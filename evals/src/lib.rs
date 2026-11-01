@@ -20,7 +20,8 @@ pub mod identity;
 pub mod provenance;
 pub mod results;
 
-#[cfg(test)]
+// Only the Linux-only runner probes (`runner::test_probes`) take the lock.
+#[cfg(all(test, target_os = "linux"))]
 #[path = "../tests/common/coordination.rs"]
 pub(crate) mod test_support;
 

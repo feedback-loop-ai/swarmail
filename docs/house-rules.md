@@ -55,6 +55,10 @@ Leave all of these clean before reporting success:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+cargo build --locked --bin swarmail    # the candidate's binary the eval suite runs against
+cd evals && cargo fmt --all -- --check
+cd evals && cargo clippy --all-targets --locked -- -D warnings
+cd evals && SWARMAIL_BIN=<the candidate's swarmail> cargo test --locked
 brokkr compile --bundle .brokkr/recipes/self   # the brokkr pinned in .brokkr/recipes/self/tooling.json
 bash scripts/coverage-gate.sh          # the floor may rise, never fall
 bash scripts/coverage-gate.sh selftest # the gate's verdict is untrusted without it
@@ -78,6 +82,15 @@ The operator's assistant read main branch protection through the GitHub API on 2
 - docker smoke
 
 These are the displayed status context names. The test context expands to both listed operating systems. This is the operator-supplied observation for 2026-10-24, not a continuous read of GitHub settings.
+
+`evals/` is a standalone, unpublished workspace outside the root coverage
+denominator (decision 0055), so none of the root commands reach it; CI and the
+verify seat therefore run its fmt, clippy and tests explicitly, `--locked`,
+against the candidate's own root `swarmail` binary (resolved from Cargo's
+artifact record of `cargo build --locked --bin swarmail`, never the harness's
+build-when-unset fallback) — CI on ubuntu and macOS, inside the `test` jobs
+(issue #201). The root `cargo deny` does not read `evals/Cargo.lock`; the
+harness's boundary test pins every foreign package there instead.
 
 This is the one gate inventory: CI and the verify seat both run all of it,
 plus a fail-closed proof that `native-tls` is absent from the tree. The absence
@@ -183,32 +196,35 @@ is CC-BY-4.0 data the crate packages for the entity table's proof
 
 ## Commits and history
 
-Author commits are unsigned until sealed (decision
-[0056](decisions/0056-signing-policy.md), *accepted*, operator, 2026-10-20).
-Seats and the operator's assistant commit unsigned (`commit.gpgsign=false`
-is set repo-locally), never push, and never stop because signing is
-unavailable — nothing signs mid-run. Write messages in the repository's
-style: imperative mood, a body that says why, not what the diff shows.
+Author commits are unsigned (decision
+[0056](decisions/0056-signing-policy.md), *accepted*, operator, 2026-10-20,
+with its 2026-11-01 addendum). Seats and the operator's assistant commit
+unsigned (`commit.gpgsign=false` is set repo-locally), never push, and never
+stop because signing is unavailable — nothing signs mid-run. Write messages
+in the repository's style: imperative mood, a body that says why, not what
+the diff shows.
 
-The operator seals every PR branch before merge with
-`scripts/seal-branch.sh` (`--check` first; it never fetches, so fetch
-before it): each commit of the branch is re-created and signed on its own
-parents, on the same merge-base — tree, message, author and parent edges
-unchanged, committer and signature new — and the branch moves only after
-every one is verified, with a leased force-push on `--push`. Never rebase
-or squash when sealing, and never onto a newer `main`. Seal before
-updating a branch from `main`, so the merge commit GitHub creates for that
-update stays GitHub-signed and is never re-signed as the operator's.
+PR branches are not sealed (0056's 2026-11-01 addendum). The operator's
+assistant merges a delivery run's PR by squash once every house gate passes
+on the final tree, after `main` is merged in, and every required CI check is
+green. It holds for the operator, and never merges on green, a PR that
+changes a decision's status to accepted; adds a package to `Cargo.lock` or
+`evals/Cargo.lock` or changes `deny.toml`; or changes `.github/`,
+`scripts/`, `.brokkr/` or the toolchain configuration. The operator may
+approve a held PR by name. `scripts/seal-branch.sh` stays available, and
+sealing is optional; when it is used, the rules above it still hold: never
+rebase or squash when sealing, never onto a newer `main`.
 
 Three kinds of signature are on record, and they mean different things:
 
 - **Sealed branch authorship** — the operator's signature added at the end
   by `scripts/seal-branch.sh`: the operator vouches for every author commit
-  of the PR branch. (Author commits signed at commit time before
-  2026-10-20 carry the same meaning and remain as recorded.)
+  of the PR branch. Required from 2026-10-20 to 2026-11-01, optional since.
+  (Author commits signed at commit time before 2026-10-20 carry the same
+  meaning and remain as recorded.)
 - **GitHub landing** — a squash merge, or a merge commit created on GitHub,
-  is signed by GitHub's key, not the operator's; the sealed author commits
-  remain on the PR branch.
+  is signed by GitHub's key, not the operator's; the author commits remain
+  on the PR branch.
 - **Release tags** — signed by the operator when cutting a release
   (`CONTRIBUTING.md`, Releases); sealing never touches a tag.
 

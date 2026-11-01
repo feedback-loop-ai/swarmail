@@ -1,0 +1,40 @@
+{
+  "name": "@swarmail/playwright",
+  "version": "0.1.0",
+  "description": "Playwright fixture for swarmail: a per-test inbox with waitForCode and waitForLink over REST",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "client.js",
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test:examples": "playwright test -c examples"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.40.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.55.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/feedback-loop-ai/swarmail.git",
+    "directory": "clients/playwright"
+  }
+}

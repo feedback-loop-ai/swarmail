@@ -3071,6 +3071,7 @@ async fn serve_policy(bound: u16) -> std::net::SocketAddr {
         smtp_degraded: Default::default(),
         pop3_degraded: Default::default(),
         http_origin_guard: Some(bound),
+        route_domain: None,
     };
     tokio::spawn(async move {
         let _stop = stop_tx;
@@ -4782,7 +4783,9 @@ async fn query_free_native_contracts_match_served_docs() {
     list_query_names.sort_unstable();
     assert_eq!(
         list_query_names,
-        ["from", "limit", "offset", "since_ms", "subject", "to"]
+        [
+            "from", "limit", "offset", "since_ms", "subject", "to", "view"
+        ]
     );
     let list_path_names = effective_parameters
         .iter()
@@ -5376,6 +5379,7 @@ async fn zero_timeout_finishes_on_the_first_router_poll() {
             smtp_degraded: Arc::new(AtomicBool::new(false)),
             pop3_degraded: Arc::new(AtomicBool::new(false)),
             http_origin_guard: None,
+            route_domain: None,
         };
         let req = Request::builder()
             .uri(format!("/api/v1/inboxes/{name}/await?count=1{query}"))
@@ -5494,6 +5498,239 @@ async fn openapi_webhook_ca_admission_statuses() {
             !ca_statuses_documented(&dangling),
             "unresolved {method} 503 schema"
         );
+    }
+    srv.stop().await;
+}
+
+// ---- view=compact (decision 0108 §4) ----
+
+/// A multipart mail with two anchors, a code and a named PDF, and a plain
+/// one: the same fixtures the MCP wire proofs read.
+const COMPACT_MULTIPART: &[u8] = b"From: Ann <ann@x.io>\r\nTo: bob@x.io\r\nSubject: Quarterly\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n\
+--b\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n\
+--a\r\nContent-Type: text/plain\r\n\r\nSee the links, code 482913\r\n\
+--a\r\nContent-Type: text/html\r\n\r\n<a href=\"https://x.io/one\">One</a> <a href=\"https://x.io/two\">Two</a>\r\n--a--\r\n\
+--b\r\nContent-Type: application/pdf; name=\"q3.pdf\"\r\nContent-Disposition: attachment; filename=\"q3.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0=\r\n--b--\r\n";
+
+/// The list of an inbox holding the plain mail and then the multipart one
+/// (newest first) answers the compact bytes only when asked, and the
+/// request that does not ask is the unchanged list.
+#[tokio::test]
+async fn view_compact_serves_the_compact_list_and_nothing_else_changes() {
+    let srv = start().await;
+    let plain = common::smtp_raw(
+        srv.smtp_addr,
+        "box",
+        b"Subject: Plain\r\n\r\nhello   there\r\n",
+    )
+    .await;
+    let multi = common::smtp_raw(srv.smtp_addr, "box", COMPACT_MULTIPART).await;
+    let path = "/api/v1/inboxes/box/messages";
+    let (st, full) = http_json(srv.http_addr, "GET", path, None).await;
+    assert_eq!(st, 200);
+    let ms = |i: usize| full["emails"][i]["received_ms"].clone();
+
+    // The unchanged list: the envelope order, whole emails with bodies.
+    let (_, unchanged) = http_send_text(srv.http_addr, "GET", path, None).await;
+    assert!(
+        unchanged.starts_with(r#"{"total":2,"emails":[{"id":"#),
+        "{unchanged}"
+    );
+    assert!(unchanged.contains(r#""text":"hello   there"#));
+    let (_, empty_query) = http_send_text(srv.http_addr, "GET", &format!("{path}?"), None).await;
+    assert_eq!(empty_query, unchanged);
+
+    let newest = serde_json::json!({
+        "anchors": [
+            {"anchor_text": "One", "url": "https://x.io/one"},
+            {"anchor_text": "Two", "url": "https://x.io/two"}
+        ],
+        "attachments": [{"content_type": "application/pdf", "filename": "q3.pdf", "size": 5}],
+        "codes": ["482913"],
+        "from": {"address": "ann@x.io", "name": "Ann"},
+        "id": multi,
+        "received_ms": ms(0),
+        "snippet": "See the links, code 482913",
+        "subject": "Quarterly",
+        "to": [{"address": "bob@x.io"}],
+    });
+    let oldest = serde_json::json!({
+        "attachments": [],
+        "from": {"address": "sender@x.io"},
+        "id": plain,
+        "received_ms": ms(1),
+        "snippet": "hello there",
+        "subject": "Plain",
+        "to": [],
+    });
+    // A mail without attachments is a known empty list: the member is absent.
+    let mut oldest = oldest;
+    oldest.as_object_mut().unwrap().remove("attachments");
+    let expected = format!(r#"{{"total":2,"emails":[{newest},{oldest}]}}"#);
+    let (st, compact) =
+        http_send_text(srv.http_addr, "GET", &format!("{path}?view=compact"), None).await;
+    assert_eq!(st, 200);
+    assert_eq!(compact, expected);
+
+    // The filters and the page apply as before; `total` is the unpaged count.
+    let (_, paged) = http_send_text(
+        srv.http_addr,
+        "GET",
+        &format!("{path}?view=compact&limit=1&offset=1"),
+        None,
+    )
+    .await;
+    assert_eq!(paged, format!(r#"{{"total":2,"emails":[{oldest}]}}"#));
+    let (_, none) = http_send_text(
+        srv.http_addr,
+        "GET",
+        &format!("{path}?view=compact&subject=nomatch"),
+        None,
+    )
+    .await;
+    assert_eq!(none, r#"{"total":0,"emails":[]}"#);
+    // The mail itself is untouched by having been viewed.
+    let (_, again) = http_json(srv.http_addr, "GET", path, None).await;
+    assert_eq!(again, full);
+    srv.stop().await;
+}
+
+/// `compact` is the whole domain of `view`: every other spelling, the empty
+/// one and a repeat included, is a 400 naming `view` — and so is any other
+/// key beside it. No other route takes the key.
+#[tokio::test]
+async fn view_admits_only_compact_and_only_on_the_list() {
+    let srv = start().await;
+    let id = common::smtp_raw(srv.smtp_addr, "box", COMPACT_MULTIPART).await;
+    for query in [
+        "view=full",
+        "view=",
+        "view=COMPACT",
+        "view=compact%20",
+        "view=compact&view=compact",
+    ] {
+        let (st, body) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/box/messages?{query}"),
+            None,
+        )
+        .await;
+        assert_eq!(st, 400, "{query}: {body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("view"),
+            "{query}: {body}"
+        );
+    }
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/box/messages?view=compact&fields=id",
+        None,
+    )
+    .await;
+    assert_eq!(st, 400);
+    assert!(
+        body["error"].as_str().unwrap().contains("`fields`"),
+        "{body}"
+    );
+    for path in [
+        format!("/api/v1/messages/{id}"),
+        format!("/api/v1/messages/{id}/raw"),
+        "/api/v1/inboxes/box/count".to_string(),
+        "/api/v1/inboxes/box/await".to_string(),
+        "/api/v1/inboxes/box/assert".to_string(),
+        "/api/v1/inboxes/box/threads".to_string(),
+        "/api/v1/inboxes/box/feed".to_string(),
+    ] {
+        let (st, body) =
+            http_json(srv.http_addr, "GET", &format!("{path}?view=compact"), None).await;
+        assert_eq!(st, 400, "{path}: {body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("view"),
+            "{path}: {body}"
+        );
+    }
+    // The key is documented on exactly the list route.
+    let doc = served_openapi(srv.http_addr).await;
+    let mut documenting = Vec::new();
+    for (path, item) in doc["paths"].as_object().unwrap() {
+        for (method, operation) in item.as_object().unwrap() {
+            let has_view = operation["parameters"]
+                .as_array()
+                .is_some_and(|ps| ps.iter().any(|p| p["in"] == "query" && p["name"] == "view"));
+            if has_view {
+                documenting.push(format!("{method} {path}"));
+            }
+        }
+    }
+    assert_eq!(documenting, ["get /api/v1/inboxes/{inbox}/messages"]);
+    let schemas = &doc["components"]["schemas"];
+    assert_eq!(
+        doc["paths"]["/api/v1/inboxes/{inbox}/messages"]["get"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["anyOf"],
+        serde_json::json!([
+            {"$ref": "#/components/schemas/EmailList"},
+            {"$ref": "#/components/schemas/CompactEmailList"}
+        ])
+    );
+    assert_eq!(
+        schemas["CompactEmailList"]["properties"]["emails"]["items"]["$ref"],
+        "#/components/schemas/CompactEmail"
+    );
+    // Every member the compact item can carry is documented, and nothing else.
+    let mut documented: Vec<&str> = schemas["CompactEmail"]["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    documented.sort_unstable();
+    assert_eq!(
+        documented,
+        [
+            "anchors",
+            "anchors_total",
+            "attachments",
+            "attachments_total",
+            "codes",
+            "from",
+            "id",
+            "links",
+            "received_ms",
+            "snippet",
+            "subject",
+            "to"
+        ]
+    );
+    srv.stop().await;
+}
+
+/// The README and the served `llms.txt` describe the compact default, the
+/// `fields` argument and `view=compact`, and say the token metric was not
+/// measured (decision 0108 §8).
+#[tokio::test]
+async fn the_documents_describe_the_compact_view_and_fields() {
+    let srv = start().await;
+    let (_, llms) = http_get_text(srv.http_addr, "/llms.txt").await;
+    for (name, text) in [
+        ("README", include_str!("../README.md")),
+        ("llms.txt", llms.as_str()),
+    ] {
+        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            "view=compact",
+            "fields",
+            "compact view",
+            "anchors_total",
+            "attachments_total",
+            "swarmail_get_email",
+            "at most 200 characters",
+            "250",
+            "no paid trial",
+        ] {
+            assert!(normalized.contains(needle), "{name} omits {needle}");
+        }
     }
     srv.stop().await;
 }

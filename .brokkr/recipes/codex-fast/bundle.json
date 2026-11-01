@@ -27,7 +27,9 @@
       "intake"
     ],
     "rules": [
-      "INTAKE-OK"
+      "INTAKE-OK",
+      "REVIEW-CLEAN-SPEC-EXHAUSTED",
+      "REVIEW-CLEAN-SPEC-REDESIGN"
     ],
     "phases": [
       "intake"

@@ -20,8 +20,8 @@ Leave every gate in the one inventory,
 reporting success — all of it, `--locked`, the coverage selftest and the
 publish-guard proof included; that section also names what only CI
 proves. This file keeps no copy of the list. Commit unsigned, never push,
-and never stop for signing — the operator seals the branch before merge
-(0056). Never report
+and never stop for signing — nothing is sealed; the operator's assistant
+merges on green, holding what 0056's 2026-11-01 addendum lists. Never report
 `complete` while required work remains; never widen the dependency allowlist
 without a defensible reason.
 

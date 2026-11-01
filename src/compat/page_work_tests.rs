@@ -458,6 +458,7 @@ fn app_state(srv: &crate::RunningServer) -> AppState {
         smtp_degraded: Arc::new(AtomicBool::new(false)),
         pop3_degraded: Arc::new(AtomicBool::new(false)),
         http_origin_guard: Some(srv.http_addr.port()),
+        route_domain: None,
     }
 }
 
