@@ -33,7 +33,7 @@ fn rebind(root: &Path, name: &str) {
     save(&path, &meta);
 }
 fn retained(task: &str, agent: &str) -> (tempfile::TempDir, runner::TrialResult) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let out = cli()
         .args([
             "trial",
@@ -390,7 +390,7 @@ fn snapshot_semantics_and_historical_version_cannot_be_laundered_by_new_hashes()
 #[test]
 fn early_errors_and_impossible_retention_are_truthful_without_private_diagnostics() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let out = cli()
         .env("SWARMAIL_BIN", "/missing-target")
         .args([
@@ -438,7 +438,7 @@ fn early_errors_and_impossible_retention_are_truthful_without_private_diagnostic
             "--artifacts-dir",
         ])
         .arg(dir.path())
-        .args(["--", "/bin/false", marker])
+        .args(["--", FALSE_PROGRAM, marker])
         .output()
         .unwrap();
     let row = one_row(&out);
@@ -456,7 +456,7 @@ fn early_errors_and_impossible_retention_are_truthful_without_private_diagnostic
 #[test]
 fn a_real_eight_cell_retained_matrix_replays_offline_in_order_and_checks_all_before_output() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let agents = dir.path().join("agents.json");
     save(
         &agents,
@@ -535,7 +535,7 @@ fn helper_agent() {
         let target =
             std::path::PathBuf::from(std::env::var_os("EVAL_TEST_REPLACE_TARGET").unwrap());
         let replacement = target.with_extension("replacement");
-        std::fs::copy("/bin/false", &replacement).unwrap();
+        std::fs::copy(FALSE_PROGRAM, &replacement).unwrap();
         std::fs::rename(replacement, target).unwrap();
         let marker = std::path::PathBuf::from(std::env::var_os(MARKER_ENV).unwrap());
         use std::io::Write;
@@ -683,7 +683,7 @@ fn helper_agent() {
 #[test]
 fn fresh_fixture_processes_repeat_only_the_declared_projection() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     for task in ["invite-time", "digest-forty", "stale-otp"] {
         let mut projections = vec![];
         for (n, seed) in [ZERO, ZERO, &"ab".repeat(32)].iter().enumerate() {
@@ -761,7 +761,7 @@ fn declared_model_public_command_and_legacy_private_configuration_stay_distinct(
             "public-config-a",
             "--public-argv",
             "--",
-            "/bin/true",
+            TRUE_PROGRAM,
             "literal",
             "λ",
             "",
@@ -782,7 +782,7 @@ fn declared_model_public_command_and_legacy_private_configuration_stay_distinct(
         p::Availability::present(
             p::CommandIdentity {
                 algorithm: "public-argv-sha256-v1".into(),
-                sha256: p::public_argv(&["/bin/true", "literal", "λ", ""].map(str::to_string))
+                sha256: p::public_argv(&[TRUE_PROGRAM, "literal", "λ", ""].map(str::to_string))
             },
             p::Source::DeclaredPublicArgv
         )
@@ -809,7 +809,7 @@ fn declared_model_public_command_and_legacy_private_configuration_stay_distinct(
 #[test]
 fn sequential_retained_matrices_preserve_duplicate_occurrences_and_exclusive_ownership() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let agents = dir.path().join("agents.json");
     save(&agents, &json!([{"label":"null","argv":[]}]));
     let root = dir.path().join("fresh-shared-root");
@@ -893,7 +893,7 @@ fn business_replay_never_rewrites_budget_or_infrastructure_history() {
 #[test]
 fn retained_reader_enforces_fixed_paths_declared_lengths_and_all_size_boundaries() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let file = dir.path().join("bound.json");
     for (limit, kind) in [
         (a::SMALL_LIMIT, "small"),
@@ -953,7 +953,7 @@ fn retained_reader_enforces_fixed_paths_declared_lengths_and_all_size_boundaries
 fn matrix_publication_failures_and_conflicting_child_evidence_never_overwrite_or_complete() {
     let _trial_scope = trial_scope();
     for mode in ["index_failure", "partial_evidence", "published_conflict"] {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir();
         let root = dir.path().join("runs");
         let agents = dir.path().join("agents.json");
         let (_helper_owner, argv) = matrix_helper(mode, &[(MARKER_ENV, root.to_str().unwrap())]);
@@ -1010,7 +1010,7 @@ fn matrix_publication_failures_and_conflicting_child_evidence_never_overwrite_or
 #[test]
 fn invalid_requests_and_missing_targets_retain_explicit_unscorable_error_evidence() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     for args in [
         vec!["--agent", "oracle"],
         vec!["--task", "unknown", "--agent", "null"],
@@ -1068,7 +1068,7 @@ fn invalid_requests_and_missing_targets_retain_explicit_unscorable_error_evidenc
 #[test]
 fn replacing_a_measured_target_fails_affected_cells_without_relaunch_or_invented_source() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let target = dir.path().join("swarmail");
     std::fs::copy(swarmail_bin(), &target).unwrap();
     let digest = swarmail_evals::identity::file_hash(&target).unwrap();
@@ -1180,8 +1180,8 @@ fn external_private_claims_are_absent_from_trial_matrix_replay_and_failure_publi
         "private_claims_budget",
         "private_claims_retention_failure",
     ] {
-        let dir = tempfile::tempdir().unwrap();
-        let private = tempfile::tempdir().unwrap();
+        let dir = tempdir();
+        let private = tempdir();
         let root = dir.path().join("published");
         let (row, out) = helper_trial(
             mode,
@@ -1242,8 +1242,8 @@ fn external_private_claims_are_absent_from_trial_matrix_replay_and_failure_publi
             assert!(!root.join(&row.trial_id).join("metadata.json").exists());
         }
     }
-    let dir = tempfile::tempdir().unwrap();
-    let private = tempfile::tempdir().unwrap();
+    let dir = tempdir();
+    let private = tempdir();
     let (_helper_owner, argv) = matrix_helper(
         "private_claims",
         &[(MARKER_ENV, private.path().to_str().unwrap())],
@@ -1298,7 +1298,7 @@ fn publication_guard_refuses_supplied_state_before_any_result_or_state_bytes() {
     let mut snap: swarmail_evals::state::Snapshot =
         serde_json::from_value(load(&dir.path().join(&row.trial_id).join("state.json"))).unwrap();
     snap.events[0].claimed = Some("private-writer-canary".into());
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let req = runner::TrialRequest {
         artifacts_dir: Some(root.path().into()),
         ..Default::default()
@@ -1310,7 +1310,7 @@ fn publication_guard_refuses_supplied_state_before_any_result_or_state_bytes() {
     let dest = root.path().join(&row.trial_id);
     assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
     // Preserve exclusive partial ownership, including the finalizer's error path.
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let req = runner::TrialRequest {
         artifacts_dir: Some(root.path().into()),
         ..req
@@ -1351,8 +1351,8 @@ fn bare(task: &str, path: &Path) -> std::process::Output {
 #[test]
 fn historical_unknown_claims_score_without_mutation_and_reader_errors_do_not_reflect_input() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
-    let private = tempfile::tempdir().unwrap();
+    let dir = tempdir();
+    let private = tempdir();
     let (row, _) = helper_trial(
         "private_claims",
         &[
@@ -1488,7 +1488,7 @@ fn historical_unknown_claims_score_without_mutation_and_reader_errors_do_not_ref
 #[test]
 fn retained_matrix_historical_claims_remain_scoreable_and_a_bad_later_cell_emits_no_rows() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let agents = dir.path().join("agents.json");
     save(&agents, &json!([{"label":"null","argv":[]}]));
     let out = cli()
@@ -1587,7 +1587,7 @@ fn retained_matrix_historical_claims_remain_scoreable_and_a_bad_later_cell_emits
 #[test]
 fn retained_plan_coordinates_versions_and_cross_cell_results_refuse_even_with_new_bindings() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let agents = dir.path().join("agents.json");
     save(&agents, &json!([{"label":"null","argv":[]}]));
     let out = cli()
@@ -1704,7 +1704,7 @@ fn public_native_argv_hashes_the_original_declaration_and_non_utf8_opt_in_refuse
         ffi::OsString,
         os::unix::{ffi::OsStringExt, fs::PermissionsExt},
     };
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let script = dir.path().join("agent");
     let marker = dir.path().join("launched");
     std::fs::write(
@@ -1769,7 +1769,7 @@ fn public_native_argv_hashes_the_original_declaration_and_non_utf8_opt_in_refuse
 #[test]
 fn retained_agent_input_accepts_the_exact_bound_and_refuses_one_extra_byte_before_admission() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let agents = dir.path().join("agents.json");
     let mut bytes = br#"[{"label":"null","argv":[]}]"#.to_vec();
     bytes.resize(1024 * 1024, b' ');

@@ -67,9 +67,9 @@ const CLEANUP_BUDGET_HOLD_ENV: &str = "EVAL_TEST_CLEANUP_BUDGET_HOLD_DIR";
 const CLEANUP_BUDGET_RELEASE_ENV: &str = "EVAL_TEST_CLEANUP_BUDGET_RELEASE";
 #[cfg(test)]
 const CLEANUP_BUDGET_LOG_ENV: &str = "EVAL_TEST_CLEANUP_BUDGET_LOG";
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 const CLEANUP_OBSERVE_ERROR_ENV: &str = "EVAL_TEST_CLEANUP_OBSERVE_ERROR";
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 const CLEANUP_FORCE_EXPIRY_ENV: &str = "EVAL_TEST_CLEANUP_FORCE_EXPIRY";
 #[cfg(test)]
 const RUNNER_SIGNAL_LOG_ENV: &str = "EVAL_TEST_RUNNER_SIGNAL_LOG";
@@ -544,10 +544,20 @@ impl RuntimeDirs {
     }
 }
 
+/// The shared sticky temporary directory every private runtime directory is
+/// created in, by its symlink-free name. Private runtime paths are walked
+/// without following symlinks, and macOS's /tmp is a symlink to /private/tmp.
+#[cfg(target_os = "macos")]
+pub const SHARED_TMP: &str = "/private/tmp";
+/// The shared sticky temporary directory every private runtime directory is
+/// created in, by its symlink-free name.
+#[cfg(not(target_os = "macos"))]
+pub const SHARED_TMP: &str = "/tmp";
+
 pub fn private_tempdir(prefix: &str) -> Result<tempfile::TempDir, String> {
     let directory = tempfile::Builder::new()
         .prefix(prefix)
-        .tempdir_in("/tmp")
+        .tempdir_in(SHARED_TMP)
         .map_err(|_| "private_directory")?;
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
         .map_err(|_| "private_directory")?;
@@ -861,15 +871,21 @@ struct DrainTestControl {
     progress: tokio::sync::mpsc::UnboundedSender<&'static str>,
 }
 
+// Only Linux can read a member's pid, group and state (from /proc); other
+// Unix systems observe the group as a whole through kill(-pgid, 0).
 #[derive(Debug, Clone, Copy)]
 struct ProcIdentity {
+    #[cfg(target_os = "linux")]
     pid: i32,
+    #[cfg(target_os = "linux")]
     pgrp: i32,
     session: i32,
     start_time: u64,
+    #[cfg(target_os = "linux")]
     state: char,
 }
 
+#[cfg(target_os = "linux")]
 fn parse_proc_stat(pid: i32, stat: &str) -> Result<ProcIdentity, String> {
     let (_, tail) = stat
         .rsplit_once(')')
@@ -984,11 +1000,8 @@ fn group_members(group: &OwnedGroup) -> Result<Vec<ProcIdentity>, String> {
         let rc = unsafe { libc::kill(-group.pgid, 0) };
         if rc == 0 {
             Ok(vec![ProcIdentity {
-                pid: group.pid,
-                pgrp: group.pgid,
                 session: group.session.unwrap_or_default(),
                 start_time: group.start_time.unwrap_or_default(),
-                state: 'R',
             }])
         } else {
             let e = std::io::Error::last_os_error();
@@ -996,11 +1009,8 @@ fn group_members(group: &OwnedGroup) -> Result<Vec<ProcIdentity>, String> {
                 Ok(Vec::new())
             } else if e.raw_os_error() == Some(libc::EPERM) {
                 Ok(vec![ProcIdentity {
-                    pid: group.pid,
-                    pgrp: group.pgid,
                     session: group.session.unwrap_or_default(),
                     start_time: group.start_time.unwrap_or_default(),
-                    state: 'R',
                 }])
             } else {
                 Err(format!("cannot inspect process group {}: {e}", group.pgid))
@@ -1028,6 +1038,14 @@ fn signal_owned_group(group: &OwnedGroup, sig: i32) -> Result<(), String> {
     let e = std::io::Error::last_os_error();
     if e.raw_os_error() == Some(libc::ESRCH) {
         Ok(())
+    } else if cfg!(target_os = "macos") && e.raw_os_error() == Some(libc::EPERM) {
+        // Darwin answers EPERM for a group whose remaining members are all
+        // zombies, as when a child exited just before cleanup and is not yet
+        // reaped. The signal proves nothing either way: cleanup succeeds only
+        // once observation (which counts EPERM as presence) finds the group
+        // gone, and a member that truly cannot be signalled outlives the
+        // deadline and fails cleanup as expired.
+        Ok(())
     } else {
         Err(format!(
             "cannot signal owned process group {}: {e}",
@@ -1036,7 +1054,7 @@ fn signal_owned_group(group: &OwnedGroup, sig: i32) -> Result<(), String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 fn cleanup_timeout_error(group: &OwnedGroup, running: usize) -> String {
     format!(
         "cleanup timed out for process group {} ({} running member(s), direct child reaped: {})",
@@ -2393,6 +2411,7 @@ async fn run_body(
         AgentsEnd::ServerDied => return Err("server_died".into()),
         AgentsEnd::Done | AgentsEnd::Deadline => {}
     }
+    services_survived(&mut trial.servers, &client, http, &app_url).await?;
 
     // Freeze, then take one consistent snapshot before the servers stop.
     admin.call(true, "/admin/freeze", None).await?;
@@ -2400,6 +2419,64 @@ async fn run_body(
     let snap: Snapshot = serde_json::from_value(snap).map_err(|_| "snapshot_invalid")?;
     *snapshot_out = Some(snap);
     Ok(matches!(end, AgentsEnd::Deadline))
+}
+
+/// How long a service whose liveness probe failed gets to show it exited,
+/// which only names the harness error; the trial is a harness error anyway.
+const SERVICE_EXIT_GRACE: Duration = Duration::from_secs(5);
+
+/// Prove both services outlived the agents before the trial is graded. The
+/// agent loop sees a service die only once its exit is reaped, and an agent
+/// that kills a service and then exits can be reaped first, so the trial
+/// would be graded against a dead service. A service killed before this
+/// probe can never answer it — its pending SIGKILL ends every thread at the
+/// next return to user space — so an answer proves it alive after the agents
+/// ended, and an exit at any point before that answer is a harness error.
+async fn services_survived(
+    servers: &mut [Proc],
+    client: &reqwest::Client,
+    swarmail_http: SocketAddr,
+    app_url: &str,
+) -> Result<(), String> {
+    let (swarmail_slot, fixture_slot) = servers.split_at_mut(1);
+    let swarmail = &mut swarmail_slot[0].child;
+    let fixture = &mut fixture_slot[0].child;
+    let probe = async {
+        let health = client
+            .get(format!("http://{swarmail_http}/healthz"))
+            .send()
+            .await
+            .map_err(|_| "swarmail_health")?;
+        if !health.status().is_success() {
+            return Err("swarmail_health");
+        }
+        let index = client
+            .get(format!("{app_url}/"))
+            .send()
+            .await
+            .map_err(|_| "fixture_index")?;
+        if !index.status().is_success() {
+            return Err("fixture_index");
+        }
+        Ok(())
+    };
+    let failed = tokio::select! {
+        biased;
+        _ = swarmail.wait() => return Err("server_died".into()),
+        _ = fixture.wait() => return Err("server_died".into()),
+        probed = probe => match probed {
+            Ok(()) => return Ok(()),
+            Err(category) => category,
+        },
+    };
+    // A refused or reset probe is how a dying service usually shows first;
+    // its reaped exit names the error when it follows within the grace.
+    tokio::select! {
+        biased;
+        _ = swarmail.wait() => Err("server_died".into()),
+        _ = fixture.wait() => Err("server_died".into()),
+        _ = tokio::time::sleep(SERVICE_EXIT_GRACE) => Err(failed.into()),
+    }
 }
 
 const ARTIFACT_DIRECTORY_MODE: u32 = 0o700;
@@ -3128,6 +3205,8 @@ fn recheck_digest(
     Err("executable_changed_or_unreadable".into())
 }
 
+// Linux only: these probes prove cleanup by PID/start-time identities read
+// from /proc/<pid>/stat, which macOS does not have.
 #[cfg(all(test, target_os = "linux"))]
 mod test_probes {
     use super::*;
@@ -4752,7 +4831,6 @@ mod privacy_tests {
     use serde_json::json;
     use std::ffi::{OsStr, OsString};
     use std::io::Cursor;
-    use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -5156,7 +5234,12 @@ mod privacy_tests {
         std::fs::create_dir(&path_dir).unwrap();
         executable(&cwd.join("relative-agent"));
         executable(&path_dir.join("bare-agent"));
-        let odd_name = OsString::from_vec(b"nonutf8-\xff-agent".to_vec());
+        // Linux only: macOS file systems (APFS, HFS+) refuse a non-UTF-8
+        // file name with EILSEQ, so such a program cannot exist there.
+        #[cfg(target_os = "linux")]
+        let odd_name =
+            <OsString as std::os::unix::ffi::OsStringExt>::from_vec(b"nonutf8-\xff-agent".to_vec());
+        #[cfg(target_os = "linux")]
         executable(&path_dir.join(&odd_name));
         let path =
             std::env::join_paths([OsString::new(), path_dir.clone().into_os_string()]).unwrap();
@@ -5172,6 +5255,7 @@ mod privacy_tests {
             resolve_program(OsStr::new("bare-agent"), &caller).unwrap(),
             path_dir.join("bare-agent")
         );
+        #[cfg(target_os = "linux")]
         assert_eq!(
             resolve_program(&odd_name, &caller).unwrap(),
             path_dir.join(&odd_name)

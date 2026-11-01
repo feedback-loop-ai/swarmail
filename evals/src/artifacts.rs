@@ -490,6 +490,12 @@ pub fn replay_exit(rows: &[ReplayRow]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A temporary artifact root by its symlink-free name: roots refuse
+    /// every symlinked component, and macOS's temporary directory lives
+    /// under /var, a symlink to /private/var.
+    fn artifact_root(dir: &tempfile::TempDir) -> PathBuf {
+        std::fs::canonicalize(dir.path()).unwrap()
+    }
     #[test]
     fn every_publication_stage_refuses_without_a_completion_marker() {
         let req = crate::runner::TrialRequest {
@@ -518,9 +524,10 @@ mod tests {
             "diagnostics.log",
             "metadata.json",
         ] {
-            let root = tempfile::tempdir().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let root = artifact_root(&dir);
             let mut injected = false;
-            let r = retain_with(root.path(), &row, Some(&snap), |root, name, bytes| {
+            let r = retain_with(&root, &row, Some(&snap), |root, name, bytes| {
                 if name == stage {
                     injected = true;
                     return Err("injected write failure".into());
@@ -530,46 +537,31 @@ mod tests {
             assert!(r.is_err());
             assert!(injected, "{stage} injection was not reached");
             assert_eq!(r.unwrap_err(), "injected write failure");
-            assert!(
-                !root
-                    .path()
-                    .join(&row.trial_id)
-                    .join("metadata.json")
-                    .exists()
-            );
+            assert!(!root.join(&row.trial_id).join("metadata.json").exists());
         }
     }
     #[test]
     fn exclusive_destinations_and_symlinked_roots_are_never_reused() {
-        let dir = tempfile::tempdir().unwrap();
+        let owner = tempfile::tempdir().unwrap();
+        let dir = artifact_root(&owner);
         let req = crate::runner::TrialRequest {
             task: Some("signup".into()),
             agent: Some("null".into()),
             ..Default::default()
         };
         let row = crate::runner::refused_row(&req, &"0".repeat(32));
-        retain_trial(dir.path(), &row, None).unwrap();
-        let before = read_file(
-            &dir.path().join(&row.trial_id),
-            "metadata.json",
-            SMALL_LIMIT,
-        )
-        .unwrap();
-        assert!(retain_trial(dir.path(), &row, None).is_err());
+        retain_trial(&dir, &row, None).unwrap();
+        let before = read_file(&dir.join(&row.trial_id), "metadata.json", SMALL_LIMIT).unwrap();
+        assert!(retain_trial(&dir, &row, None).is_err());
         assert_eq!(
-            read_file(
-                &dir.path().join(&row.trial_id),
-                "metadata.json",
-                SMALL_LIMIT
-            )
-            .unwrap(),
+            read_file(&dir.join(&row.trial_id), "metadata.json", SMALL_LIMIT).unwrap(),
             before
         );
-        let link = dir.path().join("linked");
-        std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+        let link = dir.join("linked");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
         assert!(ensure_root(&link.join("must-not-create")).is_err());
-        assert!(!dir.path().join("must-not-create").exists());
-        assert!(read_file(dir.path(), "../metadata.json", SMALL_LIMIT).is_err());
+        assert!(!dir.join("must-not-create").exists());
+        assert!(read_file(&dir, "../metadata.json", SMALL_LIMIT).is_err());
     }
 }
 

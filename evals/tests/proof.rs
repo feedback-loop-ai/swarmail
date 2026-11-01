@@ -37,7 +37,7 @@ fn per_task<T>(f: impl Fn(String) -> T) -> Vec<(String, T)> {
 fn every_task_passes_with_the_oracle() {
     let _trial_scope = trial_scope();
     let results = per_task(|id| {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir();
         let (row, out) = trial(&[
             "--task",
             &id,
@@ -142,7 +142,7 @@ fn no_goal_completed(state: &Value) -> bool {
 fn every_task_fails_with_null_and_its_declared_idle_class() {
     let _trial_scope = trial_scope();
     let results = per_task(|id| {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir();
         let (row, out) = trial(&[
             "--task",
             &id,
@@ -208,7 +208,7 @@ fn wrong_actions_fail_in_their_observable_classes() {
 #[test]
 fn sequential_poacher_control_refuses_competing_trial() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let ready = dir.path().join("victim-ready");
     let (mut command, _wrapper) = helper_command(
         "held_idle",
@@ -359,7 +359,7 @@ fn completed_naive_controls_recover_the_goal_but_lose_the_trial() {
         ),
     ];
     for (task, mode, goal_action, trap_action, flow, count, class) in cases {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir();
         let args = [
             "--task",
             task,
@@ -533,7 +533,7 @@ fn near_miss_controls_recover_after_a_timed_out_wait() {
         ("slow-delivery", "near_miss_slow", Outcome::Pass, None),
     ];
     for (task, mode, outcome, class) in cases {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir();
         let args = [
             "--task",
             task,

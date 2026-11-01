@@ -55,6 +55,10 @@ Leave all of these clean before reporting success:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+cargo build --locked --bin swarmail    # the candidate's binary the eval suite runs against
+cd evals && cargo fmt --all -- --check
+cd evals && cargo clippy --all-targets --locked -- -D warnings
+cd evals && SWARMAIL_BIN=<the candidate's swarmail> cargo test --locked
 brokkr compile --bundle .brokkr/recipes/self   # the brokkr pinned in .brokkr/recipes/self/tooling.json
 bash scripts/coverage-gate.sh          # the floor may rise, never fall
 bash scripts/coverage-gate.sh selftest # the gate's verdict is untrusted without it
@@ -78,6 +82,15 @@ The operator's assistant read main branch protection through the GitHub API on 2
 - docker smoke
 
 These are the displayed status context names. The test context expands to both listed operating systems. This is the operator-supplied observation for 2026-10-24, not a continuous read of GitHub settings.
+
+`evals/` is a standalone, unpublished workspace outside the root coverage
+denominator (decision 0055), so none of the root commands reach it; CI and the
+verify seat therefore run its fmt, clippy and tests explicitly, `--locked`,
+against the candidate's own root `swarmail` binary (resolved from Cargo's
+artifact record of `cargo build --locked --bin swarmail`, never the harness's
+build-when-unset fallback) — CI on ubuntu and macOS, inside the `test` jobs
+(issue #201). The root `cargo deny` does not read `evals/Cargo.lock`; the
+harness's boundary test pins every foreign package there instead.
 
 This is the one gate inventory: CI and the verify seat both run all of it,
 plus a fail-closed proof that `native-tls` is absent from the tree. The absence

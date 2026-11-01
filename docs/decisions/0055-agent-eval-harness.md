@@ -246,3 +246,71 @@ crate gains no dependency. The root `cargo deny check licenses` does not read
 verify wiring for evals stays deferred to #201: the tracked-link guard that
 uses the parser is seat-run, not CI-gated. The text above this amendment is
 unchanged; this adds one bounded exception and accepts nothing.
+
+## Dated addendum — 2026-10-31, CI and verify wiring (#201)
+
+This addendum records the wiring the body deferred. It accepts no decision,
+adds no dependency and changes no frozen guarantee; the text above, including
+the headings and sentences that still read as a draft, is unchanged.
+
+**Acceptance.** This decision was accepted by the operator on 2026-10-19 (the
+status line). The body's "Proposed ruling" heading, its "This proposed
+decision…" closing sentence and the "Proposed 0073/0075 remain proposed" note
+of the 2026-10-25 integration are the draft's historical wording, not a
+current status. [0076](0076-sequential-eval-trials.md), which the 2026-10-25
+addendum calls proposed, was accepted by the operator on 2026-10-26; trials
+stay sequential. 0073 and 0075 are not touched here.
+
+**The deferral's condition is met.** The body (the context paragraph and the
+paragraph after the proof target) and the 2026-10-30 amendment's last
+sentences defer CI and verify wiring until epic #120 batch 5's gate changes
+land, then to #201, and say evals is proven by the implement seat and
+reproduced by reviewers. Batch 5 (`1d45e57`) and batch 6 (`40767cb`) landed
+and neither wired evals. Issue #201 does, and those deferral sentences are
+superseded by this wiring. Compatible work under accepted 0045 §8: it
+contradicts no accepted ruling.
+
+**What runs, and where.** From `evals/`, `--locked`, with no condition and no
+tolerated failure:
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets --locked -- -D warnings`
+- `cargo test --locked`, with `SWARMAIL_BIN` set to the candidate's own root
+  `swarmail`, resolved from Cargo's artifact record of `cargo build --locked
+  --bin swarmail --message-format=json` and asserted executable, so the
+  harness's build-when-unset path is never what a gate ran.
+
+CI runs them as named steps of the existing `test` matrix jobs, on
+`ubuntu-latest` and `macos-latest`, after `cargo test --workspace --locked`.
+The evals crate has `cfg(target_os)` arms, and only the macOS job lints the
+other arm. The macOS eval proof that earlier text assigned to #201 is now
+CI-owned. The pinned verify seat (`.brokkr/recipes/self/scripts/verify-seat.sh`)
+runs the same three, offline, between the root `cargo test` and `brokkr
+compile`. No job or status context was added: the nine required contexts of
+the 2026-10-24 observation are unchanged. [House rules § Gates](../house-rules.md#gates--part-of-every-change)
+lists the commands in the one inventory.
+
+**What this proves.** The oracle, null and isolation proofs, the lock-subset
+boundary test (`every_evals_package_is_already_in_the_root_lock`, with the
+2026-10-30 named exceptions) and the crate's fmt and clippy now gate a change.
+A root `Cargo.lock` entry that evals shares, or the root binary's MCP
+`protocolVersion` or `content[0].text` shape that the oracle hard-codes,
+can no longer move with CI green.
+
+**Honest limits.** The root `cargo deny check licenses` does not read
+`evals/Cargo.lock`; the license check for evals stays by manifest path, and
+the boundary test's exact (name, version, source) triples are what keep a new
+package from entering unseen. Admission is a host-wide advisory reservation
+(0076): a concurrent delivery run on the same host and uid can make a correct
+candidate's eval test refuse with `concurrent_trials_refused`, a named
+diagnostic and not a silent pass; the remedy is a rerun, and a host lock in
+the seat is deferred until that is observed. Cargo reports a zero-test suite
+as success, as the root suite does; no roster assertion is added.
+
+**Residual: the stdout channel.** The accepted residual that Swarmail's
+stdout fed an unbounded channel nothing read after the startup announcement is
+closed on main: `drain()` in `evals/src/runner.rs` retains one typed,
+validated announcement and discards every other byte at once. The proof is
+`readiness_continues_draining_after_the_first_valid_announcement` in
+`evals/tests/runner.rs`, which writes 1 MiB after the announcement and
+requires a pass with bounded output. This addendum changes no lifecycle code.

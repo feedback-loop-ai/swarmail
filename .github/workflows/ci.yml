@@ -110,8 +110,40 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            . -> target
+            evals -> target
       - run: cargo test --workspace --locked
+      # The eval harness (decision 0055, issue #201) is its own `[workspace]`,
+      # so nothing above reaches it: its fmt, clippy and tests run here, on
+      # both OSes (it has cfg(target_os) arms, and Linux clippy never lints
+      # the other one), against this candidate's own `swarmail`. The binary
+      # comes from Cargo's artifact record of the very build the suite just
+      # warmed, and SWARMAIL_BIN is set explicitly and asserted executable, so
+      # the harness's build-when-unset fallback can never be what a gate ran.
+      # Named steps, so each gate's cost per OS is its own step duration.
+      - name: Resolve the candidate Swarmail binary
+        run: |
+          set -euo pipefail
+          bin="$(cargo build --locked --bin swarmail --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "swarmail" and (.target.kind | index("bin"))) | .executable')"
+          test -x "$bin"
+          echo "SWARMAIL_BIN=$bin" >> "$GITHUB_ENV"
+          echo "candidate binary: $bin"
+          if command -v sha256sum >/dev/null; then sha256sum "$bin"; else shasum -a 256 "$bin"; fi
+      - name: evals fmt
+        working-directory: evals
+        run: cargo fmt --all -- --check
+      - name: evals clippy
+        working-directory: evals
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: evals test
+        working-directory: evals
+        run: cargo test --locked
       # The portless bridge's real port-80 exchange (issue #133, decision
       # 0047 §4) is ignored by default — binding 127.0.0.1:80 is privileged —
       # and run here explicitly: Linux lowers the unprivileged port floor

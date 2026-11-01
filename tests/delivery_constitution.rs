@@ -312,9 +312,17 @@ fn verify_runs_the_pinned_gates_and_checks_the_public_shims() {
         "\"bash $pin_q/delivery-proof-test.sh\"",
         "\"bash $pin_q/publish-guard-test.sh\"",
         "\"bash $pin_q/seal-branch-test.sh\"",
+        "'cd evals && cargo fmt --all -- --check'",
+        "'cd evals && cargo clippy --all-targets --locked -- -D warnings'",
+        "cargo build --locked --bin swarmail --message-format=json",
+        "cd evals && SWARMAIL_BIN=\"$bin\" cargo test --locked",
     ] {
         assert!(seat.contains(gate), "verify-seat.sh does not run {gate}");
     }
+    // The eval gates sit between the root suite and the bundle compile.
+    let at = |needle: &str| seat.find(needle).unwrap_or_else(|| panic!("{needle}"));
+    assert!(at("run \"cargo test\"") < at("run \"evals cargo fmt\""));
+    assert!(at("run \"evals cargo test\"") < at("run \"brokkr compile"));
     let preflight = seat
         .split("for resource in")
         .nth(1)
@@ -432,7 +440,7 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
         ),
         (
             ".brokkr/recipes/self/scripts/verify-seat.sh",
-            "d48d64474f8ca6d4526a54007ce247c7cbfcb92c9e91a91ac3b388a6f329a39d",
+            "b42a7928fac7287824baa2b04672e0539085fdec4ffcbe1539cecb95fd7ed81a",
         ),
         (
             ".brokkr/recipes/self/scripts/delivery-proof-test.sh",
@@ -617,6 +625,87 @@ fn ci_runs_the_chart_history_check_and_the_docker_smoke() {
     );
 }
 
+/// #201: the `test` matrix job (ubuntu and macOS) runs the standalone eval
+/// workspace's fmt, clippy and tests against the candidate's own binary. No
+/// eval step is conditional or allowed to fail, and no new job (hence no new
+/// status context) carries them.
+#[test]
+fn ci_gates_the_eval_harness_on_both_operating_systems() {
+    let ci = read_text(".github/workflows/ci.yml");
+    let test_job = ci
+        .split("\n  test:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  coverage:\n").next())
+        .expect("ci.yml has a test job before coverage");
+    assert!(
+        test_job.contains("os: [ubuntu-latest, macos-latest]"),
+        "the eval gates ride the two-OS test matrix"
+    );
+    for needle in [
+        "components: rustfmt, clippy",
+        "evals -> target",
+        "cargo build --locked --bin swarmail --message-format=json",
+        "echo \"SWARMAIL_BIN=$bin\" >> \"$GITHUB_ENV\"",
+        "test -x \"$bin\"",
+    ] {
+        assert!(
+            test_job.contains(needle),
+            "the test job must carry {needle:?}"
+        );
+    }
+    let steps: Vec<&str> = test_job.split("\n      - ").collect();
+    let step = |name: &str| -> &str {
+        steps
+            .iter()
+            .copied()
+            .find(|step| step.starts_with(&format!("name: {name}")))
+            .unwrap_or_else(|| panic!("the test job has no step named {name:?}"))
+    };
+    let resolve = step("Resolve the candidate Swarmail binary");
+    for (name, command) in [
+        ("evals fmt", "cargo fmt --all -- --check"),
+        (
+            "evals clippy",
+            "cargo clippy --all-targets --locked -- -D warnings",
+        ),
+        ("evals test", "cargo test --locked"),
+    ] {
+        let body = step(name);
+        assert!(body.contains(&format!("run: {command}")), "{name}: {body}");
+        assert!(body.contains("working-directory: evals"), "{name}: {body}");
+        for forbidden in ["if:", "continue-on-error", "|| true"] {
+            assert!(
+                !body.contains(forbidden),
+                "{name} must not carry {forbidden}"
+            );
+        }
+    }
+    for forbidden in ["if:", "continue-on-error", "|| true"] {
+        assert!(
+            !resolve.contains(forbidden),
+            "the resolve step must not carry {forbidden}"
+        );
+    }
+    // Order: the root suite builds first, the binary is resolved, the three
+    // gates follow, and the privileged port-80 steps stay last.
+    let position = |needle: &str| test_job.find(needle).unwrap_or_else(|| panic!("{needle}"));
+    let order = [
+        position("run: cargo test --workspace --locked"),
+        position("name: Resolve the candidate Swarmail binary"),
+        position("name: evals fmt"),
+        position("name: evals clippy"),
+        position("name: evals test"),
+        position("portless_bridge_pings_port_eighty"),
+    ];
+    assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{order:?}");
+    // The harness's build-when-unset fallback must never be what a gate runs.
+    assert_eq!(
+        ci.matches("working-directory: evals").count(),
+        3,
+        "only the three eval gates run from evals/"
+    );
+}
+
 #[test]
 fn codex_correctness_charter_provenance_matches_the_tracked_library() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -689,6 +778,8 @@ struct VerifySeatFixture {
     bin: std::path::PathBuf,
     gate_order: std::path::PathBuf,
     gate_report: std::path::PathBuf,
+    evals_report: std::path::PathBuf,
+    swarmail: std::path::PathBuf,
     argv_marker: std::path::PathBuf,
     later_marker: std::path::PathBuf,
 }
@@ -715,12 +806,16 @@ impl VerifySeatFixture {
         let engine = engine_dir.join("brokkr");
         let gate_order = base.join("gate order.txt");
         let gate_report = base.join("gate report.txt");
+        let evals_report = base.join("evals report.txt");
+        let swarmail = base.join("built swarmail ; [bin]");
         let argv_marker = base.join("engine argv.txt");
         let later_marker = base.join("later gate.txt");
         let prompt = base.join("verify prompt.md");
         let result = result_dir.join("seat result.json");
 
         std::fs::create_dir_all(&candidate).unwrap();
+        // The standalone eval workspace the seat's evals gates `cd` into.
+        std::fs::create_dir_all(candidate.join("evals")).unwrap();
         std::fs::create_dir_all(&pin).unwrap();
         std::fs::create_dir_all(&result_dir).unwrap();
         std::fs::create_dir_all(&bin).unwrap();
@@ -746,12 +841,25 @@ exit 0
         engine_permissions.set_mode(0o755);
         std::fs::set_permissions(&engine, engine_permissions).unwrap();
 
+        // `cargo build --message-format=json` answers with the records the
+        // seat's filter must tell apart: a decoy bin, the lib of the same
+        // name (no executable) and the real swarmail bin.
         let cargo_script = r#"#!/usr/bin/env bash
 printf 'cargo:%s\n' "$*" >> "$GATE_ORDER"
 if [ "$1" = tree ]; then
   printf 'error: package ID specification native-tls did not match any packages\n' >&2
   exit 101
 fi
+if [ "$1" = build ]; then
+  jq -cn '{reason: "compiler-artifact", target: {name: "decoy", kind: ["bin"]}, executable: "/nonexistent/decoy"}'
+  jq -cn '{reason: "compiler-artifact", target: {name: "swarmail", kind: ["lib"]}, executable: null}'
+  jq -cn --arg exe "$FAKE_SWARMAIL" '{reason: "compiler-artifact", target: {name: "swarmail", kind: ["bin"]}, executable: $exe}'
+  jq -cn '{reason: "build-finished", success: true}'
+  exit 0
+fi
+case "$PWD" in
+  */evals) printf '%s\tcwd=%s\tswarmail_bin=%s\n' "$1" "$PWD" "${SWARMAIL_BIN-unset}" >> "$EVALS_REPORT" ;;
+esac
 exit 0
 "#;
         let cargo = bin.join("cargo");
@@ -759,6 +867,11 @@ exit 0
         let mut cargo_permissions = std::fs::metadata(&cargo).unwrap().permissions();
         cargo_permissions.set_mode(0o755);
         std::fs::set_permissions(&cargo, cargo_permissions).unwrap();
+
+        std::fs::write(&swarmail, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut swarmail_permissions = std::fs::metadata(&swarmail).unwrap().permissions();
+        swarmail_permissions.set_mode(0o755);
+        std::fs::set_permissions(&swarmail, swarmail_permissions).unwrap();
 
         std::fs::write(
             &prompt,
@@ -776,6 +889,8 @@ exit 0
             bin,
             gate_order,
             gate_report,
+            evals_report,
+            swarmail,
             argv_marker,
             later_marker,
         };
@@ -870,6 +985,10 @@ exit 0
             .env("PATH", path)
             .env("GATE_ORDER", &self.gate_order)
             .env("GATE_REPORT", &self.gate_report)
+            .env("EVALS_REPORT", &self.evals_report)
+            .env("FAKE_SWARMAIL", &self.swarmail)
+            // An inherited value must not satisfy the seat: it resolves its own.
+            .env("SWARMAIL_BIN", "/inherited/must-not-be-used")
             .env("BROKKR_ARGV_MARKER", &self.argv_marker)
             .env("LATER_MARKER", &self.later_marker);
         command
@@ -951,9 +1070,32 @@ fi
             "cargo:fmt --all -- --check",
             "cargo:clippy --workspace --all-targets --locked -- -D warnings",
             "cargo:test --workspace --locked",
+            "cargo:fmt --all -- --check",
+            "cargo:clippy --all-targets --locked -- -D warnings",
+            "cargo:build --locked --bin swarmail --message-format=json",
+            "cargo:test --locked",
             "brokkr",
             "coverage-gate.sh",
         ]
+    );
+    // The eval gates ran inside evals/, and the suite ran against the binary
+    // the build record named — not the inherited value, not a decoy.
+    let evals = std::fs::read_to_string(&fixture.evals_report).unwrap();
+    let evals_dir = fixture.candidate.join("evals");
+    let swarmail = fixture.swarmail.display();
+    let observed: Vec<_> = evals.lines().collect();
+    assert_eq!(observed.len(), 3, "{evals}");
+    assert!(
+        observed[0].starts_with(&format!("fmt\tcwd={}\t", evals_dir.display())),
+        "{evals}"
+    );
+    assert!(
+        observed[1].starts_with(&format!("clippy\tcwd={}\t", evals_dir.display())),
+        "{evals}"
+    );
+    assert_eq!(
+        observed[2],
+        format!("test\tcwd={}\tswarmail_bin={swarmail}", evals_dir.display())
     );
     let report = std::fs::read_to_string(&fixture.gate_report).unwrap();
     assert!(report.contains(&format!("cwd={}", fixture.candidate.display())));
@@ -979,6 +1121,32 @@ fi
         observed.iter().all(|line| line.starts_with("nonlogin\t")),
         "a gate runner used login startup: {startup}"
     );
+}
+
+/// #201: the eval suite never runs against a binary the seat could not
+/// resolve. A build record naming no executable fails the seat closed, with the
+/// reason in the notes, before the harness's own build-when-unset path could.
+#[test]
+fn verify_seat_refuses_the_eval_suite_without_an_executable_candidate_binary() {
+    let fixture = VerifySeatFixture::new();
+    let output = fixture
+        .base_command()
+        .env("FAKE_SWARMAIL", fixture.candidate.join("not built"))
+        .output()
+        .expect("actual verify seat fixture ran");
+    assert!(output.status.success());
+    let result = fixture.read_result();
+    assert_eq!(result["result"], "fail");
+    let notes = result["notes"].as_str().unwrap();
+    assert!(notes.contains("evals cargo test failed"), "{notes}");
+    assert!(notes.contains("no executable swarmail binary"), "{notes}");
+    let order = std::fs::read_to_string(&fixture.gate_order).unwrap();
+    assert_eq!(
+        order.lines().last(),
+        Some("cargo:build --locked --bin swarmail --message-format=json"),
+        "the eval suite ran, or a later gate did, without a binary: {order}"
+    );
+    assert!(!fixture.later_marker.exists());
 }
 
 #[test]

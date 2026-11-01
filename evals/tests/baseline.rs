@@ -22,7 +22,7 @@ fn bytes(rows: &[TrialResult]) -> Vec<u8> {
 }
 #[test]
 fn dry_run_uses_the_exact_approved_product_without_reading_config_or_creating_output() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let output = dir.path().join("never-created");
     // A directory cannot be parsed as a configuration file. dry-run must
     // return without opening it; no test-only behavior is required.
@@ -113,7 +113,7 @@ fn declarations_have_the_exact_six_models_and_private_literal_config_handoff() {
 #[test]
 fn real_controls_are_retained_and_bad_controls_never_authorize_paid_launch() {
     let _scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let output = dir.path().join("baseline");
     let config = dir.path().join("private.json");
     // Invalid manifest contents fail the post-control selection check.
