@@ -1038,6 +1038,14 @@ fn signal_owned_group(group: &OwnedGroup, sig: i32) -> Result<(), String> {
     let e = std::io::Error::last_os_error();
     if e.raw_os_error() == Some(libc::ESRCH) {
         Ok(())
+    } else if cfg!(target_os = "macos") && e.raw_os_error() == Some(libc::EPERM) {
+        // Darwin answers EPERM for a group whose remaining members are all
+        // zombies, as when a child exited just before cleanup and is not yet
+        // reaped. The signal proves nothing either way: cleanup succeeds only
+        // once observation (which counts EPERM as presence) finds the group
+        // gone, and a member that truly cannot be signalled outlives the
+        // deadline and fails cleanup as expired.
+        Ok(())
     } else {
         Err(format!(
             "cannot signal owned process group {}: {e}",
