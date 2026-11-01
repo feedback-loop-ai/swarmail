@@ -17,6 +17,8 @@
   a different 0092, an existing collision. #156 owns 0093-near-miss-timeouts.
   No local branch tip exposed 0094. Recheck before integration; only the operator
   resolves collisions/accepts decisions. Do not reuse historical #154/0084.
+  *(The #155 and #156 numbers above are superseded: see the
+  [dated correction of 2026-11-01](#dated-correction--2026-11-01-decision-numbers).)*
 
 ## Context and authority
 
@@ -123,6 +125,8 @@ focused waiting coexists with reports; totals describe the decision snapshot.
 The thirteen-tool report supplement becomes fifteen through two additive tools.
 Old specs, decisions, captures and reviews stay intact; this is a new proposal,
 not replacement or acceptance of historical 0084 or #155's pending 0092.
+*(Superseded number: #155's record is now
+[0108](0108-compact-email-view.md); see the 2026-11-01 correction below.)*
 
 ## Costs, proof and disposition
 
@@ -162,3 +166,17 @@ lock or fabricated receipt substitutes. #151 paid baseline, actual clients, CI
 and operator seal remain independent prerequisites. No paid trials, push, merge,
 publication, tag, issue closure or decision acceptance. Chief returns drafted;
 the deterministic final check and subsequent phases own advancement.
+
+## Dated correction — 2026-11-01 (decision numbers)
+
+The Number line and the last sentence of the 2026-10-28 corrections record the
+branch-tip allocations seen while this record was drafted; their #155 and #156
+numbers no longer hold on `main`.
+#155's compact email view is proposed
+[0108](0108-compact-email-view.md) (drafted as 0092), and #156's near-miss
+timeouts are proposed [0111](0111-near-miss-timeouts.md) (recorded above as
+0093). On `main`, 0092 is [official-mail-comparison](0092-official-mail-comparison.md)
+and 0093 is [source-mail-comparison](0093-source-mail-comparison.md), both from
+#163; the OPTIONS lineage's 0092 (mcp-candidate-proof) is
+[0104](0104-mcp-candidate-proof.md). 0094 itself is unchanged on `main`. The
+historical sentences are kept as written; no ruling or status changes.
