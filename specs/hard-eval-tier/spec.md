@@ -272,3 +272,25 @@ HTML-only (quoted-printable, base64, encoded subjects), which need a root
 hostile-DATA proof before any task relies on them. A webhook, redirect or
 TLS component in any hard task. Changing the default-tier baseline product.
 A `tasks --tier` filter: the catalogue already prints `tier`.
+
+## Implementation amendments (2026-11-02, implement seat)
+
+Two facts the design took from the plan's reading of the tree did not hold
+when probed against the candidate `swarmail`; the implementation follows the
+tree, and no acceptance criterion is weakened.
+
+1. **The wait view has no `anchors`.** The design said MCP returns `anchors`
+   with url and text. The negotiated protocol (`2025-03-26`) answers
+   `swarmail_wait_for_email` in the legacy view (`html`, `text`, `links`, `to`,
+   `received_ms`, no `anchors`, and `fields` is refused as an unknown
+   argument). `digest-lookalike`'s trap is unchanged: the destination is in the
+   `href`, readable without following anything. The oracle reads the anchors
+   from `html` (`oracle::html_anchors`) and compares the destination host
+   exactly (`oracle::wrapper_destination_host`). The README states this.
+2. **The `Requested at` line carries the date.** The design specified
+   `Requested at HH:MM:SS UTC` from fixture time plus `generation × 4` minutes.
+   A time of day wraps at midnight (a fixture time of 23:30 puts generations
+   8–12 on the next day, so string order would stop being generation order). The
+   line is `Requested at YYYY-MM-DD HH:MM:SS UTC`, still exactly one per mail,
+   still strictly increasing with the generation (AC7), and comparable as a
+   string. Only the format widened.

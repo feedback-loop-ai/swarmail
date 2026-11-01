@@ -43,6 +43,10 @@ enum Cmd {
         output: PathBuf,
         #[arg(long)]
         dry_run: bool,
+        /// Plan one tier instead of the approved default-tier product
+        /// (`straight`, `traps`, `multi_step` or `hard`).
+        #[arg(long)]
+        tier: Option<tasks::Tier>,
     },
     /// Launch Claude with private selected OAuth authentication.
     AgentClaude {
@@ -127,8 +131,12 @@ enum Cmd {
     /// Otherwise exit 2 for harness errors, 1 for failures, and 0 for all-pass.
     Matrix {
         /// Comma-separated task ids.
-        #[arg(long, value_delimiter = ',', required = true)]
+        #[arg(long, value_delimiter = ',', required_unless_present = "tier")]
         tasks: Vec<String>,
+        /// Every task of one tier, in catalogue order (`straight`, `traps`,
+        /// `multi_step` or `hard`); exclusive with `--tasks`.
+        #[arg(long, conflicts_with = "tasks")]
+        tier: Option<tasks::Tier>,
         /// A JSON array of {"label": ..., "argv": [...]}.
         #[arg(long)]
         agents: PathBuf,
@@ -208,7 +216,8 @@ fn main() -> ExitCode {
             config,
             output,
             dry_run,
-        } => rt.block_on(run_baseline(config, output, dry_run)),
+            tier,
+        } => rt.block_on(run_baseline(config, output, dry_run, tier)),
         Cmd::AgentClaude { model, config } => wrapper_result("claude", model, config),
         Cmd::AgentCodex { model, config } => wrapper_result("codex", model, config),
         Cmd::AgentDsh { model, config } => wrapper_result("dsh", model, config),
@@ -336,6 +345,7 @@ fn main() -> ExitCode {
         }
         Cmd::Matrix {
             tasks: ids,
+            tier,
             agents,
             trials,
             deadline_ms,
@@ -348,6 +358,10 @@ fn main() -> ExitCode {
                 eprintln!("swarmail-evals: harness error: concurrency_unsupported");
                 return ExitCode::from(2);
             }
+            let ids = match tasks::select_ids(&tasks::catalogue(), ids, tier) {
+                Ok(ids) => ids,
+                Err(e) => return fail(e),
+            };
             let fixture = match provenance::FixtureInputs::resolve(
                 seed.as_deref(),
                 fixture_time.as_deref(),
@@ -2033,8 +2047,13 @@ fn baseline_stream(root: &std::path::Path, name: &str) -> Result<std::fs::File, 
     Ok(f)
 }
 
-async fn run_baseline(config: PathBuf, output: PathBuf, dry_run: bool) -> ExitCode {
-    let plan = baseline::Plan::new(&output);
+async fn run_baseline(
+    config: PathBuf,
+    output: PathBuf,
+    dry_run: bool,
+    tier: Option<tasks::Tier>,
+) -> ExitCode {
+    let plan = baseline::Plan::for_tier(tier, &output);
     if !config.is_absolute() {
         return fail("baseline_config_locator_invalid");
     }

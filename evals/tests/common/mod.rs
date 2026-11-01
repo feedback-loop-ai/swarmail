@@ -798,6 +798,68 @@ async fn helper(mode: &str) -> i32 {
             }
             0
         }
+        "hard_stale_code" => {
+            // The backlog's tempting choice: the code that arrived last.
+            let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();
+            let mails = mcp
+                .wait_emails(&env.inbox, Some("Your verification code"), 12)
+                .await
+                .unwrap();
+            let (code, current) = arrival_and_current_codes(&mails);
+            assert_ne!(code, current, "the last arrival is never the current code");
+            assert_eq!(
+                app.post("/otp/verify", json!({ "code": code }))
+                    .await
+                    .unwrap()
+                    .0,
+                410
+            );
+            0
+        }
+        "hard_resend" => {
+            // Ask for a fresh code, meet the closed limit, then do it right.
+            let (status, body) = app.post("/otp/resend", json!({})).await.unwrap();
+            assert_eq!(status, 429, "{body}");
+            oracle_exit(&env).await
+        }
+        "hard_wrong_message" => {
+            // The look-alike whose address contains ours, so a substring
+            // filter still returns it, presented as ourselves.
+            let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();
+            let mails = mcp
+                .wait_emails(&env.inbox, Some("Confirm your account"), 5)
+                .await
+                .unwrap();
+            let decoy = mails
+                .iter()
+                .find(|m| {
+                    let to = m["to"][0]["address"].as_str().unwrap();
+                    to != env.identity && to.contains(env.identity.as_str())
+                })
+                .expect("a look-alike containing my address");
+            let link =
+                labelled_url(decoy["text"].as_str().unwrap(), "Confirm your account:").unwrap();
+            assert_eq!(app.get(&link).await.unwrap().0, 403);
+            0
+        }
+        "hard_wrong_link" => {
+            // The exact title on the tracker-suffixed host.
+            let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();
+            let mail = mcp
+                .wait_emails(&env.inbox, Some("Your weekly digest"), 1)
+                .await
+                .unwrap();
+            let (link, _) = oracle::html_anchors(mail[0]["html"].as_str().unwrap())
+                .into_iter()
+                .find(|(href, text)| {
+                    text == swarmail_evals::tasks::DIGEST_ITEM
+                        && oracle::wrapper_destination_host(href).as_deref()
+                            == Some(swarmail_evals::tasks::DIGEST_LOOKALIKE_HOST)
+                })
+                .expect("the look-alike anchor");
+            assert_eq!(app.get(&link).await.unwrap().0, 200);
+            0
+        }
         "tool_misuse" => {
             app.post(
                 "/reset/complete",
@@ -864,6 +926,33 @@ pub fn retained_state(dir: &Path, row: &TrialResult) -> Value {
     serde_json::from_slice(&std::fs::read(&path).expect("state.json retained")).unwrap()
 }
 
+/// Run the oracle for this agent's environment; its exit code.
+async fn oracle_exit(env: &AgentEnv) -> i32 {
+    match oracle::run_oracle(env).await {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+/// The code of the mail that arrived last and the code of the mail with the
+/// latest `Requested at` line, read from the mails alone.
+fn arrival_and_current_codes(mails: &[Value]) -> (String, String) {
+    let text = |m: &Value| m["text"].as_str().unwrap().to_string();
+    let code = |m: &Value| oracle::six_digit_code(&text(m)).unwrap();
+    let last = mails
+        .iter()
+        .max_by_key(|m| (m["received_ms"].as_i64().unwrap(), m["id"].to_string()))
+        .unwrap();
+    let current = mails
+        .iter()
+        .max_by_key(|m| oracle::requested_at(&text(m)).unwrap().to_string())
+        .unwrap();
+    (code(last), code(current))
+}
+
 /// Independent public strategies: deliberately try alternatives, then recover.
 /// No oracle, admin snapshot, private tokens or scorer input is consulted.
 async fn naive_recovery(mode: &str, env: &AgentEnv, app: &App) -> i32 {
@@ -873,6 +962,10 @@ async fn naive_recovery(mode: &str, env: &AgentEnv, app: &App) -> i32 {
         "sibling-addresses" | "i18n-subject" | "stale-otp"
     ) {
         2
+    } else if env.task == "otp-backlog" {
+        12
+    } else if env.task == "recipient-crowd" {
+        5
     } else {
         1
     };
@@ -928,6 +1021,46 @@ async fn naive_recovery(mode: &str, env: &AgentEnv, app: &App) -> i32 {
                         .0,
                     if current { 200 } else { 410 }
                 );
+            }
+        }
+        "otp-backlog" => {
+            // The last arrival first (superseded), then the right one.
+            let (last, current) = arrival_and_current_codes(&mails);
+            assert_ne!(last, current);
+            for (code, status) in [(last, 410), (current, 200)] {
+                assert_eq!(
+                    app.post("/otp/verify", json!({"code": code}))
+                        .await
+                        .unwrap()
+                        .0,
+                    status
+                );
+            }
+        }
+        "recipient-crowd" => {
+            // A look-alike's token as ourselves, then our own mail.
+            let mine = mails
+                .iter()
+                .find(|m| m["to"][0]["address"] == env.identity)
+                .unwrap();
+            let theirs = mails
+                .iter()
+                .find(|m| m["to"][0]["address"] != env.identity)
+                .unwrap();
+            assert_eq!(app.get(&follow(theirs)).await.unwrap().0, 403);
+            assert_eq!(app.get(&follow(mine)).await.unwrap().0, 200);
+        }
+        "digest-lookalike" => {
+            // Every exact-title anchor in document order: the right host and
+            // the look-alike host both answer 200, and only one is the goal.
+            let exact: Vec<String> = oracle::html_anchors(mails[0]["html"].as_str().unwrap())
+                .into_iter()
+                .filter(|(_, text)| text == swarmail_evals::tasks::DIGEST_ITEM)
+                .map(|(href, _)| href)
+                .collect();
+            assert_eq!(exact.len(), 2);
+            for link in exact {
+                assert_eq!(app.get(&link).await.unwrap().0, 200, "{link}");
             }
         }
         "entity-url" if mode == "naive_entity_raw" => {

@@ -66,7 +66,7 @@ fallback build below). The same commands are the local reproduction, from
 cargo fmt --all -- --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked                  # everything; the proof alone:
-cargo test --locked --test proof     # oracle 16/16 pass, null 16/16 fail, sequential refusal control
+cargo test --locked --test proof     # oracle 19/19 pass, null 19/19 fail, hard fixed seeds, sequential refusal control
 ```
 
 The tests locate the Swarmail under test through `SWARMAIL_BIN`; when it is
@@ -94,7 +94,7 @@ cargo build --offline --locked --manifest-path evals/Cargo.toml
 export SWARMAIL_BIN="$PWD/target/debug/swarmail"   # adjust for CARGO_TARGET_DIR
 E=evals/target/debug/swarmail-evals
 
-$E tasks                                            # the v2 catalogue, schema 2
+$E tasks                                            # the v2 catalogue, schema 2 (16 default-tier + 3 hard)
 $E trial --task signup --agent oracle               # one JSON line; exit 0
 $E trial --task signup --agent null                 # fail/gave_up; exit 1
 $E trial --task signup --agent mine -- /abs/agent --mode email
@@ -107,6 +107,7 @@ cat > agents.json <<'EOF'
  {"label": "mine", "argv": ["/abs/agent", "--mode", "email"]}]
 EOF
 $E matrix --tasks signup,otp,stale-otp --agents agents.json --trials 5 > runs.jsonl
+$E matrix --tier hard --agents agents.json --trials 5 > hard.jsonl   # the hard tier only
 $E report --input runs.jsonl                        # or --input - for stdin
 ```
 
@@ -130,8 +131,9 @@ ordinary harness errors and exits 2 if any occurred, else 1 if any failed,
 else 0. Once its inputs are valid, every `(task, agent, trial)` element gets
 a row: if the Swarmail binary cannot be resolved, each element is a
 `harness_error` row (no trial child is launched) and the exit is 2. Invalid
-inputs (an unknown task, zero trials, an unreadable agents file) are refused
-with exit 2 and no rows.
+inputs (an unknown task, zero trials, an unreadable agents file, `--tier`
+together with `--tasks`, neither, or an unknown tier) are refused with exit 2
+and no rows.
 
 On matrix SIGTERM or SIGINT, the first observed signal stops admission. The
 matrix forwards one SIGTERM to its active trial PID and waits for that trial
@@ -244,11 +246,18 @@ real status when no named trap disqualifies it; `null` exits zero and fails.
 `swarmail-evals tasks` prints the catalogue: 15 tasks in three tiers plus
 `inbox-isolation` (three agents on one Swarmail behind one shared SMTP
 AUTH login, `fixture-app`; each agent's address is routed to its own inbox
-by the runner's `--route-domain swarmail.test`, decision 0112). Each
+by the runner's `--route-domain swarmail.test`, decision 0112) are the 16
+default-tier tasks, followed by the 3 hard-tier tasks described below. Each
 declares the `failure_class` it provokes and the `idle_class` (`gave_up` or
 `wait_timeout`) a do-nothing agent earns. The class set is closed:
 `wrong_message`, `stale_code`, `wrong_link`, `wait_timeout`, `gave_up`,
 `tool_misuse`, `budget`, `harness_error`.
+
+The catalogue in order — straight: `signup`, `otp`, `magic-login`; traps:
+`stale-otp`, `confirm-decoys`, `sibling-addresses`, `entity-url`,
+`i18n-subject`, `slow-delivery`, `smtp-retry`, `digest-forty`; multi_step:
+`reset-login`, `reset-reuse`, `invite-time`, `support-reply`,
+`inbox-isolation`; hard: `otp-backlog`, `recipient-crowd`, `digest-lookalike`.
 
 Scoring precedence: infrastructure failure → `harness_error`; an agent alive
 at its deadline → `fail/budget`; the earliest named trap → fail with its
@@ -268,11 +277,89 @@ retained state with a failed or parked delivery replays as `harness_error`
 (exit 2). Replay reproduces only what the snapshot records: process
 failures and deadlines are not in it.
 
+## The hard tier (proposed 0115)
+
+The 2026-11-01 baseline scored 395/400 on the 16 default-tier tasks, so the
+suite could not rank anything. Proposed
+[0115](../docs/decisions/0115-hard-eval-tier.md) (spec
+[hard-eval-tier](../specs/hard-eval-tier/spec.md)) adds a `hard` tier: **16
+default-tier tasks plus 3 hard tasks, 19 in the catalogue.** Each hard task is
+one agent, the default deadline, `gave_up` when the agent does nothing, and an
+existing flow, check and action; each provokes one agent-caused class with a
+misdirection a careful agent can still see through. The discriminator is always
+in the mail itself, never an external fact.
+
+| Task | Tier | Expected failure | The intended trap | Why a careful agent still passes | First wrong attempt |
+|---|---|---|---|---|---|
+| `otp-backlog` | hard | `stale_code` | Twelve near-identical code mails for one sign-in, sent in a seeded order with the current generation neither first nor last. Taking the newest arrival, the first listed or the last listed mail submits a superseded code. | Every mail prints `Requested at YYYY-MM-DD HH:MM:SS UTC`, and the goal says the most recently requested code is the valid one. Only content identifies the generation. | `superseded_code` (410) disqualifies the trial, even if the right code follows. |
+| `recipient-crowd` | hard | `wrong_message` | Five `Confirm your account` mails with one subject, every body greeting the agent's own address. Four go to look-alike recipients; `old.<local>@<domain>` contains the agent's whole address, so the MCP `to` substring filter still returns it. | MCP returns each mail's parsed `to` array and the goal names the exact address. An exact comparison of the recipient finds the one right mail. | `foreign_token` (403) disqualifies the trial, whether presented as the agent or as the look-alike. |
+| `digest-lookalike` | hard | `wrong_link` | An HTML-only digest of twelve tracking links `…/a/<token>?u=<destination>`. Two anchors carry the exact requested title; one destination host is `news.fixture.eval`, the other `news.fixture.eval.click-tracker.net`, so a "host contains" check passes both. | The destination is readable in the `href` without following anything, and the goal names the publisher host and says a look-alike is not it. Exact host comparison finds the one right link. | `digest_decoy` (200, but recorded) disqualifies the trial. |
+
+How the proofs read each row:
+
+- The **layout** (send order, the agent's position among five, where the two
+  exact-title anchors sit) is a pure function of the public `--seed`, through
+  the existing `select` keys below. The **secrets** (codes, tokens) stay on the
+  OS RNG, so a seed reproduces the trap's shape and never an answer.
+- `POST /otp/resend` would mint a fresh current code and dissolve the backlog,
+  so in `otp-backlog` only it answers `429` ("the resend limit for this
+  sign-in has been reached", which the goal discloses) and records an
+  unaccepted event with no category: it neither passes nor classifies anything.
+  Every other scenario's resend is unchanged. Expiry (`OTP_TTL`, 600 s) is
+  `stale_code` by the scorer's fallback, not a trap, and equals the paid run's
+  600000 ms deadline: a very slow agent can lose its current code to expiry.
+- The default `swarmail_wait_for_email` view (MCP `2025-03-26`) returns `html`,
+  `text`, `links` and the parsed `to` array, but no `anchors` member, so an
+  agent reads the digest's anchors from `html` (the oracle does).
+- The store keeps no `Date` header and every fixture mail carries the same one,
+  so arrival order is exactly the signal `otp-backlog` makes misleading; the
+  `Requested at` line is the only generation signal, and it carries the date so
+  the order survives midnight.
+- Free controls prove each task can be passed (the oracle, on four fixed seeds
+  as well as the default) and failed (the do-nothing `null`, with `gave_up`;
+  scripted agents that commit exactly the named trap, then recover, and still
+  lose in the task's class). They do **not** show that a live model sometimes
+  fails a task or that none can pass it: that calibration is the paid hard
+  run's job, and a task every model passes, or none can, is replaced on that
+  data. Deferred shapes (multi-email flows, attachment content, plus-aliases,
+  slow `since_ms`, a tight budget) are recorded in the spec's non-goals.
+
+Select the tier with `--tier`, which is exclusive with `--tasks`:
+
+```bash
+$E tasks                                    # 19 tasks: the 16 default-tier, then the 3 hard
+$E trial --task otp-backlog --agent oracle  # one task, as any other
+$E matrix --tier hard --agents agents.json --trials 5 > hard.jsonl
+$E baseline --tier hard --config /private/wrappers.json --output /tmp/baseline-hard --dry-run
+```
+
+`matrix --tier T` (`straight`, `traps`, `multi_step` or `hard`, the catalogue's
+own spelling) resolves to that tier's ids in catalogue order and then follows
+the unchanged matrix path; the retained plan records the plain ids, and no
+artifact version moves. `--tier` together with `--tasks`, neither flag, or an
+unknown tier is a usage error: exit 2 and no rows. `baseline` without `--tier`
+is the approved product, unchanged: the 16 default-tier tasks, 32 controls and
+480 paid slots. `baseline --tier hard` is a separate, operator-selected
+product of 3 tasks, 6 controls and 90 paid slots (3 × 6 × 5), with the same
+declarations, deadline, concurrency and controls-first discipline. The
+approved declarations resolve their wrapper executable only inside `baseline`,
+so the paid hard run goes through `baseline --tier hard`, not bare `matrix`.
+
+**The paid hard-tier run is the operator's, after merge.** Delivery runs no
+paid or networked agent.
+
+Hashes: the catalogue stays schema 2. `6068b687…` is the sha256 of the
+16 default-tier tasks and is the historical hash of the 2026-11-01 baseline
+(`tests/provenance.rs` pins that subset byte for byte). The full 19-task
+catalogue hashes differently (`5b312d98…`), and rows from the new catalogue
+carry that hash.
+
 ## Active scoring revision — 2026-10-25 (accepted 0071)
 
 [0071](../docs/decisions/0071-eval-trap-scoring.md) advances catalogue,
 snapshot and trial-result versions together to **2**, with unchanged fields,
-sixteen task IDs, tiers, eight failure classes and report arithmetic.
+sixteen task IDs, tiers, eight failure classes and report arithmetic (the
+hard tier below adds tasks and one tier value, and moves none of these).
 `check` refuses v1 snapshots; `report` refuses v1 rows and mixed v1/v2 input
 before aggregation, with version diagnostics. Replay historical v1 artifacts
 with their recorded old source/binary. Do not relabel, migrate or pool v1 and
@@ -280,7 +367,8 @@ v2 scores: they are different experiments.
 
 A rejected exact named action disqualifies its whole trial, before **or after**
 the goal. Application recovery remains usable and goal facts stay truthful.
-The seven affected goals disclose the rule:
+The seven affected goals disclose the rule; proposed 0115 appends three hard
+rows, which land as compatible work beside the proposal (0045 §8):
 
 | Task | Action / class |
 |---|---|
@@ -291,9 +379,12 @@ The seven affected goals disclose the rule:
 | magic-login | decoy_link / wrong_link |
 | entity-url | decoy_link or marketing_mangled / wrong_link |
 | digest-forty | digest_decoy / wrong_link |
+| otp-backlog (hard) | superseded_code / stale_code |
+| recipient-crowd (hard) | foreign_token / wrong_message |
+| digest-lookalike (hard) | digest_decoy / wrong_link |
 
 Matching requires rejected status, exact action/class/flow and a provisioned
-Agent claimant. Sibling's known Decoy claimant also counts with any flow,
+Agent claimant. Sibling's (and the crowd's) known Decoy claimant also counts with any flow,
 including null, because identity refusal can precede token lookup. Missing or
 unknown claimants and other structurally valid mismatches do not match.
 Expired-but-not-superseded OTPs and non-target tasks retain recovery; expected
@@ -301,7 +392,8 @@ reset replay remains positive evidence. Isolation keeps its existing veto and
 first-refusal fallback. Validation/infrastructure and live deadlines still win.
 The frozen snapshot is evidence, not authenticated against a hostile local process.
 
-`tests/proof.rs` completes ten independent external recovery controls through
+`tests/proof.rs` completes thirteen independent external recovery controls (ten
+default-tier, three hard) through
 real MCP and fixture HTTP backed by SMTP DATA 250. Confirm enumerates all three
 links forward and reverse; digest opens forty distinct links with 39 decoys.
 Every command exits zero and truly recovers its goal, yet loses in the named
@@ -407,6 +499,9 @@ eight digest bytes as a big-endian integer modulo a fixed nonzero bound.
 | Semantic field key | Meaning |
 |---|---|
 | `target-position` | Digest's target among 40 items, flow `digest`, generation 0 |
+| `current-position`, `perm-<i>` | `otp-backlog`: where the current generation lands (1 + choice modulo 10) and the Fisher–Yates draws (modulo i + 1) ordering the other eleven, flow `otp`, generation 0 |
+| `agent-position` | `recipient-crowd`: the agent's mail among five (1 + choice modulo 3), flow `signup`, generation 0 |
+| `right-position`, `decoy-position` | `digest-lookalike`: the right anchor among twelve and the look-alike among the other eleven, flow `digest`, generation 0 |
 | `start-days` | Invite offset 3 + choice modulo 17, flow `invite`, generation 0 |
 | `start-hour` | Invite hour 8 + choice modulo 10, flow `invite`, generation 0 |
 | `message-id` | First 16 digest bytes, lowercase hex, for each slot/flow/generation |

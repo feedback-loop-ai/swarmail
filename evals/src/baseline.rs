@@ -33,8 +33,24 @@ pub struct Plan {
     pub wrapper_contracts: &'static str,
 }
 impl Plan {
+    /// The product the operator approved on 2026-10-26: every task outside
+    /// the hard tier.
     pub fn new(output: &Path) -> Self {
-        let tasks: Vec<_> = tasks::catalogue().into_iter().map(|t| t.id).collect();
+        Self::for_tier(None, output)
+    }
+
+    /// `None` is the approved product (the default-tier tasks); `Some(tier)`
+    /// is that tier alone, a separate operator-selected product (proposed
+    /// 0115).
+    pub fn for_tier(tier: Option<tasks::Tier>, output: &Path) -> Self {
+        let tasks: Vec<_> = tasks::catalogue()
+            .into_iter()
+            .filter(|t| match tier {
+                None => t.tier != tasks::Tier::Hard,
+                Some(tier) => t.tier == tier,
+            })
+            .map(|t| t.id)
+            .collect();
         let agents = report::parse_agents(AGENTS).expect("reviewed agent declarations");
         Self {
             catalogue_schema: tasks::CATALOGUE_SCHEMA,

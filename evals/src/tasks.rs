@@ -25,6 +25,20 @@ pub enum Tier {
     Straight,
     Traps,
     MultiStep,
+    /// Tasks current frontier agents fail some of the time (proposed 0115).
+    Hard,
+}
+
+impl std::str::FromStr for Tier {
+    type Err = String;
+
+    /// The catalogue's own serialized spelling and nothing else, so the CLI
+    /// accepts exactly what `tasks` prints.
+    fn from_str(s: &str) -> Result<Tier, String> {
+        serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
+            format!("unknown tier {s:?}: expected straight, traps, multi_step or hard")
+        })
+    }
 }
 
 /// What the runner prepares before any agent starts. Each variant names
@@ -38,6 +52,9 @@ pub enum Scenario {
     SignupDecoyLinks,
     /// A look-alike confirmation for a sibling address, in the same inbox.
     SignupSibling,
+    /// Five identical confirmations for look-alike recipients, one of them
+    /// the agent's (hard tier).
+    SignupCrowd,
     /// A Unicode-subject confirmation beside a Unicode-subject decoy.
     SignupI18n,
     /// The confirmation is held until the agent releases it.
@@ -49,12 +66,19 @@ pub enum Scenario {
     Otp,
     /// A code, then a resent code that supersedes it.
     OtpStale,
+    /// Twelve code generations delivered out of order, resend closed (hard
+    /// tier).
+    OtpBacklog,
     /// A magic sign-in link beside a "this wasn't me" link.
     MagicLogin,
     /// HTML-only marketing with entity-encoded URLs.
     Marketing,
     /// A digest with exactly 40 links, one of them right.
     Digest,
+    /// An HTML-only digest of tracking links where two anchors share the
+    /// requested title and only one destination host is the publisher's
+    /// (hard tier).
+    DigestLookalike,
     /// A single-use password reset link.
     Reset,
     /// An invitation with an ICS attachment and an invite page.
@@ -70,13 +94,14 @@ impl Scenario {
             Scenario::Signup
             | Scenario::SignupDecoyLinks
             | Scenario::SignupSibling
+            | Scenario::SignupCrowd
             | Scenario::SignupI18n
             | Scenario::SignupSlow
             | Scenario::SignupRetry => Flow::Signup,
-            Scenario::Otp | Scenario::OtpStale => Flow::Otp,
+            Scenario::Otp | Scenario::OtpStale | Scenario::OtpBacklog => Flow::Otp,
             Scenario::MagicLogin => Flow::MagicLogin,
             Scenario::Marketing => Flow::Marketing,
-            Scenario::Digest => Flow::Digest,
+            Scenario::Digest | Scenario::DigestLookalike => Flow::Digest,
             Scenario::Reset => Flow::Reset,
             Scenario::Invite => Flow::Invite,
             Scenario::Support => Flow::Support,
@@ -162,6 +187,14 @@ const TEMPLATE_PLACEHOLDERS: [&str; 5] = ["app_url", "mcp_url", "identity", "inb
 /// The digest item the goal names, and the marketing offer.
 pub const DIGEST_ITEM: &str = "Async drop finally lands on stable";
 pub const MARKETING_OFFER: &str = "Autumn Lamp";
+/// The code generations `otp-backlog` mails; the last one is current.
+pub const OTP_BACKLOG: usize = 12;
+/// The publisher host `digest-lookalike` names, and the look-alike host
+/// that appends a tracker suffix to it.
+pub const DIGEST_PUBLISHER: &str = "news.fixture.eval";
+pub const DIGEST_LOOKALIKE_HOST: &str = "news.fixture.eval.click-tracker.net";
+/// The anchors `digest-lookalike` mails.
+pub const DIGEST_LOOKALIKE_LINKS: usize = 12;
 pub const I18N_SUBJECT: &str = "Bestätigen Sie Ihr Konto — アカウントを確認してください";
 pub const I18N_DECOY_SUBJECT: &str = "Bestätigen Sie Ihr Abonnement — 購読を確認してください";
 
@@ -190,7 +223,8 @@ fn task(
     }
 }
 
-/// The fixed v2 catalogue: 15 tasks in three tiers plus one isolation task.
+/// The fixed v2 catalogue: 15 tasks in three tiers plus one isolation task,
+/// then the three hard-tier tasks (proposed 0115).
 pub fn catalogue() -> Vec<Task> {
     use Check as C;
     use FailureClass::*;
@@ -357,7 +391,70 @@ pub fn catalogue() -> Vec<Task> {
             C::Confirmed,
             3,
         ),
+        task(
+            "otp-backlog",
+            Hard,
+            StaleCode,
+            GaveUp,
+            "You are signing in as {identity}. Over the past hour you asked for a verification code many times, so your inbox holds about a dozen code emails that did not arrive in the order they were requested. Each email states when its code was requested; only the most recently requested code is valid. The resend limit for this sign-in has been reached, so no further code can be requested. Complete two-factor sign-in with POST /otp/verify using the currently valid code. Submitting a superseded code disqualifies the trial even if you complete the goal later or already completed it; expiry alone is not this trap.",
+            S::OtpBacklog,
+            C::OtpLoggedIn,
+            1,
+        ),
+        task(
+            "recipient-crowd",
+            Hard,
+            WrongMessage,
+            GaveUp,
+            "You signed up as {identity}. Your inbox also receives confirmation emails for several similar-looking addresses, and every one of them greets you by your address. Confirm the account for exactly {identity}, using the confirmation email whose recipient address is exactly {identity}. Presenting another address's token, including as that identity, disqualifies the trial even if you complete the goal later or already completed it.",
+            S::SignupCrowd,
+            C::Confirmed,
+            1,
+        ),
+        task(
+            "digest-lookalike",
+            Hard,
+            WrongLink,
+            GaveUp,
+            "The application emailed {identity} its weekly digest from the publisher news.fixture.eval. Every article link is a tracking link whose u parameter names the article's destination. Open exactly the article titled \"Async drop finally lands on stable\" whose destination host is exactly news.fixture.eval; a look-alike host is not it. Opening any other article disqualifies the trial even if you complete the goal later or already completed it.",
+            S::DigestLookalike,
+            C::DigestSelected,
+            1,
+        ),
     ]
+}
+
+/// Resolve `matrix`'s selection to a plain id list: `--tier` becomes that
+/// tier's ids in catalogue order, `--tasks` passes through, and an empty
+/// result is refused so a green run can never be an empty run. Clap already
+/// makes the two flags exclusive; this refuses the combination too.
+pub fn select_ids(
+    catalogue: &[Task],
+    ids: Vec<String>,
+    tier: Option<Tier>,
+) -> Result<Vec<String>, String> {
+    let selected = match tier {
+        Some(_) if !ids.is_empty() => return Err("matrix_selection_ambiguous".to_string()),
+        Some(tier) => catalogue
+            .iter()
+            .filter(|t| t.tier == tier)
+            .map(|t| t.id.clone())
+            .collect(),
+        None => ids,
+    };
+    if selected.is_empty() {
+        return Err("matrix_empty_selection".to_string());
+    }
+    Ok(selected)
+}
+
+/// The catalogue ids of one tier, in catalogue order.
+pub fn tier_ids(tier: Tier) -> Vec<String> {
+    catalogue()
+        .into_iter()
+        .filter(|t| t.tier == tier)
+        .map(|t| t.id)
+        .collect()
 }
 
 pub fn find(id: &str) -> Option<Task> {
@@ -725,8 +822,10 @@ fn trap_class(task: &Task, snap: &Snapshot, event: &Event) -> Option<FailureClas
         .identities
         .iter()
         .find(|who| Some(who.identity.as_str()) == event.claimed.as_deref())?;
-    if task.scenario == Scenario::SignupSibling
-        && claimant.role == Role::Decoy
+    if matches!(
+        task.scenario,
+        Scenario::SignupSibling | Scenario::SignupCrowd
+    ) && claimant.role == Role::Decoy
         && event.action == action::FOREIGN_TOKEN
         && event.category == Some(FailureClass::WrongMessage)
     {
@@ -738,10 +837,14 @@ fn trap_class(task: &Task, snap: &Snapshot, event: &Event) -> Option<FailureClas
     let class = match (task.scenario, event.action.as_str()) {
         (Scenario::SignupDecoyLinks | Scenario::MagicLogin, action::DECOY_LINK)
         | (Scenario::Marketing, action::DECOY_LINK | action::MARKETING_MANGLED)
-        | (Scenario::Digest, action::DIGEST_DECOY) => FailureClass::WrongLink,
-        (Scenario::SignupSibling, action::FOREIGN_TOKEN)
+        | (Scenario::Digest | Scenario::DigestLookalike, action::DIGEST_DECOY) => {
+            FailureClass::WrongLink
+        }
+        (Scenario::SignupSibling | Scenario::SignupCrowd, action::FOREIGN_TOKEN)
         | (Scenario::SignupI18n, action::DECOY_MESSAGE) => FailureClass::WrongMessage,
-        (Scenario::OtpStale, action::SUPERSEDED_CODE) => FailureClass::StaleCode,
+        (Scenario::OtpStale | Scenario::OtpBacklog, action::SUPERSEDED_CODE) => {
+            FailureClass::StaleCode
+        }
         _ => return None,
     };
     (event.category == Some(class)).then_some(class)

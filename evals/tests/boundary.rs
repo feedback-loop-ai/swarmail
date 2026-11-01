@@ -199,6 +199,190 @@ fn sequential_contracts_and_decision_links_are_honest() {
     assert!(!plan.contains("two concurrently active isolation trials"));
 }
 
+/// Ids of the table rows a document marks as hard-tier: ``| `id` | hard |``.
+fn hard_rows(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+            let id = cells.get(1)?.strip_prefix('`')?.strip_suffix('`')?;
+            (cells.get(2) == Some(&"hard")).then(|| id.to_string())
+        })
+        .collect()
+}
+
+fn readme_or(name: &str, readme: &str, run_plan: &str) -> String {
+    if name == "README.md" {
+        readme
+    } else {
+        run_plan
+    }
+    .to_string()
+}
+
+/// AC10: the hard tier is documented in both directions. Every catalogue id
+/// is named in the README and the run plan; every hard id a document's tier
+/// table names is in the catalogue; the commands, the historical hash, the
+/// operator-owned paid run and the trap table rows are there.
+#[test]
+fn the_hard_tier_is_documented_in_both_directions() {
+    let catalogue = swarmail_evals::tasks::catalogue();
+    let hard: Vec<String> = catalogue
+        .iter()
+        .filter(|t| t.tier == swarmail_evals::tasks::Tier::Hard)
+        .map(|t| t.id.clone())
+        .collect();
+    assert_eq!(hard, ["otp-backlog", "recipient-crowd", "digest-lookalike"]);
+    let readme = std::fs::read_to_string(root().join("evals/README.md")).unwrap();
+    let run_plan = std::fs::read_to_string(root().join("evals/run-plan.md")).unwrap();
+    for (name, text) in [("README.md", &readme), ("run-plan.md", &run_plan)] {
+        // Every catalogue id, default tier and hard, is named in both documents.
+        for task in &catalogue {
+            assert!(
+                text.contains(&format!("`{}`", task.id)),
+                "{name}: missing {}",
+                task.id
+            );
+        }
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let text = &flat;
+        for phrase in [
+            "16 default-tier tasks plus 3 hard",
+            "--tier hard",
+            "6068b687",
+            "5b312d98",
+            "paid hard-tier run is the operator's",
+            "90",
+        ] {
+            assert!(text.contains(phrase), "{name}: missing {phrase:?}");
+        }
+        for named in hard_rows(&readme_or(name, &readme, &run_plan)) {
+            assert!(hard.contains(&named), "{name}: {named} is not a hard task");
+        }
+    }
+    // The README table covers the whole tier, one row per task, with the
+    // trap, the expected class and why a careful agent can pass.
+    assert_eq!(hard_rows(&readme), hard);
+    for task in &catalogue {
+        if task.tier != swarmail_evals::tasks::Tier::Hard {
+            continue;
+        }
+        let row = readme
+            .lines()
+            .find(|l| l.starts_with(&format!("| `{}` | hard |", task.id)))
+            .unwrap();
+        let class = serde_json::to_value(task.failure_class).unwrap();
+        assert!(
+            row.contains(&format!("`{}`", class.as_str().unwrap())),
+            "{row}"
+        );
+        for column in ["Why a careful agent", "intended trap", "Expected failure"] {
+            assert!(readme.contains(column), "missing column {column}");
+        }
+    }
+    // The 0071 table gains the three named-trap rows.
+    for (id, action_class) in [
+        ("otp-backlog", "superseded_code / stale_code"),
+        ("recipient-crowd", "foreign_token / wrong_message"),
+        ("digest-lookalike", "digest_decoy / wrong_link"),
+    ] {
+        assert!(
+            readme
+                .lines()
+                .any(|l| l.starts_with(&format!("| {id} (hard) |")) && l.contains(action_class)),
+            "{id}: no trap-table row"
+        );
+    }
+    // The default tier is still sixteen tasks.
+    let default_ids: Vec<&str> = catalogue
+        .iter()
+        .filter(|t| t.tier != swarmail_evals::tasks::Tier::Hard)
+        .map(|t| t.id.as_str())
+        .collect();
+    assert_eq!(default_ids.len(), 16);
+    // The decision index has exactly one 0115 row, still a proposal.
+    let index = std::fs::read_to_string(root().join("docs/decisions/README.md")).unwrap();
+    let rows: Vec<_> = index
+        .lines()
+        .filter(|l| l.starts_with("| [0115]"))
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].contains("proposed"), "{}", rows[0]);
+    let decision =
+        std::fs::read_to_string(root().join("docs/decisions/0115-hard-eval-tier.md")).unwrap();
+    assert!(decision.contains("**Status:** proposed"));
+    // The harness spec's tier list names `hard` with a dated amendment.
+    let spec = std::fs::read_to_string(root().join("specs/agent-eval-harness/spec.md")).unwrap();
+    assert!(spec.contains("straight|traps|multi_step|hard"));
+    assert!(spec.contains("amended 2026-11-02"));
+}
+
+/// AC9: the scorer's inputs do not grow. `score` takes a task and a frozen
+/// snapshot, the snapshot schema stays 2, and its field set is exactly the
+/// seven it had: no mailbox, transcript, account or agent claim.
+#[test]
+fn the_scorers_inputs_do_not_grow() {
+    let _score: fn(
+        &swarmail_evals::tasks::Task,
+        &swarmail_evals::state::Snapshot,
+    ) -> Result<swarmail_evals::tasks::Verdict, String> = swarmail_evals::tasks::score;
+    assert_eq!(swarmail_evals::state::SNAPSHOT_SCHEMA, 2);
+    assert_eq!(swarmail_evals::tasks::CATALOGUE_SCHEMA, 2);
+    let snapshot = swarmail_evals::state::Snapshot {
+        schema_version: 2,
+        trial_id: String::new(),
+        task: String::new(),
+        frozen: true,
+        identities: vec![],
+        deliveries: vec![],
+        events: vec![],
+    };
+    let value = serde_json::to_value(&snapshot).unwrap();
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "deliveries",
+            "events",
+            "frozen",
+            "identities",
+            "schema_version",
+            "task",
+            "trial_id"
+        ]
+    );
+    // The task record's field set is unchanged too: the tier is a value of an
+    // existing field, not a new one.
+    let task = serde_json::to_value(swarmail_evals::tasks::find("otp-backlog").unwrap()).unwrap();
+    let mut keys: Vec<&str> = task
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "agent_count",
+            "check",
+            "deadline_ms",
+            "failure_class",
+            "goal",
+            "goal_template",
+            "id",
+            "idle_class",
+            "scenario",
+            "tier"
+        ]
+    );
+}
+
 // The parser owns CommonMark: blocks, containers, code, inlines, escapes and
 // character references. Definitions need their own walk because a definition
 // nothing uses emits no event, and the guard refuses those too (spec

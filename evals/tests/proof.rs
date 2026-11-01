@@ -49,7 +49,7 @@ fn every_task_passes_with_the_oracle() {
         let state = retained_state(dir.path(), &row);
         (row, stderr(&out), state)
     });
-    assert_eq!(results.len(), 16);
+    assert_eq!(results.len(), 19);
     let mut failures = Vec::new();
     for (id, (row, err, state)) in &results {
         if row.outcome != Outcome::Pass {
@@ -104,6 +104,23 @@ fn every_task_passes_with_the_oracle() {
         .as_array()
         .unwrap();
     assert_eq!(sibling.iter().filter(|i| i["role"] == "decoy").count(), 1);
+    let backlog = state_of("otp-backlog")["deliveries"].as_array().unwrap();
+    assert_eq!(backlog.len(), 12, "all twelve code generations were mailed");
+    let crowd = state_of("recipient-crowd");
+    assert_eq!(
+        crowd["identities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["role"] == "decoy")
+            .count(),
+        4
+    );
+    assert_eq!(crowd["deliveries"].as_array().unwrap().len(), 5);
+    let lookalike = state_of("digest-lookalike")["deliveries"]
+        .as_array()
+        .unwrap();
+    assert_eq!(lookalike.len(), 1, "one digest");
     let reuse = &state_of("reset-reuse")["identities"][0]["facts"];
     assert_eq!(reuse["reset_count"], 1);
     assert_eq!(reuse["reset_replay_rejected"], true);
@@ -154,7 +171,7 @@ fn every_task_fails_with_null_and_its_declared_idle_class() {
         let state = retained_state(dir.path(), &row);
         (row, stderr(&out), state)
     });
-    assert_eq!(results.len(), 16);
+    assert_eq!(results.len(), 19);
     for (id, (row, err, state)) in &results {
         let task = tasks::find(id).unwrap();
         assert_eq!(row.outcome, Outcome::Fail, "{id}: {row:?}\n{err}");
@@ -190,6 +207,18 @@ fn wrong_actions_fail_in_their_observable_classes() {
         ("confirm-decoys", "wrong_link", FailureClass::WrongLink),
         ("reset-login", "tool_misuse", FailureClass::ToolMisuse),
         ("inbox-isolation", "foreign", FailureClass::WrongMessage),
+        // The hard tier's named mistakes (proposed 0115).
+        ("otp-backlog", "hard_stale_code", FailureClass::StaleCode),
+        (
+            "recipient-crowd",
+            "hard_wrong_message",
+            FailureClass::WrongMessage,
+        ),
+        (
+            "digest-lookalike",
+            "hard_wrong_link",
+            FailureClass::WrongLink,
+        ),
     ];
     for (task, mode, class) in cases {
         let (row, out) = helper_trial(mode, &["--task", task, "--agent", mode], &[]);
@@ -357,6 +386,34 @@ fn completed_naive_controls_recover_the_goal_but_lose_the_trial() {
             39,
             FailureClass::WrongLink,
         ),
+        // The hard tier: each commits exactly its named trap, then recovers.
+        (
+            "otp-backlog",
+            "naive_forward",
+            action::OTP_VERIFY,
+            "superseded_code",
+            Flow::Otp,
+            1,
+            FailureClass::StaleCode,
+        ),
+        (
+            "recipient-crowd",
+            "naive_forward",
+            action::CONFIRM,
+            "foreign_token",
+            Flow::Signup,
+            1,
+            FailureClass::WrongMessage,
+        ),
+        (
+            "digest-lookalike",
+            "naive_forward",
+            action::DIGEST_SELECT,
+            "digest_decoy",
+            Flow::Digest,
+            1,
+            FailureClass::WrongLink,
+        ),
     ];
     for (task, mode, goal_action, trap_action, flow, count, class) in cases {
         let dir = tempdir();
@@ -432,10 +489,10 @@ fn completed_naive_controls_recover_the_goal_but_lose_the_trial() {
         let f = &who.facts;
         assert!(
             match task {
-                "stale-otp" => f.otp_verified && f.logged_in,
+                "stale-otp" | "otp-backlog" => f.otp_verified && f.logged_in,
                 "magic-login" => f.magic_login && f.logged_in,
                 "entity-url" => f.marketing_completed,
-                "digest-forty" => f.digest_selected,
+                "digest-forty" | "digest-lookalike" => f.digest_selected,
                 _ => f.confirmed,
             },
             "the real goal recovered: {snap:?}"
@@ -574,4 +631,109 @@ fn near_miss_controls_recover_after_a_timed_out_wait() {
             assert!(released, "{events:?}");
         }
     }
+}
+
+/// The hard tier's fixed-seed proof: oracle and null through the real
+/// `trial --seed` path on four fixed public seeds. The layout is the only
+/// seed-dependent material, so each seed is a different trap shape.
+#[test]
+fn hard_tasks_hold_on_fixed_seeds() {
+    let _trial_scope = trial_scope();
+    swarmail_bin();
+    const SEEDS: [&str; 4] = [
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "1111111111111111111111111111111111111111111111111111111111111111",
+        "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+        "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+    ];
+    let hard = tasks::tier_ids(tasks::Tier::Hard);
+    assert_eq!(hard, ["otp-backlog", "recipient-crowd", "digest-lookalike"]);
+    for id in &hard {
+        let task = tasks::find(id).unwrap();
+        for seed in SEEDS {
+            let dir = tempdir();
+            let (row, out) = trial(&[
+                "--task",
+                id,
+                "--agent",
+                "oracle",
+                "--seed",
+                seed,
+                "--fixture-time",
+                "2026-11-01T12:00:00Z",
+                "--artifacts-dir",
+                dir.path().to_str().unwrap(),
+            ]);
+            assert_eq!(row.outcome, Outcome::Pass, "{id}@{seed}: {}", stderr(&out));
+            let state = retained_state(dir.path(), &row);
+            assert!(
+                state["deliveries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|d| d["status"] == "delivered"),
+                "{id}@{seed}"
+            );
+            let check = cli()
+                .args(["check", "--task", id, "--state"])
+                .arg(dir.path().join(&row.trial_id).join("state.json"))
+                .output()
+                .unwrap();
+            assert_eq!(check.status.code(), Some(0), "{id}@{seed}");
+
+            let dir = tempdir();
+            let (row, out) = trial(&[
+                "--task",
+                id,
+                "--agent",
+                "null",
+                "--seed",
+                seed,
+                "--fixture-time",
+                "2026-11-01T12:00:00Z",
+                "--artifacts-dir",
+                dir.path().to_str().unwrap(),
+            ]);
+            assert_eq!(row.outcome, Outcome::Fail, "{id}@{seed}: {}", stderr(&out));
+            assert_eq!(row.failure_class, Some(task.idle_class), "{id}@{seed}");
+            assert_eq!(task.idle_class, FailureClass::GaveUp);
+            let state = retained_state(dir.path(), &row);
+            assert!(no_goal_completed(&state), "{id}@{seed}: {state}");
+        }
+    }
+}
+
+/// AC8: the backlog's resend is closed and harmless. A trial that asks for a
+/// fresh code, meets the limit, and then verifies the current one passes; the
+/// refused resend is recorded unaccepted with no category and mails nothing.
+#[test]
+fn the_backlog_resend_is_refused_and_harmless() {
+    let _trial_scope = trial_scope();
+    swarmail_bin();
+    let dir = tempdir();
+    let (row, out) = helper_trial(
+        "hard_resend",
+        &[
+            "--task",
+            "otp-backlog",
+            "--agent",
+            "hard_resend",
+            "--artifacts-dir",
+            dir.path().to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert_eq!(row.outcome, Outcome::Pass, "{row:?}\n{}", stderr(&out));
+    let state = retained_state(dir.path(), &row);
+    let deliveries = state["deliveries"].as_array().unwrap();
+    assert_eq!(deliveries.len(), 12, "no thirteenth OTP delivery");
+    let resends: Vec<_> = state["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "otp_resend")
+        .collect();
+    assert_eq!(resends.len(), 1);
+    assert_eq!(resends[0]["accepted"], false);
+    assert!(resends[0]["category"].is_null(), "{}", resends[0]);
 }
