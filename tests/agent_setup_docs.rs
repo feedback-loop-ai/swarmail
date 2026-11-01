@@ -31,9 +31,23 @@
 //!   or dsh load these files is an operator-owned receipt (the guide says so
 //!   and this suite pins that it does).
 //!
-//! The suite speaks real HTTP and NDJSON to the shipped binary and touches no
-//! crate-private seam: a decision 0020 rule-3 test, outside the coverage
-//! denominator by location.
+//! * Those five round trips seed through `swarmail_seed_email` with an
+//!   explicit inbox, so they prove each snippet's transport and nothing about
+//!   where an application's mail lands. The taught loop and route are proved
+//!   once, over real SMTP, the way the AGENTS.md block tells the application
+//!   to send (`the_taught_route_and_loop_hold_over_real_smtp`): the block's
+//!   one `smtp://` URL is compared with the binary's default, substituted
+//!   once for the ephemeral address and the inbox, and mail is sent with the
+//!   URL's user as the AUTH name. The already-mailed entry state, two
+//!   wrong-route controls and the route-domain clause are driven on the wire
+//!   too. Every wait there has `timeout_ms: 0`: mail accepted with a `250` is
+//!   queryable now (decision 0001) and a wait scans what is stored after it
+//!   subscribes (decision 0002), so found and timed-out are deterministic and
+//!   no control costs a timeout or sleeps.
+//!
+//! The suite speaks real HTTP, NDJSON and SMTP to the shipped binary and
+//! touches no crate-private seam: a decision 0020 rule-3 test, outside the
+//! coverage denominator by location.
 
 mod common;
 
@@ -138,7 +152,8 @@ fn marker_reason(line: &str) -> Result<String, Refusal> {
 
 /// Every fence of a guide file, or the first reason the file is outside the
 /// convention. A fence is a line of exactly three backticks plus an info
-/// string at column 0; everything fence-shaped that is not one is refused.
+/// string at column 0; everything fence-shaped that is not one is refused,
+/// a tilde fence and an indented fence of either kind included.
 fn extract(doc: &str) -> Result<Vec<Fence>, Refusal> {
     if doc.contains('\r') {
         return Err("a CR byte is in the file".into());
@@ -185,7 +200,10 @@ fn extract(doc: &str) -> Result<Vec<Fence>, Refusal> {
                 body: String::new(),
                 line: number,
             });
-        } else if line.trim_start().starts_with("```") || line.starts_with("~~~") {
+        } else if ["```", "~~~"]
+            .iter()
+            .any(|marker| line.trim_start().starts_with(marker))
+        {
             return Err(format!("line {number}: an indented or tilde fence"));
         } else if let Some((_, at)) = marker {
             return Err(format!("line {at}: a marker is not followed by a fence"));
@@ -446,6 +464,9 @@ struct Defaults {
     url: String,
     /// `SWARMAIL_HTTP_LISTEN`'s default, the authority a snippet names.
     authority: String,
+    /// `SWARMAIL_SMTP_LISTEN`'s default, the authority the block's
+    /// `smtp://` URL names.
+    smtp_authority: String,
 }
 
 fn defaults() -> Defaults {
@@ -465,6 +486,7 @@ fn defaults() -> Defaults {
         program: Cli::command().get_name().to_string(),
         url: mcp.url,
         authority: serve.http_listen,
+        smtp_authority: serve.smtp_listen,
     }
 }
 
@@ -507,6 +529,77 @@ fn substitute_once(text: &str, from: &str, to: &str) -> Result<String, Refusal> 
     }
 }
 
+/// The block's one `smtp://` URL, split.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SmtpUrl {
+    token: String,
+    user: String,
+    authority: String,
+}
+
+/// `smtp://user:password@authority`, all three parts non-empty.
+fn split_smtp(token: &str) -> Result<SmtpUrl, Refusal> {
+    let rest = token
+        .strip_prefix("smtp://")
+        .ok_or_else(|| format!("{token:?} is not an smtp:// URL"))?;
+    let (userinfo, authority) = rest
+        .rsplit_once('@')
+        .ok_or_else(|| format!("{token:?} names no user"))?;
+    let (user, password) = userinfo
+        .split_once(':')
+        .ok_or_else(|| format!("{token:?} names no password"))?;
+    if user.is_empty() || password.is_empty() || authority.is_empty() {
+        return Err(format!("{token:?} has an empty part"));
+    }
+    Ok(SmtpUrl {
+        token: token.into(),
+        user: user.into(),
+        authority: authority.into(),
+    })
+}
+
+/// The block's `smtp://` URL: exactly one mention in the whole block, and it
+/// is an inline-code token.
+fn smtp_url(block: &str) -> Result<SmtpUrl, Refusal> {
+    let mentions = block.matches("smtp://").count();
+    let tokens: Vec<&str> = block
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|t| t.starts_with("smtp://"))
+        .collect();
+    match (mentions, tokens.as_slice()) {
+        (1, [token]) => split_smtp(token),
+        _ => Err(format!(
+            "the block mentions smtp:// {mentions} times and carries {} inline URLs, want one of each",
+            tokens.len()
+        )),
+    }
+}
+
+/// The URL names the inbox as the user and the binary's own default SMTP
+/// authority; a second copy of `1025` lives nowhere in this suite.
+fn assert_smtp_url(url: &SmtpUrl, defaults: &Defaults) -> Result<(), Refusal> {
+    if url.user != "<inbox>" {
+        return Err(format!("the URL's user is {:?}, want <inbox>", url.user));
+    }
+    if url.authority != defaults.smtp_authority {
+        return Err(format!(
+            "the URL's authority {:?} is not the default {:?}",
+            url.authority, defaults.smtp_authority
+        ));
+    }
+    Ok(())
+}
+
+/// The URL as the suite uses it: the default authority replaced by the
+/// ephemeral SMTP address and `<inbox>` by the test's inbox, each exactly
+/// once. What the suite sends is what the block, substituted, says.
+fn live_url(url: &SmtpUrl, smtp: SocketAddr, inbox: &str) -> Result<SmtpUrl, Refusal> {
+    let token = substitute_once(&url.token, &defaults().smtp_authority, &smtp.to_string())?;
+    split_smtp(&substitute_once(&token, "<inbox>", inbox)?)
+}
+
 // ---------------------------------------------------------------- server
 
 /// A `serve` child on ephemeral loopback ports, its addresses read from its
@@ -514,6 +607,7 @@ fn substitute_once(text: &str, from: &str, to: &str) -> Result<String, Refusal> 
 /// child is killed by `kill_on_drop`; the success path kills and reaps it.
 struct Server {
     child: Child,
+    smtp: SocketAddr,
     http: SocketAddr,
     stderr: Arc<Mutex<String>>,
     drains: Vec<tokio::task::JoinHandle<()>>,
@@ -528,17 +622,31 @@ impl Drop for Server {
     }
 }
 
-/// The HTTP address from the startup line's tracing fields
-/// (`smtp=… pop3=… http=…`), as `tests/binary.rs` reads it.
-fn parse_http_addr(line: &str) -> Option<SocketAddr> {
-    line.split("smtp=").nth(1)?;
-    line.split("pop3=").nth(1)?;
-    line.split("http=")
+/// The addresses a server bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Addrs {
+    smtp: SocketAddr,
+    http: SocketAddr,
+}
+
+/// One `key=addr` field of the startup line's tracing fields.
+fn field_addr(line: &str, key: &str) -> Option<SocketAddr> {
+    line.split(key)
         .nth(1)?
         .split_whitespace()
         .next()?
         .parse()
         .ok()
+}
+
+/// The SMTP and HTTP addresses from the startup line's tracing fields
+/// (`smtp=… pop3=… http=…`), as `tests/binary.rs` reads them.
+fn parse_addrs(line: &str) -> Option<Addrs> {
+    line.split("pop3=").nth(1)?;
+    Some(Addrs {
+        smtp: field_addr(line, "smtp=")?,
+        http: field_addr(line, "http=")?,
+    })
 }
 
 /// A task that fills a bounded buffer from a child's stderr; the buffer is
@@ -562,6 +670,13 @@ fn drain_stderr(
 /// The start command from the guide, argv unchanged, with its three listen
 /// knobs pointed at ephemeral loopback ports by the child's environment.
 async fn start_server(command: &str) -> Server {
+    start_server_with(command, &[]).await
+}
+
+/// `start_server` with extra variables on the child's environment (never on
+/// this process's). The route domain is removed first, so an ambient value
+/// can never turn the default server into a routed one.
+async fn start_server_with(command: &str, extra_env: &[(&str, &str)]) -> Server {
     let program = defaults().program;
     let mut words = command.split_whitespace();
     assert_eq!(words.next(), Some(program.as_str()), "{command}");
@@ -571,6 +686,8 @@ async fn start_server(command: &str) -> Server {
         .env("SWARMAIL_POP3_LISTEN", "127.0.0.1:0")
         .env("SWARMAIL_HTTP_LISTEN", "127.0.0.1:0")
         .env_remove("SWARMAIL_DATA_FILE")
+        .env_remove("SWARMAIL_ROUTE_DOMAIN")
+        .envs(extra_env.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -591,8 +708,8 @@ async fn start_server(command: &str) -> Server {
                 Ok(0) => return Err("stdout closed before the startup line".to_string()),
                 Ok(_) => {
                     transcript.push_str(&line);
-                    if let Some(addr) = parse_http_addr(&line) {
-                        return Ok(addr);
+                    if let Some(addrs) = parse_addrs(&line) {
+                        return Ok(addrs);
                     }
                 }
                 Err(e) => return Err(format!("reading stdout: {e}")),
@@ -600,8 +717,8 @@ async fn start_server(command: &str) -> Server {
         }
     })
     .await;
-    let http = match found {
-        Ok(Ok(addr)) => addr,
+    let addrs = match found {
+        Ok(Ok(addrs)) => addrs,
         outcome => {
             let _ = child.start_kill();
             let _ = child.wait().await;
@@ -621,7 +738,8 @@ async fn start_server(command: &str) -> Server {
     }));
     Server {
         child,
-        http,
+        smtp: addrs.smtp,
+        http: addrs.http,
         stderr,
         drains,
     }
@@ -790,6 +908,94 @@ fn tool_names(list: &Value) -> BTreeSet<String> {
         .collect()
 }
 
+/// An HTTP client that numbers its own requests, for the wire tests.
+struct Wire {
+    client: Client,
+    id: u64,
+}
+
+impl Wire {
+    fn http(server: &Server) -> Wire {
+        Wire {
+            client: Client::Http {
+                addr: server.http,
+                path: "/mcp".into(),
+            },
+            id: 0,
+        }
+    }
+
+    /// A non-error tool's JSON text result.
+    async fn tool(&mut self, name: &str, arguments: Value) -> Value {
+        self.id += 1;
+        self.client.tool(self.id, name, arguments).await
+    }
+
+    /// A tool's whole `result`, `isError` included.
+    async fn tool_raw(&mut self, name: &str, arguments: Value) -> Value {
+        self.id += 1;
+        self.client
+            .call(
+                self.id,
+                "tools/call",
+                json!({"name": name, "arguments": arguments}),
+            )
+            .await
+    }
+
+    /// `swarmail_wait_for_email` with `timeout_ms: 0`. Mail accepted with a
+    /// `250` is already stored (0001) and the wait scans after it subscribes
+    /// (0002), so it answers found or timed out at once, with no deadline to
+    /// wait out and no sleep.
+    async fn wait0(&mut self, inbox: &str, filter: Value) -> Value {
+        let mut arguments = json!({"inbox": inbox, "timeout_ms": 0});
+        if let (Some(into), Some(more)) = (arguments.as_object_mut(), filter.as_object()) {
+            into.extend(more.clone());
+        }
+        self.tool("swarmail_wait_for_email", arguments).await
+    }
+
+    async fn clear(&mut self, inbox: &str) {
+        self.tool("swarmail_clear_inbox", json!({"inbox": inbox}))
+            .await;
+    }
+
+    /// The codes `swarmail_extract_codes` reads from a stored mail.
+    async fn codes(&mut self, id: &str) -> Value {
+        self.tool("swarmail_extract_codes", json!({"id": id})).await["codes"].clone()
+    }
+}
+
+/// The id of the first mail of a wait that found something.
+fn found(answer: &Value) -> String {
+    assert!(answer.get("timed_out").is_none(), "timed out: {answer}");
+    answer["emails"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no email in {answer}"))
+        .to_string()
+}
+
+fn assert_timed_out(answer: &Value) {
+    assert_eq!(answer["timed_out"], true, "{answer}");
+    assert_eq!(answer["matched"], 0, "{answer}");
+}
+
+/// What the application under test does: one message over real SMTP, with
+/// the AUTH name the block's URL carries (`None` sends no AUTH).
+async fn mail_code(smtp: SocketAddr, auth: Option<&str>, to: &str, code: &str) {
+    let reply = common::smtp_send(
+        smtp,
+        auth,
+        "app@example.test",
+        to,
+        "Your verification code",
+        &format!("Your verification code is {code}. It expires soon."),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the server refused the mail: {e}"));
+    assert!(reply.starts_with("250"), "{reply}");
+}
+
 /// The guide's loop against whichever transport the snippet declared:
 /// `initialize`, `tools/list`, clear, seed, wait, extract. Returns the tool
 /// names it listed.
@@ -952,6 +1158,206 @@ async fn dsh_yaml_snippet_wires_a_round_trip() {
     drive(4).await;
 }
 
+// ---------------------------------------------------------------- the route
+
+/// The field the block's `wait_timeout` line tells the reader to look at:
+/// its one inline-code token besides the class name.
+fn near_miss_field(block: &str) -> Result<String, Refusal> {
+    let line = bullet(block, "wait_timeout")?;
+    let fields: Vec<&str> = code_spans(&line)
+        .into_iter()
+        .filter(|t| *t != "wait_timeout")
+        .collect();
+    match fields.as_slice() {
+        [field] => Ok((*field).to_string()),
+        other => Err(format!("the wait_timeout line names fields {other:?}")),
+    }
+}
+
+/// The block's field is a member of a live timed-out answer.
+fn check_near_miss(field: &str, keys: &BTreeSet<String>) -> Result<(), Refusal> {
+    if keys.contains(field) {
+        return Ok(());
+    }
+    Err(format!("{field:?} is not among the live keys {keys:?}"))
+}
+
+fn keys_of(answer: &Value) -> BTreeSet<String> {
+    answer
+        .as_object()
+        .expect("an object answer")
+        .keys()
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn the_blocks_smtp_url_is_the_binarys_default_and_occurs_once() {
+    let block = block();
+    let defaults = defaults();
+    let url = smtp_url(&block).unwrap_or_else(|e| panic!("{e}"));
+    assert_smtp_url(&url, &defaults).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(url.user, "<inbox>");
+    // The substitution names the ephemeral address and the inbox, once each.
+    let smtp: SocketAddr = "127.0.0.1:41025".parse().expect("an address");
+    let live = live_url(&url, smtp, "route-x").unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(live.user, "route-x");
+    assert_eq!(live.authority, "127.0.0.1:41025");
+    // Red controls: another authority, two URLs, none, another user.
+    let moved = block.replace(&defaults.smtp_authority, "127.0.0.1:1026");
+    assert_ne!(moved, block);
+    let moved = smtp_url(&moved).expect("still one URL");
+    assert_smtp_url(&moved, &defaults).expect_err("authority 127.0.0.1:1026");
+    let twice = format!("{block}\nAlso `smtp://<inbox>:x@127.0.0.1:1025`.\n");
+    smtp_url(&twice).expect_err("two inline URLs");
+    let bare = format!("{block}\nAlso smtp://<inbox>:x@127.0.0.1:1025 bare.\n");
+    smtp_url(&bare).expect_err("a bare second mention");
+    smtp_url(&block.replace("smtp://", "smtp:/")).expect_err("no URL");
+    let other_user = block.replace("smtp://<inbox>:x@", "smtp://agent:x@");
+    assert_ne!(other_user, block);
+    let other_user = smtp_url(&other_user).expect("still one URL");
+    assert_smtp_url(&other_user, &defaults).expect_err("user agent");
+    // The URL splitter and the substitution refuse what they cannot use.
+    for bad in [
+        "http://u:p@h",
+        "smtp://h",
+        "smtp://u@h",
+        "smtp://:p@h",
+        "smtp://u:@h",
+        "smtp://u:p@",
+    ] {
+        split_smtp(bad).expect_err(bad);
+    }
+    live_url(&url, smtp, "<inbox>").expect("an inbox may be any text, once");
+    let no_inbox = SmtpUrl {
+        token: "smtp://agent:x@127.0.0.1:1025".into(),
+        ..url
+    };
+    live_url(&no_inbox, smtp, "a").expect_err("no <inbox> token to substitute");
+}
+
+#[tokio::test]
+async fn a_started_server_reports_a_loopback_smtp_address_distinct_from_http() {
+    let server = start_server(START).await;
+    assert!(server.smtp.ip().is_loopback(), "{}", server.smtp);
+    assert_ne!(server.smtp, server.http);
+    assert_eq!(
+        parse_addrs(&format!(
+            "up smtp={} pop3=127.0.0.1:2 http={}",
+            server.smtp, server.http
+        )),
+        Some(Addrs {
+            smtp: server.smtp,
+            http: server.http
+        })
+    );
+    for bad in [
+        "smtp=127.0.0.1:1 http=127.0.0.1:2",
+        "pop3=x smtp=y http=z",
+        "",
+    ] {
+        assert_eq!(parse_addrs(bad), None, "{bad}");
+    }
+    server.shutdown().await;
+}
+
+/// The taught loop and route, as the block tells the application to send:
+/// mail over real SMTP with the URL's user as the AUTH name, read by the
+/// taught tools. Every wait has `timeout_ms: 0` (see `Wire::wait0`).
+#[tokio::test]
+async fn the_taught_route_and_loop_hold_over_real_smtp() {
+    let block = block();
+    let url = smtp_url(&block).unwrap_or_else(|e| panic!("{e}"));
+    assert_smtp_url(&url, &defaults()).unwrap_or_else(|e| panic!("{e}"));
+    let near = near_miss_field(&block).unwrap_or_else(|e| panic!("{e}"));
+    let server = start_server(START).await;
+    let mut wire = Wire::http(&server);
+    let to = "user@example.test";
+    let inbox_of = |name: &str| {
+        let live = live_url(&url, server.smtp, name).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(live.authority, server.smtp.to_string());
+        live.user
+    };
+
+    // The loop: clear, act (the application mails the inbox the URL names),
+    // wait, extract. The seed tool is not on this path.
+    let a = inbox_of("route-loop");
+    assert_eq!(a, "route-loop");
+    wire.clear(&a).await;
+    mail_code(server.smtp, Some(&a), to, "135790").await;
+    let id = found(&wire.wait0(&a, json!({})).await);
+    assert_eq!(wire.codes(&id).await, json!(["135790"]));
+
+    // Already mailed: the code was delivered before the agent started and
+    // nothing is cleared. The wait returns it at once and extract reads it.
+    let b = inbox_of("route-mailed");
+    mail_code(server.smtp, Some(&b), to, "246801").await;
+    let id = found(&wire.wait0(&b, json!({})).await);
+    assert_eq!(wire.codes(&id).await, json!(["246801"]));
+    // A timed-out wait on an inbox that holds other mail lists it under the
+    // field the block names; the field is a member of the live answer.
+    let missed = wire.wait0(&b, json!({"subject": "no-such-subject"})).await;
+    assert_timed_out(&missed);
+    let keys = keys_of(&missed);
+    check_near_miss(&near, &keys).unwrap_or_else(|e| panic!("{e}"));
+    let made_up = block.replace(&format!("`{near}`"), "`near_miss`");
+    assert_ne!(made_up, block);
+    let field = near_miss_field(&made_up).expect("still one field");
+    check_near_miss(&field, &keys).expect_err("a made-up near-miss field");
+    // The control that shows why the rule exists: a clear deletes it.
+    wire.clear(&b).await;
+    let emptied = wire.wait0(&b, json!({})).await;
+    assert_timed_out(&emptied);
+    assert!(
+        !keys_of(&emptied).contains(&near),
+        "an empty inbox lists no near misses: {emptied}"
+    );
+
+    // Wrong routes. Mail sent with no AUTH is in `default`, mail sent with
+    // another AUTH name is in that inbox, and neither is in the named one.
+    let c = inbox_of("route-control");
+    wire.clear(&c).await;
+    mail_code(server.smtp, None, to, "357913").await;
+    assert_timed_out(&wire.wait0(&c, json!({})).await);
+    let id = found(&wire.wait0("default", json!({})).await);
+    assert_eq!(wire.codes(&id).await, json!(["357913"]));
+    mail_code(server.smtp, Some("other"), to, "468024").await;
+    assert_timed_out(&wire.wait0(&c, json!({})).await);
+    let id = found(&wire.wait0("other", json!({})).await);
+    assert_eq!(wire.codes(&id).await, json!(["468024"]));
+    server.shutdown().await;
+}
+
+/// The conditional clause: `swarmail_create_inbox` answers an error naming
+/// `--route-domain` on the guide's server, and with `SWARMAIL_ROUTE_DOMAIN`
+/// in the child's environment (the knob the guide names beside the flag) it
+/// mints an address that routes whatever the AUTH name.
+#[tokio::test]
+async fn the_route_domain_clause_mints_and_routes() {
+    let server = start_server(START).await;
+    let mut wire = Wire::http(&server);
+    let refused = wire.tool_raw("swarmail_create_inbox", json!({})).await;
+    assert_eq!(refused["isError"], true, "{refused}");
+    let text = refused["content"][0]["text"].as_str().expect("a message");
+    assert!(text.contains("--route-domain"), "{text}");
+    server.shutdown().await;
+
+    let server = start_server_with(START, &[("SWARMAIL_ROUTE_DOMAIN", "swarmail.test")]).await;
+    let mut wire = Wire::http(&server);
+    let minted = wire.tool("swarmail_create_inbox", json!({})).await;
+    let inbox = minted["inbox"].as_str().expect("an inbox").to_string();
+    let address = minted["address"].as_str().expect("an address").to_string();
+    assert!(
+        address.ends_with(&format!("@{inbox}.swarmail.test")),
+        "{minted}"
+    );
+    mail_code(server.smtp, Some("other"), &address, "579135").await;
+    let id = found(&wire.wait0(&inbox, json!({})).await);
+    assert_eq!(wire.codes(&id).await, json!(["579135"]));
+    assert_timed_out(&wire.wait0("other", json!({})).await);
+    server.shutdown().await;
+}
+
 // ---------------------------------------------------------------- AC-4
 
 #[test]
@@ -977,10 +1383,16 @@ fn every_fence_of_both_guide_files_is_executed_or_marked() {
 fn the_scanner_refuses_what_it_cannot_run() {
     let fine = "intro\n\n```json\n{}\n```\n";
     assert_eq!(extract(fine).expect("fine").len(), 1);
-    let cases: [(&str, &str, &str); 13] = [
+    let cases: [(&str, &str, &str); 15] = [
         ("CR byte", "```json\r\n{}\n```\n", "CR byte"),
         ("tilde fence", "~~~json\n{}\n~~~\n", "tilde fence"),
         ("indented fence", "  ```json\n{}\n  ```\n", "indented"),
+        (
+            "indented tilde fence",
+            "  ~~~json\n{}\n  ~~~\n",
+            "indented or tilde",
+        ),
+        ("indented bare tilde", "  ~~~\n", "indented or tilde"),
         ("four backticks", "````json\n{}\n````\n", "four or more"),
         ("unterminated", "```json\n{}\n", "unterminated"),
         ("unknown info", "```ruby\nx\n```\n", "unknown info"),
@@ -1272,7 +1684,8 @@ fn tool_tokens(text: &str) -> BTreeSet<String> {
     tokens
 }
 
-async fn live_tool_names() -> BTreeSet<String> {
+/// What a running `tools/list` answers.
+async fn live_list() -> Value {
     let server = start_server(START).await;
     let mut client = Client::Http {
         addr: server.http,
@@ -1280,13 +1693,169 @@ async fn live_tool_names() -> BTreeSet<String> {
     };
     let list = client.call(1, "tools/list", json!({})).await;
     server.shutdown().await;
-    tool_names(&list)
+    list
+}
+
+async fn live_tool_names() -> BTreeSet<String> {
+    tool_names(&live_list().await)
+}
+
+/// The property names of one tool's live `inputSchema`.
+fn property_names(list: &Value, tool: &str) -> BTreeSet<String> {
+    list["tools"]
+        .as_array()
+        .expect("a tools array")
+        .iter()
+        .find(|t| t["name"] == tool)
+        .unwrap_or_else(|| panic!("{tool} is not a live tool"))["inputSchema"]["properties"]
+        .as_object()
+        .expect("a properties object")
+        .keys()
+        .cloned()
+        .collect()
+}
+
+/// The first-column tool names of the table under the guide's `The tools`
+/// heading.
+fn inventory_names(guide: &str) -> Result<BTreeSet<String>, Refusal> {
+    let mut lines = guide
+        .lines()
+        .skip_while(|l| !(l.starts_with("## ") && l.contains("The tools")));
+    lines.next().ok_or("no `## … The tools` heading")?;
+    let mut names = BTreeSet::new();
+    for line in lines {
+        if line.starts_with("## ") {
+            break;
+        }
+        let Some(rest) = line.strip_prefix("| `") else {
+            continue;
+        };
+        let (name, _) = rest.split_once('`').ok_or("an unclosed tool name")?;
+        if !names.insert(name.to_string()) {
+            return Err(format!("{name} has two rows"));
+        }
+    }
+    if names.is_empty() {
+        return Err("the tools table has no rows".into());
+    }
+    Ok(names)
+}
+
+/// The table and the live list are the same set: a vanished tool and an
+/// unlisted new one are both red, and no number is pinned.
+fn check_inventory(table: &BTreeSet<String>, live: &BTreeSet<String>) -> Result<(), Refusal> {
+    let missing: Vec<_> = live.difference(table).collect();
+    let extra: Vec<_> = table.difference(live).collect();
+    if missing.is_empty() && extra.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "the table lacks the live tools {missing:?} and lists non-tools {extra:?}"
+    ))
+}
+
+#[tokio::test]
+async fn the_tool_table_equals_the_live_list() {
+    let live = live_tool_names().await;
+    let guide = raw(GUIDE);
+    let table = inventory_names(&guide).unwrap_or_else(|e| panic!("{e}"));
+    check_inventory(&table, &live).unwrap_or_else(|e| panic!("{e}"));
+    // A copy with a row removed, and a copy with a made-up row, are refused.
+    let victim = "swarmail_clear_chaos";
+    let without: String = guide
+        .lines()
+        .filter(|l| !l.starts_with(&format!("| `{victim}`")))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let refusal = check_inventory(&inventory_names(&without).expect("a table"), &live)
+        .expect_err("a row is missing");
+    assert!(refusal.contains(victim), "{refusal}");
+    let invented = guide.replace(
+        &format!("| `{victim}` |"),
+        "| `swarmail_made_up` | x |\n| `swarmail_clear_chaos` |",
+    );
+    let refusal = check_inventory(&inventory_names(&invented).expect("a table"), &live)
+        .expect_err("a non-tool row");
+    assert!(refusal.contains("swarmail_made_up"), "{refusal}");
+    // The reader's own refusals.
+    inventory_names("no heading\n").expect_err("no heading");
+    inventory_names("## 8. The tools\n\nnothing\n").expect_err("no rows");
+    inventory_names("## The tools\n| `a` |\n| `a` |\n").expect_err("a repeated row");
+    inventory_names("## The tools\n| `a |\n").expect_err("an unclosed name");
+}
+
+/// The bullet under `### Failure classes` that starts with a class, its
+/// wrapped lines joined.
+fn bullet(block: &str, class: &str) -> Result<String, Refusal> {
+    let head = format!("- `{class}`");
+    let mut lines = block.lines().skip_while(|l| !l.starts_with(&head));
+    let mut out = lines
+        .next()
+        .ok_or_else(|| format!("no bullet for {class}"))?
+        .to_string();
+    for line in lines.take_while(|l| l.starts_with("  ")) {
+        out.push(' ');
+        out.push_str(line.trim());
+    }
+    Ok(out)
+}
+
+/// The inline-code tokens of a line.
+fn code_spans(line: &str) -> Vec<&str> {
+    line.split('`').skip(1).step_by(2).collect()
+}
+
+/// The `wrong_link` bullet sends the reader to the tool that has the
+/// selectors, and only to it: `swarmail_extract_links` returns plain URLs.
+fn check_wrong_link(
+    bullet: &str,
+    wait_props: &BTreeSet<String>,
+    extract_props: &BTreeSet<String>,
+) -> Result<(), Refusal> {
+    let spans = code_spans(bullet);
+    if !spans.contains(&"swarmail_wait_for_link") || bullet.contains("swarmail_extract_links") {
+        return Err("the wrong_link line must name swarmail_wait_for_link alone".into());
+    }
+    for selector in ["anchor_text", "host", "path"] {
+        if !wait_props.contains(selector) || extract_props.contains(selector) {
+            return Err(format!(
+                "{selector} is not a selector of swarmail_wait_for_link alone"
+            ));
+        }
+        if !spans.contains(&selector) {
+            return Err(format!("the wrong_link line never names `{selector}`"));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_wrong_link_line_names_the_tool_that_has_the_selectors() {
+    let list = live_list().await;
+    let wait = property_names(&list, "swarmail_wait_for_link");
+    let extract = property_names(&list, "swarmail_extract_links");
+    let line = bullet(&block(), "wrong_link").unwrap_or_else(|e| panic!("{e}"));
+    check_wrong_link(&line, &wait, &extract).unwrap_or_else(|e| panic!("{e}"));
+    // The old advice (choose by selectors that extract_links does not have)
+    // and a line missing a selector are refused.
+    let on_extract = line.replace("swarmail_wait_for_link", "swarmail_extract_links");
+    check_wrong_link(&on_extract, &wait, &extract).expect_err("selectors on extract_links");
+    let both = format!("{line} Or `swarmail_extract_links`.");
+    check_wrong_link(&both, &wait, &extract).expect_err("extract_links beside the selectors");
+    let no_host = line.replace("`host`", "host");
+    check_wrong_link(&no_host, &wait, &extract).expect_err("a selector unnamed");
+    let mut fake = wait.clone();
+    fake.remove("path");
+    check_wrong_link(&line, &fake, &extract).expect_err("a selector the live schema lacks");
+    let mut leaked = extract.clone();
+    leaked.insert("host".into());
+    check_wrong_link(&line, &wait, &leaked).expect_err("a selector extract_links has");
+    bullet(&block(), "made_up").expect_err("no such bullet");
 }
 
 #[tokio::test]
 async fn every_tool_name_in_the_guides_is_a_live_tool() {
     let live = live_tool_names().await;
-    assert!(live.len() >= 15, "{live:?}");
     let mut seen = BTreeSet::new();
     for path in [GUIDE, SKILL] {
         let tokens = tool_tokens(&raw(path));
@@ -1299,6 +1868,7 @@ async fn every_tool_name_in_the_guides_is_a_live_tool() {
     }
     for tool in [
         "swarmail_clear_inbox",
+        "swarmail_create_inbox",
         "swarmail_seed_email",
         "swarmail_wait_for_email",
         "swarmail_wait_for_code",
@@ -1487,30 +2057,89 @@ fn the_skill_is_the_block_behind_its_frontmatter() {
 
 // ---------------------------------------------------------------- AC-7/8
 
-const GUARANTEES: [&str; 4] = [
+const GUARANTEES: [&str; 5] = [
     "A `250` (or a successful seed) means the mail is queryable now by the running server; when a data file is configured the mail is on disk before that reply; without one, a restart loses mail. Never re-send after a `250`",
     "The wait registers before it scans, so a mail that arrives between the two can never be missed. Wait after act, and never poll-then-decide",
     "Codes and links are extracted at ingest, so extract reads stored results and a cleared or pruned mail is gone from them too",
-    "Clear before you act, never between act and extract: the clear deletes the mail you are waiting for.",
+    "Unless the flow has already mailed you, clear before you act, never between act and extract: the clear deletes the mail you are waiting for.",
+    "If the flow has already mailed you, do not clear: the wait returns mail that is already stored, and a clear would delete it with no way back.",
 ];
 
-const BLOCK_RULES: [&str; 5] = [
+const BLOCK_RULES: [&str; 11] = [
+    "If your task or environment names your swarmail inbox, use that name and pass it as `\"inbox\"` to every tool.",
+    "the SMTP AUTH username names the inbox and any password is accepted. Mail sent without AUTH lands in the inbox `default`",
+    "On a server started with `--route-domain`, you may instead call `swarmail_create_inbox` and give the flow the address it returns.",
+    "**If the flow has already mailed you, do not clear: wait, or read, straight away.** The wait returns mail that is already in your inbox.",
+    "Otherwise work in four steps, in this order: clear, act, wait, extract.",
     "Clear before you act, never between act and extract: the clear deletes the mail you are waiting for.",
     "The wait registers before it scans, so wait after act and never poll-then-decide.",
     "Codes and links are extracted at ingest, so extract reads stored results and a cleared or pruned mail is gone from them too.",
     "Never re-send after it.",
-    "Report it, then look at the inbox before you re-trigger; a second trigger makes the first code stale.",
+    "then look at the inbox before you re-trigger; a second trigger makes the first code stale.",
+    "take the code from the newest mail.",
 ];
 
-const LABELS: [&str; 7] = [
+/// Wording the review retracted (F1, F2): none of it may come back.
+const FORBIDDEN_IN_BLOCK: [&str; 4] = [
+    "Pick an inbox name that is yours alone",
+    "with a recipient in your inbox",
+    "always in this order",
+    "after your clear",
+];
+
+const LABELS: [&str; 9] = [
     "**Unverified:** the file path.",
     "**Unverified:** Cursor's file name and shape.",
     "**Unverified:** the install path and the frontmatter.",
-    "CI proves two things about each snippet above: the bytes parse, and the server answers on the transport the snippet declares.",
+    "CI proves two things: the bytes parse, and the server answers on the transport the snippet declares.",
+    "Those five round trips prove each snippet's transport and nothing about where an application's mail lands",
+    "One more test drives the loop and the route the block teaches over real SMTP",
     "CI does not prove that Claude Code, Codex, Cursor or dsh load these files. That is an operator-owned receipt.",
     "schema-evidenced, not live-proven",
     "has not been run against a real model",
 ];
+
+const README_CLAIM: &str = "The wiring snippets in `docs/agents/setup.md` are written into a fresh project and driven against the real binary by `tests/agent_setup_docs.rs` in CI; install commands are marked not-executed.";
+
+/// The retracted wording that survives in `text`.
+fn retracted(text: &str) -> Vec<&'static str> {
+    FORBIDDEN_IN_BLOCK
+        .iter()
+        .copied()
+        .filter(|phrase| text.contains(phrase))
+        .collect()
+}
+
+/// The inbox paragraph comes before the already-mailed rule, which comes
+/// before the four steps; the environment-assigned name is the first rule.
+fn block_order(block: &str) -> Result<(), Refusal> {
+    let text = squash(block);
+    let mut from = 0;
+    for (name, mark) in [
+        (
+            "the environment-assigned inbox",
+            "If your task or environment names your swarmail inbox",
+        ),
+        ("the AUTH URL", "smtp://"),
+        (
+            "the unauthenticated inbox",
+            "Mail sent without AUTH lands in the inbox `default`",
+        ),
+        ("the routed clause", "--route-domain"),
+        (
+            "the already-mailed rule",
+            "**If the flow has already mailed you",
+        ),
+        ("the order sentence", "Otherwise work in four steps"),
+        ("the first step", "**Clear.**"),
+    ] {
+        let at = text[from..]
+            .find(mark)
+            .ok_or_else(|| format!("{name} is missing or out of order"))?;
+        from += at + mark.len();
+    }
+    Ok(())
+}
 
 #[test]
 fn the_guides_state_the_guarantees_the_loop_depends_on() {
@@ -1523,12 +2152,41 @@ fn the_guides_state_the_guarantees_the_loop_depends_on() {
         absent(&squash(&raw(SKILL)), &BLOCK_RULES),
         Vec::<&str>::new()
     );
+    block_order(&block).unwrap_or_else(|e| panic!("{e}"));
     // A check-then-subscribe order is never taught.
     for text in [&guide, &block] {
         for forbidden in ["check, then subscribe", "poll until", "sleep and retry"] {
             assert!(!text.contains(forbidden), "{forbidden:?} is taught");
         }
     }
+}
+
+#[test]
+fn the_block_never_teaches_the_retracted_wording() {
+    for (what, text) in [("block", block()), ("skill", raw(SKILL))] {
+        assert_eq!(retracted(&squash(&text)), Vec::<&str>::new(), "{what}");
+    }
+    // Red controls: each retracted phrase, put back, is found.
+    let block = block();
+    for phrase in FORBIDDEN_IN_BLOCK {
+        let regressed = format!("{block}\n{phrase}\n");
+        assert_eq!(retracted(&squash(&regressed)), [phrase], "{phrase}");
+    }
+    // The order sentence says so without \"always\", and the already-mailed
+    // rule and the inbox paragraph are in front of the steps.
+    block_order(&block).unwrap_or_else(|e| panic!("{e}"));
+    let moved = block.replace(
+        "**If the flow has already mailed you",
+        "**If the flow mailed you",
+    );
+    block_order(&moved).expect_err("no already-mailed rule");
+    let unordered = block.replace("Otherwise work in four steps", "Work in four steps");
+    block_order(&unordered).expect_err("no order sentence after the rule");
+    let no_assignment = block.replace(
+        "If your task or environment names your swarmail inbox",
+        "Choose an inbox",
+    );
+    block_order(&no_assignment).expect_err("no environment-assigned rule");
 }
 
 #[test]
@@ -1563,4 +2221,25 @@ fn the_readme_points_at_the_guide_and_not_at_an_unexercised_block() {
         "the unexercised .mcp.json snippet is gone from the README"
     );
     assert!(readme.contains("| `tests/agent_setup_docs.rs` |"));
+    let flat = squash(&readme);
+    assert!(
+        flat.contains(README_CLAIM),
+        "the README claims only what is proven"
+    );
+    let overclaim = "Every snippet in it is written into a fresh project and driven";
+    assert!(!flat.contains(overclaim), "the README overclaims");
+    // The suite-table row names the SMTP-driven proof beside the transport.
+    let row = readme
+        .lines()
+        .find(|l| l.starts_with("| `tests/agent_setup_docs.rs` |"))
+        .expect("the suite row");
+    for phrase in ["over real SMTP", "already-mailed"] {
+        assert!(
+            row.contains(phrase),
+            "the suite row lacks {phrase:?}: {row}"
+        );
+    }
+    // Red controls: the overclaim, put back, is found; the claim, removed, is gone.
+    assert!(format!("{flat} {overclaim}").contains(overclaim));
+    assert!(!flat.replace(README_CLAIM, "").contains(README_CLAIM));
 }

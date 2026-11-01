@@ -112,3 +112,141 @@ cargo test --manifest-path evals/Cargo.toml --offline --locked
 ```
 
 Commit unsigned. Never push, merge, publish or accept a decision.
+
+---
+
+# Restart framing — run issue-161-ship-agent-setup-guide-564da145
+
+Restart of #161 from main `5e8d9d8` (a4f552d merged in), on the zero-Codex
+`claude-careful` recipe (decisions 0098, 0099; review residuals per 0102).
+The branch keeps its design (2104a31) and implementation (66ded9c). Design
+revises the spec, then guide, skill and suite. Sound parts stay. This section
+supersedes the 52194034 framing where they differ.
+
+## Goal
+
+Ship copy-paste setup guides for Claude Code, Codex, Cursor and dsh, a swarmail
+skill and an AGENTS.md block that teaches clear → act → wait → extract, where a
+root suite in CI drives every shipped snippet and proves the taught loop on the
+wire, including when the flow mailed the agent before it started.
+
+## Reading taken (from current main; design re-derives exact rules)
+
+- **Inbox routing, 0004 + 0112.** The SMTP AUTH username names the inbox
+  (0004 §1); an unauthenticated session lands in `default`. A server started
+  with `--route-domain` / `SWARMAIL_ROUTE_DOMAIN` (0112; `src/config.rs`,
+  `src/smtp.rs` ~1382) routes a recipient `<local>@<label>.<route-domain>` to
+  inbox `<label>`, and a routed recipient outranks AUTH. A recipient under the
+  route domain that names no inbox is refused `550 5.1.3`. Routed labels are
+  `[a-z0-9-]{1,63}` after lowercasing, so the guide's inbox examples stay in
+  that alphabet to work on both routes. `swarmail_create_inbox` mints
+  `<hex>@<inbox>.<route-domain>` and needs a route domain; without one it
+  returns an isError naming `--route-domain`. The default server has no route
+  domain. Design reads `specs/recipient-inbox-routing/spec.md` (routing and
+  AC lists) and `src/smtp.rs` before writing the taught SMTP route.
+- **The flow may mail before the agent starts (F2).** The Straight tasks'
+  fixture delivers before the agent spawns (`evals/src/fixture.rs`;
+  `evals/src/tasks.rs` scenario comments), and their prompts say the
+  application already emailed you. Clear-before-act therefore deletes the mail
+  the agent needs in those flows.
+- **Tool surface (F-tools).** The live MCP tools are read from `tools/list` at
+  run time; the check does not use a hard-coded list. The issue names 18 tools,
+  including `swarmail_create_inbox`, `swarmail_list_attachments`,
+  `swarmail_get_attachment` and the focused waits `swarmail_wait_for_code` /
+  `swarmail_wait_for_link`. The live count is confirmed at design.
+- **Timeout near misses (0111, proposed; code on main in `src/mcp/near_miss.rs`
+  and `src/mcp/focused.rs`).** A guide that names a near-miss field of a timed-out
+  wait must use the name the live output uses, asserted by a real timed-out
+  wait on the wire.
+- **Selectors (F3).** `swarmail_extract_links` returns plain URLs. Anchor text,
+  host and path belong to `swarmail_wait_for_link`'s selectors. The schema
+  names are asserted from live `tools/list` at design.
+
+## Frozen guarantees near the work
+
+- 0001 (accept == stored), 0002 (wait registers before it scans) and 0005
+  (extraction at ingest) are what the loop's wait and extract steps rely on.
+  The guides state them and pin the sentences. Docs only.
+- 0003 is not touched. 0004 and 0112 are read as authority for the inbox route.
+  Neither is amended.
+- The "already mailed, do not clear" rule restates 0001, 0002 and 0005. It
+  changes no ruling.
+
+**Blocked: no.** No request contradicts a frozen guarantee. Nothing needs a
+decision document: no production change, no dependency, no CI edit. Design
+still needs to re-verify the routing rules and the live tool names before
+the spec is written.
+
+## Acceptance criteria (restart; each one can go red)
+
+The AC-1 to AC-9 set in `specs/agent-setup-guides/spec.md` stays, except AC-2
+(below). Added or changed by the restart:
+
+- **AC-R1 (F1, the route).** The guide says how the application under test
+  reaches the inbox, in two taught forms: SMTP AUTH username equal to the inbox
+  (`smtp://<inbox>:<any>@127.0.0.1:<smtp port>`), and, on a route-domain server,
+  a recipient `<local>@<inbox>.<route-domain>`. The suite sends a real message
+  over SMTP to the ephemeral port the way the guide says, and the taught
+  `swarmail_wait_for_email` on that inbox returns it. The default SMTP port
+  comes from the parsed `Cli` defaults, never a second copy of `1025`. Red
+  control, deterministic and without a timeout: a message sent with no AUTH and
+  no route lands in `default`, and it is not in the named inbox.
+- **AC-R2 (F1, assignment).** The inbox step says to use an inbox the
+  environment assigns when one is given, and otherwise to mint one with
+  `swarmail_create_inbox` on a route-domain server. The sentence is pinned.
+  Red control: the old "pick an inbox name that is yours alone" wording alone
+  is refused.
+- **AC-R3 (F2, already mailed).** The `markdown` block says that if the flow has
+  already mailed you, do not clear; wait, or read, straight away. The behaviour
+  is proved, not only the text: the suite delivers a code over real SMTP before
+  any clear and runs the taught read path (wait, then extract) to get it. A
+  control clears after the delivery and must find the mail gone, which shows
+  why the rule exists. Red control: a block with the rule removed is refused by
+  the pin.
+- **AC-R4 (AC-2 replaced).** The round trip for the taught loop delivers over
+  real SMTP as the guide tells the application to send, not through
+  `swarmail_seed_email` with an explicit inbox after the clear. The seed tool
+  keeps its own case, because the guide teaches it as the seeding step. Red
+  control: the F1 variant with AUTH username not equal to the inbox fails the
+  round trip.
+- **AC-R5 (F3).** The wrong-link advice names `swarmail_wait_for_link`'s
+  `anchor_text`, `host` and `path` selectors. The suite asserts those property
+  names in that tool's live `inputSchema`. Red control: the link advice that
+  puts those selectors on `swarmail_extract_links` is refused.
+- **AC-R6 (F4).** The README sentence claims only what is proven, in one
+  sentence: the wiring snippets are written into a fresh project and driven by
+  a root test in CI, and install commands are marked not-executed. Red control:
+  the old "every snippet in it" claim is refused.
+- **AC-R7 (F5).** A `~~~` fence and an indented fence (`  ~~~json`,
+  `  ```json`) are refused. Each has a red control in the scanner's negative
+  tests.
+- **AC-R8 (tool names and timeouts).** Every `swarmail_[a-z_]+` token in both
+  guide files is in the live `tools/list`, which includes the 18 tools above. A
+  real timed-out wait over the wire shows the near-miss field the guide names.
+  A misspelt tool name and a made-up near-miss field are each red controls.
+- **AC-R9 (AC-3, not measured).** The one-real-model criterion stays open. No
+  paid trial is run, and the PR and report say it is not measured. The issue is
+  not claimed fully closed.
+
+## Verify gate (house rules § Gates, locked)
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo test --locked --test agent_setup_docs
+cargo build --locked --bin swarmail
+cd evals && cargo fmt --all -- --check
+cd evals && cargo clippy --all-targets --locked -- -D warnings
+cd evals && SWARMAIL_BIN=<candidate target/debug/swarmail> cargo test --locked
+brokkr compile --bundle .brokkr/recipes/self
+bash scripts/coverage-gate.sh
+bash scripts/coverage-gate.sh selftest
+bash scripts/publish-guard-test.sh
+bash scripts/seal-branch-test.sh
+cargo deny check licenses
+```
+
+The root and evals suites run on this tree, and the verify seat runs them
+offline. Coverage stays 100% exact (no `src/` line is added). Commit unsigned,
+never push, merge, publish or accept a decision.
