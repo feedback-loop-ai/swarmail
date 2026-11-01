@@ -32,7 +32,7 @@ struct Cli {
     command: Cmd,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum Cmd {
     /// Run fresh controls before the approved paid baseline. Paid admission
     /// currently refuses: locally evidenced CLI/auth contracts are incomplete.
@@ -118,9 +118,9 @@ enum Cmd {
         wrapper_profile: Option<provenance::WrapperProfile>,
         #[arg(long, hide = true)]
         worker_context: Option<String>,
-        /// Prepared, not activated (proposed 0115): run the whole trial in a
-        /// fresh Linux namespace boundary or refuse by name. Never falls
-        /// back to an unisolated run.
+        /// Prepared, not activated (proposed 0115): run the whole trial
+        /// inside a bubblewrap boundary or refuse by name. Never falls back
+        /// to an unisolated run.
         #[arg(long, hide = true)]
         isolated: bool,
         /// One more absolute regular file bound read-only into the boundary.
@@ -253,70 +253,149 @@ fn trial_request(cmd: &Cmd) -> Result<TrialRequest, ExitCode> {
     Ok(req)
 }
 
-/// Validate the trial and, for `--isolated`, enter the boundary. `Err` is the
-/// exit code of a trial that must not run; `Ok` hands back the request the
-/// runtime will execute — inside the boundary when one was asked for.
-///
-/// The entry is a parameter so a test can inject a failing one: a refusal
-/// emits one harness-error row and exit code 2 before any server or agent
-/// exists, and nothing here falls back to an unisolated run.
+/// What a validated trial will do.
+enum Prepared {
+    /// Run the trial arm in this process, as always.
+    Run(TrialRequest),
+    /// Run it inside bubblewrap: the controller stays here, and the sandbox
+    /// runs `inner` (the runner's own argv) against the unchanged trial arm.
+    Isolate {
+        req: TrialRequest,
+        request: isolation::Request,
+        inner: Vec<OsString>,
+    },
+}
+
+/// Validate the trial and, for `--isolated`, its boundary preconditions.
+/// `Err` is the exit code of a trial that must not run: one harness-error
+/// row on stdout and the reason on stderr, before any server or agent
+/// exists. Nothing here falls back to an unisolated run.
 fn prepare_trial(
     cmd: &Cmd,
-    enter: isolation::Enter,
     swarmail_bin: Result<Option<PathBuf>, String>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> Result<(TrialRequest, Option<PathBuf>), u8> {
-    let mut req = trial_request(cmd).map_err(|_| 2u8)?;
+) -> Result<Prepared, u8> {
+    let req = trial_request(cmd).map_err(|_| 2u8)?;
     let Cmd::Trial {
         isolated: true,
         isolated_expose,
         ..
     } = cmd
     else {
-        return Ok((req, None));
+        return Ok(Prepared::Run(req));
     };
-    match isolate(&req, isolated_expose, swarmail_bin, enter) {
-        Ok(entered) => {
-            // The init's cwd, PATH and checkout differ from the caller's:
-            // hand it the paths the controller resolved.
-            adopt(&mut req, &entered);
-            Ok((req, Some(entered.swarmail_bin)))
+    match isolate(&req, isolated_expose, swarmail_bin) {
+        Ok(request) => {
+            let inner = inner_args(cmd, &request);
+            Ok(Prepared::Isolate {
+                req,
+                request,
+                inner,
+            })
         }
-        Err(refusal) => {
-            let id = req.trial_id.clone().unwrap_or_else(runner::new_trial_id);
-            let _ = writeln!(err, "swarmail-evals: harness error: {refusal}");
-            // No writable host path enters or leaves the boundary: the
-            // refusal is the row on stdout, never a retained artifact.
-            let bare = TrialRequest {
-                artifacts_dir: None,
-                ..req.clone()
-            };
-            let row = runner::finalize(&bare, runner::refused_row(&bare, &id), None);
-            let _ = writeln!(out, "{}", serde_json::to_string(&row).expect("serializes"));
-            let _ = out.flush();
-            Err(row.exit_code() as u8)
-        }
+        Err(refusal) => Err(refuse(&req, &refusal.to_string(), out, err)),
     }
 }
 
-/// A relative or bare agent program is replaced by the absolute path the
-/// controller resolved: inside the boundary the cwd and PATH are not the
-/// caller's. An absolute program is left exactly as given.
-fn adopt(req: &mut TrialRequest, entered: &isolation::Request) {
-    if let (Some(agent), Some(first)) = (&entered.agent, req.argv.first_mut())
-        && !std::path::Path::new(first).is_absolute()
-    {
-        *first = agent.clone().into_os_string();
-    }
+/// One harness-error row on stdout, the reason on stderr, and the row's exit
+/// code. No writable host path enters or leaves the boundary: the refusal is
+/// the row, never a retained artifact.
+fn refuse(req: &TrialRequest, reason: &str, out: &mut impl Write, err: &mut impl Write) -> u8 {
+    let id = req.trial_id.clone().unwrap_or_else(runner::new_trial_id);
+    let _ = writeln!(err, "swarmail-evals: harness error: {reason}");
+    let bare = TrialRequest {
+        artifacts_dir: None,
+        ..req.clone()
+    };
+    let row = runner::finalize(&bare, runner::refused_row(&bare, &id), None);
+    let _ = writeln!(out, "{}", serde_json::to_string(&row).expect("serializes"));
+    let _ = out.flush();
+    row.exit_code() as u8
 }
 
-/// The preconditions of an isolated trial, then the boundary itself.
+/// The runner's own argv inside the sandbox: its executable, `trial`, and
+/// every field of the parsed request rendered as its flag (`--flag=value`,
+/// so a value that starts with `-` stays a value), without `--isolated` and
+/// `--isolated-expose`, then `--` and the agent argv verbatim. The pattern
+/// names every field and has no `..`: a field added to `Cmd::Trial` fails to
+/// compile here until it is rendered. A relative or bare agent program is
+/// replaced by the absolute path the controller resolved, since inside the
+/// sandbox the caller's cwd and PATH are gone; an absolute one is untouched.
+fn inner_args(cmd: &Cmd, request: &isolation::Request) -> Vec<OsString> {
+    let Cmd::Trial {
+        task,
+        agent,
+        deadline_ms,
+        concurrency,
+        artifacts_dir,
+        seed,
+        fixture_time,
+        agent_model,
+        agent_config_id,
+        public_argv,
+        wrapper_profile,
+        worker_context,
+        isolated: _,
+        isolated_expose: _,
+        argv,
+    } = cmd
+    else {
+        unreachable!("only a trial is isolated");
+    };
+    let mut args = vec![request.runner.clone().into_os_string(), "trial".into()];
+    let mut flag = |name: &str, value: Option<OsString>| {
+        if let Some(value) = value {
+            let mut arg = OsString::from(format!("--{name}="));
+            arg.push(value);
+            args.push(arg);
+        }
+    };
+    flag("task", task.clone().map(OsString::from));
+    flag("agent", agent.clone().map(OsString::from));
+    flag("deadline-ms", deadline_ms.map(|v| v.to_string().into()));
+    flag("concurrency", Some(concurrency.to_string().into()));
+    flag(
+        "artifacts-dir",
+        artifacts_dir.clone().map(PathBuf::into_os_string),
+    );
+    flag("seed", seed.clone().map(OsString::from));
+    flag("fixture-time", fixture_time.clone().map(OsString::from));
+    flag("agent-model", agent_model.clone().map(OsString::from));
+    flag(
+        "agent-config-id",
+        agent_config_id.clone().map(OsString::from),
+    );
+    flag(
+        "wrapper-profile",
+        wrapper_profile.map(|profile| {
+            let value = clap::ValueEnum::to_possible_value(&profile).expect("no skipped variant");
+            OsString::from(value.get_name())
+        }),
+    );
+    flag("worker-context", worker_context.clone().map(OsString::from));
+    if *public_argv {
+        args.push("--public-argv".into());
+    }
+    if !argv.is_empty() {
+        args.push("--".into());
+        let mut program = argv.clone();
+        if let (Some(resolved), Some(first)) = (&request.agent, program.first_mut())
+            && !std::path::Path::new(first).is_absolute()
+        {
+            *first = resolved.clone().into_os_string();
+        }
+        args.extend(program);
+    }
+    args
+}
+
+/// The preconditions of an isolated trial. The boundary itself (bwrap, its
+/// version, its probe) is the controller's, and refuses later and by name.
 fn isolate(
     req: &TrialRequest,
     expose: &[PathBuf],
     swarmail_bin: Result<Option<PathBuf>, String>,
-    enter: isolation::Enter,
 ) -> Result<isolation::Request, isolation::Refusal> {
     use isolation::Refusal;
     if req.concurrency.unwrap_or(1) != 1 {
@@ -348,16 +427,48 @@ fn isolate(
         _ => None,
     };
     let runner_exe = std::env::current_exe().map_err(|_| source_invalid())?;
-    let request = isolation::request(
+    isolation::request(
         swarmail_bin,
         req.artifacts_dir.is_some(),
         req.wrapper_profile.is_some(),
         expose,
         runner_exe,
         agent,
-    )?;
-    enter(&request)?;
-    Ok(request)
+    )
+}
+
+/// Launch the isolated trial and turn how it ended into the process's exit
+/// code. A row that reached stdout was printed by the runner inside the
+/// sandbox and its exit code is mirrored; every other end is one named
+/// harness-error row here. `bwrap` is the parameter production fills with the
+/// constant path.
+async fn run_isolated(
+    req: &TrialRequest,
+    request: &isolation::Request,
+    inner: &[OsString],
+    bwrap: &std::path::Path,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> u8 {
+    let launched = isolation::launch(request, inner, bwrap).await;
+    conclude(req, launched, out, err)
+}
+
+/// How a launch ended, as the process's exit code and, where no row came
+/// from the runner, the one harness-error row.
+fn conclude(
+    req: &TrialRequest,
+    launched: Result<isolation::Launched, isolation::Refusal>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> u8 {
+    use isolation::Launched;
+    match launched {
+        Ok(Launched::Exited(code)) => code,
+        Ok(Launched::NoRow) => refuse(req, isolation::NO_ROW, out, err),
+        Ok(Launched::Interrupted) => refuse(req, isolation::INTERRUPTED, out, err),
+        Err(refusal) => refuse(req, &refusal.to_string(), out, err),
+    }
 }
 
 fn main() -> ExitCode {
@@ -381,26 +492,41 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    // A trial's request is validated, and its boundary entered when asked
-    // for, before any runtime exists: the boundary clones the process, which
-    // is only sound while it is single-threaded (proposed 0115).
+    // A trial's request is validated before any runtime exists. An isolated
+    // one is handed to the bubblewrap controller and never runs the trial arm
+    // in this process.
     let mut prepared = None;
     if let Cmd::Trial { .. } = &cli.command {
         match prepare_trial(
             &cli.command,
-            isolation::enter,
             runner::selected_swarmail_bin(),
             &mut std::io::stdout().lock(),
             &mut std::io::stderr().lock(),
         ) {
-            Ok((req, resolved)) => {
-                if let Some(bin) = resolved {
-                    // Inside the boundary the caller's cwd and PATH are gone:
-                    // run against the path the controller resolved.
-                    // SAFETY: still single-threaded; no runtime exists yet.
-                    unsafe { std::env::set_var(runner::SWARMAIL_BIN_ENV, bin) };
-                }
-                prepared = Some(req);
+            Ok(Prepared::Run(req)) => prepared = Some(req),
+            Ok(Prepared::Isolate {
+                req,
+                request,
+                inner,
+            }) => {
+                let rt = match tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(_) => return fail("runtime unavailable"),
+                };
+                // The future is driven from this, the main, thread: bwrap's
+                // parent-death signal follows the thread that spawned it.
+                let code = rt.block_on(run_isolated(
+                    &req,
+                    &request,
+                    &inner,
+                    std::path::Path::new(isolation::BWRAP),
+                    &mut std::io::stdout(),
+                    &mut std::io::stderr(),
+                ));
+                return ExitCode::from(code);
             }
             Err(code) => return ExitCode::from(code),
         }
@@ -4386,6 +4512,7 @@ mod baseline_tests {
 #[cfg(test)]
 mod isolation_entry_tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use swarmail_evals::runner::TrialResult;
 
     fn parse(args: &[&str]) -> Cmd {
@@ -4394,28 +4521,15 @@ mod isolation_entry_tests {
         Cli::try_parse_from(all).expect("arguments parse").command
     }
 
-    /// An entry that must never be reached: a refusal precedes it.
-    fn unreachable_entry(_: &isolation::Request) -> Result<(), isolation::Refusal> {
-        panic!("the boundary was entered although the request was refused");
-    }
-
-    fn refuse_with_clone_enospc(_: &isolation::Request) -> Result<(), isolation::Refusal> {
-        Err(isolation::Refusal::errno("clone", libc::ENOSPC))
-    }
-
-    fn succeed(_: &isolation::Request) -> Result<(), isolation::Refusal> {
-        Ok(())
-    }
-
     struct Ran {
-        result: Result<(TrialRequest, Option<PathBuf>), u8>,
+        result: Result<Prepared, u8>,
         stdout: String,
         stderr: String,
     }
 
-    fn run(args: &[&str], bin: Result<Option<PathBuf>, String>, enter: isolation::Enter) -> Ran {
+    fn run(args: &[&str], bin: Result<Option<PathBuf>, String>) -> Ran {
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let result = prepare_trial(&parse(args), enter, bin, &mut out, &mut err);
+        let result = prepare_trial(&parse(args), bin, &mut out, &mut err);
         Ran {
             result,
             stdout: String::from_utf8(out).unwrap(),
@@ -4423,9 +4537,9 @@ mod isolation_entry_tests {
         }
     }
 
-    fn row(ran: &Ran) -> TrialResult {
-        let lines: Vec<_> = ran.stdout.lines().collect();
-        assert_eq!(lines.len(), 1, "exactly one row: {:?}", ran.stdout);
+    fn row(stdout: &str) -> TrialResult {
+        let lines: Vec<_> = stdout.lines().collect();
+        assert_eq!(lines.len(), 1, "exactly one row: {stdout:?}");
         let row: TrialResult = serde_json::from_str(lines[0]).unwrap();
         row.validate().unwrap();
         row
@@ -4439,55 +4553,7 @@ mod isolation_entry_tests {
     }
 
     #[test]
-    fn a_failed_entry_is_a_harness_error_before_any_agent_launches() {
-        let (dir, bin) = a_binary();
-        let sentinel = dir.path().join("sentinel");
-        let ran = run(
-            &[
-                "--task",
-                "signup",
-                "--agent",
-                "probe",
-                "--isolated",
-                "--",
-                "/usr/bin/touch",
-                sentinel.to_str().unwrap(),
-            ],
-            Ok(Some(bin)),
-            refuse_with_clone_enospc,
-        );
-        assert_eq!(ran.result.as_ref().err(), Some(&2));
-        assert!(
-            ran.stderr
-                .contains("harness error: boundary_unavailable:clone:ENOSPC"),
-            "{}",
-            ran.stderr
-        );
-        let row = row(&ran);
-        assert_eq!(row.outcome, Outcome::HarnessError);
-        assert_eq!(row.task.as_deref(), Some("signup"));
-        assert_eq!(row.agent.as_deref(), Some("probe"));
-        assert_eq!(row.concurrency, 1);
-        assert!(row.agent_exits.is_empty());
-        assert!(!sentinel.exists(), "no agent was launched");
-    }
-
-    #[test]
-    fn a_succeeding_entry_hands_back_the_request_to_run() {
-        let (_dir, bin) = a_binary();
-        let ran = run(
-            &["--task", "signup", "--agent", "oracle", "--isolated"],
-            Ok(Some(bin.clone())),
-            succeed,
-        );
-        assert!(ran.stdout.is_empty() && ran.stderr.is_empty());
-        let (req, resolved) = ran.result.expect("the trial proceeds");
-        assert_eq!(req.concurrency, Some(1));
-        assert_eq!(resolved, Some(bin));
-    }
-
-    #[test]
-    fn each_precondition_refuses_by_name_without_entering() {
+    fn each_precondition_refuses_by_name_before_any_boundary_work() {
         let (dir, bin) = a_binary();
         let some = || Ok(Some(bin.clone()));
         let artifacts = dir.path().join("artifacts");
@@ -4543,26 +4609,22 @@ mod isolation_entry_tests {
             ),
         ];
         for (args, bin, reason) in cases {
-            let ran = run(&args, bin, unreachable_entry);
+            let ran = run(&args, bin);
             assert_eq!(ran.result.as_ref().err(), Some(&2), "{args:?}");
             assert!(
                 ran.stderr.contains(&format!("harness error: {reason}\n")),
                 "{args:?}: {}",
                 ran.stderr
             );
-            assert_eq!(row(&ran).outcome, Outcome::HarnessError, "{args:?}");
+            assert_eq!(row(&ran.stdout).outcome, Outcome::HarnessError, "{args:?}");
         }
         assert!(!artifacts.exists());
     }
 
     #[test]
-    fn a_trial_without_the_flag_never_touches_the_boundary() {
-        let ran = run(
-            &["--task", "signup", "--agent", "null"],
-            Ok(None),
-            unreachable_entry,
-        );
-        assert_eq!(ran.result.map(|(_, bin)| bin), Ok(None));
+    fn a_trial_without_the_flag_runs_in_process_and_never_touches_the_boundary() {
+        let ran = run(&["--task", "signup", "--agent", "null"], Ok(None));
+        assert!(matches!(ran.result, Ok(Prepared::Run(_))));
         assert!(ran.stdout.is_empty() && ran.stderr.is_empty());
         // The expose flag means nothing without the boundary.
         assert!(
@@ -4571,27 +4633,328 @@ mod isolation_entry_tests {
     }
 
     #[test]
-    fn the_resolved_agent_replaces_only_a_relative_program() {
-        let entered = isolation::Request {
+    fn a_valid_isolated_request_is_handed_to_the_controller_with_its_inner_argv() {
+        let (_dir, bin) = a_binary();
+        let ran = run(
+            &["--task", "signup", "--agent", "oracle", "--isolated"],
+            Ok(Some(bin.clone())),
+        );
+        assert!(ran.stdout.is_empty() && ran.stderr.is_empty());
+        let Ok(Prepared::Isolate {
+            req,
+            request,
+            inner,
+        }) = ran.result
+        else {
+            panic!("expected an isolated launch");
+        };
+        assert_eq!(req.concurrency, Some(1));
+        assert_eq!(request.swarmail_bin, bin);
+        assert_eq!(request.runner, std::env::current_exe().unwrap());
+        assert_eq!(inner[0], request.runner.clone().into_os_string());
+        assert_eq!(inner[1], "trial");
+        assert!(
+            !inner
+                .iter()
+                .any(|a| a.to_string_lossy().contains("isolated"))
+        );
+    }
+
+    fn all_fields() -> Vec<&'static str> {
+        vec![
+            "--task",
+            "signup",
+            "--agent",
+            "probe",
+            "--deadline-ms",
+            "1234",
+            "--concurrency",
+            "1",
+            "--artifacts-dir",
+            "/a/b",
+            "--seed",
+            "seed-1",
+            "--fixture-time",
+            "2026-01-02T03:04:05Z",
+            "--agent-model",
+            "model-x",
+            "--agent-config-id",
+            "config-y",
+            "--public-argv",
+            "--wrapper-profile",
+            "claude_2_1_310",
+            "--worker-context",
+            "context-z",
+            "--isolated",
+            "--isolated-expose",
+            "/x/one",
+            "--isolated-expose",
+            "/x/two",
+            "--",
+            "agent",
+            "--isolated",
+            "--ro-bind",
+            "/",
+            "/",
+            "--",
+            "-x",
+        ]
+    }
+
+    fn request_for(agent: Option<&str>) -> isolation::Request {
+        isolation::Request {
             swarmail_bin: PathBuf::from("/b/swarmail"),
-            runner: PathBuf::from("/b/runner"),
-            agent: Some(PathBuf::from("/real/agent")),
+            runner: PathBuf::from("/b/swarmail-evals"),
+            agent: agent.map(PathBuf::from),
             expose: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_inner_request_round_trips_through_clap_without_the_boundary_flags() {
+        let original = parse(&all_fields());
+        let inner = inner_args(&original, &request_for(Some("/real/agent")));
+        assert_eq!(inner[0], "/b/swarmail-evals");
+        let mut again = vec![OsString::from("swarmail-evals")];
+        again.extend(inner[1..].iter().cloned());
+        let rendered = Cli::try_parse_from(again)
+            .expect("the inner argv parses")
+            .command;
+
+        // The same request minus `isolated`/`isolated_expose`, with the bare
+        // agent program replaced by the absolute one the controller found.
+        let mut want = parse(&all_fields());
+        let Cmd::Trial {
+            isolated,
+            isolated_expose,
+            argv,
+            ..
+        } = &mut want
+        else {
+            unreachable!()
         };
-        let mut req = TrialRequest {
-            argv: vec![OsString::from("agent"), OsString::from("--flag")],
+        *isolated = false;
+        isolated_expose.clear();
+        argv[0] = OsString::from("/real/agent");
+        assert_eq!(format!("{rendered:?}"), format!("{want:?}"));
+
+        // The agent's own `--isolated`, `--ro-bind` and `--` survive literally.
+        let Cmd::Trial { argv, .. } = &rendered else {
+            unreachable!()
+        };
+        assert_eq!(
+            argv.iter().map(|a| a.to_str().unwrap()).collect::<Vec<_>>(),
+            [
+                "/real/agent",
+                "--isolated",
+                "--ro-bind",
+                "/",
+                "/",
+                "--",
+                "-x"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_resolved_agent_replaces_only_a_relative_program() {
+        let render = |args: &[&str], agent: Option<&str>| {
+            let mut all = vec!["--isolated", "--"];
+            all.extend_from_slice(args);
+            let inner = inner_args(&parse(&all), &request_for(agent));
+            inner
+                .iter()
+                .skip_while(|a| *a != "--")
+                .skip(1)
+                .map(|a| a.to_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            render(&["agent", "--flag"], Some("/real/agent")),
+            ["/real/agent", "--flag"]
+        );
+        assert_eq!(
+            render(&["/given/agent"], Some("/real/agent")),
+            ["/given/agent"]
+        );
+        assert_eq!(render(&["agent"], None), ["agent"]);
+        // No agent argv, no separator.
+        let inner = inner_args(
+            &parse(&["--isolated", "--agent", "oracle"]),
+            &request_for(None),
+        );
+        assert!(!inner.iter().any(|a| a == "--"));
+        // A value that starts with a dash stays a value.
+        let inner = inner_args(&parse(&["--isolated", "--task=-odd"]), &request_for(None));
+        assert!(inner.iter().any(|a| a == "--task=-odd"));
+    }
+
+    // ---- the controller's refusals, through the parameter seam (AC-S2) --------
+
+    fn script(dir: &std::path::Path, version: &str, probe: &str, real: &str) -> PathBuf {
+        let path = dir.join("bwrap");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in --version) echo '{version}'; exit 0;; esac\nfor a in \"$@\"; do last=\"$a\"; done\nif [ \"$last\" = /usr/bin/true ]; then\n{probe}\nfi\n{real}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for _ in 0..500 {
+            match std::process::Command::new(&path).arg("--version").output() {
+                Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => break,
+            }
+        }
+        path
+    }
+
+    /// Drive a whole isolated request against a stand-in bwrap.
+    fn through_the_controller(bwrap: &std::path::Path, sentinel: &std::path::Path) -> Ran {
+        let (_dir, bin) = a_binary();
+        let program = sentinel.parent().unwrap().join("agent");
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\ntouch '{}'\n", sentinel.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let args = [
+            "--task",
+            "signup",
+            "--agent",
+            "probe",
+            "--isolated",
+            "--",
+            program.to_str().unwrap(),
+        ];
+        let prepared = prepare_trial(&parse(&args), Ok(Some(bin)), &mut out, &mut err)
+            .unwrap_or_else(|code| {
+                panic!("refused with {code}: {}", String::from_utf8_lossy(&err))
+            });
+        let Prepared::Isolate {
+            req,
+            request,
+            inner,
+        } = prepared
+        else {
+            panic!("not isolated")
+        };
+        let code = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(run_isolated(
+                &req, &request, &inner, bwrap, &mut out, &mut err,
+            ));
+        Ran {
+            result: Err(code),
+            stdout: String::from_utf8(out).unwrap(),
+            stderr: String::from_utf8(err).unwrap(),
+        }
+    }
+
+    #[test]
+    fn every_refused_boundary_is_a_named_harness_error_and_no_agent_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_ran = dir.path().join("agent-ran");
+        let touch = format!("touch '{}'; exit 0", agent_ran.display());
+        let bad_probe = "echo 'bwrap: Creating new namespace failed: ENOSPC' >&2; exit 1";
+        let stand_in = |name: &str, version: &str, probe: &str| {
+            let home = dir.path().join(name);
+            std::fs::create_dir(&home).unwrap();
+            script(&home, version, probe, &touch)
+        };
+        let cases: Vec<(PathBuf, &str)> = vec![
+            (
+                PathBuf::from("/definitely/not/bwrap"),
+                "boundary_unavailable:bwrap_absent",
+            ),
+            (
+                stand_in("old", "bubblewrap 0.9.0", &touch),
+                "boundary_unavailable:bwrap_version",
+            ),
+            (
+                stand_in("refusing", "bubblewrap 0.11.1", bad_probe),
+                "boundary_unavailable:bwrap_probe",
+            ),
+        ];
+        for (bwrap, reason) in cases {
+            let ran = through_the_controller(&bwrap, &agent_ran);
+            assert_eq!(ran.result.as_ref().err(), Some(&2), "{reason}");
+            assert!(
+                ran.stderr.contains(&format!("harness error: {reason}\n")),
+                "{reason}: {}",
+                ran.stderr
+            );
+            let row = row(&ran.stdout);
+            assert_eq!(row.outcome, Outcome::HarnessError);
+            assert_eq!(row.task.as_deref(), Some("signup"));
+            assert_eq!(row.agent.as_deref(), Some("probe"));
+            assert_eq!(row.concurrency, 1);
+            assert!(row.agent_exits.is_empty());
+            assert!(!agent_ran.exists(), "{reason}: an agent was launched");
+        }
+    }
+
+    #[test]
+    fn how_a_launch_ended_is_one_exit_code_and_at_most_one_named_row() {
+        let req = TrialRequest {
+            task: Some("signup".into()),
+            agent: Some("probe".into()),
             ..Default::default()
         };
-        adopt(&mut req, &entered);
-        assert_eq!(req.argv, [OsString::from("/real/agent"), "--flag".into()]);
-        let mut req = TrialRequest {
-            argv: vec![OsString::from("/given/agent")],
-            ..Default::default()
+        let conclude_with = |launched| {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = conclude(&req, launched, &mut out, &mut err);
+            (
+                code,
+                String::from_utf8(out).unwrap(),
+                String::from_utf8(err).unwrap(),
+            )
         };
-        adopt(&mut req, &entered);
-        assert_eq!(req.argv, [OsString::from("/given/agent")]);
-        let mut req = TrialRequest::default();
-        adopt(&mut req, &entered);
-        assert!(req.argv.is_empty());
+        // A row the runner printed is mirrored; the controller adds nothing.
+        for code in [0u8, 1, 2] {
+            let (got, out, err) = conclude_with(Ok(isolation::Launched::Exited(code)));
+            assert_eq!((got, out.as_str(), err.as_str()), (code, "", ""));
+        }
+        for (launched, name) in [
+            (isolation::Launched::NoRow, "isolated_trial_no_row"),
+            (
+                isolation::Launched::Interrupted,
+                "isolated_trial_interrupted",
+            ),
+        ] {
+            let (code, out, err) = conclude_with(Ok(launched));
+            assert_eq!(code, 2);
+            assert_eq!(err, format!("swarmail-evals: harness error: {name}\n"));
+            assert_eq!(row(&out).outcome, Outcome::HarnessError);
+        }
+        let (code, out, err) =
+            conclude_with(Err(isolation::Refusal::Named("concurrent_trials_refused")));
+        assert_eq!(code, 2);
+        assert!(err.contains("concurrent_trials_refused"));
+        assert_eq!(row(&out).outcome, Outcome::HarnessError);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn macos_refuses_by_name_through_the_whole_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let sentinel = dir.path().join("agent-ran");
+        let ran = through_the_controller(std::path::Path::new("/usr/bin/bwrap"), &sentinel);
+        assert_eq!(ran.result.as_ref().err(), Some(&2));
+        assert!(
+            ran.stderr
+                .contains("harness error: boundary_unavailable:platform\n"),
+            "{}",
+            ran.stderr
+        );
+        assert_eq!(row(&ran.stdout).outcome, Outcome::HarnessError);
+        assert!(!sentinel.exists());
     }
 }

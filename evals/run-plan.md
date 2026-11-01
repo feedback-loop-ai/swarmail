@@ -147,27 +147,53 @@ eval execution. #152/#153 PRs stay unmerged until the baseline exists;
 
 ## Trial isolation — prepared, not activated (#221, proposed 0115)
 
-Date: 2026-10-31. **Trials remain sequential.** Accepted 0076 still admits one
+Date: 2026-11-01 (the boundary is bubblewrap; the 2026-10-31 raw-namespace
+worker is deleted). **Trials remain sequential.** Accepted 0076 still admits one
 trial per uid and refuses `--concurrency` other than 1; nothing here changes a
-row, a refusal or a guarantee, and no row claims isolation. Same-uid separation
-by fresh `0700` HOME directories is hygiene, not a boundary.
+row, a refusal or a guarantee, and no row claims isolation (`confinement`
+stays `unconfined`). Same-uid separation by fresh `0700` HOME directories is
+hygiene, not a boundary.
 
 A hidden `trial --isolated` flag (not in `--help`) runs the whole trial —
-runner, Swarmail, fixture and every agent — inside a fresh Linux user, mount,
-PID, network and IPC namespace, or refuses by name before any server or agent
-exists. There is no fallback to an unisolated run. It refuses, as a harness
-error row and exit 2, with: `concurrency_unsupported` (first),
-`isolation_requires_swarmail_bin`, `isolation_artifacts_unsupported`,
-`isolation_wrapper_unsupported` (provider egress is an open operator question
-in 0115, so no real driver runs isolated), `isolation_expose_invalid` and
-`isolation_source_invalid`, and `boundary_unavailable:<operation>:<ERRNO>` when
-the kernel or host policy denies a step (for example
-`boundary_unavailable:clone:ENOSPC`). `--isolated-expose <absolute regular
-file>` binds one more read-only file, for a test executable.
+runner, Swarmail, fixture and every agent — inside one bubblewrap sandbox
+(user, PID, network and IPC namespaces; a private `/tmp` of 512 MiB, HOME and
+`/proc`; a cleared environment; descriptors above 2 closed), or refuses by
+name before any server or agent exists. There is no fallback to an unisolated
+run. The controller (the `swarmail-evals` you started) stays in the host
+namespaces, holds the host admission and invokes `/usr/bin/bwrap` with a fixed
+argv; the same binary runs the unchanged trial arm inside.
 
-The syscall body has never executed in a delivery seat (they cannot create
-namespaces). It is proven live only by the ignored suite, on a host that
-permits unprivileged user namespaces:
+**Host prerequisite, not a dependency.** bubblewrap (LGPL-2.0-or-later) is
+executed as a separate process and never linked, vendored or added to a
+lockfile. An isolated trial needs Linux; `/usr/bin/bwrap` of at least 0.11.1
+(an absolute path with no lookup and no override; Ubuntu 24.04's packaged
+0.9.0 is refused until a proof lowers the floor); and a host policy that lets
+bwrap create the namespaces (Ubuntu's `bwrap-userns-restrict` AppArmor
+profile, or `kernel.apparmor_restrict_unprivileged_userns` lowered). macOS
+refuses by name, since bwrap is Linux-only.
+
+The trial refuses, as a harness-error row and exit 2, with:
+`concurrency_unsupported` (first), `isolation_requires_swarmail_bin`,
+`isolation_artifacts_unsupported`, `isolation_wrapper_unsupported` (provider
+egress is an open operator question in 0115, so no real driver runs
+isolated), `isolation_expose_invalid`, `isolation_source_invalid`; then, from
+the controller, the closed set `boundary_unavailable:platform`,
+`boundary_unavailable:bwrap_absent`, `boundary_unavailable:bwrap_version` and
+`boundary_unavailable:bwrap_probe` (the exact production argv with
+`/usr/bin/true` did not exit 0 within 10 s; bwrap's own words, such as
+`ENOSPC`, go to stderr and never into the row). After a launch, a runner that
+produced no row is `isolated_trial_no_row`, and an interrupt before any runner
+existed is `isolated_trial_interrupted`. The network is a private loopback;
+provider egress does not exist inside, and `--share-net` is rejected.
+`--isolated-expose <absolute regular file>` binds one more read-only file, for
+a test executable.
+
+Delivery seats cannot create namespaces (`/usr/bin/bwrap` is present there and
+refuses with `ENOSPC`), so the live path is proven only by the ignored suite,
+on a host whose bwrap can create them. This is the one documented command; it
+is deterministic (null and oracle built-ins, `/usr/bin/sleep`, scripted
+probes), free, and bounded (every isolated trial carries a deadline of at most
+30 s):
 
 ```bash
 cargo build --locked --bin swarmail
@@ -176,6 +202,12 @@ cd evals && SWARMAIL_BIN="$PWD/../target/debug/swarmail" \
 ```
 
 Where the boundary cannot be built each of those tests prints
-`SKIP trial-isolation: boundary_unavailable:<op>:<ERRNO>` and fails; it never
-passes without the boundary. The cross-trial hostile proof and provider egress
-remain outstanding (specs/trial-isolation/spec.md, Outstanding).
+`SKIP trial-isolation: boundary_unavailable:<step>` and fails; it never passes
+without the boundary, and the gate inventory never passes `--ignored`. That
+command alone proves the hostile same-uid agent in trial B cannot read A's
+prompt, reach A's MCP or fixture, or make A's idle agent pass (AC-L1), the
+topology from inside (AC-L2) and the lifetime bounds (AC-L3). CI proves only
+the always-on tests and, on macOS, the `platform` refusal; whether a hosted
+ubuntu runner has a usable bubblewrap is unobserved. Provider egress (AC-L4)
+and the operator's ruling on 0115 remain outstanding
+(specs/trial-isolation/spec.md).

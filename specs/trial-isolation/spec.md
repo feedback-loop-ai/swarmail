@@ -118,6 +118,7 @@ cached.
   --clearenv
   --setenv PATH /usr/bin:/bin --setenv HOME /tmp --setenv TMPDIR /tmp
   --setenv SWARMAIL_BIN <swarmail_bin>
+  --size 536870912 --tmpfs /tmp
   --ro-bind /usr /usr
   [--ro-bind /bin /bin | --symlink usr/bin /bin]        (per host layout)
   [--ro-bind /lib /lib | --symlink usr/lib /lib]
@@ -128,11 +129,17 @@ cached.
   [--ro-bind <agent> <agent>]
   [--ro-bind <expose> <expose> ...]
   --proc /proc --dev /dev
-  --size 536870912 --tmpfs /tmp
   --chdir /tmp
   -- <runner_exe> trial <the request re-rendered without --isolated and
      --isolated-expose> [-- <agent argv>]
 ```
+
+Implementation note, 2026-11-01 (implement seat): the private `/tmp` is
+mounted **before** the file binds, not after as first drawn. bwrap applies
+options in order, so a tmpfs mounted last hides any bound file that lives
+below `/tmp` on the host (a test wrapper, an operator's agent script); mounted
+first, such a file is bound into the sandbox's own tmpfs. The argv is otherwise
+as drawn, and the golden test records this order.
 
 Rules: a system tree that is a symlink on the host is recreated as the same
 symlink, a missing one is skipped (today's `SYSTEM_ROOTS` semantics, now

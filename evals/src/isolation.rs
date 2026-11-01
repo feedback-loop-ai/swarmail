@@ -1,206 +1,136 @@
-//! The whole-trial namespace boundary of proposed decision 0115 — prepared,
-//! not activated.
+//! The whole-trial boundary of proposed decision 0115 — prepared, not
+//! activated — built by invoking bubblewrap (revision 2026-11-01).
 //!
-//! `trial --isolated` (a hidden flag) calls [`enter`] once, single-threaded,
-//! before any Tokio runtime exists. On Linux the controller stays in the host
-//! namespaces, holds the host admission and supervises; a child cloned into a
-//! fresh user/mount/PID/network/IPC namespace becomes the trial's PID 1,
-//! builds its root and continues into the unchanged trial arm. Anything that
-//! cannot be done refuses by name — `boundary_unavailable:<operation>:<ERRNO>`
-//! — before a server or an agent exists. There is no fallback that runs the
-//! trial unisolated, and no host-network or host-filesystem mode.
+//! `trial --isolated` (a hidden flag) validates its request, then hands it to
+//! [`launch`]: the *controller*, which stays in the host namespaces, checks
+//! that `/usr/bin/bwrap` exists and is at least [`BWRAP_MIN`], proves the
+//! boundary with one bounded run of the exact production argv, takes the host
+//! admission (accepted 0076) and supervises one `bwrap` process whose
+//! sandbox runs the unchanged trial arm. Anything that cannot be done
+//! refuses by name — `boundary_unavailable:<step>` — before a server or an
+//! agent exists. There is no fallback that runs the trial unisolated, no
+//! host-network or host-filesystem mode, and no override of the bwrap path:
+//! the one place a test reaches another binary is the `bwrap` parameter of
+//! [`launch`], which production fills with the constant [`BWRAP`].
 //!
-//! Delivery seats cannot create namespaces, so the syscall body below has
-//! never executed in the seat that wrote it. Its pure parts (the errno-name
-//! table, the bind allowlist, the step order, the remount-flag arithmetic and
-//! the self-check parser) are unit-tested here; its live behaviour is proven
-//! only by the `#[ignore]`d suite in `tests/trial_isolation.rs`, run on a host
-//! that permits unprivileged user namespaces.
+//! bubblewrap is a host prerequisite, not a crate dependency: it is executed
+//! as a separate process and never linked, vendored or downloaded.
+//!
+//! Delivery seats cannot create namespaces (bwrap refuses there with
+//! `ENOSPC`), so the live path has never run in the seat that wrote it. Its
+//! pure parts (the version parser, the argv builder, the inner-request
+//! renderer's contract, the runner finder) and its refusal arms are
+//! unit-tested here; its live behaviour is proven only by the `#[ignore]`d
+//! suite in `tests/trial_isolation.rs`, run on a host whose bwrap can create
+//! the namespaces.
 //!
 //! Nothing here widens what a trial may do: concurrency stays refused by the
 //! public CLI and by admission (accepted 0076), and no row field claims
 //! isolation (0115, Current integration 1–2).
 
+use std::ffi::OsString;
 use std::fmt;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
+
+use tokio::io::{AsyncRead, AsyncReadExt};
+
+/// The only bubblewrap this crate will run. Absolute, never looked up on
+/// `PATH`, overridable by no environment variable and no flag: an override is
+/// the lever that becomes an unisolated fallback.
+pub const BWRAP: &str = "/usr/bin/bwrap";
+
+/// The oldest bubblewrap the boundary has been observed to work on. A
+/// compatibility statement, not a security attestation of a distribution's
+/// patch level; lowering it carries a live proof on the lower version.
+pub const BWRAP_MIN: (u64, u64, u64) = (0, 11, 1);
+
+/// The size of the trial's private `/tmp`: bounded so a hostile agent fills
+/// only its own trial's memory.
+pub const TMP_BYTES: u64 = 512 * 1024 * 1024;
+
+/// How long `bwrap --version` may take.
+pub const VERSION_BOUND: Duration = Duration::from_secs(5);
+/// How long the preflight probe (the production argv with `/usr/bin/true`)
+/// may take.
+pub const PROBE_BOUND: Duration = Duration::from_secs(10);
+/// How long the controller waits for its two pipe copies after bwrap exits.
+const DRAIN_BOUND: Duration = Duration::from_secs(5);
 
 /// Read-only system trees every isolated trial may see. A tree that is a
 /// symlink on the host (merged-usr `/bin`, `/lib`) is recreated as the same
 /// symlink; a missing tree is skipped. Nothing else of the host is visible.
 pub const SYSTEM_ROOTS: [&str; 5] = ["/usr", "/bin", "/lib", "/lib64", "/etc"];
 
-/// The only device nodes the boundary binds.
-pub const DEVICES: [&str; 5] = [
-    "/dev/null",
-    "/dev/zero",
-    "/dev/full",
-    "/dev/random",
-    "/dev/urandom",
-];
-
-/// Preconditions refused before any namespace work, by name.
+/// Preconditions refused before any boundary work, by name.
 pub const REQUIRES_SWARMAIL_BIN: &str = "isolation_requires_swarmail_bin";
 pub const ARTIFACTS_UNSUPPORTED: &str = "isolation_artifacts_unsupported";
 pub const WRAPPER_UNSUPPORTED: &str = "isolation_wrapper_unsupported";
 pub const EXPOSE_INVALID: &str = "isolation_expose_invalid";
 pub const SOURCE_INVALID: &str = "isolation_source_invalid";
 
+/// The closed set of boundary steps a refusal can name.
+pub const STEP_PLATFORM: &str = "platform";
+pub const STEP_ABSENT: &str = "bwrap_absent";
+pub const STEP_VERSION: &str = "bwrap_version";
+pub const STEP_PROBE: &str = "bwrap_probe";
+
+/// Harness errors the controller itself reports once a launch was admitted.
+pub const NO_ROW: &str = "isolated_trial_no_row";
+pub const INTERRUPTED: &str = "isolated_trial_interrupted";
+
 /// Every reason `--isolated` can refuse with, in the form the diagnostic
-/// prints. Boundary failures carry the failed operation and an errno name.
+/// prints. A row never carries bwrap's own text: that goes to stderr beside
+/// the row (0075: finite categories in the row, raw diagnostics beside it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// A request precondition, or an admission verdict, named as today.
     Named(&'static str),
-    /// A boundary step that failed: `boundary_unavailable:<op>:<ERRNO>`.
-    Boundary {
-        op: &'static str,
-        errno: &'static str,
-    },
-}
-
-impl Refusal {
-    pub fn errno(op: &'static str, errno: i32) -> Self {
-        Self::Boundary {
-            op,
-            errno: errno_name(errno),
-        }
-    }
+    /// A boundary step that failed: `boundary_unavailable:<step>`.
+    Boundary { step: &'static str },
 }
 
 impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Named(name) => f.write_str(name),
-            Self::Boundary { op, errno } => write!(f, "boundary_unavailable:{op}:{errno}"),
+            Self::Boundary { step } => write!(f, "boundary_unavailable:{step}"),
         }
     }
 }
 
-/// The closed set of errnos the boundary reports by name. Anything else is
-/// the one category `EUNKNOWN`; a diagnostic never interpolates a raw string
-/// or number (0075: finite categories).
-pub const ERRNO_NAMES: [(i32, &str); 28] = [
-    (libc::EPERM, "EPERM"),
-    (libc::ENOENT, "ENOENT"),
-    (libc::ESRCH, "ESRCH"),
-    (libc::EINTR, "EINTR"),
-    (libc::EIO, "EIO"),
-    (libc::ENXIO, "ENXIO"),
-    (libc::EBADF, "EBADF"),
-    (libc::ECHILD, "ECHILD"),
-    (libc::EAGAIN, "EAGAIN"),
-    (libc::ENOMEM, "ENOMEM"),
-    (libc::EACCES, "EACCES"),
-    (libc::EFAULT, "EFAULT"),
-    (libc::EBUSY, "EBUSY"),
-    (libc::EEXIST, "EEXIST"),
-    (libc::EXDEV, "EXDEV"),
-    (libc::ENODEV, "ENODEV"),
-    (libc::ENOTDIR, "ENOTDIR"),
-    (libc::EISDIR, "EISDIR"),
-    (libc::EINVAL, "EINVAL"),
-    (libc::ENFILE, "ENFILE"),
-    (libc::EMFILE, "EMFILE"),
-    (libc::ENOSPC, "ENOSPC"),
-    (libc::EROFS, "EROFS"),
-    (libc::ENAMETOOLONG, "ENAMETOOLONG"),
-    (libc::ENOSYS, "ENOSYS"),
-    (libc::ENOTEMPTY, "ENOTEMPTY"),
-    (libc::ELOOP, "ELOOP"),
-    (libc::EOVERFLOW, "EOVERFLOW"),
-];
-
-/// The category for an errno outside [`ERRNO_NAMES`].
-pub const ERRNO_UNKNOWN: &str = "EUNKNOWN";
-
-/// A total function from any errno to a stable name.
-pub fn errno_name(errno: i32) -> &'static str {
-    ERRNO_NAMES
-        .iter()
-        .find(|(value, _)| *value == errno)
-        .map_or(ERRNO_UNKNOWN, |(_, name)| name)
-}
-
-/// One setup step inside the trial's init, in the only order it may run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Step {
-    /// `setgroups` denied, then the identity uid and gid maps.
-    Identity,
-    /// `/` and everything below it made private.
-    MountPrivate,
-    /// The bounded tmpfs that becomes the root.
-    StageRoot,
-    /// Read-only system trees, device nodes and named executables.
-    Binds,
-    /// A fresh `/proc`, mounted while the host `/proc` is still visible.
-    Proc,
-    /// `pivot_root` into the staged root.
-    Pivot,
-    /// The old root unmounted and detached.
-    Detach,
-    /// `lo` brought up in the private network namespace.
-    Loopback,
-    /// Every descriptor from 3 up closed.
-    CloseRange,
-    /// `no_new_privs`.
-    NoNewPrivs,
-    /// Bounding and ambient capability sets emptied.
-    CapBound,
-    /// Effective, permitted and inheritable sets emptied.
-    Capset,
-    /// Marked nondumpable.
-    Dumpable,
-    /// Parent-death signal, then a re-check that the parent is still alive.
-    ParentDeath,
-    /// The init verifies its own boundary before anything runs.
-    SelfCheck,
-    /// The controller's signal mask restored.
-    Unblock,
-}
-
-/// The fixed order. The executor iterates this array, so the order a test
-/// asserts is the order that runs.
-pub const STEPS: [Step; 16] = [
-    Step::Identity,
-    Step::MountPrivate,
-    Step::StageRoot,
-    Step::Binds,
-    Step::Proc,
-    Step::Pivot,
-    Step::Detach,
-    Step::Loopback,
-    Step::CloseRange,
-    Step::NoNewPrivs,
-    Step::CapBound,
-    Step::Capset,
-    Step::Dumpable,
-    Step::ParentDeath,
-    Step::SelfCheck,
-    Step::Unblock,
-];
-
-impl Step {
-    /// The operation name a refusal carries when the step fails.
-    pub fn op(self) -> &'static str {
-        match self {
-            Self::Identity => "identity_map",
-            Self::MountPrivate => "mount_private",
-            Self::StageRoot => "stage_root",
-            Self::Binds => "bind",
-            Self::Proc => "proc",
-            Self::Pivot => "pivot_root",
-            Self::Detach => "detach",
-            Self::Loopback => "loopback",
-            Self::CloseRange => "close_range",
-            Self::NoNewPrivs => "no_new_privs",
-            Self::CapBound => "cap_bound",
-            Self::Capset => "capset",
-            Self::Dumpable => "dumpable",
-            Self::ParentDeath => "parent_death",
-            Self::SelfCheck => "self_check",
-            Self::Unblock => "unblock",
-        }
+/// `Ok` where the platform has bubblewrap. macOS (and anything else that is
+/// not Linux) refuses by name: bwrap is Linux-only.
+pub fn platform(is_linux: bool) -> Result<(), Refusal> {
+    if is_linux {
+        Ok(())
+    } else {
+        Err(Refusal::Boundary {
+            step: STEP_PLATFORM,
+        })
     }
+}
+
+/// The `major.minor.patch` triple of `bubblewrap <major>.<minor>.<patch>`,
+/// trailing text (`-ubuntu1`, a newline, a banner) ignored. Anything else is
+/// `None`.
+pub fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
+    let rest = text.trim().strip_prefix("bubblewrap ")?;
+    let token = rest.split_whitespace().next()?;
+    let numeric = token
+        .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .next()?;
+    let mut parts = numeric.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
 }
 
 /// Why a path cannot be bound into the boundary.
@@ -239,12 +169,23 @@ pub fn resolve_source(path: &Path) -> Result<PathBuf, SourceError> {
     }
 }
 
-/// What the boundary binds: the fixed read-only trees and device nodes, plus
-/// the named executables and exposed files at their own absolute paths.
+/// The files bound at their own absolute paths: every named source that is
+/// not already below a system tree, once each, in the order named.
+pub fn bound_files(sources: &[PathBuf]) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    for source in sources {
+        if !in_system_root(source) && !files.contains(source) {
+            files.push(source.clone());
+        }
+    }
+    files
+}
+
+/// What the boundary binds: the fixed read-only trees, plus the named
+/// executables and exposed files at their own absolute paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindPlan {
     pub system: Vec<PathBuf>,
-    pub devices: Vec<PathBuf>,
     pub files: Vec<PathBuf>,
 }
 
@@ -252,7 +193,6 @@ pub struct BindPlan {
 /// tree is already visible (it need only exist as a file); any other is bound
 /// at its own path after [`resolve_source`] accepts it.
 pub fn bind_plan(sources: &[PathBuf]) -> Result<BindPlan, SourceError> {
-    let mut files: Vec<PathBuf> = Vec::new();
     for source in sources {
         if !source.is_absolute() {
             return Err(SourceError::Relative);
@@ -264,20 +204,16 @@ pub fn bind_plan(sources: &[PathBuf]) -> Result<BindPlan, SourceError> {
             }
             continue;
         }
-        let resolved = resolve_source(source)?;
-        if !files.contains(&resolved) {
-            files.push(resolved);
-        }
+        resolve_source(source)?;
     }
     Ok(BindPlan {
         system: SYSTEM_ROOTS.iter().map(PathBuf::from).collect(),
-        devices: DEVICES.iter().map(PathBuf::from).collect(),
-        files,
+        files: bound_files(sources),
     })
 }
 
 /// What the isolated trial needs from the host, resolved before any
-/// namespace work.
+/// boundary work.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub swarmail_bin: PathBuf,
@@ -330,181 +266,446 @@ pub fn request(
     Ok(request)
 }
 
-/// The remount flags that keep a bind mount read-only without clearing any
-/// flag the kernel locked on the copy (`statfs` reports the inherited ones).
-/// `device` leaves `nodev` off so a bound device node stays usable.
-pub fn remount_flags(statfs_flags: u64, device: bool) -> u64 {
-    const MS_RDONLY: u64 = 1;
-    const MS_NOSUID: u64 = 2;
-    const MS_NODEV: u64 = 4;
-    const MS_NOEXEC: u64 = 8;
-    const MS_REMOUNT: u64 = 32;
-    const MS_BIND: u64 = 4096;
-    const MS_NOATIME: u64 = 1024;
-    const MS_NODIRATIME: u64 = 2048;
-    const MS_RELATIME: u64 = 0x20_0000;
-    // The statfs `f_flags` bits (ST_*) for the flags the kernel can lock.
-    const ST_NODEV: u64 = 4;
-    const ST_NOEXEC: u64 = 8;
-    const ST_NOATIME: u64 = 1024;
-    const ST_NODIRATIME: u64 = 2048;
-    const ST_RELATIME: u64 = 4096;
-    let mut flags = MS_BIND | MS_REMOUNT | MS_RDONLY | MS_NOSUID;
-    if !device || statfs_flags & ST_NODEV != 0 {
-        flags |= MS_NODEV;
-    }
-    if statfs_flags & ST_NOEXEC != 0 {
-        flags |= MS_NOEXEC;
-    }
-    if statfs_flags & ST_NOATIME != 0 {
-        flags |= MS_NOATIME;
-    }
-    if statfs_flags & ST_NODIRATIME != 0 {
-        flags |= MS_NODIRATIME;
-    }
-    if statfs_flags & ST_RELATIME != 0 {
-        flags |= MS_RELATIME;
-    }
-    flags
+/// What the host has at one of the [`SYSTEM_ROOTS`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tree {
+    /// Nothing usable: skipped.
+    Missing,
+    /// A directory: bound read-only at its own path.
+    Directory,
+    /// A symlink (merged-usr `/bin`): recreated as the same symlink.
+    Link(PathBuf),
 }
 
-/// What the init observes about itself after the boundary is built.
-pub struct Observed<'a> {
-    pub pid: u32,
-    /// Numeric entries of `/proc`.
-    pub proc_pids: &'a [u32],
-    /// The text of `/proc/net/dev`.
-    pub net_dev: &'a str,
-    /// The text of `/proc/self/status`.
-    pub status: &'a str,
-    /// Whether `/` is the staged tmpfs.
-    pub root_is_tmpfs: bool,
+/// The host's own layout of one system tree.
+pub fn host_tree(path: &Path) -> Tree {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            std::fs::read_link(path).map_or(Tree::Missing, Tree::Link)
+        }
+        Ok(meta) if meta.is_dir() => Tree::Directory,
+        _ => Tree::Missing,
+    }
 }
 
-/// One `Name:\tvalue` field of `/proc/<pid>/status`.
-pub fn status_field<'a>(status: &'a str, name: &str) -> Option<&'a str> {
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix(name)?.strip_prefix(':'))
-        .map(str::trim)
+/// The bwrap options that bring the read-only system trees in, each a
+/// read-only bind or, where the host has a symlink, the same symlink.
+pub fn system_root_options(layout: &dyn Fn(&Path) -> Tree) -> Vec<OsString> {
+    let mut options = Vec::new();
+    for root in SYSTEM_ROOTS {
+        match layout(Path::new(root)) {
+            Tree::Missing => {}
+            Tree::Directory => options.extend(["--ro-bind", root, root].map(OsString::from)),
+            Tree::Link(target) => {
+                options.extend([
+                    OsString::from("--symlink"),
+                    target.into_os_string(),
+                    OsString::from(root),
+                ]);
+            }
+        }
+    }
+    options
 }
 
-fn cap_empty(status: &str, name: &str) -> bool {
-    status_field(status, name)
-        .is_some_and(|value| !value.is_empty() && value.bytes().all(|b| b == b'0'))
+/// The argv of the one bwrap process, as a pure function of the validated
+/// request and the host's layout. The options come first and end at the first
+/// `--`; `inner` is the runner's own argv and follows it, so no agent argument
+/// can become a bwrap option: the index of the first `--` depends on the
+/// request alone.
+///
+/// Never `--ro-bind / /` (a read-only host root still lets a process connect
+/// to the forwarded agent sockets under `/run/user/<uid>`), never
+/// `--unshare-all` or a `-try` unshare (an unavailable namespace must refuse,
+/// not be skipped), never `--share-net` (it would put the trial's own
+/// Swarmail and fixture on the host loopback).
+pub fn argv(
+    request: &Request,
+    layout: &dyn Fn(&Path) -> Tree,
+    inner: &[OsString],
+) -> Vec<OsString> {
+    let mut a: Vec<OsString> = [
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-ipc",
+        "--die-with-parent",
+        "--new-session",
+        "--clearenv",
+        "--setenv",
+        "PATH",
+        "/usr/bin:/bin",
+        "--setenv",
+        "HOME",
+        "/tmp",
+        "--setenv",
+        "TMPDIR",
+        "/tmp",
+        "--setenv",
+        "SWARMAIL_BIN",
+    ]
+    .map(OsString::from)
+    .into();
+    a.push(request.swarmail_bin.clone().into_os_string());
+    // The private /tmp comes before every file bind: a file that lives below
+    // /tmp on the host is then bound into this tmpfs, not hidden under it.
+    a.extend(["--size".into(), TMP_BYTES.to_string().into()]);
+    a.extend(["--tmpfs", "/tmp"].map(OsString::from));
+    a.extend(system_root_options(layout));
+    for file in bound_files(&request.sources()) {
+        a.push("--ro-bind".into());
+        a.push(file.clone().into_os_string());
+        a.push(file.into_os_string());
+    }
+    a.extend(["--proc", "/proc", "--dev", "/dev", "--chdir", "/tmp", "--"].map(OsString::from));
+    a.extend(inner.iter().cloned());
+    a
 }
 
-/// Interface names listed by `/proc/net/dev` (two header lines, then one
-/// `name: counters…` line each).
-pub fn interfaces(net_dev: &str) -> Vec<&str> {
-    net_dev
-        .lines()
-        .skip(2)
-        .filter_map(|line| line.split_once(':').map(|(name, _)| name.trim()))
+/// [`argv`] over this host's real layout.
+pub fn command(request: &Request, inner: &[OsString]) -> Vec<OsString> {
+    argv(request, &host_tree, inner)
+}
+
+/// One process of the host's table, as the runner finder needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcEntry {
+    pub pid: i32,
+    pub parent: i32,
+    pub cmdline: Vec<u8>,
+}
+
+impl ProcEntry {
+    /// Whether this process was started as `<runner> trial …`.
+    fn is_runner(&self, runner: &Path) -> bool {
+        let mut args = self.cmdline.split(|b| *b == 0);
+        args.next() == Some(runner.as_os_str().as_bytes()) && args.next() == Some(b"trial")
+    }
+}
+
+/// The trial's runner among the descendants of `root`: the process started as
+/// `<runner> trial …` that has no such process above it. A built-in agent is
+/// the same executable (`<runner> agent oracle`) and never matches, and a
+/// nested `trial` below the runner is never preferred to it.
+pub fn pick_runner(table: &[ProcEntry], root: i32, runner: &Path) -> Option<i32> {
+    let by_pid: std::collections::HashMap<i32, &ProcEntry> =
+        table.iter().map(|e| (e.pid, e)).collect();
+    let below = |entry: &ProcEntry| -> Option<Vec<i32>> {
+        // Ancestors from the entry's parent up to `root`, or None when the
+        // chain does not reach it.
+        let mut chain = Vec::new();
+        let mut at = entry.parent;
+        while at != root {
+            chain.push(at);
+            at = by_pid.get(&at)?.parent;
+            if chain.len() > table.len() {
+                return None;
+            }
+        }
+        Some(chain)
+    };
+    table
+        .iter()
+        .filter(|e| e.is_runner(runner))
+        .filter_map(|e| below(e).map(|chain| (e, chain)))
+        .filter(|(_, chain)| {
+            !chain
+                .iter()
+                .any(|pid| by_pid.get(pid).is_some_and(|e| e.is_runner(runner)))
+        })
+        .map(|(e, _)| e.pid)
+        .min()
+}
+
+/// The host's process table: pid, parent and command line of every process
+/// this uid can read.
+pub fn proc_table() -> Vec<ProcEntry> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid: i32 = entry.file_name().to_str()?.parse().ok()?;
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            let (_, tail) = stat.rsplit_once(')')?;
+            let parent = tail.split_whitespace().nth(1)?.parse().ok()?;
+            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+            Some(ProcEntry {
+                pid,
+                parent,
+                cmdline,
+            })
+        })
         .collect()
 }
 
-/// The init's self-check. `Err` names the first failed check as an
-/// operation, so the refusal reads `boundary_unavailable:<check>:EINVAL`.
-pub fn verify(observed: &Observed<'_>) -> Result<(), &'static str> {
-    if observed.pid != 1 {
-        return Err("self_check_pid");
-    }
-    if observed.proc_pids != [1] {
-        return Err("self_check_proc");
-    }
-    if interfaces(observed.net_dev) != ["lo"] {
-        return Err("self_check_net");
-    }
-    if !observed.root_is_tmpfs {
-        return Err("self_check_root");
-    }
-    let caps = ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"];
-    if !caps.iter().all(|name| cap_empty(observed.status, name)) {
-        return Err("self_check_caps");
-    }
-    if status_field(observed.status, "NoNewPrivs") != Some("1") {
-        return Err("self_check_privs");
-    }
-    Ok(())
+/// The host PID of the runner below `root`, if one exists yet.
+pub fn runner_pid(root: i32, runner: &Path) -> Option<i32> {
+    pick_runner(&proc_table(), root, runner)
 }
 
-/// The boundary entry. A test passes its own; production passes [`enter`].
-pub type Enter = fn(&Request) -> Result<(), Refusal>;
+/// How a launched trial ended, as far as the controller can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Launched {
+    /// A row reached stdout; the controller exits with this code, which is
+    /// the runner's (bwrap propagates it).
+    Exited(u8),
+    /// bwrap ended and no byte reached stdout: a named harness error.
+    NoRow,
+    /// An interrupt arrived before a runner existed: bwrap was killed.
+    Interrupted,
+}
 
+/// Mark every descriptor above stderr close-on-exec in the child between fork
+/// and exec, so nothing the controller was handed survives into bwrap.
 #[cfg(target_os = "linux")]
-pub use linux::enter;
+fn sweep(process: &mut tokio::process::Command) {
+    const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
+    // SAFETY: the closure runs between fork and exec and makes one raw
+    // `close_range` system call; it allocates nothing and takes no lock.
+    unsafe {
+        process.pre_exec(|| {
+            let rc = libc::syscall(
+                libc::SYS_close_range,
+                3 as libc::c_uint,
+                libc::c_uint::MAX,
+                CLOSE_RANGE_CLOEXEC,
+            );
+            if rc == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+}
 
-/// Non-Linux targets have no boundary and always refuse by name.
 #[cfg(not(target_os = "linux"))]
-pub fn enter(_request: &Request) -> Result<(), Refusal> {
-    Err(Refusal::errno("platform", libc::ENOSYS))
+fn sweep(_: &mut tokio::process::Command) {}
+
+/// One bwrap process over `inner`, with the controller's stdio discipline:
+/// no stdin, both output pipes owned by the controller, its own process
+/// group (a terminal interrupt reaches the controller only), no inherited
+/// environment, and the descriptor sweep. Dropping the child kills bwrap,
+/// whose `--die-with-parent` takes the sandbox with it.
+fn process(bwrap: &Path, request: &Request, inner: &[OsString]) -> tokio::process::Command {
+    let mut process = tokio::process::Command::new(bwrap);
+    process
+        .args(command(request, inner))
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .process_group(0);
+    sweep(&mut process);
+    process
 }
 
-#[cfg(target_os = "linux")]
-mod linux;
+/// `bwrap_absent`: missing, not a regular file, or not executable.
+fn present(bwrap: &Path) -> Result<(), Refusal> {
+    match std::fs::metadata(bwrap) {
+        Ok(meta) if meta.is_file() && meta.permissions().mode() & 0o111 != 0 => Ok(()),
+        _ => Err(Refusal::Boundary { step: STEP_ABSENT }),
+    }
+}
+
+/// `bwrap_version`: `--version` finished in time, printed a parseable
+/// version, and it is at least [`BWRAP_MIN`]. Checked on every launch.
+async fn version_ok(bwrap: &Path) -> Result<(), Refusal> {
+    let refusal = || Refusal::Boundary { step: STEP_VERSION };
+    let mut ask = tokio::process::Command::new(bwrap);
+    ask.arg("--version")
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    sweep(&mut ask);
+    let child = ask.spawn().map_err(|_| refusal())?;
+    let output = tokio::time::timeout(VERSION_BOUND, child.wait_with_output())
+        .await
+        .map_err(|_| refusal())?
+        .map_err(|_| refusal())?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    match parse_version(&text) {
+        Some(found) if output.status.success() && found >= BWRAP_MIN => Ok(()),
+        _ => Err(refusal()),
+    }
+}
+
+/// `bwrap_probe`: the exact production argv, with `/usr/bin/true` as the
+/// command, exits 0 within the bound. bwrap's own words go to this process's
+/// stderr unchanged and never into a row.
+async fn probe(bwrap: &Path, request: &Request) -> Result<(), Refusal> {
+    let refusal = || Refusal::Boundary { step: STEP_PROBE };
+    let mut run = process(bwrap, request, &[OsString::from("/usr/bin/true")]);
+    run.stdout(Stdio::null());
+    let child = run.spawn().map_err(|_| refusal())?;
+    let output = tokio::time::timeout(PROBE_BOUND, child.wait_with_output())
+        .await
+        .map_err(|_| refusal())?
+        .map_err(|_| refusal())?;
+    write_through(Sink::Stderr, &output.stderr);
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(refusal())
+    }
+}
+
+/// The controller's own output streams, written with blocking calls off the
+/// async threads (tokio's `io-std` feature is not enabled in this crate).
+#[derive(Clone, Copy)]
+enum Sink {
+    Stdout,
+    Stderr,
+}
+
+fn write_through(sink: Sink, bytes: &[u8]) {
+    use std::io::Write;
+    match sink {
+        Sink::Stdout => {
+            let mut out = std::io::stdout().lock();
+            let _ = out.write_all(bytes);
+            let _ = out.flush();
+        }
+        Sink::Stderr => {
+            let mut out = std::io::stderr().lock();
+            let _ = out.write_all(bytes);
+            let _ = out.flush();
+        }
+    }
+}
+
+/// Copy `from` to the controller's `sink` byte for byte and return how many
+/// bytes passed. A failing sink never stops the drain: the sandbox must not
+/// block on a pipe.
+async fn pump(mut from: impl AsyncRead + Unpin, sink: Sink) -> u64 {
+    let mut buffer = [0u8; 8192];
+    let mut total = 0u64;
+    loop {
+        match from.read(&mut buffer).await {
+            Ok(0) | Err(_) => return total,
+            Ok(n) => {
+                total += n as u64;
+                let chunk = buffer[..n].to_vec();
+                let _ = tokio::task::spawn_blocking(move || write_through(sink, &chunk)).await;
+            }
+        }
+    }
+}
+
+/// Run the trial inside bwrap and judge how it ended. Called after the probe
+/// and the host admission; the admission is the caller's to hold until this
+/// returns, that is until bwrap's PID-1 reaper has gone.
+///
+/// bwrap forwards no signals, and its `--die-with-parent` kill is `SIGKILL`,
+/// which would lose the interrupted row. So a `SIGTERM`/`SIGINT` here is
+/// delivered, once, to the runner's host PID (the runner then emits its own
+/// interrupted row, exactly as an unisolated trial does, 0073); with no
+/// runner yet, bwrap is killed and the interrupt is reported by name.
+async fn supervise(bwrap: &Path, request: &Request, inner: &[OsString]) -> Launched {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (Ok(mut term), Ok(mut int)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::interrupt()),
+    ) else {
+        return Launched::NoRow;
+    };
+    // The spawn happens on the caller's thread. A parent-death signal follows
+    // the thread that forked, so `main` drives this future from its main
+    // thread and nothing here moves the spawn into a spawned task.
+    let Ok(mut child) = process(bwrap, request, inner).spawn() else {
+        return Launched::NoRow;
+    };
+    let root = child.id().map_or(-1, |pid| pid as i32);
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        return Launched::NoRow;
+    };
+    let rows = tokio::spawn(pump(stdout, Sink::Stdout));
+    let diagnostics = tokio::spawn(pump(stderr, Sink::Stderr));
+
+    let mut signalled = false;
+    let mut abandoned = false;
+    let status = loop {
+        tokio::select! {
+            status = child.wait() => break status,
+            _ = term.recv(), if !signalled => {}
+            _ = int.recv(), if !signalled => {}
+        }
+        signalled = true;
+        match runner_pid(root, &request.runner) {
+            Some(pid) => {
+                // SAFETY: plain kill(2) on a PID read from the host table a
+                // moment ago; at worst the runner has just exited.
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+            }
+            None => {
+                abandoned = true;
+                let _ = child.start_kill();
+            }
+        }
+    };
+    let bytes = tokio::time::timeout(DRAIN_BOUND, rows)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(0);
+    let _ = tokio::time::timeout(DRAIN_BOUND, diagnostics).await;
+    if abandoned {
+        return Launched::Interrupted;
+    }
+    match (status.ok().and_then(|s| s.code()), bytes) {
+        (_, 0) => Launched::NoRow,
+        (Some(code), _) => Launched::Exited(code as u8),
+        (None, _) => Launched::Exited(2),
+    }
+}
+
+/// The boundary's controller. Refuses, in this order and before any server or
+/// agent exists, with `boundary_unavailable:{platform,bwrap_absent,
+/// bwrap_version,bwrap_probe}`; then takes the host admission (0076 §1) and
+/// holds it until bwrap is reaped; then runs the trial. Nothing is cached
+/// between launches, and nothing falls back to an unisolated run.
+///
+/// `bwrap` is a parameter so a test can aim the controller at a stand-in;
+/// production passes [`BWRAP`]. The future must be driven from the main
+/// thread (see [`supervise`]).
+pub async fn launch(
+    request: &Request,
+    inner: &[OsString],
+    bwrap: &Path,
+) -> Result<Launched, Refusal> {
+    platform(cfg!(target_os = "linux"))?;
+    present(bwrap)?;
+    version_ok(bwrap).await?;
+    probe(bwrap, request).await?;
+    let admission = crate::admission::Admission::acquire().map_err(Refusal::Named)?;
+    let launched = supervise(bwrap, request, inner).await;
+    drop(admission);
+    Ok(launched)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
-    fn rank(step: Step) -> usize {
-        // Exhaustive on purpose: adding a step without ranking it here fails
-        // to compile, so STEPS cannot silently omit one.
-        match step {
-            Step::Identity => 0,
-            Step::MountPrivate => 1,
-            Step::StageRoot => 2,
-            Step::Binds => 3,
-            Step::Proc => 4,
-            Step::Pivot => 5,
-            Step::Detach => 6,
-            Step::Loopback => 7,
-            Step::CloseRange => 8,
-            Step::NoNewPrivs => 9,
-            Step::CapBound => 10,
-            Step::Capset => 11,
-            Step::Dumpable => 12,
-            Step::ParentDeath => 13,
-            Step::SelfCheck => 14,
-            Step::Unblock => 15,
-        }
-    }
-
-    fn at(step: Step) -> usize {
-        STEPS.iter().position(|s| *s == step).unwrap()
-    }
-
-    #[test]
-    fn errno_table_is_total_closed_and_unambiguous() {
-        let mut values = std::collections::HashSet::new();
-        let mut names = std::collections::HashSet::new();
-        for (value, name) in ERRNO_NAMES {
-            assert!(values.insert(value), "errno {value} named twice");
-            assert!(names.insert(name), "{name} used twice");
-            assert!(name.starts_with('E') && name.bytes().all(|b| b.is_ascii_uppercase()));
-            assert_eq!(errno_name(value), name);
-        }
-        // The two failures the delivery boxes have actually shown.
-        assert_eq!(errno_name(libc::EPERM), "EPERM");
-        assert_eq!(errno_name(libc::ENOSPC), "ENOSPC");
-        // Everything else is one finite category, never a raw number.
-        for stray in [0, -1, 9999, i32::MAX, libc::EDOM, libc::ENOTSOCK] {
-            assert_eq!(errno_name(stray), ERRNO_UNKNOWN);
-        }
+    fn os(parts: &[&str]) -> Vec<OsString> {
+        parts.iter().map(OsString::from).collect()
     }
 
     #[test]
     fn refusal_reads_as_the_documented_diagnostic() {
-        assert_eq!(
-            Refusal::errno("clone", libc::ENOSPC).to_string(),
-            "boundary_unavailable:clone:ENOSPC"
-        );
-        assert_eq!(
-            Refusal::errno("proc", 12345).to_string(),
-            "boundary_unavailable:proc:EUNKNOWN"
-        );
+        for step in [STEP_PLATFORM, STEP_ABSENT, STEP_VERSION, STEP_PROBE] {
+            assert_eq!(
+                Refusal::Boundary { step }.to_string(),
+                format!("boundary_unavailable:{step}")
+            );
+            assert!(step.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
+        }
         assert_eq!(
             Refusal::Named(REQUIRES_SWARMAIL_BIN).to_string(),
             "isolation_requires_swarmail_bin"
@@ -512,52 +713,50 @@ mod tests {
     }
 
     #[test]
-    fn steps_run_in_the_only_safe_order() {
-        for (index, step) in STEPS.iter().enumerate() {
-            assert_eq!(rank(*step), index, "{step:?} is out of place");
-        }
-        let ops: std::collections::HashSet<_> = STEPS.iter().map(|s| s.op()).collect();
-        assert_eq!(ops.len(), STEPS.len(), "every step names a distinct op");
-        // Identity maps first: nothing else is meaningful before them.
-        assert_eq!(at(Step::Identity), 0);
-        // A fresh /proc needs the host /proc visible, so before the pivot;
-        // the binds' sources are host paths, so also before it.
-        assert!(at(Step::Proc) < at(Step::Pivot));
-        assert!(at(Step::Binds) < at(Step::Pivot));
-        assert!(at(Step::StageRoot) < at(Step::Binds));
-        assert!(at(Step::Pivot) < at(Step::Detach));
-        // Loopback needs the privileges that are dropped later.
-        assert!(at(Step::Loopback) < at(Step::CapBound));
-        // The parent-liveness descriptor survives the close until its check.
-        assert!(at(Step::CloseRange) < at(Step::ParentDeath));
-        // The bounding set needs CAP_SETPCAP, which capset removes.
-        assert!(at(Step::CapBound) < at(Step::Capset));
-        // Descriptor closure and every privilege drop precede the self-check.
-        for before in [
-            Step::CloseRange,
-            Step::NoNewPrivs,
-            Step::CapBound,
-            Step::Capset,
-            Step::Dumpable,
+    fn the_platform_refusal_is_by_name_and_only_for_not_linux() {
+        assert_eq!(platform(true), Ok(()));
+        assert_eq!(
+            platform(false).unwrap_err().to_string(),
+            "boundary_unavailable:platform"
+        );
+    }
+
+    #[test]
+    fn the_version_parser_accepts_and_refuses_exactly() {
+        for (text, want) in [
+            ("bubblewrap 0.11.1", (0, 11, 1)),
+            ("bubblewrap 0.11.1\n", (0, 11, 1)),
+            ("bubblewrap 0.11.1-ubuntu1", (0, 11, 1)),
+            ("bubblewrap 0.11.1 (extra words)", (0, 11, 1)),
+            ("bubblewrap 1.0.0", (1, 0, 0)),
+            ("bubblewrap 0.9.0", (0, 9, 0)),
+            ("bubblewrap 0.11.0", (0, 11, 0)),
         ] {
-            assert!(at(before) < at(Step::SelfCheck), "{before:?}");
+            assert_eq!(parse_version(text), Some(want), "{text:?}");
         }
-        // The parent-death signal is set after the last credential change
-        // (credential changes can clear it) and the check is last but one.
-        let last_credential = [
-            Step::NoNewPrivs,
-            Step::CapBound,
-            Step::Capset,
-            Step::Dumpable,
-        ]
-        .into_iter()
-        .map(at)
-        .max()
-        .unwrap();
-        assert!(last_credential < at(Step::ParentDeath));
-        assert!(at(Step::ParentDeath) < at(Step::SelfCheck));
-        // No agent can run before the check, and the mask is restored last.
-        assert_eq!(at(Step::Unblock), STEPS.len() - 1);
+        for text in [
+            "",
+            "garbage",
+            "bubblewrap",
+            "bubblewrap ",
+            "bubblewrap 0.11",
+            "bubblewrap 0.11.1.2",
+            "bubblewrap v0.11.1",
+            "bubblewrap a.b.c",
+            "bubblewrap ..",
+            "bwrap 0.11.1",
+            "0.11.1",
+        ] {
+            assert_eq!(parse_version(text), None, "{text:?}");
+        }
+        // The floor is a tuple comparison, not a string one.
+        assert!(parse_version("bubblewrap 0.11.1").unwrap() >= BWRAP_MIN);
+        assert!(parse_version("bubblewrap 0.11.2").unwrap() >= BWRAP_MIN);
+        assert!(parse_version("bubblewrap 0.12.0").unwrap() >= BWRAP_MIN);
+        assert!(parse_version("bubblewrap 1.0.0").unwrap() >= BWRAP_MIN);
+        assert!(parse_version("bubblewrap 0.11.0").unwrap() < BWRAP_MIN);
+        assert!(parse_version("bubblewrap 0.9.0").unwrap() < BWRAP_MIN);
+        assert!(parse_version("bubblewrap 0.100.0").unwrap() >= BWRAP_MIN);
     }
 
     #[test]
@@ -605,17 +804,6 @@ mod tests {
         assert_eq!(
             plan.system,
             ["/usr", "/bin", "/lib", "/lib64", "/etc"].map(PathBuf::from)
-        );
-        assert_eq!(
-            plan.devices,
-            [
-                "/dev/null",
-                "/dev/zero",
-                "/dev/full",
-                "/dev/random",
-                "/dev/urandom"
-            ]
-            .map(PathBuf::from)
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -681,118 +869,703 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[test]
-    fn remount_keeps_the_kernel_locked_flags_and_adds_read_only() {
-        let base = remount_flags(0, false);
-        // MS_BIND | MS_REMOUNT | MS_RDONLY | MS_NOSUID | MS_NODEV
-        assert_eq!(base, 4096 | 32 | 1 | 2 | 4);
-        // A device node stays usable: nodev is not added on its behalf.
-        assert_eq!(remount_flags(0, true) & 4, 0);
-        // But a nodev the host already set is never dropped.
-        assert_eq!(remount_flags(4, true) & 4, 4);
-        let locked = 8 | 1024 | 2048 | 4096;
-        let flags = remount_flags(locked, false);
-        for bit in [8, 1024, 2048, 0x20_0000] {
-            assert_eq!(flags & bit, bit);
+    // ---- the argv builder (AC-S4) -------------------------------------------
+
+    fn golden_request() -> Request {
+        Request {
+            swarmail_bin: PathBuf::from("/w/bin/swarmail"),
+            runner: PathBuf::from("/w/bin/swarmail-evals"),
+            agent: Some(PathBuf::from("/w/agents/agent")),
+            expose: vec![PathBuf::from("/w/probe/helper")],
         }
     }
 
-    const NET_DEV_ONLY_LO: &str = "Inter-|   Receive\n face |bytes\n    lo: 0 0 0\n";
-    const CLEAN_STATUS: &str = "Name:\tswarmail\nNoNewPrivs:\t1\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nCapAmb:\t0000000000000000\n";
+    fn merged_usr(path: &Path) -> Tree {
+        match path.to_str().unwrap() {
+            "/usr" | "/etc" => Tree::Directory,
+            "/bin" => Tree::Link("usr/bin".into()),
+            "/lib" => Tree::Link("usr/lib".into()),
+            "/lib64" => Tree::Link("usr/lib64".into()),
+            other => panic!("not a system tree: {other}"),
+        }
+    }
 
-    fn observed<'a>(net: &'a str, status: &'a str, pids: &'a [u32]) -> Observed<'a> {
-        Observed {
-            pid: 1,
-            proc_pids: pids,
-            net_dev: net,
-            status,
-            root_is_tmpfs: true,
+    fn first_separator(argv: &[OsString]) -> usize {
+        argv.iter().position(|a| a == "--").expect("a separator")
+    }
+
+    #[test]
+    fn the_golden_argv_is_exactly_the_documented_list() {
+        let inner = os(&["/w/bin/swarmail-evals", "trial", "--task", "signup"]);
+        let got = argv(&golden_request(), &merged_usr, &inner);
+        let want = os(&[
+            "--unshare-user",
+            "--unshare-pid",
+            "--unshare-net",
+            "--unshare-ipc",
+            "--die-with-parent",
+            "--new-session",
+            "--clearenv",
+            "--setenv",
+            "PATH",
+            "/usr/bin:/bin",
+            "--setenv",
+            "HOME",
+            "/tmp",
+            "--setenv",
+            "TMPDIR",
+            "/tmp",
+            "--setenv",
+            "SWARMAIL_BIN",
+            "/w/bin/swarmail",
+            "--size",
+            "536870912",
+            "--tmpfs",
+            "/tmp",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/bin",
+            "/bin",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib64",
+            "/lib64",
+            "--ro-bind",
+            "/etc",
+            "/etc",
+            "--ro-bind",
+            "/w/bin/swarmail-evals",
+            "/w/bin/swarmail-evals",
+            "--ro-bind",
+            "/w/bin/swarmail",
+            "/w/bin/swarmail",
+            "--ro-bind",
+            "/w/agents/agent",
+            "/w/agents/agent",
+            "--ro-bind",
+            "/w/probe/helper",
+            "/w/probe/helper",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--chdir",
+            "/tmp",
+            "--",
+            "/w/bin/swarmail-evals",
+            "trial",
+            "--task",
+            "signup",
+        ]);
+        assert_eq!(got, want);
+        assert_eq!(TMP_BYTES, 536_870_912);
+    }
+
+    #[test]
+    fn the_argv_never_widens_the_boundary() {
+        let inner = os(&["/w/bin/swarmail-evals", "trial"]);
+        for layout in [
+            &merged_usr as &dyn Fn(&Path) -> Tree,
+            &|_: &Path| Tree::Missing,
+            &|_: &Path| Tree::Directory,
+        ] {
+            let got = argv(&golden_request(), layout, &inner);
+            let options = &got[..first_separator(&got)];
+            // No host root, however read-only: it would expose the
+            // forwarded agent sockets under /run/user/<uid>.
+            for window in options.windows(3) {
+                if window[0] == "--ro-bind" || window[0] == "--bind" {
+                    assert_ne!(window[1], "/", "{window:?}");
+                    assert_ne!(window[2], "/", "{window:?}");
+                }
+            }
+            for refused in ["--bind", "--dev-bind", "--share-net", "--unshare-all"] {
+                assert!(!options.iter().any(|a| a == refused), "{refused}");
+            }
+            assert!(
+                !options
+                    .iter()
+                    .any(|a| a.to_string_lossy().ends_with("-try")),
+                "an unavailable namespace must refuse, not be skipped"
+            );
+            for must in [
+                "--unshare-user",
+                "--unshare-pid",
+                "--unshare-net",
+                "--unshare-ipc",
+                "--die-with-parent",
+                "--new-session",
+                "--clearenv",
+                "--proc",
+                "--dev",
+            ] {
+                assert!(options.iter().any(|a| a == must), "{must}");
+            }
+            // The environment is cleared before any variable is set.
+            let clear = options.iter().position(|a| a == "--clearenv").unwrap();
+            for (at, a) in options.iter().enumerate() {
+                if a == "--setenv" {
+                    assert!(clear < at);
+                }
+            }
+            // The size applies to the very next tmpfs, which is /tmp.
+            let size = options.iter().position(|a| a == "--size").unwrap();
+            assert_eq!(options[size + 1], "536870912");
+            assert_eq!(options[size + 2], "--tmpfs");
+            assert_eq!(options[size + 3], "/tmp");
+            // The runner follows the first separator immediately.
+            assert_eq!(got[first_separator(&got) + 1], "/w/bin/swarmail-evals");
         }
     }
 
     #[test]
-    fn self_check_names_the_first_failed_property() {
-        assert_eq!(
-            verify(&observed(NET_DEV_ONLY_LO, CLEAN_STATUS, &[1])),
-            Ok(())
-        );
-        let mut seen = observed(NET_DEV_ONLY_LO, CLEAN_STATUS, &[1]);
-        seen.pid = 7;
-        assert_eq!(verify(&seen), Err("self_check_pid"));
-        assert_eq!(
-            verify(&observed(NET_DEV_ONLY_LO, CLEAN_STATUS, &[1, 9])),
-            Err("self_check_proc")
-        );
-        assert_eq!(
-            verify(&observed(NET_DEV_ONLY_LO, CLEAN_STATUS, &[])),
-            Err("self_check_proc")
-        );
-        let two = format!("{NET_DEV_ONLY_LO}  eth0: 0 0 0\n");
-        assert_eq!(
-            verify(&observed(&two, CLEAN_STATUS, &[1])),
-            Err("self_check_net")
-        );
-        assert_eq!(
-            verify(&observed("", CLEAN_STATUS, &[1])),
-            Err("self_check_net")
-        );
-        let mut seen = observed(NET_DEV_ONLY_LO, CLEAN_STATUS, &[1]);
-        seen.root_is_tmpfs = false;
-        assert_eq!(verify(&seen), Err("self_check_root"));
-        for field in ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"] {
-            let dirty = CLEAN_STATUS.replace(
-                &format!("{field}:\t0000000000000000"),
-                &format!("{field}:\t0000000000000400"),
-            );
-            assert_eq!(
-                verify(&observed(NET_DEV_ONLY_LO, &dirty, &[1])),
-                Err("self_check_caps"),
-                "{field}"
-            );
-            // A missing field is a failure, never a pass.
-            let missing = CLEAN_STATUS.replace(&format!("{field}:"), "Other:");
-            assert_eq!(
-                verify(&observed(NET_DEV_ONLY_LO, &missing, &[1])),
-                Err("self_check_caps"),
-                "{field}"
-            );
+    fn a_file_below_tmp_is_bound_into_the_private_tmpfs_not_under_it() {
+        let request = Request {
+            swarmail_bin: PathBuf::from("/tmp/x/swarmail"),
+            runner: PathBuf::from("/tmp/x/runner"),
+            agent: Some(PathBuf::from("/tmp/x/agent")),
+            expose: Vec::new(),
+        };
+        let got = argv(&request, &merged_usr, &os(&["/tmp/x/runner"]));
+        let tmpfs = got.iter().position(|a| a == "--tmpfs").unwrap();
+        for (at, a) in got.iter().enumerate() {
+            if a == "--ro-bind" && got[at + 1].to_string_lossy().starts_with("/tmp/") {
+                assert!(tmpfs < at, "a /tmp bind would be hidden by the tmpfs");
+            }
         }
-        let privs = CLEAN_STATUS.replace("NoNewPrivs:\t1", "NoNewPrivs:\t0");
+    }
+
+    #[test]
+    fn system_trees_and_duplicates_are_not_bound_twice() {
+        let request = Request {
+            swarmail_bin: PathBuf::from("/usr/local/bin/swarmail"),
+            runner: PathBuf::from("/w/runner"),
+            agent: Some(PathBuf::from("/w/probe")),
+            expose: vec![PathBuf::from("/w/probe"), PathBuf::from("/etc/hosts")],
+        };
+        let got = argv(&request, &|_| Tree::Missing, &os(&["/w/runner"]));
+        let binds: Vec<_> = got
+            .windows(3)
+            .filter(|w| w[0] == "--ro-bind")
+            .map(|w| w[1].clone())
+            .collect();
+        assert_eq!(binds, os(&["/w/runner", "/w/probe"]));
+        // No tree at all on the host: only the fixed options remain.
+        assert!(!got.iter().any(|a| a == "--symlink"));
+    }
+
+    #[test]
+    fn no_agent_argument_can_become_a_bwrap_option() {
+        let request = golden_request();
+        let benign = os(&["/w/bin/swarmail-evals", "trial", "--", "/w/agents/agent"]);
+        let hostile = os(&[
+            "/w/bin/swarmail-evals",
+            "trial",
+            "--isolated",
+            "--",
+            "--ro-bind",
+            "/",
+            "/",
+            "--share-net",
+            "--",
+            "--bind",
+            "/home",
+            "/home",
+            "--unshare-all",
+            "--isolated",
+        ]);
+        let a = argv(&request, &merged_usr, &benign);
+        let b = argv(&request, &merged_usr, &hostile);
+        let split = first_separator(&a);
         assert_eq!(
-            verify(&observed(NET_DEV_ONLY_LO, &privs, &[1])),
-            Err("self_check_privs")
+            first_separator(&b),
+            split,
+            "the first -- depends on the request only"
         );
+        assert_eq!(a[..=split], b[..=split]);
+        let options = &b[..split];
+        for planted in [
+            "--share-net",
+            "--isolated",
+            "--unshare-all",
+            "--bind",
+            "/home",
+        ] {
+            assert!(!options.iter().any(|o| o == planted), "{planted}");
+        }
+        assert_eq!(b[split + 1..], hostile[..]);
+    }
+
+    #[test]
+    fn the_host_layout_is_read_from_the_host() {
+        // This host has /usr and /etc as directories whatever its /bin is.
+        assert_eq!(host_tree(Path::new("/usr")), Tree::Directory);
+        assert_eq!(host_tree(Path::new("/etc")), Tree::Directory);
+        assert_eq!(host_tree(Path::new("/definitely/not/here")), Tree::Missing);
+        let dir = std::fs::canonicalize(tempfile::tempdir().unwrap().keep()).unwrap();
+        std::fs::write(dir.join("file"), b"x").unwrap();
+        symlink("usr/bin", dir.join("link")).unwrap();
+        assert_eq!(host_tree(&dir.join("file")), Tree::Missing);
+        assert_eq!(host_tree(&dir.join("link")), Tree::Link("usr/bin".into()));
+        assert_eq!(host_tree(&dir), Tree::Directory);
+        std::fs::remove_dir_all(&dir).unwrap();
+        // The real argv is the pure one over the real layout.
+        let inner = os(&["/w/bin/swarmail-evals", "trial"]);
+        assert_eq!(
+            command(&golden_request(), &inner),
+            argv(&golden_request(), &host_tree, &inner)
+        );
+    }
+
+    // ---- finding the runner (interrupts) --------------------------------------
+
+    fn entry(pid: i32, parent: i32, cmdline: &str) -> ProcEntry {
+        ProcEntry {
+            pid,
+            parent,
+            cmdline: cmdline.replace(' ', "\0").into_bytes(),
+        }
+    }
+
+    #[test]
+    fn the_runner_is_the_shallowest_trial_below_the_controllers_bwrap() {
+        let runner = Path::new("/r/swarmail-evals");
+        let table = vec![
+            entry(1, 0, "/sbin/init"),
+            entry(100, 99, "/usr/bin/bwrap --unshare-user"),
+            entry(101, 100, "bwrap --unshare-user"),
+            entry(
+                102,
+                101,
+                "/r/swarmail-evals trial --task signup --isolated-not",
+            ),
+            // A built-in agent is the same executable; it is not the runner.
+            entry(105, 102, "/r/swarmail-evals agent oracle"),
+            // Even a nested trial below the runner is never preferred to it.
+            entry(106, 105, "/r/swarmail-evals trial --task nested"),
+            // A look-alike outside the controller's tree is ignored.
+            entry(200, 1, "/r/swarmail-evals trial --task other"),
+            // A chain that never reaches the root is ignored.
+            entry(300, 299, "/r/swarmail-evals trial --task orphan"),
+        ];
+        assert_eq!(pick_runner(&table, 100, runner), Some(102));
+        // Asked about a different root, the answer follows the root.
+        assert_eq!(pick_runner(&table, 1, runner), Some(200));
+        // Not started yet.
+        assert_eq!(pick_runner(&table[..3], 100, runner), None);
+        // A different executable never matches, nor a bare name.
+        assert_eq!(pick_runner(&table, 100, Path::new("/r/other")), None);
+        assert_eq!(pick_runner(&table, 100, Path::new("swarmail-evals")), None);
+        // Several independent runners: the lowest PID, deterministically.
+        let two = vec![
+            entry(100, 1, "bwrap"),
+            entry(11, 100, "/r/swarmail-evals trial"),
+            entry(10, 100, "/r/swarmail-evals trial"),
+        ];
+        assert_eq!(pick_runner(&two, 100, runner), Some(10));
+        // A cycle in the table cannot hang the walk.
+        let cycle = vec![entry(7, 8, "/r/swarmail-evals trial"), entry(8, 7, "x")];
+        assert_eq!(pick_runner(&cycle, 100, runner), None);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn the_status_parser_reads_the_real_kernel_format() {
-        let status = std::fs::read_to_string("/proc/self/status").unwrap();
-        for field in [
-            "CapInh",
-            "CapPrm",
-            "CapEff",
-            "CapBnd",
-            "CapAmb",
-            "NoNewPrivs",
-        ] {
-            assert!(
-                status_field(&status, field).is_some(),
-                "{field} missing from the real status file"
-            );
+    fn the_real_process_table_lists_this_process_with_its_parent() {
+        let me = std::process::id() as i32;
+        let table = proc_table();
+        let mine = table.iter().find(|e| e.pid == me).expect("this process");
+        // SAFETY: getppid has no preconditions.
+        assert_eq!(mine.parent, unsafe { libc::getppid() });
+        let exe = std::env::current_exe().unwrap();
+        assert!(!mine.cmdline.is_empty());
+        // This process is not a runner (it was not started as `<exe> trial`),
+        // so nothing is found below its parent.
+        assert_eq!(runner_pid(mine.parent, &exe), None);
+    }
+
+    // ---- the controller's refusal arms and judgement (AC-S2) -------------------
+    //
+    // A stand-in `bwrap` is a generated shell script handed to `launch` through
+    // its parameter: the version query, the probe (its last argument is
+    // `/usr/bin/true`) and the real run each do what the test says. Nothing
+    // here creates a namespace; the live boundary is the ignored suite's.
+
+    #[cfg(target_os = "linux")]
+    mod controller {
+        use super::*;
+        use crate::admission::Admission;
+
+        fn request() -> Request {
+            Request {
+                swarmail_bin: PathBuf::from("/x/swarmail"),
+                runner: PathBuf::from("/x/runner"),
+                agent: None,
+                expose: Vec::new(),
+            }
         }
-        let net = std::fs::read_to_string("/proc/net/dev").unwrap();
-        // The real file has exactly the two-line header the parser skips.
-        assert!(net.lines().take(2).all(|l| l.contains('|')));
-        // An ordinary test process is not a boundary: the check must fail.
-        let pids: Vec<u32> = vec![std::process::id()];
-        let seen = Observed {
-            pid: std::process::id(),
-            proc_pids: &pids,
-            net_dev: &net,
-            status: &status,
-            root_is_tmpfs: false,
+
+        fn inner() -> Vec<OsString> {
+            os(&["/x/runner", "trial", "--task", "signup"])
+        }
+
+        /// Write an executable stand-in, and wait out `ETXTBSY` (a concurrent
+        /// fork elsewhere in the test process may briefly hold the script's
+        /// write descriptor).
+        fn fake(dir: &Path, version: &str, probe: &str, real: &str) -> PathBuf {
+            let path = dir.join("bwrap");
+            let script = format!(
+                "#!/bin/sh\ncase \"$1\" in --version) echo '{version}'; exit 0;; esac\nfor a in \"$@\"; do last=\"$a\"; done\nif [ \"$last\" = /usr/bin/true ]; then\n{probe}\nfi\n{real}\n"
+            );
+            write_executable(&path, &script);
+            path
+        }
+
+        fn write_executable(path: &Path, content: &str) {
+            std::fs::write(path, content).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            for _ in 0..500 {
+                match std::process::Command::new(path).arg("--version").output() {
+                    Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    _ => return,
+                }
+            }
+            panic!("the stand-in stayed busy");
+        }
+
+        /// The host admission, once any other thread's forked-but-not-yet-exec'd
+        /// child has let go of its copy of the lock descriptor.
+        fn admitted() -> Admission {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                match Admission::acquire() {
+                    Ok(admission) => return admission,
+                    Err(_) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(reason) => panic!("the admission stayed taken: {reason}"),
+                }
+            }
+        }
+
+        /// [`run`], waiting out the same fork window where the launch is
+        /// expected to be admitted.
+        fn run_when_free(bwrap: &Path) -> Result<Launched, Refusal> {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                let outcome = run(bwrap);
+                if outcome != Err(Refusal::Named("concurrent_trials_refused"))
+                    || std::time::Instant::now() >= deadline
+                {
+                    return outcome;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        fn run(bwrap: &Path) -> Result<Launched, Refusal> {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(launch(&request(), &inner(), bwrap))
+        }
+
+        fn boundary(step: &'static str) -> Result<Launched, Refusal> {
+            Err(Refusal::Boundary { step })
+        }
+
+        #[test]
+        fn a_missing_or_unrunnable_bwrap_refuses_bwrap_absent() {
+            let dir = tempfile::tempdir().unwrap();
+            assert_eq!(
+                run(Path::new("/definitely/not/bwrap")),
+                boundary(STEP_ABSENT)
+            );
+            // A directory is not a program.
+            assert_eq!(run(dir.path()), boundary(STEP_ABSENT));
+            // Nor is a file nobody may execute.
+            let plain = dir.path().join("bwrap");
+            std::fs::write(&plain, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(run(&plain), boundary(STEP_ABSENT));
+            // The production path is a constant, absolute and outside PATH.
+            assert!(Path::new(BWRAP).is_absolute());
+        }
+
+        #[test]
+        fn an_old_or_unreadable_version_refuses_bwrap_version() {
+            let dir = tempfile::tempdir().unwrap();
+            let sentinel = dir.path().join("probe-ran");
+            let touch = format!("touch '{}'; exit 0", sentinel.display());
+            for version in [
+                "bubblewrap 0.9.0",
+                "bubblewrap 0.11.0",
+                "garbage",
+                "",
+                "bubblewrap 0.11",
+            ] {
+                let bwrap = fake(dir.path(), version, &touch, &touch);
+                assert_eq!(run(&bwrap), boundary(STEP_VERSION), "{version:?}");
+            }
+            // A program that is not a program at all (no interpreter line).
+            let bwrap = dir.path().join("bwrap");
+            write_executable_raw(&bwrap, "not a program\n");
+            assert_eq!(run(&bwrap), boundary(STEP_VERSION));
+            assert!(!sentinel.exists(), "no probe ran after a refused version");
+        }
+
+        fn write_executable_raw(path: &Path, content: &str) {
+            std::fs::write(path, content).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        #[test]
+        fn a_failing_probe_refuses_bwrap_probe_before_any_admission() {
+            let _scope = crate::test_support::trial_scope();
+            let dir = tempfile::tempdir().unwrap();
+            let ran = dir.path().join("trial-ran");
+            // Someone else holds the host admission: were the probe to come
+            // after it, this launch would be `concurrent_trials_refused`.
+            let held = admitted();
+            let bwrap = fake(
+                dir.path(),
+                "bubblewrap 0.11.1",
+                "echo 'bwrap: Creating new namespace failed: nesting depth (ENOSPC)' >&2; exit 1",
+                &format!("touch '{}'; exit 0", ran.display()),
+            );
+            assert_eq!(run(&bwrap), boundary(STEP_PROBE));
+            assert!(!ran.exists(), "no trial ran after a refused probe");
+            // A probe that hangs is the same refusal only after its bound; a
+            // probe that cannot be started is one at once.
+            drop(held);
+            let missing_interpreter = dir.path().join("other");
+            write_executable_raw(&missing_interpreter, "#!/definitely/not/an/interpreter\n");
+            assert_eq!(run(&missing_interpreter), boundary(STEP_VERSION));
+        }
+
+        #[test]
+        fn a_good_probe_then_a_held_admission_refuses_concurrency_and_runs_nothing() {
+            let _scope = crate::test_support::trial_scope();
+            let dir = tempfile::tempdir().unwrap();
+            let ran = dir.path().join("trial-ran");
+            let bwrap = fake(
+                dir.path(),
+                "bubblewrap 0.11.1",
+                "exit 0",
+                &format!("touch '{}'; echo row; exit 0", ran.display()),
+            );
+            let held = admitted();
+            assert_eq!(
+                run(&bwrap),
+                Err(Refusal::Named("concurrent_trials_refused"))
+            );
+            assert!(!ran.exists());
+            drop(held);
+            assert_eq!(run_when_free(&bwrap), Ok(Launched::Exited(0)));
+            assert!(ran.exists());
+            // The admission was released when the launch ended.
+            drop(admitted());
+        }
+
+        #[test]
+        fn a_silent_exit_after_a_good_probe_is_a_named_no_row() {
+            let _scope = crate::test_support::trial_scope();
+            let dir = tempfile::tempdir().unwrap();
+            let bwrap = fake(dir.path(), "bubblewrap 0.11.1", "exit 0", "exit 1");
+            assert_eq!(run_when_free(&bwrap), Ok(Launched::NoRow));
+            // Killed by a signal with nothing on stdout: the same verdict.
+            let bwrap = fake(dir.path(), "bubblewrap 0.11.1", "exit 0", "kill -9 $$");
+            assert_eq!(run_when_free(&bwrap), Ok(Launched::NoRow));
+            // bwrap's own words on stderr are not a row.
+            let bwrap = fake(
+                dir.path(),
+                "bubblewrap 0.11.1",
+                "exit 0",
+                "echo 'bwrap: something' >&2; exit 1",
+            );
+            assert_eq!(run_when_free(&bwrap), Ok(Launched::NoRow));
+            drop(admitted());
+        }
+
+        #[test]
+        fn a_row_on_stdout_is_mirrored_with_the_exit_code_it_came_with() {
+            let _scope = crate::test_support::trial_scope();
+            let dir = tempfile::tempdir().unwrap();
+            for code in [0u8, 1, 2] {
+                let bwrap = fake(
+                    dir.path(),
+                    "bubblewrap 0.11.1",
+                    "exit 0",
+                    &format!("echo '{{\"schema_version\":2}}'; exit {code}"),
+                );
+                assert_eq!(run_when_free(&bwrap), Ok(Launched::Exited(code)));
+            }
+            // A death by signal after a row is exit 2, never a mirrored 0.
+            let bwrap = fake(
+                dir.path(),
+                "bubblewrap 0.11.1",
+                "exit 0",
+                "echo row; kill -9 $$",
+            );
+            assert_eq!(run_when_free(&bwrap), Ok(Launched::Exited(2)));
+        }
+
+        #[test]
+        fn the_probe_and_the_run_use_exactly_the_production_argv_and_close_descriptors() {
+            let _scope = crate::test_support::trial_scope();
+            let dir = tempfile::tempdir().unwrap();
+            let probe_argv = dir.path().join("probe-argv");
+            let real_argv = dir.path().join("real-argv");
+            let real_fds = dir.path().join("real-fds");
+            // A descriptor the controller was handed and did not mark
+            // close-on-exec: the sweep must keep it out of bwrap.
+            let opened = std::fs::File::open("/dev/null").unwrap();
+            use std::os::fd::AsRawFd;
+            // SAFETY: F_DUPFD duplicates a descriptor this test owns into a
+            // number well above the ones `ls` uses itself, with FD_CLOEXEC
+            // clear (F_DUPFD, unlike F_DUPFD_CLOEXEC, leaves it so).
+            let canary_fd = unsafe { libc::fcntl(opened.as_raw_fd(), libc::F_DUPFD, 40) };
+            assert!(canary_fd >= 40);
+            let bwrap = fake(
+                dir.path(),
+                "bubblewrap 0.11.1",
+                &format!("printf '%s\\n' \"$@\" > '{}'; exit 0", probe_argv.display()),
+                &format!(
+                    "printf '%s\\n' \"$@\" > '{}'; /bin/ls /proc/self/fd > '{}'; echo row",
+                    real_argv.display(),
+                    real_fds.display()
+                ),
+            );
+            assert_eq!(run_when_free(&bwrap), Ok(Launched::Exited(0)));
+            let lines = |path: &Path| -> Vec<OsString> {
+                std::fs::read_to_string(path)
+                    .unwrap()
+                    .lines()
+                    .map(OsString::from)
+                    .collect()
+            };
+            assert_eq!(
+                lines(&probe_argv),
+                command(&request(), &os(&["/usr/bin/true"]))
+            );
+            assert_eq!(lines(&real_argv), command(&request(), &inner()));
+            let open: Vec<i32> = std::fs::read_to_string(&real_fds)
+                .unwrap()
+                .lines()
+                .filter_map(|l| l.parse().ok())
+                .collect();
+            assert!(
+                !open.contains(&canary_fd),
+                "fd {canary_fd} leaked: {open:?}"
+            );
+            assert!(
+                open.iter().all(|fd| *fd <= 3),
+                "stray descriptors: {open:?}"
+            );
+            // SAFETY: closing the duplicate made above.
+            unsafe { libc::close(canary_fd) };
+        }
+
+        /// The child half of the interrupt test: only does anything when the
+        /// parent test re-executes this binary for it.
+        #[test]
+        fn interrupt_child() {
+            let (Some(bwrap), Some(result)) = (
+                std::env::var_os("ISOLATION_TEST_BWRAP"),
+                std::env::var_os("ISOLATION_TEST_RESULT"),
+            ) else {
+                return;
+            };
+            let outcome = run(Path::new(&bwrap));
+            std::fs::write(result, format!("{outcome:?}")).unwrap();
+        }
+
+        #[test]
+        fn an_interrupt_before_any_runner_kills_bwrap_and_is_reported() {
+            let _scope = crate::test_support::trial_scope();
+            let dir = tempfile::tempdir().unwrap();
+            let started = dir.path().join("started");
+            let pid_file = dir.path().join("bwrap-pid");
+            let result = dir.path().join("result");
+            let bwrap = fake(
+                dir.path(),
+                "bubblewrap 0.11.1",
+                "exit 0",
+                &format!(
+                    "echo $$ > '{}'; touch '{}'; exec /bin/sleep 60",
+                    pid_file.display(),
+                    started.display()
+                ),
+            );
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "isolation::tests::controller::interrupt_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("ISOLATION_TEST_BWRAP", &bwrap)
+                .env("ISOLATION_TEST_RESULT", &result)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            // The stand-in writes `started` only after the controller has
+            // registered its signal handlers and spawned it.
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while !started.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the stand-in never started"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let bwrap_pid: i32 = std::fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            // SAFETY: plain kill(2) on the child this test spawned.
+            unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+            assert!(child.wait().unwrap().success());
+            assert_eq!(std::fs::read_to_string(&result).unwrap(), "Ok(Interrupted)");
+            // The stand-in bwrap did not outlive its controller's verdict.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            // SAFETY: signal 0 only probes for existence.
+            while unsafe { libc::kill(bwrap_pid, 0) } == 0
+                && !std::fs::read_to_string(format!("/proc/{bwrap_pid}/stat"))
+                    .map_or(true, |s| s.contains(") Z "))
+            {
+                assert!(std::time::Instant::now() < deadline, "bwrap survived");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn this_platform_refuses_by_name_before_looking_for_bwrap() {
+        let request = Request {
+            swarmail_bin: PathBuf::from("/x/swarmail"),
+            runner: PathBuf::from("/x/runner"),
+            agent: None,
+            expose: Vec::new(),
         };
-        assert!(verify(&seen).is_err());
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(launch(&request, &[], Path::new("/definitely/not/bwrap")));
+        assert_eq!(
+            outcome.unwrap_err().to_string(),
+            "boundary_unavailable:platform"
+        );
     }
 }

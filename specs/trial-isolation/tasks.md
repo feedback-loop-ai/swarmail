@@ -19,7 +19,7 @@ unchecked again with their new test.
   as built: `the_leak_is_live_a_same_uid_helper_makes_an_idle_victim_pass`
   and the probe's negative control. **Test:** both green on every host;
   discovery is bounded to the victim runner's descendants.
-- [ ] **T12 — Delete the raw-syscall worker (AC-S9).** Remove
+- [x] **T12 — Delete the raw-syscall worker (AC-S9).** Remove
   `evals/src/isolation/linux.rs`, `ERRNO_NAMES`/`errno_name`, `Step`/`STEPS`,
   `remount_flags`, `Observed`/`verify`/`interfaces`/`status_field`, the
   `Enter` type and `enter`, and the test-side `with_private_admission`;
@@ -28,7 +28,7 @@ unchecked again with their new test.
   code; `grep -rn "pivot_root\|SYS_clone\|uid_map\|setpriv" evals/src
   evals/tests` is empty; the kept unit tests for `resolve_source` and
   `bind_plan` still pass.
-- [ ] **T03 — The pure bwrap parts (AC-S4).** In `evals/src/isolation.rs`
+- [x] **T03 — The pure bwrap parts (AC-S4).** In `evals/src/isolation.rs`
   add `BWRAP`, `BWRAP_MIN`, `TMP_BYTES`, `parse_version`,
   `system_root_options` and `command(&Request, inner)`; beside `Cmd` add
   `inner_args(&Cmd)` destructuring `Cmd::Trial` without `..`. **Test:**
@@ -41,7 +41,7 @@ unchecked again with their new test.
   `--`; the clap round trip over a fully populated `Cmd::Trial` equals the
   original minus `isolated`/`isolated_expose` with the agent program
   absolute.
-- [ ] **T04 — The controller and the parameter seam (AC-S2, AC-S3, AC-S5,
+- [x] **T04 — The controller and the parameter seam (AC-S2, AC-S3, AC-S5,
   AC-S6 platform arm).** Replace `isolation::enter` with
   `isolation::launch(request, inner, bwrap: &Path)`: platform check,
   `bwrap_absent`, `bwrap_version` (5 s), `bwrap_probe` (10 s, real argv with
@@ -59,7 +59,7 @@ unchecked again with their new test.
   Linux unit test proves the platform-neutral refusal function. The existing
   CLI precondition tests (AC-S3) and `git diff main --stat -- src/` empty
   (AC-S5) stay green.
-- [ ] **T05 — Skip discipline for the live proofs (AC-S6).** Update
+- [x] **T05 — Skip discipline for the live proofs (AC-S6).** Update
   `boundary_unavailable`/`require_boundary` in `evals/tests/common/mod.rs`
   to classify `boundary_unavailable:<step>` and the `#[ignore]` reason to
   `trial-isolation: needs /usr/bin/bwrap >= 0.11.1 able to create user
@@ -92,7 +92,7 @@ unchecked again with their new test.
   `isolated_trial_no_row` row; `SIGTERM` to the controller yields the
   runner's interrupted row, exit 2 and no survivors; no orphan of A is alive
   when B starts.
-- [ ] **T09 — Documentation (AC-S8).** Revise the dated #221 sections of
+- [x] **T09 — Documentation (AC-S8).** Revise the dated #221 sections of
   `evals/README.md` and `evals/run-plan.md`: bwrap is the mechanism, the host
   prerequisite, the closed refusal set, the proof command, trials remain
   sequential, no row claims isolation. **Test:** a requirement-to-observation
@@ -117,3 +117,18 @@ Status 2026-11-01 (chief): T12, T03, T04, T05, T06, T07, T08, T09 and T10
 are open for the implement seat. T06–T08 are written in the seat and proven
 only by the dispatcher's one command on this host after the run; the seat
 must show them red with the named `bwrap_probe` skip, never green.
+
+Status 2026-11-01 (implement seat): T12, T03, T04, T05 and T09 are done and
+proven in the seat (unit tests in `evals/src/isolation.rs` and
+`evals/src/main.rs`, the always-on `tests/trial_isolation.rs`, and the
+`--ignored` run showing `SKIP trial-isolation: boundary_unavailable:bwrap_probe`
+red for all seven live proofs). T06, T07 and T08 are **written and compiled but
+not run**: `/usr/bin/bwrap` 0.11.1 refuses with `ENOSPC` inside the seat, so
+they stay open until the dispatcher's one command passes on the host. T10: every
+gate in the inventory passed locked except `brokkr compile --bundle
+.brokkr/recipes/self`, which could not run because the pinned brokkr binary
+(`tooling.json`, 0.12.0) is not installed in the seat; the recipe is untouched.
+Two deviations from the drawn design, both small: the private `/tmp` is mounted
+before the file binds (spec implementation note), and the interrupt/no-runner
+arm is proven by a re-executed child test process rather than by a signal to
+the test process.

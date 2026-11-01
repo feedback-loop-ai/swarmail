@@ -329,6 +329,11 @@ pub fn maybe_run_helper() {
     let Ok(mode) = std::env::var(HELPER_ENV) else {
         return;
     };
+    // The observer looks at its own descriptor table, so it runs before any
+    // runtime opens descriptors of its own.
+    if mode == "boundary_observe" {
+        std::process::exit(boundary_observe());
+    }
     let code = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -1016,9 +1021,11 @@ fn home_probe() -> i32 {
 }
 
 /// Why `trial --isolated` is unavailable here, read from a real null-agent
-/// run, or `None` when the boundary was built and the trial ran.
-/// The advisory `unshare -Urn true` is deliberately not consulted: only the
-/// launch itself is authoritative (0115, Current integration 5).
+/// run, or `None` when the boundary was built and the trial ran: the closed
+/// `boundary_unavailable:<step>` name the controller printed. bwrap's own
+/// words on stderr (`ENOSPC`, `EACCES`, ...) are never parsed; they are for
+/// the operator. The launch itself is authoritative (0115, Current
+/// integration 5): nothing advisory is consulted, nothing is cached.
 pub fn boundary_unavailable() -> Option<String> {
     let _scope = trial_scope();
     let out = cli()
@@ -1026,17 +1033,22 @@ pub fn boundary_unavailable() -> Option<String> {
         .output()
         .expect("the CLI runs");
     let text = stderr(&out);
-    let start = text.find("boundary_unavailable:")?;
-    let reason: String = text[start..]
+    let prefix = "boundary_unavailable:";
+    let start = text.find(prefix)?;
+    let step: String = text[start + prefix.len()..]
         .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
+        .take_while(|c| c.is_ascii_lowercase() || *c == '_')
         .collect();
     // A refusal is one harness-error row and no agent ever ran.
     let row = one_row(&out);
     assert_eq!(row.outcome, swarmail_evals::tasks::Outcome::HarnessError);
     assert!(row.agent_exits.is_empty());
-    Some(reason)
+    Some(format!("{prefix}{step}"))
 }
+
+/// The reason every namespace-dependent proof is `#[ignore]`d.
+pub const NEEDS_BWRAP: &str =
+    "trial-isolation: needs /usr/bin/bwrap >= 0.11.1 able to create user namespaces";
 
 /// Gate for every namespace-dependent proof. When the boundary cannot be
 /// built it prints a named SKIP line and FAILS: a proof that did not run
@@ -1321,4 +1333,189 @@ async fn cross_trial_probe() -> i32 {
         return 16;
     }
     0
+}
+
+// ---- the boundary seen from inside (AC-L2) ---------------------------------
+
+fn observe_arg(key: &str) -> Option<String> {
+    std::env::args().find_map(|arg| arg.strip_prefix(key).map(str::to_string))
+}
+
+fn status_value(status: &str, name: &str) -> Option<String> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix(':'))
+        .map(|value| value.trim().to_string())
+}
+
+/// The environment keys the runner gives an agent (0076 §4) and the shell
+/// wrapper's own bookkeeping; anything else came from the host.
+fn agent_env_key_allowed(key: &str) -> bool {
+    key.starts_with("EVAL_")
+        || [
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "HOME",
+            "TMPDIR",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "PWD",
+            "OLDPWD",
+            "SHLVL",
+            "_",
+        ]
+        .contains(&key)
+}
+
+/// AC-L2's scripted observer, run as an isolated trial's agent. It reports
+/// the topology it sees from inside by exit code — the first violated check:
+/// 40 usage, 41 uid, 42 /proc shows the host, 43 interfaces other than `lo`,
+/// 44 `lo` unusable, 45 a host path is present, 46 /tmp is not the bounded
+/// tmpfs, 47 a foreign environment key, 48 a stray descriptor, 49 capabilities
+/// or no-new-privs. 0 means every check held and a nested user namespace was
+/// refused; 100 means every check held and one was granted (observed, not
+/// asserted: `--disable-userns` is not used, 0115). No production code runs
+/// this; the trial's own scorer never sees it.
+fn boundary_observe() -> i32 {
+    let (Some(uid), Some(host_pids), Some(absent), Some(canary_fd), Some(tmp)) = (
+        observe_arg("uid="),
+        observe_arg("host-pids="),
+        observe_arg("absent="),
+        observe_arg("canary-fd="),
+        observe_arg("tmp-bytes="),
+    ) else {
+        return 40;
+    };
+    let (Ok(uid), Ok(tmp_bytes)) = (uid.parse::<u32>(), tmp.parse::<u64>()) else {
+        return 40;
+    };
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } != uid {
+        return 41;
+    }
+    // /proc is the sandbox's own: none of the host's PIDs, and PID 1 is not
+    // the host's init.
+    let host: Vec<i32> = host_pids
+        .split(',')
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    if host
+        .iter()
+        .any(|pid| Path::new(&format!("/proc/{pid}")).exists())
+    {
+        return 42;
+    }
+    match std::fs::read_to_string("/proc/1/comm") {
+        Ok(init) if !matches!(init.trim(), "" | "systemd" | "init") => {}
+        _ => return 42,
+    }
+    // Loopback only, and it works.
+    let net = std::fs::read_to_string("/proc/net/dev").unwrap_or_default();
+    let names: Vec<&str> = net
+        .lines()
+        .skip(2)
+        .filter_map(|line| line.split_once(':').map(|(name, _)| name.trim()))
+        .collect();
+    if names != ["lo"] {
+        return 43;
+    }
+    let usable = std::net::TcpListener::bind("127.0.0.1:0").is_ok_and(|listener| {
+        listener.local_addr().is_ok_and(|addr| {
+            std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok()
+        })
+    });
+    if !usable {
+        return 44;
+    }
+    // Nothing of the host beyond the read-only system trees and the named
+    // files: the test lists host paths (other trees, the operator's
+    // credentials, a canary file under the host /tmp) that must not exist.
+    let absent: Vec<&str> = absent.split(',').filter(|p| !p.is_empty()).collect();
+    if absent.is_empty() || absent.iter().any(|p| std::fs::symlink_metadata(p).is_ok()) {
+        return 45;
+    }
+    // /tmp is a tmpfs of exactly the bounded size.
+    // SAFETY: statfs writes into the zeroed struct it is handed.
+    let tmpfs = unsafe {
+        let mut st: libc::statfs = std::mem::zeroed();
+        libc::statfs(c"/tmp".as_ptr(), &mut st) == 0
+            && st.f_type as i64 == 0x0102_1994
+            && (st.f_blocks as u64) * (st.f_bsize as u64) == tmp_bytes
+    };
+    if !tmpfs {
+        return 46;
+    }
+    if std::env::vars_os().any(|(key, _)| !agent_env_key_allowed(&key.to_string_lossy())) {
+        return 47;
+    }
+    // No descriptor beyond stdio, and in particular not the one the
+    // controller was handed.
+    if Path::new(&format!("/proc/self/fd/{canary_fd}")).exists() {
+        return 48;
+    }
+    let open: Vec<PathBuf> = std::fs::read_dir("/proc/self/fd")
+        .map(|dir| dir.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    for fd in open {
+        let number: i32 = fd
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(-1);
+        // The directory handle used for this very listing has gone by now.
+        if number >= 3 && std::fs::read_link(&fd).is_ok() {
+            return 48;
+        }
+    }
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let empty = |name: &str| {
+        status_value(&status, name).is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b == b'0'))
+    };
+    if !empty("CapEff")
+        || !empty("CapPrm")
+        || status_value(&status, "NoNewPrivs").as_deref() != Some("1")
+    {
+        return 49;
+    }
+    // Observed, not asserted: may a process in here create a user namespace?
+    // SAFETY: the child only calls unshare and _exit, both async-signal-safe.
+    let nested = unsafe {
+        match libc::fork() {
+            0 => libc::_exit(i32::from(libc::unshare(libc::CLONE_NEWUSER) != 0)),
+            pid if pid > 0 => {
+                let mut status = 0;
+                libc::waitpid(pid, &mut status, 0) == pid
+                    && libc::WIFEXITED(status)
+                    && libc::WEXITSTATUS(status) == 0
+            }
+            _ => false,
+        }
+    };
+    eprintln!("boundary_observe: nested user namespace granted inside: {nested}");
+    if nested { 100 } else { 0 }
+}
+
+/// Victim A's controller, played by the trusted test: bwrap spawned from the
+/// library's own argv builder, with the controller's stdio discipline (no
+/// stdin, piped output, its own process group, no inherited environment). The
+/// test holds no host admission for it — that is trial B's, the real CLI's.
+pub fn launch_victim(
+    request: &swarmail_evals::isolation::Request,
+    inner: &[OsString],
+) -> ChildGuard {
+    use std::os::unix::process::CommandExt;
+    let mut command = Command::new(swarmail_evals::isolation::BWRAP);
+    command
+        .args(swarmail_evals::isolation::command(request, inner))
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    ChildGuard {
+        child: Some(command.spawn().expect("bwrap starts")),
+    }
 }
