@@ -277,7 +277,8 @@ fn fd_open(parent: &File, name: &std::ffi::OsStr, flags: i32, mode: u32) -> Resu
 fn safe_dir(file: &File, path: &Path) -> Result<(), String> {
     let m = file.metadata().map_err(|_| "private_directory")?;
     let uid = unsafe { libc::geteuid() };
-    let sticky_tmp = path == Path::new("/tmp") && m.uid() == 0 && m.mode() & libc::S_ISVTX != 0;
+    // The sticky bit, spelled out: libc's S_ISVTX is u32 on Linux but u16 on macOS.
+    let sticky_tmp = path == Path::new("/tmp") && m.uid() == 0 && m.mode() & 0o1000 != 0;
     if !m.is_dir() || (m.uid() != 0 && m.uid() != uid) || (!sticky_tmp && m.mode() & 0o022 != 0) {
         return Err("private_directory_unsafe".into());
     }
