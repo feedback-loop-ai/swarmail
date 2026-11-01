@@ -37,6 +37,7 @@ your tests can produce it.
 - [The surfaces](#the-surfaces)
   - [SMTP — accept is the truth](#smtp--accept-is-the-truth)
   - [The REST API — await, don't poll](#the-rest-api--await-dont-poll)
+  - [Client fixtures — Playwright and pytest](#client-fixtures--playwright-and-pytest)
   - [MCP — agents drive the mail](#mcp--agents-drive-the-mail)
   - [POP3 — the same store, RFC 1939](#pop3--the-same-store-rfc-1939)
   - [MailHog / Mailpit shims](#mailhog--mailpit-shims)
@@ -84,7 +85,7 @@ swarmail mcp                   # the stdio MCP bridge
 swarmail gen-cert --domain localhost --out ./certs
 ```
 
-Fifteen MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
+Sixteen MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
 compatibility layer (MailHog/Mailpit), one observability story
 (`/metrics`, `/healthz`, `/openapi.json`, `/llms.txt`) — and a web UI with
 zero frontend dependencies.
@@ -240,7 +241,10 @@ the tests are):
    (default 100k, `0` = unlimited) evicts the oldest mail only.
 4. **The AUTH username is the inbox**
    ([0004](docs/decisions/0004-per-test-inboxes-via-smtp-auth.md)). Free
-   parallel isolation for every test and agent; no config to route it.
+   parallel isolation for every test and agent; no config to route it. An
+   application that sends with one AUTH identity can opt in to
+   [recipient routing](#one-sending-identity-many-agents-recipient-routing)
+   instead (proposed [0112](docs/decisions/0112-recipient-inbox-routing.md)).
 5. **Extraction happens at ingest, not query time**
    ([0005](docs/decisions/0005-extraction-at-ingest.md)). Links, codes and
    thread headers are parsed once, when the mail is accepted; queries
@@ -319,6 +323,40 @@ $ curl "localhost:8025/api/v1/inboxes/quickstart/await?to=ada@x.io&count=1&timeo
 parse + extraction pipeline. Per-test isolation needs no config: the AUTH
 username names the inbox.
 
+### One sending identity, many agents: recipient routing
+
+The AUTH username only isolates parties that can each authenticate under
+their own name. An application configured with a single SMTP login fills one
+inbox however many agents drive it. Start the server with a route domain and
+the recipient chooses the inbox instead (proposed
+[0112](docs/decisions/0112-recipient-inbox-routing.md)):
+
+```
+swarmail serve --route-domain swarmail.test      # or SWARMAIL_ROUTE_DOMAIN
+```
+
+An envelope recipient `<local>@<label>.swarmail.test` is stored in inbox
+`<label>`, lowercased, whatever the AUTH username is. The precedence is the
+routed recipient, then the AUTH username, then `default`. Only `RCPT TO` is
+read — no header chooses an inbox — and the local part is free, so one inbox
+may own many addresses. A recipient under the domain that names no inbox
+(`agent@swarmail.test`, `a@x.y.swarmail.test`, a bad character or a label over
+63 characters) is refused `550 5.1.3` rather than silently merged into the AUTH
+inbox. One transaction delivers to one routed inbox: a `RCPT` naming a second
+one is answered `452 4.5.3`, the transaction stays open, and a sender that
+retries the deferred recipient in its own transaction reaches both inboxes.
+Recipients outside the domain have no vote and are recorded as before. A server
+started without the flag behaves exactly as above.
+
+An agent gets its private inbox from **`swarmail_create_inbox`** (no
+arguments): it returns `{"inbox": "<32 hex>", "address": "agent@<inbox>.<route-domain>"}`.
+Point the application's mail at that address, then wait on or search that
+inbox by name; mail for other addresses never appears there. Minting allocates
+nothing — an inbox exists once its first mail arrives, and a wait on the minted
+name before then works. On a server without `--route-domain` the tool answers an
+`isError` result naming the flag. This is addressing, not authentication: every
+read surface still accepts any inbox name (loopback posture, decision 0004).
+
 **One SMTP connection serves one inbox.** A session's first successful
 AUTH fixes its inbox; a second AUTH on the same connection answers `503`
 and changes nothing (decisions 0028 and 0034). Python's `smtplib` treats that `503`
@@ -340,7 +378,9 @@ posture above), `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited),
 listener, at least `1`; one more is answered `421`; the flag is
 `--max-sessions`. Each session holds a file descriptor, and the default is
 sized so that three times the cap stays under the usual 1024 soft limit
-(decision 0027 §3): above about 340, raise `ulimit -n` first).
+(decision 0027 §3): above about 340, raise `ulimit -n` first),
+`SWARMAIL_ROUTE_DOMAIN` (unset = off; the flag is `--route-domain`, see
+*One sending identity, many agents* above; proposed 0112).
 Logging: `RUST_LOG` (env-filter syntax; default
 `swarmail=info,tower_http=off`). `serve` and `gen-cert` log to stdout —
 `gen-cert` also prints its `wrote <cert> and <key>` line there — and
@@ -673,6 +713,24 @@ and is removed by id (`DELETE /api/v1/messages/{id}`, or `DELETE
 /api/v1/messages` with an `ids` list). Nothing promises such a name ages
 out.
 
+### Client fixtures — Playwright and pytest
+
+Two thin REST clients live in [`clients/`](clients/), versioned with the
+server (each package's version is `Cargo.toml`'s, checked under `cargo test`):
+a Playwright fixture ([`clients/playwright`](clients/playwright/README.md),
+`inbox.waitForCode()` / `inbox.waitForLink()`) and a pytest plugin
+([`clients/pytest`](clients/pytest/README.md), `swarmail_inbox.wait_for_code()`
+/ `.wait_for_link()`). Each gives every test its own inbox — the name is the
+SMTP AUTH username — and waits on the server's `await` long-poll, then selects
+only from the stored `codes` and `links`. Two distinct codes in the newest mail
+that carries any, or two matching links anywhere in the inbox, raise an
+explicit ambiguity error carrying the candidates; the fixtures never pick the
+first. `SWARMAIL_URL` (default `http://127.0.0.1:8025`) is the only
+configuration. Both run six example tests against the built binary in CI. Not
+yet done: **publishing** to npm and PyPI is a separate operator act (proposed
+decision [0113](docs/decisions/0113-client-fixture-packages.md)), TypeScript
+and Python coverage is not measured, and the packaged forms are unproved.
+
 ### MCP — agents drive the mail
 
 
@@ -700,8 +758,9 @@ including arrays containing only notifications. Modern tool descriptors add
 on all mutations (including seed, which can evict old mail, and chaos changes).
 Input schemas, the thirteen existing March catalogue entries and existing
 result bytes are unchanged for March (the modern revisions add `fields` to
-four reads, below); discovery appends the two focused waits after them
-(decision 0094, proposed), fifteen entries in all. For `2025-06-18` and
+four reads, below); discovery appends the two focused waits and
+swarmail_create_inbox after them (decisions 0094 and 0112, proposed), sixteen
+entries in all. For `2025-06-18` and
 `2025-11-25`, every tool declares an object-root `outputSchema`; successful
 results include `structuredContent` and the same JSON in the existing text block.
 Errors retain their existing text/RPC envelopes without structured success data.
@@ -794,13 +853,14 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   "content":[{"type":"text","text":"{\"emails\":[{…\"codes\":[\"424242\"]…}]}"}]}}
 ```
 
-Fifteen tools: `swarmail_search_emails`, `swarmail_get_email`,
+Sixteen tools: `swarmail_search_emails`, `swarmail_get_email`,
 `swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
 `swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
 `swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
 `swarmail_set_chaos`, `swarmail_clear_chaos`, `swarmail_get_deliverability_report`,
-and the two focused waits appended after them, **`swarmail_wait_for_code`** and
-**`swarmail_wait_for_link`** (below). Except for malformed seed fixture
+the two focused waits appended after them, **`swarmail_wait_for_code`** and
+**`swarmail_wait_for_link`** (below), and last **`swarmail_create_inbox`**
+(mints a private inbox and its routed address; needs `--route-domain`). Except for malformed seed fixture
 content and the supplied
 `timeout_ms` refusal described below, every tool validates its supplied
 arguments at the envelope: a wrong-typed or malformed value — the
@@ -892,6 +952,29 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   candidates carry `null` label, `rel` and `source` and are never
   re-extracted. Email reads, feeds and webhooks are unchanged — occurrence
   metadata is reachable only through `swarmail_wait_for_link`.
+
+- **Near misses on a timeout (decision [0111](docs/decisions/0111-near-miss-timeouts.md), proposed):**
+  a timed-out `swarmail_wait_for_email`, `swarmail_wait_for_code` or
+  `swarmail_wait_for_link` over an inbox that holds mail also carries
+  `near_misses`, read from the store at the timeout with no extra retention:
+  `arrivals` (the retained mail the wait did not answer with, newest first,
+  at most 10, with exact `arrivals_total` and `arrivals_truncated`),
+  `nearest_subject` (an entry or `null`) and `last_arrival_ms` (the
+  `received_ms` of the newest retained mail, whatever `since_ms` says). An
+  entry is `email_id`, `received_ms`, `from`, `to` (at most 5 distinct
+  To/Cc/envelope addresses, exact `to_total`), `subject` and `missed` — the
+  supplied `to`, `from` and `subject` filters that mail fails, so a sibling
+  address reads `["to"]` and a typo `["subject"]`. Strings are clipped to
+  256 bytes. `swarmail_wait_for_email` lists only mail its filter refused;
+  the focused waits list every retained mail, `missed: []` meaning it passed
+  your filters but carried no code or no link the selectors leave. A
+  supplied `since_ms` limits `arrivals`. `nearest_subject` is a hint, not a
+  selection: it is the mail that missed the subject alone and shares the
+  most character pairs with it, and you still read its `to`. **No
+  `near_misses` key means the inbox holds nothing**, so an empty-inbox
+  timeout keeps its exact bytes. The read is of the wait's own inbox only;
+  it is not access control (MCP is unauthenticated, decision
+  [0004](docs/decisions/0004-per-test-inboxes-via-smtp-auth.md)).
 
 Wire it up:
 
@@ -1336,6 +1419,7 @@ comparative or agent numbers until admitted evidence exists to cite.
 | [`docs/house-rules.md`](docs/house-rules.md) | the realm charter — frozen guarantees, gates, dependency policy |
 | [`assets/logo.svg`](assets/logo.svg) | the brand mark, and `social-preview.png`, the repository's link card |
 | [`scripts/coverage-gate.sh`](scripts/coverage-gate.sh) | the exact-coverage gate: literal 100% line/branch/function, or refusal |
+| [`clients/`](clients/) | the Playwright and pytest fixtures — thin REST clients, versioned with the server, not yet published |
 | [`charts/swarmail/`](charts/swarmail/) | the Helm chart — verified offline by [`scripts/chart-verify.sh`](scripts/chart-verify.sh), published as OCI |
 
 ## The decision culture
@@ -1366,7 +1450,7 @@ jobs:
 | CI job | What it runs |
 |---|---|
 | `quality` | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the publish guard's proof, the shim digests and the design check's selftest |
-| `test` (ubuntu + macOS) | `cargo test --workspace --locked`, then the ignored port-80 bridge proof |
+| `test` (ubuntu + macOS) | `cargo test --workspace --locked`, then the ignored port-80 bridge proof; on Linux also the Playwright and pytest fixtures' example suites against the built binary |
 | `coverage` | the coverage gate's selftest, the exact gate itself and the delivery-proof test; uploads `target/coverage/` |
 | `deny` | `cargo deny check licenses` and the fail-closed `native-tls` absence proof |
 | `dependency-audit` | the RustSec advisory audit (network-backed, CI-only) |
@@ -1407,6 +1491,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/listener_contract_docs.rs` | the listener contract as documented: README, the controlling 0027 clarification and 0036 state the per-I/O bounds, the unbounded complete-line trickle residual and its costs, and the conditional `stopping` answer |
 | `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
 | `tests/focused_waits.rs` | the focused code/link waits over real SMTP and MCP: each filter on each tool by counterexample, ingest occurrence metadata for SMTP and seed, post-park deliveries that never complete a wait, and local applications refusing stale codes and look-alike links (proposed 0094) |
+| `tests/inbox_routing.rs` | recipient inbox routing and `swarmail_create_inbox` over real SMTP and MCP: three concurrent agents behind one AUTH login never see each other's mail, the rule's case-fold, whole-label, 550 and 452 shapes and the RSET and chaos clears, routing ahead of the park (a wait on a never-mailed minted inbox; the in-flight row), the tool's modern projection and distinct concurrent mints, and the unconfigured server unchanged (proposed 0112) |
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
 | `tests/webhook.rs` | delivery with secret, pathless target, the retry budget, https over a real TLS server, the CA client cache bound |
 | `tests/stdio.rs` | the stdio JSON-RPC bridge over in-process duplex pipes |
@@ -1449,7 +1534,7 @@ before publication or merge; agent runs never push or merge.
 - [x] SQLite persistence (`--data-file` / `SWARMAIL_DATA_FILE`)
 - [x] POP3 server; MailHog/Mailpit API compat shims
 - [x] Exact 100/100/100 coverage contract (lines, branches, functions) in the gate and CI
-- [x] MCP: HTTP + stdio, 15 tools
+- [x] MCP: HTTP + stdio, 16 tools
 - [x] Kubernetes: the Helm chart (OCI-published, decision 0008 *accepted*)
 - [ ] crates.io publish — the package is publish-ready (see *Publishing*);
   the operator runs `cargo publish --locked` with their token

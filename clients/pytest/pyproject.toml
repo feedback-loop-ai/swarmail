@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pytest-swarmail"
+version = "0.1.0"
+description = "pytest fixture for swarmail: a per-test inbox with wait_for_code and wait_for_link over REST"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT OR Apache-2.0"
+dependencies = []
+classifiers = [
+  "Framework :: Pytest",
+  "Topic :: Software Development :: Testing",
+]
+
+[project.urls]
+Repository = "https://github.com/feedback-loop-ai/swarmail"
+
+[project.entry-points.pytest11]
+swarmail = "pytest_swarmail.plugin"
+
+[tool.setuptools]
+packages = ["pytest_swarmail"]

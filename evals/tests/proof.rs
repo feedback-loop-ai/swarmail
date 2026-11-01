@@ -112,7 +112,18 @@ fn every_task_passes_with_the_oracle() {
         .unwrap();
     let inboxes: std::collections::HashSet<&str> =
         iso.iter().map(|i| i["inbox"].as_str().unwrap()).collect();
-    assert_eq!(inboxes.len(), 3, "three AUTH inboxes on one server");
+    assert_eq!(inboxes.len(), 3, "three inboxes on one server");
+    // The oracle passed only because each routed address reached its own
+    // inbox under the one shared login (decision 0112 §7): the recipient of
+    // every account names its inbox under the runner's route domain.
+    for account in iso {
+        let identity = account["identity"].as_str().unwrap();
+        let inbox = account["inbox"].as_str().unwrap();
+        assert!(
+            identity.ends_with(&format!("@{inbox}.swarmail.test")),
+            "{identity} is not routed to {inbox}"
+        );
+    }
 }
 
 fn no_goal_completed(state: &Value) -> bool {
@@ -483,5 +494,84 @@ fn completed_naive_controls_recover_the_goal_but_lose_the_trial() {
         }
         assert_eq!(row.outcome, Outcome::Fail, "{task}/{mode}: {row:?}");
         assert_eq!(row.failure_class, Some(class));
+    }
+}
+
+/// Epic #164 / issue #156: recovery after a failed wait is mechanically
+/// possible from the timed-out answer alone, and the tempting wrong choice
+/// still loses. Three scripted agents run through the real CLI, real MCP
+/// (protocol 2025-03-26) and real SMTP, with no catalogue change:
+///
+/// - the sibling trap's agent mistypes the subject, reads `near_misses`,
+///   picks the entry addressed to its exact identity and passes with no trap
+///   event;
+/// - the same wait, acting on `nearest_subject` — the decoy, which lands
+///   last and ties on subject — is refused by the application and loses as
+///   `wrong_message`;
+/// - in slow delivery the first wait's timeout carries no `near_misses`
+///   (nothing arrived), and after the release the trial passes.
+///
+/// These controls do not measure the live-model recovery rate, which needs
+/// paid trials; slow-delivery's goal also prescribes the release itself.
+#[test]
+fn near_miss_controls_recover_after_a_timed_out_wait() {
+    let _trial_scope = trial_scope();
+    swarmail_bin();
+    let cases = [
+        (
+            "sibling-addresses",
+            "near_miss_sibling",
+            Outcome::Pass,
+            None,
+        ),
+        (
+            "sibling-addresses",
+            "near_miss_sibling_nearest",
+            Outcome::Fail,
+            Some(FailureClass::WrongMessage),
+        ),
+        ("slow-delivery", "near_miss_slow", Outcome::Pass, None),
+    ];
+    for (task, mode, outcome, class) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let args = [
+            "--task",
+            task,
+            "--agent",
+            mode,
+            "--artifacts-dir",
+            dir.path().to_str().unwrap(),
+        ];
+        let (mut command, _owner) = helper_command(mode, &args, &[]);
+        let out = command.output().unwrap();
+        let row = one_row(&out);
+        let state = retained_state(dir.path(), &row);
+        assert_eq!(
+            row.agent_exit_status,
+            Some(0),
+            "{task}/{mode}: {}",
+            stderr(&out)
+        );
+        assert_eq!(row.outcome, outcome, "{task}/{mode}: {row:?}");
+        assert_eq!(row.failure_class, class, "{task}/{mode}: {row:?}");
+        let events = state["events"].as_array().unwrap();
+        let rejected: Vec<&str> = events
+            .iter()
+            .filter(|e| e["accepted"] != true)
+            .map(|e| e["action"].as_str().unwrap())
+            .collect();
+        match class {
+            None => assert!(
+                rejected.is_empty(),
+                "{task}/{mode}: no trap event: {events:?}"
+            ),
+            Some(_) => assert_eq!(rejected, ["foreign_token"], "{task}/{mode}: {events:?}"),
+        }
+        if task == "slow-delivery" {
+            let released = events
+                .iter()
+                .any(|e| e["action"] == "release" && e["accepted"] == true);
+            assert!(released, "{events:?}");
+        }
     }
 }

@@ -228,7 +228,9 @@ real status when no named trap disqualifies it; `null` exits zero and fails.
 ## Tasks and the failure taxonomy
 
 `swarmail-evals tasks` prints the catalogue: 15 tasks in three tiers plus
-`inbox-isolation` (three agents on one Swarmail, one AUTH inbox each). Each
+`inbox-isolation` (three agents on one Swarmail behind one shared SMTP
+AUTH login, `fixture-app`; each agent's address is routed to its own inbox
+by the runner's `--route-domain swarmail.test`, decision 0112). Each
 declares the `failure_class` it provokes and the `idle_class` (`gave_up` or
 `wait_timeout`) a do-nothing agent earns. The class set is closed:
 `wrong_message`, `stale_code`, `wrong_link`, `wait_timeout`, `gave_up`,
@@ -294,6 +296,16 @@ isolation controls remain required. Linux proof does not imply macOS
 execution: #201's CI gating owns macOS eval proof, the operator owns sealing/live settings,
 and #221 owns namespace isolation.
 
+Three further scripted controls (`near_miss_controls_recover_after_a_timed_out_wait`,
+issue #156, Swarmail decision 0111) prove recovery after a failed wait is
+mechanically possible from the timed-out answer alone, through the real CLI,
+real MCP and real SMTP, with no catalogue change (0071): a sibling-trap agent
+that mistypes the subject reads `near_misses`, picks the entry addressed to its
+exact identity and passes with no trap event; the same wait acting on
+`nearest_subject` (the decoy, which lands last and ties on subject) loses as
+`wrong_message`; and in slow-delivery the first timed-out wait carries no
+`near_misses` (nothing arrived), after which the release and confirmation pass.
+
 ## Honest limits
 
 - **Unconfined.** Process-group ownership is lifecycle cleanup, not a
@@ -302,6 +314,12 @@ and #221 owns namespace isolation.
 - **slow-delivery** prescribes an initial MCP wait before the release; the
   app-state score proves the final confirmation, not that an arbitrary agent
   performed that first wait.
+- **The rate of recovery after a failed wait is not measured.** The three
+  near-miss controls above are scripted: they show recovery is possible and
+  that presenting the nearest subject as the match still loses, not how often
+  a live model recovers. That needs paid live-model trials, which no run here
+  holds. Slow-delivery's goal already prescribes the release, so recovery
+  there is not attributable to the near-miss answer.
 - **smtp-retry** proves the agent copes with mail that was refused (a real
   451 under 100% DATA chaos) and retried before the agent started — not
   recovery during a live outage.

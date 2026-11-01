@@ -25,9 +25,17 @@ branch, or answer it with evidence in your notes when it is not a defect;
 leave lows as tracked debt. The run gets five such returns before the
 operator rules.
 
+When `context.returned_from` has phase `design` instead, review found the
+spec, plan or tasks defective and the run went back through design first
+(decision 0102, addendum 2026-10-31). The chief revised `specs/<slug>/` in
+a new commit: read that revision (`git log -p -- specs/<slug>/`) and bring
+the existing branch into line with the revised spec, plan and tasks. The
+review findings the chief carried into tasks, security findings included,
+are yours to fix as above. These returns count against the same five.
+
 Commit unsigned (`commit.gpgsign=false` is set repo-locally); never push
-and never stop for a signing key — the operator seals the branch before
-merge (decision 0056); write messages in the repository's imperative style
+and never stop for a signing key — nothing is sealed (decision 0056,
+2026-11-01 addendum); write messages in the repository's imperative style
 with a body that says why.
 
 **Result contract (mandatory).** Your task block names an absolute

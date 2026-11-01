@@ -1930,25 +1930,49 @@ fn exit_of(identity: &str, status: Option<ExitStatus>) -> AgentExit {
 struct Identity {
     identity: String,
     inbox: String,
+    /// The SMTP AUTH username the fixture sends this account's mail under.
+    smtp_identity: String,
 }
+
+/// The one application login every inbox-isolation account sends under
+/// (decision 0112 §7).
+const ISOLATION_SMTP_IDENTITY: &str = "fixture-app";
+/// The route domain the runner starts Swarmail with (decision 0112 §7). It
+/// is inert for the `@example.test` identities of every other task.
+const ROUTE_DOMAIN: &str = "swarmail.test";
 
 fn identities(trial_id: &str, count: u8) -> Vec<Identity> {
     use rand::Rng;
     let names = ["ada", "grace", "barbara"];
-    let short: String = trial_id
+    let short = trial_id
         .chars()
         .rev()
         .take(8)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
-        .collect();
+        .collect::<String>()
+        // A routed label is folded to lowercase by the server (decision 0112
+        // §1), so the inbox the agent reads must already be lowercase.
+        .to_ascii_lowercase();
     (0..count as usize)
         .map(|i| {
             let n: u32 = rand::rng().random_range(0x10000..0xfffff);
-            Identity {
-                identity: format!("{}.{n:x}@example.test", names[i]),
-                inbox: format!("eval-{short}-{}", names[i]),
+            let inbox = format!("eval-{short}-{}", names[i]);
+            if count > 1 {
+                // Inbox-isolation: three accounts, one application login; the
+                // routed recipient names the inbox (decision 0112 §7).
+                Identity {
+                    identity: format!("{}.{n:x}@{inbox}.{ROUTE_DOMAIN}", names[i]),
+                    smtp_identity: ISOLATION_SMTP_IDENTITY.to_string(),
+                    inbox,
+                }
+            } else {
+                Identity {
+                    identity: format!("{}.{n:x}@example.test", names[i]),
+                    smtp_identity: inbox.clone(),
+                    inbox,
+                }
             }
         })
         .collect()
@@ -2107,6 +2131,8 @@ async fn run_body(
         "127.0.0.1:0",
         "--max-per-inbox",
         "100000",
+        "--route-domain",
+        ROUTE_DOMAIN,
     ]);
     swarmail_dirs.apply(&mut cmd);
     cmd.env("RUST_LOG", "swarmail=info,tower_http=off")
@@ -2202,7 +2228,9 @@ async fn run_body(
     let ids = identities(trial_id, task.agent_count);
     let provision: Vec<Value> = ids
         .iter()
-        .map(|i| json!({ "identity": i.identity, "inbox": i.inbox }))
+        .map(|i| {
+            json!({ "identity": i.identity, "inbox": i.inbox, "smtp_identity": i.smtp_identity })
+        })
         .collect();
     admin
         .call(
@@ -5209,5 +5237,49 @@ mod privacy_tests {
             Some(PathBuf::from("/tmp/swarmail")),
             "overflow is discarded through newline and later protocol data is drained"
         );
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::{ISOLATION_SMTP_IDENTITY, ROUTE_DOMAIN, identities};
+
+    /// The routed label rule of decision 0112 §1: one label of
+    /// `[a-z0-9-]{1,63}`.
+    fn is_routed_label(label: &str) -> bool {
+        (1..=63).contains(&label.len())
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    }
+
+    /// Inbox-isolation: three accounts share the one application login and
+    /// are separated by routed recipients whose label is the account inbox.
+    #[test]
+    fn isolation_accounts_share_one_login_and_route_by_recipient() {
+        let ids = identities("trial-20261031-ABCDEF12", 3);
+        assert_eq!(ids.len(), 3);
+        let mut inboxes = std::collections::HashSet::new();
+        for id in &ids {
+            assert_eq!(id.smtp_identity, ISOLATION_SMTP_IDENTITY);
+            assert!(is_routed_label(&id.inbox), "{}", id.inbox);
+            let (_, host) = id.identity.rsplit_once('@').unwrap();
+            assert_eq!(host, format!("{}.{ROUTE_DOMAIN}", id.inbox));
+            assert!(inboxes.insert(id.inbox.clone()));
+        }
+        assert_eq!(inboxes.len(), 3);
+    }
+
+    /// Every other task keeps its pre-0112 wire shape: an `@example.test`
+    /// identity, which the route domain never touches, authenticating as its
+    /// inbox.
+    #[test]
+    fn single_agent_tasks_keep_their_identity_and_authenticate_as_the_inbox() {
+        let ids = identities("trial-20261031-abcdef12", 1);
+        assert_eq!(ids.len(), 1);
+        assert!(ids[0].identity.ends_with("@example.test"));
+        assert!(!ids[0].identity.ends_with(&format!(".{ROUTE_DOMAIN}")));
+        assert_eq!(ids[0].smtp_identity, ids[0].inbox);
+        assert_eq!(ids[0].inbox, "eval-abcdef12-ada");
     }
 }

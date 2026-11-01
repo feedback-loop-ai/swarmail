@@ -1968,3 +1968,100 @@ fn current_descriptions_drop_unmeasured_superlatives() {
         raw("src/main.rs").starts_with("//! Swarmail — built for a program waiting on mail.\n")
     );
 }
+
+/// Issue #162, proposed 0110 §1–§3: the client fixture packages are one
+/// release train with the server. Each package's version is `Cargo.toml`'s,
+/// the published packages declare no runtime dependency, and every CI-only
+/// pin is exact — so a drifted version or a floating range is a red check
+/// here (and in the verify seat, offline), never a surprise at publish time.
+#[test]
+fn the_client_packages_carry_the_servers_version_and_no_runtime_dependencies() {
+    let version = env!("CARGO_PKG_VERSION");
+
+    let package: serde_json::Value =
+        serde_json::from_str(&raw("clients/playwright/package.json")).expect("package.json parses");
+    assert_eq!(package["name"], "@swarmail/playwright");
+    assert_eq!(
+        package["version"], version,
+        "package.json is off the server"
+    );
+    assert!(
+        package.get("dependencies").is_none(),
+        "the published Playwright client has no runtime dependency"
+    );
+    assert_eq!(package["type"], "module");
+    assert!(
+        package["peerDependencies"]["@playwright/test"].is_string(),
+        "@playwright/test is a peer"
+    );
+    let pin = package["devDependencies"]["@playwright/test"]
+        .as_str()
+        .expect("the CI pin is committed");
+    assert!(is_exact_version(pin), "the CI pin {pin:?} must be exact");
+    assert_eq!(
+        package["devDependencies"].as_object().map(|d| d.len()),
+        Some(1),
+        "the only dev dependency is the issue-named framework"
+    );
+
+    let pyproject = raw("clients/pytest/pyproject.toml");
+    let project = section_of(&pyproject, "[project]");
+    assert!(
+        project
+            .lines()
+            .any(|l| l == format!("version = \"{version}\"")),
+        "pyproject.toml's version is off the server ({version})"
+    );
+    assert!(
+        project.lines().any(|l| l == "dependencies = []"),
+        "the published pytest plugin declares dependencies = []"
+    );
+    assert!(project.lines().any(|l| l == "name = \"pytest-swarmail\""));
+    assert!(
+        section_of(&pyproject, "[project.entry-points.pytest11]")
+            .lines()
+            .any(|l| l == "swarmail = \"pytest_swarmail.plugin\""),
+        "the pytest11 entry point names the plugin module"
+    );
+
+    let pins = raw("clients/pytest/requirements-ci.txt");
+    let pinned: Vec<&str> = pins
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .collect();
+    assert!(
+        pinned.iter().any(|l| l.starts_with("pytest==")),
+        "pytest itself is pinned"
+    );
+    for line in pinned {
+        let exact = line.split_once("==").is_some_and(|(name, v)| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+                && is_exact_version(v)
+        });
+        assert!(
+            exact,
+            "requirements-ci.txt line {line:?} must be name==x.y.z"
+        );
+    }
+}
+
+/// `1.55.0` or `25.0`: digits and dots, two or more numeric parts, no range syntax.
+fn is_exact_version(v: &str) -> bool {
+    let parts: Vec<&str> = v.split('.').collect();
+    parts.len() >= 2
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// The lines of a TOML table, from its header up to the next header.
+fn section_of<'a>(toml: &'a str, header: &str) -> &'a str {
+    let after = toml
+        .split_once(&format!("\n{header}\n"))
+        .unwrap_or_else(|| panic!("no table {header}"))
+        .1;
+    after.split_once("\n[").map_or(after, |(table, _)| table)
+}

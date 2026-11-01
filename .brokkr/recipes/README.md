@@ -31,9 +31,12 @@ and normative contract work default to the full design and five-role review.
 Every lane runs the complete deterministic verification and ship gates.
 Missing or unknown strategies have no selector default and cannot select a
 cheap lane. Implementation can return oversized scope once to triage; the
-reviewers can also expose a scope defect on any lane, with bounded
-reclassification and unchanged hard stops for security, high or unknown
-residuals. Shipping refuses a missing, empty or mismatched ledger instead
+reviewers can also expose a scope defect on any lane. A read-only one with
+no security residual and at most medium severity reclassifies through
+triage, a bounded number of times; any other residual scope defect with
+complete facts returns to design and parks at the sixth review (decision
+0102, addendum 2026-10-31); a security hold and unknown facts still stop.
+Shipping refuses a missing, empty or mismatched ledger instead
 of reporting completion with discrepancy notes.
 
 `codex` and `codex-careful` explicitly select the full design/review path;

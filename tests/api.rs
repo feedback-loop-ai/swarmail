@@ -3071,6 +3071,7 @@ async fn serve_policy(bound: u16) -> std::net::SocketAddr {
         smtp_degraded: Default::default(),
         pop3_degraded: Default::default(),
         http_origin_guard: Some(bound),
+        route_domain: None,
     };
     tokio::spawn(async move {
         let _stop = stop_tx;
@@ -5378,6 +5379,7 @@ async fn zero_timeout_finishes_on_the_first_router_poll() {
             smtp_degraded: Arc::new(AtomicBool::new(false)),
             pop3_degraded: Arc::new(AtomicBool::new(false)),
             http_origin_guard: None,
+            route_domain: None,
         };
         let req = Request::builder()
             .uri(format!("/api/v1/inboxes/{name}/await?count=1{query}"))
