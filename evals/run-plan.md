@@ -81,7 +81,8 @@ ownership; no shorter competing parent kill timer is added.
 ## Admission, retention and statuses
 
 Execution exclusively creates the requested output leaf at 0700 under an
-existing non-symlink parent. Existing or partial outputs refuse unchanged.
+existing parent (symlinked ancestors only under the README's root-owned
+rule). Existing or partial outputs refuse unchanged.
 controls.jsonl and paid.jsonl are streamed as rows commit, at 0600. Keep the
 whole output tree, including incomplete bytes and absent completion markers.
 No automatic retry, overwrite, row filtering, resume, archive conversion or
