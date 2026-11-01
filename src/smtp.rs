@@ -35,7 +35,7 @@
 
 use crate::chaos::{Chaos, ChaosEvent};
 use crate::extract::{BodyOrder, extract_codes, extract_link_metadata};
-use crate::model::{Attachment, Email, EmailAddress};
+use crate::model::{Email, EmailAddress};
 use crate::store::Store;
 use chrono::Utc;
 use mail_parser::{
@@ -1901,7 +1901,6 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
 
     let (links, link_metadata) = extract_link_metadata(text.as_deref(), html.as_deref());
     let codes = extract_codes(text.as_deref(), html.as_deref(), order);
-    let attachments = parsed.as_ref().map(attachment_list);
 
     // Thread headers are extracted once, here at ingest (decision 0005), and
     // stored as first-class fields: the thread view must not re-parse the raw
@@ -1937,32 +1936,15 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
         html,
         links,
         link_metadata: Some(link_metadata),
-        attachments,
         codes,
         message_id,
         in_reply_to,
         references,
+        // Listed once, here at ingest (decision 0110): total, so it cannot
+        // fail the mail; unknown only where the parser read nothing.
+        attachments: parsed.as_ref().map(crate::attachments::extract),
         raw: raw.to_vec(),
     }
-}
-
-/// The outer message's attachment parts in parser order (decision 0108 §5):
-/// the labels the sender gave and the part's decoded length. An attached
-/// message is one entry; its inner parts are not in the outer list. The
-/// classification is the parser's; nothing is decoded beyond what the parse
-/// already did.
-fn attachment_list(message: &mail_parser::Message<'_>) -> Vec<Attachment> {
-    message
-        .attachments()
-        .map(|part| Attachment {
-            filename: part.attachment_name().map(str::to_string),
-            content_type: part.content_type().map(|ct| match ct.subtype() {
-                Some(subtype) => format!("{}/{subtype}", ct.ctype()),
-                None => ct.ctype().to_string(),
-            }),
-            size: part.len() as u64,
-        })
-        .collect()
 }
 
 /// The ids a `References`/`In-Reply-To` header carries, in header order (the
@@ -2083,6 +2065,7 @@ mod tests {
             .attachments
             .as_ref()
             .unwrap()
+            .parts
             .iter()
             .map(|a| (a.filename.as_deref(), a.content_type.as_deref(), a.size))
             .collect();
@@ -2099,7 +2082,7 @@ mod tests {
         );
 
         let plain = parse(b"From: s@x.io\r\nSubject: t\r\n\r\nplain body\r\n");
-        assert_eq!(plain.attachments, Some(vec![]));
+        assert_eq!(plain.attachments, Some(Default::default()));
         assert_eq!(parse(b"").attachments, None);
         for mail in [&mixed, &plain] {
             let value = serde_json::to_value(mail).unwrap();

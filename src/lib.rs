@@ -1,6 +1,7 @@
 //! Swarmail library — expose everything for integration tests and embedding.
 
 pub mod api;
+pub mod attachments;
 pub mod chaos;
 pub mod compat;
 pub mod config;

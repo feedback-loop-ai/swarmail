@@ -119,8 +119,8 @@ pub(super) fn assert_march_descriptor(descriptor: &Value) {
 }
 
 /// The served March catalogue is the captured thirteen-tool line with the
-/// two focused descriptors and the inbox minter appended, and nothing else
-/// changed.
+/// two focused descriptors, the inbox minter (0112) and then the two
+/// attachment descriptors (0110) appended, and nothing else changed.
 pub(super) fn assert_appended(raw: &str, captured: &str) {
     let prefix = captured.strip_suffix("]}}").unwrap();
     let tail = raw
@@ -132,11 +132,14 @@ pub(super) fn assert_appended(raw: &str, captured: &str) {
     ))
     .unwrap();
     let appended = appended.as_array().unwrap();
-    assert_eq!(appended.len(), 3);
+    assert_eq!(appended.len(), 5);
     for descriptor in &appended[..2] {
         assert_march_descriptor(descriptor);
     }
     assert_minter_descriptor(&appended[2]);
+    for descriptor in &appended[3..] {
+        super::attachments::assert_march_descriptor(descriptor);
+    }
 }
 
 /// Decision 0094 §7's closed variants, stated independently.
@@ -416,7 +419,7 @@ async fn focused_waits_on_every_revision_and_transport() {
             let mut wire = Wire::start(srv.http_addr, version, stdio).await;
             let list = wire.request(&json!({"id":1,"method":"tools/list"})).await;
             let tools = list["result"]["tools"].as_array().unwrap();
-            assert_eq!(tools.len(), 16);
+            assert_eq!(tools.len(), 18);
             let modern = version != VERSIONS[0];
             for (i, name) in FOCUSED.iter().enumerate() {
                 let tool = &tools[13 + i];
@@ -576,7 +579,9 @@ async fn focused_schema_negatives() {
 
 /// Decision 0097 §4: every current surface states the compatibility the
 /// served catalogue actually has — thirteen existing March entries kept,
-/// two focused waits and the inbox minter appended, sixteen in all — and keeps the OpenAPI pin
+/// two focused waits and the inbox minter appended, sixteen in all, then
+/// the two attachment tools of decision 0110, eighteen in all — and keeps
+/// the OpenAPI pin
 /// for REST-backed schemas apart from the MCP-only focused schemas. The
 /// blanket "catalogue bytes unchanged" claims the review found are gone.
 #[tokio::test]
@@ -590,9 +595,10 @@ async fn served_prose_states_additive_discovery() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 16);
+    assert_eq!(names.len(), 18);
     assert_eq!(names[13..15], FOCUSED);
     assert_eq!(names[15], "swarmail_create_inbox");
+    assert_eq!(names[16..], super::attachments::ATTACHMENTS);
     assert!(names[..13].iter().all(|name| !FOCUSED.contains(name)));
     let flat = |text: &str| {
         text.split_whitespace()
@@ -628,6 +634,10 @@ async fn served_prose_states_additive_discovery() {
             "explicit output projections",
             "mcp-only",
             "independently stated expectations",
+            "then the two attachment tools",
+            "swarmail_list_attachments",
+            "swarmail_get_attachment",
+            "eighteen",
         ] {
             assert!(text.contains(clause), "{surface} omits {clause:?}");
         }
@@ -641,6 +651,6 @@ async fn served_prose_states_additive_discovery() {
             assert!(!text.contains(stale), "{surface} still claims {stale:?}");
         }
     }
-    assert!(surfaces[0].1.contains("sixteen mcp tools"));
+    assert!(surfaces[0].1.contains("eighteen mcp tools"));
     srv.stop().await;
 }

@@ -57,7 +57,9 @@
 //! owner's `-wal` file to another hard link's basename, and a restart never
 //! repairs loss an earlier multi-writer run already caused.
 
-use crate::model::{Attachment, Email};
+use crate::attachments::MAX_ATTACHMENTS;
+use crate::model::{Attachment, AttachmentList, Email};
+use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use std::fs::{File, OpenOptions, TryLockError};
@@ -69,7 +71,7 @@ use std::sync::Mutex;
 const COLUMNS: &str = "id, inbox, from_json, to_json, cc_json, recipients_json, subject, \
                        received_at, received_ms, size, text, html, links_json, codes_json, \
                        message_id, in_reply_to, references_json, raw, envelope_from, \
-                       link_metadata_json, attachments_json";
+                       link_metadata_json, attachments_json, attachment_bytes";
 
 /// The whole schema, created idempotently on every open.
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
@@ -94,7 +96,8 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
     raw BLOB NOT NULL,
     envelope_from TEXT,
     link_metadata_json TEXT,
-    attachments_json TEXT
+    attachments_json TEXT,
+    attachment_bytes BLOB
 );
 -- Retired (issue #87): `emails_inbox` was maintained on every write and read
 -- by no query — the store answers per-inbox reads from memory, and restore
@@ -122,9 +125,12 @@ const ADDED_COLUMNS: &[(&str, &str)] = &[
     // Decision 0094 §2: NULL is a row from before ingest kept link
     // occurrences — unknown, never backfilled.
     ("link_metadata_json", "TEXT"),
-    // Decision 0108 §5: NULL is unknown — a row from before ingest kept the
-    // attachment list, or a mail the parser could not read; never backfilled.
+    // Decisions 0108 §5 and 0110 §6: both NULL is an unknown list — a row from
+    // before ingest listed attachments, or a mail the parser could not read —
+    // never backfilled. A list beside the concatenated bytes of its stored
+    // parts is the current shape; a tuple array with no bytes is 0108's.
     ("attachments_json", "TEXT"),
+    ("attachment_bytes", "BLOB"),
 ];
 
 /// The full restore scan `load` runs — one builder, so the plan test
@@ -461,11 +467,11 @@ impl Persist {
         state.next_seq += 1;
         let tx = state.conn.transaction()?;
         tx.execute(
-            // 22 columns: COLUMNS + the ordering seq.
+            // 23 columns: COLUMNS + the ordering seq.
             &format!(
                 "INSERT INTO emails ({COLUMNS}, seq)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-                         ?17, ?18, ?19, ?20, ?21, ?22)"
+                         ?17, ?18, ?19, ?20, ?21, ?22, ?23)"
             ),
             params![
                 email.id,
@@ -491,8 +497,10 @@ impl Persist {
                 email.envelope_from,
                 // NULL is unknown history; '[]' a known mail without links.
                 email.link_metadata.as_ref().map(json),
-                // NULL is unknown history; '[]' a known mail without any.
-                email.attachments.as_deref().map(stored_attachments),
+                // NULL in both is an unknown list; a known empty one is
+                // '{"total":0,"parts":[]}' with an empty blob.
+                email.attachments.as_ref().map(json),
+                email.attachments.as_ref().map(stored_bytes),
                 seq,
             ],
         )?;
@@ -556,7 +564,7 @@ fn row_to_email(row: &rusqlite::Row<'_>) -> rusqlite::Result<Email> {
         html: row.get(11)?,
         links: from_json(row.get(12)?),
         link_metadata: strict_column(19, row.get(19)?)?,
-        attachments: attachments(row.get(20)?)?,
+        attachments: attachments(row.get(20)?, row.get(21)?)?,
         codes: from_json(row.get(13)?),
         message_id: row.get(14)?,
         in_reply_to: row.get(15)?,
@@ -617,31 +625,141 @@ fn strict_column<T: DeserializeOwned>(
     .transpose()
 }
 
-/// The attachment column is a list of `[filename, content_type, size]`
-/// tuples: serde refuses a wrong length, a wrong type or a top-level null.
-type StoredAttachment = (Option<String>, Option<String>, u64);
-
-fn stored_attachments(list: &[Attachment]) -> String {
-    let tuples: Vec<(&Option<String>, &Option<String>, u64)> = list
+/// The stored parts' bytes, concatenated in list order — the blob the
+/// restore splits again by the listed sizes.
+fn stored_bytes(list: &AttachmentList) -> Vec<u8> {
+    list.parts
         .iter()
-        .map(|a| (&a.filename, &a.content_type, a.size))
-        .collect();
-    json(&tuples)
+        .filter_map(|part| part.content.as_deref())
+        .flatten()
+        .copied()
+        .collect()
 }
 
-fn attachments(raw: Option<String>) -> rusqlite::Result<Option<Vec<Attachment>>> {
-    Ok(
-        strict_column::<Vec<StoredAttachment>>(20, raw)?.map(|tuples| {
-            tuples
-                .into_iter()
-                .map(|(filename, content_type, size)| Attachment {
-                    filename,
-                    content_type,
-                    size,
-                })
-                .collect()
+/// A damaged attachment column, named (decision 0110 §6).
+#[derive(Debug)]
+struct Damaged {
+    column: &'static str,
+    reason: String,
+}
+
+impl std::fmt::Display for Damaged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.column, self.reason)
+    }
+}
+
+impl std::error::Error for Damaged {}
+
+fn damaged(
+    column: &'static str,
+    index: usize,
+    kind: rusqlite::types::Type,
+    reason: impl Into<String>,
+) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        index,
+        kind,
+        Box::new(Damaged {
+            column,
+            reason: reason.into(),
         }),
     )
+}
+
+/// A row of 0108 §5's first listing: `[filename, content_type, size]` tuples.
+/// Serde refuses a wrong length, a wrong type or a top-level null.
+type LabelsOnlyPart = (Option<String>, Option<String>, u64);
+
+fn labels_only(json: &str) -> rusqlite::Result<AttachmentList> {
+    let tuples: Vec<LabelsOnlyPart> = serde_json::from_str(json)
+        .map_err(|error| damaged("attachments_json", 20, Type::Text, error.to_string()))?;
+    let parts: Vec<Attachment> = tuples
+        .into_iter()
+        .map(|(filename, content_type, size)| Attachment {
+            filename,
+            content_type,
+            size,
+            sha256: String::new(),
+            stored: false,
+            ics: None,
+            content: None,
+        })
+        .collect();
+    Ok(AttachmentList {
+        total: parts.len() as u64,
+        parts,
+        labels_only: true,
+    })
+}
+
+/// The attachment columns, strictly (decisions 0108 §5, 0110 §6): NULL in both
+/// is an unknown list; a tuple array with no bytes is a row of the first
+/// listing; otherwise the closed `{total, parts}` object ingest wrote, with a
+/// blob exactly as long as the stored parts' sizes. A NULL in only one column
+/// of any other value, a damaged value or a blob of the wrong length refuses
+/// the restore by its column — an empty fallback would read as a confident
+/// "no attachments".
+fn attachments(
+    json: Option<String>,
+    bytes: Option<Vec<u8>>,
+) -> rusqlite::Result<Option<AttachmentList>> {
+    let (json, bytes) = match (json, bytes) {
+        (None, None) => return Ok(None),
+        // The tuple array of 0108 §5 was written with no bytes column.
+        (Some(json), None) if json.starts_with('[') => return labels_only(&json).map(Some),
+        (Some(json), Some(bytes)) => (json, bytes),
+        (None, Some(_)) => {
+            return Err(damaged(
+                "attachments_json",
+                20,
+                Type::Text,
+                "NULL while attachment_bytes is set",
+            ));
+        }
+        (Some(_), None) => {
+            return Err(damaged(
+                "attachment_bytes",
+                21,
+                Type::Blob,
+                "NULL while attachments_json is set",
+            ));
+        }
+    };
+    let mut list: AttachmentList = serde_json::from_str(&json)
+        .map_err(|error| damaged("attachments_json", 20, Type::Text, error.to_string()))?;
+    if list.parts.len() > MAX_ATTACHMENTS || list.parts.len() as u64 > list.total {
+        return Err(damaged(
+            "attachments_json",
+            20,
+            Type::Text,
+            "more parts than the cap or than the total",
+        ));
+    }
+    let sum = list
+        .parts
+        .iter()
+        .filter(|part| part.stored)
+        .fold(0u64, |sum, part| sum.saturating_add(part.size));
+    if sum != bytes.len() as u64 {
+        return Err(damaged(
+            "attachment_bytes",
+            21,
+            Type::Blob,
+            format!(
+                "holds {} bytes but the stored parts sum to {sum}",
+                bytes.len()
+            ),
+        ));
+    }
+    let mut at = 0usize;
+    for part in list.parts.iter_mut().filter(|part| part.stored) {
+        // The sum equals the blob's length, so every slice is in range.
+        let end = at + part.size as usize;
+        part.content = Some(bytes[at..end].to_vec());
+        at = end;
+    }
+    Ok(Some(list))
 }
 
 fn write_counter(conn: &Connection, key: &str, value: u64) -> rusqlite::Result<()> {
@@ -666,6 +784,7 @@ fn read_counter(conn: &Connection, key: &str) -> rusqlite::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::AttachmentList;
     use crate::store::email;
     use serde::ser::Error as _;
     use std::path::PathBuf;
@@ -794,18 +913,15 @@ mod tests {
         e.message_id = Some("m@x.io".into());
         e.in_reply_to = Some("parent@x.io".into());
         e.references = vec!["root@x.io".into(), "parent@x.io".into()];
-        e.attachments = Some(vec![
-            Attachment {
-                filename: Some("q3.pdf".into()),
-                content_type: Some("application/pdf".into()),
-                size: 4096,
-            },
-            Attachment {
-                filename: None,
-                content_type: None,
-                size: 0,
-            },
-        ]);
+        let mut labelled = attachment("q3.pdf", None, 4096);
+        labelled.content_type = Some("application/pdf".into());
+        let mut bare = attachment("", None, 0);
+        (bare.filename, bare.content_type) = (None, None);
+        e.attachments = Some(AttachmentList {
+            total: 2,
+            parts: vec![labelled, bare],
+            ..Default::default()
+        });
         // Deliberately not valid UTF-8: raw bytes must round-trip untouched.
         e.raw = vec![0xFF, 0xFE, b'a', b'\r', b'\n'];
         e
@@ -918,72 +1034,340 @@ mod tests {
         assert_eq!(persist.load().unwrap().0, [mail]);
     }
 
-    /// Decision 0108 §5: SQL NULL (history), a known empty list and a
-    /// populated list restore as stored, in the strict tuple form, and every
-    /// other value — invalid JSON, JSON null, an object, a wrong tuple
-    /// length, a wrong member type, a negative size — refuses the restore by
-    /// its column (20) instead of reading as "no attachments".
+    fn attachment(name: &str, bytes: Option<&[u8]>, size: u64) -> crate::model::Attachment {
+        crate::model::Attachment {
+            filename: Some(name.into()),
+            content_type: Some("application/octet-stream".into()),
+            size,
+            sha256: crate::attachments::sha256_hex(bytes.unwrap_or(b"")),
+            stored: bytes.is_some(),
+            ics: None,
+            content: bytes.map(<[u8]>::to_vec),
+        }
+    }
+
+    /// Decision 0110 §6: NULL in both columns (unknown), a known empty list
+    /// and a list with stored and unstored parts each restore as written —
+    /// the bytes of the stored parts split back by their listed sizes.
     #[test]
-    fn attachments_null_empty_present_and_corrupt_are_distinct() {
+    fn attachments_null_empty_and_present_are_distinct_and_exact() {
         let (_guard, path) = db_path("attachments");
         let persist = Persist::open(&path).unwrap();
         let mut mail = full_email("attachments", "box");
-        let column = |persist: &Persist| -> Option<String> {
-            persist
-                .state
-                .lock()
-                .unwrap()
-                .conn
-                .query_row("SELECT attachments_json FROM emails", [], |row| row.get(0))
-                .unwrap()
-        };
-        let mut stored = Vec::new();
-        for attachments in [None, Some(vec![]), mail.attachments.clone()] {
-            mail.attachments = attachments;
+        let mut calendar = attachment("invite.ics", Some(b"BEGIN:VEVENT"), 12);
+        calendar.ics = Some(crate::model::IcsEvent {
+            dtstart: Some("20261102T150000".into()),
+            summary: Some("Plan".into()),
+            ..Default::default()
+        });
+        for list in [
+            None,
+            Some(AttachmentList::default()),
+            Some(AttachmentList {
+                total: 300,
+                parts: vec![
+                    attachment("a.bin", Some(b"abc"), 3),
+                    attachment("big.bin", None, 5_000_000),
+                    attachment("empty.bin", Some(b""), 0),
+                    calendar,
+                ],
+                ..Default::default()
+            }),
+        ] {
+            mail.attachments = list;
             persist.record_insert(&mail, &[], 1, 0).unwrap();
             assert_eq!(persist.load().unwrap().0, [mail.clone()]);
-            stored.push(column(&persist));
-            persist.record_delete(&mail.id).unwrap();
-        }
-        assert_eq!(
-            stored,
-            [
-                None,
-                Some("[]".to_string()),
-                Some(r#"[["q3.pdf","application/pdf",4096],[null,null,0]]"#.to_string()),
-            ]
-        );
-        persist.record_insert(&mail, &[], 1, 0).unwrap();
-        for corrupt in [
-            "not json",
-            "null",
-            "{}",
-            "[null]",
-            r#"[["a"]]"#,
-            r#"[["a","b"]]"#,
-            r#"[["a","b",1,2]]"#,
-            r#"[[1,"b",1]]"#,
-            r#"[["a",2,1]]"#,
-            r#"[["a","b","1"]]"#,
-            r#"[["a","b",-1]]"#,
-            r#"[{"filename":"a","content_type":"b","size":1}]"#,
-        ] {
-            persist
+            let columns: (Option<String>, Option<Vec<u8>>) = persist
                 .state
                 .lock()
                 .unwrap()
                 .conn
-                .execute("UPDATE emails SET attachments_json=?1", [corrupt])
+                .query_row(
+                    "SELECT attachments_json, attachment_bytes FROM emails",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
                 .unwrap();
-            let error = persist.load().unwrap_err();
-            assert!(
-                matches!(
-                    error,
-                    rusqlite::Error::FromSqlConversionFailure(20, rusqlite::types::Type::Text, _)
+            match &mail.attachments {
+                None => assert_eq!(columns, (None, None)),
+                Some(list) if list.parts.is_empty() => assert_eq!(
+                    columns,
+                    (Some(r#"{"total":0,"parts":[]}"#.into()), Some(vec![]))
                 ),
-                "{corrupt}: {error:?}"
+                Some(_) => assert_eq!(columns.1.as_deref(), Some(&b"abcBEGIN:VEVENT"[..])),
+            }
+            persist.record_delete(&mail.id).unwrap();
+        }
+    }
+
+    /// Writes both attachment columns of the one row.
+    fn set_attachments(persist: &Persist, json: Option<&str>, bytes: Option<&[u8]>) {
+        persist
+            .state
+            .lock()
+            .unwrap()
+            .conn
+            .execute(
+                "UPDATE emails SET attachments_json=?1, attachment_bytes=?2",
+                rusqlite::params![json, bytes],
+            )
+            .unwrap();
+    }
+
+    /// Every damaged state refuses the restore and names its column; none
+    /// reads as "no attachments".
+    #[test]
+    fn damaged_attachment_columns_refuse_the_restore_by_name() {
+        let (_guard, path) = db_path("attachments-damaged");
+        let persist = Persist::open(&path).unwrap();
+        let mut mail = full_email("damaged", "box");
+        mail.attachments = Some(AttachmentList {
+            total: 1,
+            parts: vec![attachment("a.bin", Some(b"abc"), 3)],
+            ..Default::default()
+        });
+        persist.record_insert(&mail, &[], 1, 0).unwrap();
+        let good: String = persist
+            .state
+            .lock()
+            .unwrap()
+            .conn
+            .query_row("SELECT attachments_json FROM emails", [], |row| row.get(0))
+            .unwrap();
+        let sized = |size: u64, total: u64| {
+            good.replace(r#""size":3"#, &format!(r#""size":{size}"#))
+                .replace(r#""total":1"#, &format!(r#""total":{total}"#))
+        };
+        let many = format!(
+            r#"{{"total":251,"parts":[{}]}}"#,
+            vec![
+                r#"{"filename":null,"content_type":null,"size":0,"sha256":"x","stored":false,"ics":null}"#;
+                251
+            ]
+            .join(",")
+        );
+        let refused = |json: Option<&str>, bytes: Option<&[u8]>, column: usize, kind: Type| {
+            set_attachments(&persist, json, bytes);
+            let error = persist.load().unwrap_err();
+            let debug = format!("{error:?}");
+            let expected = format!("FromSqlConversionFailure({column}, {kind:?}, ");
+            assert!(debug.starts_with(&expected), "{debug}");
+            std::error::Error::source(&error).unwrap().to_string()
+        };
+        use rusqlite::types::Type::{Blob, Text};
+        for (json, bytes, column, kind, reason) in [
+            (
+                None,
+                Some(&b"abc"[..]),
+                20,
+                Text,
+                "attachments_json: NULL while attachment_bytes is set",
+            ),
+            (
+                Some(good.as_str()),
+                None,
+                21,
+                Blob,
+                "attachment_bytes: NULL while attachments_json is set",
+            ),
+            (
+                Some("not json"),
+                Some(&b"abc"[..]),
+                20,
+                Text,
+                "attachments_json: expected",
+            ),
+            (
+                Some("[]"),
+                Some(&b"abc"[..]),
+                20,
+                Text,
+                "attachments_json: invalid type",
+            ),
+            (
+                Some(sized(3, 0).as_str()),
+                Some(&b"abc"[..]),
+                20,
+                Text,
+                "more parts than the cap or than the total",
+            ),
+            (
+                Some(many.as_str()),
+                Some(&b""[..]),
+                20,
+                Text,
+                "more parts than the cap or than the total",
+            ),
+            (
+                Some(good.as_str()),
+                Some(&b"ab"[..]),
+                21,
+                Blob,
+                "holds 2 bytes but the stored parts sum to 3",
+            ),
+            (
+                Some(good.as_str()),
+                Some(&b"abcd"[..]),
+                21,
+                Blob,
+                "holds 4 bytes but the stored parts sum to 3",
+            ),
+            (
+                Some(sized(u64::MAX, 1).as_str()),
+                Some(&b"abc"[..]),
+                21,
+                Blob,
+                "the stored parts sum to 18446744073709551615",
+            ),
+        ] {
+            let cause = refused(json, bytes, column, kind);
+            assert!(
+                cause.starts_with(&format!(
+                    "{}: ",
+                    if column == 20 {
+                        "attachments_json"
+                    } else {
+                        "attachment_bytes"
+                    }
+                )),
+                "{cause}"
+            );
+            assert!(cause.contains(reason), "{cause} vs {reason}");
+        }
+        // The undamaged pair restores again, and the cap is inclusive.
+        set_attachments(&persist, Some(&good), Some(b"abc"));
+        assert_eq!(persist.load().unwrap().0, [mail]);
+        let at_cap = many.replacen("251", "250", 1).replacen(
+            &format!("{},", r#"{"filename":null,"content_type":null,"size":0,"sha256":"x","stored":false,"ics":null}"#),
+            "",
+            1,
+        );
+        set_attachments(&persist, Some(&at_cap), Some(b""));
+        assert_eq!(
+            persist.load().unwrap().0[0]
+                .attachments
+                .as_ref()
+                .unwrap()
+                .parts
+                .len(),
+            250
+        );
+    }
+
+    /// Decisions 0108 §5 and 0110: the tuple array the first listing wrote,
+    /// with no bytes, restores as labels only — populated or known empty — and
+    /// every malformed tuple row refuses by its column. A tuple array beside
+    /// bytes, and anything else without them, is damage and never "none".
+    #[test]
+    fn a_labels_only_row_restores_and_malformed_ones_refuse() {
+        let (_guard, path) = db_path("attachments-tuples");
+        let persist = Persist::open(&path).unwrap();
+        persist
+            .record_insert(&full_email("tuples", "box"), &[], 1, 0)
+            .unwrap();
+        set_attachments(
+            &persist,
+            Some(r#"[["q3.pdf","application/pdf",4096],[null,null,0]]"#),
+            None,
+        );
+        let list = persist.load().unwrap().0[0].attachments.clone().unwrap();
+        assert!(list.labels_only);
+        assert_eq!(list.total, 2);
+        let labels: Vec<_> = list
+            .parts
+            .iter()
+            .map(|p| (p.filename.as_deref(), p.content_type.as_deref(), p.size))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                (Some("q3.pdf"), Some("application/pdf"), 4096),
+                (None, None, 0)
+            ]
+        );
+        for part in &list.parts {
+            assert_eq!(
+                (part.stored, &part.content, &part.ics, part.sha256.as_str()),
+                (false, &None, &None, "")
             );
         }
+        set_attachments(&persist, Some("[]"), None);
+        let list = persist.load().unwrap().0[0].attachments.clone().unwrap();
+        assert_eq!(
+            (list.labels_only, list.total, list.parts),
+            (true, 0, vec![])
+        );
+        for (corrupt, bytes, column, kind) in [
+            ("[null]", None, 20, Type::Text),
+            (r#"[["a"]]"#, None, 20, Type::Text),
+            (r#"[["a","b"]]"#, None, 20, Type::Text),
+            (r#"[["a","b",1,2]]"#, None, 20, Type::Text),
+            (r#"[[1,"b",1]]"#, None, 20, Type::Text),
+            (r#"[["a",2,1]]"#, None, 20, Type::Text),
+            (r#"[["a","b","1"]]"#, None, 20, Type::Text),
+            (r#"[["a","b",-1]]"#, None, 20, Type::Text),
+            (
+                r#"[{"filename":"a","content_type":"b","size":1}]"#,
+                None,
+                20,
+                Type::Text,
+            ),
+            ("[", None, 20, Type::Text),
+            (r#"[["a","b",1]]"#, Some(&b""[..]), 20, Type::Text),
+            ("not json", None, 21, Type::Blob),
+            ("null", None, 21, Type::Blob),
+            ("{}", None, 21, Type::Blob),
+            ("not json", Some(&b""[..]), 20, Type::Text),
+            ("null", Some(&b""[..]), 20, Type::Text),
+            ("{}", Some(&b""[..]), 20, Type::Text),
+        ] {
+            set_attachments(&persist, Some(corrupt), bytes);
+            let debug = format!("{:?}", persist.load().unwrap_err());
+            let expected = format!("FromSqlConversionFailure({column}, {kind:?}, ");
+            assert!(debug.starts_with(&expected), "{corrupt}: {debug}");
+        }
+    }
+
+    /// A data file written before the attachment columns existed — the
+    /// previous explicit schema, so the migration really runs — keeps its
+    /// mail, restores its attachments as unknown (never backfilled) and
+    /// then mirrors new lists through both new columns.
+    #[test]
+    fn a_pre_attachment_data_file_migrates_to_unknown_lists() {
+        let (_guard, path) = db_path("pre-attachments");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE emails (id TEXT PRIMARY KEY, inbox TEXT NOT NULL, \
+                 seq INTEGER NOT NULL, from_json TEXT NOT NULL, to_json TEXT NOT NULL, \
+                 cc_json TEXT NOT NULL, recipients_json TEXT NOT NULL, subject TEXT, \
+                 received_at TEXT NOT NULL, received_ms INTEGER NOT NULL, size INTEGER NOT NULL, \
+                 text TEXT, html TEXT, links_json TEXT NOT NULL, codes_json TEXT NOT NULL, \
+                 message_id TEXT, in_reply_to TEXT, \
+                 references_json TEXT NOT NULL DEFAULT '[]', raw BLOB NOT NULL, \
+                 envelope_from TEXT, link_metadata_json TEXT);
+                 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO emails VALUES ('old-1', 'box', 1, 'null', '[]', '[]', '[]', 'Hi', \
+                 't', 1, 1, NULL, NULL, '[]', '[]', NULL, NULL, '[]', x'FF00', NULL, '[]');",
+            )
+            .unwrap();
+        }
+        let mut fresh = full_email("new-1", "box");
+        fresh.attachments = Some(AttachmentList {
+            total: 1,
+            parts: vec![attachment("n.bin", Some(b"xyz"), 3)],
+            ..Default::default()
+        });
+        {
+            let persist = Persist::open(&path).unwrap();
+            let (emails, _, _) = persist.load().unwrap();
+            assert_eq!(emails[0].attachments, None);
+            assert_eq!(emails[0].raw, vec![0xFF, 0x00]);
+            persist.record_insert(&fresh, &[], 2, 0).unwrap();
+        }
+        let (emails, _, _) = Persist::open(&path).unwrap().load().unwrap();
+        assert_eq!(emails[0].attachments, None);
+        assert_eq!(emails[1], fresh);
     }
 
     /// Writes `corrupt` into the one row's occurrence column and returns the

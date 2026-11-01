@@ -492,15 +492,19 @@ async fn mcp_at(addr: Http, version: &str, request: &Value) -> Value {
 }
 
 #[tokio::test]
-async fn the_tool_is_appended_last_with_its_modern_projection() {
+async fn the_tool_is_appended_after_the_focused_waits_with_its_modern_projection() {
     let srv = routed().await;
     for version in ["2025-03-26", "2025-06-18", "2025-11-25"] {
         let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
         let reply = mcp_at(srv.http_addr, version, &list).await;
         let tools = reply["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 16, "{version}");
+        assert_eq!(tools.len(), 18, "{version}");
+        assert_eq!(tools[14]["name"], "swarmail_wait_for_link", "{version}");
         let tool = &tools[15];
         assert_eq!(tool["name"], "swarmail_create_inbox");
+        // Decision 0110 appends the two attachment tools after it.
+        assert_eq!(tools[16]["name"], "swarmail_list_attachments", "{version}");
+        assert_eq!(tools[17]["name"], "swarmail_get_attachment", "{version}");
         assert_eq!(
             tool["inputSchema"],
             json!({"type":"object","additionalProperties":false})
@@ -589,5 +593,133 @@ async fn concurrent_calls_mint_distinct_names_inside_the_routing_alphabet() {
     assert_eq!(addresses.len(), 24);
     // Minting allocates nothing (0032).
     assert!(inbox_names(addr).await.is_empty());
+    srv.stop().await;
+}
+
+// ---------- Routing beside the attachment tools (decisions 0110, 0112) ----------
+
+/// One transaction carrying a text body and one attachment; the stored id.
+async fn deliver_attached(
+    addr: Http,
+    auth: Option<&str>,
+    rcpt: &str,
+    filename: &str,
+    content: &str,
+) -> String {
+    let mut conn = session(addr, auth).await;
+    ok(&mut conn, "MAIL FROM:<app@example.test>").await;
+    ok(&mut conn, &format!("RCPT TO:<{rcpt}>")).await;
+    let reply = conn
+        .data(&format!(
+            "Subject: attached\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/mixed; boundary=\"bd\"\r\n\r\n\
+             --bd\r\nContent-Type: text/plain\r\n\r\nsee attached\r\n\
+             --bd\r\nContent-Type: text/plain\r\n\
+             Content-Disposition: attachment; filename=\"{filename}\"\r\n\r\n\
+             {content}\r\n--bd--"
+        ))
+        .await;
+    stored_id(&reply)
+}
+
+/// A mail routed by recipient to a minted inbox keeps its attachments: the
+/// two tools list and fetch them by the id the routed inbox shows, and
+/// clearing the AUTH identity's inbox (which holds a mail of its own)
+/// leaves them in place. Clearing the minted inbox takes them with it.
+#[tokio::test]
+async fn attachments_of_a_routed_mail_are_listed_and_fetched_from_the_minted_inbox() {
+    let srv = routed().await;
+    let addr = srv.http_addr;
+    let smtp = srv.smtp_addr;
+    let agent = mint(addr).await;
+    let routed_id =
+        deliver_attached(smtp, Some("fixture-app"), &agent.address, "a.txt", "abc").await;
+    // The same AUTH identity, a recipient outside the domain: no vote, so
+    // this one lands in the AUTH inbox.
+    let auth_id = deliver_attached(
+        smtp,
+        Some("fixture-app"),
+        "ops@elsewhere.test",
+        "b.txt",
+        "other",
+    )
+    .await;
+
+    assert_eq!(
+        ids(addr, &agent.inbox).await,
+        BTreeSet::from([routed_id.clone()])
+    );
+    assert_eq!(
+        ids(addr, "fixture-app").await,
+        BTreeSet::from([auth_id.clone()])
+    );
+
+    let expect_routed = |listed: &Value| {
+        assert_eq!(listed["id"], routed_id.as_str());
+        assert_eq!(listed["total"], 1);
+        assert_eq!(listed["truncated"], false);
+        let entry = &listed["attachments"][0];
+        assert_eq!(entry["index"], 0);
+        assert_eq!(entry["filename"], "a.txt");
+        assert_eq!(entry["content_type"], "text/plain");
+        assert_eq!(entry["size"], 3);
+        assert_eq!(entry["stored"], true);
+        assert_eq!(
+            entry["sha256"],
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    };
+    let list = |id: &str| tool(addr, "swarmail_list_attachments", json!({ "id": id }));
+    let get = |id: &str| {
+        tool(
+            addr,
+            "swarmail_get_attachment",
+            json!({ "id": id, "index": 0 }),
+        )
+    };
+
+    let listed = list(&routed_id).await;
+    assert_eq!(listed["result"]["isError"], false, "{listed}");
+    expect_routed(&text(&listed));
+    let fetched = get(&routed_id).await;
+    assert_eq!(fetched["result"]["isError"], false, "{fetched}");
+    let fetched = text(&fetched);
+    assert_eq!(fetched["encoding"], "utf-8");
+    assert_eq!(fetched["content"], "abc");
+    assert_eq!(fetched["filename"], "a.txt");
+
+    // The id an agent reads from its own inbox is the id the tools take.
+    let found = text(
+        &tool(
+            addr,
+            "swarmail_search_emails",
+            json!({"inbox": agent.inbox}),
+        )
+        .await,
+    );
+    assert_eq!(found["emails"][0]["id"], routed_id.as_str());
+
+    // Clearing the AUTH identity's inbox touches only its own mail.
+    let cleared = tool(
+        addr,
+        "swarmail_clear_inbox",
+        json!({"inbox": "fixture-app"}),
+    )
+    .await;
+    assert_eq!(cleared["result"]["isError"], false, "{cleared}");
+    let gone = list(&auth_id).await;
+    assert_eq!(gone["result"]["isError"], true, "{gone}");
+    expect_routed(&text(&list(&routed_id).await));
+    assert_eq!(text(&get(&routed_id).await)["content"], "abc");
+
+    // Clearing the minted inbox removes the routed mail and its attachments.
+    let cleared = tool(addr, "swarmail_clear_inbox", json!({"inbox": agent.inbox})).await;
+    assert_eq!(cleared["result"]["isError"], false, "{cleared}");
+    let gone = list(&routed_id).await;
+    assert_eq!(gone["result"]["isError"], true, "{gone}");
+    assert_eq!(
+        gone["result"]["content"][0]["text"],
+        format!("message {routed_id} not found")
+    );
     srv.stop().await;
 }

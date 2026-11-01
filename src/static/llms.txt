@@ -137,9 +137,10 @@ No sessions or SSE; GET /mcp is 405 with valid or absent version headers.
 Only 2025-03-26 supports batches; every batch description below refers to
 that revision. Modern arrays refuse one -32600/null before all effects,
 including notification-only arrays. Legacy batch initialize stays legacy.
-Modern tools annotate the ten reads (search, get, latest, wait, both extracts,
+Modern tools annotate the twelve reads (search, get, latest, wait, both extracts,
 the deliverability report, whose cache fill changes no mail, both focused
-waits and the inbox minter, which allocates nothing) readOnlyHint:true and the six mutations readOnlyHint:false,
+waits, the inbox minter, which allocates nothing, and both attachment tools)
+readOnlyHint:true and the six mutations readOnlyHint:false,
 destructiveHint:true (delete, both clears, seed, which can prune, and both chaos
 changes, which replace configuration).
 For 2025-06-18 and 2025-11-25 every tool declares an object-root outputSchema.
@@ -147,9 +148,11 @@ Every success returns structuredContent plus the same JSON in its existing text
 block; text-only consumers can keep reading content. Errors keep their text/RPC
 shapes without structured success data. March (also missing-version requests)
 keeps its thirteen existing catalogue entries and existing result bytes;
-discovery appends the two focused waits and swarmail_create_inbox after them, sixteen in all. Tests pin
-the REST-backed schemas to served OpenAPI through explicit output projections,
-including omitted fields and nullable provenance; the focused waits are MCP-only
+discovery appends the two focused waits and swarmail_create_inbox after them,
+sixteen in all, then the two attachment tools, eighteen in all. Tests pin the
+REST-backed schemas to served OpenAPI through explicit output projections,
+including omitted fields and nullable provenance; the focused waits and the
+attachment tools are MCP-only
 and their schemas are checked against independently stated expectations.
 Compact reads (decision 0108, proposed): on 2025-06-18 and 2025-11-25,
 swarmail_search_emails and swarmail_get_latest_email answer a compact view per
@@ -206,7 +209,8 @@ The operator retains #151's merge hold.
 `swarmail_wait_for_link` (decision 0094, proposed; read-only), then
 `swarmail_create_inbox` (decision 0112, proposed; no arguments; returns
 {inbox, address}, or isError naming --route-domain when the server routes
-nothing). The focused waits
+nothing), then `swarmail_list_attachments` and `swarmail_get_attachment`
+(decision 0110, proposed; read-only; described below). The focused waits
 take the wait's inbox/to/from/subject/inclusive since_ms filters and timeout_ms
 (default 5000, 0-60000) and answer status selected|ambiguous|timed_out with
 matched (eligible emails). wait_for_code: one distinct code in the newest
@@ -238,6 +242,23 @@ but had no code or no selected link. since_ms limits arrivals. nearest_subject i
 a hint, never a selection: the mail that missed the subject alone with the most
 shared character pairs; read its to. No near_misses key means the inbox holds
 nothing. Own inbox only; not access control (MCP is unauthenticated).
+Attachments (decision 0110, proposed): swarmail_list_attachments {id} answers
+{id,total,truncated,attachments}, <=250 entries in message order and <=3 MiB of JSON,
+so labels that escape heavily can list fewer (total is exact; a stored part cut from
+the answer stays fetchable by index),
+each {index,filename,content_type,size,sha256,stored,ics}: type lowercased, size
+in decoded bytes, sha256 lowercase hex of exactly the bytes get returns. Candidates
+are the parser's attachments plus any text/calendar, application/ics or .ics part;
+an attached message is one entry. ics is the FIRST VEVENT's dtstart, dtstart_tzid,
+dtend, dtend_tzid, summary (unescaped) and uid, verbatim, no timezone resolution;
+null for no VEVENT, non-UTF-8 or >1 MiB. swarmail_get_attachment {id,index} answers
+{index,filename,content_type,size,sha256,encoding,content}: encoding utf-8 for valid
+UTF-8 without control bytes beyond tab/LF/CR, else base64; never truncated. Only
+1 MiB of decoded bytes is kept per mail, first-fit in list order; a larger part is
+listed with stored:false and fetch refuses it, naming its size, the budget and
+GET /api/v1/messages/{id}/raw, which serves the whole mail. Strings are cut to 1024
+bytes. Mail stored before the feature answers unknown, even where a compact read
+shows its attachment labels; nothing is backfilled.
 stdio transport: `swarmail mcp --url http://127.0.0.1:8025` (launch as an MCP
 subprocess; talks to the same server). Except for malformed seed fixture
 content and the supplied `timeout_ms`
