@@ -118,7 +118,7 @@ enum Cmd {
         wrapper_profile: Option<provenance::WrapperProfile>,
         #[arg(long, hide = true)]
         worker_context: Option<String>,
-        /// Prepared, not activated (proposed 0110): run the whole trial in a
+        /// Prepared, not activated (proposed 0115): run the whole trial in a
         /// fresh Linux namespace boundary or refuse by name. Never falls
         /// back to an unisolated run.
         #[arg(long, hide = true)]
@@ -383,7 +383,7 @@ fn main() -> ExitCode {
     };
     // A trial's request is validated, and its boundary entered when asked
     // for, before any runtime exists: the boundary clones the process, which
-    // is only sound while it is single-threaded (proposed 0110).
+    // is only sound while it is single-threaded (proposed 0115).
     let mut prepared = None;
     if let Cmd::Trial { .. } = &cli.command {
         match prepare_trial(

@@ -1,4 +1,4 @@
-//! The whole-trial namespace boundary of proposed decision 0110 — prepared,
+//! The whole-trial namespace boundary of proposed decision 0115 — prepared,
 //! not activated.
 //!
 //! `trial --isolated` (a hidden flag) calls [`enter`] once, single-threaded,
@@ -19,7 +19,7 @@
 //!
 //! Nothing here widens what a trial may do: concurrency stays refused by the
 //! public CLI and by admission (accepted 0076), and no row field claims
-//! isolation (0110, Current integration 1–2).
+//! isolation (0115, Current integration 1–2).
 
 use std::fmt;
 use std::path::{Path, PathBuf};

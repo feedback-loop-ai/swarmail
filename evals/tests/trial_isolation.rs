@@ -1,4 +1,4 @@
-//! Trial isolation (proposed decision 0110; issue #221) — prepared, not
+//! Trial isolation (proposed decision 0115; issue #221) — prepared, not
 //! activated. Concurrency stays off; nothing here lets two trials overlap.
 //!
 //! Two kinds of test live here, and the line between them is the point:

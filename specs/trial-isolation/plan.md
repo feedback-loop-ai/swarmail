@@ -1,7 +1,7 @@
 # Trial isolation implementation plan — preparation on main
 
 Implements [spec.md](spec.md); semantic activation is governed by proposed
-[0110](../../docs/decisions/0110-trial-isolation.md). This run prepares the
+[0115](../../docs/decisions/0115-trial-isolation.md). This run prepares the
 worker and proves everything provable without a namespace. Concurrency stays
 off; no row version changes; no production path reads a proof record.
 
@@ -35,7 +35,7 @@ Preserve accepted 0001–0005, 0055's app-state authority and real-subprocess
 path, 0071 trap precedence, 0073 matrix cancellation, 0075 safe diagnostics
 and closed environments, and all of 0076. Accepted 0045 §8 separates
 compatible proof from contradictory activation: overlapping trials, a new row
-version and any egress change wait for operator acceptance of 0110. Root exact
+version and any egress change wait for operator acceptance of 0115. Root exact
 coverage stays 100% lines/branches/functions with zero missed and no
 `coverage(off)`; this work does not touch `src/`, so the root report is
 unchanged and `git diff main --stat -- src/` must stay empty. Evals keeps its
@@ -64,7 +64,7 @@ before any Tokio runtime is built, so no async-fork hazard exists.
 
 Provider egress is a feasibility checkpoint, not shipped code. A private
 network namespace has loopback only; a real driver cannot reach its provider.
-0110 asks the operator one question with the chief's recommendation (a
+0115 asks the operator one question with the chief's recommendation (a
 controller-side CONNECT relay with an explicit allowlist over an inherited
 socket). Until then `--isolated` refuses every `--wrapper-profile`, so a paid
 driver cannot run isolated and score a provider outage as a model `gave_up`.
@@ -80,7 +80,7 @@ driver cannot run isolated and score a provider outage as a model `gave_up`.
 | `evals/tests/trial_isolation.rs` (new) | The always-on leak baseline (AC-S1), the precondition refusals (AC-S3), and the `#[ignore]` live proofs (AC-L1..L3), with the probe-and-fail skip helper (AC-S6). |
 | `evals/tests/common/mod.rs` | Extend with the idle-victim handshake (already present as `held_idle`), bounded descendant discovery (already present as `process_descendants`), a `/proc/<pid>/environ` reader, and the probe helper. Controller-owned; grants no sibling capability. |
 | `evals/README.md`, `evals/run-plan.md` | A dated section: the hidden flag, its refusals, the host proof command, sequential-still, no row claims isolation. |
-| `docs/decisions/0110-trial-isolation.md` | The proposed record itself, committed by the chief with this design. |
+| `docs/decisions/0115-trial-isolation.md` | The proposed record itself, committed by the chief with this design. |
 | `docs/decisions/README.md` | Its index row, added in implementation task T01 (the 0076 precedent: the chief commits only the decision body; the index row lands with the implementation so the chief HEAD stays the four design files). |
 | `specs/trial-isolation/{spec,plan,tasks}.md` | This design. |
 
@@ -94,7 +94,7 @@ incidentally.
 
 No wire contract changes in this run. `TrialResult` stays schema 2 with
 required integer `concurrency: 1`; `results::read` and the report math are
-untouched. The `execution`/`boundary`/`concurrency` object of 0110 §4 and §5
+untouched. The `execution`/`boundary`/`concurrency` object of 0115 §4 and §5
 is drafted in the decision and the spec but is **not** added to any struct,
 constructor, reader or report here; it lands as a new row version chosen by
 the operator at activation, with the same fail-closed reading of older rows
@@ -145,7 +145,7 @@ CI owns the chart, Docker smoke, RustSec, tag-rate and port-80 proofs.
 Design-stage validation is structural (`design-check.sh`): exactly one touched
 `specs/<slug>/`, its three files committed, non-empty and clean, an acceptance
 heading in spec.md, a checkbox in tasks.md, a risks heading in plan.md, and
-the declared `Decision: 0110` resolving to one committed, clean, proposed
+the declared `Decision: 0115` resolving to one committed, clean, proposed
 record the spec links. The sequence's pinned checker rules the attempt; the
 chief's result is `drafted`.
 
@@ -153,14 +153,14 @@ chief's result is `drafted`.
 
 | Risk | Mitigation / remaining cost |
 | --- | --- |
-| The namespace code lands unexecuted in this seat | Every failure refuses by name; the code has no caller outside the hidden flag and the `#[ignore]` proofs; the spec and 0110 say plainly the worker is unproven. The first live run will find setup bugs (locked mount flags, a masked `/proc`); that is expected, not a regression. |
+| The namespace code lands unexecuted in this seat | Every failure refuses by name; the code has no caller outside the hidden flag and the `#[ignore]` proofs; the spec and 0115 say plainly the worker is unproven. The first live run will find setup bugs (locked mount flags, a masked `/proc`); that is expected, not a regression. |
 | `--isolated` falls back to unisolated under pressure | There is no fallback path by construction: the single return is success or a named refusal and exit 2. AC-S2 proves a forced failure launches no agent. |
 | A test prints SKIP and shows `ok` (the fake pass) | Namespace tests are `#[ignore]`; run explicitly they probe and **panic** on an unavailable boundary. The gate inventory never passes `--ignored`, so seats stay green with the proofs shown as ignored. |
-| The index row is a fifth file in the chief commit | It is not: the chief commits only the four design artifacts; the index row is implementation T01, matching the accepted 0076 delivery (its T1 added the index row). The decision is still discoverable by its `Decision: 0110` link from the spec, which is what `design-check.sh` validates. |
+| The index row is a fifth file in the chief commit | It is not: the chief commits only the four design artifacts; the index row is implementation T01, matching the accepted 0076 delivery (its T1 added the index row). The decision is still discoverable by its `Decision: 0115` link from the spec, which is what `design-check.sh` validates. |
 | Reading another process's `/proc/<pid>/environ` is a hostile technique | It is used only inside the test suite against the suite's own idle-victim child, to establish the leak the feature exists to close (AC-S1). It is authorized security testing of this harness, bounded to the victim runner's descendants, never other sessions. |
 | The clone-based PID-1 topology is subtle | The clone is single-threaded before any runtime; the controller only forwards signals and mirrors status; a tiny reaping init is deferred activation work and named as a known zombie limit, not silently assumed away. |
 | A row implies a trial was isolated | No row changes; `confinement` stays `"unconfined"`; no `boundary` field exists until the operator accepts a version. The report cannot claim isolation. |
-| Egress blocks any real driver | AC-L4 stays open and blocks activation; `--isolated` refuses wrapper profiles so no paid driver runs isolated; 0110 puts the one question to the operator. No paid trial is run. |
+| Egress blocks any real driver | AC-L4 stays open and blocks activation; `--isolated` refuses wrapper profiles so no paid driver runs isolated; 0115 puts the one question to the operator. No paid trial is run. |
 | Coverage: isolation.rs is outside the root report | True (`evals` is a separate workspace), so the exact-100% gate does not force its lines to execute. The discipline is replaced by AC-S1..S4 covering the pure parts and the live proofs covering the rest; the honest limit is that the syscall body is unexecuted here, stated in the spec. |
 | Incidental edits to reserved cancellation/environment blocks | The boundary sets HOME inside the private tmpfs via the existing `RuntimeDirs` map; no edit to the 0073 cancellation or 0075/0076 §4 environment code. If an edit becomes necessary it is recorded as an integration dependency, not hidden in a refactor. |
 | Gates or reviewers unavailable | Preserve failed receipts; no substitution or success claim. The run must not report complete while AC-L1..L4 and AC-O1 are open. |

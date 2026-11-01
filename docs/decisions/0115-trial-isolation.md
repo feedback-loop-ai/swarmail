@@ -1,4 +1,4 @@
-# 0110 — Trial separation and observed concurrency
+# 0115 — Trial separation and observed concurrency
 
 - **Status:** proposed — only the operator accepts.
 - **Date:** 2026-10-24 (design on record, branch
@@ -16,7 +16,7 @@
   unconfined limits; accepted 0071, 0073, 0075 and 0076 until the operator
   accepts this record; 0098/0099 review routing; root coverage and
   dependency policy.
-- **Number:** 0110 follows the highest record on main, 0109 (accepted
+- **Number:** 0115 follows the highest record on main, 0109 (accepted
   2026-10-31). 0062 is occupied by *RPC edge contracts*; 0106–0108 are
   unreferenced gaps and are not reused.
 

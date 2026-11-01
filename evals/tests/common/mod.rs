@@ -906,7 +906,7 @@ async fn naive_recovery(mode: &str, env: &AgentEnv, app: &App) -> i32 {
     0
 }
 
-// ---- trial isolation (proposed 0110) -------------------------------------
+// ---- trial isolation (proposed 0115) -------------------------------------
 
 /// A benign agent for the isolated-HOME proof: exit 0 when HOME is fresh
 /// (no sentinel from an earlier trial) and writable, else a named code.
@@ -927,7 +927,7 @@ fn home_probe() -> i32 {
 /// Why `trial --isolated` is unavailable here, read from a real null-agent
 /// run, or `None` when the boundary was built and the trial ran.
 /// The advisory `unshare -Urn true` is deliberately not consulted: only the
-/// launch itself is authoritative (0110, Current integration 5).
+/// launch itself is authoritative (0115, Current integration 5).
 pub fn boundary_unavailable() -> Option<String> {
     let _scope = trial_scope();
     let out = cli()
@@ -963,7 +963,7 @@ pub fn agent_codes(row: &TrialResult) -> Vec<Option<i32>> {
     row.agent_exits.iter().map(|exit| exit.code).collect()
 }
 
-// ---- cross-trial probing (proposed 0110; AC-S1, AC-L1) -------------------
+// ---- cross-trial probing (proposed 0115; AC-S1, AC-L1) -------------------
 //
 // The adversary here is a test fixture that is, deliberately, only as strong
 // as any same-uid process: it owns no credential, exploits no kernel bug, and

@@ -4,7 +4,7 @@ Date: 2026-10-31. Issue #221 (split from #199), Epic #192. Base: main a3cff51.
 Lane: `claude-careful` (accepted 0098/0099; residual rework under accepted 0102).
 Operator direction, 2026-10-30: **preparation only**.
 
-Decision: 0110 — [Trial separation and observed concurrency](../../docs/decisions/0110-trial-isolation.md)
+Decision: 0115 — [Trial separation and observed concurrency](../../docs/decisions/0115-trial-isolation.md)
 (proposed; carried from the design on record, branch
 `epic192/issue199-current-0058` at 518c52d where it was 0062, with a dated
 *Current integration* section that governs where main has moved).
@@ -38,14 +38,14 @@ already inside a user namespace (`/proc/self/uid_map` reads `1000 0 1`),
 
 Concurrency stays off. The public `--concurrency` refusal, admission and every
 0076 row rule are untouched. Nothing in this run reads a "proof record" to
-unlock overlap: that would contradict accepted 0076 §2 while 0110 is proposed
+unlock overlap: that would contradict accepted 0076 §2 while 0115 is proposed
 (accepted 0045 §8), and a file is forgeable, host-scoped and goes stale.
 
 ## Panel synthesis — what was adopted, rejected and reconciled
 
 | Question | Ruling | Losing side and its cost |
 | --- | --- | --- |
-| Shape of the worker | **Simplicity:** one module entered in `trial --isolated` before the Tokio runtime exists, then the unchanged runner arm; no re-exec verb, no versioned lifecycle pipes, no proof record. | Robustness's controller pipes and re-exec. Cost: the controller cannot attest the boundary in this run; the row carries no `boundary` field until the operator accepts a row version (0110 §4). |
+| Shape of the worker | **Simplicity:** one module entered in `trial --isolated` before the Tokio runtime exists, then the unchanged runner arm; no re-exec verb, no versioned lifecycle pipes, no proof record. | Robustness's controller pipes and re-exec. Cost: the controller cannot attest the boundary in this run; the row carries no `boundary` field until the operator accepts a row version (0115 §4). |
 | Process topology | **Robustness, narrowed:** the controller stays in host namespaces, holds the host admission, forwards signals and mirrors the exit status; the trial init is PID 1 of its own PID namespace so the kernel tears the trial down when it dies, and it dies when the controller dies. | Simplicity's "unshare in the outer process, then fork" drags the controller into the trial's namespaces. Cost of the ruling: one clone with namespace flags instead of `unshare`+`fork` (three processes would otherwise be needed to make the runner PID 1). |
 | Writable state | **Robustness:** a fresh size-bounded tmpfs mounted inside the boundary is the only writable path; the trial root is never a bind of a host directory; `/tmp` inside is that tmpfs, so the existing `RuntimeDirs` map lands there unchanged. | Nothing lost: 0076 §4's fresh HOME is kept, not rewritten. |
 | Immutable inputs | **Simplicity's allowlist, extended by one named list:** read-only, nosuid binds of `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, a fixed set of `/dev` nodes, a fresh `/proc`, and the runner, Swarmail and agent executables at their own absolute paths. A hidden, repeatable `--isolated-expose <absolute regular file>` binds one more read-only file (the proof needs the test executable the helper script execs). | A mask list or a writable checkout (robustness's "edit the harness for later trials" route). Cost: an agent that needs anything outside the allowlist refuses by name; nothing is guessed. |
@@ -55,8 +55,8 @@ unlock overlap: that would contradict accepted 0076 §2 while 0110 is proposed
 | Fixture control plane | **Reject robustness invariant 7 as inapplicable:** the runner that drives the fixture lives inside the boundary with it; nothing crosses the network namespace. | None. |
 | Reaping orphans | The runner is PID 1; a detached grandchild whose parent exits becomes a zombie it does not reap, bounded by the namespace's lifetime. Recorded as a known limit; a tiny init between controller and runner is activation work if the live proof shows it matters. | Robustness's full init. Cost: zombies of daemonizing agents persist until teardown. |
 | Artifacts and wrapper profiles | `--isolated` refuses `--artifacts-dir` (no writable host path enters the boundary; controller-side staging is activation work), refuses every `--wrapper-profile` (egress is open, below), and refuses an unset `SWARMAIL_BIN` (no cargo build inside). | Robustness's controller-owned artifact staging. Cost: isolated trials retain no artifacts in this run. |
-| Row schema, `execution` object, event ledger | **Rejected for this run** (0110 Current integration 1–2). | Cost: the row cannot show a trial was isolated. Acceptable while overlap is off. |
-| Egress (AC5 of the design on record) | **Both positions agree:** nothing is built; `--isolated` refuses wrapper profiles; 0110 asks the operator one question with a recommendation. AC-L4 stays open and blocks activation however green the hostile proof goes. | Cost: no real model driver can run isolated yet. |
+| Row schema, `execution` object, event ledger | **Rejected for this run** (0115 Current integration 1–2). | Cost: the row cannot show a trial was isolated. Acceptable while overlap is off. |
+| Egress (AC5 of the design on record) | **Both positions agree:** nothing is built; `--isolated` refuses wrapper profiles; 0115 asks the operator one question with a recommendation. AC-L4 stays open and blocks activation however green the hostile proof goes. | Cost: no real model driver can run isolated yet. |
 | Live baseline of the leak | **Simplicity:** one always-on test makes an idle victim pass through a same-uid helper that reads the victim agent's environment from `/proc`, then uses real MCP and the real fixture. Runs on every host, no namespace needed. | Cost: a test that documents the attacker able to win, in the repository, on purpose — without it a later denial is cooperating-oracle evidence. |
 | Skip discipline | `#[ignore = "trial-isolation: needs unprivileged user namespaces"]` is the one honest skip cargo has. Run explicitly, each such test probes first with a real `trial --isolated` null-agent run; if that refuses, it prints `SKIP trial-isolation: <reason>` and **fails**. | Intake C5's "records status unavailable in its evidence" is narrowed to that line plus the probe's harness-error row; no sidecar. A test that prints SKIP and returns `ok` is the fake pass the operator forbids. |
 
@@ -121,8 +121,8 @@ the operator. The run must not report complete while they are open.
 | Outstanding | Owner | How it is settled |
 | --- | --- | --- |
 | AC-L1..L3 hostile live proof | host/CI | the command below, green |
-| AC-L4 provider egress | operator ruling on 0110's question, then a host proof | a negative test that the chosen path cannot reach the host fixture port or a sibling address |
-| AC-O1 operator ruling on 0110 | operator | acceptance or rejection recorded in `docs/decisions/` |
+| AC-L4 provider egress | operator ruling on 0115's question, then a host proof | a negative test that the chosen path cannot reach the host fixture port or a sibling address |
+| AC-O1 operator ruling on 0115 | operator | acceptance or rejection recorded in `docs/decisions/` |
 | Concurrency re-enabled | a later change after AC-L1..L4 and AC-O1 | a new row version chosen then; not this run |
 
 The live proof command, from the repository root on a capable host:
@@ -188,7 +188,7 @@ asked for and unavailable, outstanding until the host proof above passes.
   locked, plus the standalone evals `fmt`, `clippy --all-targets` and
   `cargo test --locked`. CI-owned obligations are not claimed. No new
   dependency; `evals` already depends on `libc =0.2.190`.
-- **AC-S8 — Authority.** `docs/decisions/0110-trial-isolation.md` is
+- **AC-S8 — Authority.** `docs/decisions/0115-trial-isolation.md` is
   committed with status `proposed` and an index row; accepted decisions,
   the dependency allowlist, gate scripts and review routing are unchanged;
   `git diff main -- docs/decisions/0055-agent-eval-harness.md` and
@@ -211,11 +211,11 @@ asked for and unavailable, outstanding until the host proof above passes.
   trial process alive on the host; killing the init leaves no agent alive;
   an interrupted trial emits its interrupted row and the controller ends with
   the same signal. No orphan from trial A is alive when trial B starts.
-- **AC-L4 — Driver egress.** Open. The operator's ruling on 0110's question,
+- **AC-L4 — Driver egress.** Open. The operator's ruling on 0115's question,
   then a negative proof that the chosen transport cannot reach the host
   fixture port or a sibling trial's address. Offline oracle passes alone do
   not satisfy it.
-- **AC-O1 — Operator ruling on 0110.** Outstanding by construction.
+- **AC-O1 — Operator ruling on 0115.** Outstanding by construction.
 
 No push, merge, tag, publication, issue closure or decision acceptance belongs
 to this work. Drafting this design is not implementation success.
@@ -288,7 +288,7 @@ Built and proven in the seat (all on every host):
    by the same uid refuses `concurrent_trials_refused` while the first runs.
    AC-L1 as written needs two live trials. It cannot run without either a
    documented, hidden admission bypass (which would contradict 0076 §1 while
-   0110 is proposed, accepted 0045 §8) or a test-side arrangement that gives
+   0115 is proposed, accepted 0045 §8) or a test-side arrangement that gives
    trial B's controller its own `/tmp` (a private mount namespace created in
    the test before `exec`). Nothing in this run takes either step; the
    operator should choose.

@@ -6,12 +6,12 @@ contradictory contract (accepted 0045 §8); concurrency stays off and no row
 version changes in this run.
 
 - [x] **T01 — Carry the decision and its index row (AC-S8, AC-O1).** Keep
-  `docs/decisions/0110-trial-isolation.md` as `proposed` (committed by the
+  `docs/decisions/0115-trial-isolation.md` as `proposed` (committed by the
   chief with this design) and add its row to `docs/decisions/README.md` in the
-  implementation commit. **Test:** `design-check.sh` resolves `Decision: 0110`
+  implementation commit. **Test:** `design-check.sh` resolves `Decision: 0115`
   to one clean proposed record the spec links; `git diff main --
   docs/decisions/0055-agent-eval-harness.md docs/decisions/0076-sequential-eval-trials.md`
-  is empty; the README has exactly one 0110 row.
+  is empty; the README has exactly one 0115 row.
 - [x] **T02 — Establish the leak live, before any boundary (AC-S1).** Add
   `evals/tests/trial_isolation.rs` with an always-on test: hold an idle signup
   victim (`held_idle`), a same-uid helper reads the victim agent's `EVAL_*`
@@ -64,7 +64,7 @@ version changes in this run.
 - [x] **T09 — Documentation (AC-S8).** Add a dated section to
   `evals/README.md` and `evals/run-plan.md`: the hidden flag, its refusals,
   the host proof command, trials remain sequential, no row claims isolation.
-  **Test:** a requirement-to-observation read against 0076 and 0110; no
+  **Test:** a requirement-to-observation read against 0076 and 0115; no
   guarantee downgrade, no `confinement` relabel, no claimed reproduction of
   concurrency.
 - [ ] **T10 — Gates (AC-S7).** Run the full house gate inventory locked plus
@@ -74,7 +74,7 @@ version changes in this run.
   and seal proofs, `cargo deny check licenses` and the fail-closed native-tls
   absence; CI-owned obligations retained, not claimed; the run does not report
   complete while AC-L1..L4 and AC-O1 are open.
-- [x] **T11 — Egress question to the operator (AC-L4, AC-O1).** Carry 0110's
+- [x] **T11 — Egress question to the operator (AC-L4, AC-O1).** Carry 0115's
   egress question and recommendation; `--isolated` refuses wrapper profiles
   until the operator rules. **Test:** no egress code, launcher, daemon,
   dependency or credential copy is added; `cargo deny check licenses` passes

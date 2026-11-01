@@ -145,7 +145,7 @@ house charter's network/chart/Docker/port-80/macOS root proofs; #201 owns macOS
 eval execution. #152/#153 PRs stay unmerged until the baseline exists;
 #154–#160 await reprioritization. No paid/networked agent is run by delivery.
 
-## Trial isolation — prepared, not activated (#221, proposed 0110)
+## Trial isolation — prepared, not activated (#221, proposed 0115)
 
 Date: 2026-10-31. **Trials remain sequential.** Accepted 0076 still admits one
 trial per uid and refuses `--concurrency` other than 1; nothing here changes a
@@ -159,7 +159,7 @@ exists. There is no fallback to an unisolated run. It refuses, as a harness
 error row and exit 2, with: `concurrency_unsupported` (first),
 `isolation_requires_swarmail_bin`, `isolation_artifacts_unsupported`,
 `isolation_wrapper_unsupported` (provider egress is an open operator question
-in 0110, so no real driver runs isolated), `isolation_expose_invalid` and
+in 0115, so no real driver runs isolated), `isolation_expose_invalid` and
 `isolation_source_invalid`, and `boundary_unavailable:<operation>:<ERRNO>` when
 the kernel or host policy denies a step (for example
 `boundary_unavailable:clone:ENOSPC`). `--isolated-expose <absolute regular
