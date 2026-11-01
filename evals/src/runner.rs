@@ -67,9 +67,9 @@ const CLEANUP_BUDGET_HOLD_ENV: &str = "EVAL_TEST_CLEANUP_BUDGET_HOLD_DIR";
 const CLEANUP_BUDGET_RELEASE_ENV: &str = "EVAL_TEST_CLEANUP_BUDGET_RELEASE";
 #[cfg(test)]
 const CLEANUP_BUDGET_LOG_ENV: &str = "EVAL_TEST_CLEANUP_BUDGET_LOG";
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 const CLEANUP_OBSERVE_ERROR_ENV: &str = "EVAL_TEST_CLEANUP_OBSERVE_ERROR";
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 const CLEANUP_FORCE_EXPIRY_ENV: &str = "EVAL_TEST_CLEANUP_FORCE_EXPIRY";
 #[cfg(test)]
 const RUNNER_SIGNAL_LOG_ENV: &str = "EVAL_TEST_RUNNER_SIGNAL_LOG";
@@ -861,15 +861,21 @@ struct DrainTestControl {
     progress: tokio::sync::mpsc::UnboundedSender<&'static str>,
 }
 
+// Only Linux can read a member's pid, group and state (from /proc); other
+// Unix systems observe the group as a whole through kill(-pgid, 0).
 #[derive(Debug, Clone, Copy)]
 struct ProcIdentity {
+    #[cfg(target_os = "linux")]
     pid: i32,
+    #[cfg(target_os = "linux")]
     pgrp: i32,
     session: i32,
     start_time: u64,
+    #[cfg(target_os = "linux")]
     state: char,
 }
 
+#[cfg(target_os = "linux")]
 fn parse_proc_stat(pid: i32, stat: &str) -> Result<ProcIdentity, String> {
     let (_, tail) = stat
         .rsplit_once(')')
@@ -984,11 +990,8 @@ fn group_members(group: &OwnedGroup) -> Result<Vec<ProcIdentity>, String> {
         let rc = unsafe { libc::kill(-group.pgid, 0) };
         if rc == 0 {
             Ok(vec![ProcIdentity {
-                pid: group.pid,
-                pgrp: group.pgid,
                 session: group.session.unwrap_or_default(),
                 start_time: group.start_time.unwrap_or_default(),
-                state: 'R',
             }])
         } else {
             let e = std::io::Error::last_os_error();
@@ -996,11 +999,8 @@ fn group_members(group: &OwnedGroup) -> Result<Vec<ProcIdentity>, String> {
                 Ok(Vec::new())
             } else if e.raw_os_error() == Some(libc::EPERM) {
                 Ok(vec![ProcIdentity {
-                    pid: group.pid,
-                    pgrp: group.pgid,
                     session: group.session.unwrap_or_default(),
                     start_time: group.start_time.unwrap_or_default(),
-                    state: 'R',
                 }])
             } else {
                 Err(format!("cannot inspect process group {}: {e}", group.pgid))
@@ -1036,7 +1036,7 @@ fn signal_owned_group(group: &OwnedGroup, sig: i32) -> Result<(), String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 fn cleanup_timeout_error(group: &OwnedGroup, running: usize) -> String {
     format!(
         "cleanup timed out for process group {} ({} running member(s), direct child reaped: {})",
