@@ -34,8 +34,8 @@ review findings the chief carried into tasks, security findings included,
 are yours to fix as above. These returns count against the same five.
 
 Commit unsigned (`commit.gpgsign=false` is set repo-locally); never push
-and never stop for a signing key — the operator seals the branch before
-merge (decision 0056); write messages in the repository's imperative style
+and never stop for a signing key — nothing is sealed (decision 0056,
+2026-11-01 addendum); write messages in the repository's imperative style
 with a body that says why.
 
 **Result contract (mandatory).** Your task block names an absolute
