@@ -3,7 +3,8 @@
 - **Status:** proposed — only the operator accepts.
 - **Date:** 2026-10-24 (design on record, branch
   `epic192/issue199-current-0058` at 518c52d, where it was numbered 0062);
-  carried onto main a3cff51 on 2026-10-31 for issue #221.
+  carried onto main a3cff51 on 2026-10-31 for issue #221; revised
+  2026-11-01 (the boundary is bubblewrap; main a4f552d merged in).
 - **Issue:** #221 (split from #199 by operator ruling, 2026-10-24), Epic #192.
 - **Design:** [spec](../../specs/trial-isolation/spec.md),
   [plan](../../specs/trial-isolation/plan.md),
@@ -19,6 +20,109 @@
 - **Number:** 0115 follows the highest record on main, 0109 (accepted
   2026-10-31). 0062 is occupied by *RPC edge contracts*; 0106–0108 are
   unreferenced gaps and are not reused.
+
+## Revision 2026-11-01 — the boundary is bubblewrap
+
+Operator direction of 2026-11-01, recorded here while the record stays
+proposed. This dated section governs where it disagrees with the 2026-10-24
+ruling and the 2026-10-31 integration below; everything it does not name
+stands.
+
+**Evidence.** The 2026-10-31 worker built the namespaces itself (`clone`
+with namespace flags, `uid_map`, `pivot_root`). On this host it refuses
+`boundary_unavailable:identity_map:EACCES`: `kernel.apparmor_restrict_unprivileged_userns=1`,
+the Ubuntu-family default most operators will hit. bubblewrap 0.11.1
+(`/usr/bin/bwrap`) traverses that restriction through its AppArmor profile
+`bwrap-userns-restrict`. The dispatcher's probe outside any seat, with
+`--unshare-user --unshare-pid --unshare-net --unshare-ipc
+--die-with-parent`, gave uid 1000, an empty private `/tmp`, loopback only
+and pid 2; processes inside cannot create further user namespaces. In the
+delivery seat the same binary refuses with `ENOSPC` (the seat is already
+inside a user namespace), which is the named refusal the seat must show.
+
+**Ruling 1, restated.** The whole-trial boundary is built by invoking
+`/usr/bin/bwrap` (bubblewrap, at least 0.11.1) from the trial's controller
+with the fixed argv the spec records, not by a namespace worker the harness
+builds; the raw `clone`/`unshare` worker is retired and deleted. The
+boundary's contract is unchanged: one boundary around the runner worker,
+Swarmail, the fixture and every agent; private `/tmp`, HOME and `/proc`;
+escape descriptors closed; an unavailable boundary refuses by name before
+any server or agent exists; no unisolated fallback. bwrap is the same kernel
+boundary with a maintained, distribution-integrated launcher; it is not
+claimed to be stronger than one, and its trust is named, not hidden.
+
+**Locating and pinning.** The path is the constant `/usr/bin/bwrap`: no
+`PATH` lookup, no environment or flag override, because an override is the
+lever that becomes an unisolated fallback. The floor is `0.11.1`, the only
+version the boundary has been observed to work on; every option used is
+older, so the floor is a compatibility statement and not a security
+attestation of a distribution's patch level. Lowering it is an ordinary
+change that carries a live proof on the lower version. Both the version and
+a bounded probe with the real argv are checked on every launch and never
+cached. The closed refusal set is `boundary_unavailable:platform`
+(non-Linux; **macOS refuses by name**, bwrap is Linux-only),
+`boundary_unavailable:bwrap_absent`, `boundary_unavailable:bwrap_version`
+and `boundary_unavailable:bwrap_probe`. The errno-name vocabulary of the
+worker is withdrawn; bwrap's own stderr is forwarded beside the row.
+
+**Host prerequisite, for the operator.** bubblewrap is a **binary host
+prerequisite, not a crate dependency**: LGPL-2.0-or-later, executed as a
+separate process, never linked, vendored, downloaded or placed in
+`Cargo.lock` or `evals/Cargo.lock`; `deny.toml` does not change and no Rust
+dependency is added without a separate operator ruling. Running an isolated
+trial requires Linux, `/usr/bin/bwrap` at least 0.11.1 (on Ubuntu, the
+`bubblewrap` package; 24.04 ships 0.9.0, which the floor refuses until a
+proof lowers it), and a host policy that lets bwrap create user, PID,
+network and IPC namespaces (Ubuntu's `bwrap-userns-restrict` profile, or
+`kernel.apparmor_restrict_unprivileged_userns` lowered). Where any of these
+is missing the trial refuses by name and does not run. Accepting this record
+is accepting that prerequisite. Ruling 2's sentence "no new launcher … is
+implicitly authorized" is revised to: bwrap is the one launcher this record
+asks the operator to admit.
+
+**Network.** `--unshare-net` gives each trial a private loopback; Swarmail
+and the fixture listen there, and neither the host's nor a sibling's
+services exist there. `--share-net` is rejected outright: it would put the
+trial's own services on the host loopback. **Provider egress for real
+agents remains the open operator question** below, reframed: the design
+cannot give it without new machinery, and this record does not guess one.
+Until the operator rules, `--isolated` refuses every `--wrapper-profile`, so
+no paid driver can score a provider outage as a model `gave_up`.
+
+**Boundary observation replaces the in-init self-check.** No production
+self-check runs inside; a scripted observer agent in the live proof reports
+the topology from inside (uid, `/proc`, interfaces, absent host paths,
+tmpfs bound, closed environment, no stray descriptor, empty capabilities,
+`NoNewPrivs`), and the hostile proof attacks it from a sibling. Nested user
+namespaces are observed, not asserted: `--disable-userns` is not used until
+a live run shows it traverses the profile. The boundary is an access
+boundary, not a resource boundary: bwrap sets no cgroup limits unprivileged,
+and a hostile agent can still consume host CPU and memory; sequential
+admission bounds that today and activation must revisit it.
+
+**CI.** Nothing in `.github/` changes in this run (held for the operator
+under 0056's addendum). CI proves the always-on tests on ubuntu and the
+`platform` refusal on macOS. Whether a hosted ubuntu runner has bubblewrap,
+which version apt installs there, and whether the runner's policy permits
+the namespaces are **unobserved**; the operator's follow-up, if wanted, is a
+serialized ubuntu job that installs a pinned bubblewrap, checks the floor
+and policy, runs the one proof command and fails closed. Until then the
+only live proof is the dispatcher's command on this host.
+
+**Seats and the live proof.** Delivery seats cannot run bwrap in their own
+box; every boundary-dependent test detects that and fails with the named
+`SKIP trial-isolation: boundary_unavailable:<step>` line, never a fake
+pass, and the gate inventory never runs them. The hostile proof named in the
+issue (a same-uid agent in trial B cannot read A's prompt, reach A's MCP or
+fixture, or make A's idle agent pass) is one documented command, free (null
+and oracle agents and scripted hostile agents only), deterministic and
+bounded; the spec says which criteria only it proves (AC-L1..L3).
+
+**Still proposed.** Trials stay sequential under accepted 0076 until that
+proof passes and the operator accepts this record; concurrency returns only
+behind both. Current integration 5 and 6 below are superseded by this
+section's refusal set and probe; integration 1–4 stand. Nothing here accepts
+itself.
 
 ## Current integration — 2026-10-31, carried onto main a3cff51
 
@@ -139,6 +243,18 @@ alternative, a user-mode network stack such as `pasta` or `slirp4netns`, adds
 an external launcher and exposes host addresses by default. Until the
 operator rules, `--isolated` refuses every `wrapper_profile`, so no paid
 driver can silently score a provider outage as a model `gave_up`.
+
+*Reframed for bubblewrap, 2026-11-01.* `--unshare-net` leaves the trial a
+private loopback and nothing else. bwrap's `--share-net` is rejected: it
+keeps the host network namespace, so the trial's own Swarmail and fixture
+would listen on the host loopback where sibling trials and host services
+reach them. The two remaining routes each cost something this record does
+not authorize: `pasta` or `slirp4netns` composed around bwrap is a second
+binary prerequisite with a user-mode network stack inside the trust
+boundary and host-address mapping to disable; the controller-side CONNECT
+relay above is new relay code plus one descriptor that must survive the
+controller's close-on-exec sweep. The operator chooses one, or leaves real
+drivers outside the boundary; nothing is built or guessed here.
 
 ## Operator boundary and evidence-limited outcome
 

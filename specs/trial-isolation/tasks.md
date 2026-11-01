@@ -1,87 +1,119 @@
-# Trial isolation tasks — preparation on main
+# Trial isolation tasks — the boundary is bubblewrap
 
 Ordered. Each task names the test that proves it. AC references point to
-[spec.md](spec.md). A proposed decision is not authority to activate a
-contradictory contract (accepted 0045 §8); concurrency stays off and no row
-version changes in this run.
+[spec.md](spec.md) as revised 2026-11-01. A proposed decision is not authority
+to activate a contradictory contract (accepted 0045 §8); concurrency stays off
+and no row version changes in this run. Tasks closed by the 2026-10-31
+implementation that this revision keeps stay closed; tasks it reopens are
+unchecked again with their new test.
 
-- [x] **T01 — Carry the decision and its index row (AC-S8, AC-O1).** Keep
-  `docs/decisions/0115-trial-isolation.md` as `proposed` (committed by the
-  chief with this design) and add its row to `docs/decisions/README.md` in the
-  implementation commit. **Test:** `design-check.sh` resolves `Decision: 0115`
-  to one clean proposed record the spec links; `git diff main --
-  docs/decisions/0055-agent-eval-harness.md docs/decisions/0076-sequential-eval-trials.md`
-  is empty; the README has exactly one 0115 row.
-- [x] **T02 — Establish the leak live, before any boundary (AC-S1).** Add
-  `evals/tests/trial_isolation.rs` with an always-on test: hold an idle signup
-  victim (`held_idle`), a same-uid helper reads the victim agent's `EVAL_*`
-  from `/proc/<pid>/environ` after finding it among the victim runner's
-  descendants, completes signup through real MCP and the real fixture, and the
-  victim row is `pass`. **Test:** that test, green on every host; discovery is
-  bounded to the victim runner's descendants.
-- [x] **T03 — The pure boundary module (AC-S4).** Add `evals/src/isolation.rs`
-  with the errno-name table, the bind allowlist resolver and the ordered step
-  list, `#[cfg(target_os = "linux")]` body and a refusing `cfg` stub
-  elsewhere; one line in `lib.rs`. **Test:** inline unit tests assert the
-  errno table is total and closed, the resolver refuses relative/missing/
-  non-regular/symlinked executables and accepts the named sources, and the
-  step list orders identity maps first, `/proc` before pivot, and the
-  parent-death signal after the last credential change.
-- [x] **T04 — Entry, refusal and the injected-failure seam (AC-S2, AC-S3,
-  AC-S5).** Add the hidden `--isolated` and repeatable `--isolated-expose`
-  flags to `Cmd::Trial`; when set, run `isolation::enter` (taken as a
-  parameter) before the Tokio runtime and continue into the unchanged `Trial`
-  arm on success, else emit one `refused_row` and exit 2. **Test:** a unit
-  test injects an entry failing `clone`/`ENOSPC` and asserts the row is
-  `harness_error`, stderr names `boundary_unavailable:clone:ENOSPC`, exit 2
-  and no sentinel; CLI tests cover the `SWARMAIL_BIN`-unset, `--artifacts-dir`,
-  `--wrapper-profile`, bad-`--isolated-expose` and `--concurrency 2` refusals;
-  `git diff main --stat -- src/` (root) is empty.
-- [x] **T05 — Skip discipline for the live proofs (AC-S6).** Add the probe
-  helper to `evals/tests/common/mod.rs`: a real null-agent `trial --isolated`
-  classified from its refusal. **Test:** a namespace-dependent test marked
-  `#[ignore = "trial-isolation: needs unprivileged user namespaces"]` prints
-  `SKIP trial-isolation: boundary_unavailable:<op>:<ERRNO>` and panics when the
-  boundary is unavailable; the standalone evals suite is green with it shown as
-  ignored.
-- [ ] **T06 — Hostile live proof, boundary holds (AC-L1).** The `#[ignore]`
-  proof: victim A runs `trial --isolated /usr/bin/sleep` held under the
-  deadline; the trusted test reads A's coordinates from the host `/proc`;
-  trial B runs `trial --isolated` with the T02 helper as its agent and A's
-  coordinates in argv; the helper reports every denied route by exit status.
-  **Test:** on a capable host, the helper exits 0 (all routes denied), A's row
-  is `fail` in signup's declared idle class with no accepted confirmation,
-  never `pass`/`budget`/`harness_error`; a leak makes it red.
-- [x] **T07 — Fresh HOME and own services through the boundary (AC-L2).** An
-  `#[ignore]` proof. **Test:** on a capable host, a real child sees a fresh
-  writable HOME, the previous isolated trial's sentinel is absent, and the
-  oracle passes signup inside the boundary through its own MCP and fixture.
-- [x] **T08 — Lifetime bound on both ends (AC-L3).** An `#[ignore]` proof.
-  **Test:** on a capable host, killing the controller leaves no trial process
-  alive; killing the init leaves no agent alive; an interrupt emits the
-  interrupted row and the controller re-raises the signal; no orphan of A is
-  alive when B starts.
-- [x] **T09 — Documentation (AC-S8).** Add a dated section to
-  `evals/README.md` and `evals/run-plan.md`: the hidden flag, its refusals,
-  the host proof command, trials remain sequential, no row claims isolation.
-  **Test:** a requirement-to-observation read against 0076 and 0115; no
-  guarantee downgrade, no `confinement` relabel, no claimed reproduction of
-  concurrency.
+- [x] **T01 — Carry the decision and its index row (AC-S8, AC-O1).**
+  `docs/decisions/0115-trial-isolation.md` stays `proposed`, now with its
+  *Revision 2026-11-01* section (committed by the chief with this design);
+  the README index row from 2026-10-31 stands. **Test:** `design-check.sh`
+  resolves `Decision: 0115` to one clean proposed record the spec links;
+  `git diff main -- docs/decisions/0055-agent-eval-harness.md
+  docs/decisions/0076-sequential-eval-trials.md` is empty; the README has
+  exactly one 0115 row.
+- [x] **T02 — Establish the leak live, before any boundary (AC-S1).** Kept
+  as built: `the_leak_is_live_a_same_uid_helper_makes_an_idle_victim_pass`
+  and the probe's negative control. **Test:** both green on every host;
+  discovery is bounded to the victim runner's descendants.
+- [ ] **T12 — Delete the raw-syscall worker (AC-S9).** Remove
+  `evals/src/isolation/linux.rs`, `ERRNO_NAMES`/`errno_name`, `Step`/`STEPS`,
+  `remount_flags`, `Observed`/`verify`/`interfaces`/`status_field`, the
+  `Enter` type and `enter`, and the test-side `with_private_admission`;
+  narrow `Refusal::Boundary` to `{ step }`. **Test:** `cargo clippy
+  --all-targets --locked -- -D warnings` in `evals/` is clean with no dead
+  code; `grep -rn "pivot_root\|SYS_clone\|uid_map\|setpriv" evals/src
+  evals/tests` is empty; the kept unit tests for `resolve_source` and
+  `bind_plan` still pass.
+- [ ] **T03 — The pure bwrap parts (AC-S4).** In `evals/src/isolation.rs`
+  add `BWRAP`, `BWRAP_MIN`, `TMP_BYTES`, `parse_version`,
+  `system_root_options` and `command(&Request, inner)`; beside `Cmd` add
+  `inner_args(&Cmd)` destructuring `Cmd::Trial` without `..`. **Test:**
+  inline unit tests: the version parser's accept/refuse table; the golden
+  argv for a request with an agent and one exposed file (exact list, no `/`
+  bind, no `-try`/`--unshare-all`/`--share-net`, `--clearenv` before every
+  `--setenv`, `--size` immediately before `--tmpfs /tmp`, the first `--`
+  immediately before the runner); the property that agent argv containing
+  `--ro-bind`, `--share-net`, `--` and `--isolated` never precedes the first
+  `--`; the clap round trip over a fully populated `Cmd::Trial` equals the
+  original minus `isolated`/`isolated_expose` with the agent program
+  absolute.
+- [ ] **T04 — The controller and the parameter seam (AC-S2, AC-S3, AC-S5,
+  AC-S6 platform arm).** Replace `isolation::enter` with
+  `isolation::launch(request, inner, bwrap: &Path)`: platform check,
+  `bwrap_absent`, `bwrap_version` (5 s), `bwrap_probe` (10 s, real argv with
+  `/usr/bin/true`), host admission, spawn on the main thread with
+  `process_group(0)`, `kill_on_drop`, null stdin, piped stdout/stderr copied
+  through, `close_range` CLOEXEC sweep in `pre_exec`, `SIGTERM`/`SIGINT`
+  handling by signalling the runner's host PID, and the exit judgement. Wire
+  `main` to `block_on` it for `--isolated` instead of entering the trial arm;
+  remove the `unsafe set_var`. **Test:** `main.rs` unit tests pass, in turn,
+  an absent path, a generated `bubblewrap 0.9.0` script, a `0.11.1` script
+  that fails everything else, and a script that passes the probe then exits
+  1 silently; each yields a `harness_error` row, exit 2, the named reason on
+  stderr, no admission taken before the probe passed, and no agent sentinel.
+  A `cfg(not(target_os = "linux"))` test proves `platform` (CI macOS) and a
+  Linux unit test proves the platform-neutral refusal function. The existing
+  CLI precondition tests (AC-S3) and `git diff main --stat -- src/` empty
+  (AC-S5) stay green.
+- [ ] **T05 — Skip discipline for the live proofs (AC-S6).** Update
+  `boundary_unavailable`/`require_boundary` in `evals/tests/common/mod.rs`
+  to classify `boundary_unavailable:<step>` and the `#[ignore]` reason to
+  `trial-isolation: needs /usr/bin/bwrap >= 0.11.1 able to create user
+  namespaces`. **Test:** run explicitly in the seat, every live proof prints
+  `SKIP trial-isolation: boundary_unavailable:bwrap_probe` and fails; the
+  standalone evals suite is green with them shown as ignored.
+- [ ] **T06 — Hostile live proof, boundary holds (AC-L1).** Rewrite
+  `a_hostile_same_uid_agent_in_trial_b_cannot_reach_trial_a`: victim A is
+  launched by the test through `isolation::command` (a new
+  `launch_victim` helper in `common/mod.rs` with the controller's stdio
+  discipline), its agent `/usr/bin/sleep` under the deadline; the test reads
+  A's coordinates from the host `/proc`; trial B runs the real
+  `trial --isolated --isolated-expose <test exe>` with the probe as agent;
+  a route-90 void is retried at most twice. **Test:** on this host, the
+  probe exits 0 (all routes denied), A's row after its agent is killed from
+  outside is `fail` in signup's declared idle class, never
+  `pass`/`budget`/`harness_error`; a leak or a third void makes it red.
+- [ ] **T07 — Fresh HOME, own services and the observed topology (AC-L2).**
+  Keep the fresh-HOME and oracle-signup proofs; add the `boundary_observe`
+  helper mode and its test, with a canary file under the host `/tmp` and a
+  canary descriptor held open in the test before launch. **Test:** on this
+  host, the observer exits 0 (uid, `/proc`, `lo` usable, host paths and
+  canary file absent, tmpfs size, four-variable environment, no stray
+  descriptor, empty `CapEff`, `NoNewPrivs` 1) and prints its nested-userns
+  observation to stderr; a nonzero code names the first violated check.
+- [ ] **T08 — Lifetime bound on both ends (AC-L3).** Rewrite the three
+  lifetime proofs for bwrap's topology. **Test:** on this host, `SIGKILL` to
+  the controller leaves no trial process alive; `SIGKILL` to the runner's
+  host PID leaves no agent alive and the controller exits 2 with the
+  `isolated_trial_no_row` row; `SIGTERM` to the controller yields the
+  runner's interrupted row, exit 2 and no survivors; no orphan of A is alive
+  when B starts.
+- [ ] **T09 — Documentation (AC-S8).** Revise the dated #221 sections of
+  `evals/README.md` and `evals/run-plan.md`: bwrap is the mechanism, the host
+  prerequisite, the closed refusal set, the proof command, trials remain
+  sequential, no row claims isolation. **Test:** a requirement-to-observation
+  read against 0076 and 0115; no guarantee downgrade, no `confinement`
+  relabel, no claimed reproduction of concurrency, no claim that CI proves
+  the boundary.
 - [ ] **T10 — Gates (AC-S7).** Run the full house gate inventory locked plus
-  the standalone evals `fmt`, `clippy --all-targets` and `cargo test --locked`.
-  **Test:** command/exit/log receipts for every required check bound to the
-  candidate, literal zero-missed root coverage with its selftest, publish-guard
-  and seal proofs, `cargo deny check licenses` and the fail-closed native-tls
-  absence; CI-owned obligations retained, not claimed; the run does not report
-  complete while AC-L1..L4 and AC-O1 are open.
+  the standalone evals `fmt`, `clippy --all-targets` and `cargo test
+  --locked`. **Test:** command/exit/log receipts for every required check
+  bound to the candidate, literal zero-missed root coverage with its
+  selftest, publish-guard and seal proofs, `cargo deny check licenses` and
+  the fail-closed native-tls absence; neither lockfile nor `deny.toml`
+  changed; CI-owned obligations retained, not claimed; the run does not
+  report complete while AC-L1..L4 and AC-O1 are open.
 - [x] **T11 — Egress question to the operator (AC-L4, AC-O1).** Carry 0115's
-  egress question and recommendation; `--isolated` refuses wrapper profiles
+  egress question, reframed for bwrap; `--isolated` refuses wrapper profiles
   until the operator rules. **Test:** no egress code, launcher, daemon,
   dependency or credential copy is added; `cargo deny check licenses` passes
   unchanged; the decision stays proposed.
 
-Status 2026-10-31: T02 (live leak baseline) is done and green on this seat.
-T06 (hostile proof) is written but has never run and stays open until a
-namespace-capable host passes it — see spec.md, Implementation status. T07 and
-T08 are likewise written and never run. T10 is recorded in the delivery notes
-of this run.
+Status 2026-11-01 (chief): T12, T03, T04, T05, T06, T07, T08, T09 and T10
+are open for the implement seat. T06–T08 are written in the seat and proven
+only by the dispatcher's one command on this host after the run; the seat
+must show them red with the named `bwrap_probe` skip, never green.
