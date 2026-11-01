@@ -3197,6 +3197,8 @@ fn recheck_digest(
     Err("executable_changed_or_unreadable".into())
 }
 
+// Linux only: these probes prove cleanup by PID/start-time identities read
+// from /proc/<pid>/stat, which macOS does not have.
 #[cfg(all(test, target_os = "linux"))]
 mod test_probes {
     use super::*;
@@ -4821,7 +4823,6 @@ mod privacy_tests {
     use serde_json::json;
     use std::ffi::{OsStr, OsString};
     use std::io::Cursor;
-    use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -5225,7 +5226,12 @@ mod privacy_tests {
         std::fs::create_dir(&path_dir).unwrap();
         executable(&cwd.join("relative-agent"));
         executable(&path_dir.join("bare-agent"));
-        let odd_name = OsString::from_vec(b"nonutf8-\xff-agent".to_vec());
+        // Linux only: macOS file systems (APFS, HFS+) refuse a non-UTF-8
+        // file name with EILSEQ, so such a program cannot exist there.
+        #[cfg(target_os = "linux")]
+        let odd_name =
+            <OsString as std::os::unix::ffi::OsStringExt>::from_vec(b"nonutf8-\xff-agent".to_vec());
+        #[cfg(target_os = "linux")]
         executable(&path_dir.join(&odd_name));
         let path =
             std::env::join_paths([OsString::new(), path_dir.clone().into_os_string()]).unwrap();
@@ -5241,6 +5247,7 @@ mod privacy_tests {
             resolve_program(OsStr::new("bare-agent"), &caller).unwrap(),
             path_dir.join("bare-agent")
         );
+        #[cfg(target_os = "linux")]
         assert_eq!(
             resolve_program(&odd_name, &caller).unwrap(),
             path_dir.join(&odd_name)

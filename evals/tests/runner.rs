@@ -564,6 +564,8 @@ fn capture_then_exec(
     wrapper
 }
 
+// Linux only: the probe agent finds the fixture through /proc and reads its
+// environment from /proc/<pid>/environ.
 #[cfg(target_os = "linux")]
 #[test]
 fn fixture_gets_only_its_private_runtime_map_and_generated_admin_input() {

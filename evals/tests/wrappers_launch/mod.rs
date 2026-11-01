@@ -443,6 +443,7 @@ fn unsupported_goals_config_and_executables_refuse_without_launch() {
     }
 }
 
+// Linux only: the effective helper environment is read from /proc/<pid>/environ.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn isolated_helper_exec_has_a_credential_free_effective_environment() {
@@ -490,6 +491,8 @@ async fn isolated_helper_exec_has_a_credential_free_effective_environment() {
     assert!(child.wait().await.unwrap().success());
 }
 
+// Linux only: the descendants guard and the test below prove ownership by
+// PID/start-time identities read from /proc.
 #[cfg(target_os = "linux")]
 struct Descendants(Vec<common::ProcessIdentity>);
 #[cfg(target_os = "linux")]

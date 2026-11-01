@@ -99,6 +99,8 @@ fn the_matrix_runs_the_whole_product_and_aggregates_exits() {
     }
 }
 
+// Linux only: the worker wrapper captures the worker's environment from
+// /proc/$PPID/environ.
 #[cfg(target_os = "linux")]
 #[test]
 fn matrix_workers_are_closed_and_child_output_is_not_published() {
