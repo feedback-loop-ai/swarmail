@@ -24,8 +24,7 @@ impl Admission {
         Self::at(&Self::root_for(uid), uid)
     }
 
-    /// The private per-uid directory the lock lives in; the isolated
-    /// controller stages its mount points below it.
+    /// The private per-uid directory the lock lives in, on the host `/tmp`.
     pub(crate) fn root_for(uid: u32) -> PathBuf {
         PathBuf::from(format!("/tmp/swarmail-evals-{uid}"))
     }

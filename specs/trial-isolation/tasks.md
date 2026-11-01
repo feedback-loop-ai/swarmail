@@ -31,7 +31,7 @@ findings are T13–T20.
   stand-in tests.
 - [x] **T05 — Skip discipline for the live proofs (AC-S6).** Done at
   bdc504f; T13 adds the Linux gate.
-- [ ] **T13 — Make the evals suite compile on macOS (R3; AC-S1, AC-S6,
+- [x] **T13 — Make the evals suite compile on macOS (R3; AC-S1, AC-S6,
   AC-S7).** Gate with `cfg(target_os = "linux")`: in `tests/common/mod.rs`
   `find_victim_agent`, `boundary_observe`, `launch_victim` and every helper
   naming `ProcessIdentity`/`process_descendants`/`identity_alive`; in
@@ -45,7 +45,7 @@ findings are T13–T20.
   `evals/src` and `evals/tests`) shows no ungated use; CI's
   `test (macos-latest)` job is the compile evidence and is not claimed by
   the seat.
-- [ ] **T14 — `--as-pid-1` (R1; AC-S4, AC-L3).** Insert `--as-pid-1` after
+- [x] **T14 — `--as-pid-1` (R1; AC-S4, AC-L3).** Insert `--as-pid-1` after
   `--new-session` in `isolation::argv`; update the doc comments that
   describe bwrap's reaper (`supervise`, `launch`) to say the runner is PID 1
   and that bwrap's `wait` returns after the kernel empties the namespace.
@@ -53,7 +53,7 @@ findings are T13–T20.
   `--new-session` and before `--clearenv`; the stand-in `bwrap_probe` test
   still refuses by name (the stand-in sees the new token in its argv); AC-L3
   on the host proves the lifetime chain with the runner as init.
-- [ ] **T15 — Refuse unexposed external agents under `--isolated` (R2, R8;
+- [x] **T15 — Refuse unexposed external agents under `--isolated` (R2, R8;
   AC-S3).** Add `EXTERNAL_AGENT_UNSUPPORTED = "isolation_external_agent_unsupported"`
   and check it in `isolation::request` after `EXPOSE_INVALID` and before
   `SOURCE_INVALID`: a `Some(agent)` whose canonical path is not among the
@@ -71,7 +71,7 @@ findings are T13–T20.
   controller (refuses `boundary_unavailable:bwrap_probe` in the seat, by
   name, not a precondition). One assertion in the matrix argv tests that no
   rendered trial argv contains `--isolated`.
-- [ ] **T16 — Complete the void rule (R4; AC-L1).** In `cross_trial_probe`,
+- [x] **T16 — Complete the void rule (R4; AC-L1).** In `cross_trial_probe`,
   before routes 14 and 15, parse `/proc/net/tcp` and `/proc/net/tcp6` for
   `LISTEN` local ports and return 90 when A's MCP or fixture port is among
   them; delete the same-role authority comparisons; keep the prompt/HOME
@@ -79,7 +79,7 @@ findings are T13–T20.
   case where the "victim" MCP port is a port the probe's own process is
   listening on, which must return 90 (Linux); the hostile live proof keeps
   its two-retry bound and named third failure on the host.
-- [ ] **T17 — Extend the in-boundary observer (R1, R6, R7; AC-L2).** In
+- [x] **T17 — Extend the in-boundary observer (R1, R6, R7; AC-L2).** In
   `boundary_observe`: `/proc/1/exe` must read as the runner path the test
   passes (`runner=`), else 42; walk `/home` recursively and return 45 on any
   entry that is neither a bound file nor a directory on the path to one;
@@ -93,7 +93,7 @@ findings are T13–T20.
   names code 50; the oracle trial's argv in the test carries the deadline;
   on the host the observer exits 0 or 100 and prints its three observations;
   a bwrap that still installs a reaper is red at 42 by name.
-- [ ] **T18 — Small drifts (R9, R10, R13, R14; AC-S2, AC-S4, AC-S9).**
+- [x] **T18 — Small drifts (R9, R10, R13, R14; AC-S2, AC-S4, AC-S9).**
   Canonicalize the agent program once in `isolate()` and use that path in
   both the bind and `inner_args`; replace the single hostile-argv example
   with a table over `--ro-bind`, `--share-net`, `--as-pid-1`, `--`,
@@ -120,7 +120,7 @@ findings are T13–T20.
   row; `SIGTERM` to the controller after the agent exists yields the runner's
   interrupted row, exit 2 and no survivors; no orphan of A is alive when B
   starts.
-- [ ] **T19 — Documentation (AC-S8).** Revise the dated #221 sections of
+- [x] **T19 — Documentation (AC-S8).** Revise the dated #221 sections of
   `evals/README.md` and `evals/run-plan.md`: `--as-pid-1` and why; the
   external-agent refusal and that an isolated row is not an eval result;
   macOS compiles the suite and proves the platform refusal only; the proof
@@ -141,7 +141,7 @@ findings are T13–T20.
   operator rules. **Test:** no egress code, launcher, daemon, dependency or
   credential copy is added; `cargo deny check licenses` passes unchanged; the
   decision stays proposed.
-- [ ] **T20 — Live proof outstanding (AC-L1..L3).** After T13–T18 the
+- [x] **T20 — Live proof outstanding (AC-L1..L3).** After T13–T18 the
   implement seat runs the `--ignored` command in the seat and shows every
   live proof red with `SKIP trial-isolation: boundary_unavailable:bwrap_probe`;
   the dispatcher runs the same command on the host after the run. **Test:**
@@ -152,3 +152,25 @@ Status 2026-11-01 (chief, after the review return): T13–T20 are open for the
 implement seat, in that order, T06–T08 behind them and proven only by the
 dispatcher's one command on this host. The earlier status notes of the
 implement seat (bdc504f) stand in git history.
+
+Status 2026-11-01 (implement seat, after the review return): T13–T19 are
+done and T20's seat half is done (every live proof is red with
+`SKIP trial-isolation: boundary_unavailable:bwrap_probe` in the seat). T06–T08
+stay open: only the dispatcher's one command on the host closes them. T10:
+every gate in the house inventory ran clean locked except
+`brokkr compile --bundle .brokkr/recipes/self`, because the pinned brokkr
+binary is not installed in the seat and cannot be fetched offline; `.brokkr/`
+is untouched. Implementation notes: (a) the in-boundary observer reports its
+two recorded observations through its exit code, because the runner drains an
+agent's stderr and a line printed there never reaches the test: 0 all held,
+100 a nested user namespace was granted, 101 `/proc/1/mem` opens read-write,
+102 both; the test reads `kernel.yama.ptrace_scope` itself and prints it.
+(b) `isolation::request` takes the already-attempted resolutions of the
+Swarmail selector and the agent program (`Option<Named>`) and alone decides
+which refusal wins, so the order lives in one place; resolving has no effect,
+so "resolved only after the checks" is observable only as that order.
+(c) Two always-on additions beyond the plan: the observer's negative control
+(run unisolated it reports 42, not 0) and a test of its directory and
+descriptor walks; the idle-trial tests expose a generated script that
+`exec`s `/usr/bin/sleep`, since an external agent must now be exposed and
+this host's `/usr/bin/sleep` is a symlink an exposure refuses.

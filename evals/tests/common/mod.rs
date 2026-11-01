@@ -330,7 +330,8 @@ pub fn maybe_run_helper() {
         return;
     };
     // The observer looks at its own descriptor table, so it runs before any
-    // runtime opens descriptors of its own.
+    // runtime opens descriptors of its own. Linux only: it reads `/proc`.
+    #[cfg(target_os = "linux")]
     if mode == "boundary_observe" {
         std::process::exit(boundary_observe());
     }
@@ -355,6 +356,7 @@ async fn helper(mode: &str) -> i32 {
     if mode == "home_probe" {
         return home_probe();
     }
+    #[cfg(target_os = "linux")]
     if mode == "leak_signup" {
         return leak_signup().await;
     }
@@ -1093,7 +1095,9 @@ pub fn proc_environ(pid: i32) -> Option<std::collections::BTreeMap<String, Strin
 }
 
 /// The victim agent found among the descendants of `runner` ONLY (never
-/// other sessions), with its agent environment.
+/// other sessions), with its agent environment. Linux only: it walks the
+/// `/proc` process table.
+#[cfg(target_os = "linux")]
 pub fn find_victim_agent(
     runner: i32,
 ) -> Option<(ProcessIdentity, std::collections::BTreeMap<String, String>)> {
@@ -1173,6 +1177,7 @@ fn victim_from_argv() -> Result<Victim, String> {
 /// runner's descendants, reads its `EVAL_*` environment from `/proc`, and
 /// completes the victim's signup through the real MCP and the real fixture.
 /// Exit 0 means the leak is real; a nonzero code names the step that failed.
+#[cfg(target_os = "linux")]
 async fn leak_signup() -> i32 {
     let Some(runner) = std::env::args()
         .find_map(|a| a.strip_prefix(VICTIM_RUNNER_ARG).map(str::to_string))
@@ -1199,6 +1204,40 @@ async fn leak_signup() -> i32 {
 fn authority(url: &str) -> Option<String> {
     let rest = url.strip_prefix("http://")?;
     Some(rest.split('/').next()?.to_string())
+}
+
+/// The port of a `host:port` authority.
+fn authority_port(authority: &str) -> Option<u16> {
+    authority.rsplit_once(':')?.1.parse().ok()
+}
+
+/// The local ports in the `LISTEN` state in the text of `/proc/net/tcp` or
+/// `/proc/net/tcp6`: after the header line, field 1 is `ADDR:PORT` in hex and
+/// field 3 is the state, `0A` for `LISTEN`.
+pub fn parse_listen_ports(text: &str) -> Vec<u16> {
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let local = fields.nth(1)?;
+            let state = fields.nth(1)?;
+            if state != "0A" {
+                return None;
+            }
+            u16::from_str_radix(local.rsplit_once(':')?.1, 16).ok()
+        })
+        .collect()
+}
+
+/// Every port some socket of this network namespace is listening on, read
+/// from `/proc/net/tcp` and `/proc/net/tcp6`. A table that cannot be read
+/// contributes nothing.
+pub fn listening_ports() -> Vec<u16> {
+    ["/proc/net/tcp", "/proc/net/tcp6"]
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .flat_map(|text| parse_listen_ports(&text))
+        .collect()
 }
 
 fn reachable(authority: &str) -> bool {
@@ -1259,9 +1298,9 @@ async fn cross_trial_probe() -> i32 {
     {
         return 30;
     }
-    if own_app.as_deref() == Some(victim_app_auth.as_str())
-        || own_mcp.as_deref() == Some(victim_mcp_auth.as_str())
-        || victim.vars.get(oracle::ENV_PROMPT_FILE) == Some(&own.prompt_file)
+    // A coincidence of paths is void, not a verdict: the victim's prompt or
+    // HOME path is also this trial's own.
+    if victim.vars.get(oracle::ENV_PROMPT_FILE) == Some(&own.prompt_file)
         || victim.vars.get("HOME") == std::env::var("HOME").ok().as_ref()
     {
         return 90;
@@ -1313,6 +1352,16 @@ async fn cross_trial_probe() -> i32 {
         && Path::new(home).exists()
     {
         return 13;
+    }
+    // A port coincidence is void too. Inside this trial's private network
+    // namespace every loopback `LISTEN` socket is this trial's own, so if the
+    // victim's MCP or fixture port is one of them, a connect below would
+    // reach this trial's service and mean nothing about the victim.
+    let listening = listening_ports();
+    for authority in [&victim_mcp_auth, &victim_app_auth] {
+        if authority_port(authority).is_some_and(|port| listening.contains(&port)) {
+            return 90;
+        }
     }
     // 14, 15: the victim's services over the wire.
     if reachable(&victim_mcp_auth) {
@@ -1370,15 +1419,93 @@ fn agent_env_key_allowed(key: &str) -> bool {
         .contains(&key)
 }
 
+/// Whether `candidate` is a strict ancestor directory of one of `files`.
+fn is_ancestor_of_any(candidate: &Path, files: &[PathBuf]) -> bool {
+    files
+        .iter()
+        .any(|file| file != candidate && file.starts_with(candidate))
+}
+
+/// The first entry under `dir`, recursively, that is neither one of the
+/// bound `files` nor a directory on the path to one: such an entry is a piece
+/// of the host's `/home` that the boundary should never have shown. `None`
+/// when `dir` holds nothing but the bound files and their empty parents.
+pub fn stray_under(dir: &Path, files: &[PathBuf]) -> Option<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            return Some(path);
+        };
+        if meta.is_dir() && !meta.file_type().is_symlink() {
+            if !is_ancestor_of_any(&path, files) {
+                return Some(path);
+            }
+            if let Some(stray) = stray_under(&path, files) {
+                return Some(stray);
+            }
+        } else if !files.contains(&path) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Whether some descriptor of some process visible in this `/proc` is a
+/// directory that lists any of `host_pids`: that descriptor reaches the
+/// host's `/proc`. A table that cannot be read counts as denied. The PIDs
+/// the test passes are large enough never to coincide with a PID of this
+/// namespace or with a file descriptor number, so a listing that names one is
+/// the host's.
+#[cfg(target_os = "linux")]
+pub fn descriptor_reaches_host_proc(host_pids: &std::collections::HashSet<String>) -> bool {
+    let Ok(processes) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    for process in processes.flatten() {
+        let name = process.file_name();
+        if !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(table) = std::fs::read_dir(process.path().join("fd")) else {
+            continue;
+        };
+        for descriptor in table.flatten() {
+            // `read_dir` follows the link: it succeeds only for a directory.
+            let Ok(listing) = std::fs::read_dir(descriptor.path()) else {
+                continue;
+            };
+            if listing
+                .flatten()
+                .any(|entry| host_pids.contains(entry.file_name().to_string_lossy().as_ref()))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// AC-L2's scripted observer, run as an isolated trial's agent. It reports
 /// the topology it sees from inside by exit code — the first violated check:
-/// 40 usage, 41 uid, 42 /proc shows the host, 43 interfaces other than `lo`,
-/// 44 `lo` unusable, 45 a host path is present, 46 /tmp is not the bounded
-/// tmpfs, 47 a foreign environment key, 48 a stray descriptor, 49 capabilities
-/// or no-new-privs. 0 means every check held and a nested user namespace was
-/// refused; 100 means every check held and one was granted (observed, not
-/// asserted: `--disable-userns` is not used, 0115). No production code runs
+/// 40 usage, 41 uid, 42 `/proc` shows the host (a host PID, or PID 1 is not
+/// the runner, so bwrap installed a reaper), 43 interfaces other than `lo`,
+/// 44 `lo` unusable, 45 a host path is present (or a stray entry under
+/// `/home`), 46 /tmp is not the bounded tmpfs, 47 a foreign environment key,
+/// 48 a stray descriptor in the observer, 49 capabilities or no-new-privs,
+/// 50 some process's descriptor reaches the host `/proc`.
+///
+/// Every check holding is exit 0, or 100 plus two recorded observations
+/// that are not failures (the runner drains an agent's stderr, so a line
+/// printed there never reaches the test; the exit code carries them): 100 a
+/// nested user namespace was granted, 101 `/proc/1/mem` opens read-write
+/// (the runner is PID 1 and reading one's own runner is within-trial, 0115
+/// ruling 6), 102 both. Neither is asserted: `--disable-userns` is not used
+/// until a live run shows it traverses the profile. No production code runs
 /// this; the trial's own scorer never sees it.
+#[cfg(target_os = "linux")]
 fn boundary_observe() -> i32 {
     let (Some(uid), Some(host_pids), Some(absent), Some(canary_fd), Some(tmp)) = (
         observe_arg("uid="),
@@ -1389,6 +1516,9 @@ fn boundary_observe() -> i32 {
     ) else {
         return 40;
     };
+    let (Some(runner), Some(bound)) = (observe_arg("runner="), observe_arg("bound=")) else {
+        return 40;
+    };
     let (Ok(uid), Ok(tmp_bytes)) = (uid.parse::<u32>(), tmp.parse::<u64>()) else {
         return 40;
     };
@@ -1396,8 +1526,8 @@ fn boundary_observe() -> i32 {
     if unsafe { libc::geteuid() } != uid {
         return 41;
     }
-    // /proc is the sandbox's own: none of the host's PIDs, and PID 1 is not
-    // the host's init.
+    // /proc is the sandbox's own: none of the host's PIDs, and PID 1 is the
+    // runner itself, so no reaper (bwrap's default) stands inside.
     let host: Vec<i32> = host_pids
         .split(',')
         .filter_map(|p| p.parse().ok())
@@ -1408,8 +1538,8 @@ fn boundary_observe() -> i32 {
     {
         return 42;
     }
-    match std::fs::read_to_string("/proc/1/comm") {
-        Ok(init) if !matches!(init.trim(), "" | "systemd" | "init") => {}
+    match std::fs::read_link("/proc/1/exe") {
+        Ok(exe) if exe == Path::new(&runner) => {}
         _ => return 42,
     }
     // Loopback only, and it works.
@@ -1432,9 +1562,19 @@ fn boundary_observe() -> i32 {
     }
     // Nothing of the host beyond the read-only system trees and the named
     // files: the test lists host paths (other trees, the operator's
-    // credentials, a canary file under the host /tmp) that must not exist.
+    // credentials, a canary file under the host /tmp) that must not exist,
+    // and /home holds only the bound files and the empty directories on the
+    // path to them.
     let absent: Vec<&str> = absent.split(',').filter(|p| !p.is_empty()).collect();
     if absent.is_empty() || absent.iter().any(|p| std::fs::symlink_metadata(p).is_ok()) {
+        return 45;
+    }
+    let bound: Vec<PathBuf> = bound
+        .split(',')
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    if stray_under(Path::new("/home"), &bound).is_some() {
         return 45;
     }
     // /tmp is a tmpfs of exactly the bounded size.
@@ -1480,6 +1620,13 @@ fn boundary_observe() -> i32 {
     {
         return 49;
     }
+    // No process inside holds a descriptor onto the host's /proc: the escape
+    // route the review named for a reaper, walked over every process.
+    let host_pids: std::collections::HashSet<String> =
+        host_pids.split(',').map(str::to_string).collect();
+    if descriptor_reaches_host_proc(&host_pids) {
+        return 50;
+    }
     // Observed, not asserted: may a process in here create a user namespace?
     // SAFETY: the child only calls unshare and _exit, both async-signal-safe.
     let nested = unsafe {
@@ -1494,14 +1641,25 @@ fn boundary_observe() -> i32 {
             _ => false,
         }
     };
-    eprintln!("boundary_observe: nested user namespace granted inside: {nested}");
-    if nested { 100 } else { 0 }
+    // Observed, not asserted: does PID 1 (the runner) open for writing?
+    let mem_writable = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/proc/1/mem")
+        .is_ok();
+    match (nested, mem_writable) {
+        (false, false) => 0,
+        (true, false) => 100,
+        (false, true) => 101,
+        (true, true) => 102,
+    }
 }
 
 /// Victim A's controller, played by the trusted test: bwrap spawned from the
 /// library's own argv builder, with the controller's stdio discipline (no
 /// stdin, piped output, its own process group, no inherited environment). The
 /// test holds no host admission for it — that is trial B's, the real CLI's.
+#[cfg(target_os = "linux")]
 pub fn launch_victim(
     request: &swarmail_evals::isolation::Request,
     inner: &[OsString],

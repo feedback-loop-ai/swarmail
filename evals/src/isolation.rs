@@ -70,6 +70,7 @@ pub const REQUIRES_SWARMAIL_BIN: &str = "isolation_requires_swarmail_bin";
 pub const ARTIFACTS_UNSUPPORTED: &str = "isolation_artifacts_unsupported";
 pub const WRAPPER_UNSUPPORTED: &str = "isolation_wrapper_unsupported";
 pub const EXPOSE_INVALID: &str = "isolation_expose_invalid";
+pub const EXTERNAL_AGENT_UNSUPPORTED: &str = "isolation_external_agent_unsupported";
 pub const SOURCE_INVALID: &str = "isolation_source_invalid";
 
 /// The closed set of boundary steps a refusal can name.
@@ -232,37 +233,66 @@ impl Request {
     }
 }
 
+/// A path the caller named, after the caller tried to resolve it: `Err` is a
+/// name that could not be resolved to a path at all (an unreadable
+/// `SWARMAIL_BIN`, a program found nowhere). The caller resolves before this
+/// runs only because resolving has no effect; which refusal is reported is
+/// decided here, in one place, in the documented order.
+pub type Named = Result<PathBuf, ()>;
+
 /// Validate an isolated request. Each refusal is named and precedes every
-/// namespace operation; `concurrency_unsupported` and
-/// `concurrent_trials_refused` keep their existing meaning and are decided
-/// before this runs.
+/// namespace operation, and the first one hit wins, in this order:
+/// `isolation_requires_swarmail_bin`, `isolation_artifacts_unsupported`,
+/// `isolation_wrapper_unsupported`, `isolation_expose_invalid`,
+/// `isolation_external_agent_unsupported`, `isolation_source_invalid`.
+/// `concurrency_unsupported` and `concurrent_trials_refused` keep their
+/// existing meaning and are decided elsewhere.
+///
+/// `agent` is `None` for a builtin agent (or no program at all), and for an
+/// external program its resolved canonical path. An external program runs
+/// isolated only if that path is one of the `--isolated-expose` files: until
+/// the operator rules on provider egress (0115) the only programs admitted
+/// are the builtins and scripted agents the caller deliberately exposed. A
+/// program that did not resolve at all cannot be exposed and is reported by
+/// the later, more precise `isolation_source_invalid`.
 pub fn request(
-    swarmail_bin: Option<PathBuf>,
+    swarmail_bin: Option<Named>,
     artifacts: bool,
     wrapper: bool,
     expose: &[PathBuf],
     runner: PathBuf,
-    agent: Option<PathBuf>,
+    agent: Option<Named>,
 ) -> Result<Request, Refusal> {
-    let Some(swarmail_bin) = swarmail_bin else {
+    if swarmail_bin.is_none() {
         return Err(Refusal::Named(REQUIRES_SWARMAIL_BIN));
-    };
+    }
     if artifacts {
         return Err(Refusal::Named(ARTIFACTS_UNSUPPORTED));
     }
     if wrapper {
         return Err(Refusal::Named(WRAPPER_UNSUPPORTED));
     }
-    if expose.iter().any(|path| resolve_source(path).is_err()) {
-        return Err(Refusal::Named(EXPOSE_INVALID));
+    // An exposed file is reached through no symlink, so its path is its
+    // canonical path and membership is plain equality.
+    let mut canonical_expose = Vec::with_capacity(expose.len());
+    for path in expose {
+        canonical_expose.push(resolve_source(path).map_err(|_| Refusal::Named(EXPOSE_INVALID))?);
     }
+    if let Some(Ok(program)) = &agent
+        && !canonical_expose.contains(program)
+    {
+        return Err(Refusal::Named(EXTERNAL_AGENT_UNSUPPORTED));
+    }
+    let source_invalid = || Refusal::Named(SOURCE_INVALID);
     let request = Request {
-        swarmail_bin,
+        swarmail_bin: swarmail_bin
+            .and_then(Result::ok)
+            .ok_or_else(source_invalid)?,
         runner,
-        agent,
-        expose: expose.to_vec(),
+        agent: agent.transpose().map_err(|_| source_invalid())?,
+        expose: canonical_expose,
     };
-    bind_plan(&request.sources()).map_err(|_| Refusal::Named(SOURCE_INVALID))?;
+    bind_plan(&request.sources()).map_err(|_| source_invalid())?;
     Ok(request)
 }
 
@@ -319,6 +349,13 @@ pub fn system_root_options(layout: &dyn Fn(&Path) -> Tree) -> Vec<OsString> {
 /// `--unshare-all` or a `-try` unshare (an unavailable namespace must refuse,
 /// not be skipped), never `--share-net` (it would put the trial's own
 /// Swarmail and fixture on the host loopback).
+///
+/// `--as-pid-1` makes bwrap install no reaper: the process it execs, the
+/// runner, is PID 1 of the trial's PID namespace. bwrap's default reaper
+/// would be a same-uid, dumpable process inside the boundary that a sibling
+/// trial's agent could probe through `/proc/1`; with it gone, every process
+/// inside is the runner or something the runner spawned behind the
+/// controller's close-on-exec sweep.
 pub fn argv(
     request: &Request,
     layout: &dyn Fn(&Path) -> Tree,
@@ -331,6 +368,7 @@ pub fn argv(
         "--unshare-ipc",
         "--die-with-parent",
         "--new-session",
+        "--as-pid-1",
         "--clearenv",
         "--setenv",
         "PATH",
@@ -599,12 +637,16 @@ async fn pump(mut from: impl AsyncRead + Unpin, sink: Sink) -> u64 {
 
 /// Run the trial inside bwrap and judge how it ended. Called after the probe
 /// and the host admission; the admission is the caller's to hold until this
-/// returns, that is until bwrap's PID-1 reaper has gone.
+/// returns, that is until bwrap's `wait` has returned. The runner is PID 1 of
+/// the trial's namespace (`--as-pid-1`), so that happens only after the
+/// kernel has emptied the namespace.
 ///
 /// bwrap forwards no signals, and its `--die-with-parent` kill is `SIGKILL`,
 /// which would lose the interrupted row. So a `SIGTERM`/`SIGINT` here is
 /// delivered, once, to the runner's host PID (the runner then emits its own
-/// interrupted row, exactly as an unisolated trial does, 0073); with no
+/// interrupted row, exactly as an unisolated trial does, 0073; as namespace
+/// init it receives the signal only once it has installed that handler, and
+/// an earlier one is dropped, so that trial ends at its deadline); with no
 /// runner yet, bwrap is killed and the interrupt is reported by name.
 async fn supervise(bwrap: &Path, request: &Request, inner: &[OsString]) -> Launched {
     use tokio::signal::unix::{SignalKind, signal};
@@ -667,7 +709,8 @@ async fn supervise(bwrap: &Path, request: &Request, inner: &[OsString]) -> Launc
 /// The boundary's controller. Refuses, in this order and before any server or
 /// agent exists, with `boundary_unavailable:{platform,bwrap_absent,
 /// bwrap_version,bwrap_probe}`; then takes the host admission (0076 §1) and
-/// holds it until bwrap is reaped; then runs the trial. Nothing is cached
+/// holds it until bwrap has been reaped, which with the runner as PID 1 is
+/// after the namespace is empty; then runs the trial. Nothing is cached
 /// between launches, and nothing falls back to an unisolated run.
 ///
 /// `bwrap` is a parameter so a test can aim the controller at a stand-in;
@@ -834,37 +877,108 @@ mod tests {
         let dir = std::fs::canonicalize(tempfile::tempdir().unwrap().keep()).unwrap();
         let bin = dir.join("swarmail");
         let runner = dir.join("runner");
-        std::fs::write(&bin, b"x").unwrap();
-        std::fs::write(&runner, b"x").unwrap();
-        let ask = |bin: Option<PathBuf>, artifacts, wrapper, expose: &[PathBuf]| {
-            request(bin, artifacts, wrapper, expose, runner.clone(), None)
-        };
+        let program = dir.join("program");
+        for file in [&bin, &runner, &program] {
+            std::fs::write(file, b"x").unwrap();
+        }
+        let ask =
+            |bin: Option<Named>, artifacts, wrapper, expose: &[PathBuf], agent: Option<Named>| {
+                request(bin, artifacts, wrapper, expose, runner.clone(), agent)
+            };
         let named = |name| Err(Refusal::Named(name));
+        let missing = dir.join("no");
+        let unexposed = Some(Ok(program.clone()));
         // Every refusal wins over the ones after it.
         assert_eq!(
-            ask(None, true, true, &[dir.join("no")]),
+            ask(
+                None,
+                true,
+                true,
+                std::slice::from_ref(&missing),
+                unexposed.clone()
+            ),
             named(REQUIRES_SWARMAIL_BIN)
         );
         assert_eq!(
-            ask(Some(bin.clone()), true, true, &[dir.join("no")]),
+            ask(
+                Some(Ok(bin.clone())),
+                true,
+                true,
+                std::slice::from_ref(&missing),
+                unexposed.clone()
+            ),
             named(ARTIFACTS_UNSUPPORTED)
         );
         assert_eq!(
-            ask(Some(bin.clone()), false, true, &[dir.join("no")]),
+            ask(
+                Some(Ok(bin.clone())),
+                false,
+                true,
+                std::slice::from_ref(&missing),
+                unexposed.clone()
+            ),
             named(WRAPPER_UNSUPPORTED)
         );
-        for bad in [PathBuf::from("relative"), dir.join("no"), dir.clone()] {
+        for bad in [PathBuf::from("relative"), missing.clone(), dir.clone()] {
             assert_eq!(
-                ask(Some(bin.clone()), false, false, &[bad]),
+                ask(
+                    Some(Ok(bin.clone())),
+                    false,
+                    false,
+                    &[bad],
+                    unexposed.clone()
+                ),
                 named(EXPOSE_INVALID)
             );
         }
-        // A named executable that cannot be bound is its own refusal.
+        // An external program that is not an exposed file is refused before
+        // anything about the sources is looked at, even with an unusable
+        // Swarmail selector.
         assert_eq!(
-            ask(Some(dir.join("missing")), false, false, &[]),
+            ask(
+                Some(Err(())),
+                false,
+                false,
+                std::slice::from_ref(&runner),
+                unexposed.clone()
+            ),
+            named(EXTERNAL_AGENT_UNSUPPORTED)
+        );
+        // A named executable that cannot be bound, or resolved, is its own
+        // refusal; so is a program that resolved nowhere.
+        assert_eq!(
+            ask(Some(Ok(dir.join("missing"))), false, false, &[], None),
             named(SOURCE_INVALID)
         );
-        let ok = ask(Some(bin.clone()), false, false, &[]).unwrap();
+        assert_eq!(
+            ask(Some(Err(())), false, false, &[], None),
+            named(SOURCE_INVALID)
+        );
+        assert_eq!(
+            ask(Some(Ok(bin.clone())), false, false, &[], Some(Err(()))),
+            named(SOURCE_INVALID)
+        );
+        // An exposed external program is admitted, bound once, and a builtin
+        // (no program) needs no exposure.
+        let exposed = ask(
+            Some(Ok(bin.clone())),
+            false,
+            false,
+            std::slice::from_ref(&program),
+            Some(Ok(program.clone())),
+        )
+        .unwrap();
+        assert_eq!(exposed.agent, Some(program.clone()));
+        assert_eq!(
+            exposed.sources(),
+            vec![
+                runner.clone(),
+                bin.clone(),
+                program.clone(),
+                program.clone()
+            ]
+        );
+        let ok = ask(Some(Ok(bin.clone())), false, false, &[], None).unwrap();
         assert_eq!(ok.sources(), vec![runner.clone(), bin.clone()]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -905,6 +1019,7 @@ mod tests {
             "--unshare-ipc",
             "--die-with-parent",
             "--new-session",
+            "--as-pid-1",
             "--clearenv",
             "--setenv",
             "PATH",
@@ -1061,50 +1176,72 @@ mod tests {
     #[test]
     fn no_agent_argument_can_become_a_bwrap_option() {
         let request = golden_request();
-        let benign = os(&["/w/bin/swarmail-evals", "trial", "--", "/w/agents/agent"]);
-        let hostile = os(&[
-            "/w/bin/swarmail-evals",
-            "trial",
-            "--isolated",
-            "--",
+        let benign_agent = ["/w/agents/agent", "--flag", "value", "tail"];
+        let inner_for = |agent: &[&str]| {
+            let mut inner = os(&["/w/bin/swarmail-evals", "trial", "--"]);
+            inner.extend(os(agent));
+            inner
+        };
+        let benign = argv(&request, &merged_usr, &inner_for(&benign_agent));
+        let split = first_separator(&benign);
+        // Each hostile token, planted at every index of the agent argv (and
+        // appended after it), leaves the options before the first `--`
+        // untouched and the first `--` where the benign argv has it.
+        let tokens = [
             "--ro-bind",
-            "/",
-            "/",
             "--share-net",
+            "--as-pid-1",
             "--",
-            "--bind",
-            "/home",
-            "/home",
-            "--unshare-all",
             "--isolated",
-        ]);
-        let a = argv(&request, &merged_usr, &benign);
-        let b = argv(&request, &merged_usr, &hostile);
-        let split = first_separator(&a);
-        assert_eq!(
-            first_separator(&b),
-            split,
-            "the first -- depends on the request only"
-        );
-        assert_eq!(a[..=split], b[..=split]);
-        let options = &b[..split];
-        for planted in [
-            "--share-net",
-            "--isolated",
-            "--unshare-all",
-            "--bind",
-            "/home",
-        ] {
-            assert!(!options.iter().any(|o| o == planted), "{planted}");
+            "--chdir",
+        ];
+        for token in tokens {
+            for at in 0..=benign_agent.len() {
+                let mut agent = benign_agent.to_vec();
+                agent.insert(at, token);
+                let hostile = argv(&request, &merged_usr, &inner_for(&agent));
+                assert_eq!(
+                    first_separator(&hostile),
+                    split,
+                    "{token} at {at}: the first -- depends on the request only"
+                );
+                assert_eq!(benign[..=split], hostile[..=split], "{token} at {at}");
+                let planted = hostile[..split].iter().filter(|o| *o == token).count();
+                let own = benign[..split].iter().filter(|o| *o == token).count();
+                assert_eq!(planted, own, "{token} at {at}: a planted option");
+                // Everything after the separator is the runner's, verbatim.
+                assert_eq!(
+                    hostile[split + 1..],
+                    inner_for(&agent)[..],
+                    "{token} at {at}"
+                );
+            }
         }
-        assert_eq!(b[split + 1..], hostile[..]);
+        // `--as-pid-1` is the boundary's own, exactly once, before the
+        // environment is cleared.
+        let options = &benign[..split];
+        assert_eq!(options.iter().filter(|o| *o == "--as-pid-1").count(), 1);
+        let pid1 = options.iter().position(|o| o == "--as-pid-1").unwrap();
+        let session = options.iter().position(|o| o == "--new-session").unwrap();
+        let clear = options.iter().position(|o| o == "--clearenv").unwrap();
+        assert!(session < pid1 && pid1 < clear);
     }
 
     #[test]
     fn the_host_layout_is_read_from_the_host() {
-        // This host has /usr and /etc as directories whatever its /bin is.
-        assert_eq!(host_tree(Path::new("/usr")), Tree::Directory);
-        assert_eq!(host_tree(Path::new("/etc")), Tree::Directory);
+        // Each system tree is what the host's own metadata says it is: a
+        // directory on most Linux hosts, a symlink where merged-usr or macOS
+        // makes it one (`/etc` is a symlink on macOS), nothing where absent.
+        for root in SYSTEM_ROOTS {
+            let want = match std::fs::symlink_metadata(root) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    Tree::Link(std::fs::read_link(root).unwrap())
+                }
+                Ok(meta) if meta.is_dir() => Tree::Directory,
+                _ => Tree::Missing,
+            };
+            assert_eq!(host_tree(Path::new(root)), want, "{root}");
+        }
         assert_eq!(host_tree(Path::new("/definitely/not/here")), Tree::Missing);
         let dir = std::fs::canonicalize(tempfile::tempdir().unwrap().keep()).unwrap();
         std::fs::write(dir.join("file"), b"x").unwrap();

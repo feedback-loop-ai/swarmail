@@ -30,6 +30,13 @@
 //! (AC-L1) runs a hostile probe as trial B's agent inside the boundary
 //! against a live idle victim A and requires every route to be denied.
 //!
+//! What each platform proves. Everything that reads `/proc` is
+//! `cfg(target_os = "linux")`: the leak proof (AC-S1) and its negative
+//! control, the live proofs and the in-boundary observer. macOS compiles this
+//! file and proves only that `--isolated` refuses `boundary_unavailable:platform`
+//! (`macos_refuses_by_name_through_the_real_cli`); it claims nothing else,
+//! and passes nothing vacuously.
+//!
 //! Proof command, from the repository root on a capable host (deterministic:
 //! null and oracle built-ins, `/usr/bin/sleep`, and scripted agents from this
 //! test executable; no provider, no paid call; every isolated trial carries a
@@ -42,7 +49,9 @@
 mod common;
 
 use common::*;
+#[cfg(target_os = "linux")]
 use std::process::Stdio;
+#[cfg(target_os = "linux")]
 use swarmail_evals::state::FailureClass;
 use swarmail_evals::tasks::Outcome;
 
@@ -55,6 +64,22 @@ fn sentinel_agent(dir: &std::path::Path) -> (std::path::PathBuf, [String; 2]) {
     let sentinel = dir.join("agent-ran");
     let argv = ["/usr/bin/touch".to_string(), sentinel.display().to_string()];
     (sentinel, argv)
+}
+
+/// A generated agent script that touches a sentinel file (on the host) if it
+/// ever runs, plus that sentinel. It is a regular file in a fresh directory,
+/// so it can be named by `--isolated-expose`.
+fn sentinel_script(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let sentinel = dir.join("agent-ran");
+    let script = dir.join("agent.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\n", sentinel.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    (sentinel, script)
 }
 
 #[test]
@@ -123,6 +148,141 @@ fn isolated_preconditions_refuse_through_the_real_cli() {
     assert!(!std::path::Path::new(artifacts).exists());
 }
 
+/// The external-agent rule and the order of the refusals, through the real
+/// CLI (AC-S3). Until the operator rules on provider egress (0115) an
+/// external program runs isolated only if the caller exposed that very file.
+#[test]
+fn an_unexposed_external_agent_is_refused_and_the_order_is_the_documented_one() {
+    let _scope = trial_scope();
+    let dir = tempfile::tempdir().unwrap();
+    let sentinel = dir.path().join("agent-ran");
+    let artifacts = dir.path().join("artifacts");
+    let artifacts = artifacts.to_str().unwrap();
+    let touch = ["/usr/bin/touch".to_string(), sentinel.display().to_string()];
+    let cases: Vec<(Vec<&str>, Vec<String>, &str)> = vec![
+        // An external program nobody exposed.
+        (
+            vec![],
+            touch.to_vec(),
+            "isolation_external_agent_unsupported",
+        ),
+        (
+            vec![],
+            vec!["/bin/sh".into(), "-c".into(), "true".into()],
+            "isolation_external_agent_unsupported",
+        ),
+        // Exposing something else does not admit it.
+        (
+            vec!["--isolated-expose", exe()],
+            touch.to_vec(),
+            "isolation_external_agent_unsupported",
+        ),
+        // The order: artifacts before an unresolvable program; a bad
+        // exposure before an unexposed program; an unresolvable program is
+        // its own named refusal.
+        (
+            vec!["--artifacts-dir", artifacts],
+            vec!["/definitely/not/a/program".into()],
+            "isolation_artifacts_unsupported",
+        ),
+        (
+            vec!["--isolated-expose", "/definitely/not/here"],
+            vec!["/bin/sh".into()],
+            "isolation_expose_invalid",
+        ),
+        (
+            vec![],
+            vec!["/definitely/not/a/program".into()],
+            "isolation_source_invalid",
+        ),
+    ];
+    for (extra, agent, reason) in cases {
+        let out = cli()
+            .args([
+                "trial",
+                "--isolated",
+                "--task",
+                "signup",
+                "--agent",
+                "probe",
+            ])
+            .args(&extra)
+            .arg("--")
+            .args(&agent)
+            .output()
+            .unwrap();
+        let row = one_row(&out);
+        assert_eq!(row.outcome, Outcome::HarnessError, "{extra:?} {agent:?}");
+        assert_eq!(out.status.code(), Some(2), "{extra:?} {agent:?}");
+        assert!(
+            stderr(&out).contains(&format!("harness error: {reason}\n")),
+            "{extra:?} {agent:?}: {}",
+            stderr(&out)
+        );
+        assert!(row.agent_exits.is_empty());
+        assert!(!sentinel.exists(), "{extra:?}: an agent was launched");
+    }
+    assert!(!std::path::Path::new(artifacts).exists());
+}
+
+#[test]
+fn an_exposed_external_agent_passes_the_precondition_and_reaches_the_boundary() {
+    // Where the boundary exists this would launch the agent for real, and the
+    // live suite covers that; here the interest is the refusal by name.
+    let Some(reason) = boundary_unavailable() else {
+        return;
+    };
+    let _scope = trial_scope();
+    let dir = tempdir();
+    let (sentinel, script) = sentinel_script(dir.path());
+    let out = cli()
+        .args([
+            "trial",
+            "--isolated",
+            "--task",
+            "signup",
+            "--agent",
+            "probe",
+        ])
+        .arg("--isolated-expose")
+        .arg(&script)
+        .arg("--")
+        .arg(&script)
+        .output()
+        .unwrap();
+    let row = one_row(&out);
+    assert_eq!(row.outcome, Outcome::HarnessError);
+    assert_eq!(out.status.code(), Some(2));
+    // Not a precondition: the boundary itself is what refused.
+    assert!(
+        !stderr(&out).contains("harness error: isolation_"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stderr(&out).contains(&reason), "{}", stderr(&out));
+    assert!(!sentinel.exists(), "the agent ran without the boundary");
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn macos_refuses_by_name_through_the_real_cli() {
+    // bwrap is Linux-only: the whole of what this platform proves.
+    let _scope = trial_scope();
+    let out = cli()
+        .args(["trial", "--isolated", "--task", "signup", "--agent", "null"])
+        .output()
+        .unwrap();
+    let row = one_row(&out);
+    assert_eq!(row.outcome, Outcome::HarnessError);
+    assert!(row.agent_exits.is_empty());
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("harness error: boundary_unavailable:platform\n"),
+        "{}",
+        stderr(&out)
+    );
+}
+
 #[test]
 fn the_isolation_flags_stay_hidden() {
     let out = cli().args(["trial", "--help"]).output().unwrap();
@@ -155,8 +315,8 @@ fn an_unavailable_boundary_refuses_by_name_and_never_falls_back() {
     assert!(steps.contains(&step), "outside the closed set: {reason}");
 
     let _scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
-    let (sentinel, agent) = sentinel_agent(dir.path());
+    let dir = tempdir();
+    let (sentinel, script) = sentinel_script(dir.path());
     let out = cli()
         .args([
             "trial",
@@ -165,9 +325,11 @@ fn an_unavailable_boundary_refuses_by_name_and_never_falls_back() {
             "signup",
             "--agent",
             "probe",
-            "--",
         ])
-        .args(&agent)
+        .arg("--isolated-expose")
+        .arg(&script)
+        .arg("--")
+        .arg(&script)
         .output()
         .unwrap();
     let row = one_row(&out);
@@ -186,6 +348,7 @@ fn an_unavailable_boundary_refuses_by_name_and_never_falls_back() {
 /// anything. This documents, in the repository and on purpose, that without
 /// the boundary a same-uid neighbour wins: a later denial is therefore an
 /// observation against a demonstrated attack, not a cooperating oracle.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_leak_is_live_a_same_uid_helper_makes_an_idle_victim_pass() {
     let _scope = trial_scope();
@@ -238,6 +401,7 @@ fn the_leak_is_live_a_same_uid_helper_makes_an_idle_victim_pass() {
 /// `/proc`); aimed at nothing it must say it is blind (30) rather than report
 /// that everything was denied. Without this, the live "every route denied"
 /// result could be an artefact of a probe that cannot see.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_hostile_probe_reports_a_leak_where_there_is_one_and_is_never_blind() {
     let _scope = trial_scope();
@@ -308,29 +472,184 @@ fn the_hostile_probe_reports_a_leak_where_there_is_one_and_is_never_blind() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(30));
+
+    // A port coincidence is void (90), never a verdict: if the "victim's"
+    // MCP or fixture port is one this probe's own network namespace is
+    // listening on, a connect would reach its own service. Here the probe's
+    // two services are the listeners above, and the coordinates name them.
+    let free_port = || {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let (app_port, mcp_port) = (
+        app.local_addr().unwrap().port(),
+        mcp.local_addr().unwrap().port(),
+    );
+    let coordinates = |app_port: u16, mcp_port: u16| {
+        let vars = std::collections::BTreeMap::from([
+            (
+                "EVAL_APP_URL".to_string(),
+                format!("http://127.0.0.1:{app_port}"),
+            ),
+            (
+                "EVAL_MCP_URL".to_string(),
+                format!("http://127.0.0.1:{mcp_port}/mcp"),
+            ),
+        ]);
+        // No such process: only the ports can coincide.
+        victim_args(i32::MAX, i32::MAX, &vars)
+    };
+    let exit_for = |args: Vec<String>| {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        own(&mut command);
+        command.args(args).output().unwrap().status.code()
+    };
+    assert_eq!(
+        exit_for(coordinates(free_port(), mcp_port)),
+        Some(90),
+        "the victim's MCP port is one of the probe's own listeners"
+    );
+    assert_eq!(
+        exit_for(coordinates(app_port, free_port())),
+        Some(90),
+        "the victim's fixture port is one of the probe's own listeners"
+    );
+    // The void does not over-fire: with nothing listening on either port and
+    // no victim to find, every route is denied.
+    assert_eq!(exit_for(coordinates(free_port(), free_port())), Some(0));
     send_signal(victim.pid(), libc::SIGTERM);
     let _ = victim.wait_with_output();
 }
 
+/// The observer is not vacuous: run unisolated, it sees the host's `/proc`
+/// and reports it (42) rather than passing, and the two walks it relies on
+/// find what they look for (AC-L2). The live proof's green is then not an
+/// artefact of an observer that cannot see.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_in_boundary_observer_reports_the_host_where_there_is_no_boundary() {
+    let _scope = trial_scope();
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "helper_agent", "--nocapture", "--test-threads=1"])
+        .args([
+            format!("uid={uid}"),
+            format!("host-pids={}", std::process::id()),
+            "absent=/definitely/not/here".to_string(),
+            "canary-fd=99".to_string(),
+            "tmp-bytes=1".to_string(),
+            "runner=/definitely/not/the/runner".to_string(),
+            "bound=".to_string(),
+        ])
+        .env(HELPER_ENV, "boundary_observe")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    // The helper's own PID is visible in the host /proc it lists.
+    assert_eq!(
+        out.status.code(),
+        Some(42),
+        "{}",
+        observer_check(out.status.code())
+    );
+    // With no arguments it says so instead of guessing.
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "helper_agent", "--nocapture", "--test-threads=1"])
+        .env(HELPER_ENV, "boundary_observe")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(40));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_observers_directory_walks_find_what_they_look_for() {
+    let dir = tempdir();
+    let bound = dir.path().join("a/b/tool");
+    std::fs::create_dir_all(bound.parent().unwrap()).unwrap();
+    std::fs::write(&bound, b"x").unwrap();
+    let files = [bound.clone()];
+    // Only the bound file and the directories on the way to it: clean.
+    assert_eq!(stray_under(dir.path(), &files), None);
+    // A missing root is clean (the boundary may have no /home at all).
+    assert_eq!(stray_under(&dir.path().join("nope"), &files), None);
+    // Anything else is a stray: a sibling directory, a sibling file, a link.
+    for make in [
+        |d: &std::path::Path| std::fs::create_dir(d.join("a/c")).unwrap(),
+        |d: &std::path::Path| std::fs::write(d.join("a/b/other"), b"y").unwrap(),
+        |d: &std::path::Path| std::fs::write(d.join("loose"), b"y").unwrap(),
+        |d: &std::path::Path| std::os::unix::fs::symlink("b", d.join("a/link")).unwrap(),
+    ] {
+        make(dir.path());
+        assert!(stray_under(dir.path(), &files).is_some());
+        // Reset to clean for the next case.
+        std::fs::remove_dir_all(dir.path().join("a")).ok();
+        std::fs::remove_file(dir.path().join("loose")).ok();
+        std::fs::create_dir_all(bound.parent().unwrap()).unwrap();
+        std::fs::write(&bound, b"x").unwrap();
+    }
+
+    // A directory descriptor onto /proc is exactly what the walk looks for:
+    // it lists this process's PID. Held, it is found; never listed, not.
+    let held = std::fs::File::open("/proc").unwrap();
+    let me = std::collections::HashSet::from([std::process::id().to_string()]);
+    assert!(descriptor_reaches_host_proc(&me));
+    drop(held);
+    let nobody = std::collections::HashSet::from(["no-such-entry".to_string()]);
+    assert!(!descriptor_reaches_host_proc(&nobody));
+}
+
+#[test]
+fn listening_ports_are_read_from_the_proc_net_tables() {
+    let tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 11111 1 0 100 0 0 10 0\n\
+   1: 0100007F:0050 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1000        0 22222 1 0 100 0 0 10 0\n\
+   2: 00000000:01BB 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 33333 1 0 100 0 0 10 0\n";
+    assert_eq!(parse_listen_ports(tcp), [0x1F90, 0x01BB]);
+    let tcp6 = "  sl  local_address                         remote_address                        st tx_queue\n\
+   0: 00000000000000000000000001000000:2328 00000000000000000000000000000000:0000 0A 00000000:00000000\n";
+    assert_eq!(parse_listen_ports(tcp6), [0x2328]);
+    assert_eq!(parse_listen_ports(""), Vec::<u16>::new());
+    assert_eq!(parse_listen_ports("header only\n"), Vec::<u16>::new());
+    assert_eq!(parse_listen_ports("h\n garbage line\n"), Vec::<u16>::new());
+    // On Linux the real tables see a listener this very test opens.
+    #[cfg(target_os = "linux")]
+    {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(listening_ports().contains(&port));
+        drop(listener);
+    }
+}
+
 // ---- live proofs: need a bwrap that can create the namespaces -------------
 
+#[cfg(target_os = "linux")]
 use std::ffi::OsString;
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
 use swarmail_evals::isolation;
 
 /// The runner executable as a controller reports it (`current_exe`).
+#[cfg(target_os = "linux")]
 fn runner_exe() -> PathBuf {
     std::fs::canonicalize(exe()).unwrap()
 }
 
 /// A trial whose agent is the helper in `mode`, run inside the boundary.
+#[cfg(target_os = "linux")]
 fn isolated_helper(mode: &str) -> (std::process::Command, tempfile::TempDir) {
     isolated_helper_with(mode, &[])
 }
 
 /// The same, with `agent_args` appended to the wrapper's argv. The wrapper
 /// forwards them to the helper (libtest treats them as inert name filters).
+#[cfg(target_os = "linux")]
 fn isolated_helper_with(
     mode: &str,
     agent_args: &[String],
@@ -352,6 +671,8 @@ fn isolated_helper_with(
     command
         .args(["trial", "--isolated", "--isolated-expose"])
         .arg(&me)
+        .arg("--isolated-expose")
+        .arg(&wrapper)
         .args(["--deadline-ms", "20000"])
         .args(["--task", "signup", "--agent", "probe", "--"])
         .arg(&wrapper)
@@ -359,6 +680,7 @@ fn isolated_helper_with(
     (command, dir)
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "trial-isolation: needs /usr/bin/bwrap >= 0.11.1 able to create user namespaces"]
 fn a_fresh_home_and_the_trials_own_services_work_through_the_boundary() {
@@ -374,29 +696,49 @@ fn a_fresh_home_and_the_trials_own_services_work_through_the_boundary() {
     }
     // The oracle completes signup inside the boundary through its own
     // Swarmail MCP and its own fixture.
-    let (row, out) = trial(&["--isolated", "--task", "signup", "--agent", "oracle"]);
+    let (row, out) = trial(&[
+        "--isolated",
+        "--deadline-ms",
+        "30000",
+        "--task",
+        "signup",
+        "--agent",
+        "oracle",
+    ]);
     assert_eq!(row.outcome, Outcome::Pass, "{}", stderr(&out));
     assert_eq!(row.concurrency, 1);
 }
 
+#[cfg(target_os = "linux")]
 fn observer_check(code: Option<i32>) -> &'static str {
     match code {
-        Some(0) => "every check held; a nested user namespace was refused",
+        Some(0) => {
+            "every check held; a nested user namespace was refused; /proc/1/mem is read-only"
+        }
         Some(100) => "every check held; a nested user namespace was granted (observed)",
+        Some(101) => "every check held; /proc/1/mem opens read-write (observed, within-trial)",
+        Some(102) => {
+            "every check held; a nested user namespace was granted and /proc/1/mem opens \
+             read-write (observed)"
+        }
         Some(40) => "the observer was not given its arguments",
         Some(41) => "the uid is not the caller's",
-        Some(42) => "/proc shows the host (a host PID, or the host's init as PID 1)",
+        Some(42) => {
+            "/proc shows the host (a host PID), or PID 1 is not the runner (a reaper stands inside)"
+        }
         Some(43) => "an interface other than lo exists",
         Some(44) => "lo is unusable",
-        Some(45) => "a listed host path is present",
+        Some(45) => "a listed host path is present, or a stray entry is under /home",
         Some(46) => "/tmp is not the bounded tmpfs",
         Some(47) => "a foreign environment key reached the agent",
         Some(48) => "a stray descriptor reached the agent",
         Some(49) => "capabilities are not empty, or NoNewPrivs is not 1",
+        Some(50) => "a descriptor of some process inside reaches the host /proc",
         _ => "the observer did not report",
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "trial-isolation: needs /usr/bin/bwrap >= 0.11.1 able to create user namespaces"]
 fn the_boundary_looks_as_designed_from_inside() {
@@ -415,8 +757,8 @@ fn the_boundary_looks_as_designed_from_inside() {
     // a file the boundary has to bind, which exists as an empty mount point.
     let bound = [
         runner_exe(),
-        swarmail_bin().to_path_buf(),
-        std::env::current_exe().unwrap(),
+        std::fs::canonicalize(swarmail_bin()).unwrap(),
+        std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap(),
     ];
     let home = std::env::var("HOME").unwrap_or_default();
     let mut candidates: Vec<String> = [
@@ -452,7 +794,21 @@ fn the_boundary_looks_as_designed_from_inside() {
         format!("absent={}", candidates.join(",")),
         format!("canary-fd={CANARY_FD}"),
         format!("tmp-bytes={}", isolation::TMP_BYTES),
+        format!("runner={}", runner_exe().display()),
+        format!(
+            "bound={}",
+            bound
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
     ];
+    // The host's Yama setting is a recorded observation, not a prerequisite
+    // (0115, After the first review).
+    let ptrace_scope = std::fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope")
+        .map_or_else(|_| "unavailable".to_string(), |v| v.trim().to_string());
+    eprintln!("observation: host kernel.yama.ptrace_scope = {ptrace_scope}");
     let (mut command, _owner) = isolated_helper_with("boundary_observe", &args);
     // SAFETY: the closure runs between fork and exec and makes one dup2.
     unsafe {
@@ -468,8 +824,13 @@ fn the_boundary_looks_as_designed_from_inside() {
     let row = one_row(&out);
     let code = agent_codes(&row).first().copied().flatten();
     eprintln!("observer: {} (exit {code:?})", observer_check(code));
+    eprintln!(
+        "observation: nested user namespace granted inside: {}; /proc/1/mem opens read-write: {}",
+        matches!(code, Some(100) | Some(102)),
+        matches!(code, Some(101) | Some(102)),
+    );
     assert!(
-        matches!(code, Some(0) | Some(100)),
+        matches!(code, Some(0) | Some(100) | Some(101) | Some(102)),
         "the boundary is not as designed: {} (exit {code:?})\n{}",
         observer_check(code),
         stderr(&out)
@@ -479,12 +840,20 @@ fn the_boundary_looks_as_designed_from_inside() {
 
 /// Spawn an isolated trial through the real CLI whose agent sleeps, and wait
 /// until it runs. The guard is the controller.
-fn idle_trial() -> (ChildGuard, ProcessIdentity) {
+#[cfg(target_os = "linux")]
+fn idle_trial() -> (ChildGuard, ProcessIdentity, tempfile::TempDir) {
+    use std::os::unix::fs::PermissionsExt;
+    // An external agent runs isolated only if it is exposed (0115): a
+    // generated script that becomes `/usr/bin/sleep` by `exec`.
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("idle.sh");
+    std::fs::write(&script, "#!/bin/sh\nexec /usr/bin/sleep 1000\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut command = cli();
     command
+        .args(["trial", "--isolated", "--isolated-expose"])
+        .arg(&script)
         .args([
-            "trial",
-            "--isolated",
             "--task",
             "signup",
             "--agent",
@@ -492,18 +861,18 @@ fn idle_trial() -> (ChildGuard, ProcessIdentity) {
             "--deadline-ms",
             "30000",
             "--",
-            "/usr/bin/sleep",
-            "1000",
         ])
+        .arg(&script)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let trial = ChildGuard {
         child: Some(command.spawn().unwrap()),
     };
     let agent = wait_for_sleeping_agent(trial.pid());
-    (trial, agent)
+    (trial, agent, dir)
 }
 
+#[cfg(target_os = "linux")]
 fn wait_for_sleeping_agent(root: i32) -> ProcessIdentity {
     let mut agent = None;
     eventually("the isolated agent", || {
@@ -516,16 +885,17 @@ fn wait_for_sleeping_agent(root: i32) -> ProcessIdentity {
     agent.unwrap()
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "trial-isolation: needs /usr/bin/bwrap >= 0.11.1 able to create user namespaces"]
 fn killing_the_controller_leaves_no_trial_process_alive() {
     require_boundary();
     let _scope = trial_scope();
-    let (trial, _agent) = idle_trial();
+    let (trial, _agent, _owner) = idle_trial();
     let family = process_descendants(trial.pid());
     assert!(
         family.len() >= 3,
-        "bwrap, its reaper, the runner, the agent: {family:?}"
+        "bwrap, the runner (PID 1), the agent: {family:?}"
     );
     send_signal(trial.pid(), libc::SIGKILL);
     let _ = trial.wait_with_output();
@@ -533,17 +903,18 @@ fn killing_the_controller_leaves_no_trial_process_alive() {
         family.iter().all(|p| !identity_alive(p))
     });
     // No orphan survives to watch the next trial.
-    let (next, _) = idle_trial();
+    let (next, _, _next_owner) = idle_trial();
     assert!(family.iter().all(|p| !identity_alive(p)));
     send_signal(next.pid(), libc::SIGKILL);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "trial-isolation: needs /usr/bin/bwrap >= 0.11.1 able to create user namespaces"]
 fn killing_the_runner_leaves_no_agent_alive_and_the_controller_names_the_missing_row() {
     require_boundary();
     let _scope = trial_scope();
-    let (trial, agent) = idle_trial();
+    let (trial, agent, _owner) = idle_trial();
     let family = process_descendants(trial.pid());
     let runner = isolation::runner_pid(trial.pid(), &runner_exe())
         .expect("the runner is below the controller");
@@ -565,12 +936,13 @@ fn killing_the_runner_leaves_no_agent_alive_and_the_controller_names_the_missing
     });
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "trial-isolation: needs /usr/bin/bwrap >= 0.11.1 able to create user namespaces"]
 fn an_interrupt_emits_the_runners_interrupted_row_and_leaves_nothing_alive() {
     require_boundary();
     let _scope = trial_scope();
-    let (trial, agent) = idle_trial();
+    let (trial, agent, _owner) = idle_trial();
     let family = process_descendants(trial.pid());
     send_signal(trial.pid(), libc::SIGTERM);
     let out = trial.wait_with_output();
@@ -587,12 +959,13 @@ fn an_interrupt_emits_the_runners_interrupted_row_and_leaves_nothing_alive() {
     });
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "trial-isolation: needs /usr/bin/bwrap >= 0.11.1 able to create user namespaces"]
 fn an_agent_killed_from_outside_leaves_the_idle_class_not_a_pass() {
     require_boundary();
     let _scope = trial_scope();
-    let (trial, agent) = idle_trial();
+    let (trial, agent, _owner) = idle_trial();
     send_signal(agent.pid, libc::SIGKILL);
     let out = trial.wait_with_output();
     let row = one_row(&out);
@@ -611,6 +984,7 @@ fn an_agent_killed_from_outside_leaves_the_idle_class_not_a_pass() {
 /// trusted test through the library's own argv builder — the test is A's
 /// controller and holds no host admission for it. Returns A's bwrap (the
 /// guard), A's agent and A's runner, as host PIDs read from the host `/proc`.
+#[cfg(target_os = "linux")]
 fn idle_victim() -> (ChildGuard, ProcessIdentity, i32) {
     let runner = runner_exe();
     let request = isolation::Request {
@@ -639,6 +1013,7 @@ fn idle_victim() -> (ChildGuard, ProcessIdentity, i32) {
     (victim, agent, runner_pid)
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "trial-isolation: needs /usr/bin/bwrap >= 0.11.1 able to create user namespaces"]
 fn a_hostile_same_uid_agent_in_trial_b_cannot_reach_trial_a() {

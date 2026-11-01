@@ -319,9 +319,10 @@ fn refuse(req: &TrialRequest, reason: &str, out: &mut impl Write, err: &mut impl
 /// so a value that starts with `-` stays a value), without `--isolated` and
 /// `--isolated-expose`, then `--` and the agent argv verbatim. The pattern
 /// names every field and has no `..`: a field added to `Cmd::Trial` fails to
-/// compile here until it is rendered. A relative or bare agent program is
-/// replaced by the absolute path the controller resolved, since inside the
-/// sandbox the caller's cwd and PATH are gone; an absolute one is untouched.
+/// compile here until it is rendered. The agent program is always replaced
+/// by the canonical absolute path the controller resolved and binds, since
+/// inside the sandbox the caller's cwd and PATH are gone and a program
+/// reached through a symlinked directory is bound at its real location.
 fn inner_args(cmd: &Cmd, request: &isolation::Request) -> Vec<OsString> {
     let Cmd::Trial {
         task,
@@ -380,9 +381,7 @@ fn inner_args(cmd: &Cmd, request: &isolation::Request) -> Vec<OsString> {
     if !argv.is_empty() {
         args.push("--".into());
         let mut program = argv.clone();
-        if let (Some(resolved), Some(first)) = (&request.agent, program.first_mut())
-            && !std::path::Path::new(first).is_absolute()
-        {
+        if let (Some(resolved), Some(first)) = (&request.agent, program.first_mut()) {
             *first = resolved.clone().into_os_string();
         }
         args.extend(program);
@@ -392,41 +391,48 @@ fn inner_args(cmd: &Cmd, request: &isolation::Request) -> Vec<OsString> {
 
 /// The preconditions of an isolated trial. The boundary itself (bwrap, its
 /// version, its probe) is the controller's, and refuses later and by name.
+///
+/// `concurrency_unsupported` is decided first; the rest are ordered in
+/// [`isolation::request`], the one place that knows the order. The Swarmail
+/// selector and the agent program are resolved here, at the caller's cwd and
+/// PATH, but a failure to resolve is only a fact handed on: it is reported
+/// as `isolation_source_invalid` after every precondition named before it,
+/// so the first-named refusal wins.
 fn isolate(
     req: &TrialRequest,
     expose: &[PathBuf],
     swarmail_bin: Result<Option<PathBuf>, String>,
 ) -> Result<isolation::Request, isolation::Refusal> {
-    use isolation::Refusal;
+    use isolation::{Named, Refusal};
     if req.concurrency.unwrap_or(1) != 1 {
         return Err(Refusal::Named("concurrency_unsupported"));
     }
-    let source_invalid = || Refusal::Named(isolation::SOURCE_INVALID);
-    // The Swarmail selector and the agent program are resolved here, at the
-    // caller's cwd and PATH; their directories are made canonical so the
-    // bind names the real file (a symlinked final component still refuses).
-    let canonical = |path: PathBuf| -> Result<PathBuf, Refusal> {
-        let name = path.file_name().ok_or_else(source_invalid)?.to_owned();
-        let parent = path.parent().ok_or_else(source_invalid)?;
-        Ok(std::fs::canonicalize(parent)
-            .map_err(|_| source_invalid())?
-            .join(name))
+    // Their directories are made canonical so the bind names the real file
+    // (a symlinked final component still refuses at the bind check).
+    let canonical = |path: PathBuf| -> Named {
+        let name = path.file_name().ok_or(())?.to_owned();
+        let parent = path.parent().ok_or(())?;
+        Ok(std::fs::canonicalize(parent).map_err(|_| ())?.join(name))
     };
-    let swarmail_bin = swarmail_bin
-        .map_err(|_| source_invalid())?
-        .map(canonical)
-        .transpose()?;
+    let swarmail_bin: Option<Named> = match swarmail_bin {
+        Ok(selected) => selected.map(canonical),
+        Err(_) => Some(Err(())),
+    };
     let builtin = req
         .agent
         .as_deref()
         .is_some_and(|s| runner::BUILTINS.contains(&s));
-    let agent = match req.argv.first() {
-        Some(program) if !builtin => Some(canonical(
-            runner::selected_agent_program(program).map_err(|_| source_invalid())?,
-        )?),
+    let agent: Option<Named> = match req.argv.first() {
+        Some(program) if !builtin => Some(
+            runner::selected_agent_program(program)
+                .map_err(|_| ())
+                .and_then(canonical),
+        ),
         _ => None,
     };
-    let runner_exe = std::env::current_exe().map_err(|_| source_invalid())?;
+    // An unknowable own path is an empty one, which the bind check refuses
+    // as a relative source, in its place in the order.
+    let runner_exe = std::env::current_exe().unwrap_or_default();
     isolation::request(
         swarmail_bin,
         req.artifacts_dir.is_some(),
@@ -4241,6 +4247,48 @@ mod privacy_tests {
     }
 
     #[tokio::test]
+    async fn the_matrix_never_renders_the_isolated_flags() {
+        // The boundary is a hidden single-trial flag (proposed 0115). The
+        // matrix stays sequential and unisolated: no trial argv it renders
+        // carries `--isolated` or `--isolated-expose`.
+        let _trial_scope = crate::test_support::trial_scope();
+        let owner = tempfile::tempdir().unwrap();
+        let record = owner.path().join("argv");
+        let program = owner.path().join("recording-worker");
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit 1\n",
+                record.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let spec = AgentSpec {
+            label: "oracle".into(),
+            argv: Vec::new(),
+            ..Default::default()
+        };
+        run_child(
+            &program,
+            Path::new("/bin/true"),
+            "signup",
+            &spec,
+            &[],
+            Some(5),
+        )
+        .await;
+        let rendered = std::fs::read_to_string(&record).unwrap();
+        let args: Vec<_> = rendered.lines().collect();
+        assert_eq!(args.first(), Some(&"trial"), "{args:?}");
+        assert!(args.contains(&"--deadline-ms"), "{args:?}");
+        assert!(
+            !args.iter().any(|a| a.starts_with("--isolated")),
+            "{args:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn matrix_worker_requires_one_matching_schema_row_and_exit() {
         let _trial_scope = crate::test_support::trial_scope();
         let owner = tempfile::tempdir().unwrap();
@@ -4600,6 +4648,60 @@ mod isolation_entry_tests {
                 some(),
                 "isolation_source_invalid",
             ),
+            // An external program nobody exposed is refused by name.
+            (
+                vec!["--isolated", "--task", "signup", "--", "/bin/sh"],
+                some(),
+                "isolation_external_agent_unsupported",
+            ),
+            (
+                vec!["--isolated", "--agent", "probe", "--", "/usr/bin/env"],
+                some(),
+                "isolation_external_agent_unsupported",
+            ),
+            // The order is the documented one, each fault shadowing the next:
+            // artifacts before an unresolvable program,
+            (
+                vec![
+                    "--isolated",
+                    "--artifacts-dir",
+                    artifacts.to_str().unwrap(),
+                    "--",
+                    "/definitely/not/an/agent",
+                ],
+                some(),
+                "isolation_artifacts_unsupported",
+            ),
+            // a bad exposure before an unexposed program,
+            (
+                vec![
+                    "--isolated",
+                    "--isolated-expose",
+                    "/definitely/not/here",
+                    "--",
+                    "/bin/sh",
+                ],
+                some(),
+                "isolation_expose_invalid",
+            ),
+            // an unexposed program before an unusable Swarmail selector,
+            (
+                vec!["--isolated", "--", "/bin/sh"],
+                Err("program_missing".into()),
+                "isolation_external_agent_unsupported",
+            ),
+            // and a missing selector before everything but concurrency.
+            (
+                vec![
+                    "--isolated",
+                    "--artifacts-dir",
+                    artifacts.to_str().unwrap(),
+                    "--",
+                    "/bin/sh",
+                ],
+                Ok(None),
+                "isolation_requires_swarmail_bin",
+            ),
             // The public refusal keeps its meaning and comes first, even
             // where a later precondition also fails.
             (
@@ -4658,6 +4760,70 @@ mod isolation_entry_tests {
                 .iter()
                 .any(|a| a.to_string_lossy().contains("isolated"))
         );
+    }
+
+    fn executable(path: &std::path::Path) {
+        std::fs::write(path, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn an_exposed_external_program_passes_the_precondition_and_reaches_the_controller() {
+        // `a_binary` names a canonical directory (macOS temporary
+        // directories sit behind a symlink, which an exposure refuses).
+        let (_dir, bin) = a_binary();
+        let home = bin.parent().unwrap().to_path_buf();
+        let program = home.join("agent");
+        executable(&program);
+        let program_arg = program.to_str().unwrap();
+        let ran = run(
+            &[
+                "--task",
+                "signup",
+                "--agent",
+                "probe",
+                "--isolated",
+                "--isolated-expose",
+                program_arg,
+                "--",
+                program_arg,
+                "--flag",
+            ],
+            Ok(Some(bin.clone())),
+        );
+        assert!(ran.stdout.is_empty() && ran.stderr.is_empty());
+        let Ok(Prepared::Isolate { request, inner, .. }) = ran.result else {
+            panic!("an exposed program reaches the controller");
+        };
+        assert_eq!(request.agent.as_deref(), Some(program.as_path()));
+        assert!(request.expose.contains(&program));
+        assert!(inner.iter().any(|a| a == "--flag"));
+
+        // The same file reached through a symlinked directory: the inner
+        // argv names the canonical path the bind uses, not the alias.
+        let alias = home.join("alias");
+        std::os::unix::fs::symlink(&home, &alias).unwrap();
+        let through_alias = alias.join("agent");
+        let ran = run(
+            &[
+                "--task",
+                "signup",
+                "--agent",
+                "probe",
+                "--isolated",
+                "--isolated-expose",
+                program_arg,
+                "--",
+                through_alias.to_str().unwrap(),
+            ],
+            Ok(Some(bin.clone())),
+        );
+        let Ok(Prepared::Isolate { request, inner, .. }) = ran.result else {
+            panic!("{}", ran.stderr);
+        };
+        assert_eq!(request.agent.as_deref(), Some(program.as_path()));
+        let after: Vec<_> = inner.iter().skip_while(|a| *a != "--").skip(1).collect();
+        assert_eq!(after, [program.as_os_str()]);
     }
 
     fn all_fields() -> Vec<&'static str> {
@@ -4757,7 +4923,7 @@ mod isolation_entry_tests {
     }
 
     #[test]
-    fn the_resolved_agent_replaces_only_a_relative_program() {
+    fn the_resolved_agent_replaces_the_program_whatever_the_caller_named() {
         let render = |args: &[&str], agent: Option<&str>| {
             let mut all = vec!["--isolated", "--"];
             all.extend_from_slice(args);
@@ -4773,10 +4939,13 @@ mod isolation_entry_tests {
             render(&["agent", "--flag"], Some("/real/agent")),
             ["/real/agent", "--flag"]
         );
+        // An absolute name reached through a symlinked directory is
+        // rendered as the canonical path the controller binds (R9).
         assert_eq!(
-            render(&["/given/agent"], Some("/real/agent")),
-            ["/given/agent"]
+            render(&["/alias/agent"], Some("/real/agent")),
+            ["/real/agent"]
         );
+        assert_eq!(render(&["/given/agent"], None), ["/given/agent"]);
         assert_eq!(render(&["agent"], None), ["agent"]);
         // No agent argv, no separator.
         let inner = inner_args(
@@ -4791,6 +4960,7 @@ mod isolation_entry_tests {
 
     // ---- the controller's refusals, through the parameter seam (AC-S2) --------
 
+    #[cfg(target_os = "linux")]
     fn script(dir: &std::path::Path, version: &str, probe: &str, real: &str) -> PathBuf {
         let path = dir.join("bwrap");
         std::fs::write(
@@ -4829,6 +4999,8 @@ mod isolation_entry_tests {
             "--agent",
             "probe",
             "--isolated",
+            "--isolated-expose",
+            program.to_str().unwrap(),
             "--",
             program.to_str().unwrap(),
         ];
@@ -4858,6 +5030,9 @@ mod isolation_entry_tests {
         }
     }
 
+    // Linux only: elsewhere every one of these refuses `platform` first,
+    // which `macos_refuses_by_name_through_the_whole_entry` proves.
+    #[cfg(target_os = "linux")]
     #[test]
     fn every_refused_boundary_is_a_named_harness_error_and_no_agent_runs() {
         let dir = tempfile::tempdir().unwrap();
@@ -4899,6 +5074,65 @@ mod isolation_entry_tests {
             assert!(row.agent_exits.is_empty());
             assert!(!agent_ran.exists(), "{reason}: an agent was launched");
         }
+    }
+
+    /// The child half of the stderr test: only does anything when the parent
+    /// test re-executes this binary for it, so the controller's own stderr
+    /// (a real descriptor, not a captured buffer) can be read by the parent.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bwrap_stderr_child() {
+        let (Some(bwrap), Some(out)) = (
+            std::env::var_os("ISOLATION_STDERR_BWRAP"),
+            std::env::var_os("ISOLATION_STDERR_OUT"),
+        ) else {
+            return;
+        };
+        let out = PathBuf::from(out);
+        let ran = through_the_controller(std::path::Path::new(&bwrap), &out.join("agent-ran"));
+        std::fs::write(out.join("row"), ran.stdout).unwrap();
+        std::fs::write(out.join("diagnostic"), ran.stderr).unwrap();
+        std::fs::write(out.join("code"), format!("{}", ran.result.err().unwrap())).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bwrap_words_reach_the_controllers_stderr_and_never_the_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = "marker-4f1c9a";
+        let bwrap = script(
+            dir.path(),
+            "bubblewrap 0.11.1",
+            &format!("echo 'bwrap: {marker}' >&2; exit 1"),
+            "exit 0",
+        );
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "isolation_entry_tests::bwrap_stderr_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("ISOLATION_STDERR_BWRAP", &bwrap)
+            .env("ISOLATION_STDERR_OUT", dir.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("bwrap: {marker}\n")),
+            "bwrap's own words reach the controller's stderr: {stderr:?}"
+        );
+        let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).unwrap();
+        // The row and the controller's own diagnostic name the step and
+        // carry nothing of bwrap's text (0075: finite categories).
+        let (row_text, diagnostic) = (read("row"), read("diagnostic"));
+        assert!(!row_text.contains(marker), "{row_text}");
+        assert!(!diagnostic.contains(marker), "{diagnostic}");
+        assert!(diagnostic.contains("harness error: boundary_unavailable:bwrap_probe\n"));
+        assert_eq!(read("code"), "2");
+        assert_eq!(row(&row_text).outcome, Outcome::HarnessError);
+        assert!(!dir.path().join("agent-ran").exists());
     }
 
     #[test]
