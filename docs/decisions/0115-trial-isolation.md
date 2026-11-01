@@ -4,7 +4,9 @@
 - **Date:** 2026-10-24 (design on record, branch
   `epic192/issue199-current-0058` at 518c52d, where it was numbered 0062);
   carried onto main a3cff51 on 2026-10-31 for issue #221; revised
-  2026-11-01 (the boundary is bubblewrap; main a4f552d merged in).
+  2026-11-01 (the boundary is bubblewrap; main a4f552d merged in); revised
+  again 2026-11-01 after the first review panel returned the run (accepted
+  0102, spec-defect addendum): see *After the first review* below.
 - **Issue:** #221 (split from #199 by operator ruling, 2026-10-24), Epic #192.
 - **Design:** [spec](../../specs/trial-isolation/spec.md),
   [plan](../../specs/trial-isolation/plan.md),
@@ -86,8 +88,12 @@ services exist there. `--share-net` is rejected outright: it would put the
 trial's own services on the host loopback. **Provider egress for real
 agents remains the open operator question** below, reframed: the design
 cannot give it without new machinery, and this record does not guess one.
-Until the operator rules, `--isolated` refuses every `--wrapper-profile`, so
-no paid driver can score a provider outage as a model `gave_up`.
+Until the operator rules, `--isolated` refuses every `--wrapper-profile`
+and, since the first review, every external agent program that the caller
+did not name with `--isolated-expose` (`isolation_external_agent_unsupported`,
+below): only the builtins and the live proof's exposed scripted agents run
+inside, so no real model driver runs isolated by accident, and an isolated
+row is a boundary-proof row, not an eval result.
 
 **Boundary observation replaces the in-init self-check.** No production
 self-check runs inside; a scripted observer agent in the live proof reports
@@ -123,6 +129,71 @@ proof passes and the operator accepts this record; concurrency returns only
 behind both. Current integration 5 and 6 below are superseded by this
 section's refusal set and probe; integration 1–4 stand. Nothing here accepts
 itself.
+
+### After the first review — 2026-11-01
+
+The accepted 0098/0099 panel reviewed the first bwrap implementation
+(bdc504f) and returned the run to design with a spec defect (accepted 0102,
+addendum 2026-10-31). This dated subsection records what changes in the
+boundary as a result; it governs over the paragraphs above where they
+differ, and the record stays proposed.
+
+**The runner is PID 1: `--as-pid-1`.** The security member found that
+bwrap's default reaper, left as PID 1 inside the boundary, is a same-uid
+dumpable process whose `/proc/1/fd` and `/proc/1/mem` are reachable by a
+sibling-trial agent under the uid-based `/proc` checks, and that the reaper
+may hold a descriptor opened before the clone that leads to the host
+`/proc`. The design cannot verify the descriptor claim offline and does not
+need to: the argv now carries `--as-pid-1`, so bwrap installs no reaper and
+the process it execs, the runner, is the namespace's init. Every process
+inside is then the runner or something it spawned behind the controller's
+close-on-exec sweep. `--die-with-parent`'s `SIGKILL` reaches an init, and
+the kernel empties the namespace when PID 1 exits before bwrap's `wait`
+returns, so admission-through-reaping (accepted 0076 §3) is unchanged.
+Accepted costs, named in the spec: a `SIGTERM` that lands before the runner
+has installed its 0073 handler is dropped and that trial ends at its
+deadline; orphans inside stay zombies until the namespace is emptied. The
+review's alternative, a hand-written non-dumpable init inside the boundary,
+is rejected as the PID-1 code this record retired; a `kernel.yama.ptrace_scope`
+prerequisite is rejected because Yama does not guard the `/proc/<pid>/fd`
+route the finding names and would only narrow the qualifying hosts. The
+live observer now proves PID 1 is the runner, walks every process's
+descriptors inside for one that reaches the host `/proc`, and **records
+without asserting** whether `/proc/1/mem` opens read-write, the host's
+`ptrace_scope`, and whether a nested user namespace is granted. Reading
+one's own runner is within-trial (ruling 6).
+
+**External agents are refused under `--isolated`.** The promise above that
+no paid driver can score a provider outage as `gave_up` was not enforced:
+any external argv ran inside the no-network boundary. It is now a named
+precondition, `isolation_external_agent_unsupported`, checked after
+`isolation_expose_invalid` and before `isolation_source_invalid`: a
+non-builtin agent program runs isolated only if its canonical path is one of
+the `--isolated-expose` files. The builtins (`oracle`, `null`) and the live
+proof's exposed scripted agents are the whole admitted set until the
+operator rules on provider egress. An operator who exposes a real driver by
+hand gets an honest failure row; the matrix never renders `--isolated`.
+
+**What each platform proves.** The first implementation did not compile on
+macOS: Linux-only `/proc` helpers were ungated in the shared test module, so
+the required `test (macos-latest)` check was red. The live leak proof, the
+hostile proof and the observer are Linux-only by `cfg`; macOS compiles the
+suite and proves the `platform` refusal, and nothing more is claimed for it.
+The seat cannot build for Darwin, so that compile is CI's evidence.
+
+**Evidence, corrected.** The proof command has not yet run on any host; the
+0.11.1 floor rests on the dispatcher's out-of-seat probe alone and is
+confirmed or corrected by the first live run. Nested user namespaces were
+observed denied on this host's profile; that is an observation, not a
+property of the argv. Stock Ubuntu 24.04 packages bubblewrap 0.9.0, below
+the floor, so a hosted ubuntu runner that installs it with apt cannot run
+the boundary; the operator's CI follow-up chooses a pinned bubblewrap at or
+above the floor or a floor-lowering decision with a live proof. A cross-trial
+port coincidence in the hostile proof is voided by reading B's own `LISTEN`
+ports (every listener in B's network namespace is B's), never scored.
+
+Nothing here accepts itself; 0055 and 0076 are unchanged; no dependency is
+added.
 
 ## Current integration — 2026-10-31, carried onto main a3cff51
 
@@ -254,7 +325,10 @@ binary prerequisite with a user-mode network stack inside the trust
 boundary and host-address mapping to disable; the controller-side CONNECT
 relay above is new relay code plus one descriptor that must survive the
 controller's close-on-exec sweep. The operator chooses one, or leaves real
-drivers outside the boundary; nothing is built or guessed here.
+drivers outside the boundary; nothing is built or guessed here. Since the first
+review, `--isolated` refuses every external agent program that is not an
+exposed scripted agent (`isolation_external_agent_unsupported`), which is
+what keeps real drivers outside the boundary until the operator rules.
 
 ## Operator boundary and evidence-limited outcome
 
