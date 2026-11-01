@@ -1,6 +1,6 @@
 # Evaluate MCP resources and subscriptions for #158
 
-Decision: 0106 — [MCP resources evaluation](../../docs/decisions/0106-mcp-resources-evaluation.md)
+Decision: 0114 — [MCP resources evaluation](../../docs/decisions/0114-mcp-resources-evaluation.md)
 
 ## Feature and rationale
 
@@ -14,7 +14,7 @@ matrix needs resources; otherwise close with the data.
 This design rules that the gate stays shut and delivers the record the gate
 asks for. Nothing under `src/` or `evals/src/` changes. The delivery is:
 
-1. proposed [0106](../../docs/decisions/0106-mcp-resources-evaluation.md),
+1. proposed [0114](../../docs/decisions/0114-mcp-resources-evaluation.md),
    which records the metric as NOT MEASURED with its reason, the matrix-client
    finding, the tasks evaluation, two reopen triggers and the fixed shape any
    reopened build must take;
@@ -51,7 +51,7 @@ chief corrected.
 | Question | Ruling and rejected position | Cost retained |
 |---|---|---|
 | Ship protocol code | Both: no. Adopted. | The feature's wanter waits for a trigger. |
-| A measured gain still would not flip the verdict (robustness) | **Rejected.** The gate is the operator's criterion; a record that forbids it is not a record. A measured gain reopens, but only into the fixed shape of 0106 ruling 4. | Robustness keeps every constraint that made the small design unsafe, and loses the permanent refusal. |
+| A measured gain still would not flip the verdict (robustness) | **Rejected.** The gate is the operator's criterion; a record that forbids it is not a record. A measured gain reopens, but only into the fixed shape of 0114 ruling 4. | Robustness keeps every constraint that made the small design unsafe, and loses the permanent refusal. |
 | "Close with the data" when there is none (simplicity) | Adopted: say plainly that the head-to-head data does not exist and why. Corrected: the #151-labelled commit is not a baseline. | The issue's phrase is only partly satisfiable; the record says so. |
 | Pin the refusal by name | Simplicity: the generic `-32601` pin suffices. Robustness: the capability must not become a per-revision lie. **Ruled for one test-only witness** naming the methods on three revisions over HTTP and stdio. | A few test lines; zero production lines, so the exact gate is untouched. |
 | Push surface | Chief's addition: the REST feed is already the product's push surface, uncited by either position. | A future MCP push reuses `feed::feed_stream`'s subscribe-then-scan discipline rather than growing a second owner. |
@@ -64,7 +64,7 @@ What this delivery changes, and what it does not:
 - **Unchanged:** `src/`, `evals/src/`, `Cargo.toml`, `evals/Cargo.toml`,
   both lockfiles, `deny.toml`, the OpenAPI document, the tool catalogue, the
   reconciliation ledger and every historical spec.
-- **Added:** proposed 0106 and its index row in `docs/decisions/README.md`;
+- **Added:** proposed 0114 and its index row in `docs/decisions/README.md`;
   this specification; one named witness in `tests/mcp_revisions.rs`; one
   dated risk note in `evals/run-plan.md`; a delivery receipt
   `specs/mcp-resources-evaluation/implementation.md`.
@@ -79,7 +79,7 @@ What this delivery changes, and what it does not:
 
 ## Acceptance Criteria
 
-- **AC1 — Metric recorded honestly.** 0106 states the head-to-head metric
+- **AC1 — Metric recorded honestly.** 0114 states the head-to-head metric
   as NOT MEASURED, names the reason (paid trials forbidden; no baseline arm),
   and nowhere claims "no gain" or a ship. *Proof:* the record's text; the
   review panel reads it against this criterion.
@@ -96,17 +96,17 @@ What this delivery changes, and what it does not:
   `tests/mcp.rs:2319` continue to assert capabilities exactly `{"tools": {}}`
   and no `resources` key. *Proof:* `cargo test --locked --test mcp --test
   mcp_revisions` green.
-- **AC5 — Tasks evaluated, not adopted.** 0106 ruling 5 exists, cites the
+- **AC5 — Tasks evaluated, not adopted.** 0114 ruling 5 exists, cites the
   ledger rows, states the snapshot limit, and no `tasks` capability or
   `execution` metadata appears in the catalogue. *Proof:* AC3's witness
   (`tasks/*` answer `-32601`) and the unchanged catalogue under AC2.
-- **AC6 — Reopen triggers recorded.** 0106 ruling 3 names the two triggers
+- **AC6 — Reopen triggers recorded.** 0114 ruling 3 names the two triggers
   and ruling 4 fixes the shape a reopened build must take, including
   URI-only notifications, O(1) `insert`, a per-inbox revision and the 0043
   guard on any `GET /mcp` stream. *Proof:* the record's text.
 - **AC7 — Decision index and links.** `docs/decisions/README.md` carries the
-  0106 row with status "proposed — awaiting the operator"; every relative link
-  in this spec and in 0106 resolves to a tracked file; nothing links into
+  0114 row with status "proposed — awaiting the operator"; every relative link
+  in this spec and in 0114 resolves to a tracked file; nothing links into
   delivery state. *Proof:* `cargo test --manifest-path evals/Cargo.toml
   --locked --test boundary` green.
 - **AC8 — Baseline risk noted.** `evals/run-plan.md` carries a dated note

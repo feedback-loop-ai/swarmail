@@ -2,10 +2,10 @@
 
 These are implementation and proof obligations, not completed work. Check a
 task only after its paired witness is recorded against the actual candidate.
-The chief commits the design and proposed 0106; the engine's deterministic
+The chief commits the design and proposed 0114; the engine's deterministic
 check owns the design verdict. Dependencies follow this order.
 
-- [ ] **T1 — Add the 0106 index row (AC7).** Append one row to
+- [ ] **T1 — Add the 0114 index row (AC7).** Append one row to
   `docs/decisions/README.md` after 0105, status
   "proposed — awaiting the operator", citation "(Epic #164, issue #158;
   provisional number)". **Test:**

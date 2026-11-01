@@ -1,4 +1,4 @@
-# 0106 — MCP resources and subscriptions: evaluated, not shipped, metric not measured
+# 0114 — MCP resources and subscriptions: evaluated, not shipped, metric not measured
 
 - **Status:** proposed
 - **Date:** 2026-10-31
@@ -10,7 +10,7 @@
   0079/0080 (no session registry, no SSE or session machinery on the MCP
   endpoint), 0094 (bounded `0..60000` ms waits). Nothing here accepts an
   earlier proposal.
-- **Number:** provisional 0106, the next free number on `d892acb`;
+- **Number:** provisional 0114, the next free number on `d892acb`;
   collisions at integration are renumbered the way 0105 was.
 
 ## Context

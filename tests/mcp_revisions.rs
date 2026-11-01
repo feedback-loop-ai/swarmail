@@ -1001,7 +1001,7 @@ async fn revision_tool_schemas_and_text_safety() {
     }
 }
 
-/// Decision 0106 (proposed): issue #158's resources, subscriptions and
+/// Decision 0114 (proposed): issue #158's resources, subscriptions and
 /// 2025-11-25 tasks are evaluated and not shipped. The refusal is pinned by
 /// method name, on every revision, over real HTTP and the binary bridge, so
 /// the record's claim is something a reader can run: capabilities stay exactly

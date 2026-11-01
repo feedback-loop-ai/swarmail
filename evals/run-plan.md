@@ -155,5 +155,5 @@ at the maximum can therefore race the client's own timeout. When the operator's
 baseline publishes its failure taxonomy, read its `wait_timeout` rows against
 this first; the proportionate remedy is guidance or wrapper configuration, not
 a second delivery path. Recorded under proposed
-[0106](../docs/decisions/0106-mcp-resources-evaluation.md) (issue #158), which
+[0114](../docs/decisions/0114-mcp-resources-evaluation.md) (issue #158), which
 also records that the wait-tool versus subscription metric is NOT MEASURED.

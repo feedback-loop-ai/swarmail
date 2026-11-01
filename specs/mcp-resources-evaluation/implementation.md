@@ -1,7 +1,7 @@
 # Implementation receipt — MCP resources evaluation (#158)
 
 Implements [tasks.md](tasks.md) under proposed
-[0106](../../docs/decisions/0106-mcp-resources-evaluation.md). Baseline `d892acb`.
+[0114](../../docs/decisions/0114-mcp-resources-evaluation.md). Baseline `d892acb`.
 
 **The wait-tool versus subscription metric remains NOT MEASURED** (paid trials
 are operator-owned and forbidden here; no baseline arm exists). This receipt
@@ -9,7 +9,7 @@ does not claim "no gain" and does not close #158; closing is the operator's act.
 
 ## Tasks
 
-- **T1** — index row for 0106 added after 0105 in `docs/decisions/README.md`
+- **T1** — index row for 0114 added after 0105 in `docs/decisions/README.md`
   ("proposed — awaiting the operator"; "provisional number"). Evals `boundary`
   test green.
 - **T2** — witness `resources_and_tasks_methods_are_refused_by_name` in

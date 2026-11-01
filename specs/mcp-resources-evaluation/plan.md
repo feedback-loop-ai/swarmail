@@ -1,7 +1,7 @@
 # Implementation plan — MCP resources evaluation
 
 Implements [spec.md](spec.md) under proposed
-[0106](../../docs/decisions/0106-mcp-resources-evaluation.md).
+[0114](../../docs/decisions/0114-mcp-resources-evaluation.md).
 
 ## Technical context
 
@@ -26,7 +26,7 @@ owed.
   registry, no SSE or session machinery on the MCP endpoint. 0094: wait
   bounds unchanged.
 - 0045 §8: the change preserves every accepted ruling, so it may land while
-  0106 is proposed. Only the operator accepts 0106 and closes #158.
+  0114 is proposed. Only the operator accepts 0114 and closes #158.
 - 0020: the witness is a public-API, wire-shaped test and lives in `tests/`
   (rule 3); it needs no crate-private seam. The coverage denominator is
   unchanged because no production line is added; the exact gate still runs.
@@ -37,8 +37,8 @@ owed.
 
 | Path | Change |
 |---|---|
-| `docs/decisions/0106-mcp-resources-evaluation.md` | the proposed record (this commit) |
-| `docs/decisions/README.md` | one index row for 0106 (implementation, T1) |
+| `docs/decisions/0114-mcp-resources-evaluation.md` | the proposed record (this commit) |
+| `docs/decisions/README.md` | one index row for 0114 (implementation, T1) |
 | `specs/mcp-resources-evaluation/{spec,plan,tasks}.md` | this design (this commit) |
 | `specs/mcp-resources-evaluation/implementation.md` | the delivery receipt (implementation, T5) |
 | `tests/mcp_revisions.rs` | one named witness for resource and task methods (implementation, T2) |
@@ -50,7 +50,7 @@ No file under `src/`, `evals/src/`, `benches/` or `charts/` changes.
 
 - **Why no code:** the issue's gate (measured gain or matrix need) is unmet
   and cannot be met in this run; both panel positions and the chief agree.
-  Details and evidence are in the spec's *Findings* and in 0106.
+  Details and evidence are in the spec's *Findings* and in 0114.
 - **Why a named witness anyway:** the generic unknown-method pin already
   covers these methods, but the record claims a specific refusal on specific
   methods across revisions and transports. A test that names them turns the
@@ -85,7 +85,7 @@ None. No type, schema, table or wire shape is added or changed.
 ## Quickstart (implementation seat)
 
 ```bash
-# 1. Index row for 0106, after the 0105 row, in the index's style.
+# 1. Index row for 0114, after the 0105 row, in the index's style.
 # 2. Witness in tests/mcp_revisions.rs using the suite's post/Binary/initialize helpers.
 cargo test --locked --test mcp_revisions
 # 3. Dated risk note in evals/run-plan.md.
@@ -107,12 +107,12 @@ git diff d892acb..HEAD --stat
 
 | Risk | Mitigation |
 |---|---|
-| The record is read as "subscriptions bring no gain" | 0106 and the spec say NOT MEASURED with the reason in the first sentence of the finding; AC1 makes that wording reviewable. |
-| A reader treats the docs-only delivery as closing #158 | 0106 states that closing is the operator's act; the receipt reports its own result, never `closed`. |
+| The record is read as "subscriptions bring no gain" | 0114 and the spec say NOT MEASURED with the reason in the first sentence of the finding; AC1 makes that wording reviewable. |
+| A reader treats the docs-only delivery as closing #158 | 0114 states that closing is the operator's act; the receipt reports its own result, never `closed`. |
 | The witness duplicates the generic `-32601` pin and drifts from it | It uses the same helpers and asserts the same code; if the generic refusal changes, both fail together, which is the point of naming the methods. |
 | The witness accidentally exercises a new production branch and moves the denominator | No production line is added; the coverage gate's exact floor is run and its summary is recorded in the receipt. |
-| The 0106 number collides at integration | Provisional, like 0105's 0091; renumbered at integration with a dated note in the record's header. |
+| The 0114 number collides at integration | Provisional, like 0105's 0091; renumbered at integration with a dated note in the record's header. |
 | The index row's link text or a spec link is refused by the tracked-markdown guard | Links point only at tracked files; no link into `.brokkr/state/` or `.forge/`; the evals boundary test is in the quickstart. |
 | The tasks evaluation misstates the 2025-11-25 text | The record cites the ledger rows and states that the snapshot was not re-read; any later citation of task details must read the snapshot first. |
 | The 60 s client-timeout note is taken as a measured failure | It is marked observed-in-configuration, not reproduced, and is addressed to the baseline's failure taxonomy. |
-| A future run builds the small design under this proposal | 0106 ruling 4 fixes the minimum shape (URI-only, O(1) insert, revision cursor, 0043-guarded stream, RAII guard, per-session cap) and requires a new proposed decision reconciling 0079/0080. |
+| A future run builds the small design under this proposal | 0114 ruling 4 fixes the minimum shape (URI-only, O(1) insert, revision cursor, 0043-guarded stream, RAII guard, per-session cap) and requires a new proposed decision reconciling 0079/0080. |
