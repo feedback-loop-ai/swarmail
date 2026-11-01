@@ -1,12 +1,14 @@
 # Trial isolation tasks — the boundary is bubblewrap
 
-Ordered. Each task names the test that proves it. AC, R and P references
-point to [spec.md](spec.md) as revised 2026-11-01 after the first live
-proof. A proposed decision is not authority to activate a contradictory
-contract (accepted 0045 §8); concurrency stays off and no row version
-changes. Tasks closed by earlier commits that this revision keeps stay
-closed; the live proof's findings are T21–T28, in the order the implementer
-does them; T06–T08 and T10 are reopened behind them.
+Ordered. Each task names the test that proves it. AC, R, P and Q references
+point to [spec.md](spec.md) as revised 2026-11-01 for the fourth time,
+after the second review. A proposed decision is not authority to activate a
+contradictory contract (accepted 0045 §8); concurrency stays off and no row
+version changes. Tasks closed by earlier commits that this revision keeps
+stay closed; the live proof's findings were T21–T28 (done at 4f3ba15); the
+second review's findings are T29–T33, in the order the implementer does
+them; T10 is reopened behind them, and T06–T08 and T20 stay open until the
+dispatcher's host run.
 
 - [x] **T01 — Carry the decision and its index row (AC-S8, AC-O1).**
   `docs/decisions/0115-trial-isolation.md` stays `proposed`, now with its
@@ -130,6 +132,64 @@ does them; T06–T08 and T10 are reopened behind them.
   show every live proof red with `SKIP trial-isolation: boundary_unavailable:bwrap_probe`,
   each within its bound. **Test:** both receipts in the implement notes
   with wall-clock durations.
+- [ ] **T29 — Judge the reap, speak 0076 §3's line (Q1; AC-S13).** In
+  `isolation.rs` add `enum Cleanup { Proved, Unproved }`,
+  `pub const CLEANUP_UNPROVED` (the exact `swarmail-evals: harness error:
+  trial_cleanup_unproved\n` line), `fn envelope_report(Cleanup) ->
+  &'static str` and `fn verdict(status, seen, abandoned) -> Launched` (the
+  existing match, lifted unchanged). `supervise` returns `(Launched,
+  Cleanup)`: `Unproved` exactly when the envelope fired and
+  `timeout(bounds.drain, child.wait())` ran out, `Proved` otherwise; the
+  envelope arm writes `envelope_report(cleanup)` where it wrote
+  `ENVELOPE_EXPIRED`. No `Launched` variant, no row reason, no `conclude`
+  change. **Test:** inline, `envelope_report(Proved)` equals
+  `ENVELOPE_EXPIRED` and contains no `trial_cleanup_unproved`;
+  `envelope_report(Unproved)` is `ENVELOPE_EXPIRED` then `CLEANUP_UNPROVED`,
+  the cleanup line once and after the envelope line; `CLEANUP_UNPROVED`
+  equals the literal the matrix parser matches; the `verdict` table
+  (`(Err, 0, false)` → `NoRow`; `(Err, 9, false)` → `Exited(2)`;
+  `(Ok(code 1), 9, false)` → `Exited(1)`; `(Ok(signal), 9, false)` →
+  `Exited(2)`; `(Ok(code 0), 9, true)` → `Interrupted`); in `main.rs`,
+  `capture_worker_category` fed `envelope_report(Unproved)` returns
+  `trial_cleanup_unproved`; `an_expired_envelope_says_so_on_stderr_in_one_fixed_line`
+  additionally asserts `stderr.matches("trial_cleanup_unproved").count() == 0`;
+  every existing controller test still passes.
+- [ ] **T30 — Retain the admission on an unproved reap (Q1; AC-S13).** In
+  `admission.rs` add `pub(crate) fn retain(self)` that `std::mem::forget`s
+  the lock file (doc: 0076 §3; released only by process exit; the
+  process-scoped limit). In `launch`: `drop(admission)` on `Proved`,
+  `admission.retain()` on `Unproved`. **Test:** `retain_child` (re-exec
+  half: reads `ADMISSION_TEST_ROOT`, `Admission::at(root, uid)`, `retain`,
+  asserts a second `Admission::at(root, uid)` is
+  `Err("concurrent_trials_refused")`, exits 0) and
+  `a_retained_admission_is_released_only_by_the_process_exit`: spawns the
+  child with a tempdir root, polls `try_wait` to a 30 s deadline,
+  `SIGKILL`s and panics by name on expiry, requires exit 0, then
+  `Admission::at(root, uid)` succeeds. Confirm the `Launched`-to-`retain`
+  wiring by reading `launch`: exactly one `retain` call, on the `Unproved`
+  arm.
+- [ ] **T31 — Correct the `Sink` comment (Q3).** The doc comment on `Sink`
+  says the streams are written on the thread that drives the runtime, the
+  only thread that may take the std locks, never from a blocking task.
+  **Test:** `grep -n "off the async threads" evals/src/isolation.rs` is
+  empty; `grep -n "spawn_blocking" evals/src/isolation.rs` is empty.
+- [ ] **T32 — Documentation (Q1; AC-S8).** One sentence in the
+  bounded-controller paragraph of `evals/README.md` and `evals/run-plan.md`:
+  a reap the controller cannot prove within its bound is the named
+  `trial_cleanup_unproved` harness error on stderr, the admission is held to
+  the controller's exit, exit 2, and an operator confirms cleanup before
+  resuming — never an ordinary no-row. **Test:** a requirement-to-observation
+  read against spec step 3 and 0115's *After the second review*; no claim
+  that the live criteria passed; `git diff a4f552d --
+  docs/decisions/0076-sequential-eval-trials.md` empty; 0115's *Amends if
+  accepted* line unchanged.
+- [ ] **T33 — Seat run of both suites after T29–T32 (AC-S6, AC-S7).** Run
+  the always-on evals suite locked in the seat and show AC-S10 skipped by
+  name and every other test green within bounded time; run the `--ignored`
+  command and show every live proof red with
+  `SKIP trial-isolation: boundary_unavailable:bwrap_probe`, each within its
+  bound. **Test:** both receipts in the implement notes with wall-clock
+  durations.
 - [ ] **T06 — Hostile live proof, boundary holds (AC-L1).** As at f1a30a7,
   under `bounded`. **Test:** on this host, the probe exits 0 (all routes
   denied), A's row after its agent is killed from outside is `fail` in
@@ -146,7 +206,7 @@ does them; T06–T08 and T10 are reopened behind them.
   `SIGTERM` to the controller after the agent exists yields the runner's
   interrupted row, exit 2 and no survivors; no orphan of A is alive when B
   starts.
-- [ ] **T10 — Gates (AC-S7).** Run the full house gate inventory locked plus
+- [ ] **T10 — Gates (AC-S7), reopened after T29–T32.** Run the full house gate inventory locked plus
   the standalone evals `fmt`, `clippy --all-targets` and `cargo test
   --locked`. **Test:** command/exit/log receipts for every required check
   bound to the candidate, literal zero-missed root coverage with its
@@ -197,3 +257,12 @@ Status 2026-11-01 (implement seat): T21–T28 are done. Receipts:
   run**: the pinned brokkr binary is not installed in this seat and the seat
   installs nothing.
 - T06–T08, T20: open, proven only by the dispatcher's one `--ignored` command.
+
+Status 2026-11-01 (chief, after the second review): the review panel
+confirmed T21–T28 and returned the run on Q1 (the reap the controller
+cannot prove released the admission as proved and said nothing, against
+accepted 0076 §3) beside Q2–Q7. T29–T33 are open for the implement seat, in
+that order, with T10 reopened behind them; T06–T08 and T20 stay open and are
+proven only by the dispatcher's one command on this host. The implementer
+reads these tasks, not the review's notes; nothing in 4f3ba15's controller
+fix is reopened.

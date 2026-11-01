@@ -8,7 +8,10 @@
   again 2026-11-01 after the first review panel returned the run (accepted
   0102, spec-defect addendum): see *After the first review* below; revised a
   third time 2026-11-01 after the first live proof on the host failed in the
-  controller: see *After the live proof* below.
+  controller: see *After the live proof* below; revised a fourth time
+  2026-11-01 after the second review panel returned the run on the
+  envelope's cleanup path: see *After the second review* inside that
+  subsection.
 - **Issue:** #221 (split from #199 by operator ruling, 2026-10-24), Epic #192.
 - **Design:** [spec](../../specs/trial-isolation/spec.md),
   [plan](../../specs/trial-isolation/plan.md),
@@ -255,6 +258,33 @@ and returns where it is unavailable; an ignored live proof prints the same
 line and fails. The live proof command is the acceptance gate of the pull
 request, run by the dispatcher on this host under a hard 20-minute limit;
 the spec no longer claims a duration it has not measured.
+
+**After the second review — 2026-11-01.** The review panel confirmed the
+controller fix and returned the run on one path the live proof cannot
+reach: when the envelope expired and the bounded reap after the kill ran
+out, the controller released the host admission and reported an ordinary
+no-row or exit 2, saying nothing, which narrowed accepted 0076 §3 without
+amending it. This record does not amend §3; the controller conforms to it.
+The reap is judged: proved when bwrap's `wait` returned, on its own or
+within the bound after the kill; unproved when that bound ran out. An
+unproved reap writes the existing harness-error line
+`swarmail-evals: harness error: trial_cleanup_unproved` on stderr beside the
+envelope line, retains the host admission for the rest of the controller's
+life instead of releasing it as proved, and exits 2 whatever reached
+stdout; the row is the runner's own beside exit 2 or the existing
+`isolated_trial_no_row`, and no new row reason exists. A matrix parent that
+ever ran an isolated child reads that line through the parser it already
+has and stops later admission; no second owner of that fact is added. The
+limit is 0076's own: the advisory lock is process-scoped, so the
+controller's exit releases it while a bwrap the kernel will not reap may
+still hold a live namespace; that run is invalid baseline evidence, the
+line is the operator's signal to confirm cleanup before resuming, and no
+stale-lock recovery, keeper process, dirty marker or lock descriptor
+inherited into the sandbox is added. Every wait stays bounded and the
+controller still exits after its row. 0076 §3 is preserved, not amended;
+the *Amends if accepted* line above does not grow. The observer's
+recorded-not-asserted observations are reported by its exit code
+(100/101/102), not on stderr, which the spec now states.
 
 **Still open.** AC-L1..L3 (the hostile proof, the observed topology, the
 lifetime chain) remain proven only by that command passing; provider egress

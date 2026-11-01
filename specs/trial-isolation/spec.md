@@ -1,21 +1,25 @@
 # Isolate concurrent eval trials — the boundary is bubblewrap
 
-Date: 2026-11-01 (third revision, after the first live proof on the host
-failed; the 2026-10-31 design commit and the two earlier 2026-11-01
-revisions stay in history). Issue #221 (split from #199), Epic #192.
+Date: 2026-11-01 (fourth revision, after the second review panel returned
+the third on the envelope's cleanup path; the 2026-10-31 design commit and
+the three earlier 2026-11-01 revisions stay in history). Issue #221 (split
+from #199), Epic #192.
 Branch `repair/issue221-trial-isolation` (PR #308), main a4f552d merged in.
 Lane: `claude-careful` (accepted 0098/0099; residual rework under accepted
 0102 and its spec-defect addendum).
 Operator direction, 2026-11-01: **fix it; merge only once the live proof
 passes on the host.** The boundary stays bubblewrap exactly as the second
-revision drew it; what this revision changes is the controller on the host
-side of it and the tests that hold it.
+revision drew it; the third revision changed the controller on the host
+side of it and the tests that hold it, and this fourth revision changes one
+path of that controller — the reap the kernel will not let it prove — and
+the sentences that described it, so that accepted 0076 §3 is conformed to
+rather than quietly narrowed.
 
 Decision: 0115 — [Trial separation and observed concurrency](../../docs/decisions/0115-trial-isolation.md)
 (proposed; its dated *Revision 2026-11-01* section, the *After the first
-review* subsection and the *After the live proof* subsection below it govern
-where they disagree with the 2026-10-24 ruling and the 2026-10-31
-integration).
+review* subsection, the *After the live proof* subsection below it and the
+*After the second review* paragraph inside that subsection govern where they
+disagree with the 2026-10-24 ruling and the 2026-10-31 integration).
 
 ## Feature and rationale
 
@@ -109,6 +113,26 @@ has a task in [tasks.md](tasks.md) and a proving test, and
 | R13 | bwrap's stderr forwarding is never asserted (tests; info) | AC-S2's `bwrap_probe` case asserts it |
 | R14 | `admission::root_for`'s doc comment describes the deleted raw worker (independent; info) | plan, project structure |
 
+## What the second review returned, and where each finding is answered
+
+The panel reviewed 4f3ba15 (the third revision, implemented) and returned
+the run to design with `spec_defect: true` (accepted 0102, addendum
+2026-10-31). The fix for P1–P6 stands: every member confirmed the diagnosis
+and the code, and the tests member found the suite exactly what the spec
+asked for. The defect is in one path the live proof cannot reach. Each
+finding has a task in [tasks.md](tasks.md) and a proving test, and
+[plan.md](plan.md) says which finding each change answers.
+
+| # | Finding (member, severity) | Answered by |
+| --- | --- | --- |
+| Q1 | On envelope expiry the controller `start_kill`s bwrap and waits at most `DRAIN_BOUND` for the reap; if that wait runs out it still drops the host admission and returns the ordinary `NoRow`/`Exited(2)`. Nothing says `trial_cleanup_unproved` and nothing stops later admission, while accepted 0076 §3 requires exactly that of unproved cleanup. The spec said admission-through-reaping "is unchanged" and then carved the exception in step 3; 0115's *Amends if accepted* list omits §3 (guarantees, security; medium, **the spec defect**) | Required behaviour, steps 3 and 6, rewritten to 0076 §3: the reap is judged `Proved` or `Unproved`; `Unproved` writes the existing `trial_cleanup_unproved` harness-error line beside the envelope line, retains the admission to process exit and exits 2 whatever reached stdout; the limit (a process-scoped `flock`) stated in 0076's own words; AC-S13; 0115 *After the second review*; 0076 §3 preserved, not amended |
+| Q2 | AC-L2 says the observer records its observations "on stderr"; `boundary_observe` reports them by exit code 100/101/102 and writes nothing to stderr (guarantees; low, raised a second time) | AC-L2 restated to the exit-code contract |
+| Q3 | The `Sink` doc comment says the streams are written "off the async threads", the opposite of the invariant the fix rests on (independent; info) | plan, `isolation.rs` row: the comment says the writes happen on the driving thread and why; T31 |
+| Q4 | plan.md sketched the envelope as a per-iteration `timeout` inside the `select!` loop; the implementation pins one sleep outside it, which is the right form (correctness; info) | plan, P6 paragraph and the `isolation.rs` row corrected to the implemented form |
+| Q5 | AC-S12 quotes the panic as `after 90 s`; the code prints `Duration`'s `Debug`, `after 90s` (independent; info) | AC-S12 quotes the code's form |
+| Q6 | `isolation::run` maps a runtime that cannot be built to `NoRow`, so the row says `isolated_trial_no_row` for a trial that never launched (independent; info) | Accepted and named in step 7: the row is an honest harness error for a trial with no row; a distinct name would be a new row reason for a practically unreachable arm |
+| Q7 | `a_row_then_a_grandchild_holding_stdout_is_still_a_delivered_row` asserts under 4 s around an admission retry that may take up to 10 s on a contended fork window (correctness; info) | Accepted and named in plan § Risks: the margin is the test's point (the drain did not wait for the 5 s writer); a false red on a loaded host carries its elapsed time and the margin is widened with that evidence |
+
 ## Panel synthesis — adopted, rejected, reconciled
 
 The first synthesis table (bwrap over the raw worker, the constant path and
@@ -146,6 +170,23 @@ part on how much of the controller to rebuild. This is the ruling.
 | What proves the fix | **All three tests, from both positions.** The always-on handoff test around the real CLI (AC-S10; both positions); the seat-runnable re-exec red test that holds the stdout lock as `main` did (AC-S11; simplicity); the stand-in bwrap that writes a row and then hangs, and the one that writes nothing and hangs, under a millisecond envelope (AC-S2; robustness). | None. |
 | The skip rule | **Both:** always-on tests that need the boundary print `SKIP trial-isolation: boundary_unavailable:<step>` and **return** where it is unavailable; the ignored live proofs print the same line and **fail**. The spec states both sentences side by side (AC-S6). | None. |
 | Documents | **Both:** only the facts the run changed; 0115 stays proposed and gains one dated subsection. | None. |
+
+### The fourth ruling — after the second review
+
+The fourth panel argued Q1 against the same code. Both positions read the
+finding as real, both refuse to amend 0076 §3 through 0115 (the return rule
+of 0102 moves a criterion toward the accepted decision, and a proposal is
+not authority), and both keep every wait bounded and the exit after the
+row. They part on how much of the failure path to put into types and on
+when the admission lets go. This is the ruling.
+
+| Question | Ruling | Losing side and its cost |
+| --- | --- | --- |
+| Amend 0076 §3 or conform to it | **Both: conform.** The controller speaks the sentence 0076 §3 already defines and the matrix already parses, `swarmail-evals: harness error: trial_cleanup_unproved`. 0115's *Amends if accepted* list does not grow; its *Preserves* line stays true. | The amendment route is rejected: it moves away from an accepted ruling to fit the code, and it would park the PR behind acceptance of 0115 while the operator's merge gate is the live proof. |
+| Where the judgment lives | **Robustness, in the type where it is consumed:** `supervise` returns the reap judgment beside the verdict, `Cleanup::Proved` or `Cleanup::Unproved`, and `launch` acts on it. **Simplicity, in the public verdict:** no new `Launched` variant and no new row reason; the stdout row and the exit code are the existing ones (`Exited(2)` beside the runner's row, or `isolated_trial_no_row`, both already exit 2), and the distinguishing record is the stderr line, exactly as the unisolated runner reports the same condition. | **Robustness's `Launched::CleanupUnproved`** is rejected: it threads a new arm through `conclude` for an exit code that is already 2 and a row that does not change; a library caller of `isolation::run` (none exists) learns the condition from stderr as the matrix does. **Simplicity's "no type at all"** is rejected: the admission's fate depends on the judgment, and a fact threaded by comment is how the defect arose. |
+| The admission on `Unproved` | **Robustness:** `launch` does not drop it. `Admission::retain(self)` forgets the lock descriptor, so the host admission is released only by the controller's exit, after the line is written, the row is out and the runtime is down. The matrix's `capture_worker_category` already lets `trial_cleanup_unproved` win every other category and sets `stop_admission`, so a parent that ever ran an isolated child stops later admission with no new field. | **Simplicity's drop-after-supervise** is rejected: it releases the lock before the shutdown and the row print, a window of up to `DRAIN_BOUND` in which the controller has said "unproved" and let go anyway. Cost of the ruling: one method and one re-exec test; and the limit, said in step 3 in 0076's words: the advisory `flock` is process-scoped, so the controller's exit releases it while a `D`-state bwrap may still hold a live namespace; that run is invalid baseline evidence and the operator confirms cleanup before resuming. **Robustness's `stop_admission` field on the isolated result** is rejected as a second owner of a fact the stderr parser already owns; **its keeper process, dirty marker or inherited lock descriptor** are rejected as 0076 rejects them (no stale-lock recovery) and as the descriptor sweep forbids the last. |
+| How the cold arm is proven | **Simplicity's pure functions, inline:** `envelope_report(cleanup)` yields the bytes the envelope arm writes and is tested at both poles; `verdict(status, seen, abandoned)` is the existing match lifted out and tested as a table, so "exit 2 whatever reached stdout" on a failed reap is a unit fact; the existing envelope test asserts the cleanup line is absent when the stand-in is reaped. **Robustness's retention proof:** a re-executed child acquires an admission at a private root, retains it and shows a fresh acquisition in the same process refuses `concurrent_trials_refused`; the parent acquires after the child's exit. | **Robustness's harness file** (`isolation/cleanup_tests.rs`) is rejected: 0020 §2's refuge exists to keep a cold path out of the root coverage report, and `evals/` is outside that denominator (0055); the inline home excludes nothing. **A real `D`-state bwrap** is not pretended: no unprivileged test can make one at a pole (0020 §5), and a `drain: 0` race with the kernel's `SIGKILL` delivery is the mid-band rule 0020 forbids. |
+| Q2–Q7 | **Both:** AC-L2 restated to the exit-code contract; the `Sink` comment and the plan's envelope sketch corrected; AC-S12 quotes the code; Q6 and Q7 accepted and named. | None. |
 
 ## Required behaviour
 
@@ -232,7 +273,9 @@ PID namespace, and there is no same-uid process inside that the runner did
 not spawn. bwrap's `--die-with-parent` still delivers `SIGKILL` to that PID 1
 when bwrap or the controller dies, which an init cannot ignore, and when PID
 1 exits the kernel kills and reaps everything left in the namespace before
-bwrap's `wait` returns, so admission-through-reaping (0076 §3) is unchanged.
+bwrap's `wait` returns, so admission-through-reaping (0076 §3) holds on the
+proved path; step 3 of *The controller* below says what the controller does
+on the one path where the kernel will not let it prove the reap (Q1).
 Signals other than `SIGKILL`/`SIGSTOP` reach a namespace init from outside
 only once it has installed a handler; the runner installs its 0073
 `SIGTERM`/`SIGINT` handlers when the trial arm starts, and the window before
@@ -271,8 +314,26 @@ started. It stays in the host namespaces and never runs the trial arm:
    `bwrap_probe`, each bounded (5 s for version, 10 s for the probe);
 3. acquires the host admission (0076 §1; `concurrent_trials_refused` as
    today) and holds it until bwrap is reaped — which, with the runner as PID
-   1, is after the kernel has emptied the namespace — or until the envelope
-   below has expired and the bounded reap after it has run out;
+   1, is after the kernel has emptied the namespace. The reap is judged
+   (Q1): **`Cleanup::Proved`** when bwrap's `wait` returned, on its own or
+   within `DRAIN_BOUND` of the envelope kill, and the admission is released
+   as today; **`Cleanup::Unproved`** when the envelope expired and the
+   bounded reap after the kill ran out. On `Unproved` the controller never
+   releases the admission as if cleanup were proved: it writes the existing
+   0076 §3 harness-error line
+   `swarmail-evals: harness error: trial_cleanup_unproved` on stderr beside
+   the envelope line, retains the admission for the rest of its life
+   (`Admission::retain`), exits 2 whatever reached stdout, and the lock is
+   released only by that exit. That is the shipped 0076 §3 path of the
+   unisolated `trial` process, whose matrix parent reads the same line and
+   stops later admission (`capture_worker_category`, `stop_admission`); the
+   controller adds no second owner of that fact. The limit is 0076's own,
+   said plainly: the advisory `flock` is process-scoped, so the controller's
+   exit releases it while a `D`-state bwrap may still hold a live
+   namespace; that run is invalid baseline evidence, the line is the
+   operator's signal to confirm cleanup before resuming, and no stale-lock
+   recovery, keeper process, dirty marker or lock descriptor inherited into
+   bwrap is added;
 4. builds a **current-thread** tokio runtime in one production entry,
    `isolation::run`, which the unit tests call as well, and from its main
    thread spawns bwrap with `process_group(0)`, `kill_on_drop`, null stdin,
@@ -290,21 +351,33 @@ started. It stays in the host namespaces and never runs the trial arm:
    matrix's 300 000 ms grace, one shared constant (P6). When the envelope
    expires it `start_kill()`s bwrap (whose `--die-with-parent` `SIGKILL`s
    PID 1, and the kernel empties the namespace), waits `DRAIN_BOUND` for the
-   reap, and prints one fixed line on stderr,
-   `swarmail-evals: isolated trial envelope expired; bwrap killed`. It then
+   reap, and prints the envelope report on stderr: one fixed line,
+   `swarmail-evals: isolated trial envelope expired; bwrap killed`,
+   followed, only when the reap ran out (`Unproved`), by the 0076 §3 line
+   `swarmail-evals: harness error: trial_cleanup_unproved` (Q1). The report
+   is one pure function of the judgment, `envelope_report(cleanup)`. It then
    drains both pipes, each bounded by `DRAIN_BOUND`, with the stdout byte
    count kept **on the read side as bytes arrive**, so an expired drain
-   never reads as no row (P5). The verdict is the existing one: if at least
+   never reads as no row (P5). The verdict is the existing match, lifted
+   into one pure function `verdict(status, seen, abandoned)`: if at least
    one byte reached stdout, the controller exits with bwrap's exit code
    (bwrap propagates the runner's); if none did, it prints the
    `isolated_trial_no_row` harness-error row and exits 2; if bwrap died by a
-   signal, the envelope kill included, exit 2. No new row reason exists;
-   the finite 0075 set is unchanged;
+   signal or was never reaped, the envelope kill included, exit 2. An
+   `Unproved` reap therefore exits 2 whatever reached stdout, and its row is
+   the runner's own beside exit 2 or `isolated_trial_no_row`; no second row
+   is fabricated. No new row reason exists; the finite 0075 set is
+   unchanged: `trial_cleanup_unproved` is a stderr category the harness
+   already defines and the matrix already parses, not a row field;
 7. shuts the runtime down with `shutdown_timeout(DRAIN_BOUND)` and
    **returns from `main`** with that code. Every wait in the controller is
    one of: the version bound, the probe bound, the envelope, the bounded
    reap, the two drain bounds and the shutdown bound; the admission never
-   waits (`try_lock`). A controller that has written its row exits (P2).
+   waits (`try_lock`). A controller that has written its row exits (P2). A
+   runtime that cannot be built is reported as `isolated_trial_no_row`
+   (Q6, accepted and named): an honest harness error for a trial with no
+   row, where a distinct name would be a new row reason for a practically
+   unreachable arm.
 
 The bounds (`Bounds { envelope, drain }`) are a parameter of `launch`
 beside the bwrap path, filled by production from the request and by the
@@ -356,7 +429,10 @@ and hung; every wait in the controller is now bounded and the envelope is
 named; a controller that has written its row exits; every isolated test
 child is held under a 90 s bound; the always-on suite skips by name without
 bwrap and the ignored suite fails by name; the dispatcher runs the proof
-with a hard 20-minute limit. Nothing else changes.
+with a hard 20-minute limit; and, after the second review, a reap the
+controller could not prove within its bound is the named
+`trial_cleanup_unproved` harness error and an operator stop signal, never
+an ordinary no-row (Q1). Nothing else changes.
 
 ## What stays outstanding after this run, and how to prove it
 
@@ -441,7 +517,11 @@ asked for and unavailable, outstanding until the host command above passes.
   row and exits 0 while a grandchild keeps its stdout open past the drain
   bound yields `Exited(0)`, never `NoRow`, because the count is read-side.
   Every one of these tests is a real deadline on a child that never ends by
-  itself (0020 §5: chaos at the poles), and each runs in the seat.
+  itself (0020 §5: chaos at the poles), and each runs in the seat. In every
+  one of them the stand-in is `SIGKILL`ed and reaped within the drain bound,
+  so the envelope-line test also asserts that `trial_cleanup_unproved`
+  appears **zero** times on the controller's stderr (Q1): the `Proved` pole
+  of the judgment; AC-S13 owns the `Unproved` pole.
 - **AC-S3 — Precondition refusals are real CLI runs, in the named order.**
   `trial --isolated` without `SWARMAIL_BIN`, with `--artifacts-dir`, with a
   `--wrapper-profile`, with an `--isolated-expose` that is not an absolute
@@ -523,7 +603,11 @@ asked for and unavailable, outstanding until the host command above passes.
   worked, the controller lost the row and hung), the bounded-controller
   contract (every wait bounded, the envelope, exit after the row), the
   two-suite skip rule and the 20-minute acceptance limit, and corrects "has
-  not run" to what ran. Accepted decisions, the dependency allowlist, gate
+  not run" to what ran; its *After the second review* paragraph records the
+  failure-path contract of step 3 (the reap judged, `trial_cleanup_unproved`
+  on `Unproved`, the admission retained to exit, the process-scoped limit in
+  0076's words) and states that 0076 §3 is preserved, not amended, so the
+  *Amends if accepted* line does not grow (Q1). Accepted decisions, the dependency allowlist, gate
   scripts, `.github/` and review routing are unchanged; `git diff a4f552d --
   docs/decisions/0055-agent-eval-harness.md
   docs/decisions/0076-sequential-eval-trials.md` is empty (R11).
@@ -568,9 +652,14 @@ asked for and unavailable, outstanding until the host command above passes.
   runner, included) no entry of `/proc/<pid>/fd` opens as a directory that
   contains any of the host PIDs the test passed**, so no descriptor inside
   reaches the host `/proc` (R1); `CapEff` is zero and `NoNewPrivs` is 1. It
-  **records without asserting**, on stderr: whether `unshare(CLONE_NEWUSER)`
-  succeeds inside (R7), whether `/proc/1/mem` opens read-write, and the
-  host's `kernel.yama.ptrace_scope` as the test read it (R1). The `/proc/1/exe`
+  **records without asserting**, by exit code and not on stderr (Q2; the
+  runner drains an agent's stderr, so a line there never reaches the test):
+  once every asserted check holds it exits 0 when neither observation is
+  made, 100 when `unshare(CLONE_NEWUSER)` succeeded inside (R7), 101 when
+  `/proc/1/mem` opened read-write, 102 when both did; the test accepts 0,
+  100, 101 and 102 alike, prints the decoded observations, and prints the
+  host's `kernel.yama.ptrace_scope` as the test itself read it from the host
+  `/proc` (R1). The `/proc/1/exe`
   check is what proves the reaper is gone; the descriptor walk is what would
   catch its escape route if it were not.
 - **AC-L3 — Lifetime is bound on both ends.** `SIGKILL` to the controller
@@ -615,8 +704,9 @@ asked for and unavailable, outstanding until the host command above passes.
 - **AC-S12 — Every isolated CLI child is bounded.** One helper in
   `evals/tests/common` spawns a CLI child with stdout and stderr on files
   in a tempdir, polls `try_wait` to a hard deadline of 90 s, and on expiry
-  `SIGKILL`s it and panics `controller outlived its row after 90 s` with
-  everything it wrote; `ChildGuard::wait_with_output` is that bounded wait.
+  `SIGKILL`s it and panics `controller outlived its row after 90s` (the
+  bound in `Duration`'s `Debug` form, Q5) with everything it wrote;
+  `ChildGuard::wait_with_output` is that bounded wait.
   `boundary_unavailable()`, `require_boundary()`, `trial()` when called with
   `--isolated`, `launch_victim`, `idle_trial`, `idle_victim`,
   `isolated_helper_with` and every other `trial --isolated` invocation in
@@ -624,6 +714,38 @@ asked for and unavailable, outstanding until the host command above passes.
   `.output()` and `.wait_with_output()` on an isolated command outside the
   helper is empty. A test of the helper itself holds a child that never
   exits under a 200 ms bound and shows the named panic and no survivor.
+- **AC-S13 — Unproved cleanup is named and never released as proved (Q1).**
+  `supervise` yields the reap judgment, `Cleanup::Proved` or
+  `Cleanup::Unproved`, beside the verdict; `Unproved` exactly when the
+  envelope expired and `timeout(DRAIN_BOUND, child.wait())` ran out, and
+  `Proved` in every other case (bwrap reaped on its own or within the bound,
+  or no child ever spawned). `launch` drops the admission on `Proved` and
+  calls `Admission::retain` on `Unproved`. Unit tests, inline in
+  `isolation.rs`: `envelope_report(Cleanup::Proved)` is exactly
+  `ENVELOPE_EXPIRED` and contains no `trial_cleanup_unproved`;
+  `envelope_report(Cleanup::Unproved)` is `ENVELOPE_EXPIRED` followed by
+  `CLEANUP_UNPROVED`, the cleanup line exactly once and after the envelope
+  line; `CLEANUP_UNPROVED` equals
+  `swarmail-evals: harness error: trial_cleanup_unproved\n`, and the
+  matrix's `capture_worker_category`, fed the `Unproved` report (a `main.rs`
+  test beside its existing category tests), returns
+  `trial_cleanup_unproved`; `verdict` over a table: `(Err, 0, false)` is
+  `NoRow`, `(Err, n>0, false)` is `Exited(2)`, `(Ok(exit code c), n>0,
+  false)` is `Exited(c)`, `(Ok(signal death), n>0, false)` is `Exited(2)`,
+  and `(_, _, true)` is `Interrupted`, so a reap that ran out exits 2
+  whatever reached stdout. The existing envelope test asserts the cleanup
+  line is absent when the stand-in is reaped (AC-S2). `Admission::retain`
+  is proven by a re-executed child in `admission.rs` (the `interrupt_child`
+  pattern): the child acquires an admission at a private root under a
+  tempdir, retains it, shows a fresh acquisition at the same root in the
+  same process refuses `concurrent_trials_refused`, and exits 0; the parent
+  polls it to a 30 s deadline, `SIGKILL`s and fails by name on expiry, and
+  after the child's exit acquires at that root, which is the process-scoped
+  limit step 3 states. No real `D`-state bwrap is manufactured (0020 §5);
+  the `Unproved` arm is proven through those functions and the wiring is
+  read in review. 0076 §3 is not in 0115's *Amends if accepted* list, and
+  `git diff a4f552d -- docs/decisions/0076-sequential-eval-trials.md` is
+  empty.
 - **AC-O1 — Operator ruling on 0115.** Outstanding by construction; now
   includes the host prerequisite and the `--as-pid-1` argv.
 
@@ -655,5 +777,17 @@ void, the observer's descriptor walk. The verify seat passed every gate on
 Linux; bwrap refuses inside the seat, so only the refusal paths ran there.
 The dispatcher then ran the live proof on the host for the first time: the
 boundary worked and the controller lost the runner's row and never exited
-(P1–P4). This third revision answers that; the second revision's commits
+(P1–P4). The third revision answered that; the second revision's commits
 remain in history.
+
+**2026-11-01 third bwrap revision (52aa050, implemented at 4f3ba15).** One
+production entry on a current-thread runtime, pumps on the driving thread,
+the read-side count, the envelope on bwrap's wait, the bounded test-side
+runner, the always-on handoff test and the two-suite skip rule. The verify
+seat passed every gate on Linux; bwrap still refuses inside the seat. The
+review panel confirmed the fix and returned the run on one path the live
+proof cannot reach: a reap that runs out after the envelope kill released
+the host admission as if cleanup were proved and never said
+`trial_cleanup_unproved`, against accepted 0076 §3 (Q1), beside the smaller
+findings Q2–Q7. This fourth revision answers that; the third revision's
+commits remain in history.
