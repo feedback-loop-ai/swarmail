@@ -110,6 +110,11 @@ $E matrix --tasks signup,otp,stale-otp --agents agents.json --trials 5 > runs.js
 $E report --input runs.jsonl                        # or --input - for stdin
 ```
 
+Artifact roots refuse every symlinked path component. On macOS `/tmp` and the
+per-user TMPDIR (under `/var`) are symlinks into `/private`, so name an
+artifact root there by its real path, for example `/private/tmp/evals`; the
+harness's own private runtime directories already live under `/private/tmp`.
+
 `trial` exits 0 pass, 1 fail, 2 harness error. `matrix` runs the product
 sequentially, one row per requested slot with no retries, continues after
 ordinary harness errors and exits 2 if any occurred, else 1 if any failed,
