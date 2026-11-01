@@ -660,6 +660,16 @@ controller's exit, the exit code is 2, and an operator confirms cleanup before
 resuming (accepted 0076 §3; the lock is process-scoped, so that exit releases
 it).
 
+**A killed controller is a killed trial.** The second live run showed that
+bwrap's `--die-with-parent` binding does not reach the runner: the kernel
+clears a parent-death signal at an exec it marks secure, and the host's
+AppArmor `bwrap-userns-restrict` profile marks the exec of bwrap's sandbox
+child secure. The runner therefore re-arms `PR_SET_PDEATHSIG` itself as the
+first statement of `main` when it is PID 1, so bwrap's death (the controller
+killed, or bwrap killed at the envelope) kills the runner and empties the
+namespace; a parent that dies before that statement runs is bounded by the
+trial deadline.
+
 The network is a private loopback; provider egress does not exist inside, and
 `--share-net` is rejected. Provider egress is an open operator question in
 0115, so no real driver runs isolated: a wrapper profile is refused, and an

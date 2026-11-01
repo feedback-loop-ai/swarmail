@@ -389,6 +389,31 @@ fn an_isolated_null_trial_hands_over_its_row_and_exits() {
     assert_eq!(row.concurrency, 1);
 }
 
+/// AC-L3's diagnostic: `survivors` names a live process with its pid, state and
+/// command line, and is empty once the process is gone and reaped.
+#[cfg(target_os = "linux")]
+#[test]
+fn survivors_names_a_live_process_and_is_empty_once_it_is_gone() {
+    let started = std::time::Instant::now();
+    let mut child = std::process::Command::new("/usr/bin/sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let pid = child.id() as i32;
+    let family = vec![process_identity(pid).expect("the child is in the process table")];
+    let named = survivors(&family);
+    assert!(named.contains(&format!("pid {pid} state ")), "{named}");
+    assert!(named.contains("cmdline /usr/bin/sleep 30"), "{named}");
+    assert!(
+        named.contains(&format!("PPid {}", std::process::id())),
+        "{named}"
+    );
+    send_signal(pid, libc::SIGKILL);
+    child.wait().unwrap();
+    assert_eq!(survivors(&family), "");
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+}
+
 /// AC-S12: the bounded runner fails by name instead of waiting. A child that
 /// would run a minute is held to 200 ms: the wait panics with the bound in the
 /// message, and the child is gone, not left running behind the failure.
@@ -991,9 +1016,11 @@ fn killing_the_controller_leaves_no_trial_process_alive() {
     );
     send_signal(trial.pid(), libc::SIGKILL);
     let _ = trial.wait_with_output();
-    eventually("every trial process to die", || {
-        family.iter().all(|p| !identity_alive(p))
-    });
+    eventually_else(
+        "every trial process to die",
+        || family.iter().all(|p| !identity_alive(p)),
+        || survivors(&family),
+    );
     // No orphan survives to watch the next trial.
     let (next, _, _next_owner) = idle_trial();
     assert!(family.iter().all(|p| !identity_alive(p)));

@@ -332,6 +332,19 @@ pub fn eventually(what: &str, mut ok: impl FnMut() -> bool) {
     }
 }
 
+/// `eventually` with a detail line: the panic names what was still true.
+pub fn eventually_else(what: &str, mut ok: impl FnMut() -> bool, detail: impl Fn() -> String) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !ok() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}:\n{}",
+            detail()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 // The process-identity proofs read /proc/<pid>/stat, which only Linux has;
 // they are compiled only there so no test can pass vacuously elsewhere.
 /// Whether `pid` names a live (not zombie) process.
@@ -406,6 +419,48 @@ pub fn process_descendants(root: i32) -> Vec<ProcessIdentity> {
         found.extend(children);
     }
     found
+}
+
+/// One line per member of `family` that is still alive: pid, state, parent and
+/// namespace pids from `/proc/<pid>/status`, and the command line. A field that
+/// cannot be read is `?`. Empty when every member is gone.
+#[cfg(target_os = "linux")]
+pub fn survivors(family: &[ProcessIdentity]) -> String {
+    let status_field = |pid: i32, name: &str| -> String {
+        std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find_map(|line| line.strip_prefix(name)?.strip_prefix(':'))
+                    .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
+            })
+            .unwrap_or_else(|| "?".into())
+    };
+    family
+        .iter()
+        .filter(|member| identity_alive(member))
+        .map(|member| {
+            let state = process_identity(member.pid).map_or('?', |now| now.state);
+            let cmdline = std::fs::read(format!("/proc/{}/cmdline", member.pid))
+                .map(|raw| {
+                    raw.split(|b| *b == 0)
+                        .map(|part| String::from_utf8_lossy(part).into_owned())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .trim()
+                        .to_string()
+                })
+                .unwrap_or_else(|_| "?".into());
+            format!(
+                "pid {} state {state} PPid {} NSpid {} cmdline {cmdline}",
+                member.pid,
+                status_field(member.pid, "PPid"),
+                status_field(member.pid, "NSpid"),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn send_signal(pid: i32, sig: i32) {

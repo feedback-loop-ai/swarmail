@@ -500,6 +500,7 @@ fn conclude(
 }
 
 fn main() -> ExitCode {
+    swarmail_evals::isolation::rearm_parent_death(std::process::id() == 1);
     std::panic::set_hook(Box::new(|_| {
         eprintln!("swarmail-evals: harness error: panicked");
     }));

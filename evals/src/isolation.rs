@@ -426,6 +426,11 @@ pub fn system_root_options(layout: &dyn Fn(&Path) -> Tree) -> Vec<OsString> {
 /// trial's agent could probe through `/proc/1`; with it gone, every process
 /// inside is the runner or something the runner spawned behind the
 /// controller's close-on-exec sweep.
+///
+/// `--die-with-parent` arms `PR_SET_PDEATHSIG` in bwrap's sandbox child, but
+/// the kernel clears it at the exec the host's AppArmor profile marks secure,
+/// so it does not reach the runner by itself. The runner, as PID 1, re-arms
+/// the binding as the first statement of `main` ([`rearm_parent_death`]).
 pub fn argv(
     request: &Request,
     layout: &dyn Fn(&Path) -> Tree,
@@ -565,6 +570,31 @@ pub enum Launched {
     Interrupted,
 }
 
+/// Re-arm the parent-death signal when this process is the init of the
+/// trial's PID namespace (the runner under `--as-pid-1`).
+///
+/// bwrap arms `PR_SET_PDEATHSIG` in the process it is about to exec, but the
+/// kernel clears that binding at an exec it marks secure, and the host's
+/// AppArmor `bwrap-userns-restrict` profile marks the bwrap to unprivileged
+/// transition secure. So the runner arms the binding itself, as the first
+/// statement of `main`: when the bwrap that is its parent dies (the controller
+/// killed, or bwrap killed at the envelope), the kernel kills the runner,
+/// and with PID 1 gone it empties the namespace. A runner that is not PID 1
+/// arms nothing. A parent that dies between the exec and this call is not
+/// seen; that window is bounded by the trial deadline.
+pub fn rearm_parent_death(is_init: bool) {
+    #[cfg(target_os = "linux")]
+    if is_init {
+        // SAFETY: prctl(PR_SET_PDEATHSIG, SIGKILL) takes only integer
+        // arguments and touches no memory.
+        unsafe {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = is_init;
+}
+
 /// Mark every descriptor above stderr close-on-exec in the child between fork
 /// and exec, so nothing the controller was handed survives into bwrap.
 #[cfg(target_os = "linux")]
@@ -596,7 +626,8 @@ fn sweep(_: &mut tokio::process::Command) {}
 /// no stdin, both output pipes owned by the controller, its own process
 /// group (a terminal interrupt reaches the controller only), no inherited
 /// environment, and the descriptor sweep. Dropping the child kills bwrap,
-/// whose `--die-with-parent` takes the sandbox with it.
+/// whose death fires the parent-death signal the runner re-armed as PID 1
+/// ([`rearm_parent_death`]), which takes the sandbox with it.
 fn process(bwrap: &Path, request: &Request, inner: &[OsString]) -> tokio::process::Command {
     let mut process = tokio::process::Command::new(bwrap);
     process
@@ -717,7 +748,7 @@ async fn pump(mut from: impl AsyncRead + Unpin, sink: Sink, seen: Arc<AtomicU64>
 /// the trial's namespace (`--as-pid-1`), so that happens only after the
 /// kernel has emptied the namespace.
 ///
-/// bwrap forwards no signals, and its `--die-with-parent` kill is `SIGKILL`,
+/// bwrap forwards no signals, and the parent-death kill is `SIGKILL`,
 /// which would lose the interrupted row. So a `SIGTERM`/`SIGINT` here is
 /// delivered, once, to the runner's host PID (the runner then emits its own
 /// interrupted row, exactly as an unisolated trial does, 0073; as namespace
@@ -726,7 +757,8 @@ async fn pump(mut from: impl AsyncRead + Unpin, sink: Sink, seen: Arc<AtomicU64>
 /// runner yet, bwrap is killed and the interrupt is reported by name.
 ///
 /// Every wait is bounded by `bounds`. If bwrap outlives `bounds.envelope` it
-/// is killed (`--die-with-parent` empties the namespace), reaped within
+/// is killed (its death fires the parent-death signal the runner re-armed, which
+/// empties the namespace), reaped within
 /// `bounds.drain`, and [`envelope_report`] goes to stderr; the verdict is
 /// then the usual one: `Exited(2)` beside whatever row reached stdout, or
 /// `NoRow`. The copies are judged by the bytes the read side counted, not by
@@ -885,6 +917,29 @@ mod tests {
 
     fn os(parts: &[&str]) -> Vec<OsString> {
         parts.iter().map(OsString::from).collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_namespace_init_rearms_its_parent_death_signal_and_a_plain_runner_does_not() {
+        // The binding is per thread, so a fresh thread starts from zero and
+        // the test leaves no state behind in the harness's own threads.
+        std::thread::spawn(|| {
+            let read = || {
+                let mut signal: libc::c_int = -1;
+                // SAFETY: PR_GET_PDEATHSIG writes one int through the pointer.
+                let rc = unsafe { libc::prctl(libc::PR_GET_PDEATHSIG, &mut signal as *mut _) };
+                assert_eq!(rc, 0);
+                signal
+            };
+            assert_eq!(read(), 0);
+            rearm_parent_death(false);
+            assert_eq!(read(), 0);
+            rearm_parent_death(true);
+            assert_eq!(read(), libc::SIGKILL);
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

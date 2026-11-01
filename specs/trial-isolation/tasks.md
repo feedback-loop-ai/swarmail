@@ -192,7 +192,7 @@ these tasks, not the panel's positions.
   `SKIP trial-isolation: boundary_unavailable:bwrap_probe`, each within its
   bound. **Test:** both receipts in the implement notes with wall-clock
   durations.
-- [ ] **T34 — Re-arm the parent-death binding in the namespace init (L1;
+- [x] **T34 — Re-arm the parent-death binding in the namespace init (L1;
   AC-S14).** In `evals/src/isolation.rs` add
   `pub fn rearm_parent_death(is_init: bool)`: on Linux, when `is_init`, one
   `libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL)` under a `SAFETY`
@@ -209,7 +209,7 @@ these tasks, not the panel's positions.
   `cargo test --locked --lib rearms_its_parent_death` green in the seat;
   `rg -n 'rearm_parent_death' evals/src/main.rs` shows the call on the
   first line of `main`'s body.
-- [ ] **T35 — Name the survivor on a lifetime timeout (L1; AC-L3).** In
+- [x] **T35 — Name the survivor on a lifetime timeout (L1; AC-L3).** In
   `evals/tests/common/mod.rs` add `pub fn survivors(family: &[ProcessIdentity])
   -> String` (one line per member still `identity_alive`: pid, state,
   `PPid` and `NSpid` from `/proc/<pid>/status`, cmdline from
@@ -226,7 +226,7 @@ these tasks, not the panel's positions.
   spawns `/usr/bin/sleep 30`, captures its identity, asserts `survivors`
   names it with its pid, state and `/usr/bin/sleep` cmdline, `SIGKILL`s and
   waits it, and asserts `survivors` is then empty; the whole test under 2 s.
-- [ ] **T36 — Correct the sentences that assumed bwrap's binding reached
+- [x] **T36 — Correct the sentences that assumed bwrap's binding reached
   PID 1 (L1; AC-S8, AC-S14).** The `argv` doc comment's `--as-pid-1`
   paragraph says the runner re-arms `PR_SET_PDEATHSIG` as PID 1 and why
   (the kernel clears it at the host's secure exec); the `process` doc
@@ -238,7 +238,7 @@ these tasks, not the panel's positions.
   `rg -n 'die-with-parent' evals/src/isolation.rs` shows no sentence
   claiming bwrap's `SIGKILL` reaches PID 1 by itself; `rg -n
   'rearm' evals/README.md evals/run-plan.md` finds one sentence in each.
-- [ ] **T37 — Seat run of both suites after T34–T36 (AC-S6, AC-S7).** Run
+- [x] **T37 — Seat run of both suites after T34–T36 (AC-S6, AC-S7).** Run
   the always-on evals suite locked in the seat and show AC-S10 skipped by
   name, the new AC-S14 and `survivors` tests green, and every other test
   green within bounded time; run the `--ignored` command and show every
@@ -363,3 +363,24 @@ the implement seat, in that order, with T10 reopened behind them; T06–T08
 and T20 stay open and are proven only by the dispatcher's third run of the
 one command on this host. Nothing in 4f3ba15's or 5e44b14's controller work
 is reopened; the argv does not change.
+
+Status 2026-11-02 (implement seat, after the second live proof): T34-T37 are
+done. `rearm_parent_death` is the first statement of `main`; `survivors` and
+`eventually_else` name any survivor of the lifetime test; the doc sentences
+and one paragraph each in `evals/README.md` and `evals/run-plan.md` are
+corrected. Receipts (seat; bwrap refuses here with `ENOSPC`):
+- `cargo test --locked --lib rearms_its_parent_death` green; the survivors
+  test green in under 1 s; `cargo test --locked --test trial_isolation`
+  15 passed, 7 ignored in 6 s; the `--ignored` command 7 failed in 2 s, each
+  after `SKIP trial-isolation: boundary_unavailable:bwrap_probe`.
+- Whole evals `cargo test --locked --no-fail-fast` green (about 10 min).
+  `child_output_server_death_remains_a_harness_error_on_linux` is a flake
+  that fails about one run in three when run alone and passes in the full
+  run; it does not touch the isolation path.
+- Root fmt, clippy, `cargo test --workspace --locked`, build, evals fmt and
+  clippy, the coverage gate (exact 100/100/100) and its selftest,
+  publish-guard, seal-branch and `cargo deny check licenses` green. `brokkr
+  compile` not run: the pinned brokkr binary is not installed in this seat.
+  `src/`, both lockfiles and `deny.toml` unchanged.
+- T08/T20 stay open for the dispatcher's third host run; the re-arm is
+  unproved live from here.
