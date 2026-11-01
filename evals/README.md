@@ -320,6 +320,76 @@ exact identity and passes with no trap event; the same wait acting on
 `wrong_message`; and in slow-delivery the first timed-out wait carries no
 `near_misses` (nothing arrived), after which the release and confirmation pass.
 
+## The eval recipe on brokkr (#148, proposed 0116)
+
+The operator ruled on 2026-10-18 that the harness is built on brokkr. This is
+the **interim path**: brokkr cannot yet lawfully give a seat Swarmail's MCP
+server (the broker, brokkr 0065 slice two, is mid-build; URL-connection MCP is
+outside it, brokkr 0077; no process may outlive its seat). Until it lands, the
+recipe `.brokkr/recipes/eval/` has two exec seats and **nothing in them is
+confined**; every row records the trial as `unconfined` (Codex sees the
+operator's own MCP servers; dsh's web tools stay on). The move to the broker is
+tracked in brokkr#766.
+
+- `trial` runs `swarmail-evals trial` from a request the matrix wrote: it
+  starts Swarmail and the fixture as its own children, runs the agent (for a
+  paid trial the real `brokkr driver claude|codex|dsh`, through the wrapper's
+  `--via-brokkr`), saves the app's state and stops both servers.
+- `score` re-applies the task's check to the retained leaf
+  (`check --artifacts-dir`): the app's state, never the agent's account.
+  The matrix cross-checks the gate against the row; a disagreement is that
+  slot's `harness_error` (`score_mismatch`) and stops admission.
+
+```bash
+E=evals/target/debug/swarmail-evals
+# one command, one row per slot (from the repository root; --artifacts-dir required)
+$E matrix --brokkr "$PWD/.brokkr/state/bin/brokkr" --tasks signup,otp \
+  --agents agents.json --trials 5 --artifacts-dir "$PWD/.brokkr/state/eval/run1" > runs.jsonl
+# accounting from the journal, joined to the rows by trial id
+bash evals/scripts/journal-facts.sh "$PWD/.brokkr/state/bin/brokkr" .brokkr/state/forge.db \
+  facts.json $(jq -r .trial_id runs.jsonl)
+$E report --input runs.jsonl --journal facts.json \
+  --evidence-dir "$PWD/.brokkr/state/eval/run1-evidence"
+```
+
+`--deadline-ms` may not exceed 1 200 000 in this mode (`deadline_exceeds_seat`):
+the trial's deadline plus the runner's fixed startup and shutdown budgets must
+fit the trial seat's 1800 s. Trials stay sequential (accepted 0076): the
+issue's "two concurrent trials of one task both pass" criterion is **not** met
+by this recipe and is not claimed; isolation is #221's.
+
+**What joins.** Rows are unchanged. `report --journal` adds a `journal` object
+to each group: joined count, typed `missing` reasons (`journal_missing`,
+`journal_ambiguous`, `journal_has_no_accounting`, `builtin_agent`), token
+distributions (`total` is input + output; `cached` is reported beside it),
+turns, tool-call counts by tool, invalid-argument errors, and
+`tokens_per_success`, which is `null` with a reason whenever any scored trial
+in the group lacks token facts or none passed. A figure is never `0` for an
+unavailable fact.
+
+**What is retained.** `--evidence-dir` writes `DIR/<trial_id>/tool-calls.json`
+per accounted trial: ordinal, bounded tool name, outcome class, byte lengths
+and SHA-256 digests of each call's arguments and result, capped at 64 KiB and
+cut at a whole call with `"truncated": true`. **No argument or result bytes
+are ever copied** (accepted 0075 §4). A value-bearing mode is proposed in 0116
+and is not implemented until the operator accepts it.
+
+**Admission posture.** The trial's own advisory admission lock lives in the
+shared `/tmp`. If brokkr's exec box gives the trial seat a private `/tmp`, that
+lock cannot see other cooperating runners on the host: the posture the #151
+baseline was run under. The matrix is sequential, so none of its own trials
+overlap; run nothing else while a matrix runs. Which of the two the engine does
+is brokkr fact F6 (`specs/eval-brokkr-recipe/implementation.md`).
+
+**What delivery proved, and what it did not.** The oracle and null controls
+(16/16 pass; 0/16 pass with only `gave_up` or `wait_timeout`) run through the
+recipe's two real scripts and the matrix, with an offline stand-in for
+`brokkr run`; the via-brokkr launch is proven with a stand-in driver. The first
+`brokkr run --recipe eval` with the engine, the first authenticated
+via-brokkr smoke per family and the paid matrix are the operator's. The #151
+"Not measured" rows (tokens per success; per-trial tool-call records) are
+closed by the operator's run of this recipe, not before.
+
 ## Honest limits
 
 - **Unconfined.** Process-group ownership is lifecycle cleanup, not a
@@ -341,8 +411,10 @@ exact identity and passes with no trap event; the same wait acting on
   download; it does not measure MCP attachment retrieval (#159).
 - **support-reply** replies through the app's HTTP form with the mailed
   challenge; it does not measure Swarmail inbound reply transport (#160).
-- No tokens, turns or cost here: those come from brokkr's journal when the
-  #148 recipe wraps this runner. No model was run in this batch.
+- Tokens, turns and cost are not in the rows (the rows do not change). They
+  come from brokkr's journal, joined by trial id (next section); until the
+  operator's paid run of the eval recipe, the #151 baseline still lacks them.
+  No model was run in this batch.
 
 ## Private artifact publication (proposed 0075, renumbered from 0062)
 

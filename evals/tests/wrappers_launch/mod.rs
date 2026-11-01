@@ -142,6 +142,226 @@ impl Case {
         c
     }
 }
+/// A stand-in `brokkr driver` (decision 0116): an absolute executable that
+/// records its argv and environment keys to `record`, then plays `mode`.
+fn standin_driver(base: &Path, name: &str, mode: &str, record: &Path) -> PathBuf {
+    let path = base.join(name);
+    let body = format!(
+        "#!{}\nRECORD={}\nMODE={}\nEVALS_BIN={}\n{}",
+        standin_python(),
+        json!(record),
+        json!(mode),
+        json!(common::exe()),
+        include_str!("standin-driver.py")
+    );
+    private(&path, body.as_bytes());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    path
+}
+
+/// Empty a fresh-HOME directory so the same case can launch twice.
+fn reset_home(case: &Case) {
+    for entry in std::fs::read_dir(&case.home).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(path).unwrap();
+        } else {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+#[test]
+fn via_brokkr_execs_the_driver_with_the_direct_argv() {
+    for (family, model) in [
+        ("claude", "claude-sonnet-5-5"),
+        ("codex", "gpt-6-luna"),
+        ("dsh", "spark-glm/GLM-5.3-Flash-EXL3"),
+    ] {
+        let c = Case::new(family);
+        // The direct launch, captured by the family stand-in.
+        let direct = c.command(family, model).output().unwrap();
+        assert!(direct.status.success(), "{family}: {direct:?}");
+        let expected: Value = serde_json::from_slice(&std::fs::read(&c.capture).unwrap()).unwrap();
+        std::fs::remove_file(&c.capture).unwrap();
+        reset_home(&c);
+
+        // The same launch through the driver, which hands the CLI its argv back.
+        let record = c.root.path().join("driver-record.json");
+        let driver = standin_driver(c.root.path(), "driver-pass", "passthrough", &record);
+        let mut cmd = c.command(family, model);
+        let out = cmd.arg("--via-brokkr").arg(&driver).output().unwrap();
+        assert!(out.status.success(), "{family}: {out:?}");
+        assert!(out.stdout.is_empty() && out.stderr.is_empty());
+        let through: Value = serde_json::from_slice(&std::fs::read(&c.capture).unwrap()).unwrap();
+        assert_eq!(
+            through, expected,
+            "{family}: the CLI saw the same argv, stdin, env and config"
+        );
+
+        // What the driver was given: `<family> -- <program> <argv...>`.
+        let seen: Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+        let argv = seen["argv"].as_array().unwrap();
+        assert_eq!(argv[0], family);
+        assert_eq!(argv[1], "--");
+        let program = argv[2].as_str().unwrap();
+        assert!(program.ends_with("/standin"), "{family}: {program}");
+        let direct_argv = expected["argv"].as_array().unwrap();
+        assert_eq!(&argv[3..], &direct_argv[..], "{family}: argv byte for byte");
+        // The driver sees the direct launch's environment keys and nothing else.
+        let mut keys: Vec<String> = expected["env"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        let driver_keys: Vec<String> = serde_json::from_value(seen["env_keys"].clone()).unwrap();
+        for key in &keys {
+            assert!(driver_keys.contains(key), "{family}: driver lacks {key}");
+        }
+        // The family stand-in pops the dsh route credential from its capture;
+        // the driver, like the CLI, still receives it.
+        assert!(
+            driver_keys.iter().all(|k| keys.contains(k)
+                || matches!(
+                    k.as_str(),
+                    "PWD" | "_" | "SHLVL" | "SPARK_API_KEY" | "DASHSCOPE_API_KEY"
+                )),
+            "{family}: no extra environment key reaches the driver: {driver_keys:?}"
+        );
+        assert_eq!(seen["cwd"], json!(c.work));
+    }
+}
+
+#[test]
+fn via_brokkr_refuses_an_invalid_driver_before_launch() {
+    let c = Case::new("claude");
+    let record = c.root.path().join("driver-record.json");
+    let plain_file = c.root.path().join("not-executable");
+    private(&plain_file, b"#!/bin/sh\nexit 0\n");
+    let directory = c.root.path().join("a-directory");
+    dir(&directory);
+    let good = standin_driver(c.root.path(), "driver-ok", "passthrough", &record);
+    let relative = PathBuf::from(good.file_name().unwrap());
+    for (label, driver) in [
+        ("relative", relative),
+        ("missing", PathBuf::from("/nonexistent/brokkr")),
+        ("not executable", plain_file),
+        ("a directory", directory),
+    ] {
+        let out = c
+            .command("claude", "claude-sonnet-5-5")
+            .arg("--via-brokkr")
+            .arg(&driver)
+            .current_dir(c.root.path())
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{label}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("driver_invalid"),
+            "{label}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!record.exists(), "{label}: nothing was spawned");
+        assert!(!c.capture.exists(), "{label}: no CLI was launched");
+        assert!(
+            std::fs::read_dir(&c.home).unwrap().next().is_none(),
+            "{label}: no private file was written"
+        );
+    }
+}
+
+#[test]
+fn a_direct_launch_is_unchanged_by_the_flag_existing() {
+    let c = Case::new("claude");
+    let out = c.command("claude", "claude-sonnet-5-5").output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let seen: Value = serde_json::from_slice(&std::fs::read(&c.capture).unwrap()).unwrap();
+    assert!(seen["argv"][0] == "-p", "{}", seen["argv"]);
+}
+
+/// Run one `trial` whose agent is the claude wrapper launched through a
+/// stand-in driver, declared with the via-brokkr surface.
+fn via_brokkr_trial(mode: &str) -> (runner::TrialResult, std::process::Output, PathBuf) {
+    let c = Case::new("claude");
+    let record = c.root.path().join("driver-record.json");
+    let driver = standin_driver(c.root.path(), "driver-trial", mode, &record);
+    let out = common::cli()
+        .args([
+            "trial",
+            "--task",
+            "signup",
+            "--agent",
+            "smoke",
+            "--agent-model",
+            "claude-sonnet-5-5",
+            "--agent-config-id",
+            "standin",
+            "--wrapper-profile",
+            "claude_2_1_310_via_brokkr",
+            "--deadline-ms",
+            "60000",
+            "--",
+        ])
+        .arg(common::exe())
+        .args(["agent-claude", "--model", "claude-sonnet-5-5", "--config"])
+        .arg(&c.manifest)
+        .arg("--via-brokkr")
+        .arg(&driver)
+        .output()
+        .unwrap();
+    let row = common::one_row(&out);
+    // The Case owns the private files; keep it alive until the row is read.
+    let path = record.clone();
+    drop(c);
+    (row, out, path)
+}
+
+#[test]
+fn a_trial_through_the_stand_in_driver_passes_and_declares_the_via_brokkr_surface() {
+    use swarmail_evals::provenance::{ToolSurface, WrapperProfile};
+    use swarmail_evals::tasks::Outcome;
+    let _scope = common::trial_scope();
+    let (row, out, _) = via_brokkr_trial("oracle");
+    assert_eq!(
+        row.outcome,
+        Outcome::Pass,
+        "{row:?}\n{}",
+        common::stderr(&out)
+    );
+    assert_eq!(row.confinement, "unconfined");
+    match &row.provenance.agent.tool_surface {
+        ToolSurface::Wrapper {
+            profile, residuals, ..
+        } => {
+            assert_eq!(*profile, WrapperProfile::Claude2_1_310ViaBrokkr);
+            assert!(residuals.iter().any(|r| r.contains("brokkr driver")));
+        }
+        other => panic!("not the via-brokkr surface: {other:?}"),
+    }
+    assert_ne!(
+        row.provenance.agent.tool_surface,
+        ToolSurface::declared(WrapperProfile::Claude2_1_310),
+        "a via-brokkr row never claims the direct-launch surface"
+    );
+}
+
+#[test]
+fn an_idle_stand_in_driver_fails_the_trial_as_gave_up() {
+    use swarmail_evals::state::FailureClass;
+    use swarmail_evals::tasks::Outcome;
+    let _scope = common::trial_scope();
+    let (row, out, _) = via_brokkr_trial("idle");
+    assert_eq!(
+        row.outcome,
+        Outcome::Fail,
+        "{row:?}\n{}",
+        common::stderr(&out)
+    );
+    assert_eq!(row.failure_class, Some(FailureClass::GaveUp));
+}
+
 #[test]
 fn all_six_models_exec_literal_recipes_private_auth_and_no_raw_output() {
     for (family, models) in [

@@ -10,7 +10,8 @@
 mod common;
 
 use common::*;
-use serde_json::Value;
+use serde_json::{Value, json};
+use swarmail_evals::runner::TrialResult;
 use swarmail_evals::state::FailureClass;
 use swarmail_evals::tasks::{self, Outcome};
 
@@ -574,4 +575,78 @@ fn near_miss_controls_recover_after_a_timed_out_wait() {
             assert!(released, "{events:?}");
         }
     }
+}
+
+/// The controls again, through the recipe path (decision 0116): the same 16
+/// tasks run by `matrix --brokkr` with the offline stand-in for the engine, so
+/// the oracle must still pass 16/16 and the do-nothing agent must still fail
+/// every task with its declared idle class. The success check is proven able
+/// to fail and able to pass through trial.sh, the row, score.sh and the
+/// matrix's cross-check, not only through the direct runner.
+#[test]
+fn the_controls_hold_through_the_recipe_path() {
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    let ids: Vec<String> = tasks::catalogue().into_iter().map(|t| t.id).collect();
+    assert_eq!(ids.len(), 16);
+    let agents = dir.path().join("agents.json");
+    std::fs::write(
+        &agents,
+        json!([{"label": "oracle", "argv": []}, {"label": "null", "argv": []}]).to_string(),
+    )
+    .unwrap();
+    let out = brokkr_matrix("ok")
+        .args(["--tasks", &ids.join(","), "--agents"])
+        .arg(&agents)
+        .args(["--trials", "1", "--artifacts-dir"])
+        .arg(dir.path().join("artifacts"))
+        .output()
+        .unwrap();
+    let rows: Vec<TrialResult> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 32, "{}", stderr(&out));
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "failures, no harness error\n{}",
+        stderr(&out)
+    );
+    let oracle: Vec<_> = rows
+        .iter()
+        .filter(|r| r.agent.as_deref() == Some("oracle"))
+        .collect();
+    let null: Vec<_> = rows
+        .iter()
+        .filter(|r| r.agent.as_deref() == Some("null"))
+        .collect();
+    assert_eq!(oracle.len(), 16);
+    assert_eq!(null.len(), 16);
+    assert_eq!(
+        oracle.iter().filter(|r| r.outcome == Outcome::Pass).count(),
+        16,
+        "oracle 16/16: {:?}",
+        oracle
+            .iter()
+            .filter(|r| r.outcome != Outcome::Pass)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        null.iter().filter(|r| r.outcome == Outcome::Pass).count(),
+        0
+    );
+    for row in &null {
+        assert_eq!(row.outcome, Outcome::Fail, "{row:?}");
+        let task = tasks::find(row.task.as_deref().unwrap()).unwrap();
+        assert_eq!(row.failure_class, Some(task.idle_class), "{row:?}");
+        assert!(
+            matches!(
+                row.failure_class,
+                Some(FailureClass::GaveUp | FailureClass::WaitTimeout)
+            ),
+            "{row:?}"
+        );
+    }
+    assert!(rows.iter().all(|r| r.confinement == "unconfined"));
 }

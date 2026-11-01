@@ -125,7 +125,8 @@ Every current row requires canonical `provenance.agent.tool_surface`, including
 setup failures and unstarted slots. Wrapper profiles have revision 1 and basis
 `declared_configuration`, restrictions and conservative residuals. The finite
 selectors are `claude_2_1_310`, `codex_0_164_0`, `dsh_0_1_5_rc_1` (AgentSpec
-`wrapper_profile`, or trial `--wrapper-profile`). A selector is an explicit
+`wrapper_profile`, or trial `--wrapper-profile`), plus the three
+`*_via_brokkr` selectors below. A selector is an explicit
 operator declaration, never inferred from a label, executable or CLI output.
 Generic external commands remain `external_unknown`; builtins are
 `builtin_not_applicable`; invalid requests are `invalid_request`. Missing,
@@ -156,3 +157,24 @@ credential-free selection, then admits the six-model product. Paid baseline,
 publication, failure-taxonomy reprioritization and sealing are operator work.
 No paid or networked agent is run by this delivery. Root and standalone test
 receipts, including carried failures, must be assessed separately from smoke.
+
+## Launching through a brokkr driver (`--via-brokkr`, proposed 0116)
+
+`agent-claude|agent-codex|agent-dsh ... --via-brokkr /abs/driver` builds
+exactly the argv, MCP config, private HOME and cleared environment it builds
+today, then execs `DRIVER <family> -- <program> <argv...>` instead of the
+selected executable, so brokkr's journal can record tokens, turns and tool
+rows for the run. `DRIVER` must be an absolute path to a regular executable
+(`driver_invalid` before any private file is read). The goal reaches the
+driver as it reaches the CLI today (stdin bytes for Claude and Codex, one
+literal argument for dsh). A direct launch is unchanged.
+
+A row for such a launch declares the matching finite selector
+`claude_2_1_310_via_brokkr`, `codex_0_164_0_via_brokkr` or
+`dsh_0_1_5_rc_1_via_brokkr`: the family's declared configuration plus one
+residual (`brokkr driver flags unenumerated`), because the driver adds flags
+the family profile does not list. A via-brokkr row never claims the
+direct-launch surface; a binary from before this change refuses these rows,
+as it refuses any historical row it does not know. Delivery proves the flag
+only with a stand-in driver; the first authenticated smoke per family is the
+operator's.

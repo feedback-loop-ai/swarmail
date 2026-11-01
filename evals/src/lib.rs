@@ -27,4 +27,5 @@ pub(crate) mod test_support;
 
 pub mod baseline;
 pub mod fixture_http;
+pub mod journal;
 pub mod wrappers;

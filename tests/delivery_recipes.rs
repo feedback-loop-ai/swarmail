@@ -79,6 +79,7 @@ fn every_recipe_stands_on_the_brokkr_folder_shelf() {
         "codex-fast",
         "mixed-opus-terra",
         "claude-careful",
+        "eval",
     ] {
         let bundle = folder.join("recipes").join(name).join("bundle.json");
         assert!(
@@ -1670,4 +1671,177 @@ fn claude_careful_design_check_is_self_validator_byte_for_byte() {
         recipe["seats"]["design"]["sequence"][2], base["seats"]["design"]["sequence"][2],
         "the model-free validator step is self's, field for field"
     );
+}
+
+/// The eval recipe's structural contract (decision 0116). `Err` names the
+/// first defect, so the mutants below can show each one is caught.
+fn eval_recipe_defect(bundle: &Value, policy: &Value) -> Result<(), String> {
+    let expect = |ok: bool, what: &str| if ok { Ok(()) } else { Err(what.to_string()) };
+    expect(bundle["name"] == "eval", "name")?;
+    expect(bundle["policy"] == "policy.json", "own policy")?;
+    expect(bundle.get("extends").is_none(), "extends nothing")?;
+    expect(
+        bundle["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("unconfined")),
+        "description says unconfined",
+    )?;
+    let seats = bundle["seats"].as_object().ok_or("seats")?;
+    expect(
+        seats.keys().map(String::as_str).collect::<Vec<_>>() == ["score", "trial"],
+        "exactly two seats",
+    )?;
+    for (name, script) in [("trial", "trial.sh"), ("score", "score.sh")] {
+        let seat = &seats[name];
+        expect(
+            seat.get("agent").is_none(),
+            &format!("{name}: no model agent"),
+        )?;
+        expect(
+            seat["driver"]["command"]
+                == json!([
+                    "{brokkr}",
+                    "driver",
+                    "exec",
+                    "--",
+                    "bash",
+                    format!("./scripts/{script}"),
+                    "{prompt_file}"
+                ]),
+            &format!("{name}: an exec driver running its own script"),
+        )?;
+        expect(
+            seat["limits"]["max_attempts"]
+                .as_u64()
+                .is_some_and(|n| n <= 1),
+            &format!("{name}: no retries"),
+        )?;
+        expect(
+            seat["hands"]["kind"] == "workspace",
+            &format!("{name}: workspace hands"),
+        )?;
+    }
+    expect(seats["trial"]["class"] == "work", "trial is work")?;
+    expect(seats["score"]["class"] == "gate", "score is a gate")?;
+    expect(
+        seats["score"]["hands"]["network"] == false,
+        "score has no network",
+    )?;
+    expect(
+        seats["trial"]["limits"]["timeout_seconds"] == 1800,
+        "trial seat 1800 s",
+    )?;
+    expect(
+        seats["score"]["limits"]["timeout_seconds"] == 600,
+        "score seat 600 s",
+    )?;
+    expect(
+        seats["trial"]["results"] == json!(["ran", "harness_error"]),
+        "trial results",
+    )?;
+    expect(
+        seats["score"]["results"] == json!(["pass", "fail", "unscorable"]),
+        "score results",
+    )?;
+
+    expect(
+        policy["schema"] == "forge.phase-machine/v2",
+        "policy schema",
+    )?;
+    expect(
+        policy["phases"] == json!(["trial", "score", "done", "stop"]),
+        "phases",
+    )?;
+    expect(
+        policy["initial"] == "trial" && policy["terminal"] == json!(["done", "stop"]),
+        "start and end",
+    )?;
+    let rules = policy["rules"].as_array().ok_or("rules")?;
+    let table: Vec<(&str, &str, &str, bool)> = rules
+        .iter()
+        .map(|r| {
+            (
+                r["from"].as_str().unwrap_or(""),
+                r["result"].as_str().unwrap_or(""),
+                r["next"].as_str().unwrap_or(""),
+                r["severity"] == "hard",
+            )
+        })
+        .collect();
+    expect(
+        table
+            == [
+                ("trial", "ran", "score", false),
+                ("trial", "harness_error", "stop", true),
+                ("score", "pass", "done", false),
+                ("score", "fail", "done", false),
+                ("score", "unscorable", "stop", true),
+            ],
+        "exactly the five rules",
+    )?;
+    expect(rules.iter().all(|r| r["from"] != r["next"]), "no self-loop")?;
+    expect(
+        rules.iter().all(|r| r.get("when").is_none()),
+        "no counted retry",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn eval_recipe_is_two_exec_seats_with_one_attempt_and_five_rules() {
+    let bundle = read_json(".brokkr/recipes/eval/bundle.json");
+    let policy = read_json(".brokkr/recipes/eval/policy.json");
+    eval_recipe_defect(&bundle, &policy).expect("the recipe as shipped");
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".brokkr/recipes/eval/scripts");
+    for script in ["trial.sh", "score.sh"] {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(root.join(script)).unwrap();
+        assert!(
+            meta.is_file() && meta.permissions().mode() & 0o111 != 0,
+            "{script}"
+        );
+    }
+
+    // One-fault mutants: each defect is caught by exactly the pin that names it.
+    let mutants: Vec<(&str, Value, Value)> = {
+        let mut out = Vec::new();
+        let mut retry = policy.clone();
+        retry["rules"].as_array_mut().unwrap().push(json!(
+            {"id": "RETRY", "from": "trial", "result": "harness_error", "next": "trial", "reason": "retry"}
+        ));
+        out.push(("a retry rule", bundle.clone(), retry));
+        let mut attempts = bundle.clone();
+        attempts["seats"]["trial"]["limits"]["max_attempts"] = json!(2);
+        out.push(("max_attempts 2", attempts, policy.clone()));
+        let mut network = bundle.clone();
+        network["seats"]["score"]["hands"]["network"] = json!(true);
+        out.push(("network on the gate", network, policy.clone()));
+        let mut model = bundle.clone();
+        model["seats"]["trial"]["agent"] = json!("claude-implementer");
+        out.push(("a model agent on trial", model, policy.clone()));
+        let mut third = bundle.clone();
+        third["seats"]["extra"] = third["seats"]["score"].clone();
+        out.push(("a third seat", third, policy.clone()));
+        let mut soft = policy.clone();
+        soft["rules"][4]["next"] = json!("done");
+        out.push(("an unscorable leaf that finishes", bundle.clone(), soft));
+        let mut extends = bundle.clone();
+        extends["extends"] = json!("self");
+        out.push(("an inherited delivery recipe", extends, policy.clone()));
+        let mut quiet = bundle.clone();
+        quiet["description"] = json!("an eval recipe");
+        out.push((
+            "a description that hides the confinement",
+            quiet,
+            policy.clone(),
+        ));
+        out
+    };
+    for (label, bundle, policy) in &mutants {
+        assert!(
+            eval_recipe_defect(bundle, policy).is_err(),
+            "the pin misses: {label}"
+        );
+    }
 }

@@ -529,10 +529,53 @@ fn validate_goal(family: &str, goal: &str) -> Result<(), String> {
         Ok(())
     }
 }
-pub fn run(harness: &str, model: &str, config: &Path) -> Result<(), String> {
+/// The brokkr driver a wrapper may launch the family CLI through (decision
+/// 0116): an absolute path to a regular executable, checked before any
+/// private file is read.
+fn validate_driver(driver: &Path) -> Result<(), String> {
+    if !driver.is_absolute() {
+        return Err("driver_invalid".into());
+    }
+    match std::fs::metadata(driver) {
+        Ok(m) if m.is_file() && m.mode() & 0o111 != 0 => Ok(()),
+        _ => Err("driver_invalid".into()),
+    }
+}
+
+/// `DRIVER <family> -- <program> <args...>` with the direct launch's
+/// environment, working directory and output routing: the driver is only a
+/// different launcher for the same argv.
+fn through_driver(direct: &Command, family: &str, driver: &Path) -> Command {
+    let mut cmd = Command::new(driver);
+    cmd.arg(family)
+        .arg("--")
+        .arg(direct.get_program())
+        .args(direct.get_args())
+        .env_clear();
+    for (key, value) in direct.get_envs() {
+        if let Some(value) = value {
+            cmd.env(key, value);
+        }
+    }
+    if let Some(dir) = direct.get_current_dir() {
+        cmd.current_dir(dir);
+    }
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    cmd
+}
+
+pub fn run(
+    harness: &str,
+    model: &str,
+    config: &Path,
+    via_brokkr: Option<&Path>,
+) -> Result<(), String> {
     validate_model(harness, model)?;
     if !config.is_absolute() {
         return Err("wrapper_config_locator_invalid".into());
+    }
+    if let Some(driver) = via_brokkr {
+        validate_driver(driver)?;
     }
     let inputs = Inputs::environment()?;
     validate_goal(harness, &inputs.goal)?;
@@ -741,6 +784,10 @@ pub fn run(harness: &str, model: &str, config: &Path) -> Result<(), String> {
                 .arg(&inputs.goal);
         }
     }
+    let mut cmd = match via_brokkr {
+        Some(driver) => through_driver(&cmd, harness, driver),
+        None => cmd,
+    };
     if harness == "dsh" {
         cmd.stdin(Stdio::null());
     } else {

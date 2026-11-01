@@ -50,6 +50,9 @@ enum Cmd {
         model: String,
         #[arg(long)]
         config: PathBuf,
+        /// Launch through this brokkr driver (absolute path): `DRIVER claude -- <argv>`.
+        #[arg(long)]
+        via_brokkr: Option<PathBuf>,
     },
     /// Launch Codex with private selected ChatGPT authentication.
     AgentCodex {
@@ -57,6 +60,9 @@ enum Cmd {
         model: String,
         #[arg(long)]
         config: PathBuf,
+        /// Launch through this brokkr driver (absolute path): `DRIVER codex -- <argv>`.
+        #[arg(long)]
+        via_brokkr: Option<PathBuf>,
     },
     /// Launch dsh with the selected private route credential.
     AgentDsh {
@@ -64,6 +70,9 @@ enum Cmd {
         model: String,
         #[arg(long)]
         config: PathBuf,
+        /// Launch through this brokkr driver (absolute path): `DRIVER dsh -- <argv>`.
+        #[arg(long)]
+        via_brokkr: Option<PathBuf>,
     },
     /// Serve one app-bound HTTP tool over MCP stdio using the EVAL inputs.
     FixtureHttp,
@@ -145,6 +154,11 @@ enum Cmd {
         seed: Option<String>,
         #[arg(long)]
         fixture_time: Option<String>,
+        /// Run each slot as one `brokkr run --recipe eval` with this absolute
+        /// brokkr executable (decision 0116). Requires --artifacts-dir and a
+        /// working directory holding .brokkr/recipes/eval.
+        #[arg(long)]
+        brokkr: Option<PathBuf>,
     },
     /// Re-apply a task's check to a retained state.json.
     Check {
@@ -161,6 +175,13 @@ enum Cmd {
     Report {
         #[arg(long)]
         input: String,
+        /// Journal facts v1 (decision 0116), joined to the rows by trial id.
+        #[arg(long)]
+        journal: Option<PathBuf>,
+        /// Write a bounded tool-call record per joined trial here
+        /// (requires --journal).
+        #[arg(long)]
+        evidence_dir: Option<PathBuf>,
     },
 }
 
@@ -209,9 +230,21 @@ fn main() -> ExitCode {
             output,
             dry_run,
         } => rt.block_on(run_baseline(config, output, dry_run)),
-        Cmd::AgentClaude { model, config } => wrapper_result("claude", model, config),
-        Cmd::AgentCodex { model, config } => wrapper_result("codex", model, config),
-        Cmd::AgentDsh { model, config } => wrapper_result("dsh", model, config),
+        Cmd::AgentClaude {
+            model,
+            config,
+            via_brokkr,
+        } => wrapper_result("claude", model, config, via_brokkr.as_deref()),
+        Cmd::AgentCodex {
+            model,
+            config,
+            via_brokkr,
+        } => wrapper_result("codex", model, config, via_brokkr.as_deref()),
+        Cmd::AgentDsh {
+            model,
+            config,
+            via_brokkr,
+        } => wrapper_result("dsh", model, config, via_brokkr.as_deref()),
         Cmd::FixtureHttpIsolated => match wrappers::isolated_helper() {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => fail("helper_setup_failed"),
@@ -343,6 +376,7 @@ fn main() -> ExitCode {
             artifacts_dir,
             seed,
             fixture_time,
+            brokkr,
         } => {
             if concurrency != 1 {
                 eprintln!("swarmail-evals: harness error: concurrency_unsupported");
@@ -355,6 +389,18 @@ fn main() -> ExitCode {
                 Ok(v) => v,
                 Err(e) => return fail(e),
             };
+            if let Some(bin) = &brokkr
+                && let Err(category) = brokkr_mode_admissible(
+                    bin,
+                    std::path::Path::new("."),
+                    artifacts_dir.as_deref(),
+                    deadline_ms,
+                    &ids,
+                )
+            {
+                eprintln!("swarmail-evals: harness error: {category}");
+                return ExitCode::from(2);
+            }
             rt.block_on(matrix_with_options(
                 ids,
                 agents,
@@ -362,6 +408,7 @@ fn main() -> ExitCode {
                 deadline_ms,
                 fixture,
                 artifacts_dir,
+                brokkr,
             ))
         }
         Cmd::Check {
@@ -431,7 +478,15 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Cmd::Report { input } => {
+        Cmd::Report {
+            input,
+            journal,
+            evidence_dir,
+        } => {
+            if evidence_dir.is_some() && journal.is_none() {
+                eprintln!("swarmail-evals: harness error: evidence_requires_journal");
+                return ExitCode::from(2);
+            }
             let text = if input == "-" {
                 let mut s = String::new();
                 match std::io::Read::read_to_string(&mut std::io::stdin(), &mut s) {
@@ -446,7 +501,20 @@ fn main() -> ExitCode {
             };
             match report::parse_rows(&text) {
                 Ok(rows) => {
-                    print_line(&report::report(&rows));
+                    let joined = match journal.as_deref().map(|path| join_journal(path, &rows)) {
+                        None => None,
+                        Some(Ok(mut joined)) => {
+                            if let Some(dir) = &evidence_dir {
+                                swarmail_evals::journal::write_evidence(dir, &mut joined);
+                            }
+                            Some(joined)
+                        }
+                        Some(Err(category)) => {
+                            eprintln!("swarmail-evals: harness error: {category}");
+                            return ExitCode::from(2);
+                        }
+                    };
+                    print_line(&report::report_with_journal(&rows, joined.as_ref()));
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -497,6 +565,43 @@ impl WorkerContext {
         artifacts::matches_cell(&row, &self.cell)?;
         Ok(())
     }
+}
+
+/// The trial seat's 1800 s less the trial's fixed startup and shutdown
+/// budgets and the envelope's 300 s slack: a deadline above this cannot nest
+/// inside the seat (decision 0116).
+const BROKKR_SEAT_DEADLINE_MS: u64 = 1_200_000;
+
+/// The refusals `matrix --brokkr` makes before any row exists: each is a fixed
+/// category on stderr and exit 2 with no stdout.
+fn brokkr_mode_admissible(
+    bin: &std::path::Path,
+    realm: &std::path::Path,
+    artifacts_dir: Option<&std::path::Path>,
+    deadline_ms: Option<u64>,
+    ids: &[String],
+) -> Result<(), &'static str> {
+    use std::os::unix::fs::PermissionsExt;
+    if artifacts_dir.is_none() {
+        return Err("brokkr_requires_artifacts");
+    }
+    let executable = bin.is_absolute()
+        && std::fs::metadata(bin).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
+    let realm = std::fs::metadata(realm.join(".brokkr/recipes/eval/bundle.json"))
+        .is_ok_and(|m| m.is_file());
+    if !executable || !realm {
+        return Err("brokkr_realm_invalid");
+    }
+    let longest = ids
+        .iter()
+        .filter_map(|id| tasks::find(id))
+        .map(|task| deadline_ms.unwrap_or(task.deadline_ms))
+        .max()
+        .unwrap_or(0);
+    if longest > BROKKR_SEAT_DEADLINE_MS {
+        return Err("deadline_exceeds_seat");
+    }
+    Ok(())
 }
 
 const MATRIX_OUTPUT_LIMIT: usize = 64 * 1024;
@@ -1087,79 +1192,40 @@ fn signal_trial(pid: u32) -> Result<(), String> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_child_assigned(
-    exe: &std::path::Path,
-    bin: &std::path::Path,
+/// The one argument list (after the `trial` subcommand) a `swarmail-evals trial` worker is given, whether
+/// the matrix spawns it directly or writes it into a brokkr slot's request.
+fn trial_args(
     id: &str,
     spec: &report::AgentSpec,
     argv: &[OsString],
     deadline_ms: Option<u64>,
     context: Option<&WorkerContext>,
     retention: Option<&std::path::Path>,
-    term: &mut tokio::signal::unix::Signal,
-    int: &mut tokio::signal::unix::Signal,
-) -> ChildRun {
-    let started = Instant::now();
-    #[cfg(test)]
-    if let Some(path) = std::env::var_os(MATRIX_TRIAL_START_ENV) {
-        let _ = std::fs::write(path, matrix_test_monotonic_nanos().to_string());
-    }
-    let setup = runner::private_tempdir("swarmail-eval-matrix-").and_then(|owner| {
-        let dirs = runner::RuntimeDirs::create(owner.path(), "worker")?;
-        Ok((owner, dirs))
-    });
-    let (_runtime, dirs) = match setup {
-        Ok(setup) => setup,
-        Err(_) => {
-            return ChildRun {
-                row: None,
-                interrupted: false,
-                failure: Some("private_directory_unavailable".into()),
-                stop_admission: false,
-                elapsed_ms: 0,
-            };
-        }
-    };
-    let mut cmd = Command::new(exe);
-    #[cfg(test)]
-    let bypass_wait = std::env::var_os("EVAL_TEST_MATRIX_BYPASS_WAIT").is_some();
-    #[cfg(not(test))]
-    let bypass_wait = false;
-    dirs.apply(&mut cmd);
-    cmd.process_group(0)
-        .args(["trial", "--task", id, "--agent", &spec.label])
-        .env(runner::SWARMAIL_BIN_ENV, bin)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(!bypass_wait);
+    bin: &std::path::Path,
+) -> Result<Vec<OsString>, &'static str> {
+    let _ = bin;
+    let mut args: Vec<OsString> = ["--task", id, "--agent", spec.label.as_str()]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
     if let Some(ms) = deadline_ms {
-        cmd.args(["--deadline-ms", &ms.to_string()]);
+        args.extend(["--deadline-ms".into(), ms.to_string().into()]);
     }
     if let Some(context) = context {
-        cmd.args([
-            "--seed",
-            &context.cell.fixture.seed,
-            "--fixture-time",
-            &context.cell.fixture.fixture_time,
+        args.extend([
+            "--seed".into(),
+            context.cell.fixture.seed.clone().into(),
+            "--fixture-time".into(),
+            context.cell.fixture.fixture_time.clone().into(),
         ]);
-        let bytes = match artifacts::encode(context, artifacts::SMALL_LIMIT) {
-            Ok(b) => b,
-            Err(_) => {
-                return ChildRun {
-                    row: None,
-                    interrupted: false,
-                    failure: Some("worker_context_invalid".into()),
-                    stop_admission: false,
-                    elapsed_ms: 0,
-                };
-            }
-        };
-        cmd.arg("--worker-context")
-            .arg(String::from_utf8(bytes).expect("JSON UTF-8"));
+        let bytes = artifacts::encode(context, artifacts::SMALL_LIMIT)
+            .map_err(|_| "worker_context_invalid")?;
+        args.extend([
+            "--worker-context".into(),
+            String::from_utf8(bytes).expect("JSON UTF-8").into(),
+        ]);
         if let Some(root) = retention {
-            cmd.arg("--artifacts-dir").arg(root);
+            args.extend(["--artifacts-dir".into(), root.into()]);
         }
     }
     #[cfg(test)]
@@ -1187,27 +1253,224 @@ async fn run_child_assigned(
         pass.failure_class = None;
         pass.agent_exit_status = Some(0);
         pass.wall_time_ms = 1;
-        cmd.args([
-            "--test-error-row",
-            &serde_json::to_string(&error).unwrap(),
-            "--test-pass-row",
-            &serde_json::to_string(&pass).unwrap(),
+        args.extend([
+            "--test-error-row".into(),
+            serde_json::to_string(&error).unwrap().into(),
+            "--test-pass-row".into(),
+            serde_json::to_string(&pass).unwrap().into(),
         ]);
     }
     if let Some(model) = &spec.model {
-        cmd.args(["--agent-model", model]);
+        args.extend(["--agent-model".into(), model.into()]);
     }
     if let Some(config) = &spec.config_id {
-        cmd.args(["--agent-config-id", config]);
+        args.extend(["--agent-config-id".into(), config.into()]);
     }
     if spec.public_argv {
-        cmd.arg("--public-argv");
+        args.push("--public-argv".into());
     }
     if let Some(profile) = spec.wrapper_profile {
-        cmd.args(["--wrapper-profile", profile.name()]);
+        args.extend(["--wrapper-profile".into(), profile.name().into()]);
     }
     if !argv.is_empty() {
-        cmd.arg("--").args(argv);
+        args.push("--".into());
+        args.extend(argv.iter().cloned());
+    }
+    Ok(args)
+}
+
+/// A brokkr-mode slot (decision 0116): the private directory the matrix
+/// created for one trial and the request file inside it.
+struct BrokkrSlot {
+    bin: PathBuf,
+    dir: PathBuf,
+    request: PathBuf,
+}
+
+const SLOT_ROW_LIMIT: usize = 64 * 1024;
+
+/// Create `<matrix>/slots/<trial_id>/` and write the exclusive `request.json`
+/// the recipe's scripts read: the same argument list the direct worker gets,
+/// plus the absolute paths the seat needs. Everything is a fixed category.
+#[allow(clippy::too_many_arguments)]
+fn prepare_brokkr_slot(
+    brokkr: &std::path::Path,
+    exe: &std::path::Path,
+    swarmail: &std::path::Path,
+    trial_id: &str,
+    args: &[OsString],
+    trials_root: &std::path::Path,
+) -> Result<BrokkrSlot, String> {
+    let matrix_root = trials_root.parent().ok_or("slot_unavailable")?;
+    let slots = match artifacts::create_private_dir(matrix_root, "slots") {
+        Ok(path) => path,
+        Err(_) if matrix_root.join("slots").is_dir() => matrix_root.join("slots"),
+        Err(_) => return Err("slot_unavailable".into()),
+    };
+    let dir = artifacts::create_private_dir(&slots, trial_id)
+        .map_err(|_| "slot_unavailable".to_string())?;
+    let text = |p: &std::path::Path| p.to_str().map(str::to_owned).ok_or("request_unwritable");
+    let args = args
+        .iter()
+        .map(|a| a.to_str().map(str::to_owned).ok_or("request_unwritable"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let request = serde_json::json!({
+        "schema_version": 1,
+        "trial_id": trial_id,
+        "slot": text(&dir)?,
+        "trials_root": text(trials_root)?,
+        "evals_bin": text(exe)?,
+        "swarmail_bin": text(swarmail)?,
+        "args": args,
+    });
+    let bytes = artifacts::encode(&request, artifacts::SMALL_LIMIT)
+        .map_err(|_| "request_unwritable".to_string())?;
+    artifacts::publish(&dir, "request.json", &bytes).map_err(|_| "request_unwritable")?;
+    Ok(BrokkrSlot {
+        bin: brokkr.into(),
+        request: dir.join("request.json"),
+        dir,
+    })
+}
+
+/// What the recipe's seats left in a slot, read through the fixed-name,
+/// no-symlink, bounded reader. The worker's own exit status is not an input:
+/// the slot's `exit` file is the trial's.
+struct SlotOutput {
+    row: CapturedOutput,
+    exit: i32,
+    score: Option<String>,
+    stderr: Vec<u8>,
+}
+
+fn read_slot(dir: &std::path::Path) -> Result<SlotOutput, &'static str> {
+    let row =
+        artifacts::read_file(dir, "row.json", SLOT_ROW_LIMIT).map_err(|_| "trial_row_missing")?;
+    let exit = artifacts::read_file(dir, "exit", 16)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .and_then(|t| t.trim().parse::<i32>().ok())
+        .filter(|code| (0..=2).contains(code))
+        .ok_or("trial_row_missing")?;
+    // A missing, unreadable or malformed gate verdict is a mismatch: the gate
+    // must have ruled on this row, and nothing else may stand in for it.
+    let score = artifacts::read_file(dir, "score.json", 4096)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v.get("outcome")?.as_str().map(str::to_owned));
+    let stderr = artifacts::read_file(dir, "trial.stderr", SLOT_ROW_LIMIT).unwrap_or_default();
+    Ok(SlotOutput {
+        row: CapturedOutput {
+            bytes: row,
+            overflow: false,
+        },
+        exit,
+        score,
+        stderr,
+    })
+}
+
+fn outcome_name(outcome: Outcome) -> &'static str {
+    match outcome {
+        Outcome::Pass => "pass",
+        Outcome::Fail => "fail",
+        Outcome::HarnessError => "harness_error",
+    }
+}
+
+async fn drain_discard<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+) -> std::io::Result<CapturedOutput> {
+    let mut chunk = [0_u8; 8192];
+    while reader.read(&mut chunk).await? != 0 {}
+    Ok(CapturedOutput {
+        bytes: Vec::new(),
+        overflow: false,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_child_assigned(
+    exe: &std::path::Path,
+    bin: &std::path::Path,
+    id: &str,
+    spec: &report::AgentSpec,
+    argv: &[OsString],
+    deadline_ms: Option<u64>,
+    context: Option<&WorkerContext>,
+    retention: Option<&std::path::Path>,
+    brokkr: Option<&std::path::Path>,
+    term: &mut tokio::signal::unix::Signal,
+    int: &mut tokio::signal::unix::Signal,
+) -> ChildRun {
+    let started = Instant::now();
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os(MATRIX_TRIAL_START_ENV) {
+        let _ = std::fs::write(path, matrix_test_monotonic_nanos().to_string());
+    }
+    let refused = |failure: &str| ChildRun {
+        row: None,
+        interrupted: false,
+        failure: Some(failure.into()),
+        stop_admission: false,
+        elapsed_ms: 0,
+    };
+    let args = match trial_args(id, spec, argv, deadline_ms, context, retention, bin) {
+        Ok(args) => args,
+        Err(failure) => return refused(failure),
+    };
+    #[cfg(test)]
+    let bypass_wait = std::env::var_os("EVAL_TEST_MATRIX_BYPASS_WAIT").is_some();
+    #[cfg(not(test))]
+    let bypass_wait = false;
+    let mut slot = None;
+    let mut cmd;
+    let _runtime;
+    if let Some(brokkr) = brokkr {
+        let slot_result = match (context, retention) {
+            (Some(context), Some(trials_root)) => {
+                prepare_brokkr_slot(brokkr, exe, bin, &context.cell.trial_id, &args, trials_root)
+            }
+            _ => Err("slot_unavailable".into()),
+        };
+        let prepared = match slot_result {
+            Ok(prepared) => prepared,
+            Err(failure) => return refused(&failure),
+        };
+        cmd = Command::new(&prepared.bin);
+        cmd.process_group(0)
+            .args(["run", "--recipe", "eval", "--feature"])
+            .arg({
+                let mut feature = OsString::from("swarmail-eval-request: ");
+                feature.push(&prepared.request);
+                feature
+            })
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(!bypass_wait);
+        slot = Some(prepared);
+        _runtime = None;
+    } else {
+        let setup = runner::private_tempdir("swarmail-eval-matrix-").and_then(|owner| {
+            let dirs = runner::RuntimeDirs::create(owner.path(), "worker")?;
+            Ok((owner, dirs))
+        });
+        let (owner, dirs) = match setup {
+            Ok(setup) => setup,
+            Err(_) => return refused("private_directory_unavailable"),
+        };
+        cmd = Command::new(exe);
+        dirs.apply(&mut cmd);
+        cmd.process_group(0)
+            .arg("trial")
+            .args(&args)
+            .env(runner::SWARMAIL_BIN_ENV, bin)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(!bypass_wait);
+        _runtime = Some(owner);
     }
     let mut child = match cmd.spawn() {
         Ok(child) => child,
@@ -1226,9 +1489,15 @@ async fn run_child_assigned(
     let pid = child.id().expect("spawned trial has a PID");
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
+    let brokkr_mode = slot.is_some();
     let mut reader = tokio::spawn(async move {
-        let (output, category) =
-            tokio::join!(capture_stdout(stdout), capture_worker_category(stderr));
+        // In brokkr mode the worker's stdout is brokkr's own, never the row:
+        // drained and discarded, not retained.
+        let (output, category) = if brokkr_mode {
+            tokio::join!(drain_discard(stdout), capture_worker_category(stderr))
+        } else {
+            tokio::join!(capture_stdout(stdout), capture_worker_category(stderr))
+        };
         Ok::<_, std::io::Error>((output?, category?))
     });
     #[cfg(test)]
@@ -1347,6 +1616,37 @@ async fn run_child_assigned(
     } else {
         None
     };
+    // In brokkr mode the trial's row, exit code, gate verdict and diagnostics
+    // are the slot's, not the worker's streams (decision 0116). A slot that
+    // cannot be read is a worker that returned no row; the worker's own exit
+    // status is never the trial's.
+    let mut gate_verdict = None;
+    let (captured, status) = match (&slot, captured, status) {
+        (Some(slot), Some(_), Some(_)) => match read_slot(&slot.dir) {
+            Ok(output) => {
+                gate_verdict = Some(output.score);
+                let code = output.exit;
+                if worker_category.is_none() {
+                    worker_category = capture_worker_category(output.stderr.as_slice())
+                        .await
+                        .unwrap_or(None);
+                }
+                (
+                    Some(output.row),
+                    Some(std::process::ExitStatus::from_raw(code << 8)),
+                )
+            }
+            Err(category) => {
+                failure.get_or_insert(category.into());
+                (None, status)
+            }
+        },
+        (Some(_), _, _) => {
+            failure.get_or_insert("trial_row_missing".into());
+            (None, status)
+        }
+        (None, captured, status) => (captured, status),
+    };
     let output_available = captured.is_some();
     let row = match (captured, status) {
         (Some(captured), Some(status)) => {
@@ -1360,6 +1660,14 @@ async fn run_child_assigned(
                             || row.provenance.target.source_dirty != c.target.source_dirty
                     }) {
                         failure.get_or_insert("trial_context_mismatch".into());
+                        None
+                    } else if gate_verdict
+                        .as_ref()
+                        .is_some_and(|v| v.as_deref() != Some(outcome_name(row.outcome)))
+                    {
+                        // The gate re-scored the retained leaf and disagrees
+                        // with the row (or never ruled): never averaged in.
+                        failure.get_or_insert("score_mismatch".into());
                         None
                     } else {
                         Some(row)
@@ -1398,7 +1706,20 @@ async fn run_child(
     term: &mut tokio::signal::unix::Signal,
     int: &mut tokio::signal::unix::Signal,
 ) -> ChildRun {
-    run_child_assigned(exe, bin, id, spec, argv, deadline_ms, None, None, term, int).await
+    run_child_assigned(
+        exe,
+        bin,
+        id,
+        spec,
+        argv,
+        deadline_ms,
+        None,
+        None,
+        None,
+        term,
+        int,
+    )
+    .await
 }
 
 async fn cleanup_cargo(
@@ -1582,7 +1903,16 @@ async fn matrix(
     trials: u32,
     deadline_ms: Option<u64>,
 ) -> ExitCode {
-    matrix_with_options(ids, agents, trials, deadline_ms, Default::default(), None).await
+    matrix_with_options(
+        ids,
+        agents,
+        trials,
+        deadline_ms,
+        Default::default(),
+        None,
+        None,
+    )
+    .await
 }
 
 async fn matrix_with_options(
@@ -1592,6 +1922,7 @@ async fn matrix_with_options(
     deadline_ms: Option<u64>,
     master: provenance::FixtureInputs,
     retention: Option<PathBuf>,
+    brokkr: Option<PathBuf>,
 ) -> ExitCode {
     if trials == 0 {
         return fail("--trials must be positive");
@@ -1627,6 +1958,7 @@ async fn matrix_with_options(
             deadline_ms,
             master,
             retention,
+            brokkr,
         },
         &mut MatrixResources::default(),
     )
@@ -1640,6 +1972,7 @@ struct MatrixInvocation {
     deadline_ms: Option<u64>,
     master: provenance::FixtureInputs,
     retention: Option<PathBuf>,
+    brokkr: Option<PathBuf>,
 }
 #[derive(Default)]
 struct MatrixResources {
@@ -1657,6 +1990,7 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
         deadline_ms,
         master,
         retention,
+        brokkr,
     } = invocation;
     if trials == 0
         || ids.is_empty()
@@ -1837,6 +2171,7 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
                         deadline_ms,
                         Some(&context),
                         trials_root.as_deref(),
+                        brokkr.as_deref(),
                         &mut term,
                         &mut int,
                     )
@@ -1978,8 +2313,13 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
     }
 }
 
-fn wrapper_result(harness: &str, model: String, config: PathBuf) -> ExitCode {
-    match wrappers::run(harness, &model, &config) {
+fn wrapper_result(
+    harness: &str,
+    model: String,
+    config: PathBuf,
+    via_brokkr: Option<&std::path::Path>,
+) -> ExitCode {
+    match wrappers::run(harness, &model, &config, via_brokkr) {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => {
             // run returns only finite harness-authored categories.
@@ -1987,6 +2327,24 @@ fn wrapper_result(harness: &str, model: String, config: PathBuf) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Read and join a journal facts file. The error is a fixed category and no
+/// partial report is ever printed.
+fn join_journal(
+    path: &std::path::Path,
+    rows: &[TrialResult],
+) -> Result<swarmail_evals::journal::Joined, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| {
+            f.take(swarmail_evals::journal::FACTS_LIMIT as u64 + 1)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|_| "journal_invalid".to_string())?;
+    let facts = swarmail_evals::journal::read(&bytes)?;
+    swarmail_evals::journal::join(rows, &facts)
 }
 
 fn numeric_status(code: ExitCode) -> u8 {
@@ -2078,6 +2436,7 @@ async fn baseline_execute(
                 deadline_ms: Some(plan.deadline_ms),
                 master: master.clone(),
                 retention: Some(root.join("controls")),
+                brokkr: None,
             },
             &mut resources,
         )
@@ -2132,6 +2491,7 @@ async fn baseline_execute(
                 deadline_ms: Some(plan.deadline_ms),
                 master,
                 retention: Some(root.join("paid")),
+                brokkr: None,
             },
             &mut resources,
         )
@@ -2275,6 +2635,7 @@ mod tests {
                 None,
                 Default::default(),
                 Some(root.into()),
+                None,
             ))
         } else {
             runtime.block_on(matrix(ids, agents, trials, None))
@@ -4283,5 +4644,240 @@ mod baseline_tests {
         assert_eq!(leaf, base.join("out"));
         assert_eq!(std::fs::metadata(&leaf).unwrap().mode() & 0o777, 0o700);
         assert!(baseline_leaf(&leaf).is_err(), "an existing output refuses");
+    }
+}
+
+#[cfg(test)]
+mod brokkr_mode_tests {
+    use super::*;
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn spec(label: &str, argv: &[&str]) -> report::AgentSpec {
+        report::AgentSpec {
+            label: label.into(),
+            argv: argv.iter().map(|s| s.to_string()).collect(),
+            model: None,
+            config_id: None,
+            public_argv: false,
+            wrapper_profile: None,
+        }
+    }
+
+    #[test]
+    fn trial_args_are_the_one_list_both_workers_use() {
+        let bin = std::path::Path::new("/swarmail");
+        let plain = trial_args("signup", &spec("oracle", &[]), &[], None, None, None, bin).unwrap();
+        assert_eq!(
+            plain,
+            ["--task", "signup", "--agent", "oracle"].map(OsString::from)
+        );
+        let mut external = spec("claude", &["/bin/agent"]);
+        external.model = Some("claude-sonnet-5-5".into());
+        external.config_id = Some("cfg".into());
+        external.public_argv = true;
+        external.wrapper_profile = Some(provenance::WrapperProfile::Claude2_1_310ViaBrokkr);
+        let argv = [OsString::from("/bin/agent"), OsString::from("--flag")];
+        let args = trial_args("otp", &external, &argv, Some(5000), None, None, bin).unwrap();
+        assert_eq!(
+            args,
+            [
+                "--task",
+                "otp",
+                "--agent",
+                "claude",
+                "--deadline-ms",
+                "5000",
+                "--agent-model",
+                "claude-sonnet-5-5",
+                "--agent-config-id",
+                "cfg",
+                "--public-argv",
+                "--wrapper-profile",
+                "claude_2_1_310_via_brokkr",
+                "--",
+                "/bin/agent",
+                "--flag",
+            ]
+            .map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn a_slot_holds_a_private_request_equal_to_the_worker_arguments() {
+        let root = runner::private_tempdir("brokkr-slot-test-").unwrap();
+        let matrix = root.path().join("m");
+        let trials = matrix.join("trials");
+        std::fs::create_dir_all(&trials).unwrap();
+        std::fs::set_permissions(&matrix, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&trials, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let args: Vec<OsString> = ["--task", "signup", "--agent", "null"]
+            .map(OsString::from)
+            .into();
+        let id_a = "a".repeat(32);
+        let id_b = "b".repeat(32);
+        let a = prepare_brokkr_slot(
+            "/brokkr".as_ref(),
+            "/evals".as_ref(),
+            "/swarmail".as_ref(),
+            &id_a,
+            &args,
+            &trials,
+        )
+        .unwrap();
+        // A second slot reuses the slots directory.
+        let b = prepare_brokkr_slot(
+            "/brokkr".as_ref(),
+            "/evals".as_ref(),
+            "/swarmail".as_ref(),
+            &id_b,
+            &args,
+            &trials,
+        )
+        .unwrap();
+        assert_eq!(a.bin, std::path::Path::new("/brokkr"));
+        assert_eq!(a.request, a.dir.join("request.json"));
+        assert_ne!(a.dir, b.dir);
+        assert_eq!(
+            std::fs::metadata(&a.dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&a.request).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let request: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&a.request).unwrap()).unwrap();
+        assert_eq!(
+            request,
+            serde_json::json!({
+                "schema_version": 1, "trial_id": id_a, "slot": a.dir, "trials_root": trials,
+                "evals_bin": "/evals", "swarmail_bin": "/swarmail",
+                "args": ["--task", "signup", "--agent", "null"],
+            })
+        );
+        // The same trial id never gets a second slot; non-UTF-8 and rootless
+        // paths are fixed categories, not panics.
+        assert!(
+            prepare_brokkr_slot(
+                "/b".as_ref(),
+                "/e".as_ref(),
+                "/s".as_ref(),
+                &id_a,
+                &args,
+                &trials
+            )
+            .is_err()
+        );
+        let odd = vec![OsString::from_vec(vec![0xff, 0xfe])];
+        assert_eq!(
+            prepare_brokkr_slot(
+                "/b".as_ref(),
+                "/e".as_ref(),
+                "/s".as_ref(),
+                &"c".repeat(32),
+                &odd,
+                &trials
+            )
+            .err()
+            .as_deref(),
+            Some("request_unwritable")
+        );
+        assert_eq!(
+            prepare_brokkr_slot(
+                "/b".as_ref(),
+                "/e".as_ref(),
+                "/s".as_ref(),
+                &id_a,
+                &args,
+                "/".as_ref()
+            )
+            .err()
+            .as_deref(),
+            Some("slot_unavailable")
+        );
+    }
+
+    #[test]
+    fn a_slot_is_read_through_the_bounded_reader_and_missing_pieces_are_typed() {
+        let root = runner::private_tempdir("brokkr-slot-read-").unwrap();
+        let slot = root.path().join("slot");
+        std::fs::create_dir(&slot).unwrap();
+        std::fs::set_permissions(&slot, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(read_slot(&slot).err(), Some("trial_row_missing"));
+        std::fs::write(slot.join("row.json"), "{}\n").unwrap();
+        assert_eq!(
+            read_slot(&slot).err(),
+            Some("trial_row_missing"),
+            "no exit file"
+        );
+        for bad in ["3", "-1", "x", "", "1 2"] {
+            std::fs::write(slot.join("exit"), bad).unwrap();
+            assert_eq!(
+                read_slot(&slot).err(),
+                Some("trial_row_missing"),
+                "exit {bad:?}"
+            );
+        }
+        std::fs::write(slot.join("exit"), "1\n").unwrap();
+        let read = read_slot(&slot).unwrap();
+        assert_eq!((read.exit, read.score, read.stderr.len()), (1, None, 0));
+        std::fs::write(slot.join("score.json"), r#"{"outcome":"fail"}"#).unwrap();
+        std::fs::write(slot.join("trial.stderr"), "note\n").unwrap();
+        let read = read_slot(&slot).unwrap();
+        assert_eq!(read.score.as_deref(), Some("fail"));
+        assert_eq!(read.stderr, b"note\n");
+        std::fs::write(slot.join("score.json"), "not json").unwrap();
+        assert_eq!(read_slot(&slot).unwrap().score, None);
+        std::fs::write(slot.join("row.json"), vec![b'x'; SLOT_ROW_LIMIT + 1]).unwrap();
+        assert_eq!(
+            read_slot(&slot).err(),
+            Some("trial_row_missing"),
+            "oversize row"
+        );
+        // A symlink in a slot is refused, never followed.
+        std::fs::remove_file(slot.join("row.json")).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", slot.join("row.json")).unwrap();
+        assert_eq!(read_slot(&slot).err(), Some("trial_row_missing"));
+    }
+
+    #[test]
+    fn outcome_names_are_the_gate_vocabulary() {
+        assert_eq!(outcome_name(Outcome::Pass), "pass");
+        assert_eq!(outcome_name(Outcome::Fail), "fail");
+        assert_eq!(outcome_name(Outcome::HarnessError), "harness_error");
+    }
+
+    #[test]
+    fn brokkr_mode_admission_names_each_refusal() {
+        let me = std::env::current_exe().unwrap();
+        let artifacts = std::path::Path::new("/does/not/matter");
+        let ids = vec!["signup".to_string()];
+        // The crate directory holds no `.brokkr`; the repository root does.
+        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = crate_dir.parent().unwrap();
+        let check = |bin: &std::path::Path, realm: &std::path::Path, deadline: Option<u64>| {
+            brokkr_mode_admissible(bin, realm, Some(artifacts), deadline, &ids)
+        };
+        assert_eq!(
+            brokkr_mode_admissible(&me, root, None, None, &ids),
+            Err("brokkr_requires_artifacts")
+        );
+        assert_eq!(check(&me, crate_dir, None), Err("brokkr_realm_invalid"));
+        assert_eq!(check(&me, root, None), Ok(()));
+        assert_eq!(
+            check("brokkr".as_ref(), root, None),
+            Err("brokkr_realm_invalid"),
+            "relative"
+        );
+        assert_eq!(
+            check("/nonexistent/brokkr".as_ref(), root, None),
+            Err("brokkr_realm_invalid")
+        );
+        assert_eq!(check(&me, root, Some(BROKKR_SEAT_DEADLINE_MS)), Ok(()));
+        assert_eq!(
+            check(&me, root, Some(BROKKR_SEAT_DEADLINE_MS + 1)),
+            Err("deadline_exceeds_seat")
+        );
     }
 }

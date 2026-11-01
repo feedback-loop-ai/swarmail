@@ -1402,3 +1402,725 @@ fn the_dossier_refuses_without_baseline_finals_and_costs_in_that_order() {
     assert_eq!(out["inputs"]["cost_sha256"], "e".repeat(64));
     assert!(report::dossier(&[], &all).is_err());
 }
+
+// ---- `matrix --brokkr`: the eval recipe path (decision 0116) -------------
+//
+// The engine is not present in delivery. `tests/data/brokkr-standin.sh` plays
+// `brokkr run --recipe eval`: it runs the recipe's real trial.sh and score.sh
+// in policy order. Everything the matrix does with a slot is real.
+
+fn brokkr_agents(dir: &std::path::Path) -> String {
+    agents_file(
+        dir,
+        json!([{"label": "oracle", "argv": []}, {"label": "null", "argv": []}]),
+    )
+}
+
+/// The single matrix directory under an artifacts root.
+fn only_matrix_dir(root: &std::path::Path) -> std::path::PathBuf {
+    let mut dirs: Vec<_> = std::fs::read_dir(root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(dirs.len(), 1, "one matrix under {root:?}");
+    dirs.pop().unwrap()
+}
+
+#[test]
+fn brokkr_mode_runs_the_product_through_the_recipe_scripts() {
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    let agents = brokkr_agents(dir.path());
+    let root = dir.path().join("artifacts");
+    let log = dir.path().join("brokkr.log");
+    let out = brokkr_matrix("ok")
+        .env("EVAL_TEST_BROKKR_LOG", &log)
+        .args([
+            "--tasks",
+            "signup,otp",
+            "--agents",
+            &agents,
+            "--trials",
+            "2",
+        ])
+        .args(["--artifacts-dir"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    let rows = rows(&out.stdout);
+    assert_eq!(
+        rows.len(),
+        8,
+        "2 tasks × 2 agents × 2 trials\n{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "fails present, no harness error\n{}",
+        stderr(&out)
+    );
+    for task in ["signup", "otp"] {
+        for (agent, outcome) in [("oracle", Outcome::Pass), ("null", Outcome::Fail)] {
+            let n = rows
+                .iter()
+                .filter(|r| {
+                    r.task.as_deref() == Some(task)
+                        && r.agent.as_deref() == Some(agent)
+                        && r.outcome == outcome
+                })
+                .count();
+            assert_eq!(n, 2, "{task} {agent}");
+        }
+    }
+    assert_eq!(
+        rows.iter().filter(|r| r.outcome == Outcome::Pass).count(),
+        4,
+        "four passes"
+    );
+    // Every row on the recipe path declares the trial unconfined (AC10).
+    assert!(rows.iter().all(|r| r.confinement == "unconfined"));
+    // Two sequential oracle trials of one task both pass, with distinct seeds.
+    let signups: Vec<_> = rows
+        .iter()
+        .filter(|r| r.task.as_deref() == Some("signup") && r.agent.as_deref() == Some("oracle"))
+        .collect();
+    assert_eq!(signups.len(), 2);
+    assert!(signups.iter().all(|r| r.outcome == Outcome::Pass));
+    assert_ne!(
+        signups[0].provenance.fixture.seed, signups[1].provenance.fixture.seed,
+        "distinct seeds"
+    );
+    // One worker per slot, each naming a request inside the matrix's slots.
+    let log_text = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(log_text.lines().count(), 8);
+    let matrix_dir = only_matrix_dir(&root);
+    for row in &rows {
+        let slot = matrix_dir.join("slots").join(&row.trial_id);
+        assert!(log_text.contains(slot.join("request.json").to_str().unwrap()));
+        assert!(slot.join("row.json").is_file());
+        assert!(matrix_dir.join("trials").join(&row.trial_id).is_dir());
+    }
+    // The retained matrix replays offline exactly like a direct one.
+    let replay = cli()
+        .args(["check", "--matrix"])
+        .arg(&matrix_dir)
+        .env("SWARMAIL_BIN", "/absent-during-offline-replay")
+        .output()
+        .unwrap();
+    assert_eq!(replay.status.code(), Some(1), "{}", stderr(&replay));
+    assert_eq!(String::from_utf8_lossy(&replay.stdout).lines().count(), 8);
+}
+
+fn defect_case(mode: &str, expected_stderr: &str) {
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    let agents = agents_file(dir.path(), json!([{"label": "oracle", "argv": []}]));
+    let log = dir.path().join("brokkr.log");
+    let out = brokkr_matrix(mode)
+        .env("EVAL_TEST_BROKKR_LOG", &log)
+        .args(["--tasks", "signup", "--agents", &agents, "--trials", "3"])
+        .arg("--artifacts-dir")
+        .arg(dir.path().join("artifacts"))
+        .output()
+        .unwrap();
+    let rows = rows(&out.stdout);
+    assert_eq!(rows.len(), 3, "{mode}: one row per slot\n{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(2), "{mode}");
+    assert!(
+        stderr(&out).contains(expected_stderr),
+        "{mode}: wanted {expected_stderr:?} in\n{}",
+        stderr(&out)
+    );
+    for row in &rows {
+        assert_eq!(row.outcome, Outcome::HarnessError, "{mode}: {row:?}");
+        assert_eq!(
+            row.failure_class,
+            Some(swarmail_evals::state::FailureClass::HarnessError),
+            "{mode}: a worker defect is never an agent failure"
+        );
+    }
+    assert!(
+        rows[1..].iter().all(|r| r.wall_time_ms == 0),
+        "{mode}: the unstarted suffix is zero-time"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap().lines().count(),
+        1,
+        "{mode}: admission stopped after the defective slot"
+    );
+}
+
+#[test]
+fn brokkr_mode_turns_every_worker_defect_into_a_row() {
+    defect_case("no-row", "trial_row_missing");
+    defect_case("foreign-row", "trial_context_mismatch");
+    defect_case("bad-exit", "does not match result outcome");
+    defect_case("bad-score", "score_mismatch");
+}
+
+#[test]
+fn brokkr_mode_records_a_killed_worker_as_a_harness_error() {
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    let agents = agents_file(dir.path(), json!([{"label": "oracle", "argv": []}]));
+    let ready = dir.path().join("ready");
+    let mut cmd = brokkr_matrix("hang-after-start");
+    let child = cmd
+        .env("EVAL_TEST_BROKKR_READY", &ready)
+        .args(["--tasks", "signup", "--agents", &agents, "--trials", "2"])
+        .arg("--artifacts-dir")
+        .arg(dir.path().join("artifacts"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let guard = ChildGuard { child: Some(child) };
+    eventually("the stand-in worker to start", || {
+        std::fs::read_to_string(&ready).is_ok_and(|t| t.trim().parse::<i32>().is_ok())
+    });
+    let pid: i32 = std::fs::read_to_string(&ready)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    send_signal(pid, libc::SIGKILL);
+    let out = guard.wait_with_output();
+    let rows = rows(&out.stdout);
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter().all(|r| r.outcome == Outcome::HarnessError
+            && r.failure_class == Some(swarmail_evals::state::FailureClass::HarnessError)),
+        "a killed worker is a harness error, never gave_up: {rows:?}"
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("trial_row_missing"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline() {
+    let dir = tempdir();
+    let agents = brokkr_agents(dir.path());
+    let root = dir.path().join("artifacts");
+    let base = |extra: &[&str]| {
+        let mut cmd = brokkr_matrix("ok");
+        cmd.args(["--tasks", "signup", "--agents", &agents, "--trials", "1"])
+            .args(extra);
+        cmd
+    };
+    let root_arg = root.to_str().unwrap();
+    let refused = |out: std::process::Output, category: &str| {
+        assert_eq!(out.status.code(), Some(2), "{category}");
+        assert!(out.stdout.is_empty(), "{category}: no rows");
+        assert!(
+            stderr(&out).contains(category),
+            "{category}: {}",
+            stderr(&out)
+        );
+    };
+    // No --artifacts-dir.
+    refused(base(&[]).output().unwrap(), "brokkr_requires_artifacts");
+    // A deadline that cannot nest inside the seat's 1800 s.
+    refused(
+        base(&["--artifacts-dir", root_arg, "--deadline-ms", "1200001"])
+            .output()
+            .unwrap(),
+        "deadline_exceeds_seat",
+    );
+    // A working directory without the recipe.
+    let mut cmd = base(&["--artifacts-dir", root_arg]);
+    cmd.current_dir(dir.path());
+    refused(cmd.output().unwrap(), "brokkr_realm_invalid");
+    // A relative brokkr path.
+    let out = cli()
+        .current_dir(repo_root())
+        .args([
+            "matrix", "--brokkr", "brokkr", "--tasks", "signup", "--agents", &agents,
+        ])
+        .args(["--trials", "1", "--artifacts-dir", root_arg])
+        .output()
+        .unwrap();
+    refused(out, "brokkr_realm_invalid");
+    // Concurrency stays refused in this mode too (accepted 0076).
+    refused(
+        base(&["--artifacts-dir", root_arg, "--concurrency", "2"])
+            .output()
+            .unwrap(),
+        "concurrency_unsupported",
+    );
+    assert!(!root.exists(), "a refusal writes no evidence");
+}
+
+// ---- `report --journal`: the typed join (decision 0116) -------------------
+
+fn golden_rows() -> Vec<TrialResult> {
+    // 8 rows, 3 agents: the built-in oracle (no driver, no journal), a fully
+    // joined external agent, and one with a trial the journal never saw.
+    let spec = [
+        (1, "oracle", false, Outcome::Pass),
+        (2, "oracle", false, Outcome::Pass),
+        (3, "claude-a", true, Outcome::Pass),
+        (4, "claude-a", true, Outcome::Pass),
+        (5, "claude-a", true, Outcome::Fail),
+        (6, "codex-b", true, Outcome::Pass),
+        (7, "codex-b", true, Outcome::Fail),
+        (8, "codex-b", true, Outcome::Pass),
+    ];
+    spec.into_iter()
+        .map(|(n, agent, external, outcome)| {
+            synthetic_row(
+                "signup",
+                agent,
+                external,
+                outcome,
+                1000 * n as u64,
+                &fixed_id(n),
+            )
+        })
+        .collect()
+}
+
+fn write_rows(dir: &std::path::Path, rows: &[TrialResult]) -> std::path::PathBuf {
+    let path = dir.join("rows.jsonl");
+    let text: String = rows
+        .iter()
+        .map(|r| format!("{}\n", serde_json::to_string(r).unwrap()))
+        .collect();
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+fn golden_facts() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/journal-facts-golden.json")
+}
+
+fn run_report(rows: &std::path::Path, extra: &[&std::ffi::OsStr]) -> std::process::Output {
+    cli()
+        .args(["report", "--input"])
+        .arg(rows)
+        .args(extra)
+        .output()
+        .unwrap()
+}
+
+fn group<'a>(report: &'a Value, agent: &str) -> &'a Value {
+    report["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["agent"] == agent)
+        .unwrap_or_else(|| panic!("no group {agent}"))
+}
+
+#[test]
+fn report_joins_journal_facts_by_trial_id() {
+    let dir = tempdir();
+    let rows_path = write_rows(dir.path(), &golden_rows());
+    let facts = golden_facts();
+    let out = run_report(&rows_path, &["--journal".as_ref(), facts.as_os_str()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+
+    // The fully joined group: hand-computed from tests/data/journal-facts-golden.json.
+    // total = input + output per trial = 1200, 3600, 2400; two passes.
+    let claude = &group(&report, "claude-a")["journal"];
+    assert_eq!(claude["joined"], 3);
+    assert_eq!(claude["missing"], json!({}));
+    assert_eq!(
+        claude["tokens"]["input"],
+        json!({"n": 3, "median": 2000, "p95": 3000, "max": 3000, "sum": 6000})
+    );
+    assert_eq!(
+        claude["tokens"]["output"],
+        json!({"n": 3, "median": 400, "p95": 600, "max": 600, "sum": 1200})
+    );
+    assert_eq!(
+        claude["tokens"]["cached"],
+        json!({"n": 3, "median": 5000, "p95": 7000, "max": 7000, "sum": 12000})
+    );
+    assert_eq!(
+        claude["tokens"]["total"],
+        json!({"n": 3, "median": 2400, "p95": 3600, "max": 3600, "sum": 7200})
+    );
+    assert_eq!(claude["tokens_per_success"], json!(3600.0));
+    assert_eq!(claude["tokens_per_success_reason"], Value::Null);
+    assert_eq!(
+        claude["turns"],
+        json!({"n": 3, "median": 7, "p95": 9, "max": 9})
+    );
+    assert_eq!(claude["seat_wall_time_ms"]["median"], 20000);
+    assert_eq!(
+        claude["tool_calls"],
+        json!({
+            "total": 6,
+            "invalid_argument": 1,
+            "trials": 3,
+            "by_tool": {"mcp__fixture__eval_http": 3, "mcp__swarmail__wait": 3}
+        })
+    );
+    assert_eq!(claude["deadline_killed"], 0);
+    assert_eq!(
+        claude["runs"],
+        json!({fixed_id(3): "run-3", fixed_id(4): "run-4", fixed_id(5): "run-5"})
+    );
+
+    // The group with a trial the journal never saw: the figure is withheld,
+    // never computed over the two that were seen.
+    let codex = &group(&report, "codex-b")["journal"];
+    assert_eq!(codex["joined"], 2);
+    assert_eq!(codex["scored"], 3);
+    assert_eq!(codex["missing"], json!({"journal_missing": 1}));
+    assert_eq!(codex["tokens_per_success"], Value::Null);
+    assert_eq!(codex["tokens_per_success_reason"], "incomplete_join");
+    assert_eq!(codex["tokens"]["total"]["sum"], 1600);
+    assert_eq!(codex["deadline_killed"], 1);
+
+    // The built-in agent launches no driver: a typed reason for every trial
+    // and no token figure at all.
+    let oracle = &group(&report, "oracle")["journal"];
+    assert_eq!(oracle["missing"], json!({"builtin_agent": 2}));
+    assert_eq!(oracle["joined"], 0);
+    assert_eq!(oracle["tokens"], Value::Null);
+    assert_eq!(oracle["tokens_per_success"], Value::Null);
+    assert_eq!(oracle["turns"], Value::Null);
+    assert_eq!(oracle["tool_calls"], Value::Null);
+    assert_eq!(report["journal_source"]["brokkr_version"], "0.12.0");
+
+    // No numeric field anywhere stands in for an unavailable fact.
+    for agent in ["oracle", "codex-b"] {
+        let journal = &group(&report, agent)["journal"];
+        assert!(journal["tokens_per_success"].is_null(), "{agent}");
+    }
+}
+
+#[test]
+fn report_without_journal_is_unchanged() {
+    let dir = tempdir();
+    let rows = golden_rows();
+    let rows_path = write_rows(dir.path(), &rows);
+    let plain = run_report(&rows_path, &[]);
+    assert!(plain.status.success());
+    let expected = format!(
+        "{}\n",
+        serde_json::to_string(&swarmail_evals::report::report(&rows)).unwrap()
+    );
+    assert_eq!(String::from_utf8(plain.stdout.clone()).unwrap(), expected);
+    // With the journal every existing field is byte-identical: the figures
+    // are added beside them.
+    let facts = golden_facts();
+    let joined = run_report(&rows_path, &["--journal".as_ref(), facts.as_os_str()]);
+    let mut with: Value = serde_json::from_slice(&joined.stdout).unwrap();
+    let without: Value = serde_json::from_slice(&plain.stdout).unwrap();
+    with.as_object_mut().unwrap().remove("journal_source");
+    for g in with["groups"].as_array_mut().unwrap() {
+        g.as_object_mut().unwrap().remove("journal");
+    }
+    assert_eq!(with, without);
+}
+
+#[test]
+fn a_dropped_join_is_red() {
+    // The same rows with the join dropped (an empty facts file) must differ
+    // from the correct join in exactly the figure the join exists to give.
+    let rows = golden_rows();
+    let facts_text = std::fs::read(golden_facts()).unwrap();
+    let facts = swarmail_evals::journal::read(&facts_text).unwrap();
+    let correct = swarmail_evals::journal::join(&rows, &facts).unwrap();
+    let mut empty = facts.clone();
+    empty.trials.clear();
+    let dropped = swarmail_evals::journal::join(&rows, &empty).unwrap();
+    let right = swarmail_evals::report::report_with_journal(&rows, Some(&correct));
+    let wrong = swarmail_evals::report::report_with_journal(&rows, Some(&dropped));
+    assert_eq!(
+        group(&right, "claude-a")["journal"]["tokens_per_success"],
+        json!(3600.0)
+    );
+    assert_eq!(
+        group(&wrong, "claude-a")["journal"]["tokens_per_success"],
+        Value::Null
+    );
+    assert_eq!(
+        group(&wrong, "claude-a")["journal"]["tokens_per_success_reason"],
+        "incomplete_join"
+    );
+    assert_ne!(right, wrong);
+}
+
+#[test]
+fn a_journal_that_does_not_match_the_rows_refuses_the_whole_report() {
+    let dir = tempdir();
+    let rows_path = write_rows(dir.path(), &golden_rows());
+    let unmatched = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/journal-facts-unmatched.json");
+    let out = run_report(&rows_path, &["--journal".as_ref(), unmatched.as_os_str()]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "no partial report");
+    assert!(
+        stderr(&out).contains("journal_unmatched_trial"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Two entries for one trial id.
+    let mut facts: Value = serde_json::from_slice(&std::fs::read(golden_facts()).unwrap()).unwrap();
+    let first = facts["trials"][0].clone();
+    facts["trials"].as_array_mut().unwrap().push(first);
+    let dup = dir.path().join("dup.json");
+    std::fs::write(&dup, facts.to_string()).unwrap();
+    let out = run_report(&rows_path, &["--journal".as_ref(), dup.as_os_str()]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert!(
+        stderr(&out).contains("journal_duplicate_trial"),
+        "{}",
+        stderr(&out)
+    );
+
+    // An unknown field, a missing file and a wrong schema refuse as invalid.
+    let mut unknown = facts.clone();
+    unknown["surprise"] = json!(1);
+    let bad = dir.path().join("bad.json");
+    std::fs::write(&bad, unknown.to_string()).unwrap();
+    for path in [bad, dir.path().join("absent.json")] {
+        let out = run_report(&rows_path, &["--journal".as_ref(), path.as_os_str()]);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(out.stdout.is_empty());
+        assert!(stderr(&out).contains("journal_invalid"), "{}", stderr(&out));
+    }
+}
+
+// ---- retained tool-call records (decision 0116; accepted 0075 §4) ---------
+
+fn facts_value() -> Value {
+    serde_json::from_slice(&std::fs::read(golden_facts()).unwrap()).unwrap()
+}
+
+fn write_facts(dir: &std::path::Path, facts: &Value) -> std::path::PathBuf {
+    let path = dir.join("facts.json");
+    std::fs::write(&path, facts.to_string()).unwrap();
+    path
+}
+
+fn tree_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            out.extend(tree_files(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
+}
+
+fn mode(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[test]
+fn evidence_records_carry_no_argument_or_result_bytes() {
+    let dir = tempdir();
+    let rows_path = write_rows(dir.path(), &golden_rows());
+    // Tool rows whose arguments and results are built from the fixture admin
+    // secret and a planted token: the facts carry only their lengths and
+    // digests, and nothing downstream may reconstruct the bytes.
+    let secret = format!("admin-secret-{}", fixed_id(0xfeed));
+    let token = format!("sentinel-{}", fixed_id(0xbeef));
+    let argument = format!(r#"{{"path":"/admin/state?secret={secret}","token":"{token}"}}"#);
+    let result = format!(r#"{{"body":"{token} {secret}"}}"#);
+    let mut facts = facts_value();
+    facts["trials"][0]["tool_calls"] = json!([{
+        "ordinal": 1,
+        "tool": "mcp__fixture__eval_http",
+        "outcome": "ok",
+        "argument_bytes": argument.len(),
+        "argument_sha256": swarmail_evals::provenance::sha256(argument.as_bytes()),
+        "result_bytes": result.len(),
+        "result_sha256": swarmail_evals::provenance::sha256(result.as_bytes()),
+    }]);
+    let facts_path = write_facts(dir.path(), &facts);
+    let evidence = dir.path().join("evidence");
+    let out = run_report(
+        &rows_path,
+        &[
+            "--journal".as_ref(),
+            facts_path.as_os_str(),
+            "--evidence-dir".as_ref(),
+            evidence.as_os_str(),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+
+    // One record per accounted trial (the five the journal saw), none for the rest.
+    let files = tree_files(&evidence);
+    assert_eq!(files.len(), 5, "{files:?}");
+    for file in &files {
+        assert_eq!(mode(file), 0o600, "{file:?}");
+        assert_eq!(mode(file.parent().unwrap()), 0o700, "{file:?}");
+        assert_eq!(file.file_name().unwrap(), "tool-calls.json");
+        let text = std::fs::read_to_string(file).unwrap();
+        for needle in [&secret, &token] {
+            assert!(!text.contains(needle.as_str()), "{file:?} leaks {needle}");
+        }
+        let record: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(record["schema_version"], 1);
+        assert_eq!(record["truncated"], false);
+    }
+    assert_eq!(mode(&evidence), 0o700);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for needle in [&secret, &token] {
+        assert!(
+            !stdout.contains(needle.as_str()),
+            "the report leaks {needle}"
+        );
+        assert!(!stderr(&out).contains(needle.as_str()));
+    }
+
+    // The record is what the facts said: name, class, lengths, digests.
+    let first =
+        std::fs::read_to_string(evidence.join(fixed_id(3)).join("tool-calls.json")).unwrap();
+    let record: Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(record["trial_id"], fixed_id(3));
+    assert_eq!(record["run_id"], "run-3");
+    assert_eq!(record["tool_calls"][0]["tool"], "mcp__fixture__eval_http");
+    assert_eq!(record["tool_calls"][0]["argument_bytes"], argument.len());
+    assert_eq!(
+        record["tool_calls"][0]["argument_sha256"],
+        swarmail_evals::provenance::sha256(argument.as_bytes())
+    );
+
+    // The report names each file with its length and digest; the others are
+    // typed absences, never silence.
+    let indexed = &group(&report, "claude-a")["journal"]["evidence"][fixed_id(3)];
+    assert_eq!(indexed["path"], format!("{}/tool-calls.json", fixed_id(3)));
+    assert_eq!(indexed["length"], first.len());
+    assert_eq!(
+        indexed["sha256"],
+        swarmail_evals::provenance::sha256(first.as_bytes())
+    );
+    assert_eq!(
+        group(&report, "oracle")["journal"]["evidence"][fixed_id(1)],
+        json!({"absent": "builtin_agent"})
+    );
+    assert_eq!(
+        group(&report, "codex-b")["journal"]["evidence"][fixed_id(7)],
+        json!({"absent": "journal_missing"})
+    );
+}
+
+#[test]
+fn evidence_truncates_at_a_call_boundary() {
+    let dir = tempdir();
+    let rows_path = write_rows(dir.path(), &golden_rows());
+    let digest = swarmail_evals::provenance::sha256(b"x");
+    let calls: Vec<Value> = (1..=5000)
+        .map(|i| {
+            json!({
+                "ordinal": i, "tool": "mcp__swarmail__wait", "outcome": "ok",
+                "argument_bytes": 1, "argument_sha256": digest,
+                "result_bytes": 1, "result_sha256": digest,
+            })
+        })
+        .collect();
+    let mut facts = facts_value();
+    facts["trials"][0]["tool_calls"] = Value::Array(calls);
+    let facts_path = write_facts(dir.path(), &facts);
+    let evidence = dir.path().join("evidence");
+    let out = run_report(
+        &rows_path,
+        &[
+            "--journal".as_ref(),
+            facts_path.as_os_str(),
+            "--evidence-dir".as_ref(),
+            evidence.as_os_str(),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let bytes = std::fs::read(evidence.join(fixed_id(3)).join("tool-calls.json")).unwrap();
+    assert!(bytes.len() <= 64 * 1024, "{} bytes", bytes.len());
+    let record: Value = serde_json::from_slice(&bytes).expect("valid JSON, not cut mid-call");
+    assert_eq!(record["truncated"], true);
+    let kept = record["tool_calls"].as_array().unwrap();
+    assert!(!kept.is_empty() && kept.len() < 5000, "{}", kept.len());
+    for (i, call) in kept.iter().enumerate() {
+        assert_eq!(call["ordinal"], i as u64 + 1, "whole calls, in order");
+    }
+    // The report still counts every call the journal had.
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let total = group(&report, "claude-a")["journal"]["tool_calls"]["total"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(total, 5000 + 3 + 1);
+}
+
+#[test]
+fn evidence_never_clobbers_and_never_goes_silent() {
+    let dir = tempdir();
+    let rows_path = write_rows(dir.path(), &golden_rows());
+    let facts_path = golden_facts();
+    let evidence = dir.path().join("evidence");
+    // A pre-existing target for one trial.
+    let taken = evidence.join(fixed_id(3));
+    std::fs::create_dir_all(&taken).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&evidence, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&taken, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::fs::write(taken.join("tool-calls.json"), "precious").unwrap();
+    let out = run_report(
+        &rows_path,
+        &[
+            "--journal".as_ref(),
+            facts_path.as_os_str(),
+            "--evidence-dir".as_ref(),
+            evidence.as_os_str(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "the report still completes\n{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(taken.join("tool-calls.json")).unwrap(),
+        "precious",
+        "an existing record is never touched"
+    );
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let evidence_index = &group(&report, "claude-a")["journal"]["evidence"];
+    assert_eq!(
+        evidence_index[fixed_id(3)],
+        json!({"absent": "evidence_write_failed"})
+    );
+    assert!(
+        evidence_index[fixed_id(4)]["sha256"].is_string(),
+        "the others were written"
+    );
+}
+
+#[test]
+fn evidence_requires_a_journal() {
+    let dir = tempdir();
+    let rows_path = write_rows(dir.path(), &golden_rows());
+    let evidence = dir.path().join("evidence");
+    let out = run_report(
+        &rows_path,
+        &["--evidence-dir".as_ref(), evidence.as_os_str()],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert!(
+        stderr(&out).contains("evidence_requires_journal"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!evidence.exists());
+}

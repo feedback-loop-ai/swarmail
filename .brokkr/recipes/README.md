@@ -236,3 +236,39 @@ The route, triage and inheritance pins in `tests/delivery_recipes.rs` catch drif
 these assignments. Passing them alone does not establish executable delivery:
 the engine must compile each composition, and a live run must execute the
 inherited gates and protected review before the recipe is reported verified.
+
+## The `eval` recipe (interim, decision 0116)
+
+`eval` is not a delivery lane. It runs one trial of the agent eval harness
+(#148) as a brokkr run: a `trial` exec seat, then a `score` exec gate. It has
+its own two-phase policy (`trial` -> `score` -> `done`), no retry (a retried
+trial is a different experiment) and no model seat. This is the operator's
+2026-10-18 **interim path**: the `trial` seat runs the opaque eval-trial driver
+`swarmail-evals trial`, which starts Swarmail and the fixture app as its own
+children and runs the real `brokkr driver claude|codex|dsh` as a child, so the
+journal keeps tokens, turns and tool rows. **Nothing in that seat is
+confined**; every row records the trial as `unconfined`. The recipe moves to
+the MCP broker when brokkr#766 lands.
+
+Do not start it by hand. `swarmail-evals matrix --brokkr BIN` writes each
+slot's `request.json` (trial id, slot, absolute paths, the trial's argument
+list) under the artifacts root and runs
+`brokkr run --recipe eval --feature "swarmail-eval-request: <abs request.json>"`
+once per slot, then reads the slot's `row.json`, `exit` and `score.json` and
+keeps accounting for exactly one row per requested slot:
+
+```bash
+export PATH="$PWD/.brokkr/state/bin:$PATH"
+brokkr compile --bundle .brokkr/recipes/eval
+E=evals/target/debug/swarmail-evals
+$E matrix --brokkr "$PWD/.brokkr/state/bin/brokkr" --tasks signup \
+  --agents controls.json --trials 1 --artifacts-dir "$PWD/.brokkr/state/eval/controls" > controls.jsonl
+bash evals/scripts/journal-facts.sh "$PWD/.brokkr/state/bin/brokkr" .brokkr/state/forge.db \
+  facts.json $(jq -r .trial_id controls.jsonl)
+$E report --input controls.jsonl --journal facts.json
+```
+
+The first engine run (oracle and null controls: offline and free), the first
+authenticated via-brokkr smoke per family and the paid matrix are the
+operator's. A pull request that touches `.brokkr/` or `.github/` merges only
+on the operator's approval by name (decision 0056, 2026-11-01 addendum).

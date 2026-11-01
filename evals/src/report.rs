@@ -222,6 +222,16 @@ fn ratio(a: u64, b: u64) -> Value {
 
 /// Aggregate rows per (task, agent).
 pub fn report(rows: &[TrialResult]) -> Value {
+    report_with_journal(rows, None)
+}
+
+/// The same report, with each group's `journal` object beside the existing
+/// fields when facts were joined (decision 0116). Every existing field is
+/// byte-identical with or without the journal.
+pub fn report_with_journal(
+    rows: &[TrialResult],
+    journal: Option<&crate::journal::Joined>,
+) -> Value {
     let mut groups: BTreeMap<(Option<String>, Option<String>), Vec<&TrialResult>> = BTreeMap::new();
     for row in rows {
         groups
@@ -260,7 +270,7 @@ pub fn report(rows: &[TrialResult]) -> Value {
                     surfaces.push(surface.clone());
                 }
             }
-            json!({
+            let mut group = json!({
                 "tool_surfaces": surfaces,
                 "task": task,
                 "agent": agent,
@@ -279,10 +289,18 @@ pub fn report(rows: &[TrialResult]) -> Value {
                     "p95": nearest_rank(&times, 0.95),
                 },
                 "failure_classes": classes,
-            })
+            });
+            if let Some(joined) = journal {
+                group["journal"] = crate::journal::summarize(&rows, joined);
+            }
+            group
         })
         .collect();
-    json!({ "groups": out, "tool_surface_note": "Per-family tool surfaces are asymmetric declared configurations: Claude disables builtins; Codex retains native reading/edit tools, code-mode and ChatGPT connectors; dsh retains native tools whose removal is unmeasured. All trials are unconfined." })
+    let mut report = json!({ "groups": out, "tool_surface_note": "Per-family tool surfaces are asymmetric declared configurations: Claude disables builtins; Codex retains native reading/edit tools, code-mode and ChatGPT connectors; dsh retains native tools whose removal is unmeasured. All trials are unconfined." });
+    if let Some(joined) = journal {
+        report["journal_source"] = json!(joined.source());
+    }
+    report
 }
 
 #[cfg(test)]

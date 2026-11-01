@@ -295,13 +295,25 @@ pub enum WrapperProfile {
     #[serde(rename = "dsh_0_1_5_rc_1")]
     #[value(name = "dsh_0_1_5_rc_1")]
     Dsh0_1_5Rc1,
+    /// The same declared configuration launched through a brokkr driver
+    /// (decision 0116): the driver adds flags this profile does not
+    /// enumerate, so such a row never claims the direct-launch surface.
+    #[serde(rename = "claude_2_1_310_via_brokkr")]
+    #[value(name = "claude_2_1_310_via_brokkr")]
+    Claude2_1_310ViaBrokkr,
+    #[serde(rename = "codex_0_164_0_via_brokkr")]
+    #[value(name = "codex_0_164_0_via_brokkr")]
+    Codex0_164_0ViaBrokkr,
+    #[serde(rename = "dsh_0_1_5_rc_1_via_brokkr")]
+    #[value(name = "dsh_0_1_5_rc_1_via_brokkr")]
+    Dsh0_1_5Rc1ViaBrokkr,
 }
 impl WrapperProfile {
     pub fn family(self) -> &'static str {
         match self {
-            Self::Claude2_1_310 => "claude",
-            Self::Codex0_164_0 => "codex",
-            Self::Dsh0_1_5Rc1 => "dsh",
+            Self::Claude2_1_310 | Self::Claude2_1_310ViaBrokkr => "claude",
+            Self::Codex0_164_0 | Self::Codex0_164_0ViaBrokkr => "codex",
+            Self::Dsh0_1_5Rc1 | Self::Dsh0_1_5Rc1ViaBrokkr => "dsh",
         }
     }
     pub fn name(self) -> &'static str {
@@ -309,6 +321,25 @@ impl WrapperProfile {
             Self::Claude2_1_310 => "claude_2_1_310",
             Self::Codex0_164_0 => "codex_0_164_0",
             Self::Dsh0_1_5Rc1 => "dsh_0_1_5_rc_1",
+            Self::Claude2_1_310ViaBrokkr => "claude_2_1_310_via_brokkr",
+            Self::Codex0_164_0ViaBrokkr => "codex_0_164_0_via_brokkr",
+            Self::Dsh0_1_5Rc1ViaBrokkr => "dsh_0_1_5_rc_1_via_brokkr",
+        }
+    }
+    /// True for the selectors that declare a launch through a brokkr driver.
+    pub fn via_brokkr(self) -> bool {
+        matches!(
+            self,
+            Self::Claude2_1_310ViaBrokkr | Self::Codex0_164_0ViaBrokkr | Self::Dsh0_1_5Rc1ViaBrokkr
+        )
+    }
+    /// The direct-launch selector whose declared configuration this one shares.
+    pub fn direct(self) -> Self {
+        match self {
+            Self::Claude2_1_310ViaBrokkr => Self::Claude2_1_310,
+            Self::Codex0_164_0ViaBrokkr => Self::Codex0_164_0,
+            Self::Dsh0_1_5Rc1ViaBrokkr => Self::Dsh0_1_5Rc1,
+            other => other,
         }
     }
     pub fn validate_model(self, model: Option<&str>) -> Result<(), String> {
@@ -336,7 +367,7 @@ pub enum ToolSurface {
 }
 impl ToolSurface {
     pub fn declared(profile: WrapperProfile) -> Self {
-        let (restrictions, residuals): (&[&str], &[&str]) = match profile {
+        let (restrictions, residuals): (&[&str], &[&str]) = match profile.direct() {
             WrapperProfile::Claude2_1_310 => (
                 &[
                     "empty builtins",
@@ -381,13 +412,18 @@ impl ToolSurface {
                     "unconfined; same-uid access",
                 ],
             ),
+            _ => unreachable!("direct() returns a direct selector"),
         };
+        let mut residuals: Vec<String> = residuals.iter().map(|s| s.to_string()).collect();
+        if profile.via_brokkr() {
+            residuals.push("brokkr driver flags unenumerated".to_string());
+        }
         Self::Wrapper {
             revision: 1,
             basis: SurfaceBasis::DeclaredConfiguration,
             profile,
             restrictions: restrictions.iter().map(|s| s.to_string()).collect(),
-            residuals: residuals.iter().map(|s| s.to_string()).collect(),
+            residuals,
         }
     }
     pub fn for_request(valid: bool, builtin: bool, profile: Option<WrapperProfile>) -> Self {
@@ -656,4 +692,116 @@ where
         }
     }
     d.deserialize_seq(Bounded(std::marker::PhantomData))
+}
+
+#[cfg(test)]
+mod via_brokkr_tests {
+    use super::*;
+
+    const DIRECT: [WrapperProfile; 3] = [
+        WrapperProfile::Claude2_1_310,
+        WrapperProfile::Codex0_164_0,
+        WrapperProfile::Dsh0_1_5Rc1,
+    ];
+    const VIA: [WrapperProfile; 3] = [
+        WrapperProfile::Claude2_1_310ViaBrokkr,
+        WrapperProfile::Codex0_164_0ViaBrokkr,
+        WrapperProfile::Dsh0_1_5Rc1ViaBrokkr,
+    ];
+
+    #[test]
+    fn each_via_brokkr_selector_round_trips_by_its_finite_name() {
+        for (direct, via) in DIRECT.into_iter().zip(VIA) {
+            assert_eq!(via.name(), format!("{}_via_brokkr", direct.name()));
+            assert_eq!(via.family(), direct.family());
+            assert_eq!(via.direct(), direct);
+            assert_eq!(direct.direct(), direct);
+            assert!(via.via_brokkr() && !direct.via_brokkr());
+            let json = serde_json::to_string(&via).unwrap();
+            assert_eq!(json, format!("\"{}\"", via.name()));
+            assert_eq!(serde_json::from_str::<WrapperProfile>(&json).unwrap(), via);
+            // The command line accepts exactly the finite names.
+            let parsed = <WrapperProfile as clap::ValueEnum>::from_str(via.name(), false).unwrap();
+            assert_eq!(parsed, via);
+        }
+        assert!(serde_json::from_str::<WrapperProfile>("\"claude_2_1_310_via_other\"").is_err());
+    }
+
+    #[test]
+    fn a_via_brokkr_selector_validates_only_its_own_families_models() {
+        for (via, model, foreign) in [
+            (
+                WrapperProfile::Claude2_1_310ViaBrokkr,
+                "claude-sonnet-5-5",
+                "gpt-6-luna",
+            ),
+            (
+                WrapperProfile::Codex0_164_0ViaBrokkr,
+                "gpt-6-luna",
+                "claude-opus-5-5",
+            ),
+            (
+                WrapperProfile::Dsh0_1_5Rc1ViaBrokkr,
+                "dashscope/glm-5.3",
+                "gpt-6.1-sol",
+            ),
+        ] {
+            assert!(via.validate_model(Some(model)).is_ok());
+            assert!(via.validate_model(Some(foreign)).is_err());
+            assert!(via.validate_model(None).is_err());
+        }
+    }
+
+    #[test]
+    fn a_via_brokkr_surface_differs_from_the_direct_one_only_by_the_driver_residual() {
+        for (direct, via) in DIRECT.into_iter().zip(VIA) {
+            let (
+                ToolSurface::Wrapper {
+                    restrictions: direct_restrictions,
+                    residuals: direct_residuals,
+                    revision: direct_revision,
+                    basis: direct_basis,
+                    ..
+                },
+                ToolSurface::Wrapper {
+                    restrictions,
+                    residuals,
+                    revision,
+                    basis,
+                    profile,
+                },
+            ) = (ToolSurface::declared(direct), ToolSurface::declared(via))
+            else {
+                panic!("a declared surface is a wrapper surface");
+            };
+            assert_eq!(profile, via);
+            assert_eq!((revision, basis), (direct_revision, direct_basis));
+            assert_eq!(restrictions, direct_restrictions);
+            assert_eq!(residuals[..direct_residuals.len()], direct_residuals[..]);
+            assert_eq!(
+                residuals[direct_residuals.len()..],
+                ["brokkr driver flags unenumerated".to_string()]
+            );
+            assert_ne!(ToolSurface::declared(via), ToolSurface::declared(direct));
+            // The request-level constructor accepts a via-brokkr profile like any other.
+            assert_eq!(
+                ToolSurface::for_request(true, false, Some(via)),
+                ToolSurface::declared(via)
+            );
+        }
+    }
+
+    #[test]
+    fn a_surface_validates_against_its_own_model_and_no_other_profile() {
+        let model =
+            Availability::present("claude-sonnet-5-5".to_string(), Source::OperatorDeclared);
+        let via = ToolSurface::declared(WrapperProfile::Claude2_1_310ViaBrokkr);
+        assert!(via.validate(AgentKind::External, &model).is_ok());
+        // A via-brokkr surface forged with the direct profile's name is refused.
+        let mut forged = ToolSurface::declared(WrapperProfile::Claude2_1_310);
+        if let ToolSurface::Wrapper { profile, .. } = &mut forged {
+            *profile = WrapperProfile::Claude2_1_310ViaBrokkr;
+        }
+        assert!(forged.validate(AgentKind::External, &model).is_err());
+    }
 }
