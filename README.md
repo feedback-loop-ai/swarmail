@@ -979,14 +979,12 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   it is not access control (MCP is unauthenticated, decision
   [0004](docs/decisions/0004-per-test-inboxes-via-smtp-auth.md)).
 
-Wire it up:
-
-```jsonc
-// .mcp.json — HTTP transport
-{ "mcpServers": { "swarmail": { "type": "http", "url": "http://localhost:8025/mcp" } } }
-// or stdio subprocess:
-{ "mcpServers": { "swarmail": { "command": "swarmail", "args": ["mcp"] } } }
-```
+Wire it up: copy-paste setup for Claude Code (`.mcp.json` and a skill),
+Codex, Cursor and dsh, and an `AGENTS.md` block that teaches the clear → act →
+wait → extract loop, are in [the agent setup guide](docs/agents/setup.md).
+The wiring snippets in `docs/agents/setup.md` are written into a fresh project
+and driven against the real binary by `tests/agent_setup_docs.rs` in CI;
+install commands are marked not-executed.
 
 `swarmail mcp` speaks JSON-RPC over stdin/stdout and bridges to
 `SWARMAIL_URL` (default `http://127.0.0.1:8025`). The HTTP surface is
@@ -1557,6 +1555,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/listen.rs` | every listener's bind: both address families, the bind error reported as-is, and (Linux) a burst of 600 fresh SMTP connections all greeted, past the platform default backlog of 128 |
 | `tests/listener_contract_docs.rs` | the listener contract as documented: README, the controlling 0027 clarification and 0036 state the per-I/O bounds, the unbounded complete-line trickle residual and its costs, and the conditional `stopping` answer |
 | `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
+| `tests/agent_setup_docs.rs` | the agent setup guide and skill exercised: every fence of the guide is run, content-checked (the AGENTS.md block) or marked not-executed, each JSON/TOML/YAML wiring written verbatim into a fresh project and driven through `initialize`, `tools/list` and a seed → wait → extract round trip on its declared transport (transport only), and the taught loop and inbox route driven over real SMTP with the AUTH name the block's `smtp://` URL carries, including the already-mailed case (no clear), the wrong-route controls, the route-domain clause and the timed-out answer's `near_misses`; the tool table equal to the live `tools/list`, the AGENTS.md block's loop steps and failure classes checked against the eval taxonomy, and the 0001/0002/0005 sentences pinned |
 | `tests/focused_waits.rs` | the focused code/link waits over real SMTP and MCP: each filter on each tool by counterexample, ingest occurrence metadata for SMTP and seed, post-park deliveries that never complete a wait, and local applications refusing stale codes and look-alike links (proposed 0094) |
 | `tests/inbox_routing.rs` | recipient inbox routing and `swarmail_create_inbox` over real SMTP and MCP: three concurrent agents behind one AUTH login never see each other's mail, the rule's case-fold, whole-label, 550 and 452 shapes and the RSET and chaos clears, routing ahead of the park (a wait on a never-mailed minted inbox; the in-flight row), the tool's modern projection and distinct concurrent mints, and the unconfigured server unchanged (proposed 0112) |
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
