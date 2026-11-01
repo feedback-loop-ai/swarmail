@@ -1444,6 +1444,7 @@ fn invalid_inputs_are_one_harness_error_row_with_the_supplied_labels() {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn read_pids(marker: &std::path::Path) -> (i32, i32) {
     let pids: Value = serde_json::from_slice(&std::fs::read(marker).unwrap()).unwrap();
     (
@@ -1452,6 +1453,9 @@ fn read_pids(marker: &std::path::Path) -> (i32, i32) {
     )
 }
 
+// Linux only: the stall helper reports its /proc identities, and the reaped
+// descendants are proved by reading /proc.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_deadline_is_budget_and_reaps_the_agents_descendants() {
     let _trial_scope = trial_scope();
@@ -1707,6 +1711,9 @@ fn normal_trial_binary_ignores_the_former_runner_fault_control() {
     }
 }
 
+// Linux only: the stall helper reports its /proc identities, and the reaped
+// agent group is proved by reading /proc.
+#[cfg(target_os = "linux")]
 #[test]
 fn sigterm_interrupts_cleans_up_and_emits_one_row() {
     let _trial_scope = trial_scope();
@@ -1876,6 +1883,9 @@ fn the_catalogue_is_served_as_schema_version_two() {
     assert_eq!(cat.tasks, swarmail_evals::tasks::catalogue());
 }
 
+// Linux only: the resistant helper reports its /proc identities, and the
+// escalated kill is proved by PID/start-time identities read from /proc.
+#[cfg(target_os = "linux")]
 #[test]
 fn cleanup_escalates_after_a_leader_exits_and_a_descendant_ignores_term() {
     let _trial_scope = trial_scope();

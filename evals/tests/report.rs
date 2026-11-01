@@ -7,7 +7,7 @@ mod common;
 use common::*;
 use serde_json::{Value, json};
 use std::ffi::OsString;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
@@ -448,6 +448,11 @@ fn empty_and_all_error_inputs_give_null_estimates_and_bad_rows_refuse() {
     }
 }
 
+// The matrix guard and the tests built on it prove cleanup by PID/start-time
+// identities read from /proc (the matrix's process table and each owned
+// process's group, session and state); macOS has no /proc, so they are Linux
+// only rather than passing vacuously there.
+#[cfg(target_os = "linux")]
 struct MatrixGuard {
     child: Option<std::process::Child>,
     owner: ProcessIdentity,
@@ -455,6 +460,7 @@ struct MatrixGuard {
     owned: Vec<ProcessIdentity>,
 }
 
+#[cfg(target_os = "linux")]
 impl MatrixGuard {
     fn pid(&self) -> i32 {
         self.child.as_ref().unwrap().id() as i32
@@ -564,6 +570,7 @@ impl MatrixGuard {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for MatrixGuard {
     fn drop(&mut self) {
         let _ = std::fs::write(&self.release, b"release");
@@ -598,6 +605,7 @@ impl Drop for MatrixGuard {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn marker_identity(value: &Value, name: &str) -> ProcessIdentity {
     ProcessIdentity {
         pid: value[name].as_i64().unwrap() as i32,
@@ -609,6 +617,7 @@ fn marker_identity(value: &Value, name: &str) -> ProcessIdentity {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn matrix_signal_case(signal: i32, noisy: bool) {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("active.json");
@@ -868,6 +877,8 @@ fn matrix_signal_case(signal: i32, noisy: bool) {
     );
 }
 
+// Linux only: proves owned cleanup through MatrixGuard's /proc identities.
+#[cfg(target_os = "linux")]
 #[test]
 fn matrix_sigterm_and_sigint_wait_for_the_active_trials_owned_cleanup() {
     let _trial_scope = trial_scope();
@@ -875,6 +886,8 @@ fn matrix_sigterm_and_sigint_wait_for_the_active_trials_owned_cleanup() {
     matrix_signal_case(libc::SIGINT, false);
 }
 
+// Linux only: proves owned cleanup through MatrixGuard's /proc identities.
+#[cfg(target_os = "linux")]
 #[test]
 fn privacy_cancellation_preserves_owned_runtime_and_suffix_accounting() {
     let _trial_scope = trial_scope();
@@ -882,8 +895,12 @@ fn privacy_cancellation_preserves_owned_runtime_and_suffix_accounting() {
     matrix_signal_case(libc::SIGINT, true);
 }
 
+// Linux only: its owner guard and its no-survivor proof are MatrixGuard's
+// /proc identities.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_broken_matrix_stdout_stops_after_the_owned_trial_finishes() {
+    use std::io::Read;
     let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let launches = dir.path().join("launches.txt");
@@ -1014,6 +1031,8 @@ fn normal_matrix_binary_ignores_test_control_environment_variables() {
     }
 }
 
+// Linux only: the reaped fallback cargo group is proved by /proc identities.
+#[cfg(target_os = "linux")]
 #[test]
 fn matrix_signal_cancels_and_reaps_the_fallback_cargo_group() {
     let _trial_scope = trial_scope();

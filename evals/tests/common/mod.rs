@@ -214,7 +214,10 @@ pub fn eventually(what: &str, mut ok: impl FnMut() -> bool) {
     }
 }
 
+// The process-identity proofs read /proc/<pid>/stat, which only Linux has;
+// they are compiled only there so no test can pass vacuously elsewhere.
 /// Whether `pid` names a live (not zombie) process.
+#[cfg(target_os = "linux")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessIdentity {
     pub pid: i32,
@@ -225,6 +228,7 @@ pub struct ProcessIdentity {
     pub state: char,
 }
 
+#[cfg(target_os = "linux")]
 pub fn process_identity(pid: i32) -> Option<ProcessIdentity> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let (_, tail) = stat.rsplit_once(')')?;
@@ -239,17 +243,20 @@ pub fn process_identity(pid: i32) -> Option<ProcessIdentity> {
     })
 }
 
+#[cfg(target_os = "linux")]
 pub fn identity_alive(identity: &ProcessIdentity) -> bool {
     process_identity(identity.pid)
         .is_some_and(|now| now.start_time == identity.start_time && !matches!(now.state, 'Z' | 'X'))
 }
 
+#[cfg(target_os = "linux")]
 pub fn pid_alive(pid: i32) -> bool {
     process_identity(pid).is_some_and(|process| !matches!(process.state, 'Z' | 'X'))
 }
 
 /// Read the Linux process table and return every process below `root`, using
 /// PID/start-time identities so the exit proof is safe against PID reuse.
+#[cfg(target_os = "linux")]
 pub fn process_descendants(root: i32) -> Vec<ProcessIdentity> {
     let mut all = Vec::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
@@ -362,6 +369,8 @@ async fn helper(mode: &str) -> i32 {
             std::fs::write(marker().unwrap(), report.to_string()).unwrap();
             3
         }
+        // The process-identity helper modes report /proc identities.
+        #[cfg(target_os = "linux")]
         "resistant" => {
             // The agent leader exits on TERM; this same-group descendant
             // ignores TERM so the owning cleanup must escalate to KILL.
@@ -385,6 +394,7 @@ async fn helper(mode: &str) -> i32 {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
             }
         }
+        #[cfg(target_os = "linux")]
         "stall" | "noisy_stall" => {
             if let Ok(path) = std::env::var(LAUNCH_LOG_ENV) {
                 use std::io::Write;
