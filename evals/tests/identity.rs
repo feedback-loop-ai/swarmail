@@ -253,6 +253,7 @@ fn rebuilds_follow_source_git_indirection_packed_refs_and_archive_unavailability
     );
 }
 
+// Linux only: the git wrapper captures its environment from /proc/$$/environ.
 #[cfg(target_os = "linux")]
 #[test]
 fn runtime_git_helpers_have_closed_maps_and_private_source_locators_never_publish() {
@@ -364,7 +365,10 @@ fn runtime_git_helpers_have_closed_maps_and_private_source_locators_never_publis
             "XDG_DATA_HOME",
             "XDG_STATE_HOME",
         ] {
-            assert!(map[key].starts_with("/tmp/swarmail-eval-git-"));
+            assert!(map[key].starts_with(&format!(
+                "{}/swarmail-eval-git-",
+                swarmail_evals::runner::SHARED_TMP
+            )));
             assert!(
                 !Path::new(&map[key]).exists(),
                 "owned helper directories are removed after cleanup"

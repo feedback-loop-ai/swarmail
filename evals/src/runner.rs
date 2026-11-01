@@ -544,10 +544,20 @@ impl RuntimeDirs {
     }
 }
 
+/// The shared sticky temporary directory every private runtime directory is
+/// created in, by its symlink-free name. Private runtime paths are walked
+/// without following symlinks, and macOS's /tmp is a symlink to /private/tmp.
+#[cfg(target_os = "macos")]
+pub const SHARED_TMP: &str = "/private/tmp";
+/// The shared sticky temporary directory every private runtime directory is
+/// created in, by its symlink-free name.
+#[cfg(not(target_os = "macos"))]
+pub const SHARED_TMP: &str = "/tmp";
+
 pub fn private_tempdir(prefix: &str) -> Result<tempfile::TempDir, String> {
     let directory = tempfile::Builder::new()
         .prefix(prefix)
-        .tempdir_in("/tmp")
+        .tempdir_in(SHARED_TMP)
         .map_err(|_| "private_directory")?;
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
         .map_err(|_| "private_directory")?;

@@ -432,7 +432,8 @@ fn an_external_agent_gets_literal_argv_and_identical_prompt_and_env() {
         value("XDG_DATA_HOME"),
         value("XDG_STATE_HOME"),
     ];
-    assert!(private.iter().all(|path| path.starts_with("/tmp/")));
+    let shared_tmp = format!("{}/", swarmail_evals::runner::SHARED_TMP);
+    assert!(private.iter().all(|path| path.starts_with(&shared_tmp)));
     assert_eq!(
         private
             .iter()
