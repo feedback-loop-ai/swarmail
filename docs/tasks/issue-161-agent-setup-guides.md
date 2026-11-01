@@ -54,7 +54,8 @@ change to production behaviour or to the gate inventory. Decisions 0055,
   the no-paid-trials rule. It stays open and is reported as not measured. It
   must not be recorded as passed.
 - **AC-4 snippet coverage.** Every fenced block in the guide files is either
-  executed by the suite or carries an explicit
+  executed by the suite, content-checked (the one `markdown` AGENTS.md block,
+  which is prose and is pinned, not run) or carries an explicit
   `<!-- not-executed: <reason> -->` marker. An unmarked, unexecuted block goes
   red.
 - **AC-5 tool-name drift.** Every `swarmail_*` name that appears in the
@@ -140,7 +141,7 @@ wire, including when the flow mailed the agent before it started.
   route domain that names no inbox is refused `550 5.1.3`. Routed labels are
   `[a-z0-9-]{1,63}` after lowercasing, so the guide's inbox examples stay in
   that alphabet to work on both routes. `swarmail_create_inbox` mints
-  `<hex>@<inbox>.<route-domain>` and needs a route domain; without one it
+  `agent@<inbox>.<route-domain>` and needs a route domain; without one it
   returns an isError naming `--route-domain`. The default server has no route
   domain. Design reads `specs/recipient-inbox-routing/spec.md` (routing and
   AC lists) and `src/smtp.rs` before writing the taught SMTP route.

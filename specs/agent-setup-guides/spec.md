@@ -42,7 +42,7 @@ behaviour the guides describe:
   `SWARMAIL_ROUTE_DOMAIN`, a recipient `<local>@<label>.<domain>` names
   inbox `<label>` and outranks AUTH; a label under the domain that is not
   `[a-z0-9-]{1,63}` is refused `550 5.1.3`; `swarmail_create_inbox` mints
-  `<hex>@<inbox>.<domain>` and is an `isError` naming `--route-domain`
+  `agent@<inbox>.<domain>` (the inbox a fresh UUID v7 in 32 hex digits) and is an `isError` naming `--route-domain`
   without one; the default server has no route domain (F1). The guide
   describes the binary main ships; under accepted 0045 §8 that is
   compatible implementation and amends nothing;
@@ -345,7 +345,8 @@ from the first design; 7, 8, 10 and 11 are revised; 15–19 are new.
   report records why the shipped wrappers cannot measure docs wiring and
   that the criterion is not passed; the PR does not claim #161 closed.
 - AC-4 Snippet coverage, fail closed. Every fence in both guide files is
-  executed, is the executed start command, or carries a valid marker on the
+  executed, is the executed start command, is the one `markdown` AGENTS.md
+  block (content-checked by AC-6/AC-7, not run), or carries a valid marker on the
   line above. Red controls: unmarked `text` fence; marker with empty
   reason; marker followed by a blank line; marker on a `json` fence; `~~~`
   fence at column 0; **indented `  ~~~json` fence; indented `  ```json`

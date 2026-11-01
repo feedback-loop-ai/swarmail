@@ -12,13 +12,19 @@ against the real `swarmail` binary on the transport it declares; the section
 
 <!-- not-executed: needs a network pull of the published image -->
 ```sh
-docker run --rm --stop-timeout 30 -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:main
+docker run --rm --stop-timeout 30 -p 127.0.0.1:1025:1025 -p 127.0.0.1:1110:1110 -p 127.0.0.1:8025:8025 ghcr.io/feedback-loop-ai/swarmail:main
 ```
 
 <!-- not-executed: builds from a checkout, which CI already built -->
 ```sh
 cargo install --locked --path .
 ```
+
+The image listens on every interface inside the container and swarmail has no
+authentication, so the `docker run` line above publishes the ports on the host's
+loopback only. Do not drop the `127.0.0.1:` to publish them on a network you do
+not trust; the README's "off-loopback bind trusts the network" paragraph says
+what that exposes.
 
 The server the snippets below talk to is started by this command, which the
 suite runs with its argv unchanged:
@@ -96,8 +102,9 @@ The skill for Claude Code is [section 6](#6-the-skill).
 
 ## 3. Codex
 
-Codex reads MCP servers from a TOML table. The keys below are the ones the
-repository's eval wrappers set.
+Codex reads MCP servers from a TOML table. The three keys below are the ones an
+interactive setup needs; the repository's eval wrappers set them too, plus an
+HTTP header and a tool-approval mode that a headless trial needs.
 **Unverified:** the file path. Codex keeps user configuration in
 `~/.codex/config.toml`, but that path is not sourced in this repository and CI
 never loads it.

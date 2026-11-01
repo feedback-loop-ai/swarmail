@@ -1380,6 +1380,28 @@ fn every_fence_of_both_guide_files_is_executed_or_marked() {
 }
 
 #[test]
+fn the_docker_start_publishes_on_loopback_only() {
+    let fences = guide_fences();
+    let docker: Vec<_> = fences
+        .iter()
+        .filter(|f| f.body.contains("docker run"))
+        .collect();
+    assert_eq!(docker.len(), 1, "one docker fence");
+    let published: Vec<_> = docker[0]
+        .body
+        .split_whitespace()
+        .skip_while(|w| *w != "-p")
+        .filter(|w| *w != "-p" && !w.starts_with("--") && w.contains(':'))
+        .take_while(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .collect();
+    assert_eq!(published.len(), 3, "SMTP, POP3 and HTTP");
+    assert!(
+        published.iter().all(|p| p.starts_with("127.0.0.1:")),
+        "a bare -p host:container publishes on every host interface: {published:?}"
+    );
+}
+
+#[test]
 fn the_scanner_refuses_what_it_cannot_run() {
     let fine = "intro\n\n```json\n{}\n```\n";
     assert_eq!(extract(fine).expect("fine").len(), 1);
