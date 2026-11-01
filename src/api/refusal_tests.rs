@@ -224,6 +224,7 @@ fn app_state(addr: std::net::SocketAddr) -> (AppState, tokio::sync::watch::Sende
             smtp_degraded: Arc::new(AtomicBool::new(false)),
             pop3_degraded: Arc::new(AtomicBool::new(false)),
             http_origin_guard: Some(addr.port()),
+            route_domain: None,
         },
         shutdown,
     )

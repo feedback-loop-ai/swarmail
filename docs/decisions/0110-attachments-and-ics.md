@@ -1,0 +1,268 @@
+# 0110 — Attachments listed and fetched from stored bytes, ICS fields at ingest
+
+- **Status:** proposed — awaiting the operator
+- **Date:** 2026-10-31
+- **Scope:** Epic #164, issue #159, on main `d892acb` (the merged MCP work of
+  #152, #153 and #154).
+- **Specification:** [Attachments and ICS](../../specs/attachments-and-ics/spec.md);
+  [plan](../../specs/attachments-and-ics/plan.md),
+  [tasks](../../specs/attachments-and-ics/tasks.md).
+- **Supplements:** the modern tool inventories of proposed
+  [0082](0082-mcp-structured-output.md), [0105](0105-mcp-report-output.md)
+  and [0094](0094-focused-mail-waits.md) (two appended read-only tools);
+  extends ingest-owned extraction under accepted
+  [0005](0005-extraction-at-ingest.md) compatibly; states a new bounded
+  memory exposure beside accepted [0038](0038-store-memory-and-timestamps.md).
+- **Authority relied on:** accepted [0001](0001-synchronous-insert-lossless.md)
+  (the attachment work runs inside the parse that precedes the commit),
+  accepted [0022](0022-bounded-data-raw-bytes.md) (DATA is bounded at 50 MiB
+  before the parser sees it; `/raw` serves the stored bytes), accepted
+  [0031 §1](0031-sender-honest-stored-bodies.md) (the record is sender-honest),
+  accepted [0040](0040-extraction-fidelity.md) (attachment parts never become
+  the body), accepted [0045 §8](0045-delivery-repairs.md) (compatible work may
+  land while this record is proposed).
+- **Preserves:** 0001–0005, 0010, 0014, 0020, 0030, 0056, the 0082 §1 March
+  byte freeze, every existing full Email serialization and every REST
+  response without `view` (0108 §4). The compact view's `attachments` change
+  as the reconciliation with #155 below states.
+- **Number:** 0106 and 0107 are held by open PR #292, 0108 and 0109 by
+  `origin/main`; 0110 was the next number no checked tip held and the operator
+  kept it at integration on 2026-10-31.
+
+## Proposed ruling
+
+1. **Attachments are extracted at ingest, inside `build_email`, before the
+   insert.** For every candidate part of the outer message — the parser's
+   attachment list plus any bare calendar part (`text/calendar`,
+   `application/ics`, or a filename ending `.ics`) in part order — ingest
+   records the filename, the ASCII-lowercased `type/subtype`, the decoded
+   size in octets, the lowercase-hex SHA-256 of the decoded bytes, whether
+   the bytes are stored, and for a calendar part the ICS fields of §4. An
+   attached message is one entry; its inner parts are not walked. The walk,
+   the hashes and the ICS scan are total: nothing in them can fail the
+   mail, so an SMTP `250` still means stored (0001).
+
+2. **Fetch reads stored bytes; nothing re-parses `raw` at query time.** The
+   decoded bytes of listed parts are kept, first-fit in list order, under
+   one per-message budget `MAX_ATTACHMENT_STORED_BYTES` = 1 MiB (1 048 576
+   octets): a part whose size is at most the remaining budget is stored and
+   charged; a larger one is listed with its true size and hash and
+   `stored: false`, and the budget stays for later, smaller parts. Fetching
+   an unstored part refuses by name, naming the size, the budget and the
+   REST `/raw` route that still serves the whole mail (0022). The bytes are
+   never truncated: a partial body would not match the listed hash. This is
+   0005 read literally — list, fetch and ICS fields are served from stored
+   fields only — and it keeps the served bytes equal to the hashed bytes
+   across parser upgrades.
+
+3. **The caps are pinned constants, never configuration.**
+
+   | Constant | Value | Bounds |
+   |---|---|---|
+   | `MAX_ATTACHMENTS` | 250 | entries listed and considered for storage per mail; the exact candidate total is still recorded |
+   | `MAX_ATTACHMENT_STORED_BYTES` | 1 MiB | decoded bytes retained per mail, summed over stored parts; also the largest fetchable part |
+   | `MAX_LABEL_BYTES` | 1024 | every stored string: filename, content type, each ICS field |
+   | `MAX_ICS_BYTES` | 1 MiB | the largest calendar part the ICS scanner reads; a larger one yields no fields |
+   | `MAX_LIST_JSON_BYTES` | 3 MiB | the entries of one list answer, as compact JSON, charged in list order; the first entry past it and every later one are cut from the answer, which `truncated` names |
+
+   1 MiB is chosen from the stdio bridge's unchanged 10 MiB response cap
+   (0029 §4): a modern result carries the JSON twice (text block and
+   `structuredContent`), and a worst-case UTF-8 text payload escapes to four
+   times its size inside the text block, so one fetch answers in at most
+   about 6 MiB and never trips the bridge. A larger budget would make fetch
+   refuse on the bridge for exactly the payloads it stored. A knob would
+   double the branch matrix under the exact gate and make the pinned value
+   unobservable.
+
+   The byte budget does not bound the list answer; the labels do, and they
+   escape. 250 entries of eight 1024-byte labels of control bytes are a
+   25.5 MiB modern answer and 13.7 MiB under March, and a control byte's
+   `\u0001` costs 13 wire bytes against the 1 it stores. So the list answer is
+   bound where it is sent: it serves the longest prefix of the stored list
+   whose entries fit `MAX_LIST_JSON_BYTES`. JSON at most doubles inside the
+   text block and rides once more as `structuredContent`, so a modern answer
+   is at most three times that: 9 MiB plus the envelope, inside the cap.
+   Labels are never rewritten (0031 §1), entries keep their indexes, `total`
+   stays exact and a stored part cut from the answer stays fetchable by index.
+   Nothing that needs no escaping is ever cut: 250 entries of 1024-byte plain
+   labels are about 2.1 MiB of JSON. The request's own `id` is echoed in the
+   envelope and is the client's to keep small.
+
+4. **ICS fields are read from the first `VEVENT` only, literally.** After
+   RFC 5545 unfolding (CRLF to LF, then `LF SP` and `LF HT` removed), the
+   scanner reads properties that sit directly inside the first
+   `BEGIN:VEVENT … END:VEVENT`, tracking nesting so a `VTIMEZONE`'s
+   `DTSTART` or a `VALARM`'s `SUMMARY` is never reported as the event's.
+   `DTSTART`, `DTEND` and `UID` are stored verbatim with the property's
+   `TZID` parameter beside the two times; `SUMMARY` is RFC 5545 text
+   unescaped. No timezone resolution, no instant conversion, no `RRULE`,
+   attendee or organizer fields: a wrong offset is worse than the
+   calendar's own text, and no timezone database is in the tree. A calendar
+   part with no `VEVENT`, invalid UTF-8 or more than `MAX_ICS_BYTES` yields
+   `ics: null`; a malformed one never panics and never refuses the mail.
+   `UID` is the one field beyond the issue's three: the invite task reads
+   it, and it is the event's identity.
+
+5. **SHA-256 comes from the ring provider rustls already links**, through
+   rustls's public cipher-suite hash provider, with known-answer tests
+   (NIST `abc` and the empty string) proving it is SHA-256. No crate enters
+   the tree and `Cargo.lock` is unchanged. A hand-rolled digest is refused
+   as a security regression; `sha2` would be a new dependency and is not
+   added without the operator. The operator may separately rule that `ring`
+   (already a direct dependency of the evals crate at the locked version)
+   becomes a direct dependency of the root crate; that cleanup changes the
+   manifest only, adds no crate, and is not needed for this change.
+
+6. **Persistence is two nullable columns in the insert's transaction.**
+   Ingest writes `attachments_json` as the closed object `{total, parts}` and
+   `attachment_bytes` as the concatenation of the stored parts' bytes in list
+   order (empty, not `NULL`, when nothing is stored), or `NULL` in both for a
+   mail the parser could not read; both ride `record_insert` with the mail
+   row, the prune deletes and the counters, and both are added through
+   `ADDED_COLUMNS` so a data file written by an older release opens. Restore
+   accepts exactly three shapes, and none is ever backfilled:
+
+   - **`NULL` in both** — unknown: a row from before the columns, or a mail
+     the parser could not read. The compact view serves `attachments: null`;
+     both tools answer the named unknown refusal.
+   - **An `attachments_json` beginning `[` with `attachment_bytes` `NULL`** —
+     a row of 0108 §5's first listing, read strictly as
+     `[filename|null, content_type|null, size]` three-tuples and restored
+     labels-only (see the reconciliation below): `total` is the tuple count,
+     and no part has a hash, bytes or ICS fields. The compact view serves its
+     labels as #155 did (`[]` is known empty and omitted); both tools answer
+     the named unknown refusal.
+   - **The closed object beside a blob** — every member required, at most
+     `MAX_ATTACHMENTS` parts and no more than `total`, and the stored parts'
+     sizes summing to exactly the blob's length, which is split back into
+     those parts in list order.
+
+   Anything else refuses the restore by its column, never "no attachments":
+   a malformed tuple array, a tuple array beside a blob, a damaged object
+   (an unknown or missing member, a wrong type, too many parts) or `NULL`
+   beside a blob names `attachments_json`; any value not beginning `[` beside
+   a `NULL` blob, or a blob whose length is not the stored sizes' sum, names
+   `attachment_bytes`.
+
+7. **Two read-only MCP tools, appended.** `swarmail_list_attachments {id}`
+   answers `{id, total, truncated, attachments}`; `swarmail_get_attachment
+   {id, index}` answers `{index, filename, content_type, size, sha256,
+   encoding, content}` with `encoding` `utf-8` for text that is valid UTF-8
+   with no control bytes beyond TAB, LF and CR, else `base64`. Both carry a
+   closed `outputSchema` on the June and November revisions and
+   `readOnlyHint: true`; March keeps every earlier byte and gains the two
+   descriptors text-only (0082 §1, 0094 §7). Malformed arguments refuse
+   `-32602` by name before any store read; an unknown mail, an unknown
+   attachment list, an index past the list and an unstored part are
+   `isError` text results; a labels-only list (§6) answers as unknown. No
+   REST route, no compat field, no webhook change: `Email.attachments` and
+   the bytes are `#[serde(skip)]`, so every full Email read, feed, webhook
+   and March capture keeps its bytes. The one existing output that moves is
+   the compact view's `attachments` and `attachments_total` (0108), which
+   now read this record's list; the reconciliation below states how.
+
+8. **Memory exposure, stated.** Each stored mail may retain up to 1 MiB of
+   decoded attachment bytes beside its raw bytes, in memory and in the data
+   file. 0038's rule stands: there is no global ceiling; the per-inbox cap
+   bounds count, not bytes. The transient decode is unchanged: mail-parser
+   decodes every part while parsing, bounded by the 50 MiB DATA cap (0022);
+   this change bounds what is retained, not what the existing parse
+   allocates for the duration of one ingest. *Implementation note:* the
+   recorded entries are retained too — at most 250 of them, each with a
+   filename, a type and (for a calendar part) six ICS fields of at most
+   `MAX_LABEL_BYTES` plus a 64-character digest, so at most 8 256 bytes
+   each and about 2 MiB of labels per mail beside the 1 MiB of bytes.
+
+9. **The metric.** The invite and ICS eval tasks run offline only — the
+   evals crate's fixture and oracle tests, extended with a rig test that
+   lists and fetches the real invite through the two tools. The live agent
+   metric is reported as **not measured: no paid trial**, and the report
+   states that the catalogue's `invite-time` task does not exercise the MCP
+   attachment tools (0055 §4); an attachment-only task needs its own id and
+   baseline label and is not added here.
+
+## Why
+
+Agents asked for the invoice, the calendar invite or the report the mail
+carries get, today, only a raw MIME download to decode themselves. Listing
+type, size and hash lets an agent decide before it pays for bytes; fetching
+from stored bytes answers in one call with the bytes the hash describes;
+ICS fields at ingest answer the invite question the way links and codes are
+answered — once, identically on every surface. The byte budget keeps a fetch
+inside the bridge cap and, with the entry and label caps, inside a stated
+memory bound; the JSON bound keeps a list answer inside the bridge cap.
+
+## Alternatives and consequences
+
+- *Re-decode `raw` at fetch under the report's job permits.* Rejected. It
+  reopens 0005 for a convenience read, needs permit plumbing and a busy
+  refusal, lets a parser upgrade move a part or change its bytes under a
+  persisted hash, and its cold arms (permit exhaustion, hash mismatch) are
+  reachable only through seams. Cost of the ruling: up to 1 MiB more per
+  mail in memory and on disk, and no fetch for parts over the budget.
+- *Store up to 10 MiB per mail in a child table.* Rejected. 10 MiB cannot
+  be answered through the 10 MiB bridge once doubled and escaped, and a
+  child table adds a second delete site to every prune, delete and clear.
+  Cost of the ruling: large attachments are metadata-only through MCP.
+- *`sha2` as a new dependency.* Not refused; not needed. It would block the
+  change on a ruling the tree already answers. Cost: one unusual helper
+  that reaches SHA-256 through a cipher-suite struct, commented.
+- *A per-line ICS cap.* Rejected: the input is bounded by `MAX_ICS_BYTES`
+  and every stored field by `MAX_LABEL_BYTES`; a third constant bounds
+  nothing further.
+- *REST list and fetch routes.* Deferred. The epic measures the agent
+  surface; `/raw` already serves the bytes; a REST contract is a separate
+  decision with its OpenAPI, refusal and `tests/api.rs` obligations.
+- *Rendering HTML attachments to text in fetch.* Out of scope. The
+  renderer exists once (`compat`'s `html_to_text`, 0031 §3) and #155 owns
+  its sharing; fetch returns the part's own bytes.
+- *Timezone resolution for `DTSTART`.* Rejected; see §4.
+
+## Reconciliation with #155 (proposed 0108 §5)
+
+#155 landed first on `origin/main`, with `model::Attachment { filename,
+content_type, size }`, `Email.attachments`, `attachments_json` as an array of
+three-tuples and `attachment_list` in `smtp.rs`. This record, second to land,
+reconciles as its first draft said it would: one list, one column.
+
+- `Email.attachments` is this record's `AttachmentList`, and the compact view
+  and `fields` read their `attachments` and `attachments_total` from it —
+  on modern MCP search and latest, `fields` naming `attachments` on the four
+  modern reads, and REST `view=compact`. So for mail ingested from this
+  change on, that view's entries also include bare calendar parts
+  (`text/calendar`, `application/ics` or a `.ics` filename, in part order),
+  and carry `filename` and `content_type` cut to `MAX_LABEL_BYTES` at a
+  character boundary. Ingest now ASCII-lowercases `content_type` itself;
+  the locked mail-parser 0.11.9 already lowercases the type and subtype #155
+  read, so that moves no byte today. `size` is the same decoded length, the
+  view still shows at most 250 entries, and `attachments_total` is still the
+  exact count, now from the recorded `total` beyond the 250 entries ingest
+  keeps. Rows restored as unknown or labels-only serve exactly what #155
+  served them.
+  0108 §5's "outer parser list" gains the calendar arm in effect, and 0108's
+  text is the operator's to amend.
+- `attachments_json` restores every shape ingest wrote and nothing else. A
+  tuple array with `attachment_bytes` NULL is a row of 0108's first listing,
+  restored as labels only: the compact view serves its labels as before, and
+  both attachment tools answer the named unknown refusal, because it holds no
+  hash and no bytes and its list, even an empty one, could not see a bare
+  calendar part. It is never backfilled. A tuple array beside bytes, or any
+  other value without them, refuses the restore by its column.
+- Ingest writes only the `{total, parts}` object. `attachment_list` is gone.
+
+Neither change is authority over the other; the operator rules on both.
+
+## Dated note — 2026-11-01
+
+Review run `issue-159-list-and-fetch-attachm-bbfa90f5` found that §6, §7, the
+Preserves line and the specification's Persistence, "What does not change",
+AC6 and task T5 still stated the contract from before #155 landed — only the
+closed object restores, a `NULL` in one column always refuses, old rows
+restore unknown, every REST response is unchanged — while the code, its tests
+and the reconciliation above accept 0108's tuple rows as labels-only and move
+the compact view's attachments. That text was reconciled with #155 and with
+the code on this date, and the reconciliation's first bullet now names each
+plane and each change exactly — its earlier "a lowercased type" was no change
+on the wire, since the parser already lowercases. No ruling, code or test
+changed; the earlier wording
+stays in the branch history, and this record is still proposed.

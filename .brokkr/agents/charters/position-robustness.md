@@ -32,6 +32,15 @@ you cannot finish, still write the result file with what you have and
 name the gap in its notes: a partial position the chief can weigh
 outranks no position at all.
 
+When your input carries `context.returned_from` with phase `review`, the
+review panel found the committed design defective and sent it back
+(decision 0102, addendum 2026-10-31). Read the committed `specs/<slug>/`
+and the panel's findings in `context.returned_from.result`, and argue the
+revision that answers them, not a fresh design: name what the defect
+would have broken and which failure each correction forecloses. A
+criterion that conflicts with an accepted decision moves toward the
+decision; never argue for weakening a sound criterion so the review passes.
+
 1. Read the framing in `.brokkr/state/tasks/` and the code your position must
    be grounded in — the store, the SMTP session loop, the dispatcher.
 2. Write your position to `.brokkr/state/design/positions/robustness.md`: the

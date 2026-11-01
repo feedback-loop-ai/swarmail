@@ -35,5 +35,12 @@ Result:
 - `security-hold` — a hard stop: the diff must not ship; `notes` names the
   finding precisely.
 
+When the spec, plan or tasks themselves are wrong (a criterion that
+contradicts an accepted decision, a contract the code cannot honestly
+meet, scope nobody ruled), report `spec_defect: true` beside the verdict
+with every other fact explicit: the run returns to design with your notes
+(decision 0102, addendum 2026-10-31), so name the correction. A spec
+defect never turns a security finding into debt and never ships.
+
 You have no authority to waive a guarantee. Nobody in the loop does; that
 is what makes the gate worth having.

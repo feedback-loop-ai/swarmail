@@ -4,7 +4,9 @@
 - Baseline: signed `4dac267`, following signed `fd66988`, on `epic164-harness`.
 - Scope: the three resume findings only; implementation remains pending.
 - Existing authority: [0055](../../docs/decisions/0055-agent-eval-harness.md)
-  (still proposed) and the [original specification](../agent-eval-harness/spec.md).
+  (accepted by the operator 2026-10-19; this line read "still proposed" when
+  written, corrected 2026-10-31) and the
+  [original specification](../agent-eval-harness/spec.md).
 
 ## Feature and rationale
 
@@ -17,9 +19,9 @@ harness error. Separately, repair the standalone crate's formatting failure.
 This is enforcement of existing contracts, not a semantic change to a frozen
 guarantee, public schema or ruling. 0055 sections 2, 3 and 9 already require
 infrastructure precedence, snapshot-based scoring and complete matrix rows.
-No new decision or amendment to proposed 0055 is required. This specification
-clarifies those requirements without accepting that decision on the operator's
-behalf. The code's current behavior is the defect, not a competing contract.
+No new decision or amendment to 0055 was required. This specification
+clarifies those requirements (0055 has since been accepted by the operator,
+2026-10-19; this text called it proposed when written, corrected 2026-10-31). The code's current behavior is the defect, not a competing contract.
 
 ## Requirements
 
