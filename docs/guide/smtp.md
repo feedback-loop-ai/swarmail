@@ -134,7 +134,8 @@ handshake is dropped after `--tls-handshake-timeout-ms` (default 10 s).
 The value is not range-checked: `0` (or `SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS=0`)
 is accepted at startup, and then every STARTTLS handshake fails — the
 client gets `220 2.0.0 Ready to start TLS` and the connection is dropped
-before any handshake can finish, so use a positive value. Plaintext
+before any handshake can finish (with `--smtp-implicit-tls`, below, every
+connection fails before the greeting), so use a positive value. Plaintext
 sessions answer to the per-I/O idle bounds above (5 min SMTP,
 10 min POP3, decisions 0027 and 0036). Without a cert the
 plaintext listener is byte-identical to the one without the flag.
@@ -143,3 +144,49 @@ plaintext listener is byte-identical to the one without the flag.
 $ swarmail gen-cert --domain localhost --out ./certs    # cert.pem + key.pem, 0600
 $ swarmail serve --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
 ```
+
+### Implicit TLS (SMTPS)
+
+Some senders are configured for TLS *before* the greeting (RFC 8314 §3.3):
+Ory Kratos' courier with `smtps://…?legacy_ssl=true`, MailSlurper's `smtps`
+image. They cannot talk to a STARTTLS server. `--smtp-implicit-tls` (env
+`SWARMAIL_SMTP_IMPLICIT_TLS=true`, decision 0116) switches the SMTP listener
+to that mode. It is **off by default**; without it the listener is
+byte-identical to the one above.
+
+- **It needs the certificate.** It reuses `--tls-cert`/`--tls-key` and
+  refuses to start without the pair —
+  `--smtp-implicit-tls requires --tls-cert and --tls-key`, before anything
+  binds. A port asked to be TLS never serves plaintext.
+- **The whole listener changes, and only the transport.** The SMTP listener
+  (`--smtp-listen`, port 1025 by default) runs the TLS handshake on connect
+  and the `220` greeting follows inside TLS. `STARTTLS` is not advertised
+  and is answered `554 5.5.1 TLS already active`. AUTH-named inboxes,
+  `--route-domain` routing, `await`, extraction and the `250`-means-stored
+  guarantee behave exactly as over plaintext. There is one mode per
+  process: STARTTLS *or* implicit TLS, never both on the one listener. A
+  deployment that needs both runs two servers, and those are two stores.
+- **Same handshake deadline.** `--tls-handshake-timeout-ms` (default 10 s)
+  bounds this handshake too: a client that connects and goes silent is
+  dropped at the deadline with no byte written. As above, `0` is accepted
+  but makes every connection fail before the greeting.
+- **Plaintext on the port gets no SMTP reply.** A client that sends `EHLO`
+  instead of a ClientHello is closed when the handshake fails — at most it
+  receives a TLS alert record, never a `220`.
+- **At the session cap** (`--max-sessions`) the refusal is the unchanged,
+  plaintext `421 4.7.0 Too many connections, closing transmission channel`
+  (decision 0027 §3). An implicit-TLS client reads it as a failed handshake
+  and retries; the mail was refused, never lost.
+
+The certificate is the one `gen-cert` mints; Kratos' `skip_ssl_verify=true`
+relaxes only the client, so a self-signed pair works for it.
+
+```
+$ swarmail gen-cert --domain localhost --out ./certs
+$ swarmail serve --smtp-implicit-tls --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
+# Kratos courier: smtps://user:pass@<host>:1025/?skip_ssl_verify=true&legacy_ssl=true
+```
+
+On the Helm chart, mount the pair with `tls.enabled: true` and
+`tls.secretName`, and set the flag through the env map:
+`config: {SWARMAIL_SMTP_IMPLICIT_TLS: "true"}`.

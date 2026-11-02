@@ -612,6 +612,95 @@ async fn a_mailslurper_bind_on_a_held_port_refuses() {
     drop(held);
 }
 
+/// Implicit TLS without a certificate pair never starts (decision 0116
+/// §3): the flag and the env spelling each make the binary exit non-zero
+/// with the one message on stderr, and no ready line is printed.
+#[tokio::test]
+async fn implicit_tls_without_a_pair_exits_non_zero_with_the_message() {
+    for env_spelling in [false, true] {
+        let mut cmd = serve_command();
+        if env_spelling {
+            cmd.env("SWARMAIL_SMTP_IMPLICIT_TLS", "true");
+        } else {
+            cmd.arg("--smtp-implicit-tls");
+        }
+        let out = command_output(&mut cmd).await;
+        let transcript = String::from_utf8_lossy(&out.stdout);
+        let reason = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "env={env_spelling}: must refuse: {:?}\n{transcript}{reason}",
+            out.status
+        );
+        assert!(
+            transcript.lines().all(|line| parse_addrs(line).is_none()),
+            "env={env_spelling}: the refused server came up: {transcript}"
+        );
+        assert!(
+            reason.contains("--smtp-implicit-tls requires --tls-cert and --tls-key"),
+            "env={env_spelling}: the refusal names the missing pair: {reason}"
+        );
+    }
+}
+
+/// `SWARMAIL_SMTP_IMPLICIT_TLS=false` is off (the clap bool env parse is
+/// the thing under test): no pair is needed and the listener greets in
+/// plaintext.
+#[tokio::test]
+async fn the_implicit_tls_env_false_leaves_the_listener_plain() {
+    let mut cmd = serve_command();
+    cmd.env("SWARMAIL_SMTP_IMPLICIT_TLS", "false");
+    let mut serve = spawn_serve(cmd).await;
+    let mut smtp = common::SmtpConn::connect(serve.smtp_addr).await;
+    smtp.send("QUIT").await;
+    assert!(smtp.reply().await.starts_with("221"));
+    kill_serve(&mut serve).await;
+}
+
+/// The env spelling with a real pair serves implicit TLS end to end on the
+/// shipped binary: a verifying rustls client handshakes on connect, is
+/// greeted inside TLS and delivers to its AUTH-named inbox.
+#[tokio::test]
+async fn the_implicit_tls_env_true_with_a_pair_serves_tls_from_the_first_byte() {
+    let pair = swarmail::tls::TlsConfig::generate_self_signed("localhost").unwrap();
+    let dir = tempfile::TempDir::with_prefix("swarmail-binary-implicit-").unwrap();
+    let (cert, key) = pair.write_to_dir(dir.path()).unwrap();
+    let root = rustls_pemfile::certs(&mut pair.cert_pem.as_bytes())
+        .next()
+        .unwrap()
+        .unwrap();
+    let mut cmd = serve_command();
+    cmd.env("SWARMAIL_SMTP_IMPLICIT_TLS", "true")
+        .arg("--tls-cert")
+        .arg(&cert)
+        .arg("--tls-key")
+        .arg(&key);
+    let mut serve = spawn_serve(cmd).await;
+    let mut tls = common::implicit_tls(serve.smtp_addr, "localhost", root).await;
+    tls.send(&format!(
+        "AUTH PLAIN {}",
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "\0binbox\0x")
+    ))
+    .await;
+    assert!(tls.reply_raw().await.starts_with("235"));
+    tls.send("MAIL FROM:<s@x.io>").await;
+    assert!(tls.reply_raw().await.starts_with("250"));
+    tls.send("RCPT TO:<r@y.io>").await;
+    assert!(tls.reply_raw().await.starts_with("250"));
+    let stored = tls.data("Subject: from the binary\r\n\r\nbody").await;
+    assert!(stored.starts_with("250"), "{stored}");
+    let (code, body) = common::http_json(
+        serve.http_addr,
+        "GET",
+        "/api/v1/inboxes/binbox/messages",
+        None,
+    )
+    .await;
+    assert_eq!(code, 200);
+    assert_eq!(body["emails"][0]["subject"], "from the binary");
+    kill_serve(&mut serve).await;
+}
+
 #[tokio::test]
 async fn serve_restores_a_data_file_across_a_restart() {
     let dir = tempfile::TempDir::with_prefix("swarmail-binary-").unwrap();

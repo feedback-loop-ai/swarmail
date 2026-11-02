@@ -79,8 +79,9 @@ pub struct ServeArgs {
     #[arg(long, value_name = "PATH", env = "SWARMAIL_DATA_FILE")]
     pub data_file: Option<PathBuf>,
 
-    /// PEM certificate for STARTTLS on the SMTP port. The listener stays
-    /// byte-identical plaintext without it. Requires --tls-key.
+    /// PEM certificate for TLS on the SMTP port: STARTTLS, or implicit TLS
+    /// with --smtp-implicit-tls. The listener stays byte-identical
+    /// plaintext without it. Requires --tls-key.
     #[arg(
         long,
         value_name = "FILE",
@@ -98,9 +99,11 @@ pub struct ServeArgs {
     )]
     pub tls_key: Option<PathBuf>,
 
-    /// Maximum time in milliseconds a STARTTLS handshake may take before
-    /// the session is dropped: a client that stalls mid-upgrade must not
-    /// tie a session task up forever. Plaintext sessions are bounded per
+    /// Maximum time in milliseconds a TLS handshake (STARTTLS or implicit)
+    /// may take before the session is dropped: a client that stalls
+    /// mid-handshake must not tie a session task up forever. With
+    /// --smtp-implicit-tls, 0 makes every connection fail before the
+    /// greeting. Plaintext sessions are bounded per
     /// read and per write by a compiled idle timeout — 5 minutes on SMTP,
     /// 10 minutes on POP3 — not by a session lifetime (decision 0036).
     #[arg(
@@ -110,6 +113,11 @@ pub struct ServeArgs {
         env = "SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS"
     )]
     pub tls_handshake_timeout_ms: u64,
+
+    /// Speak TLS from the first byte on the SMTP listener (implicit TLS,
+    /// RFC 8314). Requires --tls-cert/--tls-key. STARTTLS is not offered.
+    #[arg(long, env = "SWARMAIL_SMTP_IMPLICIT_TLS")]
+    pub smtp_implicit_tls: bool,
 
     /// Route mail by recipient (decision 0112): an SMTP envelope recipient
     /// `<local>@<label>.<DOMAIN>` is stored in inbox `<label>`, outranking
@@ -202,6 +210,7 @@ impl From<&ServeArgs> for Config {
                 tls_handshake_timeout: Duration::from_millis(args.tls_handshake_timeout_ms),
                 max_sessions: args.max_sessions,
                 route_domain: args.route_domain.clone(),
+                implicit_tls: args.smtp_implicit_tls,
                 ..SmtpConfig::default()
             },
             pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,

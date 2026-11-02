@@ -13,6 +13,7 @@ use std::time::Instant;
 use swarmail_evals::fixture::{self, FixtureConfig, IDENTITY_HEADER, Running};
 use swarmail_evals::mcp::McpClient;
 use swarmail_evals::oracle::{App, anchor_href, ics_property, labelled_url};
+use swarmail_evals::provenance::FixtureInputs;
 use swarmail_evals::runner::parse_swarmail_addrs;
 use swarmail_evals::state::Snapshot;
 use swarmail_evals::tasks;
@@ -84,6 +85,10 @@ struct Rig {
 
 impl Rig {
     async fn new(task: &str, count: usize) -> Rig {
+        Rig::with_inputs(task, count, Default::default()).await
+    }
+
+    async fn with_inputs(task: &str, count: usize, inputs: FixtureInputs) -> Rig {
         let sw = start_swarmail();
         let running = fixture::start(FixtureConfig {
             smtp: sw.smtp,
@@ -91,7 +96,7 @@ impl Rig {
             trial_id: "wire".into(),
             admin_secret: SECRET.into(),
             clock: Arc::new(Instant::now),
-            inputs: Default::default(),
+            inputs,
         })
         .await
         .unwrap();
@@ -1016,6 +1021,43 @@ async fn all_claim_routes_preserve_refusals_and_canonical_roles() {
     rig.stop().await;
 }
 
+/// A fixed seed whose digest places `DIGEST_ITEM` where the part-1 decoy
+/// would sit (the generator's `target-position` draw is 1 of 40), found by a
+/// bounded deterministic search so the displaced-control branch runs on every
+/// invocation. Slot 0 is the one account `Rig::new(task, 1)` provisions.
+fn seed_displacing_digest_part_one() -> FixtureInputs {
+    (0..10_000u32)
+        .map(|n| FixtureInputs::resolve(Some(&format!("{n:064x}")), None).unwrap())
+        .find(|inputs| inputs.select("digest-forty", 0, "digest", 0, "target-position", 40) == 1)
+        .expect("a seed within the bound displaces digest part 1")
+}
+
+/// The digest-forty negative control: the part-1 decoy's anchor selector if
+/// the mail carries that title, otherwise part 2 (the same topic, index 14).
+/// The generator displaces exactly one index, so one of the two is always
+/// present; the assertion names the task and the title if the layout drifts.
+fn digest_forty_control(task: &str, ambiguous: &Value) -> String {
+    let anchors: Vec<&str> = ambiguous["candidates"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{task}: ambiguous answer lists candidates: {ambiguous}"))
+        .iter()
+        .filter_map(|candidate| candidate["anchor_text"].as_str())
+        .collect();
+    let title = |part: u32| format!("Async drop RFC enters final comment period (part {part})");
+    let part = if anchors.contains(&title(1).as_str()) {
+        1
+    } else {
+        2
+    };
+    assert!(
+        anchors.contains(&title(part).as_str()),
+        "{task}: negative control {:?} must be among the {} pre-call candidates",
+        title(part),
+        anchors.len()
+    );
+    format!(r"^Async drop RFC enters final comment period \(part {part}\)$")
+}
+
 /// Focused tools drive the application's actual actions without reading bodies.
 /// Independent rigs keep each trap control out of the successful trial's ledger.
 #[tokio::test]
@@ -1028,11 +1070,22 @@ async fn focused_tools_complete_link_and_code_traps_without_guessing() {
         (
             "digest-forty",
             tasks::DIGEST_ITEM,
+            // Never read: `digest_forty_control` replaces this literal in
+            // every digest-forty negative rig.
             r"^Async drop RFC enters final comment period \(part 1\)$",
         ),
     ] {
-        for negative in [false, true] {
-            let rig = Rig::new(task, 1).await;
+        let mut rigs = vec![(false, None), (true, None)];
+        if task == "digest-forty" {
+            // Every random seed displaces the part-1 control 1 time in 40.
+            // This rig displaces it on every run.
+            rigs.push((true, Some(seed_displacing_digest_part_one())));
+        }
+        for (negative, inputs) in rigs {
+            let rig = match inputs {
+                Some(inputs) => Rig::with_inputs(task, 1, inputs).await,
+                None => Rig::new(task, 1).await,
+            };
             rig.prepare().await;
             let mut mcp = rig.mcp().await;
             let ambiguous = mcp
@@ -1048,6 +1101,14 @@ async fn focused_tools_complete_link_and_code_traps_without_guessing() {
                 rig.snapshot().await.events.is_empty(),
                 "ambiguity causes no guessed action"
             );
+            // The generator displaces exactly one of the 40 decoys with
+            // DIGEST_ITEM, so the digest's negative control is chosen from
+            // what the mail really holds. The falsifier for a product bug is
+            // asserted here: an anchor among the pre-call candidates must be
+            // selected by a zero-timeout wait on the same inbox.
+            let control = (task == "digest-forty" && negative)
+                .then(|| digest_forty_control(task, &ambiguous));
+            let decoy = control.as_deref().unwrap_or(decoy);
             let result = mcp.call("swarmail_wait_for_link",json!({"inbox":rig.inbox(0),"anchor_text":if negative {decoy} else {anchor},"timeout_ms":0})).await.unwrap();
             assert_eq!(result["status"], "selected", "{task}: {result}");
             rig.app(0)
