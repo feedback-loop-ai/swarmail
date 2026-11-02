@@ -233,6 +233,24 @@ A mismatch on a field the consumer reads (`mailItems`, `totalRecords`,
 `subject`, `body`, `toAddresses`) blocks acceptance. A mismatch elsewhere
 is a dated addendum and a follow-up change.
 
+### 8. Implementation notes (2026-11-02, the implement seat)
+
+Three details the build settled, all inside the rulings above:
+
+- **The wipe body is checked by hand.** `DELETE /mail` reads the body as a
+  plain JSON value and requires an object with the sole key `pruneCode`.
+  A derived struct would also accept a positional array, and `["all"]` wiped
+  in the first wire test; the same hazard 0070 closed for seed and chaos.
+  Arrays, scalars, `{}` and extra keys share one `400`:
+  `deletion requires the JSON body {"pruneCode":"all"}`.
+- **`/mail/{id}/message` is hardened for a browser.** The body is the
+  sender's HTML, served as `text/html` from the listener that also hosts
+  the wipe. The answer carries `Content-Security-Policy: sandbox` and
+  `X-Content-Type-Options: nosniff`, so a page opened from it runs no
+  script and holds no origin. The body bytes are unchanged.
+- **The startup line names the listener.** `swarmail serve` logs
+  `mailslurper=Some(addr)` (or `None`) beside the other bound addresses.
+
 ## Alternatives rejected
 
 - **Routes at the root of the HTTP port** (the simplicity position). This

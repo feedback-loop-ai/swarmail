@@ -33,6 +33,8 @@ struct Serve {
     smtp_addr: SocketAddr,
     pop3_addr: SocketAddr,
     http_addr: SocketAddr,
+    /// The opt-in MailSlurper listener, when the startup line names one.
+    mailslurper_addr: Option<SocketAddr>,
     /// The reader parked just past the startup line: the signal legs
     /// sequence on the server's own log lines, never a sleep.
     stdout: Option<BufReader<ChildStdout>>,
@@ -61,6 +63,14 @@ fn parse_addrs(line: &str) -> Option<(SocketAddr, SocketAddr, SocketAddr)> {
     let pop3 = line.split("pop3=").nth(1)?.split_whitespace().next()?;
     let http = line.split("http=").nth(1)?.split_whitespace().next()?;
     Some((smtp.parse().ok()?, pop3.parse().ok()?, http.parse().ok()?))
+}
+
+/// The startup line's `mailslurper=` field (a `?`-formatted option):
+/// `Some(addr)` when the opt-in listener is up, `None` for the `None` text
+/// or an absent field (decision 0116).
+fn parse_mailslurper(line: &str) -> Option<SocketAddr> {
+    let field = line.split("mailslurper=Some(").nth(1)?;
+    field.split(')').next()?.parse().ok()
 }
 
 /// A `serve` command on OS-assigned ports.
@@ -241,18 +251,20 @@ async fn try_spawn_serve(mut cmd: Command, deadline: Duration) -> Result<Serve, 
             if n == 0 {
                 return Err("stdout EOF before startup addresses".to_string());
             }
-            if let Some(addrs) = parse_addrs(&String::from_utf8_lossy(&line)) {
-                return Ok(addrs);
+            let text = String::from_utf8_lossy(&line);
+            if let Some(addrs) = parse_addrs(&text) {
+                return Ok((addrs, parse_mailslurper(&text)));
             }
         }
     })
     .await;
     match result {
-        Ok(Ok((smtp_addr, pop3_addr, http_addr))) => Ok(Serve {
+        Ok(Ok(((smtp_addr, pop3_addr, http_addr), mailslurper_addr))) => Ok(Serve {
             child,
             smtp_addr,
             pop3_addr,
             http_addr,
+            mailslurper_addr,
             stdout: Some(reader),
             reaped: false,
             stderr,
@@ -529,6 +541,75 @@ async fn a_pop3_env_bind_on_a_held_port_refuses() {
 #[tokio::test]
 async fn an_http_env_bind_on_a_held_port_refuses() {
     assert_env_bind_refused("SWARMAIL_HTTP_LISTEN").await;
+}
+
+/// The MailSlurper listener is opt-in (decision 0116): the env var alone
+/// binds it, the startup line names it, and it answers its own routes. The
+/// same child without the variable binds nothing.
+#[tokio::test]
+async fn serve_takes_the_mailslurper_listener_from_the_environment() {
+    let mut serve = {
+        let mut cmd = serve_command();
+        cmd.env("SWARMAIL_MAILSLURPER_LISTEN", "127.0.0.1:0");
+        spawn_serve(cmd).await
+    };
+    let addr = serve.mailslurper_addr.expect("the startup line names it");
+    assert_ne!(addr.port(), 4437, "127.0.0.1:0 must bind an ephemeral port");
+    let (st, body) = common::http_json(addr, "GET", "/mailcount", None).await;
+    assert_eq!((st, body), (200, serde_json::json!({"mailCount": 0})));
+    // The HTTP plane does not serve the routes.
+    let (st, _) = common::http_send_text(serve.http_addr, "GET", "/mailcount", None).await;
+    assert_eq!(st, 404);
+    let status = signal_and_wait(&mut serve, libc::SIGINT, Duration::from_secs(30)).await;
+    serve.reaped = true;
+    assert!(status.success(), "SIGINT exit: {status:?}");
+
+    // Off by default: no variable, no listener.
+    let mut serve = spawn_serve(serve_command()).await;
+    assert_eq!(serve.mailslurper_addr, None);
+    let status = signal_and_wait(&mut serve, libc::SIGINT, Duration::from_secs(30)).await;
+    serve.reaped = true;
+    assert!(status.success(), "SIGINT exit: {status:?}");
+}
+
+/// The flag spelling binds the same listener.
+#[tokio::test]
+async fn serve_takes_the_mailslurper_listener_from_its_flag() {
+    let mut cmd = serve_command();
+    cmd.args(["--mailslurper-listen", "127.0.0.1:0"]);
+    let mut serve = spawn_serve(cmd).await;
+    let addr = serve.mailslurper_addr.expect("the startup line names it");
+    let (st, body) = common::http_json(addr, "GET", "/mail", None).await;
+    assert_eq!(
+        (st, body),
+        (200, serde_json::json!({"totalPages": 0, "totalRecords": 0}))
+    );
+    let status = signal_and_wait(&mut serve, libc::SIGINT, Duration::from_secs(30)).await;
+    serve.reaped = true;
+    assert!(status.success(), "SIGINT exit: {status:?}");
+}
+
+/// A MailSlurper address that cannot bind fails startup: non-zero, the
+/// in-use reason, and no ready line (decision 0116 §1).
+#[tokio::test]
+async fn a_mailslurper_bind_on_a_held_port_refuses() {
+    let held = std::net::TcpListener::bind("127.0.0.1:0").expect("a held port binds");
+    let addr = held.local_addr().expect("the held addr is local");
+    let mut cmd = serve_command();
+    cmd.env("SWARMAIL_MAILSLURPER_LISTEN", addr.to_string());
+    let out = command_output(&mut cmd).await;
+    let transcript = String::from_utf8_lossy(&out.stdout);
+    let reason = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        transcript.lines().all(|line| parse_addrs(line).is_none()),
+        "the refused server came up: {transcript}"
+    );
+    assert!(!out.status.success(), "must refuse: {:?}", out.status);
+    assert!(
+        reason.contains("swarmail: ") && reason.contains("in use"),
+        "the refusal says the address is in use: {reason}"
+    );
+    drop(held);
 }
 
 #[tokio::test]
