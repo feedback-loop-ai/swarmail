@@ -21,7 +21,7 @@
 //! MailHog page serializes borrowed views into one buffer capped at
 //! [`MAX_COMPAT_PAGE_BYTES`].
 //!
-//! Deliberate omissions live in README.md (`Compat shims`); the headline
+//! Deliberate omissions live in docs/guide/compat-shims.md; the headline
 //! ones: no attachments, no read/unread state, no send-API, and no
 //! `/api/v1/messages/{id}/mime/part/...`.
 
@@ -128,7 +128,7 @@ const DEFAULT_PAGE_LIMIT: usize = 50;
 /// The page limit, with `0` meaning "unset" (issue #55): upstream answers
 /// the default page for `limit=0`, never an empty one — an empty page
 /// makes a client's "assert nothing arrived" pass vacuously. The 0030 §3
-/// cap still refuses anything above it; a malformed value is README-listed
+/// cap still refuses anything above it; a malformed value is guide-listed
 /// (axum's own rejection shape).
 fn page_limit(requested: Option<usize>) -> Result<usize, ApiError> {
     match requested {
@@ -459,8 +459,8 @@ fn mailpit_envelope(mailbox: usize, matches: usize, start: usize, page: &[Arc<Em
 /// store when none is named — found in one pass on the blocking pool. A
 /// nonblank `query` refuses by name: a filtered latest is a search and an
 /// id fetch. An empty scope is a 404 even when another inbox has mail. Any
-/// other key — Mailpit's `tz` included — is a named `400` (README lists
-/// it). The selection and the whole render run in one blocking-pool hop
+/// other key — Mailpit's `tz` included — is a named `400` (the shims
+/// guide lists it). The selection and the whole render run in one blocking-pool hop
 /// ([`render_one`]); the winner's `Arc` is held through the render, and
 /// two calls are two snapshots.
 async fn render_latest<Build>(

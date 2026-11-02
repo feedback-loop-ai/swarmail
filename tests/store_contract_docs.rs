@@ -137,6 +137,37 @@ fn refuses(text: &str, what: &str, phrases: &[&str]) {
     }
 }
 
+/// The guide pages under `docs/guide/` that hold the README's detail, as
+/// repository paths, sorted. Read from the directory, so a page added
+/// later is covered by every refusal below without being listed here.
+fn guide_pages() -> Vec<String> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/guide");
+    let mut pages: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{} is unreadable: {e}", dir.display()))
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".md"))
+        .map(|name| format!("docs/guide/{name}"))
+        .collect();
+    pages.sort();
+    assert!(pages.len() >= 20, "the guide pages were found: {pages:?}");
+    pages
+}
+
+/// The current user documentation: the README front page and every guide
+/// page its detail moved into. A refused claim must return to none of them.
+fn user_docs() -> Vec<String> {
+    let mut docs = vec!["README.md".to_string()];
+    docs.extend(guide_pages());
+    docs
+}
+
+/// No phrase is present in the README or in any guide page.
+fn refuses_in_user_docs(phrases: &[&str]) {
+    for path in user_docs() {
+        refuses(&doc(&path), &path, phrases);
+    }
+}
+
 /// The reviewed claims #87 names, gone from every current document. Short
 /// enough to sit on one source line, so a comment prefix (`//!`, `#`) at a
 /// line break cannot hide one from the check.
@@ -146,22 +177,25 @@ const OLD_MEMORY_CLAIMS: &[&str] = &[
     "restored size of the claim",
 ];
 
-/// The await-metrics registry cap the README documents, observed on a
+/// The await-metrics registry cap the guide documents, observed on a
 /// running server rather than restated: this test binary is the only
 /// user of the process-global registry, so after the documented cap plus
 /// one distinct awaited names, the scrape holds exactly the cap's worth of
 /// named rows and one overflow sample. A cap moved either way changes the
-/// count, and the documented `4,096` with it, so the README phrases go red.
+/// count, and the documented `4,096` with it, so the guide phrases go red.
+/// The README's metrics detail moved to the network-posture page and its
+/// memory detail to the persistence page; each states its own phrase.
 #[tokio::test]
 async fn the_documented_registry_cap_is_the_running_one() {
-    let readme = doc("README.md");
-    let documented: usize = readme
+    let posture = doc("docs/guide/network-posture.md");
+    let persistence = doc("docs/guide/persistence.md");
+    let documented: usize = posture
         .split(" names. A name first seen after that has no row of its own")
         .next()
         .and_then(|head| head.rsplit("the first ").next())
         .map(|n| n.replace(',', ""))
         .and_then(|n| n.parse().ok())
-        .expect("the README documents the registry cap as `the first N names`");
+        .expect("the guide documents the registry cap as `the first N names`");
     let srv = common::start().await;
     let mut waits = tokio::task::JoinSet::new();
     let names: Vec<String> = (0..=documented).map(|i| format!("cap-{i}")).collect();
@@ -195,12 +229,14 @@ async fn the_documented_registry_cap_is_the_running_one() {
         .count();
     let cap = thousands(named);
     states(
-        &readme,
-        "README",
-        &[
-            &format!("for the first {cap} names"),
-            &format!("{cap}-name cap on the await-metrics registry"),
-        ],
+        &posture,
+        "docs/guide/network-posture.md",
+        &[&format!("for the first {cap} names")],
+    );
+    states(
+        &persistence,
+        "docs/guide/persistence.md",
+        &[&format!("{cap}-name cap on the await-metrics registry")],
     );
     assert!(
         scrape.lines().any(|l| l == format!("{overflow} 1")),
@@ -209,12 +245,13 @@ async fn the_documented_registry_cap_is_the_running_one() {
     srv.stop().await;
 }
 
+/// The README's persistence detail lives on the guide's persistence page.
 #[test]
 fn the_readme_states_the_memory_and_timestamp_contract() {
-    let readme = doc("README.md");
+    let persistence = doc("docs/guide/persistence.md");
     states(
-        &readme,
-        "README",
+        &persistence,
+        "docs/guide/persistence.md",
         &[
             "Memory is not globally bounded",
             "not a global byte or RSS cap",
@@ -229,7 +266,7 @@ fn the_readme_states_the_memory_and_timestamp_contract() {
             "0038-store-memory-and-timestamps.md",
         ],
     );
-    refuses(&readme, "README", OLD_MEMORY_CLAIMS);
+    refuses_in_user_docs(OLD_MEMORY_CLAIMS);
 }
 
 /// The store module and the chart name 0038 with its current status, read
@@ -270,20 +307,16 @@ fn the_store_module_and_chart_state_the_memory_contract() {
 
 #[test]
 fn the_pop3_size_rule_is_stated_alike_everywhere() {
-    let readme = doc("README.md");
+    let pop3_page = doc("docs/guide/pop3.md");
     states(
-        &readme,
-        "README",
+        &pop3_page,
+        "docs/guide/pop3.md",
         &[
             "the transparency dots RETR adds not counted (RFC 1939 §11)",
             "0037-pop3-size-accounting.md",
         ],
     );
-    refuses(
-        &readme,
-        "README",
-        &["CRLF-terminated and dot-stuffed, the terminating"],
-    );
+    refuses_in_user_docs(&["CRLF-terminated and dot-stuffed, the terminating"]);
     let pop3 = doc("src/pop3.rs");
     states(
         &pop3,
@@ -296,21 +329,40 @@ fn the_pop3_size_rule_is_stated_alike_everywhere() {
 /// widened recipient predicate, the nullable envelope sender, the renamed
 /// unread key, the wipe route's honest name, latest's limits, the bounded
 /// snippet and page budget and the unordered batch effects — stated in
-/// README and llms.txt and in the served schema, with the drifted claims
-/// issue #99 named gone.
+/// the guide pages that hold the README's detail, in llms.txt and in the
+/// served schema, with the drifted claims issue #99 named gone.
 #[test]
 fn the_compat_validation_contracts_are_published() {
-    let readme = doc("README.md");
+    let rest = doc("docs/guide/rest-api.md");
     states(
-        &readme,
-        "README",
+        &rest,
+        "docs/guide/rest-api.md",
         &[
             "the SMTP envelope recipients — so a Bcc'd address matches",
             "`envelope_from`, the SMTP `MAIL FROM` reverse path",
+        ],
+    );
+    let shims = doc("docs/guide/compat-shims.md");
+    states(
+        &shims,
+        "docs/guide/compat-shims.md",
+        &[
             "the envelope's `messages_unread` is the match count",
             "swarmail's own explicit wipe of every inbox — not an upstream route",
             "a nonblank `?query=` is a `400` — search, then fetch the id",
-            "the members' effects have **no** order",
+        ],
+    );
+    let mcp = doc("docs/guide/mcp.md");
+    states(
+        &mcp,
+        "docs/guide/mcp.md",
+        &["the members' effects have **no** order"],
+    );
+    let posture = doc("docs/guide/network-posture.md");
+    states(
+        &posture,
+        "docs/guide/network-posture.md",
+        &[
             &format!(
                 "its JSON would pass {} (`compat page exceeds byte budget {}; reduce limit or fetch raw by id",
                 mib(swarmail::compat::MAX_COMPAT_PAGE_BYTES),
@@ -323,11 +375,7 @@ fn the_compat_validation_contracts_are_published() {
             "0044-compat-validation.md",
         ],
     );
-    refuses(
-        &readme,
-        "README",
-        &["messages_unread_count", "MailHog's wipe alias"],
-    );
+    refuses_in_user_docs(&["messages_unread_count", "MailHog's wipe alias"]);
     let llms = doc("src/static/llms.txt");
     states(
         &llms,
@@ -1472,20 +1520,23 @@ fn the_gate_inventory_has_one_home_and_everyone_points_at_it() {
     );
 }
 
-/// D09: the README's CI table names every job ci.yml declares and its
-/// suite table every root suite under `tests/`, so a new job or suite
-/// that is not documented — or a stale name such as the old `chart` job —
-/// goes red.
+/// D09: the testing guide's CI table (the README's former Testing &
+/// coverage section) names every job ci.yml declares and its suite table
+/// every root suite under `tests/`, so a new job or suite that is not
+/// documented — or a stale name such as the old `chart` job — goes red.
 #[test]
 fn the_readme_names_every_ci_job_and_every_root_suite() {
-    let readme = raw("README.md");
-    let testing = section(&readme, "## Testing & coverage");
+    let testing = raw("docs/guide/testing.md");
+    assert!(
+        testing.starts_with("# Testing & coverage\n"),
+        "the testing page"
+    );
     let jobs = ci_jobs();
     assert!(jobs.len() >= 10, "ci.yml jobs were found: {jobs:?}");
     for job in &jobs {
         assert!(
             testing.contains(&format!("`{job}`")),
-            "README's CI table must name the `{job}` job"
+            "the testing guide's CI table must name the `{job}` job"
         );
     }
     let mut suites = 0;
@@ -1496,16 +1547,12 @@ fn the_readme_names_every_ci_job_and_every_root_suite() {
             suites += 1;
             assert!(
                 testing.contains(&format!("| `tests/{name}` |")),
-                "README's suite table must list tests/{name}"
+                "the testing guide's suite table must list tests/{name}"
             );
         }
     }
     assert!(suites >= 20, "the root suites were found");
-    refuses(
-        &doc("README.md"),
-        "README",
-        &["the CI `chart` job", "functions** (today"],
-    );
+    refuses_in_user_docs(&["the CI `chart` job", "functions** (today"]);
 }
 
 /// D05: `deny.toml` allows exactly what house rules' Dependencies names,
@@ -1547,41 +1594,73 @@ fn doc_text(text: &str) -> String {
 /// refused. The entity-table size is read from the table itself.
 #[test]
 fn the_corrected_release_and_runtime_claims_stay_corrected() {
-    let readme = doc("README.md");
     let k8s = file_status(&record("0008-kubernetes-deployment-contract.md"), "0008");
-    states(
-        &readme,
-        "README",
-        &[
-            &format!("0008-kubernetes-deployment-contract.md), *{k8s}*"),
-            "not published on crates.io",
-            "append-only, with dated errata",
-            "`serve` and `gen-cert` log to stdout",
-            "Only `mcp` logs to stderr",
-            "exactly 100/100/100",
-            "under `target/coverage/`",
-            "2,097,152 bytes",
-            "plain-text `413`",
-            "a second AUTH on the same connection answers `503`",
-            "files *both* tests' mail under `a`",
-            "Open a fresh connection per inbox",
-            "ends the session with **no reply**",
-            "is accepted at startup, and then every STARTTLS handshake fails",
-            "**Stopping:**",
-            "knife's edge",
-            "`docker stop -t 30`",
-        ],
-    );
-    refuses(
-        &readme,
-        "README",
-        &[
-            "The crate ships to",
-            "ships to [crates.io]",
-            "release notes are frozen",
-            "every other subcommand to stderr",
-        ],
-    );
+    // The README keeps the short form; the detail moved into guide pages,
+    // each of which states the sentences that moved with it.
+    for (path, phrases) in [
+        (
+            "README.md",
+            vec![
+                format!("0008-kubernetes-deployment-contract.md), *{k8s}*"),
+                "not published on crates.io".to_string(),
+            ],
+        ),
+        (
+            "docs/guide/kubernetes.md",
+            vec![format!("0008-kubernetes-deployment-contract.md), *{k8s}*")],
+        ),
+        (
+            "docs/guide/publishing.md",
+            vec![
+                "not published on crates.io".to_string(),
+                "append-only, with dated errata".to_string(),
+            ],
+        ),
+        (
+            "docs/guide/quickstart.md",
+            vec![
+                "not published on crates.io".to_string(),
+                "`serve` and `gen-cert` log to stdout".to_string(),
+                "Only `mcp` logs to stderr".to_string(),
+                "a second AUTH on the same connection answers `503`".to_string(),
+                "files *both* tests' mail under `a`".to_string(),
+                "Open a fresh connection per inbox".to_string(),
+                "**Stopping:**".to_string(),
+                "knife's edge".to_string(),
+                "`docker stop -t 30`".to_string(),
+            ],
+        ),
+        (
+            "docs/guide/testing.md",
+            vec![
+                "exactly 100/100/100".to_string(),
+                "under `target/coverage/`".to_string(),
+            ],
+        ),
+        (
+            "docs/guide/rest-api.md",
+            vec![
+                "2,097,152 bytes".to_string(),
+                "plain-text `413`".to_string(),
+            ],
+        ),
+        (
+            "docs/guide/smtp.md",
+            vec![
+                "ends the session with **no reply**".to_string(),
+                "is accepted at startup, and then every STARTTLS handshake fails".to_string(),
+            ],
+        ),
+    ] {
+        let phrases: Vec<&str> = phrases.iter().map(String::as_str).collect();
+        states(&doc(path), path, &phrases);
+    }
+    refuses_in_user_docs(&[
+        "The crate ships to",
+        "ships to [crates.io]",
+        "release notes are frozen",
+        "every other subcommand to stderr",
+    ]);
 
     let notes = doc("docs/releases/v0.1.0.md");
     let entities = raw("src/extract/entities.rs");
@@ -1634,6 +1713,12 @@ fn issue_182_mcp_section(text: &str) -> String {
         .split_once("### mcp — agents drive the mail")
         .map(|(_, rest)| rest)
         .or_else(|| normalized.split_once("## mcp").map(|(_, rest)| rest))
+        // The guide's MCP page, whose title is the README's former heading.
+        .or_else(|| {
+            normalized
+                .split_once("# mcp — agents drive the mail")
+                .map(|(_, rest)| rest)
+        })
         .expect("the document has an MCP section");
     let end = rest
         .find("### pop3")
@@ -1781,7 +1866,7 @@ fn issue_182_assert_rejected_append(
 
 #[test]
 fn issue_182_unknown_mcp_arguments_keep_their_json_rpc_envelope() {
-    for path in ["README.md", "src/static/llms.txt"] {
+    for path in ["docs/guide/mcp.md", "src/static/llms.txt"] {
         let text = raw(path);
         issue_182_assert_rejected_edit(
             issue_182_unknown_arguments,
@@ -1795,7 +1880,7 @@ fn issue_182_unknown_mcp_arguments_keep_their_json_rpc_envelope() {
 
 #[test]
 fn issue_182_seed_and_webhook_data_errors_do_not_cover_extractor_refusals() {
-    for path in ["README.md", "src/static/llms.txt"] {
+    for path in ["docs/guide/rest-api.md", "src/static/llms.txt"] {
         let text = raw(path);
         issue_182_assert_rejected_append(
             issue_182_data_envelopes,
@@ -1814,7 +1899,7 @@ fn issue_182_seed_and_webhook_data_errors_do_not_cover_extractor_refusals() {
 
 #[test]
 fn issue_182_mcp_wait_results_keep_distinct_envelopes() {
-    for path in ["README.md", "src/static/llms.txt"] {
+    for path in ["docs/guide/mcp.md", "src/static/llms.txt"] {
         let text = raw(path);
         issue_182_assert_rejected_edit(
             issue_182_mcp_wait_and_seed_envelopes,
@@ -1870,7 +1955,7 @@ fn issue_182_mcp_wait_results_keep_distinct_envelopes() {
 
 #[test]
 fn issue_182_thread_keys_name_the_full_case_folding_limit() {
-    let readme = raw("README.md");
+    let readme = raw("docs/guide/threads-and-ui.md");
     issue_182_assert_rejected_edit(
         issue_182_thread_case_limit,
         &readme,
@@ -1882,7 +1967,7 @@ fn issue_182_thread_keys_name_the_full_case_folding_limit() {
 
 #[test]
 fn issue_182_pop3_documents_the_snapshot_and_live_store_skew() {
-    let readme = raw("README.md");
+    let readme = raw("docs/guide/pop3.md");
     issue_182_assert_rejected_edit(
         issue_182_pop3_snapshot_skew,
         &readme,
@@ -1968,6 +2053,9 @@ fn current_descriptions_drop_unmeasured_superlatives() {
         "src/main.rs",
     ] {
         refuses(&raw(path).to_ascii_lowercase(), path, &["fastest"]);
+    }
+    for path in guide_pages() {
+        refuses(&raw(&path).to_ascii_lowercase(), &path, &["fastest"]);
     }
     assert!(
         raw("src/main.rs").starts_with("//! Swarmail — built for a program waiting on mail.\n")
