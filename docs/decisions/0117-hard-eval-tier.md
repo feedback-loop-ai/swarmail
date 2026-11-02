@@ -1,6 +1,7 @@
 # 0117 — A hard eval tier and its named traps
 
-- **Status:** proposed — awaiting the operator
+- **Status:** accepted (operator, 2026-11-02 — "Accept 0116, 0117, 0118",
+  given in chat to the dispatcher).
 - **Date:** 2026-11-02; text aligned 2026-11-02 on the first review's return
   (0102), and again on the second review's return, status unchanged.
 - **Scope:** Epic #164, the operator's 2026-11-01 ruling to build a harder
@@ -122,3 +123,23 @@ text; 0071 receives a dated pointer only when the operator accepts. The
 chief's design commit excludes the decision index; the implementation's
 first task adds the proposed row. This record documents design, not an
 executed proof, a gate result or a paid measurement.
+
+## Dated acceptance note — 2026-11-02
+
+The operator accepted this record on 2026-11-02 ("Accept 0116, 0117,
+0118"). It amends accepted [0071](0071-eval-trap-scoring.md) §1 and §4's
+"preserving tiers", as the Amends line states; 0071 carries a dated marker
+of this date. 0076 §5's "seven traps" count is now historical, as the
+Amends line says; 0076 is neither edited nor marked. Checked against main
+`58ad25b`:
+
+- The **Number** line is historical: 0115 and 0116 were on main before
+  this record landed as `c3f28a3` (#319); 0117 was free there and is kept.
+- The Date line's "status unchanged" and *Authority and integration*
+  describe the proposal period. The implementation, including the three
+  `trap_class` arms that depend on this record, merged as `c3f28a3` while
+  it was proposed, as compatible work under accepted 0045 §8; this
+  acceptance settles that dependency.
+- *Alternatives and consequences* calls 0112 proposed. 0112 was accepted
+  on 2026-11-02 (#310); that reason is historical, and this acceptance
+  adds no plus-alias task.

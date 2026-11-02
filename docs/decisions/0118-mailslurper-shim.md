@@ -1,6 +1,7 @@
 # 0118 — A MailSlurper service-API shim on an opt-in listener, one global mailbox
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "Accept 0116, 0117, 0118",
+  given in chat to the dispatcher).
 - **Date:** 2026-11-02
 - **Scope:** issue #314 (operator request 2026-11-02; it gates Alkemio's
   nightly server-API suite on their test cluster with Swarmail as the mail
@@ -348,3 +349,17 @@ assistant must not merge it on green.
   acceptance criterion requires the delete.
 - A deployment that enables the listener is a global-mailbox Swarmail for
   its MailSlurper clients, and the guide says so.
+
+## Dated acceptance note — 2026-11-02
+
+The operator accepted this record on 2026-11-02 ("Accept 0116, 0117,
+0118"). It amends accepted [0011](0011-shim-delete-contract.md), only its
+sentence that `DELETE /api/v1/delete-all` remains the only cross-inbox
+wipe, and accepted [0004](0004-per-test-inboxes-via-smtp-auth.md), only
+its consequence that `clear_all` is the only cross-inbox destructive
+endpoint, as the Amends line states; both carry a dated marker of this
+date. The code merged as `58ad25b` (#320) on 2026-11-02 while this record
+still read proposed; §9's merge hold waited on this acceptance, which
+legitimises that merge. The ruling as given does not itemise §7's
+verification; this note records the acceptance, not the outcome of those
+checks.
