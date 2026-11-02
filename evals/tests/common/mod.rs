@@ -730,6 +730,11 @@ async fn helper(mode: &str) -> i32 {
             if mode == "unsafe_output_then_server_death" {
                 #[cfg(target_os = "linux")]
                 {
+                    // SAFETY: `signal` has no preconditions here. Ignoring TERM
+                    // lets this test agent report its own exit status
+                    // (0 = found and killed serve, 64 = did not) in either
+                    // reaping order.
+                    unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
                     let runner_pid = std::env::var("EVAL_TEST_RUNNER_PID").unwrap();
                     let mut killed = false;
                     for entry in std::fs::read_dir("/proc").unwrap() {
