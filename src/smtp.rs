@@ -10,7 +10,11 @@
 //! restarts per RFC 3207 §4.2, with everything the client said before the
 //! handshake discarded. The handshake itself is bounded: a client that
 //! stalls mid-upgrade is dropped after `SmtpConfig::tls_handshake_timeout`
-//! instead of pinning its session task. Plaintext is bounded per read and
+//! instead of pinning its session task. With `SmtpConfig::implicit_tls`
+//! (decision 0116, RFC 8314 §3.3) the same handshake, under the same
+//! deadline, runs on connect — before the greeting — and the session starts
+//! with TLS already active, so `STARTTLS` is neither advertised nor
+//! accepted. Plaintext is bounded per read and
 //! per write by `SmtpConfig::idle_timeout` (decision 0027) — one operation,
 //! never a session or DATA lifetime: a peer completing a line inside each
 //! window keeps its slot indefinitely (decision 0036 §5). A session that
@@ -67,7 +71,7 @@ const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024;
 /// server memory with an unterminated line.
 const MAX_COMMAND_LINE: usize = 4096;
 
-/// How long a STARTTLS handshake may take by default. A real rustls
+/// How long a TLS handshake (STARTTLS or implicit) may take by default. A real rustls
 /// handshake over loopback is milliseconds; ten seconds already forgives a
 /// very slow peer while a stalled one cannot hold a session task forever.
 const DEFAULT_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -103,9 +107,10 @@ pub struct SmtpConfig {
     pub accept_any_auth: bool,
     /// Largest accepted DATA payload in bytes; larger gets 552.
     pub max_message_size: usize,
-    /// How long a STARTTLS handshake may take before the session is
-    /// dropped. A client that connects, greets and then goes silent
-    /// mid-upgrade must not be able to tie the session task up forever;
+    /// How long a TLS handshake — STARTTLS, or implicit TLS with
+    /// `implicit_tls` — may take before the session is dropped. A client
+    /// that connects (or greets) and then goes silent mid-handshake must
+    /// not be able to tie the session task up forever;
     /// the deadline bounds exactly that wait and nothing else — plaintext
     /// reads and writes answer to `idle_timeout`.
     pub tls_handshake_timeout: Duration,
@@ -125,6 +130,12 @@ pub struct SmtpConfig {
     /// to a server that never heard of routing. Stored ASCII-lowercased and
     /// already validated (`crate::config::parse_route_domain`).
     pub route_domain: Option<String>,
+    /// Implicit TLS (decision 0116, RFC 8314 §3.3): the listener runs the
+    /// TLS handshake before it writes anything, and every session starts
+    /// TLS-active. `false` — the default — leaves the listener
+    /// byte-identical. Requires a TLS config: `serve` refuses the mode
+    /// without one, so a port asked to be TLS never serves plaintext.
+    pub implicit_tls: bool,
 }
 
 impl Default for SmtpConfig {
@@ -137,6 +148,7 @@ impl Default for SmtpConfig {
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
             max_sessions: DEFAULT_MAX_SESSIONS,
             route_domain: None,
+            implicit_tls: false,
         }
     }
 }
@@ -361,6 +373,24 @@ impl AsyncWrite for Recorder {
     }
 }
 
+/// The error text of the implicit-TLS pair requirement (decision 0116 §3).
+pub(crate) const IMPLICIT_TLS_NEEDS_PAIR: &str =
+    "--smtp-implicit-tls requires --tls-cert and --tls-key";
+
+/// Implicit TLS without a certificate pair is refused, never served as
+/// plaintext. The one owner of the rule: `run_on` calls it before any
+/// listener binds and `serve` calls it first, so an in-process caller
+/// building a `Config` by hand fails closed too.
+pub(crate) fn require_tls_for_implicit(cfg: &SmtpConfig, tls_configured: bool) -> io::Result<()> {
+    if cfg.implicit_tls && !tls_configured {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            IMPLICIT_TLS_NEEDS_PAIR,
+        ));
+    }
+    Ok(())
+}
+
 pub async fn serve(
     listener: TcpListener,
     store: Arc<Store>,
@@ -370,6 +400,7 @@ pub async fn serve(
     degraded: Arc<AtomicBool>,
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> io::Result<()> {
+    require_tls_for_implicit(&cfg, tls.is_some())?;
     #[cfg(test)]
     let probe = LISTENER_PROBE.try_with(Arc::clone).ok();
     let mut shutdown = std::pin::pin!(shutdown);
@@ -809,6 +840,26 @@ enum TlsOffer {
     Active,
 }
 
+/// One TLS handshake on an accepted socket, under one deadline: the shared
+/// body of the STARTTLS upgrade and of implicit TLS (decision 0116). A
+/// client that stalls — connected or greeted, then silent — must not tie a
+/// session task up forever. On elapse the `Accept` future is dropped,
+/// taking the socket with it: the peer sees the connection close and the
+/// listener keeps serving. A rustls refusal is returned as it is.
+async fn tls_handshake(
+    acc: &TlsAcceptor,
+    raw: TcpStream,
+    deadline: Duration,
+) -> io::Result<TlsStream<TcpStream>> {
+    match tokio::time::timeout(deadline, acc.accept(raw)).await {
+        Ok(handshake) => handshake,
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "TLS handshake deadline elapsed",
+        )),
+    }
+}
+
 async fn handle_conn(
     stream: TcpStream,
     store: Arc<Store>,
@@ -816,8 +867,30 @@ async fn handle_conn(
     cfg: SmtpConfig,
     tls: Option<Arc<rustls::ServerConfig>>,
 ) -> io::Result<()> {
-    // Chaos: connect event can drop the session before the banner.
-    let mut conn = Conn::Plain(Some(stream));
+    // The starting transport is decided once (decision 0116 §4). Implicit
+    // TLS runs the handshake before the session writes a byte, under the
+    // handshake deadline and inside this capped session task, never in the
+    // accept loop; the session then starts TLS-active. A handshake failure
+    // or an elapsed deadline returns before any write: the socket is
+    // dropped and no SMTP byte leaves. `serve` refuses implicit mode
+    // without a TLS config, so there is no plaintext arm for it.
+    let (mut conn, offer) = match tls {
+        Some(server_cfg) if cfg.implicit_tls => {
+            let acc = TlsAcceptor::from(server_cfg);
+            let secured = tls_handshake(&acc, stream, cfg.tls_handshake_timeout).await?;
+            (Conn::Tls(Box::new(secured)), TlsOffer::Active)
+        }
+        Some(server_cfg) => (
+            Conn::Plain(Some(stream)),
+            TlsOffer::Offered(TlsAcceptor::from(server_cfg)),
+        ),
+        None => (Conn::Plain(Some(stream)), TlsOffer::None),
+    };
+
+    // Chaos: connect event can drop the session before the banner. Checked
+    // on the chosen transport, so in implicit mode an injected error line
+    // travels inside TLS and is never written in cleartext (decision 0116
+    // §4).
     if let Some(rule) = chaos.check(ChaosEvent::Connect) {
         tokio::time::sleep(std::time::Duration::from_millis(rule.delay_ms)).await;
         if let Some(err) = &rule.error {
@@ -827,10 +900,6 @@ async fn handle_conn(
     }
 
     let mut reader = BufReader::new(conn);
-    let offer = match tls {
-        None => TlsOffer::None,
-        Some(cfg) => TlsOffer::Offered(TlsAcceptor::from(cfg)),
-    };
     let result = session(&mut reader, &store, &chaos, &cfg, offer).await;
     close(result, reader.into_inner(), cfg.idle_timeout).await
 }
@@ -1108,22 +1177,9 @@ async fn session(
                         let raw = reader.get_mut().take_plain()?;
                         // The upgrade is bounded: a client that stalls
                         // after the 220 — greeted, then silent — must not
-                        // tie this session task up forever. On elapse the
-                        // `Accept` future is dropped, taking the socket
-                        // with it: the peer sees the connection close and
-                        // the listener keeps serving.
-                        let upgraded =
-                            match tokio::time::timeout(cfg.tls_handshake_timeout, acc.accept(raw))
-                                .await
-                            {
-                                Ok(upgraded) => upgraded?,
-                                Err(_) => {
-                                    return Err(io::Error::new(
-                                        io::ErrorKind::TimedOut,
-                                        "STARTTLS handshake deadline elapsed",
-                                    ));
-                                }
-                            };
+                        // tie this session task up forever (see
+                        // `tls_handshake`).
+                        let upgraded = tls_handshake(&acc, raw, cfg.tls_handshake_timeout).await?;
                         *reader = BufReader::new(Conn::Tls(Box::new(upgraded)));
                         // RFC 3207 §4.2: everything the client said before
                         // the handshake is forgotten — fresh envelope, fresh
@@ -1983,6 +2039,36 @@ mod tests {
         );
         rec.shutdown().await.unwrap();
         assert_eq!(rec.ops.last(), Some(&WriteOp::Shutdown));
+    }
+
+    /// Implicit TLS without a TLS config fails closed in `serve` itself
+    /// (decision 0116 §3), for any in-process caller that never went through
+    /// `run_on`: the call returns the one error at once, before its first
+    /// accept, and the listener it was handed is dropped unserved.
+    #[tokio::test]
+    async fn serve_refuses_implicit_tls_without_a_tls_config() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let err = serve(
+            listener,
+            Arc::new(Store::new(0)),
+            Arc::new(Chaos::default()),
+            SmtpConfig {
+                implicit_tls: true,
+                ..SmtpConfig::default()
+            },
+            None,
+            Arc::new(AtomicBool::new(false)),
+            std::future::pending(),
+        )
+        .await
+        .expect_err("implicit TLS with no TLS config must not serve");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(err.to_string(), IMPLICIT_TLS_NEEDS_PAIR);
+        assert!(
+            TcpStream::connect(addr).await.is_err(),
+            "nothing is listening after the refusal"
+        );
     }
 
     /// The stored bodies are exactly what the sender sent (decision 0031
