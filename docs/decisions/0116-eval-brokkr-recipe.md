@@ -4,7 +4,8 @@
 - **Date:** 2026-11-02 (revised the same day after the first review return,
   decision 0102's 2026-10-31 addendum; the revision is marked **R2** below;
   revised again after the second return, which found the gate's agreement
-  rule wrong, marked **R3**)
+  rule wrong, marked **R3**; revised a third time the same day after CI's
+  pinned-bundle job refused the recipe, marked **R4**)
 - **Scope:** Epic #164 issue #148 (P1), delivered from main `f815d48` on the
   zero-Codex `claude-careful` recipe (0098/0099, rework per 0102).
 - **Specification:** [the eval recipe on brokkr](../../specs/eval-brokkr-recipe/spec.md).
@@ -77,7 +78,12 @@ check proven able to fail, and trials that cannot see each other.
    exactly `<slot>/score.json` (**R2**: its hands are not read-only). Both
    seat scripts parse the engine's rendered prompt (`Feature: <text>`, an
    indented result path) by trimming each line and matching the request
-   token anywhere on it (**R2**).
+   token anywhere on it (**R2**). **R4:** the scoring gate is the recipe's
+   protected review. The `score` seat and phase are renamed `review`, and
+   the bundle declares `protected_phase: "review"`. The seat's class,
+   driver, script (`score.sh`), hands, limits and results are unchanged,
+   and so are the five rules apart from their ids (`REVIEW-*`). See the R4
+   section below.
 2. **One command, one row per slot.** `swarmail-evals matrix --brokkr BIN`
    runs each slot as one `brokkr run --recipe eval`, reads the slot's row,
    exit and gate verdict, and keeps 0076's accounting: a worker that returns
@@ -174,7 +180,10 @@ check proven able to fail, and trials that cannot see each other.
    that introduces the recipe does not measure tokens per success.
 7. **Gates, holds and what waits.** The recipe compiles in CI's pinned-bundle
    loop beside the six existing recipes; the verify seat compiles only
-   `self` and is not changed for this (**R2**). The PR touches `.brokkr/` and
+   `self` and is not changed for this (**R2**). **R4 supersedes that
+   clause:** CI, the verify seat and the house rules' gate inventory each
+   compile every directory under `.brokkr/recipes/`, found by glob, with
+   no fixed list of names. The PR touches `.brokkr/` and
    `.github/` and merges only on the operator's approval by name (0056's
    2026-11-01 addendum), and only after the brokkr capability gaps are filed
    on feedback-loop-ai/brokkr or attached to brokkr#766's sub-issues and
@@ -243,6 +252,94 @@ replay in the gate (the deadline leg's only retained input is the row's
 own claim). Cost accepted: the agreement table is mirrored in the score
 script, outside any coverage denominator, and proven per cell by the
 recipe tests and the stand-in arms.
+
+## R4 (2026-11-02): the protected review, and every recipe compiled
+
+**What happened.** CI's `brokkr bundle (pinned)` job refused PR #316 with
+the pinned engine (brokkr 0.12.0, sha256 `29dc3309…`):
+
+```
+error: bundle: policy has no 'review' phase; the protected review gate is
+non-removable (extension model, layer 1)
+```
+
+This falsifies the earlier specification's fact F4, that a two-seat recipe
+with its own policy and no `review` phase compiles. The local gates and the
+verify seat were green only because they compiled `self` alone (§7 R2). CI
+compiled a fixed list of names. A green verify seat therefore did not mean
+that every recipe compiled.
+
+**Ruling 1: the scoring gate is the recipe's protected review (both
+positions).** The phase and the gate seat `score` are renamed `review`. The
+bundle declares `protected_phase: "review"`, as `self`, the only other
+recipe that owns its policy, already does. No other key or seat is added.
+The seat stays `class: gate`, runs the exec driver on `./scripts/score.sh`
+with workspace hands, no network and no binds, has one attempt and 600 s,
+and keeps the results `pass`, `fail` and `unscorable`. The phases are
+`trial, review, done, stop`. The five rules keep their results, transitions
+and severities; their ids become `REVIEW-PASS`, `REVIEW-FAIL` and
+`REVIEW-UNSCORABLE`. `trial` keeps its name, because it is the only seat
+name the journal-facts reader accepts.
+
+This is a true description, not a relabel. The protected review exists so
+that nothing finishes without an independent judgement the working seat
+cannot write. In this recipe that judgement is the scoring gate. A shell
+re-applies the task's check to the retained state and never reads the
+agent's account. The R3 agreement table, which makes the gate report the
+trial's class, is unchanged. Replacing the results with the delivery words
+`clean`/`residual` would reopen the R3 defect, in which a budget failure is
+counted as a pass, so they are not used.
+
+**Ruling 2: no second, ceremonial review.** A deterministic `review` seat
+after `score` was considered and rejected. Every check it could own is
+already owned. The row, exit and trial-id pairing, `score_missing`,
+`score_mismatch` and the slot root belong to the matrix's slot reader. The
+strict row read belongs to `score.sh`. A second seat would carry the
+protected gate's name only to satisfy the engine, and a protected gate that
+cannot fail independently is the rubber stamp the house refuses.
+
+**Ruling 3: if the engine refuses this shape, follow this order.** The
+design seats had no engine, so Ruling 1 is a compile hypothesis. A receipt
+from the pinned artifact decides it.
+(a) If the refusal names an additive field that changes no result word,
+seat or transition (for example `shippable_from`), add the field and record
+it here by dated line.
+(b) If it requires delivery result words, a review panel or a model seat,
+no lawful shape exists under this engine. Move the recipe out of
+`.brokkr/recipes/` so that the compile gates stay green. Record here that
+the brokkr-mode matrix is not delivered. Report the run as not complete,
+and name brokkr issue 6.
+No result word is remapped, and no ceremonial seat is added, to make the
+compile pass.
+
+**Ruling 4: one gate inventory compiles every recipe.** The fixed list
+evicted `eval` from the local gates. CI's loop, the verify seat's compile
+and the house rules' gate line each iterate every directory under
+`.brokkr/recipes/` by glob. Each one refuses an empty shelf. Each one
+refuses a directory without a `bundle.json` by name, so a stray directory
+fails the gate instead of being skipped. Each one stops at the first
+refusal and checks the policy-sweep warning for every recipe, not only for
+the last one. Executable fixtures with a sentinel recipe prove all of this.
+The shelf test lists the directory instead of naming the recipes. §7 R2's
+"the verify seat is not changed" is superseded. The verify seat's script is
+a pinned bundle script (0050 §1). The change widens a gate and weakens
+nothing.
+
+**Ruling 5: the brokkr issue drafts stay current.** Issue 4 is corrected:
+its premise is false. Issue 6, the review-gate finding, is drafted. Issues
+1, 3 and 5 name the gate by its role. Filing remains the operator's merge
+precondition (§7, earlier AC12). A draft is not a filing.
+
+**Costs accepted.** The rule ids `SCORE-*` become `REVIEW-*`. No trial has
+run under the recipe, so no journal row carries the old ids. Moving the
+recipe out under 3(b) would remove the one-command brokkr path until
+brokkr answers issue 6. A fail-first loop reports one refused recipe per
+run. This run's own verify seat runs the script pinned when the run
+started, so the first compile of `eval` comes from a staged pinned binary,
+a verify continuation entered from the candidate's bundle, or CI. Each such
+receipt is recorded here by dated line.
+
+Specification: [eval recipe review gate](../../specs/eval-recipe-review-gate/spec.md).
 
 ## Delivery and acceptance ownership
 
