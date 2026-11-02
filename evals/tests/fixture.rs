@@ -1050,8 +1050,8 @@ fn digest_forty_control(task: &str, ambiguous: &Value) -> String {
         2
     };
     assert!(
-        anchors.contains(&title(part).as_str()) && title(part) != tasks::DIGEST_ITEM,
-        "{task}: negative control {:?} must be a decoy among the {} pre-call candidates",
+        anchors.contains(&title(part).as_str()),
+        "{task}: negative control {:?} must be among the {} pre-call candidates",
         title(part),
         anchors.len()
     );
@@ -1070,6 +1070,8 @@ async fn focused_tools_complete_link_and_code_traps_without_guessing() {
         (
             "digest-forty",
             tasks::DIGEST_ITEM,
+            // Never read: `digest_forty_control` replaces this literal in
+            // every digest-forty negative rig.
             r"^Async drop RFC enters final comment period \(part 1\)$",
         ),
     ] {
