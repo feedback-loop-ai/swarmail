@@ -15,7 +15,9 @@ page sends *same-origin* requests (and same-origin GET/HEADs carry no
 hostname. **Origin**: a present `Origin` that is not a loopback spelling
 is answered `403` — the one header a browser sets honestly, so a
 cross-site drive is named and refused. Every method and every route is
-covered, `/mcp` and the UI included; requests without an `Origin` — curl,
+covered, `/mcp` and the UI included; the opt-in MailSlurper listener
+(`--mailslurper-listen`, off by default) wears the same guard keyed to its
+own port; requests without an `Origin` — curl,
 agents, the stdio bridge, every test harness — pass untouched (their
 `Host` is the loopback spelling they dialed). A `Host` without a port
 means `80`, the http default, so a port-80 loopback bind admits

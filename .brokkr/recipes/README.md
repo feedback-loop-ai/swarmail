@@ -194,13 +194,12 @@ dependency fixes with regression tests and checksummed source patches.
 
 ```bash
 export PATH="$PWD/.brokkr/state/bin:$PATH"
-brokkr compile --bundle .brokkr/recipes/codex
-brokkr compile --bundle .brokkr/recipes/codex-careful
-brokkr compile --bundle .brokkr/recipes/codex-fast
-brokkr compile --bundle .brokkr/recipes/claude-careful
-brokkr recipes show codex-fast
-brokkr run --recipe codex-fast \
-  --feature 'Implement one scoped story from epic #192'
+# Every directory on the shelf, as CI and the verify seat do (no list of names).
+# The house rules' line, verbatim and chained: a refused compile stops the rest.
+(for r in .brokkr/recipes/*/; do brokkr compile --bundle "${r%/}" || exit 1; done) \
+  && brokkr recipes show codex-fast \
+  && brokkr run --recipe codex-fast \
+    --feature 'Implement one scoped story from epic #192'
 ```
 
 Use `--recipe codex-careful` for higher intake and implementation reasoning
@@ -236,3 +235,58 @@ The route, triage and inheritance pins in `tests/delivery_recipes.rs` catch drif
 these assignments. Passing them alone does not establish executable delivery:
 the engine must compile each composition, and a live run must execute the
 inherited gates and protected review before the recipe is reported verified.
+
+## The `eval` recipe (interim, decision 0119)
+
+`eval` is not a delivery lane. It runs one trial of the agent eval harness
+(#148) as a brokkr run: a `trial` exec seat, then a `review` exec gate. It has
+its own two-phase policy (`trial` -> `review` -> `done`), no retry (a retried
+trial is a different experiment) and no model seat. The engine (brokkr 0.12.0)
+requires a `review` phase in every bundle, so the scoring gate is the recipe's
+protected review (`protected_phase: "review"`): a shell that re-applies the
+task's check to the retained state and never reads the agent's account
+(decision 0119, R4). Its script is still `scripts/score.sh`. This is the operator's
+2026-10-18 **interim path**: the `trial` seat runs the opaque eval-trial driver
+`swarmail-evals trial`, which starts Swarmail and the fixture app as its own
+children and runs the real `brokkr driver claude|codex|dsh` as a child, so the
+journal can keep tokens, turns and tool rows. **Nothing in that seat is
+confined**; every row records the trial as `unconfined`. The recipe moves to
+the MCP broker when brokkr#766 lands. Today the real driver is not launched:
+`--via-brokkr` refuses `driver_contract_unknown` until the driver's invocation
+is observed (brokkr fact F2), so the recipe runs the **oracle and null controls
+only**; paid agents under `matrix --brokkr` are unsupported until the follow-up
+that observes F1, F2 and F5 (see `evals/wrappers.md`). The `review` seat
+reports the trial's class by the agreement table in `evals/README.md`: `pass`
+for a pass row the retained state agrees with, `fail` for a business failure it
+agrees with or a `fail`/`budget` row over a validated state, and `unscorable`
+for a `harness_error` row, a contradiction or an unreadable row. The scripts parse the
+engine's prompt rendering: the feature text follows `Feature: ` and the result
+path is an indented line of its own, so each line is trimmed and the
+`swarmail-eval-request: /abs/request.json` token is matched anywhere on it.
+
+Do not start it by hand. `swarmail-evals matrix --brokkr BIN` writes each
+slot's `request.json` (trial id, slot, absolute paths, the trial's argument
+list) under the artifacts root and runs
+`brokkr run --recipe eval --feature "swarmail-eval-request: <abs request.json>"`
+once per slot, then reads the slot's `row.json`, `exit` and `score.json` and
+keeps accounting for exactly one row per requested slot (`--artifacts-dir` must
+lie inside the current directory; a gate that never ruled is `score_missing`,
+and a business replay outside what the row agrees with is `score_mismatch`):
+
+```bash
+export PATH="$PWD/.brokkr/state/bin:$PATH"
+brokkr compile --bundle .brokkr/recipes/eval
+E=evals/target/debug/swarmail-evals
+$E matrix --brokkr "$PWD/.brokkr/state/bin/brokkr" --tasks signup \
+  --agents controls.json --trials 1 --artifacts-dir "$PWD/.brokkr/state/eval/controls" > controls.jsonl
+bash evals/scripts/journal-facts.sh "$PWD/.brokkr/state/bin/brokkr" .brokkr/state/forge.db \
+  facts.json $(jq -r .trial_id controls.jsonl)
+$E report --input controls.jsonl --journal facts.json
+```
+
+The first engine run (oracle and null controls: offline and free), the first
+authenticated via-brokkr smoke per family and the paid matrix are the
+operator's. This delivery lands the measuring machinery and does not measure
+tokens per success: forwarding the observed accounting channel through the four
+named seams needs the operator's acceptance of 0119 section 6 first. A pull request that touches `.brokkr/` or `.github/` merges only
+on the operator's approval by name (decision 0056, 2026-11-01 addendum).

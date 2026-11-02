@@ -24,6 +24,7 @@ fn config_maps_the_cli_args() {
         smtp_listen: "127.0.0.1:2525".into(),
         http_listen: "127.0.0.1:8080".into(),
         pop3_listen: "127.0.0.1:1110".into(),
+        mailslurper_listen: Some("127.0.0.1:4437".into()),
         max_per_inbox: 42,
         max_sessions: 7,
         data_file: Some("/tmp/mail.db".into()),
@@ -38,6 +39,7 @@ fn config_maps_the_cli_args() {
     assert_eq!(cfg.smtp_listen, "127.0.0.1:2525");
     assert_eq!(cfg.http_listen, "127.0.0.1:8080");
     assert_eq!(cfg.pop3_listen, "127.0.0.1:1110");
+    assert_eq!(cfg.mailslurper_listen.as_deref(), Some("127.0.0.1:4437"));
     assert_eq!(cfg.max_per_inbox, 42);
     assert_eq!(
         cfg.data_file.as_deref(),
@@ -65,6 +67,9 @@ fn cli_parses_env_defaults_and_subcommands() {
     assert_eq!(args.smtp_listen, "127.0.0.1:1025");
     assert_eq!(args.http_listen, "127.0.0.1:8025");
     assert_eq!(args.pop3_listen, "127.0.0.1:1110");
+    // The MailSlurper listener has no default: unset binds nothing
+    // (decision 0118 §1).
+    assert_eq!(args.mailslurper_listen, None);
     assert_eq!(args.max_per_inbox, 100_000);
     assert!(args.data_file.is_none());
     assert!(args.tls_cert.is_none());
@@ -89,6 +94,16 @@ fn cli_parses_env_defaults_and_subcommands() {
     assert_eq!(args.smtp_listen, "0.0.0.0:1025");
     assert_eq!(args.http_listen, "0.0.0.0:8025");
     assert_eq!(args.pop3_listen, "0.0.0.0:1110");
+
+    // The opt-in MailSlurper listener is named by its flag alone.
+    let cli =
+        Cli::try_parse_from(["swarmail", "serve", "--mailslurper-listen", "0.0.0.0:4437"]).unwrap();
+    let args = serve_args_or_panic(cli);
+    assert_eq!(args.mailslurper_listen.as_deref(), Some("0.0.0.0:4437"));
+    assert_eq!(
+        Config::from(&args).mailslurper_listen.as_deref(),
+        Some("0.0.0.0:4437")
+    );
 
     // The handshake deadline is operator-tunable, in milliseconds.
     let cli =

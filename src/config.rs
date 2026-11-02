@@ -50,6 +50,15 @@ pub struct ServeArgs {
     #[arg(long, default_value = "127.0.0.1:1110", env = "SWARMAIL_POP3_LISTEN")]
     pub pop3_listen: String,
 
+    /// MailSlurper service-API listen address (decision 0118). Off by
+    /// default: unset means no socket and no route. When set, the listener
+    /// serves `/mail` and `/mailcount` over the WHOLE store as one global
+    /// mailbox, and its `DELETE /mail {"pruneCode":"all"}` clears every
+    /// inbox: enabling it collapses per-inbox isolation for its clients.
+    /// The address is the operator's own (loopback only if written so).
+    #[arg(long, value_name = "ADDR", env = "SWARMAIL_MAILSLURPER_LISTEN")]
+    pub mailslurper_listen: Option<String>,
+
     /// Maximum emails kept per inbox; oldest are pruned. 0 = unlimited.
     #[arg(long, default_value_t = 100_000, env = "SWARMAIL_MAX_PER_INBOX")]
     pub max_per_inbox: usize,
@@ -168,6 +177,9 @@ pub struct Config {
     pub http_listen: String,
     /// POP3 listener serving the same store; a USER names an existing inbox.
     pub pop3_listen: String,
+    /// The opt-in MailSlurper service-API listener (decision 0118): `None`
+    /// binds nothing.
+    pub mailslurper_listen: Option<String>,
     pub max_per_inbox: usize,
     /// Optional SQLite data file: every mutation is written through and the
     /// full state is restored on startup.
@@ -189,6 +201,7 @@ impl From<&ServeArgs> for Config {
             smtp_listen: args.smtp_listen.clone(),
             http_listen: args.http_listen.clone(),
             pop3_listen: args.pop3_listen.clone(),
+            mailslurper_listen: args.mailslurper_listen.clone(),
             max_per_inbox: args.max_per_inbox,
             data_file: args.data_file.clone(),
             tls_cert: args.tls_cert.clone(),

@@ -20,6 +20,7 @@ fn dir(path: &Path) {
 }
 use std::os::unix::fs::DirBuilderExt;
 const CANARY: &str = "SYNTHETIC-CREDENTIAL-CANARY-DO-NOT-RETAIN";
+const SEAM_SENTINEL: &str = "SWARMAIL_EVAL_SEAM_SENTINEL";
 /// The stand-in decodes TOML independently with the standard library's
 /// tomllib (Python 3.11+). /usr/bin/python3 is new enough on Linux runners,
 /// but macOS ships 3.9 there, so take the first python3 that has tomllib,
@@ -136,12 +137,117 @@ impl Case {
             .env("HTTP_PROXY", CANARY)
             .env("BASH_ENV", CANARY)
             .env("DSH_HOME", "/ambient/refused")
+            // The accounting-channel sentinel (decision 0119 section 6, F1
+            // seams 2 to 4): a variable in the wrapper's own environment must
+            // not reach the agent. The follow-up that forwards the observed
+            // channel flips this to the observed name.
+            .env(SEAM_SENTINEL, "1")
             .current_dir(&self.work)
             .args([&format!("agent-{family}"), "--model", model, "--config"])
             .arg(&self.manifest);
         c
     }
 }
+/// An executable that would leave `record` behind if it were ever spawned.
+fn executable_driver(base: &Path, name: &str, record: &Path) -> PathBuf {
+    let path = base.join(name);
+    private(
+        &path,
+        format!("#!/bin/sh\n: > '{}'\n", record.display()).as_bytes(),
+    );
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    path
+}
+
+#[test]
+fn via_brokkr_refuses_before_any_private_read() {
+    // The driver's invocation form has never been observed (F2), so a valid,
+    // executable driver is still refused: before the EVAL inputs, the
+    // selection file and the credential file are read, and before anything is
+    // spawned. The selection here is an unreadable sentinel that the direct
+    // launch would refuse differently, so the category proves the order.
+    for (family, model) in [
+        ("claude", "claude-sonnet-5-5"),
+        ("codex", "gpt-6-luna"),
+        ("dsh", "spark-glm/GLM-5.3-Flash-EXL3"),
+    ] {
+        let c = Case::new(family);
+        let record = c.root.path().join("driver-record");
+        let driver = executable_driver(c.root.path(), "driver-ok", &record);
+        std::fs::set_permissions(&c.manifest, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let direct = c.command(family, model).output().unwrap();
+        assert_eq!(direct.status.code(), Some(2), "{family}");
+        let direct_err = String::from_utf8_lossy(&direct.stderr).into_owned();
+        assert!(
+            direct_err.contains("private_path_unavailable"),
+            "{family}: the sentinel is a refusing selection: {direct_err}"
+        );
+        let out = c
+            .command(family, model)
+            .arg("--via-brokkr")
+            .arg(&driver)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{family}");
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(err.contains("driver_contract_unknown"), "{family}: {err}");
+        assert!(!err.contains("private_path_unavailable"), "{family}: {err}");
+        assert!(!record.exists(), "{family}: nothing was spawned");
+        assert!(!c.capture.exists(), "{family}: no CLI was launched");
+        assert!(
+            std::fs::read_dir(&c.home).unwrap().next().is_none(),
+            "{family}: no private file was written"
+        );
+    }
+}
+
+#[test]
+fn via_brokkr_refuses_an_invalid_driver_before_launch() {
+    let c = Case::new("claude");
+    let record = c.root.path().join("driver-record.json");
+    let plain_file = c.root.path().join("not-executable");
+    private(&plain_file, b"#!/bin/sh\nexit 0\n");
+    let directory = c.root.path().join("a-directory");
+    dir(&directory);
+    let good = executable_driver(c.root.path(), "driver-ok", &record);
+    let relative = PathBuf::from(good.file_name().unwrap());
+    for (label, driver) in [
+        ("relative", relative),
+        ("missing", PathBuf::from("/nonexistent/brokkr")),
+        ("not executable", plain_file),
+        ("a directory", directory),
+    ] {
+        let out = c
+            .command("claude", "claude-sonnet-5-5")
+            .arg("--via-brokkr")
+            .arg(&driver)
+            .current_dir(c.root.path())
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{label}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("driver_invalid"),
+            "{label}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!record.exists(), "{label}: nothing was spawned");
+        assert!(!c.capture.exists(), "{label}: no CLI was launched");
+        assert!(
+            std::fs::read_dir(&c.home).unwrap().next().is_none(),
+            "{label}: no private file was written"
+        );
+    }
+}
+
+#[test]
+fn a_direct_launch_is_unchanged_by_the_flag_existing() {
+    let c = Case::new("claude");
+    let out = c.command("claude", "claude-sonnet-5-5").output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let seen: Value = serde_json::from_slice(&std::fs::read(&c.capture).unwrap()).unwrap();
+    assert!(seen["argv"][0] == "-p", "{}", seen["argv"]);
+}
+
 #[test]
 fn all_six_models_exec_literal_recipes_private_auth_and_no_raw_output() {
     for (family, models) in [
@@ -179,6 +285,10 @@ fn all_six_models_exec_literal_recipes_private_auth_and_no_raw_output() {
                 }
             }
             assert_eq!(row["env"], json!(expected_env));
+            assert!(
+                row["env"].get(SEAM_SENTINEL).is_none(),
+                "{family} {model}: the wrapper's environment does not cross to the agent"
+            );
             let expected_helper_env: BTreeMap<_, _> = c
                 .runtime
                 .clone()

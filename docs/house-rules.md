@@ -59,7 +59,7 @@ cargo build --locked --bin swarmail    # the candidate's binary the eval suite r
 cd evals && cargo fmt --all -- --check
 cd evals && cargo clippy --all-targets --locked -- -D warnings
 cd evals && SWARMAIL_BIN=<the candidate's swarmail> cargo test --locked
-brokkr compile --bundle .brokkr/recipes/self   # the brokkr pinned in .brokkr/recipes/self/tooling.json
+(for r in .brokkr/recipes/*/; do brokkr compile --bundle "${r%/}" || exit 1; done)   # every recipe directory, as CI and the verify seat do; the brokkr pinned in .brokkr/recipes/self/tooling.json
 bash scripts/coverage-gate.sh          # the floor may rise, never fall
 bash scripts/coverage-gate.sh selftest # the gate's verdict is untrusted without it
 bash scripts/publish-guard-test.sh     # the publish guard's proof
@@ -82,6 +82,16 @@ The operator's assistant read main branch protection through the GitHub API on 2
 - docker smoke
 
 These are the displayed status context names. The test context expands to both listed operating systems. This is the operator-supplied observation for 2026-10-24, not a continuous read of GitHub settings.
+
+The compile covers every directory under `.brokkr/recipes/`, by glob and with
+no list of names, so a new recipe is gated the day it lands (#148: a fixed
+list let CI refuse a recipe the local gates never compiled). A directory that
+has no `bundle.json` is a refusal, as is an empty shelf. The checks belong to
+different surfaces. The line compiles every directory and stops at the first
+non-zero exit; it does no more. CI's loop and the verify seat refuse an empty
+shelf and a directory without a regular `bundle.json` by name, and they refuse
+the policy-sweep warning per recipe. The engine exits 0 on that warning, so a
+hand run reads each recipe's output for `lets the run go on without reading`.
 
 `evals/` is a standalone, unpublished workspace outside the root coverage
 denominator (decision 0055), so none of the root commands reach it; CI and the

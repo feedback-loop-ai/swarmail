@@ -487,6 +487,7 @@ async fn an_in_flight_commit_neither_holds_stop_nor_half_lands() {
         smtp_listen: "127.0.0.1:0".into(),
         http_listen: "127.0.0.1:0".into(),
         pop3_listen: "127.0.0.1:0".into(),
+        mailslurper_listen: None,
         max_per_inbox: 0,
         data_file: Some(path.clone()),
         tls_cert: None,

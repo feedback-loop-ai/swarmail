@@ -73,6 +73,9 @@ pub struct RunningServer {
     pub http_addr: std::net::SocketAddr,
     /// The POP3 listener; a USER names an existing inbox as the maildrop.
     pub pop3_addr: std::net::SocketAddr,
+    /// The opt-in MailSlurper service-API listener (decision 0118): `None`
+    /// unless `Config::mailslurper_listen` named an address.
+    pub mailslurper_addr: Option<std::net::SocketAddr>,
     pub store: Arc<store::Store>,
     pub chaos: Arc<chaos::Chaos>,
     pub webhooks: Arc<webhook::Webhooks>,
@@ -199,6 +202,17 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     // Bound before any spawn: a bind failure fails the whole startup.
     let pop3_listener = listen(&cfg.pop3_listen).await?;
     let pop3_addr = pop3_listener.local_addr()?;
+    // The MailSlurper listener binds with the others, before any spawn, and
+    // only when the operator named an address (decision 0118 §1).
+    let mailslurper = match &cfg.mailslurper_listen {
+        Some(addr) => {
+            let listener = listen(addr).await?;
+            let bound = listener.local_addr()?;
+            Some((listener, bound))
+        }
+        None => None,
+    };
+    let mailslurper_addr = mailslurper.as_ref().map(|(_, bound)| *bound);
 
     {
         let store = store.clone();
@@ -247,6 +261,31 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
             http_origin_guard,
             route_domain: cfg.smtp.route_domain.clone(),
         };
+        // The MailSlurper listener is the same plane under its own guard
+        // key: its loopback vocabulary is its own bound port (decision 0118
+        // §1), live only while that bind is loopback.
+        if let Some((listener, addr)) = mailslurper {
+            let state = api::AppState {
+                http_origin_guard: addr.ip().is_loopback().then(|| addr.port()),
+                ..state.clone()
+            };
+            let stop_rx = shutdown_rx.clone();
+            let mut shutdown_rx = shutdown_rx.clone();
+            tasks.spawn(async move {
+                log_stopped(
+                    "mailslurper",
+                    api::serve_app(
+                        listener,
+                        compat::mailslurper_router(state),
+                        stop_rx,
+                        async move {
+                            let _ = shutdown_rx.changed().await;
+                        },
+                    )
+                    .await,
+                );
+            });
+        }
         let mut shutdown_rx = shutdown_rx.clone();
         tasks.spawn(async move {
             log_stopped(
@@ -288,6 +327,7 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
         smtp_addr,
         http_addr,
         pop3_addr,
+        mailslurper_addr,
         store,
         chaos,
         webhooks,
@@ -317,6 +357,7 @@ mod tests {
             smtp_listen: "127.0.0.1:0".into(),
             http_listen: "127.0.0.1:0".into(),
             pop3_listen: "127.0.0.1:0".into(),
+            mailslurper_listen: None,
             max_per_inbox: 0,
             data_file: None,
             tls_cert: None,

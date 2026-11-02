@@ -43,6 +43,7 @@ fn config(data_file: Option<std::path::PathBuf>) -> crate::config::Config {
         smtp_listen: "127.0.0.1:0".into(),
         http_listen: "127.0.0.1:0".into(),
         pop3_listen: "127.0.0.1:0".into(),
+        mailslurper_listen: None,
         max_per_inbox: 0,
         data_file,
         tls_cert: None,
@@ -332,7 +333,8 @@ async fn compat_views_share_timestamp_order() {
     srv.stop().await;
 }
 
-/// While all four compat page builds are held on the blocking pool, a new
+/// While all five compat page builds (four on the HTTP plane, one on the
+/// MailSlurper listener) are held on the blocking pool, a new
 /// SMTP peer is greeted and `/healthz` answers, and no gate has expired
 /// (red on an inline build: the worker blocks inside the gate until its
 /// deadline releases it, and only then can anything else be served).
@@ -344,6 +346,7 @@ async fn held_compat_page_builds_leave_smtp_and_health_serving() {
         smtp_listen: "127.0.0.1:0".into(),
         http_listen: "127.0.0.1:0".into(),
         pop3_listen: "127.0.0.1:0".into(),
+        mailslurper_listen: Some("127.0.0.1:0".into()),
         max_per_inbox: 0,
         data_file: None,
         tls_cert: None,
@@ -378,17 +381,23 @@ async fn held_compat_page_builds_leave_smtp_and_health_serving() {
         "/api/v2/messages?inbox=parked",
         "/api/v2/search?inbox=parked&kind=containing&query=hi",
     ];
-    let requests: Vec<_> = paths
+    // The fifth build is the MailSlurper listener's own `GET /mail` (issue
+    // #314, decision 0118): its page is built at its own site, so it must
+    // leave the worker too, not only through the shared `page_work`.
+    let slurper = srv.mailslurper_addr.expect("the listener is enabled");
+    let mut requests: Vec<_> = paths
         .iter()
         .map(|path| tokio::spawn(get(addr, path.to_string())))
         .collect();
+    requests.push(tokio::spawn(get(slurper, "/mail".into())));
+    let held_builds = paths.len() + 1;
     let deadline = Instant::now() + Duration::from_secs(30);
-    while entered.load(Ordering::SeqCst) < paths.len() {
+    while entered.load(Ordering::SeqCst) < held_builds {
         assert!(
             Instant::now() < deadline,
             "only {} of {} compat builds were ever held together",
             entered.load(Ordering::SeqCst),
-            paths.len()
+            held_builds
         );
         tokio::task::yield_now().await;
     }
@@ -415,7 +424,10 @@ async fn held_compat_page_builds_leave_smtp_and_health_serving() {
         assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert!(
-            body.get("messages").or(body.get("items")).is_some(),
+            body.get("messages")
+                .or(body.get("items"))
+                .or(body.get("mailItems"))
+                .is_some(),
             "{body}"
         );
     }

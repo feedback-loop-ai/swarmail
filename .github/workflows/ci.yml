@@ -394,18 +394,30 @@ jobs:
             echo "REFUSAL: admitted brokkr version is '$built' but the record pins '$expected'" >&2
             exit 1
           fi
-          for recipe in self codex codex-careful codex-fast mixed-opus-terra claude-careful; do
-            output="$engine_dir/$recipe.log"
-            if "$artifact" compile --bundle ".brokkr/recipes/$recipe" > "$output" 2>&1; then
+          # Every directory under .brokkr/recipes/ is compiled: the shelf is the
+          # list, so a recipe nobody named here cannot fall outside the gate (#148).
+          for dir in .brokkr/recipes/*/; do
+            recipe="${dir%/}"
+            name="${recipe##*/}"
+            if [ ! -d "$recipe" ]; then
+              echo "REFUSAL: no recipe directory under .brokkr/recipes/" >&2
+              exit 1
+            fi
+            if [ ! -f "$recipe/bundle.json" ] || [ -L "$recipe/bundle.json" ]; then
+              echo "REFUSAL: $recipe has no bundle.json" >&2
+              exit 1
+            fi
+            output="$engine_dir/$name.log"
+            if "$artifact" compile --bundle "$recipe" > "$output" 2>&1; then
               cat "$output"
             else
               status=$?
               cat "$output"
-              echo "REFUSAL: brokkr compile --bundle .brokkr/recipes/$recipe failed (exit $status)" >&2
+              echo "REFUSAL: brokkr compile --bundle $recipe failed (exit $status)" >&2
               exit "$status"
             fi
             if grep -q 'lets the run go on without reading' "$output"; then
-              echo "REFUSAL: brokkr compile --bundle .brokkr/recipes/$recipe emitted a policy-sweep warning" >&2
+              echo "REFUSAL: brokkr compile --bundle $recipe emitted a policy-sweep warning" >&2
               exit 1
             fi
           done

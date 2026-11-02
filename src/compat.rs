@@ -1,4 +1,4 @@
-//! MailHog / Mailpit HTTP-API compat shims.
+//! MailHog / Mailpit / MailSlurper HTTP-API compat shims.
 //!
 //! The well-known read endpoints of the two mail-sink tools, answered from
 //! the SAME store — swarmail's inboxes stay the only mailbox model. A
@@ -20,6 +20,11 @@
 //! finished bytes; a Mailpit snippet reads a bounded prefix of its body; a
 //! MailHog page serializes borrowed views into one buffer capped at
 //! [`MAX_COMPAT_PAGE_BYTES`].
+//!
+//! A third shim, MailSlurper's service API (decision 0118), is served on its
+//! own opt-in listener rather than this router: [`mailslurper_router`]. It
+//! reads the whole store as one global mailbox and its `DELETE /mail`
+//! clears every inbox.
 //!
 //! Deliberate omissions live in docs/guide/compat-shims.md; the headline
 //! ones: no attachments, no read/unread state, no send-API, and no
@@ -1310,6 +1315,300 @@ pub(crate) fn raw_response(email: &Email) -> Response {
         .into_response()
 }
 
+// ---------- MailSlurper service API (decision 0118) ----------
+//
+// The third shim, on its own opt-in listener (`--mailslurper-listen`): the
+// routes sit at the root of that listener and nowhere on the HTTP plane.
+// MailSlurper has one global mailbox, so every route here reads the whole
+// store, and its wipe clears every inbox — enabling the listener is the
+// operator's act, and the guide says so plainly. Every item field is a
+// stored ingest-time field (decision 0005); nothing is parsed at request
+// time.
+
+/// The fixed page size of `GET /mail`: upstream's hard-coded 50 (decision
+/// 0118 §3). The consumer reads page 1 only, so this decides which mail it
+/// sees; `tests/mailslurper.rs` pins the literal 50 on the wire.
+const SLURPER_PAGE_SIZE: usize = 50;
+
+/// The MailSlurper listener's router: the service API and nothing else,
+/// wrapped in the HTTP plane's own Host/Origin guard (decision 0118 §1,
+/// 0030 §2, 0043). It carries no in-flight gauge layer: `/metrics` reports
+/// the HTTP plane.
+pub fn mailslurper_router(state: AppState) -> Router {
+    Router::new()
+        .route("/mail", get(slurper_list).delete(slurper_delete))
+        .route("/mailcount", get(slurper_count))
+        .route("/mail/{id}", get(slurper_item))
+        .route("/mail/{id}/message", get(slurper_message))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::api::origin_guard,
+        ))
+        .with_state(state)
+}
+
+/// `GET /mail`'s whole query: `pageNumber` and nothing else (decision 0118
+/// §3). It is read as text and parsed by hand, so `0`, `-1` and `x` share
+/// one named refusal; every other key — MailSlurper's search, sort and date
+/// parameters included — names itself in a `400`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SlurperListQuery {
+    #[serde(rename = "pageNumber")]
+    page_number: Option<String>,
+}
+
+/// The 1-based page: absent is the first, anything but a positive integer
+/// refuses by name.
+fn slurper_page_number(raw: Option<&str>) -> Result<usize, ApiError> {
+    match raw {
+        None => Ok(1),
+        Some(text) => text
+            .parse::<usize>()
+            .ok()
+            .filter(|page| *page >= 1)
+            .ok_or_else(|| bad_request("pageNumber must be a positive integer")),
+    }
+}
+
+/// The date MailSlurper shows (recalled, decision 0118 §4):
+/// `YYYY-MM-DD HH:MM:SS` in UTC from the stored receive stamp. A stamp
+/// chrono cannot represent falls back to the stored RFC 3339 text verbatim.
+fn slurper_date(email: &Email) -> Cow<'_, str> {
+    chrono::DateTime::from_timestamp_millis(email.received_ms)
+        .map(|at| Cow::Owned(at.format("%Y-%m-%d %H:%M:%S").to_string()))
+        .unwrap_or(Cow::Borrowed(email.received_at.as_str()))
+}
+
+/// The item's `body`: the stored HTML when there is one (an `href`-only
+/// link stays literal for a client's regex), else the stored text, else
+/// `""`. Decoded at ingest and never re-rendered or sanitized.
+fn slurper_body(email: &Email) -> &str {
+    email
+        .html
+        .as_deref()
+        .or(email.text.as_deref())
+        .unwrap_or_default()
+}
+
+/// One stored mail as a MailSlurper `MailItem`, in 0118 §4's key order. The
+/// `toAddresses` are the envelope recipients as bare strings (a Bcc'd
+/// recipient included), falling back to the header To only for a row that
+/// recorded none; `fromAddress` is the compat sender every shim reports.
+struct SlurperItem<'a>(&'a Email);
+
+#[derive(Serialize)]
+struct SlurperView<'a> {
+    id: &'a str,
+    #[serde(rename = "dateSent")]
+    date_sent: Cow<'a, str>,
+    #[serde(rename = "fromAddress")]
+    from_address: &'a str,
+    #[serde(rename = "toAddresses")]
+    to_addresses: Vec<&'a str>,
+    #[serde(rename = "ccAddresses")]
+    cc_addresses: Vec<&'a str>,
+    subject: &'a str,
+    body: &'a str,
+    attachments: [(); 0],
+}
+
+impl Serialize for SlurperItem<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let email = self.0;
+        let to_addresses = if email.recipients.is_empty() {
+            email.to.iter().map(|a| a.address.as_str()).collect()
+        } else {
+            email.recipients.iter().map(String::as_str).collect()
+        };
+        SlurperView {
+            id: &email.id,
+            date_sent: slurper_date(email),
+            from_address: compat_sender(email).unwrap_or_default(),
+            to_addresses,
+            cc_addresses: email.cc.iter().map(|a| a.address.as_str()).collect(),
+            subject: email.subject.as_deref().unwrap_or_default(),
+            body: slurper_body(email),
+            attachments: [],
+        }
+        .serialize(serializer)
+    }
+}
+
+/// The list envelope. `mailItems` is omitted whenever the page is empty —
+/// the operator's observation of real MailSlurper, which the consumer
+/// normalises.
+#[derive(Serialize)]
+struct SlurperPage<'a> {
+    #[serde(rename = "mailItems", skip_serializing_if = "Vec::is_empty")]
+    mail_items: Vec<SlurperItem<'a>>,
+    #[serde(rename = "totalPages")]
+    total_pages: usize,
+    #[serde(rename = "totalRecords")]
+    total_records: usize,
+}
+
+/// One page body cut from a snapshot of the whole mailbox: `all` is
+/// newest first, `page` is 1-based, and `total_records` counts the snapshot,
+/// not the page. A page past the end (or one whose offset overflows) holds
+/// no items but keeps the totals.
+fn slurper_page_body(
+    all: &[Arc<Email>],
+    page: usize,
+    budget: usize,
+) -> Result<Vec<u8>, OverBudget> {
+    let items = (page - 1)
+        .checked_mul(SLURPER_PAGE_SIZE)
+        .map_or(&[][..], |start| page_of(all, start, SLURPER_PAGE_SIZE));
+    serialize_capped(
+        &SlurperPage {
+            mail_items: items.iter().map(|e| SlurperItem(e)).collect(),
+            total_pages: all.len().div_ceil(SLURPER_PAGE_SIZE),
+            total_records: all.len(),
+        },
+        budget,
+    )
+}
+
+/// The budget refusal of a MailSlurper page: the whole page, by name, with
+/// the way out.
+fn slurper_budget_refusal() -> ApiError {
+    bad_request(format!(
+        "mail page exceeds byte budget {MAX_COMPAT_PAGE_BYTES}; fetch each mail by GET /mail/{{id}}"
+    ))
+}
+
+/// GET /mail — the whole store as one mailbox, newest first, 50 to a page.
+/// The query is staged before the scan, so a refusal costs none.
+async fn slurper_list(State(state): State<AppState>, raw: RawQuery) -> Result<Response, ApiError> {
+    let query: SlurperListQuery = parse_query(raw.0.as_deref().unwrap_or(""), "GET /mail")?;
+    let page = slurper_page_number(query.page_number.as_deref())?;
+    slurper_list_within(state.store.clone(), page, MAX_COMPAT_PAGE_BYTES).await
+}
+
+/// One page of the whole mailbox, built and serialized on the blocking pool
+/// under `budget`; a page over it is refused whole, by name. The route
+/// passes [`MAX_COMPAT_PAGE_BYTES`]; a unit test passes a small one.
+async fn slurper_list_within(
+    store: Arc<Store>,
+    page: usize,
+    budget: usize,
+) -> Result<Response, ApiError> {
+    page_work(store, move |store| {
+        slurper_page_body(&scoped(store, None), page, budget)
+    })
+    .await
+    .map(json_body)
+    .map_err(|OverBudget| slurper_budget_refusal())
+}
+
+/// GET /mailcount — `{"mailCount": n}` over every inbox.
+async fn slurper_count(
+    State(state): State<AppState>,
+    raw: RawQuery,
+) -> Result<Json<Value>, ApiError> {
+    let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "GET /mailcount")?;
+    Ok(Json(
+        json!({ "mailCount": mailbox_size(&state.store, None) }),
+    ))
+}
+
+/// GET /mail/{id} — one `MailItem`; an unknown id is a `404`.
+async fn slurper_item(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    raw: RawQuery,
+) -> Result<Response, ApiError> {
+    let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "GET /mail/{id}")?;
+    render_by_id(&state, id, |e| {
+        json_body(serde_json::to_vec(&SlurperItem(e)).expect("a borrowed view of strings"))
+    })
+    .await
+}
+
+/// GET /mail/{id}/message — the item's `body` as `text/html`. The mail's
+/// HTML is the sender's, so the answer carries `Content-Security-Policy:
+/// sandbox` and `nosniff`: a page opened from here runs no script and holds
+/// no origin, and cannot drive the wipe route from this listener's origin.
+async fn slurper_message(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    raw: RawQuery,
+) -> Result<Response, ApiError> {
+    let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "GET /mail/{id}/message")?;
+    render_by_id(&state, id, |e| {
+        (
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (header::CONTENT_SECURITY_POLICY, "sandbox"),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            ],
+            slurper_body(e).to_owned(),
+        )
+            .into_response()
+    })
+    .await
+}
+
+/// The refusal of every body that is not an object holding `pruneCode` and
+/// nothing else.
+const PRUNE_BODY_REFUSAL: &str = "deletion requires the JSON body {\"pruneCode\":\"all\"}";
+
+/// What a `DELETE /mail` body may do (decision 0118 §5): only an object
+/// whose sole key `pruneCode` is the literal string `"all"` proceeds. The
+/// body is read as a plain JSON value and its shape checked by hand: a
+/// derived struct would also accept a positional array (`["all"]`), and a
+/// destructive route must not (decision 0070). MailSlurper's age-based
+/// codes are refused by name — swarmail evicts only the oldest mail past a
+/// per-inbox cap (decision 0003) and adds no time-keyed eviction.
+fn prune_verdict(body: &Value) -> Result<(), ApiError> {
+    let code = body
+        .as_object()
+        .filter(|object| object.len() == 1)
+        .and_then(|object| object.get("pruneCode"))
+        .ok_or_else(|| bad_request(PRUNE_BODY_REFUSAL))?;
+    match code.as_str() {
+        Some("all") => Ok(()),
+        Some(age @ ("60plus" | "30plus" | "2wksplus")) => Err(bad_request(format!(
+            "prune code {age:?} is not supported: swarmail evicts only the oldest mail \
+             past a per-inbox cap (decision 0003); send \"all\""
+        ))),
+        Some(other) => Err(bad_request(format!(
+            "unknown prune code {other:?}; send \"all\""
+        ))),
+        None => Err(bad_request("pruneCode must be the string \"all\"")),
+    }
+}
+
+/// DELETE /mail — the cross-inbox wipe under MailSlurper's spelling, with
+/// decision 0011's rule for a destructive route: an explicit selector, or a
+/// `400` that deletes nothing. The checks run query, body, verdict, then
+/// the store's awaited `clear_all` (so emptied inboxes release their
+/// `await` watchers, decision 0002). A failed commit is `503` (decision
+/// 0014), never a count.
+async fn slurper_delete(
+    State(state): State<AppState>,
+    raw: RawQuery,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "DELETE /mail")?;
+    let Ok(Json(body)) = body else {
+        return Err(bad_request(PRUNE_BODY_REFUSAL));
+    };
+    prune_verdict(&body)?;
+    match state.store.clone().clear_all_async().await {
+        Ok(removed) => Ok((
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            removed.to_string(),
+        )
+            .into_response()),
+        Err(_) => Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage commit failed".into(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod page_work_tests;
 
@@ -1859,5 +2158,173 @@ mod tests {
             scope_inbox(Some(" \u{3000}".into())).unwrap_err().1,
             crate::model::BLANK_INBOX_REFUSAL
         );
+    }
+
+    // ---------- MailSlurper (decision 0118) ----------
+
+    /// The projection's key set and order are exactly 0118 §4's.
+    #[test]
+    fn a_slurper_item_has_exactly_its_keys_in_order() {
+        let mut m = mail();
+        m.subject = Some("Hi".into());
+        m.text = Some("t".into());
+        let wire = serde_json::to_string(&SlurperItem(&m)).unwrap();
+        assert_eq!(
+            wire,
+            r#"{"id":"id-1","dateSent":"2026-02-02 02:45:06","fromAddress":"","toAddresses":[],"ccAddresses":[],"subject":"Hi","body":"t","attachments":[]}"#
+        );
+    }
+
+    /// HTML before text before `""`.
+    #[test]
+    fn the_slurper_body_prefers_html_then_text_then_nothing() {
+        let mut m = mail();
+        assert_eq!(slurper_body(&m), "");
+        m.text = Some("plain".into());
+        assert_eq!(slurper_body(&m), "plain");
+        m.html = Some("<b>rich</b>".into());
+        assert_eq!(slurper_body(&m), "<b>rich</b>");
+    }
+
+    /// The envelope recipients win, in order; the header To only stands in
+    /// for a row that recorded none. Cc is the header Cc. The sender is the
+    /// compat sender, `""` when unknown.
+    #[test]
+    fn slurper_addresses_follow_the_envelope_and_the_compat_sender() {
+        let mut m = mail();
+        m.to = vec![address(Some("Bob"), "bob@x.io")];
+        m.cc = vec![address(None, "cc@x.io")];
+        let item = |m: &Email| serde_json::to_value(SlurperItem(m)).unwrap();
+        assert_eq!(item(&m)["toAddresses"], json!(["bob@x.io"]));
+        assert_eq!(item(&m)["ccAddresses"], json!(["cc@x.io"]));
+        assert_eq!(item(&m)["fromAddress"], json!(""));
+        m.recipients = vec!["z@x.io".into(), "bob@x.io".into()];
+        assert_eq!(item(&m)["toAddresses"], json!(["z@x.io", "bob@x.io"]));
+        m.from = Some(address(None, "header@x.io"));
+        assert_eq!(item(&m)["fromAddress"], json!("header@x.io"));
+        m.envelope_from = Some("env@x.io".into());
+        assert_eq!(item(&m)["fromAddress"], json!("env@x.io"));
+        m.envelope_from = Some(String::new());
+        assert_eq!(item(&m)["fromAddress"], json!(""), "a bounce stays empty");
+    }
+
+    /// `YYYY-MM-DD HH:MM:SS` in UTC; a stamp chrono cannot hold falls back
+    /// to the stored RFC 3339 text.
+    #[test]
+    fn the_slurper_date_is_utc_and_falls_back_verbatim() {
+        let mut m = mail();
+        assert_eq!(slurper_date(&m), "2026-02-02 02:45:06");
+        m.received_ms = i64::MIN;
+        assert_eq!(slurper_date(&m), "2026-02-03T04:05:06Z");
+    }
+
+    /// The page cut: a full page then the remainder, totals from the
+    /// snapshot, an empty page has no `mailItems`, and an overflowing offset
+    /// is past the end. The cut follows the constant; the wire test pins 50.
+    #[test]
+    fn slurper_pages_cut_at_the_page_size_and_keep_the_totals() {
+        let total = SLURPER_PAGE_SIZE + 1;
+        let all: Vec<Arc<Email>> = (0..total).map(|_| Arc::new(mail())).collect();
+        let page = |n: usize| -> Value {
+            serde_json::from_slice(&slurper_page_body(&all, n, usize::MAX).unwrap()).unwrap()
+        };
+        let totals = json!({"totalPages": 2, "totalRecords": total});
+        assert_eq!(
+            page(1)["mailItems"].as_array().unwrap().len(),
+            SLURPER_PAGE_SIZE
+        );
+        assert_eq!(page(2)["mailItems"].as_array().unwrap().len(), 1);
+        assert_eq!(page(3), totals);
+        assert_eq!(page(usize::MAX), totals);
+        assert_eq!(
+            slurper_page_body(&[], 1, usize::MAX).unwrap(),
+            br#"{"totalPages":0,"totalRecords":0}"#
+        );
+    }
+
+    /// The page budget fits exactly and refuses one byte less; the refusal
+    /// names the budget and the way out.
+    #[test]
+    fn the_slurper_page_budget_fits_exactly_and_refuses_the_next_byte() {
+        let mut m = mail();
+        m.text = Some("quote \" backslash \\ newline \n".into());
+        let page = vec![Arc::new(m)];
+        let exact = slurper_page_body(&page, 1, usize::MAX).unwrap();
+        assert_eq!(slurper_page_body(&page, 1, exact.len()).unwrap(), exact);
+        assert_eq!(
+            slurper_page_body(&page, 1, exact.len() - 1),
+            Err(OverBudget)
+        );
+        let refusal = slurper_budget_refusal();
+        assert_eq!(refusal.0, StatusCode::BAD_REQUEST);
+        assert!(refusal.1.contains(&MAX_COMPAT_PAGE_BYTES.to_string()));
+        assert!(refusal.1.contains("GET /mail/{id}"));
+    }
+
+    /// The route's own refusal: a real store, a real page, a budget one
+    /// byte short, answers the named `400`; the exact budget answers the page.
+    #[tokio::test]
+    async fn an_over_budget_slurper_page_refuses_whole_by_name() {
+        let store = Arc::new(Store::new(0));
+        store
+            .insert(crate::store::email("a", "one", "x@x.io"))
+            .unwrap();
+        let page = serve_page(&store, usize::MAX).await.unwrap();
+        let exact = page.len();
+        assert_eq!(serve_page(&store, exact).await.unwrap(), page);
+        let refusal = slurper_list_within(store, 1, exact - 1).await.unwrap_err();
+        assert_eq!(refusal.0, StatusCode::BAD_REQUEST);
+        assert_eq!(refusal.1, slurper_budget_refusal().1);
+    }
+
+    /// The body bytes `slurper_list_within` sent for page 1.
+    async fn serve_page(store: &Arc<Store>, budget: usize) -> Result<Vec<u8>, ApiError> {
+        let response = slurper_list_within(store.clone(), 1, budget).await?;
+        Ok(axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec())
+    }
+
+    #[test]
+    fn the_slurper_page_number_is_one_based_and_positive() {
+        assert_eq!(slurper_page_number(None).unwrap(), 1);
+        assert_eq!(slurper_page_number(Some("7")).unwrap(), 7);
+        for bad in ["0", "-1", "x", "", "1.5"] {
+            let refusal = slurper_page_number(Some(bad)).unwrap_err();
+            assert_eq!(refusal.0, StatusCode::BAD_REQUEST, "{bad:?}");
+            assert!(refusal.1.contains("pageNumber"), "{bad:?}");
+        }
+    }
+
+    /// Every verdict arm: only the literal object `{"pruneCode":"all"}`
+    /// proceeds; the age codes are named; nothing else deletes.
+    #[test]
+    fn prune_verdicts_refuse_everything_but_all() {
+        assert!(prune_verdict(&json!({"pruneCode": "all"})).is_ok());
+        for code in ["60plus", "30plus", "2wksplus"] {
+            let refusal = prune_verdict(&json!({ "pruneCode": code })).unwrap_err();
+            assert_eq!(refusal.0, StatusCode::BAD_REQUEST);
+            assert!(refusal.1.contains(code));
+            assert!(refusal.1.contains("0003"));
+        }
+        let refusal = prune_verdict(&json!({"pruneCode": "ALL"})).unwrap_err();
+        assert!(refusal.1.starts_with("unknown prune code \"ALL\""));
+        for code in [json!(null), json!(7), json!(["all"]), json!({"a": 1})] {
+            let refusal = prune_verdict(&json!({ "pruneCode": code })).unwrap_err();
+            assert_eq!(refusal.1, "pruneCode must be the string \"all\"");
+        }
+        for body in [
+            json!({}),
+            json!({"pruneCode": "all", "x": 1}),
+            json!({"other": "all"}),
+            json!(["all"]),
+            json!([{"pruneCode": "all"}]),
+            json!("all"),
+            json!(null),
+        ] {
+            let refusal = prune_verdict(&body).unwrap_err();
+            assert_eq!(refusal.1, PRUNE_BODY_REFUSAL, "{body}");
+        }
     }
 }
