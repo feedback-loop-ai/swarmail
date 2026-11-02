@@ -1,6 +1,7 @@
 # 0080 — MCP source reconciliation and operator-chosen deviations
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-26
 - **Scope:** Epic #164, issue #152; operator-directed reframing after run 998279d4.
 - **Specification:** [MCP version negotiation](../../specs/mcp-version-negotiation/spec.md).

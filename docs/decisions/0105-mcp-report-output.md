@@ -1,6 +1,7 @@
 # 0105 — Complete the modern thirteen-tool report output contract
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-28
 - **Scope:** Epic #164 issue #153, current-main #152 integration follow-up.
 - **Specification:** [MCP report output](../../specs/mcp-report-output/spec.md).
@@ -120,3 +121,44 @@ digests is reported, never fabricated. No paid trials.
 Actual #152 baseline/protected review, paid #151 baseline, actual client receipts,
 CI and operator seal remain independent merge prerequisites. No push, merge,
 publication, tag, issue closure or acceptance is authorized.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02. The text above is unchanged
+and remains the record of what was proposed. This addendum states what has
+moved since it was written, checked against `main` at `c336c95`; it rules
+nothing beyond the acceptance.
+
+- **What the March freeze covers.** The 2025-03-26 freeze covers the tool
+  descriptions that existed when it was written and the captured result
+  bytes of those tools. It does not freeze report content, and it does not
+  freeze what later records add: [0094](0094-focused-mail-waits.md)
+  (`swarmail_wait_for_code`, `swarmail_wait_for_link`),
+  [0110](0110-attachments-and-ics.md) (`swarmail_list_attachments`,
+  `swarmail_get_attachment`) and [0112](0112-recipient-inbox-routing.md)
+  (`swarmail_create_inbox`) append descriptors on every revision, March
+  included; [0111](0111-near-miss-timeouts.md) adds `near_misses` to a
+  timed-out wait on every revision; and [0107](0107-html-review-repair.md)
+  moves the report's `rule_set_id` from `swarmail-bulk/1` to
+  `swarmail-html/3` on March as on the modern revisions (the March fixture's
+  provenance,
+  `tests/fixtures/mcp-structured-output/march-current-main.provenance.json`,
+  records that one-token edit). The served MCP description in
+  `src/static/openapi.json` says the same: March keeps its thirteen existing
+  catalogue entries and result bytes, and discovery appends the later tools
+  after them, eighteen in all. This is the reading of §1 that
+  [0107](0107-html-review-repair.md)'s integration note proposed, accepted
+  with 0107 on the same date.
+- **The inventory.** The thirteen tools here are historical;
+  `tests/mcp_revisions.rs` pins the served catalogue as eighteen tools
+  (`CATALOGUE`), the same names on all three revisions
+  (`revision_tool_annotations`).
+- **Merge prerequisites.** The Proof section lists the actual #152 baseline,
+  the paid #151 baseline, client receipts, CI and the operator seal as merge
+  prerequisites. #282 merged as `85d45ed` on 2026-10-31, before the #151
+  baseline of 2026-11-01 (`f815d48`). The client receipts remain owed.
+  Sealing has been optional since accepted [0056](0056-signing-policy.md)'s
+  2026-11-01 addendum.
+- **Review roles.** The Proof section's Astra correctness and guarantees
+  predate accepted [0098](0098-review-panel-flash-and-deadline.md), which
+  moved both members to official DeepSeek Flash.

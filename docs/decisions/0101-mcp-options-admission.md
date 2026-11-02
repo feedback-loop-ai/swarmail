@@ -1,6 +1,7 @@
 # 0101 — MCP OPTIONS admission and modern version headers
 
-- **Status:** proposed — awaiting the operator
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-28
 - **Scope:** Epic #164, issue #152; correction to current contract documentation.
 - **Related:** accepted [0043 §4](0043-mcp-origin-boundary.md); proposed [0079](0079-mcp-version-negotiation.md) and [0080](0080-mcp-source-reconciliation.md).
