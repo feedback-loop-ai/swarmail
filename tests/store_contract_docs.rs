@@ -36,7 +36,7 @@ fn doc(path: &str) -> String {
 
 /// The two status spellings the decision process has: the first word of a
 /// status, with the emphasis and code marks the records use stripped
-/// (`proposed`, `` `proposed` ``, `**accepted**`). Anything else is not a
+/// (`proposed`, `` `proposed` ``, `**accepted**`, `rejected`). Anything else is not a
 /// status this check knows, and says so.
 fn status_word(text: &str, what: &str) -> &'static str {
     let word = text
@@ -47,6 +47,7 @@ fn status_word(text: &str, what: &str) -> &'static str {
     match word {
         "accepted" => "accepted",
         "proposed" => "proposed",
+        "rejected" => "rejected",
         other => panic!("{what}: unsupported status spelling {other:?} in {text:?}"),
     }
 }
@@ -1360,6 +1361,10 @@ fn status_spellings_parse_and_an_unknown_one_refuses() {
         "accepted"
     );
     assert_eq!(file_status("x\n- **Status:** proposed\n", "t"), "proposed");
+    assert_eq!(
+        file_status("x\n- **Status:** rejected (operator, 2026-11-02)\n", "t"),
+        "rejected"
+    );
     let unknown = std::panic::catch_unwind(|| status_word(" superseded by 0099", "t"));
     assert!(unknown.is_err(), "an unknown status spelling refuses");
 }
