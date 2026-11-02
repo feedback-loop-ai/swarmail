@@ -1386,13 +1386,43 @@ fn verify_seat_refuses_missing_or_mismatched_engine_identity_before_gates() {
     let output = fixture.base_command().output().unwrap();
     assert!(output.status.success());
     assert_eq!(fixture.read_result()["result"], "pass");
+    // The pass note is the receipt for a run entered from this bundle (#148
+    // AC13): a note that says `bundle,` rather than `every recipe bundle,`
+    // compiled `self` only. It also ends with the launched engine digest.
+    let engine_digest = fixture.engine_digest();
+    let receipt_note = |notes: &str| {
+        notes.contains("every recipe bundle,")
+            && notes
+                .trim_end()
+                .ends_with(&format!("brokkr {engine_digest}"))
+    };
+    assert!(
+        receipt_note(fixture.read_result()["notes"].as_str().unwrap()),
+        "the pass note must say `every recipe bundle` and end with the launched digest: {}",
+        fixture.read_result()["notes"]
+    );
     let order = std::fs::read_to_string(&fixture.gate_order).unwrap();
     assert!(order.contains("brokkr\ncoverage-gate.sh\n"));
     assert!(order.contains("cargo:tree -i native-tls"));
 
+    // A scratch copy that says `bundle` again (the pre-change note) fails the
+    // same check, so the reading rule's text cannot drift unnoticed.
+    let script = fixture.pin.join("verify-seat.sh");
+    let original = std::fs::read_to_string(&script).unwrap();
+    let old_note = original.replace("every recipe bundle", "bundle");
+    assert_ne!(original, old_note);
+    std::fs::write(&script, old_note).unwrap();
+    let output = fixture.base_command().output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(fixture.read_result()["result"], "pass");
+    assert!(
+        !receipt_note(fixture.read_result()["notes"].as_str().unwrap()),
+        "the old pass note must fail the receipt check"
+    );
+    std::fs::write(&script, original).unwrap();
+
     // The same oracle detects a disabled comparison in a scratch script:
     // admitting the wrong digest then yields pass and runs the gates.
-    let script = fixture.pin.join("verify-seat.sh");
     let original = std::fs::read_to_string(&script).unwrap();
     let mutant = original.replace(
         "printf '%s\\n' \"$recorded_digests\" | grep -qx \"$launched_digest\" ||",

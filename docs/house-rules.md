@@ -86,9 +86,12 @@ These are the displayed status context names. The test context expands to both l
 The compile covers every directory under `.brokkr/recipes/`, by glob and with
 no list of names, so a new recipe is gated the day it lands (#148: a fixed
 list let CI refuse a recipe the local gates never compiled). A directory that
-has no `bundle.json` is a refusal, as is an empty shelf, and CI and the verify
-seat also refuse the policy-sweep warning (`lets the run go on without
-reading`) for each recipe.
+has no `bundle.json` is a refusal, as is an empty shelf. The checks belong to
+different surfaces. The line compiles every directory and stops at the first
+non-zero exit; it does no more. CI's loop and the verify seat refuse an empty
+shelf and a directory without a regular `bundle.json` by name, and they refuse
+the policy-sweep warning per recipe. The engine exits 0 on that warning, so a
+hand run reads each recipe's output for `lets the run go on without reading`.
 
 `evals/` is a standalone, unpublished workspace outside the root coverage
 denominator (decision 0055), so none of the root commands reach it; CI and the

@@ -194,11 +194,12 @@ dependency fixes with regression tests and checksummed source patches.
 
 ```bash
 export PATH="$PWD/.brokkr/state/bin:$PATH"
-# Every directory on the shelf, as CI and the verify seat do (no list of names):
-for r in .brokkr/recipes/*/; do brokkr compile --bundle "${r%/}" || break; done
-brokkr recipes show codex-fast
-brokkr run --recipe codex-fast \
-  --feature 'Implement one scoped story from epic #192'
+# Every directory on the shelf, as CI and the verify seat do (no list of names).
+# The house rules' line, verbatim and chained: a refused compile stops the rest.
+(for r in .brokkr/recipes/*/; do brokkr compile --bundle "${r%/}" || exit 1; done) \
+  && brokkr recipes show codex-fast \
+  && brokkr run --recipe codex-fast \
+    --feature 'Implement one scoped story from epic #192'
 ```
 
 Use `--recipe codex-careful` for higher intake and implementation reasoning

@@ -163,8 +163,8 @@ source `a9893b4` plus four pinned patches), `brokkr compile --bundle
 .brokkr/recipes/eval` refused a standalone `forge.phase-machine/v2` recipe
 with phases `trial, score, done, stop` and no `protected_phase`:
 `error: bundle: policy has no 'review' phase; the protected review gate is
-non-removable (extension model, layer 1)`. Swarmail now ships the same
-recipe with its exec scoring gate named `review` (`class: gate`, exec
+non-removable (extension model, layer 1)`. Swarmail's PR #316 proposes the
+same recipe with its exec scoring gate named `review` (`class: gate`, exec
 driver, results `pass`/`fail`/`unscorable`, one attempt, no agent, no
 panel) and `protected_phase: "review"`. Questions: (1) Is that phase a
 lawful protected review for a non-delivery recipe, and is the layer-1
@@ -226,16 +226,19 @@ and this text is amended with the refusal.*
 | `cargo deny check licenses` | exit 0 |
 | `sha256sum --check --strict .brokkr/recipes/self/scripts/shims.sha256` | OK |
 
-Not run here, run by CI: the pinned-bundle compile (including `eval`), the
-chart, Docker and RustSec jobs, and the macOS test job.
+The pinned-bundle compile of every recipe, `eval` included, is the AC1 receipt
+in `specs/eval-recipe-review-gate/implementation.md` (CI's `brokkr bundle
+(pinned)` corroborates it at merge time and owns nothing in-run). Run by CI:
+the chart, Docker and RustSec jobs, and the macOS test job.
 
 ## PR description (draft; the first paragraph is the contract)
 
 > **Held for the operator: this touches `.brokkr/` and `.github/`, so it merges
-> only on the operator's approval by name (0056, 2026-11-01 addendum). The five
-> brokkr issues above are drafted, not filed: filing them (or attaching them to
-> the sub-issue that covers each) and recording the numbers is a precondition
-> of merging, owned by the operator. This delivery does not measure tokens per
+> only on the operator's approval by name (0056, 2026-11-01 addendum). The six
+> brokkr issues above, issue 6 (the protected review gate) included, are
+> drafted, not filed: filing them (or attaching them to the sub-issue that
+> covers each) and recording the numbers is a precondition of merging, owned
+> by the operator. Issue 6 is not filed while its bracketed slot is empty. This delivery does not measure tokens per
 > success: the accounting channel is severed at four named seams and forwarding
 > it is a follow-up under 0119 section 6, which only the operator can accept.
 > Paid agents under `matrix --brokkr` are unsupported until the F2/F1/F5
@@ -245,11 +248,15 @@ chart, Docker and RustSec jobs, and the macOS test job.
 > per family are the operator's, and they observe F1, F2 and F5. AC16 is the
 > operator's paid run after the follow-up. Trials stay sequential (0076);
 > isolation and the "two concurrent trials" criterion are #221's. The decision
-> number 0119 is provisional (0115 is held by #221's branch).**
+> number history: `main` took 0115 (#308) and 0116 (#313), and this record was
+> renumbered 0116 → 0119 on 2026-11-02.**
 
 ## What is the operator's
 
-1. File or attach the five drafted brokkr issues and record the numbers.
+1. File or attach the six drafted brokkr issues, issue 6 (the protected review
+   gate) included, and record the numbers. Do not file issue 6 while its
+   bracketed slot is empty: the slot is filled from the AC1 receipt
+   (`specs/eval-recipe-review-gate/implementation.md`).
 2. The first `brokkr run --recipe eval` with the engine (oracle and null,
    offline, free): the first proof of F4, F6 and the prompt rendering.
 3. The first authenticated smoke per family: observes F1, F2 and F5.
