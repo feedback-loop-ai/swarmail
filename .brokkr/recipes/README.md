@@ -246,16 +246,25 @@ trial is a different experiment) and no model seat. This is the operator's
 2026-10-18 **interim path**: the `trial` seat runs the opaque eval-trial driver
 `swarmail-evals trial`, which starts Swarmail and the fixture app as its own
 children and runs the real `brokkr driver claude|codex|dsh` as a child, so the
-journal keeps tokens, turns and tool rows. **Nothing in that seat is
+journal can keep tokens, turns and tool rows. **Nothing in that seat is
 confined**; every row records the trial as `unconfined`. The recipe moves to
-the MCP broker when brokkr#766 lands.
+the MCP broker when brokkr#766 lands. Today the real driver is not launched:
+`--via-brokkr` refuses `driver_contract_unknown` until the driver's invocation
+is observed (brokkr fact F2), so the recipe runs the **oracle and null controls
+only**; paid agents under `matrix --brokkr` are unsupported until the follow-up
+that observes F1, F2 and F5 (see `evals/wrappers.md`). The scripts parse the
+engine's prompt rendering: the feature text follows `Feature: ` and the result
+path is an indented line of its own, so each line is trimmed and the
+`swarmail-eval-request: /abs/request.json` token is matched anywhere on it.
 
 Do not start it by hand. `swarmail-evals matrix --brokkr BIN` writes each
 slot's `request.json` (trial id, slot, absolute paths, the trial's argument
 list) under the artifacts root and runs
 `brokkr run --recipe eval --feature "swarmail-eval-request: <abs request.json>"`
 once per slot, then reads the slot's `row.json`, `exit` and `score.json` and
-keeps accounting for exactly one row per requested slot:
+keeps accounting for exactly one row per requested slot (`--artifacts-dir` must
+lie inside the current directory; a gate that never ruled is `score_missing`,
+one that disagrees with the row `score_mismatch`):
 
 ```bash
 export PATH="$PWD/.brokkr/state/bin:$PATH"
@@ -270,5 +279,7 @@ $E report --input controls.jsonl --journal facts.json
 
 The first engine run (oracle and null controls: offline and free), the first
 authenticated via-brokkr smoke per family and the paid matrix are the
-operator's. A pull request that touches `.brokkr/` or `.github/` merges only
+operator's. This delivery lands the measuring machinery and does not measure
+tokens per success: forwarding the observed accounting channel through the four
+named seams needs the operator's acceptance of 0116 section 6 first. A pull request that touches `.brokkr/` or `.github/` merges only
 on the operator's approval by name (decision 0056, 2026-11-01 addendum).

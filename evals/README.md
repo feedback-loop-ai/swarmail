@@ -332,13 +332,18 @@ operator's own MCP servers; dsh's web tools stay on). The move to the broker is
 tracked in brokkr#766.
 
 - `trial` runs `swarmail-evals trial` from a request the matrix wrote: it
-  starts Swarmail and the fixture as its own children, runs the agent (for a
-  paid trial the real `brokkr driver claude|codex|dsh`, through the wrapper's
-  `--via-brokkr`), saves the app's state and stops both servers.
+  starts Swarmail and the fixture as its own children, runs the agent, saves
+  the app's state and stops both servers. The real `brokkr driver
+  claude|codex|dsh` as the agent's launcher is the design's intent but is
+  **refused today** (`--via-brokkr` fails closed with `driver_contract_unknown`
+  until the driver's invocation is observed; see `wrappers.md`).
 - `score` re-applies the task's check to the retained leaf
   (`check --artifacts-dir`): the app's state, never the agent's account.
-  The matrix cross-checks the gate against the row; a disagreement is that
-  slot's `harness_error` (`score_mismatch`) and stops admission.
+  The matrix cross-checks the gate against the row; a gate that never ruled is
+  that slot's `harness_error` (`score_missing`), one that disagrees with the
+  row is `score_mismatch`, and either stops admission.
+- Both scripts parse the engine's prompt rendering (`Feature: <text>`, the
+  result path on an indented line of its own), trimming each line.
 
 ```bash
 E=evals/target/debug/swarmail-evals
@@ -354,7 +359,13 @@ $E report --input runs.jsonl --journal facts.json \
 
 `--deadline-ms` may not exceed 1 200 000 in this mode (`deadline_exceeds_seat`):
 the trial's deadline plus the runner's fixed startup and shutdown budgets must
-fit the trial seat's 1800 s. Trials stay sequential (accepted 0076): the
+fit the trial seat's 1800 s. The matrix's wait on one worker is the trial
+deadline plus 300 s plus the score seat's 600 s. `--artifacts-dir` must resolve
+inside the current directory (`brokkr_artifacts_unreachable`): the seat's
+workspace hands reach nothing else. **Paid agents are unsupported under
+`matrix --brokkr`** until the follow-up below declares the binds a paid trial
+needs and lifts the driver refusal; the direct `matrix` (the #151 path) stays
+the paid route. Run only the oracle and null controls through this recipe now. Trials stay sequential (accepted 0076): the
 issue's "two concurrent trials of one task both pass" criterion is **not** met
 by this recipe and is not claimed; isolation is #221's.
 
@@ -362,15 +373,25 @@ by this recipe and is not claimed; isolation is #221's.
 to each group: joined count, typed `missing` reasons (`journal_missing`,
 `journal_ambiguous`, `journal_has_no_accounting`, `builtin_agent`), token
 distributions (`total` is input + output; `cached` is reported beside it),
-turns, tool-call counts by tool, invalid-argument errors, and
+turns, tool-call counts by tool, invalid-argument errors, deadline kills, and
 `tokens_per_success`, which is `null` with a reason whenever any scored trial
-in the group lacks token facts or none passed. A figure is never `0` for an
-unavailable fact.
+in the group lacks token facts or none passed. All five facts per run (tokens,
+turns, wall time, deadline kill, tool calls) are typed present or unavailable
+with a reason. The tool-call figure and the deadline-kill count are each `null`
+with `incomplete_join` whenever any scored trial in the group lacks the fact;
+a figure is never `0`, `false` or `[]` for an unavailable fact, and a facts file
+that writes one of those bare is refused (`journal_invalid`).
+`evals/scripts/journal-facts.sh` fails with exit 2 and a class (`export_failed`,
+`export_not_json`, `export_version_unreadable`, `export_shape_mismatch`) and
+writes nothing when the export is unusable; it is re-run after the journal or
+its `EXTRACT` is corrected.
 
 **What is retained.** `--evidence-dir` writes `DIR/<trial_id>/tool-calls.json`
-per accounted trial: ordinal, bounded tool name, outcome class, byte lengths
-and SHA-256 digests of each call's arguments and result, capped at 64 KiB and
-cut at a whole call with `"truncated": true`. **No argument or result bytes
+per trial whose tool-call fact is present: ordinal, bounded tool name, outcome
+class, byte lengths and SHA-256 digests of each call's arguments and result,
+capped at 64 KiB and cut at a whole call with `"truncated": true` and
+`"retained": N`. A trial without tool rows gets no file and a typed
+`absent` reason. **No argument or result bytes
 are ever copied** (accepted 0075 §4). A value-bearing mode is proposed in 0116
 and is not implemented until the operator accepts it.
 
@@ -384,11 +405,20 @@ is brokkr fact F6 (`specs/eval-brokkr-recipe/implementation.md`).
 **What delivery proved, and what it did not.** The oracle and null controls
 (16/16 pass; 0/16 pass with only `gave_up` or `wait_timeout`) run through the
 recipe's two real scripts and the matrix, with an offline stand-in for
-`brokkr run`; the via-brokkr launch is proven with a stand-in driver. The first
-`brokkr run --recipe eval` with the engine, the first authenticated
-via-brokkr smoke per family and the paid matrix are the operator's. The #151
-"Not measured" rows (tokens per success; per-trial tool-call records) are
-closed by the operator's run of this recipe, not before.
+`brokkr run` that renders the prompt as the engine does. No trial was run
+through a real `brokkr driver`, and the engine itself was not run.
+
+**This delivery lands the measuring machinery and does not measure tokens per
+success.** The accounting channel between a nested `brokkr driver` and the
+engine has never been observed, and every candidate channel is severed by four
+named seams (`wrappers.md`). Closing the #151 "Not measured" rows needs, in
+order: the operator's first engine run (oracle and null, offline, free); the
+operator's first authenticated via-brokkr smoke per family, which observes
+brokkr facts F1, F2 and F5; a follow-up change that forwards the observed
+channel through the four seams under 0116 section 6 (an exception to accepted
+0075 section 1 that only the operator can accept) and declares the binds; and
+then the paid matrix. Structural tool-call records land now; value-bearing
+records wait for 0116 section 4's acceptance.
 
 ## Honest limits
 

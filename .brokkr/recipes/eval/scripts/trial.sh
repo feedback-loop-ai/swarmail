@@ -10,9 +10,9 @@
 #
 #   trial.sh <prompt_file>
 #
-# The prompt carries the seat's result path (its last absolute `/...json`
-# line) and the request (its last `swarmail-eval-request: /abs/request.json`
-# line). The script writes the trial's single row to <slot>/row.json, the
+# The prompt carries the seat's result path (its last trimmed line that is an
+# absolute `/...json` path) and the request (its last trimmed line holding
+# `swarmail-eval-request: /abs/request.json`, bare or after `Feature: `). The script writes the trial's single row to <slot>/row.json, the
 # trial's exit code to <slot>/exit and a bounded copy of its diagnostics to
 # <slot>/trial.stderr, then reports:
 #
@@ -29,10 +29,17 @@ prompt_file="${1:-}"
 
 result_path=""
 request=""
+# The engine renders the feature as "Feature: <text>" and the result path as an
+# indented line of its own (observed 2026-11-02), so each line is trimmed of
+# surrounding whitespace and a trailing CR first, as verify-seat.sh does, and
+# the request token is matched anywhere on the trimmed line.
 while IFS= read -r line || [ -n "$line" ]; do
+  line="${line%$'\r'}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
   case "$line" in
     /*.json) result_path="$line" ;;
-    swarmail-eval-request:\ /*.json) request="${line#swarmail-eval-request: }" ;;
+    *swarmail-eval-request:\ /*.json) request="${line#*swarmail-eval-request: }" ;;
   esac
 done < "$prompt_file"
 [ -n "$result_path" ] || { echo "trial: result path missing" >&2; exit 2; }

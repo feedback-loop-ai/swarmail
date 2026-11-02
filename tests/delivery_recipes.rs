@@ -1728,6 +1728,16 @@ fn eval_recipe_defect(bundle: &Value, policy: &Value) -> Result<(), String> {
         "score has no network",
     )?;
     expect(
+        seats["trial"]["hands"]["network"] == true,
+        "trial has network (a paid trial needs it)",
+    )?;
+    for name in ["trial", "score"] {
+        expect(
+            seats[name]["hands"]["binds"] == json!([]),
+            &format!("{name}: no bind is guessed (decision 0116, F5)"),
+        )?;
+    }
+    expect(
         seats["trial"]["limits"]["timeout_seconds"] == 1800,
         "trial seat 1800 s",
     )?;
@@ -1817,6 +1827,16 @@ fn eval_recipe_is_two_exec_seats_with_one_attempt_and_five_rules() {
         let mut network = bundle.clone();
         network["seats"]["score"]["hands"]["network"] = json!(true);
         out.push(("network on the gate", network, policy.clone()));
+        let mut bind = bundle.clone();
+        bind["seats"]["trial"]["hands"]["binds"] =
+            json!([{"path": "/home/operator/.claude", "mode": "ro"}]);
+        out.push(("a guessed bind on trial", bind, policy.clone()));
+        let mut score_bind = bundle.clone();
+        score_bind["seats"]["score"]["hands"]["binds"] = json!(["/tmp"]);
+        out.push(("a bind on the gate", score_bind, policy.clone()));
+        let mut offline = bundle.clone();
+        offline["seats"]["trial"]["hands"]["network"] = json!(false);
+        out.push(("no network on trial", offline, policy.clone()));
         let mut model = bundle.clone();
         model["seats"]["trial"]["agent"] = json!("claude-implementer");
         out.push(("a model agent on trial", model, policy.clone()));
@@ -1838,10 +1858,28 @@ fn eval_recipe_is_two_exec_seats_with_one_attempt_and_five_rules() {
         ));
         out
     };
+    // Each mutant is caught by the rule that names its fault, not by accident.
+    let named = |label: &str| match label {
+        "a retry rule" => "exactly the five rules",
+        "max_attempts 2" => "trial: no retries",
+        "network on the gate" => "score has no network",
+        "a guessed bind on trial" => "trial: no bind is guessed",
+        "a bind on the gate" => "score: no bind is guessed",
+        "no network on trial" => "trial has network",
+        "a model agent on trial" => "trial: no model agent",
+        "a third seat" => "exactly two seats",
+        "an unscorable leaf that finishes" => "exactly the five rules",
+        "an inherited delivery recipe" => "extends nothing",
+        "a description that hides the confinement" => "description says unconfined",
+        other => panic!("a mutant without a named rule: {other}"),
+    };
     for (label, bundle, policy) in &mutants {
+        let defect =
+            eval_recipe_defect(bundle, policy).expect_err(&format!("the pin misses: {label}"));
         assert!(
-            eval_recipe_defect(bundle, policy).is_err(),
-            "the pin misses: {label}"
+            defect.contains(named(label)),
+            "{label}: caught by {defect:?}, wanted {:?}",
+            named(label)
         );
     }
 }

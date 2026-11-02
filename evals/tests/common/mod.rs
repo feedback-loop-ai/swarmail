@@ -1009,10 +1009,24 @@ pub fn brokkr_standin() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/brokkr-standin.sh")
 }
 
-/// `matrix --brokkr <stand-in>` from the repository root, in a given stand-in mode.
-pub fn brokkr_matrix(mode: &str) -> Command {
+/// A throwaway realm for `matrix --brokkr`: a directory under `base` that
+/// holds the eval recipe's bundle (a link to the real one), so the matrix's
+/// preflight finds `.brokkr/recipes/eval/bundle.json` and an artifact root
+/// inside it is reachable for the seat's hands. The scripts the stand-in runs
+/// are still the repository's own (`EVAL_TEST_RECIPE_DIR`).
+pub fn brokkr_realm(base: &Path) -> PathBuf {
+    let realm = base.join("realm");
+    let recipe = realm.join(".brokkr/recipes/eval");
+    std::fs::create_dir_all(&recipe).expect("realm directories");
+    std::os::unix::fs::symlink(recipe_dir().join("bundle.json"), recipe.join("bundle.json"))
+        .expect("realm bundle link");
+    realm
+}
+
+/// `matrix --brokkr <stand-in>` from `realm`, in a given stand-in mode.
+pub fn brokkr_matrix(mode: &str, realm: &Path) -> Command {
     let mut cmd = cli();
-    cmd.current_dir(repo_root())
+    cmd.current_dir(realm)
         .env("EVAL_TEST_RECIPE_DIR", recipe_dir())
         .env("EVAL_TEST_BROKKR_MODE", mode)
         .arg("matrix")

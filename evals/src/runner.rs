@@ -251,6 +251,33 @@ mod cleanup_probe {
 /// The built-in agent labels.
 pub const BUILTINS: [&str; 2] = ["oracle", "null"];
 
+/// The trial-level refusals for the wrapper's `--via-brokkr` flag (decision
+/// 0116, revision 2), decided on the public agent argv and the declared
+/// profile alone, before anything starts.
+///
+/// brokkr's driver invocation (F2) has never been observed, so an argv that
+/// asks for the driver is refused (`driver_contract_unknown`) and a
+/// `*_via_brokkr` profile declared without the flag is refused
+/// (`via_brokkr_profile_mismatch`). Both are fixed categories; the caller
+/// prints one and exits 2 with no row.
+pub fn via_brokkr_refusal(
+    argv: &[OsString],
+    profile: Option<crate::provenance::WrapperProfile>,
+) -> Option<&'static str> {
+    const FLAG: &[u8] = b"--via-brokkr";
+    let asks = argv.iter().any(|arg| {
+        let bytes = arg.as_bytes();
+        bytes == FLAG || bytes.starts_with(b"--via-brokkr=")
+    });
+    if asks {
+        Some("driver_contract_unknown")
+    } else if profile.is_some_and(|p| p.via_brokkr()) {
+        Some("via_brokkr_profile_mismatch")
+    } else {
+        None
+    }
+}
+
 const STARTUP_DEADLINE: Duration = Duration::from_secs(30);
 const CLEANUP_POLL: Duration = Duration::from_millis(100);
 
@@ -5367,5 +5394,53 @@ mod identity_tests {
         assert!(!ids[0].identity.ends_with(&format!(".{ROUTE_DOMAIN}")));
         assert_eq!(ids[0].smtp_identity, ids[0].inbox);
         assert_eq!(ids[0].inbox, "eval-abcdef12-ada");
+    }
+
+    /// The trial refuses the wrapper's driver flag wherever it stands in the
+    /// public argv, and a via-brokkr profile that does not carry it.
+    #[test]
+    fn via_brokkr_is_refused_at_every_argv_position_and_profile() {
+        use crate::provenance::WrapperProfile as P;
+        let os = |v: &[&str]| v.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        let direct = [P::Claude2_1_310, P::Codex0_164_0, P::Dsh0_1_5Rc1];
+        let via = [
+            P::Claude2_1_310ViaBrokkr,
+            P::Codex0_164_0ViaBrokkr,
+            P::Dsh0_1_5Rc1ViaBrokkr,
+        ];
+        let flagged = [
+            os(&["--via-brokkr", "/d", "agent-claude"]),
+            os(&["agent-claude", "--via-brokkr", "/d", "--model", "m"]),
+            os(&["agent-claude", "--model", "m", "--via-brokkr"]),
+            os(&["agent-claude", "--via-brokkr=/d"]),
+        ];
+        for argv in &flagged {
+            for profile in std::iter::once(None)
+                .chain(direct.iter().copied().map(Some))
+                .chain(via.iter().copied().map(Some))
+            {
+                assert_eq!(
+                    crate::runner::via_brokkr_refusal(argv, profile),
+                    Some("driver_contract_unknown"),
+                    "{argv:?} {profile:?}"
+                );
+            }
+        }
+        // The flag is matched exactly: a lookalike is an ordinary argument.
+        let plain = os(&["agent-claude", "--via-brokkr-not", "x", "--model", "--via"]);
+        assert_eq!(crate::runner::via_brokkr_refusal(&plain, None), None);
+        for profile in direct {
+            assert_eq!(
+                crate::runner::via_brokkr_refusal(&plain, Some(profile)),
+                None
+            );
+        }
+        for profile in via {
+            assert_eq!(
+                crate::runner::via_brokkr_refusal(&plain, Some(profile)),
+                Some("via_brokkr_profile_mismatch")
+            );
+        }
+        assert_eq!(crate::runner::via_brokkr_refusal(&[], None), None);
     }
 }

@@ -9,9 +9,12 @@
 //! timestamp or "newest run".
 //!
 //! Three rules keep the figures honest:
-//! * a missing, ambiguous or accounting-free fact is a typed reason, never `0`;
-//! * `tokens_per_success` is `null` whenever any scored trial in the group
-//!   lacks token facts, so a partial join can never bias it;
+//! * a missing, ambiguous or accounting-free fact is a typed reason, never `0`
+//!   or `false` or `[]`: every one of the five facts per run (tokens, turns,
+//!   wall time, deadline kill, tool calls) is `{status, value | reason}`;
+//! * `tokens_per_success`, the tool-call figure and the deadline-kill count
+//!   are each `null` whenever any scored joined trial in the group lacks the
+//!   fact they need, so a partial join can never bias them;
 //! * the retained tool-call record carries names, classes, lengths and
 //!   digests, never an argument or a result byte (accepted 0075 §4).
 
@@ -106,19 +109,20 @@ pub struct TrialFacts {
     pub tokens: Fact<Tokens>,
     pub turns: Fact<u64>,
     pub wall_time_ms: Fact<u64>,
-    pub deadline_killed: bool,
-    pub tool_calls: Vec<ToolCall>,
+    pub deadline_killed: Fact<bool>,
+    pub tool_calls: Fact<Vec<ToolCall>>,
 }
 
 impl TrialFacts {
-    /// Whether the journal accounted anything for this run at all. A run whose
-    /// every fact is unavailable and whose tool rows are empty tells nothing,
-    /// and an empty tool list there is absence, not "zero calls".
+    /// Whether the journal accounted anything for this run at all: any one of
+    /// the five typed facts is present. A present empty tool list is a fact
+    /// ("zero calls"); an unavailable one is absence.
     pub fn accounted(&self) -> bool {
         matches!(self.tokens, Fact::Present { .. })
             || matches!(self.turns, Fact::Present { .. })
             || matches!(self.wall_time_ms, Fact::Present { .. })
-            || !self.tool_calls.is_empty()
+            || matches!(self.deadline_killed, Fact::Present { .. })
+            || matches!(self.tool_calls, Fact::Present { .. })
     }
 }
 
@@ -168,15 +172,18 @@ impl Facts {
                 }
                 Fact::Unavailable { .. } => true,
             };
-            let calls_ok = trial.tool_calls.iter().enumerate().all(|(i, call)| {
-                call.ordinal == i as u64 + 1
-                    && !call.tool.is_empty()
-                    && call.tool.len() <= 1024
-                    && is_hash(&call.argument_sha256)
-                    && is_hash(&call.result_sha256)
-                    && counter(call.argument_bytes)
-                    && counter(call.result_bytes)
-            });
+            let calls_ok = match &trial.tool_calls {
+                Fact::Present { value } => value.iter().enumerate().all(|(i, call)| {
+                    call.ordinal == i as u64 + 1
+                        && !call.tool.is_empty()
+                        && call.tool.len() <= 1024
+                        && is_hash(&call.argument_sha256)
+                        && is_hash(&call.result_sha256)
+                        && counter(call.argument_bytes)
+                        && counter(call.result_bytes)
+                }),
+                Fact::Unavailable { .. } => true,
+            };
             if !safe_id(&trial.trial_id)
                 || !safe_id(&trial.run_id)
                 || trial.seat != "trial"
@@ -285,14 +292,15 @@ struct Evidence<'a> {
     trial_id: &'a str,
     run_id: &'a str,
     truncated: bool,
+    retained: u64,
     tool_calls: Vec<EvidenceCall<'a>>,
 }
 
 /// The record's bytes: whole calls only, under the cap. Truncation is typed
-/// (`"truncated": true`), never silent.
-fn evidence_bytes(facts: &TrialFacts) -> Result<Vec<u8>, String> {
-    let mut calls: Vec<EvidenceCall> = facts
-        .tool_calls
+/// (`"truncated": true` with the `retained` count), never silent. Only
+/// names, classes, lengths and digests are ever copied.
+fn evidence_bytes(facts: &TrialFacts, all: &[ToolCall]) -> Result<Vec<u8>, String> {
+    let mut calls: Vec<EvidenceCall> = all
         .iter()
         .map(|call| EvidenceCall {
             ordinal: call.ordinal,
@@ -308,17 +316,20 @@ fn evidence_bytes(facts: &TrialFacts) -> Result<Vec<u8>, String> {
         facts: &'a TrialFacts,
         calls: Vec<EvidenceCall<'a>>,
         truncated: bool,
+        retained: u64,
     ) -> Evidence<'a> {
         Evidence {
             schema_version: 1,
             trial_id: &facts.trial_id,
             run_id: &facts.run_id,
             truncated,
+            retained,
             tool_calls: calls,
         }
     }
-    // Sized with the longer flag so the final record is always under the cap.
-    let mut used = serde_json::to_vec(&frame(facts, Vec::new(), false))
+    // Sized with the longer flag and the widest count so the final record is
+    // always under the cap.
+    let mut used = serde_json::to_vec(&frame(facts, Vec::new(), true, u64::MAX))
         .map_err(|_| "evidence_write_failed")?
         .len();
     let mut keep = 0;
@@ -335,16 +346,17 @@ fn evidence_bytes(facts: &TrialFacts) -> Result<Vec<u8>, String> {
     }
     let truncated = keep < calls.len();
     calls.truncate(keep);
-    artifacts::encode(&frame(facts, calls, truncated), EVIDENCE_LIMIT)
+    artifacts::encode(&frame(facts, calls, truncated, keep as u64), EVIDENCE_LIMIT)
         .map_err(|_| "evidence_write_failed".into())
 }
 
-/// Write `DIR/<trial_id>/tool-calls.json` for every accounted trial through
-/// the artifact primitives (exclusive 0700 directory, exclusive 0600 file, no
-/// clobber) and index each in the joined facts. A trial that cannot be
-/// written is recorded as `absent: evidence_write_failed` and the report
-/// still completes; a trial the journal did not account is
-/// `absent: <its reason>`. Nothing is skipped silently.
+/// Write `DIR/<trial_id>/tool-calls.json` for every joined trial whose
+/// `tool_calls` fact is present through the artifact primitives (exclusive
+/// 0700 directory, exclusive 0600 file, no clobber) and index each in the
+/// joined facts. A trial that cannot be written is recorded as
+/// `absent: evidence_write_failed` and the report still completes; a trial
+/// whose tool rows the journal did not give is `absent: <its reason>` and no
+/// file or directory is created for it. Nothing is skipped silently.
 pub fn write_evidence(dir: &Path, joined: &mut Joined) {
     // A root this call creates is private like every leaf below it; a root
     // the operator already made keeps the operator's own mode.
@@ -362,24 +374,24 @@ pub fn write_evidence(dir: &Path, joined: &mut Joined) {
     for (id, trial) in &joined.trials {
         let entry = match trial {
             JoinedTrial::Absent(reason) => json!({"absent": reason.as_str()}),
-            JoinedTrial::Entry(facts) if !facts.accounted() => {
-                json!({"absent": Reason::JournalHasNoAccounting.as_str()})
-            }
-            JoinedTrial::Entry(facts) => {
-                let written = root.as_ref().map_err(|e| e.clone()).and_then(|root| {
-                    let bytes = evidence_bytes(facts)?;
-                    let leaf = artifacts::create_private_dir(root, id)?;
-                    artifacts::publish(&leaf, "tool-calls.json", &bytes)
-                });
-                match written {
-                    Ok(binding) => json!({
-                        "path": format!("{id}/{}", binding.path),
-                        "length": binding.length,
-                        "sha256": binding.sha256,
-                    }),
-                    Err(_) => json!({"absent": "evidence_write_failed"}),
+            JoinedTrial::Entry(facts) => match &facts.tool_calls {
+                Fact::Unavailable { reason } => json!({"absent": reason.as_str()}),
+                Fact::Present { value } => {
+                    let written = root.as_ref().map_err(|e| e.clone()).and_then(|root| {
+                        let bytes = evidence_bytes(facts, value)?;
+                        let leaf = artifacts::create_private_dir(root, id)?;
+                        artifacts::publish(&leaf, "tool-calls.json", &bytes)
+                    });
+                    match written {
+                        Ok(binding) => json!({
+                            "path": format!("{id}/{}", binding.path),
+                            "length": binding.length,
+                            "sha256": binding.sha256,
+                        }),
+                        Err(_) => json!({"absent": "evidence_write_failed"}),
+                    }
                 }
-            }
+            },
         };
         index.insert(id.clone(), entry);
     }
@@ -419,10 +431,21 @@ pub fn summarize(group: &[&TrialResult], joined: &Joined) -> Value {
     let (mut input, mut output, mut cached, mut total) = (vec![], vec![], vec![], vec![]);
     let (mut turns, mut wall) = (vec![], vec![]);
     let mut by_tool: BTreeMap<String, u64> = BTreeMap::new();
-    let (mut calls, mut invalid, mut accounted, mut killed) = (0u64, 0u64, 0u64, 0u64);
+    let (mut calls, mut invalid, mut with_calls, mut killed, mut with_kill) =
+        (0u64, 0u64, 0u64, 0u64, 0u64);
+    // Set when a scored trial in the group lacks the fact (no journal entry,
+    // or an entry whose fact is unavailable): the aggregate is then withheld.
+    let (mut calls_incomplete, mut kill_incomplete) = (false, false);
     for row in &scored {
         match &joined.trials[&row.trial_id] {
-            JoinedTrial::Absent(reason) => *missing.entry(reason.as_str()).or_default() += 1,
+            JoinedTrial::Absent(reason) => {
+                *missing.entry(reason.as_str()).or_default() += 1;
+                // A scored trial with no journal entry lacks every fact: the
+                // tool-call and kill aggregates are withheld like the token
+                // figure, never a total that silently omits it.
+                calls_incomplete = true;
+                kill_incomplete = true;
+            }
             JoinedTrial::Entry(facts) => {
                 match facts.tokens {
                     Fact::Present { value } => {
@@ -441,15 +464,24 @@ pub fn summarize(group: &[&TrialResult], joined: &Joined) -> Value {
                 if let Fact::Present { value } = facts.wall_time_ms {
                     wall.push(value);
                 }
-                if facts.accounted() {
-                    accounted += 1;
-                    for call in &facts.tool_calls {
-                        calls += 1;
-                        *by_tool.entry(bounded_tool_name(&call.tool)).or_default() += 1;
-                        invalid += u64::from(call.outcome == ToolOutcome::InvalidArgument);
+                match &facts.tool_calls {
+                    Fact::Present { value } => {
+                        with_calls += 1;
+                        for call in value {
+                            calls += 1;
+                            *by_tool.entry(bounded_tool_name(&call.tool)).or_default() += 1;
+                            invalid += u64::from(call.outcome == ToolOutcome::InvalidArgument);
+                        }
                     }
+                    Fact::Unavailable { .. } => calls_incomplete = true,
                 }
-                killed += u64::from(facts.deadline_killed);
+                match facts.deadline_killed {
+                    Fact::Present { value } => {
+                        with_kill += 1;
+                        killed += u64::from(value);
+                    }
+                    Fact::Unavailable { .. } => kill_incomplete = true,
+                }
             }
         }
     }
@@ -488,10 +520,22 @@ pub fn summarize(group: &[&TrialResult], joined: &Joined) -> Value {
             evidence.insert(row.trial_id.clone(), entry.clone());
         }
     }
-    let tool_calls = if accounted == 0 {
-        Value::Null
+    let (tool_calls, tool_calls_reason) = if calls_incomplete {
+        (Value::Null, json!("incomplete_join"))
+    } else if with_calls == 0 {
+        (Value::Null, Value::Null)
     } else {
-        json!({"total": calls, "invalid_argument": invalid, "by_tool": by_tool, "trials": accounted})
+        (
+            json!({"total": calls, "invalid_argument": invalid, "by_tool": by_tool, "trials": with_calls}),
+            Value::Null,
+        )
+    };
+    let (deadline_killed, deadline_killed_reason) = if kill_incomplete {
+        (Value::Null, json!("incomplete_join"))
+    } else if with_kill == 0 {
+        (Value::Null, Value::Null)
+    } else {
+        (json!(killed), Value::Null)
     };
     json!({
         "joined": joined_count,
@@ -504,7 +548,9 @@ pub fn summarize(group: &[&TrialResult], joined: &Joined) -> Value {
         "turns": distribution_or_null(turns, false),
         "seat_wall_time_ms": distribution_or_null(wall, false),
         "tool_calls": tool_calls,
-        "deadline_killed": killed,
+        "tool_calls_reason": tool_calls_reason,
+        "deadline_killed": deadline_killed,
+        "deadline_killed_reason": deadline_killed_reason,
         "runs": runs,
         "evidence": evidence,
     })
@@ -571,8 +617,23 @@ mod tests {
             tokens,
             turns: Fact::Present { value: 4 },
             wall_time_ms: Fact::Present { value: 100 },
-            deadline_killed: false,
-            tool_calls: calls,
+            deadline_killed: Fact::Present { value: false },
+            tool_calls: Fact::Present { value: calls },
+        }
+    }
+
+    /// A run the journal holds but with nothing accounted: every fact typed
+    /// unavailable for one reason.
+    fn no_accounting(n: u32, reason: Reason) -> TrialFacts {
+        TrialFacts {
+            trial_id: id(n),
+            run_id: format!("run-{n}"),
+            seat: "trial".into(),
+            tokens: unavailable(reason),
+            turns: unavailable(reason),
+            wall_time_ms: unavailable(reason),
+            deadline_killed: unavailable(reason),
+            tool_calls: unavailable(reason),
         }
     }
 
@@ -659,14 +720,53 @@ mod tests {
             read(v.to_string().as_bytes())
         };
         assert!(with_calls(&|_| {}).is_ok());
-        assert!(with_calls(&|v| v["trials"][0]["tool_calls"][1]["ordinal"] = json!(5)).is_err());
-        assert!(with_calls(&|v| v["trials"][0]["tool_calls"][0]["tool"] = json!("")).is_err());
         assert!(
-            with_calls(&|v| v["trials"][0]["tool_calls"][0]["argument_sha256"] = json!("abc"))
+            with_calls(&|v| v["trials"][0]["tool_calls"]["value"][1]["ordinal"] = json!(5))
                 .is_err()
         );
         assert!(
-            with_calls(&|v| v["trials"][0]["tool_calls"][0]["outcome"] = json!("fine")).is_err()
+            with_calls(&|v| v["trials"][0]["tool_calls"]["value"][0]["tool"] = json!("")).is_err()
+        );
+        assert!(
+            with_calls(
+                &|v| v["trials"][0]["tool_calls"]["value"][0]["argument_sha256"] = json!("abc")
+            )
+            .is_err()
+        );
+        assert!(
+            with_calls(&|v| v["trials"][0]["tool_calls"]["value"][0]["outcome"] = json!("fine"))
+                .is_err()
+        );
+        // An untyped fact is refused, never read as "zero calls" or "not
+        // killed": absence and a real zero must stay distinguishable.
+        for (field, untyped) in [
+            ("tool_calls", json!([])),
+            ("tool_calls", Value::Null),
+            ("deadline_killed", json!(false)),
+            ("deadline_killed", json!(true)),
+            ("deadline_killed", Value::Null),
+        ] {
+            assert_eq!(
+                mutate(&|v| v["trials"][0][field] = untyped.clone()).unwrap_err(),
+                "journal_invalid",
+                "{field}: {untyped}"
+            );
+        }
+        // Typed present-empty and typed unavailable both read.
+        assert!(
+            mutate(&|v| v["trials"][0]["tool_calls"] = json!({"status": "present", "value": []}))
+                .is_ok()
+        );
+        assert!(
+            mutate(&|v| v["trials"][0]["tool_calls"] =
+                json!({"status": "unavailable", "reason": "journal_has_no_accounting"}))
+            .is_ok()
+        );
+        assert!(
+            mutate(&|v| v["trials"][0]["deadline_killed"] =
+                json!({"status": "present", "value": "false"}))
+            .is_err(),
+            "deadline_killed is a JSON boolean"
         );
         assert!(read(&vec![b' '; FACTS_LIMIT + 1]).is_err());
         assert!(read(b"not json").is_err());
@@ -736,12 +836,8 @@ mod tests {
 
         // One entry says the run exists but its journal has no accounting; one
         // is ambiguous. Neither is zero; both withhold the figure.
-        let mut a = facts_for(1, unavailable(Reason::JournalHasNoAccounting), vec![]);
-        a.turns = unavailable(Reason::JournalHasNoAccounting);
-        a.wall_time_ms = unavailable(Reason::JournalHasNoAccounting);
-        let mut b = facts_for(2, unavailable(Reason::JournalAmbiguous), vec![]);
-        b.turns = unavailable(Reason::JournalAmbiguous);
-        b.wall_time_ms = unavailable(Reason::JournalAmbiguous);
+        let a = no_accounting(1, Reason::JournalHasNoAccounting);
+        let b = no_accounting(2, Reason::JournalAmbiguous);
         let partial = summary(&rows, &file(vec![a.clone(), b]));
         assert_eq!(
             partial["runs"],
@@ -765,12 +861,62 @@ mod tests {
         assert_eq!(none["tokens_per_success_reason"], "no_passes");
         assert_eq!(none["tokens"]["total"]["sum"], 3);
 
-        // An entry that accounts nothing at all has no tool-call figure.
-        a.tool_calls.clear();
-        a.turns = unavailable(Reason::JournalHasNoAccounting);
+        // An entry that accounts nothing at all has no tool-call figure, and
+        // says why rather than reporting zero calls and zero kills.
         let nothing = summary(&rows[..1], &file(vec![a]));
         assert_eq!(nothing["tool_calls"], Value::Null);
+        assert_eq!(nothing["tool_calls_reason"], "incomplete_join");
+        assert_eq!(nothing["deadline_killed"], Value::Null);
+        assert_eq!(nothing["deadline_killed_reason"], "incomplete_join");
         assert_eq!(nothing["turns"], Value::Null);
+    }
+
+    #[test]
+    fn every_fact_is_typed_and_a_partial_one_withholds_only_its_own_aggregate() {
+        let rows = [
+            row(1, "agent", true, Outcome::Pass),
+            row(2, "agent", true, Outcome::Pass),
+            row(3, "agent", true, Outcome::Fail),
+        ];
+        // Trial 1 made no tool calls and was not killed: a real zero. Trial 2
+        // has tokens but no tool rows and no kill fact: absence, not zero.
+        let zero = facts_for(1, tokens(1, 2), vec![]);
+        let mut partial = facts_for(2, tokens(3, 4), vec![]);
+        partial.tool_calls = unavailable(Reason::JournalHasNoAccounting);
+        partial.deadline_killed = unavailable(Reason::JournalHasNoAccounting);
+        let mut killed = facts_for(3, tokens(5, 6), vec![call(1, "t", ToolOutcome::Error)]);
+        killed.deadline_killed = Fact::Present { value: true };
+
+        // Present zeros are numbers.
+        let whole = summary(
+            &[rows[0].clone(), rows[2].clone()],
+            &file(vec![zero.clone(), killed]),
+        );
+        assert_eq!(
+            whole["tool_calls"],
+            json!({"total": 1, "invalid_argument": 0, "by_tool": {"t": 1}, "trials": 2})
+        );
+        assert_eq!(whole["tool_calls_reason"], Value::Null);
+        assert_eq!(whole["deadline_killed"], 1);
+        assert_eq!(whole["deadline_killed_reason"], Value::Null);
+        let only_zero = summary(&rows[..1], &file(vec![zero.clone()]));
+        assert_eq!(
+            only_zero["tool_calls"],
+            json!({"total": 0, "invalid_argument": 0, "by_tool": {}, "trials": 1}),
+            "a present empty list is zero calls, not absence"
+        );
+        assert_eq!(only_zero["deadline_killed"], 0);
+
+        // One unavailable fact withholds the tool-call and kill aggregates but
+        // leaves every token figure a number.
+        let mixed = summary(&rows[..2], &file(vec![zero, partial]));
+        assert_eq!(mixed["tool_calls"], Value::Null);
+        assert_eq!(mixed["tool_calls_reason"], "incomplete_join");
+        assert_eq!(mixed["deadline_killed"], Value::Null);
+        assert_eq!(mixed["deadline_killed_reason"], "incomplete_join");
+        assert_eq!(mixed["tokens_per_success"], json!(5.0));
+        assert_eq!(mixed["tokens"]["total"]["sum"], 10);
+        assert_eq!(mixed["runs"].as_object().unwrap().len(), 2);
     }
 
     #[test]
@@ -816,16 +962,31 @@ mod tests {
             .map(|i| call(i, "mcp__swarmail__wait", ToolOutcome::Ok))
             .collect();
         let facts = facts_for(1, tokens(1, 1), calls);
-        let bytes = evidence_bytes(&facts).unwrap();
+        let Fact::Present { value: all } = &facts.tool_calls else {
+            unreachable!()
+        };
+        let bytes = evidence_bytes(&facts, all).unwrap();
         assert!(bytes.len() <= EVIDENCE_LIMIT);
         let record: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(record["truncated"], true);
         let kept = record["tool_calls"].as_array().unwrap().len();
         assert!(kept > 0 && kept < 3000);
-        let small = facts_for(1, tokens(1, 1), vec![call(1, "t", ToolOutcome::Ok)]);
-        let record: Value = serde_json::from_slice(&evidence_bytes(&small).unwrap()).unwrap();
+        assert_eq!(record["retained"], kept, "the count says how much was kept");
+        let small_calls = vec![call(1, "t", ToolOutcome::Ok)];
+        let small = facts_for(1, tokens(1, 1), small_calls.clone());
+        let record: Value =
+            serde_json::from_slice(&evidence_bytes(&small, &small_calls).unwrap()).unwrap();
         assert_eq!(record["truncated"], false);
+        assert_eq!(record["retained"], 1);
         assert_eq!(record["tool_calls"].as_array().unwrap().len(), 1);
+        // A present empty list is a real fact: a record that says zero calls.
+        let none = facts_for(1, tokens(1, 1), vec![]);
+        let record: Value = serde_json::from_slice(&evidence_bytes(&none, &[]).unwrap()).unwrap();
+        assert_eq!(
+            (record["truncated"].clone(), record["retained"].clone()),
+            (json!(false), json!(0))
+        );
+        assert_eq!(record["tool_calls"], json!([]));
     }
 
     #[test]
@@ -837,19 +998,7 @@ mod tests {
             row(1, "agent", true, Outcome::Pass),
             row(2, "agent", true, Outcome::Pass),
         ];
-        let mut empty = facts_for(
-            2,
-            Fact::Unavailable {
-                reason: Reason::JournalHasNoAccounting,
-            },
-            vec![],
-        );
-        empty.turns = Fact::Unavailable {
-            reason: Reason::JournalHasNoAccounting,
-        };
-        empty.wall_time_ms = Fact::Unavailable {
-            reason: Reason::JournalHasNoAccounting,
-        };
+        let empty = no_accounting(2, Reason::JournalHasNoAccounting);
         let facts = file(vec![
             facts_for(1, tokens(1, 1), vec![call(1, "t", ToolOutcome::Ok)]),
             empty,

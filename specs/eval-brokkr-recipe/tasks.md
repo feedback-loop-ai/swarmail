@@ -40,7 +40,7 @@ says so; the round-1 boxes stay as the implementer left them.
 
 ## Round 2 (review return, 2026-11-02)
 
-- [ ] **T20 Prompt parsing on the engine's rendering (AC4, AC1; plan R1).**
+- [x] **T20 Prompt parsing on the engine's rendering (AC4, AC1; plan R1).**
   Write the test first: `recipe.rs::trial_script_parses_the_engine_rendered_prompt`
   feeds `trial.sh` a prompt whose request line is `Feature:
   swarmail-eval-request: /abs/request.json` and whose result path is
@@ -55,14 +55,14 @@ says so; the round-1 boxes stay as the implementer left them.
   `score.sh`; the existing recipe, report and proof brokkr-mode tests pass
   through the engine-shaped stand-in; a prompt with the token but a
   relative path still refuses.
-- [ ] **T21 `score.sh` always records a verdict once `check` ran (AC4; R11).**
+- [x] **T21 `score.sh` always records a verdict once `check` ran (AC4; R11).**
   `score.json` is written before the report on exit 0, 1 and other; a
   malformed request or unusable slot refuses `unscorable` with no
   `score.json`.
   **Test:** `recipe.rs::score_script_maps_check_exit_codes` asserts
   `score.json` present with `outcome: harness_error, exit: 2` on the
   truncated-state leaf, and absent on a malformed request.
-- [ ] **T22 `--via-brokkr` fails closed; assembly proven inline (AC8; R2).**
+- [x] **T22 `--via-brokkr` fails closed; assembly proven inline (AC8; R2).**
   In `wrappers::run`, after `validate_driver`, return
   `Err("driver_contract_unknown")` unconditionally, before
   `Inputs::environment()`, `manifest()` or any credential read. Keep
@@ -77,7 +77,7 @@ says so; the round-1 boxes stay as the implementer left them.
   stderr carries `driver_contract_unknown`; nothing spawned, record file
   absent); `via_brokkr_refuses_an_invalid_driver_before_launch` unchanged;
   `git ls-files evals/tests/wrappers_launch/standin-driver.py` is empty.
-- [ ] **T23 Trial-level argv refusals (AC8; R3).** Where the trial validates
+- [x] **T23 Trial-level argv refusals (AC8; R3).** Where the trial validates
   `--wrapper-profile` today (`runner.rs` request validation), add: the
   public argv contains the literal `--via-brokkr` → `driver_contract_unknown`;
   a `*_via_brokkr` profile without it → `via_brokkr_profile_mismatch`. Both
@@ -88,7 +88,7 @@ says so; the round-1 boxes stay as the implementer left them.
   `report.rs::brokkr_mode_refuses_a_via_brokkr_agent_as_a_harness_error`
   (agents file with `--via-brokkr`: slot 1 `harness_error`, admission
   stopped, suffix, exit 2, failure class never `gave_up`).
-- [ ] **T24 `brokkr_artifacts_unreachable` and the brokkr-mode envelope (AC9;
+- [x] **T24 `brokkr_artifacts_unreachable` and the brokkr-mode envelope (AC9;
   R7, R12).** In `brokkr_mode_admissible`, refuse an `--artifacts-dir` that
   does not resolve inside the current directory. Add
   `fn brokkr_envelope_ms(deadline_ms: u64) -> u64` returning
@@ -98,7 +98,7 @@ says so; the round-1 boxes stay as the implementer left them.
   function's value and the direct envelope unchanged;
   `report.rs::brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline`
   gains the unreachable arm.
-- [ ] **T25 `score_missing` and the slot-stderr category (AC2; R11, R13).**
+- [x] **T25 `score_missing` and the slot-stderr category (AC2; R11, R13).**
   `read_slot` returns the gate verdict as `Missing | Present(outcome)`; an
   absent, unreadable, malformed or multi-line `score.json` is
   `score_missing`; a present disagreeing one stays `score_mismatch`. Add
@@ -109,12 +109,12 @@ says so; the round-1 boxes stay as the implementer left them.
   arms: `score_missing` on stderr and as the row's failure for `no-score`;
   the scanned category for `category-stderr`; admission stopped, suffix,
   exit 2 in both; inline `read_slot` test distinguishes the two.
-- [ ] **T26 Bundle pins (AC3, AC9; R15).** `tests/delivery_recipes.rs` pins
+- [x] **T26 Bundle pins (AC3, AC9; R15).** `tests/delivery_recipes.rs` pins
   `trial` `network: true`, both seats `binds: []`, and the description
   mentions `unconfined`.
   **Test:** two more one-fault mutants (a bind on `trial`; `network: false`
   on `trial`) are caught by the named rule.
-- [ ] **T27 Typed `tool_calls` and `deadline_killed` (AC6, AC7; R9).** In
+- [x] **T27 Typed `tool_calls` and `deadline_killed` (AC6, AC7; R9).** In
   `journal.rs`: `tool_calls: Fact<Vec<ToolCall>>`, `deadline_killed:
   Fact<bool>`; `accounted()` = any fact present; aggregates `tool_calls` and
   `deadline_killed` are `null` with `tool_calls_reason` /
@@ -134,13 +134,13 @@ says so; the round-1 boxes stay as the implementer left them.
   `recipe.rs::journal_facts_script_output_reads_as_facts_v1` covers absent,
   null, malformed and empty `tool_calls` and a non-boolean
   `deadline_killed`.
-- [ ] **T28 `journal-facts.sh` header and F3 text (R10).** Correct the header:
+- [x] **T28 `journal-facts.sh` header and F3 text (R10).** Correct the header:
   a failed export, non-JSON, unreadable version or `EXTRACT` mismatch exits 2
   with the class and writes nothing; only a matching shape with no run for a
   trial yields `journal_missing` by absence.
   **Test:** `recipe.rs` arms: a non-JSON export → exit 2, no `OUT`; a
   mismatched shape → exit 2, no `OUT`, stderr names the class.
-- [ ] **T29 Documentation (AC15; R4, R5, R6, R8).** `evals/README.md`: the
+- [x] **T29 Documentation (AC15; R4, R5, R6, R8).** `evals/README.md`: the
   corrected closure sentence (machinery lands; tokens per success after the
   forwarding follow-up; structural records now, value-bearing after 0116
   §4); paid agents under `matrix --brokkr` unsupported. `evals/wrappers.md`:
@@ -153,7 +153,7 @@ says so; the round-1 boxes stay as the implementer left them.
   empty; `git grep -n "env -i" evals/wrappers.md` and `git grep -n
   "driver_contract_unknown" evals/wrappers.md .brokkr/recipes/README.md`
   are nonempty; no edit under `docs/evals/baseline-2026-11-01*`.
-- [ ] **T30 Seam sentinel (AC17; R4).** Set `SWARMAIL_EVAL_SEAM_SENTINEL=1`
+- [x] **T30 Seam sentinel (AC17; R4).** Set `SWARMAIL_EVAL_SEAM_SENTINEL=1`
   in the test's environment: prove it does not reach `swarmail-evals trial`
   under the real `trial.sh` (seam 1; the trial's recorded worker environment
   or a probe agent that dumps its environment keys) nor the agent launched
@@ -162,7 +162,7 @@ says so; the round-1 boxes stay as the implementer left them.
   **Test:** `recipe.rs::the_trial_seat_strips_the_matrix_environment` and
   the extended wrapper environment test; both named in `implementation.md`
   as the posture the follow-up flips.
-- [ ] **T31 Brokkr facts: read, draft, hand to the operator (AC12; R14).**
+- [x] **T31 Brokkr facts: read, draft, hand to the operator (AC12; R14).**
   For each of F1–F7: observed (command and output), tracked (sub-issue
   number) or drafted. Without network hands, write the issue texts in
   `implementation.md` **and** in the PR body verbatim, with the F1 four-seam
@@ -171,7 +171,7 @@ says so; the round-1 boxes stay as the implementer left them.
   by the operator".
   **Test:** `implementation.md`'s F-table has exactly one disposition per
   fact; no disposition reads "filed" without an issue number.
-- [ ] **T32 Gates (AC13, AC14).** Run the full quickstart list `--locked`;
+- [x] **T32 Gates (AC13, AC14).** Run the full quickstart list `--locked`;
   `brokkr compile --bundle .brokkr/recipes/eval` where the binary exists,
   else "not run".
   **Test:** every command's exit code recorded; the `git diff --stat` over
@@ -179,7 +179,7 @@ says so; the round-1 boxes stay as the implementer left them.
   empty; `TrialResult`, `Metadata`, `MatrixPlan`, `MatrixIndex` show no
   changed field in `git diff main -- evals/src`; `standin-driver.py` is
   gone from the tree.
-- [ ] **T33 Delivery paper (AC15).** Commit unsigned in the repository's
+- [x] **T33 Delivery paper (AC15).** Commit unsigned in the repository's
   style on top of `080db77` (never amend). The PR description's first
   paragraph states: held for the operator's approval by name (touches
   `.brokkr/` and `.github/`, 0056's 2026-11-01 list); the brokkr issues

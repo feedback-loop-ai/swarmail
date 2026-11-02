@@ -1,202 +1,222 @@
 {
- "schema_version": 1,
- "source": {
-  "brokkr_version": "0.12.0",
-  "binary_sha256": "d5f52e7f6eed79df50d9c9ea91e0c8e945907b6ce47d4071cffd6ad76936d257",
-  "query": "hand-authored fixture to the journal facts v1 shape (not a captured brokkr export)"
- },
- "trials": [
-  {
-   "trial_id": "00000000000000000000000000000003",
-   "run_id": "run-3",
-   "seat": "trial",
-   "tokens": {
-    "status": "present",
-    "value": {
-     "input": 1000,
-     "output": 200,
-     "cached": 5000
-    }
-   },
-   "turns": {
-    "status": "present",
-    "value": 5
-   },
-   "wall_time_ms": {
-    "status": "present",
-    "value": 10000
-   },
-   "deadline_killed": false,
-   "tool_calls": [
+  "schema_version": 1,
+  "source": {
+    "brokkr_version": "0.12.0",
+    "binary_sha256": "d5f52e7f6eed79df50d9c9ea91e0c8e945907b6ce47d4071cffd6ad76936d257",
+    "query": "hand-authored fixture to the journal facts v1 shape (not a captured brokkr export)"
+  },
+  "trials": [
     {
-     "ordinal": 1,
-     "tool": "mcp__swarmail__wait",
-     "outcome": "ok",
-     "argument_bytes": 2,
-     "argument_sha256": "f55ff16f66f43360266b95db6f8fec01d76031054306ae4a4b380598f6cfd114",
-     "result_bytes": 2,
-     "result_sha256": "82f3e9c695dc6b8d1b11818d5701919e286de8d47f7c3eb3100c485f79e57828"
+      "trial_id": "00000000000000000000000000000003",
+      "run_id": "run-3",
+      "seat": "trial",
+      "tokens": {
+        "status": "present",
+        "value": {
+          "input": 1000,
+          "output": 200,
+          "cached": 5000
+        }
+      },
+      "turns": {
+        "status": "present",
+        "value": 5
+      },
+      "wall_time_ms": {
+        "status": "present",
+        "value": 10000
+      },
+      "deadline_killed": {
+        "status": "present",
+        "value": false
+      },
+      "tool_calls": {
+        "status": "present",
+        "value": [
+          {
+            "ordinal": 1,
+            "tool": "mcp__swarmail__wait",
+            "outcome": "ok",
+            "argument_bytes": 2,
+            "argument_sha256": "f55ff16f66f43360266b95db6f8fec01d76031054306ae4a4b380598f6cfd114",
+            "result_bytes": 2,
+            "result_sha256": "82f3e9c695dc6b8d1b11818d5701919e286de8d47f7c3eb3100c485f79e57828"
+          },
+          {
+            "ordinal": 2,
+            "tool": "mcp__fixture__eval_http",
+            "outcome": "ok",
+            "argument_bytes": 2,
+            "argument_sha256": "2c3a4249d77070058649dbd822dcaf7957586fce428cfb2ca88b94741eda8b07",
+            "result_bytes": 2,
+            "result_sha256": "db77fd01af957221a4989b64b3770a83a3c56068405b9f0e9408feae57fd17e4"
+          }
+        ]
+      }
     },
     {
-     "ordinal": 2,
-     "tool": "mcp__fixture__eval_http",
-     "outcome": "ok",
-     "argument_bytes": 2,
-     "argument_sha256": "2c3a4249d77070058649dbd822dcaf7957586fce428cfb2ca88b94741eda8b07",
-     "result_bytes": 2,
-     "result_sha256": "db77fd01af957221a4989b64b3770a83a3c56068405b9f0e9408feae57fd17e4"
-    }
-   ]
-  },
-  {
-   "trial_id": "00000000000000000000000000000004",
-   "run_id": "run-4",
-   "seat": "trial",
-   "tokens": {
-    "status": "present",
-    "value": {
-     "input": 3000,
-     "output": 600,
-     "cached": 7000
-    }
-   },
-   "turns": {
-    "status": "present",
-    "value": 9
-   },
-   "wall_time_ms": {
-    "status": "present",
-    "value": 20000
-   },
-   "deadline_killed": false,
-   "tool_calls": [
-    {
-     "ordinal": 1,
-     "tool": "mcp__swarmail__wait",
-     "outcome": "ok",
-     "argument_bytes": 2,
-     "argument_sha256": "f46dd28a5499d8efef0b8fb8ee1ec1c5a5e407c9381741d576ba8deb4f59ec3f",
-     "result_bytes": 2,
-     "result_sha256": "e49d63b2a8a78f048bafc4b4590029603a5a4165ee8bf98af15d62f24cd83479"
+      "trial_id": "00000000000000000000000000000004",
+      "run_id": "run-4",
+      "seat": "trial",
+      "tokens": {
+        "status": "present",
+        "value": {
+          "input": 3000,
+          "output": 600,
+          "cached": 7000
+        }
+      },
+      "turns": {
+        "status": "present",
+        "value": 9
+      },
+      "wall_time_ms": {
+        "status": "present",
+        "value": 20000
+      },
+      "deadline_killed": {
+        "status": "present",
+        "value": false
+      },
+      "tool_calls": {
+        "status": "present",
+        "value": [
+          {
+            "ordinal": 1,
+            "tool": "mcp__swarmail__wait",
+            "outcome": "ok",
+            "argument_bytes": 2,
+            "argument_sha256": "f46dd28a5499d8efef0b8fb8ee1ec1c5a5e407c9381741d576ba8deb4f59ec3f",
+            "result_bytes": 2,
+            "result_sha256": "e49d63b2a8a78f048bafc4b4590029603a5a4165ee8bf98af15d62f24cd83479"
+          },
+          {
+            "ordinal": 2,
+            "tool": "mcp__fixture__eval_http",
+            "outcome": "invalid_argument",
+            "argument_bytes": 2,
+            "argument_sha256": "4539e4b4889079c2a00afeae0bfc1439840ef2379a1fb81c8ba27361ad476d6b",
+            "result_bytes": 2,
+            "result_sha256": "a2ec8adac7fd24b4b7a8edd89d06990579f6123f5724a14b47ee4bddfb2ba572"
+          },
+          {
+            "ordinal": 3,
+            "tool": "mcp__fixture__eval_http",
+            "outcome": "ok",
+            "argument_bytes": 2,
+            "argument_sha256": "66220e71591b2d933c0e935c138ebfd60710b91fe2fb7599eced4430b3dbb3c9",
+            "result_bytes": 2,
+            "result_sha256": "5eb242aeb68552862913d602cff36deb4cafc18a46cfdea393b4bc1c6917a669"
+          }
+        ]
+      }
     },
     {
-     "ordinal": 2,
-     "tool": "mcp__fixture__eval_http",
-     "outcome": "invalid_argument",
-     "argument_bytes": 2,
-     "argument_sha256": "4539e4b4889079c2a00afeae0bfc1439840ef2379a1fb81c8ba27361ad476d6b",
-     "result_bytes": 2,
-     "result_sha256": "a2ec8adac7fd24b4b7a8edd89d06990579f6123f5724a14b47ee4bddfb2ba572"
+      "trial_id": "00000000000000000000000000000005",
+      "run_id": "run-5",
+      "seat": "trial",
+      "tokens": {
+        "status": "present",
+        "value": {
+          "input": 2000,
+          "output": 400,
+          "cached": 0
+        }
+      },
+      "turns": {
+        "status": "present",
+        "value": 7
+      },
+      "wall_time_ms": {
+        "status": "present",
+        "value": 30000
+      },
+      "deadline_killed": {
+        "status": "present",
+        "value": false
+      },
+      "tool_calls": {
+        "status": "present",
+        "value": [
+          {
+            "ordinal": 1,
+            "tool": "mcp__swarmail__wait",
+            "outcome": "error",
+            "argument_bytes": 2,
+            "argument_sha256": "730bea4ff16f200fb931b06cae08a5da8e279813775d7ed81e680b4a77946fe1",
+            "result_bytes": 2,
+            "result_sha256": "25f1c790f16f423d2f942b70378ed075972ab0affbf3f35f12e015c13f29406f"
+          }
+        ]
+      }
     },
     {
-     "ordinal": 3,
-     "tool": "mcp__fixture__eval_http",
-     "outcome": "ok",
-     "argument_bytes": 2,
-     "argument_sha256": "66220e71591b2d933c0e935c138ebfd60710b91fe2fb7599eced4430b3dbb3c9",
-     "result_bytes": 2,
-     "result_sha256": "5eb242aeb68552862913d602cff36deb4cafc18a46cfdea393b4bc1c6917a669"
-    }
-   ]
-  },
-  {
-   "trial_id": "00000000000000000000000000000005",
-   "run_id": "run-5",
-   "seat": "trial",
-   "tokens": {
-    "status": "present",
-    "value": {
-     "input": 2000,
-     "output": 400,
-     "cached": 0
-    }
-   },
-   "turns": {
-    "status": "present",
-    "value": 7
-   },
-   "wall_time_ms": {
-    "status": "present",
-    "value": 30000
-   },
-   "deadline_killed": false,
-   "tool_calls": [
+      "trial_id": "00000000000000000000000000000006",
+      "run_id": "run-6",
+      "seat": "trial",
+      "tokens": {
+        "status": "present",
+        "value": {
+          "input": 500,
+          "output": 100,
+          "cached": 0
+        }
+      },
+      "turns": {
+        "status": "present",
+        "value": 3
+      },
+      "wall_time_ms": {
+        "status": "present",
+        "value": 5000
+      },
+      "deadline_killed": {
+        "status": "present",
+        "value": true
+      },
+      "tool_calls": {
+        "status": "present",
+        "value": [
+          {
+            "ordinal": 1,
+            "tool": "mcp__swarmail__wait",
+            "outcome": "ok",
+            "argument_bytes": 2,
+            "argument_sha256": "20377cec9f51f6bf5ba1fa64649f3b1614e4eee833fd0fc5893f24f6e0accbaf",
+            "result_bytes": 2,
+            "result_sha256": "dbb7b294e78f1c47d4a10d160442fb6a276ea0eedd9ca7c7206731f29257b511"
+          }
+        ]
+      }
+    },
     {
-     "ordinal": 1,
-     "tool": "mcp__swarmail__wait",
-     "outcome": "error",
-     "argument_bytes": 2,
-     "argument_sha256": "730bea4ff16f200fb931b06cae08a5da8e279813775d7ed81e680b4a77946fe1",
-     "result_bytes": 2,
-     "result_sha256": "25f1c790f16f423d2f942b70378ed075972ab0affbf3f35f12e015c13f29406f"
+      "trial_id": "00000000000000000000000000000008",
+      "run_id": "run-8",
+      "seat": "trial",
+      "tokens": {
+        "status": "present",
+        "value": {
+          "input": 700,
+          "output": 300,
+          "cached": 100
+        }
+      },
+      "turns": {
+        "status": "present",
+        "value": 4
+      },
+      "wall_time_ms": {
+        "status": "present",
+        "value": 9000
+      },
+      "deadline_killed": {
+        "status": "unavailable",
+        "reason": "journal_has_no_accounting"
+      },
+      "tool_calls": {
+        "status": "unavailable",
+        "reason": "journal_has_no_accounting"
+      }
     }
-   ]
-  },
-  {
-   "trial_id": "00000000000000000000000000000006",
-   "run_id": "run-6",
-   "seat": "trial",
-   "tokens": {
-    "status": "present",
-    "value": {
-     "input": 500,
-     "output": 100,
-     "cached": 0
-    }
-   },
-   "turns": {
-    "status": "present",
-    "value": 3
-   },
-   "wall_time_ms": {
-    "status": "present",
-    "value": 5000
-   },
-   "deadline_killed": true,
-   "tool_calls": [
-    {
-     "ordinal": 1,
-     "tool": "mcp__swarmail__wait",
-     "outcome": "ok",
-     "argument_bytes": 2,
-     "argument_sha256": "20377cec9f51f6bf5ba1fa64649f3b1614e4eee833fd0fc5893f24f6e0accbaf",
-     "result_bytes": 2,
-     "result_sha256": "dbb7b294e78f1c47d4a10d160442fb6a276ea0eedd9ca7c7206731f29257b511"
-    }
-   ]
-  },
-  {
-   "trial_id": "00000000000000000000000000000008",
-   "run_id": "run-8",
-   "seat": "trial",
-   "tokens": {
-    "status": "present",
-    "value": {
-     "input": 700,
-     "output": 300,
-     "cached": 100
-    }
-   },
-   "turns": {
-    "status": "present",
-    "value": 4
-   },
-   "wall_time_ms": {
-    "status": "present",
-    "value": 9000
-   },
-   "deadline_killed": false,
-   "tool_calls": [
-    {
-     "ordinal": 1,
-     "tool": "mcp__swarmail__wait",
-     "outcome": "ok",
-     "argument_bytes": 2,
-     "argument_sha256": "ce609b5bf3b974a84907e237aca3011286182be9b1b87cad7b4e9cf5d0be355f",
-     "result_bytes": 2,
-     "result_sha256": "99c66b8eedd61fc4247795c4588041dbc0b073ea0f332f7d16528f706aa528a0"
-    }
-   ]
-  }
- ]
+  ]
 }

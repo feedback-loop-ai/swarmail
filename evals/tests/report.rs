@@ -1431,9 +1431,10 @@ fn brokkr_mode_runs_the_product_through_the_recipe_scripts() {
     let _trial_scope = trial_scope();
     let dir = tempdir();
     let agents = brokkr_agents(dir.path());
-    let root = dir.path().join("artifacts");
+    let realm = brokkr_realm(dir.path());
+    let root = realm.join("artifacts");
     let log = dir.path().join("brokkr.log");
-    let out = brokkr_matrix("ok")
+    let out = brokkr_matrix("ok", &realm)
         .env("EVAL_TEST_BROKKR_LOG", &log)
         .args([
             "--tasks",
@@ -1517,11 +1518,12 @@ fn defect_case(mode: &str, expected_stderr: &str) {
     let dir = tempdir();
     let agents = agents_file(dir.path(), json!([{"label": "oracle", "argv": []}]));
     let log = dir.path().join("brokkr.log");
-    let out = brokkr_matrix(mode)
+    let realm = brokkr_realm(dir.path());
+    let out = brokkr_matrix(mode, &realm)
         .env("EVAL_TEST_BROKKR_LOG", &log)
         .args(["--tasks", "signup", "--agents", &agents, "--trials", "3"])
         .arg("--artifacts-dir")
-        .arg(dir.path().join("artifacts"))
+        .arg(realm.join("artifacts"))
         .output()
         .unwrap();
     let rows = rows(&out.stdout);
@@ -1557,6 +1559,84 @@ fn brokkr_mode_turns_every_worker_defect_into_a_row() {
     defect_case("foreign-row", "trial_context_mismatch");
     defect_case("bad-exit", "does not match result outcome");
     defect_case("bad-score", "score_mismatch");
+    // A gate that never ruled is not a gate that disagrees.
+    defect_case("no-score", "score_missing");
+    // A fixed 0076 category the trial left in the slot's diagnostics surfaces
+    // through the CLI as the worker's category, as the direct worker's does.
+    defect_case("category-stderr", "concurrent_trials_refused");
+}
+
+/// A via-brokkr agent under the recipe path fails closed at the trial: the
+/// slot is a harness error (never the agent's `gave_up`), admission stops and
+/// no agent was ever launched.
+#[test]
+fn brokkr_mode_refuses_a_via_brokkr_agent_as_a_harness_error() {
+    let _trial_scope = trial_scope();
+    let exe = exe();
+    let via_flag = json!([{
+        "label": "claude-via",
+        "argv": [exe, "agent-claude", "--model", "claude-sonnet-5-5", "--config",
+                 "/nonexistent/selection.json", "--via-brokkr", "/nonexistent/brokkr"],
+        "model": "claude-sonnet-5-5",
+        "config_id": "cfg",
+        "wrapper_profile": "claude_2_1_310_via_brokkr",
+    }]);
+    let profile_only = json!([{
+        "label": "claude-profile",
+        "argv": [exe, "agent-claude", "--model", "claude-sonnet-5-5", "--config",
+                 "/nonexistent/selection.json"],
+        "model": "claude-sonnet-5-5",
+        "config_id": "cfg",
+        "wrapper_profile": "claude_2_1_310_via_brokkr",
+    }]);
+    for (label, agents) in [("flag", via_flag), ("profile only", profile_only)] {
+        let dir = tempdir();
+        let agents = agents_file(dir.path(), agents);
+        let realm = brokkr_realm(dir.path());
+        let log = dir.path().join("brokkr.log");
+        let out = brokkr_matrix("ok", &realm)
+            .env("EVAL_TEST_BROKKR_LOG", &log)
+            .args(["--tasks", "signup", "--agents", &agents, "--trials", "3"])
+            .arg("--artifacts-dir")
+            .arg(realm.join("artifacts"))
+            .output()
+            .unwrap();
+        let rows = rows(&out.stdout);
+        assert_eq!(rows.len(), 3, "{label}: one row per slot\n{}", stderr(&out));
+        assert_eq!(out.status.code(), Some(2), "{label}");
+        for row in &rows {
+            assert_eq!(row.outcome, Outcome::HarnessError, "{label}: {row:?}");
+            assert_eq!(
+                row.failure_class,
+                Some(swarmail_evals::state::FailureClass::HarnessError),
+                "{label}: a refused driver is never a model failure"
+            );
+        }
+        assert!(
+            rows[1..].iter().all(|r| r.wall_time_ms == 0),
+            "{label}: admission stopped; the suffix is zero-time"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap().lines().count(),
+            1,
+            "{label}: one worker only"
+        );
+        // The trial said why, in the slot's diagnostics, before any agent ran.
+        let matrix_dir = only_matrix_dir(&realm.join("artifacts"));
+        let slot = matrix_dir.join("slots").join(&rows[0].trial_id);
+        let diagnostics = std::fs::read_to_string(slot.join("trial.stderr")).unwrap();
+        let expected = if label == "flag" {
+            "driver_contract_unknown"
+        } else {
+            "via_brokkr_profile_mismatch"
+        };
+        assert!(diagnostics.contains(expected), "{label}: {diagnostics}");
+        assert_eq!(
+            std::fs::read_to_string(slot.join("exit")).unwrap().trim(),
+            "2",
+            "{label}"
+        );
+    }
 }
 
 #[test]
@@ -1565,12 +1645,13 @@ fn brokkr_mode_records_a_killed_worker_as_a_harness_error() {
     let dir = tempdir();
     let agents = agents_file(dir.path(), json!([{"label": "oracle", "argv": []}]));
     let ready = dir.path().join("ready");
-    let mut cmd = brokkr_matrix("hang-after-start");
+    let realm = brokkr_realm(dir.path());
+    let mut cmd = brokkr_matrix("hang-after-start", &realm);
     let child = cmd
         .env("EVAL_TEST_BROKKR_READY", &ready)
         .args(["--tasks", "signup", "--agents", &agents, "--trials", "2"])
         .arg("--artifacts-dir")
-        .arg(dir.path().join("artifacts"))
+        .arg(realm.join("artifacts"))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1605,9 +1686,10 @@ fn brokkr_mode_records_a_killed_worker_as_a_harness_error() {
 fn brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline() {
     let dir = tempdir();
     let agents = brokkr_agents(dir.path());
-    let root = dir.path().join("artifacts");
+    let realm = brokkr_realm(dir.path());
+    let root = realm.join("artifacts");
     let base = |extra: &[&str]| {
-        let mut cmd = brokkr_matrix("ok");
+        let mut cmd = brokkr_matrix("ok", &realm);
         cmd.args(["--tasks", "signup", "--agents", &agents, "--trials", "1"])
             .args(extra);
         cmd
@@ -1637,7 +1719,7 @@ fn brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline() {
     refused(cmd.output().unwrap(), "brokkr_realm_invalid");
     // A relative brokkr path.
     let out = cli()
-        .current_dir(repo_root())
+        .current_dir(&realm)
         .args([
             "matrix", "--brokkr", "brokkr", "--tasks", "signup", "--agents", &agents,
         ])
@@ -1645,6 +1727,22 @@ fn brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline() {
         .output()
         .unwrap();
     refused(out, "brokkr_realm_invalid");
+    // An artifact root outside the realm's tree: the seat's hands cannot reach
+    // it, so no slot is spent on it (a sibling of the realm, then a `..` path).
+    let outside = dir.path().join("artifacts-outside");
+    refused(
+        base(&["--artifacts-dir", outside.to_str().unwrap()])
+            .output()
+            .unwrap(),
+        "brokkr_artifacts_unreachable",
+    );
+    refused(
+        base(&["--artifacts-dir", "../artifacts-outside"])
+            .output()
+            .unwrap(),
+        "brokkr_artifacts_unreachable",
+    );
+    assert!(!outside.exists(), "an unreachable root is never created");
     // Concurrency stays refused in this mode too (accepted 0076).
     refused(
         base(&["--artifacts-dir", root_arg, "--concurrency", "2"])
@@ -1659,7 +1757,8 @@ fn brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline() {
 
 fn golden_rows() -> Vec<TrialResult> {
     // 8 rows, 3 agents: the built-in oracle (no driver, no journal), a fully
-    // joined external agent, and one with a trial the journal never saw.
+    // joined external agent, and one with a trial the journal never saw plus,
+    // under another task, a trial with tokens but no tool rows.
     let spec = [
         (1, "oracle", false, Outcome::Pass),
         (2, "oracle", false, Outcome::Pass),
@@ -1673,7 +1772,10 @@ fn golden_rows() -> Vec<TrialResult> {
     spec.into_iter()
         .map(|(n, agent, external, outcome)| {
             synthetic_row(
-                "signup",
+                // Trial 8 sits in its own (task, agent) group so one group can
+                // hold tokens with no tool rows and no kill fact, apart from
+                // the group that holds a trial the journal never saw.
+                if n == 8 { "otp" } else { "signup" },
                 agent,
                 external,
                 outcome,
@@ -1707,13 +1809,19 @@ fn run_report(rows: &std::path::Path, extra: &[&std::ffi::OsStr]) -> std::proces
         .unwrap()
 }
 
+/// The (signup, agent) group; the golden rows keep every agent's trials there
+/// except trial 8, which `group_in` finds under `otp`.
 fn group<'a>(report: &'a Value, agent: &str) -> &'a Value {
+    group_in(report, "signup", agent)
+}
+
+fn group_in<'a>(report: &'a Value, task: &str, agent: &str) -> &'a Value {
     report["groups"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|g| g["agent"] == agent)
-        .unwrap_or_else(|| panic!("no group {agent}"))
+        .find(|g| g["task"] == task && g["agent"] == agent)
+        .unwrap_or_else(|| panic!("no group {task} {agent}"))
 }
 
 #[test]
@@ -1762,7 +1870,9 @@ fn report_joins_journal_facts_by_trial_id() {
             "by_tool": {"mcp__fixture__eval_http": 3, "mcp__swarmail__wait": 3}
         })
     );
+    assert_eq!(claude["tool_calls_reason"], Value::Null);
     assert_eq!(claude["deadline_killed"], 0);
+    assert_eq!(claude["deadline_killed_reason"], Value::Null);
     assert_eq!(
         claude["runs"],
         json!({fixed_id(3): "run-3", fixed_id(4): "run-4", fixed_id(5): "run-5"})
@@ -1771,13 +1881,38 @@ fn report_joins_journal_facts_by_trial_id() {
     // The group with a trial the journal never saw: the figure is withheld,
     // never computed over the two that were seen.
     let codex = &group(&report, "codex-b")["journal"];
-    assert_eq!(codex["joined"], 2);
-    assert_eq!(codex["scored"], 3);
+    assert_eq!(codex["joined"], 1);
+    assert_eq!(codex["scored"], 2);
     assert_eq!(codex["missing"], json!({"journal_missing": 1}));
     assert_eq!(codex["tokens_per_success"], Value::Null);
     assert_eq!(codex["tokens_per_success_reason"], "incomplete_join");
-    assert_eq!(codex["tokens"]["total"]["sum"], 1600);
-    assert_eq!(codex["deadline_killed"], 1);
+    assert_eq!(codex["tokens"]["total"]["sum"], 600);
+    // The tool-call total and the kill count are withheld on the same rule: a
+    // figure over the one trial the journal saw would silently omit the other.
+    assert_eq!(codex["tool_calls"], Value::Null);
+    assert_eq!(codex["tool_calls_reason"], "incomplete_join");
+    assert_eq!(codex["deadline_killed"], Value::Null);
+    assert_eq!(codex["deadline_killed_reason"], "incomplete_join");
+
+    // Tokens present, tool rows and the kill fact unavailable (trial 8, under
+    // its own task): the token figures are numbers, the other two are null with
+    // their reason, and nothing is zero or false.
+    let partial = &group_in(&report, "otp", "codex-b")["journal"];
+    assert_eq!(partial["joined"], 1);
+    assert_eq!(partial["missing"], json!({}));
+    assert_eq!(partial["tokens"]["total"]["sum"], 1000);
+    assert_eq!(partial["tokens_per_success"], json!(1000.0));
+    assert_eq!(partial["tokens_per_success_reason"], Value::Null);
+    assert_eq!(partial["turns"]["median"], 4);
+    assert_eq!(partial["tool_calls"], Value::Null);
+    assert_eq!(partial["tool_calls_reason"], "incomplete_join");
+    assert_eq!(partial["deadline_killed"], Value::Null);
+    assert_eq!(partial["deadline_killed_reason"], "incomplete_join");
+    assert_eq!(
+        partial["runs"],
+        json!({fixed_id(8): "run-8"}),
+        "the run is cited: tokens were accounted"
+    );
 
     // The built-in agent launches no driver: a typed reason for every trial
     // and no token figure at all.
@@ -1788,9 +1923,19 @@ fn report_joins_journal_facts_by_trial_id() {
     assert_eq!(oracle["tokens_per_success"], Value::Null);
     assert_eq!(oracle["turns"], Value::Null);
     assert_eq!(oracle["tool_calls"], Value::Null);
+    assert_eq!(oracle["deadline_killed"], Value::Null);
     assert_eq!(report["journal_source"]["brokkr_version"], "0.12.0");
 
-    // No numeric field anywhere stands in for an unavailable fact.
+    // No numeric or boolean field anywhere stands in for an unavailable fact.
+    for (task, agent) in [
+        ("signup", "oracle"),
+        ("signup", "codex-b"),
+        ("otp", "codex-b"),
+    ] {
+        let journal = &group_in(&report, task, agent)["journal"];
+        assert!(journal["tool_calls"].is_null(), "{task} {agent}");
+        assert!(journal["deadline_killed"].is_null(), "{task} {agent}");
+    }
     for agent in ["oracle", "codex-b"] {
         let journal = &group(&report, agent)["journal"];
         assert!(journal["tokens_per_success"].is_null(), "{agent}");
@@ -1935,7 +2080,7 @@ fn evidence_records_carry_no_argument_or_result_bytes() {
     let argument = format!(r#"{{"path":"/admin/state?secret={secret}","token":"{token}"}}"#);
     let result = format!(r#"{{"body":"{token} {secret}"}}"#);
     let mut facts = facts_value();
-    facts["trials"][0]["tool_calls"] = json!([{
+    facts["trials"][0]["tool_calls"]["value"] = json!([{
         "ordinal": 1,
         "tool": "mcp__fixture__eval_http",
         "outcome": "ok",
@@ -1958,9 +2103,10 @@ fn evidence_records_carry_no_argument_or_result_bytes() {
     assert!(out.status.success(), "{}", stderr(&out));
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
 
-    // One record per accounted trial (the five the journal saw), none for the rest.
+    // One record per trial whose tool rows the journal gave (four of the five
+    // it saw), none for the rest: trial 8 has tokens but no tool rows.
     let files = tree_files(&evidence);
-    assert_eq!(files.len(), 5, "{files:?}");
+    assert_eq!(files.len(), 4, "{files:?}");
     for file in &files {
         assert_eq!(mode(file), 0o600, "{file:?}");
         assert_eq!(mode(file.parent().unwrap()), 0o700, "{file:?}");
@@ -2013,6 +2159,12 @@ fn evidence_records_carry_no_argument_or_result_bytes() {
         group(&report, "codex-b")["journal"]["evidence"][fixed_id(7)],
         json!({"absent": "journal_missing"})
     );
+    // Tokens without tool rows: no file, no directory, a typed absence.
+    assert_eq!(
+        group_in(&report, "otp", "codex-b")["journal"]["evidence"][fixed_id(8)],
+        json!({"absent": "journal_has_no_accounting"})
+    );
+    assert!(!evidence.join(fixed_id(8)).exists());
 }
 
 #[test]
@@ -2030,7 +2182,7 @@ fn evidence_truncates_at_a_call_boundary() {
         })
         .collect();
     let mut facts = facts_value();
-    facts["trials"][0]["tool_calls"] = Value::Array(calls);
+    facts["trials"][0]["tool_calls"]["value"] = Value::Array(calls);
     let facts_path = write_facts(dir.path(), &facts);
     let evidence = dir.path().join("evidence");
     let out = run_report(
@@ -2049,6 +2201,11 @@ fn evidence_truncates_at_a_call_boundary() {
     assert_eq!(record["truncated"], true);
     let kept = record["tool_calls"].as_array().unwrap();
     assert!(!kept.is_empty() && kept.len() < 5000, "{}", kept.len());
+    assert_eq!(
+        record["retained"],
+        kept.len(),
+        "the count of whole calls kept"
+    );
     for (i, call) in kept.iter().enumerate() {
         assert_eq!(call["ordinal"], i as u64 + 1, "whole calls, in order");
     }
@@ -2123,4 +2280,58 @@ fn evidence_requires_a_journal() {
         stderr(&out)
     );
     assert!(!evidence.exists());
+}
+
+#[test]
+fn a_present_empty_tool_list_is_a_record_of_zero_calls() {
+    let dir = tempdir();
+    let rows_path = write_rows(dir.path(), &golden_rows());
+    let mut facts = facts_value();
+    facts["trials"][1]["tool_calls"]["value"] = json!([]);
+    let facts_path = write_facts(dir.path(), &facts);
+    let evidence = dir.path().join("evidence");
+    let out = run_report(
+        &rows_path,
+        &[
+            "--journal".as_ref(),
+            facts_path.as_os_str(),
+            "--evidence-dir".as_ref(),
+            evidence.as_os_str(),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let bytes = std::fs::read(evidence.join(fixed_id(4)).join("tool-calls.json")).unwrap();
+    assert!(!bytes.is_empty(), "an empty file is never evidence");
+    let record: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(record["tool_calls"], json!([]));
+    assert_eq!(record["retained"], 0);
+    assert_eq!(record["truncated"], false);
+}
+
+#[test]
+fn untyped_tool_calls_and_deadline_facts_refuse_the_whole_report() {
+    // A producer that writes a bare `[]` or `false` for an absent fact would
+    // turn "the journal did not say" into "zero calls" and "not killed".
+    let dir = tempdir();
+    let rows_path = write_rows(dir.path(), &golden_rows());
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/journal-facts-untyped.json");
+    let out = run_report(&rows_path, &["--journal".as_ref(), fixture.as_os_str()]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "no partial report");
+    assert!(stderr(&out).contains("journal_invalid"), "{}", stderr(&out));
+    for (index, field, untyped) in [
+        (0, "tool_calls", json!([])),
+        (1, "deadline_killed", json!(false)),
+        (2, "deadline_killed", json!(true)),
+        (2, "tool_calls", Value::Null),
+    ] {
+        let mut facts = facts_value();
+        facts["trials"][index][field] = untyped;
+        let path = write_facts(dir.path(), &facts);
+        let out = run_report(&rows_path, &["--journal".as_ref(), path.as_os_str()]);
+        assert_eq!(out.status.code(), Some(2), "{field}");
+        assert!(out.stdout.is_empty(), "{field}");
+        assert!(stderr(&out).contains("journal_invalid"), "{field}");
+    }
 }

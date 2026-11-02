@@ -576,6 +576,13 @@ pub fn run(
     }
     if let Some(driver) = via_brokkr {
         validate_driver(driver)?;
+        // Fail closed (decision 0116, revision 2): the invocation brokkr's
+        // driver accepts (F2) has never been observed, and running a guessed
+        // argv would turn a driver error into the agent's exit, scored as the
+        // task's idle class. This refusal precedes every environment read,
+        // credential read and spawn, and has no switch: `through_driver` below
+        // is the assembly the follow-up will lift this refusal onto.
+        return Err("driver_contract_unknown".into());
     }
     let inputs = Inputs::environment()?;
     validate_goal(harness, &inputs.goal)?;
@@ -866,6 +873,92 @@ mod tests {
             }
             std::fs::remove_file(path).unwrap();
         }
+    }
+    #[test]
+    fn through_driver_assembles_the_direct_argv_byte_for_byte() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let driver = Path::new("/opt/brokkr/brokkr-driver");
+        // The shapes of the three families' direct launches: the goal on stdin
+        // for claude and codex, as the last literal argument for dsh.
+        let non_utf8 = OsStr::from_bytes(b"model-\xff-bytes");
+        for (family, program, args) in [
+            (
+                "claude",
+                "/opt/claude/bin/claude",
+                vec![
+                    OsStr::new("-p"),
+                    OsStr::new("--mcp-config"),
+                    OsStr::new("/home/x/mcp.json"),
+                ],
+            ),
+            (
+                "codex",
+                "/opt/codex/bin/codex",
+                vec![OsStr::new("exec"), OsStr::new("-m"), non_utf8],
+            ),
+            (
+                "dsh",
+                "/opt/dsh/bin/dsh",
+                vec![
+                    OsStr::new("--profile"),
+                    OsStr::new("headless"),
+                    OsStr::new("a goal; with $(shell) \" metacharacters"),
+                ],
+            ),
+        ] {
+            let mut direct = Command::new(program);
+            direct
+                .args(&args)
+                .env_clear()
+                .env("HOME", "/run/home")
+                .env("PATH", "/usr/bin:/bin")
+                .env("EMPTY", "")
+                .env_remove("REMOVED")
+                .current_dir("/run/work");
+            let driven = through_driver(&direct, family, driver);
+            assert_eq!(driven.get_program(), driver.as_os_str(), "{family}");
+            let argv: Vec<&OsStr> = driven.get_args().collect();
+            assert_eq!(argv[0], OsStr::new(family));
+            assert_eq!(argv[1], OsStr::new("--"));
+            assert_eq!(argv[2], OsStr::new(program), "{family}: the program");
+            assert_eq!(
+                &argv[3..],
+                &args[..],
+                "{family}: the argv after the program, byte for byte"
+            );
+            let direct_env: Vec<_> = direct.get_envs().filter(|(_, v)| v.is_some()).collect();
+            let driven_env: Vec<_> = driven.get_envs().collect();
+            assert_eq!(
+                driven_env, direct_env,
+                "{family}: the same keys and values, nothing added, nothing inherited"
+            );
+            assert_eq!(driven.get_current_dir(), direct.get_current_dir());
+        }
+        // A direct launch with no working directory stays without one.
+        let bare = Command::new("/opt/claude/bin/claude");
+        assert_eq!(
+            through_driver(&bare, "claude", driver).get_current_dir(),
+            None
+        );
+    }
+    #[test]
+    fn the_via_brokkr_refusal_comes_after_the_driver_check_and_before_every_read() {
+        let root = crate::runner::private_tempdir("wrapper-proof-").unwrap();
+        let plain = root.path().join("not-executable");
+        std::fs::write(&plain, b"#!/bin/sh\n").unwrap();
+        let exe = root.path().join("driver");
+        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = Path::new("/nonexistent/selection.json");
+        let run_with = |driver: &Path| run("claude", "claude-sonnet-5-5", config, Some(driver));
+        assert_eq!(run_with(Path::new("rel")), Err("driver_invalid".into()));
+        assert_eq!(run_with(&plain), Err("driver_invalid".into()));
+        assert_eq!(run_with(&exe), Err("driver_contract_unknown".into()));
+        // The same call without the flag goes on to read its inputs and refuses
+        // for a different reason, which shows the refusal above preceded them.
+        let direct = run("claude", "claude-sonnet-5-5", config, None).unwrap_err();
+        assert_ne!(direct, "driver_contract_unknown");
     }
     #[test]
     fn descriptor_inputs_refuse_unsafe_paths_types_schemas_and_bounds() {

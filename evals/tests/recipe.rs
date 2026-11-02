@@ -43,23 +43,72 @@ fn request(fx: &Fixture, trial_id: &str, args: Value) -> Value {
     })
 }
 
+/// How the prompt file renders the request and the result path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Rendering {
+    /// No request line at all.
+    NoRequest,
+    /// The round-1 shape: the request and the result path each on a line of
+    /// their own, flush left.
+    Bare,
+    /// The engine's rendering, observed 2026-11-02: the feature text follows
+    /// `Feature: ` and the result path is an indented line of its own.
+    Engine,
+    /// The engine's rendering with every line ending `\r\n`.
+    EngineCrlf,
+}
+
 /// Write the request and a prompt carrying it; run one script; return the
 /// parsed result file.
 fn run_script(fx: &Fixture, script: &str, request: &str, with_request_line: bool) -> Value {
+    let rendering = if with_request_line {
+        Rendering::Bare
+    } else {
+        Rendering::NoRequest
+    };
+    run_script_rendered(fx, script, request, rendering)
+}
+
+fn render_prompt(
+    request_path: &std::path::Path,
+    result: &std::path::Path,
+    how: Rendering,
+) -> String {
+    let (eol, request_line, result_line) = match how {
+        Rendering::NoRequest => ("\n", None, result.display().to_string()),
+        Rendering::Bare => (
+            "\n",
+            Some(format!("swarmail-eval-request: {}", request_path.display())),
+            result.display().to_string(),
+        ),
+        Rendering::Engine | Rendering::EngineCrlf => (
+            if how == Rendering::EngineCrlf {
+                "\r\n"
+            } else {
+                "\n"
+            },
+            Some(format!(
+                "Feature: swarmail-eval-request: {}",
+                request_path.display()
+            )),
+            format!("    {}", result.display()),
+        ),
+    };
+    let mut lines = vec!["A seat prompt.".to_string(), String::new()];
+    lines.extend(request_line);
+    lines.push("Phase: trial".to_string());
+    lines.push("Write your result to exactly this file:".to_string());
+    lines.push(result_line);
+    lines.join(eol) + eol
+}
+
+fn run_script_rendered(fx: &Fixture, script: &str, request: &str, how: Rendering) -> Value {
     let request_path = fx.slot.join("request.json");
     std::fs::write(&request_path, request).unwrap();
     let result = fx.dir.path().join("result.json");
     let _ = std::fs::remove_file(&result);
     let prompt = fx.dir.path().join("prompt.txt");
-    let mut text = String::from("A seat prompt.\n");
-    if with_request_line {
-        text.push_str(&format!(
-            "swarmail-eval-request: {}\n",
-            request_path.display()
-        ));
-    }
-    text.push_str(&format!("{}\n", result.display()));
-    std::fs::write(&prompt, text).unwrap();
+    std::fs::write(&prompt, render_prompt(&request_path, &result, how)).unwrap();
     let out = std::process::Command::new("bash")
         .arg(recipe_dir().join("scripts").join(script))
         .arg(&prompt)
@@ -119,6 +168,72 @@ fn the_trial_script_runs_the_trial_and_reports_ran() {
             !notes.contains(fx.dir.path().to_str().unwrap()),
             "no path under the root reaches a result: {notes}"
         );
+    }
+}
+
+#[test]
+fn trial_script_parses_the_engine_rendered_prompt() {
+    let _trial_scope = trial_scope();
+    for (label, how) in [
+        ("engine", Rendering::Engine),
+        ("engine, CRLF", Rendering::EngineCrlf),
+        ("bare", Rendering::Bare),
+    ] {
+        let fx = fixture();
+        let id = format!("render-{}", label.replace([',', ' '], ""));
+        let text = request(&fx, &id, trial_args("oracle")).to_string();
+        let result = run_script_rendered(&fx, "trial.sh", &text, how);
+        assert_contract(&result, "ran");
+        assert_eq!(result["inputs"], json!({"trial_id": id}), "{label}");
+        let row: Value =
+            serde_json::from_str(&std::fs::read_to_string(fx.slot.join("row.json")).unwrap())
+                .unwrap();
+        assert_eq!(row["outcome"], "pass", "{label}");
+    }
+}
+
+#[test]
+fn the_scripts_still_refuse_a_relative_request_path_in_the_engine_rendering() {
+    for script in ["trial.sh", "score.sh"] {
+        let fx = fixture();
+        let result_path = fx.dir.path().join("result.json");
+        let prompt = fx.dir.path().join("prompt.txt");
+        std::fs::write(
+            &prompt,
+            format!(
+                "Feature: swarmail-eval-request: relative/request.json\n    {}\n",
+                result_path.display()
+            ),
+        )
+        .unwrap();
+        let out = std::process::Command::new("bash")
+            .arg(recipe_dir().join("scripts").join(script))
+            .arg(&prompt)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let result: Value = serde_json::from_slice(&std::fs::read(&result_path).unwrap()).unwrap();
+        let expected = if script == "trial.sh" {
+            "harness_error"
+        } else {
+            "unscorable"
+        };
+        assert_contract(&result, expected);
+        assert!(!fx.slot.join("row.json").exists());
+        assert!(!fx.slot.join("score.json").exists());
+    }
+}
+
+#[test]
+fn score_script_parses_the_engine_rendered_prompt() {
+    let _trial_scope = trial_scope();
+    for how in [Rendering::Engine, Rendering::EngineCrlf, Rendering::Bare] {
+        let fx = fixture();
+        let id = retained_leaf(&fx, "oracle");
+        let text = request(&fx, &id, json!([])).to_string();
+        let result = run_script_rendered(&fx, "score.sh", &text, how);
+        assert_contract(&result, "pass");
+        assert!(fx.slot.join("score.json").is_file());
     }
 }
 
@@ -239,8 +354,9 @@ fn the_score_script_maps_check_exit_codes() {
             true,
         );
         assert_contract(&result, expected);
-        let score: Value =
-            serde_json::from_slice(&std::fs::read(fx.slot.join("score.json")).unwrap()).unwrap();
+        let score_text = std::fs::read_to_string(fx.slot.join("score.json")).unwrap();
+        assert_eq!(score_text.lines().count(), 1, "the verdict is one line");
+        let score: Value = serde_json::from_str(&score_text).unwrap();
         assert_eq!(
             score,
             json!({"schema_version": 1, "trial_id": id, "outcome": outcome, "exit": code})
@@ -277,10 +393,23 @@ fn the_score_script_maps_check_exit_codes() {
         true,
     );
     assert_contract(&result, "unscorable");
-    let result = run_script(&fx, "score.sh", "{", true);
-    assert_contract(&result, "unscorable");
-    let result = run_script(&fx, "score.sh", "{}", false);
-    assert_contract(&result, "unscorable");
+    // check ran and could not score the missing leaf: the verdict is recorded.
+    let score: Value =
+        serde_json::from_slice(&std::fs::read(fx.slot.join("score.json")).unwrap()).unwrap();
+    assert_eq!(score["outcome"], "harness_error");
+    assert_eq!(score["exit"], 2);
+
+    // A request the gate cannot read means check never ran: no verdict file,
+    // so the matrix sees `score_missing`, never a verdict nobody reached.
+    for (text, with_line) in [("{", true), ("{}", false)] {
+        let fx = fixture();
+        let result = run_script(&fx, "score.sh", text, with_line);
+        assert_contract(&result, "unscorable");
+        assert!(
+            !fx.slot.join("score.json").exists(),
+            "an unrun gate writes no verdict"
+        );
+    }
 }
 
 #[test]
@@ -316,32 +445,51 @@ fn journal_script() -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/journal-facts.sh")
 }
 
-fn standin_export() -> Value {
-    let digest = |s: &str| swarmail_evals::provenance::sha256(s.as_bytes());
-    let usage = json!({
+fn digest(s: &str) -> String {
+    swarmail_evals::provenance::sha256(s.as_bytes())
+}
+
+fn tool_row(tool: &str, outcome: &str) -> Value {
+    json!({"tool": tool, "outcome": outcome, "argument_bytes": 61,
+           "argument_sha256": digest(tool), "result_bytes": 2048, "result_sha256": digest(outcome)})
+}
+
+fn full_usage() -> Value {
+    json!({
         "input_tokens": 1200, "output_tokens": 300, "cached_tokens": 4000,
         "turns": 7, "wall_time_ms": 18400, "deadline_killed": false,
         "tool_calls": [
-            {"tool": "mcp__swarmail__wait", "outcome": "ok", "argument_bytes": 61,
-             "argument_sha256": digest("a"), "result_bytes": 2048, "result_sha256": digest("r")},
-            {"tool": "mcp__fixture__eval_http", "outcome": "invalid_argument", "argument_bytes": 9,
-             "argument_sha256": digest("b"), "result_bytes": 40, "result_sha256": digest("s")}
+            tool_row("mcp__swarmail__wait", "ok"),
+            tool_row("mcp__fixture__eval_http", "invalid_argument"),
         ]
-    });
-    let mut bad_tool = usage.clone();
+    })
+}
+
+fn standin_export() -> Value {
+    let mut bad_tool = full_usage();
     bad_tool["tool_calls"][1]["outcome"] = json!("exploded");
+    // An empty tool list is a real fact; a non-boolean kill flag is not one.
+    let mut empty_list = full_usage();
+    empty_list["tool_calls"] = json!([]);
+    empty_list["deadline_killed"] = json!("no");
+    // Tool rows the journal did not give: absent, never an empty list.
+    let mut null_rows = full_usage();
+    null_rows["tool_calls"] = Value::Null;
+    null_rows.as_object_mut().unwrap().remove("deadline_killed");
     let seat = |trial: &str, usage: Value| json!({"seat": "trial", "result": "ran", "inputs": {"trial_id": trial}, "usage": usage});
     json!({"runs": [
-        {"run_id": "run-a", "seats": [seat(&fixed_id(1), usage), {"seat": "score", "result": "pass", "inputs": {}}]},
+        {"run_id": "run-a", "seats": [seat(&fixed_id(1), full_usage()), {"seat": "score", "result": "pass", "inputs": {}}]},
         {"run_id": "run-b", "seats": [seat(&fixed_id(2), Value::Null)]},
         {"run_id": "run-c", "seats": [seat(&fixed_id(3), json!({"turns": 1}))]},
         {"run_id": "run-d", "seats": [seat(&fixed_id(3), json!({"turns": 2}))]},
         {"run_id": "run-e", "seats": [seat(&fixed_id(5), bad_tool)]},
-        {"run_id": "run-f", "seats": [{"seat": "implement", "result": "complete", "inputs": {"trial_id": fixed_id(6)}}]}
+        {"run_id": "run-f", "seats": [{"seat": "implement", "result": "complete", "inputs": {"trial_id": fixed_id(6)}}]},
+        {"run_id": "run-g", "seats": [seat(&fixed_id(7), empty_list)]},
+        {"run_id": "run-h", "seats": [seat(&fixed_id(8), null_rows)]}
     ]})
 }
 
-fn run_facts(fx: &Fixture, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+fn run_facts(args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
     let mut cmd = std::process::Command::new("bash");
     cmd.arg(journal_script())
         .args(args)
@@ -349,8 +497,37 @@ fn run_facts(fx: &Fixture, args: &[&str], env: &[(&str, &str)]) -> std::process:
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let _ = fx;
     cmd.output().unwrap()
+}
+
+/// A stand-in brokkr: `--version` prints `version` (and fails when it is
+/// empty); `export` prints the file at `export` or fails when that is `None`.
+fn fake_brokkr(
+    fx: &Fixture,
+    name: &str,
+    version: &str,
+    export: Option<&std::path::Path>,
+) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = fx.dir.path().join(name);
+    let version_line = if version.is_empty() {
+        "exit 1".to_string()
+    } else {
+        format!("echo 'brokkr {version}'; exit 0")
+    };
+    let export_line = match export {
+        Some(file) => format!("[ \"$1\" = export ] && exec cat {}", file.display()),
+        None => "[ \"$1\" = export ] && exit 7".to_string(),
+    };
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then {version_line}; fi\n{export_line}\nexit 9\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
 }
 
 #[test]
@@ -359,24 +536,18 @@ fn journal_facts_script_output_reads_as_facts_v1() {
     let fx = fixture();
     let export = fx.dir.path().join("export.json");
     std::fs::write(&export, standin_export().to_string()).unwrap();
-    // A stand-in brokkr: --version and `export --db`.
-    let fake = fx.dir.path().join("brokkr");
-    std::fs::write(
-        &fake,
-        format!(
-            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'brokkr 0.12.0'; exit 0; fi\n[ \"$1\" = export ] && exec cat {}\nexit 9\n",
-            export.display()
-        ),
-    )
-    .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let fake = fake_brokkr(&fx, "brokkr", "0.12.0", Some(&export));
     let db = fx.dir.path().join("forge.db");
     std::fs::write(&db, b"not a real database; the stand-in ignores it").unwrap();
-    let ids: Vec<String> = [1, 2, 3, 4, 5].into_iter().map(fixed_id).collect();
+    let ids: Vec<String> = (1..=8).map(fixed_id).collect();
     let id_args: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let facts_names = [
+        "tokens",
+        "turns",
+        "wall_time_ms",
+        "deadline_killed",
+        "tool_calls",
+    ];
 
     for saved in [false, true] {
         let out_path = fx
@@ -394,7 +565,7 @@ fn journal_facts_script_output_reads_as_facts_v1() {
         } else {
             vec![]
         };
-        let out = run_facts(&fx, &args, &env);
+        let out = run_facts(&args, &env);
         assert!(
             out.status.success(),
             "{}",
@@ -414,12 +585,14 @@ fn journal_facts_script_output_reads_as_facts_v1() {
         let value: Value = serde_json::from_slice(&std::fs::read(&out_path).unwrap()).unwrap();
         let trials = value["trials"].as_array().unwrap();
         let by_id = |n: u32| trials.iter().find(|t| t["trial_id"] == fixed_id(n));
-        // Four of five ids are carried; id 4 is absent from the export.
-        assert_eq!(trials.len(), 4);
+        // Six of eight ids are carried; 4 is in no run and 6 only in a seat
+        // that is not the trial seat.
+        assert_eq!(trials.len(), 6);
         assert!(
             by_id(4).is_none(),
             "an absent trial is omitted, not invented"
         );
+        assert!(by_id(6).is_none(), "only the trial seat is read");
         let first = by_id(1).unwrap();
         assert_eq!(first["run_id"], "run-a");
         assert_eq!(
@@ -427,27 +600,55 @@ fn journal_facts_script_output_reads_as_facts_v1() {
             json!({"status": "present", "value": {"input": 1200, "output": 300, "cached": 4000}})
         );
         assert_eq!(first["turns"], json!({"status": "present", "value": 7}));
-        assert_eq!(first["tool_calls"].as_array().unwrap().len(), 2);
-        assert_eq!(first["tool_calls"][1]["ordinal"], 2);
-        assert_eq!(first["tool_calls"][1]["outcome"], "invalid_argument");
+        assert_eq!(
+            first["deadline_killed"],
+            json!({"status": "present", "value": false})
+        );
+        assert_eq!(first["tool_calls"]["status"], "present");
+        assert_eq!(first["tool_calls"]["value"].as_array().unwrap().len(), 2);
+        assert_eq!(first["tool_calls"]["value"][1]["ordinal"], 2);
+        assert_eq!(
+            first["tool_calls"]["value"][1]["outcome"],
+            "invalid_argument"
+        );
         let none = json!({"status": "unavailable", "reason": "journal_has_no_accounting"});
-        assert_eq!(by_id(2).unwrap()["tokens"], none, "a run with no usage");
+        for fact in facts_names {
+            assert_eq!(by_id(2).unwrap()[fact], none, "a run with no usage: {fact}");
+        }
+        // Each fact is typed on its own: an unrecognised tool row loses the
+        // tool rows and nothing else.
+        let bad = by_id(5).unwrap();
+        assert_eq!(bad["tool_calls"], none);
+        assert_eq!(bad["tokens"]["status"], "present");
         assert_eq!(
-            by_id(5).unwrap()["tokens"],
-            none,
-            "an unrecognised tool row withholds the whole entry"
+            bad["deadline_killed"],
+            json!({"status": "present", "value": false})
         );
-        assert_eq!(by_id(5).unwrap()["tool_calls"], json!([]));
+        // A present empty list is "zero calls"; a non-boolean flag is absence.
+        let empty = by_id(7).unwrap();
+        assert_eq!(
+            empty["tool_calls"],
+            json!({"status": "present", "value": []})
+        );
+        assert_eq!(empty["deadline_killed"], none);
+        assert_eq!(empty["tokens"]["status"], "present");
+        // Absent and null tool rows are unavailable, never an empty list.
+        let null_rows = by_id(8).unwrap();
+        assert_eq!(null_rows["tool_calls"], none);
+        assert_eq!(null_rows["deadline_killed"], none);
+        assert_eq!(null_rows["turns"]["status"], "present");
         let ambiguous = by_id(3).unwrap();
-        assert_eq!(
-            ambiguous["tokens"],
-            json!({"status": "unavailable", "reason": "journal_ambiguous"})
-        );
-        assert_eq!(ambiguous["turns"]["reason"], "journal_ambiguous");
+        for fact in facts_names {
+            assert_eq!(
+                ambiguous[fact],
+                json!({"status": "unavailable", "reason": "journal_ambiguous"}),
+                "{fact}"
+            );
+        }
 
-        // Joined to rows, the absent trial is journal_missing and the
+        // Joined to rows, the absent trials are journal_missing and the
         // ambiguous one is typed, never a number.
-        let rows: Vec<_> = (1..=5)
+        let rows: Vec<_> = (1..=8)
             .map(|n| {
                 synthetic_row(
                     "signup",
@@ -462,13 +663,16 @@ fn journal_facts_script_output_reads_as_facts_v1() {
         let summary = journal::join(&rows, &facts).unwrap();
         let group: Vec<_> = rows.iter().collect();
         let out = journal::summarize(&group, &summary);
-        assert_eq!(out["joined"], 1);
+        assert_eq!(out["joined"], 4, "trials 1, 5, 7 and 8 have tokens");
         assert_eq!(
             out["missing"],
-            json!({"journal_ambiguous": 1, "journal_has_no_accounting": 2, "journal_missing": 1})
+            json!({"journal_ambiguous": 1, "journal_has_no_accounting": 1, "journal_missing": 2})
         );
         assert_eq!(out["tokens_per_success"], Value::Null);
         assert_eq!(out["tokens_per_success_reason"], "incomplete_join");
+        assert_eq!(out["tool_calls"], Value::Null);
+        assert_eq!(out["tool_calls_reason"], "incomplete_join");
+        assert_eq!(out["deadline_killed"], Value::Null);
     }
 }
 
@@ -477,16 +681,7 @@ fn journal_facts_script_refuses_without_writing_a_file() {
     let fx = fixture();
     let export = fx.dir.path().join("export.json");
     std::fs::write(&export, standin_export().to_string()).unwrap();
-    let fake = fx.dir.path().join("brokkr");
-    std::fs::write(
-        &fake,
-        "#!/bin/sh\n[ \"$1\" = --version ] && echo 'brokkr 0.12.0'\nexit 0\n",
-    )
-    .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let fake = fake_brokkr(&fx, "brokkr", "0.12.0", Some(&export));
     let out_path = fx.dir.path().join("out.json");
     let fake_s = fake.to_str().unwrap();
     let out_s = out_path.to_str().unwrap();
@@ -495,46 +690,202 @@ fn journal_facts_script_refuses_without_writing_a_file() {
     let not_json = fx.dir.path().join("garbage.json");
     std::fs::write(&not_json, "not json at all").unwrap();
     let garbage = [("JOURNAL_EXPORT_FILE", not_json.to_str().unwrap())];
-    for (label, args, env) in [
+    // Documents that are JSON but not the shape the script reads.
+    let mut shapes = Vec::new();
+    for (name, body) in [
+        ("runs-is-a-string.json", r#"{"runs": "nope"}"#),
+        ("unrelated.json", r#"{"unrelated": 1}"#),
         (
-            "relative brokkr",
-            vec!["brokkr", "/db", out_s, id.as_str()],
-            &saved[..],
+            "seat-without-name.json",
+            r#"{"runs": [{"run_id": "r", "seats": [{}]}]}"#,
         ),
-        (
-            "relative output",
-            vec![fake_s, "/db", "out.json", id.as_str()],
-            &saved[..],
-        ),
-        ("no trial ids", vec![fake_s, "/db", out_s], &saved[..]),
-        (
-            "path-like id",
-            vec![fake_s, "/db", out_s, "../x"],
-            &saved[..],
-        ),
-        (
-            "export is not JSON",
-            vec![fake_s, "/db", out_s, id.as_str()],
-            &garbage[..],
-        ),
-        (
-            "no database for a live export",
-            vec![fake_s, "/nonexistent.db", out_s, id.as_str()],
-            &[][..],
-        ),
+        ("run-without-id.json", r#"{"runs": [{"seats": []}]}"#),
+        ("empty.json", ""),
     ] {
-        let out = run_facts(&fx, &args, env);
-        assert_eq!(
-            out.status.code(),
-            Some(2),
-            "{label}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        let path = fx.dir.path().join(name);
+        std::fs::write(&path, body).unwrap();
+        shapes.push((name, path));
+    }
+    let versionless = fake_brokkr(&fx, "brokkr-no-version", "", Some(&export));
+    let failing_export = fake_brokkr(&fx, "brokkr-export-fails", "0.12.0", None);
+    let db = fx.dir.path().join("forge.db");
+    std::fs::write(&db, b"db").unwrap();
+    let db_s = db.to_str().unwrap();
+    type Case<'a> = (
+        String,
+        Vec<&'a str>,
+        Vec<(&'a str, &'a str)>,
+        Option<&'a str>,
+    );
+    let mut cases: Vec<Case> = vec![
+        (
+            "relative brokkr".into(),
+            vec!["brokkr", "/db", out_s, id.as_str()],
+            saved.to_vec(),
+            None,
+        ),
+        (
+            "relative output".into(),
+            vec![fake_s, "/db", "out.json", id.as_str()],
+            saved.to_vec(),
+            None,
+        ),
+        (
+            "no trial ids".into(),
+            vec![fake_s, "/db", out_s],
+            saved.to_vec(),
+            None,
+        ),
+        (
+            "path-like id".into(),
+            vec![fake_s, "/db", out_s, "../x"],
+            saved.to_vec(),
+            None,
+        ),
+        (
+            "export is not JSON".into(),
+            vec![fake_s, "/db", out_s, id.as_str()],
+            garbage.to_vec(),
+            Some("export_not_json"),
+        ),
+        (
+            "no database for a live export".into(),
+            vec![fake_s, "/nonexistent.db", out_s, id.as_str()],
+            vec![],
+            None,
+        ),
+        (
+            "brokkr export fails".into(),
+            vec![failing_export.to_str().unwrap(), db_s, out_s, id.as_str()],
+            vec![],
+            Some("export_failed"),
+        ),
+        (
+            "the version is unreadable".into(),
+            vec![versionless.to_str().unwrap(), db_s, out_s, id.as_str()],
+            saved.to_vec(),
+            Some("export_version_unreadable"),
+        ),
+    ];
+    for (name, path) in &shapes {
+        cases.push((
+            format!("shape mismatch: {name}"),
+            vec![fake_s, "/db", out_s, id.as_str()],
+            vec![("JOURNAL_EXPORT_FILE", path.to_str().unwrap())],
+            Some("export_shape_mismatch"),
+        ));
+    }
+    for (label, args, env, class) in &cases {
+        let out = run_facts(args, env);
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(out.status.code(), Some(2), "{label}: {err}");
+        if let Some(class) = class {
+            assert!(err.contains(class), "{label}: wanted {class} in {err}");
+        }
         assert!(!out_path.exists(), "{label}: no output file");
     }
     // An existing output is never overwritten.
     std::fs::write(&out_path, "precious").unwrap();
-    let out = run_facts(&fx, &[fake_s, "/db", out_s, id.as_str()], &saved);
+    let out = run_facts(&[fake_s, "/db", out_s, id.as_str()], &saved);
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(std::fs::read_to_string(&out_path).unwrap(), "precious");
+}
+
+#[test]
+fn a_matching_export_with_no_run_for_a_trial_yields_journal_missing_by_absence() {
+    use swarmail_evals::journal;
+    let fx = fixture();
+    let export = fx.dir.path().join("empty-runs.json");
+    std::fs::write(&export, r#"{"runs": []}"#).unwrap();
+    let fake = fake_brokkr(&fx, "brokkr", "0.12.0", Some(&export));
+    let out_path = fx.dir.path().join("out.json");
+    let id = fixed_id(1);
+    let out = run_facts(
+        &[
+            fake.to_str().unwrap(),
+            "/db",
+            out_path.to_str().unwrap(),
+            id.as_str(),
+        ],
+        &[("JOURNAL_EXPORT_FILE", export.to_str().unwrap())],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let facts = journal::read(&std::fs::read(&out_path).unwrap()).unwrap();
+    assert!(facts.trials.is_empty(), "absence, not an invented entry");
+    let rows = vec![synthetic_row(
+        "signup",
+        "agent",
+        true,
+        swarmail_evals::tasks::Outcome::Pass,
+        10,
+        &id,
+    )];
+    let joined = journal::join(&rows, &facts).unwrap();
+    let group: Vec<_> = rows.iter().collect();
+    let summary = journal::summarize(&group, &joined);
+    assert_eq!(summary["missing"], json!({"journal_missing": 1}));
+}
+
+// ---- the matrix environment never crosses the seats (decision 0116, F1) ----
+
+#[test]
+fn the_trial_seat_strips_the_matrix_environment() {
+    // Seam 1 of the four that sever any accounting channel (0116 section 6):
+    // trial.sh runs the trial under `env -i`. The sentinel is set in the
+    // environment of the process that runs the script, as the matrix's would
+    // be, and must not reach the agent the trial launches. The agent here is a
+    // probe that records its environment keys. The follow-up that forwards the
+    // observed channel flips this test to the observed name.
+    let _trial_scope = trial_scope();
+    let fx = fixture();
+    let record = fx.dir.path().join("agent-env.txt");
+    let probe = fx.dir.path().join("probe.sh");
+    std::fs::write(
+        &probe,
+        format!(
+            "#!/bin/sh\nenv | sed 's/=.*//' | sort > {}\nexit 0\n",
+            record.display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let args = json!(["--task", "signup", "--agent", "probe", "--", probe]);
+    let request_path = fx.slot.join("request.json");
+    std::fs::write(&request_path, request(&fx, "seam-1", args).to_string()).unwrap();
+    let result = fx.dir.path().join("result.json");
+    let prompt = fx.dir.path().join("prompt.txt");
+    std::fs::write(
+        &prompt,
+        render_prompt(&request_path, &result, Rendering::Engine),
+    )
+    .unwrap();
+    let out = std::process::Command::new("bash")
+        .arg(recipe_dir().join("scripts/trial.sh"))
+        .arg(&prompt)
+        .env("SWARMAIL_EVAL_SEAM_SENTINEL", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let keys = std::fs::read_to_string(&record)
+        .expect("the probe agent ran and recorded its environment keys");
+    assert!(
+        !keys.contains("SWARMAIL_EVAL_SEAM_SENTINEL"),
+        "the sentinel crossed the seat: {keys}"
+    );
+    assert!(
+        keys.lines().all(|k| !k.contains("SENTINEL")),
+        "no inherited key survives: {keys}"
+    );
 }

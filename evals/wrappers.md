@@ -160,21 +160,69 @@ receipts, including carried failures, must be assessed separately from smoke.
 
 ## Launching through a brokkr driver (`--via-brokkr`, proposed 0116)
 
-`agent-claude|agent-codex|agent-dsh ... --via-brokkr /abs/driver` builds
-exactly the argv, MCP config, private HOME and cleared environment it builds
-today, then execs `DRIVER <family> -- <program> <argv...>` instead of the
-selected executable, so brokkr's journal can record tokens, turns and tool
-rows for the run. `DRIVER` must be an absolute path to a regular executable
-(`driver_invalid` before any private file is read). The goal reaches the
-driver as it reaches the CLI today (stdin bytes for Claude and Codex, one
-literal argument for dsh). A direct launch is unchanged.
+**`--via-brokkr` fails closed today.** `agent-claude|agent-codex|agent-dsh ...
+--via-brokkr /abs/driver` validates `DRIVER` (an absolute path to a regular
+executable; anything else refuses `driver_invalid`) and then refuses
+`driver_contract_unknown`, before the EVAL inputs, the selection file or any
+credential file is read and before anything is spawned. The refusal is
+unconditional: no switch, digest, flag or environment variable lifts it. Why:
+the invocation form brokkr's driver accepts (brokkr fact F2) has never been
+observed, and running a guessed `DRIVER <family> -- <argv>` would turn a driver
+error into the agent's exit status, scored as the task's idle class
+(`gave_up`), a fake model failure inside measurement data.
 
-A row for such a launch declares the matching finite selector
+`swarmail-evals trial` refuses the same thing one level up, before any server
+starts or agent launches, so the slot is a typed harness refusal and not a
+wrapper that exits early: an agent argv carrying `--via-brokkr` is refused
+`driver_contract_unknown`, and a `*_via_brokkr` profile declared without the
+flag is refused `via_brokkr_profile_mismatch` (exit 2, a fixed category on
+stderr, no row). Under `matrix --brokkr` that slot is a `harness_error` and
+stops admission.
+
+The argv assembly (`DRIVER <family> -- <program> <argv...>`, the direct
+launch's environment and working directory, output routed to `/dev/null`)
+stays in the code and is proven by an inline test that inspects the assembled
+`Command` for all three families; it is dead at runtime until the follow-up
+that implements the observed invocation lifts the refusal. A direct launch is
+unchanged.
+
+A row for a via-brokkr launch will declare the matching finite selector
 `claude_2_1_310_via_brokkr`, `codex_0_164_0_via_brokkr` or
 `dsh_0_1_5_rc_1_via_brokkr`: the family's declared configuration plus one
 residual (`brokkr driver flags unenumerated`), because the driver adds flags
 the family profile does not list. A via-brokkr row never claims the
 direct-launch surface; a binary from before this change refuses these rows,
-as it refuses any historical row it does not know. Delivery proves the flag
-only with a stand-in driver; the first authenticated smoke per family is the
-operator's.
+as it refuses any historical row it does not know.
+
+### Four seams sever any accounting channel
+
+Whatever channel carries a nested driver's token, turn and tool counts back to
+brokkr's journal (a stdout relay or one environment variable, brokkr fact F1),
+four places cut it today. None is changed by this delivery, because forwarding
+touches accepted 0075 section 1 and waits for the observed channel and the
+operator's acceptance of 0116 section 6:
+
+1. `.brokkr/recipes/eval/scripts/trial.sh` runs the trial under `env -i PATH=...
+   LANG=C LC_ALL=C SWARMAIL_BIN=...`;
+2. the runner builds the agent's environment afresh (`RuntimeDirs`/`CallerEnv`:
+   `PATH` plus the eight EVAL inputs);
+3. `wrappers::through_driver` calls `env_clear` before it sets the direct
+   launch's keys;
+4. `through_driver` routes the driver's stdout and stderr to `/dev/null`.
+
+Tests set `SWARMAIL_EVAL_SEAM_SENTINEL` in the process that runs `trial.sh`
+and in the wrapper and prove it reaches neither the trial's agent nor the CLI
+the wrapper launches (`recipe.rs::the_trial_seat_strips_the_matrix_environment`,
+the wrapper environment test in `wrappers_launch`). The follow-up flips them to
+the observed channel's name.
+
+### The paid read set (brokkr fact F5)
+
+A paid trial under the recipe would additionally read the operator's private
+selection file, the three credential files it names (Claude's
+`.credentials.json` source, Codex's `auth.json` source, dsh's route file) and
+the three CLI executables with their install trees, and needs the network. The
+recipe binds none of them (`binds: []`; `network` true on `trial`, false on
+`score`), so **paid agents under `matrix --brokkr` are unsupported** until the
+follow-up declares the observed binds. A paid agent tried anyway fails closed
+at slot 1 through the wrapper's existing typed refusals.

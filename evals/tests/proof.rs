@@ -595,11 +595,12 @@ fn the_controls_hold_through_the_recipe_path() {
         json!([{"label": "oracle", "argv": []}, {"label": "null", "argv": []}]).to_string(),
     )
     .unwrap();
-    let out = brokkr_matrix("ok")
+    let realm = brokkr_realm(dir.path());
+    let out = brokkr_matrix("ok", &realm)
         .args(["--tasks", &ids.join(","), "--agents"])
         .arg(&agents)
         .args(["--trials", "1", "--artifacts-dir"])
-        .arg(dir.path().join("artifacts"))
+        .arg(realm.join("artifacts"))
         .output()
         .unwrap();
     let rows: Vec<TrialResult> = String::from_utf8_lossy(&out.stdout)

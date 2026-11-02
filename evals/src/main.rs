@@ -337,6 +337,13 @@ fn main() -> ExitCode {
             {
                 return fail("builtin_declaration_invalid");
             }
+            if let Some(category) = runner::via_brokkr_refusal(&argv, wrapper_profile) {
+                // Before any server starts or agent launches: a wrapper that
+                // refuses inside the trial would score as the task's idle
+                // class, a fake model failure in measurement data.
+                eprintln!("swarmail-evals: harness error: {category}");
+                return ExitCode::from(2);
+            }
             let mut req = TrialRequest {
                 task,
                 agent,
@@ -576,7 +583,7 @@ const BROKKR_SEAT_DEADLINE_MS: u64 = 1_200_000;
 /// category on stderr and exit 2 with no stdout.
 fn brokkr_mode_admissible(
     bin: &std::path::Path,
-    realm: &std::path::Path,
+    realm_dir: &std::path::Path,
     artifacts_dir: Option<&std::path::Path>,
     deadline_ms: Option<u64>,
     ids: &[String],
@@ -587,10 +594,16 @@ fn brokkr_mode_admissible(
     }
     let executable = bin.is_absolute()
         && std::fs::metadata(bin).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
-    let realm = std::fs::metadata(realm.join(".brokkr/recipes/eval/bundle.json"))
+    let realm = std::fs::metadata(realm_dir.join(".brokkr/recipes/eval/bundle.json"))
         .is_ok_and(|m| m.is_file());
     if !executable || !realm {
         return Err("brokkr_realm_invalid");
+    }
+    // The trial seat's `kind: workspace` hands reach the candidate's tree and
+    // nothing else: a root outside it would burn a slot after the engine
+    // started, so it refuses before any spawn.
+    if !artifacts_dir.is_some_and(|root| root_inside_realm(realm_dir, root)) {
+        return Err("brokkr_artifacts_unreachable");
     }
     let longest = ids
         .iter()
@@ -602,6 +615,34 @@ fn brokkr_mode_admissible(
         return Err("deadline_exceeds_seat");
     }
     Ok(())
+}
+
+/// Whether the artifact root resolves, without creating anything, to a path
+/// inside the realm directory (the current directory). The root need not
+/// exist yet; a `..`, an unsafe link or an unresolvable ancestor is outside.
+fn root_inside_realm(realm_dir: &std::path::Path, root: &std::path::Path) -> bool {
+    let Ok(realm) = std::fs::canonicalize(realm_dir) else {
+        return false;
+    };
+    let absolute = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        realm.join(root)
+    };
+    artifacts::resolve_root(&absolute).is_ok_and(|resolved| resolved.starts_with(&realm))
+}
+
+/// The matrix's wait on one worker, in milliseconds: the trial's own deadline
+/// plus the runner's fixed startup and shutdown budgets and 300 s of slack.
+fn direct_envelope_ms(deadline_ms: u64) -> u64 {
+    deadline_ms.saturating_add(300_000)
+}
+
+/// In brokkr mode the envelope also carries the score seat's 600 s budget
+/// (decision 0116), so `trial_envelope_expired` there can only mean the engine
+/// or the gate hung past its own seat timeout.
+fn brokkr_envelope_ms(deadline_ms: u64) -> u64 {
+    direct_envelope_ms(deadline_ms).saturating_add(600_000)
 }
 
 const MATRIX_OUTPUT_LIMIT: usize = 64 * 1024;
@@ -1339,8 +1380,29 @@ fn prepare_brokkr_slot(
 struct SlotOutput {
     row: CapturedOutput,
     exit: i32,
-    score: Option<String>,
+    score: GateVerdict,
     stderr: Vec<u8>,
+}
+
+/// What the score gate left. `Missing` means the gate never ruled (the file is
+/// absent, unreadable, malformed or not one line); `Ruled` carries the outcome
+/// it wrote, which may still disagree with the row.
+#[derive(Debug, PartialEq, Eq)]
+enum GateVerdict {
+    Missing,
+    Ruled(String),
+}
+
+/// The gate's verdict file is exactly one JSON line with a string `outcome`.
+fn gate_verdict(bytes: &[u8]) -> GateVerdict {
+    let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    if body.contains(&b'\n') {
+        return GateVerdict::Missing;
+    }
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("outcome")?.as_str().map(str::to_owned))
+        .map_or(GateVerdict::Missing, GateVerdict::Ruled)
 }
 
 fn read_slot(dir: &std::path::Path) -> Result<SlotOutput, &'static str> {
@@ -1352,12 +1414,11 @@ fn read_slot(dir: &std::path::Path) -> Result<SlotOutput, &'static str> {
         .and_then(|t| t.trim().parse::<i32>().ok())
         .filter(|code| (0..=2).contains(code))
         .ok_or("trial_row_missing")?;
-    // A missing, unreadable or malformed gate verdict is a mismatch: the gate
-    // must have ruled on this row, and nothing else may stand in for it.
+    // The gate must have ruled on this row and nothing else may stand in for
+    // it: a verdict that is absent, unreadable, malformed or not one line is
+    // `Missing` (`score_missing`), distinct from one that disagrees.
     let score = artifacts::read_file(dir, "score.json", 4096)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v.get("outcome")?.as_str().map(str::to_owned));
+        .map_or(GateVerdict::Missing, |b| gate_verdict(&b));
     let stderr = artifacts::read_file(dir, "trial.stderr", SLOT_ROW_LIMIT).unwrap_or_default();
     Ok(SlotOutput {
         row: CapturedOutput {
@@ -1368,6 +1429,15 @@ fn read_slot(dir: &std::path::Path) -> Result<SlotOutput, &'static str> {
         score,
         stderr,
     })
+}
+
+/// The slot category for a gate verdict against the row's outcome, if any.
+fn gate_refusal(verdict: &GateVerdict, outcome: &str) -> Option<&'static str> {
+    match verdict {
+        GateVerdict::Missing => Some("score_missing"),
+        GateVerdict::Ruled(ruled) if ruled != outcome => Some("score_mismatch"),
+        GateVerdict::Ruled(_) => None,
+    }
 }
 
 fn outcome_name(outcome: Outcome) -> &'static str {
@@ -1531,9 +1601,13 @@ async fn run_child_assigned(
     let mut interrupted = false;
     let mut forwarded = false;
     let mut failure = None;
-    let envelope = deadline_ms
-        .unwrap_or_else(|| tasks::find(id).expect("validated task").deadline_ms)
-        .saturating_add(300000);
+    let trial_deadline_ms =
+        deadline_ms.unwrap_or_else(|| tasks::find(id).expect("validated task").deadline_ms);
+    let envelope = if brokkr_mode {
+        brokkr_envelope_ms(trial_deadline_ms)
+    } else {
+        direct_envelope_ms(trial_deadline_ms)
+    };
     let envelope_at = tokio::time::Instant::now() + Duration::from_millis(envelope);
     let mut envelope_requested = false;
     let expiry = matrix_envelope(envelope_at);
@@ -1620,11 +1694,11 @@ async fn run_child_assigned(
     // are the slot's, not the worker's streams (decision 0116). A slot that
     // cannot be read is a worker that returned no row; the worker's own exit
     // status is never the trial's.
-    let mut gate_verdict = None;
+    let mut gate = None;
     let (captured, status) = match (&slot, captured, status) {
         (Some(slot), Some(_), Some(_)) => match read_slot(&slot.dir) {
             Ok(output) => {
-                gate_verdict = Some(output.score);
+                gate = Some(output.score);
                 let code = output.exit;
                 if worker_category.is_none() {
                     worker_category = capture_worker_category(output.stderr.as_slice())
@@ -1661,13 +1735,13 @@ async fn run_child_assigned(
                     }) {
                         failure.get_or_insert("trial_context_mismatch".into());
                         None
-                    } else if gate_verdict
+                    } else if let Some(category) = gate
                         .as_ref()
-                        .is_some_and(|v| v.as_deref() != Some(outcome_name(row.outcome)))
+                        .and_then(|v| gate_refusal(v, outcome_name(row.outcome)))
                     {
-                        // The gate re-scored the retained leaf and disagrees
-                        // with the row (or never ruled): never averaged in.
-                        failure.get_or_insert("score_mismatch".into());
+                        // The gate never ruled, or re-scored the retained leaf
+                        // and disagrees with the row: never averaged in.
+                        failure.get_or_insert(category.into());
                         None
                     } else {
                         Some(row)
@@ -4821,14 +4895,50 @@ mod brokkr_mode_tests {
         }
         std::fs::write(slot.join("exit"), "1\n").unwrap();
         let read = read_slot(&slot).unwrap();
-        assert_eq!((read.exit, read.score, read.stderr.len()), (1, None, 0));
+        assert_eq!(
+            (read.exit, read.score, read.stderr.len()),
+            (1, GateVerdict::Missing, 0),
+            "a gate that never ruled"
+        );
         std::fs::write(slot.join("score.json"), r#"{"outcome":"fail"}"#).unwrap();
         std::fs::write(slot.join("trial.stderr"), "note\n").unwrap();
         let read = read_slot(&slot).unwrap();
-        assert_eq!(read.score.as_deref(), Some("fail"));
+        assert_eq!(read.score, GateVerdict::Ruled("fail".into()));
         assert_eq!(read.stderr, b"note\n");
-        std::fs::write(slot.join("score.json"), "not json").unwrap();
-        assert_eq!(read_slot(&slot).unwrap().score, None);
+        // Present-and-disagreeing is not missing, and a verdict that is
+        // malformed, typeless or more than one line never ruled at all.
+        std::fs::write(slot.join("score.json"), "{\"outcome\":\"pass\"}\n").unwrap();
+        assert_eq!(
+            read_slot(&slot).unwrap().score,
+            GateVerdict::Ruled("pass".into())
+        );
+        for bad in [
+            "not json",
+            "{\"outcome\":1}",
+            "{}",
+            "{\"outcome\":\"pass\"}\n{\"outcome\":\"pass\"}\n",
+            "{\"outcome\":\"pass\"}\n\n",
+            "",
+        ] {
+            std::fs::write(slot.join("score.json"), bad).unwrap();
+            assert_eq!(
+                read_slot(&slot).unwrap().score,
+                GateVerdict::Missing,
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            gate_refusal(&GateVerdict::Missing, "pass"),
+            Some("score_missing")
+        );
+        assert_eq!(
+            gate_refusal(&GateVerdict::Ruled("fail".into()), "pass"),
+            Some("score_mismatch")
+        );
+        assert_eq!(
+            gate_refusal(&GateVerdict::Ruled("pass".into()), "pass"),
+            None
+        );
         std::fs::write(slot.join("row.json"), vec![b'x'; SLOT_ROW_LIMIT + 1]).unwrap();
         assert_eq!(
             read_slot(&slot).err(),
@@ -4851,13 +4961,13 @@ mod brokkr_mode_tests {
     #[test]
     fn brokkr_mode_admission_names_each_refusal() {
         let me = std::env::current_exe().unwrap();
-        let artifacts = std::path::Path::new("/does/not/matter");
         let ids = vec!["signup".to_string()];
         // The crate directory holds no `.brokkr`; the repository root does.
         let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = crate_dir.parent().unwrap();
+        let artifacts = root.join(".brokkr/state/eval");
         let check = |bin: &std::path::Path, realm: &std::path::Path, deadline: Option<u64>| {
-            brokkr_mode_admissible(bin, realm, Some(artifacts), deadline, &ids)
+            brokkr_mode_admissible(bin, realm, Some(&artifacts), deadline, &ids)
         };
         assert_eq!(
             brokkr_mode_admissible(&me, root, None, None, &ids),
@@ -4879,5 +4989,57 @@ mod brokkr_mode_tests {
             check(&me, root, Some(BROKKR_SEAT_DEADLINE_MS + 1)),
             Err("deadline_exceeds_seat")
         );
+        // A root outside the realm's tree is unreachable for the seat's hands.
+        for outside in [
+            std::path::PathBuf::from("/tmp/eval-artifacts"),
+            root.parent().unwrap().join("sibling-of-the-realm"),
+            root.join("../escape"),
+        ] {
+            assert_eq!(
+                brokkr_mode_admissible(&me, root, Some(&outside), None, &ids),
+                Err("brokkr_artifacts_unreachable"),
+                "{}",
+                outside.display()
+            );
+        }
+        // A relative root is read against the realm and may not exist yet.
+        assert_eq!(
+            brokkr_mode_admissible(&me, root, Some(".brokkr/state/eval".as_ref()), None, &ids),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_root_that_resolves_through_a_link_out_of_the_realm_is_unreachable() {
+        let base = runner::private_tempdir("brokkr-root-link-").unwrap();
+        let realm = base.path().join("realm");
+        let outside = base.path().join("outside");
+        std::fs::create_dir_all(&realm).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::set_permissions(&realm, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::create_dir(realm.join("inside")).unwrap();
+        assert!(root_inside_realm(&realm, &realm.join("inside/new/root")));
+        assert!(root_inside_realm(&realm, "inside".as_ref()));
+        assert!(!root_inside_realm(&realm, &outside));
+        // The root's own leaf may not be a link, whichever way it points.
+        std::os::unix::fs::symlink(&outside, realm.join("link")).unwrap();
+        assert!(!root_inside_realm(&realm, &realm.join("link")));
+        assert!(!root_inside_realm(&realm, &realm.join("link/child")));
+        assert!(!root_inside_realm(
+            &base.path().join("absent-realm"),
+            "x".as_ref()
+        ));
+    }
+
+    #[test]
+    fn the_envelopes_nest_the_score_seat_only_in_brokkr_mode() {
+        assert_eq!(direct_envelope_ms(60_000), 360_000);
+        assert_eq!(brokkr_envelope_ms(60_000), 960_000);
+        assert_eq!(
+            brokkr_envelope_ms(BROKKR_SEAT_DEADLINE_MS),
+            1_200_000 + 300_000 + 600_000
+        );
+        assert_eq!(direct_envelope_ms(u64::MAX), u64::MAX);
+        assert_eq!(brokkr_envelope_ms(u64::MAX), u64::MAX);
     }
 }

@@ -24,10 +24,17 @@ prompt_file="${1:-}"
 
 result_path=""
 request=""
+# The engine renders the feature as "Feature: <text>" and the result path as an
+# indented line of its own (observed 2026-11-02), so each line is trimmed of
+# surrounding whitespace and a trailing CR first, as verify-seat.sh does, and
+# the request token is matched anywhere on the trimmed line.
 while IFS= read -r line || [ -n "$line" ]; do
+  line="${line%$'\r'}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
   case "$line" in
     /*.json) result_path="$line" ;;
-    swarmail-eval-request:\ /*.json) request="${line#swarmail-eval-request: }" ;;
+    *swarmail-eval-request:\ /*.json) request="${line#*swarmail-eval-request: }" ;;
   esac
 done < "$prompt_file"
 [ -n "$result_path" ] || { echo "score: result path missing" >&2; exit 2; }
@@ -76,7 +83,7 @@ case "$code" in
 esac
 
 tmp="$slot/score.json.tmp.$$"
-jq -n --arg id "$trial_id" --arg outcome "$outcome" --argjson code "$code" \
+jq -n -c --arg id "$trial_id" --arg outcome "$outcome" --argjson code "$code" \
   '{schema_version: 1, trial_id: $id, outcome: $outcome, exit: $code}' > "$tmp" &&
   mv -f "$tmp" "$slot/score.json" || { rm -f "$tmp"; refuse "the verdict could not be recorded"; }
 report "$result" "check exited $code; the app's retained state was re-scored"
