@@ -70,7 +70,8 @@ Not touched: `Cargo.toml`, `Cargo.lock`, `evals/`, `deny.toml`, `charts/`,
   `from_fn_with_state(state.clone(), api::origin_guard)`, then
   `.with_state(state)`. There is no `count_in_flight` layer: `/metrics`
   reports the HTTP plane.
-- `const SLURPER_PAGE_SIZE: usize = 25;`
+- `const SLURPER_PAGE_SIZE: usize = 50;` (25 before the review return; see
+  § Review return)
 - A closed list query: `pageNumber` only (`deny_unknown_fields`, read as a
   string and parsed by hand, so that `0`, `-1` and `x` share one named
   refusal).
@@ -89,7 +90,7 @@ Not touched: `Cargo.toml`, `Cargo.lock`, `evals/`, `deny.toml`, `charts/`,
 
 1. **List.** Stage the query first, so a refusal costs no scan. Then
    `page_work`: `scoped(store, None)`, `total = all.len()`, and
-   `start = (page - 1) * 25` with `checked_mul` (an overflow is past the
+   `start = (page - 1) * SLURPER_PAGE_SIZE` with `checked_mul` (an overflow is past the
    end). `page_of` cuts the page, and `slurper_page_body` serializes it
    under `MAX_COMPAT_PAGE_BYTES`. Bytes go to `json_body`. Over budget is
    a `400`:
@@ -131,8 +132,13 @@ Not touched: `Cargo.toml`, `Cargo.lock`, `evals/`, `deny.toml`, `charts/`,
 - **Verified, binding:** the consumer's two calls and headers, the fields
   `mailItems`, `totalRecords`, `subject`, `body` and `toAddresses`, and the
   omission of `mailItems` when empty (the operator's description).
-- **Recalled:** everything listed in 0118 §7. No seat in this run has web
-  access, so no claim is presented as read from upstream source.
+- **Recalled:** everything listed in 0118 §7 as still recalled. No design
+  seat has web access, so no claim is presented as read from upstream
+  source by this seat.
+- **Reported from upstream source by the review panel (2026-11-02):** the
+  page size of 50 and the other items 0118 §7 lists under that heading. They
+  are cited, with file paths and a libmailslurper commit, by the guarantees
+  member. The independent member recalled 50 independently.
 
 ## Data model
 
@@ -155,7 +161,12 @@ MAIL_SLURPER_ENDPOINT=http://localhost:4437/mail npm test     # the consumer, un
 
 | Risk | Mitigation |
 |---|---|
-| **Recalled upstream shapes are wrong** (page size, `dateSent`, count body, age-code names) | The consumer-read fields are pinned from the operator's description, not from recall. Every recalled item is labelled in 0118 §7 and the guide. The operator checks them before accepting. A consumer-field mismatch blocks acceptance, and any other mismatch is a dated addendum. |
+| **Recalled upstream shapes are wrong** (as the page size was: 25 against upstream's 50) | The consumer-read fields are pinned from the operator's description. The page size now follows the review's source citation, and 0118 §7 makes it, like everything else that decides `mailItems`' contents, acceptance-blocking. What is still recalled is labelled in 0118 §7 and the guide. AC8 asserts the literal 50 once, so a drift is a red test and not a silent window. |
+| **Page 1 misses the mail the suite just triggered** (more than 50 mails between the consumer's cleanups) | Upstream has the same limit. The receive-time order puts the newest delivery first whatever the sender's `Date` header says. The guide says that the consumer reads one page of 50. |
+| **A list page over 64 MiB is a `400` the consumer cannot handle** | Refusing whole is 0044's rule (never truncate). Fifty items under 64 MiB is the normal case. The guide states the cost. |
+| **Concurrent list pages each hold up to 64 MiB on the blocking pool** | Accepted for a single-tenant test sink (one Swarmail per suite, 0118 §2). A per-listener concurrency limit is a follow-up if the listener ever fronts a shared deployment. |
+| **A future refactor gives the listener its own `axum::serve` and loses the shared timeouts and drain** | The listener goes through `api::serve_app` (R1). The drain leg of the existing lifecycle tests and review guard it. No extra test: a structural pin would be a test of code layout, not behaviour. |
+| **`DRAIN_RECEIPT` is consumed by whichever listener drains first** (correctness, info) | No current test enables both listeners with a drain receipt. A future in-crate drain test that does must take the receipt per listener. No seam is added now for a test that does not exist. |
 | **A global wipe on a shared Swarmail destroys parallel sessions' mail** | The listener is off by default, so only an operator enables it. Only the literal `{"pruneCode":"all"}` wipes. Every AC10 refusal carries a before/after count. The guide states the global mailbox in bold. |
 | **DNS rebinding reaches the wipe on a loopback bind** | The same `origin_guard`, keyed to the MailSlurper port (AC4) |
 | **The cluster cannot reach 4437 through the chart** | The guide gives the deployer-Service recipe and the NetworkPolicy caveat. Chart support is a follow-up named in 0118. The nightly needs only the env and one Service. |
@@ -163,5 +174,57 @@ MAIL_SLURPER_ENDPOINT=http://localhost:4437/mail npm test     # the consumer, un
 | **A refused filter breaks a client that sends one** | A named `400` beats a silent wrong match. Alkemio sends none, and the guide lists the refused keys. |
 | **Every `Config` literal must change** | The compiler finds every literal, and the plan lists the known ones. `clippy --all-targets` catches the benches. |
 | **Coverage regresses on the optional-listener arms** | Every existing test runs the `None` arm, and `tests/mailslurper.rs` runs `Some`. The date fallback has an `i64::MIN` unit test. Each prune-verdict arm has a unit test as well as its wire refusal. |
-| **The PR cannot merge before 0118 is accepted** | Stated in 0118's consequences. The PR is held for the operator: expected, not a failure. |
+| **The PR cannot merge before 0118 is accepted** | Stated in 0118's consequences and §9. The mechanical hold list of 0056's addendum does not catch this case, so the ship notes below carry it to the merger. Held for the operator: expected, not a failure. |
 | **Content-type strictness refuses a client that omits `application/json`** | Alkemio's client sends JSON with the JSON content type. Refusing is 0011's rule for a destructive route, and the guide documents it. |
+
+## Review return (2026-11-02)
+
+Run `issue-314-a-mailslurper-compatib-0acb1d84`. Review of head `439eba5`
+(tree `f20a7b3`) returned `residual` with `spec_defect: true`. The frozen
+guarantees were found intact by every member, and there was no security
+residual. The design panel argued the return. Simplicity and robustness
+agree on the spine and on the defect. Where they differed, the ruling is
+in the spec's rulings table. Each finding and the change that answers it:
+
+| Finding (member, severity) | Answer | Owner |
+|---|---|---|
+| Page size 25 against upstream's 50 (guarantees MEDIUM, spec defect; independent MEDIUM; security and correctness noted it) | Spec R5 and AC8 (51-mail fixture, the literal 50 asserted once, pages summing to the snapshot); 0118 §3 and §9; `SLURPER_PAGE_SIZE = 50`; the guide's paging line and fixed-paging difference | T15, T16 |
+| The page size listed as non-blocking while it decides `mailItems` (independent) | 0118 §7: the page size, and everything that decides `mailItems`, is acceptance-blocking; the order difference is declared for the operator to rule on | this commit (0118) |
+| 0118's Amends names only 0011, not 0004's "only cross-inbox destructive endpoint" (guarantees LOW) | 0118's Amends line names 0004 and narrows it explicitly; the decision index row says it amends 0004 and 0011 | this commit (0118), T17 |
+| `llms.txt` still says `delete-all` "is the only cross-inbox wipe" (guarantees LOW) | Spec R11 and AC15: scope the claim to the HTTP plane and name the MailSlurper route | T17 |
+| Guide title and intro, README and `repo-layout.md` name two shims (guarantees INFO) | Spec R11 and AC15: three shims everywhere (plan line 56 already promised this; the build missed it) | T17 |
+| `dateSent` source and zone, and list order, not documented (guarantees INFO) | 0118 §§2 and 4 state them; AC15 lists them in the guide | T17 |
+| Past-the-end `200` against a recalled `404` (independent INFO) | Kept, documented, listed as still recalled in 0118 §7 | T17 |
+| Unknown id `404` against upstream `500`, `ccAddresses` extra, empty `mailItems` `[]` against the operator's observation (guarantees INFO) | 0118 §7 records them; AC15 lists them in the guide | T17 |
+| The recalled shapes were never checked against source (correctness LOW) | 0118 §7 now separates source-reported items from recalled ones. The operator's check stays an acceptance condition, and no seat can do it. | this commit (0118) |
+| F1: off-worker build at the listener's site proven only transitively (tests INFO) | AC17: the existing held-page-build harness test also holds `GET /mail` on the listener | T18 |
+| F2: "not in `/metrics`" is prose only (tests INFO) | Prose scoped to the exact gauge name (AC15). A behavioural test is refused: the in-flight total is process-global, and every concurrent test in the binary moves it. No seam holds a request inside the listener's router, so an assertion would be vacuous at rest or flaky while held. | T17 |
+| F3: the raw `req()` in `tests/mailslurper.rs` has no deadline (tests INFO) | AC18: named connect and read deadlines | T19 |
+| Hold routing: 0056's mechanical hold list does not catch this PR (correctness and independent INFO) | 0118 §9, and the ship notes below | ship |
+| `DRAIN_RECEIPT` taken in `serve_app` (correctness INFO) | Recorded in Risks; no change | — |
+| Robustness: no test that a wipe persists across restart | AC14's second leg | T20 |
+
+No acceptance criterion is weakened. AC8 is tightened: it moves to a
+51-mail fixture and the page-sum invariant. Its old 26-mail fixture
+would test the wrong boundary with a 50-item page. AC14 and AC15 gain
+legs, and AC17 and AC18 are new. No new route, config field, dependency,
+file outside the test and docs set, or decision number.
+
+### Files the revision touches
+
+| File | Change |
+|---|---|
+| `src/compat.rs` | `SLURPER_PAGE_SIZE = 50`; the `slurper_list` doc comment says 50; inline tests that hard-code 25 or 26 follow the constant |
+| `src/compat/page_work_tests.rs` | `held_compat_page_builds_leave_smtp_and_health_serving` enables the listener and holds `GET /mail` on it as a fifth build (AC17). The build site records its observation through `render_site`, if the gate requires one. |
+| `tests/mailslurper.rs` | AC8 rewritten for 51 mails; `req()` under named deadlines (AC18); AC14's wipe-restart leg; the docs-contract assertions of AC15 |
+| `docs/guide/compat-shims.md` | Title and intro for three shims; paging 50; the known differences of AC15; the recalled list matches 0118 §7 |
+| `src/static/llms.txt` | The scoped wipe sentence |
+| `README.md`, `docs/guide/repo-layout.md` | MailSlurper named among the shims |
+| `docs/decisions/README.md` | The 0118 row says it amends 0004 and 0011 |
+
+## Ship notes
+
+The PR body's first line must read: **HOLD: contradicts accepted 0004 and
+0011 under proposed 0118; do not merge on green; the operator accepts 0118
+(and checks its §7 items against upstream) first.** The 0056 addendum's
+mechanical hold list does not name this case (0045 §8 and 0118 §9 do).

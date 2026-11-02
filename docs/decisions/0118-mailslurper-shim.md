@@ -15,10 +15,15 @@
   MailSlurper listener, served only when an operator enables that listener.
   Both call the same store operation (`clear_all`). 0011's rule for
   destructive routes is applied to the new route unchanged: an explicit
-  selector, or a `400` that deletes nothing. The parallel sentence of
-  accepted [0004](0004-per-test-inboxes-via-smtp-auth.md) ("`clear_all` …
-  is the only cross-inbox destructive endpoint") stays true of the store
-  operation. It gains a second route, and this record names it.
+  selector, or a `400` that deletes nothing. Also amends accepted
+  [0004](0004-per-test-inboxes-via-smtp-auth.md), only its consequence
+  "`clear_all` … is the only cross-inbox destructive endpoint". That
+  sentence is narrowed: `clear_all` stays the only cross-inbox destructive
+  store operation, but it is reached by two endpoints, the second being
+  the MailSlurper listener's `DELETE /mail`, served only when an operator
+  enables that listener. On acceptance, 0004 and 0011 each get a dated
+  marker pointing here, as 0112 did for what it amended. Adding those
+  markers belongs to the acceptance, not to the delivery run.
 - **Preserves:** [0001](0001-synchronous-insert-lossless.md) (the shim only
   reads committed mail, so a `250` is visible to `GET /mail` at once),
   [0002](0002-awaits-subscribe-before-checking.md) (the wipe goes through
@@ -117,7 +122,11 @@ a follow-up issue.
 
 - `GET /mail`, `GET /mailcount` and `GET /mail/{id}` read **every inbox**
   as one mailbox. The list order is newest first by
-  `(received_ms, id)`, the order every compat list already uses.
+  `(received_ms, id)`, the order every compat list already uses. This is a
+  deliberate difference: upstream orders by `dateSent` descending, and its
+  `dateSent` is the parsed `Date` header. Receive time is fixed at ingest
+  (0005) and does not depend on the sender's clock, so the mail a suite
+  just triggered is the newest one even when a sender's clock is skewed.
 - `DELETE /mail {"pruneCode":"all"}` clears **every inbox** through the
   store's `clear_all`.
 - **Enabling the listener collapses per-inbox isolation for its clients.**
@@ -144,11 +153,14 @@ a follow-up issue.
 | `DELETE /mail` | `{"pruneCode":"all"}`: wipe every inbox, then `200 text/plain; charset=utf-8` with the decimal count removed |
 
 - **Paging.** `pageNumber` only: 1-based, default 1. The fixed page size is
-  25 (*recalled* upstream). `totalPages` is `ceil(totalRecords / 25)`.
+  **50**, upstream's hard-coded `length := 50` (review return 2026-11-02,
+  §9). `totalPages` is `ceil(totalRecords / 50)`.
   `totalRecords` counts every stored mail in the same snapshot the page was
   cut from, not the page length. `pageNumber` set to `0`, a negative
   number or a non-integer is a `400` naming `pageNumber`. A page past the
-  end is a `200` with the totals and no items.
+  end is a `200` with the totals and no items. Upstream may answer that
+  with `404 Page number out of range` (*recalled*, §7). The `200` is kept,
+  not built to a recollection.
 - **`mailItems` is omitted whenever the page is empty**, including on an
   empty store, where the answer is exactly
   `{"totalPages":0,"totalRecords":0}`. This is the operator's observation
@@ -176,10 +188,10 @@ One borrowed view of the stored `Email`, serialized in this key order:
 | Key | Source |
 |---|---|
 | `id` | the store id |
-| `dateSent` | receive time, `YYYY-MM-DD HH:MM:SS` in UTC (*recalled* format; upstream uses the server's local zone) |
+| `dateSent` | receive time, `YYYY-MM-DD HH:MM:SS` in UTC (upstream's format; upstream formats the parsed `Date` header in the server's local zone, a documented difference) |
 | `fromAddress` | the compat sender (envelope `MAIL FROM`, with the header `From` address only for rows stored before the envelope was kept; `""` when neither exists), as the MailHog and Mailpit shims report it |
 | `toAddresses` | the envelope recipients (`RCPT TO`) as bare address strings, in envelope order; the header `To` addresses only when the row has no recorded recipients |
-| `ccAddresses` | the header `Cc` addresses as bare strings |
+| `ccAddresses` | the header `Cc` addresses as bare strings (an extra key relative to upstream's item as the review read it; documented, harmless to a JSON client) |
 | `subject` | the stored subject, or `""` |
 | `body` | the stored HTML body if present, else the stored text body, else `""`: decoded at ingest, never re-rendered, unescaped or sanitized |
 | `attachments` | always `[]` (the existing shims' documented omission) |
@@ -223,15 +235,41 @@ plain-text query rejection) rather than MailSlurper's plain text.
 
 ### 7. Operator verification before acceptance
 
-The *recalled* items are the page size (25), the `pageNumber` spelling,
-`totalPages`, `{"mailCount":n}`, the `dateSent` format, the
-`/mail/{id}/message` content type, the age-code names, the search-key
-names, the plain-text DELETE answer, and `toAddresses` coming from
-`RCPT TO`. Each should be checked against `mailslurper/mailslurper` (the
-service controller and the `MailItem`/response structs) before acceptance.
-A mismatch on a field the consumer reads (`mailItems`, `totalRecords`,
-`subject`, `body`, `toAddresses`) blocks acceptance. A mismatch elsewhere
-is a dated addendum and a follow-up change.
+*Revised 2026-11-02 at the review return (§9).*
+
+**Reported from upstream source by the review panel** (the guarantees
+member, citing `cmd/mailslurper/controllers/ServiceController.go` and
+libmailslurper `controllers/MailController.go` at `17e35b8203ac`; no design
+seat could read them):
+
+- the page size is 50 (the shim's earlier 25 was wrong and is corrected);
+- the routes `/mail`, `/mail/{id}`, `/mail/{id}/message`, `/mailcount` and
+  `DELETE /mail` match;
+- the prune codes `all`, `60plus`, `30plus` and `2wksplus` match;
+- the `dateSent` format matches, but upstream formats the `Date` header in
+  local time and orders by it (§§2, 4: deliberate differences);
+- `toAddresses` from `RCPT TO` matches;
+- the count envelope matches;
+- an unknown id is a `500` upstream and a `404` here (documented);
+- `ccAddresses` is not in upstream's item (kept, documented);
+- upstream's empty list renders `mailItems` as `[]`. That conflicts with the
+  operator's observation that real MailSlurper omits the key. The
+  operator's observation is binding here, and the client normalises both.
+
+**Still recalled:** the `pageNumber` spelling, the `/mail/{id}/message`
+content type, the search-key names, the plain-text DELETE answer, and the
+past-the-end `404`.
+
+**Acceptance-blocking.** A mismatch on what the consumer reads blocks
+acceptance. That covers `mailItems` and what decides its contents (the
+page size and the omission of an empty page), plus `totalRecords`,
+`subject`, `body` and `toAddresses`. The page size was in the non-blocking
+set before the review return. That was the drafting error the review
+found: it decides which mail is on page 1, the only page the consumer
+reads. The receive-time order also decides membership once the store
+holds more than 50 mails. It is a declared difference, and the operator
+accepts or refuses it explicitly with this record. Any other mismatch is
+a dated addendum and a follow-up change.
 
 ### 8. Implementation notes (2026-11-02, the implement seat)
 
@@ -250,6 +288,31 @@ Three details the build settled, all inside the rulings above:
   script and holds no origin. The body bytes are unchanged.
 - **The startup line names the listener.** `swarmail serve` logs
   `mailslurper=Some(addr)` (or `None`) beside the other bound addresses.
+
+### 9. Review return (2026-11-02)
+
+Review of head `439eba5` (run `issue-314-a-mailslurper-compatib-0acb1d84`)
+returned the design as defective on one point: the page size. This
+record was still proposed, so it is revised in place, and this section
+records what changed.
+
+- §3: the page size goes from 25 to 50, with upstream's source cited (§7).
+  A `pageNumber`-less `GET /mail` now returns the same 50 items upstream
+  would, up to the deliberate order difference of §2.
+- §7: the source-checked items are separated from the recalled ones, and
+  the page size moves into the acceptance-blocking set.
+- **Amends:** accepted 0004's "only cross-inbox destructive endpoint"
+  consequence is now named and narrowed, beside 0011's sentence.
+- §§2–4: the order, `dateSent` source, past-the-end and `ccAddresses`
+  differences are stated, and the guide lists each of them.
+- Nothing else in the ruling changes: the listener, the guard, the global
+  view, the projection and the destructive contract stand.
+
+**Merge hold.** The PR that carries this shim contradicts accepted 0004's
+and 0011's sentences until the operator accepts this record (0045 §8). The
+mechanical hold list of 0056's 2026-11-01 addendum does not catch that
+case, so the PR body must state the hold in its first line. The operator's
+assistant must not merge it on green.
 
 ## Alternatives rejected
 
@@ -280,8 +343,8 @@ Three details the build settled, all inside the rulings above:
 - With the listener unset, the server is byte-identical to today on every
   existing port.
 - The PR is held for the operator until this decision is accepted: the
-  wipe route contradicts 0011's accepted sentence until then (accepted
-  0045 §8). The read routes alone would be compatible, but the issue's
+  wipe route contradicts the accepted sentences of 0011 and 0004 until
+  then (accepted 0045 §8; §9 says how the hold reaches the merger). The read routes alone would be compatible, but the issue's
   acceptance criterion requires the delete.
 - A deployment that enables the listener is a global-mailbox Swarmail for
   its MailSlurper clients, and the guide says so.
