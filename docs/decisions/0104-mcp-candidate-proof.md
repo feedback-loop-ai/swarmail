@@ -1,6 +1,7 @@
 # 0104 — Dated corrections for the integrated MCP candidate
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-28
 - **Scope:** epic #164 issue #152 candidate ab807436aa9bab8ebe21c49f6dea3481bb74eebe; documentation and proof attribution.
 - **Design:** [spec](../../specs/mcp-candidate-proof/spec.md), [plan](../../specs/mcp-candidate-proof/plan.md), [tasks](../../specs/mcp-candidate-proof/tasks.md).
@@ -89,3 +90,34 @@ recipe or isolated worktree supplies that proof. Separate CI-owned proofs,
 operator client receipts and failed/unavailable gates explicitly. No paid trial,
 release action, push, merge, issue closure or acceptance follows. 0001–0005,
 exact coverage, pinned proofs and hard holds remain in force.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02. The text above is unchanged
+and remains the record of what was proposed. This addendum states what has
+moved since it was written, checked against `main` at `c336c95`; it rules
+nothing beyond the acceptance.
+
+- **The catalogue is eighteen.** The thirteen entries recorded here are the
+  integrated candidate's. [0094](0094-focused-mail-waits.md) added two
+  tools, [0112](0112-recipient-inbox-routing.md) one and
+  [0110](0110-attachments-and-ics.md) two; `tests/mcp_revisions.rs` pins the
+  served catalogue as eighteen tools (`CATALOGUE`), the same names on all
+  three revisions (`revision_tool_annotations`).
+- **The merge hold is stale.** "#151's merge hold remains": #288 merged as
+  `42f04f2` on 2026-10-31, before the #151 baseline of 2026-11-01
+  (`f815d48`). The four actual-client receipts remain owed.
+- **Correctness and guarantees are no longer Astra.** The Evidence section's
+  "Astra correctness ... Astra guarantees" predates accepted
+  [0098](0098-review-panel-flash-and-deadline.md). On `main` the careful
+  panel (`codex-careful`, which `mixed-opus-terra` inherits) and the
+  `codex-fast` design and engine panels seat correctness on
+  `codex-review-astra-correctness` (the office keeps its old name) and
+  guarantees on `codex-review-guarantees`; both select `flash`, which
+  `.brokkr/adapters/dsh.json` maps to official DeepSeek `deepseek-flash`
+  through dsh, at high effort. Security stays on `codex-review-security`
+  (`flash`, high), tests on `codex-review-tests` (`glm-flash`, `efforts:
+  {}`) and independent review on `codex-review-independent` (`fable`, high).
+- **The work route.** The Terra 6.1 / Opus 5.5 route cited here from
+  [0103](0103-mixed-work-seats.md) is the `mixed-opus-terra` recipe that
+  [0090](0090-mixed-provider-routing.md) governs.

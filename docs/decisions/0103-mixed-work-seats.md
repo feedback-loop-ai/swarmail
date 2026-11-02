@@ -1,6 +1,6 @@
 # 0103 — Mixed work seats and protected review
 
-- **Status:** proposed — awaiting the operator
+- **Status:** rejected (operator, 2026-11-02 — "accept all as recommended", given in chat to the dispatcher): a duplicate of [0090](0090-mixed-provider-routing.md), which governs the mixed-opus-terra recipe; kept as history.
 - **Date:** 2026-10-28
 - **Scope:** operator-requested mixed-opus-terra route for issue #152.
 - **Related:** accepted [0057](0057-codex-delivery-recipes.md), [0058](0058-codex-review-routing.md); proposed [0081](0081-glm-flash-seats.md).

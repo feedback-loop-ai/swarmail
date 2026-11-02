@@ -1,6 +1,7 @@
 # 0115 — Trial separation and observed concurrency
 
-- **Status:** proposed — only the operator accepts.
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-24 (design on record, branch
   `epic192/issue199-current-0058` at 518c52d, where it was numbered 0062);
   carried onto main a3cff51 on 2026-10-31 for issue #221; revised
@@ -504,3 +505,35 @@ full driver egress may prevent activation at all.
 No runtime change, reproduction, complete verification, five-role review,
 model measurement or issue closure is claimed by this proposed record.
 The plan records the design-seat preservation checks and outstanding gates.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02. The text above is unchanged
+and remains the record of what was proposed. This addendum states what has
+moved since it was written, checked against `main` at `c336c95`; it rules
+nothing beyond the acceptance.
+
+- **What acceptance amends.** As the *Amends if accepted* line says, this
+  record now amends accepted [0055](0055-agent-eval-harness.md) §§6–9 and
+  accepted [0076](0076-sequential-eval-trials.md) §§1, 2, 5 and 6, solely in
+  the execution-boundary/support and result-observation contracts. Both
+  carry a dated marker of this date.
+- **Nested user namespaces: corrected to what was observed.** The 2026-11-01
+  revision says of the dispatcher's probe that "processes inside cannot
+  create further user namespaces", and *Evidence, corrected* says nested
+  user namespaces "were observed denied on this host's profile". The live
+  proof observed the opposite: a nested user namespace was granted inside
+  the boundary. The observer reports this by exit code and the proof records
+  it without asserting it (`observer_check`,
+  `evals/tests/trial_isolation.rs`). It is an observation on this host, not
+  a property of the argv, which does not pass `--disable-userns`. The
+  dispatcher reports that this run of the proof command passed 7/7 on
+  2026-11-02; its output stays on the host and is not tracked.
+- **Still open.** Acceptance does not re-enable concurrency: `main` still
+  refuses `--concurrency` other than 1 (`concurrency_unsupported`,
+  `evals/src/main.rs`), and trials stay sequential until concurrency is
+  re-enabled behind the live proof. Provider egress is still the operator's
+  open question above; `--isolated` refuses every external agent program
+  (`isolation_external_agent_unsupported`), so no real model runs isolated.
+  The bubblewrap floor is 0.11.1 and stock Ubuntu 24.04 packages 0.9.0, so
+  the CI boundary job stays the operator's follow-up.
