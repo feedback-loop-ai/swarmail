@@ -1,6 +1,7 @@
 # 0081 — GLM Flash tests-review seat
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-26; revised 2026-10-26 after the intake-hands refusal.
 - **Amends:** [0058](0058-codex-review-routing.md), only its tests-review model/effort assignment. [0057](0057-codex-delivery-recipes.md)'s intake assignments and every other route remain.
 - **Source:** operator's 2026-10-26 “GLM-5.3-Flash seats (revised)” direction, supplied in the issue-0 authority packet and verified against its SHA256SUMS. This record accepts no decision.
@@ -124,3 +125,29 @@ and labels superseded evidence. Accepted 0057/0058 bodies remain historical;
 any pointer is a dated addendum. This explicit operator direction authorizes
 only the narrow tests substitution while 0081 remains proposed; no unrelated
 acceptance, push, merge, tag, publication or issue closure is authorized.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02. The text above is unchanged
+and remains the record of what was proposed. This addendum states what has
+moved since it was written, checked against `main` at `c336c95`; it rules
+nothing beyond the acceptance.
+
+- **Correctness and guarantees are no longer Astra.** Ruling 2's "Astra
+  correctness ... Astra guarantees" predates accepted
+  [0098](0098-review-panel-flash-and-deadline.md), which moved those two
+  members to official DeepSeek Flash. On `main` the careful panel
+  (`codex-careful`, which `mixed-opus-terra` inherits) and the `codex-fast`
+  design and engine panels seat correctness on
+  `codex-review-astra-correctness` (the office keeps its old name) and
+  guarantees on `codex-review-guarantees`; both select `flash`, which
+  `.brokkr/adapters/dsh.json` maps to official DeepSeek `deepseek-flash`
+  through dsh, at high effort. Security stays on `codex-review-security`
+  (`flash`, high), tests on `codex-review-tests` (`glm-flash`, `efforts:
+  {}`) and independent review on `codex-review-independent` (`fable`, high).
+  Standard keeps `codex-review-correctness` (`fable`, high). The tests seat
+  this record rules on is as ruled.
+- **The dispatcher residual.** The 2026-10-29 and 2026-10-30 pin results
+  above record the full routing proof exiting 0 on the re-pinned engine. The
+  current pin, `.brokkr/recipes/self/tooling.json`, is brokkr `a9893b4` plus
+  four patches, binary `29dc3309…`, the pin the 2026-10-30 result names.

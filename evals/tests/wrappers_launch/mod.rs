@@ -601,9 +601,7 @@ fn wrapper_exec_descendants_and_private_state_remain_owned_through_every_ending(
                 .arg(&c.manifest)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            let mut trial = common::ChildGuard {
-                child: Some(command.spawn().unwrap()),
-            };
+            let mut trial = common::ChildGuard::new(command.spawn().unwrap());
             let mut stream = None;
             common::eventually("stand-in readiness connection", || {
                 match listener.accept() {

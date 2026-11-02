@@ -187,6 +187,11 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
         }
     };
 
+    // Implicit TLS needs the pair; refused here, before anything binds
+    // (decision 0116 §3). `smtp::serve` repeats the check for in-process
+    // callers.
+    smtp::require_tls_for_implicit(&cfg.smtp, tls.is_some())?;
+
     let smtp_listener = listen(&cfg.smtp_listen).await?;
     let http_listener = listen(&cfg.http_listen).await?;
     let smtp_addr = smtp_listener.local_addr()?;

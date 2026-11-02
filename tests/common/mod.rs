@@ -845,6 +845,12 @@ impl TlsSmtp {
             .unwrap();
     }
 
+    /// Write raw octets with no line-ending massage: a DATA payload that is
+    /// not UTF-8 (8BITMIME) or whose terminator is spelled by hand.
+    pub async fn send_bytes(&mut self, bytes: &[u8]) {
+        self.reader.get_mut().write_all(bytes).await.unwrap();
+    }
+
     /// Read a single reply line.
     pub async fn reply_raw(&mut self) -> String {
         read_line_named(&mut self.reader, "TlsSmtp::reply_raw: a reply line")
@@ -1095,6 +1101,90 @@ pub async fn assert_starttls_handshake_fails(
         .await
         .expect(
             "assert_starttls_handshake_fails: the handshake never ended within the helper deadline",
+        );
+    assert!(res.is_err(), "handshake unexpectedly succeeded");
+}
+
+/// Implicit TLS (RFC 8314 §3.3; decision 0116): a real rustls handshake
+/// the moment the TCP connection opens, before any SMTP byte, then the
+/// `220` greeting read over TLS. The client verifies the served cert
+/// against `root` — no `danger` shortcut — which is the stricter side of
+/// what Kratos' `skip_ssl_verify=true` relaxes.
+pub async fn implicit_tls(
+    addr: std::net::SocketAddr,
+    server_name: &str,
+    root: CertificateDer<'static>,
+) -> TlsSmtp {
+    let mut session = implicit_tls_raw(addr, server_name, root).await;
+    let greeting = session.reply_raw().await;
+    assert!(
+        greeting.starts_with("220"),
+        "bad greeting over implicit TLS: {greeting}"
+    );
+    session
+}
+
+/// The handshake half of [`implicit_tls`], no greeting read: for a session
+/// whose first line is not a `220` (a chaos-injected error).
+pub async fn implicit_tls_raw(
+    addr: std::net::SocketAddr,
+    server_name: &str,
+    root: CertificateDer<'static>,
+) -> TlsSmtp {
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let handshake =
+        tls_connector(root).connect(ServerName::try_from(server_name.to_string()).unwrap(), tcp);
+    let tls = tokio::time::timeout(HELPER_DEADLINE, handshake)
+        .await
+        .expect("implicit_tls: no TLS handshake reply within the helper deadline")
+        .expect("implicit TLS handshake");
+    TlsSmtp {
+        reader: BufReader::new(tls),
+    }
+}
+
+/// One implicit-TLS dial that may be refused: `None` when the handshake
+/// fails (the cap's plaintext `421` is not a ClientHello reply), the
+/// greeted session otherwise.
+pub async fn try_implicit_tls(
+    addr: std::net::SocketAddr,
+    server_name: &str,
+    root: CertificateDer<'static>,
+) -> Option<TlsSmtp> {
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let handshake =
+        tls_connector(root).connect(ServerName::try_from(server_name.to_string()).unwrap(), tcp);
+    let tls = tokio::time::timeout(HELPER_DEADLINE, handshake)
+        .await
+        .expect("try_implicit_tls: the handshake never ended within the helper deadline")
+        .ok()?;
+    let mut session = TlsSmtp {
+        reader: BufReader::new(tls),
+    };
+    let greeting = session.reply_raw().await;
+    assert!(
+        greeting.starts_with("220"),
+        "bad greeting over implicit TLS: {greeting}"
+    );
+    Some(session)
+}
+
+/// An implicit-TLS dial whose handshake must end in an error (the server
+/// answered the ClientHello with something that is not a TLS handshake, or
+/// closed): never a hang and never a success. The error comes back to the
+/// caller for the helper-deadline-bounded assertion.
+pub async fn implicit_tls_handshake_fails(
+    addr: std::net::SocketAddr,
+    server_name: &str,
+    root: CertificateDer<'static>,
+) {
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let handshake =
+        tls_connector(root).connect(ServerName::try_from(server_name.to_string()).unwrap(), tcp);
+    let res = tokio::time::timeout(HELPER_DEADLINE, handshake)
+        .await
+        .expect(
+            "implicit_tls_handshake_fails: the handshake never ended within the helper deadline",
         );
     assert!(res.is_err(), "handshake unexpectedly succeeded");
 }

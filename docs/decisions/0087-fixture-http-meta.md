@@ -1,6 +1,7 @@
 # 0087 — Discard fixture HTTP request metadata and name GET-body refusals
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-26
 - **Issue:** Epic #164, issue #151 part 3
 - **Specification:** [Fixture HTTP metadata](../../specs/fixture-http-meta/spec.md)

@@ -120,3 +120,10 @@ suite using verified candidate-local .forge/bin/brokkr and unchanged routing.
 CI owns macOS eval proof via #201 and the charter's network/platform checks;
 operator owns live settings, sealing and decisions. Only the operator accepts
 0076; the engine alone rules advancement. Commit unsigned; never push or merge.
+
+## Later-decision marker — 2026-11-02 (0115)
+
+- *(Amended by [0115](0115-trial-isolation.md) (accepted 2026-11-02):
+  §§1, 2, 5 and 6, solely the execution-boundary/support and
+  result-observation contracts; trials stay sequential until
+  concurrency is re-enabled behind the live proof.)*

@@ -21,7 +21,22 @@ impl Admission {
     pub(crate) fn acquire() -> Result<Self, &'static str> {
         // SAFETY: geteuid has no preconditions.
         let uid = unsafe { libc::geteuid() };
-        Self::at(&PathBuf::from(format!("/tmp/swarmail-evals-{uid}")), uid)
+        Self::at(&Self::root_for(uid), uid)
+    }
+
+    /// Keep the host admission for the rest of the process (0076 §3): used
+    /// when the controller could not prove bwrap was reaped. The lock is
+    /// released only by the process exit, so a later acquisition in this
+    /// process refuses. The limit is 0076's own: an advisory `flock` is
+    /// process-scoped, so that exit releases it while an unreaped bwrap may
+    /// still hold a live namespace.
+    pub(crate) fn retain(self) {
+        std::mem::forget(self);
+    }
+
+    /// The private per-uid directory the lock lives in, on the host `/tmp`.
+    pub(crate) fn root_for(uid: u32) -> PathBuf {
+        PathBuf::from(format!("/tmp/swarmail-evals-{uid}"))
     }
 
     fn at(root: &Path, uid: u32) -> Result<Self, &'static str> {
@@ -79,8 +94,19 @@ mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
 
+    /// Serializes the two tests that fork while an admission is held. On
+    /// macOS the Linux-only trial scope is not compiled, and a re-exec in
+    /// one test briefly holds the other's lock descriptor between fork and
+    /// exec, so the second acquisition refused (CI, #308).
+    static FORK_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn sequential_admission_rejects_unsafe_rendezvous() {
+        let _fork = FORK_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        // A fork elsewhere in the test process briefly holds every
+        // descriptor without close-on-exec yet; the scope keeps it out.
+        #[cfg(target_os = "linux")]
+        let _scope = crate::test_support::trial_scope();
         let owner = tempfile::tempdir().unwrap();
         let root = owner.path().join("reservation");
         let uid = unsafe { libc::geteuid() };
@@ -112,5 +138,58 @@ mod tests {
         let alias = owner.path().join("root-alias");
         symlink(&root, &alias).unwrap();
         assert!(Admission::at(&alias, uid).is_err());
+    }
+
+    /// The child half of the retain test: only acts when the parent test
+    /// re-executes this binary for it.
+    #[test]
+    fn retain_child() {
+        let Some(root) = std::env::var_os("ADMISSION_TEST_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let uid = unsafe { libc::geteuid() };
+        Admission::at(&root, uid).unwrap().retain();
+        assert!(matches!(
+            Admission::at(&root, uid),
+            Err("concurrent_trials_refused")
+        ));
+    }
+
+    #[test]
+    fn a_retained_admission_is_released_only_by_the_process_exit() {
+        let _fork = FORK_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(target_os = "linux")]
+        let _scope = crate::test_support::trial_scope();
+        let owner = tempfile::tempdir().unwrap();
+        let root = owner.path().join("reservation");
+        let uid = unsafe { libc::geteuid() };
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "admission::tests::retain_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("ADMISSION_TEST_ROOT", &root)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the retain child never exited");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(status.success(), "the child failed: {status:?}");
+        drop(Admission::at(&root, uid).unwrap());
     }
 }

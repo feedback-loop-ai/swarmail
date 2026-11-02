@@ -1,6 +1,7 @@
 # 0089 — Source-citing bulk-sender checklist through the report contract
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-26
 - **Scope:** Epic #251 issue #257, additive rules through proposed 0085.
 - **Authority:** supplied #251 operator ruling and issue #257 task brief.

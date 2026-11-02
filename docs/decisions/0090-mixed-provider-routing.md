@@ -1,6 +1,7 @@
 # 0090 — Separate operator-directed mixed-provider delivery route
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-28
 - **Source:** current operator directive for run `verify-and-independently-review--53f33089`, examining candidate `c2f76e26989bbd5eb7aabcf28f57e4ef8073d136`.
 - **Scope:** additional future recipe under [0057](0057-codex-delivery-recipes.md) and [0058](0058-codex-review-routing.md); inherits the revised tests direction recorded in proposed [0081](0081-glm-flash-seats.md).
@@ -95,3 +96,35 @@ members select official DeepSeek Flash through dsh (`deepseek-flash`,
 seat allows 14400 s. `mixed-opus-terra` inherits both without an override;
 ruling 2's Astra wording above describes the route as of 2026-10-28. This
 pointer accepts no decision.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02. The text above is unchanged
+and remains the record of what was proposed. This addendum states what has
+moved since it was written, checked against `main` at `c336c95`; it rules
+nothing beyond the acceptance.
+
+- **The recipe moved.** Ruling 1's `bundles/mixed-opus-terra` is
+  `.brokkr/recipes/mixed-opus-terra/` since accepted
+  [0100](0100-one-brokkr-folder.md). The bundle is as ruled: it extends
+  `codex-careful` and overrides only intake (`mixed-terra-intake`, `terra61`
+  → `gpt-6.1-terra`, high) and implement (`mixed-opus-implementer`, `opus` →
+  `claude-opus-5-5`, high).
+- **The inherited panel.** Ruling 2's Astra correctness and guarantees
+  predate accepted [0098](0098-review-panel-flash-and-deadline.md), as the
+  2026-10-29 pointer above says. On `main` the careful panel
+  (`codex-careful`, which `mixed-opus-terra` inherits) and the `codex-fast`
+  design and engine panels seat correctness on
+  `codex-review-astra-correctness` (the office keeps its old name) and
+  guarantees on `codex-review-guarantees`; both select `flash`, which
+  `.brokkr/adapters/dsh.json` maps to official DeepSeek `deepseek-flash`
+  through dsh, at high effort. Security stays on `codex-review-security`
+  (`flash`, high), tests on `codex-review-tests` (`glm-flash`, `efforts:
+  {}`) and independent review on `codex-review-independent` (`fable`, high).
+- **§6's residual.** The dispatcher `1-cross-attempt` finding §6 keeps open
+  has the evidence §6 asks for: [0081](0081-glm-flash-seats.md)'s 2026-10-29
+  and 2026-10-30 pin results record the full routing proof exiting 0 on the
+  re-pinned engine, the pin `.brokkr/recipes/self/tooling.json` holds today.
+- **One record for the route.** [0103](0103-mixed-work-seats.md) records the
+  same route from another candidate branch; this record is the one that
+  governs the `mixed-opus-terra` recipe.

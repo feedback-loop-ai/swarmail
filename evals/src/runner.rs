@@ -73,9 +73,6 @@ const CLEANUP_OBSERVE_ERROR_ENV: &str = "EVAL_TEST_CLEANUP_OBSERVE_ERROR";
 const CLEANUP_FORCE_EXPIRY_ENV: &str = "EVAL_TEST_CLEANUP_FORCE_EXPIRY";
 #[cfg(test)]
 const RUNNER_SIGNAL_LOG_ENV: &str = "EVAL_TEST_RUNNER_SIGNAL_LOG";
-#[cfg(all(test, target_os = "linux"))]
-static CLEANUP_OBSERVATION_TARGET: std::sync::atomic::AtomicI32 =
-    std::sync::atomic::AtomicI32::new(0);
 #[cfg(test)]
 static CLEANUP_TEST_EVENT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -778,6 +775,12 @@ pub fn selected_swarmail_bin() -> Result<Option<PathBuf>, String> {
         .transpose()
 }
 
+/// Resolve the external agent's program at the original caller boundary,
+/// without launching it (the isolated entry binds the file it names).
+pub fn selected_agent_program(program: &OsStr) -> Result<PathBuf, String> {
+    resolve_program(program, &CallerEnv::capture()?)
+}
+
 fn build_swarmail(caller: &CallerEnv) -> Result<PathBuf, String> {
     let (mut command, _owner) = prepare_build(caller)?;
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -926,21 +929,6 @@ fn proc_identity(pid: i32) -> Option<ProcIdentity> {
 }
 
 fn group_members(group: &OwnedGroup) -> Result<Vec<ProcIdentity>, String> {
-    #[cfg(all(test, target_os = "linux"))]
-    if CLEANUP_OBSERVATION_TARGET
-        .compare_exchange(
-            group.pid,
-            0,
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
-        )
-        .is_ok()
-    {
-        return Err(format!(
-            "cannot inspect owned process group {}: injected observation error",
-            group.pgid
-        ));
-    }
     #[cfg(target_os = "linux")]
     {
         let entries =
@@ -1204,7 +1192,10 @@ impl OwnedGroup {
         if std::env::var_os(CLEANUP_OBSERVE_ERROR_ENV).is_some() {
             let members = group_members(&self)?;
             if !members.is_empty() {
-                CLEANUP_OBSERVATION_TARGET.store(self.pid, std::sync::atomic::Ordering::SeqCst);
+                return Err(format!(
+                    "cannot inspect owned process group {}: injected observation error",
+                    self.pgid
+                ));
             }
         }
         #[cfg(all(test, target_os = "linux"))]
@@ -4611,7 +4602,12 @@ wait "$child"
             );
             assert!(
                 probe.owned.iter().any(alive),
-                "the test observed a real surviving owned process"
+                "the test observed a real surviving owned process: {fault}; owned={:?}",
+                probe
+                    .owned
+                    .iter()
+                    .map(|owned| (owned.pid, alive(owned)))
+                    .collect::<Vec<_>>()
             );
             let bytes = std::fs::read(dir.path().join("runtime-env")).unwrap();
             let home = bytes

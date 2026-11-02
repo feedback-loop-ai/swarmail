@@ -23,8 +23,8 @@ cargo install --locked --path .
 The image listens on every interface inside the container and swarmail has no
 authentication, so the `docker run` line above publishes the ports on the host's
 loopback only. Do not drop the `127.0.0.1:` to publish them on a network you do
-not trust; the README's "off-loopback bind trusts the network" paragraph says
-what that exposes.
+not trust; the [network posture guide](../guide/network-posture.md)'s
+"off-loopback bind trusts the network" paragraph says what that exposes.
 
 The server the snippets below talk to is started by this command, which the
 suite runs with its argv unchanged:

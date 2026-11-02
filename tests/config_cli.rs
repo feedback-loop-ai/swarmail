@@ -30,6 +30,7 @@ fn config_maps_the_cli_args() {
         tls_cert: None,
         tls_key: None,
         tls_handshake_timeout_ms: 2500,
+        smtp_implicit_tls: false,
         route_domain: Some("swarmail.test".into()),
     };
     let cfg = Config::from(&args);
@@ -129,6 +130,24 @@ fn cli_parses_env_defaults_and_subcommands() {
     };
     assert_eq!(args.domain, "localhost");
     assert_eq!(args.out, std::path::Path::new("/tmp/certs"));
+}
+
+/// Implicit TLS is opt-in (decision 0116): the bare `serve` and an explicit
+/// flag map to `SmtpConfig::implicit_tls` off and on. The env spelling
+/// (`SWARMAIL_SMTP_IMPLICIT_TLS`) is proved on the real binary in
+/// tests/binary.rs, where a child's environment cannot race this process's.
+#[test]
+fn implicit_tls_is_off_by_default_and_the_flag_turns_it_on() {
+    let bare = serve_args_or_panic(Cli::try_parse_from(["swarmail", "serve"]).unwrap());
+    assert!(!bare.smtp_implicit_tls);
+    assert!(!Config::from(&bare).smtp.implicit_tls);
+    assert!(!swarmail::smtp::SmtpConfig::default().implicit_tls);
+
+    let flagged = serve_args_or_panic(
+        Cli::try_parse_from(["swarmail", "serve", "--smtp-implicit-tls"]).unwrap(),
+    );
+    assert!(flagged.smtp_implicit_tls);
+    assert!(Config::from(&flagged).smtp.implicit_tls);
 }
 
 /// Independent idle defaults (decision 0036 §4), pinned by equality, never

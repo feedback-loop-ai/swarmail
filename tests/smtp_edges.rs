@@ -2266,7 +2266,7 @@ async fn hollow_paths_refuse_before_armed_chaos() {
 }
 
 /// The two optional RFC 5321 forms the sink does not parse, pinned as the
-/// README names them (issue #127, decision 0046 §3): a quoted local part
+/// SMTP guide names them (issue #127, decision 0046 §3): a quoted local part
 /// that holds `>` ends at its first `>` and is refused, while an ordinary
 /// quoted local part is kept as opaque path text; a source route is not
 /// stripped — the whole route is stored as the address.

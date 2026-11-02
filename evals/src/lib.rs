@@ -7,6 +7,7 @@
 
 mod admission;
 pub mod fixture;
+pub mod isolation;
 pub mod mail;
 pub mod mcp;
 pub mod oracle;

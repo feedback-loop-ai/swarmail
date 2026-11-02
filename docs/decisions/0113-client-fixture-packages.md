@@ -1,6 +1,7 @@
 # 0113 — Client fixture packages: versioned with the server, CI-only test pins
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-31
 - **Scope:** Epic #164, issue #162 (Playwright and pytest fixtures over REST).
 - **Specification:** [Client fixture packages](../../specs/client-fixture-packages/spec.md).
