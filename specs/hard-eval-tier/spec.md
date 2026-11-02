@@ -4,7 +4,9 @@
 - Status: designed (chief synthesis 2026-11-02); revised 2026-11-02 after the
   first review returned the run to design (accepted 0102, 2026-10-31 addendum).
   The revision is § Review return below; the earlier text stays as history
-  where it is superseded and is marked so.
+  where it is superseded and is marked so. Revised again 2026-11-02 after the
+  second review returned the run to design (§ Review return 2): the backlog's
+  request line no longer reads any clock.
 - Scope: Epic #164, the operator's 2026-11-01 ruling to build a harder tier
   before the next paid run. Base: main `f815d48`.
 - Route: `claude-careful` (accepted 0098/0099), zero Codex; review residuals
@@ -37,7 +39,7 @@ Three hard tasks ship, each grounded in one real agent mistake:
 
 | id | failure_class | idle_class | The mistake it provokes | Why a careful agent still passes |
 |---|---|---|---|---|
-| `otp-backlog` | `stale_code` | `gave_up` | Twelve near-identical code mails for one sign-in, delivered in a seeded order with the current generation neither first nor last. Taking the newest arrival, `emails[0]`, or the last in the list submits a superseded code. | Every mail prints `Requested at YYYY-MM-DD HH:MM:SS UTC`, a time at or before the mail's own send time; the goal says the most recently requested code is the valid one. Only content identifies the generation; arrival order and list position are the trap. |
+| `otp-backlog` | `stale_code` | `gave_up` | Twelve near-identical code mails for one sign-in, delivered in a seeded order with the current generation neither first nor last. Taking the newest arrival, `emails[0]`, or the last in the list submits a superseded code. | Every mail prints `Requested N minutes before this email was sent.` (revised on the second return, F1′), and the smallest N is the most recent request; the goal says the most recently requested code is the valid one. Only content identifies the generation; arrival order and list position are the trap. |
 | `recipient-crowd` | `wrong_message` | `gave_up` | Five confirmation mails in one inbox with identical subjects, every body greeting the agent's own address. Four are for look-alike recipients; one look-alike address contains the agent's address as a substring, so the MCP `to` substring filter still returns it. Trusting greeting, subject, filter or position presents a foreign token. | MCP returns the parsed `to` array; the goal names the exact address. Exact comparison of the recipient address finds the one right mail. |
 | `digest-lookalike` | `wrong_link` | `gave_up` | An HTML-only digest whose every link is a tracking wrapper with a `u=` destination. Two anchors carry the exact requested title; one destination host is the publisher, the other is the publisher's host with a tracker suffix appended, so a substring check on the host also passes the decoy. Choosing by anchor text, by first match, or by "host contains" opens the decoy. | The destination is readable in the href without following anything, the goal names the publisher host, and the anchors are readable in the `html` the wait view returns (amendment 1 below). Exact host comparison finds the one right link. |
 
@@ -92,7 +94,10 @@ five points; each is ruled here.
    adopted over robustness's `[n/12]` counter: it reads like a real resend
    mail and still gives a total order. The renderer and the existing
    `otp`/`stale-otp` mails are untouched. (The derivation's direction was
-   corrected on review return: see § Review return, F1.)
+   corrected on review return: see § Review return, F1. The second return
+   replaced the absolute stamp with a line relative to the mail's own send,
+   `Requested N minutes before this email was sent.`: see § Review return 2,
+   F1′.)
 4. **Inert tracking wrapper (simplicity) over a `/t` redirect route
    (robustness).** `/a/{token}?u=<destination>` already resolves to the
    existing link handler, which ignores the query, so the existing
@@ -175,23 +180,31 @@ different ones.
 The fixture issues twelve OTP generations for the agent at prepare, through
 the existing generation counter, so generation 12 is current and generations
 1–11 are superseded. Every mail has the same subject and the same template:
-the code, the line `Requested at YYYY-MM-DD HH:MM:SS UTC` and the sentence
-`It expires in 10 minutes.`; no mail says it replaces another. The request
-time of generation `g` is derived backwards from the one fixture time the
-trial captured at start:
+the code, the line `Requested N minutes before this email was sent.` and the
+sentence `It expires in 10 minutes.`; no mail says it replaces another.
+(Revised 2026-11-02 on the second review's return, F1′; the absolute
+`Requested at YYYY-MM-DD HH:MM:SS UTC` form is superseded.) The request line
+of generation `g` is relative to the mail itself:
 
-    requested(g) = fixture_time − (12 − g) × 4 min        for g in 1..=12
+    N(g) = (12 − g) × 4        for g in 1..=12
 
-so the current generation (12) was requested at the send time, which is also
-every mail's `Date` header, and generation 1 was requested 44 minutes before
-it. Every request time is therefore at or before the mail's own `Date`,
-within the goal's "past hour", and strictly increasing with the generation;
-the date in the line keeps string order equal to generation order across
-midnight. The current code is minted at prepare, a moment after the fixture
-time, so its "expires in 10 minutes" is what the application enforces
-(`OTP_TTL`, 600 s from mint). Older generations are, by their own line,
-past their ten minutes; the application reports them as superseded, which it
-checks first, and both are rejections.
+so the current generation (12) reads `Requested 0 minutes before this email
+was sent.` and generation 1 reads 44. No part of any backlog body reads the
+fixture time, the run-level `--fixture-time` or any clock: each body is a
+function of its code and its generation only. It is therefore true in every
+product: a one-trial `run`, every cell of `matrix` and `baseline` however
+long after the run's start that cell begins, and any pinned `--fixture-time`,
+past or present. All twelve codes are minted at the trial's own prepare and
+sent at once, so the current mail's two claims (requested when sent, expires
+in ten minutes) are what the application enforces (`OTP_TTL`, 600 s from
+mint). Every request is within the goal's "past hour", at most 44 minutes
+before its own send, and N strictly decreases as the generation rises, so
+the smallest N is the most recent request. The `Date` header is not part of
+the trap: it stays the fixture time as for every other task, the wait view
+exposes no `Date`, and no backlog text refers to it. Generations 1–9 are,
+by their own line, past their ten minutes, and 10–11 are not. The
+application reports all eleven older generations as superseded, which it
+checks before expiry, and both are rejections.
 The twelve are sent in a seeded permutation in which the current generation
 is neither the first nor the last delivery. Submitting any superseded code
 records the existing `superseded_code` refusal; the new trap row makes it
@@ -275,10 +288,10 @@ Each criterion names the red test that fails without the change.
 - **AC4 — `baseline --tier` keeps the approved product.** `baseline --dry-run` without `--tier` plans 16 tasks, 32 control rows and 480 paid rows exactly as before; `baseline --tier hard --dry-run` plans the three hard tasks, 6 controls and 90 paid rows with the same deadline, concurrency, steps and files. Red: the plan counts.
 - **AC5 — Oracle passes and null fails with its idle class on every task.** Through the real CLI, oracle passes all 19 catalogue tasks and null fails all 19 with each task's declared idle class and no completed goal; for the three hard ids the same holds on four fixed public seeds, and the oracle's argv and environment carry no seed and no admin secret. Red: any failing oracle, any null class other than `gave_up` for a hard task, or a seed on which either differs.
 - **AC6 — The named trap disqualifies even after recovery.** For each hard task a scripted agent commits exactly the named trap and then truly completes the goal: the fixture records the trap event and the accepted goal event, the goal fact is true in the frozen snapshot, every delivery is `delivered`, the child exits zero, yet the live row is `fail` with the task's class and `check` on the retained state agrees. In the scoring tables a trap-only snapshot scores `fail`/class, a goal-only snapshot scores `pass`, and both event orders fail. Red: a pass after a trap, a wrong class, or the idle class.
-- **AC7 — Layout invariants on every seed.** In process, for 64 distinct public seeds: `otp-backlog` plans twelve OTP deliveries whose current generation is neither first nor last, with twelve distinct codes and one `Requested at` line per mail in strictly increasing generation time, where (revised 2026-11-02, F1) every line equals `fixture_time − (12 − g) × 4 min` for its generation `g`, formatted `YYYY-MM-DD HH:MM:SS`, so every request time is at or before the mail's `Date` (the fixture time) and no earlier than the fixture time minus 60 minutes, generation 12's equals the fixture time exactly, and the twelve lines' string order equals generation order for a pinned noon fixture time and for a pinned fixture time of 00:30 UTC, where the backlog spans midnight; `recipient-crowd` plans five confirmation deliveries with five distinct recipients, exactly one to the agent, that one neither first nor last, every body greeting the agent's address, and one decoy address containing the agent's address; `digest-lookalike` plans one HTML-only mail with twelve anchors, exactly two titled `Async drop finally lands on stable`, exactly one `DigestRight` token whose destination host is `news.fixture.eval`, and the decoy's host `news.fixture.eval.click-tracker.net`. The same seed reproduces the same layout; two seeds differ in at least one layout; secrets differ across two constructions of the same seed. Red: any seed violating an invariant.
+- **AC7 — Layout invariants on every seed.** In process, for 64 distinct public seeds: `otp-backlog` plans twelve OTP deliveries whose current generation is neither first nor last, with twelve distinct codes, where (revised 2026-11-02 on the second return, F1′, superseding the first return's absolute-stamp clause) every mail's text body (the part after the header block, CRLF read as LF) equals exactly `Your verification code is {code}.\n\nRequested {N} minutes before this email was sent.\nIt expires in 10 minutes.\n` for its own code and `N = (12 − g) × 4`, so each mail has exactly one request line, N ≤ 60, N strictly decreases as the generation rises, and generation 12's N is 0; no backlog body contains `Requested at`, `UTC` or the fixture date; and all of this holds for the same seed planned under each of three pinned fixture times, `2026-10-24T12:00:00Z`, `2026-10-24T00:30:00Z` and `2020-01-01T00:00:00Z` (years before the trial, as a late matrix cell's master time can be), so the body cannot depend on the fixture time; `recipient-crowd` plans five confirmation deliveries with five distinct recipients, exactly one to the agent, that one neither first nor last, every body greeting the agent's address, and one decoy address containing the agent's address; `digest-lookalike` plans one HTML-only mail with twelve anchors, exactly two titled `Async drop finally lands on stable`, exactly one `DigestRight` token whose destination host is `news.fixture.eval`, and the decoy's host `news.fixture.eval.click-tracker.net`. The same seed reproduces the same layout; two seeds differ in at least one layout; secrets differ across two constructions of the same seed. Red: any seed violating an invariant.
 - **AC8 — The backlog's resend is closed and harmless.** In `otp-backlog`, `POST /otp/resend` answers 429, records an unaccepted event with no category, sends no mail, and the twelve deliveries are the only OTP deliveries in the snapshot; a trial that hits the 429 and then verifies the current code passes; one that verifies a superseded code fails `stale_code`. Every other scenario's resend behaves as before. Red: a thirteenth OTP delivery, a categorized resend event, or a changed `stale-otp`/`otp` resend.
 - **AC9 — The scorer's inputs do not grow.** `score`'s signature stays `(&Task, &Snapshot)`, the snapshot schema stays 2 with its field set unchanged, and no hard verdict consults anything else. Red: the boundary test on the signature and the snapshot field inventory.
-- **AC10 — Documentation is bidirectional.** Every catalogue id appears in `evals/README.md` and `evals/run-plan.md`; every hard id named in either appears in the catalogue; both name `--tier hard`, `6068b687`, the operator-owned paid hard run and 16 default-tier plus 3 hard tasks; the README trap table lists the three new action/class rows; the decision index has exactly one `0115` row marked proposed; the agent eval harness spec's tier list names `hard` with a dated amendment. Revised 2026-11-02 (F2–F4): the README's backlog row and the run-plan state that request times precede the send and that the current code's request time is its send time; the agent eval harness spec's AC3 carries a dated amendment naming 19 catalogue rows in four tiers with the default product still the 16; `specs/baseline-wrappers/spec.md` carries a dated note that the approved product is 16 tasks of a 19-task catalogue; `evals/hard-tier-intake.md` opens with a dated status banner naming the three shipped ids and pointing at this spec and 0115; the run-plan states that default-tier rows compare with the 2026-11-01 baseline by task id and per-task `definition_sha256`, not by the catalogue hash. Red: the docs test.
+- **AC10 — Documentation is bidirectional.** Every catalogue id appears in `evals/README.md` and `evals/run-plan.md`; every hard id named in either appears in the catalogue; both name `--tier hard`, `6068b687`, the operator-owned paid hard run and 16 default-tier plus 3 hard tasks; the README trap table lists the three new action/class rows; the decision index has exactly one `0115` row marked proposed; the agent eval harness spec's tier list names `hard` with a dated amendment. Revised 2026-11-02 (F2–F4), and again on the second return (F1′ and its siblings): the README's backlog row and the run-plan state that no request line depends on the fixture time and that the current code was requested when its mail was sent; both state that the window in which the current code can expire before the deadline is as long as the prepare-to-start gap, at the deadline's end, and is `stale_code` by the scorer's fallback; neither says "request times precede the send", "Requested at" or "before the agent begins"; the README says the wait view exposes no `Date` header and no longer says the store keeps none; proposed 0115 names accepted 0076 §5's seven-trap count as historical; the agent eval harness spec's AC3 amendment also states that the AC4 and AC5 controls run all 19; the agent eval harness spec's AC3 carries a dated amendment naming 19 catalogue rows in four tiers with the default product still the 16; `specs/baseline-wrappers/spec.md` carries a dated note that the approved product is 16 tasks of a 19-task catalogue; `evals/hard-tier-intake.md` opens with a dated status banner naming the three shipped ids and pointing at this spec and 0115; the run-plan states that default-tier rows compare with the 2026-11-01 baseline by task id and per-task `definition_sha256`, not by the catalogue hash. Red: the docs test.
 - **AC11 — No reach beyond `evals/`.** No root production file, `Cargo.lock`, `evals/Cargo.lock`, `deny.toml`, `.github/`, `scripts/` or `.brokkr/` file changes; outside `evals/` only `docs/decisions/README.md`, `docs/decisions/0115-hard-eval-tier.md` (while proposed), `specs/agent-eval-harness/spec.md`, `specs/baseline-wrappers/spec.md` (revised 2026-11-02, F3: one dated note) and this design's own files change; no accepted decision changes text or status. Red: the diff.
 - **AC12 — Every house gate is green.** The whole inventory in [house-rules § Gates](../../docs/house-rules.md#gates--part-of-every-change), locked, including the evals fmt, clippy and tests against the candidate's own `swarmail`, the coverage gate and its selftest, publish-guard and seal proofs, bundle compile and `cargo deny`. Red: any gate.
 
@@ -318,7 +331,8 @@ tree, and no acceptance criterion is weakened.
    string. Only the format widened. *The "plus" direction this amendment kept
    was itself the defect the first review found; the date form stands, the
    derivation is now R3's `fixture_time − (12 − g) × 4 min` (§ Review return,
-   F1).*
+   F1).* *Superseded 2026-11-02 by § Review return 2: the line is now relative
+   (`Requested N minutes before this email was sent.`) and carries no date.*
 
 ## Review return (2026-11-02, after the first review; decision 0102)
 
@@ -332,6 +346,12 @@ the goal texts, catalogue bytes, hashes, tiers, CLI, products and scoring are
 unchanged.
 
 ### F1 (medium, spec defect; independent, security and tests, with a guarantees note) — the request times were impossible
+
+*Superseded in part 2026-11-02 by § Review return 2, F1′. The subtraction
+below fixed a one-trial `run` but not `matrix` or `baseline`, and the
+absolute stamp it kept is replaced by a relative line. The rejections below
+still stand: `issued = requested(g)`, the 300 s deadline cap, and any change
+to the goal, the `Date` or the fixture time.*
 
 R3 fixed `Requested at` as fixture time **plus** `generation × 4` minutes.
 Every mail's `Date` is the fixture time and the default fixture time is the
@@ -446,9 +466,155 @@ digest fingerprint's determinism is by construction of `select`; the
 resolver's re-check of the `--tier`/`--tasks` conflict is unit-tested
 redundancy. None warrants a change.
 
-### What the implementer reads
+### What the implementer reads (first return)
 
 The revised R3, R5, AC7, AC10 and AC11 above; plan.md § Review-return
 changes for the file-level mapping; tasks.md T15–T20 for the ordered work
 and its proving tests. T1–T13 stay done; the catalogue, goals and hashes do
 not move, so the regenerated `catalogue-v2.json` and `6068b687…` stand.
+
+## Review return 2 (2026-11-02, after the second review; decision 0102)
+
+The second review (head `76e2e60`, verify-passed tree `cc2885a`) found the
+first return's T15–T20 implemented as specified, security clean and every
+frozen guarantee untouched. It returned the run with one medium spec defect,
+raised by the independent member and confirmed by the tests member, plus one
+low finding and several infos. This section answers each one. plan.md
+§ Review-return-2 changes maps each finding to its files, and tasks.md
+T21–T27 give the implementer a task and a proving test for every finding
+that needs action. No acceptance criterion is weakened. AC7 is restated
+around the new line and gains an assertion. AC10 replaces its request-time
+phrases and adds the sibling corrections. The goal texts, catalogue bytes,
+both hashes, tiers, CLI, products, deadlines and scoring do not move.
+
+### F1′ (medium, spec defect; independent and tests) — matrix and baseline cells stamped request times from the run's start
+
+`matrix` and `baseline` each resolve one master `FixtureInputs` per run
+(`evals/src/main.rs:365`, `2086`). `assigned_cell` (`main.rs:716-746`) clones
+it into every cell and replaces only the seed, and the runner forwards that
+fixture time unchanged. The first return's `Requested at` line was
+`fixture_time − (12 − g) × 4 min`. Every later cell therefore stamped its
+request times from the run's start, but minted its codes and started their
+ten-minute `OTP_TTL` at its own prepare. Cells run task-major, then
+agent-major within a task. In `baseline --tier hard`, the operator's paid
+product, the agents declared last would see a current code that its own
+text says expired tens of minutes or hours earlier. Their mail would also
+contradict the goal's "past hour" premise. That pushes careful agents
+toward `gave_up` or `tool_misuse`. It also biases results by declaration
+position, which confounds the ranking the tier exists to produce. Every
+proof pinned `--fixture-time`, which the product never does, so no proof
+could go red. A single `run` with a pinned past `--fixture-time` has the
+same mismatch.
+
+**Ruling: take the clock out of the line instead of giving the line a
+better clock.** Simplicity is adopted. Robustness's anchor is rejected.
+
+- *Adopted (simplicity): `Requested N minutes before this email was sent.`
+  with `N = (12 − g) × 4`.* The defect has one root: a trap signal written
+  in absolute wall-clock time with no per-trial clock behind it. A line
+  relative to the mail's own send has no clock input, so no master time,
+  cell position or pinned past time can contradict it. The current mail
+  says it was requested when it was sent, at that trial's prepare, and that
+  it expires ten minutes later. That is exactly what `OTP_TTL` enforces
+  from the same prepare. The trap is unchanged: arrival order and list
+  position still mislead, and content is still the only generation signal.
+  A careful agent takes the smallest N. Reading the scale backwards (the
+  largest N) is a real content-reading mistake and still lands in
+  `stale_code`. The goal text ("Each email states when its code was
+  requested") stays true, so the catalogue bytes, `definition_sha256`,
+  `6068b687…` and the full hash do not move. A bare sequence number
+  ("request 7 of 12") is not a "when". It would move the goal, and with it
+  every hash and docs pin, so it is rejected.
+- *Rejected (robustness): one wall-clock anchor per trial, captured at
+  prepare and used for the backlog's `Date`, every token's `issued` and the
+  `Requested at` base, plus a two-cell real-process matrix proof with a
+  pinned past `--fixture-time`.*
+  - The fixture's clock seam is `Arc<dyn Fn() -> Instant>`
+    (`evals/src/fixture.rs:51`): a monotonic instant with no calendar value.
+    The anchor would need a second, wall-clock seam threaded through
+    `Private::new` and every test that builds a fixture, and every line of
+    that seam falls under the exact gate.
+  - `otp-backlog` would become the one scenario whose `Date` departs from
+    the recorded `--fixture-time`, so replaying that provenance input would
+    no longer reproduce the mail's headers.
+  - The product proof's pass condition would be "inside the trial's own
+    start–end window", a timing claim that 0020 §5 makes awkward.
+
+  The relative line fixes the same paths, and every pinned run, with one
+  `format!`. **Cost of the ruling:** the backlog loses absolute-timestamp
+  realism and the date/midnight reading the first return paid for. An agent
+  that wants absolute times must combine N with the wait view's
+  `received_ms`. That combination is coherent, because all twelve mails are
+  sent at prepare. Robustness names this form as its own honest fallback.
+- *Rejected (tests member's correction; independent option 2): rebase each
+  cell's `fixture_time` at dispatch.* The matrix plan serializes each
+  cell's fixture before the cell starts (0076). A dispatch-time value
+  either rewrites a planned cell after the plan is fixed, which replay and
+  the planned-versus-recorded checks refuse, or adds a field. Both change
+  an accepted 0055 provenance input for all 19 tasks, the approved sixteen
+  included, to fix one body line. That is an amendment to accepted rulings
+  and waits for the operator (0045 §8). It would also leave every pinned
+  past `run` showing stale stamps. **Cost:** later matrix cells still carry
+  the master time in every task's `Date` header. That is pre-existing for
+  all 19, the wait view does not expose it, and after this ruling no trap
+  text refers to it.
+- *Adopted from robustness: a proof that varies the input the product
+  generates.* Robustness is right that a test which pins the product's free
+  input proves nothing about it. AC7 now plans the same seed under three
+  pinned fixture times, including `2020-01-01T00:00:00Z` (standing in for a
+  late cell's stale master time). It asserts that each body equals the
+  clock-free template built from its own code and generation. That is the
+  executable form of "no clock coupling", checked where the body is
+  decided. It goes red on `76e2e60`, which prints `Requested at`, and on any
+  later edit that reads `inputs.time()` again. It makes no wall-clock
+  validity assertion (0020 §5).
+
+### Tests LOW 1 — no test executes the `Date` tie
+
+Answered by deletion, not by a new assertion. Under F1′ the body refers to
+no `Date` and no time, so R3 and AC7 drop the "at or before the mail's
+`Date`" claim the finding asked to prove. Robustness also showed that
+`Date == requested(12)` would have been green on the defect, because both
+sides derived from the same stale input.
+
+### Guarantees LOW 1 — accepted 0076 §5 still counts seven traps
+
+Accepted text is not edited. Proposed 0115, the record of the trap-list
+amendment, now names 0076 §5's "seven traps" in its "Amends upon
+acceptance" line, as a count that becomes historical on acceptance; the
+list itself stays 0071 §1's. This design commit drafts that sentence in
+0115, whose status stays `proposed`, and AC10's docs test pins it (T24).
+
+### Sibling infos — folded into text being rewritten anyway
+
+- *Correctness info 1 and guarantees info 3 (README expiry sentence).* The
+  current code can expire before the deadline only in a window as long as
+  the prepare-to-start gap, at the deadline's end, not "before the agent
+  begins". The README and run-plan say so, and the docs test pins it (T23).
+- *Guarantees info 2.* The README says the wait view exposes no `Date`
+  header. The store does keep the raw message, Date included (T23).
+- *Guarantees info 4.* The agent eval harness spec's dated AC3 amendment
+  also says the AC4/AC5 controls run all 19 (T25).
+- *Guarantees info 5.* plan.md's file map now names `evals/src/mcp.rs`
+  (`wait_to`, `wait_emails_to`). This revision makes that correction.
+- *Guarantees info 6 (the "generations 1–7" comment).* The 00:30Z midnight
+  case the comment described goes with the date, and the comment goes with
+  it (T21).
+- *Correctness info 2 (`crowd_mails` doc comment).* The comment now says
+  that a server answering with the agent's mail alone makes the count-2
+  wait time out (T26).
+- *Tests info 2 (a client-side drop of `to` is red on two seeds in three).*
+  **Not taken.** Robustness asked for a pinned crowd seed and an asserted
+  position. The member who raised the finding said no change is required.
+  The named server-side regression is red on every seed, and a pinned-seed
+  trial would be a new real-process test for a helper regression. **Cost:**
+  a client-side drop of `to` is caught on about two runs in three, not on
+  every run.
+
+### What the implementer reads (second return)
+
+R3's backlog paragraph, AC7's backlog clause and AC10's revised sentence
+above; plan.md § Review-return-2 changes for files; tasks.md T21–T27 for
+the ordered work. T1–T20 stay done. The 0115 text (T24's text half) is
+already in this design commit. The catalogue, goal texts and hashes do not
+move, so `catalogue-v2.json` and `6068b687…` stand.

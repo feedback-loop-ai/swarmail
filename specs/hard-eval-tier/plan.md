@@ -1,7 +1,8 @@
 # Hard eval tier — implementation plan
 
 Chief synthesis, 2026-11-02, for [spec.md](spec.md); revised 2026-11-02 on
-review return (0102) — see § Review-return changes. Base main `f815d48`.
+review return (0102) — see § Review-return changes — and again on the
+second return (§ Review-return-2 changes). Base main `f815d48`.
 Proposed [0115](../../docs/decisions/0115-hard-eval-tier.md) is drafted
 beside this plan; nothing here needs its acceptance to land (0045 §8) except
 the three `trap_class` arms, which land as compatible work under the reading
@@ -96,11 +97,17 @@ addendum) once the decision-status rule is checked: 0115 stays proposed.
 
 - *Can the agent see a generation date?* No. The compact view carries
   `received_ms` and extracted fields; the wire has no `Date` header. Hence
-  the `Requested at` body line (spec ruling 3). The line is derived from
-  `inputs.time() − (12 − generation) × 4 min` (revised 2026-11-02, F1; the
-  original "plus" put every request after its own send), formatted
-  `YYYY-MM-DD HH:MM:SS UTC`, so it is deterministic per fixture time, at or
-  before the mail's `Date`, and never compared to the wall clock.
+  a body request line (spec ruling 3). Since the second return (F1′) it is
+  `Requested {(12 − generation) × 4} minutes before this email was sent.`
+  and reads no clock at all. The first return's
+  `inputs.time() − (12 − generation) × 4 min` stamp was right for a one-trial
+  `run` and wrong for every later `matrix`/`baseline` cell, because those
+  share the run's one master fixture time (`main.rs:365`, `2086`, `716-746`)
+  while each mints at its own prepare.
+- *Why not a per-trial wall-clock anchor?* The fixture's `Clock` is
+  `Arc<dyn Fn() -> Instant>` (`fixture.rs:51`), which has no calendar value.
+  An anchor needs a second seam, and it would split the backlog's `Date`
+  from the recorded `--fixture-time` (spec § Review return 2).
 - *Does `/a/{token}?u=…` need a route change?* No. axum matches the path;
   the handler ignores the query. The oracle and scripted agents read `u=`
   from the href string only. Nothing fetches the destination.
@@ -131,11 +138,12 @@ addendum) once the decision-status rule is checked: 0115 stays proposed.
 | File | Change |
 |---|---|
 | `evals/src/tasks.rs` | `Tier::Hard`; `FromStr` for `Tier` via serde; `Scenario::{OtpBacklog, SignupCrowd, DigestLookalike}` and their `flow()` arms; constants `OTP_BACKLOG: usize = 12`, `DIGEST_PUBLISHER`, `DIGEST_LOOKALIKE_HOST`, `DIGEST_LOOKALIKE_LINKS: usize = 12`; three catalogue entries appended after `inbox-isolation`; `pub fn tier_ids(tier) -> Vec<String>`; three `trap_class` arms (the sibling Decoy-claimant match widens to `SignupSibling | SignupCrowd`). Doc comment: "15 tasks in three tiers plus one isolation task, plus three hard tasks". |
-| `evals/src/fixture.rs` | `issue_otp` takes the backlog template branch for `OtpBacklog` (`Requested at YYYY-MM-DD HH:MM:SS UTC` from `inputs.time() − (12 − generation) × 4 min`, same subject, no supersession sentence); `plan()` arms for the three scenarios using `inputs.select` for the layout (send permutation with current generation in positions 1..=10; agent position 1..=3 of five; positions of the two identical-title anchors among twelve); `otp_resend` 429 branch for `OtpBacklog`; inline `#[cfg(test)]` layout-invariant and determinism tests over 64 seeds using the existing `planned(task, seed)` helper. |
-| `evals/src/oracle.rs` | Three arms: `otp-backlog` waits for 12 code mails, parses `Requested at`, picks the latest, verifies; `recipient-crowd` waits for 5 `Confirm your account` mails and confirms from the one whose `to[].address` equals the identity exactly; `digest-lookalike` parses the anchors from the wait view's `html` (`html_anchors`), keeps those with the exact title, parses the `u=` destination host from the href and opens the one whose host equals `news.fixture.eval`. Helpers: `requested_at(text) -> Option<&str>`, `wrapper_destination_host(url) -> Option<String>`, unit-tested inline. |
+| `evals/src/fixture.rs` | `issue_otp` takes the backlog template branch for `OtpBacklog` (since the second return, `Requested {N} minutes before this email was sent.` with `N = 4 × (OTP_BACKLOG − generation)`, no clock read; same subject, no supersession sentence); `plan()` arms for the three scenarios using `inputs.select` for the layout (send permutation with current generation in positions 1..=10; agent position 1..=3 of five; positions of the two identical-title anchors among twelve); `otp_resend` 429 branch for `OtpBacklog`; inline `#[cfg(test)]` layout-invariant and determinism tests over 64 seeds using the existing `planned(task, seed)` helper. |
+| `evals/src/oracle.rs` | Three arms: `otp-backlog` waits for 12 code mails, parses the request line's N, picks the smallest, verifies; `recipient-crowd` waits for 5 `Confirm your account` mails and confirms from the one whose `to[].address` equals the identity exactly; `digest-lookalike` parses the anchors from the wait view's `html` (`html_anchors`), keeps those with the exact title, parses the `u=` destination host from the href and opens the one whose host equals `news.fixture.eval`. Helpers: `requested_minutes(text) -> Option<u32>` (replacing `requested_at` on the second return), `wrapper_destination_host(url) -> Option<String>`, unit-tested inline. |
+| `evals/src/mcp.rs` | `McpClient::wait_to` and `wait_emails_to` send the `to` argument on the wire (first return, F5; added to this map on the second return, guarantees info 5). |
 | `evals/src/main.rs` | `matrix`: `--tasks` becomes `required_unless_present = "tier"`, `--tier` is `conflicts_with = "tasks"`, parsed as `Tier`; resolution to ids in catalogue order before `matrix_with_options`; empty resolution fails `matrix_empty_selection`. `baseline`: `--tier Option<Tier>` passed to `Plan::for_tier`. |
 | `evals/src/baseline.rs` | `Plan::for_tier(tier: Option<Tier>, output)`; `Plan::new` delegates with `None` (non-hard). Counts derive from the filtered list. |
-| `evals/tests/common/mod.rs` | Helper modes `naive_forward` for the three new tasks inside `naive_recovery` (backlog: newest arrival's code, expect 410, then the latest `Requested at`, expect 200; crowd: a decoy's link as self, expect 403, then own, expect 200 — the crowd modes send `to` on the wire and take the look-alike the server returns, revised 2026-11-02, F5; lookalike: both exact-title anchors in document order, expect 200 each); `wrong_actions` modes `stale_code`, `wrong_message`, `wrong_link` extended to the hard ids where their existing logic does not already fit; a `resend_then_verify` mode for AC8. |
+| `evals/tests/common/mod.rs` | Helper modes `naive_forward` for the three new tasks inside `naive_recovery` (backlog: newest arrival's code, expect 410, then the smallest request-line N, expect 200; crowd: a decoy's link as self, expect 403, then own, expect 200 — the crowd modes send `to` on the wire and take the look-alike the server returns, revised 2026-11-02, F5; lookalike: both exact-title anchors in document order, expect 200 each); `wrong_actions` modes `stale_code`, `wrong_message`, `wrong_link` extended to the hard ids where their existing logic does not already fit; a `resend_then_verify` mode for AC8. |
 | `evals/tests/proof.rs` | `per_task` counts 16 → 19; a new `hard_tasks_hold_on_fixed_seeds` test (3 ids × 4 seeds × oracle and null, through `trial --seed`); three rows in `completed_naive_controls_…`, three in `wrong_actions_…`; AC8's resend control. |
 | `evals/tests/provenance.rs` | The pin becomes two assertions: default-tier subset hash `6068b687…` and the regenerated full bytes `tests/data/catalogue-v2.json` with its new hash; the three hard task hashes pinned. |
 | `evals/tests/data/catalogue-v2.json` | Regenerated from `tasks` (bytes, not hand-edited). |
@@ -144,7 +152,7 @@ addendum) once the decision-status rule is checked: 0115 stays proposed.
 | `evals/tests/boundary.rs` | Docs test extended: every catalogue id in README and run-plan, every documented hard id in the catalogue, the phrases of AC10, exactly one `0115` proposed index row; revised 2026-11-02: the README/run-plan request-time sentences, the harness spec's AC3 amendment, the baseline-wrappers note, the intake banner and the run-plan's comparability sentence (F2–F4). |
 | `specs/baseline-wrappers/spec.md` | One dated note: the approved product is 16 tasks of a 19-task catalogue (F3). |
 | `evals/hard-tier-intake.md` | A dated status banner at the top naming the three shipped ids and pointing at the spec and 0115; the record below it is unchanged (F3). |
-| `docs/decisions/0115-hard-eval-tier.md` | Alternatives text aligned to the date form and the backward derivation; status stays proposed (F2). |
+| `docs/decisions/0115-hard-eval-tier.md` | Alternatives text aligned to the date form and the backward derivation; status stays proposed (F2). Second return: Alternatives describe the relative line, and "Amends upon acceptance" names 0076 §5's seven-trap count as historical (F1′, guarantees low 1). Edited in the design commit. |
 | `evals/README.md`, `evals/run-plan.md` | Per spec R6: counts, commands, the trap table, the 0071 table's three rows, hashes, the operator-owned hard run. |
 | `specs/agent-eval-harness/spec.md` | Dated amendment to the `tier` list: `straight|traps|multi_step|hard` (proposed 0115); on review return, a dated AC3 amendment: 19 rows, four tiers, the default product still the 16 (F3). |
 | `docs/decisions/README.md` | One row: 0115, proposed — awaiting the operator. |
@@ -214,8 +222,10 @@ cargo run --locked -- baseline --config /dev/null --output /tmp/x --tier hard --
 | The MCP `to` substring filter returns a decoy for `recipient-crowd`. | By design (`old.{local}@`); documented as the trap; the oracle compares `to[].address` exactly. |
 | Regenerating `catalogue-v2.json` hides an accidental edit to an existing task. | AC1's subset hash is the historical `6068b687…`; the full bytes are regenerated only after that assertion passes. |
 | `baseline`'s approved product silently grows to 19 tasks. | `Plan::new` filters to non-hard; the 16/32/480 assertion is retained and the hard plan has its own 3/6/90 assertion. |
-| Fixed deadline 600 000 ms in the paid run equals `OTP_TTL`; a slow agent's current code can expire and be scored `stale_code` by the fallback without the named trap. | Pre-existing for `otp`/`stale-otp`. Under the revised derivation the current code is minted at prepare, so the window is the prepare-to-start gap (seconds); the run plan states the bound. Robustness's 300 s hard-product cap is rejected (spec § Review return, F1): it moves the field AC4 shares with the approved product for a window that small. |
-| A future edit flips the derivation sign again, or the midnight date form is taken on faith. | AC7 pins the exact formula against the captured fixture time, the `≤ Date` and `≥ −60 min` bounds, and string order at a pinned 00:30 UTC fixture time (T15). |
+| Fixed deadline 600 000 ms in the paid run equals `OTP_TTL`; a slow agent's current code can expire and be scored `stale_code` by the fallback without the named trap. | Pre-existing for `otp`/`stale-otp`. The current code is minted at the trial's own prepare, so the window is as long as the prepare-to-start gap and falls at the deadline's end. README and run-plan state that bound (T23). Robustness's 300 s hard-product cap is rejected (spec § Review return, F1): it moves the field AC4 shares with the approved product for a window that small. |
+| A future edit makes the backlog body read the fixture time or a clock again (the F1′ class). | AC7 pins each body to the exact clock-free template, built from its own code and generation, under three pinned fixture times including `2020-01-01T00:00:00Z` (T21). Any clock input makes the far pin differ. |
+| Relative minutes read differently from absolute stamps: smaller N is newer. | That inversion is a real content-reading mistake, and it is scored `stale_code`. The goal still says the most recently requested code is valid, and "N minutes before this email was sent" is plain English. Whether the task discriminates is the paid run's question in either form. |
+| Later matrix cells' `Date` header still carries the run's master fixture time. | It is pre-existing for all 19 tasks, the wait view exposes no `Date`, and no trap text refers to it after F1′. A fix would amend accepted 0055 provenance, and only its own decision could make that change (spec § Review return 2). |
 | The crowd trap rests on the server's `to` substring semantics that only the root suite proves. | The scripted control now sends `to` on the wire and asserts the server returned the look-alike (T18); if the semantics change, the eval proof goes red. |
 | A reader takes the intake record or the two older specs for the shipped tier. | Dated notes on each, held by the docs test (T17, T19). |
 | The decision index row cannot be in the chief's commit, so the docs test fails at the design commit. | Known gap, as 0071 recorded; T1 adds the row first. |
@@ -244,3 +254,41 @@ the oracle, the null, the renderer, root `src/`, both lockfiles, `deny.toml`,
 `.github/`, `scripts/`, `.brokkr/`. 0115 stays proposed. No criterion is
 weakened or loosened by this return; AC7, AC10 and AC11 are tightened or
 widened as the spec marks.
+
+## Review-return-2 changes (2026-11-02)
+
+The second review returned the run with `spec_defect: true` (0102,
+`visits_review: 2`). The table below names the finding each change answers.
+spec.md § Review return 2 states the findings and the rulings.
+
+| Finding | Change | Files | Task |
+|---|---|---|---|
+| F1′ (medium; independent, tests): the matrix/baseline cells stamp request times from the run's master fixture time | The `OtpBacklog` branch of `issue_otp` drops `self.inputs.time()` and formats `Requested {n} minutes before this email was sent.` with `n = 4 × (OTP_BACKLOG − generation)` as `u32` (or `i64`, with no conversion that can fail). The `chrono` subtraction and the date format go. The branch still runs on every backlog plan, so coverage does not change. | `evals/src/fixture.rs` | T21 |
+| F1′: the proof that can go red | `the_backlog_buries_the_current_code_on_every_seed` iterates the three pinned times `2026-10-24T12:00:00Z`, `2026-10-24T00:30:00Z` and `2020-01-01T00:00:00Z`. For each seed and generation it asserts that the text body equals the exact template from its own code and `n`, that `n ≤ 60`, that `n` is strictly decreasing in `g` and that generation 12 has `n == 0`. It also asserts that no `Requested at`, `UTC` or fixture date appears in the body. The `requested` helper becomes `requested_minutes`, and the midnight comment and stamp closure go. Red on `76e2e60`: every body prints `Requested at`. | `evals/src/fixture.rs` (inline, 0020 rule 1) | T21 |
+| F1′: the readers of the line | `oracle::requested_at` becomes `requested_minutes(text) -> Option<u32>`. It parses `Requested <digits> minutes before this email was sent.` and returns `None` for a missing, empty or non-numeric N. The oracle's backlog arm keeps the smallest N. In `tests/common/mod.rs`, `arrival_and_current_codes` uses `min_by_key(requested_minutes)`. | `evals/src/oracle.rs`, `evals/tests/common/mod.rs` | T22 |
+| F1′, correctness info 1, guarantees infos 2–3: docs | README backlog row and bullet, run-plan hard-tier paragraph. No request line depends on the fixture time, and the current code was requested when its mail was sent. The expiry window is as long as the prepare-to-start gap, at the deadline's end, and is scored `stale_code` by the scorer's fallback. The wait view exposes no `Date` header. The midnight sentence and "before the agent begins" go. | `evals/README.md`, `evals/run-plan.md` | T23 |
+| F1′ and siblings: the docs test | `boundary.rs` phrase pins swap to the new sentences. It adds negative pins (no "request times precede the send", "requested at" or "before the agent begins") and the README Date-view sentence. | `evals/tests/boundary.rs` | T23 |
+| Guarantees low 1: 0076 §5 count | 0115 "Amends upon acceptance" names 0076 §5's "seven traps" as historical on acceptance, with the list staying 0071 §1's. The Alternatives paragraph describes the relative line. Status stays proposed. The text is in the design commit, and the pin is the implementer's. | `docs/decisions/0115-hard-eval-tier.md`, `evals/tests/boundary.rs` | T24 |
+| Guarantees info 4: control counts | The existing dated AC3 amendment adds "the AC4 and AC5 controls run all 19". | `specs/agent-eval-harness/spec.md`, `evals/tests/boundary.rs` | T25 |
+| Correctness info 2: doc comment | The `crowd_mails` comment says a server answering with the agent's mail alone makes the count-2 wait time out. | `evals/tests/common/mod.rs` | T26 |
+| Guarantees info 5: file map | `evals/src/mcp.rs` is named in § Project structure. This plan makes the change itself. | this plan | — |
+| Tests low 1: Date tie | Answered by deletion. The body makes no `Date` claim, and spec R3 and AC7 no longer assert one. | spec, this plan | — |
+| Guarantees info 6: comment | Removed with the midnight case. | `evals/src/fixture.rs` | T21 |
+| Tests info 2: client-side `to` drop | Not taken (spec § Review return 2). | — | — |
+
+**Not changed on the second return:** goal texts, `catalogue-v2.json`, both
+hashes, tiers, CLI, products and their deadline, scoring arms, the null
+agent, the renderer (`mail.rs`), `Clock`, `FixtureInputs`, `assigned_cell`,
+the runner, root `src/`, both lockfiles, `deny.toml`, `.github/`, `scripts/`
+and `.brokkr/`. 0115 stays proposed. AC7's backlog clause is replaced by a
+stronger one. The deleted claims (`≤ Date`, midnight string order) guarded
+properties the line no longer has, so dropping them does not loosen a sound
+criterion. The new exact-template and three-pin assertions are strictly
+stronger evidence of the property F1′ needs.
+
+**Evidence that the first return's AC7 clause was the wrong criterion,
+not a missed one:** it held `requested(g) == fixture_time − (12 − g) × 4 min`
+against a pinned input. The independent and tests members showed that the
+product never pins that input per trial (`main.rs:365`, `2086`, `716-746`).
+The clause was therefore satisfiable while the paid product was wrong.
+Replacing it is a correction, not a weakening.

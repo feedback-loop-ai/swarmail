@@ -2,7 +2,7 @@
 
 - **Status:** proposed — awaiting the operator
 - **Date:** 2026-11-02; text aligned 2026-11-02 on the first review's return
-  (0102), status unchanged.
+  (0102), and again on the second review's return, status unchanged.
 - **Scope:** Epic #164, the operator's 2026-11-01 ruling to build a harder
   eval tier before the next paid run. Base: main `f815d48`.
 - **Specification:** [hard eval tier](../../specs/hard-eval-tier/spec.md);
@@ -11,6 +11,11 @@
   (three task rows appended to the named-trap list) and §4's "preserving
   tiers" (read as preserving existing memberships, with `hard` an additive
   value); the agent eval harness spec's `tier` list (`straight|traps|multi_step`).
+  The "seven traps" counted in accepted [0076](0076-sequential-eval-trials.md)
+  §5 is the 0071 §1 list as it stood at 0076's acceptance; upon acceptance of
+  this record that count is historical (the list becomes ten rows) and the
+  list itself stays 0071 §1's. 0076's text is not edited, and its sequential
+  contract is preserved.
 - **Preserves:** 0001–0005, accepted 0055 (closed eight-class taxonomy,
   oracle/null proofs, app-state scoring, standalone `evals/`), 0071 §§2–3, 5–6
   (precedence, exact matching, recovery, no lockouts, no root changes),
@@ -87,15 +92,22 @@ criterion they serve, depend on this record. They land beside it as
 compatible work under accepted 0045 §8 because no accepted verdict moves; if
 the operator reads 0071 §1 as a closed list, only those arms wait.
 
-Adopt a content discriminator (`Requested at YYYY-MM-DD HH:MM:SS UTC`) over
-a header `Date`: the store exposes arrival time and a UUIDv7 id, never a Date
-header, so arrival order is exactly the signal the task must make misleading.
-The line is derived backwards from the trial's one captured fixture time,
-`fixture_time − (12 − generation) × 4 min`, so the current code was requested
-at its send time and every older one earlier, within the goal's past hour;
-the first implementation's forward derivation put every request after its own
-send and was corrected on review return (spec § Review return, F1). The date
-keeps string order equal to generation order across midnight. Adopt
+Adopt a content discriminator (`Requested N minutes before this email was
+sent.`, `N = (12 − generation) × 4`) over a header `Date`: the wait view exposes
+arrival time and a UUIDv7 id, never a Date header, so arrival order is
+exactly the signal the task must make misleading. The line reads no clock,
+so it is true in every `matrix` and `baseline` cell, however long after the
+run's one master fixture time that cell starts, and under any pinned
+`--fixture-time`. The current code says it was requested when it was sent,
+which is when it is minted and its ten-minute expiry starts. Two earlier
+absolute forms were corrected on review return (spec § Review return and
+§ Review return 2): `fixture_time + generation × 4 min` put every request
+after its own send, and `fixture_time − (12 − generation) × 4 min` stamped
+later cells from the run's start while they minted at their own prepare.
+A per-trial wall-clock anchor and a per-cell fixture-time rebase were
+rejected: the first needs a second clock seam and splits the backlog's
+`Date` from the recorded fixture time; the second amends accepted 0055
+provenance for every task. Adopt
 an inert `?u=` wrapper on the existing link route over a redirect route: no
 fetch, no SSRF or hang surface, same trap. Drop the plus-alias task (rests
 on proposed 0112), budget-class and slow-wait tasks (0020 §5), and
