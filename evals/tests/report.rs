@@ -355,6 +355,78 @@ fn the_matrix_refuses_bad_inputs_before_running_anything() {
     }
 }
 
+/// AC3: `matrix --tier hard` runs the hard product only, in catalogue order,
+/// and the retained plan records plain ids rather than the selector.
+#[test]
+fn matrix_tier_selects_the_hard_tasks_and_records_plain_ids() {
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    let agents = agents_file(dir.path(), json!([{"label": "oracle", "argv": []}]));
+    let artifacts = dir.path().join("retained");
+    let out = cli()
+        .args([
+            "matrix", "--tier", "hard", "--agents", &agents, "--trials", "1",
+        ])
+        .arg("--artifacts-dir")
+        .arg(&artifacts)
+        .output()
+        .unwrap();
+    let rows = rows(&out.stdout);
+    let tasks: Vec<_> = rows.iter().map(|r| r.task.clone().unwrap()).collect();
+    assert_eq!(
+        tasks,
+        ["otp-backlog", "recipient-crowd", "digest-lookalike"]
+    );
+    assert!(
+        rows.iter().all(|r| r.outcome == Outcome::Pass),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(out.status.code(), Some(0));
+    let plan = std::fs::read_dir(&artifacts)
+        .unwrap()
+        .map(|e| e.unwrap().path().join("matrix-plan.json"))
+        .find(|p| p.exists())
+        .expect("a retained matrix plan");
+    let plan: Value = serde_json::from_slice(&std::fs::read(plan).unwrap()).unwrap();
+    assert_eq!(
+        plan["tasks"],
+        json!(["otp-backlog", "recipient-crowd", "digest-lookalike"])
+    );
+    assert!(plan.get("tier").is_none(), "{plan}");
+    assert_eq!(plan["schema_version"], 1, "no artifact version moved");
+}
+
+/// AC3: every ambiguous, missing or unknown selection is a usage error with
+/// no result row and nothing launched.
+#[test]
+fn matrix_tier_refuses_ambiguous_missing_and_unknown_selections_with_no_rows() {
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    let agents = agents_file(dir.path(), json!([{"label": "oracle", "argv": []}]));
+    let cases: [&[&str]; 7] = [
+        &["--tier", "hard", "--tasks", "otp"],
+        &["--tasks", "otp", "--tier", "hard"],
+        &[],
+        &["--tier", "harder"],
+        &["--tier", "Hard"],
+        &["--tier", "multi-step"],
+        &["--tier", ""],
+    ];
+    for extra in cases {
+        let out = cli()
+            .args(["matrix", "--agents", &agents, "--trials", "1"])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{extra:?}: {}", stderr(&out));
+        assert!(
+            out.stdout.is_empty(),
+            "{extra:?}: rows for a refused invocation"
+        );
+    }
+}
+
 fn row(task: &str, outcome: &str, class: Option<&str>, ms: u64) -> String {
     let task = if task == "t" { "signup" } else { task };
     let req = swarmail_evals::runner::TrialRequest {

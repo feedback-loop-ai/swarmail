@@ -115,6 +115,7 @@ them. What may land while a decision is still proposed is stated in
 | [0114](0114-mcp-resources-evaluation.md) | MCP resources and subscriptions: evaluated, not shipped, metric not measured | **accepted** (operator, 2026-11-02 — "accept all as recommended") | (Epic #164, issue #158; provisional number; dated addendum 2026-11-02 at acceptance) |
 | [0115](0115-trial-isolation.md) | Trial separation and observed concurrency | **accepted** (operator, 2026-11-02 — "accept all as recommended") | (Epic #192, issue #221 split from #199; carried from the design on record where it was 0062; amends 0055 §§6–9 and 0076 only if accepted; dated addendum 2026-11-02 at acceptance) |
 | [0116](0116-implicit-tls-smtp.md) | Implicit TLS (SMTPS) as an opt-in mode of the SMTP listener | **proposed** | (Issue #313, operator request 2026-11-02; amends nothing; number provisional — recheck against #148 and #314 at integration) |
+| [0117](0117-hard-eval-tier.md) | A hard eval tier (otp-backlog, recipient-crowd, digest-lookalike) and its three named traps | proposed — awaiting the operator | (Epic #164, issue #164; provisional number) |
 | [0118](0118-mailslurper-shim.md) | A MailSlurper service-API shim on an opt-in listener, one global mailbox | proposed | (Issue #314; amends 0011's sentence that `delete-all` is the only cross-inbox wipe and 0004's "only cross-inbox destructive endpoint", only if accepted; the PR is held until the operator accepts) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that

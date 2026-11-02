@@ -6,10 +6,10 @@ use swarmail_evals::state::*;
 use swarmail_evals::tasks::{self, Check, Outcome, Scenario, Task, Tier, Verdict};
 
 #[test]
-fn the_catalogue_is_fifteen_tasks_in_three_tiers_plus_isolation() {
+fn the_catalogue_is_sixteen_default_tasks_then_three_hard_ones() {
     let cat = tasks::catalogue();
     tasks::validate_catalogue(&cat).unwrap();
-    assert_eq!(cat.len(), 16);
+    assert_eq!(cat.len(), 19);
     let ids: Vec<&str> = cat.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(
         ids,
@@ -29,12 +29,18 @@ fn the_catalogue_is_fifteen_tasks_in_three_tiers_plus_isolation() {
             "reset-reuse",
             "invite-time",
             "support-reply",
-            "inbox-isolation"
+            "inbox-isolation",
+            "otp-backlog",
+            "recipient-crowd",
+            "digest-lookalike"
         ]
     );
-    for tier in [Tier::Straight, Tier::Traps, Tier::MultiStep] {
+    for tier in [Tier::Straight, Tier::Traps, Tier::MultiStep, Tier::Hard] {
         assert!(cat.iter().any(|t| t.tier == tier));
     }
+    // The hard tier is appended: no default-tier task moved or changed tier.
+    assert!(cat[..16].iter().all(|t| t.tier != Tier::Hard));
+    assert!(cat[16..].iter().all(|t| t.tier == Tier::Hard));
     assert_eq!(cat.iter().filter(|t| t.agent_count == 3).count(), 1);
     let expect = [
         ("signup", FailureClass::GaveUp, FailureClass::GaveUp),
@@ -644,6 +650,22 @@ fn trap_cases() -> Vec<(&'static str, &'static str, FailureClass)> {
             action::DIGEST_DECOY,
             FailureClass::WrongLink,
         ),
+        // The hard tier (proposed 0117).
+        (
+            "otp-backlog",
+            action::SUPERSEDED_CODE,
+            FailureClass::StaleCode,
+        ),
+        (
+            "recipient-crowd",
+            action::FOREIGN_TOKEN,
+            FailureClass::WrongMessage,
+        ),
+        (
+            "digest-lookalike",
+            action::DIGEST_DECOY,
+            FailureClass::WrongLink,
+        ),
     ]
 }
 
@@ -718,7 +740,7 @@ fn exact_match_dimensions_and_sibling_claimant_exception() {
         let mut e = trap.clone();
         e.claimed = Some("unknown".into());
         mismatches.push(e);
-        if id != "sibling-addresses" {
+        if !matches!(id, "sibling-addresses" | "recipient-crowd") {
             let mut e = trap.clone();
             e.claimed = Some("d".into());
             mismatches.push(e);
@@ -733,7 +755,7 @@ fn exact_match_dimensions_and_sibling_claimant_exception() {
                 s.events.last()
             );
         }
-        if id == "sibling-addresses" {
+        if matches!(id, "sibling-addresses" | "recipient-crowd") {
             for flow in [None, Some(Flow::Signup), Some(Flow::Support)] {
                 let mut s = clean.clone();
                 let mut e = trap.clone();
@@ -908,4 +930,175 @@ fn legacy_unknown_null_and_omitted_claims_preserve_refusal_and_fact_semantics() 
         tasks::score(&base(), &s).is_err(),
         "unknown claims cannot back accepted facts"
     );
+}
+
+/// The hard tier's shape (AC2): three tasks, one agent, the default deadline,
+/// the idle class `gave_up`, and a goal that discloses its disqualifier.
+#[test]
+fn the_hard_tier_is_three_disclosed_one_agent_tasks() {
+    let hard = tasks::tier_ids(Tier::Hard);
+    assert_eq!(hard, ["otp-backlog", "recipient-crowd", "digest-lookalike"]);
+    let expect = [
+        ("otp-backlog", FailureClass::StaleCode, Scenario::OtpBacklog),
+        (
+            "recipient-crowd",
+            FailureClass::WrongMessage,
+            Scenario::SignupCrowd,
+        ),
+        (
+            "digest-lookalike",
+            FailureClass::WrongLink,
+            Scenario::DigestLookalike,
+        ),
+    ];
+    for (id, class, scenario) in expect {
+        let t = tasks::find(id).unwrap();
+        assert_eq!(t.tier, Tier::Hard);
+        assert_eq!(t.failure_class, class, "{id}");
+        assert_eq!(t.idle_class, FailureClass::GaveUp, "{id}");
+        assert_eq!(t.scenario, scenario, "{id}");
+        assert_eq!(t.agent_count, 1, "{id}");
+        assert_eq!(t.deadline_ms, tasks::DEFAULT_DEADLINE_MS, "{id}");
+        assert!(t.goal.contains("disqualifies the trial"), "{id}");
+        assert!(t.goal.contains("already completed it"), "{id}");
+        assert!(!scenario.uses_chaos());
+    }
+    assert_eq!(Scenario::OtpBacklog.flow(), Flow::Otp);
+    assert_eq!(Scenario::SignupCrowd.flow(), Flow::Signup);
+    assert_eq!(Scenario::DigestLookalike.flow(), Flow::Digest);
+    assert_eq!(
+        tasks::tier_ids(Tier::Straight),
+        ["signup", "otp", "magic-login"]
+    );
+    // The goal discloses the rule, never the answer.
+    let backlog = tasks::find("otp-backlog").unwrap().goal;
+    assert!(backlog.contains("most recently requested") && backlog.contains("resend limit"));
+    assert!(
+        tasks::find("recipient-crowd")
+            .unwrap()
+            .goal
+            .contains("exactly {identity}")
+    );
+    let lookalike = tasks::find("digest-lookalike").unwrap().goal;
+    assert!(lookalike.contains("exactly news.fixture.eval"));
+}
+
+/// AC2: `hard` is a tier, and the enum is still strict.
+#[test]
+fn the_tier_enum_accepts_hard_and_still_refuses_everything_else() {
+    use std::str::FromStr;
+    assert_eq!(serde_json::to_value(Tier::Hard).unwrap(), json!("hard"));
+    for (text, tier) in [
+        ("straight", Tier::Straight),
+        ("traps", Tier::Traps),
+        ("multi_step", Tier::MultiStep),
+        ("hard", Tier::Hard),
+    ] {
+        assert_eq!(serde_json::from_value::<Tier>(json!(text)).unwrap(), tier);
+        assert_eq!(Tier::from_str(text).unwrap(), tier);
+    }
+    for bad in [
+        "Hard",
+        "harder",
+        "multi-step",
+        "MultiStep",
+        "",
+        " hard",
+        "hard ",
+    ] {
+        assert!(
+            serde_json::from_value::<Tier>(json!(bad)).is_err(),
+            "{bad:?}"
+        );
+        assert!(
+            Tier::from_str(bad).unwrap_err().contains("unknown tier"),
+            "{bad:?}"
+        );
+    }
+}
+
+/// AC3's resolver: a tier becomes a plain id list in catalogue order; an
+/// ambiguous or empty selection is refused by name.
+#[test]
+fn matrix_selection_resolves_a_tier_to_ids_and_refuses_ambiguity_and_emptiness() {
+    let cat = tasks::catalogue();
+    let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        tasks::select_ids(&cat, vec![], Some(Tier::Hard)).unwrap(),
+        ids(&["otp-backlog", "recipient-crowd", "digest-lookalike"])
+    );
+    assert_eq!(
+        tasks::select_ids(&cat, ids(&["otp", "signup"]), None).unwrap(),
+        ids(&["otp", "signup"]),
+        "--tasks passes through in the order given"
+    );
+    assert_eq!(
+        tasks::select_ids(&cat, ids(&["otp"]), Some(Tier::Hard)),
+        Err("matrix_selection_ambiguous".to_string())
+    );
+    assert_eq!(
+        tasks::select_ids(&cat, vec![], None),
+        Err("matrix_empty_selection".to_string())
+    );
+    let default_only: Vec<_> = cat
+        .iter()
+        .filter(|t| t.tier != Tier::Hard)
+        .cloned()
+        .collect();
+    assert_eq!(
+        tasks::select_ids(&default_only, vec![], Some(Tier::Hard)),
+        Err("matrix_empty_selection".to_string())
+    );
+}
+
+/// AC4/AC8 in the scoring tables: the refused resend's event has no category,
+/// so it neither traps nor classifies; the verdict falls to the idle class,
+/// and a recovered goal still passes beside it.
+#[test]
+fn the_backlogs_category_less_resend_event_is_inert() {
+    let task = tasks::find("otp-backlog").unwrap();
+    let mut resend = event(5, "a", "otp_resend", false, None);
+    resend.flow = Some(Flow::Otp);
+    let mut idle = recovered(&task);
+    idle.identities[0].facts = Facts::default();
+    idle.events = vec![resend.clone()];
+    assert_eq!(
+        tasks::score(&task, &idle),
+        Ok(Verdict::fail(FailureClass::GaveUp))
+    );
+    let mut done = recovered(&task);
+    done.events.insert(0, resend);
+    assert_eq!(tasks::score(&task, &done), Ok(Verdict::pass()));
+}
+
+/// Cross-task exactness: a hard trap's action under another scenario's
+/// flow, or another hard task's action, is not a named trap.
+#[test]
+fn hard_traps_do_not_leak_across_scenarios() {
+    // otp-backlog ignores another task's trap action in its own flow.
+    let task = tasks::find("otp-backlog").unwrap();
+    let mut s = recovered(&task);
+    let mut e = event(
+        20,
+        "a",
+        action::DIGEST_DECOY,
+        false,
+        Some(FailureClass::WrongLink),
+    );
+    e.flow = Some(Flow::Otp);
+    s.events.push(e);
+    assert_eq!(tasks::score(&task, &s), Ok(Verdict::pass()));
+    // digest-lookalike has no sibling Decoy-claimant exception.
+    let task = tasks::find("digest-lookalike").unwrap();
+    let mut s = recovered(&task);
+    let mut e = event(
+        20,
+        "d",
+        action::FOREIGN_TOKEN,
+        false,
+        Some(FailureClass::WrongMessage),
+    );
+    e.flow = None;
+    s.events.push(e);
+    assert_eq!(tasks::score(&task, &s), Ok(Verdict::pass()));
 }
