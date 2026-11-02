@@ -10,12 +10,18 @@
 //!   malformed PEM file, half a pair.
 //! - A stalled handshake is closed by the deadline — a silent client
 //!   cannot tie a session task up forever — and the server serves on.
+//! - Implicit TLS (decision 0116, `SmtpConfig::implicit_tls`): the same
+//!   handshake runs on connect, before the greeting. AUTH-named delivery,
+//!   recipient routing, `await`, the stalled-handshake deadline, the
+//!   plaintext-client refusal, chaos and the cap refusal are each proved
+//!   over a real rustls client against a live server.
 
 mod common;
 
 use common::{
-    SmtpConn, assert_starttls_handshake_fails, http_json, stalled_starttls, start, start_with,
-    starttls, starttls_after, starttls_discarding_pipelined,
+    SmtpConn, TlsSmtp, assert_starttls_handshake_fails, http_bytes, http_json, implicit_tls,
+    implicit_tls_handshake_fails, stalled_starttls, start, start_with, starttls, starttls_after,
+    starttls_discarding_pipelined, wait_for_metric_row,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -23,7 +29,7 @@ use swarmail::RunningServer;
 use swarmail::config::Config;
 use swarmail::smtp::SmtpConfig;
 use swarmail::tls::TlsConfig;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::rustls::pki_types::CertificateDer;
 
 /// A server serving STARTTLS from a real PEM pair on disk, plus the cert
@@ -488,5 +494,421 @@ fn gen_cert_refuses_an_unmappable_domain_with_a_named_error() {
         err.to_string()
             .starts_with("self-signed certificate for n\u{f6}t.io:"),
         "the error names the refused domain: {err}"
+    );
+}
+
+// ------------------------------------------------------------------------
+// Implicit TLS (decision 0116)
+// ------------------------------------------------------------------------
+
+/// A server whose SMTP listener speaks implicit TLS from the first byte.
+async fn start_implicit(
+    name: &str,
+    smtp: SmtpConfig,
+) -> (RunningServer, CertificateDer<'static>, tempfile::TempDir) {
+    start_tls_cfg(
+        name,
+        SmtpConfig {
+            implicit_tls: true,
+            ..smtp
+        },
+    )
+    .await
+}
+
+fn b64(raw: &str) -> String {
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, raw)
+}
+
+/// AUTH PLAIN as `inbox` on an established session; asserts the `235`.
+async fn auth_as(tls: &mut TlsSmtp, inbox: &str) {
+    tls.send(&format!(
+        "AUTH PLAIN {}",
+        b64(&format!("\0{inbox}\0whatever"))
+    ))
+    .await;
+    let reply = tls.reply_raw().await;
+    assert!(reply.starts_with("235"), "{reply}");
+}
+
+/// MAIL, RCPT, DATA with `body` (already CRLF-lined, no terminator), the
+/// final reply returned. Octets, not text: the payload may be 8-bit.
+async fn deliver_bytes(tls: &mut TlsSmtp, rcpt: &str, body: &[u8]) -> String {
+    tls.send("MAIL FROM:<sender@x.io>").await;
+    assert!(tls.reply_raw().await.starts_with("250"), "MAIL");
+    tls.send(&format!("RCPT TO:<{rcpt}>")).await;
+    assert!(tls.reply_raw().await.starts_with("250"), "RCPT");
+    tls.send("DATA").await;
+    assert!(tls.reply_raw().await.starts_with("354"), "DATA");
+    tls.send_bytes(body).await;
+    tls.send_bytes(b".\r\n").await;
+    tls.reply_raw().await
+}
+
+/// AC1 — a client configured as `smtps://` (Kratos' `legacy_ssl=true`)
+/// starts TLS on connect, reads the greeting inside it, authenticates as
+/// the inbox it wants and delivers. The `250` still means queryable
+/// (0001): the very next read of the API holds exactly that one message,
+/// its raw octets intact through the dot-unstuffing (0034), its fields
+/// extracted at ingest (0005), in the AUTH-named inbox (0004).
+#[tokio::test]
+async fn implicit_tls_delivers_to_the_auth_named_inbox_and_is_stored_at_250() {
+    let (server, root, _dir) = start_implicit("implicit-deliver", SmtpConfig::default()).await;
+    let mut tls = implicit_tls(server.smtp_addr, "localhost", root).await;
+    auth_as(&mut tls, "kratos").await;
+
+    let mut stuffed =
+        b"From: Kratos <kratos@x.io>\r\nSubject: verify your account\r\n\r\n".to_vec();
+    stuffed.extend_from_slice(b"Open https://app.test/verify?t=1 now\r\n");
+    stuffed.extend_from_slice(b"bytes \xFF and \x00 survive\r\n");
+    stuffed.extend_from_slice(b"..a line that began with a dot\r\n");
+    let mut expected = stuffed.clone();
+    let at = expected
+        .windows(2)
+        .position(|w| w == b"..")
+        .expect("the stuffed line");
+    expected.remove(at);
+
+    let stored = deliver_bytes(&mut tls, "to@y.io", &stuffed).await;
+    assert!(stored.starts_with("250"), "{stored}");
+
+    // No wait, no retry: the 250 was the commit.
+    let (code, body) = http_json(
+        server.http_addr,
+        "GET",
+        "/api/v1/inboxes/kratos/messages",
+        None,
+    )
+    .await;
+    assert_eq!(code, 200);
+    let emails = body["emails"].as_array().unwrap();
+    assert_eq!(emails.len(), 1, "{body}");
+    assert_eq!(emails[0]["subject"], "verify your account");
+    assert_eq!(emails[0]["from"]["address"], "kratos@x.io");
+    assert!(
+        emails[0]["links"]
+            .to_string()
+            .contains("https://app.test/verify?t=1"),
+        "{}",
+        emails[0]
+    );
+    let id = emails[0]["id"].as_str().unwrap();
+    assert!(stored.contains(id), "the 250 names the stored id: {stored}");
+    let (st, raw) = http_bytes(server.http_addr, &format!("/api/v1/messages/{id}/raw")).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        raw, expected,
+        "the sent payload, dot-unstuffed, octet for octet"
+    );
+    let (_, other) = http_json(
+        server.http_addr,
+        "GET",
+        "/api/v1/inboxes/default/messages",
+        None,
+    )
+    .await;
+    assert_eq!(other["emails"].as_array().unwrap().len(), 0);
+
+    tls.send("QUIT").await;
+    assert!(tls.reply_raw().await.starts_with("221"));
+}
+
+/// AC2 — inside an already-TLS session STARTTLS is neither advertised nor
+/// accepted (RFC 3207 §4.2): EHLO lists exactly what a plaintext listener
+/// lists, `STARTTLS` is `554`, and the refusal changes nothing — the AUTH
+/// identity survives (a second AUTH is `503`, 0034 §5) and the next
+/// delivery still lands in the AUTH-named inbox.
+#[tokio::test]
+async fn starttls_is_neither_advertised_nor_accepted_inside_implicit_tls() {
+    let (server, root, _dir) = start_implicit("implicit-nostarttls", SmtpConfig::default()).await;
+    let mut tls = implicit_tls(server.smtp_addr, "localhost", root).await;
+    tls.send("EHLO inside-tls").await;
+    assert_eq!(
+        tls.reply_multi().await,
+        "250-swarmail.local\n250-PIPELINING\n250-8BITMIME\n250-SMTPUTF8\n\
+         250-SIZE 52428800\n250-AUTH PLAIN LOGIN\n250 OK",
+        "the EHLO body is the plaintext listener's, STARTTLS line absent"
+    );
+    auth_as(&mut tls, "stay").await;
+    tls.send("STARTTLS").await;
+    assert_eq!(
+        tls.reply_raw().await,
+        "554 5.5.1 TLS already active",
+        "STARTTLS inside TLS is refused"
+    );
+    tls.send(&format!("AUTH PLAIN {}", b64("\0again\0x"))).await;
+    let again = tls.reply_raw().await;
+    assert!(again.starts_with("503"), "one AUTH per epoch: {again}");
+
+    let stored = deliver_bytes(
+        &mut tls,
+        "to@y.io",
+        b"Subject: kept identity\r\n\r\nbody\r\n",
+    )
+    .await;
+    assert!(stored.starts_with("250"), "{stored}");
+    let (_, body) = http_json(
+        server.http_addr,
+        "GET",
+        "/api/v1/inboxes/stay/messages",
+        None,
+    )
+    .await;
+    assert_eq!(body["emails"][0]["subject"], "kept identity");
+}
+
+/// AC3 — recipient routing (0112) is transport-blind: with a route domain,
+/// a recipient `<label>.<domain>` outranks the AUTH name over implicit TLS.
+#[tokio::test]
+async fn implicit_tls_routes_by_recipient_ahead_of_auth() {
+    let (server, root, _dir) = start_implicit(
+        "implicit-route",
+        SmtpConfig {
+            route_domain: Some("swarmail.test".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut tls = implicit_tls(server.smtp_addr, "localhost", root).await;
+    auth_as(&mut tls, "a").await;
+    let stored = deliver_bytes(
+        &mut tls,
+        "x@routed.swarmail.test",
+        b"Subject: routed\r\n\r\nbody\r\n",
+    )
+    .await;
+    assert!(stored.starts_with("250"), "{stored}");
+    let (_, routed) = http_json(
+        server.http_addr,
+        "GET",
+        "/api/v1/inboxes/routed/messages",
+        None,
+    )
+    .await;
+    assert_eq!(routed["emails"][0]["subject"], "routed");
+    let (_, auth) = http_json(server.http_addr, "GET", "/api/v1/inboxes/a/messages", None).await;
+    assert_eq!(auth["emails"].as_array().unwrap().len(), 0, "{auth}");
+}
+
+/// AC4 — `await` subscribes before it checks (0002): a long-poll issued
+/// first, and observed parked on the metric row (no sleep), returns the
+/// mail an implicit-TLS delivery then makes. The await's own deadline
+/// bounds the test.
+#[tokio::test]
+async fn an_await_issued_first_sees_an_implicit_tls_delivery() {
+    let (server, root, _dir) = start_implicit("implicit-await", SmtpConfig::default()).await;
+    let http = server.http_addr;
+    let waiting = tokio::spawn(async move {
+        http_json(
+            http,
+            "GET",
+            "/api/v1/inboxes/parked/await?count=1&timeout_ms=30000",
+            None,
+        )
+        .await
+    });
+    wait_for_metric_row(http, "swarmail_awaits_active{inbox=\"parked\"}", 1).await;
+
+    let mut tls = implicit_tls(server.smtp_addr, "localhost", root).await;
+    auth_as(&mut tls, "parked").await;
+    let stored = deliver_bytes(
+        &mut tls,
+        "to@y.io",
+        b"Subject: woke the await\r\n\r\nbody\r\n",
+    )
+    .await;
+    assert!(stored.starts_with("250"), "{stored}");
+
+    let (st, body) = waiting.await.unwrap();
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["matched"], 1);
+    assert_eq!(body["emails"][0]["subject"], "woke the await");
+}
+
+/// AC5 — a client that connects and never sends a ClientHello is dropped
+/// at `tls_handshake_timeout`: not before (a probe well inside the deadline
+/// is still pending), then a clean EOF having received no byte at all, and
+/// the listener serves on.
+#[tokio::test]
+async fn a_stalled_implicit_handshake_is_dropped_at_the_timeout() {
+    let deadline = Duration::from_millis(750);
+    let (server, root, _dir) = start_implicit(
+        "implicit-stall",
+        SmtpConfig {
+            tls_handshake_timeout: deadline,
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut stalled = tokio::net::TcpStream::connect(server.smtp_addr)
+        .await
+        .unwrap();
+
+    let mut probe = [0u8; 8];
+    let early = tokio::time::timeout(deadline / 5, stalled.read(&mut probe)).await;
+    assert!(
+        early.is_err(),
+        "the stalled handshake was dropped before the deadline: {early:?}"
+    );
+
+    let mut buf = [0u8; 8];
+    let started = std::time::Instant::now();
+    let n = tokio::time::timeout(deadline * 5, stalled.read(&mut buf))
+        .await
+        .expect("the stalled handshake was never closed — the session task is still tied up")
+        .expect("the stalled handshake closed with an error, not cleanly");
+    assert_eq!(n, 0, "no SMTP byte, not even a greeting: got {n} bytes");
+    assert!(
+        started.elapsed() < deadline * 2,
+        "the close took {:?}, nowhere near the {deadline:?} deadline",
+        started.elapsed()
+    );
+
+    let mut tls = implicit_tls(server.smtp_addr, "localhost", root).await;
+    tls.send("NOOP").await;
+    assert!(tls.reply_raw().await.starts_with("250"));
+}
+
+/// AC6 — a plaintext client on the TLS port is refused: the bytes it sent
+/// are not a ClientHello, rustls ends the handshake long before the
+/// (deliberately long) deadline, and nothing readable as SMTP comes back —
+/// no greeting, at most a TLS alert record (first byte 0x15). The listener
+/// serves on.
+#[tokio::test]
+async fn a_plaintext_client_on_the_implicit_tls_port_gets_no_smtp_reply() {
+    let (server, root, _dir) = start_implicit(
+        "implicit-plaintext",
+        SmtpConfig {
+            tls_handshake_timeout: Duration::from_secs(60),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut raw = tokio::net::TcpStream::connect(server.smtp_addr)
+        .await
+        .unwrap();
+    raw.write_all(b"EHLO x\r\n").await.unwrap();
+    let mut got = Vec::new();
+    tokio::time::timeout(Duration::from_secs(20), raw.read_to_end(&mut got))
+        .await
+        .expect("the plaintext client was not closed — rustls never refused it")
+        .ok(); // a reset after the alert is as closed as an EOF
+    assert!(
+        got.is_empty() || got[0] == 0x15,
+        "neither empty nor a TLS alert: {got:?}"
+    );
+    assert!(
+        !got.windows(3).any(|w| w == b"220"),
+        "an SMTP greeting leaked in cleartext: {got:?}"
+    );
+
+    let mut tls = implicit_tls(server.smtp_addr, "localhost", root).await;
+    auth_as(&mut tls, "after-plaintext").await;
+    let stored = deliver_bytes(&mut tls, "to@y.io", b"Subject: after\r\n\r\nbody\r\n").await;
+    assert!(stored.starts_with("250"), "{stored}");
+}
+
+/// AC7 — a `Connect` chaos rule (probability 100, 0020 rule 5) is checked
+/// after the handshake, so its injected error line reaches an implicit
+/// client as decrypted TLS application data and never as cleartext on the
+/// socket.
+#[tokio::test]
+async fn connect_chaos_reaches_an_implicit_client_inside_tls() {
+    let (server, root, _dir) = start_implicit("implicit-chaos", SmtpConfig::default()).await;
+    let (st, installed) = http_json(
+        server.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"connect":{"probability":100,"error":"451 4.3.0 chaos"}}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{installed}");
+
+    // `implicit_tls` asserts a 220, which chaos replaces: read the line by
+    // hand through the helper-built handshake instead.
+    let mut chaotic = common::implicit_tls_raw(server.smtp_addr, "localhost", root).await;
+    assert_eq!(
+        chaotic.reply_raw().await,
+        "451 4.3.0 chaos",
+        "the injected line travels inside TLS"
+    );
+
+    // A client that never speaks TLS never sees the text in cleartext.
+    let mut raw = tokio::net::TcpStream::connect(server.smtp_addr)
+        .await
+        .unwrap();
+    raw.write_all(b"EHLO x\r\n").await.unwrap();
+    let mut got = Vec::new();
+    tokio::time::timeout(Duration::from_secs(20), raw.read_to_end(&mut got))
+        .await
+        .expect("the raw client was not closed")
+        .ok();
+    assert!(
+        !got.windows(b"451 4.3.0 chaos".len())
+            .any(|w| w == b"451 4.3.0 chaos"),
+        "the chaos line leaked in cleartext: {got:?}"
+    );
+}
+
+/// AC8 — the cap refusal is 0027 §3's, byte for byte, in implicit mode: a
+/// raw second connection reads the plaintext `421 4.7.0 …` and EOF; a TLS
+/// client in the same position fails its handshake rather than hang; once
+/// the held session quits the slot is free and an implicit client delivers.
+#[tokio::test]
+async fn the_session_cap_refusal_is_unchanged_in_implicit_mode() {
+    let (server, root, _dir) = start_implicit(
+        "implicit-cap",
+        SmtpConfig {
+            max_sessions: 1,
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut held = implicit_tls(server.smtp_addr, "localhost", root.clone()).await;
+
+    let mut refused = SmtpConn::connect_raw(server.smtp_addr).await;
+    assert_eq!(
+        refused.reply().await,
+        "421 4.7.0 Too many connections, closing transmission channel"
+    );
+    assert_eq!(refused.read_to_eof().await, "", "the refusal is all of it");
+
+    implicit_tls_handshake_fails(server.smtp_addr, "localhost", root.clone()).await;
+
+    held.send("QUIT").await;
+    assert!(held.reply_raw().await.starts_with("221"));
+    held.read_to_eof().await;
+
+    // The freed slot is reaped at admission (0036 §1). A dial that lands
+    // before the reap is refused in the clear and closed, so retry until a
+    // handshake completes — bounded by a real deadline, never a sleep.
+    let started = std::time::Instant::now();
+    let mut tls = loop {
+        match common::try_implicit_tls(server.smtp_addr, "localhost", root.clone()).await {
+            Some(session) => break session,
+            None => assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "the freed slot was never reaped"
+            ),
+        }
+    };
+    auth_as(&mut tls, "after-cap").await;
+    let stored = deliver_bytes(&mut tls, "to@y.io", b"Subject: after cap\r\n\r\nbody\r\n").await;
+    assert!(stored.starts_with("250"), "{stored}");
+}
+
+/// AC9 — the mode without a pair is refused before anything binds, with
+/// the one message; never served as plaintext.
+#[tokio::test]
+async fn implicit_tls_without_a_pair_refuses_to_serve() {
+    let mut cfg = base_cfg();
+    cfg.smtp.implicit_tls = true;
+    let err = match swarmail::run_on(&cfg).await {
+        Ok(_) => panic!("implicit TLS without a pair must refuse to serve"),
+        Err(e) => e,
+    };
+    assert_eq!(
+        err.to_string(),
+        "--smtp-implicit-tls requires --tls-cert and --tls-key"
     );
 }

@@ -1,6 +1,7 @@
 //! The listener contract as documented (decision 0036, issues #77–#80): the
-//! README, the dated controlling clarification of 0027 and accepted 0036
-//! must state what the listeners actually do. #80 deliberately leaves the
+//! guide's SMTP page (the README's former SMTP section), the dated
+//! controlling clarification of 0027 and accepted 0036 must state what the
+//! listeners actually do. #80 deliberately leaves the
 //! runtime unchanged, so its red/green proof is this documentary one: the
 //! reviewed text — "a trickler cannot hold a session forever", the
 //! unconditional `stopping` answer, the success-only recovery — fails here,
@@ -25,6 +26,29 @@ fn doc(path: &str) -> String {
     let text = std::fs::read_to_string(&full)
         .unwrap_or_else(|e| panic!("{} is unreadable: {e}", full.display()));
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The current user documentation, whitespace-normalized: the README front
+/// page and every page under `docs/guide/` its detail moved into. Read from
+/// the directory, so a page added later is covered without being listed.
+fn user_docs() -> Vec<(String, String)> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/guide");
+    let mut paths: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{} is unreadable: {e}", dir.display()))
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".md"))
+        .map(|name| format!("docs/guide/{name}"))
+        .collect();
+    paths.sort();
+    assert!(paths.len() >= 20, "the guide pages were found: {paths:?}");
+    paths.insert(0, "README.md".to_string());
+    paths
+        .into_iter()
+        .map(|path| {
+            let text = doc(&path);
+            (path, text)
+        })
+        .collect()
 }
 
 /// Every phrase is present in `text`, each failure naming the document.
@@ -84,13 +108,15 @@ fn residual() -> Vec<String> {
     ]
 }
 
+/// The README's SMTP detail lives on the guide's SMTP page; the stale
+/// claims are refused on the README and on every guide page.
 #[test]
 fn the_readme_states_the_current_listener_posture() {
-    let readme = doc("README.md");
-    states(&readme, "README.md", &residual());
+    let smtp_page = doc("docs/guide/smtp.md");
+    states(&smtp_page, "docs/guide/smtp.md", &residual());
     states(
-        &readme,
-        "README.md",
+        &smtp_page,
+        "docs/guide/smtp.md",
         &[
             format!(
                 "SMTP {}, POP3 {}",
@@ -106,12 +132,14 @@ fn the_readme_states_the_current_listener_posture() {
             ),
         ],
     );
-    for stale in [
-        "has no idle timeout",
-        "clears on the next success",
-        "5 s drain deadline",
-    ] {
-        assert!(!readme.contains(stale), "README.md still claims {stale:?}");
+    for (path, text) in user_docs() {
+        for stale in [
+            "has no idle timeout",
+            "clears on the next success",
+            "5 s drain deadline",
+        ] {
+            assert!(!text.contains(stale), "{path} still claims {stale:?}");
+        }
     }
 }
 
@@ -162,7 +190,8 @@ fn the_0027_clarification_controls_and_links_proposed_0036() {
 }
 
 /// Batch 1 of epic #120 as documented (decision 0046, issues #121, #126,
-/// #127, #128, #131): the README states the per-successful-write POP3 bound
+/// #127, #128, #131): the guide (the README's former SMTP and REST
+/// sections) states the per-successful-write POP3 bound
 /// with its retention residual, the failed-session drop, `TCP_NODELAY`, the
 /// two named path limitations and the one verbatim inbox rule; the dated
 /// pointers on 0027 and 0036 point at 0046 as it stood when they were
@@ -170,10 +199,9 @@ fn the_0027_clarification_controls_and_links_proposed_0036() {
 /// whole-reply semantics either way and named neither path limitation.
 #[test]
 fn the_readme_and_0046_state_the_batch_one_listener_posture() {
-    let readme = doc("README.md");
     states(
-        &readme,
-        "README.md",
+        &doc("docs/guide/smtp.md"),
+        "docs/guide/smtp.md",
         &[
             "A POP3 reply has no whole-reply deadline either",
             "every write that moves bytes starts a fresh window",
@@ -183,14 +211,22 @@ fn the_readme_and_0046_state_the_batch_one_listener_posture() {
             "sets `TCP_NODELAY` before its first byte",
             "a quoted local part containing `>`",
             "a source route (`<@hop1,@hop2:bob@y.io>`) is not stripped",
+        ],
+    );
+    states(
+        &doc("docs/guide/rest-api.md"),
+        "docs/guide/rest-api.md",
+        &[
             "inbox must not contain control characters",
             "padding included, so `\" pad \"` names the same inbox everywhere",
         ],
     );
-    assert!(
-        !readme.contains("no one reply write may wait longer"),
-        "README.md still claims a whole-write POP3 bound"
-    );
+    for (path, text) in user_docs() {
+        assert!(
+            !text.contains("no one reply write may wait longer"),
+            "{path} still claims a whole-write POP3 bound"
+        );
+    }
     // 0046's index row is checked against its record, whatever the status,
     // by `every_index_row_matches_its_records_status`; the dated pointers
     // below are history and keep the status they were written under.

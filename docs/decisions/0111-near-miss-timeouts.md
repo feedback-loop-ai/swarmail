@@ -1,6 +1,7 @@
 # 0111 — Near misses on a timed-out wait
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-31
 - **Scope:** Epic #164, issue #156, on main `d892acb` (merged #152, #153, #154).
 - **Specification:** [Near misses on a timed-out wait](../../specs/near-miss-timeouts/spec.md).

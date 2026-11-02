@@ -1,6 +1,7 @@
 # 0094 — Ingest provenance and focused mail waits
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-28
 - **Scope:** Epic #164 issue #154 on provisional #153 commit 25b367d.
 - **Specification:** [Focused mail waits](../../specs/focused-mail-waits/spec.md).
@@ -180,3 +181,23 @@ and 0093 is [source-mail-comparison](0093-source-mail-comparison.md), both from
 #163; the OPTIONS lineage's 0092 (mcp-candidate-proof) is
 [0104](0104-mcp-candidate-proof.md). 0094 itself is unchanged on `main`. The
 historical sentences are kept as written; no ruling or status changes.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02. The text above is unchanged
+and remains the record of what was proposed. This addendum states what has
+moved since it was written, checked against `main` at `c336c95`; it rules
+nothing beyond the acceptance.
+
+- **The tool count.** Ruling 7's "fifteen tools" and the 2026-10-28
+  correction's "becomes fifteen" are historical.
+  [0112](0112-recipient-inbox-routing.md) added `swarmail_create_inbox` and
+  [0110](0110-attachments-and-ics.md) the two attachment tools;
+  `tests/mcp_revisions.rs` pins the served catalogue as eighteen tools
+  (`CATALOGUE`), the same names on all three revisions
+  (`revision_tool_annotations`).
+- **Anchor labels in general reads.** The synthesis says "old general reads
+  expose only URLs; users need the new tool for labels". Since
+  [0108](0108-compact-email-view.md), the compact view on modern search and
+  latest serves `anchors` with `url` and `anchor_text` (`src/api.rs`,
+  `src/mcp.rs` `MODERN_SEARCH_DESCRIPTION`).

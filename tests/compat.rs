@@ -1796,7 +1796,7 @@ async fn wrapped_field_prefixes_refuse_by_name() {
 }
 
 /// Mailpit's `tz` is not read on latest (decision 0049 §5): a named 400 on
-/// every latest route, which README's known differences states.
+/// every latest route, which the shims guide's known differences states.
 #[tokio::test]
 async fn latest_timezone_is_a_documented_refusal() {
     let s = start().await;
@@ -1807,9 +1807,15 @@ async fn latest_timezone_is_a_documented_refusal() {
         assert_eq!(status, 400, "{route}: {body}");
         assert!(body["error"].as_str().unwrap().contains("tz"), "{body}");
     }
-    let readme =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
-    assert!(readme.contains("`tz`"), "README names the tz refusal");
+    let shims = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/docs/guide/compat-shims.md"
+    ))
+    .unwrap();
+    assert!(
+        shims.contains("`tz`"),
+        "docs/guide/compat-shims.md names the tz refusal"
+    );
 }
 
 /// A blank compat `inbox` selector refuses on all four pages (decision 0044

@@ -37,3 +37,10 @@ record's own verb and scope, and nothing above is rewritten by it.
   identity rule — the AUTH username still names the inbox, and credentials
   that fail to name one answer `501 5.5.2` and change nothing instead of
   silently succeeding. 0028 §2 is itself later amended by 0034 and 0046.)*
+
+## Later-decision marker — 2026-11-02 (0112)
+
+- *(Amended by [0112](0112-recipient-inbox-routing.md) (accepted
+  2026-11-02): §1, only on a server started with `--route-domain`,
+  where a routed recipient outranks the AUTH username; an
+  unconfigured server is unchanged.)*

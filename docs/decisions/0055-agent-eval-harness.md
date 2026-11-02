@@ -314,3 +314,13 @@ validated announcement and discards every other byte at once. The proof is
 `readiness_continues_draining_after_the_first_valid_announcement` in
 `evals/tests/runner.rs`, which writes 1 MiB after the announcement and
 requires a pass with bounded output. This addendum changes no lifecycle code.
+
+## Later-decision markers — 2026-11-02 (0112, 0115)
+
+- *(Amended by [0112](0112-recipient-inbox-routing.md) (accepted
+  2026-11-02): §6, only for the `inbox-isolation` task, whose three
+  agents share one SMTP AUTH identity and are separated by routed
+  recipients.)*
+- *(Amended by [0115](0115-trial-isolation.md) (accepted 2026-11-02):
+  §§6–9, solely the execution-boundary/support and result-observation
+  contracts.)*

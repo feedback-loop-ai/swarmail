@@ -2242,7 +2242,13 @@ fn the_readme_points_at_the_guide_and_not_at_an_unexercised_block() {
         !readme.contains("mcpServers"),
         "the unexercised .mcp.json snippet is gone from the README"
     );
-    assert!(readme.contains("| `tests/agent_setup_docs.rs` |"));
+    assert!(
+        !raw("docs/guide/mcp.md").contains("mcpServers"),
+        "the unexercised .mcp.json snippet is gone from the guide's MCP page"
+    );
+    // The suite table moved with the README's Testing section to the guide.
+    let testing = raw("docs/guide/testing.md");
+    assert!(testing.contains("| `tests/agent_setup_docs.rs` |"));
     let flat = squash(&readme);
     assert!(
         flat.contains(README_CLAIM),
@@ -2251,7 +2257,7 @@ fn the_readme_points_at_the_guide_and_not_at_an_unexercised_block() {
     let overclaim = "Every snippet in it is written into a fresh project and driven";
     assert!(!flat.contains(overclaim), "the README overclaims");
     // The suite-table row names the SMTP-driven proof beside the transport.
-    let row = readme
+    let row = testing
         .lines()
         .find(|l| l.starts_with("| `tests/agent_setup_docs.rs` |"))
         .expect("the suite row");
