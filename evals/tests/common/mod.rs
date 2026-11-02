@@ -1324,6 +1324,101 @@ async fn naive_recovery(mode: &str, env: &AgentEnv, app: &App) -> i32 {
     0
 }
 
+/// The repository root: the working directory a brokkr-mode matrix needs,
+/// because the recipe lives under `.brokkr/recipes/eval` there.
+pub fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("evals/ sits in the repository")
+        .to_path_buf()
+}
+
+/// The eval recipe's directory (bundle, policy and the two scripts).
+pub fn recipe_dir() -> PathBuf {
+    repo_root().join(".brokkr/recipes/eval")
+}
+
+/// The offline stand-in for `brokkr run --recipe eval`.
+pub fn brokkr_standin() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/brokkr-standin.sh")
+}
+
+/// A throwaway realm for `matrix --brokkr`: a directory under `base` that
+/// holds the eval recipe's bundle (a link to the real one), so the matrix's
+/// preflight finds `.brokkr/recipes/eval/bundle.json` and an artifact root
+/// inside it is reachable for the seat's hands. The scripts the stand-in runs
+/// are still the repository's own (`EVAL_TEST_RECIPE_DIR`).
+pub fn brokkr_realm(base: &Path) -> PathBuf {
+    let realm = base.join("realm");
+    let recipe = realm.join(".brokkr/recipes/eval");
+    std::fs::create_dir_all(&recipe).expect("realm directories");
+    std::os::unix::fs::symlink(recipe_dir().join("bundle.json"), recipe.join("bundle.json"))
+        .expect("realm bundle link");
+    realm
+}
+
+/// `matrix --brokkr <stand-in>` from `realm`, in a given stand-in mode.
+pub fn brokkr_matrix(mode: &str, realm: &Path) -> Command {
+    let mut cmd = cli();
+    cmd.current_dir(realm)
+        .env("EVAL_TEST_RECIPE_DIR", recipe_dir())
+        .env("EVAL_TEST_BROKKR_MODE", mode)
+        .arg("matrix")
+        .arg("--brokkr")
+        .arg(brokkr_standin());
+    cmd
+}
+
+/// A schema-valid row for report and journal tests that never launch a trial:
+/// the harness's own refused-row constructor, set to the requested outcome.
+/// `external` makes an external agent declared as the via-brokkr claude
+/// surface; `None` makes the built-in agent `agent` names.
+pub fn synthetic_row(
+    task: &str,
+    agent: &str,
+    external: bool,
+    outcome: swarmail_evals::tasks::Outcome,
+    wall_time_ms: u64,
+    id: &str,
+) -> TrialResult {
+    use swarmail_evals::provenance::WrapperProfile;
+    use swarmail_evals::state::FailureClass;
+    use swarmail_evals::tasks::Outcome;
+    let req = runner::TrialRequest {
+        task: Some(task.into()),
+        agent: Some(agent.into()),
+        argv: if external {
+            vec![OsString::from("/bin/agent")]
+        } else {
+            Vec::new()
+        },
+        agent_model: external.then(|| "claude-sonnet-5-5".to_string()),
+        wrapper_profile: external.then_some(WrapperProfile::Claude2_1_310ViaBrokkr),
+        ..Default::default()
+    };
+    let mut row = runner::refused_row(&req, id);
+    row.wall_time_ms = wall_time_ms;
+    row.outcome = outcome;
+    match outcome {
+        Outcome::Pass => {
+            row.failure_class = None;
+            row.agent_exit_status = Some(0);
+        }
+        Outcome::Fail => {
+            row.failure_class = Some(FailureClass::GaveUp);
+            row.agent_exit_status = Some(0);
+        }
+        Outcome::HarnessError => {}
+    }
+    row.validate().expect("a schema-valid synthetic row");
+    row
+}
+
+/// A deterministic 32-hex trial id for fixture rows.
+pub fn fixed_id(n: u32) -> String {
+    format!("{n:032x}")
+}
+
 // ---- trial isolation (proposed 0115) -------------------------------------
 
 /// A benign agent for the isolated-HOME proof: exit 0 when HOME is fresh

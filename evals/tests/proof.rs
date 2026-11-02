@@ -10,7 +10,8 @@
 mod common;
 
 use common::*;
-use serde_json::Value;
+use serde_json::{Value, json};
+use swarmail_evals::runner::TrialResult;
 use swarmail_evals::state::FailureClass;
 use swarmail_evals::tasks::{self, Outcome};
 
@@ -629,6 +630,84 @@ fn near_miss_controls_recover_after_a_timed_out_wait() {
             assert!(released, "{events:?}");
         }
     }
+}
+
+/// The controls again, through the recipe path (decision 0119): every
+/// catalogue task — the default tier and the hard tier (proposed 0117) alike,
+/// the same set the direct-runner controls above cover — run by
+/// `matrix --brokkr` with the offline stand-in for the engine, so the oracle
+/// must still pass every task and the do-nothing agent must still fail every
+/// task with its declared idle class. The success check is proven able to fail
+/// and able to pass through trial.sh, the row, score.sh and the matrix's
+/// cross-check, not only through the direct runner. The set is asserted by
+/// task id, so a new tier joins this proof instead of breaking a count.
+#[test]
+fn the_controls_hold_through_the_recipe_path() {
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    let ids: Vec<String> = tasks::catalogue().into_iter().map(|t| t.id).collect();
+    let mut expected = ids.clone();
+    expected.sort();
+    let agents = dir.path().join("agents.json");
+    std::fs::write(
+        &agents,
+        json!([{"label": "oracle", "argv": []}, {"label": "null", "argv": []}]).to_string(),
+    )
+    .unwrap();
+    let realm = brokkr_realm(dir.path());
+    let out = brokkr_matrix("ok", &realm)
+        .args(["--tasks", &ids.join(","), "--agents"])
+        .arg(&agents)
+        .args(["--trials", "1", "--artifacts-dir"])
+        .arg(realm.join("artifacts"))
+        .output()
+        .unwrap();
+    let rows: Vec<TrialResult> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 2 * ids.len(), "{}", stderr(&out));
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "failures, no harness error\n{}",
+        stderr(&out)
+    );
+    let of = |label: &str| -> Vec<&TrialResult> {
+        rows.iter()
+            .filter(|r| r.agent.as_deref() == Some(label))
+            .collect()
+    };
+    let covered = |rows: &[&TrialResult]| -> Vec<String> {
+        let mut seen: Vec<String> = rows.iter().map(|r| r.task.clone().unwrap()).collect();
+        seen.sort();
+        seen
+    };
+    let oracle = of("oracle");
+    let null = of("null");
+    assert_eq!(covered(&oracle), expected, "oracle covers every task once");
+    assert_eq!(covered(&null), expected, "null covers every task once");
+    let oracle_failures: Vec<_> = oracle
+        .iter()
+        .filter(|r| r.outcome != Outcome::Pass)
+        .collect();
+    assert!(
+        oracle_failures.is_empty(),
+        "oracle passes every task: {oracle_failures:?}"
+    );
+    for row in &null {
+        assert_eq!(row.outcome, Outcome::Fail, "{row:?}");
+        let task = tasks::find(row.task.as_deref().unwrap()).unwrap();
+        assert_eq!(row.failure_class, Some(task.idle_class), "{row:?}");
+        assert!(
+            matches!(
+                row.failure_class,
+                Some(FailureClass::GaveUp | FailureClass::WaitTimeout)
+            ),
+            "{row:?}"
+        );
+    }
+    assert!(rows.iter().all(|r| r.confinement == "unconfined"));
 }
 
 /// The hard tier's fixed-seed proof: oracle and null through the real

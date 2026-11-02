@@ -122,13 +122,25 @@ export SWARMAIL_ARTIFACT_FILTER='select(.reason == "compiler-artifact" and .targ
 run "evals cargo fmt"             'cd evals && cargo fmt --all -- --check'
 run "evals cargo clippy"          'cd evals && cargo clippy --all-targets --locked -- -D warnings'
 run "evals cargo test"            'set -o pipefail; bin="$(cargo build --locked --bin swarmail --message-format=json | jq -r "$SWARMAIL_ARTIFACT_FILTER")"; test -x "$bin" || { echo "error: no executable swarmail binary in the build record: ${bin:-<empty>}" >&2; exit 1; }; cd evals && SWARMAIL_BIN="$bin" cargo test --locked'
-run "brokkr compile --bundle .brokkr/recipes/self"   "$launched_q compile --bundle .brokkr/recipes/self"
-# A compile that exits 0 but sweeps a rule as reading past a hard rule's facts
-# (#125's residual warning) is not a clean constitution: refuse it by name.
-if grep -q 'lets the run go on without reading' "$output"; then
-  { printf 'brokkr compile --bundle .brokkr/recipes/self emitted a policy-sweep warning:\n'; grep 'lets the run go on without reading' "$output"; } >> "$notes"
-  write_result fail; exit 0
-fi
+# Every directory under .brokkr/recipes/ is compiled, as CI does: the shelf is
+# the list, so a recipe nobody named here cannot fall outside the gate (#148).
+# A directory without a regular bundle.json, or an empty shelf, is a refusal
+# by name, never a skip. A compile that exits 0 but sweeps a rule as reading
+# past a hard rule's facts (#125's residual warning) is not a clean
+# constitution either: refuse it by name, inside the loop, because `run`
+# overwrites $output on every call.
+for dir in .brokkr/recipes/*/; do
+  recipe="${dir%/}"
+  [ -d "$recipe" ] || fail_now "verify-seat: no recipe directory under .brokkr/recipes/; the compile gate would compile nothing"
+  if [ ! -f "$recipe/bundle.json" ] || [ -L "$recipe/bundle.json" ]; then
+    fail_now "verify-seat: $recipe has no bundle.json; a stray directory is a refusal, never a skip"
+  fi
+  run "brokkr compile --bundle $recipe" "$launched_q compile --bundle $(printf '%q' "$recipe")"
+  if grep -q 'lets the run go on without reading' "$output"; then
+    { printf 'brokkr compile --bundle %s emitted a policy-sweep warning:\n' "$recipe"; grep 'lets the run go on without reading' "$output"; } >> "$notes"
+    write_result fail; exit 0
+  fi
+done
 run "coverage gate (exact 100% lines+branches+functions)"  "bash $pin_q/coverage-gate.sh"
 run "coverage gate selftest"      "bash $pin_q/coverage-gate.sh selftest"
 run "design check selftest"       "bash $pin_q/design-check.sh selftest"
@@ -147,5 +159,5 @@ if [ "$integrity_failed" -ne 0 ]; then
   printf 'every gate passed, but wrapper integrity failed (above): not verified\n' >> "$notes"
   write_result fail; exit 0
 fi
-printf 'all gates passed from the pinned bundle (fmt, clippy, test, evals fmt+clippy+test against the candidate binary, bundle, exact 100/100/100 coverage + selftest, design-check selftest, delivery tamper-boundary proof, publish-guard proof, seal-branch keyless proof, deny licenses, no native-tls fail-closed) with network denied; brokkr %s\n' "$launched_digest" > "$notes"
+printf 'all gates passed from the pinned bundle (fmt, clippy, test, evals fmt+clippy+test against the candidate binary, every recipe bundle, exact 100/100/100 coverage + selftest, design-check selftest, delivery tamper-boundary proof, publish-guard proof, seal-branch keyless proof, deny licenses, no native-tls fail-closed) with network denied; brokkr %s\n' "$launched_digest" > "$notes"
 write_result pass
