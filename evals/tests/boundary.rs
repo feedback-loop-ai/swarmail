@@ -314,6 +314,62 @@ fn the_hard_tier_is_documented_in_both_directions() {
     let spec = std::fs::read_to_string(root().join("specs/agent-eval-harness/spec.md")).unwrap();
     assert!(spec.contains("straight|traps|multi_step|hard"));
     assert!(spec.contains("amended 2026-11-02"));
+    // Review return 2026-11-02 (F1-F4). Both documents state that request
+    // times precede the send, that the current code's request time is its
+    // send time, and that the expiry window is the prepare-to-start gap.
+    for (name, text) in [("README.md", &readme), ("run-plan.md", &run_plan)] {
+        let flat = text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        for phrase in [
+            "request times precede the send",
+            "current code's request time is its send time",
+            "prepare-to-start gap",
+            "`stale_code` by the scorer's fallback",
+        ] {
+            assert!(flat.contains(phrase), "{name}: missing {phrase:?}");
+        }
+    }
+    // F4: comparability rests on the task id and the per-task definition hash.
+    let flat_plan = run_plan.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat_plan.contains(
+        "rows of the default product compare with the 2026-11-01 baseline by task id and per-task `definition_sha256`"
+    ));
+    assert!(flat_plan.contains("is not the comparison key"));
+    // F3: the older specs and the intake record carry the dated notes.
+    let flat_spec = spec.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat_spec.contains("Amended 2026-11-02")
+            && flat_spec.contains("19 catalogue rows in four tiers")
+            && flat_spec.contains("`hard` tier"),
+        "agent-eval-harness AC3 amendment"
+    );
+    let wrappers = std::fs::read_to_string(root().join("specs/baseline-wrappers/spec.md")).unwrap();
+    let flat_wrappers = wrappers.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat_wrappers.contains("16 tasks of the 19-task catalogue"),
+        "baseline-wrappers note"
+    );
+    let intake = std::fs::read(root().join("evals/hard-tier-intake.md")).unwrap();
+    let head = String::from_utf8_lossy(&intake[..400.min(intake.len())]).to_string();
+    for needle in [
+        "otp-backlog",
+        "recipient-crowd",
+        "digest-lookalike",
+        "specs/hard-eval-tier/spec.md",
+    ] {
+        assert!(head.contains(needle), "intake banner: missing {needle}");
+    }
+    // 0115 stays a single proposal: exactly one status line, still proposed.
+    assert_eq!(
+        decision
+            .lines()
+            .filter(|l| l.starts_with("- **Status:**"))
+            .count(),
+        1
+    );
 }
 
 /// AC9: the scorer's inputs do not grow. `score` takes a task and a frozen

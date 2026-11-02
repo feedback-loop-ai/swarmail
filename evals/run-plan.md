@@ -74,9 +74,18 @@ three tasks with free controls only (oracle and null on the default seed and on
 four fixed seeds, and scripted agents that commit exactly one named trap); it
 does not show that a live model fails any of them some of the time. Read the
 first paid hard run for that: a task every model passes, or none can, is a
-design failure and is replaced on that data. Expiry (`OTP_TTL`, 600 s) equals the
-600000 ms deadline, so a slow agent can lose `otp-backlog`'s current code to
-expiry; that is `stale_code` by the scorer's fallback, not the named trap.
+design failure and is replaced on that data. `otp-backlog`'s request times
+precede the send: each mail's `Requested at` is `fixture time − (12 − g) × 4
+minutes`, so the current code's request time is its send time and it is minted
+at prepare. Expiry (`OTP_TTL`, 600 s, from mint) equals the 600000 ms deadline,
+so a slow agent can lose the current code to expiry; the expiry-before-deadline
+window is the prepare-to-start gap, and that is `stale_code` by the scorer's
+fallback, not the named trap.
+
+Comparability: rows of the default product compare with the 2026-11-01
+baseline by task id and per-task `definition_sha256`, which are unchanged for
+the sixteen; the catalogue hash is the live catalogue's identity and is not the
+comparison key.
 
 ## Current readiness and operator command
 

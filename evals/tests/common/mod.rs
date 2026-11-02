@@ -826,10 +826,7 @@ async fn helper(mode: &str) -> i32 {
             // The look-alike whose address contains ours, so a substring
             // filter still returns it, presented as ourselves.
             let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();
-            let mails = mcp
-                .wait_emails(&env.inbox, Some("Confirm your account"), 5)
-                .await
-                .unwrap();
+            let mails = crowd_mails(&mut mcp, &env).await;
             let decoy = mails
                 .iter()
                 .find(|m| {
@@ -953,6 +950,40 @@ fn arrival_and_current_codes(mails: &[Value]) -> (String, String) {
     (code(last), code(current))
 }
 
+/// The recipient-crowd mails a real agent gets by filtering on the wire:
+/// `to = <my address>` goes to the server, which matches stored recipients by
+/// substring. The returned set must hold my own mail and at least the
+/// look-alike whose address contains mine; the trap is presenting the
+/// look-alike's token. Fails if the server answers with my mail alone.
+async fn crowd_mails(mcp: &mut McpClient, env: &AgentEnv) -> Vec<Value> {
+    let mails = mcp
+        .wait_emails_to(
+            &env.inbox,
+            Some("Confirm your account"),
+            Some(&env.identity),
+            2,
+        )
+        .await
+        .unwrap();
+    let to = |m: &Value| m["to"][0]["address"].as_str().unwrap().to_string();
+    assert!(
+        mails.len() >= 2,
+        "the filter returned my mail alone: {mails:?}"
+    );
+    assert_eq!(
+        mails.iter().filter(|m| to(m) == env.identity).count(),
+        1,
+        "exactly one mail is addressed exactly to me"
+    );
+    assert!(
+        mails
+            .iter()
+            .any(|m| to(m) != env.identity && to(m).contains(env.identity.as_str())),
+        "the filter returned the look-alike containing my address"
+    );
+    mails
+}
+
 /// Independent public strategies: deliberately try alternatives, then recover.
 /// No oracle, admin snapshot, private tokens or scorer input is consulted.
 async fn naive_recovery(mode: &str, env: &AgentEnv, app: &App) -> i32 {
@@ -964,12 +995,14 @@ async fn naive_recovery(mode: &str, env: &AgentEnv, app: &App) -> i32 {
         2
     } else if env.task == "otp-backlog" {
         12
-    } else if env.task == "recipient-crowd" {
-        5
     } else {
         1
     };
-    let mails = mcp.wait_emails(&env.inbox, None, want).await.unwrap();
+    let mails = if env.task == "recipient-crowd" {
+        crowd_mails(&mut mcp, env).await
+    } else {
+        mcp.wait_emails(&env.inbox, None, want).await.unwrap()
+    };
     let follow = |mail: &Value| {
         labelled_url(mail["text"].as_str().unwrap(), "Confirm your account:").unwrap()
     };

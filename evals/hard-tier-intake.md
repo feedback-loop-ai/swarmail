@@ -1,5 +1,11 @@
 # Hard eval tier, intake framing (epic #164, operator ruling 2026-11-01)
 
+> **Status 2026-11-02:** this is the intake phase record and is not rewritten.
+> The tier shipped three tasks, `otp-backlog`, `recipient-crowd` and
+> `digest-lookalike`, not the four framed below; see
+> [specs/hard-eval-tier/spec.md](../specs/hard-eval-tier/spec.md) and proposed
+> [0115](../docs/decisions/0115-hard-eval-tier.md).
+
 Run: a-harder-eval-tier-164-epic-oper-85dfc61d. Phase: intake, framing only.
 Base: main f815d48. Route: claude-careful (decision 0099), zero Codex.
 

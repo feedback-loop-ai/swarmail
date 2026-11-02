@@ -127,9 +127,24 @@ impl McpClient {
         count: usize,
         timeout_ms: u64,
     ) -> Result<Value, String> {
+        self.wait_to(inbox, subject, None, count, timeout_ms).await
+    }
+
+    /// As [`Self::wait`], with the tool's `to` recipient filter on the wire.
+    pub async fn wait_to(
+        &mut self,
+        inbox: &str,
+        subject: Option<&str>,
+        to: Option<&str>,
+        count: usize,
+        timeout_ms: u64,
+    ) -> Result<Value, String> {
         let mut args = json!({ "inbox": inbox, "count": count, "timeout_ms": timeout_ms });
         if let Some(s) = subject {
             args["subject"] = json!(s);
+        }
+        if let Some(t) = to {
+            args["to"] = json!(t);
         }
         self.call("swarmail_wait_for_email", args).await
     }
@@ -141,10 +156,22 @@ impl McpClient {
         subject: Option<&str>,
         count: usize,
     ) -> Result<Vec<Value>, String> {
-        let found = self.wait(inbox, subject, count, 30_000).await?;
+        self.wait_emails_to(inbox, subject, None, count).await
+    }
+
+    /// As [`Self::wait_emails`], with the tool's `to` recipient filter sent
+    /// on the wire (a substring match on the stored recipients).
+    pub async fn wait_emails_to(
+        &mut self,
+        inbox: &str,
+        subject: Option<&str>,
+        to: Option<&str>,
+        count: usize,
+    ) -> Result<Vec<Value>, String> {
+        let found = self.wait_to(inbox, subject, to, count, 30_000).await?;
         if found["timed_out"] == json!(true) {
             return Err(format!(
-                "waited for {count} mail(s) matching {subject:?} in {inbox}; matched {}",
+                "waited for {count} mail(s) matching {subject:?} to {to:?} in {inbox}; matched {}",
                 found["matched"]
             ));
         }

@@ -478,8 +478,13 @@ impl Private {
         let text = if self.task.scenario == Scenario::OtpBacklog {
             // The only generation signal in the mail: no sentence says it
             // replaces another, and arrival order is deliberately unrelated.
-            let requested =
-                self.inputs.time() + chrono::Duration::minutes(4 * i64::from(generation));
+            // Requests precede the send: the newest generation is requested
+            // at the fixture time (the mail's own Date) and each earlier one
+            // four minutes before the next, so no mail claims a request
+            // made after it was sent.
+            let behind =
+                i64::try_from(tasks::OTP_BACKLOG).expect("small constant") - i64::from(generation);
+            let requested = self.inputs.time() - chrono::Duration::minutes(4 * behind);
             format!(
                 "Your verification code is {code}.\n\nRequested at {} UTC.\nIt expires in 10 minutes.\n",
                 requested.format("%Y-%m-%d %H:%M:%S")
@@ -2267,10 +2272,8 @@ mod hard_layout_proofs {
         format!("{i:064x}")
     }
 
-    fn private(id: &str, seed: &str) -> Private {
-        let inputs =
-            crate::provenance::FixtureInputs::resolve(Some(seed), Some("2026-10-24T12:00:00Z"))
-                .unwrap();
+    fn private_at(id: &str, seed: &str, time: &str) -> Private {
+        let inputs = crate::provenance::FixtureInputs::resolve(Some(seed), Some(time)).unwrap();
         let mut p = Private::with_inputs(
             "hard-layout",
             tasks::find(id).unwrap(),
@@ -2292,7 +2295,11 @@ mod hard_layout_proofs {
     /// The task planned for `seed`, and the delivery sequence numbers in
     /// the order they are sent.
     fn plan(id: &str, seed: &str) -> (Private, Vec<u64>) {
-        let mut p = private(id, seed);
+        plan_at(id, seed, "2026-10-24T12:00:00Z")
+    }
+
+    fn plan_at(id: &str, seed: &str, time: &str) -> (Private, Vec<u64>) {
+        let mut p = private_at(id, seed, time);
         let order = p.plan();
         (p, order)
     }
@@ -2354,52 +2361,67 @@ mod hard_layout_proofs {
 
     #[test]
     fn the_backlog_buries_the_current_code_on_every_seed() {
-        let fixture_time = "2026-10-24T12:00:00Z"
-            .parse::<chrono::DateTime<chrono::Utc>>()
-            .unwrap();
-        for i in 0..SEEDS {
-            let (p, order) = plan("otp-backlog", &seed(i));
-            assert_eq!(order.len(), tasks::OTP_BACKLOG);
-            assert_eq!(p.deliveries.len(), tasks::OTP_BACKLOG);
-            assert!(p.deliveries.iter().all(|d| d.flow == Flow::Otp));
-            let kinds: Vec<String> = order.iter().map(|&s| kind(&p, s)).collect();
-            let position = kinds.iter().position(|k| k == "otp-12").unwrap();
-            assert!(
-                (1..=10).contains(&position),
-                "seed {i}: current generation is {position} of {kinds:?}"
-            );
-            let mut sorted = kinds.clone();
-            sorted.sort();
-            sorted.dedup();
-            assert_eq!(sorted.len(), 12, "twelve distinct generations");
-            assert_eq!(p.otp_generation[AGENT], 12);
-            let mut codes = Vec::new();
-            for g in 1..=12u32 {
-                let seq = p
-                    .deliveries
-                    .iter()
-                    .find(|d| d.message == format!("otp-{g}"))
-                    .unwrap()
-                    .seq;
-                let mail = raw(&p, seq);
-                assert_eq!(header(&mail, "Subject:"), "Your verification code");
-                assert!(!mail.contains("earlier code"), "no supersession sentence");
-                assert_eq!(mail.matches("Requested at ").count(), 1);
-                let want = fixture_time + chrono::Duration::minutes(4 * i64::from(g));
-                assert_eq!(
-                    requested(&mail),
-                    want.format("%Y-%m-%d %H:%M:%S").to_string()
+        // The second time puts generations 1-7 on the previous day, so the
+        // date part of the string order is exercised too.
+        for time in ["2026-10-24T12:00:00Z", "2026-10-24T00:30:00Z"] {
+            let fixture_time = time.parse::<chrono::DateTime<chrono::Utc>>().unwrap();
+            let stamp =
+                |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%d %H:%M:%S").to_string();
+            for i in 0..SEEDS {
+                let (p, order) = plan_at("otp-backlog", &seed(i), time);
+                assert_eq!(order.len(), tasks::OTP_BACKLOG);
+                assert_eq!(p.deliveries.len(), tasks::OTP_BACKLOG);
+                assert!(p.deliveries.iter().all(|d| d.flow == Flow::Otp));
+                let kinds: Vec<String> = order.iter().map(|&s| kind(&p, s)).collect();
+                let position = kinds.iter().position(|k| k == "otp-12").unwrap();
+                assert!(
+                    (1..=10).contains(&position),
+                    "seed {i}: current generation is {position} of {kinds:?}"
                 );
-                codes.push((g, code(&mail), requested(&mail)));
+                let mut sorted = kinds.clone();
+                sorted.sort();
+                sorted.dedup();
+                assert_eq!(sorted.len(), 12, "twelve distinct generations");
+                assert_eq!(p.otp_generation[AGENT], 12);
+                let mut codes = Vec::new();
+                for g in 1..=12u32 {
+                    let seq = p
+                        .deliveries
+                        .iter()
+                        .find(|d| d.message == format!("otp-{g}"))
+                        .unwrap()
+                        .seq;
+                    let mail = raw(&p, seq);
+                    assert_eq!(header(&mail, "Subject:"), "Your verification code");
+                    assert!(!mail.contains("earlier code"), "no supersession sentence");
+                    assert_eq!(mail.matches("Requested at ").count(), 1);
+                    // A request precedes the send: generation g was requested
+                    // (12 - g) * 4 minutes before the fixture time, which is
+                    // the mail's own Date.
+                    let want = fixture_time - chrono::Duration::minutes(4 * (12 - i64::from(g)));
+                    let got = requested(&mail);
+                    assert_eq!(got, stamp(want), "seed {i} {time} generation {g}");
+                    assert!(got <= stamp(fixture_time), "never after the send: {got}");
+                    assert!(
+                        got >= stamp(fixture_time - chrono::Duration::minutes(60)),
+                        "within the past hour: {got}"
+                    );
+                    codes.push((g, code(&mail), got));
+                }
+                assert_eq!(
+                    codes[11].2,
+                    stamp(fixture_time),
+                    "the current code was requested at the fixture time"
+                );
+                assert!(
+                    codes.windows(2).all(|w| w[0].2 < w[1].2),
+                    "string order is generation order"
+                );
+                let mut distinct: Vec<_> = codes.iter().map(|c| c.1.clone()).collect();
+                distinct.sort();
+                distinct.dedup();
+                assert_eq!(distinct.len(), 12, "twelve distinct codes");
             }
-            assert!(
-                codes.windows(2).all(|w| w[0].2 < w[1].2),
-                "strictly increasing"
-            );
-            let mut distinct: Vec<_> = codes.iter().map(|c| c.1.clone()).collect();
-            distinct.sort();
-            distinct.dedup();
-            assert_eq!(distinct.len(), 12, "twelve distinct codes");
         }
     }
 
