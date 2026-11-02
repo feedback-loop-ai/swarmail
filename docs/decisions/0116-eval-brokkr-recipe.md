@@ -1,7 +1,8 @@
 # 0116 — The eval recipe on brokkr: interim opaque driver, journal accounting, retained tool-call records
 
 - **Status:** proposed
-- **Date:** 2026-11-02
+- **Date:** 2026-11-02 (revised the same day after the first review return,
+  decision 0102's 2026-10-31 addendum; the revision is marked **R2** below)
 - **Scope:** Epic #164 issue #148 (P1), delivered from main `f815d48` on the
   zero-Codex `claude-careful` recipe (0098/0099, rework per 0102).
 - **Specification:** [the eval recipe on brokkr](../../specs/eval-brokkr-recipe/spec.md).
@@ -10,8 +11,8 @@
   "the next run's recipe/driver".
 - **Supplements:** accepted 0055 §§6–10 and accepted
   [0076](0076-sequential-eval-trials.md) compatibly; accepted
-  [0075](0075-eval-privacy.md) compatibly in §3 and by **amendment** in §4,
-  which waits for the operator.
+  [0075](0075-eval-privacy.md) compatibly in §3 and by **amendment** in §4
+  and §6, both of which wait for the operator.
 - **Preserves:** 0001–0005; accepted 0020, 0045 §8, 0050, 0056 and its
   2026-11-01 addendum, 0063, 0071, 0098, 0099, 0100, 0102.
 - **Number:** provisional 0116. 0115 is held by #221's branch
@@ -61,58 +62,96 @@ check proven able to fail, and trials that cannot see each other.
    `swarmail-evals check --artifacts-dir` on the retained leaf; `pass`,
    `fail` or `unscorable`). No retries. A failed trial is data (`done`); an
    unscorable one or a trial that produced no row stops. The recipe reuses
-   the runner's lifecycle, admission, scoring and retention unchanged.
+   the runner's lifecycle, admission, scoring and retention unchanged. Both
+   seats have workspace hands; the score seat has no network and writes
+   exactly `<slot>/score.json` (**R2**: its hands are not read-only). Both
+   seat scripts parse the engine's rendered prompt (`Feature: <text>`, an
+   indented result path) by trimming each line and matching the request
+   token anywhere on it (**R2**).
 2. **One command, one row per slot.** `swarmail-evals matrix --brokkr BIN`
    runs each slot as one `brokkr run --recipe eval`, reads the slot's row,
    exit and gate verdict, and keeps 0076's accounting: a worker that returns
-   no row, a row for another cell, an exit that disagrees with the row, or a
-   gate that disagrees with the row is that slot's `harness_error`, stops
-   admission and writes the refusal suffix. Trials stay sequential (0076);
+   no row, a row for another cell, an exit that disagrees with the row, a
+   gate that never ruled (`score_missing`, **R2**) or a gate that disagrees
+   with the row (`score_mismatch`) is that slot's `harness_error`, stops
+   admission and writes the refusal suffix. The slot root must lie inside
+   the workspace the seat's hands reach, checked before any spawn (**R2**).
+   The brokkr-mode envelope covers the trial deadline, the direct envelope's
+   slack and the score seat's budget (**R2**). Trials stay sequential (0076);
    isolation remains #221's; the issue's two-concurrent-trials criterion is
    not met by this recipe and is not claimed.
-3. **Accounting joins by `trial_id`, never by discovery.** Rows do not
-   change. `report --journal FACTS` joins a typed journal-facts file
-   (produced from the pinned brokkr's export by `evals/scripts/journal-facts.sh`)
-   to the rows by the `trial_id` the matrix assigned before spawn and the
-   trial seat echoed in its result. A missing, ambiguous or accounting-free
-   fact is a typed reason (`journal_missing`, `journal_ambiguous`,
-   `journal_has_no_accounting`, `builtin_agent`), never `0`; tokens per
-   success is `null` with a reason whenever any trial in a group lacks
-   facts or no trial passed. This is a compatible reading of 0075 §4
-   (harness-authored finite facts) and of 0055 §10 (report formulas
-   unchanged, new figures added beside them).
-4. **Retained tool-call records.** Per joined trial the report may write a
-   bounded `tool-calls.json`: ordinal, bounded tool name, outcome class,
-   invalid-argument flag, argument and result byte lengths and SHA-256
-   digests; never argument or result bytes. This is compatible with 0075 §4
-   and lands with the recipe. **By amendment, awaiting the operator:** a
-   value-bearing mode that also retains the *argument values* of the two
-   harness-owned tools (Swarmail's MCP tools and `eval_http`), value-redacted
-   against the fixture admin secret and registered sentinels, fail-closed to
-   absence with a typed reason when redaction cannot be proven, bounded and
-   hash-bound as above, and never scored. 0075 §4 suppresses raw bodies and
-   URLs at every publication sink and names transcripts an accepted loss;
-   this clause reverses that for the two tools whose values are, by
-   construction, the fixture's synthetic data. It is not implemented until
-   accepted (0045 §8).
-5. **Via-brokkr surfaces.** Rows for agents launched through the wrapper's
-   `--via-brokkr DRIVER` declare the finite selectors
+3. **Accounting joins by `trial_id`, never by discovery; every fact is
+   typed.** Rows do not change. `report --journal FACTS` joins a typed
+   journal-facts file (produced from the pinned brokkr's export by
+   `evals/scripts/journal-facts.sh`) to the rows by the `trial_id` the matrix
+   assigned before spawn and the trial seat echoed in its result. Each of
+   the five facts (tokens, turns, wall time, deadline-killed, tool calls) is
+   present with a value or unavailable with a reason from the closed set
+   (`journal_missing`, `journal_ambiguous`, `journal_has_no_accounting`,
+   `builtin_agent`); a missing fact is never `0`, `false` or `[]` (**R2**: an
+   empty tool list is a present fact, an absent one is unavailable). Tokens
+   per success, the tool-call aggregate and the deadline-killed count are
+   each `null` with a reason whenever any scored trial in a group lacks the
+   fact or (for tokens per success) no trial passed. A facts script that
+   cannot read the export exits with a typed failure and writes no facts
+   file; the report without a facts file is unchanged (**R2**). This is a
+   compatible reading of 0075 §4 (harness-authored finite facts) and of
+   0055 §10 (report formulas unchanged, new figures added beside them).
+4. **Retained tool-call records.** Per joined trial whose tool-call fact is
+   present, the report may write a bounded `tool-calls.json`: ordinal,
+   bounded tool name, outcome class, invalid-argument flag, argument and
+   result byte lengths and SHA-256 digests; never argument or result bytes;
+   never an empty file standing for an unavailable fact (**R2**). This is
+   compatible with 0075 §4 and lands with the recipe. **By amendment,
+   awaiting the operator:** a value-bearing mode that also retains the
+   *argument values* of the two harness-owned tools (Swarmail's MCP tools and
+   `eval_http`), value-redacted against the fixture admin secret and
+   registered sentinels, fail-closed to absence with a typed reason when
+   redaction cannot be proven, bounded and hash-bound as above, and never
+   scored. 0075 §4 suppresses raw bodies and URLs at every publication sink
+   and names transcripts an accepted loss; this clause reverses that for the
+   two tools whose values are, by construction, the fixture's synthetic data.
+   It is not implemented until accepted (0045 §8).
+5. **Via-brokkr surfaces, refused until observed.** Rows for agents launched
+   through the wrapper's `--via-brokkr DRIVER` declare the finite selectors
    `claude_2_1_310_via_brokkr`, `codex_0_164_0_via_brokkr` and
    `dsh_0_1_5_rc_1_via_brokkr`: the family's declared configuration plus
    one residual naming the driver's own flags. A via-brokkr row never
-   claims the direct-launch surface.
-6. **Environment exception, if brokkr needs one.** If the driver's
-   accounting channel is one named environment variable, the wrapper
-   forwards exactly that variable to the driver and nothing else; 0075 §1's
-   cleared environment is otherwise unchanged. The variable's name is
-   recorded here by dated addendum when observed.
-7. **Gates and holds.** The recipe compiles in CI's pinned-bundle loop and
-   the verify seat beside the six existing recipes. The PR touches
-   `.brokkr/` and `.github/` and merges only on the operator's approval by
-   name (0056's 2026-11-01 addendum). The first engine run of the recipe
-   (oracle, offline), the first authenticated via-brokkr smoke per family and
-   the paid matrix are the operator's; delivery proves the recipe with the
-   oracle and null agents, the stand-in worker and the stand-in driver only.
+   claims the direct-launch surface, and a via-brokkr profile is never
+   declared for a direct launch (`via_brokkr_profile_mismatch`). **R2:**
+   until the real `brokkr driver <family>` invocation is observed and
+   recorded here by dated addendum, `--via-brokkr` refuses with
+   `driver_contract_unknown` at the trial (before any launch, no row) and at
+   the wrapper (before any private read); the argv assembly stays in the code
+   under test reach only. No stand-in driver ships: a guessed invocation that
+   runs is the workaround ruling 4 forbids, and a real-versus-stand-in switch
+   would be a production seam.
+6. **The accounting channel, if brokkr needs one, crosses four seams.**
+   **R2** (replaces "the wrapper forwards exactly that variable"): every
+   candidate channel between a nested driver and the engine is severed today
+   by (1) `trial.sh`'s `env -i`, (2) the runner's freshly built agent
+   environment, (3) the wrapper's `env_clear` on the driver launch, and (4)
+   the wrapper's `/dev/null` routing of the driver's stdout and stderr. When
+   the channel is observed: for one named environment variable, exactly that
+   name is added at seams 1–3 and nothing else; for a stdout relay, seam 4 is
+   opened for the driver only. Either is an exception to 0075 §1 and lands
+   in a follow-up change only after this clause is accepted with the observed
+   name or relay recorded by dated addendum. Until then every via-brokkr
+   group's accounting is unavailable with a typed reason, and the delivery
+   that introduces the recipe does not measure tokens per success.
+7. **Gates, holds and what waits.** The recipe compiles in CI's pinned-bundle
+   loop beside the six existing recipes; the verify seat compiles only
+   `self` and is not changed for this (**R2**). The PR touches `.brokkr/` and
+   `.github/` and merges only on the operator's approval by name (0056's
+   2026-11-01 addendum), and only after the brokkr capability gaps are filed
+   on feedback-loop-ai/brokkr or attached to brokkr#766's sub-issues and
+   named in the PR (ruling 4; **R2**: a draft is not a filing, and filing is
+   the operator's act when the seats have no network). The first engine run
+   of the recipe (oracle, offline), the first authenticated via-brokkr smoke
+   per family (which observes F1, F2 and the paid binds F5) and the paid
+   matrix are the operator's; paid agents under `matrix --brokkr` are
+   unsupported until that smoke and the follow-up (**R2**). Delivery proves
+   the recipe with the oracle and null agents and the stand-in worker only.
 
 ## Synthesis, rejected alternatives and costs
 
@@ -131,16 +170,34 @@ brokkr's accounting), a parent-held or bypassed admission inside the exec
 box (weakens 0076 §1–2 where `/tmp` is shared), and any Swarmail-side
 transcript capture.
 
+**R2 (after the review return).** The review found the design asserting
+seams it had never observed and the stand-ins authored to the assertions.
+Adopted from both round-2 positions: the engine's prompt rendering, typed
+tool-call and deadline-killed facts, the four seams, the corrected compile
+and hands claims, filing as an operator-owned precondition. Ruled for
+simplicity: the via-brokkr refusal is unconditional and the stand-in driver
+goes (no production switch); `journal-facts.sh` dies typed rather than
+writing a facts file about an export nobody read; no bind is guessed. Ruled
+for robustness: `score_missing` is distinct from `score_mismatch`; the
+brokkr-mode envelope carries the score seat's budget; the slot root is
+preflighted; the via-brokkr profile is cross-checked at the trial. Rejected:
+a `journal_unavailable` reason and a soft facts file; a paid bind guessed
+from `verify-seat`'s `~/.rustup` example; an end-to-end via-brokkr arm kept
+alive by a real-versus-stand-in switch.
+
 Costs accepted: a second scorer run per slot; one bounded evidence file per
-trial; tokens per success may remain unmeasured, typed and filed, if brokkr's
-driver does not account for a nested run or its export carries no
-accounting; admission is blind to other host runners if the exec box has a
-private `/tmp` (the baseline's own posture); value-bearing evidence waits for
-this record's acceptance.
+trial; **tokens per success is not measured until the channel is observed
+and forwarded under §6**; via-brokkr trials refuse until §5's addendum; paid
+agents under `matrix --brokkr` wait for the same smoke; admission is blind
+to other host runners if the exec box has a private `/tmp` (the baseline's
+own posture); value-bearing evidence waits for §4's acceptance.
 
 ## Delivery and acceptance ownership
 
-The chief commits this record with the spec, plan and tasks. Implementation
-adds the index row and the dated F1–F7 observations. Only the operator
-accepts this proposal; the engine alone advances delivery. Commit unsigned;
-never push or merge.
+The chief commits this record with the spec, plan and tasks (and its
+revision, on top, never amended). Implementation adds the index row and the
+dated F1–F7 observations or drafted issue texts. Only the operator accepts
+this proposal, records the §5 invocation and the §6 channel by dated
+addendum, files or attaches the brokkr issues, and approves the held PR by
+name; the engine alone advances delivery. Commit unsigned; never push or
+merge.
