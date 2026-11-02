@@ -95,14 +95,10 @@ product change it proves.
   **Test:** `grep -n 'score seat' specs/eval-brokkr-recipe/implementation.md`
   finds no draft that still says it, and issue 6 matches spec §3 byte for
   byte apart from the implementer's appended observation (AC10).
-- [ ] T13 Engine receipt (AC1): if `.brokkr/state/bin/brokkr` exists and
-  `sha256sum` equals `tooling.json`'s `binary_sha256`, run the spec §2 loop
-  with it and record the verbatim output in
-  `specs/eval-recipe-review-gate/implementation.md` and as a dated line in
-  0119 R4. On a refusal, apply spec §1.1 and record the branch taken. If the
-  binary is absent, record "not run: no staged pinned binary" and name the
-  owners (verify continuation, CI).
-  **Test:** the receipt itself. An absent receipt is never reported as met.
+- [ ] T13 Engine receipt (AC1). *Superseded 2026-11-02 by T16*, which
+  makes the receipt a completion precondition. The earlier "not run, owners
+  verify continuation or CI" record stays as history.
+  **Test:** see T16.
 - [ ] T14 Every AC11 gate, `--locked`, with `CARGO_BUILD_JOBS=32` (≤
   nproc/4). Record a receipts table and the load applied in
   `specs/eval-recipe-review-gate/implementation.md`, and confirm that
@@ -112,8 +108,104 @@ product change it proves.
   publish-guard, seal-branch, deny). The diff check is empty (AC3, AC11,
   AC12).
 - [ ] T15 Commit unsigned in the repository's style. Never push, merge or
-  accept 0119. The implement result is `complete` only if every task above
-  is done and AC1 is met or honestly recorded as not run with its owner
-  named. Under spec §1.1(b), the result is not complete.
+  accept 0119. *Revised 2026-11-02:* the implement result is `complete`
+  only if every task is done **and AC1 is met** (T16). "Not run" is
+  recorded honestly and the result is then not complete, naming the
+  dispatcher's action. Under spec §1.1(b), the result is not complete.
   **Test:** `git log --format='%G? %s' -n3` shows `N`, and
   `git status --short` is clean apart from run-local state (AC12).
+
+## Phase 4: answers to the review return (2026-11-02)
+
+Each task answers a finding named in [plan.md](plan.md) (Revision table).
+Red first applies wherever a pin exists to go red. T16 runs after T17–T21,
+so that it compiles the final recipe tree, and T22 runs last.
+
+- [ ] T17 (F2) `.brokkr/recipes/README.md`: replace the `|| break` compile
+  example with the house rules' line verbatim, in its subshell, chained:
+  `(for r in .brokkr/recipes/*/; do brokkr compile --bundle "${r%/}" || exit 1; done) && brokkr recipes show codex-fast && brokkr run --recipe codex-fast --feature '…'`.
+  No `|| break` remains in the file. Add a pin, in the README pins of
+  `tests/delivery_constitution.rs` or in `tests/store_contract_docs.rs`,
+  that requires the verbatim line in the README and refuses `|| break`.
+  **Test:** the pin is red on today's README (record it), and green after.
+- [ ] T18 (F3) `docs/house-rules.md` § Gates prose: keep the line unchanged.
+  Rewrite the reach paragraph so that it attributes each check: the line
+  compiles every directory and stops at the first non-zero exit; CI's loop
+  and the verify seat refuse an empty shelf and a directory without a
+  regular `bundle.json` by name, and they refuse the policy-sweep warning
+  per recipe; a hand run reads each recipe's output for `lets the run go on
+  without reading`. Extend
+  `store_contract_docs::the_gate_inventory_has_one_home_and_everyone_points_at_it`
+  to require that clause. Keep every phrase the pin already requires.
+  **Test:** the extended pin is red before the prose edit and green after.
+  The line pin is unchanged and green.
+- [ ] T19 (F4) Counts and number history.
+  `specs/eval-brokkr-recipe/implementation.md`: in the PR contract and in
+  "What is the operator's" item 1, "five" becomes "six", and issue 6 (the
+  protected review gate) is named in the held-PR precondition. Replace
+  "The decision number 0119 is provisional (0115 is held by #221's branch)"
+  with the true history: main took 0115 (#308) and 0116 (#313), and this
+  record was renumbered 0116 → 0119 on 2026-11-02. Replace the gate-receipt
+  line "Not run here, run by CI: the pinned-bundle compile (including
+  `eval`)" with a pointer to AC1's receipt (CI corroborates).
+  `docs/decisions/README.md`, 0119 row, **notes column only**: replace
+  "so 0116 stayed free" with "main later took 0116 for #313's implicit TLS;
+  renumbered 0116 → 0119 on 2026-11-02". The status column is unchanged.
+  **Test:** `grep -n '0116 stayed free' docs/decisions/README.md` finds
+  nothing. `git diff` of the index changes the 0119 row's notes column
+  only. In `specs/eval-brokkr-recipe/implementation.md`, greps for
+  `provisional` and for a "five" draft count find nothing in the PR
+  contract or the operator list (AC9, AC10).
+- [ ] T20 (F5) Issue 6 in `specs/eval-brokkr-recipe/implementation.md`:
+  "Swarmail now ships the same recipe" becomes "Swarmail's PR #316
+  proposes the same recipe", as in spec §3. Add to the operator list that
+  issue 6 is not filed while its bracketed slot is empty.
+  **Test:** `grep -n 'now ships' specs/eval-brokkr-recipe/implementation.md`
+  finds nothing, and issue 6 matches spec §3 apart from the filled slot
+  (AC10).
+- [ ] T21 (tests lens, AC13) In
+  `verify_seat_refuses_missing_or_mismatched_engine_identity_before_gates`,
+  at the existing pass arm (`assert_eq!(fixture.read_result()["result"], "pass")`
+  after "A matched identity reaches an actual pass verdict"), assert that
+  the notes contain `every recipe bundle` and end with
+  `brokkr <fixture.engine_digest()>`. Add a scratch mutant of the fixture's
+  copy of `verify-seat.sh` that replaces `every recipe bundle` with
+  `bundle`, and assert that the mutant's pass note fails the same check.
+  Restore the script afterwards, as the digest mutant already does. Do not
+  edit `verify-seat.sh`; its pin stays `dd893db5…`.
+  **Test:** the test is green on the shipped script, and the mutant arm
+  shows the pin catching the old note.
+- [ ] T16 (F1, AC1) Engine receipt, as a completion precondition. Check
+  that `.brokkr/state/bin/brokkr` exists, then show
+  `sha256sum .brokkr/state/bin/brokkr` beside `tooling.json`'s
+  `brokkr.binary_sha256`. Only an exact match counts; a host binary of
+  unknown digest is never used. If it matches, run the spec §2 loop
+  (structural refusals, compile, per-recipe sweep grep) over every
+  directory under `.brokkr/recipes/`. Record the date, the exact command,
+  the digest line, each recipe's verbatim output and exit status, and
+  `git rev-parse HEAD:.brokkr/recipes/<name>` for each recipe at the
+  compiled commit. Commit T17–T21 first, so that
+  `git status --short .brokkr/recipes` is empty when the loop runs. Record
+  them in the AC1 row of `specs/eval-recipe-review-gate/implementation.md`,
+  as a new dated observation line under 0119 R4 (the earlier line stays),
+  and in issue 6's bracketed slot. On a refusal, apply spec §1.1 and record
+  the branch taken. If the artifact is absent or its digest differs,
+  record "not run" with the reason. Do **not** report `complete`, and name
+  the dispatcher's action: stage the artifact and re-enter implement, or
+  continue at verify from a launch pinned to the candidate's bundle
+  (`verify-seat.sh` `dd893db5…`). Do not move `eval` off the shelf for an
+  absence.
+  **Test:** the receipt itself. Every compile exits 0 with no sweep line,
+  and the recorded tree ids equal `git rev-parse HEAD:.brokkr/recipes/<name>`
+  at the final head. Without a receipt, the result is not `complete`.
+- [ ] T22 (F1, AC11, AC12) Re-run every AC11 gate `--locked` at
+  `CARGO_BUILD_JOBS=32` and `RUST_TEST_THREADS=32` (≤ nproc/4). Record the
+  receipts table and the load applied. The compile row is T16's receipt,
+  never "not run" as a clean gate. Update the PR description draft per
+  AC12: six drafts, issue 6 included; the AC1 receipt quoted with its
+  route; CI as corroboration. Confirm that `Cargo.*`, `evals/Cargo.*`,
+  `deny.toml`, `tooling.json`, `shims.sha256`, every `bundle.json` and
+  `policy.json`, and `verify-seat.sh` show no diff in this phase.
+  **Test:** every gate exits 0 (coverage exact 100/100/100, selftest,
+  publish-guard, seal-branch, deny, shims OK), the diff check is empty,
+  and `git log --format='%G? %s' -n3` shows `N`.

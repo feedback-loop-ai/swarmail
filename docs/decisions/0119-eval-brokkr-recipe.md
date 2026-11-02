@@ -5,7 +5,9 @@
   decision 0102's 2026-10-31 addendum; the revision is marked **R2** below;
   revised again after the second return, which found the gate's agreement
   rule wrong, marked **R3**; revised a third time the same day after CI's
-  pinned-bundle job refused the recipe, marked **R4**)
+  pinned-bundle job refused the recipe, marked **R4**; R4 revised the same
+  day after the fourth review return, its revision marked
+  *R4 revision, 2026-11-02*)
 - **Scope:** Epic #164 issue #148 (P1), delivered from main `f815d48` on the
   zero-Codex `claude-careful` recipe (0098/0099, rework per 0102).
 - **Specification:** [the eval recipe on brokkr](../../specs/eval-brokkr-recipe/spec.md).
@@ -18,13 +20,15 @@
   and §6, both of which wait for the operator.
 - **Preserves:** 0001–0005; accepted 0020, 0045 §8, 0050, 0056 and its
   2026-11-01 addendum, 0063, 0071, 0098, 0099, 0100, 0102.
-- **Number:** provisional 0119. 0115 is held by #221's branch
-  (`repair/issue221-trial-isolation`, commit `cacd60e`); intake saw no 0115
-  on `main` and the task called 0115 the highest in use. Both are true, so
-  the next free number across both trees is 0119. Renumber at integration
-  if `main` takes it first, as 0105 and 0108 were. Kept at the merge of
-  main `5645bd9`: `main` took 0115 for #221's trial isolation (#308) and
-  left 0119 free.
+- **Number:** 0119. Drafted as provisional 0116: 0115 was held by #221's
+  branch (`repair/issue221-trial-isolation`, commit `cacd60e`), intake saw
+  no 0115 on `main`, and the task called 0115 the highest in use, so the
+  next free number across both trees was 0116. Kept at the merge of main
+  `5645bd9`, where `main` took 0115 for #221's trial isolation (#308). On
+  2026-11-02, `main` took 0116 for #313's implicit TLS, so this record was
+  renumbered 0116 → 0119 (commit `03d3dea`). That commit's mechanical
+  rename also turned this paragraph's original "0116" into "0119"; the
+  paragraph was restored to the true history by the R4 revision.
 
 ## Context
 
@@ -290,6 +294,12 @@ trial's class, is unchanged. Replacing the results with the delivery words
 `clean`/`residual` would reopen the R3 defect, in which a budget failure is
 counted as a pass, so they are not used.
 
+*R4 revision, 2026-11-02: scope.* This reading holds only for a
+**non-delivery** trial recipe whose terminal outcomes are data: nothing
+ships and nothing merges. Every delivery recipe keeps its model review
+panel (0013, 0098, 0099). Naming an exec phase `review` is no way to meet
+layer 1 while removing a delivery recipe's reviewers.
+
 **Ruling 2: no second, ceremonial review.** A deterministic `review` seat
 after `score` was considered and rejected. Every check it could own is
 already owned. The row, exit and trial-id pairing, `score_missing`,
@@ -312,14 +322,36 @@ and name brokkr issue 6.
 No result word is remapped, and no ceremonial seat is added, to make the
 compile pass.
 
+*R4 revision, 2026-11-02: the receipt is a precondition.* "Not run" never
+satisfies this ruling's receipt. It blocks the implement seat's `complete`,
+the run's completion and the PR's offer for merge. An absent receipt is not
+a refusal, and it never moves the recipe off the shelf: (b) applies only to
+an observed refusal. The receipt has two in-run owners, in this order.
+First, the implement seat, using a digest-matched artifact staged at
+`.brokkr/state/bin/brokkr`. It records the date, the command, the digest
+beside the recorded value, each recipe's verbatim output and exit status,
+and each recipe directory's git tree id, here by dated line. Second, a
+verify seat entered from a launch whose pinned self bundle carries the
+looping `verify-seat.sh` (`dd893db5…` or later). Its pass note,
+`every recipe bundle … brokkr 29dc3309…`, is the receipt, and it stays in
+the journal. CI's `brokkr bundle (pinned)` corroborates the receipt at
+merge time and is never the in-run receipt. A verify pass note that says
+`bundle,` rather than `every recipe bundle,` compiled `self` alone. A
+receipt is void once a recipe directory's tree id changes.
+
 **Ruling 4: one gate inventory compiles every recipe.** The fixed list
 evicted `eval` from the local gates. CI's loop, the verify seat's compile
 and the house rules' gate line each iterate every directory under
-`.brokkr/recipes/` by glob. Each one refuses an empty shelf. Each one
-refuses a directory without a `bundle.json` by name, so a stray directory
-fails the gate instead of being skipped. Each one stops at the first
-refusal and checks the policy-sweep warning for every recipe, not only for
-the last one. Executable fixtures with a sentinel recipe prove all of this.
+`.brokkr/recipes/` by glob, and each one stops at the first non-zero
+compile. CI's loop and the verify seat also refuse an empty shelf, and they
+refuse a directory without a regular `bundle.json` by name, so a stray
+directory fails the gate instead of being skipped. They check the
+policy-sweep warning for every recipe, not only for the last one. The house
+rules' line only compiles. The by-name refusals and the sweep check belong
+to CI and the verify seat, and the prose beside the line says so (*R4
+revision, 2026-11-02*: the earlier sentence said the line did all of this,
+which overstated the line). Executable fixtures with a sentinel recipe
+prove CI's and the verify seat's behaviour.
 The shelf test lists the directory instead of naming the recipes. §7 R2's
 "the verify seat is not changed" is superseded. The verify seat's script is
 a pinned bundle script (0050 §1). The change widens a gate and weakens
@@ -337,7 +369,10 @@ brokkr answers issue 6. A fail-first loop reports one refused recipe per
 run. This run's own verify seat runs the script pinned when the run
 started, so the first compile of `eval` comes from a staged pinned binary,
 a verify continuation entered from the candidate's bundle, or CI. Each such
-receipt is recorded here by dated line.
+receipt is recorded here by dated line. (*R4 revision, 2026-11-02:* CI
+corroborates and is not an in-run owner; see Ruling 3. A run may now stop
+at implement and wait for the dispatcher to stage the artifact. That is the
+honest cost of requiring the receipt.)
 
 **Observation, 2026-11-02 (implement seat).** The renamed shape is built
 (`review` seat and phase, `protected_phase: "review"`, `REVIEW-*` rule ids)

@@ -50,6 +50,7 @@ evals/README.md                           seat wording
 specs/eval-brokkr-recipe/implementation.md  F4 row, issue 4 note, issues 1/3/5 wording, issue 6
 specs/eval-brokkr-recipe/spec.md          one pointer line at F4: superseded by this spec
 specs/eval-recipe-review-gate/implementation.md  receipts, AC table (new; implement)
+docs/decisions/README.md                  0119 row notes column only (2026-11-02 revision)
 ```
 
 ## Approach
@@ -123,11 +124,15 @@ specs/eval-recipe-review-gate/implementation.md  receipts, AC table (new; implem
     wording. Edit `implementation.md` per spec §3. Add a one-line pointer
     at the earlier spec's F4 row. Create the new implementation.md with the
     AC table and receipts.
-11. **Engine receipt (AC1).** If `.brokkr/state/bin/brokkr` exists and its
-    sha256 equals `binary_sha256`, run the §2 loop with it and record the
-    output. A refusal triggers spec §1.1. If the binary is absent, record
-    "not run: no staged pinned binary". The receipt then belongs to the
-    verify continuation or to CI, and the PR body says so.
+11. **Engine receipt (AC1, revised 2026-11-02).** If `.brokkr/state/bin/brokkr`
+    exists and its sha256 equals `binary_sha256`, run the §2 loop with it
+    (every step, sweep check included) and record the receipt AC1
+    describes. A refusal triggers spec §1.1. If the binary is absent,
+    record "not run: no staged pinned binary". That **blocks `complete`**:
+    the implement result names the dispatcher's action (stage the artifact
+    and re-enter implement, or continue at verify from a launch pinned to
+    the candidate's bundle, `verify-seat.sh` `dd893db5…`). CI is the
+    merge-time backstop, not the owner.
 12. **Gates.** Run every gate in AC11 with `CARGO_BUILD_JOBS=32` and record
     the receipts.
 
@@ -140,17 +145,63 @@ specs/eval-recipe-review-gate/implementation.md  receipts, AC table (new; implem
 - **Contracts:** the recipe's seat and phase name (`review`) and its rule
   ids (`REVIEW-*`) are journal-visible. No reader depends on them: the facts
   reader keys on `trial`, and no evals code reads rule ids.
-- **Quickstart:**
-  `for r in .brokkr/recipes/*/; do brokkr compile --bundle "${r%/}" || { echo "REFUSED: $r"; break; }; done`
-  is the operator's interactive form. The gate form in the house rules
-  exits non-zero on the first refusal.
+- **Quickstart:** the house rules' line, verbatim:
+  `(for r in .brokkr/recipes/*/; do brokkr compile --bundle "${r%/}" || exit 1; done)`.
+  The `exit 1` runs inside the subshell, so it does not close an
+  interactive shell, and the group's status is non-zero on the first
+  refusal. Read each recipe's output for `lets the run go on without
+  reading`. (*Revised 2026-11-02:* the earlier `break` form left the loop
+  with status 0.)
+
+## Revision after the review return (2026-11-02)
+
+The fourth review returned `residual` with `spec_defect: true` (guarantees),
+max severity medium, and no security residual. The shape, the loops and the
+fixtures were found sound and are not reopened. Each finding the
+implementer must act on gets its own task in [tasks.md](tasks.md) (Phase 4).
+
+| Finding | Members, severity | Change, and the artifact that owns it | Task |
+|---|---|---|---|
+| F1: AC1 has no pinned-engine receipt, and AC1/AC11 let "not run" satisfy the gate inventory (the spec defect). The verify passes at 53ec6b4 carried the old pass note. | correctness, guarantees, independent; medium | spec AC1 rewritten as a completion precondition with two in-run owners, the receipt's evidence, tree-id binding and a reading rule. AC11 drops "or not run". AC12 has the PR quote the receipt. 0119 R4 Ruling 3 gets the dated receipt rule. Plan step 11 and the risk row follow. | T16, T22 |
+| F2: `.brokkr/recipes/README.md` uses `|| break`, which exits 0 | correctness; low | spec §2 README bullet: the house rules' line verbatim, chained with `&&`; AC6 adds a pin that refuses `|| break` | T17 |
+| F3: 0119 R4 Ruling 4 says the house rules' line refuses by name and checks the sweep warning, and it does neither | guarantees low; correctness info | 0119 Ruling 4 narrowed to the code (design commit). The spec §2 house-rules bullet and AC6 require a prose clause, pinned. The line is not extended (ruled in spec.md). | T18 |
+| F4: "five" drafts, issue 6 not named in the held-PR contract, "0119 provisional (0115 held)", index row "0116 stayed free", header history | guarantees; low | spec §3 and AC10 (six, issue 6 named, number history). AC9 corrects the index notes column. The 0119 header is restored to the true history (design commit). | T19 |
+| F5: issue 6 says "now ships" before any engine accepted the shape | independent; info | spec §3 issue 6 text: "PR #316 proposes"; the slot-filling rule; no filing with an empty slot | T20 |
+| Tests lens: the pass note text is not asserted | tests; info | AC13, needed because AC1's reading rule now depends on that text | T21 |
+| T39 historical row; symlinked recipe directory | correctness; info | No change. T39 is a record, not a draft. The symlink is refused by the shelf test, which runs inside `cargo test` in both CI and verify (ruled in spec.md) | none |
+
+**One criterion loosened, with evidence.** AC9 said that the
+`docs/decisions/README.md` row is unchanged. That row's notes say "0116
+stayed free", and that is false: main's `docs/decisions/0116-*.md` is #313's
+implicit-TLS decision, merged into this branch at 53ec6b4, and this branch
+renamed its own record in `03d3dea`. A criterion that preserves a false
+statement is wrong. AC9 therefore keeps the status column frozen
+(`proposed — awaiting the operator`) and allows only the notes column to be
+corrected. No other criterion is loosened. AC1 and AC11 are tightened.
+
+**Why the 0119 header changes in the design commit.** In `03d3dea` the
+mechanical renumber replaced "0116" with "0119" inside the Number
+paragraph. That turned "the next free number across both trees is 0116"
+into a claim about 0119, which was never true (compare
+`git show 89f57c4:docs/decisions/0116-eval-brokkr-recipe.md`). The R4
+revision restores the original reasoning and appends the renumbering. No
+other dated entry changes, and the 2026-11-02 implement observation is
+kept verbatim.
+
+**What this run's own verify will and will not prove.** This run's pin
+carries the pre-change `verify-seat.sh`. Its verify pass, however green,
+says `bundle,` and is silent on `eval`, according to AC1's reading rule.
+The receipt therefore has to come from route 1 (a staged artifact at
+implement) or from a verify continuation launched from the candidate's
+bundle. The design cannot arrange either. Both are dispatcher actions, and
+the implement result must name them if neither is in place.
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
 | The pinned engine refuses the renamed shape for a second reason (for example a required `shippable_from`, delivery vocabulary or a panel). | Spec §1.1 fixes the order: (a) an additive field is added and pinned; (b) otherwise eval moves to `evals/recipe/`, the run reports not complete, and issue 6 is named. No ceremonial seat and no remapped result word. Thanks to §2, a second refusal now fails at verify, not in CI. |
-| No seat in this run can execute the pinned engine, so AC1 stays unproven in-run. | AC1 names its receipt and its owners: a staged binary, a verify continuation entered from the candidate's bundle, or CI's pinned-bundle job. "Not run" is reported as such, never as met. The PR stays held by name. |
+| No seat in this run can execute the pinned engine, so AC1 stays unproven in-run. | *Revised 2026-11-02:* "not run" blocks `complete`. AC1 names two in-run owners (a staged binary at implement, or a verify continuation from a candidate-pinned launch), and CI only corroborates. The PR stays held by name and is not offered without the receipt. |
 | This run's verify seat runs the pre-change pinned `verify-seat.sh`, so it compiles `self` only. | The fixture tests prove the new script's behaviour. The dispatcher can continue at verify from the candidate's bundle to execute it. Spec AC12 tells the PR to say this. |
 | Glob order differs by locale and makes the fixture traces flaky. | Set comparisons for "every recipe compiled". `LC_ALL=C` on the fixture commands wherever order matters (fail-first arms). The product does not depend on order. |
 | The fixture's stand-in engine accepts too much and hides a wrong `--bundle`. | The stand-in still exits 94 for anything not shaped `.brokkr/recipes/<name>`. The set comparison catches an extra or missing compile. |
@@ -160,3 +211,10 @@ specs/eval-recipe-review-gate/implementation.md  receipts, AC table (new; implem
 | The house-rules edit drifts from the scripts. | `store_contract_docs.rs` pins the line. CI and verify are pinned by executable fixtures. |
 | Moving eval out (§1.1 b) silently breaks the evals preflight. | That branch includes moving `evals/src/main.rs:901` and `evals/tests/common/mod.rs:1165-1180` to the new path, and the evals gates run. |
 | Host overload during gates (128 cores). | `CARGO_BUILD_JOBS=32`, test threads ≤ 32, report the load applied. |
+| *(2026-11-02)* The run stalls at implement because no artifact is staged. | That is the honest state: the task forbids reporting `complete` while required work remains. The implement result names both dispatcher actions. Absence never triggers Ruling 3(b), so a sound shape is not thrown away on a hypothesis. |
+| *(2026-11-02)* The route-1 receipt is produced by a model seat with a shell, and the seat could misreport it. | The receipt has to be verbatim and checkable: digest beside the recorded value, the exact command, per-recipe output and exit, and tree ids that a review seat can check by git ids without running anything. CI's required pinned job re-proves the same bytes before merge. |
+| *(2026-11-02)* The receipt goes stale after a later recipe edit. | Tree-id binding: any change to a recipe directory's tree id voids the receipt, and a fresh compile is owed. Doc-only commits outside `.brokkr/recipes/` do not void it. |
+| *(2026-11-02)* A host binary of unknown digest (for example `~/.local/bin/brokkr`) is used and reported as a receipt. | Only `.brokkr/state/bin/brokkr`, with its `sha256sum` shown equal to `binary_sha256`, counts. Any other binary's output is not a receipt and is not recorded as one. |
+| *(2026-11-02)* An edit to the verify pass note silently breaks the reading rule. | AC13 pins the note text and the trailing digest, and a scratch mutant shows the pin fires. |
+| *(2026-11-02)* The narrowed Ruling 4 is read as weakening a gate. | No executed check changes: CI's and the verify seat's refusals stay byte for byte. Only an overstated sentence about the hand line is corrected, and the hand line's limit is now written down beside it. |
+| *(2026-11-02)* The exec-review reading becomes a precedent for removing delivery reviewers. | Spec §1.2 and 0119 Ruling 1 scope the reading to non-delivery trial recipes. |
