@@ -4812,7 +4812,12 @@ async fn query_free_native_contracts_match_served_docs() {
         "list GET must name its own allowed query keys: {list_refusal}"
     );
 
-    let readme = include_str!("../README.md");
+    // The README's REST detail lives on the guide's REST API page.
+    let readme = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/docs/guide/rest-api.md"
+    ))
+    .unwrap();
     let (_, llms) = http_get_text(srv.http_addr, "/llms.txt").await;
     for route in [
         "DELETE /api/v1/inboxes/{inbox}/messages",
@@ -4826,10 +4831,16 @@ async fn query_free_native_contracts_match_served_docs() {
         "DELETE /api/v1/webhooks",
         "POST /api/v1/inboxes/{inbox}/seed",
     ] {
-        assert!(readme.contains(route), "README omits {route}");
+        assert!(
+            readme.contains(route),
+            "docs/guide/rest-api.md omits {route}"
+        );
         assert!(llms.contains(route), "served llms.txt omits {route}");
     }
-    for (text, name) in [(readme, "README"), (llms.as_str(), "llms.txt")] {
+    for (text, name) in [
+        (readme.as_str(), "docs/guide/rest-api.md"),
+        (llms.as_str(), "llms.txt"),
+    ] {
         let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
             normalized.contains("empty-valued"),
@@ -5436,9 +5447,17 @@ async fn openapi_webhook_get_documents_awaited_preparation_failure() {
 
 #[test]
 fn webhook_docs_state_bounded_ca_limits() {
-    let readme = include_str!("../README.md");
+    // The README's webhook detail lives on the guide's webhooks page; the
+    // README front page must not reintroduce the retired claim either.
+    let readme = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/docs/guide/webhooks.md"
+    ))
+    .unwrap();
+    let readme = readme.as_str();
     let module = include_str!("../src/webhook.rs");
     let llms = include_str!("../src/static/llms.txt");
+    assert!(!include_str!("../README.md").contains("never blocking the SMTP path"));
     for doc in [readme, module, llms] {
         assert!(doc.contains("never awaited by SMTP acceptance"));
         assert!(!doc.contains("never blocking the SMTP path"));
@@ -5706,15 +5725,18 @@ async fn view_admits_only_compact_and_only_on_the_list() {
     srv.stop().await;
 }
 
-/// The README and the served `llms.txt` describe the compact default, the
-/// `fields` argument and `view=compact`, and say the token metric was not
-/// measured (decision 0108 §8).
+/// The guide's MCP page (the README's former MCP section) and the served
+/// `llms.txt` describe the compact default, the `fields` argument and
+/// `view=compact`, and say the token metric was not measured (decision
+/// 0108 §8).
 #[tokio::test]
 async fn the_documents_describe_the_compact_view_and_fields() {
     let srv = start().await;
     let (_, llms) = http_get_text(srv.http_addr, "/llms.txt").await;
+    let mcp =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/guide/mcp.md")).unwrap();
     for (name, text) in [
-        ("README", include_str!("../README.md")),
+        ("docs/guide/mcp.md", mcp.as_str()),
         ("llms.txt", llms.as_str()),
     ] {
         let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
