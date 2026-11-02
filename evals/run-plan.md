@@ -33,10 +33,61 @@ of cessation. CI-only house proofs remain CI-owned; #201 owns macOS eval proof.
 The 2026-10-26 approved product is recorded in [intake](issue151-intake.md#authority-and-evidence).
 It is every current v2 catalogue task, two exact models per family, five paid
 trials per cell and concurrency one. The six credential-free declarations are
-[agents-baseline.json](agents-baseline.json). Currently there are 16 tasks,
-32 free controls (one oracle and one null per task), and 480 requested paid
-slots (16 × 6 × 5). Inbox-isolation has three simultaneous agents within its
-slot; slots are not agent session counts.
+[agents-baseline.json](agents-baseline.json). The approved product is the 16
+default-tier tasks (the whole catalogue when it was approved): 32 free controls
+(one oracle and one null per task), and 480 requested paid slots (16 × 6 × 5).
+Inbox-isolation has three simultaneous agents within its slot; slots are not
+agent session counts. The catalogue now holds 16 default-tier tasks plus 3 hard
+ones; `baseline` without `--tier` still plans exactly the approved 16.
+
+The catalogue's ids, in order, are `signup`, `otp`, `magic-login`, `stale-otp`,
+`confirm-decoys`, `sibling-addresses`, `entity-url`, `i18n-subject`,
+`slow-delivery`, `smtp-retry`, `digest-forty`, `reset-login`, `reset-reuse`,
+`invite-time`, `support-reply`, `inbox-isolation` (the approved 16) and then
+`otp-backlog`, `recipient-crowd`, `digest-lookalike` (the hard tier).
+
+## The hard-tier run (proposed 0117)
+
+The 2026-11-01 baseline (395/400, catalogue sha256 `6068b687…`, the hash of the
+16 default-tier tasks) saturated the default tier. Proposed
+[0117](../docs/decisions/0117-hard-eval-tier.md) adds three hard tasks —
+`otp-backlog` (`stale_code`), `recipient-crowd` (`wrong_message`) and
+`digest-lookalike` (`wrong_link`) — documented trap by trap in the
+[README](README.md#the-hard-tier-proposed-0117). The new 19-task catalogue
+hashes differently (`5b312d98…`); the historical rows keep `6068b687…`.
+
+`baseline --tier hard` is a separate product: 3 tasks, 6 free controls (one
+oracle and one null per task) and 90 requested paid slots (3 × 6 × 5), with the
+same six declarations, 600000 ms deadline, concurrency one and controls-first
+admission. Use `baseline`, not bare `matrix --tier hard`, for the paid run: the
+approved declarations carry a placeholder executable that only `baseline`
+resolves to the wrapper and its private configuration.
+
+```bash
+$E baseline --tier hard --config /private/wrappers.json --output /tmp/baseline-hard --dry-run
+# Only the operator executes without --dry-run, after the six-model authenticated smoke:
+$E baseline --tier hard --config /private/wrappers.json --output /tmp/baseline-hard
+```
+
+**The paid hard-tier run is the operator's, after merge.** Delivery proves the
+three tasks with free controls only (oracle and null on the default seed and on
+four fixed seeds, and scripted agents that commit exactly one named trap); it
+does not show that a live model fails any of them some of the time. Read the
+first paid hard run for that: a task every model passes, or none can, is a
+design failure and is replaced on that data. In `otp-backlog` no request line
+depends on the fixture time: each mail prints `Requested N minutes before this
+email was sent.` with `N = (12 − g) × 4`, so the current code was requested
+when its mail was sent and every cell of a matrix or baseline reads the same.
+All twelve codes are minted at the trial's own prepare. Expiry (`OTP_TTL`, 600
+s, from mint) equals the 600000 ms deadline, so a slow agent can lose the
+current code to expiry; the window is as long as the prepare-to-start gap, at
+the deadline's end, and that is `stale_code` by the scorer's fallback, not the
+named trap.
+
+Comparability: rows of the default product compare with the 2026-11-01
+baseline by task id and per-task `definition_sha256`, which are unchanged for
+the sixteen; the catalogue hash is the live catalogue's identity and is not the
+comparison key.
 
 ## Current readiness and operator command
 
@@ -88,7 +139,8 @@ whole output tree, including incomplete bytes and absent completion markers.
 No automatic retry, overwrite, row filtering, resume, archive conversion or
 fabricated suffix is performed by the coordinator.
 
-1. Run the fresh free oracle/null matrix over every catalogue task, in
+1. Run the fresh free oracle/null matrix over every task of the selected
+   product (the 16 default-tier tasks, or the 3 hard ones with `--tier hard`), in
    task → agent → repetition order, retaining controls.jsonl and controls/.
 2. Require strict complete v2 rows bound to this invocation's prelaunch plan,
    unique cell/trial identities, catalogue/task definitions, declared builtins,
@@ -128,8 +180,9 @@ diagnostic report is not a completed baseline. Retain every row and report.
 
 Before any operator-owned measurement run standalone fmt, locked clippy and
 full tests from [README](README.md), including `--test wrappers`, `--test baseline`
-and `--test proof`. All sixteen oracle cases must pass and all sixteen null
-cases must fail with their declared idle class. The held-idle-victim control
+and `--test proof`. All nineteen oracle cases must pass and all nineteen null
+cases must fail with their declared idle class (the three hard tasks also on
+four fixed seeds). The held-idle-victim control
 must refuse a competing trial before agent launch; its victim fails gave_up,
 without an accepted completion event, and a later oracle passes.
 
