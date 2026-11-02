@@ -400,6 +400,12 @@ fn survivors_names_a_live_process_and_is_empty_once_it_is_gone() {
         .spawn()
         .unwrap();
     let pid = child.id() as i32;
+    // `spawn` returns once the child exists, not once it has exec'd: until
+    // then its /proc cmdline is empty and its comm is the parent's (seen on CI).
+    eventually("the child to exec /usr/bin/sleep", || {
+        std::fs::read(format!("/proc/{pid}/cmdline"))
+            .is_ok_and(|c| c.starts_with(b"/usr/bin/sleep\0"))
+    });
     let family = vec![process_identity(pid).expect("the child is in the process table")];
     let named = survivors(&family);
     assert!(named.contains(&format!("pid {pid} state ")), "{named}");
