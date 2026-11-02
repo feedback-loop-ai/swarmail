@@ -25,4 +25,7 @@ throughput, wait latency or agent results, and they compare nothing.
 The fair comparison against Mailpit and MailHog has its own method and
 driver, and so far no results: see [docs/evals](../evals/README.md)
 for what is built, what is still missing and why. This README and this guide state no
-comparative or agent numbers until admitted evidence exists to cite.
+comparative numbers until admitted evidence exists to cite. The agent eval
+suite's first paid baseline is published with its raw rows in
+[`docs/evals/baseline-2026-11-01.md`](../evals/baseline-2026-11-01.md);
+the suite is saturated at that difficulty, so the baseline ranks nothing.

@@ -63,15 +63,18 @@ whole emails and has no `fields`. REST is unchanged unless asked:
 `GET /api/v1/inboxes/{inbox}/messages?view=compact` answers the same
 `{total, emails}` envelope with compact items; `compact` is the only value of
 `view`, and no other route takes it. The token metric (median tokens per
-success) is not measured by this change: no paid trial was run.
+success) is not measured: this change ran no paid trial, and the #151 paid
+baseline ([`docs/evals/baseline-2026-11-01.md`](../evals/baseline-2026-11-01.md))
+records no token field.
 
 Duplicating JSON increases response size and token cost. The stdio bridge keeps
 its 10 MiB response cap: a query that fits as March text may exceed it with modern
 dual output and return `-32000`. Use smaller pages; a single large email can still
 exceed the cap. Lost replies can follow committed mutations; do not replay them
 assuming rollback. The epic measures tokens-per-success and invalid-argument/
-tool-misuse rates; local tests prove representation and text compatibility, while
-the operator's #151 baseline and client matrix own measurement and client receipts.
+tool-misuse rates; local tests prove representation and text compatibility. The
+#151 baseline recorded no `tool_misuse` failure in 400 paid trials and did not
+measure tokens per success; the client matrix still owns client receipts.
 
 The stdio bridge starts with legacy compatibility. Single initialize fences
 later input until a matching successful response with capabilities and server
@@ -106,13 +109,15 @@ that data boundary when displaying results or passing mail to a model.
 The metric is compatibility: actual Claude Code, Codex, MCP Inspector and
 Claude Desktop receipts remain operator-owned and owed (issue AC3). See the
 [implementation evidence](../../specs/mcp-version-negotiation/implementation.md).
-The operator holds this PR unmerged until #151's baseline exists.
+The negotiation change merged (#288, `42f04f2`) before the #151 baseline;
+that baseline now exists ([`docs/evals/baseline-2026-11-01.md`](../evals/baseline-2026-11-01.md))
+and measured main `a4f552d`, which already carries it.
 
 ```
 $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{…}}'
 {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26",
-  "serverInfo":{"name":"swarmail","version":"0.1.0"}, …}}
+  "serverInfo":{"name":"swarmail","version":"0.2.0"}, …}}
 
 $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
     -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",
@@ -122,11 +127,12 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   "content":[{"type":"text","text":"{\"emails\":[{…\"codes\":[\"424242\"]…}]}"}]}}
 ```
 
-Eighteen tools: `swarmail_search_emails`, `swarmail_get_email`,
+Eighteen tools, in discovery order: `swarmail_search_emails`,
+`swarmail_get_deliverability_report`, `swarmail_get_email`,
 `swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
 `swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
 `swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
-`swarmail_set_chaos`, `swarmail_clear_chaos`, `swarmail_get_deliverability_report`,
+`swarmail_set_chaos`, `swarmail_clear_chaos`,
 the two focused waits appended after them, **`swarmail_wait_for_code`** and
 **`swarmail_wait_for_link`** ([focused waits](focused-waits.md)), then **`swarmail_create_inbox`**
 (mints a private inbox and its routed address; needs `--route-domain`), and

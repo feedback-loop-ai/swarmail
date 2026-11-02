@@ -24,7 +24,10 @@ document may claim the crate is on crates.io.
 
 **Version policy:** a version bump is the operator's release act — bump
 `version` in `Cargo.toml`, refresh `Cargo.lock` (`cargo check` keeps it in
-lockstep, so `--locked` stays publishable), append
+lockstep, so `--locked` stays publishable), set `charts/swarmail/Chart.yaml`'s
+`version`, `appVersion` and Artifact Hub image to the same version (a joint
+image-and-chart tag needs all four equal, decision 0051), keep the client
+packages under `clients/` on Cargo's version (a test checks it), append
 `docs/releases/vX.Y.Z.md`, and sign the tag (see *Releases* in
 [CONTRIBUTING](../../CONTRIBUTING.md)). Shipped release notes are
 **append-only, with dated errata**: what a release shipped and measured is

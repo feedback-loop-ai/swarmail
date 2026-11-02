@@ -9,12 +9,16 @@ proposed [0093](../decisions/0093-source-mail-comparison.md)
 ([source-attributed continuation](../../specs/source-mail-comparison/spec.md));
 none is accepted.
 
-**Status, 2026-10-30: no results.** This directory holds no baseline, final
-run, comparison, cost or loss record, because none of those exists yet. One
-frozen collection is now sealed and admitted as raw measurement (*Collection
-(2026-10-30)* below); no figure from it is quoted or read as a result.
-Nothing in it, or in the top-level README, may be read as a measured claim
-about Swarmail, Mailpit, MailHog or any agent. The official competitor
+**Status, 2026-11-02: one baseline, no comparison result.** The #151 paid
+baseline exists: [`baseline-2026-11-01.md`](baseline-2026-11-01.md), 395 of
+400 trials on main `a4f552d`, with its raw rows and report beside it. Its
+claims are the eval suite's and are scoped in that file. This directory still
+holds no final comparison run, comparison cost or loss record, because none of
+those exists yet. One frozen collection is sealed and admitted as raw
+measurement (*Collection (2026-10-30)* below); no figure from it is quoted or
+read as a result. Nothing about the comparison, here or in the top-level
+README, may be read as a measured claim about Swarmail, Mailpit or MailHog.
+(Until 2026-11-01 this paragraph read "no results": no baseline existed.) The official competitor
 artifacts are pinned, and each tag's source chain is now bound to captured
 bytes. Every local proof below ran against the real executables. These are
 untimed checks and labelled smoke runs, not collection.
@@ -24,12 +28,12 @@ untimed checks and labelled smoke runs, not collection.
 | Deliverable (spec) | State |
 |---|---|
 | Source pins: [`sources.lock.json`](sources.lock.json) (lock v3) | **Artifacts pinned and tagged sources bound; build provenance unknown.** Mailpit v1.32.0 and MailHog v1.0.1 are pinned by asset and executable digest. Each tag's captured ref → annotated tag → commit chain and the commit's untruncated tree listing are committed under [`sources/`](sources/). Every repository document (licence, API, setup README, reviewed source) is bound by size, SHA-256 and git blob id to its path in that tree, and rechecked whenever the lock is used. Nothing ties either executable to its tagged commit, so `binary_build_provenance` stays unresolved and the lock makes no built-from claim. |
-| Method: [`protocol.json`](protocol.json) | **Frozen as protocol v2** (`fair-mail-comparison-v2`, superseding draft-3; the draft-2 and draft-3 bytes are kept under [`history/`](history/) and still read as version 1). It declares the limited official-artifact claim (no built-from claim), per-target backend, cap, prune and compression facts under the explicitly **unmatched** storage profile, the **unenforced local** resource profile, the common 100 ms poll, the driver's 40 s wait operation bound and the adapter's derived bounds and schema digest. `wait-best` is not a declared profile: it stays blocked. One frozen collection is admitted as raw measurement (see *Collection (2026-10-30)* below); it is not evidence, and no baseline, control or final contract exists. |
+| Method: [`protocol.json`](protocol.json) | **Frozen as protocol v2** (`fair-mail-comparison-v2`, superseding draft-3; the draft-2 and draft-3 bytes are kept under [`history/`](history/) and still read as version 1). It declares the limited official-artifact claim (no built-from claim), per-target backend, cap, prune and compression facts under the explicitly **unmatched** storage profile, the **unenforced local** resource profile, the common 100 ms poll, the driver's 40 s wait operation bound and the adapter's derived bounds and schema digest. `wait-best` is not a declared profile: it stays blocked. One frozen collection is admitted as raw measurement (see *Collection (2026-10-30)* below); it is not evidence. The #151 baseline now exists ([`baseline-2026-11-01.md`](baseline-2026-11-01.md)); no comparison control or final contract does. |
 | Wire driver: `benches/mail_compare.rs` | Built. Its polls now use the adapter's tested wait rule, and its scans refuse short nonfinal pages. A three-target smoke run against real Swarmail, Mailpit and MailHog seals and admits (`tests/mail_compare.rs`, ignored tests below). This is a smoke run, not evidence. Owned-bind corroboration and a cleanup worker that survives cancellation (T3), including the failed-drain-join arm, are **built and proved locally on Linux** (see *Method, as built*). Admission now recomputes the plan from the protocol, requires a proved cleanup receipt per launch and refuses a report that is not the arithmetic of its rows. The launch-level refusal of a foreign bind is proved through the kernel reading it rests on, not by forcing the reservation race, which needs no seam and has none. |
 | Mailpit MCP adapter: `mail_compare mailpit-mcp` | **Built and proved locally.** It speaks MCP 2025-03-26 over stdio. Its tools are list, search, read and a labelled client-side poll, each a translation of the captured Mailpit API. It was tested against real Mailpit over real SMTP. Each call's time frame starts at admission (see below). Final client negotiation (#151/#152/#153) is not proved by these tests. JSON-RPC batches are refused, which falls short of 2025-03-26 (receivers must accept batches); that stays open with the final contracts. |
 | One command: `scripts/compare-mail.sh` | Built. `local` runs the driver as a labelled smoke run; `collect` runs the frozen protocol after the driver's own readiness check and admits it against that protocol. `controls`, `evidence` and `measure` refuse by the name of the first missing prerequisite (baseline, final contracts, controls, coordination receipts, cost basis, identity, full product), and past those still at `comparison-integration`. No mode starts an agent. |
 | Eval integration: comparison target, envelope and controls (T7–T9) | **Row type built (T8.a); controls unstarted (T9.a).** One comparison variant (`schema_version` 3, `evals/src/identity.rs`, read by `results::read_comparison`) carries target, measured executable digest, settings, coordinate and a row hash; the native reader refuses it and the comparison reader refuses native, legacy and mixed rows; MailHog agent cells are refused as unsupported. The conflict syntax #269 committed is resolved to the accepted side. **T9.a is unstarted** because the runner's MCP client (`evals/src/mcp.rs`) speaks only Swarmail's HTTP `POST /mcp` and hands agents an HTTP URL, while the Mailpit adapter is stdio-only; driving it needs a stdio transport or an HTTP bridge in the runner, and a Mailpit-backed fixture for the oracle solutions, which call Swarmail tools. No oracle or null control ran on either agent target. Cross-checkout #148/#201 shared-admission and CI receipts are unproved. |
-| Evidence admission (T10) and the dossier (T11–T12) | **Reporting arithmetic built; no inputs exist.** `report::cite_comparison` cites protocol, attempts and the whole denominator for every cell and refuses mixed protocols and repeated coordinates; `report::dossier` refuses, naming the first of baseline, final contracts and cost basis that is missing. Both are proved on synthetic rows only, so they are arithmetic proofs and not data. The named prerequisite refusals are built and proved by stat alone; no verifier of a prerequisite's contents exists, so a supplied path is necessary and never sufficient. There is no genuine #151 baseline, no reconciled final MCP contract, no final trial and no cost record. No paid trial is authorized. |
+| Evidence admission (T10) and the dossier (T11–T12) | **Reporting arithmetic built; no inputs exist.** `report::cite_comparison` cites protocol, attempts and the whole denominator for every cell and refuses mixed protocols and repeated coordinates; `report::dossier` refuses, naming the first of baseline, final contracts and cost basis that is missing. Both are proved on synthetic rows only, so they are arithmetic proofs and not data. The named prerequisite refusals are built and proved by stat alone; no verifier of a prerequisite's contents exists, so a supplied path is necessary and never sufficient. The #151 baseline now exists ([`baseline-2026-11-01.md`](baseline-2026-11-01.md)), but nothing admits it as a comparison input; there is no reconciled final MCP contract, no final comparison trial and no comparison cost record. No paid comparison trial is authorized. |
 
 These rows are open, not waived. The story is incomplete until genuine
 evidence is admitted (spec AC12–AC14). Passing local tests does not count
@@ -40,6 +44,11 @@ unverified draft, and [v2](history/2026-10-28-sources.lock.v2.json), whose
 and nothing launches from either.
 
 ### Acceptance ledger (2026-10-29)
+
+*Since this dated ledger (2026-11-02):* the #151 baseline landed
+([`baseline-2026-11-01.md`](baseline-2026-11-01.md)), #152 and #153 merged
+(#288, #282), #201's eval CI gating landed (#300) and #219 closed (#267).
+The rows below are kept as recorded; no comparison criterion has closed.
 
 Every criterion is open. "Proof so far" names local tests in
 `tests/mail_compare.rs` or `evals/`; none is a collection or a CI receipt.
@@ -416,14 +425,16 @@ connection limit, a backlog) is not established here.
 
 ### Still open after this record
 
-#148/#201 cross-checkout coordination (unproved); the #151 paid baseline and
-final MCP contracts; operator acceptance of 0091–0093; the operator's ruling
+#148 cross-checkout coordination (unproved; #201's eval CI gating has since
+landed, #300); the final MCP contracts
+(the #151 paid baseline has since landed, 2026-11-01:
+[`baseline-2026-11-01.md`](baseline-2026-11-01.md)); operator acceptance of 0091–0093; the operator's ruling
 on whether `--max-sessions` stands as 0027 §9's follow-up (0027's 2026-10-30
 pointer records the story and claims no acceptance); a collection of
 committed bytes, since the admitted run's manifest says `candidate_dirty`
 true; CI; the five-member
 protected review; the T7–T12 controls and dossier (no oracle or null control
-has run, no paid trial is authorized); a best-available wait; binary build
+has run, no paid comparison trial is authorized); a best-available wait; binary build
 provenance for both executables; source review establishes no equivalence.
 The inherited HIGH cross-attempt review-integrity residual stays on the
 board for the protected review to rule. The dated notes in *proposed* 0081
@@ -433,8 +444,8 @@ a9893b4 + three patches pin, then (2026-10-30) on the pinned a9893b4 + four
 patches binary `29dc3309…` at main `9785f81`, which closes the residual for
 this pin by a re-run on these bytes. The verify seat's compile for `25c0854`
 used that same pinned binary. This change neither re-ran the proof nor claims
-a merge repairs the engine; it cites the committed record, and #219 and the
-other rows above stay open.
+a merge repairs the engine; it cites the committed record, and the other
+rows above stay open (#219 has since closed, #267).
 
 ## What closes the remaining rows
 
@@ -457,14 +468,16 @@ other rows above stay open.
    replace the declared `unenforced_local` profile.
 3. The comparison target, envelope and same-suite
    controls (T8–T9) and evidence admission (T10) are built in the eval
-   owners. #148/#201 receive their cross-checkout shared-admission and CI
-   receipts. The #151 baseline and the final MCP contracts, batch handling
-   included, land.
+   owners. #148 receives its cross-checkout shared-admission receipt
+   (#201's CI gating landed with #300). The final MCP contracts, batch handling included, land (the
+   #151 baseline landed on 2026-11-01).
 4. Genuine, separately authorized runs are admitted with their actual cost
    records. Losses and unsupported cells are published beside the wins, and
    README numbers cite their run, task, model, configuration and denominator.
 
 ## Cost
 
-No paid trial was run and none is authorized. Cost accounting is
-*unavailable*, which is not the same as zero.
+No paid comparison trial was run and none is authorized. Cost accounting is
+*unavailable*, which is not the same as zero. The #151 baseline's paid trials
+were a separate run, approved by the operator on 2026-11-01; they record no
+token or cost field ([`baseline-2026-11-01.md`](baseline-2026-11-01.md)).

@@ -13,12 +13,12 @@ jobs:
 
 | CI job | What it runs |
 |---|---|
-| `quality` | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the publish guard's proof, the shim digests and the design check's selftest |
-| `test` (ubuntu + macOS) | `cargo test --workspace --locked`, then the ignored port-80 bridge proof; on Linux also the Playwright and pytest fixtures' example suites against the built binary |
+| `quality` | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the publish guard's proof, the packaged-licenses and WHATWG attribution proof, the shim digests, the design check's selftest and the seal tool's keyless proof |
+| `test` (ubuntu + macOS) | `cargo test --workspace --locked`, then from `evals/` its fmt, clippy and `cargo test --locked` against the candidate's own `swarmail` binary, then the ignored port-80 bridge proof; on Linux also the Playwright and pytest fixtures' example suites against the built binary |
 | `coverage` | the coverage gate's selftest, the exact gate itself and the delivery-proof test; uploads `target/coverage/` |
 | `deny` | `cargo deny check licenses` and the fail-closed `native-tls` absence proof |
 | `dependency-audit` | the RustSec advisory audit (network-backed, CI-only) |
-| `brokkr-compile` | applies the checksummed engine patches, proves review aggregation, builds the recorded brokkr, and compiles self plus all three Codex recipes |
+| `brokkr-compile` | applies the checksummed engine patches and proves review aggregation from source, admits the published brokkr by its recorded digest and version, and compiles all six recipes (`self`, `codex`, `codex-careful`, `codex-fast`, `mixed-opus-terra`, `claude-careful`) |
 | `chart-verify` | `scripts/chart-verify.sh`: its selftest, the chart-version bump check against history, and lint + both profiles + contract assertions |
 | `docker-smoke` | real Docker: the built image as its own uid keeps accepted mail across a graceful stop and a hard kill on a named volume, `--rm` leaks no anonymous volume, and no `target/` reaches the build context |
 | `release-rate-5k` (tags only) | `cargo test --release --locked --test rate -- --ignored --nocapture`, the 5000/5000 proof |
@@ -89,5 +89,7 @@ uses separate writable candidate scripts and must execute the repaired proof;
 editing the pinned baseline invalidates the run. Compilation, local dispatch
 fixtures and provider smoke prove different boundaries. Delivery still needs
 committed-candidate hermetic verification, protected independent review and
-the genuine ledger close-out. The operator seals the verified local branch
-before publication or merge; agent runs never push or merge.
+the genuine ledger close-out. PR branches are not sealed (decision 0056,
+2026-11-01 addendum): the operator's assistant squash-merges a delivery PR once
+every house gate and required CI check is green, unless it is held for the
+operator; agent runs never push or merge.

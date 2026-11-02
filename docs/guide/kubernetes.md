@@ -14,23 +14,25 @@ helm install swarmail ./charts/swarmail --set image.tag=main --set image.pullPol
 helm test swarmail -n swarmail        # the /healthz hook, from a curl pod
 ```
 
-Install from a checkout for now. The only published chart, OCI `0.1.0`,
-predates the startupProbe, the TLS settings, `networkPolicy.ingressPeers`
-and the listen configuration, and the publish guard never republishes a
-version (decision 0019). The tree's chart is `0.1.2`, prepared but not
-published (`0.1.1` was prepared and never published either). Its
-`appVersion` image, `:0.1.0`, is the 2026-10-12 build that predates the
-current server, so the command sets `image.tag=main` explicitly — and
-`image.pullPolicy=Always`, because `:main` moves: under the chart's default
-`IfNotPresent` a node that cached an older `:main` would keep running it.
+Install from a checkout until the `v0.2.0` release run has published the
+chart. Before that run the only published chart, OCI `0.1.0`, predates the
+startupProbe, the TLS settings, `networkPolicy.ingressPeers` and the listen
+configuration, and the publish guard never republishes a version (decision
+0019); `0.1.1`, `0.1.2` and `0.1.3` were prepared and never published. The
+tree's chart is `0.2.0` with `appVersion` `0.2.0`, aligned with the crate for
+the joint `v0.2.0` release (decision 0051); its image, `:0.2.0`, exists only
+once that tag's image job has published it. The command above therefore sets
+`image.tag=main` explicitly — and `image.pullPolicy=Always`, because `:main`
+moves: under the chart's default `IfNotPresent` a node that cached an older
+`:main` would keep running it.
 
 **Releases publish the image before the chart.** A `v*` tag publishes only
 when it is exactly `v<Cargo.toml version>` for the image and exactly
 `v<Chart.yaml version>` for the chart, and the chart's `appVersion` must
 equal Cargo's version; the chart job needs the image job's success and
 checks that the image it names is published. So a tag that matches only
-the chart — `v0.1.2` on today's tree, whose crate is `0.1.0` — publishes
-neither. Preparing a chart version is not a release: CI requires a chart
+the chart — `v0.1.2` on the tree before this release, whose crate was
+`0.1.0` — publishes neither. Preparing a chart version is not a release: CI requires a chart
 version bump for every chart edit (`scripts/chart-verify.sh`), and the
 release itself is the operator's aligned tag. The two pushes are not one
 transaction: if the chart push fails after the image pushed, the image

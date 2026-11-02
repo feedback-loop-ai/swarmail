@@ -16,12 +16,15 @@ graceful drain room (see *Stopping* below).
 `:main` is the continuous build of the main branch — mutable, so pin
 `:sha-<commit>` (or build locally) when you need a reproducible image.
 `:v0.1.0` was never published, and `:0.1.0` is the 2026-10-12 first
-build; the next release cut publishes both `:v<version>` and `:<version>`.
+build. A release tag publishes both `:v<version>` and `:<version>`: the
+signed `v0.2.0` tag publishes `:v0.2.0` and `:0.2.0` once its release run
+passes (see [Kubernetes](kubernetes.md) for the conditions).
 
 **Persistence in Docker:** set `SWARMAIL_DATA_FILE` and mount a named
 volume at `/data`. The image ships `/data` owned by its runtime uid 65532,
-so a fresh named volume is writable (`:main` carries it; the 2026-10-12
-`:0.1.0` build predates it):
+so a fresh named volume is writable (`:main` carries it, as does `:0.2.0`
+once the `v0.2.0` release run publishes it; the 2026-10-12 `:0.1.0` build
+predates it):
 
 ```
 docker run --rm --stop-timeout 30 -p 1025:1025 -p 1110:1110 -p 8025:8025 \
