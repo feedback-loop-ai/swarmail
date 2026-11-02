@@ -406,9 +406,16 @@ fn distribution(values: &mut [u64], with_sum: bool) -> Value {
     out.insert("p95".into(), json!(nearest_rank(values, 0.95)));
     out.insert("max".into(), json!(values.last()));
     if with_sum {
-        out.insert("sum".into(), json!(values.iter().sum::<u64>()));
+        // A sum that does not fit a u64 is withheld (null), never wrapped:
+        // counters are capped at 2^53-1 each, but a crafted facts file can
+        // hold enough of them to overflow the total.
+        out.insert("sum".into(), json!(checked_sum(values)));
     }
     Value::Object(out)
+}
+
+fn checked_sum(values: &[u64]) -> Option<u64> {
+    values.iter().try_fold(0u64, |acc, v| acc.checked_add(*v))
 }
 
 fn distribution_or_null(mut values: Vec<u64>, with_sum: bool) -> Value {
@@ -487,13 +494,15 @@ pub fn summarize(group: &[&TrialResult], joined: &Joined) -> Value {
     }
     let passes = scored.iter().filter(|r| r.outcome == Outcome::Pass).count() as u64;
     let joined_count = total.len();
-    let sum_total: u64 = total.iter().sum();
+    let sum_total = checked_sum(&total);
     let (per_success, reason) = if !missing.is_empty() {
         (Value::Null, json!("incomplete_join"))
     } else if passes == 0 {
         (Value::Null, json!("no_passes"))
+    } else if let Some(sum) = sum_total {
+        (json!(sum as f64 / passes as f64), Value::Null)
     } else {
-        (json!(sum_total as f64 / passes as f64), Value::Null)
+        (Value::Null, json!("sum_overflow"))
     };
     let tokens = if joined_count == 0 {
         Value::Null
@@ -869,6 +878,43 @@ mod tests {
         assert_eq!(nothing["deadline_killed"], Value::Null);
         assert_eq!(nothing["deadline_killed_reason"], "incomplete_join");
         assert_eq!(nothing["turns"], Value::Null);
+    }
+
+    #[test]
+    fn a_token_sum_that_overflows_is_withheld_never_wrapped() {
+        assert_eq!(checked_sum(&[u64::MAX, 0]), Some(u64::MAX));
+        assert_eq!(checked_sum(&[u64::MAX, 1]), None);
+        let mut huge = vec![u64::MAX - 1, 2];
+        assert_eq!(distribution(&mut huge, true)["sum"], Value::Null);
+
+        // 1025 trials, each at the per-fact cap for input and output, exceed
+        // a u64 in aggregate (1025 * (2^54 - 2) > 2^64 - 1) while every
+        // fact is individually valid.
+        let big = COUNTER_LIMIT;
+        // One real row, cloned per trial: building each from scratch is slow.
+        let template = row(1, "agent", true, Outcome::Pass);
+        let rows: Vec<_> = (1..=1025)
+            .map(|n| {
+                let mut r = template.clone();
+                r.trial_id = id(n);
+                r
+            })
+            .collect();
+        let all: Vec<_> = (1..=1025)
+            .map(|n| facts_for(n, tokens(big, big), vec![]))
+            .collect();
+        let over = summary(&rows, &file(all));
+        assert_eq!(over["tokens"]["total"]["sum"], Value::Null);
+        assert_eq!(over["tokens_per_success"], Value::Null);
+        assert_eq!(over["tokens_per_success_reason"], "sum_overflow");
+
+        // 1024 still fit and are reported exactly.
+        let fit: Vec<_> = (1..=1024)
+            .map(|n| facts_for(n, tokens(big, big), vec![]))
+            .collect();
+        let ok = summary(&rows[..1024], &file(fit));
+        assert_eq!(ok["tokens"]["total"]["sum"], json!(1024 * (2 * big)));
+        assert!(ok["tokens_per_success"].is_f64());
     }
 
     #[test]

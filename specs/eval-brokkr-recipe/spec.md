@@ -282,8 +282,10 @@ reason** rather than running a guess.
   malformed request or an unusable slot refuses `unscorable` without
   writing `score.json`; the matrix then sees `score_missing`. `check --artifacts-dir` validates the bound leaf and
   re-scores the app's retained state; the agent's account is not an input
-  and the gate reads nothing the agent could have written after the trial
-  froze.
+  and the business verdict is the app's retained state on the normal path.
+  The trial seat is unconfined, so a same-uid agent could rewrite the slot
+  row or the retained leaf: that tamper is the named residual of #221, and
+  no claim of snapshot authentication is made (decision 0071 section 3).
 - Both scripts: `set -u`, `jq` renders every result (refusing with a fixed
   `harness_error`/`unscorable` text without it), results are written to a
   sibling temporary and renamed, and no secret, path or child byte is
@@ -435,10 +437,12 @@ and leaves every existing field byte-identical:
 - `joined`, `scored`, `excluded_harness_errors`, `missing: {reason: count}`;
 - `tokens`: for `input`, `output`, `cached` and `total` (input + output;
   cached beside, never added), the nearest-rank median, p95 and max over
-  joined scored trials, plus `sum`;
+  joined scored trials, plus `sum` (checked: `null`, never a wrapped
+  figure, when the sum does not fit a u64);
 - `tokens_per_success`: `sum of total tokens / passes`, or `null` with
-  `tokens_per_success_reason` `no_passes` or `incomplete_join` when any
-  scored trial in the group lacks token facts;
+  `tokens_per_success_reason` `no_passes`, `incomplete_join` when any
+  scored trial in the group lacks token facts, or `sum_overflow` when the
+  total does not fit a u64;
 - `turns`, `seat_wall_time_ms`: median, p95, max, or `null`;
 - `tool_calls`: `{total, invalid_argument, by_tool: {name: count}, trials}`,
   or **`null` with `tool_calls_reason: incomplete_join`** when any scored
