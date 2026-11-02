@@ -266,12 +266,15 @@ graceful drain room (see *Stopping* below).
 `:main` is the continuous build of the main branch — mutable, so pin
 `:sha-<commit>` (or build locally) when you need a reproducible image.
 `:v0.1.0` was never published, and `:0.1.0` is the 2026-10-12 first
-build; the next release cut publishes both `:v<version>` and `:<version>`.
+build. A release tag publishes both `:v<version>` and `:<version>`: the
+signed `v0.2.0` tag publishes `:v0.2.0` and `:0.2.0` once its release run
+passes (see *Kubernetes* below for the conditions).
 
 **Persistence in Docker:** set `SWARMAIL_DATA_FILE` and mount a named
 volume at `/data`. The image ships `/data` owned by its runtime uid 65532,
-so a fresh named volume is writable (`:main` carries it; the 2026-10-12
-`:0.1.0` build predates it):
+so a fresh named volume is writable (`:main` carries it, as does `:0.2.0`
+once the `v0.2.0` release run publishes it; the 2026-10-12 `:0.1.0` build
+predates it):
 
 ```
 docker run --rm --stop-timeout 30 -p 1025:1025 -p 1110:1110 -p 8025:8025 \
@@ -413,23 +416,25 @@ helm install swarmail ./charts/swarmail --set image.tag=main --set image.pullPol
 helm test swarmail -n swarmail        # the /healthz hook, from a curl pod
 ```
 
-Install from a checkout for now. The only published chart, OCI `0.1.0`,
-predates the startupProbe, the TLS settings, `networkPolicy.ingressPeers`
-and the listen configuration, and the publish guard never republishes a
-version (decision 0019). The tree's chart is `0.1.2`, prepared but not
-published (`0.1.1` was prepared and never published either). Its
-`appVersion` image, `:0.1.0`, is the 2026-10-12 build that predates the
-current server, so the command sets `image.tag=main` explicitly — and
-`image.pullPolicy=Always`, because `:main` moves: under the chart's default
-`IfNotPresent` a node that cached an older `:main` would keep running it.
+Install from a checkout until the `v0.2.0` release run has published the
+chart. Before that run the only published chart, OCI `0.1.0`, predates the
+startupProbe, the TLS settings, `networkPolicy.ingressPeers` and the listen
+configuration, and the publish guard never republishes a version (decision
+0019); `0.1.1`, `0.1.2` and `0.1.3` were prepared and never published. The
+tree's chart is `0.2.0` with `appVersion` `0.2.0`, aligned with the crate for
+the joint `v0.2.0` release (decision 0051); its image, `:0.2.0`, exists only
+once that tag's image job has published it. The command above therefore sets
+`image.tag=main` explicitly — and `image.pullPolicy=Always`, because `:main`
+moves: under the chart's default `IfNotPresent` a node that cached an older
+`:main` would keep running it.
 
 **Releases publish the image before the chart.** A `v*` tag publishes only
 when it is exactly `v<Cargo.toml version>` for the image and exactly
 `v<Chart.yaml version>` for the chart, and the chart's `appVersion` must
 equal Cargo's version; the chart job needs the image job's success and
 checks that the image it names is published. So a tag that matches only
-the chart — `v0.1.2` on today's tree, whose crate is `0.1.0` — publishes
-neither. Preparing a chart version is not a release: CI requires a chart
+the chart — `v0.1.2` on the tree before this release, whose crate was
+`0.1.0` — publishes neither. Preparing a chart version is not a release: CI requires a chart
 version bump for every chart edit (`scripts/chart-verify.sh`), and the
 release itself is the operator's aligned tag. The two pushes are not one
 transaction: if the chart push fails after the image pushed, the image
@@ -795,15 +800,18 @@ whole emails and has no `fields`. REST is unchanged unless asked:
 `GET /api/v1/inboxes/{inbox}/messages?view=compact` answers the same
 `{total, emails}` envelope with compact items; `compact` is the only value of
 `view`, and no other route takes it. The token metric (median tokens per
-success) is not measured by this change: no paid trial was run.
+success) is not measured: this change ran no paid trial, and the #151 paid
+baseline ([`docs/evals/baseline-2026-11-01.md`](docs/evals/baseline-2026-11-01.md))
+records no token field.
 
 Duplicating JSON increases response size and token cost. The stdio bridge keeps
 its 10 MiB response cap: a query that fits as March text may exceed it with modern
 dual output and return `-32000`. Use smaller pages; a single large email can still
 exceed the cap. Lost replies can follow committed mutations; do not replay them
 assuming rollback. The epic measures tokens-per-success and invalid-argument/
-tool-misuse rates; local tests prove representation and text compatibility, while
-the operator's #151 baseline and client matrix own measurement and client receipts.
+tool-misuse rates; local tests prove representation and text compatibility. The
+#151 baseline recorded no `tool_misuse` failure in 400 paid trials and did not
+measure tokens per success; the client matrix still owns client receipts.
 
 The stdio bridge starts with legacy compatibility. Single initialize fences
 later input until a matching successful response with capabilities and server
@@ -838,13 +846,15 @@ that data boundary when displaying results or passing mail to a model.
 The metric is compatibility: actual Claude Code, Codex, MCP Inspector and
 Claude Desktop receipts remain operator-owned and owed (issue AC3). See the
 [implementation evidence](specs/mcp-version-negotiation/implementation.md).
-The operator holds this PR unmerged until #151's baseline exists.
+The negotiation change merged (#288, `42f04f2`) before the #151 baseline;
+that baseline now exists ([`docs/evals/baseline-2026-11-01.md`](docs/evals/baseline-2026-11-01.md))
+and measured main `a4f552d`, which already carries it.
 
 ```
 $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{…}}'
 {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26",
-  "serverInfo":{"name":"swarmail","version":"0.1.0"}, …}}
+  "serverInfo":{"name":"swarmail","version":"0.2.0"}, …}}
 
 $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
     -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",
@@ -854,11 +864,12 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   "content":[{"type":"text","text":"{\"emails\":[{…\"codes\":[\"424242\"]…}]}"}]}}
 ```
 
-Eighteen tools: `swarmail_search_emails`, `swarmail_get_email`,
+Eighteen tools, in discovery order: `swarmail_search_emails`,
+`swarmail_get_deliverability_report`, `swarmail_get_email`,
 `swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
 `swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
 `swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
-`swarmail_set_chaos`, `swarmail_clear_chaos`, `swarmail_get_deliverability_report`,
+`swarmail_set_chaos`, `swarmail_clear_chaos`,
 the two focused waits appended after them, **`swarmail_wait_for_code`** and
 **`swarmail_wait_for_link`** (below), then **`swarmail_create_inbox`**
 (mints a private inbox and its routed address; needs `--route-domain`), and
@@ -1467,7 +1478,10 @@ throughput, wait latency or agent results, and they compare nothing.
 The fair comparison against Mailpit and MailHog has its own method and
 driver, and so far no results: see [docs/evals](docs/evals/README.md)
 for what is built, what is still missing and why. This README states no
-comparative or agent numbers until admitted evidence exists to cite.
+comparative numbers until admitted evidence exists to cite. The agent eval
+suite's first paid baseline is published with its raw rows in
+[`docs/evals/baseline-2026-11-01.md`](docs/evals/baseline-2026-11-01.md);
+the suite is saturated at that difficulty, so the baseline ranks nothing.
 
 ## Repo layout
 
@@ -1514,12 +1528,12 @@ jobs:
 
 | CI job | What it runs |
 |---|---|
-| `quality` | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the publish guard's proof, the shim digests and the design check's selftest |
-| `test` (ubuntu + macOS) | `cargo test --workspace --locked`, then the ignored port-80 bridge proof; on Linux also the Playwright and pytest fixtures' example suites against the built binary |
+| `quality` | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the publish guard's proof, the packaged-licenses and WHATWG attribution proof, the shim digests, the design check's selftest and the seal tool's keyless proof |
+| `test` (ubuntu + macOS) | `cargo test --workspace --locked`, then from `evals/` its fmt, clippy and `cargo test --locked` against the candidate's own `swarmail` binary, then the ignored port-80 bridge proof; on Linux also the Playwright and pytest fixtures' example suites against the built binary |
 | `coverage` | the coverage gate's selftest, the exact gate itself and the delivery-proof test; uploads `target/coverage/` |
 | `deny` | `cargo deny check licenses` and the fail-closed `native-tls` absence proof |
 | `dependency-audit` | the RustSec advisory audit (network-backed, CI-only) |
-| `brokkr-compile` | applies the checksummed engine patches, proves review aggregation, builds the recorded brokkr, and compiles self plus all three Codex recipes |
+| `brokkr-compile` | applies the checksummed engine patches and proves review aggregation from source, admits the published brokkr by its recorded digest and version, and compiles all six recipes (`self`, `codex`, `codex-careful`, `codex-fast`, `mixed-opus-terra`, `claude-careful`) |
 | `chart-verify` | `scripts/chart-verify.sh`: its selftest, the chart-version bump check against history, and lint + both profiles + contract assertions |
 | `docker-smoke` | real Docker: the built image as its own uid keeps accepted mail across a graceful stop and a hard kill on a named volume, `--rm` leaks no anonymous volume, and no `target/` reaches the build context |
 | `release-rate-5k` (tags only) | `cargo test --release --locked --test rate -- --ignored --nocapture`, the 5000/5000 proof |
@@ -1590,8 +1604,10 @@ uses separate writable candidate scripts and must execute the repaired proof;
 editing the pinned baseline invalidates the run. Compilation, local dispatch
 fixtures and provider smoke prove different boundaries. Delivery still needs
 committed-candidate hermetic verification, protected independent review and
-the genuine ledger close-out. The operator seals the verified local branch
-before publication or merge; agent runs never push or merge.
+the genuine ledger close-out. PR branches are not sealed (decision 0056,
+2026-11-01 addendum): the operator's assistant squash-merges a delivery PR once
+every house gate and required CI check is green, unless it is held for the
+operator; agent runs never push or merge.
 
 ## Roadmap
 
@@ -1629,7 +1645,10 @@ document may claim the crate is on crates.io.
 
 **Version policy:** a version bump is the operator's release act — bump
 `version` in `Cargo.toml`, refresh `Cargo.lock` (`cargo check` keeps it in
-lockstep, so `--locked` stays publishable), append
+lockstep, so `--locked` stays publishable), set `charts/swarmail/Chart.yaml`'s
+`version`, `appVersion` and Artifact Hub image to the same version (a joint
+image-and-chart tag needs all four equal, decision 0051), keep the client
+packages under `clients/` on Cargo's version (a test checks it), append
 `docs/releases/vX.Y.Z.md`, and sign the tag (see *Releases* in
 [CONTRIBUTING](CONTRIBUTING.md)). Shipped release notes are
 **append-only, with dated errata**: what a release shipped and measured is

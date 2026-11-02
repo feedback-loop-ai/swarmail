@@ -273,7 +273,7 @@
 
 <header id="top">
   <div class="wrap">
-    <div class="kicker"><span class="dot"></span> v0.1.0 · lossless by construction</div>
+    <div class="kicker"><span class="dot"></span> v0.2.0 · lossless by construction</div>
     <h1>Email that<br><span class="grad">never loses a letter</span></h1>
     <p class="tagline">
       Most mail mocks are built for a human looking at a web UI. Swarmail is built for a program waiting on mail.
@@ -299,7 +299,7 @@
       <div role="listitem"><b>5000/5000</b><span>exact over 100 concurrent fresh sessions, asserted in CI on every release tag</span></div>
       <div role="listitem"><b>1.58 µs</b><span>per mail — parse + extract + insert (criterion median, measured locally; not a CI gate)</span></div>
       <div role="listitem"><b>100/100/100</b><span>exact line · branch · function coverage, gated</span></div>
-      <div role="listitem"><b>12 tools</b><span>native MCP — HTTP and stdio transports</span></div>
+      <div role="listitem"><b>18 tools</b><span>native MCP — HTTP and stdio transports</span></div>
     </div>
   </div>
 </header>
@@ -389,7 +389,7 @@
   <div class="wrap">
     <div class="sec-label">AI-native</div>
     <h2>Agents drive the mail, end to end</h2>
-    <p class="sub">Twelve tools over MCP — search, get, seed, chaos, and <code style="font-family:var(--mono);color:var(--amber)">swarmail_wait_for_email</code>, which blocks
+    <p class="sub">Eighteen tools over MCP — search, get, seed, chaos, and <code style="font-family:var(--mono);color:var(--amber)">swarmail_wait_for_email</code>, which blocks
     until the mail actually arrives. Point Claude Code, Codex or Cursor at it and the agent closes its own loop.</p>
     <div class="codeblock" style="max-width:720px">
       <div class="cb-bar"><span>.mcp.json</span><button class="copy-btn" data-copy='{ &quot;mcpServers&quot;: { &quot;swarmail&quot;: { &quot;type&quot;: &quot;http&quot;, &quot;url&quot;: &quot;http://localhost:8025/mcp&quot; } } }'>copy</button></div>
@@ -417,7 +417,7 @@
           <tr><td>Burst handling</td><td>SMTP session leaks</td><td>documented message loss &gt;100/s</td><td>200–300/s</td><td>Node, untested</td><td class="us">lossless — 5000/5000 exact over 100 concurrent fresh sessions, asserted in CI on every release tag</td></tr>
           <tr><td>Wait-until-arrival</td><td><span class="no">❌ poll</span></td><td><span class="no">❌ poll</span></td><td><span class="no">❌ poll</span></td><td><span class="no">❌ poll</span></td><td class="us"><span class="yes">✅</span> await long-poll + MCP wait_for_email</td></tr>
           <tr><td>Per-test inboxes</td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td class="us"><span class="yes">✅</span> AUTH username = inbox</td></tr>
-          <tr><td>MCP server</td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="yes">✅</span> (Node)</td><td class="us"><span class="yes">✅</span> HTTP + stdio, native, 12 tools</td></tr>
+          <tr><td>MCP server</td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="yes">✅</span> (Node)</td><td class="us"><span class="yes">✅</span> HTTP + stdio, native, 18 tools</td></tr>
           <tr><td>Link/code extraction</td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td class="us"><span class="yes">✅</span> first-class, at ingest</td></tr>
           <tr><td>Chaos on SMTP</td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td>error codes only</td><td><span class="no">❌</span></td><td class="us"><span class="yes">✅</span> probability, error line, delay — per stage</td></tr>
           <tr><td>Webhooks</td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td>1/s, no retry</td><td><span class="no">❌</span></td><td class="us"><span class="yes">✅</span> queued, retried 100ms→1.6s, inbox-filtered, TLS</td></tr>
@@ -470,7 +470,7 @@
     </div>
     <div class="legal">
       <svg width="18" height="18" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="none" stroke="#6b7484" stroke-width="2"/><path d="M6 11l10 7 10-7" stroke="#6b7484" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>© 2026 feedback-loop-ai · Swarmail v0.1.0 · dual licensed <a href="https://github.com/feedback-loop-ai/swarmail/blob/main/LICENSE-MIT">MIT</a> or <a href="https://github.com/feedback-loop-ai/swarmail/blob/main/LICENSE-APACHE">Apache-2.0</a>, at your option (SPDX: MIT OR Apache-2.0)</span>
+      <span>© 2026 feedback-loop-ai · Swarmail v0.2.0 · dual licensed <a href="https://github.com/feedback-loop-ai/swarmail/blob/main/LICENSE-MIT">MIT</a> or <a href="https://github.com/feedback-loop-ai/swarmail/blob/main/LICENSE-APACHE">Apache-2.0</a>, at your option (SPDX: MIT OR Apache-2.0)</span>
     </div>
   </div>
 </footer>
