@@ -158,7 +158,7 @@ publication, failure-taxonomy reprioritization and sealing are operator work.
 No paid or networked agent is run by this delivery. Root and standalone test
 receipts, including carried failures, must be assessed separately from smoke.
 
-## Launching through a brokkr driver (`--via-brokkr`, proposed 0116)
+## Launching through a brokkr driver (`--via-brokkr`, proposed 0119)
 
 **`--via-brokkr` fails closed today.** `agent-claude|agent-codex|agent-dsh ...
 --via-brokkr /abs/driver` validates `DRIVER` (an absolute path to a regular
@@ -202,7 +202,7 @@ Whatever channel carries a nested driver's token, turn and tool counts back to
 brokkr's journal (a stdout relay or one environment variable, brokkr fact F1),
 four places cut it today. None is changed by this delivery, because forwarding
 touches accepted 0075 section 1 and waits for the observed channel and the
-operator's acceptance of 0116 section 6:
+operator's acceptance of 0119 section 6:
 
 1. `.brokkr/recipes/eval/scripts/trial.sh` runs the trial under `env -i PATH=...
    LANG=C LC_ALL=C SWARMAIL_BIN=...`;

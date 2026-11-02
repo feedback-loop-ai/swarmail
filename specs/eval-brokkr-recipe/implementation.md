@@ -4,7 +4,7 @@
 
 Implements [spec.md](spec.md) / [plan.md](plan.md) / [tasks.md](tasks.md)
 (revision 2, `38dab0f`) under proposed
-[0116](../../docs/decisions/0116-eval-brokkr-recipe.md). Base `main` `f815d48`.
+[0119](../../docs/decisions/0119-eval-brokkr-recipe.md). Base `main` `f815d48`.
 Commits unsigned; nothing pushed, merged, published or accepted.
 
 History, never amended: round 1 was designed in `8b9abc6` and built in
@@ -22,7 +22,7 @@ success.** The accounting channel between a nested `brokkr driver` and the
 engine has never been observed, and every candidate channel is severed by four
 named seams (below); closing the #151 "Not measured" rows needs the operator's
 first engine run, the first authenticated via-brokkr smoke per family, the
-forwarding follow-up under 0116 section 6, and then the paid matrix.
+forwarding follow-up under 0119 section 6, and then the paid matrix.
 
 ## What revision 2 changed (task by task)
 
@@ -84,7 +84,7 @@ path still refuses.)
 
 ## The four seams (brokkr fact F1)
 
-Nothing is forwarded. Identically in the spec, 0116 section 6 and
+Nothing is forwarded. Identically in the spec, 0119 section 6 and
 `evals/wrappers.md`: (1) `trial.sh` runs the trial under `env -i PATH LANG
 LC_ALL SWARMAIL_BIN`; (2) the runner builds the agent's environment afresh;
 (3) `wrappers::through_driver` calls `env_clear`; (4) `through_driver` routes
@@ -104,7 +104,7 @@ fact is claimed "tracked", because I could not read the sub-issues.
 | F1 accounting channel for a nested driver | **drafted, not filed** (issue 1) | the four seams named; sentinel proofs; no forwarding; tokens `null` with a typed reason |
 | F2 driver invocation form | **drafted, not filed** (issue 2) | `--via-brokkr` refuses `driver_contract_unknown` at the trial and the wrapper; assembly proven inline |
 | F3 per-run export shape | **drafted, not filed** (issue 3) | facts v1 reader and goldens; `journal-facts.sh` fails typed, exit 2 |
-| F4 two-seat recipe with its own policy | **falsified by the pinned engine** (brokkr 0.12.0 refuses a policy without a `review` phase); see issue 6 and 0116 R4 (2026-11-02). Issue 4 is superseded, **drafted, not filed** | the recipe now has phases `trial, review, done, stop` with the exec scoring gate as its protected review; `tests/delivery_recipes.rs` pins; CI, the verify seat and the house rules compile every recipe directory |
+| F4 two-seat recipe with its own policy | **falsified by the pinned engine** (brokkr 0.12.0 refuses a policy without a `review` phase); see issue 6 and 0119 R4 (2026-11-02). Issue 4 is superseded, **drafted, not filed** | the recipe now has phases `trial, review, done, stop` with the exec scoring gate as its protected review; `tests/delivery_recipes.rs` pins; CI, the verify seat and the house rules compile every recipe directory |
 | F5 hands for the trial seat | **drafted, not filed** (issue 5) | `binds: []`; `network` true/false; `brokkr_artifacts_unreachable`; paid agents unsupported |
 | F6 does the exec box share `/tmp` | **unobserved**; not an issue; the answer goes in `evals/README.md` (admission posture) once the engine run shows it | nothing changes either way |
 | F7 a deadline-killed seat is distinguishable | **drafted, not filed** (issue 2, last sentence) | `deadline_killed` is a typed fact; a worker with no row is `harness_error`, never `gave_up` |
@@ -182,7 +182,7 @@ shape: **not run** in the implement seat, which had no staged pinned binary
 (`.brokkr/state/bin/brokkr` absent) and no network. The receipt belongs to a
 verify continuation entered from the candidate's bundle or to CI's
 `brokkr bundle (pinned)` job; the operator attaches it to this issue when
-filing. If that compile refuses the renamed shape, 0116 R4 Ruling 3 applies
+filing. If that compile refuses the renamed shape, 0119 R4 Ruling 3 applies
 and this text is amended with the refusal.*
 
 ## Acceptance criteria
@@ -191,7 +191,7 @@ and this text is amended with the refusal.*
 |---|---|---|
 | AC1 one command, one row per slot | met | `report.rs::brokkr_mode_runs_the_product_through_the_recipe_scripts` (2 tasks × {oracle, null} × 2 = 8 rows, 4 pass, 4 fail, distinct seeds, `check --matrix` replay) |
 | AC2 worker death is a row | met | `brokkr_mode_turns_every_worker_defect_into_a_row` (no-row, foreign-row, bad-exit, bad-score, no-score, category-stderr), `brokkr_mode_records_a_killed_worker_as_a_harness_error` |
-| AC3 recipe is real | **partly**: files, pins and CI loop done; `brokkr compile --bundle .brokkr/recipes/eval` **not run** (no binary); CI refused the original shape, so reworked under 0116 R4 (2026-11-02) | `tests/delivery_recipes.rs` (11 mutants, each caught by its named rule) |
+| AC3 recipe is real | **partly**: files, pins and CI loop done; `brokkr compile --bundle .brokkr/recipes/eval` **not run** (no binary); CI refused the original shape, so reworked under 0119 R4 (2026-11-02) | `tests/delivery_recipes.rs` (11 mutants, each caught by its named rule) |
 | AC4 scripts on the engine's rendering | met | `recipe.rs` (engine, CRLF and bare forms; first red above) |
 | AC5 controls through the recipe path | met | `proof.rs::the_controls_hold_through_the_recipe_path` (oracle 16/16, null 0/16) |
 | AC6 typed join | met | goldens, inline `journal.rs` tests, `a_dropped_join_is_red`, untyped refusals |
@@ -203,7 +203,7 @@ and this text is amended with the refusal.*
 | AC12 brokkr facts filed | **operator**: drafted, not filed (table above) | |
 | AC13 no dependency, schemas unchanged | met | `git diff f815d48 --stat` over `Cargo.*`, `evals/Cargo.*`, `deny.toml`, `scripts/`, `.brokkr/recipes/self/`, `docs/evals/` is empty; no `TrialResult`/`Metadata`/`MatrixPlan`/`MatrixIndex` change |
 | AC14 gates | met except `brokkr compile` (not run) | receipts below |
-| AC15 delivery paper | this file; 0116 stays proposed with its index row | |
+| AC15 delivery paper | this file; 0119 stays proposed with its index row | |
 | AC16 paid measurement | **operator, after the follow-up**; cannot happen on this tree | |
 | AC17 seams named and proven | met | `recipe.rs::the_trial_seat_strips_the_matrix_environment`, the wrapper environment test |
 
@@ -237,15 +237,15 @@ chart, Docker and RustSec jobs, and the macOS test job.
 > the sub-issue that covers each) and recording the numbers is a precondition
 > of merging, owned by the operator. This delivery does not measure tokens per
 > success: the accounting channel is severed at four named seams and forwarding
-> it is a follow-up under 0116 section 6, which only the operator can accept.
+> it is a follow-up under 0119 section 6, which only the operator can accept.
 > Paid agents under `matrix --brokkr` are unsupported until the F2/F1/F5
-> follow-up; the direct `matrix` stays the paid route. 0116 is proposed, not
+> follow-up; the direct `matrix` stays the paid route. 0119 is proposed, not
 > accepted, and value-bearing evidence waits on it. The first engine run
 > (oracle and null, offline, free) and the first authenticated via-brokkr smoke
 > per family are the operator's, and they observe F1, F2 and F5. AC16 is the
 > operator's paid run after the follow-up. Trials stay sequential (0076);
 > isolation and the "two concurrent trials" criterion are #221's. The decision
-> number 0116 is provisional (0115 is held by #221's branch).**
+> number 0119 is provisional (0115 is held by #221's branch).**
 
 ## What is the operator's
 
@@ -255,9 +255,9 @@ chart, Docker and RustSec jobs, and the macOS test job.
 3. The first authenticated smoke per family: observes F1, F2 and F5.
 4. A captured real `brokkr export` to replace the stand-in in
    `journal-facts.sh`'s test, and any change to `SHAPE`/`EXTRACT` it needs.
-5. Accepting or amending 0116 (section 6 forwarding; section 4 value-bearing
+5. Accepting or amending 0119 (section 6 forwarding; section 4 value-bearing
    evidence, an amendment to 0075 section 4, **not** implemented), and
-   renumbering it if `main` takes 0116 first.
+   renumbering it if `main` takes 0119 first.
 6. The follow-up change (forward the observed channel, lift the refusal,
    declare the binds) and then the paid matrix (AC16).
 
@@ -273,7 +273,7 @@ the row by the agreement table (spec "Revision 3"), not by equality.
 | T36 | `score.json` is `{schema_version, trial_id, business, check_exit}`; `score.sh` reads `row.json` strictly (regular, no symlink, <= 64 KiB, one line, `jq -e` on `outcome`/`failure_class` only) and reports by the table | the T35 cases; the existing "notes carry no path" assertion holds for each |
 | T37 | `GateVerdict::Ruled(Business)`; `gate_verdict` reads `business` only (unknown values, a missing key and the revision-2 `outcome` key are `Missing`); `gate_refusal(&GateVerdict, &TrialResult)` matches the table; `outcome_name` and its test removed | inline `the_gate_agrees_with_the_row_by_the_agreement_table` (every cell), `a_slot_is_read_through_the_bounded_reader_and_missing_pieces_are_typed` |
 | T38 | `policy.json`: description and the three `SCORE-*` reason texts restated; ids, results, transitions, severities unchanged, no rule added | `tests/delivery_recipes.rs` unchanged and green (it pins no reason text) |
-| T39 | `evals/README.md` carries the table; the tokens sentence names the F1/F2 forwarding follow-up and 0116 §6 and says a paid run alone closes neither #151 gap; `.brokkr/recipes/README.md` describes the score seat by the table | the grep checks below |
+| T39 | `evals/README.md` carries the table; the tokens sentence names the F1/F2 forwarding follow-up and 0119 §6 and says a paid run alone closes neither #151 gap; `.brokkr/recipes/README.md` describes the score seat by the table | the grep checks below |
 | T40 | `through_driver` is `#[cfg(test)]`; `run()`'s driver arm is deleted; `evals/wrappers.md` says so | non-test `cargo build --locked` and clippy clean; the inline assembly and refusal tests unchanged and green |
 | T41 | `the_trial_seat_strips_the_matrix_environment` replaced by `the_trial_script_strips_the_matrix_environment` (seam 1: probe `evals_bin` under the real `trial.sh`) and `the_runner_rebuilds_the_agents_environment` (seam 2: `swarmail-evals trial` with the sentinel in its own environment); no runtime claim for seams 3 and 4 | the mutation below |
 
@@ -335,7 +335,7 @@ Checks from the plan: `test ! -e evals/tests/wrappers_launch/standin-driver.py`
 holds; `grep -n 'through_driver(&cmd' evals/src/wrappers.rs` finds nothing;
 `grep -n "until the operator's paid run" evals/README.md` finds nothing;
 `grep -n "disagrees with the row" evals/README.md .brokkr/recipes/README.md`
-finds nothing; `grep -n "0116 §6" evals/README.md` finds the tokens sentence.
+finds nothing; `grep -n "0119 §6" evals/README.md` finds the tokens sentence.
 
 PR body, one added sentence: the gate agrees with the row by the agreement
 table, and a `fail`/`budget` trial is recorded as data. The hold, the

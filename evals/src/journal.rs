@@ -1,5 +1,5 @@
 //! Journal facts v1, their join to result rows, and the retained tool-call
-//! record (decision 0116).
+//! record (decision 0119).
 //!
 //! Rows do not change. brokkr's journal owns tokens, turns, wall time and
 //! tool rows per seat; `scripts/journal-facts.sh` turns the pinned brokkr's
@@ -697,7 +697,7 @@ mod tests {
         assert!(mutate(&|v| v["trials"][0]["trial_id"] = json!("../x")).is_err());
         assert!(mutate(&|v| v["trials"][0]["run_id"] = json!("")).is_err());
         assert!(mutate(&|v| v["trials"][0]["seat"] = json!("score")).is_err());
-        // The scoring gate is the recipe's `review` seat (0116 R4); only the
+        // The scoring gate is the recipe's `review` seat (0119 R4); only the
         // `trial` seat carries the facts this reader accepts.
         assert!(mutate(&|v| v["trials"][0]["seat"] = json!("review")).is_err());
         assert!(mutate(&|v| v["trials"][0]["extra"] = json!(1)).is_err());

@@ -1,4 +1,4 @@
-//! The eval recipe's two exec scripts (decision 0116), run directly under
+//! The eval recipe's two exec scripts (decision 0119), run directly under
 //! bash with a synthesized prompt file, exactly as the engine's exec driver
 //! would run them: `trial.sh` runs `swarmail-evals trial` from the matrix's
 //! request, `score.sh` re-applies the check to the retained leaf. The engine
@@ -594,7 +594,7 @@ fn the_scripts_read_only_their_prompt_and_name_no_secret() {
     }
 }
 
-// ---- evals/scripts/journal-facts.sh (decision 0116, F3) -------------------
+// ---- evals/scripts/journal-facts.sh (decision 0119, F3) -------------------
 //
 // brokkr was not reachable when this was written, so the export below is a
 // STAND-IN in the shape the script documents, not a captured real export. The
@@ -989,7 +989,7 @@ fn a_matching_export_with_no_run_for_a_trial_yields_journal_missing_by_absence()
     assert_eq!(summary["missing"], json!({"journal_missing": 1}));
 }
 
-// ---- the matrix environment never crosses the seats (decision 0116, F1) ----
+// ---- the matrix environment never crosses the seats (decision 0119, F1) ----
 
 /// An executable shell script that records its own environment keys.
 fn env_probe(dir: &std::path::Path, name: &str, record: &std::path::Path) -> PathBuf {
@@ -1009,7 +1009,7 @@ fn env_probe(dir: &std::path::Path, name: &str, record: &std::path::Path) -> Pat
 
 #[test]
 fn the_trial_script_strips_the_matrix_environment() {
-    // Seam 1 of the four that sever any accounting channel (0116 section 6):
+    // Seam 1 of the four that sever any accounting channel (0119 section 6):
     // trial.sh runs the trial under `env -i`. The request's `evals_bin` is a
     // probe that records *its own* environment through the real script, so the
     // proof can go red: delete `env -i` from trial.sh and the sentinel, set in

@@ -163,7 +163,7 @@ enum Cmd {
         #[arg(long)]
         fixture_time: Option<String>,
         /// Run each slot as one `brokkr run --recipe eval` with this absolute
-        /// brokkr executable (decision 0116). Requires --artifacts-dir and a
+        /// brokkr executable (decision 0119). Requires --artifacts-dir and a
         /// working directory holding .brokkr/recipes/eval.
         #[arg(long)]
         brokkr: Option<PathBuf>,
@@ -183,7 +183,7 @@ enum Cmd {
     Report {
         #[arg(long)]
         input: String,
-        /// Journal facts v1 (decision 0116), joined to the rows by trial id.
+        /// Journal facts v1 (decision 0119), joined to the rows by trial id.
         #[arg(long)]
         journal: Option<PathBuf>,
         /// Write a bounded tool-call record per joined trial here
@@ -880,7 +880,7 @@ impl WorkerContext {
 
 /// The trial seat's 1800 s less the trial's fixed startup and shutdown
 /// budgets and the envelope's 300 s slack: a deadline above this cannot nest
-/// inside the seat (decision 0116).
+/// inside the seat (decision 0119).
 const BROKKR_SEAT_DEADLINE_MS: u64 = 1_200_000;
 
 /// The refusals `matrix --brokkr` makes before any row exists: each is a fixed
@@ -944,7 +944,7 @@ fn direct_envelope_ms(deadline_ms: u64) -> u64 {
 }
 
 /// In brokkr mode the envelope also carries the review (scoring) seat's 600 s budget
-/// (decision 0116), so `trial_envelope_expired` there can only mean the engine
+/// (decision 0119), so `trial_envelope_expired` there can only mean the engine
 /// or the gate hung past its own seat timeout.
 fn brokkr_envelope_ms(deadline_ms: u64) -> u64 {
     direct_envelope_ms(deadline_ms).saturating_add(600_000)
@@ -1625,7 +1625,7 @@ fn trial_args(
     Ok(args)
 }
 
-/// A brokkr-mode slot (decision 0116): the private directory the matrix
+/// A brokkr-mode slot (decision 0119): the private directory the matrix
 /// created for one trial and the request file inside it.
 struct BrokkrSlot {
     bin: PathBuf,
@@ -2022,7 +2022,7 @@ async fn run_child_assigned(
         None
     };
     // In brokkr mode the trial's row, exit code, gate verdict and diagnostics
-    // are the slot's, not the worker's streams (decision 0116). A slot that
+    // are the slot's, not the worker's streams (decision 0119). A slot that
     // cannot be read is a worker that returned no row; the worker's own exit
     // status is never the trial's.
     let mut gate = None;

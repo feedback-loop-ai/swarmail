@@ -296,7 +296,7 @@ pub enum WrapperProfile {
     #[value(name = "dsh_0_1_5_rc_1")]
     Dsh0_1_5Rc1,
     /// The same declared configuration launched through a brokkr driver
-    /// (decision 0116): the driver adds flags this profile does not
+    /// (decision 0119): the driver adds flags this profile does not
     /// enumerate, so such a row never claims the direct-launch surface.
     #[serde(rename = "claude_2_1_310_via_brokkr")]
     #[value(name = "claude_2_1_310_via_brokkr")]

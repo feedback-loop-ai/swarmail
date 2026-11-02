@@ -575,7 +575,7 @@ fn near_miss_controls_recover_after_a_timed_out_wait() {
     }
 }
 
-/// The controls again, through the recipe path (decision 0116): the same 16
+/// The controls again, through the recipe path (decision 0119): the same 16
 /// tasks run by `matrix --brokkr` with the offline stand-in for the engine, so
 /// the oracle must still pass 16/16 and the do-nothing agent must still fail
 /// every task with its declared idle class. The success check is proven able

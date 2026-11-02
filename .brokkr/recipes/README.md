@@ -235,7 +235,7 @@ these assignments. Passing them alone does not establish executable delivery:
 the engine must compile each composition, and a live run must execute the
 inherited gates and protected review before the recipe is reported verified.
 
-## The `eval` recipe (interim, decision 0116)
+## The `eval` recipe (interim, decision 0119)
 
 `eval` is not a delivery lane. It runs one trial of the agent eval harness
 (#148) as a brokkr run: a `trial` exec seat, then a `review` exec gate. It has
@@ -244,7 +244,7 @@ trial is a different experiment) and no model seat. The engine (brokkr 0.12.0)
 requires a `review` phase in every bundle, so the scoring gate is the recipe's
 protected review (`protected_phase: "review"`): a shell that re-applies the
 task's check to the retained state and never reads the agent's account
-(decision 0116, R4). Its script is still `scripts/score.sh`. This is the operator's
+(decision 0119, R4). Its script is still `scripts/score.sh`. This is the operator's
 2026-10-18 **interim path**: the `trial` seat runs the opaque eval-trial driver
 `swarmail-evals trial`, which starts Swarmail and the fixture app as its own
 children and runs the real `brokkr driver claude|codex|dsh` as a child, so the
@@ -287,5 +287,5 @@ The first engine run (oracle and null controls: offline and free), the first
 authenticated via-brokkr smoke per family and the paid matrix are the
 operator's. This delivery lands the measuring machinery and does not measure
 tokens per success: forwarding the observed accounting channel through the four
-named seams needs the operator's acceptance of 0116 section 6 first. A pull request that touches `.brokkr/` or `.github/` merges only
+named seams needs the operator's acceptance of 0119 section 6 first. A pull request that touches `.brokkr/` or `.github/` merges only
 on the operator's approval by name (decision 0056, 2026-11-01 addendum).

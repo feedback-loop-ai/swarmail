@@ -1,7 +1,7 @@
 # Implementation record: the eval recipe's protected review, and every recipe compiled (#148 rework)
 
 Implements [spec.md](spec.md) / [plan.md](plan.md) / [tasks.md](tasks.md) under proposed
-[0116 R4](../../docs/decisions/0116-eval-brokkr-recipe.md) (dated 2026-11-02, status still
+[0119 R4](../../docs/decisions/0119-eval-brokkr-recipe.md) (dated 2026-11-02, status still
 `proposed`). Commits unsigned; nothing pushed, merged, published or accepted. No paid trial ran.
 Run date 2026-11-02.
 
@@ -9,7 +9,7 @@ Run date 2026-11-02.
 pinned brokkr binary (`.brokkr/state/bin/brokkr` absent; the host has no `brokkr` at all) and no
 network, so AC1 is **not run**. The renamed shape is built and pinned by tests; the engine's verdict
 comes from a verify continuation entered from the candidate's bundle, or from CI's
-`brokkr bundle (pinned)` job. If that compile refuses the shape, 0116 R4 Ruling 3 applies (spec §1.1).
+`brokkr bundle (pinned)` job. If that compile refuses the shape, 0119 R4 Ruling 3 applies (spec §1.1).
 **This PR stays held for the operator by name** (it touches `.brokkr/`, `.github/` and
 `docs/decisions/`, decision 0056 addendum). The brokkr issue drafts (1 to 6) await the operator's filing.
 This run's own verify seat runs the `verify-seat.sh` pinned when the run started, which compiles
@@ -27,7 +27,7 @@ This run's own verify seat runs the `verify-seat.sh` pinned when the run started
 | `docs/house-rules.md` | § Gates line is the loop; one prose paragraph states the reach |
 | `.brokkr/recipes/README.md`, `evals/README.md` | loop example; `trial` then `review` wording |
 | `evals/src/journal.rs` | inline test also rejects `seat: "review"` (test only); `evals/src/main.rs`, `evals/tests/report.rs`: comments; `evals/tests/data/brokkr-standin.sh`: `seat review score.sh`; `evals/tests/recipe.rs`: synthetic seat `review` |
-| `docs/decisions/0116-…md` | one dated observation line (AC1 not run); R4 itself is the design commit's |
+| `docs/decisions/0119-…md` | one dated observation line (AC1 not run); R4 itself is the design commit's |
 | `specs/eval-brokkr-recipe/{implementation,spec}.md` | F4 row superseded; issue 4 note; **issue 6 drafted (not filed)** with the engine observation; AC3 row |
 
 Tests: `tests/delivery_recipes.rs` (`eval_recipe_defect` for the new shape, three new mutants,
@@ -70,7 +70,7 @@ directory is named `selfstray` so that it sorts between `self` and `sentinel`.
 | AC6 house rules name the loop | met | `store_contract_docs` pin, red before |
 | AC7 shelf has no fixed list | met | `every_recipe_stands_on_the_brokkr_folder_shelf` + `shelf_defects` arms |
 | AC8 evals unchanged in production | met | `grep -rn '"score"' evals/src` → only `journal.rs:699`, the rejection test; evals suite green |
-| AC9 0116 R4 | met | status `proposed`; index row untouched; one dated observation line |
+| AC9 0119 R4 | met | status `proposed`; index row untouched; one dated observation line |
 | AC10 drafts current | met | F4 row, issue 4 note, issue 6 drafted; no draft says "the score seat" |
 | AC11 gates | see table | |
 | AC12 delivery paper | met | unsigned commits; no push; no dependency |

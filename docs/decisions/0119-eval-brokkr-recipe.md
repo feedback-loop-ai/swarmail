@@ -1,4 +1,4 @@
-# 0116 — The eval recipe on brokkr: interim opaque driver, journal accounting, retained tool-call records
+# 0119 — The eval recipe on brokkr: interim opaque driver, journal accounting, retained tool-call records
 
 - **Status:** proposed
 - **Date:** 2026-11-02 (revised the same day after the first review return,
@@ -18,13 +18,13 @@
   and §6, both of which wait for the operator.
 - **Preserves:** 0001–0005; accepted 0020, 0045 §8, 0050, 0056 and its
   2026-11-01 addendum, 0063, 0071, 0098, 0099, 0100, 0102.
-- **Number:** provisional 0116. 0115 is held by #221's branch
+- **Number:** provisional 0119. 0115 is held by #221's branch
   (`repair/issue221-trial-isolation`, commit `cacd60e`); intake saw no 0115
   on `main` and the task called 0115 the highest in use. Both are true, so
-  the next free number across both trees is 0116. Renumber at integration
+  the next free number across both trees is 0119. Renumber at integration
   if `main` takes it first, as 0105 and 0108 were. Kept at the merge of
   main `5645bd9`: `main` took 0115 for #221's trial isolation (#308) and
-  left 0116 free.
+  left 0119 free.
 
 ## Context
 

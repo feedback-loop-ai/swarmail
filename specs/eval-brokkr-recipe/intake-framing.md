@@ -6,7 +6,7 @@ Engine: brokkr 0.12.0, binary sha256 29dc3309... (.brokkr/recipes/self/tooling.j
 
 ## Goal
 
-`.brokkr/recipes/eval` compiles under the pinned engine, keeps 0116's intent (one
+`.brokkr/recipes/eval` compiles under the pinned engine, keeps 0119's intent (one
 trial seat, one exec scoring gate, journal joins by trial_id), and every gate that
 compiles recipes covers every directory under `.brokkr/recipes/`.
 
@@ -21,7 +21,7 @@ compiles recipes covers every directory under `.brokkr/recipes/`.
   with its own policy and no review phase compiles. The pinned engine refutes it.
 - Fixed recipe lists to replace:
   - `.github/workflows/ci.yml:399`: `for recipe in self codex codex-careful codex-fast mixed-opus-terra claude-careful eval`
-  - `.brokkr/recipes/self/scripts/verify-seat.sh:125`: compiles only `self`. 0116 §7 R2 says it stays unchanged; item 2 supersedes that and must be recorded.
+  - `.brokkr/recipes/self/scripts/verify-seat.sh:125`: compiles only `self`. 0119 §7 R2 says it stays unchanged; item 2 supersedes that and must be recorded.
   - `docs/house-rules.md:62`: names only `self`.
 - The seat name `score` is read by the evals crate: `evals/src/journal.rs:699`,
   `evals/src/main.rs:946` and `:5454`. Renaming the seat changes evals.
@@ -30,7 +30,7 @@ compiles recipes covers every directory under `.brokkr/recipes/`.
 - Drafted brokkr issues: `specs/eval-brokkr-recipe/implementation.md:112` (five
   drafts). AC12 is `spec.md:647`; filing is operator-owned.
 
-## Decision to record: 0116 R4 (dated 2026-11-02, status stays proposed)
+## Decision to record: 0119 R4 (dated 2026-11-02, status stays proposed)
 
 Shape to try first, "the scoring gate is the protected review":
 - `bundle.json`: `protected_phase: "review"`.
@@ -70,7 +70,7 @@ recipe, and what vocabulary that review must use.
 - AC5. A new `tests/` file goes red on the pre-change tree, where verify-seat compiles
   only self and ci.yml names a list. It goes green after the change. The implement
   seat records the red run before the change.
-- AC6. 0116 gains a dated R4 section: the chosen shape, F4 falsified, and §7 R2's
+- AC6. 0119 gains a dated R4 section: the chosen shape, F4 falsified, and §7 R2's
   "verify seat not changed" superseded. Status stays `proposed`. The index row in
   `docs/decisions/README.md` keeps its status.
 - AC7. `implementation.md` gains brokkr issue 6, verbatim, stated as drafted and not

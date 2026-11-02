@@ -1701,7 +1701,7 @@ fn claude_careful_design_check_is_self_validator_byte_for_byte() {
     );
 }
 
-/// The eval recipe's structural contract (decision 0116). `Err` names the
+/// The eval recipe's structural contract (decision 0119). `Err` names the
 /// first defect, so the mutants below can show each one is caught.
 fn eval_recipe_defect(bundle: &Value, policy: &Value) -> Result<(), String> {
     let expect = |ok: bool, what: &str| if ok { Ok(()) } else { Err(what.to_string()) };
@@ -1766,7 +1766,7 @@ fn eval_recipe_defect(bundle: &Value, policy: &Value) -> Result<(), String> {
     for name in ["trial", "review"] {
         expect(
             seats[name]["hands"]["binds"] == json!([]),
-            &format!("{name}: no bind is guessed (decision 0116, F5)"),
+            &format!("{name}: no bind is guessed (decision 0119, F5)"),
         )?;
     }
     expect(

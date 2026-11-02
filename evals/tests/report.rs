@@ -1401,7 +1401,7 @@ fn the_dossier_refuses_without_baseline_finals_and_costs_in_that_order() {
     assert!(report::dossier(&[], &all).is_err());
 }
 
-// ---- `matrix --brokkr`: the eval recipe path (decision 0116) -------------
+// ---- `matrix --brokkr`: the eval recipe path (decision 0119) -------------
 //
 // The engine is not present in delivery. `tests/data/brokkr-standin.sh` plays
 // `brokkr run --recipe eval`: it runs the recipe's real trial.sh and score.sh
@@ -1839,7 +1839,7 @@ fn brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline() {
     assert!(!root.exists(), "a refusal writes no evidence");
 }
 
-// ---- `report --journal`: the typed join (decision 0116) -------------------
+// ---- `report --journal`: the typed join (decision 0119) -------------------
 
 fn golden_rows() -> Vec<TrialResult> {
     // 8 rows, 3 agents: the built-in oracle (no driver, no journal), a fully
@@ -2124,7 +2124,7 @@ fn a_journal_that_does_not_match_the_rows_refuses_the_whole_report() {
     }
 }
 
-// ---- retained tool-call records (decision 0116; accepted 0075 §4) ---------
+// ---- retained tool-call records (decision 0119; accepted 0075 §4) ---------
 
 fn facts_value() -> Value {
     serde_json::from_slice(&std::fs::read(golden_facts()).unwrap()).unwrap()

@@ -1,6 +1,6 @@
 # Plan: the eval recipe's protected review, and every recipe compiled
 
-Spec: [spec.md](spec.md). Decision: [0116 R4](../../docs/decisions/0116-eval-brokkr-recipe.md)
+Spec: [spec.md](spec.md). Decision: [0119 R4](../../docs/decisions/0119-eval-brokkr-recipe.md)
 (proposed).
 
 ## Technical context
@@ -23,7 +23,7 @@ Spec: [spec.md](spec.md). Decision: [0116 R4](../../docs/decisions/0116-eval-bro
 | Frozen 0001–0003, ruling 0005 | Untouched: no `src/` change. |
 | Protected review gate | Not weakened. `self`'s review and every extending recipe are unchanged. Eval gains a real protected review (its exec scoring gate). |
 | Exec gates / pinned scripts (0050 §1) | `verify-seat.sh` changes only its compile block and pass note, which widens the gate. `shims.sha256` is unchanged, because verify-seat is not a shim. |
-| 0045 §8 (code under a proposal) | Compatible: no accepted ruling is contradicted. 0116 §7's R2 clause is superseded inside the same proposed record. |
+| 0045 §8 (code under a proposal) | Compatible: no accepted ruling is contradicted. 0119 §7's R2 clause is superseded inside the same proposed record. |
 | 0056 hold | The PR touches `.brokkr/`, `.github/` and `docs/decisions/`, so it stays held for the operator by name. |
 | 0020 test placement | Every proof sits in existing `tests/*.rs` fixtures and inline modules. No sleeps, no shared mutable state, fixtures under `tempfile`. |
 | Load bound | Gate runs at most `nproc`/4 busy jobs (`CARGO_BUILD_JOBS=32` on this 128-core host) for at most 10 minutes per load proof. No load proof is needed. |
@@ -38,7 +38,7 @@ Spec: [spec.md](spec.md). Decision: [0116 R4](../../docs/decisions/0116-eval-bro
 .brokkr/recipes/README.md                 compile loop example; eval section wording
 .github/workflows/ci.yml                  brokkr bundle (pinned): fixed list -> loop
 docs/house-rules.md                       § Gates line + one prose sentence
-docs/decisions/0116-eval-brokkr-recipe.md R4 (design commit); dated receipt lines (implement)
+docs/decisions/0119-eval-brokkr-recipe.md R4 (design commit); dated receipt lines (implement)
 tests/delivery_recipes.rs                 eval_recipe_defect + mutants; shelf test reads the dir
 tests/delivery_constitution.rs            BrokkrCiFixture shelf + sentinel; VerifySeatFixture shelf + arms
 tests/store_contract_docs.rs              gate-inventory pin -> the loop line

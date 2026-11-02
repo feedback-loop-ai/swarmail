@@ -320,7 +320,7 @@ exact identity and passes with no trap event; the same wait acting on
 `wrong_message`; and in slow-delivery the first timed-out wait carries no
 `near_misses` (nothing arrived), after which the release and confirmation pass.
 
-## The eval recipe on brokkr (#148, proposed 0116)
+## The eval recipe on brokkr (#148, proposed 0119)
 
 The operator ruled on 2026-10-18 that the harness is built on brokkr. This is
 the **interim path**: brokkr cannot yet lawfully give a seat Swarmail's MCP
@@ -338,7 +338,7 @@ tracked in brokkr#766.
   **refused today** (`--via-brokkr` fails closed with `driver_contract_unknown`
   until the driver's invocation is observed; see `wrappers.md`).
 - `review` (the exec scoring gate, `scripts/score.sh`, which is the recipe's
-  protected review under brokkr 0.12.0, decision 0116 R4) re-applies the task's
+  protected review under brokkr 0.12.0, decision 0119 R4) re-applies the task's
   check to the retained leaf (`check --artifacts-dir`): the app's state, never the agent's account.
   The gate replays only the business check, so the matrix agrees it with the
   row by the table below (accepted 0055 section 2 and 0071 section 2 order the
@@ -408,7 +408,7 @@ class, byte lengths and SHA-256 digests of each call's arguments and result,
 capped at 64 KiB and cut at a whole call with `"truncated": true` and
 `"retained": N`. A trial without tool rows gets no file and a typed
 `absent` reason. **No argument or result bytes
-are ever copied** (accepted 0075 §4). A value-bearing mode is proposed in 0116
+are ever copied** (accepted 0075 §4). A value-bearing mode is proposed in 0119
 and is not implemented until the operator accepts it.
 
 **Admission posture.** The trial's own advisory admission lock lives in the
@@ -431,10 +431,10 @@ named seams (`wrappers.md`). Closing the #151 "Not measured" rows needs, in
 order: the operator's first engine run (oracle and null, offline, free); the
 operator's first authenticated via-brokkr smoke per family, which observes
 brokkr facts F1, F2 and F5; a follow-up change that forwards the observed
-channel through the four seams under 0116 section 6 (an exception to accepted
+channel through the four seams under 0119 section 6 (an exception to accepted
 0075 section 1 that only the operator can accept) and declares the binds; and
 then the paid matrix. Structural tool-call records land now; value-bearing
-records wait for 0116 section 4's acceptance.
+records wait for 0119 section 4's acceptance.
 
 ## Honest limits
 
@@ -461,7 +461,7 @@ records wait for 0116 section 4's acceptance.
   come from brokkr's journal, joined by trial id (next section). A paid run
   alone measures none of them: `--via-brokkr` refuses `driver_contract_unknown`
   until a follow-up forwards the observed accounting channel (brokkr facts F1
-  and F2, `wrappers.md`) and the operator accepts 0116 §6. Until then
+  and F2, `wrappers.md`) and the operator accepts 0119 §6. Until then
   the #151 baseline still lacks tokens per success and per-trial tool-call
   records. No model was run in this batch.
 

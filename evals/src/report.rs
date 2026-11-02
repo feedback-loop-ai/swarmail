@@ -226,7 +226,7 @@ pub fn report(rows: &[TrialResult]) -> Value {
 }
 
 /// The same report, with each group's `journal` object beside the existing
-/// fields when facts were joined (decision 0116). Every existing field is
+/// fields when facts were joined (decision 0119). Every existing field is
 /// byte-identical with or without the journal.
 pub fn report_with_journal(
     rows: &[TrialResult],

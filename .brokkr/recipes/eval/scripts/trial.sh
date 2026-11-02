@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# trial.sh — the eval recipe's `trial` seat (decision 0116, interim path).
+# trial.sh — the eval recipe's `trial` seat (decision 0119, interim path).
 #
 # An opaque exec driver: it runs `swarmail-evals trial` from the request the
 # matrix wrote before it spawned `brokkr run --recipe eval`. That trial starts

@@ -137,7 +137,7 @@ impl Case {
             .env("HTTP_PROXY", CANARY)
             .env("BASH_ENV", CANARY)
             .env("DSH_HOME", "/ambient/refused")
-            // The accounting-channel sentinel (decision 0116 section 6, F1
+            // The accounting-channel sentinel (decision 0119 section 6, F1
             // seams 2 to 4): a variable in the wrapper's own environment must
             // not reach the agent. The follow-up that forwards the observed
             // channel flips this to the observed name.

@@ -1053,7 +1053,7 @@ fn strict_snapshot(bytes: &[u8]) -> Result<Snapshot, String> {
 
 /// All generated matrix/trial leaves share the existing private publication
 /// primitive. `trials` holds the retained leaves; `slots` holds the brokkr
-/// mode's per-trial request and result files (decision 0116).
+/// mode's per-trial request and result files (decision 0119).
 pub fn create_private_dir(root: &Path, name: &str) -> Result<PathBuf, String> {
     safe_root(root)?;
     if !matches!(name, "trials" | "slots") && !generated_id(name) {

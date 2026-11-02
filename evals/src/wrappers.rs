@@ -530,7 +530,7 @@ fn validate_goal(family: &str, goal: &str) -> Result<(), String> {
     }
 }
 /// The brokkr driver a wrapper may launch the family CLI through (decision
-/// 0116): an absolute path to a regular executable, checked before any
+/// 0119): an absolute path to a regular executable, checked before any
 /// private file is read.
 fn validate_driver(driver: &Path) -> Result<(), String> {
     if !driver.is_absolute() {
@@ -544,7 +544,7 @@ fn validate_driver(driver: &Path) -> Result<(), String> {
 
 /// `DRIVER <family> -- <program> <args...>` with the direct launch's
 /// environment, working directory and output routing: the driver is only a
-/// different launcher for the same argv. Test-only (decision 0116, revision 3):
+/// different launcher for the same argv. Test-only (decision 0119, revision 3):
 /// no production path reaches it while `driver_contract_unknown` is refused,
 /// so the compiler, not a comment, keeps it out of the shipped binary. The
 /// follow-up that implements the observed F2 invocation lifts the refusal and
@@ -582,7 +582,7 @@ pub fn run(
     }
     if let Some(driver) = via_brokkr {
         validate_driver(driver)?;
-        // Fail closed (decision 0116, revision 2): the invocation brokkr's
+        // Fail closed (decision 0119, revision 2): the invocation brokkr's
         // driver accepts (F2) has never been observed, and running a guessed
         // argv would turn a driver error into the agent's exit, scored as the
         // task's idle class. This refusal precedes every environment read,

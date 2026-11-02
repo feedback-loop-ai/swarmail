@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# score.sh — the eval recipe's `review` gate (decision 0116, R4): the scoring gate
+# score.sh — the eval recipe's `review` gate (decision 0119, R4): the scoring gate
 # that is the recipe's protected review. The file keeps its name; nothing in it
 # reads the seat or phase name.
 #

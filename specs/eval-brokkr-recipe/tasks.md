@@ -19,8 +19,8 @@ says so; the round-1 boxes stay as the implementer left them.
   brokkr#766 and its sub-issues (#757–#765, #467, #462, #430) if network
   hands allow; record which of F1–F7 each already tracks.
   **Test:** `implementation.md` holds the F1–F7 table with a status per fact.
-- [ ] **T2 Decision index row** for proposed 0116 (done in round 1; keep).
-  **Test:** `grep -c '0116' docs/decisions/README.md` is 1.
+- [ ] **T2 Decision index row** for proposed 0119 (done in round 1; keep).
+  **Test:** `grep -c '0119' docs/decisions/README.md` is 1.
 - [ ] **T3 Recipe files** (done in round 1; pins extended by T26).
 - [ ] **T4 `trial.sh`**, **T5 `score.sh`** (done in round 1; revised by T20, T21).
 - [ ] **T6 Via-brokkr selectors** (done in round 1; keep).
@@ -142,7 +142,7 @@ says so; the round-1 boxes stay as the implementer left them.
   mismatched shape → exit 2, no `OUT`, stderr names the class.
 - [x] **T29 Documentation (AC15; R4, R5, R6, R8).** `evals/README.md`: the
   corrected closure sentence (machinery lands; tokens per success after the
-  forwarding follow-up; structural records now, value-bearing after 0116
+  forwarding follow-up; structural records now, value-bearing after 0119
   §4); paid agents under `matrix --brokkr` unsupported. `evals/wrappers.md`:
   the four F1 seams by file and mechanism, the full paid read set (F5),
   `--via-brokkr` refuses `driver_contract_unknown` until F2 is observed.
@@ -184,9 +184,9 @@ says so; the round-1 boxes stay as the implementer left them.
   paragraph states: held for the operator's approval by name (touches
   `.brokkr/` and `.github/`, 0056's 2026-11-01 list); the brokkr issues
   filed or drafted-not-filed (merge precondition); this delivery does not
-  measure tokens per success and the forwarding follow-up under 0116 §6 is
+  measure tokens per success and the forwarding follow-up under 0119 §6 is
   required; paid agents under `matrix --brokkr` are unsupported until the
-  F2/F1/F5 follow-up; 0116 is proposed, not accepted, and value-bearing
+  F2/F1/F5 follow-up; 0119 is proposed, not accepted, and value-bearing
   evidence waits on it; the first engine run (oracle, offline) and the first
   authenticated via-brokkr smoke per family are the operator's; AC16 is the
   operator's paid run after the follow-up; AC11's reading (sequential,
@@ -280,12 +280,12 @@ T36 to T38 change it. Each task names the finding it answers (plan.md,
   with the agreement table (one short table or three sentences), and
   rewrite the "Tokens, turns and cost are not in the rows" sentence. It
   must name the F1/F2 forwarding follow-up and the operator's acceptance of
-  0116 §6 as preconditions before a paid run can measure tokens, turns or
+  0119 §6 as preconditions before a paid run can measure tokens, turns or
   tool-call records, and it must not say a paid run alone closes either
   #151 gap. `.brokkr/recipes/README.md`: the score seat's results by the
   same table.
   **Test:** `grep -n "until the operator's paid run" evals/README.md`
-  finds nothing. `grep -n "0116 §6" evals/README.md` finds the sentence.
+  finds nothing. `grep -n "0119 §6" evals/README.md` finds the sentence.
   `grep -n "disagrees with the row" evals/README.md .brokkr/recipes/README.md`
   finds nothing.
 - [x] **T40 `through_driver` is test-only (AC8; Finding 3).** In

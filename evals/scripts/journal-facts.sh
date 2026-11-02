@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # journal-facts.sh — turn the pinned brokkr's journal export into journal facts
-# v1 (decision 0116), the closed shape `swarmail-evals report --journal` reads.
+# v1 (decision 0119), the closed shape `swarmail-evals report --journal` reads.
 #
 #   journal-facts.sh BROKKR DB OUT TRIAL_ID...
 #

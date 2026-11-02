@@ -252,7 +252,7 @@ mod cleanup_probe {
 pub const BUILTINS: [&str; 2] = ["oracle", "null"];
 
 /// The trial-level refusals for the wrapper's `--via-brokkr` flag (decision
-/// 0116, revision 2), decided on the public agent argv and the declared
+/// 0119, revision 2), decided on the public agent argv and the declared
 /// profile alone, before anything starts.
 ///
 /// brokkr's driver invocation (F2) has never been observed, so an argv that

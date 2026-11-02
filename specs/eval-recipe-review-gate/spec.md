@@ -1,6 +1,6 @@
 # The eval recipe's protected review, and every recipe compiled (#148 rework)
 
-Decision: 0116 — [the eval recipe on brokkr](../../docs/decisions/0116-eval-brokkr-recipe.md),
+Decision: 0119 — [the eval recipe on brokkr](../../docs/decisions/0119-eval-brokkr-recipe.md),
 section **R4 (2026-11-02)**, status `proposed`. This design adds R4 and
 changes no other ruling. Code that is compatible with R4 may land while
 the decision is proposed (accepted 0045 §8).
@@ -115,7 +115,7 @@ indented result path.
 #### 1.1 If the pinned engine refuses this shape
 
 Apply the first branch that fits, and record the engine's exact output in
-0116 R4 by a dated line:
+0119 R4 by a dated line:
 
 - (a) The refusal names an **additive** field that changes no result word,
   seat, seat count or transition (for example `shippable_from`). Add it,
@@ -124,7 +124,7 @@ Apply the first branch that fits, and record the engine's exact output in
   (`clean`/`residual`/`security-hold`), a review panel or a model seat.
   **No lawful shape exists under this engine.** Move the recipe to
   `evals/recipe/` (outside `.brokkr/recipes/`). Point `evals/src/main.rs`'s
-  realm preflight and `evals/tests/common/mod.rs` at it. Record in 0116 R4
+  realm preflight and `evals/tests/common/mod.rs` at it. Record in 0119 R4
   that the brokkr-mode matrix is not delivered. Report the implement result
   as **not complete**, naming brokkr issue 6. The gates of §2 still pass on
   the six remaining recipes.
@@ -183,7 +183,7 @@ precondition owned by the operator (earlier AC12). The dispatcher files
 them before merge. No seat files anything.
 
 - **F4 row**: "falsified by the pinned engine (0.12.0 refuses a policy
-  without a `review` phase); see issue 6 and 0116 R4".
+  without a `review` phase); see issue 6 and 0119 R4".
 - **Issue 4**: keep the text. Append one line: "Superseded: brokkr 0.12.0
   refuses this shape (see issue 6); the recipe now uses phases `trial,
   review, done, stop` with the exec scoring gate as its protected review."
@@ -212,7 +212,7 @@ them before merge. No seat files anything.
 > answered, Swarmail ships the shape the engine accepts or keeps `eval` off
 > the compiled shelf and names this issue in the PR.
 > [Implementer: append the observed compile output of the renamed shape,
-> or the refusal that triggered 0116 R4 Ruling 3(b), with its date.]
+> or the refusal that triggered 0119 R4 Ruling 3(b), with its date.]
 
 ## Acceptance Criteria
 
@@ -222,7 +222,7 @@ them before merge. No seat files anything.
   `binary_sha256`, exits 0 and prints no `lets the run go on without
   reading` line. Every other recipe directory compiles the same way.
   **Proof:** the command, the digest check and the verbatim output,
-  recorded in `specs/eval-recipe-review-gate/implementation.md` and in 0116
+  recorded in `specs/eval-recipe-review-gate/implementation.md` and in 0119
   R4 by dated line. The implement seat produces it if the digest-matched
   binary is staged at `.brokkr/state/bin/brokkr`. Otherwise the receipt
   comes from the verify seat of a continuation entered from the candidate's
@@ -285,7 +285,7 @@ them before merge. No seat files anything.
   in `evals/tests/recipe.rs` use `review`. `grep -rn '"score"' evals/src`
   finds no production reader. **Proof:** the grep output, and
   `cd evals && SWARMAIL_BIN=<candidate> cargo test --locked` green.
-- **AC9 0116 R4.** 0116 carries the dated R4 section (this design's
+- **AC9 0119 R4.** 0119 carries the dated R4 section (this design's
   commit). The implement seat adds only dated observation lines: the AC1
   receipt and, if needed, the §1.1 branch taken. The status stays
   `proposed`. The `docs/decisions/README.md` row is unchanged.
@@ -321,7 +321,7 @@ them before merge. No seat files anything.
 ## Out of scope, and residuals named for the operator
 
 - A live engine **run** of the recipe (oracle and null) remains the
-  operator's first engine run (0116 §7). A compile proves the shape, not the
+  operator's first engine run (0119 §7). A compile proves the shape, not the
   run-time behaviour of an exec-only protected review.
 - Whether the engine applies further review rules at run time (issue 6,
   question 2) is unknown until that run.

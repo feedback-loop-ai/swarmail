@@ -12,7 +12,7 @@ Issue #148, epic #164, P1. Operator direction 2026-11-01: start now,
 alongside a separate harder-tier run. Zero-Codex `claude-careful` lane
 (accepted 0098 and 0099). Base: `main` at `f815d48`.
 
-Decision: 0116 — [the eval recipe on brokkr](../../docs/decisions/0116-eval-brokkr-recipe.md),
+Decision: 0119 — [the eval recipe on brokkr](../../docs/decisions/0119-eval-brokkr-recipe.md),
 status proposed. It records the operator's 2026-10-18 rulings (the harness
 is built on brokkr; the interim opaque driver; every interim trial is
 unconfined; brokkr#766 tracks the move to the broker), the compatible
@@ -24,8 +24,8 @@ output seams any accounting channel must cross. Only the operator accepts it.
 0115 in this tree. Both are right: 0115 is held by #221's branch
 (`repair/issue221-trial-isolation`, commit `cacd60e`, "Renumber the trial
 isolation decision to 0115"), not yet on `main`. Drafting 0115 here would
-collide at the merge of either branch, so this spec takes **0116**. If
-`main` takes 0116 first, the record is renumbered at integration the way
+collide at the merge of either branch, so this spec takes **0119**. If
+`main` takes 0119 first, the record is renumbered at integration the way
 0105 and 0108 were.
 
 ## Feature and rationale
@@ -61,7 +61,7 @@ names (F1). Closing the #151 "Not measured" rows needs, in order: the
 operator's first engine run (free, offline), the operator's first
 authenticated via-brokkr smoke per family (which observes F1 and F2), a
 follow-up change that forwards the observed channel through the four seams
-under 0116 §6 (an exception to accepted 0075 §1 only the operator can
+under 0119 §6 (an exception to accepted 0075 §1 only the operator can
 accept), and then the paid matrix. The PR says this in one sentence.
 
 What already exists and is **reused, not rebuilt**: `swarmail-evals trial`
@@ -94,11 +94,11 @@ filed on brokkr, never worked around in Swarmail. Where they differed:
 | Extend the v2 row with token and evidence fields under a new schema (robustness) vs rows unchanged (simplicity) | **Rows unchanged.** "Extend, not replace" is met at the report's inputs: `report --journal` joins a typed facts file to the rows by `trial_id`. The published 395/400 rows stay readable as they are; the strict readers of 0063 and 0076 are untouched; no v3, no migration, no 64 KiB pressure. Intake's AC1 wording ("each row carries the brokkr run id") is corrected: the row carries `trial_id`; the report carries the run id. | A row alone no longer tells you its tokens; you need the facts file beside it. The baseline publishes both. |
 | Which selector a via-brokkr row declares | **New finite selectors** `claude_2_1_310_via_brokkr`, `codex_0_164_0_via_brokkr`, `dsh_0_1_5_rc_1_via_brokkr` (simplicity): the driver adds flags the family profile does not enumerate, so such a row must not claim the direct-launch surface. Same revision, basis `declared_configuration`, the family's restrictions, plus one residual naming the driver. | Three more enum variants and profile rows in `provenance.rs`; a binary before this change refuses the new rows, as the surface contract already says for historical rows. |
 | The scoring gate | **A separate exec seat with three exit codes** (robustness D), implemented by the existing `check --artifacts-dir <leaf>`, which validates the bound evidence (metadata, result, state, diagnostics) and re-scores: 0 pass, 1 fail, 2 unscorable. **And the matrix cross-checks it** against the row (`score.json` must agree with `row.json`, else the slot is `harness_error` and admission stops; *revision 3 defines "agree" by the agreement table, not by equality*). Simplicity's "replay equality is already proven" is true, but a gate whose verdict nobody reads is decoration. | About fifteen lines in the matrix and a second scorer run per slot, on a frozen snapshot that is already consistent (the fixture freezes, then snapshots through its admin API; there is no database copy and no WAL, so robustness's WAL concern does not arise). |
-| Evidence: journal only (simplicity) vs a bounded, hashed, value-redacted side file, fail-closed (robustness) | **Both, in two steps.** Now: a per-trial `tool-calls.json` derived from the journal facts: ordinal, bounded tool name, outcome class, invalid-argument flag, argument and result byte lengths and SHA-256 digests. **No argument or result bytes.** It is harness-authored finite facts, compatible with accepted 0075 §4, bound by the `artifacts.rs` triple, 64 KiB cap, truncation typed, written through the exclusive-create primitives. Later, under proposed 0116 only: argument values of the two harness-owned tools (Swarmail MCP and `eval_http`), value-redacted and fail-closed to absence. That second step contradicts 0075 §4's "suppress raw bodies, URLs" and **is not implemented in this run** (0045 §8). | Robustness loses value-bearing evidence until the operator accepts 0116. Simplicity loses "nothing to write": one bounded file per trial. The baseline's open question (did the model act on a wrong message or give up?) is answered by tool names, counts and the retained `state.json`. |
+| Evidence: journal only (simplicity) vs a bounded, hashed, value-redacted side file, fail-closed (robustness) | **Both, in two steps.** Now: a per-trial `tool-calls.json` derived from the journal facts: ordinal, bounded tool name, outcome class, invalid-argument flag, argument and result byte lengths and SHA-256 digests. **No argument or result bytes.** It is harness-authored finite facts, compatible with accepted 0075 §4, bound by the `artifacts.rs` triple, 64 KiB cap, truncation typed, written through the exclusive-create primitives. Later, under proposed 0119 only: argument values of the two harness-owned tools (Swarmail MCP and `eval_http`), value-redacted and fail-closed to absence. That second step contradicts 0075 §4's "suppress raw bodies, URLs" and **is not implemented in this run** (0045 §8). | Robustness loses value-bearing evidence until the operator accepts 0119. Simplicity loses "nothing to write": one bounded file per trial. The baseline's open question (did the model act on a wrong message or give up?) is answered by tool names, counts and the retained `state.json`. |
 | Admission inside the exec box (robustness 9) | **Accepted residual, named.** If brokkr's exec box gives the trial seat a private `/tmp`, the trial's advisory lock is blind to other cooperating runners on the host, which is exactly the posture the operator ran the #151 baseline under (bwrap with a private `/tmp`). The matrix stays sequential, so no two of its own trials overlap. No bypass flag and no parent-held reservation is added: both would weaken 0076 §1–2 for the shared-`/tmp` case. | On a host where the box shares `/tmp`, nothing is lost. On a host where it does not, the operator runs no other trial while a matrix runs, as for the baseline. Brokkr fact F6 records which it is. |
 | Crash tests, join tests, unavailable tests, gate-failure tests, sentinel tests (robustness) | **Adopted**, with stand-ins: the matrix's worker stand-in plays `brokkr run` and runs the two real recipe scripts, so the recipe path is proven offline without the engine. | None. |
 | Cert, cap, chaos, webhook failure modes (robustness table) | **Out of scope, stated.** The eval has no TLS (loopback HTTP), the harness never changes the server's cap or prunes, the eval runs no chaos, and the fixture has no webhook sink. Nothing here touches 0001–0005. | None. |
-| Decision number 0115 (intake) vs 0116 (simplicity) | **0116**, for the collision reason above. | A renumber at integration if `main` takes 0116 first. |
+| Decision number 0115 (intake) vs 0119 (simplicity) | **0119**, for the collision reason above. | A renumber at integration if `main` takes 0119 first. |
 
 ## Revision 2: the review's findings and the rulings
 
@@ -108,7 +108,7 @@ never observed** (the driver argv F2, the accounting channel F1, the export
 shape F3, the compile gate AC3, the hands F5) and authored every stand-in to
 the assertion. Both round-2 positions name the same root cause and agree on
 most corrections; the rulings below settle where they differ. Every change is
-a revision of this spec, 0116, plan.md and tasks.md; the committed shape
+a revision of this spec, 0119, plan.md and tasks.md; the committed shape
 (two seats, rows unchanged, report-side join, structural evidence, sequential
 admission) is not re-opened.
 
@@ -116,9 +116,9 @@ admission) is not re-opened.
 |---|---|---|
 | **Prompt parsing is wrong for the real engine** (correctness 1 low, independent 2 medium). `trial.sh`/`score.sh` match only a line that *begins* `swarmail-eval-request:` and an unindented `/….json`; the engine renders the feature as `Feature: <text>` and the result path indented. Observed in this chief seat's own rendered prompt on 2026-11-02 (`Feature: Issue #148: …`; the result path line indented four spaces). | **Adopted as the real high.** Both scripts trim each line as `verify-seat.sh` and `design-check.sh` do and match the request token anywhere on the trimmed line. The stand-in renders the engine's observed shape. The proving test is written first and observed red against the committed scripts. | None. |
 | **`--via-brokkr` runs an unobserved driver contract, fails open** (guarantees 3 high, independent 5 low, guarantees 7 low). | **Refuse unconditionally, at two layers, and cut the stand-in driver** (simplicity). The trial refuses before any launch when the agent argv carries `--via-brokkr` (`driver_contract_unknown`, exit 2, no row) and when a `*_via_brokkr` profile is declared without it (`via_brokkr_profile_mismatch`); the wrapper refuses `--via-brokkr` after `driver_invalid` validation and before any private read, with the same category. Argv assembly stays and is proven inline by inspecting the `Command`. `wrappers_launch/standin-driver.py` and its end-to-end arms go. Robustness's "keep the stand-in for assembly" loses: a real-versus-stand-in switch would be a production seam (0020 §4 in spirit), and the stand-in only ever proved our convention against itself. | No end-to-end via-brokkr trial until F2 is observed. The trial-level refusal matters more than the wrapper's: a wrapper that exits without acting scores as the task's idle class (`gave_up`), a fake model failure inside measurement data; refusing before launch makes it a typed harness refusal instead. |
-| **The accounting channel is severed by construction** (independent 1 medium, correctness 2 low). `trial.sh` runs `env -i`; the runner builds the agent environment afresh; `through_driver` calls `env_clear`; the driver's stdout and stderr go to `/dev/null`. 0116 §6 said "the wrapper forwards exactly that variable", one site. | **Both positions agree; adopted.** F1 names the four seams. No forwarding is built now: forwarding touches accepted 0075 §1 at three environment sites and one output-routing site and waits for the observed channel and the operator's acceptance of 0116 §6. One test names the seams and proves a sentinel variable set in the matrix's environment reaches neither the trial nor the agent (the follow-up flips it to the observed name). AC16 and the READMEs stop saying this delivery closes the #151 rows. | Robustness's "sentinel survives all four seams" test cannot be written until the channel exists; it is the follow-up's. Tokens per success stays `null` with a typed reason in every via-brokkr group until then. |
+| **The accounting channel is severed by construction** (independent 1 medium, correctness 2 low). `trial.sh` runs `env -i`; the runner builds the agent environment afresh; `through_driver` calls `env_clear`; the driver's stdout and stderr go to `/dev/null`. 0119 §6 said "the wrapper forwards exactly that variable", one site. | **Both positions agree; adopted.** F1 names the four seams. No forwarding is built now: forwarding touches accepted 0075 §1 at three environment sites and one output-routing site and waits for the observed channel and the operator's acceptance of 0119 §6. One test names the seams and proves a sentinel variable set in the matrix's environment reaches neither the trial nor the agent (the follow-up flips it to the observed name). AC16 and the READMEs stop saying this delivery closes the #151 rows. | Robustness's "sentinel survives all four seams" test cannot be written until the channel exists; it is the follow-up's. Tokens per success stays `null` with a typed reason in every via-brokkr group until then. |
 | **F5: no bind for the operator's selection file; the score seat is not read-only** (guarantees 2 high, 4b medium, correctness 6, independent 6). | **Correct the facts; guess no bind** (simplicity, with robustness's preflight). F5 lists the whole paid read set (selection file, three credential files, three CLI executables and their install trees). None is bound: a `~` bind guessed now may break the operator's free offline oracle run and still would not reach the executables. The score seat has workspace hands read-write and writes exactly `<slot>/score.json`. Paid agents under `matrix --brokkr` are unsupported until the F2/F1/F5 follow-up and the PR says so; the direct `matrix` (the #151 path) stays the paid route. New: `matrix --brokkr` refuses an `--artifacts-dir` outside the current directory before any spawn (`brokkr_artifacts_unreachable`). | Robustness's "selection as a matrix input" is not taken: the matrix does not read the operator's private file; the wrapper reads it, inside the seat, and the seat cannot reach it today. The paid path waits. |
-| **AC3/0116 §7 claim a verify-seat compile that does not run** (guarantees 4 medium, correctness 3 low, independent 4 low). | **Adopted.** AC3 and 0116 §7 claim only CI's pinned-bundle loop. `.brokkr/recipes/self/` is not edited to make the claim true (hold list; shims). The implement seat records the compile as **not run** without the binary. | No seat compiles `eval` before CI; the shape is pinned by `tests/delivery_recipes.rs`. |
+| **AC3/0119 §7 claim a verify-seat compile that does not run** (guarantees 4 medium, correctness 3 low, independent 4 low). | **Adopted.** AC3 and 0119 §7 claim only CI's pinned-bundle loop. `.brokkr/recipes/self/` is not edited to make the claim true (hold list; shims). The implement seat records the compile as **not run** without the binary. | No seat compiles `eval` before CI; the shape is pinned by `tests/delivery_recipes.rs`. |
 | **A missing `tool_calls` is `[]`, a missing `deadline_killed` is `false`** (guarantees 5 medium). | **Adopted; one rule everywhere.** Facts v1 (unreleased) changes in place: `tool_calls` and `deadline_killed` are typed `{status, value|reason}` like tokens, turns and wall time. `accounted()`'s "non-empty tool list" heuristic goes. `tool_calls` and `deadline_killed` aggregates are `null` with `incomplete_join` when any scored joined trial lacks the fact. Evidence for a trial without tool rows is `absent: journal_has_no_accounting` and no file is written. Robustness's new reason `journal_has_no_tool_rows` is not added: the closed set stays closed and the reason is per fact. | A golden gains the tokens-present/tool-rows-absent case. |
 | **`journal-facts.sh` dies instead of F3's soft fallback** (guarantees 8 low). | **Simplicity wins; the spec moves to the code.** The script exits 2 naming the failure class and writes no facts file. Robustness's `journal_unavailable` facts file is rejected: a facts file produced from an export nobody read would label "the journal has no accounting", which is false; `report` without `--journal` is already byte-identical and typed as "no journal"; and nothing is lost, because the journal is append-only and the script is re-run after `EXTRACT` is corrected. | The operator gets an exit code and a class, not a report full of `null`. |
 | **A gate that never ruled is mislabeled `score_mismatch`** (tests 1 info; robustness R8). | **Adopted.** `score_missing` (absent, unreadable, malformed or not one line) is distinct from `score_mismatch` (present and disagreeing); the stand-in gains a `no-score` mode. | One more typed category and one more arm. |
@@ -127,7 +127,7 @@ admission) is not re-opened.
 | `trial_args`' `let _ = bin` (correctness 4, independent 6 info). | **No change.** `bin` is used under `#[cfg(test)]` to build the target; the `let _` silences the non-test build. The finding is inaccurate. | None. |
 | Categories from the slot's `trial.stderr` never surface through the CLI (tests 2 info). | **Adopted, cheaply:** a stand-in mode appends a fixed 0076 category line to `<slot>/trial.stderr` and the test asserts it on the row's failure. | One mode, one assertion. |
 | Cold refusal arms of the scripts (tests 3 info); no private HOME/TMPDIR for the brokkr-mode worker (independent 6). | **Named residuals, no change.** The scripts are outside the measured denominator; the agent's own environment is built by the runner and the wrapper identically in both modes. | None. |
-| The transcript half of #151 (guarantees 6 medium). | **Text corrected.** Structural records land now; value-bearing records wait for the operator's acceptance of 0116 §4 (0045 §8). The README no longer says the operator's run closes the row. | None. |
+| The transcript half of #151 (guarantees 6 medium). | **Text corrected.** Structural records land now; value-bearing records wait for the operator's acceptance of 0119 §4 (0045 §8). The README no longer says the operator's run closes the row. | None. |
 
 ## Revision 3: the gate's agreement rule, and the rulings
 
@@ -165,8 +165,8 @@ yields `fail/budget` only from the deadline leg (`runner.rs:2938`).
 | A refusal of a populated `--artifacts-dir` (robustness 3a) | **Rejected for this revision.** Each matrix writes under its own fresh `ROOT/<matrix_id>/` through the exclusive-create primitives, so a second matrix never clobbers the first, and the review did not raise this. | None. |
 | `trial_id` hardening against `.`/`..` and `basename(slot)` (robustness 3e) | **Rejected.** `check`'s `resolve_root`/`ensure_root`/`safe_root` already refuse `..` and symlinks (the security member found this clean), and the matrix writes the request. An agent that rewrites the request is the named unconfined residual, and no script check closes that. | Defence in depth in the scripts. |
 | Taking the failure class from the row rather than a `trial.stderr` scan (robustness 3e) | **Rejected as not a change.** The class always comes from the row. The scan only adds a fixed 0076 admission category as the slot's *refusal* reason, exactly as in direct mode. The agent's CLI output goes to `/dev/null` (0075 §1), so only a same-uid rewrite reaches `trial.stderr`, which is the unconfined residual. | None. |
-| Finding 2 (low): `evals/README.md` says the #151 baseline lacks tokens only "until the operator's paid run" | **Adopted.** The sentence names the forwarding follow-up (F1/F2) and the operator's acceptance of 0116 §6 as preconditions. A paid run alone measures nothing, because `--via-brokkr` refuses `driver_contract_unknown` unconditionally. The PR does not present either #151 gap as closed. | None. |
-| Finding 3 (low): `through_driver` is production code, and `run()` keeps an unreachable `Some(driver) => through_driver(..)` arm | **Adopted as the spec already said (0116 §5).** `through_driver` goes under `#[cfg(test)]` and the arm is deleted. `run()` uses `via_brokkr` only to validate and refuse. Simplicity's alternative (delete the function and its test outright) is not taken: the inline assembly proof is the follow-up's starting point, and it costs no production line. | None. |
+| Finding 2 (low): `evals/README.md` says the #151 baseline lacks tokens only "until the operator's paid run" | **Adopted.** The sentence names the forwarding follow-up (F1/F2) and the operator's acceptance of 0119 §6 as preconditions. A paid run alone measures nothing, because `--via-brokkr` refuses `driver_contract_unknown` unconditionally. The PR does not present either #151 gap as closed. | None. |
+| Finding 3 (low): `through_driver` is production code, and `run()` keeps an unreachable `Some(driver) => through_driver(..)` arm | **Adopted as the spec already said (0119 §5).** `through_driver` goes under `#[cfg(test)]` and the arm is deleted. `run()` uses `via_brokkr` only to validate and refuse. Simplicity's alternative (delete the function and its test outright) is not taken: the inline assembly proof is the follow-up's starting point, and it costs no production line. | None. |
 | Correctness Finding 4 (info): `trial_args`' `let _ = bin` | **No change, again** (simplicity proposed dropping the parameter). `bin` is used inside the `#[cfg(test)]` block of `trial_args` (`main.rs:1272-1286`, the synthetic-row target build). The `let _` silences only the non-test build. Dropping it breaks the test build. | None. |
 | Independent Finding 4 (low): the AC17 tests cannot go red for the seams they name | **Adopted, split.** Seam 1 (`trial.sh`'s `env -i`) gets a proof that can go red: the request's `evals_bin` is a probe that records *its own* environment through the real `trial.sh`, so removing `env -i` turns it red. Seam 2 (the runner rebuilds the agent's environment) is the existing probe-agent assertion, now run against `swarmail-evals trial` directly with the sentinel in the trial's own environment. Seams 3 and 4 (`through_driver`) are crossed by no production path once `through_driver` is test-only (Finding 3), so AC17 claims no runtime proof for them. Their proof is the follow-up's. Robustness's "observe the trial process's environment" is taken for seam 1, and simplicity's "narrow the claim" for seams 3 and 4. | None. |
 | Tests residual (low): the `child_output_server_death_remains_a_harness_error_on_linux` flake | **Out of this change.** It is inherited, tracked in #302 and being fixed in parallel (dispatcher note, 2026-11-02). Editing that test here would collide with the fix. Robustness's direction (assert only race-stable facts, and never retry or sleep) is the right one for #302 and is recorded there, not here. | A verify round under seat load may go red on it again. The dispatcher's host re-runs are the evidence until #302 lands. |
@@ -206,10 +206,10 @@ reason** rather than running a guess.
 
 | # | Requirement | Ships regardless | If absent or unobserved |
 |---|---|---|---|
-| F1 | A `brokkr driver <family>` run as a descendant of an exec seat records its tokens (input, output, cached), turns and tool rows against that seat in the journal, and says through which channel (stdout relay or a named environment variable). **Four seams** sever every candidate channel today: (1) `trial.sh` runs the trial under `env -i PATH LANG LC_ALL SWARMAIL_BIN`; (2) the runner builds the agent's environment afresh (`RuntimeDirs`/`CallerEnv`: PATH plus the EVAL inputs); (3) `wrappers::through_driver` calls `env_clear`; (4) `through_driver` routes the driver's stdout and stderr to `/dev/null` (0075 §1). | The seams named here, in 0116 §6 and in `evals/wrappers.md`; one test proving a sentinel variable in the matrix's environment reaches neither the trial nor the agent. No forwarding. | File (issue text in the PR). Forwarding the observed channel is a **follow-up change** that touches 0075 §1 at the named seams and lands only under 0116 §6 as accepted by the operator. Until then every via-brokkr group's tokens are `null` with a typed reason, and this delivery does not measure tokens per success. |
+| F1 | A `brokkr driver <family>` run as a descendant of an exec seat records its tokens (input, output, cached), turns and tool rows against that seat in the journal, and says through which channel (stdout relay or a named environment variable). **Four seams** sever every candidate channel today: (1) `trial.sh` runs the trial under `env -i PATH LANG LC_ALL SWARMAIL_BIN`; (2) the runner builds the agent's environment afresh (`RuntimeDirs`/`CallerEnv`: PATH plus the EVAL inputs); (3) `wrappers::through_driver` calls `env_clear`; (4) `through_driver` routes the driver's stdout and stderr to `/dev/null` (0075 §1). | The seams named here, in 0119 §6 and in `evals/wrappers.md`; one test proving a sentinel variable in the matrix's environment reaches neither the trial nor the agent. No forwarding. | File (issue text in the PR). Forwarding the observed channel is a **follow-up change** that touches 0075 §1 at the named seams and lands only under 0119 §6 as accepted by the operator. Until then every via-brokkr group's tokens are `null` with a typed reason, and this delivery does not measure tokens per success. |
 | F2 | The driver accepts the goal the wrapper already supplies (stdin bytes for Claude and Codex, one literal argument for dsh) and an explicit CLI executable, and documents the invocation form (`brokkr driver <family> -- …` or otherwise) and the flags it adds. | The wrapper's argv assembly for `DRIVER <family> -- <argv>`, proven inline byte for byte against the direct launch. **`--via-brokkr` refuses with `driver_contract_unknown`** at the trial (before launch, no row) and at the wrapper (after `driver_invalid` validation, before any private read). No stand-in driver. | File. The refusal lifts in the follow-up that implements the observed invocation; when it lifts, a via-brokkr argv under a direct profile and the reverse refuse (`via_brokkr_profile_mismatch`, live now for the second arm). |
 | F3 | A per-run machine-readable query (`brokkr export` is documented in the recipe guide; the exact shape is to be observed) carries seat results with their `inputs`, token counts, turns, tool rows and the deadline-kill event. | The typed journal-facts v1 reader and golden tests; `evals/scripts/journal-facts.sh` with the one assumed export shape isolated in `EXTRACT`. | File. The script **exits 2 naming the failure class and writes no facts file** when `brokkr export` fails, the export is not JSON, the version is unreadable or the shape does not match; a shape that matches but carries no trial yields `journal_missing`. `report` without `--journal` is byte-identical to today's. |
-| F4 | **Superseded 2026-11-02: falsified by the pinned engine** (brokkr 0.12.0 refuses a policy without a `review` phase); see [eval-recipe-review-gate](../eval-recipe-review-gate/spec.md) and 0116 R4. A two-seat recipe with its own `policy.json` and no intake, design, implement, verify, review or ship phase compiles, runs and finishes without a commit, with `class: work` on an exec driver. | `bundle.json` and `policy.json` as specified; `brokkr compile --bundle .brokkr/recipes/eval` in CI's pinned-bundle loop (the only place it runs before merge). | File. The recipe keeps the shape and the matrix's brokkr mode is proven with the stand-in worker only. |
+| F4 | **Superseded 2026-11-02: falsified by the pinned engine** (brokkr 0.12.0 refuses a policy without a `review` phase); see [eval-recipe-review-gate](../eval-recipe-review-gate/spec.md) and 0119 R4. A two-seat recipe with its own `policy.json` and no intake, design, implement, verify, review or ship phase compiles, runs and finishes without a commit, with `class: work` on an exec driver. | `bundle.json` and `policy.json` as specified; `brokkr compile --bundle .brokkr/recipes/eval` in CI's pinned-bundle loop (the only place it runs before merge). | File. The recipe keeps the shape and the matrix's brokkr mode is proven with the stand-in worker only. |
 | F5 | The trial seat's hands reach loopback, the candidate's `swarmail` and `swarmail-evals` executables, and the slot directory under the candidate's `.brokkr/state/eval/` read-write; the score seat has workspace hands read-write with no network and writes exactly `<slot>/score.json`. **A paid trial additionally reads** the operator's private selection file, the three credential files it names and the three CLI executables with their install trees, and needs the network; none of those paths is bound today. | `hands` as the recipe guide documents: `kind: workspace`, `binds: []`, `network: true` on `trial` and `false` on `score`. `matrix --brokkr` refuses `--artifacts-dir` outside the current directory before any spawn (`brokkr_artifacts_unreachable`). | **Paid agents under `matrix --brokkr` are unsupported** until the F2/F1/F5 follow-up declares the observed binds; the PR says so and the direct `matrix` stays the paid route. A paid agent tried anyway fails closed at slot 1 through the wrapper's existing typed refusals (`wrapper_config_*`, `wrapper_executable_unavailable`). File the first unreachable path. |
 | F6 | Whether the exec box shares the host's `/tmp` with the trial seat. | Nothing changes either way. | Record the answer in `evals/README.md` (admission posture), not an issue. |
 | F7 | A seat killed by the run deadline is distinguishable in the journal from a seat that returned. | `deadline_killed` is a typed fact (`present` true/false or `unavailable`). The trial deadline bound in brokkr mode makes brokkr's timer a backstop only. | File. The matrix already yields `harness_error`, never `gave_up`, for a worker that returns no row. |
@@ -472,7 +472,7 @@ whose `tool_calls` fact is unavailable gets **no file** and
 `absent: evidence_write_failed` for that trial and the report still
 completes. An empty file is never written as evidence. The value-bearing
 mode (argument values of the Swarmail MCP and `eval_http` tools,
-value-redacted and fail-closed) is specified in 0116 §4 and not implemented
+value-redacted and fail-closed) is specified in 0119 §4 and not implemented
 here.
 
 ### Documentation
@@ -484,18 +484,18 @@ under `matrix --brokkr` wait for the F2/F1/F5 follow-up. `evals/README.md`:
 the brokkr-mode command, the facts and evidence commands, the admission
 posture (F6), and the corrected closure sentence: *this delivery lands the
 machinery; tokens per success are measured only after the accounting
-channel is observed and forwarded under 0116 §6; structural tool-call
-records land now and value-bearing records wait for 0116 §4's acceptance.*
+channel is observed and forwarded under 0119 §6; structural tool-call
+records land now and value-bearing records wait for 0119 §4's acceptance.*
 **Revision 3:** `evals/README.md`'s recipe section states the agreement
 table in place of "the matrix cross-checks the gate against the row ... one
 that disagrees with the row is `score_mismatch`". Its "Tokens, turns and
 cost are not in the rows" paragraph (Finding 2) names the F1/F2 forwarding
-follow-up and the operator's acceptance of 0116 §6 as preconditions. A paid
+follow-up and the operator's acceptance of 0119 §6 as preconditions. A paid
 run alone does not close either #151 gap. `.brokkr/recipes/README.md`
 describes the score seat's results by the same table.
 `evals/wrappers.md`: `--via-brokkr` (refuses `driver_contract_unknown`
 until F2 is observed), the three selectors, the four F1 seams and the full
-paid read set (F5). `docs/decisions/README.md` carries the proposed 0116
+paid read set (F5). `docs/decisions/README.md` carries the proposed 0119
 row. `docs/evals/baseline-2026-11-01.md` is history and does not change.
 
 ## Acceptance Criteria
@@ -637,7 +637,7 @@ test.
   `timeout_seconds` is 1800 and `score`'s is 600 in `bundle.json` (pinned by
   `tests/delivery_recipes.rs`).
 - **AC10 Unconfined, everywhere.** Every row's `confinement` is
-  `unconfined`; the report's note says so; the bundle description and 0116
+  `unconfined`; the report's note says so; the bundle description and 0119
   say so. **Proof:** assertion on recipe-path rows in AC1's test.
 - **AC11 Sequential (accepted 0076).** No concurrency option changes;
   `--concurrency` other than 1 still refuses; the issue's "two concurrent
@@ -664,13 +664,13 @@ test.
   the implement seat reports it as **not run** when the binary is
   unreachable, never as passed.
 - **AC15 Delivery paper.** Commits unsigned, nothing pushed, merged,
-  published or accepted; 0116 stays proposed with its index row. The PR
+  published or accepted; 0119 stays proposed with its index row. The PR
   says, in its first paragraph: it touches `.brokkr/` and `.github/` and so
   merges only on the operator's approval by name (0056's 2026-11-01 hold
   list); which brokkr issues were filed, or that they are drafted and filing
   is a merge precondition (AC12); that this delivery does **not** measure
   tokens per success and why (F1's four seams; the forwarding follow-up
-  under 0116 §6); that paid agents under `matrix --brokkr` are unsupported
+  under 0119 §6); that paid agents under `matrix --brokkr` are unsupported
   until the F2/F1/F5 follow-up; that the first `brokkr run --recipe eval`
   with the engine (oracle, offline, free) and the first authenticated
   via-brokkr smoke per family are the operator's and are the observations
@@ -693,7 +693,7 @@ test.
   Seams 3 and 4 (`through_driver`'s `env_clear` and output routing) are
   crossed by no production path while `through_driver` is `#[cfg(test)]`
   (AC8). No runtime proof is claimed for them, and their proof belongs to
-  the forwarding follow-up. `evals/wrappers.md`, 0116 §6 and this spec name
+  the forwarding follow-up. `evals/wrappers.md`, 0119 §6 and this spec name
   the four seams identically. **Proof:** `evals/tests/recipe.rs`, two tests.
 - **AC18 The journal's terminal and the row agree (revision 3).** For each
   agreement-table cell the stand-in plays (`ok` oracle, `ok` null,
@@ -710,7 +710,7 @@ test.
 ## Residuals named for the operator
 
 - **Tokens per success is not measured by this delivery.** F1's channel is
-  severed at four named seams; forwarding is a follow-up under 0116 §6 that
+  severed at four named seams; forwarding is a follow-up under 0119 §6 that
   touches accepted 0075 §1 and waits for the observed channel and the
   operator's acceptance.
 - **Via-brokkr trials refuse until F2 is observed.** The refusal is typed
@@ -736,7 +736,7 @@ test.
 - **#302** (the runner-suite flake under seat load) is inherited and
   fixed in parallel; this change does not touch that test.
 - **Admission inside a private `/tmp`** (F6), as above.
-- **Value-bearing evidence** waits for 0116 §4's acceptance; the transcript
+- **Value-bearing evidence** waits for 0119 §4's acceptance; the transcript
   half of #151 is only structurally closed until then.
 - **Cold refusal arms of the two scripts** (no `jq`, unreadable size,
   symlinked request) have no named test; the scripts are outside the

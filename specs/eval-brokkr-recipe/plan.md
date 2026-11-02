@@ -2,11 +2,11 @@
 
 Implements [spec.md](spec.md), revision 2 (returned from review 2026-11-02
 under accepted 0102's spec-defect addendum). Declares proposed
-[0116](../../docs/decisions/0116-eval-brokkr-recipe.md), revised the same
+[0119](../../docs/decisions/0119-eval-brokkr-recipe.md), revised the same
 day. Compatible work under accepted 0045 §8: nothing here contradicts an
 accepted ruling; the two parts that would (value-bearing evidence, 0075 §4;
 forwarding an accounting channel through the cleared environment, 0075 §1)
-are specified in 0116 and deliberately not implemented. The chief commits
+are specified in 0119 and deliberately not implemented. The chief commits
 spec.md, plan.md, tasks.md and the decision record only; the round-1 design
 commit `8b9abc6`, the build `080db77` and `implementation.md` stay as
 history and are revised on top, never amended.
@@ -27,7 +27,7 @@ review's notes.
 | S3 | `score.sh` reads the row's `outcome` and `failure_class` strictly and reports the trial's class by the table (`unscorable` for `harness_error` and contradictions), so the run's terminal and the row agree for every legitimate row. | Finding 1 ("state which gate result the policy rules for such rows, so the journal's run outcome and the row never disagree": correctness, independent) | `score.sh` (T36) |
 | S4 | Policy reason texts restated to the table. Ids, results and transitions are unchanged, and no rule is added. | Finding 1 (as S3) | `policy.json` (T38) |
 | S5 | Red-first stand-in arms `budget-over-pass`, `harness-error-over-pass` and `budget-over-unscorable`; `bad-score` retargeted; the stand-in logs the score seat's result word. Per-cell `score.sh` cases. | Finding 1 ("add red-first stand-in arms ... do not weaken the gate"); robustness C5 arms 1–3, 5 and 6 | `brokkr-standin.sh`, `report.rs`, `recipe.rs` (T34, T35) |
-| S6 | The README's `score_mismatch` sentence is replaced by the table. The #151 sentence names the F1/F2 follow-up and 0116 §6 acceptance as preconditions. | Finding 1 (guarantees: "correct ... the README's `score_mismatch` sentence together"); Finding 2 (low) | `evals/README.md`, `.brokkr/recipes/README.md` (T39) |
+| S6 | The README's `score_mismatch` sentence is replaced by the table. The #151 sentence names the F1/F2 follow-up and 0119 §6 acceptance as preconditions. | Finding 1 (guarantees: "correct ... the README's `score_mismatch` sentence together"); Finding 2 (low) | `evals/README.md`, `.brokkr/recipes/README.md` (T39) |
 | S7 | `through_driver` is `#[cfg(test)]`, and `run()`'s driver arm is deleted. | Finding 3 (low) | `wrappers.rs` (T40) |
 | S8 | Seam 1 is proven by a probe `evals_bin` that records its own environment (it can go red), and seam 2 by the trial run directly. Seams 3–4 are claimed only as unreachable. | Independent Finding 4 (low) | `recipe.rs` (T41) |
 | — | `trial_args`' `let _ = bin`: no change, because `bin` is used in the `#[cfg(test)]` block at `main.rs:1272-1286`. | Correctness Finding 4 (info) | — |
@@ -72,11 +72,11 @@ Severities are the panel's; "spec" marks the defects that returned the run.
 | R1 | Trim every prompt line; match the request token anywhere on the trimmed line; the stand-in renders `Feature: swarmail-eval-request: …` with an indented result path; the engine-shape test is written first and observed red | correctness 1 (low), independent 2 (medium); both positions | `trial.sh`, `score.sh`, `brokkr-standin.sh`, `recipe.rs` |
 | R2 | `--via-brokkr` refuses `driver_contract_unknown` unconditionally after `driver_invalid`, before any private read or spawn; `through_driver` proven inline; `standin-driver.py` and its two end-to-end arms removed | guarantees 3 (high, spec), independent 5 (low) | `wrappers.rs`, `tests/wrappers_launch/`, `tests/wrappers.rs` |
 | R3 | The trial refuses before launch: `--via-brokkr` in the agent argv → `driver_contract_unknown`; a `*_via_brokkr` profile without it → `via_brokkr_profile_mismatch` | guarantees 3, guarantees 7 (low); the fake-`gave_up` hazard the simplicity position names | `runner.rs` request validation, `main.rs` trial argument check |
-| R4 | F1's four seams named in spec, 0116 §6 and `wrappers.md`; a sentinel test proves nothing crosses them; no forwarding built | independent 1 (medium), correctness 2 (low) | docs, `recipe.rs`, wrapper environment tests |
+| R4 | F1's four seams named in spec, 0119 §6 and `wrappers.md`; a sentinel test proves nothing crosses them; no forwarding built | independent 1 (medium), correctness 2 (low) | docs, `recipe.rs`, wrapper environment tests |
 | R5 | AC16 and the READMEs stop claiming this delivery closes the #151 rows; the PR states the follow-up | independent 1, guarantees 6 (medium) | `evals/README.md`, `.brokkr/recipes/README.md`, PR body |
-| R6 | F5 lists the full paid read set; no bind guessed; score seat hands stated read-write writing only `score.json`; paid agents under `matrix --brokkr` documented unsupported | guarantees 2 (high, spec), guarantees 4b (medium), correctness 6, independent 6 | spec, 0116 §7, `wrappers.md`, bundle description |
+| R6 | F5 lists the full paid read set; no bind guessed; score seat hands stated read-write writing only `score.json`; paid agents under `matrix --brokkr` documented unsupported | guarantees 2 (high, spec), guarantees 4b (medium), correctness 6, independent 6 | spec, 0119 §7, `wrappers.md`, bundle description |
 | R7 | `matrix --brokkr` refuses `--artifacts-dir` outside the current directory before any spawn (`brokkr_artifacts_unreachable`) | correctness 5 (info); robustness R4c | `main.rs::brokkr_mode_admissible` |
-| R8 | AC3 and 0116 §7 claim only CI's pinned-bundle loop; the implement seat records the compile as not run | guarantees 4 (medium), correctness 3 (low), independent 4 (low) | spec, 0116, `implementation.md` |
+| R8 | AC3 and 0119 §7 claim only CI's pinned-bundle loop; the implement seat records the compile as not run | guarantees 4 (medium), correctness 3 (low), independent 4 (low) | spec, 0119, `implementation.md` |
 | R9 | `tool_calls` and `deadline_killed` typed `Fact<_>` in facts v1 (in place); `accounted()` is "any fact present"; aggregates `null` with `incomplete_join`; evidence absent, no file, for an unavailable fact; `journal-facts.sh` distinguishes absent from empty; goldens gain the tokens-present/tool-rows-absent case; untyped forms refuse | guarantees 5 (medium) | `journal.rs`, `journal-facts.sh`, `tests/data/journal-facts-*.json`, `report.rs` tests |
 | R10 | `journal-facts.sh`'s F3 text corrected to the code: exit 2 with the class, no facts file; header sentence about `journal_missing` corrected | guarantees 8 (low); simplicity over robustness | spec F3, script header |
 | R11 | `score_missing` distinct from `score_mismatch`; stand-in `no-score` mode; `score.sh` writes `score.json` before reporting on every exit of `check` | tests 1 (info); robustness R8 | `main.rs` slot acceptance, `brokkr-standin.sh`, `score.sh`, `report.rs` |
@@ -140,7 +140,7 @@ names who can satisfy it.
   deadline); fresh tempdir, fresh seeds, no shared mutable state; chaos is
   not involved. `through_driver`'s `#[cfg(test)]`-only reach is a seam, not
   a flag (0020 §4).
-- 0045 §8: compatible; 0116 is drafted, not accepted; the value-bearing
+- 0045 §8: compatible; 0119 is drafted, not accepted; the value-bearing
   evidence mode and the channel forwarding are not built.
 - 0050 §1: the pinned shims and `shims.sha256` do not change; the recipe's
   scripts are the recipe's own.
@@ -255,7 +255,7 @@ journal facts v1 and the report.
 | `evals/tests/wrappers.rs`, `evals/tests/wrappers_launch/mod.rs` | refusal before private read; remove the two stand-in-driver arms |
 | `evals/tests/wrappers_launch/standin-driver.py` | **deleted** |
 | `evals/README.md`, `evals/wrappers.md` | corrected closure sentence; four seams; full paid read set; `--via-brokkr` refuses |
-| `docs/decisions/0116-eval-brokkr-recipe.md` | revised by the chief (§1 score seat hands, §3 typed facts, §5 refusal, §6 four seams, §7 CI-only compile; dated revision note) |
+| `docs/decisions/0119-eval-brokkr-recipe.md` | revised by the chief (§1 score seat hands, §3 typed facts, §5 refusal, §6 four seams, §7 CI-only compile; dated revision note) |
 | `specs/eval-brokkr-recipe/implementation.md` | the implementer's record, extended with the round-2 receipts and the first-red observation |
 
 Not touched: root `src/`, `scripts/`, `.brokkr/recipes/self/`, every other
@@ -355,7 +355,7 @@ $E report --input controls.jsonl --journal facts.json --evidence-dir "$PWD/.brok
 |---|---|
 | The engine's prompt rendering differs again from what this seat observed (`Feature: ` prefix, indented result path). | The parser accepts the token anywhere on a trimmed line and both forms; the request path is still validated absolute, regular, no-symlink, ≤ 64 KiB, `jq`. A third shape surfaces as `harness_error` at slot 1, visible, and is a one-line parser change. |
 | `brokkr driver <family>` turns out to run as an opaque child with a different argv than `DRIVER <family> -- <argv>` (F2). | Nothing launches it: `driver_contract_unknown` at the trial and the wrapper. The follow-up implements the observed form; `through_driver` is the starting point, not a contract. |
-| The accounting channel needs 0075 §1 widened (F1). | Named seams, no forwarding now; 0116 §6 is the operator's to accept; the sentinel test documents the current posture and flips in the follow-up. |
+| The accounting channel needs 0075 §1 widened (F1). | Named seams, no forwarding now; 0119 §6 is the operator's to accept; the sentinel test documents the current posture and flips in the follow-up. |
 | The export shape differs from `EXTRACT` (F3). | The script exits 2 with the class; the operator corrects `EXTRACT` and re-runs; the journal is append-only, nothing is lost. |
 | The engine refuses a work-class exec seat or a policy without delivery phases (F4). | CI's loop compiles it before merge; the run path is proven with the stand-in worker; an engine refusal is filed, not patched around. |
 | The exec box cannot reach the slot or the binaries (F5). | The slot root must lie inside the current directory before spawn; the first unreachable path is filed; paid binds wait for the follow-up. |

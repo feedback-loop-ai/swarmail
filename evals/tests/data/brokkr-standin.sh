@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A stand-in for `brokkr run --recipe eval --feature "swarmail-eval-request: PATH"`
-# (decision 0116). It plays the engine's part and nothing else: it synthesizes
+# (decision 0119). It plays the engine's part and nothing else: it synthesizes
 # the prompt file each seat receives, runs the recipe's real trial.sh and
 # score.sh in policy order, and exits. The engine itself is not present in
 # delivery; the operator's first engine run is its proof.
@@ -38,7 +38,7 @@ seat() { # seat <name> <script>: prints the seat's result word
 }
 
 # rewrite_row <outcome> <failure_class> <exit>: the way a runner's precedence
-# legs would have left the slot (decision 0116, the agreement table). The
+# legs would have left the slot (decision 0119, the agreement table). The
 # deadline and infrastructure legs cannot be raced offline (0020 section 5),
 # so the row, the slot's exit, the retained result.json and its digest in
 # metadata.json are rewritten together, as provenance.rs's `rebind` does. No

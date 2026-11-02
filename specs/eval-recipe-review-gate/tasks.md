@@ -1,6 +1,6 @@
 # Tasks: the eval recipe's protected review, and every recipe compiled
 
-Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Decision: 0116 R4 (proposed).
+Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Decision: 0119 R4 (proposed).
 Order matters: every test task lands, and is recorded red, before the
 product change it proves.
 
@@ -99,7 +99,7 @@ product change it proves.
   `sha256sum` equals `tooling.json`'s `binary_sha256`, run the spec §2 loop
   with it and record the verbatim output in
   `specs/eval-recipe-review-gate/implementation.md` and as a dated line in
-  0116 R4. On a refusal, apply spec §1.1 and record the branch taken. If the
+  0119 R4. On a refusal, apply spec §1.1 and record the branch taken. If the
   binary is absent, record "not run: no staged pinned binary" and name the
   owners (verify continuation, CI).
   **Test:** the receipt itself. An absent receipt is never reported as met.
@@ -112,7 +112,7 @@ product change it proves.
   publish-guard, seal-branch, deny). The diff check is empty (AC3, AC11,
   AC12).
 - [ ] T15 Commit unsigned in the repository's style. Never push, merge or
-  accept 0116. The implement result is `complete` only if every task above
+  accept 0119. The implement result is `complete` only if every task above
   is done and AC1 is met or honestly recorded as not run with its owner
   named. Under spec §1.1(b), the result is not complete.
   **Test:** `git log --format='%G? %s' -n3` shows `N`, and
