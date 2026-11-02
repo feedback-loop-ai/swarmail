@@ -27,6 +27,16 @@ fn slurper(s: &RunningServer) -> SocketAddr {
     s.mailslurper_addr.expect("the listener is enabled")
 }
 
+/// Run one wire step under the house helpers' deadline; a wedged listener
+/// fails the test with the step's name instead of hanging the CI slot
+/// (issue #102). No test depends on the deadline for validity.
+async fn within<T>(step: &str, fut: impl std::future::Future<Output = T>) -> T {
+    match tokio::time::timeout(common::HELPER_DEADLINE, fut).await {
+        Ok(out) => out,
+        Err(_) => panic!("{step}: no progress within {:?}", common::HELPER_DEADLINE),
+    }
+}
+
 /// One HTTP/1.1 exchange, headers sent exactly as given (a `Host` is added
 /// only when the caller names none). The body, when present, rides
 /// `Content-Length`.
@@ -49,10 +59,17 @@ async fn req(
     }
     head.push_str("Connection: close\r\n\r\n");
     head.push_str(body.unwrap_or(""));
-    let mut stream = TcpStream::connect(addr).await.unwrap();
-    stream.write_all(head.as_bytes()).await.unwrap();
+    let step = |what: &str| format!("{method} {path}: {what} at {addr}");
+    let mut stream = within(&step("connect"), TcpStream::connect(addr))
+        .await
+        .unwrap();
+    within(&step("write"), stream.write_all(head.as_bytes()))
+        .await
+        .unwrap();
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).await.unwrap();
+    within(&step("read to EOF"), stream.read_to_end(&mut buf))
+        .await
+        .unwrap();
     let split = buf
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -525,42 +542,47 @@ async fn mailcount_sums_every_inbox() {
     assert_eq!(body, br#"{"mailCount":6}"#);
 }
 
-/// AC8: 26 mails page as 25 newest + the oldest, the totals are the
-/// snapshot's, and an invalid page number refuses by name.
+/// AC8: upstream pages at 50. 51 mails over two inboxes: the consumer's
+/// `pageNumber`-less request holds the 50 newest, page 2 the oldest one,
+/// both carry the snapshot's totals, and the pages together are the 51 sent
+/// ids with none repeated.
 #[tokio::test]
-async fn pages_are_newest_first_and_counted() {
+async fn pages_cut_at_fifty_newest_first_and_counted() {
     let s = start().await;
-    for i in 0..26 {
+    let mut sent = Vec::new();
+    for i in 0..51 {
         let inbox = if i % 2 == 0 { "even" } else { "odd" };
-        send_text(s.smtp_addr, Some(inbox), &format!("m{i:02}"), "x").await;
+        sent.push(send_text(s.smtp_addr, Some(inbox), &format!("m{i:02}"), "x").await);
     }
-    let subjects = |page: &Value| -> Vec<String> {
+    let ids = |page: &Value| -> Vec<String> {
         page["mailItems"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|m| m["subject"].as_str().unwrap().to_string())
+            .map(|m| m["id"].as_str().unwrap().to_string())
             .collect()
     };
+    // The literal 50 is upstream's page size, asserted here and nowhere
+    // else, so the test pins upstream and not the shim's own constant.
     let one = get_json(slurper(&s), "/mail").await;
-    assert_eq!(
-        (one["totalPages"].clone(), one["totalRecords"].clone()),
-        (json!(2), json!(26))
-    );
-    let expected: Vec<String> = (1..26).rev().map(|i| format!("m{i:02}")).collect();
-    assert_eq!(
-        subjects(&one),
-        expected,
-        "the 25 newest, across both inboxes"
-    );
+    assert_eq!(one["mailItems"].as_array().unwrap().len(), 50);
+    let newest_first: Vec<String> = sent.iter().rev().cloned().collect();
+    assert_eq!(ids(&one), newest_first[..50], "the 50 newest, both inboxes");
     assert_eq!(get_json(slurper(&s), "/mail?pageNumber=1").await, one);
 
     let two = get_json(slurper(&s), "/mail?pageNumber=2").await;
-    assert_eq!(
-        (two["totalPages"].clone(), two["totalRecords"].clone()),
-        (json!(2), json!(26))
-    );
-    assert_eq!(subjects(&two), vec!["m00".to_string()]);
+    assert_eq!(ids(&two), newest_first[50..], "the oldest one");
+    for page in [&one, &two] {
+        assert_eq!(
+            (page["totalPages"].clone(), page["totalRecords"].clone()),
+            (json!(2), json!(51))
+        );
+    }
+    let mut union: Vec<String> = ids(&one).into_iter().chain(ids(&two)).collect();
+    union.sort();
+    let mut expected = sent.clone();
+    expected.sort();
+    assert_eq!(union, expected, "every sent id once, none repeated");
 
     // Past the end: the totals, no items key.
     for path in [
@@ -569,8 +591,9 @@ async fn pages_are_newest_first_and_counted() {
     ] {
         let (status, _, body) = get(slurper(&s), path).await;
         assert_eq!(status, 200, "{path}");
-        assert_eq!(body, br#"{"totalPages":2,"totalRecords":26}"#, "{path}");
+        assert_eq!(body, br#"{"totalPages":2,"totalRecords":51}"#, "{path}");
     }
+    s.stop().await;
 }
 
 #[tokio::test]
@@ -747,7 +770,8 @@ async fn every_250_is_listed_at_once() {
     }
 }
 
-/// AC14: an id survives a restart on the same data file, byte for byte.
+/// AC14: an id survives a restart on the same data file, byte for byte,
+/// and a wipe survives the next restart.
 #[tokio::test]
 async fn an_id_survives_a_data_file_restart() {
     let dir = tempfile::TempDir::with_prefix("swarmail-e2e-slurper-restart-").unwrap();
@@ -764,10 +788,20 @@ async fn an_id_survives_a_data_file_restart() {
     let (_, _, first) = get(slurper(&s), &format!("/mail/{id}")).await;
     s.stop().await;
 
-    let s = common::start_with(with_file(db)).await;
+    let s = common::start_with(with_file(db.clone())).await;
     let (status, _, second) = get(slurper(&s), &format!("/mail/{id}")).await;
     assert_eq!(status, 200);
     assert_eq!(second, first, "the same item after the restart");
+
+    // A wipe persists too: a nightly run never scans a stale link.
+    let (status, _, body) = prune(slurper(&s), r#"{"pruneCode":"all"}"#).await;
+    assert_eq!((status, body.as_slice()), (200, &b"1"[..]));
+    s.stop().await;
+
+    let s = common::start_with(with_file(db)).await;
+    let (status, _, body) = get(slurper(&s), "/mail").await;
+    assert_eq!((status, body.as_slice()), (200, EMPTY.as_bytes()));
+    assert_eq!(native_total(&s).await, 0, "both stores empty natively");
     s.stop().await;
 }
 
@@ -785,8 +819,22 @@ fn the_guide_states_the_global_view_and_every_known_difference() {
             .join(" ")
     };
     let shims = read("docs/guide/compat-shims.md");
+    assert!(
+        shims.starts_with("# MailHog / Mailpit / MailSlurper shims"),
+        "the page title names all three shims"
+    );
     for needle in [
         "## MailSlurper service API",
+        "50 to a page",
+        "the page size is 50, upstream's own",
+        "*`dateSent` is the receive time, in UTC*",
+        "*Order is the receive time*",
+        "*A page past the end is a `200`*",
+        "*An unknown id is a `404`*",
+        "*`ccAddresses` is an extra key*",
+        "`swarmail_http_requests_in_flight`",
+        "*A list page over 64 MiB is a `400`*",
+        "*Still recalled, not read from source*",
         "**It is a global view.**",
         "`GET /mail` and `GET /mailcount` read **every inbox**",
         "`DELETE /mail` with `{\"pruneCode\":\"all\"}` **clears every inbox**",
@@ -806,10 +854,27 @@ fn the_guide_states_the_global_view_and_every_known_difference() {
         "*Identity encoding*",
         "*Errors*",
         "*Not in `/metrics`*",
-        "*Recalled, not read from source*",
         "decision 0118",
     ] {
         assert!(shims.contains(needle), "compat-shims.md lacks {needle:?}");
+    }
+    // The agent brief scopes the "only cross-inbox wipe" claim to the HTTP
+    // plane and names the MailSlurper route; the source is the file the
+    // server serves (tests/api.rs pins that byte equality).
+    let llms = read("src/static/llms.txt");
+    assert!(
+        llms.contains("is the HTTP plane's only cross-inbox wipe"),
+        "llms.txt scopes the wipe claim"
+    );
+    assert!(
+        llms.contains("`DELETE /mail` with `{\"pruneCode\":\"all\"}` clears every inbox"),
+        "llms.txt names the MailSlurper wipe"
+    );
+    for path in ["README.md", "docs/guide/repo-layout.md"] {
+        assert!(
+            read(path).contains("MailSlurper"),
+            "{path} names MailSlurper"
+        );
     }
     for (path, needle) in [
         (

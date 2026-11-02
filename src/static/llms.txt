@@ -394,8 +394,11 @@ Same store, the two shapes existing suites already speak:
   alike) and replies `{"removed": n}`; any
   other body (absent, empty, unparseable, `{"ids": []}`) is a `400` that
   deletes nothing — MailHog's bodyless wipe included (decision 0011);
-  `DELETE /api/v1/delete-all`, swarmail's own route, is the only
-  cross-inbox wipe.
+  `DELETE /api/v1/delete-all`, swarmail's own route, is the HTTP
+  plane's only cross-inbox wipe. The opt-in MailSlurper listener
+  (`--mailslurper-listen`, off by default, its own port) has the other:
+  `DELETE /mail` with `{"pruneCode":"all"}` clears every inbox (decision
+  0118).
 - `GET /api/v2/messages` — MailHog's `{total, count, start, items}` with
   `data.Message` shapes (`Content.{Headers,Body,Size,MIME}`,
   `Raw.{From,To,Data,Helo}`); a page whose JSON would pass 64 MiB is

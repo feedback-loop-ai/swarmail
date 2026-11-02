@@ -1325,8 +1325,10 @@ pub(crate) fn raw_response(email: &Email) -> Response {
 // stored ingest-time field (decision 0005); nothing is parsed at request
 // time.
 
-/// The fixed page size of `GET /mail` (recalled upstream, decision 0118 §3).
-const SLURPER_PAGE_SIZE: usize = 25;
+/// The fixed page size of `GET /mail`: upstream's hard-coded 50 (decision
+/// 0118 §3). The consumer reads page 1 only, so this decides which mail it
+/// sees; `tests/mailslurper.rs` pins the literal 50 on the wire.
+const SLURPER_PAGE_SIZE: usize = 50;
 
 /// The MailSlurper listener's router: the service API and nothing else,
 /// wrapped in the HTTP plane's own Host/Origin guard (decision 0118 §1,
@@ -1476,7 +1478,7 @@ fn slurper_budget_refusal() -> ApiError {
     ))
 }
 
-/// GET /mail — the whole store as one mailbox, newest first, 25 to a page.
+/// GET /mail — the whole store as one mailbox, newest first, 50 to a page.
 /// The query is staged before the scan, so a refusal costs none.
 async fn slurper_list(State(state): State<AppState>, raw: RawQuery) -> Result<Response, ApiError> {
     let query: SlurperListQuery = parse_query(raw.0.as_deref().unwrap_or(""), "GET /mail")?;
@@ -2216,21 +2218,24 @@ mod tests {
         assert_eq!(slurper_date(&m), "2026-02-03T04:05:06Z");
     }
 
-    /// The page cut: 25 to a page, totals from the snapshot, an empty page
-    /// has no `mailItems`, and an overflowing offset is past the end.
+    /// The page cut: a full page then the remainder, totals from the
+    /// snapshot, an empty page has no `mailItems`, and an overflowing offset
+    /// is past the end. The cut follows the constant; the wire test pins 50.
     #[test]
-    fn slurper_pages_cut_at_25_and_keep_the_totals() {
-        let all: Vec<Arc<Email>> = (0..26).map(|_| Arc::new(mail())).collect();
+    fn slurper_pages_cut_at_the_page_size_and_keep_the_totals() {
+        let total = SLURPER_PAGE_SIZE + 1;
+        let all: Vec<Arc<Email>> = (0..total).map(|_| Arc::new(mail())).collect();
         let page = |n: usize| -> Value {
             serde_json::from_slice(&slurper_page_body(&all, n, usize::MAX).unwrap()).unwrap()
         };
-        assert_eq!(page(1)["mailItems"].as_array().unwrap().len(), 25);
-        assert_eq!(page(2)["mailItems"].as_array().unwrap().len(), 1);
-        assert_eq!(page(3), json!({"totalPages": 2, "totalRecords": 26}));
+        let totals = json!({"totalPages": 2, "totalRecords": total});
         assert_eq!(
-            page(usize::MAX),
-            json!({"totalPages": 2, "totalRecords": 26})
+            page(1)["mailItems"].as_array().unwrap().len(),
+            SLURPER_PAGE_SIZE
         );
+        assert_eq!(page(2)["mailItems"].as_array().unwrap().len(), 1);
+        assert_eq!(page(3), totals);
+        assert_eq!(page(usize::MAX), totals);
         assert_eq!(
             slurper_page_body(&[], 1, usize::MAX).unwrap(),
             br#"{"totalPages":0,"totalRecords":0}"#

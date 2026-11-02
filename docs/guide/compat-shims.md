@@ -1,9 +1,11 @@
-# MailHog / Mailpit shims
+# MailHog / Mailpit / MailSlurper shims
 
 [← README](../../README.md) · [Guide index](README.md)
 
-Point an existing client at the HTTP port and it works — the two shapes
-test suites actually hit, answered from one store:
+Point an existing client at the HTTP port and it works — the MailHog and
+Mailpit shapes test suites actually hit, answered from one store. A third
+shape, MailSlurper's service API, is served on a listener of its own that
+you enable ([below](#mailslurper-service-api)):
 
 | Endpoint | Behavior |
 |---|---|
@@ -116,7 +118,7 @@ spec:
 
 | Endpoint | Behavior |
 |---|---|
-| `GET /mail` | `200 application/json`, `{"mailItems":[…],"totalPages":n,"totalRecords":n}` over every inbox, newest first (the receive time, then id); `?pageNumber=` pages (1-based, default 1), 25 to a page; `totalRecords` counts the whole mailbox, not the page; a page past the end is `200` with the totals and no `mailItems`; **`mailItems` is omitted whenever the page is empty**, so an empty mailbox is exactly `{"totalPages":0,"totalRecords":0}`; `pageNumber` of `0`, a negative number or a non-integer is a `400` naming it |
+| `GET /mail` | `200 application/json`, `{"mailItems":[…],"totalPages":n,"totalRecords":n}` over every inbox, newest first (the receive time, then id); `?pageNumber=` pages (1-based, default 1), 50 to a page; `totalRecords` counts the whole mailbox, not the page; a page past the end is `200` with the totals and no `mailItems`; **`mailItems` is omitted whenever the page is empty**, so an empty mailbox is exactly `{"totalPages":0,"totalRecords":0}`; `pageNumber` of `0`, a negative number or a non-integer is a `400` naming it |
 | `GET /mail/{id}` | one item (the shape below); an unknown id is a `404` |
 | `GET /mail/{id}/message` | the item's `body` as `text/html; charset=utf-8`, with `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff` (the HTML is the sender's); an unknown id is a `404` |
 | `GET /mailcount` | `{"mailCount":n}` over every inbox |
@@ -154,23 +156,44 @@ nothing. A failed commit is `503 storage commit failed`, never a count.
   (`message`, `from`, `to`, `start`, `end`, `orderby`, `dir`), and any other
   key, are a `400` naming the key rather than being ignored. The other
   routes take no query at all.
-- *Fixed paging*: the page size is 25 and cannot be changed. A page whose
+- *Fixed paging*: the page size is 50, upstream's own, and cannot be changed (no flag, env or `?limit=`; a client that wants more uses `pageNumber`). The Alkemio client reads page 1 only. A page whose
   JSON would pass 64 MiB is refused whole, by name, with a pointer to `GET
   /mail/{id}`.
+- *`dateSent` is the receive time, in UTC*: the format is upstream's
+  (`YYYY-MM-DD HH:MM:SS`), but upstream formats the message's parsed `Date`
+  header in the server's local zone. Swarmail stamps receive time at ingest
+  (decision 0005) and reads no header at request time.
+- *Order is the receive time*: the list is newest first by receive time,
+  then id. Upstream orders by `dateSent` descending. A sender with a skewed
+  clock therefore sorts differently here, and the mail a suite has just
+  triggered is always the newest one, which is the mail its link scan wants
+  first. Once the store holds more than 50 mails the two orders can put
+  different mail on page 1.
+- *A page past the end is a `200`* with the totals and no `mailItems`.
+  Upstream may answer `404 Page number out of range` (recalled, see below).
+- *An unknown id is a `404`*; upstream answers `500`.
+- *`ccAddresses` is an extra key*: upstream's item, as the review of this
+  shim read it, carries no such key. A JSON client ignores it.
+- *A list page over 64 MiB is a `400`*, refused whole by name (never
+  truncated, decision 0044). Fifty items under 64 MiB is the normal case; a
+  client that does not handle the `400`, such as the Alkemio helper, fails.
 - *Identity encoding*: the client's `Accept-Encoding` is a preference, and
   responses are never compressed.
 - *Errors* are swarmail's JSON `{"error": …}` envelope (a malformed query is
   axum's plain text), not MailSlurper's plain text.
-- *Not in `/metrics`*: requests to this listener are not counted by the HTTP
-  plane's gauges.
+- *Not in `/metrics`*: requests to this listener are not counted in
+  `swarmail_http_requests_in_flight`, which reports the HTTP plane's requests.
 - *Ingest still counts*: a mail is listed the moment its SMTP `250` is read,
   and a wipe that follows may remove it. That is what "all" means.
-- *Recalled, not read from source*: the page size, the `pageNumber`
-  spelling, `totalPages`, `{"mailCount":n}`, the `dateSent` format, the
-  `/message` content type, the age-code names, the search-key names, the
-  plain-text delete answer and `toAddresses` from `RCPT TO` are from the
-  design council's recollection of MailSlurper, not from its source. The
-  fields the Alkemio client reads (`mailItems`, `totalRecords`, `subject`,
-  `body`, `toAddresses`, and the empty-mailbox omission of `mailItems`) are
-  from the operator's description of that client. Check the rest against
-  `mailslurper/mailslurper` before you rely on them.
+- *Reported from upstream source by the review of this shim*, not
+  re-checked by the operator yet: the page size of 50, the routes, the age
+  codes `60plus`, `30plus` and `2wksplus`, the `dateSent` format and its
+  local-zone, `Date`-header origin, `toAddresses` from `RCPT TO`, the
+  `{"mailCount":n}` envelope and the `500` for an unknown id.
+- *Still recalled, not read from source*: the `pageNumber` spelling, the
+  `/message` content type, the search-key names, the plain-text delete answer
+  and the past-the-end `404`. The fields the Alkemio client reads
+  (`mailItems`, `totalRecords`, `subject`, `body`, `toAddresses`, and the
+  empty-mailbox omission of `mailItems`) are from the operator's
+  description of that client. Check the rest against
+  `mailslurper/mailslurper` before you rely on them (decision 0118 §7).
