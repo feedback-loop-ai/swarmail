@@ -1,6 +1,7 @@
 # 0097 — Strict restore and full-story focused review repair
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-28
 - **Scope:** Epic #164 issue #154 protected-review follow-up.
 - **Specification:** [Focused review repair](../../specs/focused-review-repair/spec.md).

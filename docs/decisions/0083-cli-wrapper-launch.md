@@ -1,6 +1,7 @@
 # 0083 — Evidence-based CLI launches and declared tool surfaces
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-26
 - **Issue:** #151 part 1 continuation, epic #164
 - **Specification:** [CLI wrapper launch](../../specs/cli-wrapper-launch/spec.md)
@@ -92,3 +93,20 @@ index row. It changes no wrapper behavior or runtime provision in this proposal.
 The earlier missing-index and absent-link failures remain historical evidence;
 all required local gates must be reproved on the combined committed candidate.
 This proposal remains proposed; only the operator accepts decisions.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02. The text above is unchanged
+and remains the record of what was proposed. This addendum states what has
+moved since it was written, checked against `main` at `c336c95`; it rules
+nothing beyond the acceptance.
+
+- **The Preserves line is stale.** It says 0063/0073/0075/0076 "remain
+  proposed". The operator accepted all four on 2026-10-26 (`ebc7848`, #250):
+  [0063](0063-eval-provenance.md), [0073](0073-matrix-cancellation.md),
+  [0075](0075-eval-privacy.md) and [0076](0076-sequential-eval-trials.md).
+- **Proof still owed.** The authenticated six-model smoke, exact-version
+  interoperability and live dsh HTTP MCP remain operator-owned. The
+  [2026-11-01 baseline](../evals/baseline-2026-11-01.md) records that
+  `dashscope/glm-5.3` failed its authenticated smoke (HTTP 429
+  `insufficient_quota`) and that five models ran.

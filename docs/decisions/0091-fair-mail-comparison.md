@@ -1,6 +1,7 @@
 # 0091 — Fair comparison evidence and target-aware experiment records
 
-- **Status:** proposed — awaiting the operator
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-28
 - **Issue:** Epic #164 / #163
 - **Specification:** [Fair mail comparison](../../specs/fair-mail-comparison/spec.md)
@@ -107,3 +108,22 @@ Implementation adds its single proposed decision-index row and validates
 status/link inventory; a temporary missing-index gap is explicit, not waived.
 No accepted decision or historical spec is rewritten. No paid trial, push,
 merge, publication, tag, issue closure, decision acceptance or engine re-pin.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02. The text above is unchanged
+and remains the record of what was proposed. This addendum states what has
+moved since it was written, checked against `main` at `c336c95`; it rules
+nothing beyond the acceptance.
+
+- **The tooling shipped; the evidence is owed.** `44175fe` (#287) landed the
+  wire driver (`benches/mail_compare.rs`), the Mailpit adapter
+  (`benches/mail_compare/mailpit_mcp.rs`), `scripts/compare-mail.sh` and the
+  comparison row type (`evals/src/identity.rs`).
+  [`docs/evals/README.md`](../evals/README.md) records the controls (T9.a)
+  as unstarted and no comparison evidence, final contract, final trial or
+  cost record; its rows are open, not waived. No paid trial is authorized.
+  Acceptance makes no comparison claim.
+- **The #151 baseline exists.** It was published on 2026-11-01 (`f815d48`,
+  [baseline](../evals/baseline-2026-11-01.md)), while `docs/evals/README.md`
+  still says, under its 2026-10-30 status, that no baseline exists.

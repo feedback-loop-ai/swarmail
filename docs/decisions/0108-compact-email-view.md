@@ -1,6 +1,7 @@
 # 0108 — Compact email view and field projections
 
-- **Status:** proposed — awaiting the operator
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-30
 - **Scope:** Epic #164, issue #155, on #153 (PR #282) and #154 (PR #284), both now on main.
 - **Specification:** [Compact email view](../../specs/compact-email-view/spec.md);
@@ -148,3 +149,16 @@ Line numbers are those of `main` at `a4f552d`.*
 Where the code differs from the text above, it follows proposed 0110 (§§1, 6
 and its reconciliation with #155). This addendum records facts; amending this
 record's ruling is the operator's.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02. The text above is unchanged
+and remains the record of what was proposed. This addendum states what has
+moved since it was written, checked against `main` at `c336c95`; it rules
+nothing beyond the acceptance.
+
+- **Accepted together with 0110; 0110 governs attachment storage.** The
+  operator accepted this record and [0110](0110-attachments-and-ics.md) on
+  the same date. Where they differ on attachment capture and storage, 0110
+  governs: 0110 §§1 and 6 and its reconciliation with #155 replace §5 above,
+  as the 2026-11-01 addendum lays out item by item.
