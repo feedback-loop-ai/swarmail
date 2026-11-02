@@ -935,7 +935,7 @@ async fn oracle_exit(env: &AgentEnv) -> i32 {
 }
 
 /// The code of the mail that arrived last and the code of the mail with the
-/// latest `Requested at` line, read from the mails alone.
+/// smallest request-line minutes, read from the mails alone.
 fn arrival_and_current_codes(mails: &[Value]) -> (String, String) {
     let text = |m: &Value| m["text"].as_str().unwrap().to_string();
     let code = |m: &Value| oracle::six_digit_code(&text(m)).unwrap();
@@ -945,7 +945,7 @@ fn arrival_and_current_codes(mails: &[Value]) -> (String, String) {
         .unwrap();
     let current = mails
         .iter()
-        .max_by_key(|m| oracle::requested_at(&text(m)).unwrap().to_string())
+        .min_by_key(|m| oracle::requested_minutes(&text(m)).unwrap())
         .unwrap();
     (code(last), code(current))
 }
@@ -954,7 +954,9 @@ fn arrival_and_current_codes(mails: &[Value]) -> (String, String) {
 /// `to = <my address>` goes to the server, which matches stored recipients by
 /// substring. The returned set must hold my own mail and at least the
 /// look-alike whose address contains mine; the trap is presenting the
-/// look-alike's token. Fails if the server answers with my mail alone.
+/// look-alike's token. A server that answers with my mail alone makes the
+/// count-2 `wait_emails_to` time out and the helper panic; the `len >= 2`
+/// assertion is the guard for a server that returns early with fewer.
 async fn crowd_mails(mcp: &mut McpClient, env: &AgentEnv) -> Vec<Value> {
     let mails = mcp
         .wait_emails_to(

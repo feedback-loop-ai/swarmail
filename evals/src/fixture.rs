@@ -478,16 +478,14 @@ impl Private {
         let text = if self.task.scenario == Scenario::OtpBacklog {
             // The only generation signal in the mail: no sentence says it
             // replaces another, and arrival order is deliberately unrelated.
-            // Requests precede the send: the newest generation is requested
-            // at the fixture time (the mail's own Date) and each earlier one
-            // four minutes before the next, so no mail claims a request
-            // made after it was sent.
-            let behind =
-                i64::try_from(tasks::OTP_BACKLOG).expect("small constant") - i64::from(generation);
-            let requested = self.inputs.time() - chrono::Duration::minutes(4 * behind);
+            // The line is relative to the mail's own send, so it reads no
+            // clock: the same body is true in a one-trial run, in every cell
+            // of a matrix however late it starts, and under any pinned
+            // fixture time. The newest generation was requested when it was
+            // sent and each earlier one four minutes before the next.
+            let minutes = 4 * (tasks::OTP_BACKLOG as u32).saturating_sub(generation);
             format!(
-                "Your verification code is {code}.\n\nRequested at {} UTC.\nIt expires in 10 minutes.\n",
-                requested.format("%Y-%m-%d %H:%M:%S")
+                "Your verification code is {code}.\n\nRequested {minutes} minutes before this email was sent.\nIt expires in 10 minutes.\n"
             )
         } else if generation == 1 {
             format!("Your verification code is {code}.\n\nIt expires in 10 minutes.\n")
@@ -2330,14 +2328,29 @@ mod hard_layout_proofs {
         raw[at..at + 6].to_string()
     }
 
-    fn requested(raw: &str) -> String {
-        let line = raw
+    /// The minutes on the mail's request line, and the line's count.
+    fn requested_minutes(raw: &str) -> (u32, usize) {
+        let lines: Vec<&str> = raw
             .lines()
-            .find(|l| l.starts_with("Requested at "))
+            .filter(|l| l.starts_with("Requested "))
+            .collect();
+        let n = lines[0]
+            .strip_prefix("Requested ")
+            .and_then(|r| r.strip_suffix(" minutes before this email was sent."))
+            .unwrap_or_else(|| panic!("unexpected request line {:?}", lines[0]))
+            .parse()
             .unwrap();
-        line.trim_start_matches("Requested at ")
-            .trim_end_matches('.')
-            .trim_end_matches(" UTC")
+        (n, lines.len())
+    }
+
+    /// The text body: the part after the header block, CRLF read as LF. The
+    /// renderer ends the message with one more line break than the template
+    /// carries; that terminator is not part of the text.
+    fn text_body(raw: &str) -> String {
+        let body = raw.replace("\r\n", "\n");
+        let body = body.split_once("\n\n").unwrap().1;
+        body.strip_suffix('\n')
+            .unwrap_or_else(|| panic!("no terminator on {body:?}"))
             .to_string()
     }
 
@@ -2361,12 +2374,14 @@ mod hard_layout_proofs {
 
     #[test]
     fn the_backlog_buries_the_current_code_on_every_seed() {
-        // The second time puts generations 1-7 on the previous day, so the
-        // date part of the string order is exercised too.
-        for time in ["2026-10-24T12:00:00Z", "2026-10-24T00:30:00Z"] {
-            let fixture_time = time.parse::<chrono::DateTime<chrono::Utc>>().unwrap();
-            let stamp =
-                |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%d %H:%M:%S").to_string();
+        // The line reads no clock: the same seed under a noon time, a
+        // just-after-midnight time and a time years before the trial (as a
+        // late matrix cell's master time can be) must print the same body.
+        for time in [
+            "2026-10-24T12:00:00Z",
+            "2026-10-24T00:30:00Z",
+            "2020-01-01T00:00:00Z",
+        ] {
             for i in 0..SEEDS {
                 let (p, order) = plan_at("otp-backlog", &seed(i), time);
                 assert_eq!(order.len(), tasks::OTP_BACKLOG);
@@ -2394,28 +2409,30 @@ mod hard_layout_proofs {
                     let mail = raw(&p, seq);
                     assert_eq!(header(&mail, "Subject:"), "Your verification code");
                     assert!(!mail.contains("earlier code"), "no supersession sentence");
-                    assert_eq!(mail.matches("Requested at ").count(), 1);
-                    // A request precedes the send: generation g was requested
-                    // (12 - g) * 4 minutes before the fixture time, which is
-                    // the mail's own Date.
-                    let want = fixture_time - chrono::Duration::minutes(4 * (12 - i64::from(g)));
-                    let got = requested(&mail);
-                    assert_eq!(got, stamp(want), "seed {i} {time} generation {g}");
-                    assert!(got <= stamp(fixture_time), "never after the send: {got}");
-                    assert!(
-                        got >= stamp(fixture_time - chrono::Duration::minutes(60)),
-                        "within the past hour: {got}"
+                    let (n, lines) = requested_minutes(&mail);
+                    assert_eq!(lines, 1, "exactly one request line");
+                    assert_eq!(n, 4 * (12 - g), "seed {i} {time} generation {g}");
+                    assert!(n <= 60, "within the past hour: {n}");
+                    let c = code(&mail);
+                    assert_eq!(
+                        text_body(&mail),
+                        format!(
+                            "Your verification code is {c}.\n\nRequested {n} minutes before this email was sent.\nIt expires in 10 minutes.\n"
+                        ),
+                        "the body is a function of its code and generation only"
                     );
-                    codes.push((g, code(&mail), got));
+                    for banned in ["Requested at", "UTC", "2026-", "2020-"] {
+                        assert!(
+                            !text_body(&mail).contains(banned),
+                            "no clock in the body: {banned}"
+                        );
+                    }
+                    codes.push((g, c, n));
                 }
-                assert_eq!(
-                    codes[11].2,
-                    stamp(fixture_time),
-                    "the current code was requested at the fixture time"
-                );
+                assert_eq!(codes[11].2, 0, "the current code was requested when sent");
                 assert!(
-                    codes.windows(2).all(|w| w[0].2 < w[1].2),
-                    "string order is generation order"
+                    codes.windows(2).all(|w| w[0].2 > w[1].2),
+                    "minutes strictly decrease as the generation rises"
                 );
                 let mut distinct: Vec<_> = codes.iter().map(|c| c.1.clone()).collect();
                 distinct.sort();

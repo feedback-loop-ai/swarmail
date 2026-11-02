@@ -310,13 +310,19 @@ fn the_hard_tier_is_documented_in_both_directions() {
     let decision =
         std::fs::read_to_string(root().join("docs/decisions/0115-hard-eval-tier.md")).unwrap();
     assert!(decision.contains("**Status:** proposed"));
+    // 0115 names accepted 0076 §5's seven-trap count as historical.
+    let flat_decision = decision.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat_decision.contains("[0076](0076-sequential-eval-trials.md) §5"),
+        "0115 names 0076 §5"
+    );
     // The harness spec's tier list names `hard` with a dated amendment.
     let spec = std::fs::read_to_string(root().join("specs/agent-eval-harness/spec.md")).unwrap();
     assert!(spec.contains("straight|traps|multi_step|hard"));
     assert!(spec.contains("amended 2026-11-02"));
-    // Review return 2026-11-02 (F1-F4). Both documents state that request
-    // times precede the send, that the current code's request time is its
-    // send time, and that the expiry window is the prepare-to-start gap.
+    // Second return (F1'): both documents state that no request line depends
+    // on the fixture time, that the current code was requested when its mail
+    // was sent, and what the expiry window is; neither keeps the old claims.
     for (name, text) in [("README.md", &readme), ("run-plan.md", &run_plan)] {
         let flat = text
             .split_whitespace()
@@ -324,12 +330,25 @@ fn the_hard_tier_is_documented_in_both_directions() {
             .join(" ")
             .to_lowercase();
         for phrase in [
-            "request times precede the send",
-            "current code's request time is its send time",
+            "no request line depends on the fixture time",
+            "the current code was requested when its mail was sent",
             "prepare-to-start gap",
+            "at the deadline's end",
             "`stale_code` by the scorer's fallback",
         ] {
             assert!(flat.contains(phrase), "{name}: missing {phrase:?}");
+        }
+        for gone in [
+            "request times precede the send",
+            // With the space: "requested attempts" is unrelated prose.
+            "requested at ",
+            "before the agent begins",
+        ] {
+            assert!(!flat.contains(gone), "{name}: still says {gone:?}");
+        }
+        if name == "README.md" {
+            assert!(flat.contains("wait view exposes no `date` header"));
+            assert!(!flat.contains("store keeps no `date` header"));
         }
     }
     // F4: comparability rests on the task id and the per-task definition hash.
@@ -343,7 +362,8 @@ fn the_hard_tier_is_documented_in_both_directions() {
     assert!(
         flat_spec.contains("Amended 2026-11-02")
             && flat_spec.contains("19 catalogue rows in four tiers")
-            && flat_spec.contains("`hard` tier"),
+            && flat_spec.contains("`hard` tier")
+            && flat_spec.contains("AC4 and AC5 controls run all 19"),
         "agent-eval-harness AC3 amendment"
     );
     let wrappers = std::fs::read_to_string(root().join("specs/baseline-wrappers/spec.md")).unwrap();

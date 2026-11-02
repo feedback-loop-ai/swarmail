@@ -291,7 +291,7 @@ in the mail itself, never an external fact.
 
 | Task | Tier | Expected failure | The intended trap | Why a careful agent still passes | First wrong attempt |
 |---|---|---|---|---|---|
-| `otp-backlog` | hard | `stale_code` | Twelve near-identical code mails for one sign-in, sent in a seeded order with the current generation neither first nor last. Taking the newest arrival, the first listed or the last listed mail submits a superseded code. | Every mail prints `Requested at YYYY-MM-DD HH:MM:SS UTC`, a time at or before the mail's own send time, and the goal says the most recently requested code is the valid one. Only content identifies the generation. | `superseded_code` (410) disqualifies the trial, even if the right code follows. |
+| `otp-backlog` | hard | `stale_code` | Twelve near-identical code mails for one sign-in, sent in a seeded order with the current generation neither first nor last. Taking the newest arrival, the first listed or the last listed mail submits a superseded code. | Every mail prints `Requested N minutes before this email was sent.`, the smallest N is the most recent request, and the goal says the most recently requested code is the valid one. Only content identifies the generation. | `superseded_code` (410) disqualifies the trial, even if the right code follows. |
 | `recipient-crowd` | hard | `wrong_message` | Five `Confirm your account` mails with one subject, every body greeting the agent's own address. Four go to look-alike recipients; `old.<local>@<domain>` contains the agent's whole address, so the MCP `to` substring filter still returns it. | MCP returns each mail's parsed `to` array and the goal names the exact address. An exact comparison of the recipient finds the one right mail. | `foreign_token` (403) disqualifies the trial, whether presented as the agent or as the look-alike. |
 | `digest-lookalike` | hard | `wrong_link` | An HTML-only digest of twelve tracking links `…/a/<token>?u=<destination>`. Two anchors carry the exact requested title; one destination host is `news.fixture.eval`, the other `news.fixture.eval.click-tracker.net`, so a "host contains" check passes both. | The destination is readable in the `href` without following anything, and the goal names the publisher host and says a look-alike is not it. Exact host comparison finds the one right link. | `digest_decoy` (200, but recorded) disqualifies the trial. |
 
@@ -305,23 +305,23 @@ How the proofs read each row:
   so in `otp-backlog` only it answers `429` ("the resend limit for this
   sign-in has been reached", which the goal discloses) and records an
   unaccepted event with no category: it neither passes nor classifies anything.
-  Every other scenario's resend is unchanged. Request times precede the send:
-  generation `g` is stamped `fixture time − (12 − g) × 4 minutes`, so the
-  current code's request time is its send time (the fixture time, which is
-  every mail's `Date`) and generation 1 is 44 minutes earlier, inside the
-  goal's "past hour". All twelve codes are minted at prepare, a moment after
-  the fixture time. Expiry (`OTP_TTL`, 600 s, from mint) is `stale_code` by the
-  scorer's fallback, not a trap, and equals the paid run's 600000 ms deadline.
-  The only window in which the current code can be expired is the
-  prepare-to-start gap before the agent begins; a very slow agent can also lose
-  it to expiry before the deadline.
+  Every other scenario's resend is unchanged. Each mail's request line is
+  relative to its own send: generation `g` prints
+  `Requested (12 − g) × 4 minutes before this email was sent.`, so no request
+  line depends on the fixture time, in a one-trial `run` or in any cell of a
+  `matrix` or `baseline`. The current code was requested when its mail was sent
+  (0 minutes) and generation 1 is 44 minutes earlier, inside the goal's "past
+  hour". All twelve codes are minted at the trial's own prepare. Expiry
+  (`OTP_TTL`, 600 s, from mint) is `stale_code` by the scorer's fallback, not a
+  trap, and equals the paid run's 600000 ms deadline. The window in which the
+  current code can expire before the deadline is as long as the
+  prepare-to-start gap, at the deadline's end.
 - The default `swarmail_wait_for_email` view (MCP `2025-03-26`) returns `html`,
   `text`, `links` and the parsed `to` array, but no `anchors` member, so an
   agent reads the digest's anchors from `html` (the oracle does).
-- The store keeps no `Date` header and every fixture mail carries the same one,
-  so arrival order is exactly the signal `otp-backlog` makes misleading; the
-  `Requested at` line is the only generation signal, and it carries the date so
-  the order survives midnight.
+- The wait view exposes no `Date` header and every fixture mail carries the
+  same one, so arrival order is exactly the signal `otp-backlog` makes
+  misleading; the request line is the only generation signal.
 - Free controls prove each task can be passed (the oracle, on four fixed seeds
   as well as the default) and failed (the do-nothing `null`, with `gave_up`;
   scripted agents that commit exactly the named trap, then recover, and still

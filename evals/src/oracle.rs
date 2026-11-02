@@ -242,13 +242,13 @@ pub fn six_digit_code(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The timestamp on the mail's `Requested at … UTC` line. The form
-/// `YYYY-MM-DD HH:MM:SS` compares correctly as a string.
-pub fn requested_at(text: &str) -> Option<&str> {
+/// The minutes on the mail's `Requested N minutes before this email was
+/// sent.` line. The smallest N is the most recent request.
+pub fn requested_minutes(text: &str) -> Option<u32> {
     text.lines().find_map(|line| {
-        let rest = line.trim().strip_prefix("Requested at ")?;
-        let at = rest.trim_end_matches('.').strip_suffix(" UTC")?;
-        (!at.is_empty()).then_some(at)
+        let rest = line.trim().strip_prefix("Requested ")?;
+        let digits = rest.strip_suffix(" minutes before this email was sent.")?;
+        digits.parse().ok()
     })
 }
 
@@ -377,15 +377,13 @@ pub async fn run_oracle(env: &AgentEnv) -> Result<(), String> {
             if mails.len() != want {
                 return Err(format!("expected {want} code mails, saw {}", mails.len()));
             }
-            let mut newest: Option<(String, String)> = None;
+            let mut newest: Option<(u32, String)> = None;
             for mail in &mails {
                 let text = text_of(mail);
-                let at = requested_at(&text)
-                    .ok_or("a code mail has no Requested at line")?
-                    .to_string();
+                let minutes = requested_minutes(&text).ok_or("a code mail has no request line")?;
                 let code = six_digit_code(&text).ok_or("no six-digit code in the mail")?;
-                if newest.as_ref().is_none_or(|(best, _)| at > *best) {
-                    newest = Some((at, code));
+                if newest.as_ref().is_none_or(|(best, _)| minutes < *best) {
+                    newest = Some((minutes, code));
                 }
             }
             let (_, code) = newest.ok_or("no code mails")?;
@@ -596,16 +594,26 @@ mod tests {
     }
 
     #[test]
-    fn requested_at_reads_the_generation_line() {
-        let text = "Your verification code is 123456.\n\nRequested at 2026-10-24 12:04:00 UTC.\nIt expires in 10 minutes.\n";
-        assert_eq!(requested_at(text), Some("2026-10-24 12:04:00"));
+    fn requested_minutes_reads_the_generation_line() {
+        let text = "Your verification code is 123456.\n\nRequested 44 minutes before this email was sent.\nIt expires in 10 minutes.\n";
+        assert_eq!(requested_minutes(text), Some(44));
         assert_eq!(
-            requested_at("Requested at 12:04:00 UTC\n"),
-            Some("12:04:00")
+            requested_minutes("Requested 0 minutes before this email was sent.\n"),
+            Some(0)
         );
-        assert_eq!(requested_at("Your code is 123456.\n"), None);
-        assert_eq!(requested_at("Requested at soon\n"), None);
-        assert_eq!(requested_at("Requested at  UTC\n"), None);
+        assert_eq!(requested_minutes("Your code is 123456.\n"), None);
+        assert_eq!(
+            requested_minutes("Requested at 2026-10-24 12:04:00 UTC\n"),
+            None
+        );
+        assert_eq!(
+            requested_minutes("Requested soon minutes before this email was sent.\n"),
+            None
+        );
+        assert_eq!(
+            requested_minutes("Requested  minutes before this email was sent.\n"),
+            None
+        );
         assert_eq!(six_digit_code(text).as_deref(), Some("123456"));
         assert_eq!(six_digit_code("only 12345 and 1234567"), None);
     }
