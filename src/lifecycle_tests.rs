@@ -153,6 +153,7 @@ async fn ca_server_drop_and_startup_failure_close_only_their_scopes() {
         smtp_listen: "127.0.0.1:0".into(),
         http_listen: "127.0.0.1:0".into(),
         pop3_listen: "127.0.0.1:0".into(),
+        mailslurper_listen: None,
         max_per_inbox: 0,
         data_file: None,
         tls_cert: None,

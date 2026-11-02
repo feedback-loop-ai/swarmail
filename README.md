@@ -52,11 +52,12 @@ Everything below is the short version. The detail lives in
 - **Built for AI agents.** Agents drive the same store over MCP, on HTTP or
   stdio: wait for a mail, take the newest code or the one link, seed a
   fixture, break SMTP on purpose.
-- **Drop-in for MailHog and Mailpit.** Existing clients work through the
-  [shims](docs/guide/compat-shims.md) on the HTTP port.
+- **Drop-in for MailHog, Mailpit and MailSlurper.** Existing clients work
+  through the [shims](docs/guide/compat-shims.md): MailHog and Mailpit on the
+  HTTP port, MailSlurper's service API on an opt-in listener of its own.
 
 Eighteen MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
-compatibility layer (MailHog/Mailpit), one observability story
+compatibility layer (MailHog/Mailpit/MailSlurper), one observability story
 (`/metrics`, `/healthz`, `/openapi.json`, `/llms.txt`) — and a web UI with
 zero frontend dependencies. More in the [overview](docs/guide/overview.md).
 
@@ -97,7 +98,7 @@ per inbox, and how to stop the server gracefully.
 | Focused waits | the newest code, or the one matching link, as a decision | [focused-waits.md](docs/guide/focused-waits.md) |
 | Attachments | list them, fetch one, read a calendar invite | [attachments.md](docs/guide/attachments.md) |
 | POP3 `:1110` | the same store over RFC 1939 | [pop3.md](docs/guide/pop3.md) |
-| MailHog / Mailpit shims | the routes existing test suites hit, with known differences | [compat-shims.md](docs/guide/compat-shims.md) |
+| MailHog / Mailpit / MailSlurper shims | the routes existing test suites hit, with known differences | [compat-shims.md](docs/guide/compat-shims.md) |
 | Threads and live UI | stable conversation keys, a UI that updates itself | [threads-and-ui.md](docs/guide/threads-and-ui.md) |
 | Webhooks | every accepted mail POSTed to your sink, with retries | [webhooks.md](docs/guide/webhooks.md) |
 | Chaos | per-stage SMTP failures and delays, on purpose | [chaos.md](docs/guide/chaos.md) |

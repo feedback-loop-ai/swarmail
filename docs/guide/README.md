@@ -26,7 +26,7 @@ frozen guarantees and the rulings behind them are in
 | [Focused waits](focused-waits.md) | `swarmail_wait_for_code`, `swarmail_wait_for_link` and near misses on a timeout |
 | [Attachments](attachments.md) | `swarmail_list_attachments`, `swarmail_get_attachment`, calendar invites, the caps |
 | [POP3](pop3.md) | the maildrop snapshot, octet counts, DELE on QUIT |
-| [MailHog / Mailpit shims](compat-shims.md) | the routes, deliberate omissions, known differences |
+| [MailHog / Mailpit / MailSlurper shims](compat-shims.md) | the routes, deliberate omissions, known differences |
 | [Threads and the live UI](threads-and-ui.md) | conversation keys, the SSE feed, the UI |
 | [Webhooks](webhooks.md) | targets and validation, delivery bounds, CA work, the ledger counters |
 | [Chaos](chaos.md) | per-stage failure rules and their exact behavior |

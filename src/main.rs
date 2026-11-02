@@ -124,6 +124,7 @@ async fn main() {
                         smtp = %server.smtp_addr,
                         pop3 = %server.pop3_addr,
                         http = %server.http_addr,
+                        mailslurper = ?server.mailslurper_addr,
                         "Swarmail is up — SMTP on :{}, POP3 on :{}, API/UI on http://{}",
                         server.smtp_addr.port(),
                         server.pop3_addr.port(),

@@ -88,7 +88,10 @@ connection.
 Environment knobs: `SWARMAIL_SMTP_LISTEN` (default `127.0.0.1:1025`),
 `SWARMAIL_POP3_LISTEN` (`127.0.0.1:1110`), `SWARMAIL_HTTP_LISTEN`
 (`127.0.0.1:8025` — the image and the chart set `0.0.0.0`, see the
-[network posture](network-posture.md)), `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited),
+[network posture](network-posture.md)),
+`SWARMAIL_MAILSLURPER_LISTEN` (no default, off: the opt-in
+[MailSlurper service API](compat-shims.md#mailslurper-service-api), a global
+view of every inbox), `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited),
 `SWARMAIL_URL` (the MCP stdio bridge's upstream, default
 `http://127.0.0.1:8025`),
 `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
