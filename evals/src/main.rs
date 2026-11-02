@@ -5322,7 +5322,10 @@ mod isolation_entry_tests {
     #[test]
     fn macos_refuses_by_name_through_the_whole_entry() {
         let dir = tempfile::tempdir().unwrap();
-        let sentinel = dir.path().join("agent-ran");
+        // macOS temporary directories sit under the /var -> /private/var
+        // symlink, which --isolated-expose refuses; name the real path, as
+        // `a_binary` does, so the platform refusal is what this observes.
+        let sentinel = std::fs::canonicalize(dir.path()).unwrap().join("agent-ran");
         let ran = through_the_controller(std::path::Path::new("/usr/bin/bwrap"), &sentinel);
         assert_eq!(ran.result.as_ref().err(), Some(&2));
         assert!(
