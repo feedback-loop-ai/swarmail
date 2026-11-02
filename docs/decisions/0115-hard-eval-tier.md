@@ -1,7 +1,8 @@
 # 0115 — A hard eval tier and its named traps
 
 - **Status:** proposed — awaiting the operator
-- **Date:** 2026-11-02.
+- **Date:** 2026-11-02; text aligned 2026-11-02 on the first review's return
+  (0102), status unchanged.
 - **Scope:** Epic #164, the operator's 2026-11-01 ruling to build a harder
   eval tier before the next paid run. Base: main `f815d48`.
 - **Specification:** [hard eval tier](../../specs/hard-eval-tier/spec.md);
@@ -86,9 +87,15 @@ criterion they serve, depend on this record. They land beside it as
 compatible work under accepted 0045 §8 because no accepted verdict moves; if
 the operator reads 0071 §1 as a closed list, only those arms wait.
 
-Adopt a content discriminator (`Requested at HH:MM:SS UTC`) over a header
-`Date`: the store exposes arrival time and a UUIDv7 id, never a Date header,
-so arrival order is exactly the signal the task must make misleading. Adopt
+Adopt a content discriminator (`Requested at YYYY-MM-DD HH:MM:SS UTC`) over
+a header `Date`: the store exposes arrival time and a UUIDv7 id, never a Date
+header, so arrival order is exactly the signal the task must make misleading.
+The line is derived backwards from the trial's one captured fixture time,
+`fixture_time − (12 − generation) × 4 min`, so the current code was requested
+at its send time and every older one earlier, within the goal's past hour;
+the first implementation's forward derivation put every request after its own
+send and was corrected on review return (spec § Review return, F1). The date
+keeps string order equal to generation order across midnight. Adopt
 an inert `?u=` wrapper on the existing link route over a redirect route: no
 fetch, no SSRF or hang surface, same trap. Drop the plus-alias task (rests
 on proposed 0112), budget-class and slow-wait tasks (0020 §5), and

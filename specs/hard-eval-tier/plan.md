@@ -1,6 +1,7 @@
 # Hard eval tier — implementation plan
 
-Chief synthesis, 2026-11-02, for [spec.md](spec.md). Base main `f815d48`.
+Chief synthesis, 2026-11-02, for [spec.md](spec.md); revised 2026-11-02 on
+review return (0102) — see § Review-return changes. Base main `f815d48`.
 Proposed [0115](../../docs/decisions/0115-hard-eval-tier.md) is drafted
 beside this plan; nothing here needs its acceptance to land (0045 §8) except
 the three `trap_class` arms, which land as compatible work under the reading
@@ -50,9 +51,11 @@ Facts the design rests on, verified in the tree at `f815d48`:
   whole catalogue (`evals/src/baseline.rs:37`) and `run_baseline` feeds
   `plan.tasks` to `matrix_run`; the approved declarations' argv[0] is a
   placeholder that only `Plan::effective_agents` resolves.
-- MCP returns `to` (array of addresses), `text`, `html`, `codes`, `links`
-  and `anchors` (url + anchor_text); its `to` filter is a case-insensitive
-  substring match (`src/mcp.rs:1128`). No `Date` header is exposed.
+- MCP returns `to` (array of addresses), `text`, `html`, `codes` and
+  `links`; the negotiated `2025-03-26` wait view has no `anchors` member
+  (spec amendment 1), so anchors are read from `html`. Its `to` filter is a
+  case-insensitive substring match (`src/mcp.rs:1128`). No `Date` header is
+  exposed.
 - The server's default per-inbox cap is 100,000 (`src/config.rs:54`).
 - `tests/proof.rs::per_task` iterates the live catalogue and asserts 16
   results; `completed_naive_controls_…` and `wrong_actions_…` drive helper
@@ -94,8 +97,10 @@ addendum) once the decision-status rule is checked: 0115 stays proposed.
 - *Can the agent see a generation date?* No. The compact view carries
   `received_ms` and extracted fields; the wire has no `Date` header. Hence
   the `Requested at` body line (spec ruling 3). The line is derived from
-  `inputs.time() + generation × 4 min`, formatted `HH:MM:SS UTC`, so it is
-  deterministic per fixture time and never compared to the wall clock.
+  `inputs.time() − (12 − generation) × 4 min` (revised 2026-11-02, F1; the
+  original "plus" put every request after its own send), formatted
+  `YYYY-MM-DD HH:MM:SS UTC`, so it is deterministic per fixture time, at or
+  before the mail's `Date`, and never compared to the wall clock.
 - *Does `/a/{token}?u=…` need a route change?* No. axum matches the path;
   the handler ignores the query. The oracle and scripted agents read `u=`
   from the href string only. Nothing fetches the destination.
@@ -126,19 +131,22 @@ addendum) once the decision-status rule is checked: 0115 stays proposed.
 | File | Change |
 |---|---|
 | `evals/src/tasks.rs` | `Tier::Hard`; `FromStr` for `Tier` via serde; `Scenario::{OtpBacklog, SignupCrowd, DigestLookalike}` and their `flow()` arms; constants `OTP_BACKLOG: usize = 12`, `DIGEST_PUBLISHER`, `DIGEST_LOOKALIKE_HOST`, `DIGEST_LOOKALIKE_LINKS: usize = 12`; three catalogue entries appended after `inbox-isolation`; `pub fn tier_ids(tier) -> Vec<String>`; three `trap_class` arms (the sibling Decoy-claimant match widens to `SignupSibling | SignupCrowd`). Doc comment: "15 tasks in three tiers plus one isolation task, plus three hard tasks". |
-| `evals/src/fixture.rs` | `issue_otp` takes the backlog template branch for `OtpBacklog` (`Requested at HH:MM:SS UTC`, same subject, no supersession sentence); `plan()` arms for the three scenarios using `inputs.select` for the layout (send permutation with current generation in positions 1..=10; agent position 1..=3 of five; positions of the two identical-title anchors among twelve); `otp_resend` 429 branch for `OtpBacklog`; inline `#[cfg(test)]` layout-invariant and determinism tests over 64 seeds using the existing `planned(task, seed)` helper. |
-| `evals/src/oracle.rs` | Three arms: `otp-backlog` waits for 12 code mails, parses `Requested at`, picks the latest, verifies; `recipient-crowd` waits for 5 `Confirm your account` mails and confirms from the one whose `to[].address` equals the identity exactly; `digest-lookalike` reads MCP `anchors`, keeps those with the exact title, parses the `u=` destination host from the url and opens the one whose host equals `news.fixture.eval`. Helpers: `requested_at(text) -> Option<&str>`, `wrapper_destination_host(url) -> Option<String>`, unit-tested inline. |
+| `evals/src/fixture.rs` | `issue_otp` takes the backlog template branch for `OtpBacklog` (`Requested at YYYY-MM-DD HH:MM:SS UTC` from `inputs.time() − (12 − generation) × 4 min`, same subject, no supersession sentence); `plan()` arms for the three scenarios using `inputs.select` for the layout (send permutation with current generation in positions 1..=10; agent position 1..=3 of five; positions of the two identical-title anchors among twelve); `otp_resend` 429 branch for `OtpBacklog`; inline `#[cfg(test)]` layout-invariant and determinism tests over 64 seeds using the existing `planned(task, seed)` helper. |
+| `evals/src/oracle.rs` | Three arms: `otp-backlog` waits for 12 code mails, parses `Requested at`, picks the latest, verifies; `recipient-crowd` waits for 5 `Confirm your account` mails and confirms from the one whose `to[].address` equals the identity exactly; `digest-lookalike` parses the anchors from the wait view's `html` (`html_anchors`), keeps those with the exact title, parses the `u=` destination host from the href and opens the one whose host equals `news.fixture.eval`. Helpers: `requested_at(text) -> Option<&str>`, `wrapper_destination_host(url) -> Option<String>`, unit-tested inline. |
 | `evals/src/main.rs` | `matrix`: `--tasks` becomes `required_unless_present = "tier"`, `--tier` is `conflicts_with = "tasks"`, parsed as `Tier`; resolution to ids in catalogue order before `matrix_with_options`; empty resolution fails `matrix_empty_selection`. `baseline`: `--tier Option<Tier>` passed to `Plan::for_tier`. |
 | `evals/src/baseline.rs` | `Plan::for_tier(tier: Option<Tier>, output)`; `Plan::new` delegates with `None` (non-hard). Counts derive from the filtered list. |
-| `evals/tests/common/mod.rs` | Helper modes `naive_forward` for the three new tasks inside `naive_recovery` (backlog: newest arrival's code, expect 410, then the latest `Requested at`, expect 200; crowd: a decoy's link as self, expect 403, then own, expect 200; lookalike: both exact-title anchors in document order, expect 200 each); `wrong_actions` modes `stale_code`, `wrong_message`, `wrong_link` extended to the hard ids where their existing logic does not already fit; a `resend_then_verify` mode for AC8. |
+| `evals/tests/common/mod.rs` | Helper modes `naive_forward` for the three new tasks inside `naive_recovery` (backlog: newest arrival's code, expect 410, then the latest `Requested at`, expect 200; crowd: a decoy's link as self, expect 403, then own, expect 200 — the crowd modes send `to` on the wire and take the look-alike the server returns, revised 2026-11-02, F5; lookalike: both exact-title anchors in document order, expect 200 each); `wrong_actions` modes `stale_code`, `wrong_message`, `wrong_link` extended to the hard ids where their existing logic does not already fit; a `resend_then_verify` mode for AC8. |
 | `evals/tests/proof.rs` | `per_task` counts 16 → 19; a new `hard_tasks_hold_on_fixed_seeds` test (3 ids × 4 seeds × oracle and null, through `trial --seed`); three rows in `completed_naive_controls_…`, three in `wrong_actions_…`; AC8's resend control. |
 | `evals/tests/provenance.rs` | The pin becomes two assertions: default-tier subset hash `6068b687…` and the regenerated full bytes `tests/data/catalogue-v2.json` with its new hash; the three hard task hashes pinned. |
 | `evals/tests/data/catalogue-v2.json` | Regenerated from `tasks` (bytes, not hand-edited). |
 | `evals/tests/baseline.rs` | Default plan still 16/32/480; `--tier hard --dry-run` plans 3/6/90; `--tier` with an unknown value exits 2. |
 | `evals/tests/runner.rs` or `tests/scoring.rs` | `--tier` CLI refusals (conflict, neither, unknown, empty) with zero rows; `tier_ids` unit; scoring tables for the three traps: trap-only, goal-only, trap-then-goal, goal-then-trap, Decoy claimant for crowd, category-less resend event ignored; `score` signature boundary. |
-| `evals/tests/boundary.rs` | Docs test extended: every catalogue id in README and run-plan, every documented hard id in the catalogue, the phrases of AC10, exactly one `0115` proposed index row. |
+| `evals/tests/boundary.rs` | Docs test extended: every catalogue id in README and run-plan, every documented hard id in the catalogue, the phrases of AC10, exactly one `0115` proposed index row; revised 2026-11-02: the README/run-plan request-time sentences, the harness spec's AC3 amendment, the baseline-wrappers note, the intake banner and the run-plan's comparability sentence (F2–F4). |
+| `specs/baseline-wrappers/spec.md` | One dated note: the approved product is 16 tasks of a 19-task catalogue (F3). |
+| `evals/hard-tier-intake.md` | A dated status banner at the top naming the three shipped ids and pointing at the spec and 0115; the record below it is unchanged (F3). |
+| `docs/decisions/0115-hard-eval-tier.md` | Alternatives text aligned to the date form and the backward derivation; status stays proposed (F2). |
 | `evals/README.md`, `evals/run-plan.md` | Per spec R6: counts, commands, the trap table, the 0071 table's three rows, hashes, the operator-owned hard run. |
-| `specs/agent-eval-harness/spec.md` | Dated amendment to the `tier` list: `straight|traps|multi_step|hard` (proposed 0115). |
+| `specs/agent-eval-harness/spec.md` | Dated amendment to the `tier` list: `straight|traps|multi_step|hard` (proposed 0115); on review return, a dated AC3 amendment: 19 rows, four tiers, the default product still the 16 (F3). |
 | `docs/decisions/README.md` | One row: 0115, proposed — awaiting the operator. |
 
 Not touched: root `src/`, `Cargo.toml`, `Cargo.lock`, `evals/Cargo.toml`,
@@ -206,7 +214,33 @@ cargo run --locked -- baseline --config /dev/null --output /tmp/x --tier hard --
 | The MCP `to` substring filter returns a decoy for `recipient-crowd`. | By design (`old.{local}@`); documented as the trap; the oracle compares `to[].address` exactly. |
 | Regenerating `catalogue-v2.json` hides an accidental edit to an existing task. | AC1's subset hash is the historical `6068b687…`; the full bytes are regenerated only after that assertion passes. |
 | `baseline`'s approved product silently grows to 19 tasks. | `Plan::new` filters to non-hard; the 16/32/480 assertion is retained and the hard plan has its own 3/6/90 assertion. |
-| Fixed deadline 600 000 ms in the paid run equals `OTP_TTL`; a slow agent's current code can expire. | Pre-existing for `otp`/`stale-otp`; expiry is `stale_code` by fallback, not a trap, and the run plan notes it. No change here. |
+| Fixed deadline 600 000 ms in the paid run equals `OTP_TTL`; a slow agent's current code can expire and be scored `stale_code` by the fallback without the named trap. | Pre-existing for `otp`/`stale-otp`. Under the revised derivation the current code is minted at prepare, so the window is the prepare-to-start gap (seconds); the run plan states the bound. Robustness's 300 s hard-product cap is rejected (spec § Review return, F1): it moves the field AC4 shares with the approved product for a window that small. |
+| A future edit flips the derivation sign again, or the midnight date form is taken on faith. | AC7 pins the exact formula against the captured fixture time, the `≤ Date` and `≥ −60 min` bounds, and string order at a pinned 00:30 UTC fixture time (T15). |
+| The crowd trap rests on the server's `to` substring semantics that only the root suite proves. | The scripted control now sends `to` on the wire and asserts the server returned the look-alike (T18); if the semantics change, the eval proof goes red. |
+| A reader takes the intake record or the two older specs for the shipped tier. | Dated notes on each, held by the docs test (T17, T19). |
 | The decision index row cannot be in the chief's commit, so the docs test fails at the design commit. | Known gap, as 0071 recorded; T1 adds the row first. |
 | Twelve near-identical mails stress nothing but could mask a delivery failure. | `validate_snapshot` already turns any non-delivered delivery into `harness_error`; the oracle asserts it received twelve. |
 | Seeded layout accidentally leaks into secrets. | Secrets stay on `private_rng`; the existing entropy test covers the new tasks automatically; the new determinism test asserts layout equality and secret inequality on the same seed. |
+
+## Review-return changes (2026-11-02)
+
+The first review returned the run with `spec_defect: true` (0102). Each
+change below names the finding it answers; the findings are stated in
+spec.md § Review return.
+
+| Finding | Change | Files |
+|---|---|---|
+| F1 (medium) — request times after the send | `issue_otp`'s backlog line becomes `inputs.time() − Duration::minutes(4 × (12 − generation))` with `tasks::OTP_BACKLOG` as the one owner of the 12; the 64-seed test pins the new formula, the `≤ fixture_time` and `≥ fixture_time − 60 min` bounds, generation 12 equal to the fixture time, and runs the ordering check at a second pinned fixture time of 00:30 UTC. No new file, seam, flag or dependency; coverage is unchanged because the same line still runs on every backlog plan. | `evals/src/fixture.rs` |
+| F1 — docs that state the derivation | README backlog row and bullet, run-plan: request times precede the send, the current code's request time is its send time, the expiry window bound. | `evals/README.md`, `evals/run-plan.md` |
+| F2 (info) — superseded descriptions | 0115 Alternatives (date form, backward derivation); plan and spec `anchors` wording. | `docs/decisions/0115-hard-eval-tier.md`, this plan, `spec.md` |
+| F3 (info) — contradicting records | Dated AC3 amendment; dated baseline-wrappers note; dated intake banner. | `specs/agent-eval-harness/spec.md`, `specs/baseline-wrappers/spec.md`, `evals/hard-tier-intake.md` |
+| F4 (info) — comparability | One run-plan sentence: default-tier rows compare by task id and per-task `definition_sha256`. The `catalogue_sha256` field does not move. | `evals/run-plan.md` |
+| F5 (info) — client-side `to` filter | `hard_wrong_message` and the crowd `naive_forward` mode pass `to` to `swarmail_wait_for_email` and assert the server returned the look-alike. | `evals/tests/common/mod.rs` |
+| All — the docs test | New assertions for the F1 sentences, the AC3 amendment, the baseline-wrappers note, the intake banner and the comparability sentence. | `evals/tests/boundary.rs` |
+
+Not changed on return: goal texts, `catalogue-v2.json`, both hashes, the
+tiers, the CLI, the baseline products and their deadline, the scoring arms,
+the oracle, the null, the renderer, root `src/`, both lockfiles, `deny.toml`,
+`.github/`, `scripts/`, `.brokkr/`. 0115 stays proposed. No criterion is
+weakened or loosened by this return; AC7, AC10 and AC11 are tightened or
+widened as the spec marks.
