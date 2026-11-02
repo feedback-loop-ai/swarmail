@@ -384,6 +384,19 @@ continuation entered from the candidate's bundle, whose compile now visits
 every recipe directory, or to CI's `brokkr bundle (pinned)` job. A refusal
 there applies Ruling 3 and is recorded here by dated line.
 
+**Observation, 2026-11-02 (implement seat, review-return visit).** Still
+**not run**. This visit looked for the artifact before compiling: `.brokkr/state/bin/brokkr`
+is absent, no executable on the host hashes to `29dc3309925a2556b9713b7a9b5fb8089b8e4610e86215fc89554e75634e7cad`
+(the `binary_sha256` in `tooling.json`), and the box has no network to fetch it.
+A host binary of unknown digest was not used. Under Ruling 3 an absence is
+not a refusal: `eval` stays on the shelf, and the implement result is not
+`complete`. The dispatcher either stages the digest-matched artifact at
+`.brokkr/state/bin/brokkr` and re-enters implement, or continues at verify
+from a launch whose pinned self bundle carries `verify-seat.sh` sha256
+`dd893db5…`, whose pass note (`every recipe bundle`, ending `brokkr 29dc3309…`)
+is then the receipt. Recipe tree ids at this visit's head are in the
+review-gate implementation record.
+
 Specification: [eval recipe review gate](../../specs/eval-recipe-review-gate/spec.md).
 
 ## Delivery and acceptance ownership

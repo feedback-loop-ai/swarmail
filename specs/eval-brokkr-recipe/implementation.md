@@ -185,6 +185,12 @@ verify continuation entered from the candidate's bundle or to CI's
 filing. If that compile refuses the renamed shape, 0119 R4 Ruling 3 applies
 and this text is amended with the refusal.*
 
+*Second visit, 2026-11-02 (implement seat, review return): still **not run**,
+the artifact was again absent and the box has no network. The slot stays
+empty, so this issue is not filed yet; it is filled from AC1's receipt in
+`specs/eval-recipe-review-gate/implementation.md` (a staged-binary compile
+or the candidate-pinned verify pass note).*
+
 ## Acceptance criteria
 
 | AC | Status | Proof |
@@ -249,7 +255,12 @@ the chart, Docker and RustSec jobs, and the macOS test job.
 > operator's paid run after the follow-up. Trials stay sequential (0076);
 > isolation and the "two concurrent trials" criterion are #221's. The decision
 > number history: `main` took 0115 (#308) and 0116 (#313), and this record was
-> renumbered 0116 → 0119 on 2026-11-02.**
+> renumbered 0116 → 0119 on 2026-11-02. The pinned-engine compile of every
+> recipe (AC1 of `specs/eval-recipe-review-gate/`) has **not** run in-run: the
+> receipt is pending, by a staged-binary compile or by the candidate-pinned
+> verify pass note, and CI's `brokkr bundle (pinned)` corroborates it. The
+> verify seat's broader compile takes effect for runs whose pinned bundle
+> includes it.**
 
 ## What is the operator's
 
