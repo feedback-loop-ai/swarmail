@@ -1,7 +1,8 @@
 # Eval flake determinism (issue #302)
 
 Status: design, run `issue-302-make-the-flaky-eval-te-e944c222`, base main
-`c336c95`, 2026-11-02.
+`c336c95`, 2026-11-02. Revised 2026-11-02 after the review return on
+`c3b4ab7` (decision 0102 and its spec-defect addendum); see § Clarifications.
 
 ## The feature
 
@@ -27,10 +28,13 @@ occurrences were extracted at ingest, and the scan saw them
 ([0001](../../docs/decisions/0001-synchronous-insert-lossless.md),
 [0005](../../docs/decisions/0005-extraction-at-ingest.md),
 [0002](../../docs/decisions/0002-awaits-subscribe-before-checking.md)).
-`near_misses` filters only on to/from/subject/since and never on the anchor
-([0111](../../docs/decisions/0111-near-miss-timeouts.md)). Listing the digest
-with `missed: []` therefore proves the mail arrived. It does not prove the
-anchor matched. The PR states this classification and the falsifier: a
+`near_misses` filters only on to/from/subject/since and never on the anchor.
+That is the tool's current shape on main (`src/mcp/near_miss.rs`), described
+by the **proposed** record
+[0111](../../docs/decisions/0111-near-miss-timeouts.md); the design uses it as
+an observation of current behaviour, not as an accepted ruling. Listing the
+digest with `missed: []` therefore proves the mail arrived. It does not prove
+the anchor matched. The PR states this classification and the falsifier: a
 zero-timeout anchored wait whose anchor is among the pre-call candidates and
 which still answers `timed_out` would be a product bug. The test now asserts
 that falsifier on every run.
@@ -47,18 +51,32 @@ that falsifier on every run.
 
 ### Authorities
 
-The accepted decisions this design relies on, cited as authority and not
-declared by it:
+**Accepted decisions, cited as authority** (not declared by this design):
 [0001](../../docs/decisions/0001-synchronous-insert-lossless.md),
 [0002](../../docs/decisions/0002-awaits-subscribe-before-checking.md),
 [0005](../../docs/decisions/0005-extraction-at-ingest.md),
 [0020](../../docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md),
+[0045 §8](../../docs/decisions/0045-delivery-repairs.md),
 [0055](../../docs/decisions/0055-agent-eval-harness.md),
 [0056](../../docs/decisions/0056-signing-policy.md),
-[0076](../../docs/decisions/0076-sequential-eval-trials.md),
-[0111](../../docs/decisions/0111-near-miss-timeouts.md).
-No frozen guarantee, public contract or ruling changes, so this design
-declares no decision.
+[0076](../../docs/decisions/0076-sequential-eval-trials.md).
+
+**Proposed records, relied on only as the current shape of the tools under
+test** (status `proposed — awaiting the operator` in
+[the index](../../docs/decisions/README.md)):
+
+- [0094](../../docs/decisions/0094-focused-mail-waits.md): the
+  `candidates[].anchor_text` field of an `ambiguous` `swarmail_wait_for_link`
+  answer (`src/mcp/focused.rs`), which the case-3 control reads (AC3);
+- [0111](../../docs/decisions/0111-near-miss-timeouts.md): `near_misses` and
+  its filter-only `missed`, which the case-3 classification uses as evidence.
+
+This design is compatible implementation under accepted 0045 §8: it preserves
+every accepted ruling, changes no product code, and does not depend on, imply
+or ask for the acceptance of 0094 or 0111. It declares no decision and accepts
+none. If the operator later amends or rejects 0094 (the `anchor_text` field)
+or 0111 (near-miss semantics), the case-3 control and its evidence chain must
+be re-derived from the tools as they then stand, not assumed.
 
 ### Rulings on the intake criteria
 
@@ -102,9 +120,15 @@ None of the restatements loosens what a test proves.
     clean exit.
   - The `any(alive)` message may gain detail: the owned identities and their
     alive state.
-  - Proof: on the old seam, a forced interleaving (the agent group's store is
-    overwritten by another group's) fails at `any(alive)`. On the new seam
-    the same perturbation cannot apply, and the test passes.
+  - Proof: on the old seam, a perturbation that widens the window in which
+    another group can overwrite the agent group's store goes red at
+    `any(alive)`. The red-before is **probabilistic**, not forced: which group
+    the perturbation delays is up to the scheduler, and the run on the
+    previous head went red about 1 time in 4. The fix rests on the causal
+    argument (one process-global slot consumed by parallel group cleanups),
+    and on the new seam the slot no longer exists, so no perturbation can lose
+    the fault. The shipped test is itself the detector for a reintroduced
+    shared slot.
 - **AC2. Case 2's witness owns its exit status.** The
   `unsafe_output_then_server_death` helper ignores SIGTERM before it walks
   `/proc`, so it reports its own exit (0 = found and killed `serve`, 64 = did
@@ -120,6 +144,14 @@ None of the restatements loosens what a test proves.
     helper fails the exit-0 assertion and the new helper passes. If the
     perturbation fires the outcome assertion instead, case 2 returns to
     design as a runner ordering bug, and this helper patch is not shipped.
+  - **Accepted residual.** A helper descheduled for longer than `TERM_GRACE`
+    (5 s) between its kill of `serve` and its own exit is SIGKILLed by the
+    runner's escalation, and `agent_exit_status` is then `None`. That needs a
+    host that cannot schedule a runnable process for five seconds; a red test
+    there is correct, and the assertion's message carries the captured stderr,
+    so the next sighting names itself. `TERM_GRACE` is not raised: that would
+    change runner semantics for every trial and could not create the
+    ordering.
 - **AC3. Case 3's control is chosen from the observed mail, and the
   falsifier is asserted.**
   - For digest-forty's negative rig, the test reads the `anchor_text` values
@@ -128,9 +160,15 @@ None of the restatements loosens what a test proves.
     `^Async drop RFC enters final comment period \(part 2\)$`, which is
     `digest_decoy_title(14)`. Exactly one index is displaced, so one of the
     two titles is always present.
-  - It asserts that the chosen title is among the pre-call candidates and is
-    not `DIGEST_ITEM`. The message names the task, `negative` and the chosen
-    title.
+  - It asserts that the chosen title is among the pre-call candidates. This
+    presence check is the falsifier, and it is evaluated on runtime data. The
+    message names the task, `negative` and the chosen title.
+  - The assertion carries no constant-only conjunct. The previous head's
+    `title(part) != tasks::DIGEST_ITEM` compared two constants that always
+    differ, so it could never go red; it is deleted, not kept as a guard.
+    That the chosen link is not the target is proven at runtime by the
+    existing `WrongLink` assertion on the click (the fixture's own judgment
+    of the selected URL), which stays unchanged.
   - Both calls keep `timeout_ms: 0`. The `selected` and `WrongLink`
     assertions and every positive-rig assertion are unchanged.
   - The random-seed rigs stay random. One extra digest-forty negative rig is
@@ -142,13 +180,29 @@ None of the restatements loosens what a test proves.
     bug" with the evidence chain above. No root `src/` file changes.
 - **AC4. Determinism under load is proven, and the counts are in the PR.**
   - The candidate `swarmail` and the evals test binaries are prebuilt, with
-    target dirs on `/home`. The binaries are then run directly while at least
-    4 parallel copies of the evals suite run as load.
+    target dirs on `/home`, and run directly (no cargo lock in the loop).
+  - **Load** is concurrent CPU and process load that accepted
+    [0076](../../docs/decisions/0076-sequential-eval-trials.md)'s per-uid
+    admission lock does not serialise: at least `nproc` CPU hogs plus at
+    least 4 looping copies of the root real-protocol test binaries (`burst`,
+    `p2`, `rate`), started before the measurement and kept running through
+    it. Copies of the evals suite do **not** count as load: their trials
+    queue on the 0076 admission `flock` (`evals/src/admission.rs`), so they
+    would load the host in name only. The 1-minute load average, sampled
+    during the measurement, is recorded and must be at least `nproc`.
   - Each test (`--exact`) passes at least **100/100** for cases 1 and 2 and
-    at least **200/200** for case 3.
-  - The whole evals suite passes once under the same load.
-  - The command, the counts and the wall time are in the PR text. Nothing
-    from the load proof is committed.
+    at least **200/200** for case 3, on the head the PR ships.
+  - The whole evals suite passes once under the same load, on the head the
+    PR ships.
+  - Counts measured on an earlier head may be reused for case 1 or case 2
+    only if `git diff <earlier head> HEAD -- evals/` is limited to files that
+    neither test compiles or runs (`evals/tests/fixture.rs` only); the PR
+    names the head each count was measured on.
+  - Nothing from the load proof is committed.
+  - This replaces the issue's example load ("several copies of the evals
+    suite"), which 0076 makes infeasible. The counts are unchanged and the
+    load is at least as heavy, so the criterion is moved toward the accepted
+    decision, not loosened.
 - **AC5. Scope.** Changes are limited to:
   - `cfg(all(test, target_os = "linux"))` code in `evals/src/runner.rs` (the
     fault seam and `test_probes`);
@@ -173,3 +227,43 @@ None of the restatements loosens what a test proves.
   - The implementation lands as unsigned commits on
     `repair/issue302-eval-flakes`, on top of this design commit.
   - No push, merge, publish or decision acceptance. No paid trials.
+- **AC9. The PR text carries the evidence.** The PR body (written at ship,
+  from the implement and verify results) states each of the following; a
+  missing item fails this criterion:
+  - the case-3 classification "test-data collision, not a product bug", the
+    evidence chain of § Why case 3 is not a 0001/0002/0005 defect, and the
+    falsifier asserted on every run;
+  - why the issue's literal "Done when" (a release-file hold on the case-1
+    survivor) was not followed: SIGKILL cannot be blocked, so the fix removes
+    the path that delivered it;
+  - that case 1's red-before was probabilistic (the measured rate) and the
+    fix rests on the code argument;
+  - case 2's red-before result and the accepted `> TERM_GRACE` residual;
+  - case 3's red-before on the forced `right == 1` rig;
+  - the AC4 load command, the per-test counts and the head each was measured
+    on, the load average, the wall time, and the 0076 reason the load is not
+    copies of the evals suite;
+  - that 0094 and 0111 are proposed and this work is compatible
+    implementation under accepted 0045 §8.
+
+## Clarifications
+
+- **2026-11-02, review return on `c3b4ab7`** (spec defect, max residual
+  severity low; security and tests clean). The panel confirmed all three
+  causes and fixes. Corrections, each owned here:
+  - *Authorities (guarantees, spec defect).* 0111 was listed among accepted
+    decisions; it is proposed. 0094, whose `anchor_text` the control reads,
+    was not cited, nor was accepted 0045 §8. § Authorities now splits
+    accepted from proposed and states the 0045 §8 basis.
+  - *AC4 load (correctness, independent, tests; low).* "4 parallel copies of
+    the evals suite" conflicts with accepted 0076: the copies serialise on
+    the per-uid admission lock. AC4 now names load 0076 permits, keeps every
+    count, and requires the counts on the shipped head.
+  - *AC3 guard (correctness, info).* The not-`DIGEST_ITEM` conjunct compared
+    two constants; it is deleted and the runtime `WrongLink` assertion is
+    named as the proof that the control is not the target.
+  - *AC1 red-before (correctness, independent; info).* Stated as
+    probabilistic, with the causal argument as the basis.
+  - *AC2 residual (correctness, info).* The `> TERM_GRACE` window is written
+    into AC2 as an accepted residual.
+  - *PR evidence (independent).* AC9 lists what the PR text must carry.
