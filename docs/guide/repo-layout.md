@@ -7,7 +7,7 @@
 | `src/smtp.rs`, `src/pop3.rs` | the two wire protocols, hand-rolled on tokio |
 | `src/store.rs`, `src/persist.rs` | the synchronous store and the SQLite restart copy |
 | `src/extract.rs`, `src/threads.rs` | ingest-time extraction and conversation grouping |
-| `src/api.rs`, `src/compat.rs` | the native REST API and the MailHog/Mailpit shims |
+| `src/api.rs`, `src/compat.rs` | the native REST API and the MailHog/Mailpit/MailSlurper shims |
 | `src/mcp.rs`, `src/stdio.rs` | the MCP HTTP surface and the stdio bridge |
 | `src/chaos.rs`, `src/webhook.rs`, `src/tls.rs` | the failure injector, the dispatcher, STARTTLS |
 | `src/static/` | the embedded UI, `/openapi.json`, `/llms.txt` |

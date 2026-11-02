@@ -31,6 +31,7 @@ async fn a_burst_of_fresh_smtp_connections_is_greeted() {
         smtp_listen: "127.0.0.1:0".into(),
         http_listen: "127.0.0.1:0".into(),
         pop3_listen: "127.0.0.1:0".into(),
+        mailslurper_listen: None,
         max_per_inbox: 0,
         data_file: None,
         tls_cert: None,

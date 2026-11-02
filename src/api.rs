@@ -408,7 +408,7 @@ const ORIGIN_HOST_MISMATCH: &str = "cross-origin requests must match the Host au
 /// `Origin` passes the Origin leg — the shape of every non-browser client
 /// and of a rebound page's same-origin reads, which is why the loopback
 /// Host leg exists.
-async fn origin_guard(
+pub(crate) async fn origin_guard(
     State(state): State<AppState>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -765,24 +765,35 @@ pub async fn serve(
     state: AppState,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
+    // The stop watch is cloned before the router consumes the state: the
+    // deadline race and /healthz's stopping answer are two readers of the
+    // same watch, both subscribed before the stop can fire.
+    let stop_rx = state.shutdown.clone();
+    serve_app(listener, router(state), stop_rx, shutdown).await
+}
+
+/// Serve any router on `listener` under the HTTP plane's stop contract: the
+/// graceful serve is raced against stop-plus-[`DRAIN_DEADLINE`], so a clean
+/// drain finishes on its own and a client parked mid-request (or mid-body)
+/// is cut off at the deadline instead of holding the process forever. The
+/// MailSlurper listener (decision 0118) shares this body with the HTTP plane.
+pub(crate) async fn serve_app(
+    listener: TcpListener,
+    app: Router,
+    stop_rx: tokio::sync::watch::Receiver<bool>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
     #[cfg(test)]
     let deadline_receipt = DRAIN_RECEIPT
         .with(|slot| slot.take())
         .unwrap_or_else(|| tokio::sync::oneshot::channel().0);
-    // The stop watch is cloned before the router consumes the receiver:
-    // the deadline race below and /healthz's stopping answer are two
-    // readers of the same watch, both subscribed before the stop can fire.
-    let stop_rx = state.shutdown.clone();
     let drain = async {
         shutdown_signal(stop_rx).await;
         tokio::time::sleep(DRAIN_DEADLINE).await;
     };
-    // The graceful serve is raced against stop-plus-deadline: a clean
-    // drain finishes on its own; a client parked mid-request (or mid-body)
-    // is cut off at the deadline instead of holding the process forever.
     // The serve future is pinned so the race can poll it in place.
     let mut serve = std::pin::pin!(
-        axum::serve(listener, router(state))
+        axum::serve(listener, app)
             .with_graceful_shutdown(shutdown)
             .into_future(),
     );
