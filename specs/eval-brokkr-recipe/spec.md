@@ -1,9 +1,13 @@
 # The eval recipe on brokkr: interim opaque driver, journal join, retained tool-call records
 
-Date: 2026-11-02. Status: design, **revision 2** (returned from review under
-accepted 0102's 2026-10-31 spec-defect addendum; the first design commit
-`8b9abc6` and the build it produced, `080db77`, stand in history and are
-revised here, never amended). Run `issue-148-the-eval-recipe-on-bro-197e7def`.
+Date: 2026-11-02. Status: design, **revision 3** (returned from review a
+second time under accepted 0102's 2026-10-31 spec-defect addendum, run
+`issue-148-the-eval-recipe-on-bro-1b9b64e9`; the design commits `8b9abc6`
+and `38dab0f` and the builds `080db77` and `040795d` stand in history and
+are revised here, never amended). Revision 2 was run
+`issue-148-the-eval-recipe-on-bro-197e7def`. Revision 3 changes one
+contract, the scoring gate's agreement with the row, and the four lower
+findings beside it; see "Revision 3" below.
 Issue #148, epic #164, P1. Operator direction 2026-11-01: start now,
 alongside a separate harder-tier run. Zero-Codex `claude-careful` lane
 (accepted 0098 and 0099). Base: `main` at `f815d48`.
@@ -89,7 +93,7 @@ filed on brokkr, never worked around in Swarmail. Where they differed:
 | Bind the child run id at spawn, never discover it (robustness B) | **Adopted through the key the matrix already assigns.** `trial_id` is assigned before the worker spawns, written into the slot's request file, echoed by the trial seat in its typed result `inputs.trial_id`, and is the only join key. A journal with two runs claiming one `trial_id` joins neither (`journal_ambiguous`). No timestamp or "newest run" matching anywhere. | Robustness wanted the run id inside the row before the agent runs; the row does not change (next ruling), so the run id is surfaced by the report, not the row. |
 | Extend the v2 row with token and evidence fields under a new schema (robustness) vs rows unchanged (simplicity) | **Rows unchanged.** "Extend, not replace" is met at the report's inputs: `report --journal` joins a typed facts file to the rows by `trial_id`. The published 395/400 rows stay readable as they are; the strict readers of 0063 and 0076 are untouched; no v3, no migration, no 64 KiB pressure. Intake's AC1 wording ("each row carries the brokkr run id") is corrected: the row carries `trial_id`; the report carries the run id. | A row alone no longer tells you its tokens; you need the facts file beside it. The baseline publishes both. |
 | Which selector a via-brokkr row declares | **New finite selectors** `claude_2_1_310_via_brokkr`, `codex_0_164_0_via_brokkr`, `dsh_0_1_5_rc_1_via_brokkr` (simplicity): the driver adds flags the family profile does not enumerate, so such a row must not claim the direct-launch surface. Same revision, basis `declared_configuration`, the family's restrictions, plus one residual naming the driver. | Three more enum variants and profile rows in `provenance.rs`; a binary before this change refuses the new rows, as the surface contract already says for historical rows. |
-| The scoring gate | **A separate exec seat with three exit codes** (robustness D), implemented by the existing `check --artifacts-dir <leaf>`, which validates the bound evidence (metadata, result, state, diagnostics) and re-scores: 0 pass, 1 fail, 2 unscorable. **And the matrix cross-checks it** against the row (`score.json` must agree with `row.json`, else the slot is `harness_error` and admission stops). Simplicity's "replay equality is already proven" is true, but a gate whose verdict nobody reads is decoration. | About fifteen lines in the matrix and a second scorer run per slot, on a frozen snapshot that is already consistent (the fixture freezes, then snapshots through its admin API; there is no database copy and no WAL, so robustness's WAL concern does not arise). |
+| The scoring gate | **A separate exec seat with three exit codes** (robustness D), implemented by the existing `check --artifacts-dir <leaf>`, which validates the bound evidence (metadata, result, state, diagnostics) and re-scores: 0 pass, 1 fail, 2 unscorable. **And the matrix cross-checks it** against the row (`score.json` must agree with `row.json`, else the slot is `harness_error` and admission stops; *revision 3 defines "agree" by the agreement table, not by equality*). Simplicity's "replay equality is already proven" is true, but a gate whose verdict nobody reads is decoration. | About fifteen lines in the matrix and a second scorer run per slot, on a frozen snapshot that is already consistent (the fixture freezes, then snapshots through its admin API; there is no database copy and no WAL, so robustness's WAL concern does not arise). |
 | Evidence: journal only (simplicity) vs a bounded, hashed, value-redacted side file, fail-closed (robustness) | **Both, in two steps.** Now: a per-trial `tool-calls.json` derived from the journal facts: ordinal, bounded tool name, outcome class, invalid-argument flag, argument and result byte lengths and SHA-256 digests. **No argument or result bytes.** It is harness-authored finite facts, compatible with accepted 0075 §4, bound by the `artifacts.rs` triple, 64 KiB cap, truncation typed, written through the exclusive-create primitives. Later, under proposed 0116 only: argument values of the two harness-owned tools (Swarmail MCP and `eval_http`), value-redacted and fail-closed to absence. That second step contradicts 0075 §4's "suppress raw bodies, URLs" and **is not implemented in this run** (0045 §8). | Robustness loses value-bearing evidence until the operator accepts 0116. Simplicity loses "nothing to write": one bounded file per trial. The baseline's open question (did the model act on a wrong message or give up?) is answered by tool names, counts and the retained `state.json`. |
 | Admission inside the exec box (robustness 9) | **Accepted residual, named.** If brokkr's exec box gives the trial seat a private `/tmp`, the trial's advisory lock is blind to other cooperating runners on the host, which is exactly the posture the operator ran the #151 baseline under (bwrap with a private `/tmp`). The matrix stays sequential, so no two of its own trials overlap. No bypass flag and no parent-held reservation is added: both would weaken 0076 §1–2 for the shared-`/tmp` case. | On a host where the box shares `/tmp`, nothing is lost. On a host where it does not, the operator runs no other trial while a matrix runs, as for the baseline. Brokkr fact F6 records which it is. |
 | Crash tests, join tests, unavailable tests, gate-failure tests, sentinel tests (robustness) | **Adopted**, with stand-ins: the matrix's worker stand-in plays `brokkr run` and runs the two real recipe scripts, so the recipe path is proven offline without the engine. | None. |
@@ -124,6 +128,68 @@ admission) is not re-opened.
 | Categories from the slot's `trial.stderr` never surface through the CLI (tests 2 info). | **Adopted, cheaply:** a stand-in mode appends a fixed 0076 category line to `<slot>/trial.stderr` and the test asserts it on the row's failure. | One mode, one assertion. |
 | Cold refusal arms of the scripts (tests 3 info); no private HOME/TMPDIR for the brokkr-mode worker (independent 6). | **Named residuals, no change.** The scripts are outside the measured denominator; the agent's own environment is built by the runner and the wrapper identically in both modes. | None. |
 | The transcript half of #151 (guarantees 6 medium). | **Text corrected.** Structural records land now; value-bearing records wait for the operator's acceptance of 0116 §4 (0045 §8). The README no longer says the operator's run closes the row. | None. |
+
+## Revision 3: the gate's agreement rule, and the rulings
+
+The second review (correctness, guarantees, independent and security
+members, `spec_defect: true`, highest severity medium, no security
+residual; reviewed head `040795d`, tree `9952152`) found one defect in the
+ruled contract. Revision 2 required `score.json`'s `outcome` to **equal**
+the row's outcome. But the gate (`score.sh` → `check --artifacts-dir`)
+replays only the business check over the retained state
+(`artifacts.rs:471-497`, `replay_exit` `:612-616`), while the row applies
+the whole precedence of accepted 0055 §2 and 0071 §2 (`runner.rs:2916-2947`):
+infrastructure first, then a live deadline as `fail/budget`, then the
+business check. `evals/tests/provenance.rs`'s
+`business_replay_never_rewrites_budget_or_infrastructure_history` pins
+that a `fail/budget` row and a `harness_error` row over a passing state
+both replay as `pass`. So an agent that reached the goal and then hung to
+the deadline was rewritten from `fail/budget` to `harness_error`
+(`score_mismatch`) and stopped the matrix, `budget` (in the issue's fixed
+taxonomy) could never be recorded through the brokkr path, and the journal
+ruled `SCORE-PASS → done` for a trial the row called a failure.
+
+**The fact that makes the fix small** (simplicity): the row alone shows which
+precedence leg decided it. `tasks.rs:406-413` forbids a task's business
+`failure_class` from being `budget` or `harness_error`, and the runner
+yields `fail/budget` only from the deadline leg (`runner.rs:2938`).
+
+| Question | Ruling | What the losing side costs |
+|---|---|---|
+| Option (a): define agreement against the row's precedence, vs option (b): the gate replays the full 0055 §2 precedence | **(a), the agreement table below** (both positions). (b) is rejected: the deadline leg's only retained input is the row's own `failure_class` in `result.json`, so a "replay" of it copies the claim it checks, and it would change `check`'s documented business-only exit contract (`evals/README.md`, the retained-artifact section) and its pinning test. | None: `check` keeps its contract; nothing that (b) would check is lost, because (b) would check nothing new. |
+| Strength of the budget arm: any ruled replay (simplicity's first sketch), or `pass`/`fail` only | **`pass` or `fail`, never `unscorable`** (robustness C4; simplicity's table already says unscorable contradicts the row). The runner validates the snapshot *before* the deadline branch (`runner.rs:2932-2938`), so an unscorable replay of a budget leaf means the leaf changed after it froze. | None. |
+| Which result the score seat reports, so that the journal and the row never disagree. Simplicity: policy and `score.sh` unchanged, the seat names the retained state's verdict and `done` means "data". Robustness: the seat reports the trial's class. | **Robustness, through the row's two class fields only.** `score.sh` reads `<slot>/row.json` strictly (regular file, no symlink, ≤ 64 KiB, exactly one line, `outcome` and `failure_class` only) and reports the trial's class when the business replay agrees with the row, and `unscorable` for a `harness_error` row or a contradiction. Under simplicity's reading a `harness_error` row over a valid state would still be journalled `SCORE-PASS → done`, which is a run outcome that disagrees with the row (the review asked for "never"). A budget failure would also be journalled as a gate `pass`, and the operator's 2026-10-18 ruling makes `brokkr compare` and analytics the per-model view, so they would count it as a success. The row is harness-authored by `trial.sh` with `noclobber`. The business verdict still comes only from the app's retained state, and the row chooses only the seat's result word. | Simplicity loses "score.sh unchanged". The agreement table is mirrored in about fifteen lines of bash, outside any coverage denominator, and each cell is proven by `recipe.rs` and a stand-in arm (AC4, AC18). The Rust function in the matrix stays the authority that commits or refuses. |
+| `score.json`'s fields | **Rename, do not add.** `outcome` becomes **`business`** (`pass`, `fail` or `unscorable`) and `exit` becomes **`check_exit`**. The overloaded word `outcome` was the defect's root: it named a business replay as if it were the trial's outcome. Robustness's extra derived `outcome` field is **rejected**. It would be copied from the row, so equality on it is vacuous, and the matrix already holds the row. `score.json` is unreleased and `read_slot` is its only reader. | Robustness loses a "cheap tamper check" that checks nothing the row does not already say. |
+| A new policy rule (`score harness_error → stop`, robustness C3) or a `SCORE-BUDGET` result | **Both rejected.** The seat's vocabulary stays `pass`, `fail` and `unscorable`. A rule for a result outside that vocabulary depends on how the engine handles a seat that never reports, and nobody has observed that (revision 2's lesson: an unobserved seam is never guessed). The matrix already records such a slot as `score_missing`. Rule ids and transitions do not change. The reason texts of `SCORE-PASS`, `SCORE-FAIL` and `SCORE-UNSCORABLE` are restated to the table. | The engine's terminal for a silent score seat is brokkr's. It is named as a residual and observed in the operator's first engine run. |
+| A `TERM`/`INT`/`EXIT` trap in `score.sh` (robustness C3) | **Rejected.** `score.json` is already written to a sibling temporary and renamed before the seat reports. A kill before the rename leaves no file, and `score_missing` is the true answer. A kill after it leaves a complete verdict. A trap changes no outcome the matrix records. | None measured. |
+| A refusal of a populated `--artifacts-dir` (robustness 3a) | **Rejected for this revision.** Each matrix writes under its own fresh `ROOT/<matrix_id>/` through the exclusive-create primitives, so a second matrix never clobbers the first, and the review did not raise this. | None. |
+| `trial_id` hardening against `.`/`..` and `basename(slot)` (robustness 3e) | **Rejected.** `check`'s `resolve_root`/`ensure_root`/`safe_root` already refuse `..` and symlinks (the security member found this clean), and the matrix writes the request. An agent that rewrites the request is the named unconfined residual, and no script check closes that. | Defence in depth in the scripts. |
+| Taking the failure class from the row rather than a `trial.stderr` scan (robustness 3e) | **Rejected as not a change.** The class always comes from the row. The scan only adds a fixed 0076 admission category as the slot's *refusal* reason, exactly as in direct mode. The agent's CLI output goes to `/dev/null` (0075 §1), so only a same-uid rewrite reaches `trial.stderr`, which is the unconfined residual. | None. |
+| Finding 2 (low): `evals/README.md` says the #151 baseline lacks tokens only "until the operator's paid run" | **Adopted.** The sentence names the forwarding follow-up (F1/F2) and the operator's acceptance of 0116 §6 as preconditions. A paid run alone measures nothing, because `--via-brokkr` refuses `driver_contract_unknown` unconditionally. The PR does not present either #151 gap as closed. | None. |
+| Finding 3 (low): `through_driver` is production code, and `run()` keeps an unreachable `Some(driver) => through_driver(..)` arm | **Adopted as the spec already said (0116 §5).** `through_driver` goes under `#[cfg(test)]` and the arm is deleted. `run()` uses `via_brokkr` only to validate and refuse. Simplicity's alternative (delete the function and its test outright) is not taken: the inline assembly proof is the follow-up's starting point, and it costs no production line. | None. |
+| Correctness Finding 4 (info): `trial_args`' `let _ = bin` | **No change, again** (simplicity proposed dropping the parameter). `bin` is used inside the `#[cfg(test)]` block of `trial_args` (`main.rs:1272-1286`, the synthetic-row target build). The `let _` silences only the non-test build. Dropping it breaks the test build. | None. |
+| Independent Finding 4 (low): the AC17 tests cannot go red for the seams they name | **Adopted, split.** Seam 1 (`trial.sh`'s `env -i`) gets a proof that can go red: the request's `evals_bin` is a probe that records *its own* environment through the real `trial.sh`, so removing `env -i` turns it red. Seam 2 (the runner rebuilds the agent's environment) is the existing probe-agent assertion, now run against `swarmail-evals trial` directly with the sentinel in the trial's own environment. Seams 3 and 4 (`through_driver`) are crossed by no production path once `through_driver` is test-only (Finding 3), so AC17 claims no runtime proof for them. Their proof is the follow-up's. Robustness's "observe the trial process's environment" is taken for seam 1, and simplicity's "narrow the claim" for seams 3 and 4. | None. |
+| Tests residual (low): the `child_output_server_death_remains_a_harness_error_on_linux` flake | **Out of this change.** It is inherited, tracked in #302 and being fixed in parallel (dispatcher note, 2026-11-02). Editing that test here would collide with the fix. Robustness's direction (assert only race-stable facts, and never retry or sleep) is the right one for #302 and is recorded there, not here. | A verify round under seat load may go red on it again. The dispatcher's host re-runs are the evidence until #302 lands. |
+
+### The agreement table (normative)
+
+| Row (the trial's outcome) | Decided by | Agreeing business replay | `score` seat reports | Policy → terminal | Matrix |
+|---|---|---|---|---|---|
+| `pass` | business | `pass` | `pass` | `SCORE-PASS` → `done` | commits the row |
+| `fail`, class not `budget` | business | `fail` | `fail` | `SCORE-FAIL` → `done` | commits the row |
+| `fail`/`budget` | the deadline, over a snapshot the runner validated | `pass` or `fail` | `fail` | `SCORE-FAIL` → `done` | commits the row; admission continues |
+| `harness_error` | infrastructure | `pass`, `fail` or `unscorable` | `unscorable` | `SCORE-UNSCORABLE` → `stop` | commits the row as written, never rewritten; admission follows direct mode's rule for the same row |
+| any row, replay outside its agreeing set | (contradiction) | — | `unscorable` | `stop` | `score_mismatch` → the slot's `harness_error` row, admission stops |
+| `row.json` unreadable to the gate | — | — | `unscorable` (`score.json` still written) | `stop` | `trial_row_missing` from its own read |
+| no usable `score.json` | — | — | — | — | `score_missing` → `harness_error`, admission stops |
+
+**The invariant the table buys:** for every row the runner can produce, the
+run's terminal is `done` exactly when the matrix commits a `pass` or `fail`
+row, and `stop` exactly when the slot's row is `harness_error`. The checks
+only the matrix holds (planned cell, worker context, target identity, the
+`exit`/row pairing) and a slot rewritten after the gate ruled can still turn
+a `done` run into a refused `harness_error` row. Those are tamper or bug
+cases, never a legitimate trial, and are named in the residuals.
 
 ## Brokkr contract: facts the implementer establishes, uses or files
 
@@ -166,6 +232,14 @@ reason** rather than running a guess.
   `trial harness_error → stop` (hard); `score pass → done`; `score fail →
   done` (a failed trial is data); `score unscorable → stop` (hard). No
   retry rule anywhere: a retried trial is a different experiment.
+  **Revision 3:** ids, results and transitions are unchanged. The reason
+  texts follow the agreement table: `SCORE-PASS` means the row is a pass
+  and the replay of the retained state agrees; `SCORE-FAIL` means the row
+  is a failure (a business failure the replay agrees with, or a budget
+  failure over a validated state) and a failed trial is data;
+  `SCORE-UNSCORABLE` means the row is the harness's fault, or the replay
+  contradicts the row, or the leaf cannot be scored where the row needs a
+  verdict.
 - **Prompt parsing (revision 2), both scripts.** The engine renders the
   feature text as `Feature: <text>` and the result path as an indented line
   of its own (observed in this run's chief prompt, 2026-11-02;
@@ -189,14 +263,24 @@ reason** rather than running a guess.
   `{"result":"ran","inputs":{"trial_id":"<id>"},"notes":"…"}` when the exit
   is 0, 1 or 2 and `row.json` is exactly one line; otherwise
   `harness_error`. The script never reads or prints the row's content.
-- `scripts/score.sh`: same prompt parsing; runs
+- `scripts/score.sh` (**revision 3**): same prompt parsing; runs
   `"$evals_bin" check --artifacts-dir "<trials_root>/<trial_id>"` (both
-  from the request), writes `<slot>/score.json` as
-  `{"schema_version":1,"trial_id":"…","outcome":"pass|fail|harness_error","exit":N}`
-  **before** reporting, and reports `pass` (exit 0), `fail` (exit 1) or
-  `unscorable` (anything else). A malformed request or an unusable slot
-  refuses `unscorable` without writing `score.json`; the matrix then sees
-  `score_missing`. `check --artifacts-dir` validates the bound leaf and
+  from the request). It maps check's exit to the **business** verdict (0
+  `pass`, 1 `fail`, anything else `unscorable`) and writes
+  `<slot>/score.json` as
+  `{"schema_version":1,"trial_id":"…","business":"pass|fail|unscorable","check_exit":N}`
+  through a sibling temporary and rename, **before** reporting. It then
+  reads `<slot>/row.json` strictly: a regular file, not a symlink, at most
+  64 KiB, exactly one line, and `jq -e` passing with `.outcome` one of
+  `pass`, `fail`, `harness_error` and `.failure_class` a string or null.
+  No other row field is read. It reports by the agreement table: `pass`
+  for a pass row with a `pass` replay; `fail` for a non-budget fail row
+  with a `fail` replay or a budget row with a `pass` or `fail` replay;
+  `unscorable` for a `harness_error` row, for any contradiction and for an
+  unreadable row. In each `unscorable` case `score.json` stays written. The
+  row never enters the business verdict and chooses only the result word. A
+  malformed request or an unusable slot refuses `unscorable` without
+  writing `score.json`; the matrix then sees `score_missing`. `check --artifacts-dir` validates the bound leaf and
   re-scores the app's retained state; the agent's account is not an input
   and the gate reads nothing the agent could have written after the trial
   froze.
@@ -222,10 +306,13 @@ direct launch's environment keys and values, working directory, stdout and
 stderr routing) stays in the code and is proven by inline tests that inspect
 the assembled `Command` (`get_program`, `get_args`, `get_envs`,
 `get_current_dir`): the argv after `--` equals the direct launch's argv byte
-for byte for all three families. It is dead at runtime until the follow-up
-that implements the observed F2 invocation lifts the refusal, and the
-`#[cfg(test)]`-only reach to it is permitted by 0020 §4 (a seam, not a
-flag). The three `*_via_brokkr` selectors, their `ToolSurface` rows,
+for byte for all three families. **Revision 3 (Finding 3):** `through_driver`
+is declared `#[cfg(test)]`, and `run()`'s `Some(driver) =>
+through_driver(..)` arm is deleted. `run()` uses `via_brokkr` only to
+validate and refuse, so the compiler, not a comment, keeps the driver path
+out of production until the follow-up that implements the observed F2
+invocation lifts the refusal and restores the arm. The `#[cfg(test)]`-only
+reach is permitted by 0020 §4 (a seam, not a flag). The three `*_via_brokkr` selectors, their `ToolSurface` rows,
 `--wrapper-profile` and `agents.json` acceptance stay as round 1 specified:
 they label rows once the refusal lifts.
 
@@ -274,11 +361,17 @@ under the existing admission, the matrix:
    bound), `exit` and `score.json` from the slot, and accepts the slot only
    when the row matches the planned cell and worker context exactly as
    today, `exit` pairs with the row's outcome exactly as `matching_trial_row`
-   requires, and `score.json` is present, one line, well-formed and its
-   `outcome` equals the row's outcome. A missing or invalid `row.json` or
-   `exit` is `trial_row_missing`; a `score.json` that is absent, unreadable,
-   malformed or not one line is **`score_missing`**; one that is present and
-   disagrees is **`score_mismatch`**. Each yields the slot's `harness_error`
+   requires, and `score.json` is present, one line, well-formed, and its
+   `business` verdict lies in the row's agreeing set under **the agreement
+   table** (revision 3). Equality between the business replay and the row's
+   outcome is not the rule. A missing or invalid `row.json` or `exit` is
+   `trial_row_missing`. A `score.json` that is absent, unreadable, malformed,
+   not one line, or carries a `business` outside `pass`/`fail`/`unscorable`
+   (including the revision-2 `outcome` key) is **`score_missing`**. One
+   whose `business` lies outside the row's agreeing set is
+   **`score_mismatch`**. A committed `fail/budget` or `harness_error` row is
+   never rewritten, and admission after it follows the direct mode's rule
+   for the same row. Each yields the slot's `harness_error`
    row, stops admission and writes the refusal suffix (0076 §3). The slot's
    `trial.stderr` is scanned for the same fixed 0076 categories the direct
    worker's stderr is;
@@ -389,6 +482,13 @@ posture (F6), and the corrected closure sentence: *this delivery lands the
 machinery; tokens per success are measured only after the accounting
 channel is observed and forwarded under 0116 §6; structural tool-call
 records land now and value-bearing records wait for 0116 §4's acceptance.*
+**Revision 3:** `evals/README.md`'s recipe section states the agreement
+table in place of "the matrix cross-checks the gate against the row ... one
+that disagrees with the row is `score_mismatch`". Its "Tokens, turns and
+cost are not in the rows" paragraph (Finding 2) names the F1/F2 forwarding
+follow-up and the operator's acceptance of 0116 §6 as preconditions. A paid
+run alone does not close either #151 gap. `.brokkr/recipes/README.md`
+describes the score seat's results by the same table.
 `evals/wrappers.md`: `--via-brokkr` (refuses `driver_contract_unknown`
 until F2 is observed), the three selectors, the four F1 seams and the full
 paid read set (F5). `docs/decisions/README.md` carries the proposed 0116
@@ -413,15 +513,31 @@ test.
   sequential oracle trials of one task both pass with distinct seeds.
 - **AC2 The worker's death is a row, never a gap.** A stand-in worker that
   exits without `row.json`, that writes a row for another trial id, that
-  writes `exit` disagreeing with the row, whose `score.json` disagrees with
-  the row, **that never writes `score.json`**, or **that leaves a fixed 0076
-  category line in `trial.stderr`**, yields that slot's `harness_error` row
+  writes `exit` disagreeing with the row, whose `score.json` business
+  verdict lies outside the row's agreeing set (**revision 3:** a pass row
+  with a `fail` business, the `bad-score` arm; a `fail/budget` row whose
+  leaf replays `unscorable`, the `budget-over-unscorable` arm), **that never
+  writes `score.json`**, or **that leaves a fixed 0076 category line in
+  `trial.stderr`**, yields that slot's `harness_error` row
   (`trial_row_missing`, `trial_context_mismatch`, `score_mismatch`,
   `score_missing`, or the category, on stderr and as the row's failure),
   stops admission, and writes zero-time refusal rows for every later slot;
   the exit is 2. A worker killed by SIGKILL mid-trial yields
-  `harness_error`, never `gave_up`. **Proof:** the same test file, one case
-  per arm.
+  `harness_error`, never `gave_up`. **Revision 3, the legitimate arms:** a
+  `fail/budget` row over a passing state (`budget-over-pass`) is committed
+  as `fail/budget` with admission continuing and every planned row
+  produced. A `harness_error` row over a passing state
+  (`harness-error-over-pass`) is committed as that `harness_error` row,
+  never rewritten to `score_mismatch`. The stand-in builds both by
+  rewriting the slot's `row.json`, `exit` and the retained `result.json`
+  and rebinding its digest in `metadata.json` exactly as `provenance.rs`'s
+  `rebind` does; no deadline is raced (0020 §5). Both are written first and
+  observed red against `040795d` (`score_mismatch`), and the observation is
+  recorded in `implementation.md`. **Proof:** the same test file, one case
+  per arm, and inline `main.rs` tests of `gate_refusal(&GateVerdict,
+  &TrialResult)` over every cell of the agreement table, plus
+  `gate_verdict` refusing an unknown `business` value and the revision-2
+  `outcome` key as `Missing`.
 - **AC3 The recipe is real and compiles where a binary exists.**
   `.brokkr/recipes/eval/bundle.json` and `policy.json` are as specified;
   `brokkr compile --bundle .brokkr/recipes/eval` is in CI's pinned-bundle
@@ -444,10 +560,17 @@ test.
   null request → fail row, `exit` 1, `ran`; a prompt without the request
   token, a request over 64 KiB, a request missing `args`, a relative
   `evals_bin` → `harness_error` and no `row.json`; `score.sh` on the oracle
-  leaf → `pass` and `score.json.outcome` `pass`; on the null leaf → `fail`;
-  on a leaf with a truncated `state.json` → `unscorable` **with
-  `score.json` written**; on a malformed request → `unscorable` with no
-  `score.json`; no result `notes` contains a path under ROOT or any byte of
+  leaf → `pass` and `score.json.business` `pass`; on the null leaf → `fail`
+  and `business` `fail`; on a leaf with a truncated `state.json` →
+  `unscorable` **with `score.json` written** (`business` `unscorable`); on a
+  malformed request → `unscorable` with no `score.json`; **revision 3, one
+  case per agreement-table cell over rewritten oracle leaves and slot
+  rows:** a `fail/budget` row over a passing state → `fail` with `business`
+  `pass`; a `harness_error` row over a passing state → `unscorable` with
+  `business` `pass`; a pass row over a failing state → `unscorable` with
+  `business` `fail`; a `fail/budget` row over an unscorable leaf →
+  `unscorable`; a `row.json` that is missing, a symlink or two lines →
+  `unscorable` with `score.json` written; no result `notes` contains a path under ROOT or any byte of
   the agent's stderr. The `Feature:`-prefixed case is written first and
   observed red against the round-1 scripts (recorded in
   `implementation.md`).
@@ -488,8 +611,12 @@ test.
   `driver_contract_unknown` before any private file is read and before
   anything is spawned (the private selection and credential files in the
   test are unreadable sentinels that would refuse differently if opened).
-  Inline tests in `wrappers.rs` prove `through_driver`'s `Command` for all
-  three families: program `DRIVER`, argv `<family> -- <direct argv…>` byte
+  `through_driver` is `#[cfg(test)]` and `run()` has no driver arm
+  (revision 3). The evals crate's non-test `cargo build --locked` proves
+  the first by compiling without it, and the plan's quickstart greps the
+  second. Inline
+  tests in `wrappers.rs` prove `through_driver`'s `Command` for all three
+  families: program `DRIVER`, argv `<family> -- <direct argv…>` byte
   for byte, the same environment keys and values, the same working
   directory. A `trial` whose agent argv contains `--via-brokkr` refuses
   `driver_contract_unknown` (exit 2, no row, no agent launched); a `trial`
@@ -551,13 +678,30 @@ test.
   `tokens_per_success` is a number for each paid group; `tool-calls.json`
   exists per trial. This closes the #151 "Not measured" rows. It cannot
   happen on this delivery's tree; it needs the F2/F1/F5 follow-up first.
-- **AC17 The seams are named and proven (revision 2).** One test sets a
-  sentinel environment variable in the matrix's environment and proves it
-  reaches neither `swarmail-evals trial` under `trial.sh` nor the agent
-  under the wrapper; `evals/wrappers.md`, 0116 §6 and this spec name the
-  four seams identically. **Proof:** `evals/tests/recipe.rs` (seam 1
-  through the real `trial.sh`) and the existing wrapper environment tests
-  extended with the sentinel (seams 2–4).
+- **AC17 The seams are named, and the live ones are proven (revision 3).**
+  Seam 1: with a sentinel variable in the environment that runs the real
+  `trial.sh`, a request whose `evals_bin` is a probe that records **its own**
+  environment keys shows the probe ran (`SWARMAIL_BIN` present) and the
+  sentinel absent. Deleting `env -i` from `trial.sh` turns the test red, and
+  the implementer records that local mutation in `implementation.md`.
+  Seam 2: `swarmail-evals trial` run directly with the sentinel in its own
+  environment launches a probe agent whose recorded environment lacks it.
+  Seams 3 and 4 (`through_driver`'s `env_clear` and output routing) are
+  crossed by no production path while `through_driver` is `#[cfg(test)]`
+  (AC8). No runtime proof is claimed for them, and their proof belongs to
+  the forwarding follow-up. `evals/wrappers.md`, 0116 §6 and this spec name
+  the four seams identically. **Proof:** `evals/tests/recipe.rs`, two tests.
+- **AC18 The journal's terminal and the row agree (revision 3).** For each
+  agreement-table cell the stand-in plays (`ok` oracle, `ok` null,
+  `budget-over-pass`, `harness-error-over-pass`, `bad-score`,
+  `budget-over-unscorable`), the stand-in's log records the score seat's
+  result word, and the test asserts it with the committed row: `pass` with
+  a pass row, `fail` with a fail row (the budget row included), and
+  `unscorable` exactly when the slot's row is `harness_error`. The policy's
+  five rule ids and transitions are pinned unchanged by
+  `tests/delivery_recipes.rs`, and its reason texts follow the table.
+  **Proof:** `evals/tests/report.rs` brokkr-mode arms and
+  `tests/delivery_recipes.rs`.
 
 ## Residuals named for the operator
 
@@ -572,7 +716,21 @@ test.
 - **Unconfined.** A hostile agent can write into its own trial's slot
   (`row.json`, `score.json`) before the trial reaps it; the row is
   cross-checked against the gate and the bound leaf, which narrows but does
-  not close this. #221 and brokkr's broker own confinement.
+  not close this. In the interim the gate is independent of the agent's
+  account, not of the agent's uid. #221 and brokkr's broker own
+  confinement.
+- **Gate-only versus matrix-only checks (revision 3).** The score seat
+  sees the row's class, never the planned cell, worker context, target
+  identity or the `exit` pairing. A slot that fails one of those, or is
+  rewritten after the gate ruled, can end the run `done` while the matrix
+  records a refused `harness_error` row. This happens only through tamper or
+  a bug, never in a legitimate trial, and the matrix's row is the
+  measurement.
+- **A score seat that dies without reporting.** Its terminal is the
+  engine's and has not been observed. The matrix records `score_missing`,
+  and the operator's first engine run observes the terminal.
+- **#302** (the runner-suite flake under seat load) is inherited and
+  fixed in parallel; this change does not touch that test.
 - **Admission inside a private `/tmp`** (F6), as above.
 - **Value-bearing evidence** waits for 0116 §4's acceptance; the transcript
   half of #151 is only structurally closed until then.

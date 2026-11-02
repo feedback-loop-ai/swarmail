@@ -2,7 +2,9 @@
 
 - **Status:** proposed
 - **Date:** 2026-11-02 (revised the same day after the first review return,
-  decision 0102's 2026-10-31 addendum; the revision is marked **R2** below)
+  decision 0102's 2026-10-31 addendum; the revision is marked **R2** below;
+  revised again after the second return, which found the gate's agreement
+  rule wrong, marked **R3**)
 - **Scope:** Epic #164 issue #148 (P1), delivered from main `f815d48` on the
   zero-Codex `claude-careful` recipe (0098/0099, rework per 0102).
 - **Specification:** [the eval recipe on brokkr](../../specs/eval-brokkr-recipe/spec.md).
@@ -61,7 +63,13 @@ check proven able to fail, and trials that cannot see each other.
    `inputs.trial_id`, or `harness_error`) and `score` (runs
    `swarmail-evals check --artifacts-dir` on the retained leaf; `pass`,
    `fail` or `unscorable`). No retries. A failed trial is data (`done`); an
-   unscorable one or a trial that produced no row stops. The recipe reuses
+   unscorable one or a trial that produced no row stops. **R3:** the score
+   seat's result is the trial's class whenever the business replay agrees
+   with the row under §2's agreement table (`pass` for a pass row, `fail`
+   for a business or budget failure), and `unscorable` for a
+   `harness_error` row or a contradiction, so the run's terminal (`done` or
+   `stop`) and the row's outcome never disagree for a row the runner can
+   produce. The policy's five rules and transitions do not change. The recipe reuses
    the runner's lifecycle, admission, scoring and retention unchanged. Both
    seats have workspace hands; the score seat has no network and writes
    exactly `<slot>/score.json` (**R2**: its hands are not read-only). Both
@@ -72,9 +80,32 @@ check proven able to fail, and trials that cannot see each other.
    runs each slot as one `brokkr run --recipe eval`, reads the slot's row,
    exit and gate verdict, and keeps 0076's accounting: a worker that returns
    no row, a row for another cell, an exit that disagrees with the row, a
-   gate that never ruled (`score_missing`, **R2**) or a gate that disagrees
-   with the row (`score_mismatch`) is that slot's `harness_error`, stops
-   admission and writes the refusal suffix. The slot root must lie inside
+   gate that never ruled (`score_missing`, **R2**) or a gate whose business
+   replay contradicts the row under the agreement table (`score_mismatch`,
+   **R3**) is that slot's `harness_error`, stops admission and writes the
+   refusal suffix.
+
+   **R3, the agreement table.** The gate replays only the business check
+   over the retained state (`check --artifacts-dir`); the row applies the
+   whole precedence of accepted 0055 §2 and 0071 §2 (infrastructure, then
+   the deadline, then the business check). The two are equal only for
+   business-decided rows, so agreement is defined against the row's own
+   precedence, never as raw equality. The row alone shows which leg decided
+   it, because a task's business failure class can never be `budget` or
+   `harness_error` and the runner yields `fail/budget` only from the
+   deadline leg:
+
+   | Row | Decided by | Agreeing business replay |
+   |---|---|---|
+   | `pass` | business | `pass` |
+   | `fail`, any class but `budget` | business | `fail` |
+   | `fail/budget` | the deadline, over a snapshot the runner validated | `pass` or `fail`, never `unscorable` |
+   | `harness_error` | infrastructure | any ruled replay |
+
+   A budget or infrastructure row whose state happens to pass is committed
+   as the row says; the gate never promotes it, and the matrix never
+   rewrites it. The gate's business verdict is recorded under its own name
+   (`business`) and never as the trial's outcome. The slot root must lie inside
    the workspace the seat's hands reach, checked before any spawn (**R2**).
    The brokkr-mode envelope covers the trial deadline, the direct envelope's
    slack and the score seat's budget (**R2**). Trials stay sequential (0076);
@@ -191,6 +222,25 @@ and forwarded under §6**; via-brokkr trials refuse until §5's addendum; paid
 agents under `matrix --brokkr` wait for the same smoke; admission is blind
 to other host runners if the exec box has a private `/tmp` (the baseline's
 own posture); value-bearing evidence waits for §4's acceptance.
+
+**R3 (after the second review return).** All four reviewing members found
+§2's "the gate agrees with the row" defined as equality between a
+business-only replay and a total verdict, so a legitimate `fail/budget`
+trial over a passing state, or a `harness_error` row over a valid one, was
+rewritten as `score_mismatch` and stopped the matrix. Ruled: the agreement
+table in §2 (both positions; robustness's "budget never unscorable" clause
+adopted). Ruled for robustness against simplicity: the score seat reports
+the trial's class, reading the harness-authored row's outcome and failure
+class only to choose its result, so the journal never records `done` for a
+`harness_error` row and `brokkr compare` never counts a budget failure as a
+pass; simplicity's "policy unchanged, the seat names only the state" would
+have left both. Ruled for simplicity against robustness: no derived
+`outcome` in `score.json` (copied from the row, it checks nothing), no new
+policy rule for a result outside the seat's vocabulary, no full-precedence
+replay in the gate (the deadline leg's only retained input is the row's
+own claim). Cost accepted: the agreement table is mirrored in the score
+script, outside any coverage denominator, and proven per cell by the
+recipe tests and the stand-in arms.
 
 ## Delivery and acceptance ownership
 

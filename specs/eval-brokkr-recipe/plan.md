@@ -1,4 +1,4 @@
-# Implementation plan: the eval recipe on brokkr (interim path) — revision 2
+# Implementation plan: the eval recipe on brokkr (interim path) — revision 3
 
 Implements [spec.md](spec.md), revision 2 (returned from review 2026-11-02
 under accepted 0102's spec-defect addendum). Declares proposed
@@ -11,7 +11,58 @@ spec.md, plan.md, tasks.md and the decision record only; the round-1 design
 commit `8b9abc6`, the build `080db77` and `implementation.md` stay as
 history and are revised on top, never amended.
 
-## Review return: what changes and which finding each change answers
+## Revision 3: what changes and which finding each change answers
+
+The second review returned head `040795d` (tree `9952152`) with `residual`,
+`spec_defect: true`, highest severity medium, security clean. The panel
+did not challenge the committed shape (two exec seats, rows unchanged, a
+report-side join, structural evidence, sequential admission), and it is not
+re-opened. The implementer reads this table and tasks T34–T42, not the
+review's notes.
+
+| # | Change | Finding answered | Where |
+|---|---|---|---|
+| S1 | **The agreement table** replaces equality. A `pass` row needs a `pass` replay. A business `fail` row needs `fail`. A `fail/budget` row needs `pass` or `fail`, never `unscorable`. A `harness_error` row accepts any ruled replay. The row's class alone shows the deciding leg (`tasks.rs:406-413`, `runner.rs:2938`). A committed `fail/budget` or `harness_error` row is never rewritten. | Finding 1 (medium, spec defect): correctness, guarantees, independent, security | `main.rs` `gate_verdict`/`gate_refusal` (T37) |
+| S2 | `score.json` is `{schema_version, trial_id, business, check_exit}`. The overloaded `outcome` key goes. | Finding 1 (the root: a business replay was named as the trial's outcome) | `score.sh`, `main.rs` (T36, T37) |
+| S3 | `score.sh` reads the row's `outcome` and `failure_class` strictly and reports the trial's class by the table (`unscorable` for `harness_error` and contradictions), so the run's terminal and the row agree for every legitimate row. | Finding 1 ("state which gate result the policy rules for such rows, so the journal's run outcome and the row never disagree": correctness, independent) | `score.sh` (T36) |
+| S4 | Policy reason texts restated to the table. Ids, results and transitions are unchanged, and no rule is added. | Finding 1 (as S3) | `policy.json` (T38) |
+| S5 | Red-first stand-in arms `budget-over-pass`, `harness-error-over-pass` and `budget-over-unscorable`; `bad-score` retargeted; the stand-in logs the score seat's result word. Per-cell `score.sh` cases. | Finding 1 ("add red-first stand-in arms ... do not weaken the gate"); robustness C5 arms 1–3, 5 and 6 | `brokkr-standin.sh`, `report.rs`, `recipe.rs` (T34, T35) |
+| S6 | The README's `score_mismatch` sentence is replaced by the table. The #151 sentence names the F1/F2 follow-up and 0116 §6 acceptance as preconditions. | Finding 1 (guarantees: "correct ... the README's `score_mismatch` sentence together"); Finding 2 (low) | `evals/README.md`, `.brokkr/recipes/README.md` (T39) |
+| S7 | `through_driver` is `#[cfg(test)]`, and `run()`'s driver arm is deleted. | Finding 3 (low) | `wrappers.rs` (T40) |
+| S8 | Seam 1 is proven by a probe `evals_bin` that records its own environment (it can go red), and seam 2 by the trial run directly. Seams 3–4 are claimed only as unreachable. | Independent Finding 4 (low) | `recipe.rs` (T41) |
+| — | `trial_args`' `let _ = bin`: no change, because `bin` is used in the `#[cfg(test)]` block at `main.rs:1272-1286`. | Correctness Finding 4 (info) | — |
+| — | The #302 flake is left to its parallel fix. | Tests residual (low) | — |
+
+**No acceptance criterion is weakened.** AC2's `score_mismatch` arm is
+*corrected toward accepted decisions* 0055 §2 and 0071 §2, the authority
+for which leg decides a row. The review's evidence is
+`provenance.rs::business_replay_never_rewrites_budget_or_infrastructure_history`,
+which pins that a business replay legitimately differs from a budget or
+infrastructure row. The criterion grows: it gains the budget-unscorable
+refusal (a check revision 2 did not have) and two arms that must *not*
+refuse. AC4 gains one case per table cell. AC17 is narrowed only where
+the finding showed it claimed more than its test could show (seams 3–4).
+Seam 1 gains a proof that can go red. AC18 is new.
+
+**Positions, ruled.** *Adopted from simplicity:* option (a) in the one
+function that already owns it; the observation that the row's class names
+the deciding leg; no full-precedence replay; no new policy rule or result;
+the narrowed seam 3–4 claim; through_driver test-only rather than deleted;
+#302 out of scope. *Adopted from robustness:* budget never unscorable; the
+score seat reports the trial's class so the journal never says `done` for a
+`harness_error` row (simplicity's "the seat names the state" would leave
+that, and would let `brokkr compare` count budget failures as passes); a
+seam-1 proof that observes the trial process's own environment; the
+vacuity control (`bad-score` stays red). *Rejected from robustness:* a
+derived `outcome` in `score.json` (vacuous), a `score harness_error → stop`
+rule (a result outside the seat's vocabulary, about an unobserved engine
+seam), a trap (changes no recorded outcome), the populated-root refusal and
+the trial-id hardening (outside the finding; `check` already refuses `..`),
+and the #302 test change (collides with the parallel fix). *Rejected from
+simplicity:* score.sh and policy semantics unchanged, and dropping `bin`
+(it breaks the test build).
+
+## Review return (revision 2): what changes and which finding each change answers
 
 The implementer reads this table and the tasks, not the review's notes.
 Severities are the panel's; "spec" marks the defects that returned the run.
@@ -166,7 +217,24 @@ applying it to the two remaining fields removes a special case.
   `hang-after-start` (write a readiness file, then sleep until killed).
 - **No stand-in driver.** Argv assembly is proven inline.
 
-## Project structure: files touched (revision 2 delta on `080db77`)
+## Project structure: files touched
+
+**Revision 3 delta on `040795d`:** `.brokkr/recipes/eval/scripts/score.sh`
+(agreement table, `business`/`check_exit`, strict row read);
+`.brokkr/recipes/eval/policy.json` (reason texts only);
+`.brokkr/recipes/README.md`; `evals/src/main.rs` (`GateVerdict`,
+`gate_verdict`, `gate_refusal(&GateVerdict, &TrialResult)`, inline tests);
+`evals/src/wrappers.rs` (`#[cfg(test)]` `through_driver`, driver arm
+deleted); `evals/tests/data/brokkr-standin.sh` (three modes, `bad-score`
+retargeted, `score=` log line); `evals/tests/report.rs` (three arms and the
+AC18 assertions); `evals/tests/recipe.rs` (per-cell cases, two seam tests);
+`tests/delivery_recipes.rs` (only if it pins reason text);
+`evals/README.md`; `specs/eval-brokkr-recipe/implementation.md`. Not
+touched: everything revision 2 listed as untouched, plus `check`, the
+`artifacts.rs` replay, the runner's precedence, `trial.sh`, `bundle.json`,
+journal facts v1 and the report.
+
+### Revision 2 delta on `080db77`
 
 | File | Change |
 |---|---|
@@ -201,7 +269,9 @@ schemas, `docs/evals/baseline-2026-11-01.md`, `.github/` beyond round 1.
   (after the `trial` subcommand). ≤ 64 KiB. Absolute paths only.
 - **Slot outputs**: `row.json` (one schema-2 row), `exit` (one decimal),
   `trial.stderr` (≤ 64 KiB), `score.json` (`schema_version: 1`, `trial_id`,
-  `outcome`, `exit`; present whenever `check` ran).
+  `business` ∈ {`pass`, `fail`, `unscorable`}, `check_exit`; present
+  whenever `check` ran; **revision 3** renames `outcome`/`exit`, and a line
+  carrying `outcome` is `score_missing`).
 - **Journal facts v1 (revised in place)**: five typed facts per trial
   (`tokens`, `turns`, `wall_time_ms`, `deadline_killed`, `tool_calls`), each
   `{status: present, value}` or `{status: unavailable, reason}`; closed
@@ -225,11 +295,14 @@ schemas, `docs/evals/baseline-2026-11-01.md`, `.github/` beyond round 1.
   `trial` (refusals `driver_contract_unknown`, `via_brokkr_profile_mismatch`
   on the public argv, exit 2, no row). `--wrapper-profile` keeps the three
   names. Slot categories: `trial_row_missing`, `trial_context_mismatch`,
-  `score_missing`, `score_mismatch`, the 0076 categories. No exit code
+  `score_missing`, `score_mismatch` (revision 3: a business replay outside
+  the row's agreeing set under the agreement table), the 0076 categories. No exit code
   changes elsewhere; stderr keeps fixed categories only.
 - Recipe seat results: `trial` → `ran` with `inputs.trial_id`, or
   `harness_error` with empty inputs; `score` → `pass`, `fail`, `unscorable`,
-  empty inputs. Exactly `result`, `inputs`, `notes`.
+  empty inputs, chosen by the agreement table (revision 3): the trial's
+  class when the replay agrees, `unscorable` for a `harness_error` row or a
+  contradiction. Exactly `result`, `inputs`, `notes`.
 - Library: `journal::read(&[u8]) -> Result<Facts, String>`,
   `journal::join(&[TrialResult], &Facts) -> Result<Joined, String>`,
   `journal::write_evidence(&Path, &Joined) -> EvidenceIndex`,
@@ -259,6 +332,9 @@ bash scripts/seal-branch-test.sh
 cargo deny check licenses
 git diff --stat main -- Cargo.toml Cargo.lock evals/Cargo.toml evals/Cargo.lock deny.toml scripts/ .brokkr/recipes/self/   # empty
 test ! -e evals/tests/wrappers_launch/standin-driver.py
+! grep -n 'through_driver(&cmd' evals/src/wrappers.rs                       # revision 3: no production driver arm
+(cd evals && cargo build --locked)                                          # non-test build: through_driver is test-only
+! grep -n "until the operator's paid run" evals/README.md                   # Finding 2
 ```
 
 The operator's first engine run, offline and free, after merge (oracle and
@@ -292,4 +368,9 @@ $E report --input controls.jsonl --journal facts.json --evidence-dir "$PWD/.brok
 | Deleting `standin-driver.py` loses the only end-to-end proof of the wrapper's launch path through a driver. | Accepted and stated: the path is refused at runtime, so an end-to-end proof would prove a path no user can reach; the inline `Command` inspection proves assembly; the follow-up restores an end-to-end arm against the observed driver. |
 | CI cannot run the engine. | Stated plainly: CI compiles the recipe; the scripts are exercised under bash; the engine run is the operator's receipt. |
 | The decision number collides at integration. | Renumber as 0105 and 0108 were; the spec and index row say so. |
+| **(R3)** The stand-in's rewritten budget/infrastructure leaf is rejected by a binding the plan did not name (the matrix index or row binds more than `metadata.json`'s `result` entry). | T34 rebinds the whole chain the commit path checks, with the same helpers `provenance.rs` uses. A check is never relaxed to admit the rewrite. If a binding cannot be reproduced from a test, the arm moves to a Rust test that rewrites through `artifacts` primitives, with the same assertions. |
+| **(R3)** The bash mirror of the agreement table drifts from `gate_refusal`. | The six stand-in arms run both the real `score.sh` and the real matrix on one slot and assert the seat's word together with the committed row (AC18), so a drift turns one of them red. The Rust function stays the authority that commits. |
+| **(R3)** A hostile unconfined agent rewrites `row.json` to steer the score seat's word. | The score seat's word can only move the run's terminal. The matrix re-reads the row against the planned cell, worker context, `exit` and the bound leaf. The row is the measurement, and the residual is #221's (unchanged from revision 2). |
+| **(R3)** Renaming `score.json`'s keys breaks a reader. | `read_slot` is the only reader, the file is unreleased, and a line carrying the old key is `score_missing` (tested), never silently accepted. |
+| **(R3)** The #302 flake reddens a verify round. | Out of this change and fixed in parallel. The implementer records any recurrence and never retries to green silently (T42). |
 | The design is returned again. | Design returns share 0102's five review returns; the sixth parks for the operator. |

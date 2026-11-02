@@ -1,4 +1,4 @@
-# Ordered tasks: the eval recipe on brokkr (interim path) — revision 2
+# Ordered tasks: the eval recipe on brokkr (interim path) — revision 3
 
 Each task is checked only with its paired test. Nothing is `complete` while a
 box is open or a gate is red. No push, no merge, no decision accepted;
@@ -194,3 +194,135 @@ says so; the round-1 boxes stay as the implementer left them.
   **Test:** `git log -1 --format=%G?` is `N`; `git status --porcelain` is
   empty; no remote was pushed; `implementation.md` records the first-red
   observation from T20.
+
+## Round 3 (second review return, 2026-11-02; run `issue-148-the-eval-recipe-on-bro-1b9b64e9`)
+
+Built on top of `040795d`, never amended. Order matters: the red-first arms
+(T34, T35) are written and observed red against the committed code before
+T36 to T38 change it. Each task names the finding it answers (plan.md,
+"Revision 3").
+
+- [ ] **T34 Stand-in arms for the agreement table, red first (AC2, AC18;
+  Finding 1, all four members).** In `evals/tests/data/brokkr-standin.sh`
+  add modes `budget-over-pass`, `harness-error-over-pass` and
+  `budget-over-unscorable`. After `trial.sh` the stand-in rewrites the
+  slot's `row.json` (`outcome`/`failure_class` → `fail`/`budget` or
+  `harness_error`/`harness_error`), writes `exit` (`1` or `2`), and rewrites
+  the retained `trials/<trial_id>/result.json` to the same row. It then
+  rebinds `metadata.json`'s `result` entry (length and SHA-256) exactly as
+  `evals/tests/provenance.rs`'s `rebind` does. `budget-over-unscorable`
+  additionally truncates the retained `state.json` *without* rebinding. Then
+  run the real `score.sh`. Extend `EVAL_TEST_BROKKR_LOG` with one
+  `score=<result word>` line per invocation, and retarget the `bad-score`
+  mode to the `business` key. If the matrix's commit path binds more than
+  `metadata.json` (for example a digest of `metadata.json` in the matrix
+  index), rebind that chain the same way. Never relax a check to make the
+  rewrite pass. Add the three cases to `evals/tests/report.rs` beside
+  `bad-score`/`no-score`.
+  **Test:** before T36, run the two legitimate arms against `040795d` and
+  record in `implementation.md` that both are red with `score_mismatch`.
+  After T36 to T38: `budget-over-pass` commits a `fail`/`budget` row, every
+  planned row is produced and the exit is 1. `harness-error-over-pass`
+  commits the slot's `harness_error` row unchanged (failure not
+  `score_mismatch`). `budget-over-unscorable` and `bad-score` yield
+  `score_mismatch`, a `harness_error` row, a zero-time suffix and exit 2.
+  `no-score` still yields `score_missing`.
+- [ ] **T35 `score.sh` per-cell cases, red first (AC4, AC18; Finding 1).**
+  In `evals/tests/recipe.rs`, over rewritten oracle and null leaves and
+  slot rows (the T34 rewrite, done in Rust with the `provenance.rs`
+  helpers), add one case per agreement-table cell: pass/pass → `pass`;
+  null fail/fail → `fail`; `fail/budget`/pass → `fail`;
+  `harness_error`/pass → `unscorable`; pass row over a failing state →
+  `unscorable`; `fail/budget` over a truncated `state.json` →
+  `unscorable`; `row.json` missing, a symlink, or two lines →
+  `unscorable`. In every case `score.json` has `business` and
+  `check_exit` and no `outcome` key. A malformed request still writes no
+  `score.json`.
+  **Test:** the cases themselves, observed red against `040795d` (no
+  `business` key; `fail/budget` reports `pass`) and green after T36.
+- [ ] **T36 `score.sh` follows the agreement table (AC4, AC18; Finding 1).**
+  Write `score.json` as `{schema_version, trial_id, business, check_exit}`
+  (sibling temporary and rename, before reporting, unchanged order). Read
+  `<slot>/row.json` strictly: regular file, `! -L`, `wc -c` ≤ 65536,
+  exactly one line, `jq -e '(.outcome|IN("pass","fail","harness_error"))
+  and (.failure_class|type|IN("string","null"))'`. Read only those two
+  fields. Report by the table, and `unscorable` with `score.json` written
+  when the row is unreadable. Update the header comment to the table.
+  Notes carry no path and no row byte.
+  **Test:** T35 green. `recipe.rs`'s existing "notes carry no path or
+  stderr byte" assertion holds for every new case.
+- [ ] **T37 `gate_verdict` and `gate_refusal` follow the agreement table
+  (AC2; Finding 1).** In `evals/src/main.rs`, `GateVerdict::Ruled` carries
+  a closed `Business { Pass, Fail, Unscorable }` read from the `business`
+  key. Any other value, a missing key and the revision-2 `outcome` key are
+  `Missing`. `gate_refusal(&GateVerdict, &TrialResult)` matches
+  `(row.outcome, row.failure_class, business)` per the table. The caller
+  passes `&row`. `outcome_name` is removed if nothing else uses it. A
+  committed `fail/budget` or `harness_error` row is never rewritten, and
+  `stop_admission` stays today's expression.
+  **Test:** inline tests at the existing `gate_refusal` test cover every
+  cell: pass × {pass ok; fail, unscorable mismatch}; business fail ×
+  {fail ok; pass, unscorable mismatch}; budget × {pass, fail ok;
+  unscorable mismatch}; harness_error × {pass, fail, unscorable ok};
+  `Missing` → `score_missing` for every row. `gate_verdict` cases: an
+  unknown value, a missing key and an `outcome`-only line are `Missing`.
+  T34 green.
+- [ ] **T38 Policy reason texts (AC18; Finding 1).** In
+  `.brokkr/recipes/eval/policy.json` restate the `reason` of `SCORE-PASS`,
+  `SCORE-FAIL` and `SCORE-UNSCORABLE` (and the description sentence) to the
+  agreement table. Ids, results, transitions and severities stay unchanged,
+  and no rule is added.
+  **Test:** `tests/delivery_recipes.rs` still pins exactly five rules with
+  their ids, from/result/next and hard severities. If it pins reason text,
+  its fixture follows the new text. The one-fault mutants stay red.
+- [ ] **T39 README and recipe docs (Finding 2 and Finding 1's docs).**
+  `evals/README.md`: replace the recipe section's `score_mismatch` sentence
+  with the agreement table (one short table or three sentences), and
+  rewrite the "Tokens, turns and cost are not in the rows" sentence. It
+  must name the F1/F2 forwarding follow-up and the operator's acceptance of
+  0116 §6 as preconditions before a paid run can measure tokens, turns or
+  tool-call records, and it must not say a paid run alone closes either
+  #151 gap. `.brokkr/recipes/README.md`: the score seat's results by the
+  same table.
+  **Test:** `grep -n "until the operator's paid run" evals/README.md`
+  finds nothing. `grep -n "0116 §6" evals/README.md` finds the sentence.
+  `grep -n "disagrees with the row" evals/README.md .brokkr/recipes/README.md`
+  finds nothing.
+- [ ] **T40 `through_driver` is test-only (AC8; Finding 3).** In
+  `evals/src/wrappers.rs` put `#[cfg(test)]` on `through_driver` and delete
+  `run()`'s `let mut cmd = match via_brokkr { Some(driver) =>
+  through_driver(..), None => cmd }`, so `cmd` stays the direct command. The
+  comment at the refusal names the follow-up that restores the arm.
+  **Test:** the evals crate's non-test `cargo build --locked` and
+  `cargo clippy --all-targets --locked -- -D warnings` stay clean.
+  `grep -n "through_driver(&cmd" evals/src/wrappers.rs` finds nothing. The
+  inline `through_driver_assembles_the_direct_argv_byte_for_byte` and the
+  `driver_contract_unknown` refusal tests pass unchanged.
+- [ ] **T41 Seam proofs that can go red (AC17; independent Finding 4).** In
+  `evals/tests/recipe.rs` replace
+  `the_trial_seat_strips_the_matrix_environment` with two tests. (1) Seam
+  1: the request's `evals_bin` is a probe script that writes its own
+  environment keys to a file and exits 2. Run the real `trial.sh` with
+  `SWARMAIL_EVAL_SEAM_SENTINEL=1` in its environment. Assert the record
+  contains `SWARMAIL_BIN` (the probe ran under `trial.sh`) and no key
+  containing `SENTINEL`. (2) Seam 2: run `swarmail-evals trial --task signup
+  --agent probe -- <probe agent>` directly, with the sentinel in the trial's
+  own environment. Assert that the probe agent's recorded keys lack it.
+  Under the existing `trial_scope()` guard. No claim is made for seams 3–4.
+  **Test:** both green. Locally delete `env -i` from `trial.sh`, observe
+  (1) red, restore it, and record that in `implementation.md` (the mutation
+  is never committed).
+- [ ] **T42 Implementation record and gates (AC13, AC14, AC15).** Extend
+  `specs/eval-brokkr-recipe/implementation.md` with the round-3 receipts:
+  the T34/T35 first-red observations, the T41 mutation, and the gate list
+  run `--locked` exactly as the plan's quickstart (evals fmt/clippy/test
+  against the candidate's `swarmail`, coverage gate plus selftest,
+  publish-guard, seal-branch, deny; the eval bundle compile "not run, no
+  binary" unless the binary exists). Record the #302 flake if it reappears,
+  never retry-to-green silently. Commit unsigned on top of `040795d`.
+  **Test:** every command's exit code recorded. `git diff --stat main --
+  Cargo.toml Cargo.lock evals/Cargo.toml evals/Cargo.lock deny.toml
+  scripts/ .brokkr/recipes/self/` is empty. `git log -1 --format=%G?` is
+  `N`. `git status --porcelain` is empty. The PR body (T33's paragraph)
+  gains one sentence: the gate agrees with the row by the agreement table,
+  and a `fail/budget` trial is recorded as data.
