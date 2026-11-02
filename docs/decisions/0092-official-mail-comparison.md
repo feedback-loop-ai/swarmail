@@ -1,6 +1,7 @@
 # 0092 — Official comparison provenance and bounded translation
 
-- **Status:** proposed — awaiting the operator
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-28
 - **Issue:** Epic #164 / #163, continuation of stopped candidate 4a116dbc2ab0b8851eefb4ce8c2a8804dc619f01
 - **Specification:** [Official-artifact comparison](../../specs/official-mail-comparison/spec.md)
@@ -101,3 +102,27 @@ Implementation T1 adds the one proposed 0092 decision-index row and proves the
 inventory; until then that gate is outstanding, not waived. 0091 already has its
 row. Structural design validation cannot stand in for whole-candidate verification.
 Commit unsigned; operator alone accepts/reconciles decisions and seals for merge.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02. The text above is unchanged
+and remains the record of what was proposed. This addendum states what has
+moved since it was written, checked against `main` at `c336c95`; it rules
+nothing beyond the acceptance.
+
+- **The tooling shipped; the evidence is owed.** `44175fe` (#287) landed the
+  wire driver (`benches/mail_compare.rs`), the Mailpit adapter
+  (`benches/mail_compare/mailpit_mcp.rs`), `scripts/compare-mail.sh` and the
+  comparison row type (`evals/src/identity.rs`).
+  [`docs/evals/README.md`](../evals/README.md) records the controls (T9.a)
+  as unstarted and no comparison evidence, final contract, final trial or
+  cost record; its rows are open, not waived. No paid trial is authorized.
+  Acceptance makes no comparison claim.
+- **v3 is the current lock.** The v2 source lock this record introduced is
+  kept as history (`docs/evals/history/2026-10-28-sources.lock.v2.json`);
+  the lock in use is `docs/evals/sources.lock.json`, `lock_version` 3, under
+  [0093](0093-source-mail-comparison.md).
+- **The adapter falls short of §3's contract.** §3 makes the adapter's local
+  contract MCP 2025-03-26. `docs/evals/README.md` records that the adapter
+  refuses JSON-RPC batches, which falls short of 2025-03-26, and that this
+  stays open with the final contracts.

@@ -1,6 +1,7 @@
 # 0079 — Revision-qualified MCP negotiation and admission
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-26
 - **Scope:** Epic #164, issue #152.
 - **Specification:** [MCP revision negotiation](../../specs/mcp-version-negotiation/spec.md).
@@ -103,3 +104,24 @@ deviations in the [per-revision register](../../specs/mcp-version-negotiation/re
 Neither proposal is accepted by this correction. Full revision conformance is
 not claimed. The four actual-client receipts remain operator-owned and owed;
 #151's wrappers and the epic exit matrix determine the deviations' practical impact.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02. The text above is unchanged
+and remains the record of what was proposed. This addendum states what has
+moved since it was written, checked against `main` at `c336c95`; it rules
+nothing beyond the acceptance.
+
+- **The #151 merge hold was not kept.** The sentence "This draft does not
+  lift #151's merge hold" is stale. #152 merged as `42f04f2` (#288) on
+  2026-10-31; the #151 baseline was published on 2026-11-01 (`f815d48`,
+  #307, [baseline](../evals/baseline-2026-11-01.md)) and measured main
+  `a4f552d`, which already carried #152. The baseline lists that ordering
+  among its deviations. `README.md` still says "The operator holds this PR
+  unmerged until #151's baseline exists."
+- **The four client receipts are still owed.** Claude Code, Codex, MCP
+  Inspector and Claude Desktop receipts remain operator-owned and owed
+  (issue AC3, as `README.md` states). Acceptance claims neither issue
+  compatibility nor full revision conformance; the C1–C6 deviations of
+  [0080](0080-mcp-source-reconciliation.md) and the OPTIONS exception of
+  [0101](0101-mcp-options-admission.md) remain.

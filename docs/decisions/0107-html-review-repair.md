@@ -1,6 +1,7 @@
 # 0107 — Repair HTML declaration context, inspected work and empty-message reports
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended"
+  and "0107 accept", given in chat to the dispatcher).
 - **Date:** 2026-10-28
 - **Scope:** Epic #251 issue #259 independent review repairs before PR #268.
 - **Updates proposed:** [0085](0085-deliverability-report.md) report identity/composition and [0106](0106-html-client-compatibility.md) lexical, empty-input and proof details; neither is accepted here.
@@ -109,3 +110,25 @@ changes, 0105 §2 and its specification admit no fixed rule-set value, and 0105
 would misstate what ran. New HTML findings reach March text-block clients on
 mail that triggers them, under the new id. That reading is proposed, not an
 acceptance; the operator may rule otherwise.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02, in chat to the dispatcher:
+"accept all as recommended" and, separately, "0107 accept". The text above
+is unchanged and remains the record of what was proposed. This addendum
+states what the acceptance settles and what has moved, checked against
+`main` at `c336c95`.
+
+- **The March reading is accepted.** The integration note "March baseline
+  and the report identity" asked the operator to rule on reading
+  [0105](0105-mcp-report-output.md) §1 as pinning the March envelope, order,
+  escaping and text-only shape, not report content. The operator accepted
+  that reading: March clients see the report's new `rule_set_id` and its new
+  findings, and the March baseline's one-token `rule_set_id` edit
+  (`swarmail-bulk/1` to `swarmail-html/3`) stands. The 2026-11-02 addenda to
+  [0082](0082-mcp-structured-output.md) and 0105 state what the March freeze
+  covers.
+- **The identity is `swarmail-html/3`.** Rule 1 still says
+  `swarmail-html/2`, the historical HTML-only candidate's identity. Main
+  ships `swarmail-html/3` (`RULE_SET_ID`, `src/deliverability.rs`), as the
+  combined-identity note above says.

@@ -1,6 +1,7 @@
 # 0114 — MCP resources and subscriptions: evaluated, not shipped, metric not measured
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-31
 - **Scope:** Epic #164 issue #158 (P3), delivered from main `d892acb` on the
   zero-Codex `claude-careful` recipe (0098/0099, rework per 0102).
@@ -138,3 +139,20 @@ opposite directions, and the chief checked their facts against the tree:
 - 0045 §8 applies: nothing here contradicts an accepted ruling, so the
   docs-only change and the test witness may land while this record is
   proposed. Only the operator accepts it, and only the operator closes #158.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02. The text above is unchanged
+and remains the record of what was proposed. This addendum states what has
+moved since it was written, checked against `main` at `c336c95`; it rules
+nothing beyond the acceptance.
+
+- **The baseline exists.** Context item 1 cites `docs/evals/README.md` for
+  "no genuine #151 baseline". The baseline was published on 2026-11-01
+  (`f815d48`, [baseline](../evals/baseline-2026-11-01.md)).
+- **Reopen trigger (b) has not fired.** The baseline's failure taxonomy
+  counts zero `wait_timeout` failures in the paid rows. All five paid
+  failures are `gave_up` on one model, with the mail delivered and no action
+  against the application. The two `wait_timeout` rows in the oracle/null
+  controls are the null agent's declared idle class, not a paid result.
+  Closing #158 remains the operator's act.

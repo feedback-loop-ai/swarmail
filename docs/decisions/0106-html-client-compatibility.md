@@ -1,6 +1,7 @@
 # 0106 — Versioned HTML client compatibility heuristics
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-26
 - **Scope:** Epic #251 issue #259; additive HTML findings through shipped 0085.
 - **Authority:** operator's #251 direction, 2026-10-26: lazy cached analysis of stored bytes, never SMTP work; built-in deterministic rules. Number 0106 is assigned by this task; earlier reserved numbers are not reused.
