@@ -5,7 +5,17 @@
 A shared namespace mailbox, an ephemeral per-run instance, an agent-sidecar —
 the chart packages the same binary with no configuration language of its own
 ([decision 0008](../decisions/0008-kubernetes-deployment-contract.md),
-*accepted*):
+*accepted*). Install the published chart:
+
+```
+helm install swarmail oci://ghcr.io/feedback-loop-ai/charts/swarmail --version 0.2.0 \
+  --namespace swarmail --create-namespace
+helm test swarmail -n swarmail        # the /healthz hook, from a curl pod
+```
+
+It runs the `:0.2.0` image, published by the `v0.2.0` release run on
+2026-11-02 together with this chart. To track `main` instead, install from a
+checkout:
 
 ```
 git clone https://github.com/feedback-loop-ai/swarmail && cd swarmail
@@ -14,17 +24,14 @@ helm install swarmail ./charts/swarmail --set image.tag=main --set image.pullPol
 helm test swarmail -n swarmail        # the /healthz hook, from a curl pod
 ```
 
-Install from a checkout until the `v0.2.0` release run has published the
-chart. Before that run the only published chart, OCI `0.1.0`, predates the
-startupProbe, the TLS settings, `networkPolicy.ingressPeers` and the listen
-configuration, and the publish guard never republishes a version (decision
-0019); `0.1.1`, `0.1.2` and `0.1.3` were prepared and never published. The
-tree's chart is `0.2.0` with `appVersion` `0.2.0`, aligned with the crate for
-the joint `v0.2.0` release (decision 0051); its image, `:0.2.0`, exists only
-once that tag's image job has published it. The command above therefore sets
-`image.tag=main` explicitly — and `image.pullPolicy=Always`, because `:main`
-moves: under the chart's default `IfNotPresent` a node that cached an older
-`:main` would keep running it.
+The published charts are OCI `0.1.0`, which predates the startupProbe, the
+TLS settings, `networkPolicy.ingressPeers` and the listen configuration, and
+`0.2.0`; `0.1.1`, `0.1.2` and `0.1.3` were prepared and never published, and
+the publish guard never republishes a version (decision 0019). Chart `0.2.0`
+carries `appVersion` `0.2.0`, aligned with the crate (decision 0051). The
+checkout install sets `image.tag=main` explicitly — and
+`image.pullPolicy=Always`, because `:main` moves: under the chart's default
+`IfNotPresent` a node that cached an older `:main` would keep running it.
 
 **Releases publish the image before the chart.** A `v*` tag publishes only
 when it is exactly `v<Cargo.toml version>` for the image and exactly
