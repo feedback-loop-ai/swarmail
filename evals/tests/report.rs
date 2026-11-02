@@ -1499,7 +1499,7 @@ fn brokkr_mode_runs_the_product_through_the_recipe_scripts() {
             .filter(|l| *l == "score=pass" || *l == "score=fail")
             .count(),
         8,
-        "the score seat ruled pass or fail on every trial"
+        "the review (scoring) seat ruled pass or fail on every trial"
     );
     let matrix_dir = only_matrix_dir(&root);
     for row in &rows {
@@ -1560,7 +1560,7 @@ fn defect_case(mode: &str, expected_stderr: &str) {
 }
 
 /// The number of seat-pair invocations a stand-in log records (one request
-/// line each); its `score=` lines are the score seat's result words.
+/// line each); its `score=` lines are the review (scoring) seat's result words.
 fn requests(log_text: &str) -> usize {
     log_text
         .lines()
@@ -1571,7 +1571,7 @@ fn requests(log_text: &str) -> usize {
 /// A legitimate row the agreement table commits: the stand-in rewrites the
 /// slot the way the runner's precedence legs leave it, and every planned row
 /// is produced with admission continuing. Returns the rows, the exit code and
-/// the score seat's result words.
+/// the review (scoring) seat's result words.
 fn agreeing_case(mode: &str) -> (Vec<TrialResult>, Option<i32>, String, Vec<String>) {
     let _trial_scope = trial_scope();
     let dir = tempdir();
@@ -1604,7 +1604,7 @@ fn agreeing_case(mode: &str) -> (Vec<TrialResult>, Option<i32>, String, Vec<Stri
 
 /// AC2, AC18: a `fail`/`budget` row over a state that still replays `pass` is
 /// the deadline leg of accepted 0055 section 2, not a disagreement. It is
-/// committed as the row says, the score seat reports `fail`, and admission goes on.
+/// committed as the row says, the review (scoring) seat reports `fail`, and admission goes on.
 #[test]
 fn brokkr_mode_commits_a_budget_row_over_a_passing_state() {
     let (rows, code, err, words) = agreeing_case("budget-over-pass");
@@ -1623,7 +1623,7 @@ fn brokkr_mode_commits_a_budget_row_over_a_passing_state() {
 
 /// AC2, AC18: an infrastructure `harness_error` row over a state that still
 /// replays `pass` is committed as written, never rewritten to `score_mismatch`,
-/// and the score seat reports `unscorable` so the journal and the row agree.
+/// and the review (scoring) seat reports `unscorable` so the journal and the row agree.
 #[test]
 fn brokkr_mode_commits_a_harness_error_row_over_a_passing_state() {
     let (rows, code, err, words) = agreeing_case("harness-error-over-pass");

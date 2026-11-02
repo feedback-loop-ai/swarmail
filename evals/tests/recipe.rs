@@ -637,7 +637,7 @@ fn standin_export() -> Value {
     null_rows.as_object_mut().unwrap().remove("deadline_killed");
     let seat = |trial: &str, usage: Value| json!({"seat": "trial", "result": "ran", "inputs": {"trial_id": trial}, "usage": usage});
     json!({"runs": [
-        {"run_id": "run-a", "seats": [seat(&fixed_id(1), full_usage()), {"seat": "score", "result": "pass", "inputs": {}}]},
+        {"run_id": "run-a", "seats": [seat(&fixed_id(1), full_usage()), {"seat": "review", "result": "pass", "inputs": {}}]},
         {"run_id": "run-b", "seats": [seat(&fixed_id(2), Value::Null)]},
         {"run_id": "run-c", "seats": [seat(&fixed_id(3), json!({"turns": 1}))]},
         {"run_id": "run-d", "seats": [seat(&fixed_id(3), json!({"turns": 2}))]},

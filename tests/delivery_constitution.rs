@@ -440,7 +440,7 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
         ),
         (
             ".brokkr/recipes/self/scripts/verify-seat.sh",
-            "b42a7928fac7287824baa2b04672e0539085fdec4ffcbe1539cecb95fd7ed81a",
+            "dd893db5292691d6849e584691e0a1042a76844506d1222c48c8ca9513694100",
         ),
         (
             ".brokkr/recipes/self/scripts/delivery-proof-test.sh",
@@ -847,6 +847,14 @@ impl VerifySeatFixture {
         let result = result_dir.join("seat result.json");
 
         std::fs::create_dir_all(&candidate).unwrap();
+        // A candidate shelf of the repository's anchor recipe and a sentinel
+        // no gate was taught: the seat must compile both (#148).
+        for name in ["self", "sentinel"] {
+            let recipe = candidate.join(".brokkr/recipes").join(name);
+            std::fs::create_dir_all(&recipe).unwrap();
+            std::fs::write(recipe.join("bundle.json"), "{}\n").unwrap();
+        }
+        std::fs::write(candidate.join(".brokkr/recipes/README.md"), "docs\n").unwrap();
         // The standalone eval workspace the seat's evals gates `cd` into.
         std::fs::create_dir_all(candidate.join("evals")).unwrap();
         std::fs::create_dir_all(&pin).unwrap();
@@ -864,9 +872,17 @@ impl VerifySeatFixture {
             .join(".brokkr/recipes/self/scripts/verify-seat.sh");
         std::fs::copy(verify_source, pin.join("verify-seat.sh")).unwrap();
 
+        // One argv line per call; FAIL_RECIPE with COMPILE_MODE makes the one
+        // named recipe warn on stdout or fail, and every other one compile clean.
         let engine_script = r#"#!/usr/bin/env bash
 printf 'brokkr\n' >> "$GATE_ORDER"
-printf '%s\n' "$@" > "$BROKKR_ARGV_MARKER"
+printf '%s\n' "$*" >> "$BROKKR_ARGV_MARKER"
+if [ "$3" = "${FAIL_RECIPE:-none}" ]; then
+  case "${COMPILE_MODE:-clean}" in
+    warning) printf 'lets the run go on without reading fixture\n' ;;
+    failure) printf 'fixture compile failure\n' >&2; exit 23 ;;
+  esac
+fi
 exit 0
 "#;
         std::fs::write(&engine, engine_script).unwrap();
@@ -1022,6 +1038,10 @@ exit 0
             .env("FAKE_SWARMAIL", &self.swarmail)
             // An inherited value must not satisfy the seat: it resolves its own.
             .env("SWARMAIL_BIN", "/inherited/must-not-be-used")
+            // Glob order is the locale's; the fixture pins the C locale.
+            .env("LC_ALL", "C")
+            .env_remove("FAIL_RECIPE")
+            .env_remove("COMPILE_MODE")
             .env("BROKKR_ARGV_MARKER", &self.argv_marker)
             .env("LATER_MARKER", &self.later_marker);
         command
@@ -1108,6 +1128,7 @@ fi
             "cargo:build --locked --bin swarmail --message-format=json",
             "cargo:test --locked",
             "brokkr",
+            "brokkr",
             "coverage-gate.sh",
         ]
     );
@@ -1142,7 +1163,11 @@ fi
     let argv = std::fs::read_to_string(&fixture.argv_marker).unwrap();
     assert_eq!(
         argv.lines().collect::<Vec<_>>(),
-        ["compile", "--bundle", ".brokkr/recipes/self"]
+        [
+            "compile --bundle .brokkr/recipes/self",
+            "compile --bundle .brokkr/recipes/sentinel"
+        ],
+        "every recipe directory is compiled, in glob order"
     );
     let startup = std::fs::read_to_string(&startup_log).unwrap();
     let observed: Vec<_> = startup.lines().collect();
@@ -1154,6 +1179,106 @@ fi
         observed.iter().all(|line| line.starts_with("nonlogin\t")),
         "a gate runner used login startup: {startup}"
     );
+}
+
+/// The compile gate visits every directory under `.brokkr/recipes/` and
+/// refuses on the first problem, by name, before any later gate (#148). Each
+/// arm reaches `fail` and leaves the coverage gate, the next gate, unrun.
+#[test]
+fn verify_seat_compiles_every_recipe_and_refuses_the_first_problem_by_name() {
+    // A sweep warning on the *first* recipe while the second compiles clean:
+    // the check sits inside the loop, not after it.
+    let fixture = VerifySeatFixture::new();
+    let output = fixture
+        .base_command()
+        .env("FAIL_RECIPE", ".brokkr/recipes/self")
+        .env("COMPILE_MODE", "warning")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let result = fixture.read_result();
+    assert_eq!(result["result"], "fail");
+    let notes = result["notes"].as_str().unwrap();
+    assert!(
+        notes.contains(
+            "brokkr compile --bundle .brokkr/recipes/self emitted a policy-sweep warning"
+        ),
+        "{notes}"
+    );
+    let argv = std::fs::read_to_string(&fixture.argv_marker).unwrap();
+    assert_eq!(
+        argv, "compile --bundle .brokkr/recipes/self\n",
+        "stopped at the first refusal"
+    );
+    let order = std::fs::read_to_string(&fixture.gate_order).unwrap();
+    assert!(!order.contains("coverage-gate.sh"), "{order}");
+
+    // A compile failure on the sentinel, which no gate was ever taught.
+    let fixture = VerifySeatFixture::new();
+    let output = fixture
+        .base_command()
+        .env("FAIL_RECIPE", ".brokkr/recipes/sentinel")
+        .env("COMPILE_MODE", "failure")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let result = fixture.read_result();
+    assert_eq!(result["result"], "fail");
+    let notes = result["notes"].as_str().unwrap();
+    assert!(
+        notes.contains("brokkr compile --bundle .brokkr/recipes/sentinel failed"),
+        "{notes}"
+    );
+    assert!(notes.contains("fixture compile failure"), "{notes}");
+    let order = std::fs::read_to_string(&fixture.gate_order).unwrap();
+    assert!(!order.contains("coverage-gate.sh"), "{order}");
+
+    // A directory without a bundle, and one whose bundle is an alias, are
+    // refusals by name: never a skip, and the engine is not asked about them.
+    for bundle_is in ["missing", "alias"] {
+        let fixture = VerifySeatFixture::new();
+        // "selfstray" sorts after "self" and before "sentinel".
+        let stray = fixture.candidate.join(".brokkr/recipes/selfstray");
+        std::fs::create_dir(&stray).unwrap();
+        if bundle_is == "alias" {
+            std::os::unix::fs::symlink("../sentinel/bundle.json", stray.join("bundle.json"))
+                .unwrap();
+        }
+        let output = fixture.base_command().output().unwrap();
+        assert!(output.status.success());
+        let result = fixture.read_result();
+        assert_eq!(result["result"], "fail", "{bundle_is}");
+        let notes = result["notes"].as_str().unwrap();
+        assert!(
+            notes.contains(".brokkr/recipes/selfstray has no bundle.json"),
+            "{notes}"
+        );
+        let argv = std::fs::read_to_string(&fixture.argv_marker).unwrap();
+        assert_eq!(
+            argv, "compile --bundle .brokkr/recipes/self\n",
+            "the engine is not asked about the stray directory, nor past it"
+        );
+        let order = std::fs::read_to_string(&fixture.gate_order).unwrap();
+        assert!(!order.contains("coverage-gate.sh"), "{order}");
+    }
+
+    // An empty shelf compiles nothing, so it can never pass.
+    let fixture = VerifySeatFixture::new();
+    for name in ["self", "sentinel"] {
+        std::fs::remove_dir_all(fixture.candidate.join(".brokkr/recipes").join(name)).unwrap();
+    }
+    let output = fixture.base_command().output().unwrap();
+    assert!(output.status.success());
+    let result = fixture.read_result();
+    assert_eq!(result["result"], "fail");
+    let notes = result["notes"].as_str().unwrap();
+    assert!(
+        notes.contains("no recipe directory under .brokkr/recipes/"),
+        "{notes}"
+    );
+    assert!(!fixture.argv_marker.exists(), "nothing was compiled");
+    let order = std::fs::read_to_string(&fixture.gate_order).unwrap();
+    assert!(!order.contains("coverage-gate.sh"), "{order}");
 }
 
 /// #201: the eval suite never runs against a binary the seat could not
@@ -1401,6 +1526,35 @@ fn ci_transports_artifact_fields_through_env_and_retains_source_tests() {
     assert!(!job.contains("cargo build --release"));
 }
 
+/// The glob's order in the C locale: bash sorts `dir/` matches with their
+/// trailing slash, so `codex-careful/` precedes `codex/` ('-' < '/').
+fn glob_order(names: &mut [String]) {
+    names.sort_by_key(|name| format!("{name}/"));
+}
+
+/// The directory names on the real recipe shelf, in the C locale's glob
+/// order. Nothing here names a recipe.
+fn real_shelf_names() -> Vec<String> {
+    let shelf = Path::new(env!("CARGO_MANIFEST_DIR")).join(".brokkr/recipes");
+    let mut names: Vec<String> = std::fs::read_dir(shelf)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_type().unwrap().is_dir())
+        .map(|entry| entry.file_name().into_string().unwrap())
+        .collect();
+    glob_order(&mut names);
+    names
+}
+
+/// The compile lines a gate that visits every fixture-shelf directory leaves
+/// in the stand-in engine's marker, in the C locale's glob order.
+fn expected_compiles(fixture_names: &[String]) -> Vec<String> {
+    fixture_names
+        .iter()
+        .map(|name| format!("compile --bundle .brokkr/recipes/{name}"))
+        .collect()
+}
+
 struct BrokkrCiFixture {
     root: tempfile::TempDir,
     bin: std::path::PathBuf,
@@ -1423,7 +1577,20 @@ impl BrokkrCiFixture {
         let runner_temp = root.path().join("runner temp");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::create_dir_all(&runner_temp).unwrap();
-        std::fs::create_dir_all(root.path().join(".brokkr/recipes/self")).unwrap();
+        // The fixture shelf is the real shelf's directory names, read from
+        // disk (never listed here), plus a sentinel the product has never
+        // heard of: a gate that compiles only the names it was taught misses
+        // the sentinel (#148).
+        let shelf = root.path().join(".brokkr/recipes");
+        for name in real_shelf_names()
+            .iter()
+            .map(String::as_str)
+            .chain(["sentinel"])
+        {
+            std::fs::create_dir_all(shelf.join(name)).unwrap();
+            std::fs::write(shelf.join(name).join("bundle.json"), "{}\n").unwrap();
+        }
+        std::fs::write(shelf.join("README.md"), "docs\n").unwrap();
         let fixture = Self {
             root,
             bin,
@@ -1442,8 +1609,8 @@ if [ "$*" = --version ]; then
   exit 0
 fi
 [ "$1" = compile ] && [ "$2" = --bundle ] || exit 93
-case "$3" in .brokkr/recipes/self|.brokkr/recipes/codex|.brokkr/recipes/codex-careful|.brokkr/recipes/codex-fast|.brokkr/recipes/mixed-opus-terra|.brokkr/recipes/claude-careful|.brokkr/recipes/eval) ;; *) exit 94 ;; esac
-if [ "$3" = "${FAIL_RECIPE:-bundles/codex-careful}" ]; then
+case "$3" in .brokkr/recipes/*/*|.brokkr/recipes/) exit 94 ;; .brokkr/recipes/?*) ;; *) exit 94 ;; esac
+if [ "$3" = "${FAIL_RECIPE:-none}" ]; then
   case "${COMPILE_MODE:-clean}" in
     stdout-warning) printf 'lets the run go on without reading fixture\n' ;;
     stderr-warning) printf 'lets the run go on without reading fixture\n' >&2 ;;
@@ -1507,6 +1674,7 @@ cp "$FIXTURE_ASSET" "$destination"
             .env("RECORDED_VERSION", "0.12.0")
             .env("FIXTURE_ASSET", &self.engine)
             .env("ENGINE_MARKER", &self.marker)
+            .env("LC_ALL", "C")
             .env("CURL_ARGS", self.root.path().join("curl args.txt"))
             .env_remove("TRANSPORT_FAIL")
             .env_remove("COMPILE_MODE")
@@ -1649,22 +1817,53 @@ fn ci_admits_digest_before_executing_and_compiles_every_recipe() {
     assert!(fixture.marker.exists(), "mutant did not expose execution");
     std::fs::remove_file(&fixture.marker).unwrap();
 
-    let seven = "--version\ncompile --bundle .brokkr/recipes/self\ncompile --bundle .brokkr/recipes/codex\ncompile --bundle .brokkr/recipes/codex-careful\ncompile --bundle .brokkr/recipes/codex-fast\ncompile --bundle .brokkr/recipes/mixed-opus-terra\ncompile --bundle .brokkr/recipes/claude-careful\ncompile --bundle .brokkr/recipes/eval\n";
-    // Dropping the final recipe from the loop still exits zero: only the exact
-    // trace below catches the omission.
-    let omitted = body.replace(
-        "mixed-opus-terra claude-careful eval; do",
-        "mixed-opus-terra claude-careful; do",
+    let mut names = real_shelf_names();
+    names.push("sentinel".to_owned());
+    glob_order(&mut names);
+    let compiles = |fixture: &BrokkrCiFixture| -> Vec<String> {
+        let marker = std::fs::read_to_string(&fixture.marker).unwrap();
+        let mut lines: Vec<String> = marker.lines().map(str::to_owned).collect();
+        assert_eq!(lines.remove(0), "--version");
+        lines
+    };
+    // A loop taught a fixed list of the repository's names exits zero and
+    // compiles all but the sentinel: only the set comparison catches the
+    // omission, which is how a new recipe was missed before #148.
+    let glob = "for dir in .brokkr/recipes/*/; do";
+    assert_eq!(
+        body.matches(glob).count(),
+        1,
+        "the loop visits the whole shelf by glob"
     );
+    let fixed = format!(
+        "for dir in {}; do",
+        real_shelf_names()
+            .iter()
+            .map(|name| format!(".brokkr/recipes/{name}/"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let omitted = body.replace(glob, &fixed);
     assert_ne!(body, omitted);
     let output = fixture.command(&omitted).output().unwrap();
     assert!(output.status.success(), "{}", ci_diagnostics(&output));
-    assert_ne!(std::fs::read_to_string(&fixture.marker).unwrap(), seven);
+    assert_ne!(compiles(&fixture), expected_compiles(&names));
+    assert!(
+        !compiles(&fixture)
+            .iter()
+            .any(|line| line.ends_with("/sentinel"))
+    );
     std::fs::remove_file(&fixture.marker).unwrap();
 
     let output = fixture.command(&body).output().unwrap();
     assert!(output.status.success(), "{}", ci_diagnostics(&output));
-    assert_eq!(std::fs::read_to_string(&fixture.marker).unwrap(), seven);
+    let seen = compiles(&fixture);
+    assert_eq!(seen.len(), names.len(), "each directory is compiled once");
+    assert_eq!(
+        seen,
+        expected_compiles(&names),
+        "every shelf directory, once each, in glob order"
+    );
     let args = std::fs::read_to_string(fixture.root.path().join("curl args.txt")).unwrap();
     for required in [
         "--fail\n",
@@ -1717,37 +1916,29 @@ fn ci_refuses_failed_download_or_hash_before_execution() {
 #[test]
 fn ci_refuses_warning_on_either_stream_and_preserves_compile_failure_status() {
     let body = brokkr_ci_body(ADMIT_ENGINE_STEP);
-    // The final recipe gets its own failures: nothing after it could mask them,
-    // and every earlier recipe compiled clean first.
-    for (recipe, later) in [
-        (
-            ".brokkr/recipes/codex-careful",
-            Some(".brokkr/recipes/codex-fast"),
-        ),
-        (
-            ".brokkr/recipes/mixed-opus-terra",
-            Some(".brokkr/recipes/claude-careful"),
-        ),
-        (
-            ".brokkr/recipes/claude-careful",
-            Some(".brokkr/recipes/eval"),
-        ),
-        (".brokkr/recipes/eval", None),
-    ] {
+    // Every recipe on the shelf takes each failure in turn: first, middle,
+    // last and the sentinel alike. The run stops at the refusal, names the
+    // recipe, preserves the status, and compiles nothing after it.
+    let mut names = real_shelf_names();
+    names.push("sentinel".to_owned());
+    glob_order(&mut names);
+    for (position, name) in names.iter().enumerate() {
+        let recipe = format!(".brokkr/recipes/{name}");
         for mode in ["stdout-warning", "stderr-warning", "failure"] {
             let fixture = BrokkrCiFixture::new();
             let output = fixture
                 .command(&body)
-                .env("FAIL_RECIPE", recipe)
+                .env("FAIL_RECIPE", &recipe)
                 .env("COMPILE_MODE", mode)
                 .output()
                 .unwrap();
             assert_eq!(
                 output.status.code(),
-                Some(if mode == "failure" { 23 } else { 1 })
+                Some(if mode == "failure" { 23 } else { 1 }),
+                "{recipe} {mode}"
             );
             let diagnostics = ci_diagnostics(&output);
-            assert!(diagnostics.contains(recipe), "{diagnostics}");
+            assert!(diagnostics.contains(&recipe), "{diagnostics}");
             let expected = if mode == "failure" {
                 "fixture compile failure"
             } else {
@@ -1756,9 +1947,11 @@ fn ci_refuses_warning_on_either_stream_and_preserves_compile_failure_status() {
             assert!(diagnostics.contains(expected), "{diagnostics}");
             let marker = std::fs::read_to_string(&fixture.marker).unwrap();
             assert!(marker.ends_with(&format!("compile --bundle {recipe}\n")));
-            if let Some(later) = later {
-                assert!(!marker.contains(later));
-            }
+            assert_eq!(
+                marker.lines().count(),
+                position + 2,
+                "{recipe}: the first refusal stops the loop\n{marker}"
+            );
             fixture.assert_cleaned();
         }
     }
@@ -1775,6 +1968,66 @@ fn ci_refuses_warning_on_either_stream_and_preserves_compile_failure_status() {
         "--version\n"
     );
     fixture.assert_cleaned();
+}
+
+#[test]
+fn ci_refuses_an_empty_shelf_and_a_directory_without_a_bundle_by_name() {
+    let body = brokkr_ci_body(ADMIT_ENGINE_STEP);
+
+    let fixture = BrokkrCiFixture::new();
+    let shelf = fixture.root.path().join(".brokkr/recipes");
+    for name in real_shelf_names()
+        .iter()
+        .map(String::as_str)
+        .chain(["sentinel"])
+    {
+        std::fs::remove_dir_all(shelf.join(name)).unwrap();
+    }
+    let output = fixture.command(&body).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        ci_diagnostics(&output).contains("REFUSAL: no recipe directory under .brokkr/recipes/"),
+        "{}",
+        ci_diagnostics(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&fixture.marker).unwrap(),
+        "--version\n",
+        "an empty shelf compiles nothing"
+    );
+    fixture.assert_cleaned();
+
+    for bundle_is in ["missing", "alias"] {
+        let fixture = BrokkrCiFixture::new();
+        // "selfstray" sorts between "self" and "sentinel": the real recipes up
+        // to "self" compile, and the refusal stops the loop before the sentinel.
+        let stray = fixture.root.path().join(".brokkr/recipes/selfstray");
+        std::fs::create_dir(&stray).unwrap();
+        if bundle_is == "alias" {
+            std::os::unix::fs::symlink("../sentinel/bundle.json", stray.join("bundle.json"))
+                .unwrap();
+        }
+        let output = fixture.command(&body).output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{bundle_is}");
+        assert!(
+            ci_diagnostics(&output)
+                .contains("REFUSAL: .brokkr/recipes/selfstray has no bundle.json"),
+            "{}",
+            ci_diagnostics(&output)
+        );
+        let marker = std::fs::read_to_string(&fixture.marker).unwrap();
+        let before: Vec<String> = real_shelf_names()
+            .into_iter()
+            .filter(|name| format!("{name}/").as_str() < "selfstray/")
+            .collect();
+        let compiled: Vec<&str> = marker.lines().skip(1).collect();
+        assert_eq!(
+            compiled,
+            expected_compiles(&before),
+            "every recipe before the stray one compiled; the stray one and the sentinel did not"
+        );
+        fixture.assert_cleaned();
+    }
 }
 
 /// The step of a CI job whose `name:` is `name`, from its `- name:` line to

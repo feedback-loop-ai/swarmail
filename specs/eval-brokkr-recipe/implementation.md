@@ -104,7 +104,7 @@ fact is claimed "tracked", because I could not read the sub-issues.
 | F1 accounting channel for a nested driver | **drafted, not filed** (issue 1) | the four seams named; sentinel proofs; no forwarding; tokens `null` with a typed reason |
 | F2 driver invocation form | **drafted, not filed** (issue 2) | `--via-brokkr` refuses `driver_contract_unknown` at the trial and the wrapper; assembly proven inline |
 | F3 per-run export shape | **drafted, not filed** (issue 3) | facts v1 reader and goldens; `journal-facts.sh` fails typed, exit 2 |
-| F4 two-seat recipe with its own policy | **drafted, not filed** (issue 4) | files as specified; `tests/delivery_recipes.rs` pins; CI's pinned-bundle loop is the only pre-merge compile |
+| F4 two-seat recipe with its own policy | **falsified by the pinned engine** (brokkr 0.12.0 refuses a policy without a `review` phase); see issue 6 and 0116 R4 (2026-11-02). Issue 4 is superseded, **drafted, not filed** | the recipe now has phases `trial, review, done, stop` with the exec scoring gate as its protected review; `tests/delivery_recipes.rs` pins; CI, the verify seat and the house rules compile every recipe directory |
 | F5 hands for the trial seat | **drafted, not filed** (issue 5) | `binds: []`; `network` true/false; `brokkr_artifacts_unreachable`; paid agents unsupported |
 | F6 does the exec box share `/tmp` | **unobserved**; not an issue; the answer goes in `evals/README.md` (admission posture) once the engine run shows it | nothing changes either way |
 | F7 a deadline-killed seat is distinguishable | **drafted, not filed** (issue 2, last sentence) | `deadline_killed` is a typed fact; a worker with no row is `harness_error`, never `gave_up` |
@@ -146,6 +146,9 @@ else.
 exec driver and a policy with phases `trial, score, done, stop` and no intake,
 design, implement, verify, review or ship phase compile (`brokkr compile
 --bundle .brokkr/recipes/eval`) and finish without a commit.
+*Superseded: brokkr 0.12.0 refuses this shape (see issue 6); the recipe now
+uses phases `trial, review, done, stop` with the exec scoring gate as its
+protected review.*
 
 **5. Hands for an exec seat that runs the candidate's binaries (F5).** Needed:
 loopback; the worktree's `target/` and `.brokkr/state/eval/` read-write; for a
@@ -154,13 +157,41 @@ the three credential files it names, read-only access to the three CLI
 executables and their install trees, and the network; and whether `/tmp` is
 private (F6). None is declared today.
 
+**6. A non-delivery trial recipe and the protected review gate (0.12.0).**
+With brokkr 0.12.0 (binary sha256 `29dc3309925a2556b9713b7a9b5fb8089b8e4610e86215fc89554e75634e7cad`,
+source `a9893b4` plus four pinned patches), `brokkr compile --bundle
+.brokkr/recipes/eval` refused a standalone `forge.phase-machine/v2` recipe
+with phases `trial, score, done, stop` and no `protected_phase`:
+`error: bundle: policy has no 'review' phase; the protected review gate is
+non-removable (extension model, layer 1)`. Swarmail now ships the same
+recipe with its exec scoring gate named `review` (`class: gate`, exec
+driver, results `pass`/`fail`/`unscorable`, one attempt, no agent, no
+panel) and `protected_phase: "review"`. Questions: (1) Is that phase a
+lawful protected review for a non-delivery recipe, and is the layer-1
+requirement (a `review` phase even without `protected_phase`) documented?
+(2) Does the engine require of a protected review any result vocabulary,
+rule facts, `shippable_from` or panel aggregate, and does it apply them at
+compile or at run time? (3) If only a review panel is lawful, may a
+trial-only recipe declare itself exempt from layer 1, or what is the
+minimal panel shape that needs no paid model call? Until this is
+answered, Swarmail ships the shape the engine accepts or keeps `eval` off
+the compiled shelf and names this issue in the PR.
+
+*Drafted, not filed (2026-11-02). Observed compile output of the renamed
+shape: **not run** in the implement seat, which had no staged pinned binary
+(`.brokkr/state/bin/brokkr` absent) and no network. The receipt belongs to a
+verify continuation entered from the candidate's bundle or to CI's
+`brokkr bundle (pinned)` job; the operator attaches it to this issue when
+filing. If that compile refuses the renamed shape, 0116 R4 Ruling 3 applies
+and this text is amended with the refusal.*
+
 ## Acceptance criteria
 
 | AC | Status | Proof |
 |---|---|---|
 | AC1 one command, one row per slot | met | `report.rs::brokkr_mode_runs_the_product_through_the_recipe_scripts` (2 tasks × {oracle, null} × 2 = 8 rows, 4 pass, 4 fail, distinct seeds, `check --matrix` replay) |
 | AC2 worker death is a row | met | `brokkr_mode_turns_every_worker_defect_into_a_row` (no-row, foreign-row, bad-exit, bad-score, no-score, category-stderr), `brokkr_mode_records_a_killed_worker_as_a_harness_error` |
-| AC3 recipe is real | **partly**: files, pins and CI loop done; `brokkr compile --bundle .brokkr/recipes/eval` **not run** (no binary) | `tests/delivery_recipes.rs` (11 mutants, each caught by its named rule) |
+| AC3 recipe is real | **partly**: files, pins and CI loop done; `brokkr compile --bundle .brokkr/recipes/eval` **not run** (no binary); CI refused the original shape, so reworked under 0116 R4 (2026-11-02) | `tests/delivery_recipes.rs` (11 mutants, each caught by its named rule) |
 | AC4 scripts on the engine's rendering | met | `recipe.rs` (engine, CRLF and bare forms; first red above) |
 | AC5 controls through the recipe path | met | `proof.rs::the_controls_hold_through_the_recipe_path` (oracle 16/16, null 0/16) |
 | AC6 typed join | met | goldens, inline `journal.rs` tests, `a_dropped_join_is_red`, untyped refusals |

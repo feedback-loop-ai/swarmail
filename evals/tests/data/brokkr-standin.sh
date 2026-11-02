@@ -11,7 +11,7 @@
 #                        | budget-over-pass | harness-error-over-pass | budget-over-unscorable
 # EVAL_TEST_BROKKR_LOG   if set, one `swarmail-eval-request: PATH` line per
 #                        invocation, then one `score=<result word>` line
-#                        after the score seat has reported
+#                        after the review (scoring) seat has reported
 # EVAL_TEST_BROKKR_READY if set, hang-after-start writes its pid here
 set -u
 [ "${1:-}" = run ] && [ "${2:-}" = --recipe ] && [ "${3:-}" = eval ] && [ "${4:-}" = --feature ] || exit 64
@@ -84,7 +84,7 @@ case "$mode" in
     head -c 100 "$leaf/state.json" > "$work/state" && cp "$work/state" "$leaf/state.json"
     ;;
 esac
-verdict="$(seat score score.sh)"
+verdict="$(seat review score.sh)"
 [ -z "${EVAL_TEST_BROKKR_LOG:-}" ] || printf 'score=%s\n' "$verdict" >> "$EVAL_TEST_BROKKR_LOG"
 if [ "$mode" = no-score ]; then
   rm -f "$slot/score.json"

@@ -697,6 +697,9 @@ mod tests {
         assert!(mutate(&|v| v["trials"][0]["trial_id"] = json!("../x")).is_err());
         assert!(mutate(&|v| v["trials"][0]["run_id"] = json!("")).is_err());
         assert!(mutate(&|v| v["trials"][0]["seat"] = json!("score")).is_err());
+        // The scoring gate is the recipe's `review` seat (0116 R4); only the
+        // `trial` seat carries the facts this reader accepts.
+        assert!(mutate(&|v| v["trials"][0]["seat"] = json!("review")).is_err());
         assert!(mutate(&|v| v["trials"][0]["extra"] = json!(1)).is_err());
         assert!(
             mutate(&|v| v["trials"][0]["tokens"]["value"]["input"] = json!(COUNTER_LIMIT + 1))

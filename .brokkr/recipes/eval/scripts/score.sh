@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# score.sh — the eval recipe's `score` gate (decision 0116).
+# score.sh — the eval recipe's `review` gate (decision 0116, R4): the scoring gate
+# that is the recipe's protected review. The file keeps its name; nothing in it
+# reads the seat or phase name.
 #
 # Re-applies the task's deterministic check to the app's retained state: it
 # runs `swarmail-evals check --artifacts-dir <trials_root>/<trial_id>`, which

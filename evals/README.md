@@ -337,8 +337,9 @@ tracked in brokkr#766.
   claude|codex|dsh` as the agent's launcher is the design's intent but is
   **refused today** (`--via-brokkr` fails closed with `driver_contract_unknown`
   until the driver's invocation is observed; see `wrappers.md`).
-- `score` re-applies the task's check to the retained leaf
-  (`check --artifacts-dir`): the app's state, never the agent's account.
+- `review` (the exec scoring gate, `scripts/score.sh`, which is the recipe's
+  protected review under brokkr 0.12.0, decision 0116 R4) re-applies the task's
+  check to the retained leaf (`check --artifacts-dir`): the app's state, never the agent's account.
   The gate replays only the business check, so the matrix agrees it with the
   row by the table below (accepted 0055 section 2 and 0071 section 2 order the
   row's precedence: infrastructure, then a live deadline as `fail`/`budget`,
@@ -347,7 +348,7 @@ tracked in brokkr#766.
   agreeing set is `score_mismatch`; either stops admission. `score.json` is
   `{schema_version, trial_id, business, check_exit}`, the business replay only.
 
-  | row | agreeing business replay | the `score` seat reports |
+  | row | agreeing business replay | the `review` seat reports |
   |---|---|---|
   | `pass` | `pass` | `pass` |
   | `fail`, class not `budget` | `fail` | `fail` |
@@ -375,7 +376,7 @@ $E report --input runs.jsonl --journal facts.json \
 `--deadline-ms` may not exceed 1 200 000 in this mode (`deadline_exceeds_seat`):
 the trial's deadline plus the runner's fixed startup and shutdown budgets must
 fit the trial seat's 1800 s. The matrix's wait on one worker is the trial
-deadline plus 300 s plus the score seat's 600 s. `--artifacts-dir` must resolve
+deadline plus 300 s plus the review seat's 600 s. `--artifacts-dir` must resolve
 inside the current directory (`brokkr_artifacts_unreachable`): the seat's
 workspace hands reach nothing else. **Paid agents are unsupported under
 `matrix --brokkr`** until the follow-up below declares the binds a paid trial

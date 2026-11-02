@@ -50,6 +50,41 @@ fn work_offices(recipe: &Value) -> Vec<(String, &'static str)> {
     ]
 }
 
+/// What is wrong with a recipe shelf, one line per defect. An entry must be
+/// `README.md` or a real directory (never an alias) holding a regular
+/// `bundle.json`: CI, the verify seat and the house rules compile every
+/// directory by glob, so a stray one must be refused at the source.
+fn shelf_defects(shelf: &Path) -> Vec<String> {
+    let mut defects = Vec::new();
+    let entries = match std::fs::read_dir(shelf) {
+        Ok(entries) => entries,
+        Err(e) => return vec![format!("{}: {e}", shelf.display())],
+    };
+    let mut names: Vec<_> = entries.map(|e| e.unwrap().file_name()).collect();
+    names.sort();
+    if names.is_empty() {
+        defects.push("the shelf is empty".to_owned());
+    }
+    for name in names {
+        let name = name.to_string_lossy().into_owned();
+        let path = shelf.join(&name);
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        if meta.file_type().is_symlink() {
+            defects.push(format!(
+                "{name}: a shelf recipe is a real directory, never an alias"
+            ));
+        } else if meta.is_dir() {
+            let bundle = std::fs::symlink_metadata(path.join("bundle.json"));
+            if !bundle.is_ok_and(|m| m.is_file()) {
+                defects.push(format!("{name}: no regular bundle.json"));
+            }
+        } else if name != "README.md" {
+            defects.push(format!("{name}: not a recipe directory and not README.md"));
+        }
+    }
+    defects
+}
+
 #[test]
 fn every_recipe_stands_on_the_brokkr_folder_shelf() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -72,6 +107,11 @@ fn every_recipe_stands_on_the_brokkr_folder_shelf() {
         "state/\n",
         "only the folder's runtime state is ignored"
     );
+    let shelf = folder.join("recipes");
+    let defects = shelf_defects(&shelf);
+    assert!(defects.is_empty(), "the shelf is malformed: {defects:?}");
+    // The directory is the list: the known recipes must be present, and any
+    // later one is judged by the same predicate with no name to add here.
     for name in [
         "self",
         "codex",
@@ -81,19 +121,7 @@ fn every_recipe_stands_on_the_brokkr_folder_shelf() {
         "claude-careful",
         "eval",
     ] {
-        let bundle = folder.join("recipes").join(name).join("bundle.json");
-        assert!(
-            !std::fs::symlink_metadata(folder.join("recipes").join(name))
-                .unwrap()
-                .file_type()
-                .is_symlink(),
-            "{name}: a shelf recipe is a real directory, never an alias"
-        );
-        assert!(
-            bundle.is_file(),
-            "{name}: no bundle at {}",
-            bundle.display()
-        );
+        assert!(shelf.join(name).is_dir(), "{name}: missing from the shelf");
     }
     let default: Value =
         serde_json::from_str(&std::fs::read_to_string(folder.join("bundle.json")).unwrap())
@@ -1681,6 +1709,10 @@ fn eval_recipe_defect(bundle: &Value, policy: &Value) -> Result<(), String> {
     expect(bundle["policy"] == "policy.json", "own policy")?;
     expect(bundle.get("extends").is_none(), "extends nothing")?;
     expect(
+        bundle["protected_phase"] == "review",
+        "protected_phase is review (the engine's layer 1 needs a review phase)",
+    )?;
+    expect(
         bundle["description"]
             .as_str()
             .is_some_and(|d| d.contains("unconfined")),
@@ -1688,10 +1720,10 @@ fn eval_recipe_defect(bundle: &Value, policy: &Value) -> Result<(), String> {
     )?;
     let seats = bundle["seats"].as_object().ok_or("seats")?;
     expect(
-        seats.keys().map(String::as_str).collect::<Vec<_>>() == ["score", "trial"],
+        seats.keys().map(String::as_str).collect::<Vec<_>>() == ["review", "trial"],
         "exactly two seats",
     )?;
-    for (name, script) in [("trial", "trial.sh"), ("score", "score.sh")] {
+    for (name, script) in [("trial", "trial.sh"), ("review", "score.sh")] {
         let seat = &seats[name];
         expect(
             seat.get("agent").is_none(),
@@ -1722,16 +1754,16 @@ fn eval_recipe_defect(bundle: &Value, policy: &Value) -> Result<(), String> {
         )?;
     }
     expect(seats["trial"]["class"] == "work", "trial is work")?;
-    expect(seats["score"]["class"] == "gate", "score is a gate")?;
+    expect(seats["review"]["class"] == "gate", "review is a gate")?;
     expect(
-        seats["score"]["hands"]["network"] == false,
-        "score has no network",
+        seats["review"]["hands"]["network"] == false,
+        "review has no network",
     )?;
     expect(
         seats["trial"]["hands"]["network"] == true,
         "trial has network (a paid trial needs it)",
     )?;
-    for name in ["trial", "score"] {
+    for name in ["trial", "review"] {
         expect(
             seats[name]["hands"]["binds"] == json!([]),
             &format!("{name}: no bind is guessed (decision 0116, F5)"),
@@ -1742,16 +1774,16 @@ fn eval_recipe_defect(bundle: &Value, policy: &Value) -> Result<(), String> {
         "trial seat 1800 s",
     )?;
     expect(
-        seats["score"]["limits"]["timeout_seconds"] == 600,
-        "score seat 600 s",
+        seats["review"]["limits"]["timeout_seconds"] == 600,
+        "review seat 600 s",
     )?;
     expect(
         seats["trial"]["results"] == json!(["ran", "harness_error"]),
         "trial results",
     )?;
     expect(
-        seats["score"]["results"] == json!(["pass", "fail", "unscorable"]),
-        "score results",
+        seats["review"]["results"] == json!(["pass", "fail", "unscorable"]),
+        "review results",
     )?;
 
     expect(
@@ -1759,7 +1791,7 @@ fn eval_recipe_defect(bundle: &Value, policy: &Value) -> Result<(), String> {
         "policy schema",
     )?;
     expect(
-        policy["phases"] == json!(["trial", "score", "done", "stop"]),
+        policy["phases"] == json!(["trial", "review", "done", "stop"]),
         "phases",
     )?;
     expect(
@@ -1781,11 +1813,11 @@ fn eval_recipe_defect(bundle: &Value, policy: &Value) -> Result<(), String> {
     expect(
         table
             == [
-                ("trial", "ran", "score", false),
+                ("trial", "ran", "review", false),
                 ("trial", "harness_error", "stop", true),
-                ("score", "pass", "done", false),
-                ("score", "fail", "done", false),
-                ("score", "unscorable", "stop", true),
+                ("review", "pass", "done", false),
+                ("review", "fail", "done", false),
+                ("review", "unscorable", "stop", true),
             ],
         "exactly the five rules",
     )?;
@@ -1825,14 +1857,14 @@ fn eval_recipe_is_two_exec_seats_with_one_attempt_and_five_rules() {
         attempts["seats"]["trial"]["limits"]["max_attempts"] = json!(2);
         out.push(("max_attempts 2", attempts, policy.clone()));
         let mut network = bundle.clone();
-        network["seats"]["score"]["hands"]["network"] = json!(true);
+        network["seats"]["review"]["hands"]["network"] = json!(true);
         out.push(("network on the gate", network, policy.clone()));
         let mut bind = bundle.clone();
         bind["seats"]["trial"]["hands"]["binds"] =
             json!([{"path": "/home/operator/.claude", "mode": "ro"}]);
         out.push(("a guessed bind on trial", bind, policy.clone()));
         let mut score_bind = bundle.clone();
-        score_bind["seats"]["score"]["hands"]["binds"] = json!(["/tmp"]);
+        score_bind["seats"]["review"]["hands"]["binds"] = json!(["/tmp"]);
         out.push(("a bind on the gate", score_bind, policy.clone()));
         let mut offline = bundle.clone();
         offline["seats"]["trial"]["hands"]["network"] = json!(false);
@@ -1840,8 +1872,25 @@ fn eval_recipe_is_two_exec_seats_with_one_attempt_and_five_rules() {
         let mut model = bundle.clone();
         model["seats"]["trial"]["agent"] = json!("claude-implementer");
         out.push(("a model agent on trial", model, policy.clone()));
+        let mut unprotected = bundle.clone();
+        unprotected
+            .as_object_mut()
+            .unwrap()
+            .remove("protected_phase");
+        out.push(("no protected_phase", unprotected, policy.clone()));
+        let mut worker = bundle.clone();
+        worker["seats"]["review"]["class"] = json!("work");
+        out.push(("review as a work seat", worker, policy.clone()));
+        let mut renamed = bundle.clone();
+        let trial = renamed["seats"]
+            .as_object_mut()
+            .unwrap()
+            .remove("trial")
+            .unwrap();
+        renamed["seats"]["attempt"] = trial;
+        out.push(("trial renamed", renamed, policy.clone()));
         let mut third = bundle.clone();
-        third["seats"]["extra"] = third["seats"]["score"].clone();
+        third["seats"]["extra"] = third["seats"]["review"].clone();
         out.push(("a third seat", third, policy.clone()));
         let mut soft = policy.clone();
         soft["rules"][4]["next"] = json!("done");
@@ -1862,12 +1911,15 @@ fn eval_recipe_is_two_exec_seats_with_one_attempt_and_five_rules() {
     let named = |label: &str| match label {
         "a retry rule" => "exactly the five rules",
         "max_attempts 2" => "trial: no retries",
-        "network on the gate" => "score has no network",
+        "network on the gate" => "review has no network",
         "a guessed bind on trial" => "trial: no bind is guessed",
-        "a bind on the gate" => "score: no bind is guessed",
+        "a bind on the gate" => "review: no bind is guessed",
         "no network on trial" => "trial has network",
         "a model agent on trial" => "trial: no model agent",
         "a third seat" => "exactly two seats",
+        "no protected_phase" => "protected_phase is review",
+        "review as a work seat" => "review is a gate",
+        "trial renamed" => "exactly two seats",
         "an unscorable leaf that finishes" => "exactly the five rules",
         "an inherited delivery recipe" => "extends nothing",
         "a description that hides the confinement" => "description says unconfined",
@@ -1882,4 +1934,41 @@ fn eval_recipe_is_two_exec_seats_with_one_attempt_and_five_rules() {
             named(label)
         );
     }
+}
+
+#[test]
+fn the_shelf_predicate_refuses_a_stray_directory_an_alias_and_a_loose_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let shelf = dir.path();
+    assert_eq!(shelf_defects(shelf), ["the shelf is empty"]);
+    std::fs::write(shelf.join("README.md"), "docs\n").unwrap();
+    std::fs::create_dir(shelf.join("good")).unwrap();
+    std::fs::write(shelf.join("good/bundle.json"), "{}\n").unwrap();
+    assert!(
+        shelf_defects(shelf).is_empty(),
+        "a well-formed shelf passes"
+    );
+
+    std::fs::create_dir(shelf.join("stray")).unwrap();
+    assert_eq!(shelf_defects(shelf), ["stray: no regular bundle.json"]);
+    std::fs::remove_dir(shelf.join("stray")).unwrap();
+
+    std::os::unix::fs::symlink("good", shelf.join("alias")).unwrap();
+    let defects = shelf_defects(shelf);
+    assert_eq!(defects.len(), 1, "{defects:?}");
+    assert!(defects[0].starts_with("alias: a shelf recipe is a real directory"));
+    std::fs::remove_file(shelf.join("alias")).unwrap();
+
+    std::fs::write(shelf.join("notes.txt"), "x").unwrap();
+    assert_eq!(
+        shelf_defects(shelf),
+        ["notes.txt: not a recipe directory and not README.md"]
+    );
+    std::fs::remove_file(shelf.join("notes.txt")).unwrap();
+
+    std::fs::create_dir(shelf.join("linked")).unwrap();
+    std::os::unix::fs::symlink("../good/bundle.json", shelf.join("linked/bundle.json")).unwrap();
+    assert_eq!(shelf_defects(shelf), ["linked: no regular bundle.json"]);
+
+    assert!(shelf_defects(&shelf.join("absent"))[0].contains("absent"));
 }

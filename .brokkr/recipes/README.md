@@ -194,10 +194,8 @@ dependency fixes with regression tests and checksummed source patches.
 
 ```bash
 export PATH="$PWD/.brokkr/state/bin:$PATH"
-brokkr compile --bundle .brokkr/recipes/codex
-brokkr compile --bundle .brokkr/recipes/codex-careful
-brokkr compile --bundle .brokkr/recipes/codex-fast
-brokkr compile --bundle .brokkr/recipes/claude-careful
+# Every directory on the shelf, as CI and the verify seat do (no list of names):
+for r in .brokkr/recipes/*/; do brokkr compile --bundle "${r%/}" || break; done
 brokkr recipes show codex-fast
 brokkr run --recipe codex-fast \
   --feature 'Implement one scoped story from epic #192'
@@ -240,9 +238,13 @@ inherited gates and protected review before the recipe is reported verified.
 ## The `eval` recipe (interim, decision 0116)
 
 `eval` is not a delivery lane. It runs one trial of the agent eval harness
-(#148) as a brokkr run: a `trial` exec seat, then a `score` exec gate. It has
-its own two-phase policy (`trial` -> `score` -> `done`), no retry (a retried
-trial is a different experiment) and no model seat. This is the operator's
+(#148) as a brokkr run: a `trial` exec seat, then a `review` exec gate. It has
+its own two-phase policy (`trial` -> `review` -> `done`), no retry (a retried
+trial is a different experiment) and no model seat. The engine (brokkr 0.12.0)
+requires a `review` phase in every bundle, so the scoring gate is the recipe's
+protected review (`protected_phase: "review"`): a shell that re-applies the
+task's check to the retained state and never reads the agent's account
+(decision 0116, R4). Its script is still `scripts/score.sh`. This is the operator's
 2026-10-18 **interim path**: the `trial` seat runs the opaque eval-trial driver
 `swarmail-evals trial`, which starts Swarmail and the fixture app as its own
 children and runs the real `brokkr driver claude|codex|dsh` as a child, so the
@@ -252,7 +254,7 @@ the MCP broker when brokkr#766 lands. Today the real driver is not launched:
 `--via-brokkr` refuses `driver_contract_unknown` until the driver's invocation
 is observed (brokkr fact F2), so the recipe runs the **oracle and null controls
 only**; paid agents under `matrix --brokkr` are unsupported until the follow-up
-that observes F1, F2 and F5 (see `evals/wrappers.md`). The `score` seat
+that observes F1, F2 and F5 (see `evals/wrappers.md`). The `review` seat
 reports the trial's class by the agreement table in `evals/README.md`: `pass`
 for a pass row the retained state agrees with, `fail` for a business failure it
 agrees with or a `fail`/`budget` row over a validated state, and `unscorable`

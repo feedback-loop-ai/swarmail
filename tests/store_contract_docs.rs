@@ -1481,13 +1481,21 @@ fn the_gate_inventory_has_one_home_and_everyone_points_at_it() {
             "cd evals && cargo fmt --all -- --check",
             "cd evals && cargo clippy --all-targets --locked -- -D warnings",
             "cd evals && SWARMAIL_BIN=<the candidate's swarmail> cargo test --locked",
-            "brokkr compile --bundle .brokkr/recipes/self",
+            "for r in .brokkr/recipes/*/; do brokkr compile --bundle \"${r%/}\"",
+            "has no `bundle.json` is a refusal",
             "bash scripts/coverage-gate.sh selftest",
             "bash scripts/publish-guard-test.sh",
             "cargo deny check licenses",
             "`native-tls` is absent",
             "The verify seat runs",
         ],
+    );
+    // The self-only compile line let `eval` fall off every local gate while
+    // CI refused it (#148): the one inventory compiles the whole shelf.
+    refuses(
+        &inventory,
+        "house rules' Gates",
+        &["\nbrokkr compile --bundle .brokkr/recipes/self"],
     );
     for (path, prefix) in [
         ("README.md", ""),

@@ -943,7 +943,7 @@ fn direct_envelope_ms(deadline_ms: u64) -> u64 {
     deadline_ms.saturating_add(isolation::TRIAL_GRACE_MS)
 }
 
-/// In brokkr mode the envelope also carries the score seat's 600 s budget
+/// In brokkr mode the envelope also carries the review (scoring) seat's 600 s budget
 /// (decision 0116), so `trial_envelope_expired` there can only mean the engine
 /// or the gate hung past its own seat timeout.
 fn brokkr_envelope_ms(deadline_ms: u64) -> u64 {
@@ -1689,7 +1689,7 @@ struct SlotOutput {
     stderr: Vec<u8>,
 }
 
-/// What the score gate left. `Missing` means the gate never ruled (the file is
+/// What the review (scoring) gate left. `Missing` means the gate never ruled (the file is
 /// absent, unreadable, malformed, not one line, or names no `business` verdict
 /// of the closed vocabulary); `Ruled` carries the business replay it wrote,
 /// which may still lie outside what the row agrees with.

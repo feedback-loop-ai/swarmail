@@ -339,6 +339,16 @@ started, so the first compile of `eval` comes from a staged pinned binary,
 a verify continuation entered from the candidate's bundle, or CI. Each such
 receipt is recorded here by dated line.
 
+**Observation, 2026-11-02 (implement seat).** The renamed shape is built
+(`review` seat and phase, `protected_phase: "review"`, `REVIEW-*` rule ids)
+and pinned by `eval_recipe_defect`. Ruling 3's engine receipt is **not run**:
+the seat held no staged pinned binary (`.brokkr/state/bin/brokkr` absent,
+`binary_sha256` `29dc3309…` not on the host) and no network. Ruling 1 is
+therefore still a compile hypothesis. The receipt belongs to a verify
+continuation entered from the candidate's bundle, whose compile now visits
+every recipe directory, or to CI's `brokkr bundle (pinned)` job. A refusal
+there applies Ruling 3 and is recorded here by dated line.
+
 Specification: [eval recipe review gate](../../specs/eval-recipe-review-gate/spec.md).
 
 ## Delivery and acceptance ownership
