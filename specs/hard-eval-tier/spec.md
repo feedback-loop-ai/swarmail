@@ -12,7 +12,7 @@
 - Route: `claude-careful` (accepted 0098/0099), zero Codex; review residuals
   under accepted 0102.
 
-Decision: 0115 — [A hard eval tier and its named traps](../../docs/decisions/0115-hard-eval-tier.md),
+Decision: 0117 — [A hard eval tier and its named traps](../../docs/decisions/0117-hard-eval-tier.md),
 status proposed; acceptance is the operator's.
 
 Authority relied on, not amended: accepted
@@ -79,13 +79,13 @@ five points; each is ruled here.
    the three tasks get exact named-trap rows, each reusing an action/class
    pair 0071 already names (`superseded_code`/`stale_code`,
    `foreign_token`/`wrong_message`, `digest_decoy`/`wrong_link`), appended to
-   0071 §1's list by proposed 0115. 0071 says future traps need explicit
-   policy review; 0115 is that review. The implementation lands beside the
+   0071 §1's list by proposed 0117. 0071 says future traps need explicit
+   policy review; 0117 is that review. The implementation lands beside the
    proposal as compatible work under 0045 §8: no existing verdict moves, no
    accepted scenario's behaviour changes, the taxonomy stays closed and no
    action string is invented. **Cost of the ruling:** if the operator reads
    0071 §1 as a closed list, the three `trap_class` arms, and with them the
-   disqualification criterion AC6, wait for 0115's acceptance; everything else
+   disqualification criterion AC6, wait for 0117's acceptance; everything else
    in this design is independent of that reading and lands regardless.
 3. **Content discriminator for the backlog (both, differently).** The store
    exposes `received_ms` and a UUIDv7 id; no `Date` header reaches MCP. Both
@@ -274,7 +274,7 @@ no dependency is added to either lockfile.
 differently, the trap table above (trap, class, why a careful agent passes,
 first-wrong-attempt consequence), the 0071 trap table gaining three rows, and
 that the paid hard run is the operator's after merge. The agent eval harness
-spec's `tier` list gains a dated amendment naming `hard`. Proposed 0115 is
+spec's `tier` list gains a dated amendment naming `hard`. Proposed 0117 is
 added to the decision index as proposed. No accepted decision changes status
 or text.
 
@@ -291,8 +291,8 @@ Each criterion names the red test that fails without the change.
 - **AC7 — Layout invariants on every seed.** In process, for 64 distinct public seeds: `otp-backlog` plans twelve OTP deliveries whose current generation is neither first nor last, with twelve distinct codes, where (revised 2026-11-02 on the second return, F1′, superseding the first return's absolute-stamp clause) every mail's text body (the part after the header block, CRLF read as LF) equals exactly `Your verification code is {code}.\n\nRequested {N} minutes before this email was sent.\nIt expires in 10 minutes.\n` for its own code and `N = (12 − g) × 4`, so each mail has exactly one request line, N ≤ 60, N strictly decreases as the generation rises, and generation 12's N is 0; no backlog body contains `Requested at`, `UTC` or the fixture date; and all of this holds for the same seed planned under each of three pinned fixture times, `2026-10-24T12:00:00Z`, `2026-10-24T00:30:00Z` and `2020-01-01T00:00:00Z` (years before the trial, as a late matrix cell's master time can be), so the body cannot depend on the fixture time; `recipient-crowd` plans five confirmation deliveries with five distinct recipients, exactly one to the agent, that one neither first nor last, every body greeting the agent's address, and one decoy address containing the agent's address; `digest-lookalike` plans one HTML-only mail with twelve anchors, exactly two titled `Async drop finally lands on stable`, exactly one `DigestRight` token whose destination host is `news.fixture.eval`, and the decoy's host `news.fixture.eval.click-tracker.net`. The same seed reproduces the same layout; two seeds differ in at least one layout; secrets differ across two constructions of the same seed. Red: any seed violating an invariant.
 - **AC8 — The backlog's resend is closed and harmless.** In `otp-backlog`, `POST /otp/resend` answers 429, records an unaccepted event with no category, sends no mail, and the twelve deliveries are the only OTP deliveries in the snapshot; a trial that hits the 429 and then verifies the current code passes; one that verifies a superseded code fails `stale_code`. Every other scenario's resend behaves as before. Red: a thirteenth OTP delivery, a categorized resend event, or a changed `stale-otp`/`otp` resend.
 - **AC9 — The scorer's inputs do not grow.** `score`'s signature stays `(&Task, &Snapshot)`, the snapshot schema stays 2 with its field set unchanged, and no hard verdict consults anything else. Red: the boundary test on the signature and the snapshot field inventory.
-- **AC10 — Documentation is bidirectional.** Every catalogue id appears in `evals/README.md` and `evals/run-plan.md`; every hard id named in either appears in the catalogue; both name `--tier hard`, `6068b687`, the operator-owned paid hard run and 16 default-tier plus 3 hard tasks; the README trap table lists the three new action/class rows; the decision index has exactly one `0115` row marked proposed; the agent eval harness spec's tier list names `hard` with a dated amendment. Revised 2026-11-02 (F2–F4), and again on the second return (F1′ and its siblings): the README's backlog row and the run-plan state that no request line depends on the fixture time and that the current code was requested when its mail was sent; both state that the window in which the current code can expire before the deadline is as long as the prepare-to-start gap, at the deadline's end, and is `stale_code` by the scorer's fallback; neither says "request times precede the send", "Requested at" or "before the agent begins"; the README says the wait view exposes no `Date` header and no longer says the store keeps none; proposed 0115 names accepted 0076 §5's seven-trap count as historical; the agent eval harness spec's AC3 amendment also states that the AC4 and AC5 controls run all 19; the agent eval harness spec's AC3 carries a dated amendment naming 19 catalogue rows in four tiers with the default product still the 16; `specs/baseline-wrappers/spec.md` carries a dated note that the approved product is 16 tasks of a 19-task catalogue; `evals/hard-tier-intake.md` opens with a dated status banner naming the three shipped ids and pointing at this spec and 0115; the run-plan states that default-tier rows compare with the 2026-11-01 baseline by task id and per-task `definition_sha256`, not by the catalogue hash. Red: the docs test.
-- **AC11 — No reach beyond `evals/`.** No root production file, `Cargo.lock`, `evals/Cargo.lock`, `deny.toml`, `.github/`, `scripts/` or `.brokkr/` file changes; outside `evals/` only `docs/decisions/README.md`, `docs/decisions/0115-hard-eval-tier.md` (while proposed), `specs/agent-eval-harness/spec.md`, `specs/baseline-wrappers/spec.md` (revised 2026-11-02, F3: one dated note) and this design's own files change; no accepted decision changes text or status. Red: the diff.
+- **AC10 — Documentation is bidirectional.** Every catalogue id appears in `evals/README.md` and `evals/run-plan.md`; every hard id named in either appears in the catalogue; both name `--tier hard`, `6068b687`, the operator-owned paid hard run and 16 default-tier plus 3 hard tasks; the README trap table lists the three new action/class rows; the decision index has exactly one `0117` row marked proposed; the agent eval harness spec's tier list names `hard` with a dated amendment. Revised 2026-11-02 (F2–F4), and again on the second return (F1′ and its siblings): the README's backlog row and the run-plan state that no request line depends on the fixture time and that the current code was requested when its mail was sent; both state that the window in which the current code can expire before the deadline is as long as the prepare-to-start gap, at the deadline's end, and is `stale_code` by the scorer's fallback; neither says "request times precede the send", "Requested at" or "before the agent begins"; the README says the wait view exposes no `Date` header and no longer says the store keeps none; proposed 0117 names accepted 0076 §5's seven-trap count as historical; the agent eval harness spec's AC3 amendment also states that the AC4 and AC5 controls run all 19; the agent eval harness spec's AC3 carries a dated amendment naming 19 catalogue rows in four tiers with the default product still the 16; `specs/baseline-wrappers/spec.md` carries a dated note that the approved product is 16 tasks of a 19-task catalogue; `evals/hard-tier-intake.md` opens with a dated status banner naming the three shipped ids and pointing at this spec and 0117; the run-plan states that default-tier rows compare with the 2026-11-01 baseline by task id and per-task `definition_sha256`, not by the catalogue hash. Red: the docs test.
+- **AC11 — No reach beyond `evals/`.** No root production file, `Cargo.lock`, `evals/Cargo.lock`, `deny.toml`, `.github/`, `scripts/` or `.brokkr/` file changes; outside `evals/` only `docs/decisions/README.md`, `docs/decisions/0117-hard-eval-tier.md` (while proposed), `specs/agent-eval-harness/spec.md`, `specs/baseline-wrappers/spec.md` (revised 2026-11-02, F3: one dated note) and this design's own files change; no accepted decision changes text or status. Red: the diff.
 - **AC12 — Every house gate is green.** The whole inventory in [house-rules § Gates](../../docs/house-rules.md#gates--part-of-every-change), locked, including the evals fmt, clippy and tests against the candidate's own `swarmail`, the coverage gate and its selftest, publish-guard and seal proofs, bundle compile and `cargo deny`. Red: any gate.
 
 ## Non-goals and deferrals
@@ -408,12 +408,12 @@ constant and on what else must move.
   the renderer every task uses and adds a signal MCP never exposes, and an
   earlier fixture time shifts every mail's header to fix one body line.
 
-### F2 (info; independent, guarantees) — proposed 0115, plan.md and this spec described a superseded artifact
+### F2 (info; independent, guarantees) — proposed 0117, plan.md and this spec described a superseded artifact
 
-0115's Alternatives said `Requested at HH:MM:SS UTC`; plan.md and this
+0117's Alternatives said `Requested at HH:MM:SS UTC`; plan.md and this
 spec's own table said the oracle reads MCP `anchors`, which implementation
 amendment 1 had already corrected. All three are aligned in this revision:
-0115 (still proposed; its status does not move) states the date form and the
+0117 (still proposed; its status does not move) states the date form and the
 backward derivation, and the oracle is described as parsing anchors from the
 `html` the wait view returns.
 
@@ -579,11 +579,11 @@ sides derived from the same stale input.
 
 ### Guarantees LOW 1 — accepted 0076 §5 still counts seven traps
 
-Accepted text is not edited. Proposed 0115, the record of the trap-list
+Accepted text is not edited. Proposed 0117, the record of the trap-list
 amendment, now names 0076 §5's "seven traps" in its "Amends upon
 acceptance" line, as a count that becomes historical on acceptance; the
 list itself stays 0071 §1's. This design commit drafts that sentence in
-0115, whose status stays `proposed`, and AC10's docs test pins it (T24).
+0117, whose status stays `proposed`, and AC10's docs test pins it (T24).
 
 ### Sibling infos — folded into text being rewritten anyway
 
@@ -615,6 +615,6 @@ list itself stays 0071 §1's. This design commit drafts that sentence in
 
 R3's backlog paragraph, AC7's backlog clause and AC10's revised sentence
 above; plan.md § Review-return-2 changes for files; tasks.md T21–T27 for
-the ordered work. T1–T20 stay done. The 0115 text (T24's text half) is
+the ordered work. T1–T20 stay done. The 0117 text (T24's text half) is
 already in this design commit. The catalogue, goal texts and hashes do not
 move, so `catalogue-v2.json` and `6068b687…` stand.

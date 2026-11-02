@@ -299,22 +299,22 @@ fn the_hard_tier_is_documented_in_both_directions() {
         .map(|t| t.id.as_str())
         .collect();
     assert_eq!(default_ids.len(), 16);
-    // The decision index has exactly one 0115 row, still a proposal.
+    // The decision index has exactly one 0117 row, still a proposal.
     let index = std::fs::read_to_string(root().join("docs/decisions/README.md")).unwrap();
     let rows: Vec<_> = index
         .lines()
-        .filter(|l| l.starts_with("| [0115]"))
+        .filter(|l| l.starts_with("| [0117]"))
         .collect();
     assert_eq!(rows.len(), 1);
     assert!(rows[0].contains("proposed"), "{}", rows[0]);
     let decision =
-        std::fs::read_to_string(root().join("docs/decisions/0115-hard-eval-tier.md")).unwrap();
+        std::fs::read_to_string(root().join("docs/decisions/0117-hard-eval-tier.md")).unwrap();
     assert!(decision.contains("**Status:** proposed"));
-    // 0115 names accepted 0076 §5's seven-trap count as historical.
+    // 0117 names accepted 0076 §5's seven-trap count as historical.
     let flat_decision = decision.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         flat_decision.contains("[0076](0076-sequential-eval-trials.md) §5"),
-        "0115 names 0076 §5"
+        "0117 names 0076 §5"
     );
     // The harness spec's tier list names `hard` with a dated amendment.
     let spec = std::fs::read_to_string(root().join("specs/agent-eval-harness/spec.md")).unwrap();
@@ -382,7 +382,7 @@ fn the_hard_tier_is_documented_in_both_directions() {
     ] {
         assert!(head.contains(needle), "intake banner: missing {needle}");
     }
-    // 0115 stays a single proposal: exactly one status line, still proposed.
+    // 0117 stays a single proposal: exactly one status line, still proposed.
     assert_eq!(
         decision
             .lines()

@@ -1,4 +1,4 @@
-# 0115 — A hard eval tier and its named traps
+# 0117 — A hard eval tier and its named traps
 
 - **Status:** proposed — awaiting the operator
 - **Date:** 2026-11-02; text aligned 2026-11-02 on the first review's return
@@ -22,7 +22,7 @@
   accepted 0076 (sequential trials), 0020 §5, the 2026-10-26 approved baseline
   product, and every catalogue, snapshot and result version (all stay 2).
 - **Number:** 0114 is the highest number on `main` and in open proposals at
-  this base; 0115 is the next free one. Recheck at integration.
+  this base; 0117 is the next free one. Recheck at integration.
 
 ## Context
 

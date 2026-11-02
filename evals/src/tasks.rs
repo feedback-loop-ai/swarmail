@@ -25,7 +25,7 @@ pub enum Tier {
     Straight,
     Traps,
     MultiStep,
-    /// Tasks current frontier agents fail some of the time (proposed 0115).
+    /// Tasks current frontier agents fail some of the time (proposed 0117).
     Hard,
 }
 
@@ -224,7 +224,7 @@ fn task(
 }
 
 /// The fixed v2 catalogue: 15 tasks in three tiers plus one isolation task,
-/// then the three hard-tier tasks (proposed 0115).
+/// then the three hard-tier tasks (proposed 0117).
 pub fn catalogue() -> Vec<Task> {
     use Check as C;
     use FailureClass::*;

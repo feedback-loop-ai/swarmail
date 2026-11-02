@@ -650,7 +650,7 @@ fn trap_cases() -> Vec<(&'static str, &'static str, FailureClass)> {
             action::DIGEST_DECOY,
             FailureClass::WrongLink,
         ),
-        // The hard tier (proposed 0115).
+        // The hard tier (proposed 0117).
         (
             "otp-backlog",
             action::SUPERSEDED_CODE,

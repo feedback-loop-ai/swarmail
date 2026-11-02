@@ -277,11 +277,11 @@ retained state with a failed or parked delivery replays as `harness_error`
 (exit 2). Replay reproduces only what the snapshot records: process
 failures and deadlines are not in it.
 
-## The hard tier (proposed 0115)
+## The hard tier (proposed 0117)
 
 The 2026-11-01 baseline scored 395/400 on the 16 default-tier tasks, so the
 suite could not rank anything. Proposed
-[0115](../docs/decisions/0115-hard-eval-tier.md) (spec
+[0117](../docs/decisions/0117-hard-eval-tier.md) (spec
 [hard-eval-tier](../specs/hard-eval-tier/spec.md)) adds a `hard` tier: **16
 default-tier tasks plus 3 hard tasks, 19 in the catalogue.** Each hard task is
 one agent, the default deadline, `gave_up` when the agent does nothing, and an
@@ -374,7 +374,7 @@ v2 scores: they are different experiments.
 
 A rejected exact named action disqualifies its whole trial, before **or after**
 the goal. Application recovery remains usable and goal facts stay truthful.
-The seven affected goals disclose the rule; proposed 0115 appends three hard
+The seven affected goals disclose the rule; proposed 0117 appends three hard
 rows, which land as compatible work beside the proposal (0045 §8):
 
 | Task | Action / class |

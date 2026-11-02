@@ -41,7 +41,7 @@ impl Plan {
 
     /// `None` is the approved product (the default-tier tasks); `Some(tier)`
     /// is that tier alone, a separate operator-selected product (proposed
-    /// 0115).
+    /// 0117).
     pub fn for_tier(tier: Option<tasks::Tier>, output: &Path) -> Self {
         let tasks: Vec<_> = tasks::catalogue()
             .into_iter()

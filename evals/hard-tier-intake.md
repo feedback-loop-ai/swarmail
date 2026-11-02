@@ -4,7 +4,7 @@
 > The tier shipped three tasks, `otp-backlog`, `recipient-crowd` and
 > `digest-lookalike`, not the four framed below; see
 > [specs/hard-eval-tier/spec.md](../specs/hard-eval-tier/spec.md) and proposed
-> [0115](../docs/decisions/0115-hard-eval-tier.md).
+> [0117](../docs/decisions/0117-hard-eval-tier.md).
 
 Run: a-harder-eval-tier-164-epic-oper-85dfc61d. Phase: intake, framing only.
 Base: main f815d48. Route: claude-careful (decision 0099), zero Codex.
@@ -38,7 +38,7 @@ attachment bodies), that task is dropped. The guarantee is not touched.
    I read 0071's "preserving tiers" as protecting existing memberships, not
    freezing the enum. The implementation lands compatible with that reading.
    The spec and 0071 amendment is a new decision document, status `proposed`,
-   at the next free number, 0115 at this commit. Nothing is accepted. If the
+   at the next free number, 0117 at this commit. Nothing is accepted. If the
    operator reads "preserving tiers" as a closed enum, the implementation
    waits for that decision. This is the one reading to confirm.
 2. **New named traps are scoring semantics.** `superseded_invite` and the
@@ -99,7 +99,7 @@ A7. evals/README.md and run-plan.md state: 16 default plus 4 hard, the
     `--tier hard` command, the historical 6068b687 hash, and that the paid hard
     run is operator-owned. A table documents each hard task's trap, expected
     class and why a careful agent can pass. Red: a grep for each id in both docs.
-A8. The proposed decision (0115 or the next free number) has status `proposed`.
+A8. The proposed decision (0117 or the next free number) has status `proposed`.
     It amends the spec tier list and 0071's named traps. No accepted decision
     changes status.
 A9. No network and no paid agent. Tests use loopback fixtures plus oracle, null

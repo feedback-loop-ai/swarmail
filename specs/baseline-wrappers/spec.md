@@ -14,7 +14,7 @@ The checksum-verified issue151 packet records no prior run outcomes. Its
 2026-10-26 operator ruling fixes every v2 catalogue task, the following models,
 five paid repetitions and concurrency one. The current catalogue has 16 tasks:
 32 control rows and 480 paid result slots. (Note 2026-11-02, proposed
-[0115](../../docs/decisions/0115-hard-eval-tier.md): the approved product is
+[0117](../../docs/decisions/0117-hard-eval-tier.md): the approved product is
 16 tasks of the 19-task catalogue; the three `hard` tasks are a separate
 `baseline --tier hard` product.) Inbox-isolation runs three agents
 inside one slot, so slots are not session counts.

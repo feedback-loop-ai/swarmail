@@ -2256,7 +2256,7 @@ mod publication_proofs {
     }
 }
 
-/// The hard tier's layout proofs (proposed 0115): the layout is a pure
+/// The hard tier's layout proofs (proposed 0117): the layout is a pure
 /// function of the public seed, the secrets never are, and every trap holds
 /// on every one of 64 seeds.
 #[cfg(test)]

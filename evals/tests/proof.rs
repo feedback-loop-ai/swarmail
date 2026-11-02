@@ -207,7 +207,7 @@ fn wrong_actions_fail_in_their_observable_classes() {
         ("confirm-decoys", "wrong_link", FailureClass::WrongLink),
         ("reset-login", "tool_misuse", FailureClass::ToolMisuse),
         ("inbox-isolation", "foreign", FailureClass::WrongMessage),
-        // The hard tier's named mistakes (proposed 0115).
+        // The hard tier's named mistakes (proposed 0117).
         ("otp-backlog", "hard_stale_code", FailureClass::StaleCode),
         (
             "recipient-crowd",

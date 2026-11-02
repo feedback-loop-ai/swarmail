@@ -3,7 +3,7 @@
 Chief synthesis, 2026-11-02, for [spec.md](spec.md); revised 2026-11-02 on
 review return (0102) — see § Review-return changes — and again on the
 second return (§ Review-return-2 changes). Base main `f815d48`.
-Proposed [0115](../../docs/decisions/0115-hard-eval-tier.md) is drafted
+Proposed [0117](../../docs/decisions/0117-hard-eval-tier.md) is drafted
 beside this plan; nothing here needs its acceptance to land (0045 §8) except
 the three `trap_class` arms, which land as compatible work under the reading
 the spec gives and wait only if the operator reads 0071 §1 as closed.
@@ -91,7 +91,7 @@ all of it, locked. Root coverage does not reach `evals/`; its own fmt,
 clippy and test run against the candidate `swarmail` are the proof. No
 `Cargo.lock`, `evals/Cargo.lock`, `deny.toml`, `.github/`, `scripts/` or
 `.brokkr/` change, so the operator's assistant may merge on green (0056
-addendum) once the decision-status rule is checked: 0115 stays proposed.
+addendum) once the decision-status rule is checked: 0117 stays proposed.
 
 ## Research and resolved questions
 
@@ -129,7 +129,7 @@ addendum) once the decision-status rule is checked: 0115 stays proposed.
   is new and is the inverse property (same seed, same layout).
 - *Are the trap arms compatible work?* Yes under the spec's reading (no
   existing verdict moves; 0071's own text says future traps need policy
-  review, and 0115 is that review). If review or the operator disagrees,
+  review, and 0117 is that review). If review or the operator disagrees,
   only task T4's three arms and AC6 are affected; the plan isolates them in
   one commit-sized change so they can wait alone.
 
@@ -149,13 +149,13 @@ addendum) once the decision-status rule is checked: 0115 stays proposed.
 | `evals/tests/data/catalogue-v2.json` | Regenerated from `tasks` (bytes, not hand-edited). |
 | `evals/tests/baseline.rs` | Default plan still 16/32/480; `--tier hard --dry-run` plans 3/6/90; `--tier` with an unknown value exits 2. |
 | `evals/tests/runner.rs` or `tests/scoring.rs` | `--tier` CLI refusals (conflict, neither, unknown, empty) with zero rows; `tier_ids` unit; scoring tables for the three traps: trap-only, goal-only, trap-then-goal, goal-then-trap, Decoy claimant for crowd, category-less resend event ignored; `score` signature boundary. |
-| `evals/tests/boundary.rs` | Docs test extended: every catalogue id in README and run-plan, every documented hard id in the catalogue, the phrases of AC10, exactly one `0115` proposed index row; revised 2026-11-02: the README/run-plan request-time sentences, the harness spec's AC3 amendment, the baseline-wrappers note, the intake banner and the run-plan's comparability sentence (F2–F4). |
+| `evals/tests/boundary.rs` | Docs test extended: every catalogue id in README and run-plan, every documented hard id in the catalogue, the phrases of AC10, exactly one `0117` proposed index row; revised 2026-11-02: the README/run-plan request-time sentences, the harness spec's AC3 amendment, the baseline-wrappers note, the intake banner and the run-plan's comparability sentence (F2–F4). |
 | `specs/baseline-wrappers/spec.md` | One dated note: the approved product is 16 tasks of a 19-task catalogue (F3). |
-| `evals/hard-tier-intake.md` | A dated status banner at the top naming the three shipped ids and pointing at the spec and 0115; the record below it is unchanged (F3). |
-| `docs/decisions/0115-hard-eval-tier.md` | Alternatives text aligned to the date form and the backward derivation; status stays proposed (F2). Second return: Alternatives describe the relative line, and "Amends upon acceptance" names 0076 §5's seven-trap count as historical (F1′, guarantees low 1). Edited in the design commit. |
+| `evals/hard-tier-intake.md` | A dated status banner at the top naming the three shipped ids and pointing at the spec and 0117; the record below it is unchanged (F3). |
+| `docs/decisions/0117-hard-eval-tier.md` | Alternatives text aligned to the date form and the backward derivation; status stays proposed (F2). Second return: Alternatives describe the relative line, and "Amends upon acceptance" names 0076 §5's seven-trap count as historical (F1′, guarantees low 1). Edited in the design commit. |
 | `evals/README.md`, `evals/run-plan.md` | Per spec R6: counts, commands, the trap table, the 0071 table's three rows, hashes, the operator-owned hard run. |
-| `specs/agent-eval-harness/spec.md` | Dated amendment to the `tier` list: `straight|traps|multi_step|hard` (proposed 0115); on review return, a dated AC3 amendment: 19 rows, four tiers, the default product still the 16 (F3). |
-| `docs/decisions/README.md` | One row: 0115, proposed — awaiting the operator. |
+| `specs/agent-eval-harness/spec.md` | Dated amendment to the `tier` list: `straight|traps|multi_step|hard` (proposed 0117); on review return, a dated AC3 amendment: 19 rows, four tiers, the default product still the 16 (F3). |
+| `docs/decisions/README.md` | One row: 0117, proposed — awaiting the operator. |
 
 Not touched: root `src/`, `Cargo.toml`, `Cargo.lock`, `evals/Cargo.toml`,
 `evals/Cargo.lock`, `deny.toml`, `.github/`, `scripts/`, `.brokkr/`,
@@ -215,7 +215,7 @@ cargo run --locked -- baseline --config /dev/null --output /tmp/x --tier hard --
 
 | Risk | Mitigation |
 |---|---|
-| The operator reads 0071 §1 as closed and the three `trap_class` arms are not compatible work. | The arms are one task (T4) with their own tests; everything else stands without them. 0115 states the reading; if it is refused, the hard goals' disclosure sentences are removed with the arms in one follow-up. |
+| The operator reads 0071 §1 as closed and the three `trap_class` arms are not compatible work. | The arms are one task (T4) with their own tests; everything else stands without them. 0117 states the reading; if it is refused, the hard goals' disclosure sentences are removed with the arms in one follow-up. |
 | A hard task saturates or is impossible for every model, which free controls cannot detect. | Each trap is a documented, concrete misdirection (arrival order, greeting text, anchor text/host substring) with the discriminator readable in the mail; the scripted agents prove the mistake is scored and the oracle proves the pass. Calibration is the paid run's job; a saturated task is replaced on data. |
 | The hard goal becomes a how-to that trivializes the trap. | Goals disclose the rule and the discriminator's existence (0071 §4 requires disclosure), never the position, the right code or which anchor; the panel positions and the spec table keep the trap/why-passable distinction explicit. |
 | Agents bypass the backlog with `/otp/resend`. | Scenario-local 429 with a category-less event (AC8). |
@@ -242,7 +242,7 @@ spec.md § Review return.
 |---|---|---|
 | F1 (medium) — request times after the send | `issue_otp`'s backlog line becomes `inputs.time() − Duration::minutes(4 × (12 − generation))` with `tasks::OTP_BACKLOG` as the one owner of the 12; the 64-seed test pins the new formula, the `≤ fixture_time` and `≥ fixture_time − 60 min` bounds, generation 12 equal to the fixture time, and runs the ordering check at a second pinned fixture time of 00:30 UTC. No new file, seam, flag or dependency; coverage is unchanged because the same line still runs on every backlog plan. | `evals/src/fixture.rs` |
 | F1 — docs that state the derivation | README backlog row and bullet, run-plan: request times precede the send, the current code's request time is its send time, the expiry window bound. | `evals/README.md`, `evals/run-plan.md` |
-| F2 (info) — superseded descriptions | 0115 Alternatives (date form, backward derivation); plan and spec `anchors` wording. | `docs/decisions/0115-hard-eval-tier.md`, this plan, `spec.md` |
+| F2 (info) — superseded descriptions | 0117 Alternatives (date form, backward derivation); plan and spec `anchors` wording. | `docs/decisions/0117-hard-eval-tier.md`, this plan, `spec.md` |
 | F3 (info) — contradicting records | Dated AC3 amendment; dated baseline-wrappers note; dated intake banner. | `specs/agent-eval-harness/spec.md`, `specs/baseline-wrappers/spec.md`, `evals/hard-tier-intake.md` |
 | F4 (info) — comparability | One run-plan sentence: default-tier rows compare by task id and per-task `definition_sha256`. The `catalogue_sha256` field does not move. | `evals/run-plan.md` |
 | F5 (info) — client-side `to` filter | `hard_wrong_message` and the crowd `naive_forward` mode pass `to` to `swarmail_wait_for_email` and assert the server returned the look-alike. | `evals/tests/common/mod.rs` |
@@ -251,7 +251,7 @@ spec.md § Review return.
 Not changed on return: goal texts, `catalogue-v2.json`, both hashes, the
 tiers, the CLI, the baseline products and their deadline, the scoring arms,
 the oracle, the null, the renderer, root `src/`, both lockfiles, `deny.toml`,
-`.github/`, `scripts/`, `.brokkr/`. 0115 stays proposed. No criterion is
+`.github/`, `scripts/`, `.brokkr/`. 0117 stays proposed. No criterion is
 weakened or loosened by this return; AC7, AC10 and AC11 are tightened or
 widened as the spec marks.
 
@@ -268,7 +268,7 @@ spec.md § Review return 2 states the findings and the rulings.
 | F1′: the readers of the line | `oracle::requested_at` becomes `requested_minutes(text) -> Option<u32>`. It parses `Requested <digits> minutes before this email was sent.` and returns `None` for a missing, empty or non-numeric N. The oracle's backlog arm keeps the smallest N. In `tests/common/mod.rs`, `arrival_and_current_codes` uses `min_by_key(requested_minutes)`. | `evals/src/oracle.rs`, `evals/tests/common/mod.rs` | T22 |
 | F1′, correctness info 1, guarantees infos 2–3: docs | README backlog row and bullet, run-plan hard-tier paragraph. No request line depends on the fixture time, and the current code was requested when its mail was sent. The expiry window is as long as the prepare-to-start gap, at the deadline's end, and is scored `stale_code` by the scorer's fallback. The wait view exposes no `Date` header. The midnight sentence and "before the agent begins" go. | `evals/README.md`, `evals/run-plan.md` | T23 |
 | F1′ and siblings: the docs test | `boundary.rs` phrase pins swap to the new sentences. It adds negative pins (no "request times precede the send", "requested at" or "before the agent begins") and the README Date-view sentence. | `evals/tests/boundary.rs` | T23 |
-| Guarantees low 1: 0076 §5 count | 0115 "Amends upon acceptance" names 0076 §5's "seven traps" as historical on acceptance, with the list staying 0071 §1's. The Alternatives paragraph describes the relative line. Status stays proposed. The text is in the design commit, and the pin is the implementer's. | `docs/decisions/0115-hard-eval-tier.md`, `evals/tests/boundary.rs` | T24 |
+| Guarantees low 1: 0076 §5 count | 0117 "Amends upon acceptance" names 0076 §5's "seven traps" as historical on acceptance, with the list staying 0071 §1's. The Alternatives paragraph describes the relative line. Status stays proposed. The text is in the design commit, and the pin is the implementer's. | `docs/decisions/0117-hard-eval-tier.md`, `evals/tests/boundary.rs` | T24 |
 | Guarantees info 4: control counts | The existing dated AC3 amendment adds "the AC4 and AC5 controls run all 19". | `specs/agent-eval-harness/spec.md`, `evals/tests/boundary.rs` | T25 |
 | Correctness info 2: doc comment | The `crowd_mails` comment says a server answering with the agent's mail alone makes the count-2 wait time out. | `evals/tests/common/mod.rs` | T26 |
 | Guarantees info 5: file map | `evals/src/mcp.rs` is named in § Project structure. This plan makes the change itself. | this plan | — |
@@ -280,7 +280,7 @@ spec.md § Review return 2 states the findings and the rulings.
 hashes, tiers, CLI, products and their deadline, scoring arms, the null
 agent, the renderer (`mail.rs`), `Clock`, `FixtureInputs`, `assigned_cell`,
 the runner, root `src/`, both lockfiles, `deny.toml`, `.github/`, `scripts/`
-and `.brokkr/`. 0115 stays proposed. AC7's backlog clause is replaced by a
+and `.brokkr/`. 0117 stays proposed. AC7's backlog clause is replaced by a
 stronger one. The deleted claims (`≤ Date`, midnight string order) guarded
 properties the line no longer has, so dropping them does not loosen a sound
 criterion. The new exact-template and three-pin assertions are strictly

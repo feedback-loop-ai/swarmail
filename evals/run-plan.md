@@ -46,14 +46,14 @@ The catalogue's ids, in order, are `signup`, `otp`, `magic-login`, `stale-otp`,
 `invite-time`, `support-reply`, `inbox-isolation` (the approved 16) and then
 `otp-backlog`, `recipient-crowd`, `digest-lookalike` (the hard tier).
 
-## The hard-tier run (proposed 0115)
+## The hard-tier run (proposed 0117)
 
 The 2026-11-01 baseline (395/400, catalogue sha256 `6068b687…`, the hash of the
 16 default-tier tasks) saturated the default tier. Proposed
-[0115](../docs/decisions/0115-hard-eval-tier.md) adds three hard tasks —
+[0117](../docs/decisions/0117-hard-eval-tier.md) adds three hard tasks —
 `otp-backlog` (`stale_code`), `recipient-crowd` (`wrong_message`) and
 `digest-lookalike` (`wrong_link`) — documented trap by trap in the
-[README](README.md#the-hard-tier-proposed-0115). The new 19-task catalogue
+[README](README.md#the-hard-tier-proposed-0117). The new 19-task catalogue
 hashes differently (`5b312d98…`); the historical rows keep `6068b687…`.
 
 `baseline --tier hard` is a separate product: 3 tasks, 6 free controls (one

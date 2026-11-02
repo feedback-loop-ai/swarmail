@@ -727,7 +727,7 @@ fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
     })
     .unwrap();
     assert_eq!(encoded, include_bytes!("data/catalogue-v2.json"));
-    // The full catalogue gained the hard tier (proposed 0115), so its hash
+    // The full catalogue gained the hard tier (proposed 0117), so its hash
     // moved; the pin below is regenerated from `tasks`, never hand-edited.
     assert_eq!(
         p::catalogue_hash(),
