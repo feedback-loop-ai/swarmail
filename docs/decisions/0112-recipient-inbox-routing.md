@@ -1,6 +1,7 @@
 # 0112 — Recipient inbox routing under a configured route domain
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-31
 - **Scope:** Epic #164, issue #157 (isolate parallel agents' inboxes,
   provisioning one per run). Priority P2.
@@ -150,3 +151,13 @@ flag, the tool, the tests — may be built and reviewed meanwhile.
 - **Route-domain validation at startup (robustness; simplicity conceded).**
   A typo'd domain fails before any session, not inside one. Cost: a small
   parser and its tests.
+
+## Dated acceptance note — 2026-11-02
+
+The operator accepted this record on 2026-11-02. It amends accepted
+[0004](0004-per-test-inboxes-via-smtp-auth.md) §1 and accepted
+[0055](0055-agent-eval-harness.md) §6, as the Amends line states; both
+carry a dated marker of this date. The code merged as `075b22e` (#296)
+on 2026-11-01, while this record was still proposed, although the
+Context says merge waits for acceptance (house rules, *Code under a
+proposed decision*). This acceptance legitimises that merge.

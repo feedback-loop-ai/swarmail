@@ -549,13 +549,38 @@ fn commands(text: &str, prefix: &str) -> Vec<String> {
 /// 2a325c9 the README's runs had no `--rm`, the Helm line kept
 /// `IfNotPresent` and `.dockerignore` matched only the root `target/`. The
 /// real-Docker proof of the same contract is `scripts/docker-smoke.sh` (CI).
+/// The README keeps the quickstart run and the Helm line; the other runs
+/// moved with their sections into `docs/guide/`, so every page is read.
 #[test]
 fn the_install_examples_clean_up_and_pull_what_they_name() {
+    let mut pages: Vec<String> =
+        std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/guide"))
+            .expect("docs/guide is readable")
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.ends_with(".md"))
+            .map(|name| format!("docs/guide/{name}"))
+            .collect();
+    pages.sort();
+    pages.insert(0, "README.md".to_string());
+    let docs: Vec<(String, String)> = pages
+        .into_iter()
+        .map(|path| {
+            let text = read_text(&path);
+            (path, text)
+        })
+        .collect();
     let readme = read_text("README.md");
-    let runs = commands(&readme, "docker run ");
+    assert!(
+        !commands(&readme, "docker run ").is_empty(),
+        "the README documents its quickstart docker run"
+    );
+    let runs: Vec<String> = docs
+        .iter()
+        .flat_map(|(_, text)| commands(text, "docker run "))
+        .collect();
     assert!(
         runs.len() >= 3,
-        "the README documents its docker runs: {runs:#?}"
+        "the README and the guide document their docker runs: {runs:#?}"
     );
     for run in &runs {
         assert!(
@@ -567,8 +592,14 @@ fn the_install_examples_clean_up_and_pull_what_they_name() {
             "a documented run keeps Docker's 10 s grace: {run}"
         );
     }
-    let helm = commands(&readme, "helm install swarmail ./charts/swarmail ");
-    assert!(!helm.is_empty(), "the README documents its helm install");
+    assert!(
+        !commands(&readme, "helm install swarmail ./charts/swarmail ").is_empty(),
+        "the README documents its helm install"
+    );
+    let helm: Vec<String> = docs
+        .iter()
+        .flat_map(|(_, text)| commands(text, "helm install swarmail ./charts/swarmail "))
+        .collect();
     for line in &helm {
         if line.contains("--set image.tag=main") {
             assert!(
@@ -577,10 +608,12 @@ fn the_install_examples_clean_up_and_pull_what_they_name() {
             );
         }
     }
-    assert!(
-        !readme.contains("until the next `:main`"),
-        "the README keeps the expired next-:main workaround"
-    );
+    for (path, text) in &docs {
+        assert!(
+            !text.contains("until the next `:main`"),
+            "{path} keeps the expired next-:main workaround"
+        );
+    }
 
     let ignore = read_text(".dockerignore");
     assert!(

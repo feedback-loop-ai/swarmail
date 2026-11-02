@@ -158,3 +158,136 @@ this first; the proportionate remedy is guidance or wrapper configuration, not
 a second delivery path. Recorded under proposed
 [0114](../docs/decisions/0114-mcp-resources-evaluation.md) (issue #158), which
 also records that the wait-tool versus subscription metric is NOT MEASURED.
+
+## Trial isolation — prepared, not activated (#221, proposed 0115)
+
+Date: 2026-11-01 (the boundary is bubblewrap; the 2026-10-31 raw-namespace
+worker is deleted; revised after the first review and again after the first
+live proof). **Trials remain
+sequential.** Accepted 0076 still admits one trial per uid and refuses
+`--concurrency` other than 1; nothing here changes a row, a refusal or a
+guarantee, and no row claims isolation (`confinement` stays `unconfined`).
+Same-uid separation by fresh `0700` HOME directories is hygiene, not a
+boundary.
+
+A hidden `trial --isolated` flag (not in `--help`) runs the whole trial —
+runner, Swarmail, fixture and every agent — inside one bubblewrap sandbox
+(user, PID, network and IPC namespaces; a private `/tmp` of 512 MiB, HOME and
+`/proc`; a cleared environment; descriptors above 2 closed), or refuses by
+name before any server or agent exists. There is no fallback to an unisolated
+run. The controller (the `swarmail-evals` you started) stays in the host
+namespaces, holds the host admission and invokes `/usr/bin/bwrap` with a fixed
+argv; the same binary runs the unchanged trial arm inside. The argv carries
+`--as-pid-1`: bwrap installs no reaper, so the runner itself is PID 1 of the
+trial's namespace and every process inside is the runner or something it
+spawned. bwrap's default reaper would be a same-uid, dumpable process inside
+the boundary that a sibling trial's agent could probe through `/proc/1`.
+Accepted costs: a `SIGTERM` that reaches the runner before it has installed
+its signal handler is dropped, and that trial ends at its deadline; orphans
+inside stay zombies until the runner exits and the kernel empties the
+namespace.
+
+**Host prerequisite, not a dependency.** bubblewrap (LGPL-2.0-or-later) is
+executed as a separate process and never linked, vendored or added to a
+lockfile. An isolated trial needs Linux; `/usr/bin/bwrap` of at least 0.11.1
+(an absolute path with no lookup and no override; the floor is confirmed for
+the launch on 0.11.1 by the proof command's first run on 2026-11-01, which
+passed the probe, accepted the full argv and ran the trial inside, and then
+failed in the controller, which is repaired below; none of the live criteria
+has yet passed; stock Ubuntu 24.04
+packages bubblewrap 0.9.0, which the floor refuses until a proof lowers it, so
+a hosted runner that installs it with apt cannot run the boundary); and a host
+policy that lets bwrap create the namespaces (Ubuntu's `bwrap-userns-restrict`
+AppArmor profile, or `kernel.apparmor_restrict_unprivileged_userns` lowered).
+macOS refuses by name, since bwrap is Linux-only: macOS compiles this suite
+and proves only that refusal.
+
+The trial refuses, as a harness-error row and exit 2, with, in this order:
+`concurrency_unsupported`, `isolation_requires_swarmail_bin`,
+`isolation_artifacts_unsupported`, `isolation_wrapper_unsupported`,
+`isolation_expose_invalid`, `isolation_external_agent_unsupported`,
+`isolation_source_invalid`; then, from the controller, the closed set
+`boundary_unavailable:platform`, `boundary_unavailable:bwrap_absent`,
+`boundary_unavailable:bwrap_version` and `boundary_unavailable:bwrap_probe`
+(the exact production argv with `/usr/bin/true` did not exit 0 within 10 s;
+bwrap's own words, such as `ENOSPC`, go to stderr and never into the row).
+After a launch, a runner that produced no row is `isolated_trial_no_row`, and
+an interrupt before any runner existed is `isolated_trial_interrupted`.
+
+**The controller hands over the row and exits.** The first live run showed the
+boundary working and the controller losing the runner's row and then never
+exiting: it held the process's standard-output lock across the whole trial
+while copying the sandbox's output from another thread, which parked on it.
+The controller now runs on a current-thread runtime, copies the sandbox's
+output on the thread that drives it, holds no standard-stream lock across the
+trial, counts the row as it is read, and returns once its row is written. Every
+wait it makes is bounded: bwrap's version (5 s) and probe (10 s), bwrap's own
+exit (the trial's deadline plus the matrix's 300 s grace; on expiry bwrap is
+killed, the namespace empties with it, one fixed line goes to stderr and the
+result is the usual `isolated_trial_no_row` or exit 2 beside the runner's
+row), the pipe copies and the reap (5 s each) and the runtime's shutdown (5 s).
+A reap the controller cannot prove within its bound is the named
+`swarmail-evals: harness error: trial_cleanup_unproved` line on stderr beside
+the envelope line, never an ordinary no-row: the host admission is held to the
+controller's exit, the exit code is 2, and an operator confirms cleanup before
+resuming (accepted 0076 §3; the lock is process-scoped, so that exit releases
+it).
+
+**A killed controller is a killed trial.** The second live run showed that
+bwrap's `--die-with-parent` binding does not reach the runner: the kernel
+clears a parent-death signal at an exec it marks secure, and the host's
+AppArmor `bwrap-userns-restrict` profile marks the exec of bwrap's sandbox
+child secure. The runner therefore re-arms `PR_SET_PDEATHSIG` itself as the
+first statement of `main` when it is PID 1, so bwrap's death (the controller
+killed, or bwrap killed at the envelope) kills the runner and empties the
+namespace; a parent that dies before that statement runs is bounded by the
+trial deadline.
+
+The network is a private loopback; provider egress does not exist inside, and
+`--share-net` is rejected. Provider egress is an open operator question in
+0115, so no real driver runs isolated: a wrapper profile is refused, and an
+external agent program is refused unless it is one of the files named with
+`--isolated-expose <absolute regular file>` (the live proof's scripted agents
+are). The builtins `oracle` and `null` need no exposure. **An isolated row is
+a boundary-proof row, not an eval result**; the matrix never renders
+`--isolated`.
+
+Delivery seats cannot create namespaces (`/usr/bin/bwrap` is present there and
+refuses with `ENOSPC`), so the live path is proven only by the ignored suite,
+on a host whose bwrap can create them. This is the one documented command; it
+is deterministic (null and oracle built-ins and scripted probes from the test
+executable), free, and bounded: every isolated trial carries a deadline of at
+most 30 s, every child a test spawns that may run a boundary is held to 90 s
+(output on files; `SIGKILL` and a named `controller outlived its row` failure
+at the bound), and the dispatcher runs the command under a hard 20-minute
+limit. Its green on a host whose bwrap works is the acceptance gate of the pull
+request:
+
+```bash
+cargo build --locked --bin swarmail
+cd evals && SWARMAIL_BIN="$PWD/../target/debug/swarmail" \
+  cargo test --locked --test trial_isolation -- --ignored --nocapture --test-threads=1
+```
+
+Where the boundary cannot be built each of those tests prints
+`SKIP trial-isolation: boundary_unavailable:<step>` and fails; it never passes
+without the boundary, and the gate inventory never passes `--ignored`. The
+always-on suite follows the other rule: its one boundary test,
+`an_isolated_null_trial_hands_over_its_row_and_exits`, prints the same SKIP
+line and returns where the boundary cannot be built, and where it can, runs a
+real isolated null trial through the CLI and passes only by the controller's
+actual exit with the runner's own row; the two tests whose subject is the
+absent boundary print `SKIP trial-isolation: boundary available` and return
+there. The whole `cargo test --locked` therefore finishes in bounded time on a
+host where bwrap works as well as in a seat where it does not. That
+command alone proves the hostile same-uid agent in trial B cannot read A's
+prompt, reach A's MCP or fixture, or make A's idle agent pass (AC-L1), the
+topology from inside (AC-L2: the runner is PID 1, no host path under `/home`
+or elsewhere, no descriptor of any process reaching the host `/proc`; it also
+prints, without asserting, whether a nested user namespace is granted,
+whether `/proc/1/mem` opens read-write, and the host's
+`kernel.yama.ptrace_scope`) and the lifetime bounds (AC-L3). CI proves only
+the always-on tests on Linux and macOS and, on macOS, the `platform` refusal;
+whether a hosted ubuntu runner has a usable bubblewrap is unobserved. Provider
+egress (AC-L4) and the operator's ruling on 0115 remain outstanding
+(specs/trial-isolation/spec.md).

@@ -1259,9 +1259,7 @@ fn sequential_matrix_refuses_overlap_and_unsupported_concurrency() {
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let matrix = ChildGuard {
-        child: Some(command.spawn().unwrap()),
-    };
+    let matrix = ChildGuard::new(command.spawn().unwrap());
     eventually("matrix agent readiness", || ready.exists());
     let (row, out) = trial(&["--task", "signup", "--agent", "oracle"]);
     assert_eq!(row.outcome, Outcome::HarnessError);
@@ -1744,7 +1742,7 @@ fn brokkr_mode_records_a_killed_worker_as_a_harness_error() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let guard = ChildGuard { child: Some(child) };
+    let guard = ChildGuard::new(child);
     eventually("the stand-in worker to start", || {
         std::fs::read_to_string(&ready).is_ok_and(|t| t.trim().parse::<i32>().is_ok())
     });

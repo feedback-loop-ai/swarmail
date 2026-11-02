@@ -1,6 +1,7 @@
 # 0093 — Source attribution and observation contracts
 
-- **Status:** proposed — awaiting the operator
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-29
 - **Issue:** Epic #164 / #163, continuation from 14217f7c9f30718c450aa25fa04ccbac064dddba
 - **Specification:** [Source-attributed comparison](../../specs/source-mail-comparison/spec.md)

@@ -21,7 +21,9 @@
   (`repair/issue221-trial-isolation`, commit `cacd60e`); intake saw no 0115
   on `main` and the task called 0115 the highest in use. Both are true, so
   the next free number across both trees is 0116. Renumber at integration
-  if `main` takes it first, as 0105 and 0108 were.
+  if `main` takes it first, as 0105 and 0108 were. Kept at the merge of
+  main `5645bd9`: `main` took 0115 for #221's trial isolation (#308) and
+  left 0116 free.
 
 ## Context
 

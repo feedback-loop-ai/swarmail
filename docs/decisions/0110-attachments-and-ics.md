@@ -1,6 +1,7 @@
 # 0110 — Attachments listed and fetched from stored bytes, ICS fields at ingest
 
-- **Status:** proposed — awaiting the operator
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-31
 - **Scope:** Epic #164, issue #159, on main `d892acb` (the merged MCP work of
   #152, #153 and #154).
@@ -266,3 +267,18 @@ plane and each change exactly — its earlier "a lowercased type" was no change
 on the wire, since the parser already lowercases. No ruling, code or test
 changed; the earlier wording
 stays in the branch history, and this record is still proposed.
+
+## Dated addendum — 2026-11-02 (at acceptance)
+
+The operator accepted this record on 2026-11-02. The text above is unchanged
+and remains the record of what was proposed. This addendum states what has
+moved since it was written, checked against `main` at `c336c95`; it rules
+nothing beyond the acceptance.
+
+- **Accepted together with 0108; this record governs attachment storage.**
+  The operator accepted this record and [0108](0108-compact-email-view.md)
+  on the same date. Where they differ on attachment capture and storage,
+  this record governs: §§1 and 6 and the reconciliation with #155 replace
+  0108 §5, which the reconciliation left "the operator's to amend".
+- **`ring` is left unruled.** The optional ruling §5 offers, making `ring` a
+  direct dependency of the root crate, is not part of this acceptance.

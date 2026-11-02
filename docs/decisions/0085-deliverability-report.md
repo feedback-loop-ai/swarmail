@@ -1,6 +1,7 @@
 # 0085 — Lazy, versioned deliverability reports
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "accept all as recommended",
+  given in chat to the dispatcher).
 - **Date:** 2026-10-26
 - **Scope:** Epic #251 issue #252; additive report and predicate contracts.
 - **Authority:** operator's #251 ruling of 2026-10-26: analyze stored bytes lazily,
