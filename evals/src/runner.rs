@@ -778,6 +778,12 @@ pub fn selected_swarmail_bin() -> Result<Option<PathBuf>, String> {
         .transpose()
 }
 
+/// Resolve the external agent's program at the original caller boundary,
+/// without launching it (the isolated entry binds the file it names).
+pub fn selected_agent_program(program: &OsStr) -> Result<PathBuf, String> {
+    resolve_program(program, &CallerEnv::capture()?)
+}
+
 fn build_swarmail(caller: &CallerEnv) -> Result<PathBuf, String> {
     let (mut command, _owner) = prepare_build(caller)?;
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))

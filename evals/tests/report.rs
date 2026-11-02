@@ -1259,9 +1259,7 @@ fn sequential_matrix_refuses_overlap_and_unsupported_concurrency() {
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let matrix = ChildGuard {
-        child: Some(command.spawn().unwrap()),
-    };
+    let matrix = ChildGuard::new(command.spawn().unwrap());
     eventually("matrix agent readiness", || ready.exists());
     let (row, out) = trial(&["--task", "signup", "--agent", "oracle"]);
     assert_eq!(row.outcome, Outcome::HarnessError);

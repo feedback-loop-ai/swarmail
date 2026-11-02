@@ -225,9 +225,7 @@ fn sequential_poacher_control_refuses_competing_trial() {
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let victim = ChildGuard {
-        child: Some(command.spawn().unwrap()),
-    };
+    let victim = ChildGuard::new(command.spawn().unwrap());
     eventually("idle victim readiness", || ready.exists());
     let launch = dir.path().join("competitor-launched");
     let (row, out) = trial(&[

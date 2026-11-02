@@ -113,6 +113,7 @@ them. What may land while a decision is still proposed is stated in
 | [0112](0112-recipient-inbox-routing.md) | Recipient inbox routing under a configured route domain | proposed — awaiting the operator | (Epic #164, issue #157; amends 0004 §1 for configured servers and 0055 §6 for the isolation task) |
 | [0113](0113-client-fixture-packages.md) | Client fixture packages: Playwright and pytest fixtures under `clients/`, versioned with the server, zero runtime dependencies, CI-only exact test pins; publishing stays a separate operator act | proposed — awaiting the operator | (Epic #164, issue #162; number provisional — recheck before integration) |
 | [0114](0114-mcp-resources-evaluation.md) | MCP resources and subscriptions: evaluated, not shipped, metric not measured | proposed — awaiting the operator | (Epic #164, issue #158; provisional number) |
+| [0115](0115-trial-isolation.md) | Trial separation and observed concurrency | proposed — awaiting the operator | (Epic #192, issue #221 split from #199; carried from the design on record where it was 0062; amends 0055 §§6–9 and 0076 only if accepted) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

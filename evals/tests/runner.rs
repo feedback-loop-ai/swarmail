@@ -1994,7 +1994,7 @@ fn cleanup_escalates_after_a_leader_exits_and_a_descendant_ignores_term() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let child = ChildGuard { child: Some(child) };
+    let child = ChildGuard::new(child);
     eventually("the TERM-resistant descendant readiness marker", || {
         marker.is_file()
     });
@@ -2266,9 +2266,7 @@ fn sequential_admission_refuses_independent_cli_trials() {
             &[(MARKER_ENV, ready.to_str().unwrap())],
         );
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let victim = ChildGuard {
-            child: Some(command.spawn().unwrap()),
-        };
+        let victim = ChildGuard::new(command.spawn().unwrap());
         eventually("live trial", || ready.exists());
         let artifacts = dir.path().join(format!("unused-artifacts-{signal}"));
         let launch = dir.path().join(format!("unused-agent-{signal}"));

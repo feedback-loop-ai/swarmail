@@ -62,19 +62,106 @@ pub fn swarmail_bin() -> &'static Path {
     BIN.get_or_init(|| runner::resolve_swarmail_bin().expect("the swarmail binary resolves"))
 }
 
-/// The CLI with SWARMAIL_BIN pinned (no per-trial build).
+/// How long any isolated CLI child may live in a test. A trial's own bounds
+/// are inside it (5 s version, 10 s probe, a 30 s deadline, the runner's
+/// teardown, two 5 s drains) with slack; a child still running at the bound
+/// is a controller that outlived its row, and the test fails by name instead
+/// of hanging the suite behind it.
+pub const ISOLATED_CLI_BOUND: Duration = Duration::from_secs(90);
+
+/// Where a bounded child's output goes: files in a directory the guard owns,
+/// so no reader thread is needed and no pipe can fill.
+struct Captured {
+    _dir: tempfile::TempDir,
+    stdout: PathBuf,
+    stderr: PathBuf,
+    bound: Duration,
+    deadline: Instant,
+}
+
+/// A spawned child the test owns: killed when the guard drops. Built by
+/// [`bounded`] it also owns its output files and a deadline, and
+/// [`ChildGuard::wait_with_output`] passes only by the child's actual exit.
 pub struct ChildGuard {
     pub child: Option<std::process::Child>,
+    captured: Option<Captured>,
 }
 
 impl ChildGuard {
+    /// A guard over a child whose pipes the caller set up; waiting for it is
+    /// unbounded. Isolated CLI children never use this: they use [`bounded`].
+    pub fn new(child: std::process::Child) -> Self {
+        Self {
+            child: Some(child),
+            captured: None,
+        }
+    }
+
     pub fn pid(&self) -> i32 {
         self.child.as_ref().unwrap().id() as i32
     }
 
+    /// The child's output once it has exited. A bounded child that is still
+    /// running at its deadline is `SIGKILL`ed, reaped and reported with a
+    /// panic that names the bound and carries what it had written.
     pub fn wait_with_output(mut self) -> Output {
-        self.child.take().unwrap().wait_with_output().unwrap()
+        let mut child = self.child.take().unwrap();
+        let Some(captured) = self.captured.take() else {
+            return child.wait_with_output().unwrap();
+        };
+        let read = |path: &Path| std::fs::read(path).unwrap_or_default();
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return Output {
+                    status,
+                    stdout: read(&captured.stdout),
+                    stderr: read(&captured.stderr),
+                };
+            }
+            if Instant::now() >= captured.deadline {
+                // SAFETY: this guard owns the child process it spawned.
+                unsafe {
+                    libc::kill(child.id() as i32, libc::SIGKILL);
+                }
+                let _ = child.wait();
+                panic!(
+                    "controller outlived its row after {:?}\nstdout:\n{}\nstderr:\n{}",
+                    captured.bound,
+                    String::from_utf8_lossy(&read(&captured.stdout)),
+                    String::from_utf8_lossy(&read(&captured.stderr)),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
+}
+
+/// The one way a test spawns a child that may run a boundary: stdout and
+/// stderr go to files the guard owns, and the guard's wait gives up at
+/// `bound`. The caller sets stdin, arguments and environment; this sets only
+/// the output.
+pub fn bounded(mut command: Command, bound: Duration) -> ChildGuard {
+    let dir = tempdir();
+    let (stdout, stderr) = (dir.path().join("stdout"), dir.path().join("stderr"));
+    command
+        .stdout(std::fs::File::create(&stdout).expect("stdout file"))
+        .stderr(std::fs::File::create(&stderr).expect("stderr file"));
+    let child = command.spawn().expect("the child starts");
+    ChildGuard {
+        child: Some(child),
+        captured: Some(Captured {
+            _dir: dir,
+            stdout,
+            stderr,
+            bound,
+            deadline: Instant::now() + bound,
+        }),
+    }
+}
+
+/// [`bounded`] at [`ISOLATED_CLI_BOUND`], waited to its exit.
+pub fn isolated_output(command: Command) -> Output {
+    bounded(command, ISOLATED_CLI_BOUND).wait_with_output()
 }
 
 impl Drop for ChildGuard {
@@ -128,11 +215,14 @@ pub fn one_row(out: &Output) -> TrialResult {
 }
 
 pub fn trial(args: &[&str]) -> (TrialResult, Output) {
-    let out = cli()
-        .arg("trial")
-        .args(args)
-        .output()
-        .expect("the CLI runs");
+    let mut command = cli();
+    command.arg("trial").args(args);
+    // An isolated trial runs a boundary: it is held to the bound.
+    let out = if args.contains(&"--isolated") {
+        isolated_output(command)
+    } else {
+        command.output().expect("the CLI runs")
+    };
     (one_row(&out), out)
 }
 
@@ -242,6 +332,19 @@ pub fn eventually(what: &str, mut ok: impl FnMut() -> bool) {
     }
 }
 
+/// `eventually` with a detail line: the panic names what was still true.
+pub fn eventually_else(what: &str, mut ok: impl FnMut() -> bool, detail: impl Fn() -> String) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !ok() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}:\n{}",
+            detail()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 // The process-identity proofs read /proc/<pid>/stat, which only Linux has;
 // they are compiled only there so no test can pass vacuously elsewhere.
 /// Whether `pid` names a live (not zombie) process.
@@ -318,6 +421,48 @@ pub fn process_descendants(root: i32) -> Vec<ProcessIdentity> {
     found
 }
 
+/// One line per member of `family` that is still alive: pid, state, parent and
+/// namespace pids from `/proc/<pid>/status`, and the command line. A field that
+/// cannot be read is `?`. Empty when every member is gone.
+#[cfg(target_os = "linux")]
+pub fn survivors(family: &[ProcessIdentity]) -> String {
+    let status_field = |pid: i32, name: &str| -> String {
+        std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find_map(|line| line.strip_prefix(name)?.strip_prefix(':'))
+                    .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
+            })
+            .unwrap_or_else(|| "?".into())
+    };
+    family
+        .iter()
+        .filter(|member| identity_alive(member))
+        .map(|member| {
+            let state = process_identity(member.pid).map_or('?', |now| now.state);
+            let cmdline = std::fs::read(format!("/proc/{}/cmdline", member.pid))
+                .map(|raw| {
+                    raw.split(|b| *b == 0)
+                        .map(|part| String::from_utf8_lossy(part).into_owned())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .trim()
+                        .to_string()
+                })
+                .unwrap_or_else(|_| "?".into());
+            format!(
+                "pid {} state {state} PPid {} NSpid {} cmdline {cmdline}",
+                member.pid,
+                status_field(member.pid, "PPid"),
+                status_field(member.pid, "NSpid"),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn send_signal(pid: i32, sig: i32) {
     // SAFETY: plain kill(2).
     unsafe {
@@ -331,6 +476,12 @@ pub fn maybe_run_helper() {
     let Ok(mode) = std::env::var(HELPER_ENV) else {
         return;
     };
+    // The observer looks at its own descriptor table, so it runs before any
+    // runtime opens descriptors of its own. Linux only: it reads `/proc`.
+    #[cfg(target_os = "linux")]
+    if mode == "boundary_observe" {
+        std::process::exit(boundary_observe());
+    }
     let code = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -349,6 +500,16 @@ async fn first_link(mcp: &mut McpClient, inbox: &str, subject: &str, label: &str
 }
 
 async fn helper(mode: &str) -> i32 {
+    if mode == "home_probe" {
+        return home_probe();
+    }
+    #[cfg(target_os = "linux")]
+    if mode == "leak_signup" {
+        return leak_signup().await;
+    }
+    if mode == "cross_trial_probe" {
+        return cross_trial_probe().await;
+    }
     let env = AgentEnv::from_env().expect("the agent environment");
     let app = App::new(&env.app_url, &env.identity).unwrap();
     match mode {
@@ -988,4 +1149,696 @@ async fn naive_recovery(mode: &str, env: &AgentEnv, app: &App) -> i32 {
         std::future::pending::<()>().await;
     }
     0
+}
+
+// ---- trial isolation (proposed 0115) -------------------------------------
+
+/// A benign agent for the isolated-HOME proof: exit 0 when HOME is fresh
+/// (no sentinel from an earlier trial) and writable, else a named code.
+fn home_probe() -> i32 {
+    let Ok(home) = std::env::var("HOME") else {
+        return 20;
+    };
+    let sentinel = Path::new(&home).join("isolated-home-sentinel");
+    if sentinel.exists() {
+        return 21;
+    }
+    if std::fs::write(&sentinel, b"written by a real agent").is_err() {
+        return 22;
+    }
+    0
+}
+
+/// Why `trial --isolated` is unavailable here, read from a real null-agent
+/// run, or `None` when the boundary was built and the trial ran: the closed
+/// `boundary_unavailable:<step>` name the controller printed. bwrap's own
+/// words on stderr (`ENOSPC`, `EACCES`, ...) are never parsed; they are for
+/// the operator. The launch itself is authoritative (0115, Current
+/// integration 5): nothing advisory is consulted, nothing is cached.
+pub fn boundary_unavailable() -> Option<String> {
+    let _scope = trial_scope();
+    let out = null_probe();
+    let step = refused_step(&out)?;
+    // A refusal is one harness-error row and no agent ever ran.
+    let row = one_row(&out);
+    assert_eq!(row.outcome, swarmail_evals::tasks::Outcome::HarnessError);
+    assert!(row.agent_exits.is_empty());
+    Some(step)
+}
+
+/// One real null-agent `trial --isolated`, held to [`ISOLATED_CLI_BOUND`].
+/// Its deadline is 30 s so the bound's arithmetic is true of it too. The
+/// caller holds the trial scope.
+pub fn null_probe() -> Output {
+    let mut command = cli();
+    command.args([
+        "trial",
+        "--isolated",
+        "--task",
+        "signup",
+        "--agent",
+        "null",
+        "--deadline-ms",
+        "30000",
+    ]);
+    isolated_output(command)
+}
+
+/// The `boundary_unavailable:<step>` name the controller printed, if it
+/// refused for the boundary.
+pub fn refused_step(out: &Output) -> Option<String> {
+    let text = stderr(out);
+    let prefix = "boundary_unavailable:";
+    let start = text.find(prefix)?;
+    let step: String = text[start + prefix.len()..]
+        .chars()
+        .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+        .collect();
+    Some(format!("{prefix}{step}"))
+}
+
+/// The reason every namespace-dependent proof is `#[ignore]`d.
+pub const NEEDS_BWRAP: &str =
+    "trial-isolation: needs /usr/bin/bwrap >= 0.11.1 able to create user namespaces";
+
+/// Gate for every namespace-dependent proof. When the boundary cannot be
+/// built it prints a named SKIP line and FAILS: a proof that did not run
+/// must never read as one that passed, and never falls back to an
+/// unisolated run.
+pub fn require_boundary() {
+    if let Some(reason) = boundary_unavailable() {
+        eprintln!("SKIP trial-isolation: {reason}");
+        panic!("trial-isolation proof not run: {reason}");
+    }
+}
+
+/// The agent's exit codes recorded in a row.
+pub fn agent_codes(row: &TrialResult) -> Vec<Option<i32>> {
+    row.agent_exits.iter().map(|exit| exit.code).collect()
+}
+
+// ---- cross-trial probing (proposed 0115; AC-S1, AC-L1) -------------------
+//
+// The adversary here is a test fixture that is, deliberately, only as strong
+// as any same-uid process: it owns no credential, exploits no kernel bug, and
+// touches only the synthetic trials this test itself launched, which hold
+// fabricated accounts on loopback. It exists to turn "the trials do not
+// interfere" from a cooperating oracle's say-so into an observation: it is
+// handed one victim trial's coordinates and uses only ordinary same-uid
+// facilities (`/proc`, plain TCP, plain file reads) to reach it.
+
+/// The victim's `EVAL_*` variables as read from `/proc/<pid>/environ`, or
+/// `None` when the file is unreadable or carries no agent environment.
+pub fn proc_environ(pid: i32) -> Option<std::collections::BTreeMap<String, String>> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    let vars: std::collections::BTreeMap<String, String> = raw
+        .split(|b| *b == 0)
+        .filter_map(|entry| {
+            let text = std::str::from_utf8(entry).ok()?;
+            let (key, value) = text.split_once('=')?;
+            (key.starts_with("EVAL_") || key == "HOME")
+                .then(|| (key.to_string(), value.to_string()))
+        })
+        .collect();
+    vars.contains_key(oracle::ENV_APP_URL).then_some(vars)
+}
+
+/// The victim agent found among the descendants of `runner` ONLY (never
+/// other sessions), with its agent environment. Linux only: it walks the
+/// `/proc` process table.
+#[cfg(target_os = "linux")]
+pub fn find_victim_agent(
+    runner: i32,
+) -> Option<(ProcessIdentity, std::collections::BTreeMap<String, String>)> {
+    process_descendants(runner)
+        .into_iter()
+        .find_map(|p| proc_environ(p.pid).map(|env| (p, env)))
+}
+
+fn agent_env_from(vars: &std::collections::BTreeMap<String, String>) -> Result<AgentEnv, String> {
+    let get = |key: &str| {
+        vars.get(key)
+            .cloned()
+            .ok_or_else(|| format!("{key} is missing"))
+    };
+    Ok(AgentEnv {
+        task: get(oracle::ENV_TASK)?,
+        app_url: get(oracle::ENV_APP_URL)?,
+        mcp_url: get(oracle::ENV_MCP_URL)?,
+        identity: get(oracle::ENV_IDENTITY)?,
+        inbox: get(oracle::ENV_INBOX)?,
+        goal: get(oracle::ENV_GOAL)?,
+        prompt_file: get(oracle::ENV_PROMPT_FILE)?,
+        deadline_ms: get(oracle::ENV_DEADLINE_MS)?
+            .parse()
+            .map_err(|_| "EVAL_DEADLINE_MS is not an integer".to_string())?,
+    })
+}
+
+const VICTIM_RUNNER_ARG: &str = "victim-runner=";
+const VICTIM_AGENT_ARG: &str = "victim-agent=";
+const VICTIM_VAR_ARG: &str = "victim-var:";
+
+/// The argv that hands a probe one victim trial's coordinates.
+pub fn victim_args(
+    runner: i32,
+    agent: i32,
+    vars: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut args = vec![
+        format!("{VICTIM_RUNNER_ARG}{runner}"),
+        format!("{VICTIM_AGENT_ARG}{agent}"),
+    ];
+    args.extend(vars.iter().map(|(k, v)| format!("{VICTIM_VAR_ARG}{k}={v}")));
+    args
+}
+
+struct Victim {
+    runner: i32,
+    agent: i32,
+    vars: std::collections::BTreeMap<String, String>,
+}
+
+fn victim_from_argv() -> Result<Victim, String> {
+    let mut runner = None;
+    let mut agent = None;
+    let mut vars = std::collections::BTreeMap::new();
+    for arg in std::env::args() {
+        if let Some(v) = arg.strip_prefix(VICTIM_RUNNER_ARG) {
+            runner = v.parse().ok();
+        } else if let Some(v) = arg.strip_prefix(VICTIM_AGENT_ARG) {
+            agent = v.parse().ok();
+        } else if let Some(v) = arg.strip_prefix(VICTIM_VAR_ARG)
+            && let Some((key, value)) = v.split_once('=')
+        {
+            vars.insert(key.to_string(), value.to_string());
+        }
+    }
+    Ok(Victim {
+        runner: runner.ok_or("victim-runner is missing")?,
+        agent: agent.ok_or("victim-agent is missing")?,
+        vars,
+    })
+}
+
+/// AC-S1's bare helper. Given only the victim runner's PID (and nothing
+/// from the victim's own side), it finds the victim agent among that
+/// runner's descendants, reads its `EVAL_*` environment from `/proc`, and
+/// completes the victim's signup through the real MCP and the real fixture.
+/// Exit 0 means the leak is real; a nonzero code names the step that failed.
+#[cfg(target_os = "linux")]
+async fn leak_signup() -> i32 {
+    let Some(runner) = std::env::args()
+        .find_map(|a| a.strip_prefix(VICTIM_RUNNER_ARG).map(str::to_string))
+        .and_then(|v| v.parse::<i32>().ok())
+    else {
+        return 2;
+    };
+    let Some((_, vars)) = find_victim_agent(runner) else {
+        return 3;
+    };
+    let Ok(env) = agent_env_from(&vars) else {
+        return 4;
+    };
+    match oracle::run_oracle(&env).await {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("leak_signup: {e}");
+            5
+        }
+    }
+}
+
+/// `host:port` of an `http://` URL.
+fn authority(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("http://")?;
+    Some(rest.split('/').next()?.to_string())
+}
+
+/// The port of a `host:port` authority.
+fn authority_port(authority: &str) -> Option<u16> {
+    authority.rsplit_once(':')?.1.parse().ok()
+}
+
+/// The local ports in the `LISTEN` state in the text of `/proc/net/tcp` or
+/// `/proc/net/tcp6`: after the header line, field 1 is `ADDR:PORT` in hex and
+/// field 3 is the state, `0A` for `LISTEN`.
+pub fn parse_listen_ports(text: &str) -> Vec<u16> {
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let local = fields.nth(1)?;
+            let state = fields.nth(1)?;
+            if state != "0A" {
+                return None;
+            }
+            u16::from_str_radix(local.rsplit_once(':')?.1, 16).ok()
+        })
+        .collect()
+}
+
+/// Every port some socket of this network namespace is listening on, read
+/// from `/proc/net/tcp` and `/proc/net/tcp6`. A table that cannot be read
+/// contributes nothing.
+pub fn listening_ports() -> Vec<u16> {
+    ["/proc/net/tcp", "/proc/net/tcp6"]
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .flat_map(|text| parse_listen_ports(&text))
+        .collect()
+}
+
+fn reachable(authority: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    authority
+        .to_socket_addrs()
+        .ok()
+        .into_iter()
+        .flatten()
+        .any(|addr| std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok())
+}
+
+/// The route a hostile probe reported, by exit code (0 means all denied).
+pub fn probe_route(code: Option<i32>) -> &'static str {
+    match code {
+        Some(0) => "every route was denied",
+        Some(10) => "a process in /proc carries the victim's agent environment",
+        Some(11) => "the victim's /proc entries are readable",
+        Some(12) => "the victim's prompt file is readable",
+        Some(13) => "the victim's HOME exists",
+        Some(14) => "the victim's MCP port accepts a connection",
+        Some(15) => "the victim's fixture port accepts a connection",
+        Some(16) => "the victim's signup was completed from outside",
+        Some(30) => "the probe is blind: it cannot see its own environment or services",
+        Some(90) => "an own service shares the victim's port: rerun, the result is void",
+        Some(91) => "the probe was not given a usable victim",
+        _ => "the probe did not report",
+    }
+}
+
+/// AC-L1's hostile agent, run as trial B's agent inside the boundary. It is
+/// handed trial A's coordinates in argv and tries, in order, every route a
+/// same-uid process has to A. Exit 0 means every route was denied; a code
+/// from `probe_route` names the first one that worked.
+async fn cross_trial_probe() -> i32 {
+    let Ok(victim) = victim_from_argv() else {
+        return 91;
+    };
+    let Ok(own) = AgentEnv::from_env() else {
+        return 30;
+    };
+    // The probe must be able to see its own world, or "denied" proves nothing.
+    let own_app = authority(&own.app_url);
+    let own_mcp = authority(&own.mcp_url);
+    let victim_app = victim.vars.get(oracle::ENV_APP_URL).map(String::as_str);
+    let victim_mcp = victim.vars.get(oracle::ENV_MCP_URL).map(String::as_str);
+    let (Some(victim_app), Some(victim_mcp)) = (victim_app, victim_mcp) else {
+        return 91;
+    };
+    let (Some(victim_app_auth), Some(victim_mcp_auth)) =
+        (authority(victim_app), authority(victim_mcp))
+    else {
+        return 91;
+    };
+    if proc_environ(std::process::id() as i32).is_none()
+        || !own_app.as_deref().is_some_and(reachable)
+        || !own_mcp.as_deref().is_some_and(reachable)
+    {
+        return 30;
+    }
+    // A coincidence of paths is void, not a verdict: the victim's prompt or
+    // HOME path is also this trial's own.
+    if victim.vars.get(oracle::ENV_PROMPT_FILE) == Some(&own.prompt_file)
+        || victim.vars.get("HOME") == std::env::var("HOME").ok().as_ref()
+    {
+        return 90;
+    }
+
+    // 10: discovery. Any readable process anywhere in /proc that carries the
+    // victim's agent environment.
+    let me = std::process::id() as i32;
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<i32>().ok())
+            else {
+                continue;
+            };
+            if pid != me
+                && proc_environ(pid).is_some_and(|env| {
+                    env.get(oracle::ENV_APP_URL).map(String::as_str) == Some(victim_app)
+                })
+            {
+                return 10;
+            }
+        }
+    }
+    // 11: the victim's own /proc entries by the coordinates handed over.
+    for pid in [victim.runner, victim.agent] {
+        for file in ["environ", "cmdline", "cwd", "root", "fd"] {
+            let path = format!("/proc/{pid}/{file}");
+            if pid != me && (std::fs::read(&path).is_ok() || std::fs::read_dir(&path).is_ok()) {
+                // The runner's pid may coincide with a process of this
+                // trial; a hit counts only when it is the victim's.
+                if proc_environ(pid).is_some_and(|e| {
+                    e.get(oracle::ENV_APP_URL).map(String::as_str) == Some(victim_app)
+                }) {
+                    return 11;
+                }
+            }
+        }
+    }
+    // 12, 13: the victim's prompt and HOME by path.
+    if let Some(prompt) = victim.vars.get(oracle::ENV_PROMPT_FILE)
+        && std::fs::read(prompt).is_ok()
+    {
+        return 12;
+    }
+    if let Some(home) = victim.vars.get("HOME")
+        && Path::new(home).exists()
+    {
+        return 13;
+    }
+    // A port coincidence is void too. Inside this trial's private network
+    // namespace every loopback `LISTEN` socket is this trial's own, so if the
+    // victim's MCP or fixture port is one of them, a connect below would
+    // reach this trial's service and mean nothing about the victim.
+    let listening = listening_ports();
+    for authority in [&victim_mcp_auth, &victim_app_auth] {
+        if authority_port(authority).is_some_and(|port| listening.contains(&port)) {
+            return 90;
+        }
+    }
+    // 14, 15: the victim's services over the wire.
+    if reachable(&victim_mcp_auth) {
+        return 14;
+    }
+    if reachable(&victim_app_auth) {
+        return 15;
+    }
+    // 16: make the victim's idle agent pass.
+    let mut vars = victim.vars.clone();
+    vars.entry(oracle::ENV_DEADLINE_MS.to_string())
+        .or_insert_with(|| "1000".to_string());
+    if let Ok(env) = agent_env_from(&vars)
+        && tokio::time::timeout(Duration::from_secs(5), oracle::run_oracle(&env))
+            .await
+            .is_ok_and(|r| r.is_ok())
+    {
+        return 16;
+    }
+    0
+}
+
+// ---- the boundary seen from inside (AC-L2) ---------------------------------
+
+fn observe_arg(key: &str) -> Option<String> {
+    std::env::args().find_map(|arg| arg.strip_prefix(key).map(str::to_string))
+}
+
+fn status_value(status: &str, name: &str) -> Option<String> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix(':'))
+        .map(|value| value.trim().to_string())
+}
+
+/// The environment keys the runner gives an agent (0076 §4) and the shell
+/// wrapper's own bookkeeping; anything else came from the host.
+fn agent_env_key_allowed(key: &str) -> bool {
+    key.starts_with("EVAL_")
+        || [
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "HOME",
+            "TMPDIR",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "PWD",
+            "OLDPWD",
+            "SHLVL",
+            "_",
+        ]
+        .contains(&key)
+}
+
+/// Whether `candidate` is a strict ancestor directory of one of `files`.
+fn is_ancestor_of_any(candidate: &Path, files: &[PathBuf]) -> bool {
+    files
+        .iter()
+        .any(|file| file != candidate && file.starts_with(candidate))
+}
+
+/// The first entry under `dir`, recursively, that is neither one of the
+/// bound `files` nor a directory on the path to one: such an entry is a piece
+/// of the host's `/home` that the boundary should never have shown. `None`
+/// when `dir` holds nothing but the bound files and their empty parents.
+pub fn stray_under(dir: &Path, files: &[PathBuf]) -> Option<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            return Some(path);
+        };
+        if meta.is_dir() && !meta.file_type().is_symlink() {
+            if !is_ancestor_of_any(&path, files) {
+                return Some(path);
+            }
+            if let Some(stray) = stray_under(&path, files) {
+                return Some(stray);
+            }
+        } else if !files.contains(&path) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Whether some descriptor of some process visible in this `/proc` is a
+/// directory that lists any of `host_pids`: that descriptor reaches the
+/// host's `/proc`. A table that cannot be read counts as denied. The PIDs
+/// the test passes are large enough never to coincide with a PID of this
+/// namespace or with a file descriptor number, so a listing that names one is
+/// the host's.
+#[cfg(target_os = "linux")]
+pub fn descriptor_reaches_host_proc(host_pids: &std::collections::HashSet<String>) -> bool {
+    let Ok(processes) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    for process in processes.flatten() {
+        let name = process.file_name();
+        if !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(table) = std::fs::read_dir(process.path().join("fd")) else {
+            continue;
+        };
+        for descriptor in table.flatten() {
+            // `read_dir` follows the link: it succeeds only for a directory.
+            let Ok(listing) = std::fs::read_dir(descriptor.path()) else {
+                continue;
+            };
+            if listing
+                .flatten()
+                .any(|entry| host_pids.contains(entry.file_name().to_string_lossy().as_ref()))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// AC-L2's scripted observer, run as an isolated trial's agent. It reports
+/// the topology it sees from inside by exit code — the first violated check:
+/// 40 usage, 41 uid, 42 `/proc` shows the host (a host PID, or PID 1 is not
+/// the runner, so bwrap installed a reaper), 43 interfaces other than `lo`,
+/// 44 `lo` unusable, 45 a host path is present (or a stray entry under
+/// `/home`), 46 /tmp is not the bounded tmpfs, 47 a foreign environment key,
+/// 48 a stray descriptor in the observer, 49 capabilities or no-new-privs,
+/// 50 some process's descriptor reaches the host `/proc`.
+///
+/// Every check holding is exit 0, or 100 plus two recorded observations
+/// that are not failures (the runner drains an agent's stderr, so a line
+/// printed there never reaches the test; the exit code carries them): 100 a
+/// nested user namespace was granted, 101 `/proc/1/mem` opens read-write
+/// (the runner is PID 1 and reading one's own runner is within-trial, 0115
+/// ruling 6), 102 both. Neither is asserted: `--disable-userns` is not used
+/// until a live run shows it traverses the profile. No production code runs
+/// this; the trial's own scorer never sees it.
+#[cfg(target_os = "linux")]
+fn boundary_observe() -> i32 {
+    let (Some(uid), Some(host_pids), Some(absent), Some(canary_fd), Some(tmp)) = (
+        observe_arg("uid="),
+        observe_arg("host-pids="),
+        observe_arg("absent="),
+        observe_arg("canary-fd="),
+        observe_arg("tmp-bytes="),
+    ) else {
+        return 40;
+    };
+    let (Some(runner), Some(bound)) = (observe_arg("runner="), observe_arg("bound=")) else {
+        return 40;
+    };
+    let (Ok(uid), Ok(tmp_bytes)) = (uid.parse::<u32>(), tmp.parse::<u64>()) else {
+        return 40;
+    };
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } != uid {
+        return 41;
+    }
+    // /proc is the sandbox's own: none of the host's PIDs, and PID 1 is the
+    // runner itself, so no reaper (bwrap's default) stands inside.
+    let host: Vec<i32> = host_pids
+        .split(',')
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    if host
+        .iter()
+        .any(|pid| Path::new(&format!("/proc/{pid}")).exists())
+    {
+        return 42;
+    }
+    match std::fs::read_link("/proc/1/exe") {
+        Ok(exe) if exe == Path::new(&runner) => {}
+        _ => return 42,
+    }
+    // Loopback only, and it works.
+    let net = std::fs::read_to_string("/proc/net/dev").unwrap_or_default();
+    let names: Vec<&str> = net
+        .lines()
+        .skip(2)
+        .filter_map(|line| line.split_once(':').map(|(name, _)| name.trim()))
+        .collect();
+    if names != ["lo"] {
+        return 43;
+    }
+    let usable = std::net::TcpListener::bind("127.0.0.1:0").is_ok_and(|listener| {
+        listener.local_addr().is_ok_and(|addr| {
+            std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok()
+        })
+    });
+    if !usable {
+        return 44;
+    }
+    // Nothing of the host beyond the read-only system trees and the named
+    // files: the test lists host paths (other trees, the operator's
+    // credentials, a canary file under the host /tmp) that must not exist,
+    // and /home holds only the bound files and the empty directories on the
+    // path to them.
+    let absent: Vec<&str> = absent.split(',').filter(|p| !p.is_empty()).collect();
+    if absent.is_empty() || absent.iter().any(|p| std::fs::symlink_metadata(p).is_ok()) {
+        return 45;
+    }
+    let bound: Vec<PathBuf> = bound
+        .split(',')
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    if stray_under(Path::new("/home"), &bound).is_some() {
+        return 45;
+    }
+    // /tmp is a tmpfs of exactly the bounded size.
+    // SAFETY: statfs writes into the zeroed struct it is handed.
+    let tmpfs = unsafe {
+        let mut st: libc::statfs = std::mem::zeroed();
+        libc::statfs(c"/tmp".as_ptr(), &mut st) == 0
+            && st.f_type as i64 == 0x0102_1994
+            && (st.f_blocks as u64) * (st.f_bsize as u64) == tmp_bytes
+    };
+    if !tmpfs {
+        return 46;
+    }
+    if std::env::vars_os().any(|(key, _)| !agent_env_key_allowed(&key.to_string_lossy())) {
+        return 47;
+    }
+    // No descriptor beyond stdio, and in particular not the one the
+    // controller was handed.
+    if Path::new(&format!("/proc/self/fd/{canary_fd}")).exists() {
+        return 48;
+    }
+    let open: Vec<PathBuf> = std::fs::read_dir("/proc/self/fd")
+        .map(|dir| dir.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    for fd in open {
+        let number: i32 = fd
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(-1);
+        // The directory handle used for this very listing has gone by now.
+        if number >= 3 && std::fs::read_link(&fd).is_ok() {
+            return 48;
+        }
+    }
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let empty = |name: &str| {
+        status_value(&status, name).is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b == b'0'))
+    };
+    if !empty("CapEff")
+        || !empty("CapPrm")
+        || status_value(&status, "NoNewPrivs").as_deref() != Some("1")
+    {
+        return 49;
+    }
+    // No process inside holds a descriptor onto the host's /proc: the escape
+    // route the review named for a reaper, walked over every process.
+    let host_pids: std::collections::HashSet<String> =
+        host_pids.split(',').map(str::to_string).collect();
+    if descriptor_reaches_host_proc(&host_pids) {
+        return 50;
+    }
+    // Observed, not asserted: may a process in here create a user namespace?
+    // SAFETY: the child only calls unshare and _exit, both async-signal-safe.
+    let nested = unsafe {
+        match libc::fork() {
+            0 => libc::_exit(i32::from(libc::unshare(libc::CLONE_NEWUSER) != 0)),
+            pid if pid > 0 => {
+                let mut status = 0;
+                libc::waitpid(pid, &mut status, 0) == pid
+                    && libc::WIFEXITED(status)
+                    && libc::WEXITSTATUS(status) == 0
+            }
+            _ => false,
+        }
+    };
+    // Observed, not asserted: does PID 1 (the runner) open for writing?
+    let mem_writable = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/proc/1/mem")
+        .is_ok();
+    match (nested, mem_writable) {
+        (false, false) => 0,
+        (true, false) => 100,
+        (false, true) => 101,
+        (true, true) => 102,
+    }
+}
+
+/// Victim A's controller, played by the trusted test: bwrap spawned from the
+/// library's own argv builder, with the controller's stdio discipline (no
+/// stdin, piped output, its own process group, no inherited environment). The
+/// test holds no host admission for it — that is trial B's, the real CLI's.
+#[cfg(target_os = "linux")]
+pub fn launch_victim(
+    request: &swarmail_evals::isolation::Request,
+    inner: &[OsString],
+) -> ChildGuard {
+    use std::os::unix::process::CommandExt;
+    let mut command = Command::new(swarmail_evals::isolation::BWRAP);
+    command
+        .args(swarmail_evals::isolation::command(request, inner))
+        .env_clear()
+        .stdin(Stdio::null())
+        .process_group(0);
+    bounded(command, ISOLATED_CLI_BOUND)
 }
