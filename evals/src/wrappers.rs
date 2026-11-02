@@ -544,7 +544,13 @@ fn validate_driver(driver: &Path) -> Result<(), String> {
 
 /// `DRIVER <family> -- <program> <args...>` with the direct launch's
 /// environment, working directory and output routing: the driver is only a
-/// different launcher for the same argv.
+/// different launcher for the same argv. Test-only (decision 0116, revision 3):
+/// no production path reaches it while `driver_contract_unknown` is refused,
+/// so the compiler, not a comment, keeps it out of the shipped binary. The
+/// follow-up that implements the observed F2 invocation lifts the refusal and
+/// restores the arm in `run()` that launches through the driver; this
+/// assembly and its inline proof are its starting point.
+#[cfg(test)]
 fn through_driver(direct: &Command, family: &str, driver: &Path) -> Command {
     let mut cmd = Command::new(driver);
     cmd.arg(family)
@@ -581,7 +587,7 @@ pub fn run(
         // argv would turn a driver error into the agent's exit, scored as the
         // task's idle class. This refusal precedes every environment read,
         // credential read and spawn, and has no switch: `through_driver` below
-        // is the assembly the follow-up will lift this refusal onto.
+        // is the test-only assembly the follow-up will lift this refusal onto.
         return Err("driver_contract_unknown".into());
     }
     let inputs = Inputs::environment()?;
@@ -791,10 +797,6 @@ pub fn run(
                 .arg(&inputs.goal);
         }
     }
-    let mut cmd = match via_brokkr {
-        Some(driver) => through_driver(&cmd, harness, driver),
-        None => cmd,
-    };
     if harness == "dsh" {
         cmd.stdin(Stdio::null());
     } else {

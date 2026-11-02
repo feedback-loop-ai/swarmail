@@ -182,8 +182,10 @@ stops admission.
 The argv assembly (`DRIVER <family> -- <program> <argv...>`, the direct
 launch's environment and working directory, output routed to `/dev/null`)
 stays in the code and is proven by an inline test that inspects the assembled
-`Command` for all three families; it is dead at runtime until the follow-up
-that implements the observed invocation lifts the refusal. A direct launch is
+`Command` for all three families; `through_driver` is `#[cfg(test)]` (no
+production path reaches it), so the compiler keeps it out of the shipped binary
+until the follow-up that implements the observed invocation lifts the refusal
+and restores `run()`'s arm. A direct launch is
 unchanged.
 
 A row for a via-brokkr launch will declare the matching finite selector
@@ -210,11 +212,16 @@ operator's acceptance of 0116 section 6:
    launch's keys;
 4. `through_driver` routes the driver's stdout and stderr to `/dev/null`.
 
-Tests set `SWARMAIL_EVAL_SEAM_SENTINEL` in the process that runs `trial.sh`
-and in the wrapper and prove it reaches neither the trial's agent nor the CLI
-the wrapper launches (`recipe.rs::the_trial_seat_strips_the_matrix_environment`,
-the wrapper environment test in `wrappers_launch`). The follow-up flips them to
-the observed channel's name.
+Tests set `SWARMAIL_EVAL_SEAM_SENTINEL` and prove two of the four. Seam 1:
+`recipe.rs::the_trial_script_strips_the_matrix_environment` runs the real
+`trial.sh` with a probe as the request's `evals_bin`, which records its own
+environment, so deleting `env -i` turns it red. Seam 2:
+`recipe.rs::the_runner_rebuilds_the_agents_environment` runs `swarmail-evals
+trial` with the sentinel in its own environment and reads the probe agent's
+keys; the direct wrapper launch has the same assertion in `wrappers_launch`.
+Seams 3 and 4 are crossed by no production path while `through_driver` is
+test-only, so **no runtime proof is claimed for them**; the follow-up supplies
+it. The follow-up flips the tests to the observed channel's name.
 
 ### The paid read set (brokkr fact F5)
 

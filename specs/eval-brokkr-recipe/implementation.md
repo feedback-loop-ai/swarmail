@@ -1,4 +1,6 @@
-# Implementation record: the eval recipe on brokkr (interim path), revision 2
+# Implementation record: the eval recipe on brokkr (interim path), revision 3
+
+**Revision 3 (round 3, T34 to T42) is the last section, "Round 3". It supersedes the gate receipts and the AC2/AC4 rows below where they differ.**
 
 Implements [spec.md](spec.md) / [plan.md](plan.md) / [tasks.md](tasks.md)
 (revision 2, `38dab0f`) under proposed
@@ -227,3 +229,83 @@ chart, Docker and RustSec jobs, and the macOS test job.
    renumbering it if `main` takes 0116 first.
 6. The follow-up change (forward the observed channel, lift the refusal,
    declare the binds) and then the paid matrix (AC16).
+
+## Round 3 (T34 to T42; run `issue-148-the-eval-recipe-on-bro-1b9b64e9`)
+
+Built on `6f5b1c3` (spec revision 3), never amended. The gate now agrees with
+the row by the agreement table (spec "Revision 3"), not by equality.
+
+| Task | Change | Proof |
+|---|---|---|
+| T34 | `brokkr-standin.sh`: modes `budget-over-pass`, `harness-error-over-pass`, `budget-over-unscorable` rewrite the slot's `row.json`, `exit`, the retained `result.json` and its digest in `metadata.json` (as `provenance.rs`'s `rebind` does; no check relaxed), `budget-over-unscorable` also cuts `state.json` without rebinding; `bad-score` retargeted to `business`; the log gains one `score=<word>` line per invocation | `report.rs::brokkr_mode_commits_a_budget_row_over_a_passing_state` (3 `fail`/`budget` rows, exit 1, `score=fail` x3), `…_a_harness_error_row_over_a_passing_state` (3 `harness_error` rows as written, exit 2, `score=unscorable` x3, no `score_mismatch`), `brokkr_mode_turns_every_worker_defect_into_a_row` (now seven arms) |
+| T35 | one `score.sh` case per table cell over rewritten oracle/null leaves; unreadable rows (missing, symlink, two lines) | `recipe.rs::the_score_script_follows_the_agreement_table`, `the_score_script_maps_check_exit_codes` |
+| T36 | `score.json` is `{schema_version, trial_id, business, check_exit}`; `score.sh` reads `row.json` strictly (regular, no symlink, <= 64 KiB, one line, `jq -e` on `outcome`/`failure_class` only) and reports by the table | the T35 cases; the existing "notes carry no path" assertion holds for each |
+| T37 | `GateVerdict::Ruled(Business)`; `gate_verdict` reads `business` only (unknown values, a missing key and the revision-2 `outcome` key are `Missing`); `gate_refusal(&GateVerdict, &TrialResult)` matches the table; `outcome_name` and its test removed | inline `the_gate_agrees_with_the_row_by_the_agreement_table` (every cell), `a_slot_is_read_through_the_bounded_reader_and_missing_pieces_are_typed` |
+| T38 | `policy.json`: description and the three `SCORE-*` reason texts restated; ids, results, transitions, severities unchanged, no rule added | `tests/delivery_recipes.rs` unchanged and green (it pins no reason text) |
+| T39 | `evals/README.md` carries the table; the tokens sentence names the F1/F2 forwarding follow-up and 0116 §6 and says a paid run alone closes neither #151 gap; `.brokkr/recipes/README.md` describes the score seat by the table | the grep checks below |
+| T40 | `through_driver` is `#[cfg(test)]`; `run()`'s driver arm is deleted; `evals/wrappers.md` says so | non-test `cargo build --locked` and clippy clean; the inline assembly and refusal tests unchanged and green |
+| T41 | `the_trial_seat_strips_the_matrix_environment` replaced by `the_trial_script_strips_the_matrix_environment` (seam 1: probe `evals_bin` under the real `trial.sh`) and `the_runner_rebuilds_the_agents_environment` (seam 2: `swarmail-evals trial` with the sentinel in its own environment); no runtime claim for seams 3 and 4 | the mutation below |
+
+### First red, observed (T34, T35)
+
+Run against `040795d`'s code with the new tests (and the stand-in's retargeted
+`bad-score`):
+
+* `budget-over-pass` and `harness-error-over-pass`: red. Slot 1 became
+  `score_mismatch` (stderr `matrix trial error: score_mismatch`), admission
+  stopped after one worker (`left: 1, right: 3`) and the run exited 2.
+* `bad-score` after retargeting: red (`left: Some(0)`, `right: Some(2)`): the
+  old `score.sh` had no `business` key to disagree with.
+* `the_score_script_maps_check_exit_codes`: red (`score.json` carried `outcome`
+  and `exit`, not `business` and `check_exit`).
+* `the_score_script_follows_the_agreement_table`: red at its first cell for the
+  same reason. The `fail`/`budget`-over-`pass` cell reported `pass` under the
+  old script (it echoed the replay), which the report-level arm shows as above.
+
+All green after T36 to T38.
+
+### The T41 mutation
+
+With `env -i PATH=… LANG=C LC_ALL=C` deleted from `trial.sh` (so the line began
+`env SWARMAIL_BIN=…`), `the_trial_script_strips_the_matrix_environment` was red:
+`an inherited key survived env -i: BROKKR_HANDS_BOX, CARGO, CARGO_HOME, …`.
+`trial.sh` was restored byte for byte (`git diff` of it is empty) and the
+mutation was never committed.
+
+### Gate receipts (final tree, all `--locked`, offline)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all -- --check` | exit 0 |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| `cargo test --workspace --locked --no-fail-fast` | exit 0, every binary ok |
+| `cargo build --locked --bin swarmail` | exit 0; `SWARMAIL_BIN` = `target/debug/swarmail` from Cargo's artifact record |
+| `cd evals && cargo fmt --all -- --check` | exit 0 |
+| `cd evals && cargo clippy --all-targets --locked -- -D warnings` | exit 0 |
+| `cd evals && cargo build --locked` (non-test: `through_driver` is test-only) | exit 0 |
+| `cd evals && SWARMAIL_BIN=… cargo test --locked --no-fail-fast` | exit 0 (lib 73, bin 27, recipe 15, report 37, runner 38, provenance 29, wrappers 22, proof 8, baseline 3, identity 5, boundary 19, fixture 19, scoring 18) |
+| `brokkr compile --bundle .brokkr/recipes/self` and `…/eval` | **not run: no brokkr binary in this seat** (CI's pinned-bundle job compiles both) |
+| `bash scripts/coverage-gate.sh` | exit 0, exact 100/100/100 |
+| `bash scripts/coverage-gate.sh selftest` | exit 0 |
+| `bash scripts/publish-guard-test.sh` | exit 0 |
+| `bash scripts/seal-branch-test.sh` | exit 0 |
+| `cargo deny check licenses` | exit 0 |
+| `git diff --stat f815d48 -- Cargo.toml Cargo.lock evals/Cargo.toml evals/Cargo.lock deny.toml scripts/ .brokkr/recipes/self/` | empty |
+
+**A flake, recorded and not retried to green.** The first full evals run
+failed `tests/fixture.rs::focused_tools_complete_link_and_code_traps_without_guessing`
+(`digest-forty` returned `status: timed_out` with the arrival in
+`near_misses`) while the host was building and running the whole suite. It is
+a wait-timing test in code this change does not touch. Run alone it passed 3 of
+3, and the next full `--no-fail-fast` run passed it. The #302 test
+(`child_output_server_death_remains_a_harness_error_on_linux`) did not recur.
+
+Checks from the plan: `test ! -e evals/tests/wrappers_launch/standin-driver.py`
+holds; `grep -n 'through_driver(&cmd' evals/src/wrappers.rs` finds nothing;
+`grep -n "until the operator's paid run" evals/README.md` finds nothing;
+`grep -n "disagrees with the row" evals/README.md .brokkr/recipes/README.md`
+finds nothing; `grep -n "0116 §6" evals/README.md` finds the tokens sentence.
+
+PR body, one added sentence: the gate agrees with the row by the agreement
+table, and a `fail`/`budget` trial is recorded as data. The hold, the
+unfiled-brokkr-issues precondition and the paid-run limits above are unchanged.

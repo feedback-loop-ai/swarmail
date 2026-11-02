@@ -1494,7 +1494,15 @@ fn brokkr_mode_runs_the_product_through_the_recipe_scripts() {
     );
     // One worker per slot, each naming a request inside the matrix's slots.
     let log_text = std::fs::read_to_string(&log).unwrap();
-    assert_eq!(log_text.lines().count(), 8);
+    assert_eq!(requests(&log_text), 8);
+    assert_eq!(
+        log_text
+            .lines()
+            .filter(|l| *l == "score=pass" || *l == "score=fail")
+            .count(),
+        8,
+        "the score seat ruled pass or fail on every trial"
+    );
     let matrix_dir = only_matrix_dir(&root);
     for row in &rows {
         let slot = matrix_dir.join("slots").join(&row.trial_id);
@@ -1547,10 +1555,87 @@ fn defect_case(mode: &str, expected_stderr: &str) {
         "{mode}: the unstarted suffix is zero-time"
     );
     assert_eq!(
-        std::fs::read_to_string(&log).unwrap().lines().count(),
+        requests(&std::fs::read_to_string(&log).unwrap()),
         1,
         "{mode}: admission stopped after the defective slot"
     );
+}
+
+/// The number of seat-pair invocations a stand-in log records (one request
+/// line each); its `score=` lines are the score seat's result words.
+fn requests(log_text: &str) -> usize {
+    log_text
+        .lines()
+        .filter(|l| l.starts_with("swarmail-eval-request: "))
+        .count()
+}
+
+/// A legitimate row the agreement table commits: the stand-in rewrites the
+/// slot the way the runner's precedence legs leave it, and every planned row
+/// is produced with admission continuing. Returns the rows, the exit code and
+/// the score seat's result words.
+fn agreeing_case(mode: &str) -> (Vec<TrialResult>, Option<i32>, String, Vec<String>) {
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    let agents = agents_file(dir.path(), json!([{"label": "oracle", "argv": []}]));
+    let log = dir.path().join("brokkr.log");
+    let realm = brokkr_realm(dir.path());
+    let out = brokkr_matrix(mode, &realm)
+        .env("EVAL_TEST_BROKKR_LOG", &log)
+        .args(["--tasks", "signup", "--agents", &agents, "--trials", "3"])
+        .arg("--artifacts-dir")
+        .arg(realm.join("artifacts"))
+        .output()
+        .unwrap();
+    let rows = rows(&out.stdout);
+    let log_text = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(rows.len(), 3, "{mode}: one row per slot\n{}", stderr(&out));
+    assert_eq!(
+        requests(&log_text),
+        3,
+        "{mode}: admission continued through every planned slot\n{}",
+        stderr(&out)
+    );
+    let words = log_text
+        .lines()
+        .filter_map(|l| l.strip_prefix("score="))
+        .map(str::to_owned)
+        .collect();
+    (rows, out.status.code(), stderr(&out), words)
+}
+
+/// AC2, AC18: a `fail`/`budget` row over a state that still replays `pass` is
+/// the deadline leg of accepted 0055 section 2, not a disagreement. It is
+/// committed as the row says, the score seat reports `fail`, and admission goes on.
+#[test]
+fn brokkr_mode_commits_a_budget_row_over_a_passing_state() {
+    let (rows, code, err, words) = agreeing_case("budget-over-pass");
+    assert_eq!(code, Some(1), "{err}");
+    assert!(!err.contains("score_mismatch"), "{err}");
+    for row in &rows {
+        assert_eq!(row.outcome, Outcome::Fail, "{row:?}");
+        assert_eq!(
+            row.failure_class,
+            Some(swarmail_evals::state::FailureClass::Budget)
+        );
+        assert!(row.wall_time_ms > 0, "a real row, not a refusal suffix");
+    }
+    assert_eq!(words, ["fail", "fail", "fail"]);
+}
+
+/// AC2, AC18: an infrastructure `harness_error` row over a state that still
+/// replays `pass` is committed as written, never rewritten to `score_mismatch`,
+/// and the score seat reports `unscorable` so the journal and the row agree.
+#[test]
+fn brokkr_mode_commits_a_harness_error_row_over_a_passing_state() {
+    let (rows, code, err, words) = agreeing_case("harness-error-over-pass");
+    assert_eq!(code, Some(2), "{err}");
+    assert!(!err.contains("score_mismatch"), "{err}");
+    for row in &rows {
+        assert_eq!(row.outcome, Outcome::HarnessError, "{row:?}");
+        assert!(row.wall_time_ms > 0, "committed as written");
+    }
+    assert_eq!(words, ["unscorable", "unscorable", "unscorable"]);
 }
 
 #[test]
@@ -1559,6 +1644,9 @@ fn brokkr_mode_turns_every_worker_defect_into_a_row() {
     defect_case("foreign-row", "trial_context_mismatch");
     defect_case("bad-exit", "does not match result outcome");
     defect_case("bad-score", "score_mismatch");
+    // A budget row whose retained state no longer validates is a leaf that
+    // changed after it froze: the one budget contradiction (the agreement table).
+    defect_case("budget-over-unscorable", "score_mismatch");
     // A gate that never ruled is not a gate that disagrees.
     defect_case("no-score", "score_missing");
     // A fixed 0076 category the trial left in the slot's diagnostics surfaces
@@ -1617,7 +1705,7 @@ fn brokkr_mode_refuses_a_via_brokkr_agent_as_a_harness_error() {
             "{label}: admission stopped; the suffix is zero-time"
         );
         assert_eq!(
-            std::fs::read_to_string(&log).unwrap().lines().count(),
+            requests(&std::fs::read_to_string(&log).unwrap()),
             1,
             "{label}: one worker only"
         );

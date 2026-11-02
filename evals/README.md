@@ -339,9 +339,24 @@ tracked in brokkr#766.
   until the driver's invocation is observed; see `wrappers.md`).
 - `score` re-applies the task's check to the retained leaf
   (`check --artifacts-dir`): the app's state, never the agent's account.
-  The matrix cross-checks the gate against the row; a gate that never ruled is
-  that slot's `harness_error` (`score_missing`), one that disagrees with the
-  row is `score_mismatch`, and either stops admission.
+  The gate replays only the business check, so the matrix agrees it with the
+  row by the table below (accepted 0055 section 2 and 0071 section 2 order the
+  row's precedence: infrastructure, then a live deadline as `fail`/`budget`,
+  then the business check), never by equality. A gate that never ruled is that
+  slot's `harness_error` (`score_missing`); a replay outside the row's
+  agreeing set is `score_mismatch`; either stops admission. `score.json` is
+  `{schema_version, trial_id, business, check_exit}`, the business replay only.
+
+  | row | agreeing business replay | the `score` seat reports |
+  |---|---|---|
+  | `pass` | `pass` | `pass` |
+  | `fail`, class not `budget` | `fail` | `fail` |
+  | `fail`/`budget` | `pass` or `fail`, never `unscorable` | `fail` |
+  | `harness_error` | any ruled replay | `unscorable` |
+  | anything else, or an unreadable row | none | `unscorable` |
+
+  A committed `fail`/`budget` or `harness_error` row is never rewritten, so the
+  journal's run outcome and the row never disagree for a legitimate trial.
 - Both scripts parse the engine's prompt rendering (`Feature: <text>`, the
   result path on an indented line of its own), trimming each line.
 
@@ -442,9 +457,12 @@ records wait for 0116 section 4's acceptance.
 - **support-reply** replies through the app's HTTP form with the mailed
   challenge; it does not measure Swarmail inbound reply transport (#160).
 - Tokens, turns and cost are not in the rows (the rows do not change). They
-  come from brokkr's journal, joined by trial id (next section); until the
-  operator's paid run of the eval recipe, the #151 baseline still lacks them.
-  No model was run in this batch.
+  come from brokkr's journal, joined by trial id (next section). A paid run
+  alone measures none of them: `--via-brokkr` refuses `driver_contract_unknown`
+  until a follow-up forwards the observed accounting channel (brokkr facts F1
+  and F2, `wrappers.md`) and the operator accepts 0116 §6. Until then
+  the #151 baseline still lacks tokens per success and per-trial tool-call
+  records. No model was run in this batch.
 
 ## Private artifact publication (proposed 0075, renumbered from 0062)
 

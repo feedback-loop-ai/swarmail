@@ -252,7 +252,11 @@ the MCP broker when brokkr#766 lands. Today the real driver is not launched:
 `--via-brokkr` refuses `driver_contract_unknown` until the driver's invocation
 is observed (brokkr fact F2), so the recipe runs the **oracle and null controls
 only**; paid agents under `matrix --brokkr` are unsupported until the follow-up
-that observes F1, F2 and F5 (see `evals/wrappers.md`). The scripts parse the
+that observes F1, F2 and F5 (see `evals/wrappers.md`). The `score` seat
+reports the trial's class by the agreement table in `evals/README.md`: `pass`
+for a pass row the retained state agrees with, `fail` for a business failure it
+agrees with or a `fail`/`budget` row over a validated state, and `unscorable`
+for a `harness_error` row, a contradiction or an unreadable row. The scripts parse the
 engine's prompt rendering: the feature text follows `Feature: ` and the result
 path is an indented line of its own, so each line is trimmed and the
 `swarmail-eval-request: /abs/request.json` token is matched anywhere on it.
@@ -264,7 +268,7 @@ list) under the artifacts root and runs
 once per slot, then reads the slot's `row.json`, `exit` and `score.json` and
 keeps accounting for exactly one row per requested slot (`--artifacts-dir` must
 lie inside the current directory; a gate that never ruled is `score_missing`,
-one that disagrees with the row `score_mismatch`):
+and a business replay outside what the row agrees with is `score_mismatch`):
 
 ```bash
 export PATH="$PWD/.brokkr/state/bin:$PATH"

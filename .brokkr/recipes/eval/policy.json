@@ -1,6 +1,6 @@
 {
   "schema": "forge.phase-machine/v2",
-  "description": "The eval recipe's phase machine (decision 0116): trial runs the opaque eval-trial driver, score re-applies the task's check to the app's retained state. A failed trial is data and finishes the run; a trial that produced no row or a leaf that cannot be scored stops it. There is no retry rule anywhere: a retried trial is a different experiment.",
+  "description": "The eval recipe's phase machine (decision 0116): trial runs the opaque eval-trial driver, score re-applies the task's check to the app's retained state. The score seat reports the trial's class by the agreement table of decision 0116: a pass row the retained state replays as pass, and a failed row (a business failure the replay agrees with, or a budget failure over a validated state), finish the run as data; a harness-error row, a replay that contradicts the row, and a trial that produced no row or a leaf that cannot be scored stop it. There is no retry rule anywhere: a retried trial is a different experiment.",
   "phases": [
     "trial",
     "score",
@@ -33,14 +33,14 @@
       "from": "score",
       "result": "pass",
       "next": "done",
-      "reason": "The app's retained state passes the task's deterministic check."
+      "reason": "The row is a pass and the app's retained state, re-scored, agrees: it passes the task's deterministic check."
     },
     {
       "id": "SCORE-FAIL",
       "from": "score",
       "result": "fail",
       "next": "done",
-      "reason": "A failed trial is data: the check ran and the app's state does not satisfy it; the run finishes."
+      "reason": "A failed trial is data: the row is a failure (a business failure the re-scored state agrees with, or a budget failure over a state the runner validated); the run finishes."
     },
     {
       "id": "SCORE-UNSCORABLE",
@@ -48,7 +48,7 @@
       "result": "unscorable",
       "next": "stop",
       "severity": "hard",
-      "reason": "The retained leaf could not be validated or re-scored; the harness, not the agent, is at fault. Stop and let the matrix record a harness_error."
+      "reason": "The harness, not the agent, is at fault: the row is a harness error, or the re-scored state contradicts the row, or the leaf could not be validated where the row needs a verdict. Stop and let the matrix record the slot's harness_error."
     }
   ]
 }

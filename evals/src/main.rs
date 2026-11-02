@@ -1385,24 +1385,41 @@ struct SlotOutput {
 }
 
 /// What the score gate left. `Missing` means the gate never ruled (the file is
-/// absent, unreadable, malformed or not one line); `Ruled` carries the outcome
-/// it wrote, which may still disagree with the row.
+/// absent, unreadable, malformed, not one line, or names no `business` verdict
+/// of the closed vocabulary); `Ruled` carries the business replay it wrote,
+/// which may still lie outside what the row agrees with.
 #[derive(Debug, PartialEq, Eq)]
 enum GateVerdict {
     Missing,
-    Ruled(String),
+    Ruled(Business),
 }
 
-/// The gate's verdict file is exactly one JSON line with a string `outcome`.
+/// The gate's replay of the app's retained state, and nothing else: it is not
+/// the trial's outcome (the row's precedence also holds infrastructure and the
+/// deadline, accepted 0055 section 2 and 0071 section 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Business {
+    Pass,
+    Fail,
+    Unscorable,
+}
+
+/// The gate's verdict file is exactly one JSON line with a `business` string of
+/// the closed vocabulary. The revision-2 `outcome` key is not read.
 fn gate_verdict(bytes: &[u8]) -> GateVerdict {
     let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
     if body.contains(&b'\n') {
         return GateVerdict::Missing;
     }
-    serde_json::from_slice::<serde_json::Value>(body)
+    let business = serde_json::from_slice::<serde_json::Value>(body)
         .ok()
-        .and_then(|v| v.get("outcome")?.as_str().map(str::to_owned))
-        .map_or(GateVerdict::Missing, GateVerdict::Ruled)
+        .and_then(|v| match v.get("business")?.as_str()? {
+            "pass" => Some(Business::Pass),
+            "fail" => Some(Business::Fail),
+            "unscorable" => Some(Business::Unscorable),
+            _ => None,
+        });
+    business.map_or(GateVerdict::Missing, GateVerdict::Ruled)
 }
 
 fn read_slot(dir: &std::path::Path) -> Result<SlotOutput, &'static str> {
@@ -1431,21 +1448,30 @@ fn read_slot(dir: &std::path::Path) -> Result<SlotOutput, &'static str> {
     })
 }
 
-/// The slot category for a gate verdict against the row's outcome, if any.
-fn gate_refusal(verdict: &GateVerdict, outcome: &str) -> Option<&'static str> {
-    match verdict {
-        GateVerdict::Missing => Some("score_missing"),
-        GateVerdict::Ruled(ruled) if ruled != outcome => Some("score_mismatch"),
-        GateVerdict::Ruled(_) => None,
-    }
-}
-
-fn outcome_name(outcome: Outcome) -> &'static str {
-    match outcome {
-        Outcome::Pass => "pass",
-        Outcome::Fail => "fail",
-        Outcome::HarnessError => "harness_error",
-    }
+/// The slot category for a gate verdict against the row, if any: the agreement
+/// table (spec, "Revision 3"). The row's own class shows which precedence leg
+/// decided it, because a task's business `failure_class` is never `budget` or
+/// `harness_error` (`tasks.rs`) and only the deadline leg yields `fail/budget`.
+///
+/// | row                      | agreeing business replay          |
+/// |--------------------------|-----------------------------------|
+/// | `pass`                   | `pass`                            |
+/// | `fail`, class not budget | `fail`                            |
+/// | `fail`/`budget`          | `pass` or `fail`, not `unscorable`|
+/// | `harness_error`          | any ruled replay                  |
+///
+/// A committed `fail/budget` or `harness_error` row is never rewritten.
+fn gate_refusal(verdict: &GateVerdict, row: &TrialResult) -> Option<&'static str> {
+    let GateVerdict::Ruled(business) = verdict else {
+        return Some("score_missing");
+    };
+    let agrees = match (row.outcome, row.failure_class) {
+        (Outcome::Pass, _) => *business == Business::Pass,
+        (Outcome::Fail, Some(state::FailureClass::Budget)) => *business != Business::Unscorable,
+        (Outcome::Fail, _) => *business == Business::Fail,
+        (Outcome::HarnessError, _) => true,
+    };
+    (!agrees).then_some("score_mismatch")
 }
 
 async fn drain_discard<R: tokio::io::AsyncRead + Unpin>(
@@ -1735,9 +1761,7 @@ async fn run_child_assigned(
                     }) {
                         failure.get_or_insert("trial_context_mismatch".into());
                         None
-                    } else if let Some(category) = gate
-                        .as_ref()
-                        .and_then(|v| gate_refusal(v, outcome_name(row.outcome)))
+                    } else if let Some(category) = gate.as_ref().and_then(|v| gate_refusal(v, &row))
                     {
                         // The gate never ruled, or re-scored the retained leaf
                         // and disagrees with the row: never averaged in.
@@ -4900,24 +4924,29 @@ mod brokkr_mode_tests {
             (1, GateVerdict::Missing, 0),
             "a gate that never ruled"
         );
-        std::fs::write(slot.join("score.json"), r#"{"outcome":"fail"}"#).unwrap();
+        std::fs::write(slot.join("score.json"), r#"{"business":"fail"}"#).unwrap();
         std::fs::write(slot.join("trial.stderr"), "note\n").unwrap();
         let read = read_slot(&slot).unwrap();
-        assert_eq!(read.score, GateVerdict::Ruled("fail".into()));
+        assert_eq!(read.score, GateVerdict::Ruled(Business::Fail));
         assert_eq!(read.stderr, b"note\n");
         // Present-and-disagreeing is not missing, and a verdict that is
         // malformed, typeless or more than one line never ruled at all.
-        std::fs::write(slot.join("score.json"), "{\"outcome\":\"pass\"}\n").unwrap();
+        std::fs::write(slot.join("score.json"), "{\"business\":\"pass\"}\n").unwrap();
         assert_eq!(
             read_slot(&slot).unwrap().score,
-            GateVerdict::Ruled("pass".into())
+            GateVerdict::Ruled(Business::Pass)
         );
         for bad in [
             "not json",
-            "{\"outcome\":1}",
+            "{\"business\":1}",
+            "{\"business\":\"harness_error\"}",
+            "{\"business\":\"PASS\"}",
             "{}",
-            "{\"outcome\":\"pass\"}\n{\"outcome\":\"pass\"}\n",
-            "{\"outcome\":\"pass\"}\n\n",
+            // The revision-2 key is not a verdict.
+            "{\"outcome\":\"pass\"}",
+            "{\"schema_version\":1,\"trial_id\":\"x\",\"outcome\":\"pass\",\"exit\":0}",
+            "{\"business\":\"pass\"}\n{\"business\":\"pass\"}\n",
+            "{\"business\":\"pass\"}\n\n",
             "",
         ] {
             std::fs::write(slot.join("score.json"), bad).unwrap();
@@ -4927,18 +4956,6 @@ mod brokkr_mode_tests {
                 "{bad:?}"
             );
         }
-        assert_eq!(
-            gate_refusal(&GateVerdict::Missing, "pass"),
-            Some("score_missing")
-        );
-        assert_eq!(
-            gate_refusal(&GateVerdict::Ruled("fail".into()), "pass"),
-            Some("score_mismatch")
-        );
-        assert_eq!(
-            gate_refusal(&GateVerdict::Ruled("pass".into()), "pass"),
-            None
-        );
         std::fs::write(slot.join("row.json"), vec![b'x'; SLOT_ROW_LIMIT + 1]).unwrap();
         assert_eq!(
             read_slot(&slot).err(),
@@ -4952,10 +4969,45 @@ mod brokkr_mode_tests {
     }
 
     #[test]
-    fn outcome_names_are_the_gate_vocabulary() {
-        assert_eq!(outcome_name(Outcome::Pass), "pass");
-        assert_eq!(outcome_name(Outcome::Fail), "fail");
-        assert_eq!(outcome_name(Outcome::HarnessError), "harness_error");
+    fn the_gate_agrees_with_the_row_by_the_agreement_table() {
+        use swarmail_evals::state::FailureClass;
+        let row = |outcome, class| {
+            let mut row = runner::refused_row(
+                &TrialRequest {
+                    task: Some("signup".into()),
+                    agent: Some("oracle".into()),
+                    ..Default::default()
+                },
+                &"0".repeat(32),
+            );
+            row.outcome = outcome;
+            row.failure_class = class;
+            row
+        };
+        let pass = row(Outcome::Pass, None);
+        let business_fail = row(Outcome::Fail, Some(FailureClass::WrongMessage));
+        let budget = row(Outcome::Fail, Some(FailureClass::Budget));
+        let harness_error = row(Outcome::HarnessError, Some(FailureClass::HarnessError));
+        let mismatch = Some("score_mismatch");
+        let [p, f, u] =
+            [Business::Pass, Business::Fail, Business::Unscorable].map(GateVerdict::Ruled);
+        // (row, replay) -> refusal, one line per cell of the table.
+        for (name, row, verdicts) in [
+            ("pass", &pass, [None, mismatch, mismatch]),
+            ("business fail", &business_fail, [mismatch, None, mismatch]),
+            ("budget", &budget, [None, None, mismatch]),
+            ("harness_error", &harness_error, [None, None, None]),
+        ] {
+            for (verdict, expected) in [&p, &f, &u].into_iter().zip(verdicts) {
+                assert_eq!(gate_refusal(verdict, row), expected, "{name} x {verdict:?}");
+            }
+            // A gate that never ruled is `score_missing` for every row.
+            assert_eq!(
+                gate_refusal(&GateVerdict::Missing, row),
+                Some("score_missing"),
+                "{name}"
+            );
+        }
     }
 
     #[test]

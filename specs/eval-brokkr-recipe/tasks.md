@@ -202,7 +202,7 @@ Built on top of `040795d`, never amended. Order matters: the red-first arms
 T36 to T38 change it. Each task names the finding it answers (plan.md,
 "Revision 3").
 
-- [ ] **T34 Stand-in arms for the agreement table, red first (AC2, AC18;
+- [x] **T34 Stand-in arms for the agreement table, red first (AC2, AC18;
   Finding 1, all four members).** In `evals/tests/data/brokkr-standin.sh`
   add modes `budget-over-pass`, `harness-error-over-pass` and
   `budget-over-unscorable`. After `trial.sh` the stand-in rewrites the
@@ -227,7 +227,7 @@ T36 to T38 change it. Each task names the finding it answers (plan.md,
   `score_mismatch`). `budget-over-unscorable` and `bad-score` yield
   `score_mismatch`, a `harness_error` row, a zero-time suffix and exit 2.
   `no-score` still yields `score_missing`.
-- [ ] **T35 `score.sh` per-cell cases, red first (AC4, AC18; Finding 1).**
+- [x] **T35 `score.sh` per-cell cases, red first (AC4, AC18; Finding 1).**
   In `evals/tests/recipe.rs`, over rewritten oracle and null leaves and
   slot rows (the T34 rewrite, done in Rust with the `provenance.rs`
   helpers), add one case per agreement-table cell: pass/pass → `pass`;
@@ -240,7 +240,7 @@ T36 to T38 change it. Each task names the finding it answers (plan.md,
   `score.json`.
   **Test:** the cases themselves, observed red against `040795d` (no
   `business` key; `fail/budget` reports `pass`) and green after T36.
-- [ ] **T36 `score.sh` follows the agreement table (AC4, AC18; Finding 1).**
+- [x] **T36 `score.sh` follows the agreement table (AC4, AC18; Finding 1).**
   Write `score.json` as `{schema_version, trial_id, business, check_exit}`
   (sibling temporary and rename, before reporting, unchanged order). Read
   `<slot>/row.json` strictly: regular file, `! -L`, `wc -c` ≤ 65536,
@@ -251,7 +251,7 @@ T36 to T38 change it. Each task names the finding it answers (plan.md,
   Notes carry no path and no row byte.
   **Test:** T35 green. `recipe.rs`'s existing "notes carry no path or
   stderr byte" assertion holds for every new case.
-- [ ] **T37 `gate_verdict` and `gate_refusal` follow the agreement table
+- [x] **T37 `gate_verdict` and `gate_refusal` follow the agreement table
   (AC2; Finding 1).** In `evals/src/main.rs`, `GateVerdict::Ruled` carries
   a closed `Business { Pass, Fail, Unscorable }` read from the `business`
   key. Any other value, a missing key and the revision-2 `outcome` key are
@@ -267,7 +267,7 @@ T36 to T38 change it. Each task names the finding it answers (plan.md,
   `Missing` → `score_missing` for every row. `gate_verdict` cases: an
   unknown value, a missing key and an `outcome`-only line are `Missing`.
   T34 green.
-- [ ] **T38 Policy reason texts (AC18; Finding 1).** In
+- [x] **T38 Policy reason texts (AC18; Finding 1).** In
   `.brokkr/recipes/eval/policy.json` restate the `reason` of `SCORE-PASS`,
   `SCORE-FAIL` and `SCORE-UNSCORABLE` (and the description sentence) to the
   agreement table. Ids, results, transitions and severities stay unchanged,
@@ -275,7 +275,7 @@ T36 to T38 change it. Each task names the finding it answers (plan.md,
   **Test:** `tests/delivery_recipes.rs` still pins exactly five rules with
   their ids, from/result/next and hard severities. If it pins reason text,
   its fixture follows the new text. The one-fault mutants stay red.
-- [ ] **T39 README and recipe docs (Finding 2 and Finding 1's docs).**
+- [x] **T39 README and recipe docs (Finding 2 and Finding 1's docs).**
   `evals/README.md`: replace the recipe section's `score_mismatch` sentence
   with the agreement table (one short table or three sentences), and
   rewrite the "Tokens, turns and cost are not in the rows" sentence. It
@@ -288,7 +288,7 @@ T36 to T38 change it. Each task names the finding it answers (plan.md,
   finds nothing. `grep -n "0116 §6" evals/README.md` finds the sentence.
   `grep -n "disagrees with the row" evals/README.md .brokkr/recipes/README.md`
   finds nothing.
-- [ ] **T40 `through_driver` is test-only (AC8; Finding 3).** In
+- [x] **T40 `through_driver` is test-only (AC8; Finding 3).** In
   `evals/src/wrappers.rs` put `#[cfg(test)]` on `through_driver` and delete
   `run()`'s `let mut cmd = match via_brokkr { Some(driver) =>
   through_driver(..), None => cmd }`, so `cmd` stays the direct command. The
@@ -298,7 +298,7 @@ T36 to T38 change it. Each task names the finding it answers (plan.md,
   `grep -n "through_driver(&cmd" evals/src/wrappers.rs` finds nothing. The
   inline `through_driver_assembles_the_direct_argv_byte_for_byte` and the
   `driver_contract_unknown` refusal tests pass unchanged.
-- [ ] **T41 Seam proofs that can go red (AC17; independent Finding 4).** In
+- [x] **T41 Seam proofs that can go red (AC17; independent Finding 4).** In
   `evals/tests/recipe.rs` replace
   `the_trial_seat_strips_the_matrix_environment` with two tests. (1) Seam
   1: the request's `evals_bin` is a probe script that writes its own
@@ -312,7 +312,7 @@ T36 to T38 change it. Each task names the finding it answers (plan.md,
   **Test:** both green. Locally delete `env -i` from `trial.sh`, observe
   (1) red, restore it, and record that in `implementation.md` (the mutation
   is never committed).
-- [ ] **T42 Implementation record and gates (AC13, AC14, AC15).** Extend
+- [x] **T42 Implementation record and gates (AC13, AC14, AC15).** Extend
   `specs/eval-brokkr-recipe/implementation.md` with the round-3 receipts:
   the T34/T35 first-red observations, the T41 mutation, and the gate list
   run `--locked` exactly as the plan's quickstart (evals fmt/clippy/test

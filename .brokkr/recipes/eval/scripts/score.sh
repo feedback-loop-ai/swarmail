@@ -11,12 +11,25 @@
 #   score.sh <prompt_file>
 #
 # Writes <slot>/score.json = {"schema_version":1,"trial_id":...,
-# "outcome":"pass|fail|harness_error","exit":N} and reports:
-#   pass        check exited 0
-#   fail        check exited 1 (a failed trial is data)
-#   unscorable  anything else, or a malformed request
-# The matrix reads score.json and refuses a slot whose gate disagrees with
-# its row. No path, secret or child byte reaches a result's notes.
+# "business":"pass|fail|unscorable","check_exit":N}: the business replay of the
+# retained state and nothing else. It then reads <slot>/row.json for its two
+# class fields only (outcome, failure_class) and reports the trial's class by
+# the agreement table (spec, "Revision 3"; accepted 0055 section 2 and 0071
+# section 2 order the row's precedence: infrastructure, then a live deadline as
+# fail/budget, then the business check):
+#
+#   row                      agreeing replay        the seat reports
+#   pass                     pass                   pass
+#   fail, class not budget   fail                   fail
+#   fail/budget              pass or fail           fail
+#   harness_error            pass, fail, unscorable unscorable
+#   anything else (a contradiction, or an unreadable row)  unscorable
+#
+# The row never enters the business verdict; it chooses only the result word,
+# so the journal's run outcome and the committed row do not disagree. The
+# matrix mirrors this table in Rust (gate_refusal), which stays the authority
+# that commits or refuses a slot. No path, secret or child byte reaches a
+# result's notes.
 set -u
 
 prompt_file="${1:-}"
@@ -77,14 +90,37 @@ env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C \
   "$evals_bin" check --artifacts-dir "$trials_root/$trial_id" >/dev/null 2>&1 </dev/null
 code=$?
 case "$code" in
-  0) outcome=pass; result=pass ;;
-  1) outcome=fail; result=fail ;;
-  *) outcome=harness_error; result=unscorable ;;
+  0) business=pass ;;
+  1) business=fail ;;
+  *) business=unscorable ;;
 esac
 
 tmp="$slot/score.json.tmp.$$"
-jq -n -c --arg id "$trial_id" --arg outcome "$outcome" --argjson code "$code" \
-  '{schema_version: 1, trial_id: $id, outcome: $outcome, exit: $code}' > "$tmp" &&
+jq -n -c --arg id "$trial_id" --arg business "$business" --argjson code "$code" \
+  '{schema_version: 1, trial_id: $id, business: $business, check_exit: $code}' > "$tmp" &&
   mv -f "$tmp" "$slot/score.json" || { rm -f "$tmp"; refuse "the verdict could not be recorded"; }
-report "$result" "check exited $code; the app's retained state was re-scored"
+
+# The row's two class fields, read strictly: a regular file, not a symlink, at
+# most 64 KiB, exactly one line. Anything else leaves the seat unscorable with
+# the verdict above still written.
+row="$slot/row.json"
+[ -f "$row" ] && [ ! -L "$row" ] || { report unscorable "the slot's row is not a regular file"; exit 0; }
+row_size="$(wc -c < "$row" 2>/dev/null | tr -d '[:space:]')"
+case "$row_size" in ''|*[!0-9]*) report unscorable "the slot's row size is unreadable"; exit 0 ;; esac
+[ "$row_size" -le 65536 ] || { report unscorable "the slot's row is larger than 64 KiB"; exit 0; }
+[ "$(grep -c '' "$row")" -eq 1 ] ||
+  { report unscorable "the slot's row is not exactly one line"; exit 0; }
+jq -e '(.outcome | IN("pass","fail","harness_error")) and (.failure_class | type | IN("string","null"))' \
+  "$row" >/dev/null 2>&1 || { report unscorable "the slot's row carries no usable outcome"; exit 0; }
+row_outcome="$(jq -r '.outcome' "$row")"
+row_class="$(jq -r '.failure_class // ""' "$row")"
+
+case "$row_outcome:$row_class:$business" in
+  pass::pass) report pass "the row is a pass and the retained state replays pass" ;;
+  harness_error:*:*) report unscorable "the row is a harness error; the retained state replays $business" ;;
+  fail:budget:pass | fail:budget:fail) report fail "the row is a budget failure over a validated state; a failed trial is data" ;;
+  fail:budget:*) report unscorable "the row is a budget failure but the retained state replays $business" ;;
+  fail:*:fail) report fail "the row is a business failure and the retained state replays fail; a failed trial is data" ;;
+  *) report unscorable "the row is $row_outcome and the retained state replays $business" ;;
+esac
 exit 0

@@ -230,6 +230,7 @@ fn score_script_parses_the_engine_rendered_prompt() {
     for how in [Rendering::Engine, Rendering::EngineCrlf, Rendering::Bare] {
         let fx = fixture();
         let id = retained_leaf(&fx, "oracle");
+        slot_row(&fx, &id);
         let text = request(&fx, &id, json!([])).to_string();
         let result = run_script_rendered(&fx, "score.sh", &text, how);
         assert_contract(&result, "pass");
@@ -339,14 +340,72 @@ fn retained_leaf(fx: &Fixture, agent: &str) -> String {
     row.trial_id
 }
 
+/// What `trial.sh` leaves beside a retained leaf: the slot's `row.json` is the
+/// row the trial printed, which is the leaf's `result.json`.
+fn slot_row(fx: &Fixture, id: &str) {
+    std::fs::copy(
+        fx.trials.join(id).join("result.json"),
+        fx.slot.join("row.json"),
+    )
+    .unwrap();
+}
+
+/// Leave the slot the way the runner's precedence legs would have: the row,
+/// the retained `result.json` and its digest in `metadata.json` are rewritten
+/// together, as `provenance.rs`'s `rebind` does (the deadline and
+/// infrastructure legs cannot be raced offline, 0020 section 5).
+fn rewrite_row(fx: &Fixture, id: &str, outcome: &str, class: Value) {
+    let leaf = fx.trials.join(id);
+    let mut row: Value =
+        serde_json::from_slice(&std::fs::read(leaf.join("result.json")).unwrap()).unwrap();
+    row["outcome"] = json!(outcome);
+    row["failure_class"] = class;
+    let bytes = serde_json::to_vec(&row).unwrap();
+    std::fs::write(leaf.join("result.json"), &bytes).unwrap();
+    let mut meta: Value =
+        serde_json::from_slice(&std::fs::read(leaf.join("metadata.json")).unwrap()).unwrap();
+    meta["result"]["length"] = json!(bytes.len());
+    meta["result"]["sha256"] = json!(swarmail_evals::provenance::sha256(&bytes));
+    std::fs::write(
+        leaf.join("metadata.json"),
+        serde_json::to_vec(&meta).unwrap(),
+    )
+    .unwrap();
+    slot_row(fx, id);
+}
+
+fn truncate_state(fx: &Fixture, id: &str) {
+    let state = fx.trials.join(id).join("state.json");
+    let bytes = std::fs::read(&state).unwrap();
+    std::fs::write(&state, &bytes[..bytes.len() / 2]).unwrap();
+}
+
+/// Run `score.sh` on a slot and return the seat's result word and the
+/// `score.json` it left (if any).
+fn score(fx: &Fixture, id: &str) -> (Value, Option<Value>) {
+    let result = run_script(
+        fx,
+        "score.sh",
+        &request(fx, id, json!([])).to_string(),
+        true,
+    );
+    let notes = result["notes"].as_str().unwrap();
+    assert!(!notes.contains(fx.dir.path().to_str().unwrap()), "{notes}");
+    let score = std::fs::read(fx.slot.join("score.json"))
+        .ok()
+        .map(|b| serde_json::from_slice(&b).unwrap());
+    (result, score)
+}
+
 #[test]
 fn the_score_script_maps_check_exit_codes() {
     let _trial_scope = trial_scope();
-    for (agent, expected, outcome, code) in
+    for (agent, expected, business, code) in
         [("oracle", "pass", "pass", 0), ("null", "fail", "fail", 1)]
     {
         let fx = fixture();
         let id = retained_leaf(&fx, agent);
+        slot_row(&fx, &id);
         let result = run_script(
             &fx,
             "score.sh",
@@ -359,7 +418,8 @@ fn the_score_script_maps_check_exit_codes() {
         let score: Value = serde_json::from_str(&score_text).unwrap();
         assert_eq!(
             score,
-            json!({"schema_version": 1, "trial_id": id, "outcome": outcome, "exit": code})
+            json!({"schema_version": 1, "trial_id": id, "business": business, "check_exit": code}),
+            "the business replay is named `business`, never `outcome`"
         );
         let notes = result["notes"].as_str().unwrap();
         assert!(!notes.contains(fx.dir.path().to_str().unwrap()), "{notes}");
@@ -369,20 +429,14 @@ fn the_score_script_maps_check_exit_codes() {
     // verdict says so rather than passing or failing it.
     let fx = fixture();
     let id = retained_leaf(&fx, "oracle");
-    let state = fx.trials.join(&id).join("state.json");
-    let bytes = std::fs::read(&state).unwrap();
-    std::fs::write(&state, &bytes[..bytes.len() / 2]).unwrap();
-    let result = run_script(
-        &fx,
-        "score.sh",
-        &request(&fx, &id, json!([])).to_string(),
-        true,
-    );
+    slot_row(&fx, &id);
+    truncate_state(&fx, &id);
+    let (result, score) = score(&fx, &id);
     assert_contract(&result, "unscorable");
-    let score: Value =
-        serde_json::from_slice(&std::fs::read(fx.slot.join("score.json")).unwrap()).unwrap();
-    assert_eq!(score["outcome"], "harness_error");
-    assert_eq!(score["exit"], 2);
+    let score = score.expect("check ran, so the verdict is recorded");
+    assert_eq!(score["business"], "unscorable");
+    assert_eq!(score["check_exit"], 2);
+    assert!(score.get("outcome").is_none());
 
     // A leaf that does not exist, and a malformed request, are unscorable.
     let fx = fixture();
@@ -396,8 +450,8 @@ fn the_score_script_maps_check_exit_codes() {
     // check ran and could not score the missing leaf: the verdict is recorded.
     let score: Value =
         serde_json::from_slice(&std::fs::read(fx.slot.join("score.json")).unwrap()).unwrap();
-    assert_eq!(score["outcome"], "harness_error");
-    assert_eq!(score["exit"], 2);
+    assert_eq!(score["business"], "unscorable");
+    assert_eq!(score["check_exit"], 2);
 
     // A request the gate cannot read means check never ran: no verdict file,
     // so the matrix sees `score_missing`, never a verdict nobody reached.
@@ -409,6 +463,111 @@ fn the_score_script_maps_check_exit_codes() {
             !fx.slot.join("score.json").exists(),
             "an unrun gate writes no verdict"
         );
+    }
+}
+
+/// One case per cell of the agreement table (spec "Revision 3"): the seat
+/// reports the trial's class when the business replay agrees with the row, and
+/// `unscorable` for a `harness_error` row, a contradiction or an unreadable row.
+/// `score.json` always names the business replay and `check_exit`.
+#[test]
+fn the_score_script_follows_the_agreement_table() {
+    let _trial_scope = trial_scope();
+    type Prepare = fn(&Fixture, &str);
+    let cells: [(&str, &str, Prepare, &str, &str); 7] = [
+        (
+            "pass row, passing state",
+            "oracle",
+            |_, _| {},
+            "pass",
+            "pass",
+        ),
+        (
+            "business fail row, failing state",
+            "null",
+            |_, _| {},
+            "fail",
+            "fail",
+        ),
+        (
+            "budget row over a passing state",
+            "oracle",
+            |fx, id| rewrite_row(fx, id, "fail", json!("budget")),
+            "fail",
+            "pass",
+        ),
+        (
+            "harness_error row over a passing state",
+            "oracle",
+            |fx, id| rewrite_row(fx, id, "harness_error", json!("harness_error")),
+            "unscorable",
+            "pass",
+        ),
+        (
+            "pass row over a failing state",
+            "null",
+            |fx, id| rewrite_row(fx, id, "pass", Value::Null),
+            "unscorable",
+            "fail",
+        ),
+        (
+            "budget row over a truncated state",
+            "oracle",
+            |fx, id| {
+                rewrite_row(fx, id, "fail", json!("budget"));
+                truncate_state(fx, id);
+            },
+            "unscorable",
+            "unscorable",
+        ),
+        (
+            "business fail row over a passing state",
+            "oracle",
+            |fx, id| rewrite_row(fx, id, "fail", json!("wrong_message")),
+            "unscorable",
+            "pass",
+        ),
+    ];
+    for (cell, agent, prepare, seat, business) in cells {
+        let fx = fixture();
+        let id = retained_leaf(&fx, agent);
+        slot_row(&fx, &id);
+        prepare(&fx, &id);
+        let (result, score) = score(&fx, &id);
+        assert_contract(&result, seat);
+        let score = score.unwrap_or_else(|| panic!("{cell}: check ran, so a verdict is recorded"));
+        assert_eq!(score["business"], business, "{cell}");
+        assert!(score["check_exit"].is_u64(), "{cell}");
+        assert!(score.get("outcome").is_none(), "{cell}");
+    }
+
+    // A row the gate cannot read leaves the seat unscorable, with the verdict
+    // still written: the matrix then reports `trial_row_missing` from its own read.
+    type Spoil = fn(&Fixture);
+    let spoils: [(&str, Spoil); 3] = [
+        ("row.json missing", |fx| {
+            std::fs::remove_file(fx.slot.join("row.json")).unwrap()
+        }),
+        ("row.json a symlink", |fx| {
+            let real = fx.slot.join("row.real");
+            std::fs::rename(fx.slot.join("row.json"), &real).unwrap();
+            std::os::unix::fs::symlink(&real, fx.slot.join("row.json")).unwrap();
+        }),
+        ("row.json two lines", |fx| {
+            let mut text = std::fs::read_to_string(fx.slot.join("row.json")).unwrap();
+            text.push_str(&text.clone());
+            std::fs::write(fx.slot.join("row.json"), text).unwrap();
+        }),
+    ];
+    for (cell, spoil) in spoils {
+        let fx = fixture();
+        let id = retained_leaf(&fx, "oracle");
+        slot_row(&fx, &id);
+        spoil(&fx);
+        let (result, score) = score(&fx, &id);
+        assert_contract(&result, "unscorable");
+        let score = score.unwrap_or_else(|| panic!("{cell}: the verdict is still written"));
+        assert_eq!(score["business"], "pass", "{cell}");
     }
 }
 
@@ -832,33 +991,39 @@ fn a_matching_export_with_no_run_for_a_trial_yields_journal_missing_by_absence()
 
 // ---- the matrix environment never crosses the seats (decision 0116, F1) ----
 
-#[test]
-fn the_trial_seat_strips_the_matrix_environment() {
-    // Seam 1 of the four that sever any accounting channel (0116 section 6):
-    // trial.sh runs the trial under `env -i`. The sentinel is set in the
-    // environment of the process that runs the script, as the matrix's would
-    // be, and must not reach the agent the trial launches. The agent here is a
-    // probe that records its environment keys. The follow-up that forwards the
-    // observed channel flips this test to the observed name.
-    let _trial_scope = trial_scope();
-    let fx = fixture();
-    let record = fx.dir.path().join("agent-env.txt");
-    let probe = fx.dir.path().join("probe.sh");
+/// An executable shell script that records its own environment keys.
+fn env_probe(dir: &std::path::Path, name: &str, record: &std::path::Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let probe = dir.join(name);
     std::fs::write(
         &probe,
         format!(
-            "#!/bin/sh\nenv | sed 's/=.*//' | sort > {}\nexit 0\n",
+            "#!/bin/sh\nenv | sed 's/=.*//' | sort > {}\nexit 2\n",
             record.display()
         ),
     )
     .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let args = json!(["--task", "signup", "--agent", "probe", "--", probe]);
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    probe
+}
+
+#[test]
+fn the_trial_script_strips_the_matrix_environment() {
+    // Seam 1 of the four that sever any accounting channel (0116 section 6):
+    // trial.sh runs the trial under `env -i`. The request's `evals_bin` is a
+    // probe that records *its own* environment through the real script, so the
+    // proof can go red: delete `env -i` from trial.sh and the sentinel, set in
+    // the environment of the process that runs the script as the matrix's
+    // would be, appears in the record. The follow-up that forwards the
+    // observed channel flips this test to the observed name.
+    let _trial_scope = trial_scope();
+    let fx = fixture();
+    let record = fx.dir.path().join("trial-env.txt");
+    let probe = env_probe(fx.dir.path(), "evals-probe.sh", &record);
+    let mut req = request(&fx, "seam-1", json!(["--task", "signup"]));
+    req["evals_bin"] = json!(probe);
     let request_path = fx.slot.join("request.json");
-    std::fs::write(&request_path, request(&fx, "seam-1", args).to_string()).unwrap();
+    std::fs::write(&request_path, req.to_string()).unwrap();
     let result = fx.dir.path().join("result.json");
     let prompt = fx.dir.path().join("prompt.txt");
     std::fs::write(
@@ -879,13 +1044,40 @@ fn the_trial_seat_strips_the_matrix_environment() {
         String::from_utf8_lossy(&out.stderr)
     );
     let keys = std::fs::read_to_string(&record)
-        .expect("the probe agent ran and recorded its environment keys");
+        .expect("the probe ran under trial.sh and recorded its environment keys");
     assert!(
-        !keys.contains("SWARMAIL_EVAL_SEAM_SENTINEL"),
-        "the sentinel crossed the seat: {keys}"
+        keys.lines().any(|k| k == "SWARMAIL_BIN"),
+        "the probe ran as trial.sh launches the trial: {keys}"
     );
     assert!(
         keys.lines().all(|k| !k.contains("SENTINEL")),
-        "no inherited key survives: {keys}"
+        "an inherited key survived env -i: {keys}"
+    );
+}
+
+#[test]
+fn the_runner_rebuilds_the_agents_environment() {
+    // Seam 2: `swarmail-evals trial` builds the agent's environment itself.
+    // The sentinel is in the trial's own environment, so only the runner's
+    // rebuild keeps it from the probe agent. No claim is made for seams 3 and
+    // 4 (`through_driver`): no production path crosses them while the driver
+    // is refused, and their proof is the follow-up's.
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    let record = dir.path().join("agent-env.txt");
+    let probe = env_probe(dir.path(), "agent-probe.sh", &record);
+    let out = cli()
+        .env("SWARMAIL_EVAL_SEAM_SENTINEL", "1")
+        .args(["trial", "--task", "signup", "--agent", "probe", "--"])
+        .arg(&probe)
+        .output()
+        .unwrap();
+    let row = one_row(&out);
+    assert_ne!(row.outcome, swarmail_evals::tasks::Outcome::HarnessError);
+    let keys = std::fs::read_to_string(&record)
+        .expect("the probe agent ran and recorded its environment keys");
+    assert!(
+        keys.lines().count() > 0 && keys.lines().all(|k| !k.contains("SENTINEL")),
+        "the trial's own environment reached the agent: {keys}"
     );
 }
