@@ -419,6 +419,123 @@ exact identity and passes with no trap event; the same wait acting on
 `wrong_message`; and in slow-delivery the first timed-out wait carries no
 `near_misses` (nothing arrived), after which the release and confirmation pass.
 
+## The eval recipe on brokkr (#148, proposed 0119)
+
+The operator ruled on 2026-10-18 that the harness is built on brokkr. This is
+the **interim path**: brokkr cannot yet lawfully give a seat Swarmail's MCP
+server (the broker, brokkr 0065 slice two, is mid-build; URL-connection MCP is
+outside it, brokkr 0077; no process may outlive its seat). Until it lands, the
+recipe `.brokkr/recipes/eval/` has two exec seats and **nothing in them is
+confined**; every row records the trial as `unconfined` (Codex sees the
+operator's own MCP servers; dsh's web tools stay on). The move to the broker is
+tracked in brokkr#766.
+
+- `trial` runs `swarmail-evals trial` from a request the matrix wrote: it
+  starts Swarmail and the fixture as its own children, runs the agent, saves
+  the app's state and stops both servers. The real `brokkr driver
+  claude|codex|dsh` as the agent's launcher is the design's intent but is
+  **refused today** (`--via-brokkr` fails closed with `driver_contract_unknown`
+  until the driver's invocation is observed; see `wrappers.md`).
+- `review` (the exec scoring gate, `scripts/score.sh`, which is the recipe's
+  protected review under brokkr 0.12.0, decision 0119 R4) re-applies the task's
+  check to the retained leaf (`check --artifacts-dir`): the app's state, never the agent's account.
+  The gate replays only the business check, so the matrix agrees it with the
+  row by the table below (accepted 0055 section 2 and 0071 section 2 order the
+  row's precedence: infrastructure, then a live deadline as `fail`/`budget`,
+  then the business check), never by equality. A gate that never ruled is that
+  slot's `harness_error` (`score_missing`); a replay outside the row's
+  agreeing set is `score_mismatch`; either stops admission. `score.json` is
+  `{schema_version, trial_id, business, check_exit}`, the business replay only.
+
+  | row | agreeing business replay | the `review` seat reports |
+  |---|---|---|
+  | `pass` | `pass` | `pass` |
+  | `fail`, class not `budget` | `fail` | `fail` |
+  | `fail`/`budget` | `pass` or `fail`, never `unscorable` | `fail` |
+  | `harness_error` | any ruled replay | `unscorable` |
+  | anything else, or an unreadable row | none | `unscorable` |
+
+  A committed `fail`/`budget` or `harness_error` row is never rewritten, so the
+  journal's run outcome and the row never disagree for a legitimate trial.
+- Both scripts parse the engine's prompt rendering (`Feature: <text>`, the
+  result path on an indented line of its own), trimming each line.
+
+```bash
+E=evals/target/debug/swarmail-evals
+# one command, one row per slot (from the repository root; --artifacts-dir required)
+$E matrix --brokkr "$PWD/.brokkr/state/bin/brokkr" --tasks signup,otp \
+  --agents agents.json --trials 5 --artifacts-dir "$PWD/.brokkr/state/eval/run1" > runs.jsonl
+# accounting from the journal, joined to the rows by trial id
+bash evals/scripts/journal-facts.sh "$PWD/.brokkr/state/bin/brokkr" .brokkr/state/forge.db \
+  facts.json $(jq -r .trial_id runs.jsonl)
+$E report --input runs.jsonl --journal facts.json \
+  --evidence-dir "$PWD/.brokkr/state/eval/run1-evidence"
+```
+
+`--deadline-ms` may not exceed 1 200 000 in this mode (`deadline_exceeds_seat`):
+the trial's deadline plus the runner's fixed startup and shutdown budgets must
+fit the trial seat's 1800 s. The matrix's wait on one worker is the trial
+deadline plus 300 s plus the review seat's 600 s. `--artifacts-dir` must resolve
+inside the current directory (`brokkr_artifacts_unreachable`): the seat's
+workspace hands reach nothing else. **Paid agents are unsupported under
+`matrix --brokkr`** until the follow-up below declares the binds a paid trial
+needs and lifts the driver refusal; the direct `matrix` (the #151 path) stays
+the paid route. Run only the oracle and null controls through this recipe now. Trials stay sequential (accepted 0076): the
+issue's "two concurrent trials of one task both pass" criterion is **not** met
+by this recipe and is not claimed; isolation is #221's.
+
+**What joins.** Rows are unchanged. `report --journal` adds a `journal` object
+to each group: joined count, typed `missing` reasons (`journal_missing`,
+`journal_ambiguous`, `journal_has_no_accounting`, `builtin_agent`), token
+distributions (`total` is input + output; `cached` is reported beside it),
+turns, tool-call counts by tool, invalid-argument errors, deadline kills, and
+`tokens_per_success`, which is `null` with a reason whenever any scored trial
+in the group lacks token facts or none passed. All five facts per run (tokens,
+turns, wall time, deadline kill, tool calls) are typed present or unavailable
+with a reason. The tool-call figure and the deadline-kill count are each `null`
+with `incomplete_join` whenever any scored trial in the group lacks the fact;
+a figure is never `0`, `false` or `[]` for an unavailable fact, and a facts file
+that writes one of those bare is refused (`journal_invalid`).
+`evals/scripts/journal-facts.sh` fails with exit 2 and a class (`export_failed`,
+`export_not_json`, `export_version_unreadable`, `export_shape_mismatch`) and
+writes nothing when the export is unusable; it is re-run after the journal or
+its `EXTRACT` is corrected.
+
+**What is retained.** `--evidence-dir` writes `DIR/<trial_id>/tool-calls.json`
+per trial whose tool-call fact is present: ordinal, bounded tool name, outcome
+class, byte lengths and SHA-256 digests of each call's arguments and result,
+capped at 64 KiB and cut at a whole call with `"truncated": true` and
+`"retained": N`. A trial without tool rows gets no file and a typed
+`absent` reason. **No argument or result bytes
+are ever copied** (accepted 0075 §4). A value-bearing mode is proposed in 0119
+and is not implemented until the operator accepts it.
+
+**Admission posture.** The trial's own advisory admission lock lives in the
+shared `/tmp`. If brokkr's exec box gives the trial seat a private `/tmp`, that
+lock cannot see other cooperating runners on the host: the posture the #151
+baseline was run under. The matrix is sequential, so none of its own trials
+overlap; run nothing else while a matrix runs. Which of the two the engine does
+is brokkr fact F6 (`specs/eval-brokkr-recipe/implementation.md`).
+
+**What delivery proved, and what it did not.** The oracle and null controls
+over every catalogue task, the hard tier included (the oracle passes all; the
+null agent passes none, failing only with `gave_up` or `wait_timeout`), run
+through the recipe's two real scripts and the matrix, with an offline stand-in for
+`brokkr run` that renders the prompt as the engine does. No trial was run
+through a real `brokkr driver`, and the engine itself was not run.
+
+**This delivery lands the measuring machinery and does not measure tokens per
+success.** The accounting channel between a nested `brokkr driver` and the
+engine has never been observed, and every candidate channel is severed by four
+named seams (`wrappers.md`). Closing the #151 "Not measured" rows needs, in
+order: the operator's first engine run (oracle and null, offline, free); the
+operator's first authenticated via-brokkr smoke per family, which observes
+brokkr facts F1, F2 and F5; a follow-up change that forwards the observed
+channel through the four seams under 0119 section 6 (an exception to accepted
+0075 section 1 that only the operator can accept) and declares the binds; and
+then the paid matrix. Structural tool-call records land now; value-bearing
+records wait for 0119 section 4's acceptance.
+
 ## Honest limits
 
 - **Unconfined.** Process-group ownership is lifecycle cleanup, not a
@@ -440,8 +557,13 @@ exact identity and passes with no trap event; the same wait acting on
   download; it does not measure MCP attachment retrieval (#159).
 - **support-reply** replies through the app's HTTP form with the mailed
   challenge; it does not measure Swarmail inbound reply transport (#160).
-- No tokens, turns or cost here: those come from brokkr's journal when the
-  #148 recipe wraps this runner. No model was run in this batch.
+- Tokens, turns and cost are not in the rows (the rows do not change). They
+  come from brokkr's journal, joined by trial id (next section). A paid run
+  alone measures none of them: `--via-brokkr` refuses `driver_contract_unknown`
+  until a follow-up forwards the observed accounting channel (brokkr facts F1
+  and F2, `wrappers.md`) and the operator accepts 0119 §6. Until then
+  the #151 baseline still lacks tokens per success and per-trial tool-call
+  records. No model was run in this batch.
 
 ## Private artifact publication (proposed 0075, renumbered from 0062)
 

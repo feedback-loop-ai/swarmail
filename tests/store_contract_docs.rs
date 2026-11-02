@@ -1456,6 +1456,36 @@ fn section<'a>(text: &'a str, from: &str) -> &'a str {
     &rest[..rest.find("\n## ").unwrap_or(rest.len())]
 }
 
+/// The house rules' compile line, as one subshell. The recipe guide uses it
+/// verbatim, chained with `&&`, so a refused compile can never fall through
+/// to `recipes show` and `run` (`break` leaves the loop with status 0).
+const SHELF_COMPILE_LINE: &str =
+    "(for r in .brokkr/recipes/*/; do brokkr compile --bundle \"${r%/}\" || exit 1; done)";
+
+/// #148 review return (F2): the recipe guide's compile example is the house
+/// rules' line verbatim, chained, and never `|| break`.
+#[test]
+fn the_recipe_guide_compiles_the_shelf_with_the_house_line_and_never_breaks() {
+    let guide = raw(".brokkr/recipes/README.md");
+    assert!(
+        raw("docs/house-rules.md").contains(SHELF_COMPILE_LINE),
+        "the house rules' Gates carry the compile line this pin compares with"
+    );
+    // Shell line continuations fold into single spaces before the comparison.
+    let text = doc(".brokkr/recipes/README.md").replace(" \\ ", " ");
+    states(
+        &text,
+        ".brokkr/recipes/README.md",
+        &[&format!(
+            "{SHELF_COMPILE_LINE} && brokkr recipes show codex-fast && brokkr run --recipe codex-fast"
+        )],
+    );
+    assert!(
+        !guide.contains("|| break"),
+        "the recipe guide's loop must not `|| break`: it exits 0 and lets `run` proceed"
+    );
+}
+
 /// Issue #142, D01/D03: house rules' Gates section is the one inventory,
 /// and every other document points at it by its real anchor instead of
 /// carrying a shorter list of its own. Red when a pointer goes stale (the
@@ -1481,13 +1511,27 @@ fn the_gate_inventory_has_one_home_and_everyone_points_at_it() {
             "cd evals && cargo fmt --all -- --check",
             "cd evals && cargo clippy --all-targets --locked -- -D warnings",
             "cd evals && SWARMAIL_BIN=<the candidate's swarmail> cargo test --locked",
-            "brokkr compile --bundle .brokkr/recipes/self",
+            "for r in .brokkr/recipes/*/; do brokkr compile --bundle \"${r%/}\"",
+            "has no `bundle.json` is a refusal",
+            // Each check is attributed to the surface that performs it (#148
+            // review return): the hand line only compiles.
+            "The line compiles every directory and stops at the first non-zero exit",
+            "CI's loop and the verify seat refuse an empty shelf and a directory without a regular `bundle.json` by name",
+            "and they refuse the policy-sweep warning per recipe",
+            "a hand run reads each recipe's output for `lets the run go on without reading`",
             "bash scripts/coverage-gate.sh selftest",
             "bash scripts/publish-guard-test.sh",
             "cargo deny check licenses",
             "`native-tls` is absent",
             "The verify seat runs",
         ],
+    );
+    // The self-only compile line let `eval` fall off every local gate while
+    // CI refused it (#148): the one inventory compiles the whole shelf.
+    refuses(
+        &inventory,
+        "house rules' Gates",
+        &["\nbrokkr compile --bundle .brokkr/recipes/self"],
     );
     for (path, prefix) in [
         ("README.md", ""),

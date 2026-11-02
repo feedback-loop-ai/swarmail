@@ -1,0 +1,63 @@
+{
+  "name": "eval",
+  "policy": "policy.json",
+  "protected_phase": "review",
+  "description": "Swarmail's eval recipe, interim path (decision 0119, recording the operator's 2026-10-18 rulings on #148): one exec trial seat that runs the opaque eval-trial driver (swarmail-evals trial, which starts Swarmail and the fixture as its own children and runs the real brokkr driver claude|codex|dsh as a child so the journal keeps tokens, turns and tool rows), then one exec scoring gate, which is the recipe's protected review (the engine requires a review phase in every bundle, brokkr 0.12.0 layer 1): it re-applies the task's check to the app's retained state and never reads the agent's account. Nothing in the trial seat is confined: every result is recorded as unconfined. No retries: a retried trial is a different experiment. Until the F1/F2/F5 follow-up lands, the recipe runs the oracle and null controls only and paid agents wait; it moves to the MCP broker when brokkr#766 lands.",
+  "seats": {
+    "trial": {
+      "class": "work",
+      "driver": {
+        "command": [
+          "{brokkr}",
+          "driver",
+          "exec",
+          "--",
+          "bash",
+          "./scripts/trial.sh",
+          "{prompt_file}"
+        ]
+      },
+      "hands": {
+        "binds": [],
+        "kind": "workspace",
+        "network": true
+      },
+      "limits": {
+        "max_attempts": 1,
+        "timeout_seconds": 1800
+      },
+      "results": [
+        "ran",
+        "harness_error"
+      ]
+    },
+    "review": {
+      "class": "gate",
+      "driver": {
+        "command": [
+          "{brokkr}",
+          "driver",
+          "exec",
+          "--",
+          "bash",
+          "./scripts/score.sh",
+          "{prompt_file}"
+        ]
+      },
+      "hands": {
+        "binds": [],
+        "kind": "workspace",
+        "network": false
+      },
+      "limits": {
+        "max_attempts": 1,
+        "timeout_seconds": 600
+      },
+      "results": [
+        "pass",
+        "fail",
+        "unscorable"
+      ]
+    }
+  }
+}
