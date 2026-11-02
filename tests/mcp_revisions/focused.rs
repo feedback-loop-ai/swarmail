@@ -611,10 +611,14 @@ async fn served_prose_states_additive_discovery() {
     let (status, api) = common::http_get_text(srv.http_addr, "/openapi.json").await;
     assert_eq!(status, 200);
     let api: Value = serde_json::from_str(&api).unwrap();
+    // The README's MCP detail lives on the guide's MCP page; the README
+    // front page keeps the tool count and refuses the stale counts too.
     let readme =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+    let mcp_page =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/guide/mcp.md")).unwrap();
     let surfaces = [
-        ("README", flat(&readme)),
+        ("docs/guide/mcp.md", flat(&mcp_page)),
         ("llms.txt", flat(&llms)),
         (
             "openapi",
@@ -651,6 +655,10 @@ async fn served_prose_states_additive_discovery() {
             assert!(!text.contains(stale), "{surface} still claims {stale:?}");
         }
     }
-    assert!(surfaces[0].1.contains("eighteen mcp tools"));
+    let readme = flat(&readme);
+    assert!(readme.contains("eighteen mcp tools"));
+    for stale in ["thirteen mcp tools", "13 tools"] {
+        assert!(!readme.contains(stale), "README still claims {stale:?}");
+    }
     srv.stop().await;
 }
