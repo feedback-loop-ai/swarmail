@@ -94,8 +94,15 @@ mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
 
+    /// Serializes the two tests that fork while an admission is held. On
+    /// macOS the Linux-only trial scope is not compiled, and a re-exec in
+    /// one test briefly holds the other's lock descriptor between fork and
+    /// exec, so the second acquisition refused (CI, #308).
+    static FORK_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn sequential_admission_rejects_unsafe_rendezvous() {
+        let _fork = FORK_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         // A fork elsewhere in the test process briefly holds every
         // descriptor without close-on-exec yet; the scope keeps it out.
         #[cfg(target_os = "linux")]
@@ -151,6 +158,7 @@ mod tests {
 
     #[test]
     fn a_retained_admission_is_released_only_by_the_process_exit() {
+        let _fork = FORK_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         #[cfg(target_os = "linux")]
         let _scope = crate::test_support::trial_scope();
         let owner = tempfile::tempdir().unwrap();
