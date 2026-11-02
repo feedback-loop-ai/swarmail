@@ -1,4 +1,4 @@
-# 0116 — A MailSlurper service-API shim on an opt-in listener, one global mailbox
+# 0118 — A MailSlurper service-API shim on an opt-in listener, one global mailbox
 
 - **Status:** proposed
 - **Date:** 2026-11-02

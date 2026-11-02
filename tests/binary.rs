@@ -67,7 +67,7 @@ fn parse_addrs(line: &str) -> Option<(SocketAddr, SocketAddr, SocketAddr)> {
 
 /// The startup line's `mailslurper=` field (a `?`-formatted option):
 /// `Some(addr)` when the opt-in listener is up, `None` for the `None` text
-/// or an absent field (decision 0116).
+/// or an absent field (decision 0118).
 fn parse_mailslurper(line: &str) -> Option<SocketAddr> {
     let field = line.split("mailslurper=Some(").nth(1)?;
     field.split(')').next()?.parse().ok()
@@ -543,7 +543,7 @@ async fn an_http_env_bind_on_a_held_port_refuses() {
     assert_env_bind_refused("SWARMAIL_HTTP_LISTEN").await;
 }
 
-/// The MailSlurper listener is opt-in (decision 0116): the env var alone
+/// The MailSlurper listener is opt-in (decision 0118): the env var alone
 /// binds it, the startup line names it, and it answers its own routes. The
 /// same child without the variable binds nothing.
 #[tokio::test]
@@ -590,7 +590,7 @@ async fn serve_takes_the_mailslurper_listener_from_its_flag() {
 }
 
 /// A MailSlurper address that cannot bind fails startup: non-zero, the
-/// in-use reason, and no ready line (decision 0116 §1).
+/// in-use reason, and no ready line (decision 0118 §1).
 #[tokio::test]
 async fn a_mailslurper_bind_on_a_held_port_refuses() {
     let held = std::net::TcpListener::bind("127.0.0.1:0").expect("a held port binds");

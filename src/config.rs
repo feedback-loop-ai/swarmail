@@ -50,7 +50,7 @@ pub struct ServeArgs {
     #[arg(long, default_value = "127.0.0.1:1110", env = "SWARMAIL_POP3_LISTEN")]
     pub pop3_listen: String,
 
-    /// MailSlurper service-API listen address (decision 0116). Off by
+    /// MailSlurper service-API listen address (decision 0118). Off by
     /// default: unset means no socket and no route. When set, the listener
     /// serves `/mail` and `/mailcount` over the WHOLE store as one global
     /// mailbox, and its `DELETE /mail {"pruneCode":"all"}` clears every
@@ -169,7 +169,7 @@ pub struct Config {
     pub http_listen: String,
     /// POP3 listener serving the same store; a USER names an existing inbox.
     pub pop3_listen: String,
-    /// The opt-in MailSlurper service-API listener (decision 0116): `None`
+    /// The opt-in MailSlurper service-API listener (decision 0118): `None`
     /// binds nothing.
     pub mailslurper_listen: Option<String>,
     pub max_per_inbox: usize,

@@ -73,7 +73,7 @@ pub struct RunningServer {
     pub http_addr: std::net::SocketAddr,
     /// The POP3 listener; a USER names an existing inbox as the maildrop.
     pub pop3_addr: std::net::SocketAddr,
-    /// The opt-in MailSlurper service-API listener (decision 0116): `None`
+    /// The opt-in MailSlurper service-API listener (decision 0118): `None`
     /// unless `Config::mailslurper_listen` named an address.
     pub mailslurper_addr: Option<std::net::SocketAddr>,
     pub store: Arc<store::Store>,
@@ -198,7 +198,7 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     let pop3_listener = listen(&cfg.pop3_listen).await?;
     let pop3_addr = pop3_listener.local_addr()?;
     // The MailSlurper listener binds with the others, before any spawn, and
-    // only when the operator named an address (decision 0116 §1).
+    // only when the operator named an address (decision 0118 §1).
     let mailslurper = match &cfg.mailslurper_listen {
         Some(addr) => {
             let listener = listen(addr).await?;
@@ -257,7 +257,7 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
             route_domain: cfg.smtp.route_domain.clone(),
         };
         // The MailSlurper listener is the same plane under its own guard
-        // key: its loopback vocabulary is its own bound port (decision 0116
+        // key: its loopback vocabulary is its own bound port (decision 0118
         // §1), live only while that bind is loopback.
         if let Some((listener, addr)) = mailslurper {
             let state = api::AppState {

@@ -21,7 +21,7 @@
 //! MailHog page serializes borrowed views into one buffer capped at
 //! [`MAX_COMPAT_PAGE_BYTES`].
 //!
-//! A third shim, MailSlurper's service API (decision 0116), is served on its
+//! A third shim, MailSlurper's service API (decision 0118), is served on its
 //! own opt-in listener rather than this router: [`mailslurper_router`]. It
 //! reads the whole store as one global mailbox and its `DELETE /mail`
 //! clears every inbox.
@@ -1315,7 +1315,7 @@ pub(crate) fn raw_response(email: &Email) -> Response {
         .into_response()
 }
 
-// ---------- MailSlurper service API (decision 0116) ----------
+// ---------- MailSlurper service API (decision 0118) ----------
 //
 // The third shim, on its own opt-in listener (`--mailslurper-listen`): the
 // routes sit at the root of that listener and nowhere on the HTTP plane.
@@ -1325,11 +1325,11 @@ pub(crate) fn raw_response(email: &Email) -> Response {
 // stored ingest-time field (decision 0005); nothing is parsed at request
 // time.
 
-/// The fixed page size of `GET /mail` (recalled upstream, decision 0116 §3).
+/// The fixed page size of `GET /mail` (recalled upstream, decision 0118 §3).
 const SLURPER_PAGE_SIZE: usize = 25;
 
 /// The MailSlurper listener's router: the service API and nothing else,
-/// wrapped in the HTTP plane's own Host/Origin guard (decision 0116 §1,
+/// wrapped in the HTTP plane's own Host/Origin guard (decision 0118 §1,
 /// 0030 §2, 0043). It carries no in-flight gauge layer: `/metrics` reports
 /// the HTTP plane.
 pub fn mailslurper_router(state: AppState) -> Router {
@@ -1345,7 +1345,7 @@ pub fn mailslurper_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// `GET /mail`'s whole query: `pageNumber` and nothing else (decision 0116
+/// `GET /mail`'s whole query: `pageNumber` and nothing else (decision 0118
 /// §3). It is read as text and parsed by hand, so `0`, `-1` and `x` share
 /// one named refusal; every other key — MailSlurper's search, sort and date
 /// parameters included — names itself in a `400`.
@@ -1369,7 +1369,7 @@ fn slurper_page_number(raw: Option<&str>) -> Result<usize, ApiError> {
     }
 }
 
-/// The date MailSlurper shows (recalled, decision 0116 §4):
+/// The date MailSlurper shows (recalled, decision 0118 §4):
 /// `YYYY-MM-DD HH:MM:SS` in UTC from the stored receive stamp. A stamp
 /// chrono cannot represent falls back to the stored RFC 3339 text verbatim.
 fn slurper_date(email: &Email) -> Cow<'_, str> {
@@ -1389,7 +1389,7 @@ fn slurper_body(email: &Email) -> &str {
         .unwrap_or_default()
 }
 
-/// One stored mail as a MailSlurper `MailItem`, in 0116 §4's key order. The
+/// One stored mail as a MailSlurper `MailItem`, in 0118 §4's key order. The
 /// `toAddresses` are the envelope recipients as bare strings (a Bcc'd
 /// recipient included), falling back to the header To only for a row that
 /// recorded none; `fromAddress` is the compat sender every shim reports.
@@ -1552,7 +1552,7 @@ async fn slurper_message(
 /// nothing else.
 const PRUNE_BODY_REFUSAL: &str = "deletion requires the JSON body {\"pruneCode\":\"all\"}";
 
-/// What a `DELETE /mail` body may do (decision 0116 §5): only an object
+/// What a `DELETE /mail` body may do (decision 0118 §5): only an object
 /// whose sole key `pruneCode` is the literal string `"all"` proceeds. The
 /// body is read as a plain JSON value and its shape checked by hand: a
 /// derived struct would also accept a positional array (`["all"]`), and a
@@ -2158,9 +2158,9 @@ mod tests {
         );
     }
 
-    // ---------- MailSlurper (decision 0116) ----------
+    // ---------- MailSlurper (decision 0118) ----------
 
-    /// The projection's key set and order are exactly 0116 §4's.
+    /// The projection's key set and order are exactly 0118 §4's.
     #[test]
     fn a_slurper_item_has_exactly_its_keys_in_order() {
         let mut m = mail();

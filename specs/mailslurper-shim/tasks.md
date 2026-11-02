@@ -3,7 +3,7 @@
 Each task is paired with the test that proves it. Run the full gate
 inventory last (T14).
 
-- [ ] **T1 — Decision index.** Add the 0116 row (`proposed`) to
+- [ ] **T1 — Decision index.** Add the 0118 row (`proposed`) to
   `docs/decisions/README.md`. *Proof:* the index/record agreement in
   `tests/store_contract_docs.rs` passes.
 - [ ] **T2 — Config.** Add `--mailslurper-listen` /
@@ -72,7 +72,7 @@ inventory last (T14).
   - `every_250_is_listed_at_once` (AC13);
   - `an_id_survives_a_data_file_restart` (AC14).
 - [ ] **T13 — Docs.** Update:
-  - `docs/guide/compat-shims.md`: the MailSlurper section from 0116
+  - `docs/guide/compat-shims.md`: the MailSlurper section from 0118
     §§1–6, with the cluster recipe and the *recalled* list;
   - the quickstart and network-posture listener and env lists;
   - the `src/compat.rs` module doc and the `config.rs` flag doc.

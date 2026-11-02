@@ -5,7 +5,7 @@ Date: 2026-11-02. Phase: design. Issue #314, run
 Recipe `claude-careful` (accepted 0098/0099); review residuals rework under
 accepted [0102](../../docs/decisions/0102-review-residuals-rework.md).
 
-Decision: 0116 — [A MailSlurper service-API shim on an opt-in listener, one global mailbox](../../docs/decisions/0116-mailslurper-shim.md), proposed.
+Decision: 0118 — [A MailSlurper service-API shim on an opt-in listener, one global mailbox](../../docs/decisions/0118-mailslurper-shim.md), proposed.
 
 ## Feature
 
@@ -42,7 +42,7 @@ differences and a wire-level test per route.
 The design panel argued two positions: *simplicity* (routes at the root of
 the HTTP port, no new listener) and *robustness* (a dedicated opt-in
 listener with hardened inputs). The chief's rulings are listed below, and
-[0116](../../docs/decisions/0116-mailslurper-shim.md) records why.
+[0118](../../docs/decisions/0118-mailslurper-shim.md) records why.
 
 | Question | Ruling | Losing side's cost |
 |---|---|---|
@@ -51,7 +51,7 @@ listener with hardened inputs). The chief's rulings are listed below, and
 | Chart, Dockerfile | **Untouched** (simplicity) | Robustness wanted the port exposed. That needs a `scripts/chart-verify.sh` change (a held path), so it becomes a follow-up issue. |
 | `/healthz` degraded flag for the listener | **No.** The HTTP plane has none: axum's accept loop retries internally. | None |
 | Mailbox | **Global view and global wipe** (both positions; operator framing) | Isolation is per Swarmail, not per inbox, for MailSlurper clients |
-| `/mail/{id}/message` | **Ships**, marked *recalled* (the issue asks for it "if cheap", and it is one handler over the same `body`) | Simplicity's "never ship on recollection" is answered by labelling the claim and by 0116 §7 |
+| `/mail/{id}/message` | **Ships**, marked *recalled* (the issue asks for it "if cheap", and it is one handler over the same `body`) | Simplicity's "never ship on recollection" is answered by labelling the claim and by 0118 §7 |
 | `/messageraw`, attachments, `/pruneoptions`, `/version`, auth | **Not served** (both positions) | None |
 | `contentType`, `isHtml`, `xmailer`, … | **Omitted** (both positions on most; a synthesized `contentType` was proposed by simplicity and rejected: it would disagree with upstream for every multipart mail) | A client that branches on `contentType` sees it absent |
 | `dateSent` | **`YYYY-MM-DD HH:MM:SS` UTC** (simplicity's recollection of upstream) over RFC 3339 (robustness) | An RFC 3339 parser on the client would need the space-separated form |
@@ -76,7 +76,7 @@ listener with hardened inputs). The chief's rulings are listed below, and
   present `Origin` must be one too. Off loopback, a present `Origin` must
   match the `Host` authority.
 - **R3 — Routes.** `GET /mail`, `GET /mail/{id}`, `GET /mail/{id}/message`,
-  `GET /mailcount`, `DELETE /mail`, with the shapes of 0116 §§3–5. Every
+  `GET /mailcount`, `DELETE /mail`, with the shapes of 0118 §§3–5. Every
   other path is a `404`. The HTTP plane's `/mail` and `/mailcount` stay
   `404`.
 - **R4 — Global mailbox.** Reads span every inbox, newest first by
@@ -89,7 +89,7 @@ listener with hardened inputs). The chief's rulings are listed below, and
   is omitted whenever the page is empty.
 - **R6 — Closed queries.** Every key except `pageNumber` on `GET /mail`,
   and every key on the other routes, is a `400` that names the key.
-- **R7 — Projection.** Exactly the keys of 0116 §4, in that order, from
+- **R7 — Projection.** Exactly the keys of 0118 §4, in that order, from
   ingest-time fields only.
 - **R8 — Bounded work.** List pages are built and serialized on the
   blocking pool into a buffer capped at `MAX_COMPAT_PAGE_BYTES`. An
@@ -107,7 +107,7 @@ listener with hardened inputs). The chief's rulings are listed below, and
   MailSlurper section: the route table, the global-view sentence, the
   ingress/prefix note, the container and cluster recipe, the omissions, the
   known differences and the *recalled* items. The guide pages that list
-  every listener or env knob name the new one. 0116 gets its index row.
+  every listener or env knob name the new one. 0118 gets its index row.
 - **R12 — Unchanged elsewhere.** No new dependency or feature (both
   lockfiles and `deny.toml` untouched), no chart, Dockerfile, `.github/`,
   `scripts/` or `.brokkr/` change. Frozen guarantees 0001–0003 are
@@ -195,8 +195,8 @@ exact count over **both** seeded inboxes, taken through the native API.
     file, and `GET /mail/{id}` returns the same item.
 15. **AC15 — Docs.** `docs/guide/compat-shims.md` has a MailSlurper section
     with the global-view sentence, the cluster recipe and each known
-    difference of 0116 §6. A docs-contract test pins the global-view
-    sentence and the listener flag. The decision index lists 0116 as
+    difference of 0118 §6. A docs-contract test pins the global-view
+    sentence and the listener flag. The decision index lists 0118 as
     proposed, and `store_contract_docs` agrees.
 16. **AC16 — Gates.** Every gate of
     [house rules § Gates](../../docs/house-rules.md#gates--part-of-every-change)

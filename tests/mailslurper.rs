@@ -1,4 +1,4 @@
-//! The MailSlurper service-API shim (decision 0116, issue #314): real SMTP
+//! The MailSlurper service-API shim (decision 0118, issue #314): real SMTP
 //! into a real server, real HTTP/1.1 to the opt-in listener. Every route is
 //! pinned on the wire; the requests the consumer (Alkemio's tests-lib) sends
 //! are replayed with their exact headers.
@@ -772,7 +772,7 @@ async fn an_id_survives_a_data_file_restart() {
 }
 
 /// AC15: the guide states the global view, the flag, the cluster recipe,
-/// the refusals by name and each known difference of decision 0116 §6;
+/// the refusals by name and each known difference of decision 0118 §6;
 /// the quickstart and the network posture name the knob.
 #[test]
 fn the_guide_states_the_global_view_and_every_known_difference() {
@@ -807,7 +807,7 @@ fn the_guide_states_the_global_view_and_every_known_difference() {
         "*Errors*",
         "*Not in `/metrics`*",
         "*Recalled, not read from source*",
-        "decision 0116",
+        "decision 0118",
     ] {
         assert!(shims.contains(needle), "compat-shims.md lacks {needle:?}");
     }

@@ -67,7 +67,7 @@ fn cli_parses_env_defaults_and_subcommands() {
     assert_eq!(args.http_listen, "127.0.0.1:8025");
     assert_eq!(args.pop3_listen, "127.0.0.1:1110");
     // The MailSlurper listener has no default: unset binds nothing
-    // (decision 0116 §1).
+    // (decision 0118 §1).
     assert_eq!(args.mailslurper_listen, None);
     assert_eq!(args.max_per_inbox, 100_000);
     assert!(args.data_file.is_none());

@@ -142,7 +142,7 @@ non-JSON body, `{}`, `"ALL"`, an unknown code, a non-string, an array, an
 extra key, another content type, any query key) is a `400` that deletes
 nothing. A failed commit is `503 storage commit failed`, never a count.
 
-**Known differences** (decision 0116):
+**Known differences** (decision 0118):
 
 - *Not served* (a plain `404`): `/mail/{id}/messageraw`, attachment
   download, `/pruneoptions`, `/version`, login and logout; there is no CORS.

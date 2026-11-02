@@ -776,7 +776,7 @@ pub async fn serve(
 /// graceful serve is raced against stop-plus-[`DRAIN_DEADLINE`], so a clean
 /// drain finishes on its own and a client parked mid-request (or mid-body)
 /// is cut off at the deadline instead of holding the process forever. The
-/// MailSlurper listener (decision 0116) shares this body with the HTTP plane.
+/// MailSlurper listener (decision 0118) shares this body with the HTTP plane.
 pub(crate) async fn serve_app(
     listener: TcpListener,
     app: Router,
