@@ -39,10 +39,15 @@ fn dry_run_uses_the_exact_approved_product_without_reading_config_or_creating_ou
     assert!(result.status.success(), "{:?}", result);
     assert!(!output.exists());
     let plan: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert_eq!(
-        plan["tasks"],
-        serde_json::to_value(tasks::catalogue().iter().map(|t| &t.id).collect::<Vec<_>>()).unwrap()
-    );
+    // The approved product is the sixteen default-tier tasks, in catalogue
+    // order; the hard tier is a separate, operator-selected product.
+    let default_tier: Vec<_> = tasks::catalogue()
+        .into_iter()
+        .filter(|t| t.tier != tasks::Tier::Hard)
+        .map(|t| t.id)
+        .collect();
+    assert_eq!(default_tier.len(), 16);
+    assert_eq!(plan["tasks"], serde_json::to_value(&default_tier).unwrap());
     assert_eq!(plan["control_rows"], 32);
     assert_eq!(plan["paid_rows"], 480);
     assert_eq!(plan["deadline_ms"], baseline::DEADLINE_MS);
@@ -441,5 +446,159 @@ fn paid_accounting(
                 .sum::<u64>()
         ),
         479
+    );
+}
+
+fn dry_run(tier: &[&str]) -> (Option<i32>, serde_json::Value, String) {
+    let dir = tempdir();
+    let config = dir.path().join("not-a-config");
+    std::fs::create_dir(&config).unwrap();
+    let out = Command::new(exe())
+        .args(["baseline", "--dry-run", "--config"])
+        .arg(&config)
+        .arg("--output")
+        .arg(dir.path().join("never-created"))
+        .args(tier)
+        .output()
+        .unwrap();
+    (
+        out.status.code(),
+        serde_json::from_slice(&out.stdout).unwrap_or(serde_json::Value::Null),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// AC4: `--tier hard` is its own product with the same discipline, and the
+/// default product is untouched by its existence.
+#[test]
+fn the_hard_tier_is_a_separate_baseline_product_with_the_same_discipline() {
+    let (code, default, _) = dry_run(&[]);
+    let (hard_code, hard, _) = dry_run(&["--tier", "hard"]);
+    assert_eq!((code, hard_code), (Some(0), Some(0)));
+    assert_eq!(
+        hard["tasks"],
+        serde_json::json!(["otp-backlog", "recipient-crowd", "digest-lookalike"])
+    );
+    assert_eq!(hard["control_rows"], 6);
+    assert_eq!(hard["paid_rows"], 90);
+    assert_eq!(default["tasks"].as_array().unwrap().len(), 16);
+    assert_eq!(
+        (
+            default["control_rows"].clone(),
+            default["paid_rows"].clone()
+        ),
+        (32.into(), 480.into())
+    );
+    // Everything but the task list and its cardinalities is shared.
+    for key in [
+        "deadline_ms",
+        "concurrency",
+        "control_repetitions",
+        "paid_repetitions",
+        "steps",
+        "files",
+        "agents",
+        "control_agents",
+        "catalogue_schema",
+        "catalogue_sha256",
+        "wrapper_contracts",
+    ] {
+        assert_eq!(hard[key], default[key], "{key}");
+    }
+    // A default-tier tier selection plans exactly that tier.
+    let (_, straight, _) = dry_run(&["--tier", "straight"]);
+    assert_eq!(
+        straight["tasks"],
+        serde_json::json!(["signup", "otp", "magic-login"])
+    );
+    // Hashes: the plan carries the full catalogue's, not the historical one.
+    assert_eq!(hard["catalogue_sha256"], p_hash());
+}
+
+fn p_hash() -> String {
+    catalogue_hash()
+}
+
+#[test]
+fn an_unknown_baseline_tier_is_a_usage_error_with_no_plan() {
+    for bad in ["harder", "Hard", "multi-step", ""] {
+        let (code, plan, err) = dry_run(&["--tier", bad]);
+        assert_eq!(code, Some(2), "{bad:?}");
+        assert!(plan.is_null(), "{bad:?}: no plan on stdout");
+        assert!(err.contains("arguments_invalid"), "{bad:?}: {err}");
+    }
+}
+
+/// Controls come first for the hard product too: six real control trials
+/// (oracle passes, null fails with its idle class) are retained and admitted
+/// before anything paid, and a bad manifest still stops short of a paid slot.
+#[test]
+fn hard_tier_controls_run_for_real_before_any_paid_launch() {
+    let _scope = trial_scope();
+    let dir = tempdir();
+    let output = dir.path().join("baseline");
+    let config = dir.path().join("private.json");
+    std::fs::write(&config, "synthetic-secret-canary").unwrap();
+    let result = cli()
+        .args(["baseline", "--tier", "hard", "--config"])
+        .arg(&config)
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(2));
+    assert!(!output.join("paid.jsonl").exists());
+    assert!(!output.join("report.json").exists());
+    let stream = std::fs::read(output.join("controls.jsonl")).unwrap();
+    let rows = baseline::rows(&stream).unwrap();
+    assert_eq!(rows.len(), 6);
+    let tasks_run: Vec<_> = rows.iter().map(|r| r.task.clone().unwrap()).collect();
+    assert_eq!(
+        tasks_run,
+        [
+            "otp-backlog",
+            "otp-backlog",
+            "recipient-crowd",
+            "recipient-crowd",
+            "digest-lookalike",
+            "digest-lookalike"
+        ]
+    );
+    for pair in rows.chunks(2) {
+        assert_eq!(pair[0].agent.as_deref(), Some("oracle"));
+        assert_eq!(pair[0].outcome, Outcome::Pass);
+        assert_eq!(pair[1].agent.as_deref(), Some("null"));
+        assert_eq!(pair[1].outcome, Outcome::Fail);
+        assert_eq!(
+            pair[1].failure_class,
+            Some(swarmail_evals::state::FailureClass::GaveUp)
+        );
+    }
+    let root = std::fs::read_dir(output.join("controls"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let matrix: artifacts::MatrixPlan =
+        decode(&artifacts::read_file(&root, "matrix-plan.json", artifacts::PLAN_LIMIT).unwrap())
+            .unwrap();
+    assert_eq!(
+        matrix.tasks,
+        tasks_run.iter().step_by(2).cloned().collect::<Vec<_>>()
+    );
+    let plan = baseline::Plan::for_tier(Some(tasks::Tier::Hard), &output);
+    let harness = rows[0].provenance.harness.clone();
+    let p = &rows[0].provenance.target;
+    let target = ExecutableIdentity {
+        executable_sha256: p.executable_sha256.clone(),
+        build_commit: p.build_commit.clone(),
+        source_dirty: p.source_dirty.clone(),
+    };
+    baseline::validate_controls(&rows, &matrix, &plan, 1, &harness, &target).unwrap();
+    // The default product's plan refuses these controls: wrong task list.
+    let default_plan = baseline::Plan::new(&output);
+    assert!(
+        baseline::validate_controls(&rows, &matrix, &default_plan, 1, &harness, &target).is_err()
     );
 }

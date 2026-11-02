@@ -417,6 +417,19 @@ impl Private {
         subject: &str,
         role: TokenRole,
     ) -> Message {
+        self.signup_mail_greeting(owner, to, to, subject, role)
+    }
+
+    /// A confirmation mail to `to` that greets `greeting`: the two differ
+    /// only in `recipient-crowd`, where every body greets the agent.
+    fn signup_mail_greeting(
+        &mut self,
+        owner: &Account,
+        to: &str,
+        greeting: &str,
+        subject: &str,
+        role: TokenRole,
+    ) -> Message {
         let token = self.mint(&owner.identity, Flow::Signup, role);
         let link = self.link(&token);
         Self::message(
@@ -424,10 +437,10 @@ impl Private {
             subject,
             Body::Alternative {
                 text: format!(
-                    "Hi {to},\n\nConfirm your account: {link}\n\nThanks for signing up.\n"
+                    "Hi {greeting},\n\nConfirm your account: {link}\n\nThanks for signing up.\n"
                 ),
                 html: format!(
-                    "<p>Hi {to},</p>\n<p><a href=\"{link}\">Confirm your account</a></p>\n<p>Thanks for signing up.</p>\n"
+                    "<p>Hi {greeting},</p>\n<p><a href=\"{link}\">Confirm your account</a></p>\n<p>Thanks for signing up.</p>\n"
                 ),
             },
         )
@@ -462,7 +475,19 @@ impl Private {
                 consumed: false,
             },
         );
-        let text = if generation == 1 {
+        let text = if self.task.scenario == Scenario::OtpBacklog {
+            // The only generation signal in the mail: no sentence says it
+            // replaces another, and arrival order is deliberately unrelated.
+            // The line is relative to the mail's own send, so it reads no
+            // clock: the same body is true in a one-trial run, in every cell
+            // of a matrix however late it starts, and under any pinned
+            // fixture time. The newest generation was requested when it was
+            // sent and each earlier one four minutes before the next.
+            let minutes = 4 * (tasks::OTP_BACKLOG as u32).saturating_sub(generation);
+            format!(
+                "Your verification code is {code}.\n\nRequested {minutes} minutes before this email was sent.\nIt expires in 10 minutes.\n"
+            )
+        } else if generation == 1 {
             format!("Your verification code is {code}.\n\nIt expires in 10 minutes.\n")
         } else {
             format!(
@@ -543,6 +568,57 @@ impl Private {
                     );
                     send.push(self.enqueue(&decoy, &sibling, Flow::Signup, "sibling-decoy", msg));
                 }
+                Scenario::SignupCrowd => {
+                    let slot = self
+                        .accounts
+                        .iter()
+                        .position(|a| a.identity == to)
+                        .expect("account") as u64;
+                    let (local, domain) = to.split_once('@').expect("identities are addresses");
+                    // The last decoy contains the agent's whole address, so
+                    // the MCP `to` substring filter still returns it.
+                    let decoys = [
+                        format!("{local}.team@{domain}"),
+                        format!("{local}-old@{domain}"),
+                        format!("{local}2@{domain}"),
+                        format!("old.{local}@{domain}"),
+                    ];
+                    let mut mails = Vec::new();
+                    for (i, address) in decoys.iter().enumerate() {
+                        let decoy = Account {
+                            identity: address.clone(),
+                            inbox: acct.inbox.clone(),
+                            smtp_identity: acct.smtp_identity.clone(),
+                            role: Role::Decoy,
+                            facts: Facts::default(),
+                            password: None,
+                        };
+                        self.accounts.push(decoy.clone());
+                        let msg = self.signup_mail_greeting(
+                            &decoy,
+                            address,
+                            &to,
+                            "Confirm your account",
+                            TokenRole::Confirm,
+                        );
+                        let kind = format!("crowd-decoy-{}", i + 1);
+                        mails.push(self.enqueue(&decoy, address, Flow::Signup, &kind, msg));
+                    }
+                    let msg =
+                        self.signup_mail(&acct, &to, "Confirm your account", TokenRole::Confirm);
+                    let mine = self.enqueue(&acct, &to, Flow::Signup, "signup", msg);
+                    // The agent's mail lands neither first nor last of five.
+                    let position = 1 + self.inputs.select(
+                        &self.task.id,
+                        slot,
+                        "signup",
+                        0,
+                        "agent-position",
+                        3,
+                    ) as usize;
+                    mails.insert(position, mine);
+                    send.extend(mails);
+                }
                 Scenario::SignupI18n => {
                     let msg = self.signup_mail(&acct, &to, tasks::I18N_SUBJECT, TokenRole::Confirm);
                     send.push(self.enqueue(&acct, &to, Flow::Signup, "signup-i18n", msg));
@@ -558,6 +634,44 @@ impl Private {
                 Scenario::OtpStale => {
                     send.push(self.issue_otp(&acct));
                     send.push(self.issue_otp(&acct));
+                }
+                Scenario::OtpBacklog => {
+                    let slot = self
+                        .accounts
+                        .iter()
+                        .position(|a| a.identity == to)
+                        .expect("account") as u64;
+                    let n = tasks::OTP_BACKLOG;
+                    let mut by_generation = Vec::new();
+                    for _ in 0..n {
+                        by_generation.push(self.issue_otp(&acct));
+                    }
+                    // The current generation is the last one issued. It is
+                    // delivered neither first nor last; the superseded eleven
+                    // fill the other positions in a seeded shuffle.
+                    let current = by_generation.pop().expect("twelve generations");
+                    let mut older = by_generation;
+                    for i in (1..older.len()).rev() {
+                        let j = self.inputs.select(
+                            &self.task.id,
+                            slot,
+                            "otp",
+                            0,
+                            &format!("perm-{i}"),
+                            i as u64 + 1,
+                        ) as usize;
+                        older.swap(i, j);
+                    }
+                    let position = 1 + self.inputs.select(
+                        &self.task.id,
+                        slot,
+                        "otp",
+                        0,
+                        "current-position",
+                        n as u64 - 2,
+                    ) as usize;
+                    older.insert(position, current);
+                    send.extend(older);
                 }
                 Scenario::MagicLogin => {
                     let decoy = self.mint(&to, Flow::MagicLogin, TokenRole::DecoyLink);
@@ -618,6 +732,63 @@ impl Private {
                     let msg =
                         Self::message(&to, "Your weekly digest", Body::Alternative { text, html });
                     send.push(self.enqueue(&acct, &to, Flow::Digest, "digest", msg));
+                }
+                Scenario::DigestLookalike => {
+                    let slot = self
+                        .accounts
+                        .iter()
+                        .position(|a| a.identity == to)
+                        .expect("account") as u64;
+                    let n = tasks::DIGEST_LOOKALIKE_LINKS as u64;
+                    let right =
+                        self.inputs
+                            .select(&self.task.id, slot, "digest", 0, "right-position", n)
+                            as usize;
+                    let mut decoy = self.inputs.select(
+                        &self.task.id,
+                        slot,
+                        "digest",
+                        0,
+                        "decoy-position",
+                        n - 1,
+                    ) as usize;
+                    if decoy >= right {
+                        decoy += 1;
+                    }
+                    let slug = tasks::DIGEST_ITEM.to_lowercase().replace(' ', "-");
+                    let publisher = tasks::DIGEST_PUBLISHER;
+                    let mut html = format!(
+                        "<html><body>\n<h1>Weekly digest from {publisher}</h1>\n<p>This week's picks from {publisher}.</p>\n<ol>\n"
+                    );
+                    for i in 0..tasks::DIGEST_LOOKALIKE_LINKS {
+                        let (title, role, host, slug) = if i == right {
+                            (
+                                tasks::DIGEST_ITEM.to_string(),
+                                TokenRole::DigestRight,
+                                publisher,
+                                slug.clone(),
+                            )
+                        } else if i == decoy {
+                            (
+                                tasks::DIGEST_ITEM.to_string(),
+                                TokenRole::DigestWrong,
+                                tasks::DIGEST_LOOKALIKE_HOST,
+                                slug.clone(),
+                            )
+                        } else {
+                            let title = digest_decoy_title(i);
+                            let slug = format!("article-{}", i + 1);
+                            (title, TokenRole::DigestWrong, publisher, slug)
+                        };
+                        let token = self.mint(&to, Flow::Digest, role);
+                        let link = self.link(&token);
+                        html.push_str(&format!(
+                            "<li><a href=\"{link}?u=https://{host}/{slug}\">{title}</a></li>\n"
+                        ));
+                    }
+                    html.push_str("</ol>\n</body></html>\n");
+                    let msg = Self::message(&to, "Your weekly digest", Body::HtmlOnly(html));
+                    send.push(self.enqueue(&acct, &to, Flow::Digest, "digest-lookalike", msg));
                 }
                 Scenario::Reset => {
                     self.account_mut(&to).password = Some(self.random_alnum(16));
@@ -1048,6 +1219,17 @@ async fn otp_resend(State(app): State<AppState>, headers: HeaderMap) -> Response
             Ok(c) => c,
             Err(r) => return *r,
         };
+        if p.task.scenario == Scenario::OtpBacklog {
+            // The backlog task closes the resend: a fresh current code would
+            // bypass the trap. The event carries no category, so it neither
+            // completes nor classifies anything.
+            p.record(Some(&claimed), Some(Flow::Otp), "otp_resend", false, None);
+            return reply(
+                StatusCode::TOO_MANY_REQUESTS,
+                false,
+                "the resend limit for this sign-in has been reached",
+            );
+        }
         if !p.otp_generation.contains_key(&claimed) {
             return p.misuse(
                 &claimed,
@@ -1888,7 +2070,7 @@ mod entropy_proofs {
                         task.id
                     );
                     match task.scenario {
-                        Scenario::Otp | Scenario::OtpStale => {
+                        Scenario::Otp | Scenario::OtpStale | Scenario::OtpBacklog => {
                             assert!(
                                 p.tokens
                                     .values()
@@ -2071,5 +2253,435 @@ mod publication_proofs {
         assert!(!snap.frozen);
         server.abort();
         let _ = server.await;
+    }
+}
+
+/// The hard tier's layout proofs (proposed 0117): the layout is a pure
+/// function of the public seed, the secrets never are, and every trap holds
+/// on every one of 64 seeds.
+#[cfg(test)]
+mod hard_layout_proofs {
+    use super::*;
+
+    const AGENT: &str = "person-0@example.test";
+    const SEEDS: u64 = 64;
+
+    fn seed(i: u64) -> String {
+        format!("{i:064x}")
+    }
+
+    fn private_at(id: &str, seed: &str, time: &str) -> Private {
+        let inputs = crate::provenance::FixtureInputs::resolve(Some(seed), Some(time)).unwrap();
+        let mut p = Private::with_inputs(
+            "hard-layout",
+            tasks::find(id).unwrap(),
+            "http://127.0.0.1:1",
+            Arc::new(Instant::now),
+            inputs,
+        );
+        p.accounts.push(Account {
+            identity: AGENT.into(),
+            inbox: "inbox-0".into(),
+            smtp_identity: "inbox-0".into(),
+            role: Role::Agent,
+            facts: Facts::default(),
+            password: None,
+        });
+        p
+    }
+
+    /// The task planned for `seed`, and the delivery sequence numbers in
+    /// the order they are sent.
+    fn plan(id: &str, seed: &str) -> (Private, Vec<u64>) {
+        plan_at(id, seed, "2026-10-24T12:00:00Z")
+    }
+
+    fn plan_at(id: &str, seed: &str, time: &str) -> (Private, Vec<u64>) {
+        let mut p = private_at(id, seed, time);
+        let order = p.plan();
+        (p, order)
+    }
+
+    fn raw(p: &Private, seq: u64) -> String {
+        String::from_utf8(p.outbound[&seq].data.clone()).unwrap()
+    }
+
+    fn header(raw: &str, name: &str) -> String {
+        raw.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("no {name} header"))
+            .trim()
+            .to_string()
+    }
+
+    fn kind(p: &Private, seq: u64) -> String {
+        p.deliveries
+            .iter()
+            .find(|d| d.seq == seq)
+            .unwrap()
+            .message
+            .clone()
+    }
+
+    fn code(raw: &str) -> String {
+        let at = raw.find("verification code is ").unwrap() + "verification code is ".len();
+        raw[at..at + 6].to_string()
+    }
+
+    /// The minutes on the mail's request line, and the line's count.
+    fn requested_minutes(raw: &str) -> (u32, usize) {
+        let lines: Vec<&str> = raw
+            .lines()
+            .filter(|l| l.starts_with("Requested "))
+            .collect();
+        let n = lines[0]
+            .strip_prefix("Requested ")
+            .and_then(|r| r.strip_suffix(" minutes before this email was sent."))
+            .unwrap_or_else(|| panic!("unexpected request line {:?}", lines[0]))
+            .parse()
+            .unwrap();
+        (n, lines.len())
+    }
+
+    /// The text body: the part after the header block, CRLF read as LF. The
+    /// renderer ends the message with one more line break than the template
+    /// carries; that terminator is not part of the text.
+    fn text_body(raw: &str) -> String {
+        let body = raw.replace("\r\n", "\n");
+        let body = body.split_once("\n\n").unwrap().1;
+        body.strip_suffix('\n')
+            .unwrap_or_else(|| panic!("no terminator on {body:?}"))
+            .to_string()
+    }
+
+    fn fingerprint(id: &str, seed: &str) -> Vec<String> {
+        let (p, order) = plan(id, seed);
+        match id {
+            "otp-backlog" => order.iter().map(|&s| kind(&p, s)).collect(),
+            "recipient-crowd" => order.iter().map(|&s| header(&raw(&p, s), "To:")).collect(),
+            _ => {
+                let raw = raw(&p, order[0]);
+                raw.split("href=\"")
+                    .skip(1)
+                    .map(|h| {
+                        let token = h.split('?').next().unwrap().rsplit('/').next().unwrap();
+                        format!("{:?}", p.tokens[token].role)
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    #[test]
+    fn the_backlog_buries_the_current_code_on_every_seed() {
+        // The line reads no clock: the same seed under a noon time, a
+        // just-after-midnight time and a time years before the trial (as a
+        // late matrix cell's master time can be) must print the same body.
+        for time in [
+            "2026-10-24T12:00:00Z",
+            "2026-10-24T00:30:00Z",
+            "2020-01-01T00:00:00Z",
+        ] {
+            for i in 0..SEEDS {
+                let (p, order) = plan_at("otp-backlog", &seed(i), time);
+                assert_eq!(order.len(), tasks::OTP_BACKLOG);
+                assert_eq!(p.deliveries.len(), tasks::OTP_BACKLOG);
+                assert!(p.deliveries.iter().all(|d| d.flow == Flow::Otp));
+                let kinds: Vec<String> = order.iter().map(|&s| kind(&p, s)).collect();
+                let position = kinds.iter().position(|k| k == "otp-12").unwrap();
+                assert!(
+                    (1..=10).contains(&position),
+                    "seed {i}: current generation is {position} of {kinds:?}"
+                );
+                let mut sorted = kinds.clone();
+                sorted.sort();
+                sorted.dedup();
+                assert_eq!(sorted.len(), 12, "twelve distinct generations");
+                assert_eq!(p.otp_generation[AGENT], 12);
+                let mut codes = Vec::new();
+                for g in 1..=12u32 {
+                    let seq = p
+                        .deliveries
+                        .iter()
+                        .find(|d| d.message == format!("otp-{g}"))
+                        .unwrap()
+                        .seq;
+                    let mail = raw(&p, seq);
+                    assert_eq!(header(&mail, "Subject:"), "Your verification code");
+                    assert!(!mail.contains("earlier code"), "no supersession sentence");
+                    let (n, lines) = requested_minutes(&mail);
+                    assert_eq!(lines, 1, "exactly one request line");
+                    assert_eq!(n, 4 * (12 - g), "seed {i} {time} generation {g}");
+                    assert!(n <= 60, "within the past hour: {n}");
+                    let c = code(&mail);
+                    assert_eq!(
+                        text_body(&mail),
+                        format!(
+                            "Your verification code is {c}.\n\nRequested {n} minutes before this email was sent.\nIt expires in 10 minutes.\n"
+                        ),
+                        "the body is a function of its code and generation only"
+                    );
+                    for banned in ["Requested at", "UTC", "2026-", "2020-"] {
+                        assert!(
+                            !text_body(&mail).contains(banned),
+                            "no clock in the body: {banned}"
+                        );
+                    }
+                    codes.push((g, c, n));
+                }
+                assert_eq!(codes[11].2, 0, "the current code was requested when sent");
+                assert!(
+                    codes.windows(2).all(|w| w[0].2 > w[1].2),
+                    "minutes strictly decrease as the generation rises"
+                );
+                let mut distinct: Vec<_> = codes.iter().map(|c| c.1.clone()).collect();
+                distinct.sort();
+                distinct.dedup();
+                assert_eq!(distinct.len(), 12, "twelve distinct codes");
+            }
+        }
+    }
+
+    #[test]
+    fn the_crowd_hides_the_agents_mail_among_look_alikes_on_every_seed() {
+        for i in 0..SEEDS {
+            let (p, order) = plan("recipient-crowd", &seed(i));
+            assert_eq!(order.len(), 5);
+            assert!(p.deliveries.iter().all(|d| d.flow == Flow::Signup));
+            let recipients: Vec<String> = order
+                .iter()
+                .map(|&s| {
+                    let to = header(&raw(&p, s), "To:");
+                    to.trim_start_matches('<').trim_end_matches('>').to_string()
+                })
+                .collect();
+            let mut distinct = recipients.clone();
+            distinct.sort();
+            distinct.dedup();
+            assert_eq!(distinct.len(), 5, "{recipients:?}");
+            let mine = recipients.iter().position(|r| r == AGENT).unwrap();
+            assert_eq!(recipients.iter().filter(|r| *r == AGENT).count(), 1);
+            assert!((1..=3).contains(&mine), "seed {i}: agent at {mine}");
+            assert_eq!(
+                recipients.iter().filter(|r| r.contains(AGENT)).count(),
+                2,
+                "one decoy contains the agent's whole address: {recipients:?}"
+            );
+            for &seq in &order {
+                let mail = raw(&p, seq);
+                assert_eq!(header(&mail, "Subject:"), "Confirm your account");
+                assert!(mail.contains(&format!("Hi {AGENT},")), "{mail}");
+            }
+            let decoys: Vec<_> = p
+                .accounts
+                .iter()
+                .filter(|a| a.role == Role::Decoy)
+                .collect();
+            assert_eq!(decoys.len(), 4);
+            assert!(
+                decoys
+                    .iter()
+                    .all(|a| a.inbox == "inbox-0" && a.smtp_identity == "inbox-0")
+            );
+        }
+    }
+
+    #[test]
+    fn the_digest_hides_the_right_link_behind_a_look_alike_host_on_every_seed() {
+        for i in 0..SEEDS {
+            let (p, order) = plan("digest-lookalike", &seed(i));
+            assert_eq!(order.len(), 1);
+            assert_eq!(p.deliveries.len(), 1);
+            let mail = raw(&p, order[0]);
+            assert!(mail.contains("Content-Type: text/html"));
+            assert!(!mail.contains("multipart"), "HTML-only");
+            assert!(!mail.contains("text/plain"));
+            assert_eq!(mail.matches("<a href=\"").count(), 12);
+            let exact: Vec<&str> = mail
+                .lines()
+                .filter(|l| l.contains(&format!(">{}</a>", tasks::DIGEST_ITEM)))
+                .collect();
+            assert_eq!(exact.len(), 2, "exactly two anchors carry the title");
+            let mut hosts = Vec::new();
+            for line in &exact {
+                let href = line
+                    .split("href=\"")
+                    .nth(1)
+                    .unwrap()
+                    .split('"')
+                    .next()
+                    .unwrap();
+                let token = href.split('?').next().unwrap().rsplit('/').next().unwrap();
+                let destination = href.split("?u=").nth(1).unwrap();
+                assert_eq!(
+                    destination.split('/').next_back().unwrap(),
+                    "async-drop-finally-lands-on-stable"
+                );
+                let host = destination
+                    .trim_start_matches("https://")
+                    .split('/')
+                    .next()
+                    .unwrap();
+                hosts.push((p.tokens[token].role, host.to_string()));
+            }
+            hosts.sort_by_key(|h| h.1.clone());
+            assert_eq!(
+                hosts,
+                [
+                    (TokenRole::DigestRight, tasks::DIGEST_PUBLISHER.to_string()),
+                    (
+                        TokenRole::DigestWrong,
+                        tasks::DIGEST_LOOKALIKE_HOST.to_string()
+                    ),
+                ]
+            );
+            assert!(tasks::DIGEST_LOOKALIKE_HOST.starts_with(tasks::DIGEST_PUBLISHER));
+            assert_eq!(
+                p.tokens
+                    .values()
+                    .filter(|t| t.role == TokenRole::DigestRight)
+                    .count(),
+                1
+            );
+            assert_eq!(p.tokens.len(), 12);
+        }
+    }
+
+    #[test]
+    fn the_layout_is_the_seeds_and_the_secrets_are_not() {
+        for id in ["otp-backlog", "recipient-crowd", "digest-lookalike"] {
+            let layouts: Vec<_> = (0..SEEDS).map(|i| fingerprint(id, &seed(i))).collect();
+            for i in [0, 7, 63] {
+                assert_eq!(layouts[i as usize], fingerprint(id, &seed(i)), "{id}");
+            }
+            assert!(
+                layouts.iter().any(|l| l != &layouts[0]),
+                "{id}: every seed produced the same layout"
+            );
+            let secrets = |p: &Private| {
+                let mut keys: Vec<_> = p.tokens.keys().cloned().collect();
+                keys.sort();
+                keys
+            };
+            let (a, _) = plan(id, &seed(1));
+            let (b, _) = plan(id, &seed(1));
+            assert_ne!(
+                secrets(&a),
+                secrets(&b),
+                "{id}: secrets repeat for one seed"
+            );
+        }
+    }
+
+    fn shared(p: Private) -> AppState {
+        Arc::new(Shared {
+            private: Mutex::new(p),
+            smtp: "127.0.0.1:1".parse().unwrap(),
+            admin_secret: "secret".into(),
+        })
+    }
+
+    fn as_identity(who: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(IDENTITY_HEADER, who.parse().unwrap());
+        headers
+    }
+
+    fn token_with(p: &Private, role: TokenRole) -> String {
+        p.tokens
+            .iter()
+            .find(|(_, t)| t.role == role)
+            .map(|(k, _)| k.clone())
+            .unwrap()
+    }
+
+    #[test]
+    fn the_current_backlog_code_verifies_and_every_other_is_superseded() {
+        let (mut p, _) = plan("otp-backlog", &seed(3));
+        let now = Instant::now();
+        let current = token_with(&p, TokenRole::Otp { generation: 12 });
+        for generation in 1..12 {
+            let old = token_with(&p, TokenRole::Otp { generation });
+            assert_eq!(p.verify_otp(AGENT, &old, now).status(), StatusCode::GONE);
+            let last = p.events.last().unwrap();
+            assert_eq!(last.action, action::SUPERSEDED_CODE);
+            assert_eq!(last.category, Some(FailureClass::StaleCode));
+        }
+        assert_eq!(p.verify_otp(AGENT, &current, now).status(), StatusCode::OK);
+        assert!(p.accounts[0].facts.otp_verified);
+    }
+
+    #[tokio::test]
+    async fn the_backlog_resend_answers_429_and_mints_nothing() {
+        let (p, _) = plan("otp-backlog", &seed(5));
+        let before = (p.deliveries.len(), p.tokens.len());
+        let app = shared(p);
+        let response = otp_resend(State(app.clone()), as_identity(AGENT)).await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let p = app.lock();
+        assert_eq!((p.deliveries.len(), p.tokens.len()), before);
+        let event = p.events.last().unwrap();
+        assert_eq!(event.action, "otp_resend");
+        assert!(!event.accepted && event.category.is_none());
+        assert_eq!(p.otp_generation[AGENT], 12, "the generation never moved");
+    }
+
+    #[tokio::test]
+    async fn a_look_alikes_token_is_foreign_and_the_agents_own_confirms() {
+        let (p, _) = plan("recipient-crowd", &seed(2));
+        let decoy_owner = p
+            .accounts
+            .iter()
+            .find(|a| a.role == Role::Decoy)
+            .unwrap()
+            .identity
+            .clone();
+        let decoy_token = p
+            .tokens
+            .iter()
+            .find(|(_, t)| t.owner == decoy_owner)
+            .map(|(k, _)| k.clone())
+            .unwrap();
+        let own_token = p
+            .tokens
+            .iter()
+            .find(|(_, t)| t.owner == AGENT)
+            .map(|(k, _)| k.clone())
+            .unwrap();
+        let app = shared(p);
+        // As the agent, and as the look-alike: both are the foreign token.
+        for who in [AGENT, decoy_owner.as_str()] {
+            let r = follow_link(
+                State(app.clone()),
+                as_identity(who),
+                Path(decoy_token.clone()),
+            )
+            .await;
+            assert_eq!(r.status(), StatusCode::FORBIDDEN, "{who}");
+            let last = app.lock().events.last().unwrap().clone();
+            assert_eq!(last.action, action::FOREIGN_TOKEN);
+            assert_eq!(last.category, Some(FailureClass::WrongMessage));
+            assert_eq!(last.claimed.as_deref(), Some(who));
+        }
+        let r = follow_link(State(app.clone()), as_identity(AGENT), Path(own_token)).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(app.lock().accounts[0].facts.confirmed);
+    }
+
+    #[tokio::test]
+    async fn the_look_alike_article_is_a_decoy_and_the_publishers_is_the_goal() {
+        let (p, _) = plan("digest-lookalike", &seed(4));
+        let wrong = token_with(&p, TokenRole::DigestWrong);
+        let right = token_with(&p, TokenRole::DigestRight);
+        let app = shared(p);
+        let r = follow_link(State(app.clone()), as_identity(AGENT), Path(wrong)).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let last = app.lock().events.last().unwrap().clone();
+        assert_eq!(last.action, action::DIGEST_DECOY);
+        assert_eq!(last.category, Some(FailureClass::WrongLink));
+        assert!(!app.lock().accounts[0].facts.digest_selected);
+        let r = follow_link(State(app.clone()), as_identity(AGENT), Path(right)).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(app.lock().accounts[0].facts.digest_selected);
     }
 }

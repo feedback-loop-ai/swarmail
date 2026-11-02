@@ -213,6 +213,82 @@ fn last_segment(url: &str) -> String {
     url.rsplit('/').next().unwrap_or_default().to_string()
 }
 
+/// Every `<a href="…">text</a>` in `html`, in document order, as the decoded
+/// href and the decoded, trimmed anchor text. Only the double-quoted form the
+/// fixture writes is read; a malformed tail stops the scan, never guessed at.
+pub fn html_anchors(html: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    let mut rest = html;
+    while let Some(start) = rest.find("<a href=\"") {
+        let after = &rest[start + 9..];
+        let Some(end) = after.find('"') else { break };
+        let href = decode_entities(&after[..end]);
+        let Some(text_start) = after[end..].find('>').map(|i| i + end + 1) else {
+            break;
+        };
+        let Some(text_end) = after[text_start..].find("</a>").map(|i| i + text_start) else {
+            break;
+        };
+        found.push((href, decode_entities(after[text_start..text_end].trim())));
+        rest = &after[text_end..];
+    }
+    found
+}
+
+/// The first standalone six-digit run in `text`.
+pub fn six_digit_code(text: &str) -> Option<String> {
+    text.split(|c: char| !c.is_ascii_digit())
+        .find(|w| w.len() == 6)
+        .map(str::to_string)
+}
+
+/// The minutes on the mail's `Requested N minutes before this email was
+/// sent.` line. The smallest N is the most recent request.
+pub fn requested_minutes(text: &str) -> Option<u32> {
+    text.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("Requested ")?;
+        let digits = rest.strip_suffix(" minutes before this email was sent.")?;
+        digits.parse().ok()
+    })
+}
+
+/// The destination host of a tracking wrapper `…/a/<token>?u=<destination>`,
+/// read from the href alone; nothing is fetched. The destination may be
+/// percent-encoded. Only an exact host is returned (userinfo, port and path
+/// are stripped), so a suffixed look-alike host is a different host.
+pub fn wrapper_destination_host(url: &str) -> Option<String> {
+    let query = url.split_once('?')?.1;
+    let destination = query.split('&').find_map(|pair| pair.strip_prefix("u="))?;
+    let destination = percent_decode(destination);
+    let rest = destination
+        .strip_prefix("https://")
+        .or_else(|| destination.strip_prefix("http://"))?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit('@').next()?;
+    let host = host.split(':').next()?;
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// The ICS property `name`'s value.
 pub fn ics_property(ics: &str, name: &str) -> Option<String> {
     ics.lines().find_map(|l| {
@@ -255,6 +331,23 @@ pub async fn run_oracle(env: &AgentEnv) -> Result<(), String> {
                 .ok_or("no confirmation addressed to my exact identity")?;
             confirm_from_text(&app, mine).await
         }
+        "recipient-crowd" => {
+            let mails = mcp
+                .wait_emails(inbox, Some("Confirm your account"), 5)
+                .await?;
+            if mails.len() != 5 {
+                return Err(format!("expected five confirmations, saw {}", mails.len()));
+            }
+            let mine = mails
+                .iter()
+                .find(|m| {
+                    m["to"]
+                        .as_array()
+                        .is_some_and(|to| to.iter().any(|a| a["address"] == json!(env.identity)))
+                })
+                .ok_or("no confirmation addressed to my exact identity")?;
+            confirm_from_text(&app, mine).await
+        }
         "i18n-subject" => {
             let mails = mcp.wait_emails(inbox, None, 2).await?;
             let mine = mails
@@ -275,6 +368,48 @@ pub async fn run_oracle(env: &AgentEnv) -> Result<(), String> {
                 .wait_emails(inbox, Some("Confirm your account"), 1)
                 .await?;
             confirm_from_text(&app, &mail[0]).await
+        }
+        "otp-backlog" => {
+            let want = tasks::OTP_BACKLOG;
+            let mails = mcp
+                .wait_emails(inbox, Some("Your verification code"), want)
+                .await?;
+            if mails.len() != want {
+                return Err(format!("expected {want} code mails, saw {}", mails.len()));
+            }
+            let mut newest: Option<(u32, String)> = None;
+            for mail in &mails {
+                let text = text_of(mail);
+                let minutes = requested_minutes(&text).ok_or("a code mail has no request line")?;
+                let code = six_digit_code(&text).ok_or("no six-digit code in the mail")?;
+                if newest.as_ref().is_none_or(|(best, _)| minutes < *best) {
+                    newest = Some((minutes, code));
+                }
+            }
+            let (_, code) = newest.ok_or("no code mails")?;
+            ok(
+                "verify",
+                app.post("/otp/verify", json!({ "code": code })).await?,
+            )?;
+            Ok(())
+        }
+        "digest-lookalike" => {
+            let mail = mcp
+                .wait_emails(inbox, Some("Your weekly digest"), 1)
+                .await?;
+            let html = mail[0]["html"].as_str().ok_or("no HTML body")?;
+            let mut right = html_anchors(html).into_iter().filter(|(href, text)| {
+                text == tasks::DIGEST_ITEM
+                    && wrapper_destination_host(href).as_deref() == Some(tasks::DIGEST_PUBLISHER)
+            });
+            let (link, _) = right
+                .next()
+                .ok_or("no exact-title anchor on the publisher")?;
+            if right.next().is_some() {
+                return Err("more than one exact-title anchor on the publisher".to_string());
+            }
+            ok("open article", app.get(&link).await?)?;
+            Ok(())
         }
         "otp" | "stale-otp" => {
             let want = if env.task == "otp" { 1 } else { 2 };
@@ -440,6 +575,83 @@ mod tests {
             Some("http://x/o?a=1&b=2")
         );
         assert_eq!(anchor_href(html, "Nope"), None);
+    }
+
+    #[test]
+    fn html_anchors_are_read_in_order_and_malformed_tails_stop() {
+        let html = "<li><a href=\"http://x/a?u=1&amp;v=2\"> One &amp; two </a></li><a href=\"http://x/b\">Two</a>";
+        assert_eq!(
+            html_anchors(html),
+            vec![
+                ("http://x/a?u=1&v=2".to_string(), "One & two".to_string()),
+                ("http://x/b".to_string(), "Two".to_string()),
+            ]
+        );
+        assert!(html_anchors("<a href=\"http://x").is_empty());
+        assert!(html_anchors("<a href=\"http://x\" no close").is_empty());
+        assert!(html_anchors("<a href=\"http://x\">no end").is_empty());
+        assert!(html_anchors("plain text").is_empty());
+    }
+
+    #[test]
+    fn requested_minutes_reads_the_generation_line() {
+        let text = "Your verification code is 123456.\n\nRequested 44 minutes before this email was sent.\nIt expires in 10 minutes.\n";
+        assert_eq!(requested_minutes(text), Some(44));
+        assert_eq!(
+            requested_minutes("Requested 0 minutes before this email was sent.\n"),
+            Some(0)
+        );
+        assert_eq!(requested_minutes("Your code is 123456.\n"), None);
+        assert_eq!(
+            requested_minutes("Requested at 2026-10-24 12:04:00 UTC\n"),
+            None
+        );
+        assert_eq!(
+            requested_minutes("Requested soon minutes before this email was sent.\n"),
+            None
+        );
+        assert_eq!(
+            requested_minutes("Requested  minutes before this email was sent.\n"),
+            None
+        );
+        assert_eq!(six_digit_code(text).as_deref(), Some("123456"));
+        assert_eq!(six_digit_code("only 12345 and 1234567"), None);
+    }
+
+    #[test]
+    fn wrapper_hosts_are_exact_not_substrings() {
+        let wrap = |dest: &str| format!("http://127.0.0.1:1/a/tok?u={dest}");
+        assert_eq!(
+            wrapper_destination_host(&wrap("https://news.fixture.eval/async")).as_deref(),
+            Some("news.fixture.eval")
+        );
+        // The tracker suffix makes it a different host.
+        assert_eq!(
+            wrapper_destination_host(&wrap("https://news.fixture.eval.click-tracker.net/async"))
+                .as_deref(),
+            Some("news.fixture.eval.click-tracker.net")
+        );
+        // Percent-encoded, with a port, userinfo, mixed case and a further query.
+        assert_eq!(
+            wrapper_destination_host(&wrap("https%3A%2F%2FNews.Fixture.Eval%3A443%2Fx%3Fa%3D1"))
+                .as_deref(),
+            Some("news.fixture.eval")
+        );
+        assert_eq!(
+            wrapper_destination_host(&wrap("https://news.fixture.eval@evil.test/x")).as_deref(),
+            Some("evil.test")
+        );
+        // Another parameter first, then no destination at all, then junk.
+        assert_eq!(
+            wrapper_destination_host("http://h/a/t?x=1&u=https://a.test/p").as_deref(),
+            Some("a.test")
+        );
+        assert_eq!(wrapper_destination_host("http://h/a/t"), None);
+        assert_eq!(wrapper_destination_host("http://h/a/t?x=1"), None);
+        assert_eq!(wrapper_destination_host(&wrap("ftp://a.test/")), None);
+        assert_eq!(wrapper_destination_host(&wrap("https:///x")), None);
+        assert_eq!(percent_decode("a%2"), "a%2");
+        assert_eq!(percent_decode("a%zzb"), "a%zzb");
     }
 
     #[test]

@@ -727,10 +727,44 @@ fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
     })
     .unwrap();
     assert_eq!(encoded, include_bytes!("data/catalogue-v2.json"));
+    // The full catalogue gained the hard tier (proposed 0117), so its hash
+    // moved; the pin below is regenerated from `tasks`, never hand-edited.
     assert_eq!(
         p::catalogue_hash(),
+        "5b312d989a0be3cfeeab4e6885d2f3809f06bc64e0b807f26826d6dfbae8f3f7"
+    );
+    // The sixteen default-tier tasks still serialize to exactly the bytes the
+    // 2026-11-01 baseline recorded as `6068b687…`: no existing task, field or
+    // id moved, and no hard task sits before `inbox-isolation`.
+    let default_tier = serde_json::to_vec(&swarmail_evals::tasks::Catalogue {
+        schema_version: 2,
+        tasks: swarmail_evals::tasks::catalogue()
+            .into_iter()
+            .filter(|t| t.tier != swarmail_evals::tasks::Tier::Hard)
+            .collect(),
+    })
+    .unwrap();
+    assert_eq!(
+        p::sha256(&default_tier),
         "6068b687475db4be0000fa325de9f2b610b98470526085010ebd648e04862a94"
     );
+    assert_ne!(p::catalogue_hash(), p::sha256(&default_tier));
+    for (id, hash) in [
+        (
+            "otp-backlog",
+            "3ba58e2a24c3588b16c9fc1f66e48f0d5c30b6eec3e74aaa3ed2e0f80b4cbdc2",
+        ),
+        (
+            "recipient-crowd",
+            "d85007a48ed1e28143f952e747a79813c56a58f51bae6add7b7799218348b29b",
+        ),
+        (
+            "digest-lookalike",
+            "aed537fed8aef6098a28b606dea5f710da2ac4c14d46d18d696b04262956dbb9",
+        ),
+    ] {
+        assert_eq!(p::task_hash(id).unwrap(), hash, "{id}");
+    }
     assert_eq!(
         p::task_hash("confirm-decoys").unwrap(),
         "2b375c2612263e94edad691de80fa6dc98e8c5f0564c85d97c8db2ff72334fcd"

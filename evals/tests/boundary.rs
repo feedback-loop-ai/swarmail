@@ -199,6 +199,266 @@ fn sequential_contracts_and_decision_links_are_honest() {
     assert!(!plan.contains("two concurrently active isolation trials"));
 }
 
+/// Ids of the table rows a document marks as hard-tier: ``| `id` | hard |``.
+fn hard_rows(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+            let id = cells.get(1)?.strip_prefix('`')?.strip_suffix('`')?;
+            (cells.get(2) == Some(&"hard")).then(|| id.to_string())
+        })
+        .collect()
+}
+
+fn readme_or(name: &str, readme: &str, run_plan: &str) -> String {
+    if name == "README.md" {
+        readme
+    } else {
+        run_plan
+    }
+    .to_string()
+}
+
+/// AC10: the hard tier is documented in both directions. Every catalogue id
+/// is named in the README and the run plan; every hard id a document's tier
+/// table names is in the catalogue; the commands, the historical hash, the
+/// operator-owned paid run and the trap table rows are there.
+#[test]
+fn the_hard_tier_is_documented_in_both_directions() {
+    let catalogue = swarmail_evals::tasks::catalogue();
+    let hard: Vec<String> = catalogue
+        .iter()
+        .filter(|t| t.tier == swarmail_evals::tasks::Tier::Hard)
+        .map(|t| t.id.clone())
+        .collect();
+    assert_eq!(hard, ["otp-backlog", "recipient-crowd", "digest-lookalike"]);
+    let readme = std::fs::read_to_string(root().join("evals/README.md")).unwrap();
+    let run_plan = std::fs::read_to_string(root().join("evals/run-plan.md")).unwrap();
+    for (name, text) in [("README.md", &readme), ("run-plan.md", &run_plan)] {
+        // Every catalogue id, default tier and hard, is named in both documents.
+        for task in &catalogue {
+            assert!(
+                text.contains(&format!("`{}`", task.id)),
+                "{name}: missing {}",
+                task.id
+            );
+        }
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let text = &flat;
+        for phrase in [
+            "16 default-tier tasks plus 3 hard",
+            "--tier hard",
+            "6068b687",
+            "5b312d98",
+            "paid hard-tier run is the operator's",
+            "90",
+        ] {
+            assert!(text.contains(phrase), "{name}: missing {phrase:?}");
+        }
+        for named in hard_rows(&readme_or(name, &readme, &run_plan)) {
+            assert!(hard.contains(&named), "{name}: {named} is not a hard task");
+        }
+    }
+    // The README table covers the whole tier, one row per task, with the
+    // trap, the expected class and why a careful agent can pass.
+    assert_eq!(hard_rows(&readme), hard);
+    for task in &catalogue {
+        if task.tier != swarmail_evals::tasks::Tier::Hard {
+            continue;
+        }
+        let row = readme
+            .lines()
+            .find(|l| l.starts_with(&format!("| `{}` | hard |", task.id)))
+            .unwrap();
+        let class = serde_json::to_value(task.failure_class).unwrap();
+        assert!(
+            row.contains(&format!("`{}`", class.as_str().unwrap())),
+            "{row}"
+        );
+        for column in ["Why a careful agent", "intended trap", "Expected failure"] {
+            assert!(readme.contains(column), "missing column {column}");
+        }
+    }
+    // The 0071 table gains the three named-trap rows.
+    for (id, action_class) in [
+        ("otp-backlog", "superseded_code / stale_code"),
+        ("recipient-crowd", "foreign_token / wrong_message"),
+        ("digest-lookalike", "digest_decoy / wrong_link"),
+    ] {
+        assert!(
+            readme
+                .lines()
+                .any(|l| l.starts_with(&format!("| {id} (hard) |")) && l.contains(action_class)),
+            "{id}: no trap-table row"
+        );
+    }
+    // The default tier is still sixteen tasks.
+    let default_ids: Vec<&str> = catalogue
+        .iter()
+        .filter(|t| t.tier != swarmail_evals::tasks::Tier::Hard)
+        .map(|t| t.id.as_str())
+        .collect();
+    assert_eq!(default_ids.len(), 16);
+    // The decision index has exactly one 0117 row, still a proposal.
+    let index = std::fs::read_to_string(root().join("docs/decisions/README.md")).unwrap();
+    let rows: Vec<_> = index
+        .lines()
+        .filter(|l| l.starts_with("| [0117]"))
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].contains("proposed"), "{}", rows[0]);
+    let decision =
+        std::fs::read_to_string(root().join("docs/decisions/0117-hard-eval-tier.md")).unwrap();
+    assert!(decision.contains("**Status:** proposed"));
+    // 0117 names accepted 0076 §5's seven-trap count as historical.
+    let flat_decision = decision.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat_decision.contains("[0076](0076-sequential-eval-trials.md) §5"),
+        "0117 names 0076 §5"
+    );
+    // The harness spec's tier list names `hard` with a dated amendment.
+    let spec = std::fs::read_to_string(root().join("specs/agent-eval-harness/spec.md")).unwrap();
+    assert!(spec.contains("straight|traps|multi_step|hard"));
+    assert!(spec.contains("amended 2026-11-02"));
+    // Second return (F1'): both documents state that no request line depends
+    // on the fixture time, that the current code was requested when its mail
+    // was sent, and what the expiry window is; neither keeps the old claims.
+    for (name, text) in [("README.md", &readme), ("run-plan.md", &run_plan)] {
+        let flat = text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        for phrase in [
+            "no request line depends on the fixture time",
+            "the current code was requested when its mail was sent",
+            "prepare-to-start gap",
+            "at the deadline's end",
+            "`stale_code` by the scorer's fallback",
+        ] {
+            assert!(flat.contains(phrase), "{name}: missing {phrase:?}");
+        }
+        for gone in [
+            "request times precede the send",
+            // With the space: "requested attempts" is unrelated prose.
+            "requested at ",
+            "before the agent begins",
+        ] {
+            assert!(!flat.contains(gone), "{name}: still says {gone:?}");
+        }
+        if name == "README.md" {
+            assert!(flat.contains("wait view exposes no `date` header"));
+            assert!(!flat.contains("store keeps no `date` header"));
+        }
+    }
+    // F4: comparability rests on the task id and the per-task definition hash.
+    let flat_plan = run_plan.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat_plan.contains(
+        "rows of the default product compare with the 2026-11-01 baseline by task id and per-task `definition_sha256`"
+    ));
+    assert!(flat_plan.contains("is not the comparison key"));
+    // F3: the older specs and the intake record carry the dated notes.
+    let flat_spec = spec.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat_spec.contains("Amended 2026-11-02")
+            && flat_spec.contains("19 catalogue rows in four tiers")
+            && flat_spec.contains("`hard` tier")
+            && flat_spec.contains("AC4 and AC5 controls run all 19"),
+        "agent-eval-harness AC3 amendment"
+    );
+    let wrappers = std::fs::read_to_string(root().join("specs/baseline-wrappers/spec.md")).unwrap();
+    let flat_wrappers = wrappers.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat_wrappers.contains("16 tasks of the 19-task catalogue"),
+        "baseline-wrappers note"
+    );
+    let intake = std::fs::read(root().join("evals/hard-tier-intake.md")).unwrap();
+    let head = String::from_utf8_lossy(&intake[..400.min(intake.len())]).to_string();
+    for needle in [
+        "otp-backlog",
+        "recipient-crowd",
+        "digest-lookalike",
+        "specs/hard-eval-tier/spec.md",
+    ] {
+        assert!(head.contains(needle), "intake banner: missing {needle}");
+    }
+    // 0117 stays a single proposal: exactly one status line, still proposed.
+    assert_eq!(
+        decision
+            .lines()
+            .filter(|l| l.starts_with("- **Status:**"))
+            .count(),
+        1
+    );
+}
+
+/// AC9: the scorer's inputs do not grow. `score` takes a task and a frozen
+/// snapshot, the snapshot schema stays 2, and its field set is exactly the
+/// seven it had: no mailbox, transcript, account or agent claim.
+#[test]
+fn the_scorers_inputs_do_not_grow() {
+    let _score: fn(
+        &swarmail_evals::tasks::Task,
+        &swarmail_evals::state::Snapshot,
+    ) -> Result<swarmail_evals::tasks::Verdict, String> = swarmail_evals::tasks::score;
+    assert_eq!(swarmail_evals::state::SNAPSHOT_SCHEMA, 2);
+    assert_eq!(swarmail_evals::tasks::CATALOGUE_SCHEMA, 2);
+    let snapshot = swarmail_evals::state::Snapshot {
+        schema_version: 2,
+        trial_id: String::new(),
+        task: String::new(),
+        frozen: true,
+        identities: vec![],
+        deliveries: vec![],
+        events: vec![],
+    };
+    let value = serde_json::to_value(&snapshot).unwrap();
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "deliveries",
+            "events",
+            "frozen",
+            "identities",
+            "schema_version",
+            "task",
+            "trial_id"
+        ]
+    );
+    // The task record's field set is unchanged too: the tier is a value of an
+    // existing field, not a new one.
+    let task = serde_json::to_value(swarmail_evals::tasks::find("otp-backlog").unwrap()).unwrap();
+    let mut keys: Vec<&str> = task
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "agent_count",
+            "check",
+            "deadline_ms",
+            "failure_class",
+            "goal",
+            "goal_template",
+            "id",
+            "idle_class",
+            "scenario",
+            "tier"
+        ]
+    );
+}
+
 // The parser owns CommonMark: blocks, containers, code, inlines, escapes and
 // character references. Definitions need their own walk because a definition
 // nothing uses emits no event, and the guard refuses those too (spec
