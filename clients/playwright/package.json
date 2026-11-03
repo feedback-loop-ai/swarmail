@@ -1,6 +1,6 @@
 {
   "name": "@swarmail/playwright",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Playwright fixture for swarmail: a per-test inbox with waitForCode and waitForLink over REST",
   "license": "MIT OR Apache-2.0",
   "type": "module",
