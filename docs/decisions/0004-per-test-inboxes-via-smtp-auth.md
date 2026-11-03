@@ -44,3 +44,11 @@ record's own verb and scope, and nothing above is rewritten by it.
   2026-11-02): §1, only on a server started with `--route-domain`,
   where a routed recipient outranks the AUTH username; an
   unconfigured server is unchanged.)*
+
+## Later-decision marker — 2026-11-02 (0118)
+
+- *(Amended by [0118](0118-mailslurper-shim.md) (accepted 2026-11-02):
+  only the consequence that `clear_all` is the only cross-inbox
+  destructive endpoint; it stays the only cross-inbox destructive store
+  operation, also reached by `DELETE /mail` with `{"pruneCode":"all"}` on
+  the MailSlurper listener, served only when an operator enables it.)*
