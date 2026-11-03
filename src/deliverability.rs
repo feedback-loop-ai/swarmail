@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
 mod html;
+mod links;
 
-pub const RULE_SET_ID: &str = "swarmail-html/3";
+pub const RULE_SET_ID: &str = "swarmail-html/4";
 pub const MAX_FINDINGS: usize = 256;
 pub const MAX_REPORT_BYTES: usize = 65_536;
 const MAX_HEADER_BYTES: usize = 65_536;
@@ -1093,7 +1094,7 @@ mod tests {
         let empty = Collector(Vec::new()).finish(&Inputs::default()).unwrap();
         assert_eq!(
             serde_json::to_value(&empty).unwrap(),
-            json!({"rule_set_id":"swarmail-html/3","findings":[]})
+            json!({"rule_set_id":"swarmail-html/4","findings":[]})
         );
         assert!(empty.qualifies(Severity::Info));
     }

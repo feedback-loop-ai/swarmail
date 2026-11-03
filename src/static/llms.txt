@@ -440,7 +440,7 @@ info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/3):
+The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/4):
 one_click, message_id and date are errors; plain_text is warning-level presence
 advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
 are independent checks. Their error-level *.not_evaluated.v1 findings explicitly
@@ -469,7 +469,7 @@ https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 204
 or 7489 sections. These are fixed published references, not live verification or
 provider certification. The proposed rule record is decision 0089.
 
-`swarmail-html/3` retains the synthetic demo.marker.v1: the first root
+`swarmail-html/4` retains the synthetic demo.marker.v1: the first root
 X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
 and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
 html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
@@ -496,6 +496,17 @@ are Swarmail-authored heuristics dated 2026-10-26, not an imported dataset or
 fresh client-version measurements; current empirical measurements were not
 supplied. Source URLs, client scopes, selectors, thresholds and fixed hints are
 tracked there. No runtime network access or new dependency is needed.
+
+Five per-link rules (proposed decision 0121, issue #258) read each visible a href
+of the eligible HTML parts: link.scheme.unsafe.v1 (error: javascript, vbscript,
+data, file), link.url.invalid.v1 (warning: empty or not absolute; #fragment never
+fires), link.scheme.http.v1 (warning: plain http except localhost and loopback),
+link.shortener.v1 (warning: exact host in the built-in swarmail-shorteners/1 list)
+and link.anchor-host-mismatch.v1 (warning: the label names a host the target is
+neither equal to nor a subdomain of, after www. is stripped). A link finding is
+located at link {part_path, byte_offset}, or at mime_part {path} when the part's
+decoded text differs from its transfer-decoded bytes. No link is fetched; empty
+link findings do not mean the links are safe.
 
 This finite lexical model respects source quotes, comments, CSS strings/functions
 and nested media blocks. Hidden conditional comments and template content are

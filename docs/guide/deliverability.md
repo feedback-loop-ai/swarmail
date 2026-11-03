@@ -8,7 +8,7 @@ info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/3):
+The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/4):
 one_click, message_id and date are errors; plain_text is warning-level presence
 advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
 are independent checks. Their error-level *.not_evaluated.v1 findings explicitly
@@ -37,7 +37,7 @@ https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 204
 or 7489 sections. These are fixed published references, not live verification or
 provider certification. The proposed rule record is decision 0089.
 
-`swarmail-html/3` retains the synthetic demo.marker.v1: the first root
+`swarmail-html/4` retains the synthetic demo.marker.v1: the first root
 X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
 and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
 html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
@@ -136,3 +136,74 @@ memory or latency promises. #253 owns DNS observation/policy/expiry/wakeup seman
 no DNS/authentication verification, spam scorer, external service or new dependency
 ships here. The cache key includes every effective authentication fact and the
 immutable policy/observation identity, alongside selected Weak mail identity.
+
+## Link rules
+
+Proposed decision 0121 (issue #258) adds five per-link rules to the default
+report, in rule set `swarmail-html/4`. They read the same eligible outer
+`text/html` parts as the HTML heuristics above (attachments and attached
+messages excluded, same budgets) and look at every visible `<a>` start tag
+that has an `href`, in source order. "Visible" and the link label follow the
+anchor-text rules of the stored `anchors` (#154): the label is the decoded
+text up to the next `<a>` or `</a>`, ASCII whitespace collapsed, block
+boundaries as one space. Anchors inside `<head>`, `<template>`, script, style,
+title and conditional comments do not exist for these rules. `<img src>`,
+`<area>`, CSS `url()` and URLs in text/plain parts are not checked.
+
+The `href` is read once-decoded for character references and ASCII-trimmed,
+then parsed as a WHATWG URL (tabs and newlines inside it are dropped, scheme
+and host are lowercased).
+
+| rule id | severity | fires when |
+|---|---|---|
+| `link.scheme.unsafe.v1` | error | scheme is `javascript`, `vbscript`, `data` or `file` |
+| `link.url.invalid.v1` | warning | the value is empty or not an absolute URL: a relative path, `//host`, an unrendered `{{placeholder}}`, an invalid host. A value that starts with `#` never fires |
+| `link.scheme.http.v1` | warning | scheme `http`, unless the host is `localhost`, `*.localhost`, in `127.0.0.0/8` or `::1` |
+| `link.shortener.v1` | warning | an `http`/`https` host equals an entry of the built-in shortener list |
+| `link.anchor-host-mismatch.v1` | warning | the label names at least one host-like token, and the `http`/`https` target host matches none of them |
+
+Other schemes (`https`, `mailto`, `tel`, `cid`, `sms`, `ftp`, app schemes)
+produce no scheme finding. Empty link findings mean "no findings from this
+rule set", never "the links are safe".
+
+**Plain `http` is a warning, never an error.** Swarmail does not rewrite,
+upgrade or fetch the link. Loopback and `localhost` targets are exempt
+because a development mail catcher mostly receives `http://localhost:3000/...`
+links. There is no allowlist and no knob.
+
+**The shortener list is built in and versioned**, `swarmail-shorteners/1`
+(basis date 2026-11-03; Swarmail-authored, not fetched, no network lookup):
+`bit.ly`, `bl.ink`, `buff.ly`, `cutt.ly`, `goo.gl`, `is.gd`, `lnkd.in`,
+`ow.ly`, `rb.gy`, `rebrand.ly`, `s.id`, `shorturl.at`, `t.co`, `t.ly`,
+`tiny.cc`, `tinyurl.com`, `v.gd`. Matching is exact on the host (one trailing
+dot removed): `notbit.ly`, `bit.ly.evil.test` and `www.bit.ly` do not match. A
+test pins the list's digest to the list version and the rule-set id, so an
+edit moves both. A shortener's redirect target is not known without a network
+request; see the opt-in reachability check for that.
+
+**Host-like tokens** in the label are found by splitting on ASCII whitespace.
+A token is skipped when it contains `@` or any non-ASCII character. A leading
+`http://` or `https://` is removed, the token is cut at the first `/`, `?`,
+`#` or `:`, wrapping punctuation is trimmed, and it is lowercased. It counts
+when it has at least two dot-separated labels, each `[a-z0-9-]`, and an
+alphabetic last label of two or more characters. So `paypal.com` and
+`https://paypal.com/login` count, while `Version 1.2`, `3.14` and `e.g.` do
+not. The target host matches a token when, after one leading `www.` is
+removed from each, they are equal or the host is a subdomain of the token.
+`example.com` -> `click.example.com` passes. `paypal.com` ->
+`paypal.com.evil.test` fires, and so does a label naming a host with an IP
+literal target. Known gaps: there is no public-suffix list, so a label that
+names a shared suffix (`github.io`) lets any subdomain pass; labels such as
+`Node.js` or `README.md` look like hosts and can warn; internationalized
+(non-ASCII) names are skipped, not compared.
+
+**Locations.** A link finding is located at `link {part_path, byte_offset}`,
+where `byte_offset` is the first non-whitespace source byte of the `href`
+value in the part's transfer-decoded payload (before charset and entity
+decoding). That is only a true source offset when the part's decoded text is
+byte-identical to its payload. When it is not (for example `charset=iso-8859-1`
+with an 8-bit byte), the finding is located at `mime_part {path}`, the
+contract's own fallback. Swarmail never emits a guessed offset.
+
+A hostile message with more than 256 findings fails the report (503), by the
+existing limits, rather than returning a comfortable subset.
