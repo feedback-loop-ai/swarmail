@@ -124,3 +124,11 @@ unnecessary path first.
   deletion stays inside the store so removals wake `await` watchers; 0003
   is untouched. Nothing here weakens a guarantee; the change strengthens
   0004's sentence from "mostly true" to true.
+
+## Later-decision marker — 2026-11-02 (0118)
+
+- *(Amended by [0118](0118-mailslurper-shim.md) (accepted 2026-11-02):
+  only the sentence that `DELETE /api/v1/delete-all` remains the only
+  cross-inbox wipe; `DELETE /mail` with `{"pruneCode":"all"}` on the
+  opt-in MailSlurper listener is a second spelling of the same wipe, and
+  this record's explicit-selector-or-`400` rule applies to it unchanged.)*

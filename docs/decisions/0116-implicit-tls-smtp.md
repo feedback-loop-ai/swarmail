@@ -1,6 +1,7 @@
 # 0116 — Implicit TLS (SMTPS) as an opt-in mode of the SMTP listener
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-02 — "Accept 0116, 0117, 0118",
+  given in chat to the dispatcher).
 - **Date:** 2026-11-02
 - **Scope:** issue #313 (operator request 2026-11-02): a sender configured
   for implicit TLS (`smtps://…?legacy_ssl=true`, Ory Kratos' courier on
@@ -152,3 +153,12 @@ record is the chief's ruling between them.
   as a possible narrow amendment.
 - **POP3S and implicit TLS for POP3.** POP3 has no TLS today, and nothing
   asks for it.
+
+## Dated acceptance note — 2026-11-02
+
+The operator accepted this record on 2026-11-02 ("Accept 0116, 0117,
+0118"). It amends nothing, as the Amends line states, so no accepted
+record gains a marker. The **Number** line is historical: this record
+landed first, as `f549b14` (#317), #314 took 0118, and on main `58ad25b`
+no other record holds 0116. The code merged while this record was
+proposed, as compatible work under accepted 0045 §8.

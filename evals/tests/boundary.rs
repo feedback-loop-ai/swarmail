@@ -299,17 +299,17 @@ fn the_hard_tier_is_documented_in_both_directions() {
         .map(|t| t.id.as_str())
         .collect();
     assert_eq!(default_ids.len(), 16);
-    // The decision index has exactly one 0117 row, still a proposal.
+    // The decision index has exactly one 0117 row, accepted 2026-11-02.
     let index = std::fs::read_to_string(root().join("docs/decisions/README.md")).unwrap();
     let rows: Vec<_> = index
         .lines()
         .filter(|l| l.starts_with("| [0117]"))
         .collect();
     assert_eq!(rows.len(), 1);
-    assert!(rows[0].contains("proposed"), "{}", rows[0]);
+    assert!(rows[0].contains("**accepted**"), "{}", rows[0]);
     let decision =
         std::fs::read_to_string(root().join("docs/decisions/0117-hard-eval-tier.md")).unwrap();
-    assert!(decision.contains("**Status:** proposed"));
+    assert!(decision.contains("**Status:** accepted (operator, 2026-11-02"));
     // 0117 names accepted 0076 §5's seven-trap count as historical.
     let flat_decision = decision.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
@@ -382,7 +382,7 @@ fn the_hard_tier_is_documented_in_both_directions() {
     ] {
         assert!(head.contains(needle), "intake banner: missing {needle}");
     }
-    // 0117 stays a single proposal: exactly one status line, still proposed.
+    // 0117 stays a single record: exactly one status line, accepted.
     assert_eq!(
         decision
             .lines()

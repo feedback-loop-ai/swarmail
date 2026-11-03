@@ -89,3 +89,10 @@ implementation/integration commit must add its proposed row and pass
 inventory/status tests before whole-gate success. That known gap is not a
 waiver. This decision records design, not implementation, executed red/green
 proof, gate success or feature completion.
+
+## Later-decision marker — 2026-11-02 (0117)
+
+- *(Amended by [0117](0117-hard-eval-tier.md) (accepted 2026-11-02): §1,
+  three named-trap rows appended (otp-backlog, recipient-crowd,
+  digest-lookalike), and §4's "preserving tiers", read as preserving
+  existing memberships with `hard` an additive tier value.)*
