@@ -131,6 +131,45 @@ pub struct ServeArgs {
         value_parser = parse_route_domain
     )]
     pub route_domain: Option<String>,
+
+    /// JSON file declaring the TXT records and temporary-failure names that
+    /// deliverability reports read (decision 0120): DKIM selectors, SPF and
+    /// DMARC, offline and deterministic. A bad file stops startup before any
+    /// listener binds; there is no fallback to an empty map. Per-inbox maps
+    /// replace it through `PUT /api/v1/inboxes/{inbox}/dns`.
+    #[arg(long, value_name = "FILE", env = "SWARMAIL_DNS_POLICY")]
+    pub dns_policy: Option<PathBuf>,
+
+    /// Where DNS answers come from: `declared` (the default, offline) or
+    /// `real`, which this build refuses until #254 brings a resolver.
+    #[arg(
+        long,
+        value_name = "MODE",
+        default_value = "declared",
+        env = "SWARMAIL_DNS_RESOLVER",
+        value_parser = parse_dns_resolver
+    )]
+    pub dns_resolver: DnsResolver,
+}
+
+/// The DNS answer source. Only the declared map exists in this build: `real`
+/// is refused by `parse_dns_resolver`, so no listener binds under it
+/// (decision 0120 §10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsResolver {
+    Declared,
+}
+
+/// Validate `--dns-resolver`. `real` is configured and refused with a message
+/// that names the story that adds the resolver; anything else is unknown.
+pub fn parse_dns_resolver(value: &str) -> Result<DnsResolver, String> {
+    match value {
+        "declared" => Ok(DnsResolver::Declared),
+        "real" => Err("real DNS needs the resolver that #254 adds; this build has none".into()),
+        other => Err(format!(
+            "--dns-resolver must be `declared` or `real`, got {other:?}"
+        )),
+    }
 }
 
 /// Validate `--route-domain` and fold it to ASCII lowercase (decision 0112
@@ -184,6 +223,9 @@ pub struct Config {
     /// Optional SQLite data file: every mutation is written through and the
     /// full state is restored on startup.
     pub data_file: Option<PathBuf>,
+    /// The server DNS map file (decision 0120): loaded and checked by `run_on`
+    /// before the data file opens and before any listener binds.
+    pub dns_policy: Option<PathBuf>,
     /// PEM pair for STARTTLS on the SMTP listener, as file paths. Both must
     /// be set together; the listener is plain otherwise.
     pub tls_cert: Option<PathBuf>,
@@ -204,6 +246,7 @@ impl From<&ServeArgs> for Config {
             mailslurper_listen: args.mailslurper_listen.clone(),
             max_per_inbox: args.max_per_inbox,
             data_file: args.data_file.clone(),
+            dns_policy: args.dns_policy.clone(),
             tls_cert: args.tls_cert.clone(),
             tls_key: args.tls_key.clone(),
             smtp: SmtpConfig {

@@ -100,7 +100,7 @@ async fn report_rest_schema_and_refusals() {
     assert_eq!(stored, raw);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-html/3");
+    assert_eq!(first["rule_set_id"], "swarmail-html/4");
     assert_eq!(first["findings"].as_array().unwrap().len(), 7);
     assert_eq!(
         first["findings"][6],
@@ -138,7 +138,7 @@ async fn report_rest_schema_and_refusals() {
     );
     let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
     for text in [
-        "swarmail-html/3",
+        "swarmail-html/4",
         "warning",
         "demo.marker.v1",
         "x-swarmail-demo",
@@ -530,7 +530,7 @@ async fn report_served_docs_match_contract() {
     );
     assert_eq!(
         schemas["DeliverabilityReport"]["required"],
-        json!(["rule_set_id", "findings"])
+        json!(["rule_set_id", "findings", "dns"])
     );
     assert_eq!(
         schemas["DeliverabilityFinding"]["required"],
@@ -575,7 +575,7 @@ async fn report_served_docs_match_contract() {
         "structuredContent under a closed outputSchema",
         "historical",
         "JSON in one text block",
-        "swarmail-html/3",
+        "swarmail-html/4",
         "104448",
         "classic Outlook",
         "conditional comments",
@@ -621,7 +621,7 @@ async fn html_findings_share_one_report_and_predicate_contract() {
     assert_eq!(expected.len(), 15);
     assert_eq!(
         first,
-        json!({"rule_set_id":"swarmail-html/3","findings":expected})
+        json!({"rule_set_id":"swarmail-html/4","findings":expected,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
     );
     assert_eq!(report(srv.http_addr, &id).await.1, first);
     let reply = rpc(
@@ -854,7 +854,7 @@ async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
                 findings.push(json!({"rule_id":"html.css.position.v1","severity":"warning","fix_hint":rule["fix_hint"],"location":{"kind":"mime_part","path":[]}}));
             }
             findings.sort_by_key(|f| f["rule_id"].as_str().unwrap().to_string());
-            let expected = json!({"rule_set_id":"swarmail-html/3","findings":findings});
+            let expected = json!({"rule_set_id":"swarmail-html/4","findings":findings,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}});
             for _ in 0..2 {
                 assert_eq!(report(srv.http_addr, &id).await, (200, expected.clone()));
             }
@@ -902,5 +902,332 @@ async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
             );
         }
     }
+    srv.stop().await;
+}
+
+// ---------- the DNS policy (decision 0120, #253) ----------
+
+const DEFAULT_DNS: &str =
+    r#""dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}"#;
+/// Mixed case, a trailing dot, unsorted values and both members.
+const DECLARATION: &str = r#"{"tempfail":["_DMARC.example.org."],"txt":[{"name":"S1._DomainKey.Example.COM.","values":["v=DKIM1; p=AAAA"]},{"name":"example.com","values":["v=spf1 -all","a-first"]}]}"#;
+const CANONICAL: &str = r#"{"txt":[{"name":"example.com","values":["a-first","v=spf1 -all"]},{"name":"s1._domainkey.example.com","values":["v=DKIM1; p=AAAA"]}],"tempfail":["_dmarc.example.org"]}"#;
+const MAIL: &[u8] = b"From: sender@example.com\r\nDKIM-Signature: v=1; a=rsa-sha256; d=example.com; s=s1; h=from; bh=x; b=y\r\nSubject: dns\r\n\r\nbody\r\n";
+
+fn canonical() -> Value {
+    serde_json::from_str(CANONICAL).unwrap()
+}
+async fn put_dns(srv: &swarmail::RunningServer, inbox: &str, body: &str) -> (u16, Value) {
+    http_json(
+        srv.http_addr,
+        "PUT",
+        &format!("/api/v1/inboxes/{inbox}/dns"),
+        Some(body),
+    )
+    .await
+}
+async fn delete_dns(srv: &swarmail::RunningServer, inbox: &str) -> (u16, Value) {
+    http_json(
+        srv.http_addr,
+        "DELETE",
+        &format!("/api/v1/inboxes/{inbox}/dns"),
+        None,
+    )
+    .await
+}
+/// The report's exact bytes: the byte comparisons below are of the wire body.
+async fn report_text(srv: &swarmail::RunningServer, id: &str) -> String {
+    let (status, text) = http_get_text(
+        srv.http_addr,
+        &format!("/api/v1/messages/{id}/deliverability"),
+    )
+    .await;
+    assert_eq!(status, 200, "{text}");
+    text
+}
+async fn dns_of(srv: &swarmail::RunningServer, id: &str) -> Value {
+    report(srv.http_addr, id).await.1["dns"].clone()
+}
+
+#[tokio::test]
+async fn default_dns_policy_exact_json() {
+    let srv = start().await;
+    let id = smtp_raw(srv.smtp_addr, "plain", MAIL).await;
+    let text = report_text(&srv, &id).await;
+    assert!(
+        text.starts_with(r#"{"rule_set_id":"swarmail-html/4","findings":["#),
+        "{text}"
+    );
+    assert!(text.ends_with(&format!("],{DEFAULT_DNS}}}")), "{text}");
+    let body: Value = serde_json::from_str(&text).unwrap();
+    // The DKIM-Signature header is mail, not DNS: nothing was looked up.
+    assert_eq!(body["dns"]["lookups"], json!([]));
+    let mut keys: Vec<_> = body.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(keys, ["dns", "findings", "rule_set_id"]);
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn inbox_dns_declarations_over_http() {
+    let srv = start().await;
+    let (a, b) = (
+        smtp_raw(srv.smtp_addr, "a", MAIL).await,
+        smtp_raw(srv.smtp_addr, "b", MAIL).await,
+    );
+    assert_eq!(
+        put_dns(&srv, "a", DECLARATION).await,
+        (
+            200,
+            json!({"inbox":"a","source":"inbox","policy":canonical()})
+        )
+    );
+    assert_eq!(
+        dns_of(&srv, &a).await,
+        json!({"source":"inbox","policy":canonical(),"lookups":[]})
+    );
+    assert_eq!(dns_of(&srv, &b).await["source"], "default");
+    let declared = report_text(&srv, &a).await;
+
+    // Refusals leave the previous declaration byte-identical in the next report.
+    let (status, error) =
+        put_dns(&srv, "a", r#"{"txt":[{"name":"bad name","values":["x"]}]}"#).await;
+    assert_eq!(status, 400);
+    assert_eq!(error["error"], "txt[0].name is not a valid owner name");
+    let too_big = format!(r#"{{"txt":[],"tempfail":[]}}{}"#, " ".repeat(8_169));
+    assert_eq!(too_big.len(), 8_193);
+    assert_eq!(put_dns(&srv, "a", &too_big).await.0, 413);
+    assert_eq!(put_dns(&srv, "a", "").await.0, 400);
+    assert_eq!(put_dns(&srv, "a", "[]").await.0, 400);
+    assert_eq!(
+        put_dns(&srv, "%20", DECLARATION).await.0,
+        400,
+        "a blank inbox label refuses like every other inbox route"
+    );
+    assert_eq!(delete_dns(&srv, "%20").await.0, 400);
+    assert_eq!(
+        http_json(
+            srv.http_addr,
+            "PUT",
+            "/api/v1/inboxes/a/dns?x=1",
+            Some("{}")
+        )
+        .await
+        .0,
+        400,
+        "no query keys"
+    );
+    assert_eq!(report_text(&srv, &a).await, declared);
+    // 8,192 bytes is accepted.
+    let exactly = format!(r#"{{"txt":[],"tempfail":[]}}{}"#, " ".repeat(8_168));
+    assert_eq!(put_dns(&srv, "edge", &exactly).await.0, 200);
+
+    // DELETE is idempotent and answers the fallback.
+    for _ in 0..2 {
+        assert_eq!(
+            delete_dns(&srv, "a").await,
+            (
+                200,
+                json!({"inbox":"a","source":"default","policy":{"txt":[],"tempfail":[]}})
+            )
+        );
+    }
+    assert_eq!(dns_of(&srv, &a).await["source"], "default");
+
+    // Clearing an inbox's mail keeps its declaration.
+    put_dns(&srv, "a", DECLARATION).await;
+    let (status, _) = http_json(srv.http_addr, "DELETE", "/api/v1/inboxes/a/messages", None).await;
+    assert_eq!(status, 200);
+    let again = smtp_raw(srv.smtp_addr, "a", MAIL).await;
+    assert_eq!(dns_of(&srv, &again).await["source"], "inbox");
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn inbox_map_replaces_the_server_map_without_merging() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("dns.json");
+    std::fs::write(
+        &file,
+        r#"{"txt":[{"name":"server.example","values":["s"]}]}"#,
+    )
+    .unwrap();
+    let srv = start_with(|c| swarmail::config::Config {
+        dns_policy: Some(file.clone()),
+        ..c
+    })
+    .await;
+    let (a, b) = (
+        smtp_raw(srv.smtp_addr, "a", MAIL).await,
+        smtp_raw(srv.smtp_addr, "b", MAIL).await,
+    );
+    let server = json!({"source":"server","policy":{"txt":[{"name":"server.example","values":["s"]}],"tempfail":[]},"lookups":[]});
+    assert_eq!(dns_of(&srv, &a).await, server);
+    put_dns(&srv, "a", r#"{"tempfail":["inbox.example"]}"#).await;
+    assert_eq!(
+        dns_of(&srv, &a).await,
+        json!({"source":"inbox","policy":{"txt":[],"tempfail":["inbox.example"]},"lookups":[]})
+    );
+    assert_eq!(dns_of(&srv, &b).await, server);
+    // The echo of a clear is the server map, not the empty default.
+    assert_eq!(
+        delete_dns(&srv, "a").await,
+        (
+            200,
+            json!({"inbox":"a","source":"server","policy":server["policy"]})
+        )
+    );
+    assert_eq!(dns_of(&srv, &a).await, server);
+    srv.stop().await;
+
+    // `{}` is a valid, empty server map and still reports `server`.
+    std::fs::write(&file, "{}").unwrap();
+    let srv = start_with(|c| swarmail::config::Config {
+        dns_policy: Some(file.clone()),
+        ..c
+    })
+    .await;
+    let id = smtp_raw(srv.smtp_addr, "a", MAIL).await;
+    assert_eq!(
+        dns_of(&srv, &id).await,
+        json!({"source":"server","policy":{"txt":[],"tempfail":[]},"lookups":[]})
+    );
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn dns_policy_canonical_over_http() {
+    let srv = start().await;
+    let (a, b) = (
+        smtp_raw(srv.smtp_addr, "a", MAIL).await,
+        smtp_raw(srv.smtp_addr, "b", MAIL).await,
+    );
+    let permuted = r#"{"txt":[{"values":["v=spf1 -all","a-first"],"name":"EXAMPLE.com"},{"name":"s1._domainkey.example.com.","values":["v=DKIM1; p=AAAA"]}],"tempfail":["_dmarc.example.org"]}"#;
+    let first = http_send_text(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/inboxes/a/dns",
+        Some(DECLARATION),
+    )
+    .await;
+    let second = http_send_text(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/inboxes/b/dns",
+        Some(permuted),
+    )
+    .await;
+    assert_eq!(first.0, 200);
+    assert_eq!(
+        first.1.replace("\"a\"", "\"x\""),
+        second.1.replace("\"b\"", "\"x\""),
+        "byte-identical echoes"
+    );
+    assert_eq!(
+        report_text(&srv, &a).await,
+        report_text(&srv, &b).await,
+        "byte-identical reports for the same message"
+    );
+    // A report's `dns.policy` declares back verbatim.
+    let policy = dns_of(&srv, &a).await["policy"].to_string();
+    let (status, echo) = put_dns(&srv, "c", &policy).await;
+    assert_eq!((status, echo["policy"].to_string()), (200, policy));
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn dns_change_reaches_next_report() {
+    let srv = start().await;
+    let id = smtp_raw(srv.smtp_addr, "a", MAIL).await;
+    put_dns(&srv, "a", r#"{"tempfail":["one.example"]}"#).await;
+    let first = dns_of(&srv, &id).await;
+    assert_eq!(first["policy"]["tempfail"], json!(["one.example"]));
+    // A name no rule reads still changes the report: policy is part of its identity.
+    put_dns(&srv, "a", r#"{"tempfail":["two.example"]}"#).await;
+    let second = dns_of(&srv, &id).await;
+    assert_eq!(second["policy"]["tempfail"], json!(["two.example"]));
+    put_dns(&srv, "a", r#"{"tempfail":["one.example"]}"#).await;
+    assert_eq!(dns_of(&srv, &id).await, first);
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn tempfail_policy_does_not_touch_delivery() {
+    let srv = start().await;
+    let names = r#"{"tempfail":["example.com","s1._domainkey.example.com","_dmarc.example.com"]}"#;
+    assert_eq!(put_dns(&srv, "a", names).await.0, 200);
+    let id = smtp_raw(srv.smtp_addr, "a", MAIL).await;
+    let (status, listed) =
+        http_json(srv.http_addr, "GET", "/api/v1/inboxes/a/messages", None).await;
+    assert_eq!(status, 200);
+    assert_eq!(listed["total"], 1, "stored and queryable at the 250");
+    assert_eq!(listed["emails"][0]["id"], id);
+    let dns = dns_of(&srv, &id).await;
+    assert_eq!(dns["source"], "inbox");
+    assert_eq!(dns["lookups"], json!([]));
+    // Nothing on the accept, extract or persistence path knows about DNS.
+    for (file, source) in [
+        ("src/smtp.rs", include_str!("../src/smtp.rs")),
+        ("src/persist.rs", include_str!("../src/persist.rs")),
+    ] {
+        assert!(!source.to_ascii_lowercase().contains("dns"), "{file}");
+    }
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn declared_dmarc_does_not_satisfy_bulk_rules() {
+    let srv = start().await;
+    put_dns(
+        &srv,
+        "a",
+        r#"{"txt":[{"name":"_dmarc.example.com","values":["v=DMARC1; p=reject"]},{"name":"s1._domainkey.example.com","values":["v=DKIM1; p=AAAA"]},{"name":"example.com","values":["v=spf1 -all"]}]}"#,
+    )
+    .await;
+    let id = smtp_raw(srv.smtp_addr, "a", MAIL).await;
+    let (_, body) = report(srv.http_addr, &id).await;
+    let ids: Vec<&str> = body["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule_id"].as_str().unwrap())
+        .collect();
+    for rule in [
+        "bulk.dmarc_presence.not_evaluated.v1",
+        "bulk.from_alignment.not_evaluated.v1",
+        "bulk.authenticated_sender.not_evaluated.v1",
+    ] {
+        assert!(ids.contains(&rule), "{rule} in {ids:?}");
+    }
+    assert_eq!(
+        body["dns"]["lookups"],
+        json!([]),
+        "no rule resolves a name yet"
+    );
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn dns_declarations_full_is_503() {
+    let srv = start().await;
+    for n in 0..4096 {
+        let (status, _) = put_dns(&srv, &format!("full{n}"), "{}").await;
+        assert_eq!(status, 200, "inbox {n}");
+    }
+    let (status, error) = put_dns(&srv, "one-too-many", DECLARATION).await;
+    assert_eq!(
+        (status, error),
+        (503, json!({"error":"dns declarations full"}))
+    );
+    // A replacement at capacity succeeds, and a cleared slot is reusable.
+    assert_eq!(put_dns(&srv, "full0", DECLARATION).await.0, 200);
+    assert_eq!(delete_dns(&srv, "full1").await.0, 200);
+    assert_eq!(put_dns(&srv, "one-too-many", DECLARATION).await.0, 200);
+    let id = smtp_raw(srv.smtp_addr, "full2", MAIL).await;
+    assert_eq!(
+        dns_of(&srv, &id).await["source"],
+        "inbox",
+        "nothing was evicted"
+    );
     srv.stop().await;
 }

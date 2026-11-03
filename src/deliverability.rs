@@ -3,13 +3,16 @@
 
 use crate::{model::Email, store::Store};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, Weak};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
+pub mod dns;
 mod html;
 
-pub const RULE_SET_ID: &str = "swarmail-html/3";
+use dns::{DeclarationsFull, DnsRecord, Effective, Lookups, Policy, Source};
+
+pub const RULE_SET_ID: &str = "swarmail-html/4";
 pub const MAX_FINDINGS: usize = 256;
 pub const MAX_REPORT_BYTES: usize = 65_536;
 const MAX_HEADER_BYTES: usize = 65_536;
@@ -60,6 +63,8 @@ pub struct Finding {
 pub struct Report {
     pub rule_set_id: String,
     pub findings: Vec<Finding>,
+    /// Which DNS policy and which records this evaluation used (decision 0120).
+    pub dns: DnsRecord,
 }
 
 impl Report {
@@ -86,8 +91,12 @@ struct Inputs {
     config: AnalysisConfig,
     rule_set_id: &'static str,
     auth: AuthEvidence,
+    /// The request's frozen DNS policy, source and content: part of the exact key.
+    dns: Arc<Effective>,
     #[cfg(test)]
     fixture: Vec<Finding>,
+    #[cfg(test)]
+    lookups: Vec<dns::OwnerName>,
 }
 
 impl Default for Inputs {
@@ -96,8 +105,11 @@ impl Default for Inputs {
             config: AnalysisConfig::default(),
             rule_set_id: RULE_SET_ID,
             auth: AuthEvidence::default(),
+            dns: Arc::default(),
             #[cfg(test)]
             fixture: Vec::new(),
+            #[cfg(test)]
+            lookups: Vec::new(),
         }
     }
 }
@@ -130,12 +142,13 @@ impl Collector {
         Ok(())
     }
 
-    fn finish(mut self, inputs: &Inputs) -> Result<Report, AnalysisError> {
+    fn finish(mut self, inputs: &Inputs, lookups: Lookups) -> Result<Report, AnalysisError> {
         self.0.sort();
         self.0.dedup();
         let report = Report {
             rule_set_id: inputs.rule_set_id.into(),
             findings: self.0,
+            dns: lookups.finish(),
         };
         // Report contains only infallibly serializable strings, enums and integers.
         if serde_json::to_vec(&report).unwrap().len() > MAX_REPORT_BYTES {
@@ -844,7 +857,16 @@ fn trim_value(mut value: &[u8]) -> &[u8] {
     value
 }
 
-fn collect(raw: &[u8], inputs: &Inputs, out: &mut Collector) -> Result<(), AnalysisError> {
+fn collect(
+    raw: &[u8],
+    inputs: &Inputs,
+    out: &mut Collector,
+    #[cfg_attr(
+        not(test),
+        expect(unused_variables, reason = "#254/#255 verifiers resolve through it")
+    )]
+    lookups: &mut Lookups,
+) -> Result<(), AnalysisError> {
     if raw.len() > MAX_RAW_BYTES {
         return Err(AnalysisError::Failed);
     }
@@ -875,13 +897,18 @@ fn collect(raw: &[u8], inputs: &Inputs, out: &mut Collector) -> Result<(), Analy
     for finding in &inputs.fixture {
         out.push(finding.clone())?;
     }
+    #[cfg(test)]
+    for name in &inputs.lookups {
+        lookups.resolve_txt(name);
+    }
     Ok(())
 }
 
 fn evaluate(raw: &[u8], inputs: &Inputs) -> Result<Report, AnalysisError> {
     let mut out = Collector(Vec::new());
-    collect(raw, inputs, &mut out)?;
-    out.finish(inputs)
+    let mut lookups = Lookups::new(inputs.dns.clone());
+    collect(raw, inputs, &mut out, &mut lookups)?;
+    out.finish(inputs, lookups)
 }
 
 struct Slot {
@@ -895,6 +922,12 @@ struct Slot {
 pub(crate) struct Service {
     slots: Mutex<VecDeque<Arc<Slot>>>,
     jobs: Arc<Semaphore>,
+    /// The server map, set once by `run_on` before any listener binds.
+    server: OnceLock<Arc<Effective>>,
+    /// The empty `default` policy, shared so its snapshots are one allocation.
+    fallback: Arc<Effective>,
+    /// Per-inbox declarations: process-local, bounded, never held across an await.
+    inboxes: Mutex<HashMap<String, Arc<Effective>>>,
     #[cfg(test)]
     pub(crate) gate: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
@@ -906,6 +939,9 @@ impl Default for Service {
         Self {
             slots: Mutex::new(VecDeque::new()),
             jobs: Arc::new(Semaphore::new(JOBS)),
+            server: OnceLock::new(),
+            fallback: Arc::default(),
+            inboxes: Mutex::new(HashMap::new()),
             #[cfg(test)]
             gate: Mutex::new(None),
             #[cfg(test)]
@@ -915,6 +951,43 @@ impl Default for Service {
 }
 
 impl Service {
+    /// Install the server map. `run_on` calls this once, before anything serves.
+    pub(crate) fn set_server(&self, policy: Policy) {
+        let installed = self.server.set(Effective::new(Source::Server, policy));
+        installed.expect("the server DNS policy is installed once, before serving");
+    }
+
+    /// The effective policy for an inbox, frozen by the caller for one request:
+    /// the inbox declaration, else the server map, else the empty default.
+    pub(crate) fn policy_for(&self, inbox: &str) -> Arc<Effective> {
+        let declared = self.inboxes.lock().unwrap().get(inbox).cloned();
+        declared
+            .or_else(|| self.server.get().cloned())
+            .unwrap_or_else(|| self.fallback.clone())
+    }
+
+    /// Declare an inbox's map, replacing any earlier one. A new inbox beyond
+    /// the cap is refused and nothing is evicted; a replacement always succeeds.
+    pub(crate) fn declare(
+        &self,
+        inbox: &str,
+        policy: Policy,
+    ) -> Result<Arc<Effective>, DeclarationsFull> {
+        let mut inboxes = self.inboxes.lock().unwrap();
+        if !inboxes.contains_key(inbox) && inboxes.len() >= dns::MAX_DECLARED_INBOXES {
+            return Err(DeclarationsFull);
+        }
+        let declared = Effective::new(Source::Inbox, policy);
+        inboxes.insert(inbox.to_string(), declared.clone());
+        Ok(declared)
+    }
+
+    /// Clear an inbox's declaration (idempotent) and return the fallback.
+    pub(crate) fn forget(&self, inbox: &str) -> Arc<Effective> {
+        self.inboxes.lock().unwrap().remove(inbox);
+        self.policy_for(inbox)
+    }
+
     fn pin(&self, email: &Arc<Email>, inputs: &Inputs) -> Result<Arc<Slot>, AnalysisError> {
         let mut slots = self.slots.lock().unwrap();
         if let Some(slot) = slots.iter().find(|slot| {
@@ -986,12 +1059,28 @@ impl Service {
         .await
     }
 
+    /// One message's report under the policy its inbox has at this call.
     pub(crate) async fn report(
         &self,
         email: Arc<Email>,
         ready_only: bool,
     ) -> Result<Arc<Report>, AnalysisError> {
-        let inputs = Inputs::default();
+        let policy = self.policy_for(&email.inbox);
+        self.report_under(email, policy, ready_only).await
+    }
+
+    /// The report under a policy a request already froze (decision 0120 §6):
+    /// every candidate of one assert or wait is analyzed under the same one.
+    pub(crate) async fn report_under(
+        &self,
+        email: Arc<Email>,
+        policy: Arc<Effective>,
+        ready_only: bool,
+    ) -> Result<Arc<Report>, AnalysisError> {
+        let inputs = Inputs {
+            dns: policy,
+            ..Inputs::default()
+        };
         #[cfg(test)]
         let inputs = Inputs {
             auth: self.auth.get().cloned().unwrap_or_default(),
@@ -1072,7 +1161,9 @@ mod tests {
         let mut reversed = expected.clone();
         reversed.reverse();
         reversed.extend(expected.clone());
-        let report = Collector(reversed).finish(&Inputs::default()).unwrap();
+        let report = Collector(reversed)
+            .finish(&Inputs::default(), Lookups::default())
+            .unwrap();
         assert_eq!(report.findings, expected);
         let value = serde_json::to_value(&report).unwrap();
         assert_eq!(
@@ -1090,12 +1181,29 @@ mod tests {
         );
         assert_eq!(serde_json::from_value::<Report>(value).unwrap(), report);
         assert!(!report.qualifies(Severity::Error));
-        let empty = Collector(Vec::new()).finish(&Inputs::default()).unwrap();
+        let empty = Collector(Vec::new())
+            .finish(&Inputs::default(), Lookups::default())
+            .unwrap();
         assert_eq!(
             serde_json::to_value(&empty).unwrap(),
-            json!({"rule_set_id":"swarmail-html/3","findings":[]})
+            json!({"rule_set_id":"swarmail-html/4","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
         );
         assert!(empty.qualifies(Severity::Info));
+        // `dns` is required and closed (decision 0120 §5): no serde default.
+        let wire = serde_json::to_value(&empty).unwrap();
+        assert_eq!(
+            serde_json::from_value::<Report>(wire.clone()).unwrap(),
+            empty
+        );
+        let mut missing = wire.clone();
+        missing.as_object_mut().unwrap().remove("dns");
+        assert!(serde_json::from_value::<Report>(missing).is_err());
+        let mut extra = wire.clone();
+        extra["dns"]["ttl"] = json!(1);
+        assert!(serde_json::from_value::<Report>(extra).is_err());
+        let mut source = wire;
+        source["dns"]["source"] = json!("real");
+        assert!(serde_json::from_value::<Report>(source).is_err());
     }
 
     #[test]
@@ -1111,7 +1219,9 @@ mod tests {
         );
         out.push(f.clone()).unwrap();
         assert_eq!(
-            out.finish(&Inputs::default()).unwrap().findings,
+            out.finish(&Inputs::default(), Lookups::default())
+                .unwrap()
+                .findings,
             vec![f.clone()]
         );
         let mut bounded = Collector(Vec::new());
@@ -1123,7 +1233,7 @@ mod tests {
         let mut too_large = f;
         too_large.fix_hint = "x".repeat(MAX_REPORT_BYTES);
         assert_eq!(
-            Collector(vec![too_large]).finish(&Inputs::default()),
+            Collector(vec![too_large]).finish(&Inputs::default(), Lookups::default()),
             Err(AnalysisError::Failed)
         );
         assert_eq!(
@@ -1141,18 +1251,30 @@ mod tests {
             out.push(f.clone()).unwrap();
         }
         assert_eq!(out.push(f.clone()), Err(AnalysisError::Failed));
-        assert_eq!(out.finish(&input).unwrap().findings.len(), 1);
+        assert_eq!(
+            out.finish(&input, Lookups::default())
+                .unwrap()
+                .findings
+                .len(),
+            1
+        );
         let mut f = f;
-        let overhead = serde_json::to_vec(&Collector(vec![f.clone()]).finish(&input).unwrap())
-            .unwrap()
-            .len()
+        let overhead = serde_json::to_vec(
+            &Collector(vec![f.clone()])
+                .finish(&input, Lookups::default())
+                .unwrap(),
+        )
+        .unwrap()
+        .len()
             - f.fix_hint.len();
         f.fix_hint = "x".repeat(MAX_REPORT_BYTES - overhead);
-        let report = Collector(vec![f.clone()]).finish(&input).unwrap();
+        let report = Collector(vec![f.clone()])
+            .finish(&input, Lookups::default())
+            .unwrap();
         assert_eq!(serde_json::to_vec(&report).unwrap().len(), MAX_REPORT_BYTES);
         f.fix_hint.push('x');
         assert_eq!(
-            Collector(vec![f]).finish(&input),
+            Collector(vec![f]).finish(&input, Lookups::default()),
             Err(AnalysisError::Failed)
         );
         let inputs = Inputs {
@@ -1249,11 +1371,21 @@ mod tests {
             MAX_FINDINGS
         ]);
         assert_eq!(
-            collect(b"X-Swarmail-Demo: error\n\n", &Inputs::default(), &mut full),
+            collect(
+                b"X-Swarmail-Demo: error\n\n",
+                &Inputs::default(),
+                &mut full,
+                &mut Lookups::default(),
+            ),
             Err(AnalysisError::Failed)
         );
         assert_eq!(
-            collect(b"\n", &Inputs::default(), &mut full),
+            collect(
+                b"\n",
+                &Inputs::default(),
+                &mut full,
+                &mut Lookups::default()
+            ),
             Err(AnalysisError::Failed)
         );
     }
@@ -1555,6 +1687,7 @@ mod tests {
             store
                 .qualify(
                     store.list("box", &Filter::default()),
+                    store.reports.policy_for("box"),
                     Severity::Error,
                     usize::MAX,
                     false
@@ -2106,5 +2239,214 @@ mod tests {
             }
             srv.stop().await;
         }
+    }
+
+    fn declared(declaration: serde_json::Value) -> Policy {
+        dns::parse(declaration.to_string().as_bytes()).unwrap()
+    }
+
+    fn owner(name: &str) -> dns::OwnerName {
+        dns::OwnerName::parse(name).unwrap()
+    }
+
+    #[tokio::test]
+    async fn fixture_lookups_are_recorded() {
+        let service = Service::default();
+        let email = Arc::new(super::concurrency_tests::html_email("f", "box", "a@x.io"));
+        let world = Effective::new(
+            Source::Server,
+            declared(json!({
+                "txt": [
+                    {"name": "a.example", "values": ["v=spf1 -all"]},
+                    {"name": "b.example", "values": ["two", "one"]},
+                ],
+                "tempfail": ["tf.example"],
+            })),
+        );
+        let report = service
+            .with_inputs(
+                email.clone(),
+                Inputs {
+                    dns: world.clone(),
+                    lookups: [
+                        "b.example",
+                        "a.example",
+                        "a.example",
+                        "missing.example",
+                        "tf.example",
+                    ]
+                    .map(owner)
+                    .to_vec(),
+                    ..Inputs::default()
+                },
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&report.dns.lookups).unwrap(),
+            json!([
+                {"name":"a.example","type":"txt","outcome":"records","values":["v=spf1 -all"]},
+                {"name":"b.example","type":"txt","outcome":"records","values":["one","two"]},
+                {"name":"missing.example","type":"txt","outcome":"no_records","values":[]},
+                {"name":"tf.example","type":"txt","outcome":"temp_fail","values":[]},
+            ])
+        );
+        assert_eq!(report.dns.source, Source::Server);
+        // Resolving nothing records nothing, whatever the map holds.
+        let none = service
+            .with_inputs(
+                email,
+                Inputs {
+                    dns: world,
+                    ..Inputs::default()
+                },
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(none.dns.lookups.is_empty());
+        assert_eq!(none.dns.policy, report.dns.policy);
+        assert_eq!(service.slots.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn declared_policy_counts_toward_report_cap() {
+        let entries: Vec<_> = (0..55)
+            .map(|n| json!({"name": format!("n{n}.example"), "values": ["x".repeat(100)]}))
+            .collect();
+        let declaration = json!({ "txt": entries }).to_string();
+        assert!((7_500..=dns::MAX_DNS_POLICY_BYTES).contains(&declaration.len()));
+        let big = Effective::new(Source::Inbox, dns::parse(declaration.as_bytes()).unwrap());
+        let input = Inputs {
+            dns: big.clone(),
+            ..Inputs::default()
+        };
+        let mut f = finding(Location::MimePart { path: vec![] }, Severity::Info);
+        let overhead = serde_json::to_vec(
+            &Collector(vec![f.clone()])
+                .finish(&input, Lookups::default())
+                .unwrap(),
+        )
+        .unwrap()
+        .len()
+            - f.fix_hint.len();
+        // The finding fills the cap exactly when the policy is empty...
+        f.fix_hint = "x".repeat(MAX_REPORT_BYTES - overhead);
+        let fits = Collector(vec![f.clone()])
+            .finish(&input, Lookups::default())
+            .unwrap();
+        assert_eq!(serde_json::to_vec(&fits).unwrap().len(), MAX_REPORT_BYTES);
+        // ...and the same finding with the declared map is a failure, never a truncation.
+        assert_eq!(
+            Collector(vec![f]).finish(&input, Lookups::new(big)),
+            Err(AnalysisError::Failed)
+        );
+    }
+
+    #[test]
+    fn declarations_precedence_and_cap() {
+        let service = Service::default();
+        assert_eq!(*service.policy_for("a"), Effective::default());
+        service.set_server(declared(
+            json!({"txt":[{"name":"s.example","values":["1"]}]}),
+        ));
+        assert_eq!(service.policy_for("a").source, Source::Server);
+        // An inbox map replaces the server map; nothing merges.
+        let mine = service
+            .declare("a", declared(json!({"tempfail":["t.example"]})))
+            .unwrap();
+        assert!(Arc::ptr_eq(&mine, &service.policy_for("a")));
+        assert_eq!(mine.source, Source::Inbox);
+        assert!(mine.policy.view().txt.is_empty());
+        // An empty declaration is still an inbox declaration.
+        let empty = service.declare("b", Policy::default()).unwrap();
+        assert_eq!(
+            (empty.source, empty.policy.view().txt.len()),
+            (Source::Inbox, 0)
+        );
+        assert_eq!(service.policy_for("c").source, Source::Server);
+        // Clearing is idempotent and answers the fallback.
+        for _ in 0..2 {
+            assert_eq!(service.forget("a").source, Source::Server);
+        }
+        assert_eq!(service.policy_for("b").source, Source::Inbox);
+        assert_eq!(Service::default().forget("a").source, Source::Default);
+
+        // At capacity a new inbox is refused and nothing is evicted; a
+        // replacement still succeeds, and a freed slot is reusable.
+        let full = Service::default();
+        for n in 0..dns::MAX_DECLARED_INBOXES {
+            full.declare(&format!("i{n}"), Policy::default()).unwrap();
+        }
+        assert_eq!(
+            full.declare("one-too-many", Policy::default()).unwrap_err(),
+            dns::DeclarationsFull
+        );
+        assert_eq!(full.policy_for("one-too-many").source, Source::Default);
+        let replaced = full
+            .declare("i0", declared(json!({"tempfail":["r.example"]})))
+            .unwrap();
+        assert_eq!(replaced.policy.view().tempfail, ["r.example"]);
+        assert_eq!(
+            full.inboxes.lock().unwrap().len(),
+            dns::MAX_DECLARED_INBOXES
+        );
+        full.forget("i1");
+        assert!(full.declare("one-too-many", Policy::default()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn policy_is_part_of_the_cache_key() {
+        let service = Service::default();
+        let evaluations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = evaluations.clone();
+        *service.gate.lock().unwrap() = Some(Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let count = || evaluations.load(std::sync::atomic::Ordering::SeqCst);
+        let email = Arc::new(super::concurrency_tests::html_email("k", "box", "a@x.io"));
+        let world = |source, name: &str| {
+            Effective::new(
+                source,
+                declared(json!({"txt":[{"name":name,"values":["1"]}]})),
+            )
+        };
+        let first = world(Source::Inbox, "a.example");
+        let r1 = service
+            .report_under(email.clone(), first.clone(), false)
+            .await
+            .unwrap();
+        // The same snapshot, and an equal one in a different allocation, reuse the slot.
+        for same in [first.clone(), world(Source::Inbox, "a.example")] {
+            let again = service
+                .report_under(email.clone(), same, false)
+                .await
+                .unwrap();
+            assert!(Arc::ptr_eq(&r1, &again));
+        }
+        assert_eq!(count(), 1);
+        // Changed content, even a name no rule reads, is a new evaluation and says so.
+        let changed = service
+            .report_under(email.clone(), world(Source::Inbox, "b.example"), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            (count(), changed.dns.policy.txt[0].name.as_str()),
+            (2, "b.example")
+        );
+        // The same content from another source is a distinct report.
+        let server = service
+            .report_under(email.clone(), world(Source::Server, "a.example"), false)
+            .await
+            .unwrap();
+        assert_eq!(count(), 3);
+        assert_eq!(
+            (r1.dns.source, server.dns.source),
+            (Source::Inbox, Source::Server)
+        );
+        assert_eq!(r1.dns.policy, server.dns.policy);
+        assert!(!Arc::ptr_eq(&r1, &server));
+        assert_eq!(service.slots.lock().unwrap().len(), 3);
     }
 }

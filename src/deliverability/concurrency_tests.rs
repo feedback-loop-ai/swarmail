@@ -340,6 +340,7 @@ pub(super) fn config(data_file: Option<std::path::PathBuf>) -> crate::config::Co
         tls_key: None,
         smtp: Default::default(),
         pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
+        dns_policy: None,
     }
 }
 pub(super) fn client() -> reqwest::Client {
@@ -671,4 +672,111 @@ pub(super) async fn smtp_bytes(srv: &crate::RunningServer, raw: &[u8]) -> String
     read.read_line(&mut line).await.unwrap();
     assert!(line.starts_with("250"), "{line}");
     line.split_whitespace().last().unwrap().into()
+}
+
+/// One request, one policy (decision 0120 §6): a declaration made while a
+/// request's first candidate is being evaluated is seen by neither that
+/// candidate nor the next one, and by every later request.
+#[tokio::test]
+async fn declaration_change_mid_request_is_not_seen() {
+    let store = Arc::new(Store::new(0));
+    let mut held = Held::new(&store.reports);
+    for id in ["one", "two"] {
+        store.insert(html_email(id, "box", "a@x.io")).unwrap();
+    }
+    let old = store.reports.policy_for("box");
+    let task = {
+        let s = store.clone();
+        let p = old.clone();
+        tokio::spawn(async move {
+            s.qualify(
+                s.list("box", &Filter::default()),
+                p,
+                Severity::Error,
+                usize::MAX,
+                false,
+            )
+            .await
+        })
+    };
+    held.entry().await;
+    let declared = store
+        .reports
+        .declare(
+            "box",
+            dns::parse(br#"{"tempfail":["new.example"]}"#).unwrap(),
+        )
+        .unwrap();
+    held.open();
+    assert!(task.await.unwrap().unwrap().is_empty());
+    for mail in store.list("box", &Filter::default()) {
+        // Both candidates were analyzed, and cached, under the old policy only.
+        let cached = store
+            .reports
+            .report_under(mail.clone(), old.clone(), true)
+            .await
+            .unwrap();
+        assert_eq!(cached.dns.source, dns::Source::Default);
+        assert!(cached.dns.policy.tempfail.is_empty());
+        assert!(matches!(
+            store
+                .reports
+                .report_under(mail.clone(), declared.clone(), true)
+                .await,
+            Err(AnalysisError::Unavailable)
+        ));
+        // The next request resolves its own snapshot and sees the declaration.
+        let fresh = store.report(mail).await.unwrap();
+        assert_eq!(fresh.dns.source, dns::Source::Inbox);
+        assert_eq!(fresh.dns.policy.tempfail, ["new.example"]);
+    }
+}
+
+/// The wait takes its policy snapshot before it subscribes and keeps it for
+/// every iteration; a declaration made after the subscribe changes nothing in
+/// the running wait (0002's order is untouched: the policy is configuration).
+#[tokio::test]
+async fn report_wait_snapshots_policy_before_subscribe_and_keeps_it() {
+    let store = Arc::new(Store::new(0));
+    trusted(&store.reports);
+    store.insert(email("one", "box", "a")).unwrap();
+    let old = store.reports.policy_for("box");
+    let s = store.clone();
+    store.set_post_subscribe_gate(Some(Arc::new(move || {
+        assert_eq!(s.watcher_count(), 1, "subscribed before the declaration");
+        s.reports
+            .declare(
+                "box",
+                dns::parse(br#"{"tempfail":["late.example"]}"#).unwrap(),
+            )
+            .unwrap();
+    })));
+    let outcome = store
+        .wait_for_report(
+            "box",
+            &Filter::default(),
+            1,
+            Duration::from_secs(5),
+            Some(Severity::Error),
+        )
+        .await
+        .unwrap();
+    store.set_post_subscribe_gate(None); // release the fixture's Store Arc cycle
+    let WaitOutcome::Found(found) = outcome else {
+        panic!("the clean mail must qualify");
+    };
+    let cached = store
+        .reports
+        .report_under(found[0].clone(), old, true)
+        .await
+        .unwrap();
+    assert_eq!(cached.dns.source, dns::Source::Default);
+    let late = store.reports.policy_for("box");
+    assert!(matches!(
+        store
+            .reports
+            .report_under(found[0].clone(), late, true)
+            .await,
+        Err(AnalysisError::Unavailable)
+    ));
 }

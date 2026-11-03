@@ -1,11 +1,11 @@
 {
   "fixture": "march-current-main.jsonl",
-  "fixture_sha256": "d11f669eadf2cb4c83f903723eec22fbfd136ac0652aaaedf5340098fba201b3",
+  "fixture_sha256": "6793815fa1cb18a60e1c4ee9be75f8930927d17e02b53442300bfaa86dfb8e7f",
   "requests": "march-current-main.requests.jsonl",
   "requests_sha256": "2a927f97a8101d9a7f8e278ec56c99c8b2e3fced1bd23737e773781c2dcc83fa",
   "cases": "march-current-main.cases.json",
   "cases_sha256": "92ec80d7f3e569cc1460a7878b4d70c545a770b6874690b7196ee4e1930d2d38",
-  "updated": "2026-10-31: the report descriptor line in tools/list now carries main's #151/#286 March wording ('with demo and bulk-sender checks') adopted in the merge of origin/main; 2026-10-31 (#259, PR #292): the seed report row (line 8) carries rule_set_id swarmail-html/3 where the capture recorded swarmail-bulk/1, a hand edit of that one versioned identity token, not a re-capture, because proposed 0085 requires a new id for these rule changes and proposed 0105/0106 give every adapter the same report; that row gains no finding. Every other byte is as captured at the source commit below",
+  "updated": "2026-11-03 (#253, decision 0120, proposed): the seed report row (line 8) now carries rule_set_id swarmail-html/4 and the report's dns member {\"lookups\":[],\"policy\":{\"tempfail\":[],\"txt\":[]},\"source\":\"default\"} (keys in serde_json order), a hand edit of that row and its token, not a re-capture, because proposed 0120 amends the report shape and every adapter serves the same report; that row gains no finding; fixture_sha256 is recomputed. 2026-10-31: the report descriptor line in tools/list now carries main's #151/#286 March wording ('with demo and bulk-sender checks') adopted in the merge of origin/main; 2026-10-31 (#259, PR #292): the seed report row (line 8) carries rule_set_id swarmail-html/3 where the capture recorded swarmail-bulk/1, a hand edit of that one versioned identity token, not a re-capture, because proposed 0085 requires a new id for these rule changes and proposed 0105/0106 give every adapter the same report; that row gains no finding. Every other byte is as captured at the source commit below",
   "captured": "2026-10-28 by the issue #153 follow-up implement seat (run follow-up-to-run-7244a9aa-which--5572d327)",
   "source": {
     "commit": "3a2eef948ed26392fe8ce2254f4b522964459a35",

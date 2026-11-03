@@ -266,3 +266,41 @@ and passes with it. Commit unsigned, in the repository's style. Never push.
   CI-only proofs are not claimed. No load proof is planned. Any added load
   proof is bounded to nproc/4 workers for at most 10 minutes, as a named, timed
   command, with the load reported.
+
+## Implementation record — 2026-11-03
+
+The implement seat built T1–T25 as specified. Deviations and findings, each
+small and each kept inside the design:
+
+- **`Lookups` owns an `Arc<Effective>`** rather than borrowing `&Effective`
+  (the spec sketch had `Lookups<'a>`). `Collector::finish(inputs, lookups)` and
+  the existing tests that call it directly need a value with no lifetime, and
+  `Lookups::default()` is the empty world. The interface is unchanged:
+  `resolve_txt(&mut self, &OwnerName) -> Txt`.
+- **`Service::report(email, ready_only)` keeps its signature** and snapshots
+  the policy from `email.inbox`; `report_under(email, policy, ready_only)` is
+  the entry that `qualify` uses with a request's frozen snapshot. This keeps
+  the sibling stories' (#258, #260) test edits to a minimum.
+- **The declaration parser reads objects by hand.** A derived serde struct
+  accepts a JSON array as a tuple, so `[]` parsed as an empty declaration and
+  `{"txt":[["a",["x"]]]}` as an entry. The two small visitors accept objects
+  only and refuse a repeated member; `parse_refusals` pins each.
+- **The mid-request and wait-snapshot proofs live in `concurrency_tests.rs`**,
+  beside the `Held` gate they use (0020 rule 2); the other unit tests are inline.
+- **`collect` takes a `&mut Lookups`** which production does not read yet; the
+  parameter carries `expect(unused_variables)` for #254, like the other items.
+- **Schemas carry no `maxLength`**: the structured-output suite's validator
+  does not know the keyword, so the 253-byte name bound is stated in prose and
+  enforced by the parser. `openapi-report-source.json` is re-pinned for the
+  new `DeliverabilityReport`; `march-current-main.jsonl` line 8 and its
+  provenance digest are hand-edited as #259 did, and recorded in the README.
+- **Gates run here:** fmt, clippy, `cargo test --workspace`, the locked
+  `swarmail` build, the evals fmt/clippy/test against that binary, the exact
+  coverage gate (100/100/100) and its selftest, publish-guard, seal-branch and
+  `cargo deny check licenses`. **Not run here:** `brokkr compile` over the
+  recipe shelf, because the pinned brokkr binary is not provisioned in this
+  sandbox; nothing under `.brokkr/` changed. No load proof was run.
+- **Flake seen and removed:** an earlier draft built the FIFO with a spawned
+  `mkfifo`; a fork inside the library test binary can hold a copy of another
+  test's lock descriptor and fail `persist.rs`'s `try_lock` assertions. The
+  FIFO is now made with `libc::mkfifo`.

@@ -113,6 +113,16 @@ impl RunningServer {
 /// Bind SMTP + POP3 + HTTP and spawn all three servers (plus the webhook
 /// dispatcher).
 pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
+    // The server DNS map is read and checked FIRST, before the data file is
+    // opened and before any listener binds (decision 0120 §9): a bad file ends
+    // startup, and there is no fallback to an empty map that would make every
+    // later authentication check falsely clean.
+    let dns_policy = match &cfg.dns_policy {
+        Some(path) => Some(deliverability::dns::load_file(path).map_err(|reason| {
+            std::io::Error::other(format!("dns policy file {}: {reason}", path.display()))
+        })?),
+        None => None,
+    };
     // The data file is opened and restored BEFORE any listener binds: a
     // server that answers must answer with its full state.
     let store = match &cfg.data_file {
@@ -122,6 +132,9 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
         ),
         None => Arc::new(store::Store::new(cfg.max_per_inbox)),
     };
+    if let Some(policy) = dns_policy {
+        store.reports.set_server(policy);
+    }
     let chaos = Arc::new(chaos::Chaos::default());
     webhook::ca_executor::initialize();
     let webhooks = Arc::new(webhook::Webhooks::default());
@@ -364,6 +377,7 @@ mod tests {
             tls_key: None,
             smtp: Default::default(),
             pop3_idle_timeout: pop3::DEFAULT_IDLE_TIMEOUT,
+            dns_policy: None,
         };
         let mut server = run_on(&cfg).await.unwrap();
         let (serve_entered, entered) = oneshot::channel();
@@ -414,5 +428,57 @@ mod tests {
     fn log_stopped_only_reports_errors() {
         log_stopped("unit", Ok(())); // silent
         log_stopped("unit", Err(std::io::Error::other("boom"))); // logs
+    }
+
+    /// A bad server DNS file ends startup before the data file opens and before
+    /// any listener binds (decision 0120 §9), and a good one is then served.
+    #[tokio::test]
+    async fn bad_dns_policy_refuses_before_bind() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = dir.path().join("dns.json");
+        std::fs::write(&policy, b"{").unwrap();
+        let data = dir.path().join("mail.db");
+        let free = || {
+            let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            held.local_addr().unwrap().to_string()
+        };
+        let (smtp, http, pop3) = (free(), free(), free());
+        let cfg = config::Config {
+            smtp_listen: smtp.clone(),
+            http_listen: http.clone(),
+            pop3_listen: pop3,
+            mailslurper_listen: None,
+            max_per_inbox: 0,
+            data_file: Some(data.clone()),
+            dns_policy: Some(policy.clone()),
+            tls_cert: None,
+            tls_key: None,
+            smtp: Default::default(),
+            pop3_idle_timeout: pop3::DEFAULT_IDLE_TIMEOUT,
+        };
+        let error = run_on(&cfg).await.err().expect("a bad DNS file refuses");
+        let message = error.to_string();
+        assert!(
+            message.starts_with(&format!("dns policy file {}: ", policy.display())),
+            "{message}"
+        );
+        assert!(
+            message.contains("not a DNS policy declaration"),
+            "{message}"
+        );
+        assert!(
+            !data.exists(),
+            "the data file was opened before the DNS file"
+        );
+        // Nothing bound: both configured ports are still free.
+        drop(std::net::TcpListener::bind(&smtp).unwrap());
+        drop(std::net::TcpListener::bind(&http).unwrap());
+        // The same configuration with a valid file starts, and serves it.
+        std::fs::write(&policy, br#"{"tempfail":["x.example"]}"#).unwrap();
+        let server = run_on(&cfg).await.unwrap();
+        let effective = server.store.reports.policy_for("any");
+        assert_eq!(effective.source, deliverability::dns::Source::Server);
+        assert_eq!(effective.policy.view().tempfail, ["x.example"]);
+        server.stop().await;
     }
 }

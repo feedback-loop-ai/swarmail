@@ -19,7 +19,7 @@ use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures_util::Stream;
 use serde::de::{self, DeserializeOwned, MapAccess, SeqAccess, Visitor};
@@ -842,6 +842,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/inboxes/{inbox}/messages",
             get(list_messages).delete(clear_inbox),
+        )
+        .route(
+            "/api/v1/inboxes/{inbox}/dns",
+            put(set_inbox_dns)
+                .delete(clear_inbox_dns)
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    crate::deliverability::dns::MAX_DNS_POLICY_BYTES,
+                )),
         )
         .route("/api/v1/inboxes/{inbox}/count", get(count_messages))
         .route("/api/v1/inboxes/{inbox}/await", get(await_messages))
@@ -2036,10 +2044,13 @@ async fn assert_messages(
     // not a page (0030 §3, kept by 0048 §4).
     let want = q.exact_count();
     let matched = if let Some(threshold) = q.no_findings_at_or_above {
+        // One policy snapshot for the whole assertion (decision 0120 §6).
+        let policy = state.store.reports.policy_for(&inbox);
         state
             .store
             .qualify(
                 state.store.list(&inbox, &q.filter()),
+                policy,
                 threshold,
                 usize::MAX,
                 false,
@@ -2092,6 +2103,58 @@ async fn clear_inbox(
 
 pub(crate) fn analysis_error(error: AnalysisError) -> ApiError {
     ApiError(StatusCode::SERVICE_UNAVAILABLE, error.message().into())
+}
+
+/// The echo of an inbox's effective DNS policy (decision 0120 §8).
+fn dns_echo(
+    inbox: &str,
+    effective: &crate::deliverability::dns::Effective,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "inbox": inbox,
+        "source": effective.source,
+        "policy": effective.policy.view(),
+    }))
+}
+
+/// Declare an inbox's DNS map. The whole body is validated before any effect,
+/// so a refusal leaves the previous declaration exactly as it was; an
+/// oversized body is the extractor's 413 in the native envelope. A new inbox
+/// beyond the cap is a 503 and nothing is evicted.
+async fn set_inbox_dns(
+    State(state): State<AppState>,
+    Path(inbox): Path<String>,
+    raw: RawQuery,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admit(&inbox)?;
+    let ViewQuery {} = parse_query(
+        raw.0.as_deref().unwrap_or(""),
+        "PUT /api/v1/inboxes/{inbox}/dns",
+    )?;
+    let body = body.map_err(|rejection| ApiError(rejection.status(), rejection.body_text()))?;
+    let policy = crate::deliverability::dns::parse(&body).map_err(bad_request)?;
+    let declared = state.store.reports.declare(&inbox, policy).map_err(|_| {
+        ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "dns declarations full".into(),
+        )
+    })?;
+    Ok(dns_echo(&inbox, &declared))
+}
+
+/// Clear an inbox's DNS map (idempotent) and echo what now applies to it.
+async fn clear_inbox_dns(
+    State(state): State<AppState>,
+    Path(inbox): Path<String>,
+    raw: RawQuery,
+) -> ApiResult<Json<serde_json::Value>> {
+    admit(&inbox)?;
+    let ViewQuery {} = parse_query(
+        raw.0.as_deref().unwrap_or(""),
+        "DELETE /api/v1/inboxes/{inbox}/dns",
+    )?;
+    Ok(dns_echo(&inbox, &state.store.reports.forget(&inbox)))
 }
 
 async fn get_deliverability(

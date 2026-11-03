@@ -553,6 +553,7 @@ async fn a_broken_data_file_refuses_to_serve() {
         tls_key: None,
         smtp: Default::default(),
         pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+        dns_policy: None,
     };
     let err = match swarmail::run_on(&cfg).await {
         Ok(_) => panic!("a broken data file must refuse to serve"),
@@ -1491,6 +1492,7 @@ async fn a_corrupt_occurrence_column_refuses_to_serve() {
             tls_key: None,
             smtp: Default::default(),
             pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+            dns_policy: None,
         };
         let err = match swarmail::run_on(&cfg).await {
             Ok(_) => panic!("a corrupt occurrence column must refuse to serve: {corrupt}"),
@@ -1925,6 +1927,7 @@ async fn damaged_attachment_columns_refuse_to_serve_by_name() {
             tls_key: None,
             smtp: Default::default(),
             pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+            dns_policy: None,
         };
         let error = match swarmail::run_on(&cfg).await {
             Ok(_) => panic!("a damaged {named} must refuse to serve"),
@@ -2137,6 +2140,7 @@ async fn a_corrupt_attachment_column_refuses_to_serve() {
             tls_key: None,
             smtp: Default::default(),
             pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+            dns_policy: None,
         };
         let err = match swarmail::run_on(&cfg).await {
             Ok(_) => panic!("a corrupt attachment column must refuse to serve: {corrupt}"),
