@@ -434,7 +434,7 @@ Same store, the two shapes existing suites already speak:
 
 ## Deliverability report (proposed 0085; epic #251)
 
-GET /api/v1/messages/{id}/deliverability takes no query keys and returns
+GET /api/v1/messages/{id}/deliverability takes only the optional query key reachability (see Opt-in link reachability below) and returns
 {rule_set_id, findings:[{rule_id,severity,location,fix_hint}]}. Severity is
 info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
@@ -505,8 +505,26 @@ link.shortener.v1 (warning: exact host in the built-in swarmail-shorteners/1 lis
 and link.anchor-host-mismatch.v1 (warning: the label names a host the target is
 neither equal to nor a subdomain of, after www. is stripped). A link finding is
 located at link {part_path, byte_offset}, or at mime_part {path} when the part's
-decoded text differs from its transfer-decoded bytes. No link is fetched; empty
+decoded text differs from its transfer-decoded bytes. The default report fetches no link; empty
 link findings do not mean the links are safe.
+
+Opt-in link reachability (proposed decision 0121). Off by default: start the server with
+--link-reachability public|loopback (SWARMAIL_LINK_REACHABILITY), then ask with
+GET /api/v1/messages/{id}/deliverability?reachability=true. On an off server that is
+400 "link reachability is not enabled" and opens no connection; a missing message is
+404. MCP, the message page, assert and await never probe, and SMTP never does. public
+contacts only globally routable addresses; loopback also permits 127.0.0.0/8 and ::1
+(mail can then cause GETs to local ports). Private, link-local (169.254.0.0/16),
+CGNAT, ULA, multicast, documentation and reserved ranges, and URLs with credentials,
+are never contacted, checked on every redirect hop. Bounds: 5 s per target across all
+hops, 2 s connect, at most 5 redirects, at most 32 distinct targets (more is 503
+"deliverability analysis failed"), 4 targets at once per request, 2 probe requests per
+process (a third is 503 "deliverability analysis unavailable"). GET only, headers
+only, no body, no proxy, no cookies. Findings: link.redirect-chain.v1 (info; count and
+final origin), link.reachability.v1 (warning; timeout, connect/DNS/TLS failure, HTTP
+status 400 and above, redirect cap, or a missing/invalid/non-HTTP redirect) and
+link.reachability.refused.v1 (info). The observation is composed into that response
+and never cached, so two probes at different times may differ.
 
 This finite lexical model respects source quotes, comments, CSS strings/functions
 and nested media blocks. Hidden conditional comments and template content are

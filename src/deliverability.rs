@@ -9,6 +9,9 @@ use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
 mod html;
 mod links;
+mod reach;
+
+pub use reach::Mode as LinkReachability;
 
 pub const RULE_SET_ID: &str = "swarmail-html/4";
 pub const MAX_FINDINGS: usize = 256;
@@ -896,6 +899,9 @@ struct Slot {
 pub(crate) struct Service {
     slots: Mutex<VecDeque<Arc<Slot>>>,
     jobs: Arc<Semaphore>,
+    /// The opt-in reachability probe (0121 §6): outside the evaluator, the
+    /// cache and the job permits.
+    prober: reach::Prober,
     #[cfg(test)]
     pub(crate) gate: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
@@ -907,6 +913,7 @@ impl Default for Service {
         Self {
             slots: Mutex::new(VecDeque::new()),
             jobs: Arc::new(Semaphore::new(JOBS)),
+            prober: reach::Prober::default(),
             #[cfg(test)]
             gate: Mutex::new(None),
             #[cfg(test)]
@@ -983,6 +990,50 @@ impl Service {
             let report = Arc::new(evaluate(&email.raw, &inputs)?);
             *guard = Some(report.clone());
             Ok(report)
+        })
+        .await
+    }
+
+    /// Set the probe's mode before the service is shared; the default is `Off`.
+    pub(crate) fn with_link_reachability(mut self, mode: LinkReachability) -> Self {
+        self.prober = self.prober.with_mode(mode);
+        self
+    }
+
+    pub(crate) fn link_reachability(&self) -> LinkReachability {
+        self.prober.mode()
+    }
+
+    /// The cached deterministic report plus an explicit, bounded observation
+    /// of the message's links (0121 §6). The two lexical scans run on the
+    /// blocking pool under a job permit that is released before and after the
+    /// network wait; the probe itself holds no job permit and no Store guard.
+    /// The result is composed for this request only and is never cached.
+    pub(crate) async fn probed(&self, email: Arc<Email>) -> Result<Report, AnalysisError> {
+        let report = self.report(email.clone(), false).await?;
+        let targets = self.scan(email.clone(), links::targets).await?;
+        let observation = self.prober.observe(targets).await?;
+        let observed = self
+            .scan(email, move |raw| links::observed(raw, &observation))
+            .await?;
+        links::compose(&report, observed)
+    }
+
+    /// One lexical pass over the stored bytes, on the blocking pool, under a
+    /// job permit held by the worker until it ends.
+    async fn scan<T: Send + 'static>(
+        &self,
+        email: Arc<Email>,
+        pass: impl FnOnce(&[u8]) -> Result<T, AnalysisError> + Send + 'static,
+    ) -> Result<T, AnalysisError> {
+        let permit = self
+            .jobs
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AnalysisError::Unavailable)?;
+        Store::offload(move || {
+            let _permit = permit;
+            pass(&email.raw)
         })
         .await
     }

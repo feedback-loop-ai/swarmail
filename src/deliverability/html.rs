@@ -143,6 +143,20 @@ fn collect_with(raw: &[u8], c: &Catalogue, out: &mut Collector) -> Result<(), An
     })
 }
 
+/// Every link occurrence of every eligible part, in document order, to `sink`.
+/// The first error the sink returns stops the building, not the walk.
+pub(super) fn scan_links(
+    raw: &[u8],
+    mut sink: impl FnMut(links::Occurrence) -> Result<(), AnalysisError>,
+) -> Result<(), AnalysisError> {
+    with_parts(raw, |parts| {
+        for part in &parts {
+            links::scan(part, &mut sink)?;
+        }
+        Ok(())
+    })
+}
+
 /// One eligible outer `text/html` part (0106): its MIME path, its decoded
 /// text, and whether source offsets into that text are also offsets into the
 /// part's transfer-decoded payload (0085 §1 link locations).

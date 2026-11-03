@@ -3,12 +3,14 @@
 //! reuses #154's lexical walk and label rules from `extract`, adds no parser,
 //! and opens no connection; reachability lives apart in `reach` (0121 §6).
 
-use super::html::Part;
-use super::{AnalysisError, Collector, Finding, Location, Severity};
+use super::html::{self, Part};
+use super::reach::{BUDGET, End, MAX_REDIRECTS, MAX_TARGETS, Observation, Outcome};
+use super::{AnalysisError, Collector, Finding, Inputs, Location, Report, Severity};
 use crate::extract::{
     AnchorAttrs, LABEL_BREAKS, RefScanStats, Regions, TagScanStats, decode_refs, space,
 };
 use reqwest::Url;
+use std::collections::BTreeSet;
 use std::net::IpAddr;
 
 /// The built-in shortener list's version. It is Swarmail-authored, basis date
@@ -276,6 +278,116 @@ pub(super) fn collect(part: &Part<'_>, out: &mut Collector) -> Result<(), Analys
         }
         Ok(())
     })
+}
+
+/// The opt-in reachability findings (0121 §6), keyed by their stable ids.
+const REDIRECT_CHAIN: &str = "link.redirect-chain.v1";
+const REACHABILITY: &str = "link.reachability.v1";
+const REFUSED: &str = "link.reachability.refused.v1";
+
+/// The normalized `http`/`https` target of a link, or `None` for any other
+/// value (an invalid URL, `mailto:`, a script scheme).
+fn target(href: &str) -> Option<String> {
+    Url::parse(href)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+        .map(|url| url.as_str().to_string())
+}
+
+/// The distinct probe targets of a message, in order. More than
+/// [`MAX_TARGETS`] fails as soon as the extra one is seen, before any
+/// connection and without holding every occurrence.
+pub(super) fn targets(raw: &[u8]) -> Result<BTreeSet<String>, AnalysisError> {
+    let mut found = BTreeSet::new();
+    html::scan_links(raw, |occurrence| {
+        found.extend(target(&occurrence.href));
+        if found.len() > MAX_TARGETS {
+            return Err(AnalysisError::Failed);
+        }
+        Ok(())
+    })?;
+    Ok(found)
+}
+
+/// What an outcome says, as (rule id, severity, hint). The hint carries the
+/// redirect count and final origin, or the status code, and no path, query
+/// or userinfo.
+fn outcome_findings(outcome: &Outcome) -> Vec<(&'static str, Severity, String)> {
+    let reach = |hint: String| (REACHABILITY, Severity::Warning, hint);
+    let chain = (outcome.redirects > 0).then(|| {
+        (
+            REDIRECT_CHAIN,
+            Severity::Info,
+            format!(
+                "This link redirects {} time(s) before reaching {}; link to the destination directly.",
+                outcome.redirects, outcome.final_origin
+            ),
+        )
+    });
+    let mut found = match outcome.end {
+        End::Ok => Vec::new(),
+        End::Status(code) => vec![reach(format!(
+            "The link answered HTTP {code} during the opt-in reachability check; fix or replace the target."
+        ))],
+        End::Timeout => vec![reach(format!(
+            "The link did not finish answering within {} seconds during the opt-in reachability check.",
+            BUDGET.as_secs()
+        ))],
+        End::Connect => vec![reach(
+            "The link's server could not be reached (DNS, connection or TLS failure) during the opt-in reachability check.".into(),
+        )],
+        End::RedirectCap => vec![reach(format!(
+            "The link redirected more than {MAX_REDIRECTS} times during the opt-in reachability check; link to the destination directly."
+        ))],
+        End::BadRedirect => vec![reach(
+            "The link redirected to a missing, invalid or non-HTTP location during the opt-in reachability check.".into(),
+        )],
+        End::Refused => vec![(
+            REFUSED,
+            Severity::Info,
+            "Not checked: the link uses credentials or resolves to an address the reachability check never contacts in this mode.".into(),
+        )],
+    };
+    // A redirect chain is disclosed only when the chain ended in an answer.
+    if matches!(outcome.end, End::Ok | End::Status(_)) {
+        found.extend(chain);
+    }
+    found
+}
+
+/// The observation findings of a message: each outcome at every location of
+/// its target. More than [`MAX_FINDINGS`] fails rather than truncating.
+pub(super) fn observed(
+    raw: &[u8],
+    observation: &Observation,
+) -> Result<Vec<Finding>, AnalysisError> {
+    let mut out = Collector(Vec::new());
+    html::scan_links(raw, |occurrence| {
+        let Some(outcome) = target(&occurrence.href).and_then(|t| observation.get(&t)) else {
+            return Ok(());
+        };
+        for (rule, severity, hint) in outcome_findings(outcome) {
+            out.push(Finding {
+                rule_id: rule.into(),
+                location: occurrence.location.clone(),
+                severity,
+                fix_hint: hint,
+            })?;
+        }
+        Ok(())
+    })?;
+    Ok(out.0)
+}
+
+/// The probed response: the cached deterministic report plus the observation
+/// findings, through the one canonicalizer under the 0085 limits. The result
+/// is a pure function of its inputs; it is never cached.
+pub(super) fn compose(report: &Report, observed: Vec<Finding>) -> Result<Report, AnalysisError> {
+    let mut out = Collector(Vec::new());
+    for finding in report.findings.iter().cloned().chain(observed) {
+        out.push(finding)?;
+    }
+    out.finish(&Inputs::default())
 }
 
 #[cfg(test)]
@@ -742,6 +854,216 @@ mod tests {
                 ("https://x.io/a?b=1&c=2", Some("Go")),
                 ("https://x.io/text", None)
             ]
+        );
+    }
+
+    fn outcome(end: End, redirects: u8) -> Outcome {
+        Outcome {
+            redirects,
+            final_origin: "http://example.test:8080".into(),
+            end,
+        }
+    }
+
+    #[test]
+    fn compose_finding_table() {
+        let reach = "link.reachability.v1";
+        let chain = |n: u8| {
+            (
+                "link.redirect-chain.v1",
+                Severity::Info,
+                format!(
+                    "This link redirects {n} time(s) before reaching http://example.test:8080; link to the destination directly."
+                ),
+            )
+        };
+        let warn = |hint: &str| (reach, Severity::Warning, hint.to_string());
+        let table = [
+            (outcome(End::Ok, 0), vec![]),
+            (outcome(End::Ok, 2), vec![chain(2)]),
+            (
+                outcome(End::Status(404), 0),
+                vec![warn("The link answered HTTP 404 during the opt-in reachability check; fix or replace the target.")],
+            ),
+            (
+                outcome(End::Status(503), 1),
+                vec![
+                    warn("The link answered HTTP 503 during the opt-in reachability check; fix or replace the target."),
+                    chain(1),
+                ],
+            ),
+            (
+                outcome(End::Timeout, 0),
+                vec![warn("The link did not finish answering within 5 seconds during the opt-in reachability check.")],
+            ),
+            (
+                outcome(End::Connect, 3),
+                vec![warn("The link's server could not be reached (DNS, connection or TLS failure) during the opt-in reachability check.")],
+            ),
+            (
+                outcome(End::RedirectCap, 5),
+                vec![warn("The link redirected more than 5 times during the opt-in reachability check; link to the destination directly.")],
+            ),
+            (
+                outcome(End::BadRedirect, 1),
+                vec![warn("The link redirected to a missing, invalid or non-HTTP location during the opt-in reachability check.")],
+            ),
+            (
+                outcome(End::Refused, 1),
+                vec![(
+                    "link.reachability.refused.v1",
+                    Severity::Info,
+                    "Not checked: the link uses credentials or resolves to an address the reachability check never contacts in this mode.".to_string(),
+                )],
+            ),
+        ];
+        for (outcome, expected) in table {
+            assert_eq!(outcome_findings(&outcome), expected, "{outcome:?}");
+        }
+    }
+
+    fn probe_mail(html: &str) -> Vec<u8> {
+        message("7bit", "utf-8", html.as_bytes())
+    }
+
+    #[test]
+    fn targets_are_distinct_normalized_http_urls_capped_at_thirty_two() {
+        let raw = probe_mail(
+            "<a href='HTTP://Example.TEST/a'>1</a><a href='http://example.test/a'>2</a>\
+             <a href='https://example.test/b#frag'>3</a><a href='mailto:a@b.test'>4</a>\
+             <a href='javascript:x()'>5</a><a href='/relative'>6</a><a href='#top'>7</a>",
+        );
+        assert_eq!(
+            targets(&raw).unwrap().into_iter().collect::<Vec<_>>(),
+            ["http://example.test/a", "https://example.test/b#frag"]
+        );
+        let many = |n: usize| {
+            probe_mail(
+                &(0..n)
+                    .map(|i| format!("<a href='http://127.0.0.1:9/{i}'>x</a>"))
+                    .collect::<String>(),
+            )
+        };
+        assert_eq!(targets(&many(MAX_TARGETS)).unwrap().len(), MAX_TARGETS);
+        assert_eq!(
+            targets(&many(MAX_TARGETS + 1)).unwrap_err(),
+            AnalysisError::Failed
+        );
+        assert_eq!(targets(&many(300)).unwrap_err(), AnalysisError::Failed);
+        assert!(targets(b"").unwrap().is_empty());
+    }
+
+    #[test]
+    fn observed_findings_sit_at_every_location_of_their_target() {
+        let html = "<p>x</p><a href='http://127.0.0.1:9/a?token=s3cret'>a</a>\
+                    <a href='http://127.0.0.1:9/b'>b</a><a href='http://127.0.0.1:9/a?token=s3cret'>again</a>\
+                    <a href='https://127.0.0.1:9/untracked'>c</a>";
+        let raw = probe_mail(html);
+        let key = |u: &str| Url::parse(u).unwrap().as_str().to_string();
+        let observation: Observation = [
+            (
+                key("http://127.0.0.1:9/a?token=s3cret"),
+                outcome(End::Status(404), 1),
+            ),
+            (key("http://127.0.0.1:9/b"), outcome(End::Ok, 0)),
+        ]
+        .into_iter()
+        .collect();
+        let found = observed(&raw, &observation).unwrap();
+        let at = |n: usize| Location::Link {
+            part_path: vec![],
+            byte_offset: html
+                .match_indices("http://127.0.0.1:9/a?token=s3cret")
+                .nth(n)
+                .unwrap()
+                .0 as u64,
+        };
+        let mut seen: Vec<_> = found
+            .iter()
+            .map(|f| (f.rule_id.as_str(), f.location.clone()))
+            .collect();
+        seen.sort();
+        let mut expected = vec![
+            ("link.reachability.v1", at(0)),
+            ("link.redirect-chain.v1", at(0)),
+            ("link.reachability.v1", at(1)),
+            ("link.redirect-chain.v1", at(1)),
+        ];
+        expected.sort();
+        assert_eq!(seen, expected);
+        for finding in &found {
+            assert!(!finding.fix_hint.contains("s3cret"), "{}", finding.fix_hint);
+            assert!(!finding.fix_hint.contains("/a?"), "{}", finding.fix_hint);
+        }
+        assert!(observed(&raw, &Observation::new()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn compose_is_pure_and_order_independent() {
+        let raw =
+            probe_mail("<a href='http://127.0.0.1:9/a'>a</a><a href='http://127.0.0.1:9/b'>b</a>");
+        let base = report(&raw).unwrap();
+        let (a, b) = (
+            "http://127.0.0.1:9/a".to_string(),
+            "http://127.0.0.1:9/b".to_string(),
+        );
+        let forward: Observation = [
+            (a.clone(), outcome(End::Timeout, 0)),
+            (b.clone(), outcome(End::Connect, 0)),
+        ]
+        .into_iter()
+        .collect();
+        let backward: Observation = [(b, outcome(End::Connect, 0)), (a, outcome(End::Timeout, 0))]
+            .into_iter()
+            .collect();
+        let bytes = |o: &Observation| {
+            let found = observed(&raw, o).unwrap();
+            serde_json::to_vec(&compose(&base, found).unwrap()).unwrap()
+        };
+        assert_eq!(bytes(&forward), bytes(&backward));
+        assert_eq!(bytes(&forward), bytes(&forward));
+        let composed: Report = serde_json::from_slice(&bytes(&forward)).unwrap();
+        assert_eq!(composed.findings.len(), base.findings.len() + 2);
+        assert_eq!(composed.rule_set_id, base.rule_set_id);
+        assert!(composed.findings.windows(2).all(|w| w[0] <= w[1]));
+    }
+
+    #[test]
+    fn compose_respects_limits() {
+        let base = report(&probe_mail("<p>none</p>")).unwrap();
+        let extra = |n: usize| -> Vec<Finding> {
+            (0..n)
+                .map(|i| Finding {
+                    rule_id: "link.reachability.v1".into(),
+                    location: Location::Link {
+                        part_path: vec![],
+                        byte_offset: i as u64,
+                    },
+                    severity: Severity::Warning,
+                    fix_hint: "h".into(),
+                })
+                .collect()
+        };
+        let room = super::super::MAX_FINDINGS - base.findings.len();
+        assert_eq!(compose(&base, extra(room)).unwrap().findings.len(), 256);
+        assert_eq!(
+            compose(&base, extra(room + 1)).unwrap_err(),
+            AnalysisError::Failed
+        );
+        let mut huge = extra(1);
+        huge[0].fix_hint = "x".repeat(super::super::MAX_REPORT_BYTES);
+        assert_eq!(compose(&base, huge).unwrap_err(), AnalysisError::Failed);
+        // Observation findings over the limit fail while they are collected.
+        let many = (0..=super::super::MAX_FINDINGS)
+            .map(|_| "<a href='http://127.0.0.1:9/a'>a</a>")
+            .collect::<String>();
+        let observation: Observation =
+            [("http://127.0.0.1:9/a".to_string(), outcome(End::Timeout, 0))]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            observed(&probe_mail(&many), &observation).unwrap_err(),
+            AnalysisError::Failed
         );
     }
 }

@@ -2,7 +2,7 @@
 
 [← README](../../README.md) · [Guide index](README.md)
 
-GET /api/v1/messages/{id}/deliverability takes no query keys and returns
+GET /api/v1/messages/{id}/deliverability takes only the optional query key `reachability` (see Opt-in reachability below) and returns
 {rule_set_id, findings:[{rule_id,severity,location,fix_hint}]}. Severity is
 info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
@@ -207,3 +207,76 @@ contract's own fallback. Swarmail never emits a guessed offset.
 
 A hostile message with more than 256 findings fails the report (503), by the
 existing limits, rather than returning a comfortable subset.
+
+## Opt-in reachability
+
+Whether a link answers, and where its redirect chain ends, can only be known
+by asking the network. That never happens by default, never on the SMTP path,
+and never inside the cached report. Two explicit steps are needed:
+
+1. The operator starts the server with `--link-reachability off|public|loopback`
+   (env `SWARMAIL_LINK_REACHABILITY`, default `off`).
+2. A caller asks: `GET /api/v1/messages/{id}/deliverability?reachability=true`.
+
+```bash
+swarmail serve --link-reachability loopback
+curl 'http://127.0.0.1:8025/api/v1/messages/<id>/deliverability?reachability=true'
+```
+
+On an `off` server the request is `400 {"error":"link reachability is not
+enabled"}` and opens no connection; a missing message is still `404`.
+`reachability=false` or no parameter is the default report. Any other value or
+key is the usual `400`. MCP, the message page, `assert`, `await` and the MCP
+wait never probe.
+
+**Modes.** `public` contacts only globally routable unicast addresses.
+`loopback` also contacts `127.0.0.0/8` and `::1`, so that a development mail
+catcher can check `localhost` links; the risk is that **mail content can then
+cause GET requests to local ports** (headers only, no body read, no
+credentials). Choose it deliberately. In every mode these are never contacted:
+`0.0.0.0/8`, `10/8`, `100.64/10` (CGNAT), `169.254/16` (link-local, which
+includes the cloud metadata address), `172.16/12`, `192.0.0/24`, `192.0.2/24`,
+`192.168/16`, `198.18/15`, `198.51.100/24`, `203.0.113/24`, `224/4` and `240/4`
+(multicast, reserved, broadcast), `::`, `fc00::/7`, `fe80::/10`, `ff00::/8`,
+`2001:db8::/32` and the NAT64 prefix `64:ff9b::/96`. IPv4-mapped IPv6 addresses
+are unwrapped first. A URL with credentials (`user:pass@host`) is refused.
+
+**How a target is checked.** Swarmail resolves the host itself and refuses the
+target unless **every** answer is permitted, then connects only to the first
+validated address, so a name cannot change its address between the check and the
+connect. The same applies to every redirect hop. It sends `GET` with
+`User-Agent: swarmail-link-check`, no proxy, no cookies, no credentials, reads
+the status and headers only, and drops the response without reading a body.
+
+**Bounds** (constants, not knobs):
+
+| bound | value |
+|---|---|
+| per-link budget, all hops together | 5 s |
+| connect timeout per hop | 2 s |
+| redirects followed | 5 (a sixth redirect answer is `redirect_cap`) |
+| distinct targets per request | 32 (33 is `503 deliverability analysis failed` before any connection) |
+| targets probed at once per request | 4 |
+| probe requests at once per process | 2 (a third is `503 deliverability analysis unavailable`) |
+
+Worst case per request is ceil(32/4) x 5 s = 40 s with 8 open sockets across the
+two requests. A probe never holds one of the four report job permits or a Store
+guard, so SMTP, reads and cold default reports proceed while it waits. Dropping
+the request cancels its probes and releases its permit.
+
+| finding | severity | when |
+|---|---|---|
+| `link.redirect-chain.v1` | info | the link answered after one or more redirects; the hint names the count and the final origin (scheme, host, port), never a path, query or credentials |
+| `link.reachability.v1` | warning | timeout; connection, DNS or TLS failure; HTTP status 400 or above (with the code); more than 5 redirects; a missing, invalid or non-HTTP redirect target |
+| `link.reachability.refused.v1` | info | not checked: credentials in the URL, or an address the mode never contacts |
+
+Each is located at every `link` location of its target. A `200` answer adds no
+finding. The probed response is the cached deterministic report plus these
+findings, canonicalized under the same 256-finding and 64 KiB limits (over the
+limit is a failure, never a truncated report).
+
+**Determinism.** The default report is byte-identical for the same bytes and
+configuration, as before. The probed response is a pure function of the bytes,
+the configuration and the network's answers at that moment, and it is never
+cached or stored: two probes at different times can differ. Empty findings
+mean "nothing found", not "the links are safe".

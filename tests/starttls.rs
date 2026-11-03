@@ -77,6 +77,7 @@ fn base_cfg() -> Config {
         tls_key: None,
         smtp: Default::default(),
         pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+        link_reachability: swarmail::deliverability::LinkReachability::Off,
     }
 }
 

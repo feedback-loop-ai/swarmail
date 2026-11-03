@@ -48,6 +48,23 @@ trusts: any network peer can reach it, a direct client can omit or forge
 allowlist — this is a header check against cross-site browser pages, not
 authentication.
 
+**One opt-in outbound path: the link reachability probe.** Swarmail makes no
+outbound connection for mail content by default (webhooks are the other
+operator-configured sender). Proposed decision 0121 adds one more, and it needs two
+explicit steps: the operator starts the server with `--link-reachability
+public|loopback` (`SWARMAIL_LINK_REACHABILITY`, default `off`), and a caller
+asks with `GET /api/v1/messages/{id}/deliverability?reachability=true`. SMTP,
+the message page, MCP, `assert` and `await` never probe. `public` contacts
+only globally routable addresses; `loopback` also contacts `127.0.0.0/8` and
+`::1`, which means **mail content can cause GET requests to local ports** of
+the host (headers only, no body read, no credentials, fixed User-Agent). Use it
+on a development machine, not on a host that runs sensitive local services
+you would not expose to a mail's author. Private, link-local (including the
+cloud metadata address 169.254.169.254), CGNAT, ULA, multicast, documentation
+and reserved ranges are refused in every mode, on every redirect hop, and the
+server pins each connection to the address it validated. The bounds are in
+[Deliverability reports](deliverability.md#opt-in-reachability).
+
 **Forwarded ports refuse on a loopback bind.** `ssh -L 9000:localhost:8025`,
 VS Code and devcontainer port forwarding and GitHub Codespaces all
 deliver the browser's `Host: localhost:9000` (or a forwarding hostname)

@@ -517,8 +517,17 @@ async fn report_served_docs_match_contract() {
     for status in ["200", "400", "403", "404", "503"] {
         assert!(route["responses"].get(status).is_some());
     }
-    assert_eq!(route["parameters"].as_array().unwrap().len(), 1);
+    assert_eq!(route["parameters"].as_array().unwrap().len(), 2);
     assert_eq!(route["parameters"][0]["name"], "id");
+    assert_eq!(route["parameters"][1]["name"], "reachability");
+    assert_eq!(route["parameters"][1]["in"], "query");
+    assert_eq!(route["parameters"][1]["schema"]["type"], "boolean");
+    assert!(
+        route["description"]
+            .as_str()
+            .unwrap()
+            .contains("link reachability is not enabled")
+    );
     let schemas = &api["components"]["schemas"];
     assert_eq!(
         schemas["DeliverabilitySeverity"]["enum"],
@@ -576,6 +585,8 @@ async fn report_served_docs_match_contract() {
         "historical",
         "JSON in one text block",
         "swarmail-html/4",
+        "--link-reachability",
+        "link.reachability.v1",
         "104448",
         "classic Outlook",
         "conditional comments",
