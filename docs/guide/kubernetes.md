@@ -8,13 +8,15 @@ the chart packages the same binary with no configuration language of its own
 *accepted*). Install the published chart:
 
 ```
-helm install swarmail oci://ghcr.io/feedback-loop-ai/charts/swarmail --version 0.2.0 \
+helm install swarmail oci://ghcr.io/feedback-loop-ai/charts/swarmail --version 0.3.0 \
   --namespace swarmail --create-namespace
 helm test swarmail -n swarmail        # the /healthz hook, from a curl pod
 ```
 
-It runs the `:0.2.0` image, published by the `v0.2.0` release run on
-2026-11-02 together with this chart. To track `main` instead, install from a
+It runs the `:0.3.0` image. Chart `0.3.0` and its image exist once the
+`v0.3.0` tag's release run has published them; until then use
+`--version 0.2.0`, which runs the `:0.2.0` image, both published by the
+`v0.2.0` release run on 2026-11-02. To track `main` instead, install from a
 checkout:
 
 ```
@@ -26,9 +28,11 @@ helm test swarmail -n swarmail        # the /healthz hook, from a curl pod
 
 The published charts are OCI `0.1.0`, which predates the startupProbe, the
 TLS settings, `networkPolicy.ingressPeers` and the listen configuration, and
-`0.2.0`; `0.1.1`, `0.1.2` and `0.1.3` were prepared and never published, and
-the publish guard never republishes a version (decision 0019). Chart `0.2.0`
-carries `appVersion` `0.2.0`, aligned with the crate (decision 0051). The
+`0.2.0`, joined by `0.3.0` once the `v0.3.0` release run publishes it;
+`0.1.1`, `0.1.2` and `0.1.3` were prepared and never published, and the
+publish guard never republishes a version (decision 0019). Chart `0.2.0`
+carries `appVersion` `0.2.0`, and the tree's chart `0.3.0` carries
+`appVersion` `0.3.0`, each aligned with the crate (decision 0051). The
 checkout install sets `image.tag=main` explicitly — and
 `image.pullPolicy=Always`, because `:main` moves: under the chart's default
 `IfNotPresent` a node that cached an older `:main` would keep running it.
@@ -38,7 +42,7 @@ when it is exactly `v<Cargo.toml version>` for the image and exactly
 `v<Chart.yaml version>` for the chart, and the chart's `appVersion` must
 equal Cargo's version; the chart job needs the image job's success and
 checks that the image it names is published. So a tag that matches only
-the chart — `v0.1.2` on the tree before this release, whose crate was
+the chart — `v0.1.2` on the tree before the `v0.2.0` release, whose crate was
 `0.1.0` — publishes neither. Preparing a chart version is not a release: CI requires a chart
 version bump for every chart edit (`scripts/chart-verify.sh`), and the
 release itself is the operator's aligned tag. The two pushes are not one
