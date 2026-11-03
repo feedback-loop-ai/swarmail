@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
 mod html;
+mod spam;
 
-pub const RULE_SET_ID: &str = "swarmail-html/3";
+pub const RULE_SET_ID: &str = "swarmail-spam/1";
 pub const MAX_FINDINGS: usize = 256;
 pub const MAX_REPORT_BYTES: usize = 65_536;
 const MAX_HEADER_BYTES: usize = 65_536;
@@ -871,6 +872,7 @@ fn collect(raw: &[u8], inputs: &Inputs, out: &mut Collector) -> Result<(), Analy
     }
     bulk(raw, &fields, size, inputs, out)?;
     html::collect(raw, out)?;
+    spam::collect(raw, out)?;
     #[cfg(test)]
     for finding in &inputs.fixture {
         out.push(finding.clone())?;
@@ -1093,7 +1095,7 @@ mod tests {
         let empty = Collector(Vec::new()).finish(&Inputs::default()).unwrap();
         assert_eq!(
             serde_json::to_value(&empty).unwrap(),
-            json!({"rule_set_id":"swarmail-html/3","findings":[]})
+            json!({"rule_set_id":"swarmail-spam/1","findings":[]})
         );
         assert!(empty.qualifies(Severity::Info));
     }
