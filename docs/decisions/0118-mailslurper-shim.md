@@ -427,8 +427,11 @@ at 1,200,191 bytes and from `GET /mail` at 1,200,239 bytes: six bytes per
 character, before this change and unchanged by it. So the by-id response
 of a 50 MiB message could already reach about 300 MiB, and a page was
 already refused from about 10.7 MiB of stored control characters. The
-escape's worst case (five times, about 250 MiB; refusal from about
-12.8 MiB) is below both. The change adds no new ceiling. A by-id cap, or
+escape's by-id worst case (five times, about 250 MiB) is below that
+300 MiB. Its page refusal (from about 12.8 MiB of stored escapable
+characters) comes later in stored bytes than the 10.7 MiB control-character
+refusal, and the page output stays capped at 64 MiB either way. The change
+adds no new ceiling. A by-id cap, or
 a lower page cap, would be a contract change of its own and is the
 operator's to rule on, not part of this addendum.
 
