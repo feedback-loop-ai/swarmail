@@ -11,7 +11,9 @@ none is accepted.
 
 **Status, 2026-11-02: one baseline, no comparison result.** The #151 paid
 baseline exists: [`baseline-2026-11-01.md`](baseline-2026-11-01.md), 395 of
-400 trials on main `a4f552d`, with its raw rows and report beside it. Its
+400 trials on main `a4f552d`, with its raw rows and report beside it. The
+#309 hard tier has its paid run too: [`hard-2026-11-03.md`](hard-2026-11-03.md),
+74 of 75 scored trials on main `8732445`. Its
 claims are the eval suite's and are scoped in that file. This directory still
 holds no final comparison run, comparison cost or loss record, because none of
 those exists yet. One frozen collection is sealed and admitted as raw
