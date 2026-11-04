@@ -271,7 +271,7 @@ task names its finding in [plan.md § Revision
 keeps the coverage gate at exact 100%. Every new or changed production
 line or branch is run by the named test.
 
-- [ ] **R1** (HIGH, security and guarantees: address policy) Rewrite
+- [x] **R1** (HIGH, security and guarantees: address policy) Rewrite
   `reach::permitted` as default-deny, following spec § Address policy
   rules 1–6:
   - `off` refuses everything;
@@ -299,7 +299,7 @@ line or branch is run by the named test.
 
   The test fails at `33efa4c`, where `fec0::1` is permitted, and passes
   after the change.
-- [ ] **R2** (HIGH: path proof) Add rows to
+- [x] **R2** (HIGH: path proof) Add rows to
   `probe_resolver_seam_pins_mixes_and_fails`. In `loopback` mode, a name
   answered `[<listener 127.0.0.1>, 64:ff9b:1::a00:1]` gives `Refused` with
   `accepted() == 0`, and so does `[<listener>, 2002:a00:1::1]`. The listener
@@ -307,7 +307,7 @@ line or branch is run by the named test.
   `probe_revalidates_each_hop` with a loopback hop redirecting to
   `http://[fec0::1]/`, which gives `Refused` after exactly 1 accept.
   Proof: those two tests, named above. Each asserts exact accept counts.
-- [ ] **R3** (HIGH: records) Replace the range list in
+- [x] **R3** (HIGH: records) Replace the range list in
   `docs/guide/deliverability.md` § Modes, `docs/guide/network-posture.md`
   and `src/static/llms.txt` with the default-deny statement. Each states
   its basis date, the rule that embedded IPv4 is refused, and the
@@ -317,7 +317,7 @@ line or branch is run by the named test.
     shows the new text;
   - `rg -n 'Everything else is permitted' specs docs src` is empty;
   - review reads the guide against spec § Address policy (AC13).
-- [ ] **R4** (LOW, guarantees: location letter) Amend the location sentence
+- [x] **R4** (LOW, guarantees: location letter) Amend the location sentence
   in `docs/guide/deliverability.md` and `src/static/llms.txt` to the
   prefix-plus-trailing-ASCII-whitespace test. The code is unchanged.
   Proof: an AC2 fixture in `link_offsets_index_transfer_decoded_source`
@@ -325,7 +325,7 @@ line or branch is run by the named test.
   offsets. `non_identity_charset_falls_back_to_mime_part` stays. Running
   `rg -n 'byte-identical to its payload' docs/guide src/static` returns
   nothing.
-- [ ] **R5** (LOW, correctness/independent: token order; INFO: fragment key)
+- [x] **R5** (LOW, correctness/independent: token order; INFO: fragment key)
   This task has two changes:
   - **(a)** In `links::token`, apply spec § Host-like tokens steps 1–7 in
     order: lowercase, leading trim, scheme strip, cut, trailing trim, then
@@ -349,7 +349,7 @@ line or branch is run by the named test.
   - On the wire, `link_reachability_outcomes_on_loopback` (or a sibling)
     sends two links differing only in fragment. It asserts one accept, and
     the outcome finding at both locations.
-- [ ] **R6** (LOW/INFO, guarantees: surfaces; robustness: wording and
+- [x] **R6** (LOW/INFO, guarantees: surfaces; robustness: wording and
   residual) Update these surfaces:
   - name the per-link rules (`link.*`) in the OpenAPI deliverability route
     and `DeliverabilityReport` descriptions, the modern MCP report tool
@@ -362,7 +362,7 @@ line or branch is run by the named test.
   descriptions and the MCP description contain `link.`. Running
   `rg -n 'per process' docs/guide src/static` for the probe returns
   nothing.
-- [ ] **R7** (LOW, correctness/independent: AC6 by counting) Give the
+- [x] **R7** (LOW, correctness/independent: AC6 by counting) Give the
   `reach.rs` test `Server` an open-connection gauge. It increments on
   accept, decrements when the peer closes (a read returns 0 or an error),
   and records the high-water mark. Rewrite `observe_runs_four_at_a_time` to
@@ -371,27 +371,27 @@ line or branch is run by the named test.
   Proof: that test. A temporary mutation to 3 or 5 at once turns it red.
   Record the mutation run in `implementation.md`, and do not commit the
   mutation.
-- [ ] **R8** (LOW, independent: held-probe proof) In
+- [x] **R8** (LOW, independent: held-probe proof) In
   `tests/link_reachability.rs` `link_reachability_bounds_on_the_wire`,
   after the fresh `250`, its read and the cold default report, assert
   `!first.is_finished() && !second.is_finished()`. Then release the held
   probes.
   Proof: that test, plus the unchanged unit test
   `probes_hold_no_job_permit_and_no_store_guard`.
-- [ ] **R9** (INFO, tests: overclaiming name) Rename
+- [x] **R9** (INFO, tests: overclaiming name) Rename
   `link_report_is_deterministic_cold_warm_and_across_services` to
   `link_evaluate_is_deterministic`. Keep its assertions.
   Proof: the renamed test passes. The cross-`Service` and warm-cache cases
   stay proven by the existing `src/deliverability.rs` two-`Service` test
   and the `tests/deliverability.rs` warm repeat (AC7).
-- [ ] **R10** (INFO, tests: offline guard taxonomy) In
+- [x] **R10** (INFO, tests: offline guard taxonomy) In
   `probe_tests_use_loopback_only`, document the "refused literal, never
   dialled" category (`10.0.0.1`, `[fec0::1]`) in the doc comment and the
   `ALLOWED` list.
   Proof: the guard passes. It still asserts `seen > 10`, and it refuses an
   unlisted public host. Add a negative row that the guard's matcher
   rejects, `8.8.8.8`.
-- [ ] **R11** (INFO, guarantees and process: records and disposition)
+- [x] **R11** (INFO, guarantees and process: records and disposition)
   Update `implementation.md` to the revision:
   - its deviation list loses the items this revision absorbs into the
     spec: the `is_exact` letter, the label cap, the AC11 scope and the
@@ -406,7 +406,7 @@ line or branch is run by the named test.
   Proof: `rg -n 'approved by name under 0045 §8' specs/deliverability-link-checks/implementation.md`
   matches, and `git diff 33efa4c -- docs/decisions/README.md` changes no
   status (AC13, AC15).
-- [ ] **R12** Run every house gate `--locked` on the revised tree:
+- [x] **R12** (every gate ran `--locked` except the brokkr compile loop, whose pinned binary is absent from this seat; see `implementation.md` § Gates) Run every house gate `--locked` on the revised tree:
   - fmt, clippy, test and the `swarmail` build;
   - evals fmt, clippy and test with `SWARMAIL_BIN` from Cargo's artifact
     record;

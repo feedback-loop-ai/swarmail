@@ -55,14 +55,24 @@ explicit steps: the operator starts the server with `--link-reachability
 public|loopback` (`SWARMAIL_LINK_REACHABILITY`, default `off`), and a caller
 asks with `GET /api/v1/messages/{id}/deliverability?reachability=true`. SMTP,
 the message page, MCP, `assert` and `await` never probe. `public` contacts
-only globally routable addresses; `loopback` also contacts `127.0.0.0/8` and
+only addresses the default-deny policy proves globally routable; `loopback` also contacts `127.0.0.0/8` and
 `::1`, which means **mail content can cause GET requests to local ports** of
 the host (headers only, no body read, no credentials, fixed User-Agent). Use it
 on a development machine, not on a host that runs sensitive local services
-you would not expose to a mail's author. Private, link-local (including the
-cloud metadata address 169.254.169.254), CGNAT, ULA, multicast, documentation
-and reserved ranges are refused in every mode, on every redirect hop, and the
-server pins each connection to the address it validated. The bounds are in
+you would not expose to a mail's author. The address policy is
+**default-deny** (basis: the IANA special-purpose registries, read 2026-11-04):
+IPv6 is contacted only inside `2000::/3`, minus `2001::/23`, `2001:db8::/32`,
+`2002::/16` and `3fff::/20`, so site-local `fec0::/10`, NAT64, 6to4, Teredo and
+every other address outside `2000::/3` are refused; IPv4 is contacted only
+outside the registry's non-global blocks (private, link-local including the
+cloud metadata address 169.254.169.254, CGNAT, multicast, reserved and the
+others listed in the guide). An address that embeds IPv4 is refused, never
+decoded. The check holds on every redirect hop, and the server pins each
+connection to the address it validated. Residual: a block IANA later allocates
+inside `2000::/3` is contacted until the table is edited. Name resolution uses
+the OS resolver on tokio's blocking pool, which cannot be cancelled, so a
+dropped probe's lookup runs on until the OS gives up; the per-`Service` caps
+bound it and it costs latency, never a `250`. The bounds are in
 [Deliverability reports](deliverability.md#opt-in-reachability).
 
 **Forwarded ports refuse on a loopback bind.** `ssh -L 9000:localhost:8025`,

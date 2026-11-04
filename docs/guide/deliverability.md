@@ -235,17 +235,38 @@ enabled"}` and opens no connection; a missing message is still `404`.
 key is the usual `400`. MCP, the message page, `assert`, `await` and the MCP
 wait never probe.
 
-**Modes.** `public` contacts only globally routable unicast addresses.
-`loopback` also contacts `127.0.0.0/8` and `::1`, so that a development mail
-catcher can check `localhost` links; the risk is that **mail content can then
-cause GET requests to local ports** (headers only, no body read, no
-credentials). Choose it deliberately. In every mode these are never contacted:
-`0.0.0.0/8`, `10/8`, `100.64/10` (CGNAT), `169.254/16` (link-local, which
-includes the cloud metadata address), `172.16/12`, `192.0.0/24`, `192.0.2/24`,
-`192.168/16`, `198.18/15`, `198.51.100/24`, `203.0.113/24`, `224/4` and `240/4`
-(multicast, reserved, broadcast), `::`, `fc00::/7`, `fe80::/10`, `ff00::/8`,
-`2001:db8::/32` and the NAT64 prefix `64:ff9b::/96`. IPv4-mapped IPv6 addresses
-are unwrapped first. A URL with credentials (`user:pass@host`) is refused.
+**Modes.** The address policy is **default-deny**: an address is contacted
+only when the policy proves it globally routable unicast, never because it is
+missing from a list of bad ranges. The basis is the IANA IPv4 and IPv6
+Special-Purpose Address Registries as read on **2026-11-04**; Swarmail pins its
+own table and does not use the toolchain's `is_global`. `public` contacts only
+such addresses. `loopback` also contacts `127.0.0.0/8` and `::1`, so that a
+development mail catcher can check `localhost` links; the risk is that **mail
+content can then cause GET requests to local ports** (headers only, no body
+read, no credentials). Choose it deliberately.
+
+- **IPv6** is contacted only inside `2000::/3`, and then not inside `2001::/23`
+  (IETF protocol assignments, including Teredo `2001::/32`), `2001:db8::/32`
+  (documentation), `2002::/16` (6to4) or `3fff::/20` (documentation). Every
+  address outside `2000::/3` is refused without being named: `::`,
+  IPv4-compatible and IPv4-translated forms, NAT64 (`64:ff9b::/96`,
+  `64:ff9b:1::/48`), `100::/64`, `fc00::/7`, `fe80::/10`, the site-local
+  `fec0::/10`, `ff00::/8` and every unassigned block.
+- **IPv4** is contacted only outside the registry's non-global blocks: `0/8`,
+  `10/8`, `100.64/10` (CGNAT), `169.254/16` (link-local, which includes the
+  cloud metadata address), `172.16/12`, `192.0.0/24`, `192.0.2/24`,
+  `192.88.99/24` (deprecated 6to4 relay), `192.168/16`, `198.18/15`,
+  `198.51.100/24`, `203.0.113/24`, and `224/4` and `240/4` (multicast,
+  reserved, broadcast).
+- **IPv4-mapped IPv6** (`::ffff:a.b.c.d`) is unwrapped and judged as IPv4. Every
+  other address that embeds IPv4 (NAT64, 6to4, Teredo, IPv4-compatible,
+  IPv4-translated) is **refused and never decoded**. A host reachable only that
+  way is reported as `refused` (not checked), never as safe.
+- A URL with credentials (`user:pass@host`) is refused.
+- **Residual:** if IANA allocates a special-purpose block *inside* `2000::/3`
+  after the basis date, as it did with `3fff::/20` in 2024, that block is
+  contacted until the table is edited. An allocation outside `2000::/3` is
+  refused with no change.
 
 **How a target is checked.** Swarmail resolves the host itself and refuses the
 target unless **every** answer is permitted, then connects only to the first
@@ -263,12 +284,22 @@ the status and headers only, and drops the response without reading a body.
 | redirects followed | 5 (a sixth redirect answer is `redirect_cap`) |
 | distinct targets per request | 32 (33 is `503 deliverability analysis failed` before any connection) |
 | targets probed at once per request | 4 |
-| probe requests at once per process | 2 (a third is `503 deliverability analysis unavailable`) |
+| probe requests at once per `Service` (one per server process) | 2 (a third is `503 deliverability analysis unavailable`) |
 
 Worst case per request is ceil(32/4) x 5 s = 40 s with 8 open sockets across the
-two requests. A probe never holds one of the four report job permits or a Store
+two requests (a probe dropped at its budget closes its socket a moment after
+the next target has connected, so a fifth socket can briefly exist). A target's fragment is never sent, so links that differ only in
+it are one target, fetched once. A probe never holds one of the four report job permits or a Store
 guard, so SMTP, reads and cold default reports proceed while it waits. Dropping
 the request cancels its probes and releases its permit.
+
+**Resolver residual.** Names are resolved with the operating system's resolver
+on tokio's blocking pool, and that call cannot be cancelled. When a target's
+5 s budget drops a probe, its lookup keeps running until the OS resolver gives
+up, so a hostile hostname plus repeated explicit requests can park blocking
+threads. The opt-in mode, the per-`Service` caps and the OS resolver's own
+deadline bound this. It costs latency only, never a `250`. A dedicated bounded
+resolver would need its own decision.
 
 | finding | severity | when |
 |---|---|---|

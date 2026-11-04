@@ -268,6 +268,27 @@ async fn link_reachability_outcomes_on_loopback() {
     srv.stop().await;
 }
 
+/// A fragment is never sent, so two links that differ only in it are one
+/// target: one connection, and the outcome at both locations (AC6).
+#[tokio::test]
+async fn link_reachability_ignores_the_fragment() {
+    let target = Counting::start(routes).await;
+    let (a, b) = (target.url("/gone#a"), target.url("/gone#b"));
+    let raw = html_mail(&[a.clone(), b.clone()]);
+    let srv = serve(LinkReachability::Loopback).await;
+    let id = smtp_raw(srv.smtp_addr, "fragment", raw.as_bytes()).await;
+    let (status, report) = reach(&srv, &id, "?reachability=true").await;
+    assert_eq!(status, 200, "{report}");
+    let hint = "The link answered HTTP 404 during the opt-in reachability check; fix or replace the target.";
+    let expected = vec![
+        finding("link.reachability.v1", "warning", offset_of(&raw, &a), hint),
+        finding("link.reachability.v1", "warning", offset_of(&raw, &b), hint),
+    ];
+    assert_eq!(link_findings(&report), expected);
+    assert_eq!(target.accepted(), 1, "one resource, fetched once");
+    srv.stop().await;
+}
+
 /// `public` mode never contacts loopback, and credentials are never sent
 /// (AC5, wire).
 #[tokio::test]
@@ -370,6 +391,10 @@ async fn link_reachability_bounds_on_the_wire() {
     assert_eq!(status, 200);
     let (status, cold) = reach(&srv, &fresh, "").await;
     assert_eq!(status, 200, "{cold}");
+    // Both probes are still held: a probe that took a job permit or a Store
+    // guard would have stalled the reads above instead.
+    assert!(!first.is_finished() && !second.is_finished());
+    // Release them: each pays its budget and ends as a timeout.
     for task in [first, second] {
         let (status, report) = task.await.unwrap();
         assert_eq!(status, 200, "{report}");

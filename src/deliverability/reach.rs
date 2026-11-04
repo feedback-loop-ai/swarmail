@@ -21,7 +21,7 @@ use tokio::sync::Semaphore;
 pub(crate) const MAX_TARGETS: usize = 32;
 /// Targets probed at once by one request.
 pub(crate) const LINKS_AT_ONCE: usize = 4;
-/// Probe requests running at once per process.
+/// Probe requests running at once per `Service` (one per server process).
 pub(crate) const REQUESTS: usize = 2;
 /// Redirects followed before `redirect_cap`.
 pub(crate) const MAX_REDIRECTS: u8 = 5;
@@ -42,9 +42,13 @@ pub enum Mode {
     Loopback,
 }
 
-/// Ranges no mode contacts, as (network, prefix length). IPv4-mapped IPv6 is
-/// unwrapped before either table is consulted.
-const BLOCKED_V4: [(u32, u32); 12] = [
+/// IPv4 blocks the IANA IPv4 Special-Purpose Address Registry (read
+/// 2026-11-04) lists as not globally reachable, as (network, prefix length).
+/// IPv4 global unicast is the whole space minus these, so for IPv4 the
+/// complement of this table is the allow-list. `192.31.196/24`,
+/// `192.52.193/24` and `192.175.48/24` are globally reachable anycast and stay
+/// permitted. IPv4-mapped IPv6 is unwrapped before this table is consulted.
+const NOT_GLOBAL_V4: [(u32, u32); 13] = [
     (0x0000_0000, 8),  // 0.0.0.0/8
     (0x0a00_0000, 8),  // 10/8
     (0x6440_0000, 10), // 100.64/10 (CGNAT)
@@ -52,23 +56,50 @@ const BLOCKED_V4: [(u32, u32); 12] = [
     (0xac10_0000, 12), // 172.16/12
     (0xc000_0000, 24), // 192.0.0/24
     (0xc000_0200, 24), // 192.0.2/24
+    (0xc058_6300, 24), // 192.88.99/24 (deprecated 6to4 relay anycast)
     (0xc0a8_0000, 16), // 192.168/16
     (0xc612_0000, 15), // 198.18/15
     (0xc633_6400, 24), // 198.51.100/24
     (0xcb00_7100, 24), // 203.0.113/24
     (0xe000_0000, 3),  // 224/4 multicast and 240/4 reserved, with broadcast
 ];
-const BLOCKED_V6: [(u128, u32); 6] = [
-    (0, 128),                               // ::
-    (0xfc00 << 112, 7),                     // fc00::/7
-    (0xfe80 << 112, 10),                    // fe80::/10
-    (0xff00 << 112, 8),                     // ff00::/8
+
+/// The only IPv6 space the probe contacts: global unicast `2000::/3`.
+const GLOBAL_V6: (u128, u32) = (0x2000 << 112, 3);
+/// Blocks inside `2000::/3` that are not globally reachable: IETF protocol
+/// assignments (with Teredo `2001::/32`), documentation, 6to4, and the RFC
+/// 9637 documentation block.
+const NOT_GLOBAL_V6: [(u128, u32); 4] = [
+    (0x2001 << 112, 23),                    // 2001::/23
     ((0x2001 << 112) | (0x0db8 << 96), 32), // 2001:db8::/32
-    ((0x0064 << 112) | (0xff9b << 96), 96), // 64:ff9b::/96 NAT64 (stricter than the list)
+    (0x2002 << 112, 16),                    // 2002::/16
+    (0x3fff << 112, 20),                    // 3fff::/20
 ];
 
-/// Whether `mode` lets the probe contact `ip`.
+/// Whether `ip` is inside `net`/`bits`.
+fn within(ip: u128, net: u128, bits: u32) -> bool {
+    (ip ^ net) >> (128 - bits) == 0
+}
+
+/// Whether `mode` lets the probe contact `ip`. The policy is **default-deny**:
+/// an address is contacted only when it is proved globally routable unicast,
+/// and never because it is absent from a list of bad ranges. The basis is the
+/// IANA IPv4 and IPv6 Special-Purpose Address Registries as read on
+/// 2026-11-04. `std`'s `is_global` is not used, because its table moves with
+/// the toolchain.
+///
+/// IPv4-mapped IPv6 (`::ffff:0:0/96`) is unwrapped and judged as IPv4. Every
+/// other form that embeds IPv4 (NAT64, 6to4, Teredo, IPv4-compatible,
+/// IPv4-translated) lies outside `2000::/3` or inside a refused block, and is
+/// refused without being decoded.
+///
+/// Residual: an address block IANA allocates inside `2000::/3` after the basis
+/// date, as it did with `3fff::/20`, is permitted until this table is edited.
+/// An allocation outside `2000::/3` is refused with no change.
 pub(crate) fn permitted(ip: IpAddr, mode: Mode) -> bool {
+    if mode == Mode::Off {
+        return false;
+    }
     let ip = match ip {
         IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
         v4 => v4,
@@ -76,15 +107,18 @@ pub(crate) fn permitted(ip: IpAddr, mode: Mode) -> bool {
     if ip.is_loopback() {
         return mode == Mode::Loopback;
     }
-    let blocked = match ip {
-        IpAddr::V4(v4) => BLOCKED_V4
+    match ip {
+        IpAddr::V4(v4) => !NOT_GLOBAL_V4
             .iter()
             .any(|&(net, bits)| (u32::from(v4) ^ net) >> (32 - bits) == 0),
-        IpAddr::V6(v6) => BLOCKED_V6
-            .iter()
-            .any(|&(net, bits)| (u128::from(v6) ^ net) >> (128 - bits) == 0),
-    };
-    mode != Mode::Off && !blocked
+        IpAddr::V6(v6) => {
+            let v6 = u128::from(v6);
+            within(v6, GLOBAL_V6.0, GLOBAL_V6.1)
+                && !NOT_GLOBAL_V6
+                    .iter()
+                    .any(|&(net, bits)| within(v6, net, bits))
+        }
+    }
 }
 
 /// How a target's probe ended. It carries no duration and no clock reading.
@@ -297,6 +331,7 @@ mod tests {
     use std::time::Instant;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use tokio::sync::Semaphore;
     use tokio::task::{JoinHandle, JoinSet};
 
     /// A local HTTP server on 127.0.0.1 that counts accepted connections and
@@ -305,13 +340,16 @@ mod tests {
     pub(super) struct Server {
         pub(super) addr: SocketAddr,
         accepts: Arc<AtomicUsize>,
-        pub(super) accepted_at: Arc<Mutex<Vec<Instant>>>,
+        high_water: Arc<AtomicUsize>,
+        gate: Arc<Semaphore>,
         pub(super) heads: Arc<Mutex<Vec<String>>>,
         task: JoinHandle<()>,
     }
     pub(super) struct Reply {
         pub(super) bytes: Vec<u8>,
         pub(super) hold: bool,
+        /// Wait for `Server::release`, count the connection closed, then answer.
+        pub(super) gated: bool,
     }
     pub(super) fn reply(status: &str, headers: &str) -> Reply {
         Reply {
@@ -320,6 +358,7 @@ mod tests {
             )
             .into_bytes(),
             hold: false,
+            gated: false,
         }
     }
     /// A named handler, so tests whose server must never be reached still use
@@ -331,6 +370,22 @@ mod tests {
         Reply {
             bytes: Vec::new(),
             hold: true,
+            gated: false,
+        }
+    }
+    /// A `200` that is held back until the test releases it.
+    pub(super) fn gated(_: usize, _: &str) -> Reply {
+        Reply {
+            gated: true,
+            ..ok(0, "")
+        }
+    }
+    /// Counts one open connection from accept until the task that owns it
+    /// ends, which is when the peer closes a held connection.
+    struct Open(Arc<AtomicUsize>);
+    impl Drop for Open {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
         }
     }
     impl Drop for Server {
@@ -345,18 +400,28 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             let accepts = Arc::new(AtomicUsize::new(0));
-            let accepted_at = Arc::new(Mutex::new(Vec::new()));
+            let open = Arc::new(AtomicUsize::new(0));
+            let high_water = Arc::new(AtomicUsize::new(0));
             let heads = Arc::new(Mutex::new(Vec::new()));
+            let gate = Arc::new(Semaphore::new(0));
             let handler = Arc::new(handler);
-            let (count, times, log) = (accepts.clone(), accepted_at.clone(), heads.clone());
+            let (count, gauge, high, log, held) = (
+                accepts.clone(),
+                open,
+                high_water.clone(),
+                heads.clone(),
+                gate.clone(),
+            );
             let task = tokio::spawn(async move {
                 let mut connections = JoinSet::new();
                 loop {
                     let (mut stream, _) = listener.accept().await.unwrap();
                     let index = count.fetch_add(1, Ordering::SeqCst);
-                    times.lock().unwrap().push(Instant::now());
-                    let (handler, log) = (handler.clone(), log.clone());
+                    high.fetch_max(gauge.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                    let (handler, log, held) = (handler.clone(), log.clone(), held.clone());
+                    let open = Open(gauge.clone());
                     connections.spawn(async move {
+                        let mut open = Some(open);
                         let mut head = Vec::new();
                         let mut chunk = [0u8; 1024];
                         while !head.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -368,6 +433,12 @@ mod tests {
                         let head = String::from_utf8_lossy(&head).into_owned();
                         log.lock().unwrap().push(head.clone());
                         let answer = handler(index, &head);
+                        if answer.gated {
+                            held.acquire().await.unwrap().forget();
+                            // Closed on the gauge before the client sees the
+                            // answer, so the slot it frees is visible first.
+                            open.take();
+                        }
                         let _ = stream.write_all(&answer.bytes).await;
                         // A held connection stays open until the client closes it.
                         if answer.hold {
@@ -379,7 +450,8 @@ mod tests {
             Server {
                 addr,
                 accepts,
-                accepted_at,
+                high_water,
+                gate,
                 heads,
                 task,
             }
@@ -389,6 +461,14 @@ mod tests {
         }
         pub(super) fn origin(&self) -> String {
             format!("http://{}", self.addr)
+        }
+        /// Answer `n` gated connections.
+        pub(super) fn release(&self, n: usize) {
+            self.gate.add_permits(n);
+        }
+        /// The most connections this server ever had open at once.
+        pub(super) fn high_water(&self) -> usize {
+            self.high_water.load(Ordering::SeqCst)
         }
         pub(super) fn accepted(&self) -> usize {
             self.accepts.load(Ordering::SeqCst)
@@ -421,10 +501,14 @@ mod tests {
         Prober::default().with_mode(Mode::Loopback)
     }
 
+    /// The address policy is default-deny (spec § Address policy). Every row
+    /// is a literal, never computed from the table under test.
     #[test]
     fn address_policy_table() {
         let ip = |s: &str| s.parse::<IpAddr>().unwrap();
-        let never = [
+        let modes = [Mode::Off, Mode::Public, Mode::Loopback];
+        // IPv4 blocks of rule 4, at their first and last address.
+        let blocks = [
             ("0.0.0.0", "0.255.255.255"),
             ("10.0.0.0", "10.255.255.255"),
             ("100.64.0.0", "100.127.255.255"),
@@ -432,36 +516,67 @@ mod tests {
             ("172.16.0.0", "172.31.255.255"),
             ("192.0.0.0", "192.0.0.255"),
             ("192.0.2.0", "192.0.2.255"),
+            ("192.88.99.0", "192.88.99.255"),
             ("192.168.0.0", "192.168.255.255"),
             ("198.18.0.0", "198.19.255.255"),
             ("198.51.100.0", "198.51.100.255"),
             ("203.0.113.0", "203.0.113.255"),
             ("224.0.0.0", "239.255.255.255"),
             ("240.0.0.0", "255.255.255.255"),
-            ("::", "::"),
-            ("fc00::", "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
-            ("fe80::", "febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
-            ("ff00::", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
-            ("2001:db8::", "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"),
-            ("64:ff9b::", "64:ff9b::ffff:ffff"),
         ];
-        for (first, last) in never {
+        for (first, last) in blocks {
             for edge in [first, last] {
-                for mode in [Mode::Off, Mode::Public, Mode::Loopback] {
+                for mode in modes {
                     assert!(!permitted(ip(edge), mode), "{edge} {mode:?}");
                 }
             }
         }
-        // Mapped IPv6 is unwrapped before the table is read.
-        for mapped in [
+        // Refused in every mode, whatever is embedded: nothing here is decoded.
+        for refused in [
+            "::",
+            "::a00:1",
+            "::ffff:0:a00:1",
+            "64:ff9b::a00:1",
+            "64:ff9b:1::a00:1",
+            "100::1",
+            "1fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+            "2001::1",
+            "2001:0:4136:e378::1",
+            "2001:2::1",
+            "2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff",
+            "2001:db8::1",
+            "2002:a00:1::1",
+            "3fff::1",
+            "3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff",
+            "4000::",
+            "5f00::1",
+            "fbff::1",
+            "fc00::1",
+            "fe80::1",
+            "fec0::1",
+            "ff02::1",
+            "64:ff9a::1",
+            "64:ff9c::1",
+            // Mapped IPv6 is unwrapped, then judged as IPv4.
             "::ffff:10.0.0.1",
             "::ffff:169.254.169.254",
             "::ffff:192.168.0.1",
+            "::ffff:192.88.99.1",
         ] {
-            assert!(!permitted(ip(mapped), Mode::Loopback), "{mapped}");
+            for mode in modes {
+                assert!(!permitted(ip(refused), mode), "{refused} {mode:?}");
+            }
         }
-        // Just outside each range, and ordinary public addresses.
-        for outside in [
+        // Permitted when a mode is on, and refused by `off`.
+        for allowed in [
+            "2000::1",
+            "2001:200::1",
+            "2001:db7:ffff::1",
+            "2001:db9::1",
+            "2003::1",
+            "3ffe::1",
+            "3fff:1000::1",
+            "2606:4700:4700::1111",
             "1.0.0.0",
             "9.255.255.255",
             "11.0.0.0",
@@ -484,17 +599,12 @@ mod tests {
             "223.255.255.255",
             "8.8.8.8",
             "::ffff:8.8.8.8",
-            "2606:4700:4700::1111",
-            "2001:db9::1",
-            "2001:db7:ffff::1",
-            "fbff::1",
-            "fec0::1",
-            "64:ff9a::1",
-            "64:ff9c::1",
+            "192.31.196.1",
+            "192.88.98.255",
         ] {
-            assert!(!permitted(ip(outside), Mode::Off), "{outside} off");
-            assert!(permitted(ip(outside), Mode::Public), "{outside} public");
-            assert!(permitted(ip(outside), Mode::Loopback), "{outside} loopback");
+            assert!(!permitted(ip(allowed), Mode::Off), "{allowed} off");
+            assert!(permitted(ip(allowed), Mode::Public), "{allowed} public");
+            assert!(permitted(ip(allowed), Mode::Loopback), "{allowed} loopback");
         }
         // Loopback is the one range a mode changes.
         for local in ["127.0.0.1", "127.255.255.255", "::1", "::ffff:127.0.0.1"] {
@@ -580,6 +690,7 @@ mod tests {
                 bytes: b"HTTP/1.1 308 Moved\r\nLocation: /caf\xe9\r\nContent-Length: 0\r\n\r\n"
                     .to_vec(),
                 hold: false,
+                gated: false,
             },
         })
         .await;
@@ -629,6 +740,7 @@ mod tests {
         let server = Server::start(|_, _| Reply {
             bytes: b"HTTP/1.1 200 OK\r\nContent-Length: 104857600\r\n\r\n".to_vec(),
             hold: true,
+            gated: false,
         })
         .await;
         assert_eq!(one(&loopback(), &server.url("/huge")).await.end, End::Ok);
@@ -678,6 +790,8 @@ mod tests {
             ("mixed.test", &["127.0.0.1", "10.0.0.1"]),
             ("mixed-first.test", &["10.0.0.1", "127.0.0.1"]),
             ("empty.test", &[]),
+            ("nat64.test", &["127.0.0.1", "64:ff9b:1::a00:1"]),
+            ("sixtofour.test", &["127.0.0.1", "2002:a00:1::1"]),
         ];
         let server = Server::start(ok).await;
         let asked = Arc::new(Mutex::new(Vec::new()));
@@ -702,8 +816,14 @@ mod tests {
             let outcome = one(&prober, &format!("http://{name}:{port}/")).await;
             assert_eq!(outcome.end, End::Connect, "{name}");
         }
+        // An answer that embeds IPv4 is refused and never decoded. The local
+        // listener comes first, so a broken check would dial only it.
+        for name in ["nat64.test", "sixtofour.test"] {
+            let outcome = one(&prober, &format!("http://{name}:{port}/")).await;
+            assert_eq!(outcome.end, End::Refused, "{name}");
+        }
         assert_eq!(server.accepted(), 1, "only the pinned name connected");
-        assert_eq!(asked.lock().unwrap().len(), 5);
+        assert_eq!(asked.lock().unwrap().len(), 7);
     }
 
     #[tokio::test]
@@ -718,6 +838,17 @@ mod tests {
         };
         assert_eq!(outcome, expected);
         assert_eq!(server.accepted(), 1, "the private hop was never dialled");
+        // A redirect into a special-purpose IPv6 literal is refused unseen.
+        let site = "Location: http://[fec0::1]/inner\r\n";
+        let server = Server::start(move |_, _| reply("302 Found", site)).await;
+        let outcome = one(&loopback(), &server.url("/start")).await;
+        let expected = Outcome {
+            redirects: 1,
+            final_origin: "http://[fec0::1]".into(),
+            end: End::Refused,
+        };
+        assert_eq!(outcome, expected);
+        assert_eq!(server.accepted(), 1, "the site-local hop was never dialled");
         // A redirect carrying credentials is refused at the next hop too.
         let creds = "Location: http://u:p@127.0.0.1:9/\r\n";
         let server = Server::start(move |_, _| reply("302 Found", creds)).await;
@@ -750,23 +881,32 @@ mod tests {
         assert!(asked.lock().unwrap().is_empty());
     }
 
+    /// Counted, not timed. Every connection is held until the test lets it
+    /// go, and the server counts it closed *before* it answers, so a slot
+    /// freed here is visible on the gauge before the client can use it. (A
+    /// client that times out closes its socket a moment after it starts the
+    /// next target, so a timeout cannot give an exact high-water mark.)
     #[tokio::test]
     async fn observe_runs_four_at_a_time() {
-        let server = Server::start(|_, _| hold()).await;
-        let budget = Duration::from_secs(2);
-        let prober = loopback().with_budget(budget);
+        let server = Server::start(gated).await;
+        let prober = Arc::new(loopback().with_budget(Duration::from_secs(30)));
         let urls: Vec<_> = (0..=LINKS_AT_ONCE)
             .map(|n| server.url(&format!("/{n}")))
             .collect();
-        let observation = prober.observe(set(&urls)).await.unwrap();
+        let run = tokio::spawn({
+            let prober = prober.clone();
+            async move { prober.observe(set(&urls)).await }
+        });
+        server.accepted_at_least(LINKS_AT_ONCE).await;
+        // The fifth target waits for a slot; free one and it connects.
+        server.release(1);
+        server.accepted_at_least(LINKS_AT_ONCE + 1).await;
+        server.release(LINKS_AT_ONCE);
+        let observation = run.await.unwrap().unwrap();
         assert_eq!(observation.len(), 5);
-        assert!(observation.values().all(|o| o.end == End::Timeout));
+        assert!(observation.values().all(|o| o.end == End::Ok));
         assert_eq!(server.accepted(), 5);
-        let at = server.accepted_at.lock().unwrap().clone();
-        // Four connections were open together; the fifth waited for a slot,
-        // which only a timeout could free.
-        assert!(at[3] - at[0] < budget / 2, "{:?}", at[3] - at[0]);
-        assert!(at[4] - at[0] >= budget / 2, "{:?}", at[4] - at[0]);
+        assert_eq!(server.high_water(), LINKS_AT_ONCE);
     }
 
     #[tokio::test]
@@ -942,25 +1082,56 @@ mod tests {
         second.abort();
     }
 
-    /// Tests never touch the internet: every URL literal in the probe tests
-    /// names loopback, a placeholder bound to a local listener, or a name that
-    /// only the resolver seam answers (T7.3).
-    #[test]
-    fn probe_tests_use_loopback_only() {
-        // The empty name is a `{}` placeholder for a local listener's address.
-        const ALLOWED: [&str; 11] = [
+    /// Every host named by an `http(s)://` literal in `source` that the probe
+    /// tests may not name. The empty name is a `{}` placeholder for a local
+    /// listener's address.
+    fn offending_hosts(source: &str) -> (usize, Vec<String>) {
+        // Three kinds of host are allowed. Loopback and placeholders are
+        // dialled. Seam names are answered by the resolver seam. Refused
+        // literals (`10.0.0.1`, `[fec0::1]`) appear only where the policy
+        // refuses them before any dial; the tests assert zero accepts.
+        const ALLOWED: [&str; 14] = [
             "",
             "127.0.0.1",
             "[::1]",
             "localhost",
             "10.0.0.1",
+            "[fec0::1]",
             "pinned.test",
             "mixed.test",
             "mixed-first.test",
             "empty.test",
             "unknown.test",
             "named.test",
+            "nat64.test",
+            "sixtofour.test",
         ];
+        let (mut seen, mut bad) = (0, Vec::new());
+        for scheme in [["http", "://"].concat(), ["https", "://"].concat()] {
+            for (at, _) in source.match_indices(&scheme) {
+                let rest = &source[at + scheme.len()..];
+                let end = rest.find(['/', '"', '\'', ' ', '\\', '?', '#', '\n']);
+                let authority = &rest[..end.unwrap_or(rest.len())];
+                let host = authority.rsplit('@').next().unwrap();
+                let host = match host.strip_prefix('[') {
+                    Some(v6) => format!("[{}]", v6.split(']').next().unwrap()),
+                    None => host.split([':', '{']).next().unwrap().to_string(),
+                };
+                seen += 1;
+                if !ALLOWED.contains(&host.as_str()) {
+                    bad.push(authority.to_string());
+                }
+            }
+        }
+        (seen, bad)
+    }
+
+    /// Tests never touch the internet: every URL literal in the probe tests
+    /// names loopback, a placeholder bound to a local listener, a name that
+    /// only the resolver seam answers, or a literal the policy refuses before
+    /// any dial (T7.3).
+    #[test]
+    fn probe_tests_use_loopback_only() {
         let mut seen = 0;
         for (file, source) in [
             ("reach.rs", include_str!("reach.rs")),
@@ -969,24 +1140,17 @@ mod tests {
                 include_str!("../../tests/link_reachability.rs"),
             ),
         ] {
-            for scheme in [["http", "://"].concat(), ["https", "://"].concat()] {
-                for (at, _) in source.match_indices(&scheme) {
-                    let rest = &source[at + scheme.len()..];
-                    let end = rest.find(['/', '"', '\'', ' ', '\\', '?', '#', '\n']);
-                    let authority = &rest[..end.unwrap_or(rest.len())];
-                    let host = authority.rsplit('@').next().unwrap();
-                    let host = match host.strip_prefix('[') {
-                        Some(v6) => format!("[{}]", v6.split(']').next().unwrap()),
-                        None => host.split([':', '{']).next().unwrap().to_string(),
-                    };
-                    seen += 1;
-                    assert!(
-                        ALLOWED.contains(&host.as_str()),
-                        "{file}: {authority} is not a loopback, placeholder or seam name"
-                    );
-                }
-            }
+            let (count, bad) = offending_hosts(source);
+            assert!(
+                bad.is_empty(),
+                "{file}: not loopback, placeholder or seam: {bad:?}"
+            );
+            seen += count;
         }
         assert!(seen > 10, "the guard scanned the probe tests: {seen}");
+        // The matcher itself refuses a public host (built here so that this
+        // file does not contain the literal).
+        let public = [["http", "://"].concat(), "8.8.8.8/x".into()].concat();
+        assert_eq!(offending_hosts(&public), (1, vec!["8.8.8.8".to_string()]));
     }
 }
