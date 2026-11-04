@@ -103,6 +103,14 @@ trap in the [README](README.md#the-expert-tier-proposed-0123). The 24-task
 catalogue hashes differently from the 19-task one (`5b312d98…`); `hard`'s rows
 keep theirs.
 
+**The tier's criterion: no single read passes.** Every expert task needs at
+least two reads (mails plus attachment parts: `min_mails +
+min_attachment_parts ≥ 2`), and on no task does acting on the first match, the
+newest match or a Swarmail shortcut tool's answer pass on every seed. Length
+plays no part: no expert inbox holds more than five mails when the agent
+decides. An attachment part
+counts as a read (0123 §1 puts that reading to the operator).
+
 `baseline --tier expert` is a separate product: 5 tasks, 10 free controls (one
 oracle and one null per task) and 150 requested paid slots (5 × 6 × 5), with
 the same six declarations, 600000 ms deadline, concurrency one and
@@ -128,7 +136,8 @@ the operator may buy more trials per cell. Codes minted at prepare expire after
 `stale_code` by the scorer's fallback, not the named trap. The tight-budget and
 several-identities families are not built (README, "Families not built"), with
 the derivation `C = n + max(2, ⌈n/2⌉)` recorded for a follow-up that adds an
-agent-side call counter.
+agent-side call counter. Here `n` is the oracle's MCP tool calls plus its app
+requests, so the caps are 4, 4, 6, 6 and 4 in catalogue order.
 
 ## Current readiness and operator command
 

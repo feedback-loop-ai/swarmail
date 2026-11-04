@@ -1425,6 +1425,22 @@ fn the_expert_tier_is_documented_in_both_directions() {
         ] {
             assert!(flat.contains(phrase), "{name}: missing {phrase:?}");
         }
+        // One claim, worded once (0123 §1), and the withdrawn four-mail bound
+        // is gone.
+        assert!(
+            flat.contains(
+                "Every expert task needs at least two reads (mails plus attachment parts: `min_mails + min_attachment_parts ≥ 2`), and on no task does acting on the first match, the newest match or a Swarmail shortcut tool's answer pass on every seed."
+            ),
+            "{name}: the tier's criterion sentence"
+        );
+        assert!(
+            !flat.contains("no expert inbox holds more than four mails"),
+            "{name}: the withdrawn four-mail bound"
+        );
+        assert!(
+            flat.contains("no expert inbox holds more than five mails"),
+            "{name}: the five-mail bound"
+        );
         for named in expert_rows(&readme_or(name, &readme, &run_plan)) {
             assert!(
                 expert.contains(&named),

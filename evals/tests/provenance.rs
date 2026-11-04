@@ -732,7 +732,7 @@ fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
     // hand-edited.
     assert_eq!(
         p::catalogue_hash(),
-        "4f7de04f0ee285a7cf9db2901aec7bdbdf5ded66d979c927deb45c9c74190258"
+        "a05c85d3bd20606b91acf94fb957f73dda74900e921f5dbe41456debb606ffb6"
     );
     // The first nineteen entries are the catalogue the hard run recorded as
     // `5b312d98…`: the expert tier only appends, so the default-plus-hard
@@ -798,7 +798,7 @@ fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
         ),
         (
             "otp-late",
-            "a2e44d43e9235a79236885a0b9023bb0dbf26487b679ab2b600a780cba19344a",
+            "0ecd321f03417b19812f6e89c08b19502c9e1f27435d629c8d3cda1dd1d17049",
         ),
         (
             "confirm-attachment",
@@ -806,7 +806,7 @@ fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
         ),
         (
             "confirm-injection",
-            "cf17141e18bd6346b40d4367f9e0abbe90f175b12ea534fff479fb9bd561d006",
+            "afb90a22654d68ffce00d2beeea3d86979088989e58d228d8ff72a54c5f766fd",
         ),
     ] {
         assert_eq!(p::task_hash(id).unwrap(), hash, "{id}");

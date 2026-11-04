@@ -196,13 +196,13 @@ Each answers a finding named in [plan.md § Review return 1](plan.md#review-retu
 Same rule as above: each proving test is red before its change and green
 after. Nothing paid runs.
 
-- [ ] **T15: state the criterion in the table and assert it.** Set
+- [x] **T15: state the criterion in the table and assert it.** Set
   `EXPERT_DIFFICULTY`'s `otp-late` row to `min_mails = 2` and its
   `confirm-injection` row to `min_mails = 2`. Leave every cost column
   as it is (2+2 and 1+1). **Proof:** the AC5 table test gains one
   assertion, `min_mails + min_attachment_parts >= 2` for every row. It is red
   on the old table (two rows sum to 1) and green after (AC5; guarantees 1).
-- [ ] **T16: rebuild `otp-late`'s resend as head, tail, reminder.**
+- [x] **T16: rebuild `otp-late`'s resend as head, tail, reminder.**
   - Rewrite `issue_late_resend` per plan § Contracts: `mint_otp`, then the
     head, tail and reminder through `send_otp`, then
     `last_mailed_code = K`.
@@ -233,7 +233,7 @@ after. Nothing paid runs.
 
   These cover AC6 and AC13 and answer guarantees 1, correctness (b) and
   tests b.
-- [ ] **T17: `otp-late`'s goal and oracle.** Replace the goal with spec
+- [x] **T17: `otp-late`'s goal and oracle.** Replace the goal with spec
   § Goals' revised text. Add `code_head` and `code_tail` to `oracle.rs`, and
   rewrite the `otp-late` arm per plan § Contracts. **Proof:**
   - Inline oracle unit tests: each helper reads the fixture's exact
@@ -244,7 +244,7 @@ after. Nothing paid runs.
   - T21's fixed-seed oracle run.
 
   Covers AC4, AC10 and AC11.
-- [ ] **T18: rebuild `confirm-injection` as confirmation, retraction,
+- [x] **T18: rebuild `confirm-injection` as confirmation, retraction,
   injection.** Add `CONFIRM_LABELS`, then rewrite the `SignupInjection`
   `plan()` arm per plan § Contracts, with the seeded `valid-link` choice.
   **Proof:** inline `fixture.rs` tests over all 64 seeds. Each seed checks:
@@ -261,7 +261,7 @@ after. Nothing paid runs.
   unchanged. Handler tests check that the retracted link and the
   injection's link each record `decoy_link` with `wrong_link`, and that the
   valid link sets `confirmed` (AC6, AC14; guarantees 1).
-- [ ] **T19: `confirm-injection`'s goal and oracle.** Replace the goal with
+- [x] **T19: `confirm-injection`'s goal and oracle.** Replace the goal with
   spec § Goals' revised text. Add `retracted_label` and rewrite the
   `confirm-injection` arm per plan § Contracts. **Proof:**
   - inline unit tests: the helper reads both labels, and refuses an
@@ -271,7 +271,7 @@ after. Nothing paid runs.
   - T21's fixed-seed oracle run.
 
   Covers AC4, AC10 and AC11.
-- [ ] **T20: regenerate the expert catalogue bytes; hold the others.**
+- [x] **T20: regenerate the expert catalogue bytes; hold the others.**
   Regenerate `tests/data/catalogue-v2.json`, the full-catalogue pin and the
   two moved expert per-task hashes from `tasks`, never by hand. **Proof:**
   `tests/provenance.rs` stays green on its existing pins:
@@ -282,7 +282,7 @@ after. Nothing paid runs.
   - the other three expert per-task hashes are unchanged.
 
   Only the two revised tasks' hashes and the full pin move (AC2).
-- [ ] **T21: real-path proofs for the two revised tasks.** Update the
+- [x] **T21: real-path proofs for the two revised tasks.** Update the
   helper modes per plan § Project structure. **Proof:** `tests/proof.rs`
   against the real `swarmail`:
   - `expert_tasks_hold_on_fixed_seeds` on the four fixed seeds:
@@ -304,14 +304,14 @@ after. Nothing paid runs.
     5 `gave_up` failures.
 
   Covers AC7, AC9, AC10 and AC11, and answers guarantees 1.
-- [ ] **T22: tighten the secrets test.** In
+- [x] **T22: tighten the secrets test.** In
   `production_construction_keeps_secrets_independent_of_public_seed`, add
   `OtpCorrection | OtpLate` to the Otp-role arm and `SignupInjection`'s two
   Signup tokens to its arm. **Proof:** that test fails if any of those
   tokens is derived from the public seed. Mutating it temporarily to draw
   from `inputs` turns it red. Revert the mutation before committing (AC18;
   independent 2).
-- [ ] **T23: one claim in every document.**
+- [x] **T23: one claim in every document.**
   - Write § Feature's criterion sentence into `evals/README.md`,
     `evals/run-plan.md` and the `Tier::Expert` doc, replacing the old
     claim and the four-mail bound.
@@ -329,7 +329,7 @@ after. Nothing paid runs.
 
   Covers AC15 and AC17, and answers guarantees 1, guarantees 2, guarantees
   5 and tests a.
-- [ ] **T24: bring the design record in line with the code.** Append a
+- [x] **T24: bring the design record in line with the code.** Append a
   dated entry to 0123's implementation record covering:
   - the re-measured proxy table for all five tasks;
   - a statement that `issue_otp_with` was never built, and that
@@ -342,7 +342,7 @@ after. Nothing paid runs.
   `EXPERT_DIFFICULTY`, which T21 proves measured. `tests/boundary.rs`
   still finds exactly one proposed `| [0123]` index row (AC15, AC19;
   guarantees 3).
-- [ ] **T25: run every house gate on the revised tree and commit.**
+- [x] **T25: run every house gate on the revised tree and commit.**
   - Run T14's full inventory again, `--locked`: root fmt, clippy, test and
     `build --bin swarmail`, then the evals fmt, clippy and test against the
     candidate's own `swarmail` from Cargo's artifact record.
@@ -361,3 +361,19 @@ after. Nothing paid runs.
 
   **Proof:** every command exits 0. Report `complete` only when all of it
   is green (AC16).
+
+*Implement-seat record, 2026-11-04 (revision):* T15–T25 are done. Every gate in
+the inventory ran `--locked` and exited 0 (root fmt, clippy, test and
+`build --bin swarmail`; the evals fmt, clippy and full test against the
+candidate's own `swarmail`; the coverage gate at exact 100/100/100 and its
+selftest; `publish-guard-test.sh`; `seal-branch-test.sh`; `cargo deny check
+licenses`), except `brokkr compile` for the recipe shelf: the pinned `brokkr`
+binary is not present in the implement seat's box, so it did not run here. No
+file under `.brokkr/` changed, so the verify seat compiles the inputs main
+has. `git diff --stat 8732445` touches no lockfile, `deny.toml`, `.github/`,
+`scripts/`, `.brokkr/`, toolchain file or root `src/`. Test runs used at most 16
+threads (nproc/4 is 32); the highest load observed was about 12 (one-minute
+average, during the parallel evals suite), and no load proof was needed.
+One deviation from the design is recorded in 0123: the tail mail's "10 minutes"
+puts a two-digit run in it, so the test asserts "only run of three or more
+digits" rather than "only digit run".
