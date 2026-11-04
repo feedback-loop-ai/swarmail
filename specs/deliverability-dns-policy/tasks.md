@@ -40,9 +40,9 @@ and passes with it. Commit unsigned, in the repository's style. Never push.
   present.
   *Test:* inline `canonical_view_is_order_independent`: three permutations
   serialize byte-identically, and the view parses back to an equal `Policy`.
-  Inline `canonical_view_worst_case` builds an accepted input of exactly 8,192
+  ~~Inline `canonical_view_worst_case` builds an accepted input of exactly 8,192
   bytes that omits a member, and asserts that its canonical form is at most
-  8,216 bytes (spec §Declaration shape).
+  8,216 bytes.~~ *Superseded 2026-11-04 by RT1:* that input is now refused.
 - [ ] **T4. Lookup recorder.** `Txt`, `Lookups::new(&Effective)`, and
   `resolve_txt(&mut self, &OwnerName) -> Txt`, which records each answered name
   once. Mark the items production does not reach with
@@ -131,7 +131,8 @@ and passes with it. Commit unsigned, in the repository's style. Never push.
   - assert that a fresh request carries the new one.
 
   The existing 0002 subscribe-gate and Closed-arm tests in `store.rs` pass
-  unmodified.
+  unmodified. *Extended 2026-11-04 by RT5:* the change is also made through a
+  real `PUT`.
 
 ## Phase 3 — configuration (`src/config.rs`, `src/lib.rs`)
 
@@ -220,7 +221,7 @@ and passes with it. Commit unsigned, in the repository's style. Never push.
   message's domains `tempfail`, then SMTP DATA returns `250` and an immediate
   list shows the message. The report is computed on request and shows the
   `inbox` source. Plus `grep -n -i dns src/smtp.rs src/persist.rs` stays empty, as it is on `8732445`
-  (recorded in the verify notes).
+  (recorded in the verify notes). *Widened 2026-11-04 by RT4.*
 - [ ] **T21. No rule (AC13).**
   *Test:* `declared_dmarc_does_not_satisfy_bulk_rules`: declare
   `_dmarc.<from domain>`, and `bulk.dmarc_presence.not_evaluated.v1` is still
@@ -304,3 +305,147 @@ small and each kept inside the design:
   `mkfifo`; a fork inside the library test binary can hold a copy of another
   test's lock descriptor and fail `persist.rs`'s `try_lock` assertions. The
   FIFO is now made with `libc::mkfifo`.
+
+## Review return — 2026-11-04
+
+The review of `e80aa822` returned the design (run
+`issue-253-the-deliverability-dns-c76ebc80`). Each task below answers a
+finding named in the plan's review return log. Build them on top of the
+branch; do not rewrite the earlier commits. Each test must be seen red
+against `e80aa822` where the task says so, then green.
+
+- [ ] **RT1. The canonical bound (AC2, AC6, AC12; guarantees finding).**
+  In `dns::parse`, after building `Policy`, refuse when
+  `serde_json::to_vec(&policy.view())` is longer than `MAX_DNS_POLICY_BYTES`,
+  with `canonical declaration is larger than 8192 bytes`. Keep the raw
+  pre-parse check and its message. Fix the doc comment on
+  `MAX_DNS_POLICY_BYTES` (it still claims the "+24" rule).
+  *Tests:*
+  - inline `canonical_bound_closes_the_round_trip`, replacing
+    `canonical_view_worst_case`: the exactly-8,192-byte raw input omitting
+    `tempfail` is **refused** with the canonical message (red against
+    `e80aa822`); an input whose canonical form is exactly 8,192 bytes is
+    accepted; its canonical bytes parse to an equal `Policy` that serializes
+    to identical bytes; one byte more of value is refused;
+  - `parse_refusals` gains the canonical-over case;
+  - `tests/deliverability.rs` `dns_policy_canonical_over_http` gains the
+    boundary case: `PUT` the exactly-8,192-byte canonical form, read a
+    report, `PUT` its `dns.policy` back byte for byte, and assert a
+    byte-identical echo and next report; a body that fits 8,192 raw bytes
+    but not canonically is `400` with the canonical message, and the
+    previous declaration is unchanged;
+  - `declared_policy_counts_toward_report_cap` uses a declaration whose
+    canonical form is exactly 8,192 bytes and at most 256 entries, and still
+    proves `AnalysisError::Failed` with the findings and success without the
+    policy; the exact-cap test still lands on `MAX_REPORT_BYTES`.
+- [ ] **RT2. The entry count (AC19; security residual).**
+  `MAX_DNS_POLICY_ENTRIES` = 256 in `dns.rs`. `parse` counts every `txt`
+  owner, every value and every `tempfail` name as it accepts it, and refuses
+  the 257th with `declaration has more than 256 names and values`.
+  *Tests:* `parse_refusals` gains 257 entries (refused) and
+  `parse_accepts_and_canonicalizes` gains exactly 256 (accepted), both inside
+  8,192 bytes (for example one-letter `tempfail` names, and a mix of owners and
+  values so both counters are exercised); `load_file_refusals` gains a
+  257-entry file; the wire test gains a 257-entry `PUT` → `400`, with the
+  previous declaration byte-identical in the next report.
+- [ ] **RT3. `TempFail` is never clean (AC18; security contract gap).**
+  `Report::qualifies` returns `false` when any `dns.lookups` entry has
+  outcome `temp_fail`, before or regardless of the findings check.
+  *Test:* extend `fixture_lookups_are_recorded`, or a sibling inline test
+  in `src/deliverability.rs`, through `Service::with_inputs` and the real
+  cache: a message with no findings whose fixture lookups include the
+  declared `tempfail` name gives `qualifies(t) == false` for every
+  `Severity` `t` (red against `e80aa822`); the same message resolving only
+  a `records` name and a `no_records` name qualifies at every threshold. One
+  `Store::qualify` call over the `temp_fail` report returns no match.
+- [ ] **RT4. AC9's structural proof (AC9; security spec defect).**
+  Rework `tempfail_policy_does_not_touch_delivery`'s scan in
+  `tests/deliverability.rs`:
+  - whole files via `include_str!`: `src/smtp.rs`, `src/persist.rs`,
+    `src/extract.rs` and every file under `src/extract/` (list them
+    explicitly; assert the list matches `std::fs::read_dir` of `src/extract`
+    so a new file cannot escape it);
+  - `src/store.rs`: split into function bodies at each line that begins a
+    `fn` item at the `impl` indentation, keep those whose text contains
+    `self.mutation.lock()`, assert that `pub fn insert(` is among them and
+    that at least one was found, and assert none mentions `dns`,
+    `Effective` or `policy_for` (case-sensitive for the type names, and
+    `dns` case-insensitive);
+  - a comment naming the read-side exemption (`report`, `qualify`,
+    `wait_for_report`).
+  The behavioural half (`250` and immediate listing under a
+  tempfail-everything declaration) stays as it is.
+  *Proof that it can fail:* record in the verify notes that adding
+  `let _ = crate::deliverability::dns::MAX_DNS_POLICY_BYTES;` inside
+  `Store::insert` turns the test red (then revert).
+- [ ] **RT5. AC10 through a real `PUT` (AC10; security spec defect).**
+  In `src/deliverability/concurrency_tests.rs`, add
+  `put_mid_assert_is_not_seen` and `put_mid_wait_is_not_seen`, each on
+  `#[tokio::test(flavor = "multi_thread")]`: bind `127.0.0.1:0`, build an
+  `AppState` over the test's `Arc<Store>` (as `src/api.rs`'s inline router
+  tests do), and spawn `api::serve` with a pending shutdown.
+  - Assert: hold the first evaluation of a two-candidate `Store::qualify`
+    with `Held`, send `PUT /api/v1/inboxes/box/dns` over a raw HTTP/1.1
+    connection, assert `200` and the canonical echo, release, and assert both
+    candidates' cached reports carry the old policy while a fresh
+    `store.report` carries the new one.
+  - Wait: start `wait_for_report` with a threshold, hold its first
+    evaluation (after the subscribe) with `Held`, `PUT` as above, release,
+    and assert the returned mail's report carries the old policy and a fresh
+    request the new one.
+  Keep `declaration_change_mid_request_is_not_seen` and
+  `report_wait_snapshots_policy_before_subscribe_and_keeps_it` unchanged. No
+  sleep: the test awaits the `PUT` response while `Held` keeps the
+  evaluation parked.
+- [ ] **RT6. The label cap (AC19; security residual).**
+  `MAX_DNS_INBOX_LABEL_BYTES` = 512. `set_inbox_dns` refuses a longer label
+  with `400` `inbox label is longer than 512 bytes` after `admit` and before
+  `dns::parse` or `declare`.
+  *Test:* `tests/deliverability.rs` `inbox_dns_declarations_over_http` gains
+  a 513-byte label → `400` with that message and no declaration made (a
+  following `DELETE` of that label echoes the fallback and a report for a
+  512-byte-label inbox is unaffected), and a 512-byte label → `200`.
+- [ ] **RT7. `DELETE` echoes the fallback (AC20; correctness finding).**
+  Extract `fn fallback(&self) -> Arc<Effective>` (server snapshot, else the
+  default) used by `policy_for`; `forget` removes the entry under the lock
+  and returns `self.fallback()` without calling `policy_for`.
+  *Test:* inline `forget_echoes_the_fallback` in `src/deliverability.rs`: with
+  no server map, `forget` on a declared and an undeclared inbox returns
+  `Source::Default`; on a `Service` with `set_server`, both return an `Arc`
+  that is `Arc::ptr_eq` to the server snapshot. The wire `DELETE` tests keep
+  asserting `server` or `default`.
+- [ ] **RT8. The `load_file` residual, written down (correctness and
+  independent info).** No code change in behaviour. Replace the comment
+  "A FIFO is refused before it is opened, so it cannot block startup" with
+  the truth: the metadata check refuses a FIFO, device or directory at the
+  path; a FIFO swapped in between the check and the open would block
+  startup; the path is operator configuration; closing it needs a production
+  dependency (0120 §9).
+  *Test:* `load_file_refusals` still passes; review reads the comment
+  against 0120 §9.
+- [ ] **RT9. Documentation pins (AC17; tests finding).**
+  - `tests/api.rs`' route list gains `PUT /api/v1/inboxes/{inbox}/dns` and
+    `DELETE /api/v1/inboxes/{inbox}/dns`, checked in the guide and in
+    `llms.txt` (add them to `docs/guide/rest-api.md` if absent).
+  - The served-OpenAPI test asserts that `components.schemas` holds
+    `DnsRecord`, `DnsPolicy`, `DnsLookup` and `DnsEcho`, that
+    `/api/v1/inboxes/{inbox}/dns` has `put` and `delete`, and that every
+    `$ref` string in the document resolves to an existing node.
+  - `tests/deliverability.rs`' `llms.txt` phrase list gains `temp_fail`,
+    `"source"`, `canonical declaration is larger than 8192 bytes`,
+    `256 names and values` and `512 bytes`.
+  - Update `src/static/openapi.json`, `src/static/llms.txt` and
+    `docs/guide/deliverability.md` for RT1, RT2, RT3, RT6 and RT7.
+  *Test:* each new assertion is seen red by deleting its target once
+  (recorded in the verify notes), then green.
+- [ ] **RT10. Records and gates.** 0120 stays `- **Status:** proposed`
+  and its README row keeps "awaiting the operator" and the PR hold.
+  `git diff --exit-code 8732445 -- Cargo.toml Cargo.lock evals/Cargo.lock deny.toml`
+  is clean. Run every house gate `--locked` as T25 lists, including the
+  evals crate, the exact coverage gate and its selftest, publish-guard,
+  seal-branch and `cargo deny check licenses`; every new production line
+  (the two counters, the canonical check, the `qualifies` clause,
+  `fallback()`, the label check) is executed by RT1–RT7's tests. No load
+  proof is planned; any added one is bounded to nproc/4 workers for at most
+  10 minutes, as a named, timed command, with the load reported.
+  *Test:* the gate exit codes in the verify notes.

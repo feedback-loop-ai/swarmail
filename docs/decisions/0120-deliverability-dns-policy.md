@@ -1,7 +1,10 @@
 # 0120 — A declared, offline DNS policy that every deliverability report records
 
 - **Status:** proposed
-- **Date:** 2026-11-03
+- **Date:** 2026-11-03; revised 2026-11-04 after the review of `e80aa822`
+  returned the design (run `issue-253-the-deliverability-dns-c76ebc80`). The
+  revision corrects §2, §4, §8 and §9 and one alternative below; the
+  specification's review return adjudication lists each finding.
 - **Scope:** epic #251, issue #253 (operator direction 2026-11-03: "start the
   remaining deliverability stories"). Run
   `issue-253-the-deliverability-dns-c704444e`, from `main` `8732445`, on the
@@ -50,9 +53,21 @@
    and the report's `dns.policy` all use one JSON shape:
    `{"txt":[{"name":…,"values":[…]}],"tempfail":[…]}`. Both members are
    optional on input and always present on output. Unknown members are
-   refused. The two inputs share one parser. A declaration's raw bytes are
-   at most `MAX_DNS_POLICY_BYTES` = 8,192. That one bound also caps what a
-   report embeds.
+   refused. The two inputs share one parser.
+   - One constant, `MAX_DNS_POLICY_BYTES` = 8,192, bounds a declaration's
+     **raw** bytes (the file, and the API body, where over it is `413`) and
+     its **canonical** serialization, checked after folding and sorting
+     (over it is refused, `400` on the API). Canonicalization is
+     idempotent, so a report embeds at most 8,192 policy bytes and every
+     report's `dns.policy` can be declared back verbatim.
+   - *Corrected 2026-11-04.* This record first said the raw bound "also
+     caps what a report embeds". It did not: the canonical form always
+     spells both members, so an accepted 8,192-byte input that omitted one
+     became an 8,205-byte canonical form that a report embedded and the
+     API then refused. The bound is now measured on the embedded form too.
+   - At most `MAX_DNS_POLICY_ENTRIES` = 256 names and values together:
+     every `txt` owner, every value and every `tempfail` name counts one.
+     It bounds the parsed tree, which the byte bound does not (§8).
    - Owner names are ASCII. They are folded to lowercase and one trailing
      dot is stripped. Each label is 1–63 bytes of `[a-z0-9_-]`, and the
      whole name is 1–253 bytes. There is no IDNA and no wildcard
@@ -64,7 +79,8 @@
    - These declarations are refused, never repaired: two entries whose
      names fold to one owner, a duplicate value under one owner, an empty
      `values` list, a name in both `txt` and `tempfail`, a name or value
-     outside the grammar, and anything over the bound.
+     outside the grammar, raw or canonical bytes over the bound, and more
+     than 256 names and values.
    - The canonical form sorts names by byte order and sorts each owner's
      values by byte order. Insertion order never reaches a report.
 3. **The lookup interface #254/#255 plug into is concrete, not a trait.**
@@ -86,6 +102,16 @@
    or an analysis failure, the same discipline `AuthEvidence::Unknown`
    follows today. A declared `tempfail` is the only way to inject that
    outcome, which keeps it at the poles under 0020 §5.
+   - *Enforced (2026-11-04).* `Report::qualifies` returns false at every
+     threshold when any recorded lookup's outcome is `temp_fail`, whatever
+     the findings say, so a verifier that forgets its `not_evaluated`
+     finding still cannot make a temporarily failing world clean. An exact
+     assert never matches such a report, and a wait with a threshold does
+     not return it; it reaches 0085's existing deadline outcome unless
+     another candidate qualifies. This is the mechanical form of the
+     sentence above. Production `lookups` is empty until #254, so nothing
+     observable changes in this story. The changed qualify semantics are
+     part of this proposal and wait for the operator with the rest of it.
 5. **Every report records the policy and the records it used.** `Report`
    gains one required member:
    `"dns":{"source":"default"|"server"|"inbox","policy":{"txt":[…],"tempfail":[…]},"lookups":[{"name":…,"type":"txt","outcome":"records"|"no_records"|"temp_fail","values":[…]}]}`.
@@ -128,12 +154,31 @@
    - At most 4,096 inboxes hold a declaration. A `PUT` that would add a
      4,097th is refused `503`, and no live declaration is evicted.
      Replacing an existing inbox's declaration at capacity succeeds.
+   - A `PUT` label may be at most `MAX_DNS_INBOX_LABEL_BYTES` = 512 bytes
+     (RFC 5321's command-line length); a longer one is `400` before the
+     body is parsed. Such an inbox can hold mail but not a declaration.
+   - *Resident cost, stated (2026-11-04).* The inbox cap counts
+     declarations and the byte bounds count bytes; neither bounds the
+     parsed tree, which is why §2's entry count exists. One declaration
+     holds at most 8,192 bytes of strings plus at most 256 strings and
+     tree slots of overhead (about 25 KiB) plus a key of at most 512
+     bytes: under 34 KiB. A completely full registry is under 140 MiB,
+     from at most about 34 MiB of request bytes, and the 128 report-cache
+     slots may keep one replaced snapshot each alive (under 5 MiB). The
+     memory is process-local, released on `DELETE` or restart, and inside
+     the accepted model of an unbounded mail store on a test server
+     (0038). The route stays unauthenticated under the plane-wide Origin
+     guard, like every inbox route (0004).
    - A `PUT` validates fully before effect. An invalid body is `400`, an
      oversized body is `413`, and either leaves the previous declaration
      exactly as it was. A `200` means the declaration is in effect for the
      next request. The body echoes `{inbox, source, policy}`.
    - `DELETE` is idempotent. It returns `200` with the resulting effective
-     `{inbox, source, policy}`.
+     `{inbox, source, policy}`. That echo is the fallback itself, the
+     server map or else the default, returned without reading the inbox
+     declarations again after the removal. A `PUT` racing the `DELETE`
+     therefore cannot make the echo name `source` `inbox`; it is the next
+     state, and the next request sees it.
    - Declarations are not persisted and do not survive a restart. Every
      report names its source, so that reversion is visible, never silent.
      The server file is the durable policy.
@@ -148,6 +193,15 @@
      refused). It is read through a bound of `MAX_DNS_POLICY_BYTES + 1`, so
      `/dev/zero` cannot exhaust memory. It must be valid UTF-8 and a valid
      declaration.
+   - *Accepted residual (2026-11-04).* The regular-file check reads the
+     path's metadata and then opens the path. A FIFO swapped in between
+     the two calls would block startup on the open. Closing that needs a
+     non-blocking open, which needs `libc` as a production dependency;
+     this story takes no dependency, and the epic's one widening belongs
+     to #254. The path is operator configuration, so the swap needs write
+     access to a path the operator chose, and the effect is a startup that
+     hangs, not a bypass or a false-clean report. The code comment says
+     the same rather than claiming a FIFO cannot block startup.
    - Any refusal makes `serve` exit non-zero with
      `dns policy file <path>: <reason>`. It never falls back to the
      default, because an empty map would make every later DKIM/SPF/DMARC
@@ -186,10 +240,16 @@ lists every ruling. The ones that shape this record:
   be reproduced. *Cost:* reports grow by up to 8 KiB when a map is
   declared, and the declaration bound drops from the intake's suggested
   64 KiB to 8 KiB.
-- **One byte bound** (simplicity) over six count and length limits
-  (robustness). The raw-size bound caps the canonical form that reports
-  embed. *Cost:* refusals name "too large" rather than which count was
-  exceeded.
+- **One byte constant** (simplicity) over six count and length limits
+  (robustness), *corrected 2026-11-04*. The constant bounds the raw and
+  the canonical form; round one's claim that the raw bound alone capped
+  the embedded form was false. One combined entry count (256) is added,
+  because the byte bound does not bound resident memory. Robustness's two
+  byte constants (raw 16,384, canonical 8,216) were declined: they close
+  the round trip no better and put a second number on every surface.
+  *Cost:* refusals name "too large" or the entry count rather than which
+  per-owner limit was exceeded, and an input within 24 bytes of the bound
+  that omits a member is refused although it fitted on the wire.
 - **Concrete recorder, no `Real` variant** (simplicity) over a fail-closed
   `Real` arm in the evaluator (robustness). *Cost:* #254 must add the arm
   together with its resolver. There is no pre-built defensive branch to
@@ -214,7 +274,9 @@ The specification's acceptance criteria and its paired tasks hold the
 proofs: unit tests for the parser, the name grammar and the three
 outcomes; real HTTP and SMTP proofs in `tests/deliverability.rs`; a
 two-process byte comparison; refusal proofs for the file and for real
-mode; a cache-identity evaluation count; and every house gate,
+mode; a cache-identity evaluation count; the canonical-bound round trip;
+a real `PUT` during a held evaluation; the `temp_fail` qualify fixtures;
+the entry and label bounds; and every house gate,
 `--locked`, with exact coverage. Sibling stories #258 and #260 also
 advance `RULE_SET_ID`. Whichever merges later takes the next version. That
 is a one-line integration fix and does not reopen this design. This record
