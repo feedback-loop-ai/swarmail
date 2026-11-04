@@ -412,7 +412,7 @@ it is not extraction, and 0005 is preserved. 0001–0003 are not touched.
 produced, and no copy of the subject is built ahead of the cap. A list
 page therefore stays bounded by `MAX_COMPAT_PAGE_BYTES` (0044 §6, §3
 above). Escaped bytes count toward that cap: a subject made of escapable
-characters reaches 64 MiB from about 13 MiB stored. That page is refused
+characters reaches 64 MiB from about 12.8 MiB stored. That page is refused
 whole and by name, as before. `GET /mail/{id}` has no response cap, as
 before; its subject can grow up to five times the stored bytes. This
 addendum adds no by-id cap. That is the accepted ruling, not a gap
