@@ -727,20 +727,44 @@ fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
     })
     .unwrap();
     assert_eq!(encoded, include_bytes!("data/catalogue-v2.json"));
-    // The full catalogue gained the hard tier (proposed 0117), so its hash
-    // moved; the pin below is regenerated from `tasks`, never hand-edited.
+    // The full catalogue gained the expert tier (proposed 0123), so its hash
+    // moved again; the pin below is regenerated from `tasks`, never
+    // hand-edited.
     assert_eq!(
         p::catalogue_hash(),
+        "a05c85d3bd20606b91acf94fb957f73dda74900e921f5dbe41456debb606ffb6"
+    );
+    // The first nineteen entries are the catalogue the hard run recorded as
+    // `5b312d98…`: the expert tier only appends, so the default-plus-hard
+    // subset still serializes to exactly those bytes.
+    let through_hard = serde_json::to_vec(&swarmail_evals::tasks::Catalogue {
+        schema_version: 2,
+        tasks: swarmail_evals::tasks::catalogue()
+            .into_iter()
+            .filter(|t| t.tier != swarmail_evals::tasks::Tier::Expert)
+            .collect(),
+    })
+    .unwrap();
+    assert_eq!(
+        p::sha256(&through_hard),
         "5b312d989a0be3cfeeab4e6885d2f3809f06bc64e0b807f26826d6dfbae8f3f7"
+    );
+    assert_eq!(
+        swarmail_evals::tasks::catalogue()[..19],
+        swarmail_evals::tasks::catalogue()
+            .into_iter()
+            .filter(|t| t.tier != swarmail_evals::tasks::Tier::Expert)
+            .collect::<Vec<_>>()[..],
+        "the expert tasks are appended after the nineteen"
     );
     // The sixteen default-tier tasks still serialize to exactly the bytes the
     // 2026-11-01 baseline recorded as `6068b687…`: no existing task, field or
-    // id moved, and no hard task sits before `inbox-isolation`.
+    // id moved, and no hard or expert task sits before `inbox-isolation`.
     let default_tier = serde_json::to_vec(&swarmail_evals::tasks::Catalogue {
         schema_version: 2,
         tasks: swarmail_evals::tasks::catalogue()
             .into_iter()
-            .filter(|t| t.tier != swarmail_evals::tasks::Tier::Hard)
+            .filter(|t| swarmail_evals::tasks::DEFAULT_TIERS.contains(&t.tier))
             .collect(),
     })
     .unwrap();
@@ -761,6 +785,28 @@ fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
         (
             "digest-lookalike",
             "aed537fed8aef6098a28b606dea5f710da2ac4c14d46d18d696b04262956dbb9",
+        ),
+        // The expert tier's definitions, pinned so a later edit is a visible
+        // change to a published task (regenerated from `tasks`).
+        (
+            "otp-correction",
+            "1f1936f1c993e7d3ffb66e58e120245df3a72a8e4790dfa40421b37799c05d3d",
+        ),
+        (
+            "digest-correction",
+            "6acadaf6c71456e886a1b606961ff5b2cb5a8c82ca7c3176a2dff2ccbf67c7fe",
+        ),
+        (
+            "otp-late",
+            "0ecd321f03417b19812f6e89c08b19502c9e1f27435d629c8d3cda1dd1d17049",
+        ),
+        (
+            "confirm-attachment",
+            "655b30dd8bc4297f83587d5c503d4775c7c760e11d9044d72bbe0bb19c1802bd",
+        ),
+        (
+            "confirm-injection",
+            "afb90a22654d68ffce00d2beeea3d86979088989e58d228d8ff72a54c5f766fd",
         ),
     ] {
         assert_eq!(p::task_hash(id).unwrap(), hash, "{id}");
