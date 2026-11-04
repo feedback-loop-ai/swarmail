@@ -5,14 +5,14 @@ and contract detail is in [plan.md](plan.md). Each task is paired with the
 test that proves it. A task is done when that test is red before the change
 and green after. Nothing paid runs in any task.
 
-- [ ] **T1: record the proposal.** Add the 0123 row ("proposed — awaiting
+- [x] **T1: record the proposal.** Add the 0123 row ("proposed — awaiting
   the operator") to `docs/decisions/README.md`. Add the dated tier-list
   amendment to `specs/agent-eval-harness/spec.md`
   (`straight|traps|multi_step|hard|expert`; "24 catalogue rows in five tiers;
   the default product is the 16"). **Proof:** `tests/boundary.rs` asserts
   exactly one `| [0123]` index row containing `proposed`, and the amended
   tier list. No accepted record's text or status changes (AC15).
-- [ ] **T2: add the tier, and pin the existing bytes.**
+- [x] **T2: add the tier, and pin the existing bytes.**
   - Add `Tier::Expert` and `DEFAULT_TIERS`, and update `from_str`'s error
     text.
   - Make every "default tier" filter positive: `baseline.rs:49`,
@@ -28,7 +28,7 @@ and green after. Nothing paid runs in any task.
   **Proof:** `tests/provenance.rs` and the `tests/scoring.rs` tier tests
   (`"expert"` parses; `Expert`, `experts` and `expert-tier` refuse in both
   serde and `FromStr`). They go red if any existing byte moves (AC1, AC2).
-- [ ] **T3: add the five scenarios, tasks and the difficulty table.**
+- [x] **T3: add the five scenarios, tasks and the difficulty table.**
   - Add the five `Scenario` variants and their `flow()` arms, the
     constants, and the five `task(...)` entries with the goals verbatim
     from spec § Goals.
@@ -42,7 +42,7 @@ and green after. Nothing paid runs in any task.
   expert id and none for other tiers, a non-empty trap and mistake,
   `expected_class == failure_class`, and at least four distinct families
   (AC4, AC5).
-- [ ] **T4: add the five named-trap rows.** Add the `trap_class` arms of
+- [x] **T4: add the five named-trap rows.** Add the `trap_class` arms of
   plan § Project structure. This is the only task that depends on 0123's
   reading of 0071 §1. It is kept separate so it can wait alone. **Proof:**
   `tests/scoring.rs` tables for each scenario:
@@ -52,7 +52,7 @@ and green after. Nothing paid runs in any task.
   - a wrong action, flow or class traps nothing;
   - the same event under a non-expert scenario does not trap through the
     new row (AC9).
-- [ ] **T5: build `otp-correction`.**
+- [x] **T5: build `otp-correction`.**
   - Add `issue_otp_with`, the prepare arm per plan § Contracts, and the
     scenario's 429 resend.
   - **Proof:** inline `fixture.rs` tests over 64 seeds check that:
@@ -68,7 +68,7 @@ and green after. Nothing paid runs in any task.
     answers 429 with an unaccepted, category-less event and no new
     delivery, while `otp` and `stale-otp` resends are unchanged (AC6,
     AC13).
-- [ ] **T6: build `digest-correction`.**
+- [x] **T6: build `digest-correction`.**
   - Add the prepare arm per plan § Contracts.
   - **Proof:** inline tests over 64 seeds check that:
     - there are two Digest deliveries; the digest has 13 anchors and
@@ -81,7 +81,7 @@ and green after. Nothing paid runs in any task.
   - **Proof:** a handler test checks that the retracted link records
     `digest_decoy`/`wrong_link` and the right one sets `digest_selected`
     (AC6).
-- [ ] **T7: build `otp-late`.**
+- [x] **T7: build `otp-late`.**
   - Add the prepare arm with the restart, `last_mailed_code`, and the
     scenario's resend per plan § Contracts.
   - **Proof:** inline tests check that:
@@ -93,7 +93,7 @@ and green after. Nothing paid runs in any task.
     - after a second resend the reminder carries the first resend's code
       and the newest fresh code verifies;
     - `/deliveries/release` releases nothing (AC6, AC13).
-- [ ] **T8: build `confirm-attachment` and `confirm-injection`.**
+- [x] **T8: build `confirm-attachment` and `confirm-injection`.**
   - Add the two prepare arms per plan § Contracts.
   - **Proof:** inline tests over 64 seeds check that:
     - attachment: one `Mixed` delivery; the body's only URL is a
@@ -105,7 +105,7 @@ and green after. Nothing paid runs in any task.
     every mail and attachment starts with the app URL, and that no mail
     contains a backtick, `$ `, `sudo`, `curl`, `/etc/`, `~/`, `password` or
     an `@` host other than the fixture's own addresses (AC6, AC14).
-- [ ] **T9: teach the oracle and count its cost.**
+- [x] **T9: teach the oracle and count its cost.**
   - Add the five oracle arms per plan § Contracts.
   - Add `correction_digits` and `retracted_section`.
   - Add the counters: `McpClient::tool_calls` and the `App` request
@@ -117,7 +117,7 @@ and green after. Nothing paid runs in any task.
     checks that `initialize` and the notification do not count and each
     `call` counts once. T10's real-process sweep is the end-to-end proof
     (AC10, AC11).
-- [ ] **T10: oracle, null and cost on fixed seeds.**
+- [x] **T10: oracle, null and cost on fixed seeds.**
   - Add `expert_tasks_hold_on_fixed_seeds`. It runs each expert id on the
     four fixed seeds through `trial --seed` and checks:
     - the oracle passes, every delivery is `delivered`, and `check` exits 0;
@@ -125,7 +125,7 @@ and green after. Nothing paid runs in any task.
     - the `expert_cost` helper's written cost equals `EXPERT_DIFFICULTY`.
   - `per_task` and the recipe-path control cover all 24 tasks.
   - **Proof:** `tests/proof.rs` green (AC10, AC11).
-- [ ] **T11: targeted mistakes, shortcuts and visibility.** Add the helper
+- [x] **T11: targeted mistakes, shortcuts and visibility.** Add the helper
   modes of plan § Project structure. **Proof:** `tests/proof.rs`:
   - `wrong_actions_fail_in_their_observable_classes` gains six rows: both
     `otp-late` mistakes and one per other task.
@@ -138,7 +138,7 @@ and green after. Nothing paid runs in any task.
     lack the confirm link while `get_attachment` has it.
   - `expert_double_resend` resends twice and then passes (AC7, AC8, AC9,
     AC13).
-- [ ] **T12: selection and products.** Add `matrix` and
+- [x] **T12: selection and products.** Add `matrix` and
   `baseline --tier expert`. **Proof:**
   - `tests/report.rs`: `matrix --tier expert` with oracle and null emits
     the five ids in order (5 pass, 5 `gave_up`), and
@@ -147,7 +147,7 @@ and green after. Nothing paid runs in any task.
     same task order; `--tier expert --dry-run` is 5/10/150 with the same
     deadline, concurrency, steps and files; and the expert controls run
     for real before any paid launch, mirroring the hard test (AC12).
-- [ ] **T13: documentation.** Update `evals/README.md` and
+- [x] **T13: documentation.** Update `evals/README.md` and
   `evals/run-plan.md`:
   - the expert section: tier name and reason, the five-row trap table, the
     proxy table, the 0071 table's five rows, and the cut families with the
@@ -178,3 +178,9 @@ and green after. Nothing paid runs in any task.
   main` names only the files in plan § Project structure and this design.
   Commit unsigned and never push. Report `complete` only when all of it is
   green (AC16).
+
+*Implement-seat record, 2026-11-04:* every gate above ran and exited 0 except
+`brokkr compile` for the recipe shelf, which could not run because the pinned
+`brokkr` binary is not present in the implement seat's box. No file under
+`.brokkr/` changed, so the verify seat's compile sees the inputs main has. T14
+stays open until that seat runs it.

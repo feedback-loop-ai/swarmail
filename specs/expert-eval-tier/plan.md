@@ -21,8 +21,13 @@ is HOW.
   - `swarmail_wait_for_link` selects only when exactly one URL matches
     across the filtered mail, and otherwise reports ambiguity
     (`link_result`).
-  - The wait view returns `text`, `html`, `links`, `anchors` and attachment
-    metadata, but never attachment bytes.
+  - The wait view returns `text`, `html`, `links` and `codes`, never
+    attachment bytes and, in the protocol revision the harness client speaks
+    (2025-03-26), no attachment metadata either: the `fields` argument is
+    refused there, and `Email` serializes no `attachments`. A caller learns
+    of a part only through `swarmail_list_attachments`. *Implementation
+    correction, 2026-11-04:* the design said the wait view lists attachment
+    metadata, so the oracle costs three MCP calls, not two.
   - `swarmail_get_attachment` returns a UTF-8 part as text
     (`src/attachments.rs` `encode_content`).
   - The fixture's `Body::Mixed` sends its attachment base64 with

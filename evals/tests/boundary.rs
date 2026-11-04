@@ -295,7 +295,7 @@ fn the_hard_tier_is_documented_in_both_directions() {
     // The default tier is still sixteen tasks.
     let default_ids: Vec<&str> = catalogue
         .iter()
-        .filter(|t| t.tier != swarmail_evals::tasks::Tier::Hard)
+        .filter(|t| swarmail_evals::tasks::DEFAULT_TIERS.contains(&t.tier))
         .map(|t| t.id.as_str())
         .collect();
     assert_eq!(default_ids.len(), 16);
@@ -1358,5 +1358,171 @@ fn hostile_documents_terminate_and_classify() {
             (&brackets, "../.forge/p.md", 1),
         ],
         &[],
+    );
+}
+
+/// Ids of the table rows a document marks as expert-tier: ``| `id` | expert |``.
+fn expert_rows(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+            let id = cells.get(1)?.strip_prefix('`')?.strip_suffix('`')?;
+            (cells.get(2) == Some(&"expert")).then(|| id.to_string())
+        })
+        .collect()
+}
+
+/// The numbers in the cells of the README table row that starts with ``| `id` |``.
+fn proxy_row(readme: &str, id: &str) -> Vec<u32> {
+    let row = readme
+        .lines()
+        .find(|l| l.starts_with(&format!("| `{id}` |")) && !l.contains("expert"))
+        .unwrap_or_else(|| panic!("no proxy row for {id}"));
+    row.split('|')
+        .skip(2)
+        .filter_map(|c| c.trim().parse().ok())
+        .collect()
+}
+
+/// AC15: the expert tier is documented in both directions. Every expert id
+/// is named in the README and the run plan; every id a document marks
+/// `expert` is an expert task; the trap table, the proxy table (equal to the
+/// library's), the 0071 rows, the cut families with their budget derivation,
+/// the commands and the operator-owned paid run are there; the decision index
+/// and the harness spec's tier list carry the proposal.
+#[test]
+fn the_expert_tier_is_documented_in_both_directions() {
+    use swarmail_evals::tasks::{self, Tier};
+    let expert: Vec<String> = tasks::tier_ids(Tier::Expert);
+    assert_eq!(
+        expert,
+        [
+            "otp-correction",
+            "digest-correction",
+            "otp-late",
+            "confirm-attachment",
+            "confirm-injection"
+        ]
+    );
+    let readme = std::fs::read_to_string(root().join("evals/README.md")).unwrap();
+    let run_plan = std::fs::read_to_string(root().join("evals/run-plan.md")).unwrap();
+    for (name, text) in [("README.md", &readme), ("run-plan.md", &run_plan)] {
+        for id in &expert {
+            assert!(text.contains(&format!("`{id}`")), "{name}: missing {id}");
+        }
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let product = if name == "README.md" {
+            "5 tasks, 10 controls"
+        } else {
+            "5 tasks, 10 free controls"
+        };
+        for phrase in [
+            "--tier expert",
+            product,
+            "paid expert-tier run is the operator's",
+            "150",
+            "5b312d98",
+        ] {
+            assert!(flat.contains(phrase), "{name}: missing {phrase:?}");
+        }
+        for named in expert_rows(&readme_or(name, &readme, &run_plan)) {
+            assert!(
+                expert.contains(&named),
+                "{name}: {named} is not an expert task"
+            );
+        }
+    }
+    // The README table covers the whole tier, one row per task, in order,
+    // with the expected class, the family and the trap.
+    assert_eq!(expert_rows(&readme), expert);
+    for d in &tasks::EXPERT_DIFFICULTY {
+        let row = readme
+            .lines()
+            .find(|l| l.starts_with(&format!("| `{}` | expert |", d.id)))
+            .unwrap();
+        let class = serde_json::to_value(d.expected_class).unwrap();
+        assert!(
+            row.contains(&format!("`{}`", class.as_str().unwrap())),
+            "{row}"
+        );
+        let family = match d.family {
+            tasks::Family::StateAcrossMails => "state across mails",
+            tasks::Family::Timing => "timing",
+            tasks::Family::FormatAndContent => "format and content",
+            tasks::Family::InstructionsInMail => "instructions inside mail",
+        };
+        assert!(row.contains(family), "{row}");
+        for column in [
+            "The intended trap",
+            "The targeted mistake",
+            "Why a careful agent",
+            "Expected failure",
+            "First wrong attempt",
+        ] {
+            assert!(readme.contains(column), "missing column {column}");
+        }
+        // The 0071 table gains the named-trap row.
+        let pair = format!("{} / {}", d.trap, class.as_str().unwrap());
+        assert!(
+            readme
+                .lines()
+                .any(|l| l.starts_with(&format!("| {} (expert) |", d.id)) && l.contains(&pair)),
+            "{}: no trap-table row for {pair}",
+            d.id
+        );
+        // The proxy table equals the library's, and the follow-up cap is
+        // the stated derivation of the measured total.
+        let n = d.oracle_total();
+        let cap = n + 2.max(n.div_ceil(2));
+        assert_eq!(
+            proxy_row(&readme, d.id),
+            [
+                d.oracle_mcp_tool_calls,
+                d.oracle_app_requests,
+                n,
+                d.min_mails,
+                d.min_attachment_parts,
+                cap
+            ],
+            "{}",
+            d.id
+        );
+    }
+    let flat = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "C = n + max(2, ⌈n/2⌉)",
+        "Families not built",
+        "Tight budgets",
+        "Several identities",
+        "Statistical power",
+        "about 0.46",
+        "16 default-tier tasks plus 3 hard tasks plus 5 expert tasks",
+        "24 in the catalogue",
+    ] {
+        assert!(flat.contains(phrase), "README.md: missing {phrase:?}");
+    }
+    // The decision index has exactly one 0123 row, proposed; the record
+    // itself is proposed and names the issue.
+    let index = std::fs::read_to_string(root().join("docs/decisions/README.md")).unwrap();
+    let rows: Vec<_> = index
+        .lines()
+        .filter(|l| l.starts_with("| [0123]"))
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].contains("proposed"), "{}", rows[0]);
+    assert!(!rows[0].contains("**accepted**"), "{}", rows[0]);
+    let decision =
+        std::fs::read_to_string(root().join("docs/decisions/0123-expert-eval-tier.md")).unwrap();
+    assert!(decision.contains("**Status:** proposed"));
+    assert!(decision.contains("Issue #325"));
+    // The harness spec's tier list names `expert` with a dated amendment.
+    let spec = std::fs::read_to_string(root().join("specs/agent-eval-harness/spec.md")).unwrap();
+    assert!(spec.contains("straight|traps|multi_step|hard|expert"));
+    assert!(spec.contains("amended 2026-11-04"));
+    let flat_spec = spec.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat_spec.contains("24 catalogue rows in five tiers")
+            && flat_spec.contains("AC4 and AC5 controls run all 24"),
+        "agent-eval-harness AC3 amendment"
     );
 }

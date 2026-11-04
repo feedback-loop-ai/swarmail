@@ -108,7 +108,7 @@ must read (proven as lower bounds).
 | `otp-correction` | 1 | 1 | 2 | 2 | 0 | 2 |
 | `digest-correction` | 1 | 1 | 2 | 2 | 0 | 2 |
 | `otp-late` | 2 | 2 | 4 | 1 | 0 | 4 |
-| `confirm-attachment` | 2 | 1 | 3 | 1 | 1 | 1 |
+| `confirm-attachment` | 3 | 1 | 4 | 1 | 1 | 1 |
 | `confirm-injection` | 1 | 1 | 2 | 1 | 0 | 2 |
 
 `otp-late` and `confirm-injection` each need only one mail read. Picking the
@@ -197,8 +197,10 @@ paid model or a paid admission.
    revisited.
 8. **AC8: the decisive value is visible through MCP.** On
    `confirm-attachment`, the confirm link appears in none of the wait view's
-   `text`, `html`, `links` or `anchors`. It does appear in
-   `swarmail_get_attachment`'s UTF-8 content for the listed
+   `text`, `html`, `links` or `codes`, and the wait view lists no attachment
+   at all (implementation correction: the oracle reads
+   `swarmail_list_attachments`, then `swarmail_get_attachment`). It does
+   appear in `swarmail_get_attachment`'s UTF-8 content for the listed
    `confirmation.txt`. The oracle reads only MCP and the app's public plane
    (0055 §7). *Proof:* `tests/proof.rs`, and the oracle passing.
 9. **AC9: named traps classify and disqualify.**

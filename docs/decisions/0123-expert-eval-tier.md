@@ -175,3 +175,41 @@ The chief's design commit excludes the decision index. The implementation's
 first task adds the proposed row. This record documents a design. It is not
 an executed proof, a gate result or a paid measurement. The paid expert run
 is a separate step the operator approves after merge.
+
+## Implementation record (2026-11-04)
+
+The implementation landed as designed, with one correction found by running
+it. This is a record of what the delivery observed, not a paid measurement.
+
+- **The wait view lists no attachment.** The design said the wait view
+  returns attachment metadata. In the protocol revision the harness client
+  speaks (`2025-03-26`) it does not: `Email` serializes no `attachments`, and
+  `fields` is refused there. A caller learns of a part only through
+  `swarmail_list_attachments`. This makes `confirm-attachment` stricter than
+  designed (the body's only hint is "Your confirmation details are
+  attached.") and costs its oracle one more call: three MCP calls (wait, list,
+  get) and one app request, 4 in all, not 3. The ruling stands: the decisive
+  value is outside every field the wait view returns, and it is reachable
+  through the real MCP surface.
+- **The measured proxy** (the oracle's own counters, equal to
+  `EXPERT_DIFFICULTY` on every fixed proof seed). The cap column is the
+  follow-up derivation of ruling 7, `C = n + max(2, ⌈n/2⌉)`, with `n` the
+  oracle's total of MCP calls and app requests:
+
+  | task | MCP calls | app requests | n | min mails | min attachment parts | C |
+  |---|---|---|---|---|---|---|
+  | `otp-correction` | 1 | 1 | 2 | 2 | 0 | 4 |
+  | `digest-correction` | 1 | 1 | 2 | 2 | 0 | 4 |
+  | `otp-late` | 2 | 2 | 4 | 1 | 0 | 6 |
+  | `confirm-attachment` | 3 | 1 | 4 | 1 | 1 | 6 |
+  | `confirm-injection` | 1 | 1 | 2 | 1 | 0 | 4 |
+
+  The cap is a follow-up's, not enforced here: no budget task is built.
+- **Shortcut claims verified on the real server.** `swarmail_wait_for_code`
+  answers the superseded code on `otp-correction` and the reminder's code on
+  `otp-late` after one resend; `swarmail_wait_for_link` selects the body's
+  decoy on `confirm-attachment`. Scripted agents assert each answer before
+  committing the mistake, so a change to Swarmail's selection turns them red.
+- **No paid run and no load proof.** Delivery ran only free controls (oracle,
+  null, scripted mistakes). Trials stay sequential (0076), so nothing needed a
+  bounded parallel run.
