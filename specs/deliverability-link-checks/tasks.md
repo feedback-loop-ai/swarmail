@@ -5,9 +5,15 @@ Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Decision:
 
 Each task names the test that proves it. Test names are binding
 suggestions: the implementer may rename a test but must keep its
-assertion. Inline tests are `#[cfg(test)]` in the named file. Wire tests
-live in `tests/deliverability.rs`. No probe test names a non-loopback host
-except through the resolver seam.
+assertion. Inline tests are `#[cfg(test)]` in the named file. The static
+wire test lives in `tests/deliverability.rs`, and the probe wire tests in
+`tests/link_reachability.rs`. No probe test dials a non-loopback host. A
+refused literal may appear only when it is refused before any dial.
+
+Slices 1–3 were delivered at `8eb55aa`, `12a5066` and `33efa4c`. Their
+checkboxes stay as they were recorded, and their text is corrected to the
+shipped shape (marked *2026-11-04*). Slice R is the revision that review's
+return requires. It is open, and the next implement run does it.
 
 ## Slice 1 — static link rules (compatible under 0045 §8)
 
@@ -20,9 +26,11 @@ except through the resolver seam.
   `email.links`, `link_metadata` and codes for every link fixture against
   values written in the test (AC11).
 - [x] **T1.2** In `html.rs`, factor eligible-part enumeration into
-  `eligible(raw)`, returning `path`, `body` and
-  `exact = part.contents() == body.as_bytes()`. `collect_with` keeps its
-  budgets and order.
+  `eligible(raw)`, returning `path`, `body` and `exact`. *2026-11-04:*
+  `exact` is `is_exact`, which requires the decoded text to be a prefix of
+  `html::payload` followed only by ASCII whitespace. It is not
+  `part.contents() == body.as_bytes()`, which is always true for HTML.
+  `collect_with` keeps its budgets and order.
   Proof: every existing `html.rs` test passes unchanged, and
   `eligible_exact_tracks_charset_identity` covers UTF-8, us-ascii, base64,
   QP and Latin-1 with an 8-bit byte (AC2).
@@ -34,8 +42,8 @@ except through the resolver seam.
   entity-bearing, whitespace-led, two parts, base64, QP) and
   `non_identity_charset_falls_back_to_mime_part` (AC2).
 - [x] **T1.4** Make labels follow #154 exactly: decode once, collapse,
-  break on block boundaries, cap, visible only, and close at the next `<a>`
-  or `</a>`.
+  break on block boundaries, visible only, and close at the next `<a>` or
+  `</a>`. *2026-11-04:* there is no cap, because #154 has none.
   Proof: `anchor_labels_match_ingest_anchor_text` compares the
   `Anchors` labels with ingest `anchor_text` for the same http(s) bodies.
   `hidden_anchors_yield_no_occurrence` covers script, style and suppressed
@@ -80,7 +88,8 @@ except through the resolver seam.
   `link_findings_respect_report_limits` gives 257 link findings → `Failed`
   and over 64 KiB → `Failed` (AC8).
 - [x] **T1.10** Determinism of the default report with link findings.
-  Proof: `link_report_is_deterministic_cold_warm_and_across_services`, and
+  Proof: `link_report_is_deterministic_cold_warm_and_across_services` (to
+  be renamed by R9), and
   `report_provider_snapshot_is_deterministic` extended with a link fixture
   (AC7).
 - [x] **T1.11** Wire test of the static rules.
@@ -143,7 +152,9 @@ except through the resolver seam.
   - `observe_caps_targets_before_connecting`: 33 targets → `Failed` with
     zero accepts;
   - `observe_runs_four_at_a_time`: one silent listener, five targets → a
-    maximum of exactly 4 open connections, 5 accepts and five `Timeout`s;
+    maximum of exactly 4 open connections, 5 accepts and five `Timeout`s.
+    *2026-11-04:* this shipped as timestamp spacing, and R7 replaces it
+    with a gauge;
   - `observe_refuses_third_request`: two held → the third is
     `Unavailable`;
   - `observe_cancellation_releases_permit`: drop a held request → a new
@@ -201,8 +212,8 @@ except through the resolver seam.
   These cover AC4, AC5 and AC6.
 - [x] **T7.3** Offline guard.
   Proof: `probe_tests_use_loopback_only`, an inline test that scans the
-  probe test sources (`include_str!` of `reach.rs` and
-  `tests/deliverability.rs`) for `http://` and `https://` literals in
+  probe test sources (`include_str!` of `reach.rs` and, *2026-11-04*,
+  `tests/link_reachability.rs`) for `http://` and `https://` literals in
   probe-enabled cases and refuses any host other than `127.0.0.1`, `[::1]`,
   `localhost` or a name registered in the resolver seam. Review also checks
   this by eye (Risks: internet). Where a scan is impractical, the
@@ -251,3 +262,166 @@ except through the resolver seam.
   0121.
   Proof: `git log --format='%G? %s' main..HEAD` shows `N` for every commit
   and the slice order.
+
+## Slice R — revision 2026-11-04 (answering the review)
+
+Order matters. R1–R3 close the HIGH security residual and come first. Each
+task names its finding in [plan.md § Revision
+2026-11-04](plan.md#revision-2026-11-04--answering-the-review). Each task
+keeps the coverage gate at exact 100%. Every new or changed production
+line or branch is run by the named test.
+
+- [ ] **R1** (HIGH, security and guarantees: address policy) Rewrite
+  `reach::permitted` as default-deny, following spec § Address policy
+  rules 1–6:
+  - `off` refuses everything;
+  - unwrap only `::ffff:0:0/96`;
+  - loopback only in `loopback` mode;
+  - IPv4 refused in the 13 listed blocks, which now include
+    `192.88.99/24`;
+  - IPv6 permitted only when `(v6 >> 125) == 1` (`2000::/3`), and not in
+    `2001::/23`, `2001:db8::/32`, `2002::/16` or `3fff::/20`.
+
+  Delete `BLOCKED_V6` as a block list, together with its `64:ff9b::/96`
+  entry, which the prefix rule now covers. Do not use `is_global`. The doc
+  comment names the basis (the IANA special-purpose registries, read
+  2026-11-04) and the `2000::/3` residual.
+  Proof: `address_policy_table`, rewritten to spec AC5's literal rows:
+  - every refused IPv4 block at its first and last address;
+  - every listed refused IPv6 address, including `fec0::1`,
+    `64:ff9b:1::a00:1`, `2001::1`, `2001:0:4136:e378::1`,
+    `2002:a00:1::1`, `::a00:1`, `::ffff:0:a00:1`, `5f00::1`, `3fff::1`
+    and the boundary rows `1fff:ffff:…`, `2001:1ff:ffff:…`,
+    `3fff:fff:ffff:…` and `4000::`;
+  - every permitted row, in `public` and in `loopback`;
+  - the four mode rows;
+  - `off` refusing a public row.
+
+  The test fails at `33efa4c`, where `fec0::1` is permitted, and passes
+  after the change.
+- [ ] **R2** (HIGH: path proof) Add rows to
+  `probe_resolver_seam_pins_mixes_and_fails`. In `loopback` mode, a name
+  answered `[<listener 127.0.0.1>, 64:ff9b:1::a00:1]` gives `Refused` with
+  `accepted() == 0`, and so does `[<listener>, 2002:a00:1::1]`. The listener
+  comes first, so a broken check dials only the listener. Extend
+  `probe_revalidates_each_hop` with a loopback hop redirecting to
+  `http://[fec0::1]/`, which gives `Refused` after exactly 1 accept.
+  Proof: those two tests, named above. Each asserts exact accept counts.
+- [ ] **R3** (HIGH: records) Replace the range list in
+  `docs/guide/deliverability.md` § Modes, `docs/guide/network-posture.md`
+  and `src/static/llms.txt` with the default-deny statement. Each states
+  its basis date, the rule that embedded IPv4 is refused, and the
+  `2000::/3` residual.
+  Proof:
+  - `rg -n 'fec0|2000::/3' docs/guide/deliverability.md docs/guide/network-posture.md src/static/llms.txt`
+    shows the new text;
+  - `rg -n 'Everything else is permitted' specs docs src` is empty;
+  - review reads the guide against spec § Address policy (AC13).
+- [ ] **R4** (LOW, guarantees: location letter) Amend the location sentence
+  in `docs/guide/deliverability.md` and `src/static/llms.txt` to the
+  prefix-plus-trailing-ASCII-whitespace test. The code is unchanged.
+  Proof: an AC2 fixture in `link_offsets_index_transfer_decoded_source`
+  whose payload ends in `\r\n` after the decoded text still yields `link`
+  offsets. `non_identity_charset_falls_back_to_mime_part` stays. Running
+  `rg -n 'byte-identical to its payload' docs/guide src/static` returns
+  nothing.
+- [ ] **R5** (LOW, correctness/independent: token order; INFO: fragment key)
+  This task has two changes:
+  - **(a)** In `links::token`, apply spec § Host-like tokens steps 1–7 in
+    order: lowercase, leading trim, scheme strip, cut, trailing trim, then
+    strip one `www.` before qualification. `judge` then strips `www.` only
+    from H.
+  - **(b)** Add `key(url)`, which clears the fragment and returns
+    `as_str`. `targets` and `observed` both use it.
+
+  Proof:
+  - `host_token_table` gains these rows:
+    - `(https://paypal.com)` → `paypal.com`;
+    - `<https://paypal.com/>` → `paypal.com`;
+    - `"https://paypal.com/login"` → `paypal.com`;
+    - `www.com` → none;
+    - `www.example.com` → `example.com`.
+  - `anchor_mismatch_pair` fires on the three bracketed labels against
+    `https://paypal.com.evil.test/`, and passes on `www.com` against
+    `https://evil.com/`.
+  - `targets_are_distinct_normalized_http_urls_capped_at_thirty_two` pins
+    `x#a` and `x#b` as one key.
+  - On the wire, `link_reachability_outcomes_on_loopback` (or a sibling)
+    sends two links differing only in fragment. It asserts one accept, and
+    the outcome finding at both locations.
+- [ ] **R6** (LOW/INFO, guarantees: surfaces; robustness: wording and
+  residual) Update these surfaces:
+  - name the per-link rules (`link.*`) in the OpenAPI deliverability route
+    and `DeliverabilityReport` descriptions, the modern MCP report tool
+    description in `src/mcp.rs`, `README.md` and `docs/guide/README.md`;
+  - say "per `Service`" where docs say "per process";
+  - add the resolver residual to `docs/guide/network-posture.md`.
+
+  Proof: extend `report_served_docs_match_contract`, or add
+  `report_descriptions_name_link_rules`, to assert that both OpenAPI
+  descriptions and the MCP description contain `link.`. Running
+  `rg -n 'per process' docs/guide src/static` for the probe returns
+  nothing.
+- [ ] **R7** (LOW, correctness/independent: AC6 by counting) Give the
+  `reach.rs` test `Server` an open-connection gauge. It increments on
+  accept, decrements when the peer closes (a read returns 0 or an error),
+  and records the high-water mark. Rewrite `observe_runs_four_at_a_time` to
+  assert `high_water == 4`, `accepted() == 5` and five `Timeout`s, and
+  delete every timestamp comparison.
+  Proof: that test. A temporary mutation to 3 or 5 at once turns it red.
+  Record the mutation run in `implementation.md`, and do not commit the
+  mutation.
+- [ ] **R8** (LOW, independent: held-probe proof) In
+  `tests/link_reachability.rs` `link_reachability_bounds_on_the_wire`,
+  after the fresh `250`, its read and the cold default report, assert
+  `!first.is_finished() && !second.is_finished()`. Then release the held
+  probes.
+  Proof: that test, plus the unchanged unit test
+  `probes_hold_no_job_permit_and_no_store_guard`.
+- [ ] **R9** (INFO, tests: overclaiming name) Rename
+  `link_report_is_deterministic_cold_warm_and_across_services` to
+  `link_evaluate_is_deterministic`. Keep its assertions.
+  Proof: the renamed test passes. The cross-`Service` and warm-cache cases
+  stay proven by the existing `src/deliverability.rs` two-`Service` test
+  and the `tests/deliverability.rs` warm repeat (AC7).
+- [ ] **R10** (INFO, tests: offline guard taxonomy) In
+  `probe_tests_use_loopback_only`, document the "refused literal, never
+  dialled" category (`10.0.0.1`, `[fec0::1]`) in the doc comment and the
+  `ALLOWED` list.
+  Proof: the guard passes. It still asserts `seen > 10`, and it refuses an
+  unlisted public host. Add a negative row that the guard's matcher
+  rejects, `8.8.8.8`.
+- [ ] **R11** (INFO, guarantees and process: records and disposition)
+  Update `implementation.md` to the revision:
+  - its deviation list loses the items this revision absorbs into the
+    spec: the `is_exact` letter, the label cap, the AC11 scope and the
+    test-file move;
+  - it gains the revision's commits, its gate transcript and the R7
+    mutation run;
+  - § Disposition carries AC15's hold sentence word for word.
+
+  The final result says the same, so that ship puts it in the PR body.
+  Leave `docs/decisions/README.md` status "proposed — awaiting the
+  operator".
+  Proof: `rg -n 'approved by name under 0045 §8' specs/deliverability-link-checks/implementation.md`
+  matches, and `git diff 33efa4c -- docs/decisions/README.md` changes no
+  status (AC13, AC15).
+- [ ] **R12** Run every house gate `--locked` on the revised tree:
+  - fmt, clippy, test and the `swarmail` build;
+  - evals fmt, clippy and test with `SWARMAIL_BIN` from Cargo's artifact
+    record;
+  - the brokkr compile loop over `.brokkr/recipes/*/`, reading each output
+    for `lets the run go on without reading`. If the pinned binary is
+    absent, say so; do not claim it;
+  - the coverage gate (exact 100%) and its `selftest`;
+  - `publish-guard-test.sh`, `seal-branch-test.sh` and
+    `cargo deny check licenses`;
+  - `git diff 8732445 -- Cargo.toml Cargo.lock evals/Cargo.lock deny.toml`
+    must be empty.
+
+  Commit unsigned in the two commits of plan § Delivery slices item 4, and
+  never push.
+  Proof: the gate transcript in `implementation.md`. CI-owned proofs are
+  named as not claimed. Any load proof is one named, timed command at
+  ≤ nproc/4 workers for ≤ 10 minutes, with the load applied reported
+  (AC14).

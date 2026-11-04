@@ -2,6 +2,12 @@
 
 - **Status:** proposed
 - **Date:** 2026-11-03
+- **Revised:** 2026-11-04, still proposed. Review of `33efa4c` returned the
+  design (run `issue-258-deliverability-link-ch-4052800f`). §6's address
+  policy is now default-deny; §3's location test states what the code
+  checks; §6's caps are per `Service`, and it records the resolver
+  residual. See the [plan's revision
+  table](../../specs/deliverability-link-checks/plan.md#revision-2026-11-04--answering-the-review).
 - **Scope:** Epic #251, issue #258 (operator direction 2026-11-03: start the
   remaining deliverability stories). Run
   `issue-258-deliverability-link-ch-d9779f5d`, from `main` `8732445`. The
@@ -53,10 +59,13 @@
 3. **Locations are source bytes, or the containing part.** A finding's
    location is `link {part_path, byte_offset}`, where `byte_offset` is the
    first non-ASCII-whitespace source byte of the `href` value. That matches
-   0085 §1 only when the part's character-decoded text is byte-identical to
-   its transfer-decoded payload, so the collector checks this per part. When
-   the check fails, every link finding of that part uses `mime_part {path}`,
-   0085's own fallback. Swarmail never fabricates an offset.
+   0085 §1 only when the part's character-decoded text is a prefix of its
+   transfer-decoded payload and the rest of the payload is ASCII
+   whitespace, so the collector checks this per part. Under that test every
+   decoded offset indexes the same payload byte. When the check fails,
+   including a failed transfer decode, every link finding of that part uses
+   `mime_part {path}`, 0085's own fallback. Swarmail never fabricates an
+   offset.
 4. **The shortener list is built in, versioned and exact.** It is a sorted
    Rust constant with version `swarmail-shorteners/1` and basis date
    2026-11-03. It is Swarmail-authored and was not fetched. A snapshot test
@@ -78,21 +87,39 @@
    - *The address policy is checked on every hop.* Swarmail resolves the
      host itself and refuses a target if **any** resolved address is not
      permitted. It pins the connection to the first validated address.
-     `public` permits only globally routable unicast addresses. `loopback`
-     also permits `127.0.0.0/8` and `::1`, for local development servers.
-     Private, link-local (which includes `169.254.169.254`), CGNAT, ULA,
-     unspecified, broadcast, multicast, documentation and reserved ranges
-     are refused in every mode. Swarmail unwraps IPv4-mapped IPv6 before the
-     check. A target with userinfo is refused.
+     The policy is **default-deny**: an address is contacted only if the
+     policy proves it globally routable unicast. The basis is the IANA IPv4
+     and IPv6 Special-Purpose Address Registries as read on 2026-11-04.
+     IPv6 is permitted only inside `2000::/3`, and not inside `2001::/23`,
+     `2001:db8::/32`, `2002::/16` or `3fff::/20`. Everything outside
+     `2000::/3` is refused without being named. IPv4 is permitted only
+     outside every non-globally-reachable registry entry, and the spec
+     lists those blocks. IPv4-mapped IPv6 is unwrapped and judged as IPv4.
+     Every other form that embeds IPv4 (NAT64, 6to4, Teredo,
+     IPv4-compatible, IPv4-translated) is refused and never decoded.
+     `loopback` mode additionally permits `127.0.0.0/8` and `::1`, for
+     local development servers. A target with userinfo is refused.
+     `std`'s `is_global` is not used, because its table moves with the
+     toolchain. Residual: a future special-purpose block inside `2000::/3`
+     is permitted until the table is edited.
    - *Bounds are constants, not knobs.* Connect timeout is 2 s. The per-link
      budget is 5 s, covering every hop. The redirect cap is 5, followed
      manually. At most 32 distinct targets are probed per request; more is
      an explicit failure before any connection. Each request probes at most
-     4 links at once, and at most 2 probe requests run per process; a busy
-     process answers `Unavailable`. The response body is never read. The
+     4 links at once, and at most 2 probe requests run per `Service` (one
+     per production process); a busy `Service` answers `Unavailable`. The response body is never read. The
      probe uses no proxy, cookies or credentials, and a fixed `User-Agent`.
      Worst case per request: ⌈32/4⌉ × 5 s = 40 s and 8 open sockets. No
      probe ever holds one of 0085's four job permits or a Store guard.
+     Targets are keyed with the fragment cleared, so one resource is
+     fetched once.
+   - *Resolver residual, accepted.* `tokio::net::lookup_host` runs on the
+     blocking pool and cannot be cancelled. A probe dropped at its budget
+     leaves the OS lookup running until the OS gives up. Repeated explicit
+     requests for hostile names can therefore park blocking threads. The
+     opt-in mode, the per-`Service` caps and the OS resolver deadline bound
+     this. It costs latency, never a `250`. A dedicated bounded resolver
+     would need its own decision.
    - *Outcomes become findings through the one canonicalizer.*
      `link.redirect-chain.v1` (info) discloses the redirect count and the
      final origin (scheme, host and port; never a path, query or userinfo).
@@ -156,6 +183,23 @@
   `<img>`/`<area>`/CSS/text-plain URLs:** rejected for this story. Input is
   already bounded by 0106's limits and output by 0085's. Text/plain URLs are
   the first follow-up.
+- **Extend the IPv6 block list with the ranges review found** (the
+  2026-11-04 return): rejected for default-deny. The block list missed six
+  ranges in six entries, and every future allocation would be a bypass by
+  default. An allow-list fails closed. Cost: a host whose only addresses
+  are 6to4, Teredo or NAT64 gets `refused`. That is a visible "not
+  checked", never a false "safe".
+- **Decode embedded IPv4 (6to4, Teredo, NAT64) and judge it:** rejected.
+  It adds four decoders and their boundary fixtures to the exact coverage
+  gate, only to permit rare transition-only hosts.
+- **Block the globally reachable anycast /24s inside the IPv4 registry**
+  (`192.31.196/24`, `192.52.193/24`, `192.175.48/24`): rejected. They are
+  global unicast, and refusing them is no SSRF gain. `192.88.99/24`, the
+  deprecated 6to4 relay, *is* refused, to match `2002::/16`.
+- **One `reqwest::Client` per request instead of per hop:** rejected. Each
+  hop is pinned to its own validated address through `resolve_to_addrs`.
+  Sharing a client would need a custom resolver to keep that pin. The cost
+  is bounded (at most 32 × 6 builds) and accepted.
 - **IDN and homograph label comparison:** out of scope. Non-ASCII label
   tokens are skipped, and the guide documents this gap.
 

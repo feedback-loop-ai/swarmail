@@ -1,7 +1,12 @@
 # Deliverability link checks — plan
 
 Spec: [spec.md](spec.md). Decision: [0121](../../docs/decisions/0121-deliverability-link-checks.md)
-(proposed). Base: `main` `8732445`.
+(proposed). Base: `main` `8732445`. Revised 2026-11-04 on top of `33efa4c`
+after review returned the design; see [§ Revision
+2026-11-04](#revision-2026-11-04--answering-the-review). The structure and
+data model below describe the shipped shape at `33efa4c` plus the
+revision, so they no longer describe the pre-implementation plan of
+`a1977dc`.
 
 ## Technical context
 
@@ -16,10 +21,12 @@ Spec: [spec.md](spec.md). Decision: [0121](../../docs/decisions/0121-deliverabil
   eligible part, already bounded by 0106's 8 MiB raw, 4 MiB aggregate, 256
   parts and depth 32, and one byte comparison per part. The probe's bound is
   arithmetic: ≤ 32 targets, 4 at a time, 5 s each, so ≤ 40 s and 8 sockets
-  per process (2 requests).
+  per `Service` (2 requests; one `Service` per production process).
 - **Testing.** Inline `#[cfg(test)]` modules in the new files, with real
-  local TCP servers written on `tokio::net::TcpListener`. Real-protocol wire
-  tests go in `tests/deliverability.rs`, through `common::start_with`.
+  local TCP servers written on `tokio::net::TcpListener`. The static rule
+  wire test is in `tests/deliverability.rs`. The probe wire tests are in
+  `tests/link_reachability.rs`, so they stay clear of the sibling stories
+  that edit `tests/deliverability.rs`. Both use `common::start_with`.
 
 ## Constitution check (house rules)
 
@@ -39,18 +46,24 @@ Spec: [spec.md](spec.md). Decision: [0121](../../docs/decisions/0121-deliverabil
 ## Project structure (files touched)
 
 - **new** `src/deliverability/links.rs`
-  - `Anchors: Regions` collects `Occurrence { location, href: String,
-    label: String }`;
-  - `occurrences(path, body, exact_offsets) -> Vec<Occurrence>`;
-  - the five static rules, with `collect(path, body, exact, out)`;
+  - `Anchors: Regions` yields `Occurrence { location, href: String,
+    label: String }` to a callback; occurrences are not retained;
+  - `scan(part, f)`, and the five static rules through
+    `collect(part, out)`;
   - `SHORTENERS` and `SHORTENERS_VERSION`;
-  - the host-token parser;
-  - the pure `compose(report, occurrences, observation) -> Result<Report>`;
+  - the host-token parser `token()`, whose step order the revision fixes
+    (R3);
+  - `targets(raw)`, the distinct target keys failing at the 33rd, and
+    `observed(raw, observation)`, the findings for targets with outcomes
+    failing at the 257th. Both use one `key(url)` that clears the fragment
+    (R5);
+  - the pure `compose(report, observed_findings) -> Result<Report>`;
   - inline tests.
 - **new** `src/deliverability/reach.rs`
   - `Mode { Off, Public, Loopback }` (clap `ValueEnum`, serde lowercase);
-  - `permitted(IpAddr, Mode)`;
-  - `Outcome { redirects: u8, final_origin: Option<String>, end: End }`, with
+  - `permitted(IpAddr, Mode)`, which the revision rewrites as default-deny
+    (R1);
+  - `Outcome { redirects: u8, final_origin: String, end: End }`, with
     `End { Ok, Status(u16), Timeout, Connect, RedirectCap, BadRedirect,
     Refused }`;
   - `Prober { mode, requests: Semaphore(2) }`, with
@@ -64,8 +77,11 @@ Spec: [spec.md](spec.md). Decision: [0121](../../docs/decisions/0121-deliverabil
   - eligible-part enumeration is factored into
     `fn eligible(raw) -> Result<Vec<Part>>`, so the probe's occurrence scan
     reuses the same walk (one MIME walk owner);
-  - `Part` carries `path`, `body` and `exact`, where `exact` is
-    `part.contents() == body.as_bytes()`.
+  - `Part` carries `path`, `body` and `exact`. `exact` is `is_exact`: the
+    character-decoded text is a prefix of `html::payload` (the transfer
+    decode through mail-parser's own decoders), and the rest of the
+    payload is ASCII whitespace. `part.contents()` cannot serve, because
+    for an HTML part it returns the charset-decoded text.
 - `src/deliverability.rs`
   - `mod links; mod reach;`;
   - `RULE_SET_ID = "swarmail-html/4"`;
@@ -102,16 +118,29 @@ Spec: [spec.md](spec.md). Decision: [0121](../../docs/decisions/0121-deliverabil
 - `src/mcp.rs`, `src/static/openapi.json`, `src/static/llms.txt`: the
   `swarmail-html/4` literals, plus the `reachability` parameter and its 400
   in OpenAPI and `llms.txt`. The MCP tool schema is unchanged.
-- `tests/deliverability.rs`: wire tests for AC1–AC6. `tests/bulk_sender.rs`
-  gets the `/4` literal.
+- `tests/deliverability.rs`: the static wire test (AC1, AC2).
+  `tests/link_reachability.rs`: the probe wire tests (AC3–AC6), listed in
+  `docs/guide/testing.md`. `tests/bulk_sender.rs` and
+  `tests/config_cli.rs` get the `/4` literal and the flag test.
 - Docs: `docs/guide/deliverability.md` gets "Link rules" and "Opt-in
   reachability" sections. `docs/guide/network-posture.md` gets the
   outbound probe and the `loopback` risk. `docs/guide/rest-api.md` gets the
   parameter. `docs/decisions/README.md` gets the 0121 index row.
 
-These are **not touched:** `src/smtp.rs`, `src/model.rs`,
-`src/store/persist*.rs`, `src/webhook.rs`, `Cargo.toml`, `Cargo.lock`,
-`evals/`, `deny.toml`, `.github/`, `scripts/`, `.brokkr/`.
+These are **not touched:** the production files `src/smtp.rs`,
+`src/model.rs`, `src/store/persist.rs` and `src/webhook.rs`, plus
+`Cargo.toml`, `Cargo.lock`, `evals/`, `deny.toml`, `.github/`, `scripts/`
+and `.brokkr/`. Test harnesses such as `src/store/persist_tests.rs` gain
+only the one-line `Config` literal.
+
+**Revision touches (R1–R12 below):** `src/deliverability/reach.rs`
+(policy, table, seam rows, connection gauge, guard taxonomy),
+`src/deliverability/links.rs` (`token()` order, target key, test rename),
+`tests/link_reachability.rs` (pending assertion, fragment case),
+`src/static/openapi.json`, `src/mcp.rs`, `src/static/llms.txt`,
+`README.md`, `docs/guide/README.md`, `docs/guide/deliverability.md`,
+`docs/guide/network-posture.md`, and
+`specs/deliverability-link-checks/implementation.md`.
 
 ## Research
 
@@ -145,8 +174,8 @@ These are **not touched:** `src/smtp.rs`, `src/model.rs`,
 Occurrence { location: Location, href: String, label: String }
 Mode       = Off | Public | Loopback
 End        = Ok | Status(u16) | Timeout | Connect | RedirectCap | BadRedirect | Refused
-Outcome    { redirects: u8, final_origin: Option<String>, end: End }   // no durations, no clocks
-Observation = BTreeMap<String /* Url::as_str */, Outcome>             // order-independent
+Outcome    { redirects: u8, final_origin: String, end: End }   // no durations, no clocks
+Observation = BTreeMap<String /* key(url): Url::as_str, fragment cleared */, Outcome>
 ```
 
 No new persisted state, cache member or `Email` field.
@@ -169,10 +198,66 @@ swarmail serve --link-reachability loopback
 curl 'http://127.0.0.1:8025/api/v1/messages/<id>/deliverability?reachability=true'
 ```
 
+## Revision 2026-11-04 — answering the review
+
+Review of `33efa4c` returned the design (`spec_defect: true`, one HIGH
+security residual). Each finding is answered in the artifact that owns it.
+The ids in the last column match the tasks in [tasks.md § Slice
+R](tasks.md#slice-r--revision-2026-11-04-answering-the-review).
+
+| finding (lens) | change | owner | task |
+|---|---|---|---|
+| **HIGH: address policy is a block list.** `fec0::/10`, `64:ff9b:1::/48`, `2001::/32`, `2002::/16`, `::/96` and `::ffff:0:0:0/96` were reachable in `public` mode, and the table pinned `fec0::1` as permitted (security, guarantees). This is the spec defect. | R1: default-deny. IPv6 is allowed only inside `2000::/3` minus four blocks. IPv4 is the complement of the registry, plus `192.88.99/24`. Embedded IPv4 is refused, never decoded. The table is rewritten to literal rows, with wire rows that fail safe. | spec § Address policy, AC5; 0121 §6 | R1, R2, R3 |
+| LOW: 0121 §3 says "byte-identical", but `is_exact` accepts a prefix plus trailing ASCII whitespace (guarantees) | R4: the **text** is amended to match the code, and the code does not change. Offsets stay valid, which every lens agreed. | spec § Location, AC2; 0121 §3; guide, `llms.txt` | R4 |
+| LOW: the label is "capped at #154's cap", but no such cap exists (guarantees, correctness) | The criterion was wrong. It now reads: no cap, bounded by the 4 MiB body. | spec § Eligible links | — (text only) |
+| LOW: AC11 says `persist*.rs` has no diff, but `persist_tests.rs` gains a literal (guarantees) | The criterion was wrong. It is now scoped to production files. A test-harness literal is allowed. | spec AC11 | — (text only) |
+| LOW/INFO: OpenAPI, MCP, README and the guide README omit the link rules (guarantees) | R6: each surface names the `link.*` rules. | spec AC13 | R6 |
+| INFO: the epic #251 authority was not recorded (guarantees, robustness) | The spec's Framing notes record what was read, and say the epic was not read at source. | spec § Framing notes | — |
+| INFO: plan and tasks are stale (guarantees) | This plan and tasks.md now describe the shipped shape. | plan, tasks | R11 |
+| LOW: `(https://paypal.com)` yields no token, and `www.com` matches every `.com` (correctness, independent; also robustness R3) | R5a: the leading trim comes before the scheme strip, and `www.` is stripped before qualification. | spec § Host-like tokens, AC1 | R5 |
+| LOW: the 4-at-once cap is proven by timestamps (correctness, independent) | R7: an open-connection high-water gauge on the test server. No timing assertion. | spec AC6 | R7 |
+| LOW: the held-probe wire test cannot go red (independent; correctness INFO) | R8: assert both probes are `!is_finished()` after the cold report. | spec AC6 | R8 |
+| INFO: the `…_across_services` test overclaims (tests, correctness) | R9: rename it to what it runs. Cross-`Service` and warm-cache determinism stay proven by `deliverability.rs` and `tests/deliverability.rs`. | tasks T1.10 | R9 |
+| INFO: the offline guard's taxonomy omits refused private literals (tests) | R10: the doc comment names the category, and now `fec0::1` as well. | tasks T7.3 | R10 |
+| INFO: the fragment is part of the target key (independent) | R5b: the key clears the fragment, so one resource is fetched once. | spec § Targets, AC6 | R5 |
+| INFO: the slice-2 hold is not on 0056's list (independent, security) | AC15: `implementation.md` and the result for ship carry the hold. | spec AC15 | R11 |
+| INFO: "per process" (robustness R10) | Text: per `Service`, one per production process. | spec § Concurrency; 0121 §6 | R6 |
+| residual raised by robustness: uncancellable `lookup_host` | Documented, not fixed. | spec § Concurrency; 0121 §6; network-posture | R6 |
+| INFO: client per hop (correctness); post-probe `try_acquire` 503 (independent) | **No change.** See the rejected alternatives in 0121 and the adjudication below. | — | — |
+
+**No criterion was loosened to make review pass.** The two corrected
+criteria, the label cap and the AC11 scope, were wrong as written. The
+correctness and guarantees lenses both showed this with evidence: #154 has
+no cap, and the AC11 diff is a mechanical test-harness literal. AC5 and AC6
+are **stricter** than before. The rule-set id stays `swarmail-html/4`,
+because `/4` has never shipped. The `token()` reorder is a change inside an
+unreleased version, and the snapshot test still ties the shortener digest
+to it.
+
+### Panel adjudication — second round (2026-11-04)
+
+Both positions passed and agree on the shape of the fix: a default-deny
+allow-list of `2000::/3` minus exclusions, with embedded IPv4 refused and
+not decoded. They conflict on these points:
+
+| question | simplicity | robustness | ruling and what the losing side pays |
+|---|---|---|---|
+| IPv4 table | unchanged | add `192.31.196/24`, `192.52.193/24`, `192.88.99/24`, `192.175.48/24` | **Add only `192.88.99/24`**, the deprecated 6to4 relay, so that it matches the `2002::/16` refusal. The other three are globally reachable anycast, so refusing them buys no SSRF safety and breaks the "globally routable" sentence. *Robustness pays:* those three anycast /24s are probed in `public` mode. *Simplicity pays:* one table row. |
+| `www.` strip before qualification | not raised; swap only | yes | **Adopt.** One reordered line closes the `www.com` wildcard (correctness INFO 7) in a rule that exists to catch phishing. *Simplicity pays:* one extra fixture. |
+| Fragment in the target key | keep: harmless and pinned | clear it | **Clear it.** A mail author can otherwise make the probe fetch one resource 32 times, so this is a small amplification lever. The fix is one `set_fragment(None)`. *Simplicity pays:* the target-count fixtures are re-pinned. |
+| Wire proofs | one seam row | each refused literal on the wire, in `loopback` mode | **The table carries range membership, and the wire carries the path.** That means seam rows whose permitted listener comes first, plus one redirect into `[fec0::1]`. Wire-dialling every special range would, if the policy were broken, send real packets toward 6to4 relays and Teredo servers, and tests must never touch the internet. *Robustness pays:* no per-range wire row. The existing literal-refusal wire test (`127.0.0.1` in `public`) already proves that literals reach `permitted()`. |
+| Resolver-thread residual | not raised | document it | **Document it** in the spec, in 0121 §6 and in network-posture. A bounded resolver needs a separate decision. |
+| `std::net::Ipv6Addr::is_global` | unstable, so not used | never use it, even when stable | **Never use it** (robustness). Swarmail pins its own policy. |
+| Client reuse, post-probe `try_acquire`, a public-suffix list | reject | reject or accept the cost | **No change.** Both positions agree, and both are bounded. |
+
+The first-round adjudication follows unchanged. It records why the probe
+exists, why `loopback` is a production mode, and why the probe is not
+cached.
+
 ## Panel adjudication
 
-The robustness and simplicity positions both passed. This synthesis rules
-on each conflict:
+First round, 2026-11-03. The robustness and simplicity positions both
+passed. This synthesis rules on each conflict:
 
 | Question | Simplicity | Robustness | Ruling and cost |
 |---|---|---|---|
@@ -201,6 +286,14 @@ on each conflict:
 2. **Reachability slice** (T4.1–T7.4): `reach.rs`, config, API, compose, wire
    tests and docs. It is held for 0121's acceptance.
 3. **Records and gates** (T8.1–T9.2): the index row and the full gate run.
+4. **Revision, 2026-11-04** (R1–R12): a later implement run lands it on
+   top of `33efa4c`, in two commits:
+   - the static-slice corrections (R4–R6, R9 and the static docs), which
+     stay compatible under 0045 §8;
+   - the reachability corrections (R1–R3, R7, R8, R10), which stay held.
+
+   The records and gates close it (R11, R12). Earlier commits are not
+   rewritten.
 
 Each slice leaves every gate green on its own, so the operator can approve
 slice 1 by name.
@@ -209,7 +302,12 @@ slice 1 by name.
 
 | Risk | Mitigation |
 |---|---|
-| **SSRF through mail-chosen URLs.** The probe could be aimed at metadata, private hosts, a DNS rebind, or a redirect into private space. | Off by default, with two explicit opt-ins. Swarmail resolves names itself; every answer must be permitted; it pins to the validated address and re-validates every hop. Userinfo is refused, and IPv4-mapped addresses are unwrapped. No proxy, cookies, credentials or body read. A full range table test plus resolver-seam tests for a mixed answer, pinning and redirect-into-private (AC5). |
+| **SSRF through mail-chosen URLs.** The probe could be aimed at metadata, private hosts, a DNS rebind, or a redirect into private space. Review of `33efa4c` found that the block list let six special-purpose IPv6 ranges through (HIGH). | Off by default, with two explicit opt-ins. The policy is **default-deny**: IPv6 only inside `2000::/3` minus four blocks, and IPv4 only outside the registry's non-global entries. Embedded IPv4 is refused, never decoded. Swarmail resolves names itself; every answer must be permitted; it pins to the validated address and re-validates every hop. Userinfo is refused. No proxy, cookies, credentials or body read. The table test is written as literal rows, including every address review named. Resolver-seam rows put the permitted local listener first, so a broken check would dial only that listener. A redirect into `[fec0::1]` is refused (AC5, R1–R3). |
+| **A future special-purpose block inside `2000::/3`** is permitted until the table is edited. | Recorded as a residual in the spec, 0121 and the guide, with the basis date. Any allocation outside `2000::/3` is refused with no change. Re-read the registry when 0121 is accepted. |
+| **Refusing transition-only hosts.** A public site reachable only over 6to4, Teredo or NAT64 is reported as `refused`. | The outcome is an info finding saying the link was not checked, never a claim that it is safe. Accepted in 0121's alternatives. |
+| **Uncancellable `getaddrinfo`.** Dropped probes leave blocking-pool threads running until the OS resolver gives up. | The opt-in mode, the per-`Service` caps and the OS resolver deadline bound it. It costs latency, never a `250`, because no job permit or Store guard is held. Documented in the spec, 0121 §6 and network-posture. |
+| **The token reorder changes rule results inside `swarmail-html/4`.** | `/4` has never shipped, so no cached slot or released client sees two meanings. `host_token_table` and `anchor_mismatch_pair` pin the new results (R5). |
+| **The slice-2 hold is lost at merge.** 0056's mechanical hold list does not cover it. | AC15 writes the hold into `implementation.md` and into the result handed to ship, so that it reaches the PR body. |
 | **`loopback` mode lets mail cause GETs to local services.** | It is an explicit, documented operator choice in the guide and network-posture. It sends GET only, with no body read, no credentials and fixed headers. Private and link-local addresses stay refused. |
 | **Resource exhaustion from a hostile mail or many callers.** | 32 targets, 4 per request, 2 requests per process, and a 5 s per-link budget across all hops give a worst case of 40 s and 8 sockets. Over the cap is an explicit 503. The probe never holds job permits or Store guards (AC6). |
 | **`resolve_to_addrs` does not pin as expected** (for example, the URL port is ignored). | The pinning test (AC5) asserts the listener is reached and the `Host` header carries the name. The implementer adjusts the call until it passes. A test failure here blocks the slice. |
@@ -217,7 +315,7 @@ slice 1 by name.
 | **Label or anchor semantics drift from #154.** | The same `walk` and helpers are reused, not copied. A parity test compares the `Anchors` labels with ingest's stored `anchor_text` for the same body (T1.4). |
 | **False positives** (`Node.js` in a label, `README.md`, shared suffixes). | Warnings only, with documented token rules and fixed hints that never claim phishing. Tests pin the documented edges. |
 | **A hostile mail with more than 256 link findings fails its report.** | This is the 0085 rule: an explicit failure is better than a comfortable subset. The guide documents it, and AC8 proves it. |
-| **Timeout tests slow down or flake.** | Servers hold the connection until the test ends, so the timeout is a real deadline and not a sleep. Assertions are on classes, not wall time. Two wire tests pay the 5 s budget (~10 s for concurrency), and the inline tests use the same production constant. A shorter `cfg(test)` budget is allowed only as a seam that a test installs. |
+| **Timeout tests slow down or flake.** | Servers hold the connection until the test ends, so the timeout is a real deadline and not a sleep. Assertions are on classes, not wall time. The 4-at-once proof counts open connections with a high-water gauge, not timestamps (R7). Two wire tests pay the 5 s budget (~10 s for concurrency), and the inline tests use the same production constant. A shorter `cfg(test)` budget is allowed only as a seam that a test installs. |
 | **Rule-set id collision with #253/#260.** | The integrator takes the next free id at merge, and the snapshot fixtures record it. This slice touches only its own rules, files and tests. |
 | **The PR is held because 0121 is proposed.** | The static and reachability slices are separate commits, and the operator may approve the static slice by name. The result says plainly that the reachability slice awaits acceptance. |
 | **A test accidentally touches the internet.** | Probe tests use loopback literals and the resolver seam. Static fixtures with public names run with the mode `off`, which AC3 proves opens nothing. Review greps the probe tests for non-loopback hosts (T7.3). |
