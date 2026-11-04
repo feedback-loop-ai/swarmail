@@ -505,7 +505,8 @@ link.shortener.v1 (warning: exact host in the built-in swarmail-shorteners/1 lis
 and link.anchor-host-mismatch.v1 (warning: the label names a host the target is
 neither equal to nor a subdomain of, after www. is stripped). A link finding is
 located at link {part_path, byte_offset}, or at mime_part {path} when the part's
-decoded text differs from its transfer-decoded bytes. The default report fetches no link; empty
+decoded text is not a prefix of its transfer-decoded bytes followed only by ASCII
+whitespace. The default report fetches no link; empty
 link findings do not mean the links are safe.
 
 Opt-in link reachability (proposed decision 0121). Off by default: start the server with

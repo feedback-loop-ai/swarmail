@@ -182,14 +182,18 @@ edit moves both. A shortener's redirect target is not known without a network
 request; see the opt-in reachability check for that.
 
 **Host-like tokens** in the label are found by splitting on ASCII whitespace.
-A token is skipped when it contains `@` or any non-ASCII character. A leading
-`http://` or `https://` is removed, the token is cut at the first `/`, `?`,
-`#` or `:`, wrapping punctuation is trimmed, and it is lowercased. It counts
-when it has at least two dot-separated labels, each `[a-z0-9-]`, and an
-alphabetic last label of two or more characters. So `paypal.com` and
-`https://paypal.com/login` count, while `Version 1.2`, `3.14` and `e.g.` do
-not. The target host matches a token when, after one leading `www.` is
-removed from each, they are equal or the host is a subdomain of the token.
+A token is skipped when it contains `@` or any non-ASCII character. Then, in
+this order: it is lowercased; leading `(` `[` `<` `"` `'` are trimmed; a
+leading `http://` or `https://` is removed; it is cut at the first `/`, `?`,
+`#` or `:`; trailing `.` `,` `;` `:` `!` `?` `)` `]` `>` `"` `'` are trimmed;
+and one leading `www.` is removed. It counts when what is left has at least
+two dot-separated labels, each `[a-z0-9-]`, and an alphabetic last label of two
+or more characters. So `paypal.com`, `(https://paypal.com)`,
+`<https://paypal.com/>` and `https://paypal.com/login` all give `paypal.com`,
+while `Version 1.2`, `3.14`, `e.g.` and `www.com` (which is `com` after the
+`www.` is removed) do not count. The target host, after one trailing dot and
+one leading `www.` are removed, matches a token when they are equal or the host
+is a subdomain of the token.
 `example.com` -> `click.example.com` passes. `paypal.com` ->
 `paypal.com.evil.test` fires, and so does a label naming a host with an IP
 literal target. Known gaps: there is no public-suffix list, so a label that
@@ -200,10 +204,12 @@ names a shared suffix (`github.io`) lets any subdomain pass; labels such as
 **Locations.** A link finding is located at `link {part_path, byte_offset}`,
 where `byte_offset` is the first non-whitespace source byte of the `href`
 value in the part's transfer-decoded payload (before charset and entity
-decoding). That is only a true source offset when the part's decoded text is
-byte-identical to its payload. When it is not (for example `charset=iso-8859-1`
-with an 8-bit byte), the finding is located at `mime_part {path}`, the
-contract's own fallback. Swarmail never emits a guessed offset.
+decoding). That is only a true source offset when the part's decoded text is a
+prefix of its transfer-decoded payload and the rest of the payload is ASCII
+whitespace (a trailing newline does not move an offset). When it is not (for
+example `charset=iso-8859-1` with an 8-bit byte), or when the transfer decode
+fails, the finding is located at `mime_part {path}`, the contract's own
+fallback. Swarmail never emits a guessed offset.
 
 A hostile message with more than 256 findings fails the report (503), by the
 existing limits, rather than returning a comfortable subset.

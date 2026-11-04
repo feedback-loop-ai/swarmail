@@ -528,7 +528,20 @@ async fn report_served_docs_match_contract() {
             .unwrap()
             .contains("link reachability is not enabled")
     );
+    // Both OpenAPI descriptions name the per-link rules (AC13).
+    assert!(
+        route["description"]
+            .as_str()
+            .unwrap()
+            .contains("link.scheme")
+    );
     let schemas = &api["components"]["schemas"];
+    assert!(
+        schemas["DeliverabilityReport"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("link.")
+    );
     assert_eq!(
         schemas["DeliverabilitySeverity"]["enum"],
         json!(["info", "warning", "error"])

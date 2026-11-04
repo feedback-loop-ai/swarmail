@@ -224,7 +224,6 @@ pub(crate) fn judge(href: &str, label: &str) -> Vec<&'static Rule> {
         let target = host.strip_prefix("www.").unwrap_or(host);
         if !tokens.is_empty()
             && !tokens.iter().any(|token| {
-                let token = token.strip_prefix("www.").unwrap_or(token);
                 target == token
                     || target
                         .strip_suffix(token)
@@ -242,19 +241,22 @@ pub(crate) fn host_tokens(label: &str) -> Vec<String> {
     label.split_ascii_whitespace().filter_map(token).collect()
 }
 
+/// One token, by spec § Host-like tokens steps 1-7, in that order: the
+/// leading trim comes before the scheme strip, and the `www.` strip comes
+/// before qualification, so `www.com` is not a host-like token.
 fn token(raw: &str) -> Option<String> {
     if !raw.is_ascii() || raw.contains('@') {
         return None;
     }
     let lower = raw.to_ascii_lowercase();
-    let rest = lower
-        .strip_prefix("https://")
-        .or_else(|| lower.strip_prefix("http://"))
-        .unwrap_or(&lower);
-    let rest = &rest[..rest.find(['/', '?', '#', ':']).unwrap_or(rest.len())];
+    let rest = lower.trim_start_matches(['(', '[', '<', '"', '\'']);
     let rest = rest
-        .trim_start_matches(['(', '[', '<', '"', '\''])
-        .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '>', '"', '\'']);
+        .strip_prefix("https://")
+        .or_else(|| rest.strip_prefix("http://"))
+        .unwrap_or(rest);
+    let rest = &rest[..rest.find(['/', '?', '#', ':']).unwrap_or(rest.len())];
+    let rest = rest.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '>', '"', '\'']);
+    let rest = rest.strip_prefix("www.").unwrap_or(rest);
     let (head, last) = rest.rsplit_once('.')?;
     let label = |l: &str| {
         !l.is_empty()
@@ -285,13 +287,21 @@ const REDIRECT_CHAIN: &str = "link.redirect-chain.v1";
 const REACHABILITY: &str = "link.reachability.v1";
 const REFUSED: &str = "link.reachability.refused.v1";
 
-/// The normalized `http`/`https` target of a link, or `None` for any other
-/// value (an invalid URL, `mailto:`, a script scheme).
+/// The target key of a URL: its normalized form with the fragment cleared.
+/// A fragment is never sent, so `x#a` and `x#b` are one resource, fetched
+/// once. `targets` and `observed` both key through here.
+fn key(mut url: Url) -> String {
+    url.set_fragment(None);
+    url.into()
+}
+
+/// The target key of a link, or `None` for any value that is not an absolute
+/// `http`/`https` URL (an invalid URL, `mailto:`, a script scheme).
 fn target(href: &str) -> Option<String> {
     Url::parse(href)
         .ok()
         .filter(|url| matches!(url.scheme(), "http" | "https"))
-        .map(|url| url.as_str().to_string())
+        .map(key)
 }
 
 /// The distinct probe targets of a message, in order. More than
@@ -561,7 +571,13 @@ mod tests {
                 "\"a.b.example\"! x.test:8080",
                 vec!["a.b.example", "x.test"],
             ),
-            ("www.example.com.", vec!["www.example.com"]),
+            ("www.example.com.", vec!["example.com"]),
+            ("(https://paypal.com)", vec!["paypal.com"]),
+            ("<https://paypal.com/>", vec!["paypal.com"]),
+            ("\"https://paypal.com/login\"", vec!["paypal.com"]),
+            ("www.com", vec![]),
+            ("www.example.com", vec!["example.com"]),
+            ("www.www.example.com", vec!["www.example.com"]),
             ("Version 1.2", vec![]),
             ("pi is 3.14", vec![]),
             ("e.g. this", vec![]),
@@ -590,6 +606,12 @@ mod tests {
             ("trusted.test", "https://trusted.test@evil.test/"),
             ("Visit a.test or b.test", "https://c.test/"),
             ("example.com", "http://notexample.com/"),
+            ("(https://paypal.com)", "https://paypal.com.evil.test/"),
+            ("<https://paypal.com/>", "https://paypal.com.evil.test/"),
+            (
+                "\"https://paypal.com/login\"",
+                "https://paypal.com.evil.test/",
+            ),
         ] {
             assert!(fires(href, label, m), "{label:?} {href:?}");
         }
@@ -604,6 +626,8 @@ mod tests {
             ("Version 1.2", "https://example.com/"),
             ("example.com", "mailto:a@example.com"),
             ("example.com", "javascript:void(0)"),
+            ("www.com", "https://evil.com/"),
+            ("(https://paypal.com)", "https://www.paypal.com/"),
         ] {
             assert!(!fires(href, label, m), "{label:?} {href:?}");
         }
@@ -705,43 +729,48 @@ mod tests {
 
     #[test]
     fn link_offsets_index_transfer_decoded_source() {
-        let html = "<p>intro</p>\n<a href=\"https://bit.ly/q\">bit.ly</a>\n\
+        let base = "<p>intro</p>\n<a href=\"https://bit.ly/q\">bit.ly</a>\n\
                     <a href=\"javascript:z()\">go</a>\n";
-        let b64 = STANDARD
-            .encode(html)
-            .as_bytes()
-            .chunks(20)
-            .map(|c| String::from_utf8_lossy(c).into_owned())
-            .collect::<Vec<_>>()
-            .join("\r\n");
-        let crlf = html.replace('\n', "\r\n");
-        for (encoding, body, source) in [
-            ("7bit", crlf.clone(), crlf.clone()),
-            ("base64", b64, html.to_string()),
-            ("quoted-printable", quoted_printable(html), crlf),
-        ] {
-            let found = links(&message(encoding, "utf-8", body.as_bytes()));
-            let at = |rule: &str| -> Vec<Location> {
-                found
-                    .iter()
-                    .filter(|f| f.rule_id == rule)
-                    .map(|f| f.location.clone())
-                    .collect()
-            };
-            let link = |needle: &str| Location::Link {
-                part_path: vec![],
-                byte_offset: source.find(needle).unwrap() as u64,
-            };
-            assert_eq!(
-                at("link.scheme.unsafe.v1"),
-                [link("javascript:z()")],
-                "{encoding}"
-            );
-            assert_eq!(
-                at("link.shortener.v1"),
-                [link("https://bit.ly/q")],
-                "{encoding}"
-            );
+        // The second body carries trailing ASCII whitespace after the decoded
+        // text: offsets stay `link` offsets (AC2).
+        for html in [base.to_string(), format!("{base} \n\n")] {
+            let html = html.as_str();
+            let b64 = STANDARD
+                .encode(html)
+                .as_bytes()
+                .chunks(20)
+                .map(|c| String::from_utf8_lossy(c).into_owned())
+                .collect::<Vec<_>>()
+                .join("\r\n");
+            let crlf = html.replace('\n', "\r\n");
+            for (encoding, body, source) in [
+                ("7bit", crlf.clone(), crlf.clone()),
+                ("base64", b64, html.to_string()),
+                ("quoted-printable", quoted_printable(html), crlf),
+            ] {
+                let found = links(&message(encoding, "utf-8", body.as_bytes()));
+                let at = |rule: &str| -> Vec<Location> {
+                    found
+                        .iter()
+                        .filter(|f| f.rule_id == rule)
+                        .map(|f| f.location.clone())
+                        .collect()
+                };
+                let link = |needle: &str| Location::Link {
+                    part_path: vec![],
+                    byte_offset: source.find(needle).unwrap() as u64,
+                };
+                assert_eq!(
+                    at("link.scheme.unsafe.v1"),
+                    [link("javascript:z()")],
+                    "{encoding}"
+                );
+                assert_eq!(
+                    at("link.shortener.v1"),
+                    [link("https://bit.ly/q")],
+                    "{encoding}"
+                );
+            }
         }
     }
 
@@ -819,7 +848,7 @@ mod tests {
     }
 
     #[test]
-    fn link_report_is_deterministic_cold_warm_and_across_services() {
+    fn link_evaluate_is_deterministic() {
         let raw = message(
             "7bit",
             "utf-8",
@@ -931,11 +960,13 @@ mod tests {
         let raw = probe_mail(
             "<a href='HTTP://Example.TEST/a'>1</a><a href='http://example.test/a'>2</a>\
              <a href='https://example.test/b#frag'>3</a><a href='mailto:a@b.test'>4</a>\
-             <a href='javascript:x()'>5</a><a href='/relative'>6</a><a href='#top'>7</a>",
+             <a href='javascript:x()'>5</a><a href='/relative'>6</a><a href='#top'>7</a>\
+             <a href='http://example.test/a#a'>8</a><a href='http://example.test/a#b'>9</a>",
         );
+        // The fragment is never sent, so it is not part of the key.
         assert_eq!(
             targets(&raw).unwrap().into_iter().collect::<Vec<_>>(),
-            ["http://example.test/a", "https://example.test/b#frag"]
+            ["http://example.test/a", "https://example.test/b"]
         );
         let many = |n: usize| {
             probe_mail(
