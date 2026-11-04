@@ -415,7 +415,10 @@ above). Escaped bytes count toward that cap: a subject made of escapable
 characters reaches 64 MiB from about 13 MiB stored. That page is refused
 whole and by name, as before. `GET /mail/{id}` has no response cap, as
 before; its subject can grow up to five times the stored bytes. This
-addendum adds no by-id cap.
+addendum adds no by-id cap. That is the accepted ruling, not a gap
+this addendum leaves: 0044 §6 says "One item may exceed [the page budget];
+raw-by-ID remains available", so a by-id cap would contradict an accepted
+ruling and could not land under 0045 §8 without the operator's amendment.
 
 *Measured, not new.* JSON already writes a control character as a
 six-byte `\u00XX` escape. On this branch's tree a mail whose subject and
