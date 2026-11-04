@@ -38,13 +38,16 @@ default-tier tasks (the whole catalogue when it was approved): 32 free controls
 (one oracle and one null per task), and 480 requested paid slots (16 × 6 × 5).
 Inbox-isolation has three simultaneous agents within its slot; slots are not
 agent session counts. The catalogue now holds 16 default-tier tasks plus 3 hard
-ones; `baseline` without `--tier` still plans exactly the approved 16.
+ones plus 5 expert ones; `baseline` without `--tier` still plans exactly the
+approved 16.
 
 The catalogue's ids, in order, are `signup`, `otp`, `magic-login`, `stale-otp`,
 `confirm-decoys`, `sibling-addresses`, `entity-url`, `i18n-subject`,
 `slow-delivery`, `smtp-retry`, `digest-forty`, `reset-login`, `reset-reuse`,
 `invite-time`, `support-reply`, `inbox-isolation` (the approved 16) and then
-`otp-backlog`, `recipient-crowd`, `digest-lookalike` (the hard tier).
+`otp-backlog`, `recipient-crowd`, `digest-lookalike` (the hard tier) and then
+`otp-correction`, `digest-correction`, `otp-late`, `confirm-attachment`,
+`confirm-injection` (the expert tier).
 
 ## The hard-tier run (proposed 0117)
 
@@ -88,6 +91,53 @@ Comparability: rows of the default product compare with the 2026-11-01
 baseline by task id and per-task `definition_sha256`, which are unchanged for
 the sixteen; the catalogue hash is the live catalogue's identity and is not the
 comparison key.
+
+## The expert-tier run (proposed 0123)
+
+The hard tier's paid run (74/75 over five models, 2026-11-03) did not
+discriminate either. Proposed
+[0123](../docs/decisions/0123-expert-eval-tier.md) adds five `expert` tasks —
+`otp-correction` and `otp-late` (`stale_code`), `digest-correction`,
+`confirm-attachment` and `confirm-injection` (`wrong_link`) — documented trap by
+trap in the [README](README.md#the-expert-tier-proposed-0123). The 24-task
+catalogue hashes differently from the 19-task one (`5b312d98…`); `hard`'s rows
+keep theirs.
+
+**The tier's criterion: no single read passes.** Every expert task needs at
+least two reads (mails plus attachment parts: `min_mails +
+min_attachment_parts ≥ 2`), and on no task does acting on the first match, the
+newest match or a Swarmail shortcut tool's answer pass on every seed. Length
+plays no part: no expert inbox holds more than five mails when the agent
+decides. An attachment part
+counts as a read (0123 §1 puts that reading to the operator).
+
+`baseline --tier expert` is a separate product: 5 tasks, 10 free controls (one
+oracle and one null per task) and 150 requested paid slots (5 × 6 × 5), with
+the same six declarations, 600000 ms deadline, concurrency one and
+controls-first admission. Use `baseline`, not bare `matrix --tier expert`, for
+the paid run.
+
+```bash
+$E baseline --tier expert --config /private/wrappers.json --output /tmp/baseline-expert --dry-run
+# Only the operator executes without --dry-run, after the six-model authenticated smoke:
+$E baseline --tier expert --config /private/wrappers.json --output /tmp/baseline-expert
+```
+
+**The paid expert-tier run is the operator's, after merge.** Delivery proves
+the five tasks with free controls only and records an unpaid difficulty proxy
+per task (`EXPERT_DIFFICULTY`: the oracle's measured MCP calls and app
+requests, and the fewest mails and attachment parts any solver must read) so
+the paid run can be judged against it. The issue's target is a tier where at
+least two models fail at least 10% of their trials. At five trials per cell
+(25 per model) a model whose true failure rate is 10% shows at least 3
+failures with probability of about 0.46, so a narrow miss is weak evidence and
+the operator may buy more trials per cell. Codes minted at prepare expire after
+600 s, the deadline, so a slow agent can lose a code to expiry; that is
+`stale_code` by the scorer's fallback, not the named trap. The tight-budget and
+several-identities families are not built (README, "Families not built"), with
+the derivation `C = n + max(2, ⌈n/2⌉)` recorded for a follow-up that adds an
+agent-side call counter. Here `n` is the oracle's MCP tool calls plus its app
+requests, so the caps are 4, 4, 6, 6 and 4 in catalogue order.
 
 ## Current readiness and operator command
 
@@ -140,7 +190,8 @@ No automatic retry, overwrite, row filtering, resume, archive conversion or
 fabricated suffix is performed by the coordinator.
 
 1. Run the fresh free oracle/null matrix over every task of the selected
-   product (the 16 default-tier tasks, or the 3 hard ones with `--tier hard`), in
+   product (the 16 default-tier tasks, the 3 hard ones with `--tier hard`, or the
+   5 expert ones with `--tier expert`), in
    task → agent → repetition order, retaining controls.jsonl and controls/.
 2. Require strict complete v2 rows bound to this invocation's prelaunch plan,
    unique cell/trial identities, catalogue/task definitions, declared builtins,
@@ -180,9 +231,9 @@ diagnostic report is not a completed baseline. Retain every row and report.
 
 Before any operator-owned measurement run standalone fmt, locked clippy and
 full tests from [README](README.md), including `--test wrappers`, `--test baseline`
-and `--test proof`. All nineteen oracle cases must pass and all nineteen null
-cases must fail with their declared idle class (the three hard tasks also on
-four fixed seeds). The held-idle-victim control
+and `--test proof`. All twenty-four oracle cases must pass and all twenty-four null
+cases must fail with their declared idle class (the three hard tasks and the
+five expert tasks also on four fixed seeds). The held-idle-victim control
 must refuse a competing trial before agent launch; its victim fails gave_up,
 without an accepted completion event, and a later oracle passes.
 

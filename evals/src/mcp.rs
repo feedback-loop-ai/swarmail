@@ -18,6 +18,10 @@ pub struct McpClient {
     http: reqwest::Client,
     url: String,
     next_id: u64,
+    /// `tools/call` requests sent: the oracle's MCP cost (proposed 0123 §6).
+    /// `initialize` and the initialized notification are session setup, not
+    /// calls, and are not counted.
+    tool_calls: u32,
 }
 
 impl McpClient {
@@ -33,6 +37,7 @@ impl McpClient {
             http,
             url: url.to_string(),
             next_id: 0,
+            tool_calls: 0,
         };
         let init = client
             .rpc(
@@ -103,6 +108,7 @@ impl McpClient {
 
     /// Call a tool and decode the JSON inside its text block.
     pub async fn call(&mut self, tool: &str, arguments: Value) -> Result<Value, String> {
+        self.tool_calls += 1;
         let result = self
             .rpc(
                 "tools/call",
@@ -116,6 +122,29 @@ impl McpClient {
             return Err(format!("{tool}: tool error: {text}"));
         }
         serde_json::from_str(text).map_err(|e| format!("{tool}: text is not JSON: {e}"))
+    }
+
+    /// The `tools/call` requests this session has sent.
+    pub fn tool_calls(&self) -> u32 {
+        self.tool_calls
+    }
+
+    /// `swarmail_list_attachments`: the parts of one captured email, in
+    /// order. No wait or search view of a mail in the protocol this client
+    /// speaks carries them, so this is how a caller learns a part exists.
+    pub async fn list_attachments(&mut self, id: &str) -> Result<Value, String> {
+        self.call("swarmail_list_attachments", json!({ "id": id }))
+            .await
+    }
+
+    /// `swarmail_get_attachment`: one stored part of a captured email by its
+    /// index in the attachment list. A UTF-8 part is returned as text.
+    pub async fn get_attachment(&mut self, id: &str, index: usize) -> Result<Value, String> {
+        self.call(
+            "swarmail_get_attachment",
+            json!({ "id": id, "index": index }),
+        )
+        .await
     }
 
     /// `swarmail_wait_for_email`: the long-poll (subscribe before check,
