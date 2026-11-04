@@ -1108,7 +1108,7 @@ mod tests {
         );
         assert_eq!(
             fixture["catalogue_snapshot"]["rule_set_id"],
-            "swarmail-html/3"
+            "swarmail-spam/1"
         );
         let c = catalogue(DATA).unwrap();
         assert_eq!(c.rules.len(), 7);
@@ -1542,7 +1542,9 @@ mod tests {
     }
     #[test]
     fn raw_decoded_structural_and_contribution_limits_are_exact() {
-        let mut bytes = b"Content-Type: text/plain\r\n\r\n".to_vec();
+        // Not text/plain: the spam collector's own 4 MiB text cap would fail an
+        // 8 MiB plain body first, and this test pins the engine's raw bound.
+        let mut bytes = b"Content-Type: application/octet-stream\r\n\r\n".to_vec();
         bytes.resize(RAW_BYTES, b'x');
         assert!(evaluate(&bytes, &Inputs::default()).is_ok());
         bytes.push(b'x');

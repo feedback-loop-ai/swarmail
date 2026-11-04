@@ -100,7 +100,7 @@ async fn report_rest_schema_and_refusals() {
     assert_eq!(stored, raw);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-html/3");
+    assert_eq!(first["rule_set_id"], "swarmail-spam/1");
     assert_eq!(first["findings"].as_array().unwrap().len(), 7);
     assert_eq!(
         first["findings"][6],
@@ -138,7 +138,7 @@ async fn report_rest_schema_and_refusals() {
     );
     let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
     for text in [
-        "swarmail-html/3",
+        "swarmail-spam/1",
         "warning",
         "demo.marker.v1",
         "x-swarmail-demo",
@@ -575,7 +575,7 @@ async fn report_served_docs_match_contract() {
         "structuredContent under a closed outputSchema",
         "historical",
         "JSON in one text block",
-        "swarmail-html/3",
+        "swarmail-spam/1",
         "104448",
         "classic Outlook",
         "conditional comments",
@@ -621,7 +621,7 @@ async fn html_findings_share_one_report_and_predicate_contract() {
     assert_eq!(expected.len(), 15);
     assert_eq!(
         first,
-        json!({"rule_set_id":"swarmail-html/3","findings":expected})
+        json!({"rule_set_id":"swarmail-spam/1","findings":expected})
     );
     assert_eq!(report(srv.http_addr, &id).await.1, first);
     let reply = rpc(
@@ -854,7 +854,7 @@ async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
                 findings.push(json!({"rule_id":"html.css.position.v1","severity":"warning","fix_hint":rule["fix_hint"],"location":{"kind":"mime_part","path":[]}}));
             }
             findings.sort_by_key(|f| f["rule_id"].as_str().unwrap().to_string());
-            let expected = json!({"rule_set_id":"swarmail-html/3","findings":findings});
+            let expected = json!({"rule_set_id":"swarmail-spam/1","findings":findings});
             for _ in 0..2 {
                 assert_eq!(report(srv.http_addr, &id).await, (200, expected.clone()));
             }
