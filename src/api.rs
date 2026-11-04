@@ -2128,6 +2128,14 @@ async fn set_inbox_dns(
     body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> ApiResult<Json<serde_json::Value>> {
     admit(&inbox)?;
+    // An inbox may hold mail under any admitted label, but a declaration is
+    // resident memory keyed by it (decision 0120 §8): cap the key.
+    let longest = crate::deliverability::dns::MAX_DNS_INBOX_LABEL_BYTES;
+    if inbox.len() > longest {
+        return Err(bad_request(format!(
+            "inbox label is longer than {longest} bytes"
+        )));
+    }
     let ViewQuery {} = parse_query(
         raw.0.as_deref().unwrap_or(""),
         "PUT /api/v1/inboxes/{inbox}/dns",

@@ -449,3 +449,69 @@ against `e80aa822` where the task says so, then green.
   proof is planned; any added one is bounded to nproc/4 workers for at most
   10 minutes, as a named, timed command, with the load reported.
   *Test:* the gate exit codes in the verify notes.
+
+## Implementation record — 2026-11-04 (review return)
+
+The implement seat built RT1–RT10 on top of `ef3c21c`, in the existing branch,
+without rewriting earlier commits.
+
+- **RT1/RT2.** `dns::parse` counts entries as it accepts them
+  (`count_entry`) and refuses a canonical form over 8,192 bytes after building
+  the policy. `canonical_view_worst_case` is replaced by
+  `canonical_bound_closes_the_round_trip`: the 8,192-byte raw input that omits
+  `tempfail` (accepted by `e80aa822`) is now refused with the canonical
+  message; a canonical form of exactly 8,192 bytes is accepted and
+  re-serializes to identical bytes. The canonical serialization uses `expect`,
+  not `map_err`: a view of strings cannot fail to serialize, and an
+  unreachable error closure would leave the exact coverage gate one function
+  short.
+- **RT3.** `Report::qualifies` is false at every threshold when a lookup is
+  `temp_fail`. To drive it through `Store::qualify` without a production
+  caller, `Service` gained a `#[cfg(test)]` `lookups: OnceLock<Vec<OwnerName>>`
+  seam beside `auth` (0020 rule 4); `temp_fail_is_never_clean` installs it.
+- **RT4.** `the_accept_path_has_no_dns_reference` scans whole files for SMTP,
+  persistence, `src/extract.rs` and `src/extract/*` (the list is checked
+  against `read_dir`), and every `src/store.rs` function that takes
+  `self.mutation.lock()`, asserting `pub fn insert(` is among them. *Seen red:*
+  adding `let _ = crate::deliverability::dns::MAX_DNS_POLICY_BYTES;` inside
+  `Store::insert` failed the test with `pub fn insert(...) mentions DNS`; it
+  was reverted and the test is green.
+- **RT5.** `put_mid_assert_is_not_seen` and `put_mid_wait_is_not_seen` serve
+  the real router with `api::serve` over the test's `Store` on a multi-thread
+  runtime and issue the `PUT` with `reqwest` (already a dependency, used by the
+  harness's own `client()`), not a hand-written HTTP/1.1 socket as the task
+  sketched. It is the same real HTTP request to the real `set_inbox_dns`
+  handler, answered while `Held` keeps the evaluation parked; no sleep.
+- **RT6.** `set_inbox_dns` refuses a label over 512 bytes after `admit` and
+  before the query and body. The wire test seeds mail into the 513-byte label
+  and reads `source:"default"` from its report, which proves no declaration was
+  made, rather than relying on the `DELETE` echo (which is the fallback either
+  way).
+- **RT7.** `Service::fallback()` is shared by `policy_for` and `forget`;
+  `forget_echoes_the_fallback` asserts `Arc::ptr_eq`.
+- **RT8.** The `load_file` comment states the metadata/open window truthfully.
+- **RT9.** Route rows in `docs/guide/rest-api.md`; `llms.txt`, the guide, the
+  OpenAPI texts and the MCP report description (`MODERN_REPORT_DESCRIPTION`,
+  which no fixture pins) describe the canonical bound, the 256 count, the label
+  cap, the `DELETE` echo and the `temp_fail` qualify rule. The MCP tool
+  descriptions that the March fixture pins (`no_findings_at_or_above`) are not
+  edited, to keep that fixture's hand edit to one line. *Seen red,* each by
+  removing its target once and then restoring it: deleting the `DnsRecord`
+  schema (`components.schemas lacks DnsRecord`); renaming one `$ref` target
+  (`dangling $ref`); removing every `512 bytes` from `llms.txt` (phrase list);
+  removing the `DELETE` row from `rest-api.md` (`omits DELETE ...`).
+- **RT10 — gates run here, all `--locked`:** `cargo fmt --all -- --check`;
+  `cargo clippy --workspace --all-targets -D warnings`;
+  `cargo test --workspace` (1,309 passed, 0 failed);
+  `cargo build --bin swarmail`; the evals fmt, clippy and `cargo test` against
+  that binary (exit 0); `scripts/coverage-gate.sh` (exact 100/100/100:
+  24,349 lines, 1,818 branches, 2,406 functions) and its `selftest`;
+  `publish-guard-test.sh`; `seal-branch-test.sh`; `cargo deny check licenses`.
+  `git diff --exit-code 8732445 -- Cargo.toml Cargo.lock evals/Cargo.lock
+  deny.toml` is clean. **Not run here:** `brokkr compile` over the recipe
+  shelf, because the pinned brokkr binary is not provisioned in this sandbox
+  (`which brokkr` is empty, nothing found on disk); nothing under `.brokkr/`,
+  `.github/` or `scripts/` changed. CI-only proofs are not claimed.
+- **Load.** No load proof was run. `cargo test` ran with
+  `RUST_TEST_THREADS=32` (nproc/4 of 128); the coverage gate and the evals
+  suite ran as the house scripts run them.

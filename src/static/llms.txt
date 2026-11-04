@@ -528,18 +528,31 @@ Every report carries a required `dns` member
 lookups:[{name,type:"txt",outcome:"records"|"no_records"|"temp_fail",values}]}.
 `policy` is the complete canonical effective policy; `lookups` lists each name an
 evaluation resolved, once, sorted. No rule resolves a name yet, so `lookups` is
-empty today. `temp_fail` is never a pass and never clean; `no_records` is a
-definite negative. The same message under the same configuration gives
-byte-identical report JSON; no path, time or generation appears.
+empty today. `temp_fail` is never a pass and never clean: a report with a
+`temp_fail` lookup qualifies at no no_findings_at_or_above threshold, so an assert
+does not match it and a wait rides to its deadline. `no_records` is a definite
+negative. The same message under the same configuration gives byte-identical
+report JSON; no path, time or generation appears.
 Declare a server map with `serve --dns-policy FILE` (env SWARMAIL_DNS_POLICY): a
 JSON file of at most 8192 bytes, `{"txt":[{"name":"s1._domainkey.example.com",
 "values":["v=DKIM1; k=rsa; p=..."]}],"tempfail":["_dmarc.example.org"]}`; `{}` is
 an empty map and source "server". A bad file stops startup before any listener
 binds; there is no fallback to an empty map. Declare an inbox map with
-PUT /api/v1/inboxes/{inbox}/dns (same body; 200 echoes {inbox,source,policy};
-400 invalid, 413 over 8192 bytes, 503 when 4096 inboxes already hold one) and clear
-it with DELETE (idempotent, echoes the policy now in effect). An inbox map
-replaces the server map; there is no merge. Names are ASCII labels of
+PUT /api/v1/inboxes/{inbox}/dns (same body; 200 echoes the object
+{"inbox","source","policy"}; 400 for an invalid declaration or an inbox label over
+512 bytes, 413 for a body over 8192 bytes, 503 when 4096 inboxes already hold one)
+and clear it with DELETE /api/v1/inboxes/{inbox}/dns (idempotent; it echoes the
+fallback, the server map else the default). An inbox map replaces the server map;
+there is no merge. A declaration is bounded twice, on its raw bytes and on its
+canonical form (what a report embeds), at most 8192 bytes each, so a report's
+`dns.policy` can always be declared back verbatim. An input that fits on the wire
+but whose canonical form does not, for example one near the bound that omits
+`tempfail`, is refused with 400
+`canonical declaration is larger than 8192 bytes`. It also holds at most 256 names
+and values in all (each txt owner, each value and each tempfail name counts one);
+one more is refused with `declaration has more than 256 names and values`. A
+declaration is kept in memory under its inbox label, so the label may be at most
+512 bytes: `inbox label is longer than 512 bytes`. Names are ASCII labels of
 [A-Za-z0-9_-], folded to lowercase with one trailing dot stripped, at most 253
 bytes; a name matches only itself (no wildcard, no IDNA). Values are exact
 printable ASCII, never trimmed. Duplicates, an empty values list and a name under

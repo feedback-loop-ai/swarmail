@@ -13,6 +13,8 @@
 | `GET /api/v1/inboxes/{inbox}/threads[/{key}]` | conversations, oldest first, stable keys |
 | `GET /api/v1/inboxes/{inbox}/feed` | SSE: one snapshot, then one event per accepted mail |
 | `POST /api/v1/inboxes/{inbox}/seed` | a fixture without SMTP — full parse + extraction; `html` preserved verbatim (supersedes `text`), CR/LF/NUL envelope fields refused |
+| `PUT /api/v1/inboxes/{inbox}/dns` | declare this inbox's offline DNS map (TXT records and temporary-failure names for DKIM, SPF and DMARC checks; decision 0120); replaces the server map for this inbox; see [deliverability](deliverability.md) |
+| `DELETE /api/v1/inboxes/{inbox}/dns` | clear it (idempotent); echoes the fallback, the server map else the default |
 | `GET /api/v1/messages/{id}` | one full mail |
 | `GET /api/v1/messages/{id}/raw` | the RFC 5322 source as `message/rfc822` |
 | `DELETE /api/v1/messages/{id}` | remove one mail |

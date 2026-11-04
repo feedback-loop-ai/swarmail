@@ -780,3 +780,154 @@ async fn report_wait_snapshots_policy_before_subscribe_and_keeps_it() {
         Err(AnalysisError::Unavailable)
     ));
 }
+
+/// A loopback `api::serve` over `store`, the pattern `src/api.rs`'s inline
+/// router tests use: the real router and the real `set_inbox_dns` handler over
+/// the same `Store` whose `Service` carries the gate. The returned sender keeps
+/// the stop unfired; dropping it ends nothing the tests rely on.
+fn loopback(
+    store: &Arc<Store>,
+) -> (
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<std::io::Result<()>>,
+    tokio::sync::watch::Sender<bool>,
+) {
+    use std::sync::atomic::AtomicBool;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+    let (stop, stop_rx) = tokio::sync::watch::channel(false);
+    let state = crate::api::AppState {
+        store: store.clone(),
+        chaos: Arc::new(crate::chaos::Chaos::default()),
+        webhooks: Arc::new(crate::webhook::Webhooks::default()),
+        started: std::time::Instant::now(),
+        shutdown: stop_rx,
+        smtp_degraded: Arc::new(AtomicBool::new(false)),
+        pop3_degraded: Arc::new(AtomicBool::new(false)),
+        http_origin_guard: Some(addr.port()),
+        route_domain: None,
+    };
+    let server = tokio::spawn(crate::api::serve(listener, state, std::future::pending()));
+    (addr, server, stop)
+}
+
+/// `PUT /api/v1/inboxes/box/dns` over real HTTP; the echo must be the new
+/// canonical declaration. No sleep: the caller awaits this response while
+/// `Held` keeps an evaluation parked, so the handler ran mid-request.
+async fn put_new_policy(addr: std::net::SocketAddr) {
+    let response = tokio::time::timeout(
+        Duration::from_secs(10),
+        client()
+            .put(format!("http://{addr}/api/v1/inboxes/box/dns"))
+            .header("Content-Type", "application/json")
+            .body(r#"{"tempfail":["New.Example."]}"#)
+            .send(),
+    )
+    .await
+    .expect("the PUT must be answered while the evaluation is held")
+    .unwrap();
+    assert_eq!(response.status(), 200);
+    let echo: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(
+        echo,
+        serde_json::json!({
+            "inbox": "box",
+            "source": "inbox",
+            "policy": {"txt": [], "tempfail": ["new.example"]},
+        })
+    );
+}
+
+/// AC10 through the real handler, exact assert: a `PUT` answered while the
+/// assert's first candidate is held changes neither candidate's report, and the
+/// next request sees it.
+#[tokio::test(flavor = "multi_thread")]
+async fn put_mid_assert_is_not_seen() {
+    let store = Arc::new(Store::new(0));
+    let mut held = Held::new(&store.reports);
+    for id in ["one", "two"] {
+        store.insert(html_email(id, "box", "a@x.io")).unwrap();
+    }
+    let (addr, server, _stop) = loopback(&store);
+    let old = store.reports.policy_for("box");
+    let task = {
+        let s = store.clone();
+        let p = old.clone();
+        tokio::spawn(async move {
+            s.qualify(
+                s.list("box", &Filter::default()),
+                p,
+                Severity::Error,
+                usize::MAX,
+                false,
+            )
+            .await
+        })
+    };
+    held.entry().await;
+    put_new_policy(addr).await;
+    held.open();
+    assert!(task.await.unwrap().unwrap().is_empty());
+    for mail in store.list("box", &Filter::default()) {
+        let cached = store
+            .reports
+            .report_under(mail.clone(), old.clone(), true)
+            .await
+            .unwrap();
+        assert_eq!(cached.dns.source, dns::Source::Default);
+        assert!(cached.dns.policy.tempfail.is_empty());
+        let fresh = store.report(mail).await.unwrap();
+        assert_eq!(fresh.dns.source, dns::Source::Inbox);
+        assert_eq!(fresh.dns.policy.tempfail, ["new.example"]);
+    }
+    server.abort();
+}
+
+/// AC10 through the real handler, wait: the first evaluation of the wait's scan
+/// is held after its subscribe, a real `PUT` is answered, and the mail the wait
+/// returns was judged under the policy the wait started with.
+#[tokio::test(flavor = "multi_thread")]
+async fn put_mid_wait_is_not_seen() {
+    let store = Arc::new(Store::new(0));
+    trusted(&store.reports);
+    let mut held = Held::new(&store.reports);
+    store.insert(email("one", "box", "a")).unwrap();
+    let (addr, server, _stop) = loopback(&store);
+    let old = store.reports.policy_for("box");
+    let waiter = {
+        let s = store.clone();
+        tokio::spawn(async move {
+            s.wait_for_report(
+                "box",
+                &Filter::default(),
+                1,
+                Duration::from_secs(30),
+                Some(Severity::Error),
+            )
+            .await
+        })
+    };
+    held.entry().await;
+    assert_eq!(
+        store.watcher_count(),
+        1,
+        "the evaluation is after the subscribe"
+    );
+    put_new_policy(addr).await;
+    held.open();
+    let WaitOutcome::Found(found) = waiter.await.unwrap().unwrap() else {
+        panic!("the clean mail must qualify under the policy the wait started with");
+    };
+    let cached = store
+        .reports
+        .report_under(found[0].clone(), old, true)
+        .await
+        .unwrap();
+    assert_eq!(cached.dns.source, dns::Source::Default);
+    let fresh = store.report(found[0].clone()).await.unwrap();
+    assert_eq!(fresh.dns.source, dns::Source::Inbox);
+    assert_eq!(fresh.dns.policy.tempfail, ["new.example"]);
+    server.abort();
+}

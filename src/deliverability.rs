@@ -68,8 +68,17 @@ pub struct Report {
 }
 
 impl Report {
+    /// A report qualifies when no finding reaches `threshold` and no lookup
+    /// failed temporarily. A `temp_fail` is never clean (decision 0120 §4): a
+    /// verifier that forgets its `not_evaluated` finding still cannot make a
+    /// temporarily failing world pass, at any threshold.
     pub fn qualifies(&self, threshold: Severity) -> bool {
-        !self.findings.iter().any(|f| f.severity >= threshold)
+        !self
+            .dns
+            .lookups
+            .iter()
+            .any(|lookup| lookup.outcome == dns::Outcome::TempFail)
+            && !self.findings.iter().any(|f| f.severity >= threshold)
     }
 }
 
@@ -932,6 +941,10 @@ pub(crate) struct Service {
     pub(crate) gate: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     auth: std::sync::OnceLock<AuthEvidence>,
+    /// Names every report resolves, so a store-level test can see a lookup that
+    /// production makes only once #254 adds a verifier.
+    #[cfg(test)]
+    lookups: std::sync::OnceLock<Vec<dns::OwnerName>>,
 }
 
 impl Default for Service {
@@ -946,6 +959,8 @@ impl Default for Service {
             gate: Mutex::new(None),
             #[cfg(test)]
             auth: std::sync::OnceLock::new(),
+            #[cfg(test)]
+            lookups: std::sync::OnceLock::new(),
         }
     }
 }
@@ -961,8 +976,15 @@ impl Service {
     /// the inbox declaration, else the server map, else the empty default.
     pub(crate) fn policy_for(&self, inbox: &str) -> Arc<Effective> {
         let declared = self.inboxes.lock().unwrap().get(inbox).cloned();
-        declared
-            .or_else(|| self.server.get().cloned())
+        declared.unwrap_or_else(|| self.fallback())
+    }
+
+    /// What an inbox without a declaration sees: the server map, else the
+    /// empty default.
+    fn fallback(&self) -> Arc<Effective> {
+        self.server
+            .get()
+            .cloned()
             .unwrap_or_else(|| self.fallback.clone())
     }
 
@@ -982,10 +1004,12 @@ impl Service {
         Ok(declared)
     }
 
-    /// Clear an inbox's declaration (idempotent) and return the fallback.
+    /// Clear an inbox's declaration (idempotent) and return the fallback. The
+    /// answer is the fallback itself, not a second read of the declarations, so
+    /// a `PUT` racing this call can never make the echo say `inbox`.
     pub(crate) fn forget(&self, inbox: &str) -> Arc<Effective> {
         self.inboxes.lock().unwrap().remove(inbox);
-        self.policy_for(inbox)
+        self.fallback()
     }
 
     fn pin(&self, email: &Arc<Email>, inputs: &Inputs) -> Result<Arc<Slot>, AnalysisError> {
@@ -1084,6 +1108,7 @@ impl Service {
         #[cfg(test)]
         let inputs = Inputs {
             auth: self.auth.get().cloned().unwrap_or_default(),
+            lookups: self.lookups.get().cloned().unwrap_or_default(),
             ..inputs
         };
         self.with_inputs(email, inputs, ready_only).await
@@ -2312,11 +2337,23 @@ mod tests {
 
     #[test]
     fn declared_policy_counts_toward_report_cap() {
-        let entries: Vec<_> = (0..55)
-            .map(|n| json!({"name": format!("n{n}.example"), "values": ["x".repeat(100)]}))
-            .collect();
-        let declaration = json!({ "txt": entries }).to_string();
-        assert!((7_500..=dns::MAX_DNS_POLICY_BYTES).contains(&declaration.len()));
+        // 55 owners with one 100-byte value each (110 names and values), the
+        // last value padded so the canonical form is exactly 8,192 bytes.
+        let build = |last: usize| {
+            let entries: Vec<_> = (0..55)
+                .map(|n| {
+                    let fill = if n == 54 { last } else { 100 };
+                    json!({"name": format!("n{n}.example"), "values": ["x".repeat(fill)]})
+                })
+                .collect();
+            json!({ "txt": entries }).to_string()
+        };
+        let canonical = |declaration: &str| {
+            let policy = dns::parse(declaration.as_bytes()).unwrap();
+            serde_json::to_vec(&policy.view()).unwrap().len()
+        };
+        let declaration = build(dns::MAX_DNS_POLICY_BYTES - canonical(&build(0)));
+        assert_eq!(canonical(&declaration), dns::MAX_DNS_POLICY_BYTES);
         let big = Effective::new(Source::Inbox, dns::parse(declaration.as_bytes()).unwrap());
         let input = Inputs {
             dns: big.clone(),
@@ -2394,6 +2431,96 @@ mod tests {
         );
         full.forget("i1");
         assert!(full.declare("one-too-many", Policy::default()).is_ok());
+    }
+
+    #[test]
+    fn forget_echoes_the_fallback() {
+        // No server map: a declared and an undeclared inbox both answer the default.
+        let bare = Service::default();
+        bare.declare("a", declared(json!({"tempfail":["t.example"]})))
+            .unwrap();
+        for inbox in ["a", "never-declared"] {
+            let echo = bare.forget(inbox);
+            assert_eq!(echo.source, Source::Default);
+            assert!(Arc::ptr_eq(&echo, &bare.fallback));
+        }
+        // With a server map both answer that very snapshot, never an inbox one.
+        let served = Service::default();
+        served.set_server(declared(
+            json!({"txt":[{"name":"s.example","values":["1"]}]}),
+        ));
+        served
+            .declare("a", declared(json!({"tempfail":["t.example"]})))
+            .unwrap();
+        let server = served.server.get().unwrap().clone();
+        for inbox in ["a", "never-declared"] {
+            let echo = served.forget(inbox);
+            assert!(Arc::ptr_eq(&echo, &server));
+            assert_eq!(echo.source, Source::Server);
+        }
+        // Forgetting declared nothing else.
+        assert!(served.inboxes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn temp_fail_is_never_clean() {
+        let world = Effective::new(
+            Source::Server,
+            declared(json!({
+                "txt": [{"name": "a.example", "values": ["v=spf1 -all"]}],
+                "tempfail": ["tf.example"],
+            })),
+        );
+        let service = Service::default();
+        let email = super::concurrency_tests::mail("t");
+        let report = |names: &[&str]| {
+            let inputs = Inputs {
+                dns: world.clone(),
+                auth: super::concurrency_tests::passing(),
+                lookups: names.iter().copied().map(owner).collect(),
+                ..Inputs::default()
+            };
+            service.with_inputs(email.clone(), inputs, false)
+        };
+        let levels = [Severity::Info, Severity::Warning, Severity::Error];
+        // No findings, and a lookup that failed temporarily: clean at no level.
+        let failed = report(&["a.example", "tf.example"]).await.unwrap();
+        assert!(failed.findings.is_empty());
+        for level in levels {
+            assert!(!failed.qualifies(level), "{level:?}");
+        }
+        // The same message resolving only a records name and a no_records name
+        // qualifies at every level.
+        let answered = report(&["a.example", "missing.example"]).await.unwrap();
+        assert!(answered.findings.is_empty());
+        for level in levels {
+            assert!(answered.qualifies(level), "{level:?}");
+        }
+        // Through the store: the exact assert's `qualify` matches the clean
+        // world and never the temporarily failing one.
+        for (names, matches) in [
+            (vec!["a.example", "tf.example"], 0),
+            (vec!["a.example", "missing.example"], 1),
+        ] {
+            let store = Store::new(10);
+            super::concurrency_tests::trusted(&store.reports);
+            store
+                .reports
+                .lookups
+                .set(names.into_iter().map(owner).collect())
+                .unwrap();
+            let found = store
+                .qualify(
+                    vec![email.clone()],
+                    world.clone(),
+                    Severity::Error,
+                    1,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(found.len(), matches);
+        }
     }
 
     #[tokio::test]

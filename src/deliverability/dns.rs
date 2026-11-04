@@ -15,9 +15,19 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
-/// One raw-size bound for the file, the API body and (through the canonical
-/// form, which is never longer than its input plus 24 bytes) a report's policy.
+/// One size bound, measured twice: on the raw bytes of the file or API body, and
+/// on the canonical form a report embeds (compact, both members spelled). The
+/// canonical form can be longer than an input that omits a member, so a bound on
+/// the input alone would let a report carry a policy that cannot be declared
+/// back; measuring the form a report embeds closes that round trip.
 pub(crate) const MAX_DNS_POLICY_BYTES: usize = 8_192;
+/// Names and values together (every `txt` owner, every value and every
+/// `tempfail` name counts one). The byte bound does not bound the parsed tree,
+/// whose per-string overhead is many times a short name's wire size.
+pub(crate) const MAX_DNS_POLICY_ENTRIES: usize = 256;
+/// The longest inbox label that may hold a declaration (RFC 5321's command-line
+/// length, so every inbox a compliant `RCPT TO` names fits).
+pub(crate) const MAX_DNS_INBOX_LABEL_BYTES: usize = 512;
 /// Inboxes that may hold a declaration at once; the next is refused, none evicted.
 pub(crate) const MAX_DECLARED_INBOXES: usize = 4_096;
 
@@ -197,6 +207,17 @@ impl<'de> Deserialize<'de> for TxtDeclaration {
     }
 }
 
+/// Count one accepted name or value against `MAX_DNS_POLICY_ENTRIES`.
+fn count_entry(entries: &mut usize) -> Result<(), String> {
+    *entries += 1;
+    if *entries > MAX_DNS_POLICY_ENTRIES {
+        return Err(format!(
+            "declaration has more than {MAX_DNS_POLICY_ENTRIES} names and values"
+        ));
+    }
+    Ok(())
+}
+
 /// Validate a declaration into its canonical form. Nothing is repaired: every
 /// duplicate, overlap or out-of-grammar spelling is a refusal. The messages
 /// name the position, never the offending text, so they stay small.
@@ -209,10 +230,12 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Policy, String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "declaration is not valid UTF-8")?;
     let declaration: Declaration =
         serde_json::from_str(text).map_err(|e| format!("not a DNS policy declaration: {e}"))?;
+    let mut entries = 0;
     let mut txt = BTreeMap::new();
     for (i, entry) in declaration.txt.into_iter().enumerate() {
         let name = OwnerName::parse(&entry.name)
             .ok_or_else(|| format!("txt[{i}].name is not a valid owner name"))?;
+        count_entry(&mut entries)?;
         if entry.values.is_empty() {
             return Err(format!("txt[{i}].values is empty"));
         }
@@ -221,6 +244,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Policy, String> {
             if !value.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
                 return Err(format!("txt[{i}].values[{j}] is not printable ASCII"));
             }
+            count_entry(&mut entries)?;
             if !values.insert(value) {
                 return Err(format!("txt[{i}].values[{j}] repeats a value"));
             }
@@ -236,16 +260,30 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Policy, String> {
         if txt.contains_key(&name) {
             return Err(format!("tempfail[{i}] is also declared under txt"));
         }
+        count_entry(&mut entries)?;
         if !tempfail.insert(name) {
             return Err(format!("tempfail[{i}] repeats an owner name"));
         }
     }
-    Ok(Policy { txt, tempfail })
+    let policy = Policy { txt, tempfail };
+    // The form a report embeds must itself fit, or it could not be declared
+    // back (a report's `dns.policy` is canonical, so it re-parses to itself).
+    let canonical =
+        serde_json::to_vec(&policy.view()).expect("a view of strings and arrays always serializes");
+    if canonical.len() > MAX_DNS_POLICY_BYTES {
+        return Err(format!(
+            "canonical declaration is larger than {MAX_DNS_POLICY_BYTES} bytes"
+        ));
+    }
+    Ok(policy)
 }
 
 /// Load the server file: a regular file, read through a bound so a device or an
-/// endless stream cannot exhaust memory, then parsed. A FIFO is refused before
-/// it is opened, so it cannot block startup.
+/// endless stream cannot exhaust memory, then parsed. The metadata check refuses
+/// a FIFO, a device or a directory at the path. It is a check and then an open,
+/// so a FIFO swapped in between the two calls would block startup. The path is
+/// operator configuration, and closing the window needs `O_NONBLOCK` and so a
+/// production dependency this story may not take (decision 0120 §9).
 pub(crate) fn load_file(path: &Path) -> Result<Policy, String> {
     fn read(path: &Path) -> std::io::Result<Vec<u8>> {
         if !std::fs::metadata(path)?.is_file() {
@@ -440,6 +478,14 @@ mod tests {
                 .len(),
             1
         );
+        // Exactly 256 names and values are accepted, however they are mixed:
+        // owners and values count one each, as does every `tempfail` name.
+        for (owners, tempfail) in [(0, 256), (128, 0), (100, 56), (1, 254)] {
+            let input = entries(owners, tempfail);
+            assert!(input.len() <= MAX_DNS_POLICY_BYTES, "{owners}/{tempfail}");
+            let policy = parse(input.as_bytes()).unwrap();
+            assert_eq!(policy.txt.len() * 2 + policy.tempfail.len(), 256);
+        }
     }
 
     #[test]
@@ -488,6 +534,23 @@ mod tests {
             (br#"{"tempfail":[1]}"#.to_vec(), "invalid type"),
             (b"{\"txt\":[],\"x\":\"\xff\"}".to_vec(), "not valid UTF-8"),
             (over.into_bytes(), "larger than 8192 bytes"),
+            (
+                one_value(MAX_DNS_POLICY_BYTES - one_value(0).len()).into_bytes(),
+                "canonical declaration is larger than 8192 bytes",
+            ),
+            // 257 names and values, counted on each of the three counters.
+            (
+                entries(0, 257).into_bytes(),
+                "declaration has more than 256 names and values",
+            ),
+            (
+                entries(129, 0).into_bytes(),
+                "declaration has more than 256 names and values",
+            ),
+            (
+                entries(128, 1).into_bytes(),
+                "declaration has more than 256 names and values",
+            ),
             (
                 br#"{"txt":[{"name":"a b","values":["x"]}]}"#.to_vec(),
                 "txt[0].name is not a valid owner name",
@@ -560,26 +623,69 @@ mod tests {
         assert_eq!(serde_json::to_string(&back.view()).unwrap(), views[0]);
     }
 
+    /// A declaration that omits `tempfail`, with a value of `fill` bytes.
+    fn one_value(fill: usize) -> String {
+        format!(
+            r#"{{"txt":[{{"name":"a.example","values":["{}"]}}]}}"#,
+            "x".repeat(fill)
+        )
+    }
+
     #[test]
-    fn canonical_view_worst_case() {
-        // Exactly 8,192 bytes, omitting `tempfail`; the escape `\"` is as long
-        // in the canonical form as in the input.
-        let head = r#"{"txt":[{"name":"A.example.","values":[""#;
-        let tail = r#""]}]}"#;
-        let fill = MAX_DNS_POLICY_BYTES - head.len() - tail.len();
-        let mut value = "\\\"".repeat(fill / 2);
-        value.push_str(&"x".repeat(fill - value.len()));
-        let input = format!("{head}{value}{tail}");
-        assert_eq!(input.len(), MAX_DNS_POLICY_BYTES);
-        let canonical = serde_json::to_string(&parse(input.as_bytes()).unwrap().view()).unwrap();
-        // The omitted `tempfail` costs `,"tempfail":[]` and the trailing-dot
-        // strip saves one byte, so the canonical form is the input plus 13.
-        assert_eq!(canonical.len(), MAX_DNS_POLICY_BYTES + 13);
-        assert!(canonical.len() <= MAX_DNS_POLICY_BYTES + 24);
+    fn canonical_bound_closes_the_round_trip() {
+        let canonical_len = |input: &str| {
+            serde_json::to_string(&parse(input.as_bytes()).unwrap().view())
+                .unwrap()
+                .len()
+        };
+        // Omitting `tempfail` costs `,"tempfail":[]` (14 bytes) in the canonical
+        // form. An input whose canonical form is exactly 8,192 bytes is accepted.
+        let fill = MAX_DNS_POLICY_BYTES - one_value(0).len() - 14;
+        let input = one_value(fill);
+        assert_eq!(input.len(), MAX_DNS_POLICY_BYTES - 14);
+        assert_eq!(canonical_len(&input), MAX_DNS_POLICY_BYTES);
+        // One more byte of value fits on the wire but not canonically: refused.
+        let over = one_value(fill + 1);
+        assert!(over.len() <= MAX_DNS_POLICY_BYTES);
+        assert_eq!(
+            parse(over.as_bytes()).unwrap_err(),
+            "canonical declaration is larger than 8192 bytes"
+        );
+        // The exactly-8,192-byte raw input that omits `tempfail` (accepted by
+        // e80aa822 with an 8,205-byte canonical form) is refused the same way.
+        let raw_at_bound = one_value(MAX_DNS_POLICY_BYTES - one_value(0).len());
+        assert_eq!(raw_at_bound.len(), MAX_DNS_POLICY_BYTES);
+        assert_eq!(
+            parse(raw_at_bound.as_bytes()).unwrap_err(),
+            "canonical declaration is larger than 8192 bytes"
+        );
+        // The canonical bytes of the accepted input are themselves accepted, give
+        // an equal policy and serialize to the same bytes: the round trip closes.
+        let policy = parse(input.as_bytes()).unwrap();
+        let canonical = serde_json::to_string(&policy.view()).unwrap();
+        assert_eq!(canonical.len(), MAX_DNS_POLICY_BYTES);
+        let back = parse(canonical.as_bytes()).unwrap();
+        assert_eq!(back, policy);
+        assert_eq!(serde_json::to_string(&back.view()).unwrap(), canonical);
+        // One byte over the raw bound is the raw refusal, not the canonical one.
+        assert_eq!(
+            parse(format!("{canonical} ").as_bytes()).unwrap_err(),
+            "declaration is larger than 8192 bytes"
+        );
         // The input that omits both members pays for them exactly.
         let empty = serde_json::to_string(&parse(b"{}").unwrap().view()).unwrap();
         assert_eq!(empty, r#"{"txt":[],"tempfail":[]}"#);
         assert_eq!(empty.len(), 24);
+    }
+
+    /// A declaration of `owners` owners with one value each plus `tempfail`
+    /// names, so `owners * 2 + tempfail` entries in all.
+    fn entries(owners: usize, tempfail: usize) -> String {
+        let txt: Vec<_> = (0..owners)
+            .map(|i| json!({"name": format!("o{i}"), "values": ["v"]}))
+            .collect();
+        let tempfail: Vec<_> = (0..tempfail).map(|i| format!("t{i}")).collect();
+        json!({"txt": txt, "tempfail": tempfail}).to_string()
     }
 
     #[test]
@@ -659,6 +765,20 @@ mod tests {
             load_file(&big)
                 .unwrap_err()
                 .contains("larger than 8192 bytes")
+        );
+        let many = write("many.json", entries(0, 257).as_bytes());
+        assert_eq!(
+            load_file(&many).unwrap_err(),
+            "declaration has more than 256 names and values"
+        );
+        // Exactly 8,192 raw bytes that omit `tempfail`: the canonical form is over.
+        let fat = write(
+            "fat.json",
+            one_value(MAX_DNS_POLICY_BYTES - one_value(0).len()).as_bytes(),
+        );
+        assert_eq!(
+            load_file(&fat).unwrap_err(),
+            "canonical declaration is larger than 8192 bytes"
         );
         let bad = write("bad.json", b"{");
         assert!(load_file(&bad).unwrap_err().contains("not a DNS policy"));

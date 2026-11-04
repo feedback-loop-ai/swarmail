@@ -581,6 +581,12 @@ async fn report_served_docs_match_contract() {
         "conditional comments",
         "4 MiB",
         "Can I email",
+        // The DNS policy (decision 0120): the contract a client reads.
+        "temp_fail",
+        "\"source\"",
+        "canonical declaration is larger than 8192 bytes",
+        "256 names and values",
+        "512 bytes",
     ] {
         assert!(llms.contains(expected), "{expected}");
     }
@@ -1017,6 +1023,65 @@ async fn inbox_dns_declarations_over_http() {
         400,
         "no query keys"
     );
+    // 257 names and values are refused; 256 are not. Nothing changes.
+    let names = |n: usize| {
+        let names: Vec<_> = (0..n).map(|i| format!("t{i}.example")).collect();
+        json!({ "tempfail": names }).to_string()
+    };
+    let (status, error) = put_dns(&srv, "a", &names(257)).await;
+    assert_eq!(
+        (status, error),
+        (
+            400,
+            json!({"error":"declaration has more than 256 names and values"})
+        )
+    );
+    // Fits 8,192 raw bytes but not canonically: 400 with its own message, not 413.
+    let head = r#"{"txt":[{"name":"big.example","values":[""#;
+    let fill = 8_192 - head.len() - r#""]}]}"#.len();
+    let omits_tempfail = format!("{head}{}\"]}}]}}", "x".repeat(fill));
+    assert_eq!(omits_tempfail.len(), 8_192);
+    assert_eq!(
+        put_dns(&srv, "a", &omits_tempfail).await,
+        (
+            400,
+            json!({"error":"canonical declaration is larger than 8192 bytes"})
+        )
+    );
+    assert_eq!(report_text(&srv, &a).await, declared);
+    assert_eq!(put_dns(&srv, "names", &names(256)).await.0, 200);
+    // An inbox label of 513 bytes may hold mail but not a declaration; 512 may.
+    let (long, edge) = ("l".repeat(513), "e".repeat(512));
+    let (status, error) = put_dns(&srv, &long, DECLARATION).await;
+    assert_eq!(
+        (status, error),
+        (400, json!({"error":"inbox label is longer than 512 bytes"}))
+    );
+    let seeded = |inbox: String| {
+        let addr = srv.http_addr;
+        async move {
+            let (status, mail) = http_json(
+                addr,
+                "POST",
+                &format!("/api/v1/inboxes/{inbox}/seed"),
+                Some(r#"{"to":"x@example.com","text":"hello"}"#),
+            )
+            .await;
+            assert_eq!(status, 200, "{mail}");
+            mail["id"].as_str().unwrap().to_string()
+        }
+    };
+    let long_id = seeded(long.clone()).await;
+    assert_eq!(
+        dns_of(&srv, &long_id).await["source"],
+        "default",
+        "the refused label holds no declaration"
+    );
+    assert_eq!(delete_dns(&srv, &long).await.1["source"], "default");
+    assert_eq!(put_dns(&srv, &edge, DECLARATION).await.0, 200);
+    let edge_id = seeded(edge).await;
+    assert_eq!(dns_of(&srv, &edge_id).await["source"], "inbox");
+    assert_eq!(dns_of(&srv, &long_id).await["source"], "default");
     assert_eq!(report_text(&srv, &a).await, declared);
     // 8,192 bytes is accepted.
     let exactly = format!(r#"{{"txt":[],"tempfail":[]}}{}"#, " ".repeat(8_168));
@@ -1132,6 +1197,71 @@ async fn dns_policy_canonical_over_http() {
     let policy = dns_of(&srv, &a).await["policy"].to_string();
     let (status, echo) = put_dns(&srv, "c", &policy).await;
     assert_eq!((status, echo["policy"].to_string()), (200, policy));
+
+    // At the boundary too: a canonical form of exactly 8,192 bytes is accepted,
+    // its report embeds those bytes, and the report's `dns.policy` declares back
+    // byte for byte, with a byte-identical echo and next report.
+    let head = r#"{"txt":[{"name":"big.example","values":[""#;
+    let tail = r#""]}],"tempfail":[]}"#;
+    let edge = format!(
+        "{head}{}{tail}",
+        "x".repeat(8_192 - head.len() - tail.len())
+    );
+    assert_eq!(edge.len(), 8_192);
+    let (status, first_echo) = http_send_text(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/inboxes/edge/dns",
+        Some(&edge),
+    )
+    .await;
+    assert_eq!(status, 200, "{first_echo}");
+    let id = smtp_raw(srv.smtp_addr, "edge", MAIL).await;
+    let before = report_text(&srv, &id).await;
+    // The bytes of the wire body, not a re-serialized `Value`, which would sort keys.
+    let embedded_in = |text: &str| {
+        let (_, dns) = text
+            .split_once(r#""dns":{"source":"inbox","policy":"#)
+            .unwrap();
+        dns.strip_suffix(r#","lookups":[]}}"#).unwrap().to_string()
+    };
+    let embedded = embedded_in(&before);
+    assert!(
+        embedded == edge,
+        "the report embeds exactly the 8,192 bytes"
+    );
+    let (status, second_echo) = http_send_text(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/inboxes/edge/dns",
+        Some(&embedded),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(second_echo == first_echo, "byte-identical echo");
+    assert!(
+        report_text(&srv, &id).await == before,
+        "byte-identical report"
+    );
+    // The same declaration omitting `tempfail` is 8,192 - 14 bytes of input and
+    // is accepted; one byte more of value fits on the wire but not canonically.
+    let omitting = |extra: usize| {
+        let head = r#"{"txt":[{"name":"big.example","values":[""#;
+        let fill = 8_192 - head.len() - r#""]}]}"#.len() - 14 + extra;
+        format!("{head}{}\"]}}]}}", "x".repeat(fill))
+    };
+    assert_eq!(put_dns(&srv, "edge2", &omitting(0)).await.0, 200);
+    let (status, error) = put_dns(&srv, "edge2", &omitting(1)).await;
+    assert_eq!(
+        (status, error["error"].as_str().unwrap()),
+        (400, "canonical declaration is larger than 8192 bytes")
+    );
+    // The refused body left the accepted declaration in place: the same bytes.
+    let id2 = smtp_raw(srv.smtp_addr, "edge2", MAIL).await;
+    assert!(
+        embedded_in(&report_text(&srv, &id2).await) == embedded,
+        "same canonical bytes as the first boundary declaration"
+    );
     srv.stop().await;
 }
 
@@ -1165,14 +1295,113 @@ async fn tempfail_policy_does_not_touch_delivery() {
     let dns = dns_of(&srv, &id).await;
     assert_eq!(dns["source"], "inbox");
     assert_eq!(dns["lookups"], json!([]));
-    // Nothing on the accept, extract or persistence path knows about DNS.
-    for (file, source) in [
+    srv.stop().await;
+}
+
+/// Names that would mean DNS on a path that must not know about it.
+fn mentions_dns(source: &str) -> bool {
+    source.to_ascii_lowercase().contains("dns")
+        || source.contains("Effective")
+        || source.contains("policy_for")
+}
+
+/// The functions of `src/store.rs` that start at the `impl` indentation, as
+/// (first line, text) pairs. A doc comment belongs to the function before it.
+fn store_functions(source: &str) -> Vec<(&str, &str)> {
+    let starts_fn = |line: &str| {
+        let item = line
+            .strip_prefix("    ")
+            .filter(|rest| !rest.starts_with(' '));
+        item.map(|rest| {
+            rest.strip_prefix("pub(crate) ")
+                .or_else(|| rest.strip_prefix("pub "))
+                .unwrap_or(rest)
+        })
+        .is_some_and(|rest| rest.starts_with("fn ") || rest.starts_with("async fn "))
+    };
+    let mut starts = Vec::new();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        if starts_fn(line) {
+            starts.push(offset);
+        }
+        offset += line.len();
+    }
+    starts.push(source.len());
+    starts
+        .windows(2)
+        .map(|w| {
+            let text = &source[w[0]..w[1]];
+            (text.lines().next().unwrap(), text)
+        })
+        .collect()
+}
+
+/// AC9, structural half. Accept, extraction, persistence and the Store's
+/// mutation code gain no DNS reference: an accepted mail is stored without
+/// asking what any policy says (decisions 0001, 0005). The named exemption is
+/// the Store's read path (`report`, `qualify`, `wait_for_report`), which holds
+/// the effective policy because decision 0085 puts analysis there.
+#[test]
+fn the_accept_path_has_no_dns_reference() {
+    let mut files = vec![
         ("src/smtp.rs", include_str!("../src/smtp.rs")),
         ("src/persist.rs", include_str!("../src/persist.rs")),
-    ] {
-        assert!(!source.to_ascii_lowercase().contains("dns"), "{file}");
+        ("src/extract.rs", include_str!("../src/extract.rs")),
+        (
+            "src/extract/entities.rs",
+            include_str!("../src/extract/entities.rs"),
+        ),
+    ];
+    // A new file under src/extract cannot escape the scan.
+    let mut on_disk: Vec<String> =
+        std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src/extract"))
+            .unwrap()
+            .map(|entry| {
+                format!(
+                    "src/extract/{}",
+                    entry.unwrap().file_name().to_string_lossy()
+                )
+            })
+            .collect();
+    on_disk.sort();
+    let mut listed: Vec<_> = files
+        .iter()
+        .map(|(f, _)| f.to_string())
+        .filter(|f| f.starts_with("src/extract/"))
+        .collect();
+    listed.sort();
+    assert_eq!(listed, on_disk, "list every file under src/extract above");
+    for (file, source) in files.drain(..) {
+        assert!(!mentions_dns(source), "{file} mentions DNS");
     }
-    srv.stop().await;
+
+    // Every Store function that takes the mutation lock, `insert` and its
+    // oldest-only prune among them.
+    let store = include_str!("../src/store.rs");
+    let locked: Vec<_> = store_functions(store)
+        .into_iter()
+        .filter(|(_, text)| text.contains("self.mutation.lock()"))
+        .collect();
+    assert!(!locked.is_empty());
+    assert!(
+        locked
+            .iter()
+            .any(|(first, _)| first.contains("pub fn insert(")),
+        "the scan must find Store::insert among {:?}",
+        locked.iter().map(|(first, _)| *first).collect::<Vec<_>>()
+    );
+    for (first, text) in &locked {
+        assert!(!mentions_dns(text), "{first} mentions DNS");
+    }
+    // The scan can fail: the read path is a function it splits out and does
+    // mention the policy.
+    let read_path: Vec<_> = store_functions(store)
+        .into_iter()
+        .filter(|(first, _)| first.contains("fn qualify(") || first.contains("fn wait_for_report("))
+        .collect();
+    assert_eq!(read_path.len(), 2);
+    assert!(read_path.iter().all(|(_, text)| mentions_dns(text)));
 }
 
 #[tokio::test]
