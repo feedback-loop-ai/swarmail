@@ -169,7 +169,12 @@ curl -s 127.0.0.1:4437/mail | jq -r '.mailItems[0].subject'
   subject can grow up to 5× (≤ ~250 MiB for a pathological 50 MiB
   subject). *Mitigation:* streaming means no transient copy is allocated
   beside the response. The addendum names the residual. A by-id cap would
-  be its own contract change.
+  be its own contract change. Review's low security residual (2026-11-04)
+  was answered with a measurement: a control character already costs six
+  JSON bytes on both routes, so a 50 MiB message could already reach about
+  300 MiB by id and a page was already refused from about 10.7 MiB; the
+  escape's five times is below both and raises no ceiling. The addendum
+  records the measurement.
 - **A shortcut implementation reintroduces the eager copy** (for example a
   `String` field, or `to_string()` on the escape). *Mitigation:* AC5's
   review check, plus the page test that refuses inside the subject. A test

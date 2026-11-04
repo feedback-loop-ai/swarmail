@@ -417,6 +417,18 @@ whole and by name, as before. `GET /mail/{id}` has no response cap, as
 before; its subject can grow up to five times the stored bytes. This
 addendum adds no by-id cap.
 
+*Measured, not new.* JSON already writes a control character as a
+six-byte `\u00XX` escape. On this branch's tree a mail whose subject and
+body were each 100,000 `U+0001` characters came back from `GET /mail/{id}`
+at 1,200,191 bytes and from `GET /mail` at 1,200,239 bytes: six bytes per
+character, before this change and unchanged by it. So the by-id response
+of a 50 MiB message could already reach about 300 MiB, and a page was
+already refused from about 10.7 MiB of stored control characters. The
+escape's worst case (five times, about 250 MiB; refusal from about
+12.8 MiB) is below both. The change adds no new ceiling. A by-id cap, or
+a lower page cap, would be a contract change of its own and is the
+operator's to rule on, not part of this addendum.
+
 **Records.** Specification:
 [MailSlurper subject escape](../../specs/mailslurper-subject-escape/spec.md),
 with a dated pointer in the [shim spec](../../specs/mailslurper-shim/spec.md).
