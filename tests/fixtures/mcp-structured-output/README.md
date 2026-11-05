@@ -24,9 +24,7 @@ not a protected #152 acceptance receipt.
 Two values in that file have moved by hand since the capture, each recorded in
 the provenance `updated` field: the report descriptor wording adopted from main
 (#151/#286) and, on the seed report row, `rule_set_id` from `swarmail-bulk/1` to
-`swarmail-html/3` (#259). On 2026-11-03 (#253, proposed 0120) the same row moved
-again by hand, to `swarmail-html/4` with the report's new `dns` member at its
-default, and the provenance `fixture_sha256` was recomputed. The fixture was not re-captured. The baseline pins the
+`swarmail-html/3` (#259), on 2026-11-03 to `swarmail-spam/1` (#260, proposed 0122), on 2026-11-05 to `swarmail-html/4` (#258, proposed 0121, merged after #260), and on 2026-11-05 to `swarmail-html/5` with the report's new `dns` member at its default (#253, proposed 0120, merged after #258), when the provenance `fixture_sha256` was recomputed. The fixture was not re-captured. The baseline pins the
 March envelope, order, escaping and text-only shape around the report; the
 report's content is versioned by that id (proposed 0085) and every adapter
 serves the same report (proposed 0105, 0106). See the note in proposed 0107.

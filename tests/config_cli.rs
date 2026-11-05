@@ -8,6 +8,7 @@ mod common;
 use clap::Parser;
 use std::time::Duration;
 use swarmail::config::{Cli, Command, Config, ServeArgs};
+use swarmail::deliverability::LinkReachability;
 
 /// The serve subcommand's args, or a hard stop — gen-cert and mcp are
 /// not server configurations. Extracted so both arms are testable.
@@ -35,6 +36,7 @@ fn config_maps_the_cli_args() {
         route_domain: Some("swarmail.test".into()),
         dns_policy: Some("/tmp/dns.json".into()),
         dns_resolver: swarmail::config::DnsResolver::Declared,
+        link_reachability: LinkReachability::Public,
     };
     let cfg = Config::from(&args);
     assert_eq!(
@@ -61,6 +63,7 @@ fn config_maps_the_cli_args() {
     // of the SMTP knobs, in its CLI unit (milliseconds).
     assert_eq!(cfg.smtp.tls_handshake_timeout, Duration::from_millis(2500));
     assert_eq!(cfg.smtp.max_sessions, 7);
+    assert_eq!(cfg.link_reachability, LinkReachability::Public);
 }
 
 #[test]
@@ -487,4 +490,44 @@ fn dns_flags_parse_and_real_resolution_is_refused() {
         "{unknown}"
     );
     assert!(!unknown.contains("#254"), "{unknown}");
+}
+
+/// Decision 0121 §6: the reachability probe is off unless the operator names
+/// a mode, and an unknown mode is refused at parse time, before anything binds.
+#[test]
+fn link_reachability_flag_parses_and_defaults_off() {
+    let bare = serve_args_or_panic(Cli::try_parse_from(["swarmail", "serve"]).unwrap());
+    assert_eq!(bare.link_reachability, LinkReachability::Off);
+    assert_eq!(Config::from(&bare).link_reachability, LinkReachability::Off);
+    for (given, mode) in [
+        ("off", LinkReachability::Off),
+        ("public", LinkReachability::Public),
+        ("loopback", LinkReachability::Loopback),
+    ] {
+        let args = serve_args_or_panic(
+            Cli::try_parse_from(["swarmail", "serve", "--link-reachability", given]).unwrap(),
+        );
+        assert_eq!(Config::from(&args).link_reachability, mode);
+    }
+    let err = Cli::try_parse_from(["swarmail", "serve", "--link-reachability", "all"])
+        .expect_err("an unknown mode must refuse");
+    assert!(err.to_string().contains("--link-reachability"), "{err}");
+
+    // The environment spelling is the same knob; a bad value refuses before
+    // any listener binds, and --help names the variable and the safe default.
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_swarmail"))
+        .args(["serve", "--smtp-listen", "127.0.0.1:0"])
+        .env("SWARMAIL_LINK_REACHABILITY", "everything")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty(), "nothing was served or logged");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--link-reachability"));
+    let help = std::process::Command::new(env!("CARGO_BIN_EXE_swarmail"))
+        .args(["serve", "--help"])
+        .output()
+        .unwrap();
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(help.contains("SWARMAIL_LINK_REACHABILITY"), "{help}");
+    assert!(help.contains("[default: off]"), "{help}");
 }

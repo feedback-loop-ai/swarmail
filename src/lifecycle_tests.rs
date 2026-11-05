@@ -161,6 +161,7 @@ async fn ca_server_drop_and_startup_failure_close_only_their_scopes() {
         smtp: Default::default(),
         pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
         dns_policy: None,
+        link_reachability: crate::deliverability::LinkReachability::Off,
     };
     let (send, scope) = tokio::sync::oneshot::channel();
     *CA_STARTUP.lock().unwrap() = Some(("ca-startup-failure-probe".into(), send));

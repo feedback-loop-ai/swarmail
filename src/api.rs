@@ -1071,6 +1071,16 @@ impl AssertQuery {
 #[serde(deny_unknown_fields)]
 pub struct ViewQuery {}
 
+/// `GET /api/v1/messages/{id}/deliverability` admits exactly one key
+/// (decision 0121 §6): `reachability=true` asks for the opt-in link probe,
+/// `false` is the default report. Any other value or key is refused by the
+/// closed-shape parser like every native query.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliverabilityQuery {
+    reachability: Option<bool>,
+}
+
 /// The inbox listing's page (decision 0044 §3, issue #91): `/api/v1/inboxes`
 /// and the UI index were the only unpaged listings. `limit` defaults to the
 /// shared 100 and refuses above the shared 250 cap; `offset` is uncapped.
@@ -2170,7 +2180,7 @@ async fn get_deliverability(
     Path(id): Path<String>,
     raw: RawQuery,
 ) -> ApiResult<Json<std::sync::Arc<crate::deliverability::Report>>> {
-    let ViewQuery {} = parse_query(
+    let DeliverabilityQuery { reachability } = parse_query(
         raw.0.as_deref().unwrap_or(""),
         "GET /api/v1/messages/{id}/deliverability",
     )?;
@@ -2178,9 +2188,26 @@ async fn get_deliverability(
         .store
         .get(&id)
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "message not found".into()))?;
-    Ok(Json(
-        state.store.report(email).await.map_err(analysis_error)?,
-    ))
+    if reachability != Some(true) {
+        return Ok(Json(
+            state.store.report(email).await.map_err(analysis_error)?,
+        ));
+    }
+    // The probe needs two explicit steps (decision 0121 §6): the operator's
+    // startup mode, then this request. An `off` server opens no connection.
+    if state.store.link_reachability() == crate::deliverability::LinkReachability::Off {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "link reachability is not enabled".into(),
+        ));
+    }
+    Ok(Json(std::sync::Arc::new(
+        state
+            .store
+            .report_probed(email)
+            .await
+            .map_err(analysis_error)?,
+    )))
 }
 
 async fn get_message(

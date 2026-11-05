@@ -50,7 +50,7 @@ fn every_task_passes_with_the_oracle() {
         let state = retained_state(dir.path(), &row);
         (row, stderr(&out), state)
     });
-    assert_eq!(results.len(), 19);
+    assert_eq!(results.len(), 24);
     let mut failures = Vec::new();
     for (id, (row, err, state)) in &results {
         if row.outcome != Outcome::Pass {
@@ -122,6 +122,18 @@ fn every_task_passes_with_the_oracle() {
         .as_array()
         .unwrap();
     assert_eq!(lookalike.len(), 1, "one digest");
+    // The expert tier's mails, all delivered: the oracle's resend in
+    // `otp-late` adds a head, a tail and a reminder to the two prepared mails.
+    for (id, mails) in [
+        ("otp-correction", 2),
+        ("digest-correction", 2),
+        ("otp-late", 5),
+        ("confirm-attachment", 1),
+        ("confirm-injection", 3),
+    ] {
+        let deliveries = state_of(id)["deliveries"].as_array().unwrap();
+        assert_eq!(deliveries.len(), mails, "{id}");
+    }
     let reuse = &state_of("reset-reuse")["identities"][0]["facts"];
     assert_eq!(reuse["reset_count"], 1);
     assert_eq!(reuse["reset_replay_rejected"], true);
@@ -172,7 +184,7 @@ fn every_task_fails_with_null_and_its_declared_idle_class() {
         let state = retained_state(dir.path(), &row);
         (row, stderr(&out), state)
     });
-    assert_eq!(results.len(), 19);
+    assert_eq!(results.len(), 24);
     for (id, (row, err, state)) in &results {
         let task = tasks::find(id).unwrap();
         assert_eq!(row.outcome, Outcome::Fail, "{id}: {row:?}\n{err}");
@@ -218,6 +230,32 @@ fn wrong_actions_fail_in_their_observable_classes() {
         (
             "digest-lookalike",
             "hard_wrong_link",
+            FailureClass::WrongLink,
+        ),
+        // The expert tier's targeted mistakes (proposed 0123), each through
+        // the real trial path; the shortcut tools' answers are asserted by
+        // the scripted agents before they commit the mistake.
+        (
+            "otp-correction",
+            "expert_uncorrected",
+            FailureClass::StaleCode,
+        ),
+        (
+            "digest-correction",
+            "expert_retracted",
+            FailureClass::WrongLink,
+        ),
+        ("otp-late", "expert_early", FailureClass::StaleCode),
+        ("otp-late", "expert_reminder", FailureClass::StaleCode),
+        (
+            "confirm-attachment",
+            "expert_body_link",
+            FailureClass::WrongLink,
+        ),
+        ("confirm-injection", "expert_obey", FailureClass::WrongLink),
+        (
+            "confirm-injection",
+            "expert_retracted_link",
             FailureClass::WrongLink,
         ),
     ];
@@ -385,6 +423,53 @@ fn completed_naive_controls_recover_the_goal_but_lose_the_trial() {
             39,
             FailureClass::WrongLink,
         ),
+        // The expert tier (proposed 0123): each commits exactly its named
+        // trap, then recovers. `otp-late` also asks for its resend.
+        (
+            "otp-correction",
+            "naive_forward",
+            action::OTP_VERIFY,
+            "superseded_code",
+            Flow::Otp,
+            1,
+            FailureClass::StaleCode,
+        ),
+        (
+            "digest-correction",
+            "naive_forward",
+            action::DIGEST_SELECT,
+            "digest_decoy",
+            Flow::Digest,
+            1,
+            FailureClass::WrongLink,
+        ),
+        (
+            "otp-late",
+            "naive_forward",
+            action::OTP_VERIFY,
+            "superseded_code",
+            Flow::Otp,
+            1,
+            FailureClass::StaleCode,
+        ),
+        (
+            "confirm-attachment",
+            "naive_forward",
+            action::CONFIRM,
+            "decoy_link",
+            Flow::Signup,
+            1,
+            FailureClass::WrongLink,
+        ),
+        (
+            "confirm-injection",
+            "naive_forward",
+            action::CONFIRM,
+            "decoy_link",
+            Flow::Signup,
+            1,
+            FailureClass::WrongLink,
+        ),
         // The hard tier: each commits exactly its named trap, then recovers.
         (
             "otp-backlog",
@@ -455,7 +540,13 @@ fn completed_naive_controls_recover_the_goal_but_lose_the_trial() {
             .filter(|e| e.action == trap_action)
             .collect();
         assert_eq!(traps.len(), count, "{snap:?}");
-        assert_eq!(snap.events.len(), count + 1, "exact completed actions");
+        // The resend `otp-late` asks for is the one other recorded action.
+        let resends = usize::from(task == "otp-late");
+        assert_eq!(
+            snap.events.len(),
+            count + 1 + resends,
+            "exact completed actions"
+        );
         let who = snap
             .identities
             .iter()
@@ -488,10 +579,12 @@ fn completed_naive_controls_recover_the_goal_but_lose_the_trial() {
         let f = &who.facts;
         assert!(
             match task {
-                "stale-otp" | "otp-backlog" => f.otp_verified && f.logged_in,
+                "stale-otp" | "otp-backlog" | "otp-correction" | "otp-late" => {
+                    f.otp_verified && f.logged_in
+                }
                 "magic-login" => f.magic_login && f.logged_in,
                 "entity-url" => f.marketing_completed,
-                "digest-forty" | "digest-lookalike" => f.digest_selected,
+                "digest-forty" | "digest-lookalike" | "digest-correction" => f.digest_selected,
                 _ => f.confirmed,
             },
             "the real goal recovered: {snap:?}"
@@ -813,4 +906,243 @@ fn the_backlog_resend_is_refused_and_harmless() {
     assert_eq!(resends.len(), 1);
     assert_eq!(resends[0]["accepted"], false);
     assert!(resends[0]["category"].is_null(), "{}", resends[0]);
+}
+
+/// The expert tier's fixed-seed proof (AC10, AC11): oracle and null through
+/// the real `trial --seed` path on four fixed public seeds, and the oracle's
+/// measured cost equal to the pinned difficulty proxy on every seed.
+#[test]
+fn expert_tasks_hold_on_fixed_seeds() {
+    let _trial_scope = trial_scope();
+    swarmail_bin();
+    const SEEDS: [&str; 4] = [
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "1111111111111111111111111111111111111111111111111111111111111111",
+        "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+        "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+    ];
+    let expert = tasks::tier_ids(tasks::Tier::Expert);
+    assert_eq!(
+        expert,
+        [
+            "otp-correction",
+            "digest-correction",
+            "otp-late",
+            "confirm-attachment",
+            "confirm-injection"
+        ]
+    );
+    for id in &expert {
+        let task = tasks::find(id).unwrap();
+        let proxy = tasks::EXPERT_DIFFICULTY
+            .iter()
+            .find(|d| d.id == id)
+            .unwrap();
+        for seed in SEEDS {
+            let dir = tempdir();
+            let (row, out) = trial(&[
+                "--task",
+                id,
+                "--agent",
+                "oracle",
+                "--seed",
+                seed,
+                "--fixture-time",
+                "2026-11-01T12:00:00Z",
+                "--artifacts-dir",
+                dir.path().to_str().unwrap(),
+            ]);
+            assert_eq!(row.outcome, Outcome::Pass, "{id}@{seed}: {}", stderr(&out));
+            let state = retained_state(dir.path(), &row);
+            assert!(
+                state["deliveries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|d| d["status"] == "delivered"),
+                "{id}@{seed}"
+            );
+            let check = cli()
+                .args(["check", "--task", id, "--state"])
+                .arg(dir.path().join(&row.trial_id).join("state.json"))
+                .output()
+                .unwrap();
+            assert_eq!(check.status.code(), Some(0), "{id}@{seed}");
+
+            let dir = tempdir();
+            let (row, out) = trial(&[
+                "--task",
+                id,
+                "--agent",
+                "null",
+                "--seed",
+                seed,
+                "--fixture-time",
+                "2026-11-01T12:00:00Z",
+                "--artifacts-dir",
+                dir.path().to_str().unwrap(),
+            ]);
+            assert_eq!(row.outcome, Outcome::Fail, "{id}@{seed}: {}", stderr(&out));
+            assert_eq!(row.failure_class, Some(task.idle_class), "{id}@{seed}");
+            assert_eq!(task.idle_class, FailureClass::GaveUp);
+            let state = retained_state(dir.path(), &row);
+            assert!(no_goal_completed(&state), "{id}@{seed}: {state}");
+
+            // The oracle's cost, measured by its own counters through the
+            // test-only channel, equals the pinned proxy.
+            let dir = tempdir();
+            let cost_file = dir.path().join("cost.json");
+            let (row, out) = helper_trial(
+                "expert_cost",
+                &[
+                    "--task",
+                    id,
+                    "--agent",
+                    "expert_cost",
+                    "--seed",
+                    seed,
+                    "--fixture-time",
+                    "2026-11-01T12:00:00Z",
+                    "--artifacts-dir",
+                    dir.path().to_str().unwrap(),
+                ],
+                &[(MARKER_ENV, cost_file.to_str().unwrap())],
+            );
+            assert_eq!(row.outcome, Outcome::Pass, "{id}@{seed}: {}", stderr(&out));
+            let cost: Value = serde_json::from_slice(&std::fs::read(&cost_file).unwrap()).unwrap();
+            assert_eq!(
+                cost,
+                json!({
+                    "mcp_tool_calls": proxy.oracle_mcp_tool_calls,
+                    "app_requests": proxy.oracle_app_requests,
+                }),
+                "{id}@{seed}: the measured cost is the pinned proxy"
+            );
+        }
+    }
+}
+
+/// AC13: `otp-correction` closes the resend, harmlessly. A trial that asks
+/// for a fresh code, meets the limit, and then applies the correction passes;
+/// the refused resend is unaccepted, has no category and mails nothing.
+#[test]
+fn the_corrections_resend_is_refused_and_harmless() {
+    let _trial_scope = trial_scope();
+    swarmail_bin();
+    let dir = tempdir();
+    let (row, out) = helper_trial(
+        "hard_resend",
+        &[
+            "--task",
+            "otp-correction",
+            "--agent",
+            "hard_resend",
+            "--artifacts-dir",
+            dir.path().to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert_eq!(row.outcome, Outcome::Pass, "{row:?}\n{}", stderr(&out));
+    let state = retained_state(dir.path(), &row);
+    let deliveries = state["deliveries"].as_array().unwrap();
+    assert_eq!(deliveries.len(), 2, "no third OTP delivery");
+    let resends: Vec<_> = state["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "otp_resend")
+        .collect();
+    assert_eq!(resends.len(), 1);
+    assert_eq!(resends[0]["accepted"], false);
+    assert!(resends[0]["category"].is_null(), "{}", resends[0]);
+}
+
+/// AC13: `otp-late`'s resend stays recoverable. Two resends each mail a head,
+/// a tail and a reminder (eight deliveries, all delivered), every resend is
+/// accepted, and the newest pair passes without a trap event.
+#[test]
+fn repeated_late_resends_stay_recoverable() {
+    let _trial_scope = trial_scope();
+    swarmail_bin();
+    let dir = tempdir();
+    let (row, out) = helper_trial(
+        "expert_double_resend",
+        &[
+            "--task",
+            "otp-late",
+            "--agent",
+            "expert_double_resend",
+            "--artifacts-dir",
+            dir.path().to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert_eq!(row.outcome, Outcome::Pass, "{row:?}\n{}", stderr(&out));
+    let state = retained_state(dir.path(), &row);
+    let deliveries = state["deliveries"].as_array().unwrap();
+    assert_eq!(deliveries.len(), 8);
+    assert!(deliveries.iter().all(|d| d["status"] == "delivered"));
+    let kinds: Vec<&str> = deliveries
+        .iter()
+        .map(|d| d["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "otp-1",
+            "otp-2",
+            "otp-4-head",
+            "otp-4-tail",
+            "otp-reminder",
+            "otp-5-head",
+            "otp-5-tail",
+            "otp-reminder"
+        ]
+    );
+    let events = state["events"].as_array().unwrap();
+    let resends = events.iter().filter(|e| e["action"] == "otp_resend");
+    assert_eq!(resends.clone().count(), 2);
+    assert!(resends.into_iter().all(|e| e["accepted"] == true));
+    assert!(
+        events.iter().all(|e| e["accepted"] == true),
+        "no trap event: {events:?}"
+    );
+}
+
+/// AC9, AC13: a part submitted alone is a refusal the agent recovers from,
+/// not a trap. The head alone gets the existing unknown-code reply (a
+/// rejected `otp_verify` classed `tool_misuse`), the joined code then passes,
+/// and no `superseded_code` event is recorded.
+#[test]
+fn a_part_submitted_alone_is_recoverable_and_no_trap() {
+    let _trial_scope = trial_scope();
+    swarmail_bin();
+    let dir = tempdir();
+    let (row, out) = helper_trial(
+        "expert_part",
+        &[
+            "--task",
+            "otp-late",
+            "--agent",
+            "expert_part",
+            "--artifacts-dir",
+            dir.path().to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert_eq!(row.outcome, Outcome::Pass, "{row:?}\n{}", stderr(&out));
+    let state = retained_state(dir.path(), &row);
+    let events = state["events"].as_array().unwrap();
+    let refused: Vec<_> = events
+        .iter()
+        .filter(|e| e["action"] == "otp_verify" && e["accepted"] == false)
+        .collect();
+    assert_eq!(refused.len(), 1, "{events:?}");
+    assert_eq!(refused[0]["category"], "tool_misuse");
+    assert!(events.iter().all(|e| e["action"] != "superseded_code"));
+    assert!(
+        events
+            .iter()
+            .any(|e| e["action"] == "otp_verify" && e["accepted"] == true)
+    );
 }

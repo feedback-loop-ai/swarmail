@@ -117,6 +117,7 @@ async fn test_server() -> crate::RunningServer {
         smtp: Default::default(),
         pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
         dns_policy: None,
+        link_reachability: crate::deliverability::LinkReachability::Off,
     })
     .await
     .unwrap()
@@ -366,6 +367,7 @@ fn api_preparation_panic_is_keyed_and_one_shot() {
                 smtp: Default::default(),
                 pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
                 dns_policy: None,
+                link_reachability: crate::deliverability::LinkReachability::Off,
             };
             let server = crate::run_on(&config).await.unwrap();
             let prior = WebhookTarget {
@@ -789,6 +791,7 @@ fn shutdown_during_held_build_aborts_once_without_late_publish_or_send() {
                 smtp: Default::default(),
                 pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
                 dns_policy: None,
+                link_reachability: crate::deliverability::LinkReachability::Off,
             };
             let server = crate::run_on(&config).await.unwrap();
             let webhooks = Arc::clone(&server.webhooks);
@@ -924,6 +927,7 @@ fn smtp_acceptance_and_queryability_continue_during_held_distinct_ca_build() {
                 smtp: Default::default(),
                 pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
                 dns_policy: None,
+                link_reachability: crate::deliverability::LinkReachability::Off,
             };
             let server = crate::run_on(&config).await.unwrap();
             let (pem, tls_addr, sink) = tls_sink_once().await;
@@ -1318,6 +1322,7 @@ fn held_delivery_leaves_the_single_smtp_blocking_slot_free() {
                 smtp: Default::default(),
                 pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
                 dns_policy: None,
+                link_reachability: crate::deliverability::LinkReachability::Off,
             };
             let server = crate::run_on(&config).await.unwrap();
             let (pem, tls_addr, sink) = tls_sink_once().await;
@@ -1492,6 +1497,7 @@ fn projection_capacity_case(cancel_waiter: bool) {
                 smtp: Default::default(),
                 pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
                 dns_policy: None,
+                link_reachability: crate::deliverability::LinkReachability::Off,
             };
             let server = test_server_from_config(&config).await;
             let pem = ca_pem();

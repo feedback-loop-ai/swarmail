@@ -281,3 +281,21 @@ the entry and label bounds; and every house gate,
 advance `RULE_SET_ID`. Whichever merges later takes the next version. That
 is a one-line integration fix and does not reopen this design. This record
 stays proposed. Only the operator accepts it.
+
+## Integration note — 2026-11-05 (merge of `main` after #258 and #260)
+
+`main` now carries `swarmail-html/4` for #260's spam signals (proposed
+[0122](0122-deterministic-spam-rules.md)) and #258's link rules (proposed
+[0121](0121-deliverability-link-checks.md), see its 2026-11-05 note), while
+this branch had taken `swarmail-html/4` for the `dns` member. The two
+reports differ in bytes, and `main`'s `/4` is no longer never-shipped. Under
+the last paragraph above, 0121 §5 and 0122 §1.4, the branch integrating
+second takes the next never-shipped id: the merged report carries the spam
+signals, the link rules and the `dns` member under `swarmail-html/5`. Where
+§1 and §5 name `swarmail-html/4`, read `swarmail-html/5`. No rule id,
+severity, hint or location of any story changes, and the `dns` member's
+shape, sources, bounds and qualify semantics are as recorded above. 0121's
+opt-in link reachability probe resolves link hosts' addresses outside the
+evaluator when an operator enables it; it reads no TXT record and neither
+consults nor changes this policy, and both default to no network access.
+This note changes no status; the record stays proposed.

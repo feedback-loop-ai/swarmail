@@ -150,6 +150,20 @@ pub struct ServeArgs {
         value_parser = parse_dns_resolver
     )]
     pub dns_resolver: DnsResolver,
+
+    /// What the opt-in link-reachability check may contact (decision 0121).
+    /// `off` (the default) opens no connection, ever. `public` lets a caller
+    /// of `GET /api/v1/messages/{id}/deliverability?reachability=true` make
+    /// the server fetch the headers of a message's http(s) links, refusing
+    /// private, link-local and other non-public addresses; `loopback` also
+    /// permits 127.0.0.0/8 and ::1, so mail can cause GETs to local ports.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = crate::deliverability::LinkReachability::Off,
+        env = "SWARMAIL_LINK_REACHABILITY"
+    )]
+    pub link_reachability: crate::deliverability::LinkReachability,
 }
 
 /// The DNS answer source. Only the declared map exists in this build: `real`
@@ -235,6 +249,9 @@ pub struct Config {
     /// 0036 §4): no CLI knob, `pop3::DEFAULT_IDLE_TIMEOUT` from the CLI,
     /// overridable in-process. A Rust struct literal must name it.
     pub pop3_idle_timeout: Duration,
+    /// The opt-in link-reachability mode (decision 0121): `Off` opens no
+    /// connection. A Rust struct literal must name it.
+    pub link_reachability: crate::deliverability::LinkReachability,
 }
 
 impl From<&ServeArgs> for Config {
@@ -257,6 +274,7 @@ impl From<&ServeArgs> for Config {
                 ..SmtpConfig::default()
             },
             pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
+            link_reachability: args.link_reachability,
         }
     }
 }

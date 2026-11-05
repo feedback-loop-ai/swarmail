@@ -341,6 +341,7 @@ pub(super) fn config(data_file: Option<std::path::PathBuf>) -> crate::config::Co
         smtp: Default::default(),
         pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
         dns_policy: None,
+        link_reachability: crate::deliverability::LinkReachability::Off,
     }
 }
 pub(super) fn client() -> reqwest::Client {

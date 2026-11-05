@@ -40,10 +40,12 @@ fn dry_run_uses_the_exact_approved_product_without_reading_config_or_creating_ou
     assert!(!output.exists());
     let plan: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
     // The approved product is the sixteen default-tier tasks, in catalogue
-    // order; the hard tier is a separate, operator-selected product.
+    // order; the hard and expert tiers are separate, operator-selected
+    // products. The filter is a positive list of the three default tiers, so
+    // a tier added later never joins the approved product.
     let default_tier: Vec<_> = tasks::catalogue()
         .into_iter()
-        .filter(|t| t.tier != tasks::Tier::Hard)
+        .filter(|t| tasks::DEFAULT_TIERS.contains(&t.tier))
         .map(|t| t.id)
         .collect();
     assert_eq!(default_tier.len(), 16);
@@ -597,6 +599,128 @@ fn hard_tier_controls_run_for_real_before_any_paid_launch() {
     };
     baseline::validate_controls(&rows, &matrix, &plan, 1, &harness, &target).unwrap();
     // The default product's plan refuses these controls: wrong task list.
+    let default_plan = baseline::Plan::new(&output);
+    assert!(
+        baseline::validate_controls(&rows, &matrix, &default_plan, 1, &harness, &target).is_err()
+    );
+}
+
+/// AC12: `--tier expert` is its own product, 5 tasks, 10 controls and 150
+/// paid slots, sharing the approved deadline, concurrency, steps and files;
+/// the default product and the hard product are untouched by it.
+#[test]
+fn the_expert_tier_is_a_separate_baseline_product_with_the_same_discipline() {
+    let (code, default, _) = dry_run(&[]);
+    let (hard_code, hard, _) = dry_run(&["--tier", "hard"]);
+    let (expert_code, expert, _) = dry_run(&["--tier", "expert"]);
+    assert_eq!((code, hard_code, expert_code), (Some(0), Some(0), Some(0)));
+    assert_eq!(
+        expert["tasks"],
+        serde_json::json!([
+            "otp-correction",
+            "digest-correction",
+            "otp-late",
+            "confirm-attachment",
+            "confirm-injection"
+        ])
+    );
+    assert_eq!(expert["control_rows"], 10);
+    assert_eq!(expert["paid_rows"], 150);
+    // The approved product is still the sixteen: 32 controls, 480 slots.
+    assert_eq!(default["tasks"].as_array().unwrap().len(), 16);
+    assert_eq!(
+        (
+            default["control_rows"].clone(),
+            default["paid_rows"].clone()
+        ),
+        (32.into(), 480.into())
+    );
+    assert_eq!(hard["control_rows"], 6);
+    assert_eq!(hard["paid_rows"], 90);
+    for key in [
+        "deadline_ms",
+        "concurrency",
+        "control_repetitions",
+        "paid_repetitions",
+        "steps",
+        "files",
+        "agents",
+        "control_agents",
+        "catalogue_schema",
+        "catalogue_sha256",
+        "wrapper_contracts",
+    ] {
+        assert_eq!(expert[key], default[key], "{key}");
+    }
+    assert_eq!(expert["catalogue_sha256"], p_hash());
+    // The tier flag stays strict about its spelling.
+    for bad in ["Expert", "experts", "expert-tier"] {
+        let (code, plan, err) = dry_run(&["--tier", bad]);
+        assert_eq!(code, Some(2), "{bad:?}");
+        assert!(plan.is_null(), "{bad:?}: no plan on stdout");
+        assert!(err.contains("arguments_invalid"), "{bad:?}: {err}");
+    }
+}
+
+/// Controls come first for the expert product too: ten real control trials
+/// are retained and admitted before anything paid, and the default product's
+/// plan refuses them.
+#[test]
+fn expert_tier_controls_run_for_real_before_any_paid_launch() {
+    let _scope = trial_scope();
+    let dir = tempdir();
+    let output = dir.path().join("baseline");
+    let config = dir.path().join("private.json");
+    std::fs::write(&config, "synthetic-secret-canary").unwrap();
+    let result = cli()
+        .args(["baseline", "--tier", "expert", "--config"])
+        .arg(&config)
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(2));
+    assert!(!output.join("paid.jsonl").exists());
+    assert!(!output.join("report.json").exists());
+    let stream = std::fs::read(output.join("controls.jsonl")).unwrap();
+    let rows = baseline::rows(&stream).unwrap();
+    assert_eq!(rows.len(), 10);
+    let tasks_run: Vec<_> = rows.iter().map(|r| r.task.clone().unwrap()).collect();
+    let expert = tasks::tier_ids(tasks::Tier::Expert);
+    let doubled: Vec<String> = expert
+        .iter()
+        .flat_map(|id| [id.clone(), id.clone()])
+        .collect();
+    assert_eq!(tasks_run, doubled);
+    for pair in rows.chunks(2) {
+        assert_eq!(pair[0].agent.as_deref(), Some("oracle"));
+        assert_eq!(pair[0].outcome, Outcome::Pass);
+        assert_eq!(pair[1].agent.as_deref(), Some("null"));
+        assert_eq!(pair[1].outcome, Outcome::Fail);
+        assert_eq!(
+            pair[1].failure_class,
+            Some(swarmail_evals::state::FailureClass::GaveUp)
+        );
+    }
+    let root = std::fs::read_dir(output.join("controls"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let matrix: artifacts::MatrixPlan =
+        decode(&artifacts::read_file(&root, "matrix-plan.json", artifacts::PLAN_LIMIT).unwrap())
+            .unwrap();
+    assert_eq!(matrix.tasks, expert);
+    let plan = baseline::Plan::for_tier(Some(tasks::Tier::Expert), &output);
+    let harness = rows[0].provenance.harness.clone();
+    let p = &rows[0].provenance.target;
+    let target = ExecutableIdentity {
+        executable_sha256: p.executable_sha256.clone(),
+        build_commit: p.build_commit.clone(),
+        source_dirty: p.source_dirty.clone(),
+    };
+    baseline::validate_controls(&rows, &matrix, &plan, 1, &harness, &target).unwrap();
     let default_plan = baseline::Plan::new(&output);
     assert!(
         baseline::validate_controls(&rows, &matrix, &default_plan, 1, &harness, &target).is_err()

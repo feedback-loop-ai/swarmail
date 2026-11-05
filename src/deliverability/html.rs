@@ -1,10 +1,13 @@
 //! Finite source-aware risk heuristics, not a renderer. Data is authored locally
 //! from named guidance; no client measurement or runtime networking is implied.
+use super::links;
 use super::{AnalysisError, Collector, Finding, Location, Severity};
 use crate::extract::decode_refs_counted;
-use mail_parser::{MessageParser, MimeHeaders, PartType};
+use mail_parser::{
+    Encoding, MessageParser, MessagePart, MimeHeaders, PartType, parsers::MessageStream,
+};
 use serde::Deserialize;
-use std::{collections::HashMap, sync::LazyLock};
+use std::{borrow::Cow, collections::HashMap, sync::LazyLock};
 
 const HTML_BYTES: usize = 4_194_304;
 const NESTING: usize = 32;
@@ -118,6 +121,79 @@ fn collect_catalogue(
 fn collect_with(raw: &[u8], c: &Catalogue, out: &mut Collector) -> Result<(), AnalysisError> {
     // Raw size, part count and nesting depth are already bounded by the
     // engine's own admission budgets, so this walk relies on them.
+    with_parts(raw, |parts| {
+        for part in parts {
+            let mut scan = Scan::new(c);
+            scan.html(part.body)?;
+            for (rule, matched) in c.rules.iter().zip(scan.matched) {
+                if matched {
+                    out.push(Finding {
+                        rule_id: rule.id.clone(),
+                        severity: rule.severity,
+                        location: Location::MimePart {
+                            path: part.path.clone(),
+                        },
+                        fix_hint: rule.fix_hint.clone(),
+                    })?;
+                }
+            }
+            links::collect(&part, out)?;
+        }
+        Ok(())
+    })
+}
+
+/// Every link occurrence of every eligible part, in document order, to `sink`.
+/// The first error the sink returns stops the building, not the walk.
+pub(super) fn scan_links(
+    raw: &[u8],
+    mut sink: impl FnMut(links::Occurrence) -> Result<(), AnalysisError>,
+) -> Result<(), AnalysisError> {
+    with_parts(raw, |parts| {
+        for part in &parts {
+            links::scan(part, &mut sink)?;
+        }
+        Ok(())
+    })
+}
+
+/// One eligible outer `text/html` part (0106): its MIME path, its decoded
+/// text, and whether source offsets into that text are also offsets into the
+/// part's transfer-decoded payload (0085 §1 link locations).
+pub(super) struct Part<'a> {
+    pub(super) path: Vec<u64>,
+    pub(super) body: &'a str,
+    pub(super) exact: bool,
+}
+
+/// The transfer-decoded payload of a part, through the parser's own body
+/// decoders. A decode the parser refused yields an empty payload, which can
+/// never be a prefix of a non-empty body.
+fn payload<'a>(raw: &'a [u8], part: &MessagePart<'_>) -> Cow<'a, [u8]> {
+    let body = raw
+        .get(part.raw_body_offset() as usize..part.raw_end_offset() as usize)
+        .unwrap_or_default();
+    match part.encoding {
+        Encoding::Base64 => MessageStream::new(body).decode_base64_mime(b"").1,
+        Encoding::QuotedPrintable => MessageStream::new(body).decode_quoted_printable_mime(b"").1,
+        Encoding::None => Cow::Borrowed(body),
+    }
+}
+
+/// Offsets into the character-decoded text are offsets into the payload only
+/// when the text is the payload's prefix and the rest is line-ending space.
+fn is_exact(payload: &[u8], body: &str) -> bool {
+    payload
+        .strip_prefix(body.as_bytes())
+        .is_some_and(|tail| tail.iter().all(u8::is_ascii_whitespace))
+}
+
+/// The eligible parts in document order, under the 0106 budgets, handed to
+/// `f` while the parsed message is alive. Exactly empty raw has none.
+pub(super) fn with_parts(
+    raw: &[u8],
+    f: impl FnOnce(Vec<Part<'_>>) -> Result<(), AnalysisError>,
+) -> Result<(), AnalysisError> {
     if raw.is_empty() {
         return Ok(());
     }
@@ -149,25 +225,15 @@ fn collect_with(raw: &[u8], c: &Catalogue, out: &mut Collector) -> Result<(), An
             if bytes > HTML_BYTES {
                 return Err(AnalysisError::Failed);
             }
-            eligible.push((path, body));
+            eligible.push(Part {
+                path,
+                body,
+                exact: is_exact(&payload(raw, part), body),
+            });
         }
     }
     // Validate aggregate decoded size before any lexical analysis/contribution.
-    for (path, body) in eligible {
-        let mut scan = Scan::new(c);
-        scan.html(body)?;
-        for (rule, matched) in c.rules.iter().zip(scan.matched) {
-            if matched {
-                out.push(Finding {
-                    rule_id: rule.id.clone(),
-                    severity: rule.severity,
-                    location: Location::MimePart { path: path.clone() },
-                    fix_hint: rule.fix_hint.clone(),
-                })?;
-            }
-        }
-    }
-    Ok(())
+    f(eligible)
 }
 
 /// Cursor displacement is a progress invariant, never a work estimate.
@@ -1101,6 +1167,34 @@ mod tests {
         assert!(scan.work.inspections <= K);
     }
     #[test]
+    fn eligible_exact_tracks_charset_identity() {
+        let html = "<p>caf\u{e9}</p>";
+        let b64 = STANDARD.encode(html);
+        let latin: &[u8] = b"<p>caf\xe9</p>";
+        for (encoding, charset, body, exact) in [
+            ("7bit", "utf-8", html.as_bytes(), true),
+            ("8bit", "utf-8", html.as_bytes(), true),
+            ("7bit", "us-ascii", b"<p>cafe</p>\r\n".as_slice(), true),
+            ("base64", "utf-8", b64.as_bytes(), true),
+            ("quoted-printable", "utf-8", b"<p>caf=C3=A9</p>", true),
+            ("quoted-printable", "iso-8859-1", b"<p>caf=E9</p>", false),
+            ("8bit", "iso-8859-1", latin, false),
+        ] {
+            let mut raw = format!(
+                "Content-Type: text/html; charset={charset}\r\nContent-Transfer-Encoding: {encoding}\r\n\r\n"
+            )
+            .into_bytes();
+            raw.extend_from_slice(body);
+            let mut seen = Vec::new();
+            with_parts(&raw, |parts| {
+                seen = parts.iter().map(|p| (p.path.clone(), p.exact)).collect();
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(seen, [(vec![], exact)], "{encoding} {charset}");
+        }
+    }
+    #[test]
     fn reviewed_version_snapshot_and_every_rule_pair() {
         let fixture: Value =
             serde_json::from_str(include_str!("../../tests/fixtures/html-compatibility.json"))
@@ -1111,7 +1205,7 @@ mod tests {
         );
         assert_eq!(
             fixture["catalogue_snapshot"]["rule_set_id"],
-            "swarmail-html/4"
+            "swarmail-html/5"
         );
         let c = catalogue(DATA).unwrap();
         assert_eq!(c.rules.len(), 7);
@@ -1545,7 +1639,9 @@ mod tests {
     }
     #[test]
     fn raw_decoded_structural_and_contribution_limits_are_exact() {
-        let mut bytes = b"Content-Type: text/plain\r\n\r\n".to_vec();
+        // Not text/plain: the spam collector's own 4 MiB text cap would fail an
+        // 8 MiB plain body first, and this test pins the engine's raw bound.
+        let mut bytes = b"Content-Type: application/octet-stream\r\n\r\n".to_vec();
         bytes.resize(RAW_BYTES, b'x');
         assert!(evaluate(&bytes, &Inputs::default()).is_ok());
         bytes.push(b'x');

@@ -208,6 +208,8 @@ store these headers as fields. Emitting them would mean either parsing
 MIME at request time (against 0005) or inventing values. A synthesized
 `contentType` would disagree with upstream for every multipart mail.
 
+*`subject` is amended by the dated addendum of 2026-11-04 below (issue #326): it is served HTML-escaped with Go's `html.EscapeString` set. The operator accepted that addendum on 2026-11-05.*
+
 ### 5. The destructive route
 
 Only a request with the JSON content type, no query string, and a body
@@ -363,3 +365,93 @@ still read proposed; §9's merge hold waited on this acceptance, which
 legitimises that merge. The ruling as given does not itemise §7's
 verification; this note records the acceptance, not the outcome of those
 checks.
+
+## Dated addendum — 2026-11-04: the MailSlurper `subject` is HTML-escaped
+
+This addendum is accepted (operator, 2026-11-05; see the acceptance note
+at its end). It was proposed when written, and the code that implements
+it was held under accepted 0045 §8 until that acceptance. The text above
+is unchanged except for the one pointer line at the end of §4.
+
+**Evidence.** Issue #326. The first full Alkemio trial against Swarmail
+v0.3.0 (alkem-io/test-suites run 41808342506, `smtp-mode=plain`) ran 160
+of 162 test files green. All five failures compare `subject` exactly with
+a string that contains `&#34;` where the mail has `"`
+(`form-response.it-spec.ts` 219, 299, 319, 353;
+`user-invitation-outcomes.it-spec.ts` 441). The same tests pass against
+MailSlurper (run 41744902684), so MailSlurper's service API serves the
+subject HTML-escaped.
+
+**Amended ruling for §4's `subject`.** The MailSlurper item's `subject` is
+the stored subject, or `""`, with exactly these substitutions, which are
+the set of Go's `html.EscapeString`: `&` → `&amp;`, `<` → `&lt;`, `>` →
+`&gt;`, `"` → `&#34;`, `'` → `&#39;`. The substitution is a single pass,
+so each stored character is replaced at most once (`&` first, nothing
+double-escaped by a later step). It is unconditional, as Go's is: text
+that already reads as an entity is escaped again (`&amp;` →
+`&amp;amp;`). It applies on both routes that serve a `MailItem`,
+`GET /mail` and `GET /mail/{id}`.
+
+**Observed and inferred.** Only `"` → `&#34;` is observed. The other four
+substitutions are inferred from MailSlurper being Go and `&#34;` being
+`html.EscapeString`'s spelling. No seat has read upstream (§7's gap
+stands). The operator's re-run of the Alkemio trial is the acceptance
+evidence. If upstream turns out to differ, the correction is a further
+dated addendum.
+
+**Unchanged.** `body` stays as §4 has it: decoded at ingest, never
+re-rendered, unescaped or sanitized. Every body-reading test in the trial
+passed. `fromAddress`, `toAddresses`, `ccAddresses` and
+`GET /mail/{id}/message` are unchanged. The native API, the Mailpit and
+MailHog shims, search and filter matching, ingest and storage keep the
+sender's subject. Escaping is a view computed when the item is
+serialized. It parses no MIME and derives nothing from the raw source, so
+it is not extraction, and 0005 is preserved. 0001–0003 are not touched.
+
+**Bounds.** The escape is written into the page's capped buffer as it is
+produced, and no copy of the subject is built ahead of the cap. A list
+page therefore stays bounded by `MAX_COMPAT_PAGE_BYTES` (0044 §6, §3
+above). Escaped bytes count toward that cap: a subject made of escapable
+characters reaches 64 MiB from about 12.8 MiB stored. That page is refused
+whole and by name, as before. `GET /mail/{id}` has no response cap, as
+before; its subject can grow up to five times the stored bytes. This
+addendum adds no by-id cap. That is the accepted ruling, not a gap
+this addendum leaves: 0044 §6 says "One item may exceed [the page budget];
+raw-by-ID remains available", so a by-id cap would contradict an accepted
+ruling and could not land under 0045 §8 without the operator's amendment.
+
+*Measured, not new.* JSON already writes a control character as a
+six-byte `\u00XX` escape. On this branch's tree a mail whose subject and
+body were each 100,000 `U+0001` characters came back from `GET /mail/{id}`
+at 1,200,191 bytes and from `GET /mail` at 1,200,239 bytes: six bytes per
+character, before this change and unchanged by it. So the by-id response
+of a 50 MiB message could already reach about 300 MiB, and a page was
+already refused from about 10.7 MiB of stored control characters. The
+escape's by-id worst case (five times, about 250 MiB) is below that
+300 MiB. Its page refusal (from about 12.8 MiB of stored escapable
+characters) comes later in stored bytes than the 10.7 MiB control-character
+refusal, and the page output stays capped at 64 MiB either way. The change
+adds no new ceiling. A by-id cap, or
+a lower page cap, would be a contract change of its own and is the
+operator's to rule on, not part of this addendum.
+
+**Records.** Specification:
+[MailSlurper subject escape](../../specs/mailslurper-subject-escape/spec.md),
+with a dated pointer in the [shim spec](../../specs/mailslurper-shim/spec.md).
+No new decision number is taken. The index row keeps this record's status
+and names this addendum in its notes.
+
+### Dated acceptance note — 2026-11-05
+
+The operator accepted this addendum on 2026-11-05, in chat to the
+dispatcher, choosing "Accept and merge" for the 2026-11-04 note on
+0118 §4. The choice was put to them with the scope stated: only `"` →
+`&#34;` is observed, and the other four substitutions are inferred. In
+the same exchange the operator accepted the low security residual of
+the #326 review under accepted 0102 ("Accept the risk"). That residual
+is the uncapped by-id growth and the earlier page refusal described
+under **Bounds** above. This acceptance lifts the 0045 §8 hold on #326.
+If a re-run of the Alkemio trial shows that MailSlurper's escaping
+differs from this addendum (for example, bluemonday-style sanitizing
+rather than `html.EscapeString`), that is recorded in a further dated
+addendum, not by editing this one.

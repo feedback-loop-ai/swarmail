@@ -51,6 +51,7 @@ fn config(data_file: Option<std::path::PathBuf>) -> crate::config::Config {
         smtp: Default::default(),
         pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
         dns_policy: None,
+        link_reachability: crate::deliverability::LinkReachability::Off,
     }
 }
 
@@ -355,6 +356,7 @@ async fn held_compat_page_builds_leave_smtp_and_health_serving() {
         smtp: Default::default(),
         pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
         dns_policy: None,
+        link_reachability: crate::deliverability::LinkReachability::Off,
     };
     let srv = crate::run_on(&cfg).await.unwrap();
     let mut held = crate::store::email("p1", "parked", "a@x.io");

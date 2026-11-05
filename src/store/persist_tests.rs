@@ -495,6 +495,7 @@ async fn an_in_flight_commit_neither_holds_stop_nor_half_lands() {
         smtp: Default::default(),
         pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
         dns_policy: None,
+        link_reachability: crate::deliverability::LinkReachability::Off,
     })
     .await
     .unwrap();

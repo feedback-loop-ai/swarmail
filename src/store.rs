@@ -953,6 +953,24 @@ impl Store {
         self.reports.report(email, false).await
     }
 
+    /// The deterministic report plus an explicit link-reachability
+    /// observation (0121 §6), composed for this request and never cached.
+    pub(crate) async fn report_probed(&self, email: Arc<Email>) -> Result<Report, AnalysisError> {
+        self.reports.probed(email).await
+    }
+
+    /// What the operator allowed the reachability probe to contact at startup.
+    pub fn link_reachability(&self) -> crate::deliverability::LinkReachability {
+        self.reports.link_reachability()
+    }
+
+    /// Set the reachability mode while the store is still owned by its
+    /// builder, before it is shared (0121 §6).
+    pub fn with_link_reachability(mut self, mode: crate::deliverability::LinkReachability) -> Self {
+        self.reports = std::mem::take(&mut self.reports).with_link_reachability(mode);
+        self
+    }
+
     /// Snapshot qualification shared by exact assert and wait. A failure aborts
     /// the entire scan; it cannot silently turn into a clean match or a count.
     pub(crate) async fn qualify(

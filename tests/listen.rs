@@ -42,6 +42,7 @@ async fn a_burst_of_fresh_smtp_connections_is_greeted() {
         },
         pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
         dns_policy: None,
+        link_reachability: swarmail::deliverability::LinkReachability::Off,
     };
     let srv = swarmail::run_on(&cfg).await.unwrap();
     let addr = srv.smtp_addr;

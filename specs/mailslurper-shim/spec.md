@@ -20,6 +20,8 @@ finding to the change that answers it. The first design is commit
 
 Decision: 0118 — [A MailSlurper service-API shim on an opt-in listener, one global mailbox](../../docs/decisions/0118-mailslurper-shim.md), proposed.
 
+*Dated addendum of 2026-11-04 (issue #326, accepted (operator, 2026-11-05)): the item's `subject` is HTML-escaped; see the end of this spec and [the subject-escape spec](../mailslurper-subject-escape/spec.md).*
+
 ## Feature
 
 Swarmail already emulates MailHog's and Mailpit's HTTP APIs
@@ -111,6 +113,7 @@ listener with hardened inputs). The chief's rulings are listed below, and
   and every key on the other routes, is a `400` that names the key.
 - **R7 — Projection.** Exactly the keys of 0118 §4, in that order, from
   ingest-time fields only.
+  *(Amended for `subject` by the 2026-11-04 addendum below, accepted (operator, 2026-11-05).)*
 - **R8 — Bounded work.** List pages are built and serialized on the
   blocking pool into a buffer capped at `MAX_COMPAT_PAGE_BYTES`. An
   over-cap page is refused whole with a named `400`. Single-item routes
@@ -185,6 +188,7 @@ exact count over **both** seeded inboxes, taken through the native API.
      for a text-only mail, and `""` for a bodyless mail.
    - `attachments` is `[]`.
    An unknown id is a `404`.
+   *(`subject` is amended by the 2026-11-04 addendum below, accepted (operator, 2026-11-05).)*
 6. **AC6 — Message route.** `GET /mail/{id}/message` answers
    `text/html; charset=utf-8` with exactly the item's `body`, and `404`
    for an unknown id.
@@ -266,3 +270,23 @@ exact count over **both** seeded inboxes, taken through the native API.
 Implicit TLS for SMTP (its own issue). Chart-native exposure of the
 listener (a follow-up). Search, sorting and date filters. Age-based
 pruning. Attachments. Compression. Paid trials.
+
+## Dated addendum — 2026-11-04: `subject` is HTML-escaped (accepted (operator, 2026-11-05))
+
+Issue #326. The text above is unchanged. This addendum was proposed when
+written and the operator accepted it on 2026-11-05; R7 and AC5 now read
+as amended here. The full requirement, acceptance criteria and the
+evidence are in
+[the subject-escape spec](../mailslurper-subject-escape/spec.md) and in
+the dated addendum of
+[0118](../../docs/decisions/0118-mailslurper-shim.md).
+
+- **R7 / AC5, `subject`.** The item's `subject` is the stored subject (or
+  `""`) with exactly Go's `html.EscapeString` substitutions, in one pass:
+  `&` → `&amp;`, `<` → `&lt;`, `>` → `&gt;`, `"` → `&#34;`, `'` → `&#39;`.
+  It applies to `GET /mail` and `GET /mail/{id}`. `body`, the addresses,
+  `GET /mail/{id}/message`, the native API, the Mailpit and MailHog shims,
+  search and storage are unchanged.
+- **Observed and inferred.** Only `"` → `&#34;` is observed (Alkemio
+  trial run 41808342506). The other four are inferred from MailSlurper
+  being Go; no seat has read upstream.

@@ -333,7 +333,7 @@ async fn bulk_untrusted_auth_headers_stay_unknown() {
         );
         let (_, status, value) = report(&srv, raw.as_bytes()).await;
         assert_eq!(status, 200);
-        assert_eq!(value["rule_set_id"], "swarmail-html/4");
+        assert_eq!(value["rule_set_id"], "swarmail-html/5");
         let occurrence = match from {
             "" => Value::Null,
             "From: sender@example.test\r\n" => json!(0),
@@ -361,7 +361,7 @@ async fn bulk_untrusted_auth_headers_stay_unknown() {
         }
         assert_eq!(
             value,
-            json!({"rule_set_id":"swarmail-html/4","findings":expected,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
+            json!({"rule_set_id":"swarmail-html/5","findings":expected,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
         );
     }
     srv.stop().await;
@@ -394,7 +394,9 @@ async fn bulk_analysis_budget_boundaries_and_incomplete_mime() {
     let srv = start().await;
     let mut fixtures = Vec::new();
     for (over, expected) in [(0, 200), (1, 503)] {
-        let mut raw = format!("{BASE}\r\n");
+        // Not text/plain: an 8 MiB plain body would hit the spam collector's own
+        // 4 MiB text cap first, and this fixture pins the engine's raw bound.
+        let mut raw = format!("{BASE}Content-Type: application/octet-stream\r\n\r\n");
         raw.extend(std::iter::repeat_n('x', 8_388_608 + over - raw.len() - 2));
         raw.push_str("\r\n");
         fixtures.push(("raw", raw, expected));

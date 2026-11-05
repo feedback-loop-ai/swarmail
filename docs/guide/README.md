@@ -32,7 +32,7 @@ frozen guarantees and the rulings behind them are in
 | [Chaos](chaos.md) | per-stage failure rules and their exact behavior |
 | [Persistence](persistence.md) | the data file, one server per file, memory, timestamps |
 | [Recipient routing](recipient-routing.md) | `--route-domain` and `swarmail_create_inbox` |
-| [Deliverability reports](deliverability.md) | the report shape, the bulk-sender checklist, the HTML rules, the bounds |
+| [Deliverability reports](deliverability.md) | the report shape, the bulk-sender checklist, the HTML rules, the per-link `link.*` rules, the bounds |
 
 ## Operating and contributing
 
