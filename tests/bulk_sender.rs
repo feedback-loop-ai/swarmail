@@ -361,7 +361,7 @@ async fn bulk_untrusted_auth_headers_stay_unknown() {
         }
         // The sender-written signature is judged as mail, and is malformed (no
         // s=, bh= or h=); it still never becomes trusted evidence (decision 0125).
-        expected.push(json!({"rule_id":"dkim.malformed.v1","severity":"error","location":{"kind":"header","name":"dkim-signature","occurrence":0},"fix_hint":"Fix the DKIM-Signature tag list: each tag once, d=, s=, b=, bh= and h= present, valid base64, and x= later than t= (RFC 6376 section 3.5)."}));
+        expected.push(json!({"rule_id":"dkim.malformed.v1","severity":"error","location":{"kind":"header","name":"dkim-signature","occurrence":0},"fix_hint":"Fix the DKIM-Signature tag list: each tag once; v=, a=, d=, s=, b=, bh= and h= present; valid base64; t=, x= and l= plain decimal numbers; and x= later than t= (RFC 6376 sections 3.2 and 3.5)."}));
         assert_eq!(
             value,
             json!({"rule_set_id":"swarmail-html/6","findings":expected,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})

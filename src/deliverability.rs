@@ -2,9 +2,12 @@
 //! No network, clock, persistence or Store guard enters the evaluator (0085), with
 //! one stated exception: the `mail-auth` DKIM verifier compares a signature's `x=`
 //! with the wall clock inside the crate. Swarmail reads no clock and judges `x=` at
-//! the message's receipt second; the crate's read can only move one verdict from
-//! "verified" to "not verified", and `dkim.expired_since_receipt.v1` names it
-//! (decision 0125 section 8, awaiting the operator's ruling).
+//! the message's receipt second. The crate's read is the clock residual: once the
+//! host clock reaches an `x=` that is after the receipt second, every verdict the
+//! crate would have decided for that signature becomes
+//! `dkim.expired_since_receipt.v1` and its key lookups vanish, so a clean report
+//! can later begin to disqualify (decision 0125 section 8, a proposed amendment
+//! held for the operator).
 
 use crate::{model::Email, store::Store};
 use serde::{Deserialize, Serialize};
@@ -917,7 +920,7 @@ fn collect(
     bulk(raw, &fields, size, inputs, out)?;
     html::collect(raw, out)?;
     spam::collect(raw, out)?;
-    dkim::collect(raw, receipt, lookups, out)?;
+    dkim::collect(raw, &fields, size, receipt, lookups, out)?;
     #[cfg(test)]
     for finding in &inputs.fixture {
         out.push(finding.clone())?;

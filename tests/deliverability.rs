@@ -1705,14 +1705,26 @@ async fn dkim_signed_mail_verifies_over_the_wire() {
         "dkim.not_evaluated.v1"
     );
     assert_eq!(report_temp["dns"]["lookups"][0]["outcome"], "temp_fail");
-    // MCP serves the same report text, DKIM findings included.
+    // MCP serves the same report text on both messages: no DKIM finding and the
+    // recorded key lookup for the signed one, the named finding for the altered one.
+    for (id, expected) in [(&good, &report_good), (&bad, &report_bad)] {
+        let reply = rpc(
+            srv.http_addr,
+            "tools/call",
+            json!({"name":"swarmail_get_deliverability_report","arguments":{"id":id}}),
+        )
+        .await;
+        assert_eq!(&result_text(&reply), expected);
+    }
     let reply = rpc(
         srv.http_addr,
         "tools/call",
-        json!({"name":"swarmail_get_deliverability_report","arguments":{"id":bad}}),
+        json!({"name":"swarmail_get_deliverability_report","arguments":{"id":good}}),
     )
     .await;
-    assert_eq!(result_text(&reply), report_bad);
+    let over_mcp = result_text(&reply);
+    assert_eq!(dkim_findings(&over_mcp), Vec::<Value>::new());
+    assert_eq!(over_mcp["dns"]["lookups"][0]["name"], DKIM_KEY_NAME);
     srv.stop().await;
 }
 

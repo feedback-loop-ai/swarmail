@@ -299,3 +299,33 @@ opt-in link reachability probe resolves link hosts' addresses outside the
 evaluator when an operator enables it; it reads no TXT record and neither
 consults nor changes this policy, and both default to no network access.
 This note changes no status; the record stays proposed.
+
+## Integration note — 2026-11-05 (proposed 0125, issue #254)
+
+Proposed [0125](0125-offline-dkim-verification.md) is the first verifier to
+call `Lookups` from production code. It moves three things this record said,
+and changes no status; the record stays proposed.
+
+- **§4/§5, "production lookups are empty".** They are no longer empty. A
+  message with a `DKIM-Signature` records every key, ATPS and
+  `_report._domainkey` name the DKIM verifier asks for, once, sorted, with
+  its outcome. A message with no signature still records none. The `dns`
+  member's shape, the sources and the bounds are unchanged, and a report
+  with a `temp_fail` lookup still never qualifies. The recorder is fed
+  through a cache adapter inside the evaluator, so the report remains a
+  function of the stored bytes, the receipt second and the frozen policy
+  snapshot.
+- **§7, live-answer semantics.** The wake and expiry story stays with #255.
+  What moves is the resolver wording: a name that is outside the owner-name
+  grammar is never looked up and never recorded, and the verifier's own
+  resolver is compiled in but unreachable (the adapter answers every name,
+  and the one authenticator has no name servers). The one place the report
+  can differ between two evaluations of the same bytes is 0125 §8's clock
+  residual, a proposed amendment of accepted 0085 §8 held for the operator.
+- **§10, "real DNS is configured and refused".** The refusal text and the
+  `declared` default stand. The promise that a later story adds a `Real`
+  variant moves to a later story with its own decision; 0125 adds none, and
+  no network lookup exists in this build.
+
+The `swarmail-html/6` id belongs to 0125 (it has never shipped), after this
+record's `/5`.

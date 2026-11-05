@@ -19,12 +19,13 @@ allow = [
   "BSD-3-Clause",
   "ISC",
   "Unicode-3.0",
-  # webpki-roots — Mozilla's root CA bundle shipped as data; CDLA-Permissive-2.0
-  # is the permissive flavor of the data license family (no copyleft, no
-  # field-of-use restriction) and the only license under which rustls
-  # distributes the offline trust store, which the tree's rustls-tls leg
-  # genuinely needs. The house rules name this allowance and its one crate,
-  # so it is a tracked allowance, not a silent widening.
+  # webpki-roots and webpki-root-certs — Mozilla's root CA bundle shipped as
+  # data (the second is pulled in by hickory's platform verifier, #254);
+  # CDLA-Permissive-2.0 is the permissive flavor of the data license family (no
+  # copyleft, no field-of-use restriction) and the only license under which
+  # rustls distributes the offline trust store, which the tree's rustls-tls leg
+  # genuinely needs. The house rules name this allowance and both crates, so it
+  # is a tracked allowance, not a silent widening.
   "CDLA-Permissive-2.0",
 ]
 

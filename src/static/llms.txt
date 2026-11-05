@@ -561,13 +561,15 @@ Every report carries a required `dns` member
 {source:"default"|"server"|"inbox", policy:{txt:[{name,values}],tempfail:[name]},
 lookups:[{name,type:"txt",outcome:"records"|"no_records"|"temp_fail",values}]}.
 `policy` is the complete canonical effective policy; `lookups` lists each name an
-evaluation resolved, once, sorted. No rule resolves a name yet, so `lookups` is
-empty today. `temp_fail` is never a pass and never clean: a report with a
+evaluation resolved, once, sorted. DKIM verification (proposed 0125, below) records
+every key, ATPS and report name it asks for; a message with no `DKIM-Signature`
+records none, and SPF and DMARC (#255) record theirs when they arrive. `temp_fail` is never a pass and never clean: a report with a
 `temp_fail` lookup qualifies at no no_findings_at_or_above threshold, so an assert
 does not match it and a wait rides to its deadline. `no_records` is a definite
 negative. The same message under the same configuration gives byte-identical
 report JSON; no path, time or generation appears (the one stated exception is the
-DKIM wall-clock residual, `dkim.expired_since_receipt.v1`, described below).
+DKIM wall-clock residual, `dkim.expired_since_receipt.v1`, whose radius is
+described below).
 Declare a server map with `serve --dns-policy FILE` (env SWARMAIL_DNS_POLICY): a
 JSON file of at most 8192 bytes, `{"txt":[{"name":"s1._domainkey.example.com",
 "values":["v=DKIM1; k=rsa; p=..."]}],"tempfail":["_dmarc.example.org"]}`; `{}` is
@@ -658,10 +660,20 @@ message's DKIM-Signature fields from zero), except a verified signature whose
 the declared DNS map (`PUT /api/v1/inboxes/{inbox}/dns`, record
 `<s>._domainkey.<d>`); every name asked is recorded in `dns.lookups`; real DNS is
 not supported. A signature is judged at the message's receipt second: `x=` at or
-before it is expired. The one residual, `dkim.expired_since_receipt.v1`, is the
-crate's own wall-clock check. At most 16 signature fields and 128 `h=` names are
-judged; past either bound one `dkim.limits_exceeded.v1` finding stands alone.
-Rule ids, each at version 1: `dkim.malformed.v1`, `dkim.unsupported.v1`, `dkim.from_unsigned.v1`, `dkim.limits_exceeded.v1`, `dkim.signature_expired.v1`, `dkim.expired_since_receipt.v1`, `dkim.selector_invalid.v1`, `dkim.key_missing.v1`, `dkim.key_invalid.v1`, `dkim.key_revoked.v1`, `dkim.not_evaluated.v1`, `dkim.body_hash_mismatch.v1`, `dkim.signature_mismatch.v1`, `dkim.auid_mismatch.v1`, `dkim.atps_unauthorized.v1`, `dkim.body_length_exceeds.v1`, `dkim.body_length_partial.v1`.
+before it (or a literal `x=0`) is expired. The one residual,
+`dkim.expired_since_receipt.v1`, is the crate's own wall-clock check, and its
+radius is wide: once the host clock passes an `x=` that is after the receipt
+second, every verdict for that signature (a pass, the warning and every error
+alike) becomes that finding and its key lookups disappear, so a clean report can
+later begin to disqualify. `a=`, `v=` and plain decimal `t=`, `x=` and `l=` are
+required (`dkim.malformed.v1`). If the verifier's header/body boundary differs from
+Swarmail's (a header line without a colon, or a whitespace-only first line), the
+message gets one `dkim.header_boundary_ambiguous.v1` and nothing else. The crate
+counts `l=` in raw bytes, RFC 6376 counts canonical ones, so a `body_hash_mismatch`
+on a signature with `l=` is not evidence of tampering. At most 16 signature fields
+and 128 `h=` names are judged; past either bound one `dkim.limits_exceeded.v1`
+finding stands alone.
+Rule ids, each at version 1: `dkim.malformed.v1`, `dkim.unsupported.v1`, `dkim.from_unsigned.v1`, `dkim.header_boundary_ambiguous.v1`, `dkim.limits_exceeded.v1`, `dkim.signature_expired.v1`, `dkim.expired_since_receipt.v1`, `dkim.selector_invalid.v1`, `dkim.key_missing.v1`, `dkim.key_invalid.v1`, `dkim.key_revoked.v1`, `dkim.not_evaluated.v1`, `dkim.body_hash_mismatch.v1`, `dkim.signature_mismatch.v1`, `dkim.auid_mismatch.v1`, `dkim.atps_unauthorized.v1`, `dkim.body_length_exceeds.v1`, `dkim.body_length_partial.v1`.
 The bulk checklist's `*.not_evaluated.v1` errors disqualify every report until
 #255, so assert on DKIM rule ids rather than on a threshold. See the deliverability
 guide for each rule's hint, passing and failing fixture.
@@ -827,6 +839,6 @@ checklist), `swarmail-html/2` and `swarmail-html/3` (HTML heuristics), then
 `swarmail-spam/1`; no existing rule changed meaning), then
 `swarmail-html/5` (the required `dns` report member of proposed 0120,
 integrated after `swarmail-html/4`; no rule changed meaning), then
-`swarmail-html/6` (the seventeen DKIM rules of proposed 0125, integrated after
+`swarmail-html/6` (the eighteen DKIM rules of proposed 0125, integrated after
 `swarmail-html/5`; no existing rule changed meaning). A change to
 any rule's meaning, hint, location or order requires a new id.

@@ -14,16 +14,23 @@
 //! Time. Swarmail reads no clock. A signature is judged at the message's receipt
 //! second (`x=` at or before it is expired), so a report is a function of the
 //! bytes, the receipt time and the policy. The crate itself compares `x=` with
-//! the wall clock; that read is internal to `verify_dkim`, can only move one
-//! verdict from "verified" to "not verified", and is named
-//! `dkim.expired_since_receipt.v1` (decision 0125 section 8).
+//! the wall clock inside `verify_dkim`; that read is the clock residual, and its
+//! radius is stated in decision 0125 section 8: once the host clock reaches an
+//! `x=` that is after the receipt second, every verdict the crate would have
+//! decided for that field becomes `dkim.expired_since_receipt.v1`, and the key
+//! lookups for it disappear.
+//!
+//! One body. Before anything is verified, the crate's header/body boundary must
+//! equal Swarmail's, so DKIM hashes the body every other collector sees; if not,
+//! the message gets one `dkim.header_boundary_ambiguous.v1` and nothing else.
 
 use super::dns::{Lookups, OwnerName, Txt};
-use super::{AnalysisError, Collector, Finding, Location, Severity};
+use super::{AnalysisError, Collector, Finding, Headers, Location, Severity};
 use futures_util::FutureExt;
 use mail_auth::crypto::{Algorithm, CryptoError};
 use mail_auth::dkim::{
     AtpsRecord, Canonicalization, DkimError, DkimReportRecord, DomainKey, Signature,
+    VerifySignature,
 };
 use mail_auth::dns::TxtRecordParser;
 use mail_auth::headers::Writer;
@@ -52,6 +59,7 @@ enum Rule {
     Malformed,
     Unsupported,
     FromUnsigned,
+    HeaderBoundaryAmbiguous,
     LimitsExceeded,
     SignatureExpired,
     ExpiredSinceReceipt,
@@ -70,10 +78,11 @@ enum Rule {
 
 impl Rule {
     #[cfg(test)]
-    const ALL: [Rule; 17] = [
+    const ALL: [Rule; 18] = [
         Self::Malformed,
         Self::Unsupported,
         Self::FromUnsigned,
+        Self::HeaderBoundaryAmbiguous,
         Self::LimitsExceeded,
         Self::SignatureExpired,
         Self::ExpiredSinceReceipt,
@@ -95,6 +104,7 @@ impl Rule {
             Self::Malformed => "dkim.malformed.v1",
             Self::Unsupported => "dkim.unsupported.v1",
             Self::FromUnsigned => "dkim.from_unsigned.v1",
+            Self::HeaderBoundaryAmbiguous => "dkim.header_boundary_ambiguous.v1",
             Self::LimitsExceeded => "dkim.limits_exceeded.v1",
             Self::SignatureExpired => "dkim.signature_expired.v1",
             Self::ExpiredSinceReceipt => "dkim.expired_since_receipt.v1",
@@ -124,12 +134,15 @@ impl Rule {
     const fn hint(self) -> &'static str {
         match self {
             Self::Malformed => {
-                "Fix the DKIM-Signature tag list: each tag once, d=, s=, b=, bh= and h= present, valid base64, and x= later than t= (RFC 6376 section 3.5)."
+                "Fix the DKIM-Signature tag list: each tag once; v=, a=, d=, s=, b=, bh= and h= present; valid base64; t=, x= and l= plain decimal numbers; and x= later than t= (RFC 6376 sections 3.2 and 3.5)."
             }
             Self::Unsupported => {
                 "Use v=1, a=rsa-sha256 or ed25519-sha256, c= simple or relaxed, and no l=0 (RFC 6376 section 3.5, RFC 8301 section 3.1, RFC 8463)."
             }
             Self::FromUnsigned => "Sign the From header: list from in h= (RFC 6376 section 5.4).",
+            Self::HeaderBoundaryAmbiguous => {
+                "A line in the header block that is not a header field (no colon, or only whitespace at the very top) ends the headers at some receivers and not at others; remove it or fold it into the previous field (RFC 5322 section 2.2.3)."
+            }
             Self::LimitsExceeded => {
                 "Send at most 16 DKIM-Signature fields, each with at most 128 header names in h=."
             }
@@ -227,6 +240,15 @@ struct Adapter<'l> {
     lookups: RefCell<&'l mut Lookups>,
 }
 
+/// The one judge of a DNS name. The crate asks for `<s>._domainkey.<d>.` with a
+/// trailing dot; `OwnerName::parse` strips exactly one, so a `d=` that itself ends
+/// in a dot leaves an empty label and is outside the grammar. The adapter and the
+/// verdict both ask this function, so what is looked up and what is reported
+/// cannot disagree.
+fn owner_of(name: &str) -> Option<OwnerName> {
+    OwnerName::parse(name)
+}
+
 fn not_found() -> TxtRecord {
     TxtRecord::Error(Error::Dns(DnsError::RecordNotFound(ResponseCode::NXDomain)))
 }
@@ -234,7 +256,7 @@ fn not_found() -> TxtRecord {
 impl Adapter<'_> {
     fn answer(&self, name: &str) -> TxtRecord {
         // A name outside 0120's grammar is never looked up and never recorded.
-        let Some(owner) = OwnerName::parse(name) else {
+        let Some(owner) = owner_of(name) else {
             return not_found();
         };
         match self.lookups.borrow_mut().resolve_txt(&owner) {
@@ -411,16 +433,43 @@ fn canonical_len(body: &[u8], c: Canonicalization, limit: u64) -> u64 {
 
 /// What the crate's public struct cannot say about one field: the tag list read
 /// once more, narrowly (RFC 6376 section 3.2).
-#[derive(Debug, Default, PartialEq, Eq)]
+///
+/// It covers only what the crate defaults silently: a repeated tag, a missing
+/// `v=` or `a=` (the crate reads them as version 0 and rsa-sha256), and a `t=`,
+/// `x=` or `l=` that is not a plain number (the crate reads garbage as absent).
+#[derive(Debug, PartialEq, Eq)]
 struct Scan {
     duplicate: bool,
     has_v: bool,
+    has_a: bool,
+    has_t: bool,
+    has_x: bool,
     has_l: bool,
+    /// Every `t=`, `x=` and `l=` is one or more ASCII digits that fit `u64`, once
+    /// the folding whitespace around it is trimmed. Then the crate's value is
+    /// the literal one.
+    numbers_ok: bool,
     h_names: usize,
 }
 
+fn number_fits(value: &[u8]) -> bool {
+    let value = value.trim_ascii();
+    !value.is_empty()
+        && value.iter().all(u8::is_ascii_digit)
+        && std::str::from_utf8(value).is_ok_and(|digits| digits.parse::<u64>().is_ok())
+}
+
 fn scan(value: &[u8]) -> Scan {
-    let mut scan = Scan::default();
+    let mut scan = Scan {
+        duplicate: false,
+        has_v: false,
+        has_a: false,
+        has_t: false,
+        has_x: false,
+        has_l: false,
+        numbers_ok: true,
+        h_names: 0,
+    };
     let mut seen = BTreeSet::new();
     for tag in value.split(|b| *b == b';') {
         let Some(eq) = tag.iter().position(|b| *b == b'=') else {
@@ -433,10 +482,18 @@ fn scan(value: &[u8]) -> Scan {
             .map(u8::to_ascii_lowercase)
             .collect();
         scan.duplicate |= !name.is_empty() && !seen.insert(name.clone());
-        scan.has_v |= name == b"v";
-        scan.has_l |= name == b"l";
-        if name == b"h" {
-            scan.h_names += tag[eq + 1..].iter().filter(|b| **b == b':').count() + 1;
+        let tag_value = &tag[eq + 1..];
+        match name.as_slice() {
+            b"v" => scan.has_v = true,
+            b"a" => scan.has_a = true,
+            b"t" => scan.has_t = true,
+            b"x" => scan.has_x = true,
+            b"l" => scan.has_l = true,
+            b"h" => scan.h_names += tag_value.iter().filter(|b| **b == b':').count() + 1,
+            _ => {}
+        }
+        if matches!(name.as_slice(), b"t" | b"x" | b"l") {
+            scan.numbers_ok &= number_fits(tag_value);
         }
     }
     scan
@@ -454,7 +511,7 @@ fn is_dkim_signature(name: &[u8]) -> bool {
 /// One `DKIM-Signature` field as the crate sees it, in header order.
 struct Field<'m> {
     value: &'m [u8],
-    parsed: Result<(usize, &'m Signature), &'m Error>,
+    parsed: Result<&'m Signature, &'m Error>,
     scan: Scan,
 }
 
@@ -464,10 +521,9 @@ fn fields<'m>(message: &'m AuthenticatedMessage<'m>) -> Vec<Field<'m>> {
     let mut fields: Vec<Field<'m>> = message
         .dkim_signatures()
         .iter()
-        .enumerate()
-        .map(|(index, header)| Field {
+        .map(|header| Field {
             value: header.value,
-            parsed: Ok((index, &header.header)),
+            parsed: Ok(&header.header),
             scan: scan(header.value),
         })
         .chain(
@@ -486,11 +542,10 @@ fn fields<'m>(message: &'m AuthenticatedMessage<'m>) -> Vec<Field<'m>> {
     fields
 }
 
-/// What `verdict` reads besides the field: the crate's outputs and where the
-/// parsed ones start, the message body, and the receipt second.
+/// What `verdict` reads besides the field: the crate's outputs, the message body,
+/// and the receipt second.
 struct Context<'a, 'm> {
     outputs: &'a [DkimOutput<'m>],
-    first_parsed: usize,
     body: &'a [u8],
     receipt: u64,
 }
@@ -498,19 +553,23 @@ struct Context<'a, 'm> {
 /// The verdict for one field, or `None` for a signature that verified cleanly.
 /// The first matching row of the specification's evaluation table wins.
 fn verdict(field: &Field<'_>, context: &Context<'_, '_>) -> Option<Rule> {
-    let (index, signature) = match field.parsed {
-        // A repeated tag, or no `v=` (the crate reads that as version 0 and
-        // goes on): both break RFC 6376 section 3.2 and section 3.5.
-        _ if field.scan.duplicate || !field.scan.has_v => return Some(Rule::Malformed),
+    let scan = &field.scan;
+    // Row a: what the crate would default or read as absent. A repeated tag, no
+    // `v=` (version 0) or no `a=` (rsa-sha256) break RFC 6376 sections 3.2 and
+    // 3.5; a `t=`, `x=` or `l=` that is no number reads as 0, "absent".
+    if scan.duplicate || !scan.has_v || !scan.has_a || !scan.numbers_ok {
+        return Some(Rule::Malformed);
+    }
+    let signature = match field.parsed {
         Err(Error::Dkim(
             DkimError::UnsupportedVersion
             | DkimError::UnsupportedAlgorithm
             | DkimError::UnsupportedCanonicalization,
         )) => return Some(Rule::Unsupported),
         Err(_) => return Some(Rule::Malformed),
-        Ok(parsed) => parsed,
+        Ok(signature) => signature,
     };
-    if signature.a == Algorithm::RsaSha1 || (field.scan.has_l && signature.l == 0) {
+    if signature.a == Algorithm::RsaSha1 || (scan.has_l && signature.l == 0) {
         return Some(Rule::Unsupported);
     }
     if !signature
@@ -520,14 +579,23 @@ fn verdict(field: &Field<'_>, context: &Context<'_, '_>) -> Option<Rule> {
     {
         return Some(Rule::FromUnsigned);
     }
-    if signature.x != 0 && signature.x <= signature.t {
+    if scan.has_x && scan.has_t && signature.x <= signature.t {
         return Some(Rule::Malformed);
     }
-    if signature.x != 0 && signature.x <= context.receipt {
+    if scan.has_x && signature.x <= context.receipt {
         return Some(Rule::SignatureExpired);
     }
-    // The crate's outputs line up with the fields by construction (see `collect`).
-    let output = &context.outputs[context.first_parsed + index];
+    // The output is the one that holds this very signature, never one picked by
+    // position: the crate lists an output for rejected fields too.
+    let output = context
+        .outputs
+        .iter()
+        .find(|output| {
+            output
+                .signature()
+                .is_some_and(|found| std::ptr::eq(found, signature))
+        })
+        .expect("every parsed signature has one output");
     match output.result() {
         DkimResult::Pass => body_length(signature, context.body),
         DkimResult::Neutral(Error::Dkim(DkimError::SignatureExpired)) => {
@@ -535,9 +603,9 @@ fn verdict(field: &Field<'_>, context: &Context<'_, '_>) -> Option<Rule> {
         }
         DkimResult::TempError(_) => Some(Rule::NotEvaluated),
         DkimResult::PermError(_) if output.is_atps() => Some(Rule::AtpsUnauthorized),
+        // The name the crate asked for, trailing dot included, is the name judged.
         DkimResult::PermError(Error::Dns(DnsError::RecordNotFound(_))) => {
-            let name = format!("{}._domainkey.{}", signature.s, signature.d);
-            Some(if OwnerName::parse(&name).is_none() {
+            Some(if owner_of(&signature.domain_key()).is_none() {
                 Rule::SelectorInvalid
             } else {
                 Rule::KeyMissing
@@ -577,9 +645,12 @@ fn body_length(signature: &Signature, body: &[u8]) -> Option<Rule> {
     }
 }
 
-/// Verify every `DKIM-Signature` of `raw` against the declared map.
+/// Verify every `DKIM-Signature` of `raw` against the declared map. `root` and
+/// `size` are the root header list and body offset every other collector uses.
 pub(super) fn collect(
     raw: &[u8],
+    root: &Headers,
+    size: usize,
     receipt: u64,
     lookups: &mut Lookups,
     out: &mut Collector,
@@ -589,19 +660,27 @@ pub(super) fn collect(
     // rejects every `l=` signature unhashed. The fields it lists are the crate's
     // own, so one that a header scanner of ours would not recognise (a name folded
     // across lines, say) cannot slip past the bound.
-    let Some(strict) = AuthenticatedMessage::parse_with_opts(raw, None, true) else {
+    let parsed = AuthenticatedMessage::parse_with_opts(raw, None, true);
+    let first = parsed.as_ref().map_or_else(Vec::new, fields);
+    // Unsigned mail is none of DKIM's business, whatever its header block holds.
+    if first.is_empty() && !root.iter().any(|(name, _)| is_dkim_signature(name)) {
         return Ok(());
+    }
+    // One body: the crate must end the headers where Swarmail does, or its body is
+    // not the one every other collector and the UI see (a whitespace-only line
+    // ends the crate's headers and continues Swarmail's field).
+    let Some(strict) = parsed
+        .as_ref()
+        .filter(|message| message.body_offset() == size)
+    else {
+        return out.push(Rule::HeaderBoundaryAmbiguous.finding(0));
     };
-    let first = fields(&strict);
     let by_count = (first.len() > MAX_DKIM_SIGNATURES).then_some(MAX_DKIM_SIGNATURES);
     let by_names = first
         .iter()
         .position(|f| f.scan.h_names > MAX_DKIM_SIGNED_HEADERS);
     if let Some(over) = [by_count, by_names].into_iter().flatten().min() {
         return out.push(Rule::LimitsExceeded.finding(over));
-    }
-    if first.is_empty() {
-        return Ok(());
     }
     // A signature with `l=` is judged, not ignored: parse again without strict.
     let full;
@@ -610,7 +689,7 @@ pub(super) fn collect(
             .expect("a message that parsed strictly parses without strict");
         &full
     } else {
-        &strict
+        strict
     };
     let adapter = Adapter {
         lookups: RefCell::new(lookups),
@@ -619,15 +698,8 @@ pub(super) fn collect(
         .verify_dkim(Parameters::new(message).with_cache(&adapter))
         .now_or_never()
         .expect("a declared map answers on the first poll");
-    // The crate lists one neutral output for each field rejected with an error
-    // of its own kind, then one output per parsed signature, in header order.
     let context = Context {
         outputs: &outputs,
-        first_parsed: message
-            .errors()
-            .iter()
-            .filter(|header| matches!(header.header, Error::Dkim(_)))
-            .count(),
         body: message.raw_body(),
         receipt,
     };
@@ -794,6 +866,11 @@ mod tests {
     /// crate declines to canonicalize it (its `x=` is not after `t=`), the
     /// placeholder stays: such a field never reaches the key.
     fn forged(o: &Sign, tags: &str, message: &[u8]) -> Vec<u8> {
+        forged_with(o, tags, true, message)
+    }
+
+    /// `forged`, optionally without the `a=` tag (RFC 6376 section 3.5 requires it).
+    fn forged_with(o: &Sign, tags: &str, algorithm: bool, message: &[u8]) -> Vec<u8> {
         let template = signature(o, message);
         let names: Vec<String> = template.h.clone();
         let c = |c: Canonicalization| match c {
@@ -801,8 +878,12 @@ mod tests {
             Canonicalization::Simple => "simple",
         };
         let head = format!(
-            "DKIM-Signature: v=1; a={}; c={}/{}; d={}; s={}; {tags}; h={}; bh={}; b=",
-            o.kind.algorithm(),
+            "DKIM-Signature: v=1; {}c={}/{}; d={}; s={}; {tags}; h={}; bh={}; b=",
+            if algorithm {
+                format!("a={}; ", o.kind.algorithm())
+            } else {
+                String::new()
+            },
             c(o.ch),
             c(o.cb),
             o.domain,
@@ -1058,7 +1139,11 @@ mod tests {
         let clean = Scan {
             duplicate: false,
             has_v: true,
+            has_a: false,
+            has_t: false,
+            has_x: false,
             has_l: false,
+            numbers_ok: true,
             h_names: 2,
         };
         assert_eq!(scan(" v=1; d=a.example; h=from:to; b=AA"), clean);
@@ -1093,6 +1178,51 @@ mod tests {
             assert!(scan(value).has_l, "{value:?}");
         }
         assert!(!scan("ll=5; b=l=5; d=a").has_l);
+        // `a=`, `t=` and `x=` are seen however they are spelled, and only as names.
+        for (value, a, t, x) in [
+            ("a=rsa-sha256", true, false, false),
+            (" A = ed25519-sha256", true, false, false),
+            ("t=1; x=2", false, true, true),
+            ("T=1;\r\n X =2", false, true, true),
+            ("aa=1; tt=2; xx=3; b=a=t=x=", false, false, false),
+        ] {
+            let found = scan(value);
+            assert_eq!(
+                (found.has_a, found.has_t, found.has_x),
+                (a, t, x),
+                "{value:?}"
+            );
+        }
+        // A number is one or more digits that fit `u64`, trimmed of folding
+        // whitespace; the crate would read anything else as 0, which means absent.
+        for good in [
+            "t=0",
+            "t=1000",
+            "x= 2000 ",
+            "x=\r\n 2000\r\n ",
+            "l=18446744073709551615",
+            "t=1; x=2; l=3",
+            "d=a; b=abc",
+        ] {
+            assert!(scan(good).numbers_ok, "{good:?}");
+        }
+        for bad in [
+            "t=",
+            "t= ",
+            "t=abc",
+            "x=12a",
+            "x=-1",
+            "x=1 2",
+            "l=+5",
+            "l=0x10",
+            "l=1.5",
+            "x=18446744073709551616",
+            "x=99999999999999999999",
+            "t=1; x=abc",
+            "t=\u{661}",
+        ] {
+            assert!(!scan(bad).numbers_ok, "{bad:?}");
+        }
         // The `h=` count is an upper bound: colons plus one, summed over tags.
         assert_eq!(scan("h=").h_names, 1);
         assert_eq!(scan("h=a:b:c:d").h_names, 4);
@@ -1250,10 +1380,27 @@ mod tests {
         // No version tag: the crate would read it as a valid signature.
         let unversioned = tampered(&o, &msg(), |h| h.replacen("v=1; ", "", 1));
         assert!(!String::from_utf8_lossy(&unversioned).contains("v=1"));
-        for raw in [missing, base64, twice, expiry, unversioned] {
+        // No algorithm tag: the crate would read it as rsa-sha256 (RFC 6376 3.5).
+        let unalgorithmed = tampered(&o, &msg(), |h| h.replacen("a=ed25519-sha256; ", "", 1));
+        assert!(!String::from_utf8_lossy(&unalgorithmed).contains("a=ed25519"));
+        // Numbers that are no numbers: the crate reads each as 0, "absent".
+        let numbers = [
+            "t=abc",
+            "x=abc",
+            "l=abc",
+            "x=99999999999999999999",
+            "t=1000; x=1000",
+        ]
+        .map(|tags| forged(&o, tags, &msg()));
+        for raw in [missing, base64, twice, expiry, unversioned, unalgorithmed]
+            .into_iter()
+            .chain(numbers)
+        {
             assert_eq!(
                 verdicts(&raw, 0, &world),
-                one("dkim.malformed.v1", 0, ERROR)
+                one("dkim.malformed.v1", 0, ERROR),
+                "{}",
+                String::from_utf8_lossy(&raw)
             );
         }
         // A repeated tag is malformed even if the crate would verify the rest,
@@ -1286,10 +1433,11 @@ mod tests {
             verdicts(&zero, 0, &world),
             one("dkim.unsupported.v1", 0, ERROR)
         );
+        // `l=abc` is no number at all, which is malformed, not unsupported.
         let nonsense = tampered(&o, &msg(), |h| format!("{} l=abc;\r\n", h.trim_end()));
         assert_eq!(
             verdicts(&nonsense, 0, &world),
-            one("dkim.unsupported.v1", 0, ERROR)
+            one("dkim.malformed.v1", 0, ERROR)
         );
         // An unknown version, algorithm or canonicalization.
         for (from, to) in [
@@ -1467,6 +1615,36 @@ mod tests {
         // Before t is no problem for the crate (t is not enforced).
         assert_eq!(
             verdicts(&raw, 0, &world),
+            one("dkim.expired_since_receipt.v1", 0, ERROR)
+        );
+    }
+
+    #[test]
+    fn expired_since_receipt_hides_key_and_lookup() {
+        // The clock residual's radius (decision 0125 section 8): the crate stops at
+        // the expiry, before the body hash and before it asks for any key. Every
+        // verdict the later rows could give, a missing key included, is replaced.
+        let raw = forged(&Sign::default(), "t=1000; x=2000", &msg());
+        let nothing = policy(&[], &[]);
+        let undeclared = report(&raw, 1500, &nothing);
+        assert_eq!(
+            dkim(&undeclared),
+            one("dkim.expired_since_receipt.v1", 0, ERROR)
+        );
+        assert!(undeclared.dns.lookups.is_empty());
+        // The same bytes with the key declared read the same, and ask nothing.
+        let declared = report(&raw, 1500, &key_of(Kind::Ed25519));
+        assert_eq!(
+            dkim(&declared),
+            one("dkim.expired_since_receipt.v1", 0, ERROR)
+        );
+        assert!(declared.dns.lookups.is_empty());
+        // An altered body is still the one verdict.
+        let altered = String::from_utf8(raw)
+            .unwrap()
+            .replace("this  is", "this was");
+        assert_eq!(
+            verdicts(altered.as_bytes(), 1500, &nothing),
             one("dkim.expired_since_receipt.v1", 0, ERROR)
         );
     }
@@ -1910,6 +2088,327 @@ mod tests {
         assert_eq!(lookups(&two.dns).len(), 1);
     }
 
+    // mail-auth 0.14.0 ends the headers at a CRLF line that holds no colon and
+    // does not start with a space or tab; Swarmail skips such a line and goes on.
+    // A whitespace-only line inside the block is a continuation in both, but a
+    // whitespace-only first line ends the crate's headers and not Swarmail's.
+
+    /// A signed message with a colon-less line right after the signature field:
+    /// the crate ends the headers there, Swarmail ends them at the blank line.
+    fn stray_line_after() -> Vec<u8> {
+        let mut raw = header_of(&Sign::default(), &msg());
+        raw.extend_from_slice(b"stray line\r\n");
+        raw.extend_from_slice(&msg());
+        raw
+    }
+
+    /// The same line before the signature: the crate sees the signature as body.
+    fn stray_line_before() -> Vec<u8> {
+        let mut raw = b"X-Pad: 1\r\nstray line\r\n".to_vec();
+        raw.extend_from_slice(&base());
+        raw
+    }
+
+    fn assert_ambiguous(raw: &[u8], world: &Arc<Effective>) {
+        let report = report(raw, 0, world);
+        assert_eq!(
+            dkim(&report),
+            one("dkim.header_boundary_ambiguous.v1", 0, ERROR)
+        );
+        assert!(report.dns.lookups.is_empty());
+    }
+
+    /// The message-level finding stands alone, so equality with it is exact.
+    fn is_ambiguous(raw: &[u8], world: &Arc<Effective>) -> bool {
+        verdicts(raw, 0, world) == one("dkim.header_boundary_ambiguous.v1", 0, ERROR)
+    }
+
+    fn offsets(raw: &[u8]) -> (Option<usize>, usize) {
+        (
+            AuthenticatedMessage::parse_with_opts(raw, None, true).map(|m| m.body_offset()),
+            super::super::headers(raw).unwrap().1,
+        )
+    }
+
+    #[test]
+    fn boundary_agrees_for_crlf_lf_and_empty_body() {
+        let world = key_of(Kind::Ed25519);
+        let lf_raw = String::from_utf8(base()).unwrap().replace("\r\n", "\n");
+        let empty = signed(&Sign::default(), &message(""));
+        for raw in [base(), lf_raw.clone().into_bytes(), empty.clone()] {
+            let (crate_offset, ours) = offsets(&raw);
+            assert_eq!(crate_offset, Some(ours));
+        }
+        // The passing fixtures of the rule: no boundary finding, normal verdicts.
+        assert_eq!(verdicts(&base(), 0, &world), vec![]);
+        assert!(!is_ambiguous(lf_raw.as_bytes(), &world));
+        let report = report(&empty, 0, &world);
+        assert_eq!(dkim(&report), vec![]);
+        assert_eq!(lookups(&report.dns).len(), 1);
+    }
+
+    #[test]
+    fn boundary_whitespace_line_inside_the_block_is_no_difference() {
+        // The first design's example: a whitespace-only line after, or among, the
+        // fields is a continuation for the crate as well, so nothing is ambiguous.
+        let world = key_of(Kind::Ed25519);
+        let mut after = header_of(&Sign::default(), &msg());
+        after.extend_from_slice(b" \r\n");
+        after.extend_from_slice(&msg());
+        let mut before = b"X-Pad: 1\r\n \r\n".to_vec();
+        before.extend_from_slice(&base());
+        for raw in [after, before] {
+            let (crate_offset, ours) = offsets(&raw);
+            assert_eq!(crate_offset, Some(ours));
+            assert!(!is_ambiguous(&raw, &world));
+        }
+    }
+
+    #[test]
+    fn boundary_stray_line_after_signature() {
+        let world = key_of(Kind::Ed25519);
+        let raw = stray_line_after();
+        // The precondition: the two parsers really end the headers apart.
+        let (crate_offset, ours) = offsets(&raw);
+        assert_ne!(crate_offset, Some(ours));
+        let strict = AuthenticatedMessage::parse_with_opts(&raw, None, true).unwrap();
+        assert!(!strict.dkim_signatures().is_empty());
+        assert_ambiguous(&raw, &world);
+    }
+
+    #[test]
+    fn boundary_stray_line_before_signature() {
+        let world = key_of(Kind::Ed25519);
+        let raw = stray_line_before();
+        // The crate lists no signature at all, yet Swarmail sees the field.
+        let strict = AuthenticatedMessage::parse_with_opts(&raw, None, true).unwrap();
+        assert!(strict.dkim_signatures().is_empty());
+        assert!(strict.errors().is_empty());
+        assert_ambiguous(&raw, &world);
+    }
+
+    #[test]
+    fn boundary_strict_parse_none_while_signed() {
+        let world = key_of(Kind::Ed25519);
+        let mut raw = b" \r\n".to_vec();
+        raw.extend_from_slice(&base());
+        assert!(AuthenticatedMessage::parse_with_opts(&raw, None, true).is_none());
+        assert_ambiguous(&raw, &world);
+    }
+
+    #[test]
+    fn unsigned_stray_and_whitespace_lines_have_no_dkim_finding() {
+        // The guard is gated on "signed": mail with no signature gains nothing,
+        // however its header block looks (AC1).
+        let world = key_of(Kind::Ed25519);
+        for (from, to) in [
+            ("Subject: Hello\r\n", "Subject: Hello\r\nstray line\r\n"),
+            ("Subject: Hello\r\n", "Subject: Hello\r\n \r\n"),
+        ] {
+            let raw = String::from_utf8(msg()).unwrap().replace(from, to);
+            let report = report(raw.as_bytes(), 0, &world);
+            assert_eq!(dkim(&report), vec![]);
+            assert!(report.dns.lookups.is_empty());
+        }
+        let mut lead = b" \r\n".to_vec();
+        lead.extend_from_slice(&msg());
+        assert_eq!(verdicts(&lead, 0, &world), vec![]);
+    }
+
+    #[test]
+    fn rule_header_boundary_ambiguous() {
+        let world = key_of(Kind::Ed25519);
+        // Passing fixture: a signed message whose boundaries agree.
+        assert_eq!(verdicts(&base(), 0, &world), vec![]);
+        // Failing fixtures: a stray line after and before the field.
+        assert_ambiguous(&stray_line_after(), &world);
+        assert_ambiguous(&stray_line_before(), &world);
+        // It stands in for every verdict, even a field that would be malformed.
+        let mut raw = b"DKIM-Signature: v=1\r\n".to_vec();
+        raw.extend_from_slice(&stray_line_after());
+        assert_ambiguous(&raw, &world);
+    }
+
+    /// Whether the crate alone, asked through the adapter, passes every signature.
+    fn crate_passes(raw: &[u8], world: &Arc<Effective>) -> bool {
+        let message = AuthenticatedMessage::parse_with_opts(raw, None, false).unwrap();
+        let mut lookups = declared_lookups(world);
+        let adapter = Adapter {
+            lookups: RefCell::new(&mut lookups),
+        };
+        let outputs = AUTHENTICATOR
+            .verify_dkim(Parameters::new(&message).with_cache(&adapter))
+            .now_or_never()
+            .unwrap();
+        outputs.iter().all(|o| o.result() == &DkimResult::Pass)
+    }
+
+    #[test]
+    fn missing_a_is_malformed() {
+        let o = Sign {
+            kind: Kind::Rsa2048,
+            ..Sign::default()
+        };
+        let world = key_of(Kind::Rsa2048);
+        let with = forged(&o, "t=1000", &msg());
+        let without = forged_with(&o, "t=1000", false, &msg());
+        assert!(!String::from_utf8_lossy(&without).contains("a=rsa"));
+        // The crate defaults the algorithm to rsa-sha256 and verifies the field.
+        assert!(crate_passes(&with, &world));
+        assert!(crate_passes(&without, &world));
+        // Swarmail does not: the tag is required (RFC 6376 section 3.5).
+        assert_eq!(verdicts(&with, 0, &world), vec![]);
+        assert_eq!(
+            verdicts(&without, 0, &world),
+            one("dkim.malformed.v1", 0, ERROR)
+        );
+    }
+
+    #[test]
+    fn non_numeric_tags_are_malformed() {
+        let o = Sign::default();
+        let world = key_of(Kind::Ed25519);
+        let t = parsed(&base()).t;
+        let later = t + 86_400;
+        // Each pair: the same tag, non-numeric (malformed) and numeric (clean).
+        for (bad, good) in [
+            ("t=abc", format!("t={t}")),
+            ("x=abc", format!("x={later}")),
+            ("x=99999999999999999999", format!("x={later}")),
+            ("t=1000; x=abc", format!("t=1000; x={later}")),
+        ] {
+            assert_eq!(
+                verdicts(&forged(&o, bad, &msg()), 0, &world),
+                one("dkim.malformed.v1", 0, ERROR),
+                "{bad}"
+            );
+            assert_eq!(
+                verdicts(&forged(&o, &good, &msg()), 0, &world),
+                vec![],
+                "{good}"
+            );
+        }
+        // `l=abc` is malformed whatever the rest says.
+        assert_eq!(
+            verdicts(&forged(&o, "l=abc", &msg()), 0, &world),
+            one("dkim.malformed.v1", 0, ERROR)
+        );
+    }
+
+    #[test]
+    fn folded_numeric_tag_is_clean() {
+        let o = Sign::default();
+        let world = key_of(Kind::Ed25519);
+        let later = parsed(&base()).t + 86_400;
+        let folded = format!("t=1000;\r\n x=\r\n {later}\r\n ");
+        assert_eq!(verdicts(&forged(&o, &folded, &msg()), 0, &world), vec![]);
+    }
+
+    #[test]
+    fn x_zero_without_t_is_expired() {
+        let o = Sign::default();
+        let world = key_of(Kind::Ed25519);
+        // A literal `x=0` is an expiry in 1970, not an absent tag.
+        let raw = forged(&o, "x=0", &msg());
+        for receipt in [0, 1, u64::MAX] {
+            assert_eq!(
+                verdicts(&raw, receipt, &world),
+                one("dkim.signature_expired.v1", 0, ERROR)
+            );
+        }
+    }
+
+    #[test]
+    fn x_zero_with_t_is_malformed() {
+        let world = key_of(Kind::Ed25519);
+        let raw = forged(&Sign::default(), "t=1000; x=0", &msg());
+        assert_eq!(
+            verdicts(&raw, 0, &world),
+            one("dkim.malformed.v1", 0, ERROR)
+        );
+    }
+
+    #[test]
+    fn arc_and_rejected_fields_do_not_shift_pairing() {
+        let world = key_of(Kind::Ed25519);
+        let good = header_of(&Sign::default(), &msg());
+        let other = Sign {
+            selector: "other",
+            ..Sign::default()
+        };
+        let failing = header_of(&other, &msg());
+        let rejected = String::from_utf8(good.clone())
+            .unwrap()
+            .replacen("bh=", "xh=", 1)
+            .into_bytes();
+        let arc = b"ARC-Seal: i=1\r\nARC-Message-Signature: i=1; junk\r\nARC-Authentication-Results: i=1\r\n";
+        let build = |fields: &[&[u8]]| {
+            let mut raw = fields.concat();
+            raw.extend_from_slice(&msg());
+            raw
+        };
+        // The passing signature keeps its verdict and its occurrence, beside ARC
+        // fields the crate rejects and a DKIM field it rejects with an error.
+        let raw = build(&[arc, &rejected, &good, &failing]);
+        assert_eq!(
+            verdicts(&raw, 0, &world),
+            vec![
+                ("dkim.malformed.v1".to_string(), 0, ERROR),
+                ("dkim.key_missing.v1".to_string(), 2, ERROR)
+            ]
+        );
+        let raw = build(&[&failing, arc, &good, &rejected, arc]);
+        assert_eq!(
+            verdicts(&raw, 0, &world),
+            vec![
+                ("dkim.key_missing.v1".to_string(), 0, ERROR),
+                ("dkim.malformed.v1".to_string(), 2, ERROR)
+            ]
+        );
+    }
+
+    #[test]
+    fn trailing_dot_domain_is_selector_invalid() {
+        // The crate asks for `sel._domainkey.example.com..`, which is no name: the
+        // verdict judges that very name, not a rebuilt `sel._domainkey.example.com`.
+        let o = Sign {
+            domain: "example.com.",
+            ..Sign::default()
+        };
+        let world = key_of(Kind::Ed25519);
+        let report = report(&signed(&o, &msg()), 0, &world);
+        assert_eq!(dkim(&report), one("dkim.selector_invalid.v1", 0, ERROR));
+        assert!(report.dns.lookups.is_empty());
+        // One judge: the adapter and the verdict agree on every name.
+        for (name, valid) in [
+            ("sel._domainkey.example.com.", true),
+            ("sel._domainkey.example.com", true),
+            ("sel._domainkey.example.com..", false),
+            ("bad*sel._domainkey.example.com.", false),
+            (".", false),
+            ("", false),
+        ] {
+            assert_eq!(owner_of(name).is_some(), valid, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn resolver_without_nameservers_answers_nothing() {
+        // No cache at all: whatever the crate would ask, nothing answers. It must
+        // finish on the first poll with an error, never a pass and never a hang.
+        let raw = base();
+        let message = AuthenticatedMessage::parse_with_opts(&raw, None, false).unwrap();
+        let outputs = AUTHENTICATOR
+            .verify_dkim(Parameters::new(&message))
+            .now_or_never()
+            .expect("a resolver with no name servers fails on the first poll");
+        assert_eq!(outputs.len(), 1);
+        assert!(matches!(
+            outputs[0].result(),
+            DkimResult::TempError(_) | DkimResult::PermError(_)
+        ));
+    }
+
     #[test]
     fn algorithm_canonicalization_matrix() {
         use Canonicalization::{Relaxed, Simple};
@@ -2163,9 +2662,9 @@ mod tests {
             assert!(rule.hint().ends_with('.'));
             assert!(!rule.hint().contains('\n'));
         }
-        assert_eq!(seen.len(), 17);
+        assert_eq!(seen.len(), 18);
         // No rule is documented that the table lacks, and only one is a warning.
-        assert_eq!(guide.matches("\n### `dkim.").count(), 17);
+        assert_eq!(guide.matches("\n### `dkim.").count(), 18);
         let warnings = Rule::ALL
             .iter()
             .filter(|r| r.severity() == Severity::Warning);
@@ -2174,9 +2673,12 @@ mod tests {
             "## DKIM verification (`swarmail-html/6`)",
             "**Time is the receipt time.**",
             "`dkim.expired_since_receipt.v1`",
+            "**The clock residual (its full radius).**",
+            "**One body.**",
+            "interop gap:**",
             "At most 16 `DKIM-Signature` fields",
             "at most 128 names",
-            "`swarmail-html/6` (the seventeen DKIM rules of proposed 0125",
+            "`swarmail-html/6` (the eighteen DKIM rules of proposed 0125",
         ] {
             assert!(guide.contains(fact), "{fact}");
         }
@@ -2224,18 +2726,20 @@ mod tests {
             ])
         };
         let mut lookups = Lookups::new(policy(&[], &[]));
+        let run = |raw: &[u8], lookups: &mut Lookups| {
+            let (root, size) = super::super::headers(raw).unwrap();
+            collect(raw, &root, size, 0, lookups, &mut full())
+        };
         let no_key = signed(&Sign::default(), &msg());
-        assert_eq!(
-            collect(&no_key, 0, &mut lookups, &mut full()),
-            Err(AnalysisError::Failed)
-        );
-        // The bound finding is pushed the same way.
+        assert_eq!(run(&no_key, &mut lookups), Err(AnalysisError::Failed));
+        // The bound finding and the boundary finding are pushed the same way.
         let seventeen = many_fields(MAX_DKIM_SIGNATURES + 1);
+        assert_eq!(run(&seventeen, &mut lookups), Err(AnalysisError::Failed));
         assert_eq!(
-            collect(&seventeen, 0, &mut lookups, &mut full()),
+            run(&stray_line_after(), &mut lookups),
             Err(AnalysisError::Failed)
         );
         // A message with no signature adds nothing, so a full report stays as is.
-        assert_eq!(collect(&msg(), 0, &mut lookups, &mut full()), Ok(()));
+        assert_eq!(run(&msg(), &mut lookups), Ok(()));
     }
 }

@@ -419,3 +419,50 @@ dependency, feature or allowlist entry changes. Only the `deny.toml` comment
 on CDLA-Permissive-2.0 changes: it now also covers `webpki-root-certs`.
 
 This record stays proposed. Only the operator accepts it.
+
+## Implementation of the return revision (2026-11-05)
+
+The implementation seat brought the branch into line with the revised
+specification. Evidence, and the three places where reading the crate showed
+the specification's text to be loose:
+
+1. **The boundary guard's real trigger.** `mail-auth` 0.14.0 does **not** end
+   its headers at a whitespace-only line inside the block: such a line starts
+   with a space, so the crate folds it into the previous field exactly as
+   Swarmail does (`headers/parse.rs`, `scan_value`). The two parsers differ
+   instead at (a) a CRLF line that holds no colon and does not start with a
+   space or tab, which the crate takes as the end of the headers and Swarmail
+   skips, and (b) a whitespace-only *first* line, after which the crate lists
+   no header at all (`parse_with_opts` returns `None`). The guard compares
+   `body_offset()` with Swarmail's offset, so it catches both without naming
+   either. The fixtures are therefore a `stray line` CRLF line after the
+   signature field, the same line before it, and a leading `" \r\n"`; a test
+   records that the specification's `" \r\n"` inside the block gives agreeing
+   offsets and no finding. The hint names the real triggers.
+2. **`owner_of` strips no dot of its own.** `OwnerName::parse` already strips
+   exactly one trailing dot, so a second strip in `owner_of` would accept the
+   crate's `sel._domainkey.example.com..` for `d=example.com.`. `owner_of` is
+   `OwnerName::parse` under one name that the adapter and row l both call, and
+   row l hands it `signature.domain_key()` unchanged. The first design's
+   reconstruction (`format!("{s}._domainkey.{d}")`, no trailing dot) was the
+   divergence; a test asserts `d=example.com.` gives `selector_invalid` and no
+   lookup.
+3. **Overflowing numbers.** The crate saturates an overflowing `number()` to
+   `u64::MAX`; it does not read it as 0. Row a refuses it as malformed either
+   way, so no verdict depends on the difference.
+
+Other evidence:
+- the empty-name-server proof (spec T-R8): `AUTHENTICATOR.verify_dkim` with
+  **no** cache completes on the first poll with a `TempError` or `PermError`, so
+  `resolver_without_nameservers_answers_nothing` is kept (no timer, no race);
+  `adapter_outcomes` remains the proof that the adapter never misses;
+- the over-the-wire test reads the signed and the altered message over real
+  SMTP, REST and MCP;
+- the lockfile, `deny.toml` allowlist and `evals/Cargo.lock` are unchanged since
+  `adeaa12`; `deny.toml` differs from `fad9e7e` in the CDLA comment only; accepted
+  0085 is unchanged; `cargo tree -i native-tls` finds no package;
+- Docker: this sandbox has the client but no daemon (`/var/run/docker.sock`
+  absent), so no image was built. CI's `docker smoke` is the named proof, per the
+  spec's risk table; no `apk` change is made speculatively.
+
+This record stays proposed. Only the operator accepts it.
