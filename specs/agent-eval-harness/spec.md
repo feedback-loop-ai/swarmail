@@ -127,7 +127,7 @@ first wait; this limitation is part of the task description.
 
 A typed fixed catalogue, serialized by `tasks` as schema version 2, is the
 task format. No arbitrary executable checks or task-loading language.
-Each entry contains `id`, `tier` (`straight|traps|multi_step`; amended 2026-11-02, proposed [0117](../../docs/decisions/0117-hard-eval-tier.md): `straight|traps|multi_step|hard`),
+Each entry contains `id`, `tier` (`straight|traps|multi_step`; amended 2026-11-02, proposed [0117](../../docs/decisions/0117-hard-eval-tier.md): `straight|traps|multi_step|hard`; amended 2026-11-04, proposed [0123](../../docs/decisions/0123-expert-eval-tier.md): `straight|traps|multi_step|hard|expert`),
 `failure_class` (the targeted failure), `idle_class`, `goal`, `goal_template`,
 `scenario`, `check` (a typed predicate), `agent_count`, and `deadline_ms`.
 Unknown enum values, duplicate IDs, unknown template placeholders, invalid
@@ -300,6 +300,10 @@ Empty denominators/inputs produce null estimates, never NaN or invented
   holds 19 catalogue rows in four tiers, the `hard` tier adding `otp-backlog`,
   `recipient-crowd` and `digest-lookalike`; the default product is still the
   16, and the AC4 and AC5 controls run all 19.)
+  (Amended 2026-11-04, proposed [0123](../../docs/decisions/0123-expert-eval-tier.md):
+  24 catalogue rows in five tiers, the `expert` tier adding `otp-correction`,
+  `digest-correction`, `otp-late`, `confirm-attachment` and `confirm-injection`;
+  the default product is still the 16, and the AC4 and AC5 controls run all 24.)
 - **AC4 — Positive control:** `evals/tests/proof.rs` runs every task through
   the actual CLI with oracle; all 16 pass through real HTTP/SMTP/MCP.
 - **AC5 — Negative controls:** The same test target runs every task with

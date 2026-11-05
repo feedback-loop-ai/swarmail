@@ -8,7 +8,7 @@ info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/3):
+The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-spam/1):
 one_click, message_id and date are errors; plain_text is warning-level presence
 advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
 are independent checks. Their error-level *.not_evaluated.v1 findings explicitly
@@ -37,7 +37,7 @@ https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 204
 or 7489 sections. These are fixed published references, not live verification or
 provider certification. The proposed rule record is decision 0089.
 
-`swarmail-html/3` retains the synthetic demo.marker.v1: the first root
+`swarmail-spam/1` retains the synthetic demo.marker.v1: the first root
 X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
 and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
 html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
@@ -133,6 +133,163 @@ or deadline) / "deliverability analysis failed" (analysis/size), native JSON err
 Selected pre-removal reads may finish; fresh lookups cannot resurrect removed mail.
 Cache loss at restart costs recomputation. These are cache/job bounds, not total
 memory or latency promises. #253 owns DNS observation/policy/expiry/wakeup semantics;
-no DNS/authentication verification, spam scorer, external service or new dependency
+no DNS/authentication verification, external spam scorer, external service or new dependency
 ships here. The cache key includes every effective authentication fact and the
 immutable policy/observation identity, alongside selected Weak mail identity.
+
+## Spam signals (`swarmail-spam/1`)
+
+Six built-in, offline, deterministic rules read only the captured message: the
+root Subject, the root From display name and the sender's `text/plain` bodies
+(decision 0122, proposed). There is no external scorer, network, clock, locale or
+configuration; the same stored bytes always give the same findings. Each rule
+emits at most one finding per report, severity info or warning (error stays the
+bulk checklist's requirement level), so a large message can never flood the
+report. The report's `rule_set_id` is `swarmail-spam/1`, so the rule-set version
+is recorded in every report and in the cache key. Reports carry no weight and no
+total: the weights below are the proposal in decision 0122 and wait for the
+operator to accept it; they are labelled "proposed in 0122 — not in the report"
+because they are not emitted.
+
+Subject means the first root Subject field in wire order, RFC 2047-decoded and
+unfolded; From means the first mailbox of the first root From field, display name
+decoded. A later duplicate field never substitutes for the first. Letters are
+ASCII A–Z/a–z only and case comparison is ASCII-only: no Unicode case folding,
+so a non-ASCII letter neither counts as a capital nor as lowercase. Body rules
+read eligible text parts: a non-multipart part reached through multipart
+containers only, whose type is `text/plain` or absent (RFC 2045 default; a
+`multipart/digest` child defaults to `message/rfc822` and is not scanned), that is
+not an attachment, does not carry a filename or name parameter and does not sit
+under such a part. Embedded `message/*` bodies stay opaque and `text/html` is
+never scanned (HTML is #259's surface; HTML-only mail already receives
+`bulk.plain_text.v1`). The text is the transfer- and charset-decoded contents. A
+body finding is located at the `mime_part` path of the first matching eligible
+part in wire order (root `[]`, children by index).
+
+### `spam.subject.all_caps.v1`
+
+- **Matches:** a Subject with at least 8 ASCII letters, none lowercase.
+- **Severity:** warning. **Weight:** 3 (proposed in 0122 — not in the report).
+- **Location:** `header {name:"subject", occurrence:0}`.
+- **Why:** an all-capital subject reads as shouting and is a classic spam signal;
+  the 8-letter floor keeps short acronyms such as `RSVP` or `OTP: 123456` clear.
+- **Fix hint:** `Write the Subject in sentence case; an all-capital subject reads as shouting and is a common spam signal.`
+- **Passing:** `Subject: URGENT` (6 letters) and `Subject: WINTER Sale` (a lowercase letter).
+- **Failing:** `Subject: WINTER SALE`.
+
+### `spam.subject.punctuation.v1`
+
+- **Matches:** a Subject containing `!!`, `??` or `$$`.
+- **Severity:** info. **Weight:** 1 (proposed in 0122 — not in the report).
+- **Location:** `header {name:"subject", occurrence:0}`.
+- **Why:** repeated emphasis punctuation is a weak but common sales-spam marker; a
+  single `!`, `?` or `$` is ordinary.
+- **Fix hint:** `Remove repeated !, ? or $ characters from the Subject.`
+- **Passing:** `Subject: Your receipt!`
+- **Failing:** `Subject: Your receipt!!`
+
+### `spam.subject.phrases.v1`
+
+- **Matches:** a Subject containing a phrase from the list below.
+- **Severity:** warning. **Weight:** 3 (proposed in 0122 — not in the report).
+- **Location:** `header {name:"subject", occurrence:0}`.
+- **Why:** these are high-pressure sales claims that filters have long weighted.
+- **Fix hint:** `Remove high-pressure sales wording from the Subject; see the guide's phrase list.`
+- **Passing:** `Subject: Your invoice is ready`
+- **Failing:** `Subject: Act now to keep your account`
+
+### `spam.from.display_name_address.v1`
+
+- **Matches:** a From display name containing an address-shaped token
+  (`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+`) that is not, ASCII
+  case-insensitively, the mailbox's own address. A group, an empty list or a
+  mailbox without an address yields no finding.
+- **Severity:** warning. **Weight:** 3 (proposed in 0122 — not in the report).
+- **Location:** `header {name:"from", occurrence:0}`.
+- **Why:** a different address in the display name is how mail clients are made to
+  show a trusted-looking sender; the same address as the real one is harmless.
+- **Fix hint:** `Do not put an email address in the From display name unless it is the sending address; a different address there looks like spoofing.`
+- **Passing:** `From: "Billing" <billing@example.test>` and `From: "Billing@Example.test" <billing@example.test>`.
+- **Failing:** `From: "ceo@bank.example" <billing@example.test>`
+
+### `spam.body.phrases.v1`
+
+- **Matches:** an eligible text part containing a phrase from the list below.
+- **Severity:** warning. **Weight:** 3 (proposed in 0122 — not in the report).
+- **Location:** `mime_part {path}` of the first matching eligible part.
+- **Why:** the same claims as the Subject rule, in the body.
+- **Fix hint:** `Remove high-pressure sales wording from the text/plain body; see the guide's phrase list.`
+- **Passing:** `Your order has shipped.`
+- **Failing:** `Your order has shipped. Act now.`
+
+### `spam.body.zero_width.v1`
+
+- **Matches:** an eligible text part with at least 3 zero-width characters
+  (U+200B, U+200C, U+2060, U+FEFF). U+200D (ZWJ) is excluded because emoji
+  sequences use it legitimately.
+- **Severity:** info. **Weight:** 1 (proposed in 0122 — not in the report).
+- **Location:** `mime_part {path}` of the first matching eligible part.
+- **Why:** invisible characters inside words are used to hide them from filters; one
+  or two are common in pasted text, so the floor is three.
+- **Fix hint:** `Remove zero-width characters from the text/plain body; they are used to hide words from filters.`
+- **Passing:** a body with two U+200B characters.
+- **Failing:** a body with three U+200B characters.
+
+### Phrase list
+
+Fourteen fixed phrases: `act now`, `limited time offer`, `100% free`, `risk-free`,
+`risk free`, `you have won`, `you are a winner`, `claim your prize`,
+`no credit check`, `double your money`, `make money fast`, `once in a lifetime`,
+`this is not spam`, `cash bonus`. A phrase matches ASCII case-insensitively, each
+internal space matching one or more of space, tab, CR or LF (so a line-wrapped
+phrase matches), with no ASCII letter, digit or `_` immediately before or after it
+(`reactnow` and `act nowhere` do not match). Words transactional mail legitimately
+uses, such as "urgent", "congratulations" or "verify your account", are
+deliberately not listed.
+
+### Spam signal bounds
+
+| input | bound |
+|---|---|
+| raw message | 8,388,608 bytes, checked before any collector |
+| root header block (Subject, From) | 65,536 bytes including the separator |
+| MIME parts / depth | 256 including root / 32 (root 0) |
+| aggregate decoded eligible text | 4,194,304 bytes, summed over every eligible part before any rule matches |
+| spam findings | at most 6, one per rule |
+
+Exceeding the text bound fails the whole report (REST 503 "deliverability
+analysis failed", MCP isError), even if an earlier part would have matched: a
+truncated scan is refused, never reported as clean. Work is linear: the phrase
+matcher is one finite-automaton regex compiled once from the constant list, and
+the zero-width count is one pass, so the spam collector inspects at most the
+65,536 header bytes plus 4,194,304 text bytes per report, beyond the single
+bounded MIME parse. Cost of the bound: a message with more than 4 MiB of decoded
+`text/plain`, which earlier rule sets reported on, now fails analysis.
+
+### Signals counted elsewhere
+
+The spam rules do not re-detect what other collectors report. A reader assessing
+spam risk should also count `bulk.plain_text.v1` (HTML-only mail),
+`bulk.one_click.v1` (no one-click unsubscribe), `bulk.message_id.v1`,
+`bulk.date.v1`, `html.image-only.v1` and `html.tracking-pixel.v1`. Decision 0122
+proposes that, once weights ship, every finding counts by its severity (info 1,
+warning 3, error 10), with `*.not_evaluated.*` findings and `demo.marker.v1` at
+zero. Link and URL signals belong to #258 and DNS policy to #253; this rule set
+reads no URL and resolves nothing.
+
+### Known false negatives and positives
+
+False negatives: HTML-only spam wording, phrases outside the fixed list, phrases
+split by tags or inserted characters, non-ASCII look-alike letters, a partly
+shouted subject with any lowercase letter, and spam with a clean Subject and body
+but a bad link or sender (not read here). False positives: a legitimate subject in
+capitals of 8 or more letters, a genuine "limited time offer" in a newsletter, and
+a newsletter whose display name repeats a different mailbox, or a bare address followed by a comment holding another address (the parser reads the comment as the display name). An empty report does
+not mean the message will reach the inbox.
+
+### Rule-set version history
+
+`swarmail-demo/1` (synthetic demo marker), `swarmail-bulk/1` (bulk-sender
+checklist), `swarmail-html/2` and `swarmail-html/3` (HTML heuristics), then
+`swarmail-spam/1` (these six rules; no existing rule changed meaning). A change to
+any rule's meaning, hint, location or order requires a new id.

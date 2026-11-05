@@ -33,8 +33,9 @@ pub struct Plan {
     pub wrapper_contracts: &'static str,
 }
 impl Plan {
-    /// The product the operator approved on 2026-10-26: every task outside
-    /// the hard tier.
+    /// The product the operator approved on 2026-10-26: the sixteen
+    /// default-tier tasks, selected by a positive list of tiers so a tier
+    /// added later never joins it.
     pub fn new(output: &Path) -> Self {
         Self::for_tier(None, output)
     }
@@ -46,7 +47,7 @@ impl Plan {
         let tasks: Vec<_> = tasks::catalogue()
             .into_iter()
             .filter(|t| match tier {
-                None => t.tier != tasks::Tier::Hard,
+                None => tasks::DEFAULT_TIERS.contains(&t.tier),
                 Some(tier) => t.tier == tier,
             })
             .map(|t| t.id)

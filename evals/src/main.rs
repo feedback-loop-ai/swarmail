@@ -44,7 +44,7 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
         /// Plan one tier instead of the approved default-tier product
-        /// (`straight`, `traps`, `multi_step` or `hard`).
+        /// (`straight`, `traps`, `multi_step`, `hard` or `expert`).
         #[arg(long)]
         tier: Option<tasks::Tier>,
     },
@@ -151,7 +151,7 @@ enum Cmd {
         #[arg(long, value_delimiter = ',', required_unless_present = "tier")]
         tasks: Vec<String>,
         /// Every task of one tier, in catalogue order (`straight`, `traps`,
-        /// `multi_step` or `hard`); exclusive with `--tasks`.
+        /// `multi_step`, `hard` or `expert`); exclusive with `--tasks`.
         #[arg(long, conflicts_with = "tasks")]
         tier: Option<tasks::Tier>,
         /// A JSON array of {"label": ..., "argv": [...]}.
