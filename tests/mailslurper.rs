@@ -425,7 +425,13 @@ async fn the_item_shape_is_pinned_field_by_field() {
     )
     .await;
 
-    let expected = |id: &str, stored: &Value, from: &str, to: &[&str], cc: &[&str], body: &str| {
+    let expected = |id: &str,
+                    stored: &Value,
+                    from: &str,
+                    to: &[&str],
+                    cc: &[&str],
+                    subject: &str,
+                    body: &str| {
         let date = chrono::DateTime::from_timestamp_millis(stored["received_ms"].as_i64().unwrap())
             .unwrap()
             .format("%Y-%m-%d %H:%M:%S")
@@ -438,7 +444,7 @@ async fn the_item_shape_is_pinned_field_by_field() {
             j(json!(from)),
             j(json!(to)),
             j(json!(cc)),
-            j(stored["subject"].clone()),
+            j(json!(subject)),
             j(json!(body)),
         )
     };
@@ -460,6 +466,7 @@ async fn the_item_shape_is_pinned_field_by_field() {
             "bounce@envelope.test",
             &["bob@x.io", "carol@x.io", "dave@x.io"],
             &["carol@x.io"],
+            "Welcome &lt;b&gt;aboard&lt;/b&gt;",
             html
         ),
         "HTML wins over text; the envelope sender and recipients; header Cc"
@@ -475,6 +482,7 @@ async fn the_item_shape_is_pinned_field_by_field() {
             "s@x.io",
             &["r@x.io"],
             &[],
+            "Plain one",
             stored["text"].as_str().unwrap()
         ),
         "a text-only mail's body is its text"
@@ -484,13 +492,67 @@ async fn the_item_shape_is_pinned_field_by_field() {
     let (_, _, body) = get(slurper(&s), &format!("/mail/{bodyless}")).await;
     assert_eq!(
         String::from_utf8(body).unwrap(),
-        expected(&bodyless, &stored, "s@x.io", &["r@x.io"], &[], ""),
+        expected(&bodyless, &stored, "s@x.io", &["r@x.io"], &[], "Empty", ""),
         "a bodyless mail's body is empty"
     );
 
     let (status, _, body) = get(slurper(&s), "/mail/no-such-id").await;
     assert_eq!(status, 404);
     assert_eq!(err(&body), "message not found");
+}
+
+/// Issue #326 (0118 §4, dated addendum 2026-11-04, accepted 2026-11-05): the MailSlurper
+/// listener serves `subject` HTML-escaped with Go's `html.EscapeString` set,
+/// on both item routes, and nothing else changes. One mail over real SMTP;
+/// the listener is read at once after the `250`. The body is the stored
+/// bytes on every route; the native API, Mailpit and MailHog serve the raw
+/// subject, and Mailpit's `kind=subject` search matches the raw text and
+/// not the escaped spelling. Only `"` is observed; the rest are inferred.
+#[tokio::test]
+async fn the_subject_is_escaped_on_both_item_routes_and_raw_everywhere_else() {
+    let s = start().await;
+    let raw = "New Form response to \"f\" & <b>'x'</b>";
+    let escaped = "New Form response to &#34;f&#34; &amp; &lt;b&gt;&#39;x&#39;&lt;/b&gt;";
+    let body = "\"q\" & <i>'y'</i>";
+    let id = send_text(s.smtp_addr, None, raw, body).await;
+    let stored = native(&s, &id).await;
+    let stored_body = stored["text"].as_str().unwrap();
+    assert!(stored_body.starts_with(body), "{stored_body:?}");
+
+    let list = get_json(slurper(&s), "/mail").await;
+    assert_eq!(list["mailItems"][0]["id"], id.as_str());
+    assert_eq!(list["mailItems"][0]["subject"], escaped, "GET /mail");
+    assert_eq!(list["mailItems"][0]["body"], stored_body);
+    let item = get_json(slurper(&s), &format!("/mail/{id}")).await;
+    assert_eq!(item["subject"], escaped, "GET /mail/{{id}}");
+    assert_eq!(item["body"], stored_body, "the body is never escaped");
+    let (status, _, message) = get(slurper(&s), &format!("/mail/{id}/message")).await;
+    assert_eq!(status, 200);
+    assert_eq!(String::from_utf8(message).unwrap(), stored_body);
+
+    assert_eq!(stored["subject"], raw, "native API");
+    let (status, pm) =
+        common::http_json(s.http_addr, "GET", &format!("/api/v1/message/{id}"), None).await;
+    assert_eq!(status, 200);
+    assert_eq!(pm["Subject"], raw, "Mailpit");
+    let (status, hog) = common::http_json(s.http_addr, "GET", "/api/v2/messages", None).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        hog["items"][0]["Content"]["Headers"]["Subject"][0], raw,
+        "MailHog"
+    );
+
+    let search = |fragment: &str| {
+        let path = format!("/api/v1/search?kind=subject&query={fragment}");
+        async move {
+            let (status, found) = common::http_json(s.http_addr, "GET", &path, None).await;
+            assert_eq!(status, 200, "{found}");
+            found["messages_count"].as_u64().unwrap()
+        }
+    };
+    assert_eq!(search("to%20%22f%22").await, 1, "the raw fragment matches");
+    assert_eq!(search("%26%2334%3Bf").await, 0, "the escaped one does not");
+    s.stop().await;
 }
 
 /// AC6: the message route is the item's `body` as `text/html`, hardened for
@@ -835,6 +897,7 @@ fn the_guide_states_the_global_view_and_every_known_difference() {
         "`swarmail_http_requests_in_flight`",
         "*A list page over 64 MiB is a `400`*",
         "*Still recalled, not read from source*",
+        "*`subject` is HTML-escaped, `body` is not*",
         "**It is a global view.**",
         "`GET /mail` and `GET /mailcount` read **every inbox**",
         "`DELETE /mail` with `{\"pruneCode\":\"all\"}` **clears every inbox**",

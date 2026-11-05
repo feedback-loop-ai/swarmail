@@ -129,7 +129,9 @@ The item, in this key order: `id`, `dateSent` (the receive time as
 the other shims report it), `toAddresses` (the envelope recipients as bare
 address strings, so a Bcc'd recipient is listed; the header `To` addresses
 only for a row that recorded no envelope), `ccAddresses` (the header `Cc`
-addresses, bare), `subject`, `body` (the stored HTML when the mail has one,
+addresses, bare), `subject` (the stored subject, HTML-escaped as MailSlurper
+serves it: `&` `<` `>` `"` `'` become `&amp;` `&lt;` `&gt;` `&#34;` `&#39;`),
+`body` (the stored HTML when the mail has one,
 else its stored text, else `""`, exactly as decoded at ingest: not
 re-rendered, unescaped or sanitized, so an `href`-only link stays literal)
 and `attachments` (always `[]`).
@@ -183,6 +185,16 @@ nothing. A failed commit is `503 storage commit failed`, never a count.
   axum's plain text), not MailSlurper's plain text.
 - *Not in `/metrics`*: requests to this listener are not counted in
   `swarmail_http_requests_in_flight`, which reports the HTTP plane's requests.
+- *`subject` is HTML-escaped, `body` is not*: the item's `subject` goes
+  through the five substitutions of Go's `html.EscapeString` (`&` →
+  `&amp;`, `<` → `&lt;`, `>` → `&gt;`, `"` → `&#34;`, `'` → `&#39;`), once,
+  on `GET /mail` and `GET /mail/{id}`, so a subject that already reads
+  `&amp;` is served `&amp;amp;`. Only `"` → `&#34;` is observed (the Alkemio
+  trial compares subjects with it); the other four are inferred from
+  MailSlurper being Go, not read from its source. The native API, Mailpit
+  and MailHog keep the raw subject, and search matches the raw subject.
+  Escaped bytes count toward the 64 MiB page. The addendum of 2026-11-04 to
+  decision 0118 records this; the operator accepted it on 2026-11-05.
 - *Ingest still counts*: a mail is listed the moment its SMTP `250` is read,
   and a wipe that follows may remove it. That is what "all" means.
 - *Reported from upstream source by the review of this shim*, not
