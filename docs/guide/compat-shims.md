@@ -194,7 +194,7 @@ nothing. A failed commit is `503 storage commit failed`, never a count.
   MailSlurper being Go, not read from its source. The native API, Mailpit
   and MailHog keep the raw subject, and search matches the raw subject.
   Escaped bytes count toward the 64 MiB page. The addendum of 2026-11-04 to
-  decision 0118 records this and is proposed until the operator accepts it.
+  decision 0118 records this; the operator accepted it on 2026-11-05.
 - *Ingest still counts*: a mail is listed the moment its SMTP `250` is read,
   and a wipe that follows may remove it. That is what "all" means.
 - *Reported from upstream source by the review of this shim*, not

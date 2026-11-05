@@ -501,7 +501,7 @@ async fn the_item_shape_is_pinned_field_by_field() {
     assert_eq!(err(&body), "message not found");
 }
 
-/// Issue #326 (0118 §4, dated addendum 2026-11-04, proposed): the MailSlurper
+/// Issue #326 (0118 §4, dated addendum 2026-11-04, accepted 2026-11-05): the MailSlurper
 /// listener serves `subject` HTML-escaped with Go's `html.EscapeString` set,
 /// on both item routes, and nothing else changes. One mail over real SMTP;
 /// the listener is read at once after the `250`. The body is the stored

@@ -208,7 +208,7 @@ store these headers as fields. Emitting them would mean either parsing
 MIME at request time (against 0005) or inventing values. A synthesized
 `contentType` would disagree with upstream for every multipart mail.
 
-*`subject` is amended by the dated addendum of 2026-11-04 below (issue #326): it is served HTML-escaped with Go's `html.EscapeString` set. That addendum is proposed; only the operator accepts it.*
+*`subject` is amended by the dated addendum of 2026-11-04 below (issue #326): it is served HTML-escaped with Go's `html.EscapeString` set. The operator accepted that addendum on 2026-11-05.*
 
 ### 5. The destructive route
 
@@ -368,10 +368,10 @@ checks.
 
 ## Dated addendum — 2026-11-04: the MailSlurper `subject` is HTML-escaped
 
-This addendum is proposed. Only the operator accepts it; until then the
-§4 row "`subject` | the stored subject, or `""`" stands as accepted, and
-the code that implements this addendum is held (accepted 0045 §8). The
-text above is unchanged except for the one pointer line at the end of §4.
+This addendum is accepted (operator, 2026-11-05; see the acceptance note
+at its end). It was proposed when written, and the code that implements
+it was held under accepted 0045 §8 until that acceptance. The text above
+is unchanged except for the one pointer line at the end of §4.
 
 **Evidence.** Issue #326. The first full Alkemio trial against Swarmail
 v0.3.0 (alkem-io/test-suites run 41808342506, `smtp-mode=plain`) ran 160
@@ -440,3 +440,18 @@ operator's to rule on, not part of this addendum.
 with a dated pointer in the [shim spec](../../specs/mailslurper-shim/spec.md).
 No new decision number is taken. The index row keeps this record's status
 and names this addendum in its notes.
+
+### Dated acceptance note — 2026-11-05
+
+The operator accepted this addendum on 2026-11-05, in chat to the
+dispatcher, choosing "Accept and merge" for the 2026-11-04 note on
+0118 §4. The choice was put to them with the scope stated: only `"` →
+`&#34;` is observed, and the other four substitutions are inferred. In
+the same exchange the operator accepted the low security residual of
+the #326 review under accepted 0102 ("Accept the risk"). That residual
+is the uncapped by-id growth and the earlier page refusal described
+under **Bounds** above. This acceptance lifts the 0045 §8 hold on #326.
+If a re-run of the Alkemio trial shows that MailSlurper's escaping
+differs from this addendum (for example, bluemonday-style sanitizing
+rather than `html.EscapeString`), that is recorded in a further dated
+addendum, not by editing this one.

@@ -6,8 +6,8 @@ Date: 2026-11-04. Phase: design. Issue #326, run
 
 **Authority.** Accepted
 [0118](../../docs/decisions/0118-mailslurper-shim.md) §4 (the item
-projection), as amended by its **dated addendum of 2026-11-04, which is
-proposed**: only the operator accepts it. This spec takes no new decision
+projection), as amended by its **dated addendum of 2026-11-04, accepted
+by the operator on 2026-11-05** (proposed when this spec was written). This spec takes no new decision
 number. Accepted [0005](../../docs/decisions/0005-extraction-at-ingest.md)
 (extraction at ingest) and [0044](../../docs/decisions/0044-compat-validation.md)
 §6 (a byte cap that refuses the whole page) bind the design. 0001–0003 are
