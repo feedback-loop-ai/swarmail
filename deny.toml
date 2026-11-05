@@ -20,7 +20,8 @@ allow = [
   "ISC",
   "Unicode-3.0",
   # webpki-roots and webpki-root-certs — Mozilla's root CA bundle shipped as
-  # data (the second is pulled in by hickory's platform verifier, #254);
+  # data (the second only through hickory's platform verifier, which this
+  # build never reaches, #254);
   # CDLA-Permissive-2.0 is the permissive flavor of the data license family (no
   # copyleft, no field-of-use restriction) and the only license under which
   # rustls distributes the offline trust store, which the tree's rustls-tls leg

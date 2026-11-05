@@ -178,8 +178,9 @@ or deadline) / "deliverability analysis failed" (analysis/size), native JSON err
 Selected pre-removal reads may finish; fresh lookups cannot resurrect removed mail.
 Cache loss at restart costs recomputation. These are cache/job bounds, not total
 memory or latency promises. #253 owns DNS observation/policy/expiry/wakeup semantics;
-no DNS/authentication verification, external spam scorer, external service or new dependency
-ships here. The cache key includes every effective authentication fact and the
+#253 shipped no verification: DKIM verification arrives with proposed 0125 on
+`mail-auth`, offline against the declared keys; SPF, DMARC and ARC are #255 and
+#256; no external spam scorer or service ships here. The cache key includes every effective authentication fact and the
 immutable policy/observation identity, alongside selected Weak mail identity.
 
 ## Link rules
@@ -433,13 +434,20 @@ section 8.2); an `l=` longer than both the raw and the canonical body is an erro
 RFC 6376 section 3.4.5 counts canonicalized octets where the crate counts raw
 ones: see the interop gap under known limits.
 
-**One body.** DKIM must hash the body every other collector and the message page
-see. Before anything is verified, the verifier's header/body boundary must equal
-Swarmail's. If it does not, the message gets one `dkim.header_boundary_ambiguous.v1`
-and nothing else: no verification, no lookup, no other `dkim.*` finding. The
-verifier ends the headers at a line without a colon (and at a whitespace-only
-first line) where Swarmail skips the line and goes on, so the two would hash
-different bodies. A message with no `DKIM-Signature` never gets this finding.
+**One body, one field list.** DKIM must hash the body every other collector and
+the message page see, and `occurrence k` must be the same field in both. Before
+anything is verified, two things must hold: the verifier's header/body boundary
+equals Swarmail's, and the verifier lists as many `DKIM-Signature` fields as
+Swarmail's root header list does. If either fails, the message gets one
+`dkim.header_boundary_ambiguous.v1` and nothing else: no verification, no lookup,
+no other `dkim.*` finding. The verifier ends the headers at a line without a
+colon (and at a whitespace-only first line) where Swarmail skips the line and
+goes on, so the two would hash different bodies; and it reads a name with a space
+before the colon (`DKIM-Signature :`) as a signature where Swarmail's scanner
+names no field, so the two would count different fields. A whitespace-only line
+among the fields is a continuation for both and is no difference. A message with
+no `DKIM-Signature` never gets this finding. A passing check proves the body and
+the field count are shared, and nothing more.
 
 **Bounds.** At most 16 `DKIM-Signature` fields per message and at most 128 names
 in any `h=`. Past either bound the message gets one `dkim.limits_exceeded.v1`
@@ -471,7 +479,8 @@ do not read a `body_hash_mismatch` on a signature with `l=` as evidence of
 tampering (#255 must not either). The wall-clock residual has the radius stated
 above. The compiled-in resolver is unreachable, not absent. Each finding is on
 `{"kind":"header","name":"dkim-signature","occurrence":k}`, `k` counting the
-message's `DKIM-Signature` fields in header order from zero.
+message's root DKIM-Signature fields in header order from zero (the boundary
+check above guarantees the verifier lists the same fields).
 
 ### `dkim.malformed.v1`
 
@@ -495,13 +504,13 @@ message's `DKIM-Signature` fields in header order from zero.
 
 ### `dkim.header_boundary_ambiguous.v1`
 
-**Severity:** error. The verifier's header/body boundary differs from Swarmail's, so the body it would hash is not the body the rest of the report reads: for example a line without a colon in the header block, or a whitespace-only first line. Only a message with a `DKIM-Signature` gets it; the finding is on occurrence 0 and nothing else is judged or looked up.
+**Severity:** error. The verifier's header/body boundary differs from Swarmail's, so the body it would hash is not the body the rest of the report reads (a line without a colon in the header block, or a whitespace-only first line), or the verifier lists a different number of `DKIM-Signature` fields than Swarmail's root list (a field name with a space before the colon). Only a message with a `DKIM-Signature` gets it; the finding is on occurrence 0 and nothing else is judged or looked up.
 
-**Hint:** A line in the header block that is not a header field (no colon, or only whitespace at the very top) ends the headers at some receivers and not at others; remove it or fold it into the previous field (RFC 5322 section 2.2.3).
+**Hint:** A line in the header block that is not a header field (no colon, or only whitespace at the very top), or a DKIM-Signature field name that not every parser accepts (such as a space before the colon), ends or splits the headers differently at different receivers; remove it, fold it into the previous field, or write the name as DKIM-Signature: (RFC 5322 sections 2.2 and 2.2.3).
 
-**Passing:** a signed message whose boundaries agree.
+**Passing:** a signed message whose boundaries agree; a whitespace-only line among the header fields.
 
-**Failing:** `stray line` between the signature field and the blank line; the same line before the signature; a whitespace-only first line.
+**Failing:** `stray line` between the signature field and the blank line; the same line before the signature; a whitespace-only first line; a `DKIM-Signature :` field (space before the colon) beside a valid signature.
 
 ### `dkim.from_unsigned.v1`
 

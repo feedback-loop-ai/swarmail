@@ -643,8 +643,9 @@ or deadline) / "deliverability analysis failed" (analysis/size), native JSON err
 Selected pre-removal reads may finish; fresh lookups cannot resurrect removed mail.
 Cache loss at restart costs recomputation. These are cache/job bounds, not total
 memory or latency promises. #253 owns DNS observation/policy/expiry/wakeup semantics;
-no DNS/authentication verification, external spam scorer, external service or new dependency
-ships here. The cache key includes every effective authentication fact and the
+#253 shipped no verification: DKIM verification arrives with proposed 0125 on
+`mail-auth`, offline against the declared keys; SPF, DMARC and ARC are #255 and
+#256; no external spam scorer or service ships here. The cache key includes every effective authentication fact and the
 immutable policy/observation identity, alongside selected Weak mail identity.
 
 ## DKIM verification (`swarmail-html/6`)
@@ -655,7 +656,7 @@ message is verified lazily in the report, from the stored bytes, after the SMTP
 and header hashes, `l=` and `x=`. A verified signature and an unsigned message
 emit nothing; every unverified outcome is an error finding on
 `{"kind":"header","name":"dkim-signature","occurrence":k}` (k counts the
-message's DKIM-Signature fields from zero), except a verified signature whose
+message's root DKIM-Signature fields from zero), except a verified signature whose
 `l=` covers only a prefix of the body, which is a warning. Keys come only from
 the declared DNS map (`PUT /api/v1/inboxes/{inbox}/dns`, record
 `<s>._domainkey.<d>`); every name asked is recorded in `dns.lookups`; real DNS is

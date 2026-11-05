@@ -502,3 +502,62 @@ the `Cargo.lock` additions. `rule_set_id` stays `swarmail-html/6` (unshipped).
 No dependency, feature or allowlist entry changes.
 
 This record stays proposed. Only the operator accepts it.
+
+## Implementation of return revision 2 (2026-11-05)
+
+The implementation seat brought the branch into line with the revision 2
+specification. No ruling text above changes. Evidence:
+
+1. **The premise held.** `dkim::tests::crate_lists_every_root_dkim_field`
+   covers every spelling of the field name that the shared `headers()` scanner
+   names `dkim-signature` (`DKIM-Signature`, `dkim-signature`, `DKIM-SIGNATURE`,
+   `dKiM-sIgNaTuRe`), and a kit-signed value, a value without `bh=`, an empty
+   value and a value folded across lines. In every case the crate's strict
+   parse (its `dkim_signatures()` plus the filtered `errors()`) lists exactly the
+   field the root list holds, and a message that carries all of them keeps the
+   same count and order. It passed on the first run, so the guard was not
+   weakened and the shared scanner was not touched.
+2. **The conjunct.** `collect` now requires the crate's field count to equal
+   the root `dkim-signature` count beside the body-offset equality. A mismatch is
+   the existing `dkim.header_boundary_ambiguous.v1` on occurrence 0, with no
+   verification and no lookup. The hint names both conditions. Seen to fail
+   before the change: `boundary_dkim_field_name_with_space_is_ambiguous` (a valid
+   signature beside a `DKIM-Signature :` field, before it and after it) found no
+   finding at all, because both fields verified. The root scanner accepts only
+   names of printable bytes without a space, so such a field is a signature to
+   the crate and no field to Swarmail; the offsets agree, only the counts differ.
+3. **Occurrence is the root occurrence.** `finding_occurrence_is_the_root_occurrence`
+   computes the expected index from the root list for a message with a valid
+   field, a parser-rejected field and a field signed over another body.
+4. **Wrong key, same type, both algorithms.** `rule_signature_mismatch` now
+   declares RFC 8463's published ed25519 key for the kit's ed25519 signature and
+   its published 1,024-bit RSA key for the kit's RSA-2048 signature. Each gives
+   exactly `dkim.signature_mismatch.v1` and one recorded lookup. The two
+   vacuous passes under a failure comment are gone; the cross-type case stays
+   `dkim.key_invalid.v1`.
+5. **Measured lookups pinned.** `x_zero_with_t_is_malformed` asserts the one
+   `sel._domainkey.example.com` `records` lookup. The unsigned, boundary,
+   bounds and row-h cases already assert an empty `dns.lookups`.
+6. **No calendar expiry in a passing fixture.**
+   `forged_signatures_verify_for_both_algorithms` derives `x` from the signer's
+   `t`; no `x=9000000000` remains.
+7. **Live surfaces.** The guide and `llms.txt` no longer say that no
+   authentication verification ships; the MCP description follows the OpenAPI
+   wording; the occurrence sentence says "root DKIM-Signature"; the `dns.rs`,
+   `Cargo.toml` and `deny.toml` comments are corrected (the last in comment
+   lines only); the `--dns-resolver` help text no longer promises #254 a
+   resolver.
+
+Gates, all `--locked`, all green except one that cannot run here: fmt, clippy,
+`cargo test --workspace`, the `swarmail` binary build, the evals fmt, clippy and
+tests (441 passed) against that binary, the coverage gate at exact 100% (lines
+28,595, branches 2,062, functions 2,888) and its selftest, publish-guard,
+seal-branch, `cargo deny check licenses`, and `native-tls` absent from the
+tree. This sandbox has no `brokkr` binary: the bundle compile runs in verify.
+`Cargo.lock`, `evals/Cargo.lock` and the `deny.toml` allowlist are unchanged
+since `38fd111`; accepted 0085 is unchanged. No load proof was run.
+
+The three operator holds stand: the clock (§8), the compiled resolver (§2), and
+the `Cargo.lock` additions. #255's intake inherits AC11's await clause.
+
+This record stays proposed. Only the operator accepts it.

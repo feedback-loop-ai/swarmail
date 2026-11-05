@@ -473,7 +473,7 @@ fn dns_flags_parse_and_real_resolution_is_refused() {
         Config::from(&args).dns_policy.as_deref(),
         Some(std::path::Path::new("/etc/swarmail/dns.json"))
     );
-    // `real` is configured and refused with the message that names #254.
+    // `real` is configured and refused with the message that says how to declare.
     let refused = Cli::try_parse_from(["swarmail", "serve", "--dns-resolver", "real"])
         .unwrap_err()
         .to_string();

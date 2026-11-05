@@ -20,9 +20,15 @@
 //! decided for that field becomes `dkim.expired_since_receipt.v1`, and the key
 //! lookups for it disappear.
 //!
-//! One body. Before anything is verified, the crate's header/body boundary must
-//! equal Swarmail's, so DKIM hashes the body every other collector sees; if not,
-//! the message gets one `dkim.header_boundary_ambiguous.v1` and nothing else.
+//! One body, one field list. Before anything is verified, two things must hold
+//! of the crate's strict parse: it ends the headers where Swarmail does, so DKIM
+//! hashes the body every other collector sees, and it lists exactly as many
+//! `DKIM-Signature` fields as Swarmail's root list does, so a finding's
+//! occurrence is the root occurrence. If either fails (a colon-less line that
+//! ends the headers early, or a field name such as `DKIM-Signature :` that only
+//! one of the two names a signature), the message gets one
+//! `dkim.header_boundary_ambiguous.v1` and nothing else. A passing guard proves
+//! those two facts and no more.
 
 use super::dns::{Lookups, OwnerName, Txt};
 use super::{AnalysisError, Collector, Finding, Headers, Location, Severity};
@@ -141,7 +147,7 @@ impl Rule {
             }
             Self::FromUnsigned => "Sign the From header: list from in h= (RFC 6376 section 5.4).",
             Self::HeaderBoundaryAmbiguous => {
-                "A line in the header block that is not a header field (no colon, or only whitespace at the very top) ends the headers at some receivers and not at others; remove it or fold it into the previous field (RFC 5322 section 2.2.3)."
+                "A line in the header block that is not a header field (no colon, or only whitespace at the very top), or a DKIM-Signature field name that not every parser accepts (such as a space before the colon), ends or splits the headers differently at different receivers; remove it, fold it into the previous field, or write the name as DKIM-Signature: (RFC 5322 sections 2.2 and 2.2.3)."
             }
             Self::LimitsExceeded => {
                 "Send at most 16 DKIM-Signature fields, each with at most 128 header names in h=."
@@ -666,12 +672,19 @@ pub(super) fn collect(
     if first.is_empty() && !root.iter().any(|(name, _)| is_dkim_signature(name)) {
         return Ok(());
     }
-    // One body: the crate must end the headers where Swarmail does, or its body is
-    // not the one every other collector and the UI see (a whitespace-only line
-    // ends the crate's headers and continues Swarmail's field).
+    // One body and one field list: the crate must end the headers where Swarmail
+    // does, or its body is not the one every other collector and the UI see (a
+    // colon-less line ends the crate's headers and not Swarmail's, or the other
+    // way round), and it must list as many DKIM-Signature fields as the root list
+    // does, or the occurrence of a finding is not the root's (a name with a space
+    // before the colon is a signature to the crate and no field to Swarmail).
+    let root_count = root
+        .iter()
+        .filter(|(name, _)| is_dkim_signature(name))
+        .count();
     let Some(strict) = parsed
         .as_ref()
-        .filter(|message| message.body_offset() == size)
+        .filter(|message| message.body_offset() == size && first.len() == root_count)
     else {
         return out.push(Rule::HeaderBoundaryAmbiguous.finding(0));
     };
@@ -736,6 +749,10 @@ mod tests {
     const ED25519_PRIVATE: &str =
         "MC4CAQAwBQYDK2VwBCIEIAtvV61x8r6mErlreyiGrmEK48yeio3jk3mzi+LgprfU";
     const ED25519_PUBLIC: &str = "UodvhlES5fJESplf9URbrh0U2TXyG7w5hvtVVBMrQRg=";
+    // The two public keys RFC 8463 appendix A publishes (no private half is held
+    // here): a different key of each type, for the wrong-key proofs.
+    const RFC8463_ED25519_PUBLIC: &str = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=";
+    const RFC8463_RSA1024_PUBLIC: &str = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDkHlOQoBTzWRiGs5V6NpP3idY6Wk08a5qhdR6wy5bdOKb2jLQiY/J16JYi0Qvx/byYzCNb3W91y3FutACDfzwQ/BC/e/8uBsCR+yz1Lxj+PL6lHvqMKrM3rG4hstT5QjvHO9PzoxZyVYLzBfO2EeC3Ip3G+2kryOTIKT+l/K4w3QIDAQAB";
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Kind {
@@ -1841,25 +1858,44 @@ mod tests {
             );
             assert_eq!(lookups(&report.dns).len(), 1);
         }
-        // A signature made with another key is the same verdict.
-        let rsa = Sign {
-            kind: Kind::Rsa2048,
-            ..Sign::default()
-        };
-        let other_key = key_of(Kind::Rsa2048);
-        let raw = signed(&rsa, &msg());
-        assert_eq!(verdicts(&raw, 0, &other_key), vec![]);
-        let wrong_key = key_of(Kind::Ed25519);
-        let ed = Sign::default();
+        // A key of the other type cannot check the signature at all: the key is
+        // unusable for it, which is its own rule.
         let other_pair = policy(
             &[("sel._domainkey.example.com", Kind::Rsa2048.record())],
             &[],
         );
         assert_eq!(
-            verdicts(&signed(&ed, &msg()), 0, &other_pair),
+            verdicts(&signed(&Sign::default(), &msg()), 0, &other_pair),
             one("dkim.key_invalid.v1", 0, ERROR)
         );
-        assert_eq!(verdicts(&signed(&ed, &msg()), 0, &wrong_key), vec![]);
+        // A different key of the same type, published by RFC 8463, is the verdict:
+        // the signature does not verify against the declared key.
+        for (kind, other) in [
+            (
+                Kind::Ed25519,
+                format!("v=DKIM1; k=ed25519; p={RFC8463_ED25519_PUBLIC}"),
+            ),
+            (
+                Kind::Rsa2048,
+                format!("v=DKIM1; k=rsa; p={RFC8463_RSA1024_PUBLIC}"),
+            ),
+        ] {
+            let o = Sign {
+                kind,
+                ..Sign::default()
+            };
+            let raw = signed(&o, &msg());
+            let wrong = policy(&[("sel._domainkey.example.com", other)], &[]);
+            let report = report_of(&raw, &wrong);
+            assert_eq!(
+                dkim(&report),
+                one("dkim.signature_mismatch.v1", 0, ERROR),
+                "{kind:?}"
+            );
+            assert_eq!(lookups(&report.dns).len(), 1, "{kind:?}");
+            // The same bytes verify against the key that signed them.
+            assert_eq!(verdicts(&raw, 0, &key_of(kind)), vec![], "{kind:?}");
+        }
     }
 
     #[test]
@@ -2196,6 +2232,33 @@ mod tests {
         assert_ambiguous(&raw, &world);
     }
 
+    /// A kit-signed field with a space before the colon: the crate's tag parser
+    /// reads it as a DKIM-Signature, the shared scanner does not name it one.
+    fn spaced_name() -> Vec<u8> {
+        let header = String::from_utf8(header_of(&Sign::default(), &msg())).unwrap();
+        header
+            .replacen("DKIM-Signature:", "DKIM-Signature :", 1)
+            .into_bytes()
+    }
+
+    #[test]
+    fn boundary_dkim_field_name_with_space_is_ambiguous() {
+        let world = key_of(Kind::Ed25519);
+        let mut before = spaced_name();
+        before.extend_from_slice(&base());
+        let mut after = base();
+        let split = after.len() - msg().len();
+        after.splice(split..split, spaced_name());
+        for raw in [before, after] {
+            // The precondition: the offsets agree, only the field lists differ.
+            let (crate_offset, ours) = offsets(&raw);
+            assert_eq!(crate_offset, Some(ours));
+            let (root, listed) = root_and_crate_values(&raw);
+            assert_eq!((root.len(), listed.len()), (1, 2));
+            assert_ambiguous(&raw, &world);
+        }
+    }
+
     #[test]
     fn unsigned_stray_and_whitespace_lines_have_no_dkim_finding() {
         // The guard is gated on "signed": mail with no signature gains nothing,
@@ -2227,6 +2290,122 @@ mod tests {
         let mut raw = b"DKIM-Signature: v=1\r\n".to_vec();
         raw.extend_from_slice(&stray_line_after());
         assert_ambiguous(&raw, &world);
+        // A field name the crate reads as a signature and the root list does not.
+        let mut spaced = spaced_name();
+        spaced.extend_from_slice(&base());
+        assert_ambiguous(&spaced, &world);
+        // Passing: a whitespace-only line inside the block is no difference.
+        let mut inside = header_of(&Sign::default(), &msg());
+        inside.extend_from_slice(b" \r\n");
+        inside.extend_from_slice(&msg());
+        assert!(!is_ambiguous(&inside, &world));
+    }
+
+    /// The names of the root `dkim-signature` fields, as the shared scanner lists
+    /// them, and the values the crate's strict parse lists, both in order.
+    fn root_and_crate_values(raw: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let root = super::super::headers(raw)
+            .unwrap()
+            .0
+            .into_iter()
+            .filter(|(name, _)| name == b"dkim-signature")
+            .map(|(_, value)| value)
+            .collect();
+        let strict = AuthenticatedMessage::parse_with_opts(raw, None, true).unwrap();
+        let ours = fields(&strict)
+            .into_iter()
+            .map(|field| field.value.to_vec())
+            .collect();
+        (root, ours)
+    }
+
+    /// S1: the count conjunct's premise. For every spelling of a field the shared
+    /// `headers()` scanner names `dkim-signature`, the crate's strict parse lists
+    /// exactly that field, in the same order. The crate's values keep the folding
+    /// whitespace the scanner collapses, so equality is on the unfolded text.
+    #[test]
+    fn crate_lists_every_root_dkim_field() {
+        let good = header_of(&Sign::default(), &msg());
+        let good = String::from_utf8(good).unwrap();
+        let value = good.strip_prefix("DKIM-Signature:").unwrap().to_string();
+        let cases: Vec<(&str, String)> = vec![
+            ("DKIM-Signature", value.clone()),
+            ("dkim-signature", value.clone()),
+            ("DKIM-SIGNATURE", value.clone()),
+            ("dKiM-sIgNaTuRe", value.clone()),
+            // A value the parser rejects: no `bh=`, then an empty value.
+            (
+                "DKIM-Signature",
+                " v=1; a=ed25519-sha256; d=example.com; s=sel; h=from; b=AAAA\r\n".into(),
+            ),
+            ("DKIM-Signature", "\r\n".into()),
+            // A value folded across lines.
+            ("DKIM-Signature", value.replacen("; ", ";\r\n\t", 3)),
+        ];
+        for (name, value) in &cases {
+            let mut raw = format!("{name}:{value}").into_bytes();
+            raw.extend_from_slice(&msg());
+            let (root, ours) = root_and_crate_values(&raw);
+            assert_eq!(root.len(), 1, "{name}: the root list holds the field");
+            assert_eq!(ours.len(), 1, "{name}: the crate lists the field");
+            let unfold = |bytes: &[u8]| -> String {
+                String::from_utf8_lossy(bytes)
+                    .split(|c: char| c.is_ascii_whitespace())
+                    .filter(|word| !word.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            assert_eq!(unfold(&root[0]), unfold(&ours[0]), "{name}: same field");
+        }
+        // Several spellings in one message keep their order and their count.
+        let mut raw = Vec::new();
+        for (name, value) in &cases {
+            raw.extend_from_slice(format!("{name}:{value}").as_bytes());
+        }
+        raw.extend_from_slice(&msg());
+        let (root, ours) = root_and_crate_values(&raw);
+        assert_eq!(root.len(), cases.len());
+        assert_eq!(ours.len(), cases.len());
+    }
+
+    /// S3: a finding's occurrence is the field's index among the root list's
+    /// `dkim-signature` entries, computed here from that list and not by hand.
+    #[test]
+    fn finding_occurrence_is_the_root_occurrence() {
+        let world = key_of(Kind::Ed25519);
+        let first = header_of(&Sign::default(), &msg());
+        // Signed over another body, so its body hash cannot match this message.
+        let second = header_of(&Sign::default(), &message("another body\n"));
+        let rejected =
+            b"DKIM-Signature: v=1; a=ed25519-sha256; d=example.com; s=sel; h=from; b=AAAA\r\n";
+        let mut raw = first.clone();
+        raw.extend_from_slice(rejected);
+        raw.extend_from_slice(&second);
+        raw.extend_from_slice(&msg());
+        let (root, _) = root_and_crate_values(&raw);
+        let index_of = |field: &[u8]| {
+            let wanted = String::from_utf8_lossy(field);
+            let wanted = wanted
+                .split_once(':')
+                .unwrap()
+                .1
+                .split_whitespace()
+                .last()
+                .unwrap()
+                .to_string();
+            root.iter()
+                .position(|value| String::from_utf8_lossy(value).trim().ends_with(&wanted))
+                .unwrap() as u64
+        };
+        let (rejected_at, second_at) = (index_of(rejected), index_of(&second));
+        assert_eq!((rejected_at, second_at), (1, 2));
+        assert_eq!(
+            verdicts(&raw, 0, &world),
+            vec![
+                ("dkim.malformed.v1".to_string(), rejected_at, ERROR),
+                ("dkim.body_hash_mismatch.v1".to_string(), second_at, ERROR),
+            ]
+        );
     }
 
     /// Whether the crate alone, asked through the adapter, passes every signature.
@@ -2322,9 +2501,13 @@ mod tests {
     fn x_zero_with_t_is_malformed() {
         let world = key_of(Kind::Ed25519);
         let raw = forged(&Sign::default(), "t=1000; x=0", &msg());
+        let report = report(&raw, 0, &world);
+        assert_eq!(dkim(&report), one("dkim.malformed.v1", 0, ERROR));
+        // Measured, and pinned: the crate still asks for the key of a field that
+        // Swarmail judges malformed, so exactly that one lookup is recorded.
         assert_eq!(
-            verdicts(&raw, 0, &world),
-            one("dkim.malformed.v1", 0, ERROR)
+            lookups(&report.dns),
+            vec![("sel._domainkey.example.com".to_string(), Outcome::Records)]
         );
     }
 
@@ -2498,11 +2681,11 @@ mod tests {
             &[
                 (
                     "brisbane._domainkey.football.example.com",
-                    "v=DKIM1; k=ed25519; p=11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=".into(),
+                    format!("v=DKIM1; k=ed25519; p={RFC8463_ED25519_PUBLIC}"),
                 ),
                 (
                     "test._domainkey.football.example.com",
-                    "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDkHlOQoBTzWRiGs5V6NpP3idY6Wk08a5qhdR6wy5bdOKb2jLQiY/J16JYi0Qvx/byYzCNb3W91y3FutACDfzwQ/BC/e/8uBsCR+yz1Lxj+PL6lHvqMKrM3rG4hstT5QjvHO9PzoxZyVYLzBfO2EeC3Ip3G+2kryOTIKT+l/K4w3QIDAQAB".into(),
+                    format!("v=DKIM1; k=rsa; p={RFC8463_RSA1024_PUBLIC}"),
                 ),
             ],
             &[],
@@ -2674,7 +2857,7 @@ mod tests {
             "**Time is the receipt time.**",
             "`dkim.expired_since_receipt.v1`",
             "**The clock residual (its full radius).**",
-            "**One body.**",
+            "**One body, one field list.**",
             "interop gap:**",
             "At most 16 `DKIM-Signature` fields",
             "at most 128 names",
@@ -2695,14 +2878,18 @@ mod tests {
                 kind,
                 ..Sign::default()
             };
-            let raw = forged(&o, "t=1000; x=9000000000", &msg());
-            assert_eq!(verdicts(&raw, 1500, &key_of(kind)), vec![], "{kind:?}");
+            // `x` is derived from the signer's own `t`, and the receipt is before
+            // it, so no calendar date decides the verdict.
+            let t = parsed(&signed(&o, &msg())).t;
+            let tags = format!("t={t}; x={}", t + 86_400);
+            let raw = forged(&o, &tags, &msg());
+            assert_eq!(verdicts(&raw, t, &key_of(kind)), vec![], "{kind:?}");
             // And the same bytes with a changed Subject do not verify.
             let altered = String::from_utf8(raw)
                 .unwrap()
                 .replace("Subject: Hello", "Subject: Hellp");
             assert_eq!(
-                verdicts(altered.as_bytes(), 1500, &key_of(kind)),
+                verdicts(altered.as_bytes(), t, &key_of(kind)),
                 one("dkim.signature_mismatch.v1", 0, ERROR),
                 "{kind:?}"
             );

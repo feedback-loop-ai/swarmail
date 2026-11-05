@@ -141,7 +141,8 @@ pub struct ServeArgs {
     pub dns_policy: Option<PathBuf>,
 
     /// Where DNS answers come from: `declared` (the default, offline) or
-    /// `real`, which this build refuses until #254 brings a resolver.
+    /// `real`, which this build refuses (DKIM verification reads declared keys
+    /// only, proposed decision 0125).
     #[arg(
         long,
         value_name = "MODE",

@@ -5,7 +5,8 @@
 //! `PUT` supplies it, a request freezes it once, and every report records the
 //! whole effective policy and each lookup a verifier made. Nothing here touches
 //! the network, a clock, a global or a lock, so a report is a pure function of
-//! the stored bytes and the configuration (decision 0085).
+//! the stored bytes, the receipt time, and this configuration (decision 0085),
+//! except for the one clock read of proposed decision 0125 section 8.
 
 use serde::de::{Deserializer, Error as _, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};

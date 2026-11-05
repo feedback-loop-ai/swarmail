@@ -247,7 +247,7 @@ Commit unsigned, in the repository's style. Never push.
 
 Order matters: S1's premise test runs before S2's guard change is trusted.
 
-- [ ] **S1. Prove the premise first (C3, I3; AC22).**
+- [x] **S1. Prove the premise first (C3, I3; AC22).**
   - Add a table test: for each spelling of a field that Swarmail's
     `headers()` names `dkim-signature` (`DKIM-Signature`, `dkim-signature`,
     `DKIM-SIGNATURE`, `dKiM-sIgNaTuRe`; a kit-signed value, a value missing
@@ -258,7 +258,7 @@ Order matters: S1's premise test runs before S2's guard change is trusted.
     guard, and do not change the shared `headers()` scanner.
 
   *Test:* `dkim::tests::crate_lists_every_root_dkim_field`.
-- [ ] **S2. Count conjunct in the boundary guard (C3, I3, I4; G3a/G3e text;
+- [x] **S2. Count conjunct in the boundary guard (C3, I3, I4; G3a/G3e text;
   AC17, AC22).**
   - In `collect`, compute
     `root_count = root.iter().filter(|(n, _)| is_dkim_signature(n)).count()`
@@ -282,7 +282,7 @@ Order matters: S1's premise test runs before S2's guard change is trusted.
   - `rule_header_boundary_ambiguous` gains that failing fixture and keeps the
     inside-block whitespace passing fixture;
   - `boundary_whitespace_line_inside_the_block_is_no_difference` stays.
-- [ ] **S3. Occurrence agreement (AC22).**
+- [x] **S3. Occurrence agreement (AC22).**
   - A message with two kit-signed fields and a parser-rejected
     (missing-`bh=`) field between them, with the second signature's body
     altered so it fails: assert each finding's occurrence equals its index
@@ -290,7 +290,7 @@ Order matters: S1's premise test runs before S2's guard change is trusted.
     expected index from the root list in the test, not by hand).
 
   *Test:* `dkim::tests::finding_occurrence_is_the_root_occurrence`.
-- [ ] **S4. Same-type wrong key, both algorithms (C4, I6; AC5).**
+- [x] **S4. Same-type wrong key, both algorithms (C4, I6; AC5).**
   - In `rule_signature_mismatch`, delete the block commented "A signature
     made with another key is the same verdict", whose `other_key` and
     `wrong_key` bind the correct keys and assert passes. Keep the
@@ -304,7 +304,7 @@ Order matters: S1's premise test runs before S2's guard change is trusted.
     constants. No new key material.
 
   *Test:* `dkim::tests::rule_signature_mismatch`.
-- [ ] **S5. Pin the measured lookups (G3d, G6; AC9).**
+- [x] **S5. Pin the measured lookups (G3d, G6; AC9).**
   - `x_zero_with_t_is_malformed` also asserts that `dns.lookups` is exactly
     the one `sel._domainkey.example.com` `records` lookup.
   - Confirm, and add where missing, exact empty-lookup assertions for an
@@ -313,7 +313,7 @@ Order matters: S1's premise test runs before S2's guard change is trusted.
   - `failure_reports_ask_for_the_report_name` stays as the `r=y` pin.
 
   *Tests:* `x_zero_with_t_is_malformed`, plus the listed existing tests.
-- [ ] **S6. No calendar expiry in a passing fixture (AC23).**
+- [x] **S6. No calendar expiry in a passing fixture (AC23).**
   - In `forged_signatures_verify_for_both_algorithms`, replace
     `"t=1000; x=9000000000"` and receipt 1500 with an `x` derived from
     `parsed(&base()).t` (as `folded_numeric_tag_is_clean` does) and a receipt
@@ -321,7 +321,7 @@ Order matters: S1's premise test runs before S2's guard change is trusted.
 
   *Test:* `forged_signatures_verify_for_both_algorithms`; `grep -n "x=9000000000" src/deliverability/dkim.rs`
   empty.
-- [ ] **S7. Live surfaces and comments (G4, G5, G6, C5, I5; AC15, AC22).**
+- [x] **S7. Live surfaces and comments (G4, G5, G6, C5, I5; AC15, AC22).**
   - `docs/guide/deliverability.md` ~180–183 and `src/static/llms.txt`
     ~645–648: replace "no DNS/authentication verification, external spam
     scorer, external service or new dependency ships here" with the claim in
@@ -352,7 +352,7 @@ Order matters: S1's premise test runs before S2's guard change is trusted.
   - `guide_lists_every_dkim_rule` (18 headings) and the MCP/OpenAPI snapshot
     tests;
   - `git diff fad9e7e -- deny.toml` touches comment lines only.
-- [ ] **S8. Records and gates (AC16, AC20; standing rule).**
+- [x] **S8. Records and gates (AC16, AC20; standing rule).**
   - Append a dated "Implementation of return revision 2" evidence entry to
     0125: the premise result, the conjunct, the test names. Edit no ruling
     text in 0125, and if anything in spec.md proves wrong, correct spec.md in
