@@ -394,7 +394,9 @@ async fn bulk_analysis_budget_boundaries_and_incomplete_mime() {
     let srv = start().await;
     let mut fixtures = Vec::new();
     for (over, expected) in [(0, 200), (1, 503)] {
-        let mut raw = format!("{BASE}\r\n");
+        // Not text/plain: an 8 MiB plain body would hit the spam collector's own
+        // 4 MiB text cap first, and this fixture pins the engine's raw bound.
+        let mut raw = format!("{BASE}Content-Type: application/octet-stream\r\n\r\n");
         raw.extend(std::iter::repeat_n('x', 8_388_608 + over - raw.len() - 2));
         raw.push_str("\r\n");
         fixtures.push(("raw", raw, expected));

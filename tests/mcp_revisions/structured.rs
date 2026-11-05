@@ -920,6 +920,7 @@ async fn modern_all_tools_http_and_stdio() {
                         "swarmail-html/4",
                         "bulk-sender checklist",
                         "HTML client-compatibility heuristics",
+                        "spam signals",
                         "demo marker",
                         "not_evaluated",
                         "256 findings",

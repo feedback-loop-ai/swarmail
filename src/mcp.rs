@@ -1097,7 +1097,7 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
 });
 
 /// Modern-only report description; March keeps the historical TOOLS literal.
-const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-html/4) from the stored bytes, off the SMTP path: the bulk-sender checklist, the HTML client-compatibility heuristics, the per-link link.* rules (unsafe schemes, invalid URLs, plain http, URL shorteners, anchor-host mismatch; no link is fetched) and the synthetic demo marker. Missing trusted authentication evidence yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
+const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-html/4) from the stored bytes, off the SMTP path: the bulk-sender checklist, the HTML client-compatibility heuristics, the per-link link.* rules (unsafe schemes, invalid URLs, plain http, URL shorteners, anchor-host mismatch; no link is fetched), the built-in spam signals and the synthetic demo marker. Missing trusted authentication evidence yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
 
 /// MCP-compatible JSON input schemas. These are objects — the MCP spec
 /// requires an object, and a `&str` schema embedded in `json!` serialized as

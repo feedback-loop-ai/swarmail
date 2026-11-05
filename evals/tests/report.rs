@@ -397,6 +397,90 @@ fn matrix_tier_selects_the_hard_tasks_and_records_plain_ids() {
     assert_eq!(plan["schema_version"], 1, "no artifact version moved");
 }
 
+/// AC12: `matrix --tier expert` runs the five expert tasks in catalogue
+/// order with the oracle and the null agent: five passes and five `gave_up`
+/// failures, and the retained plan records plain ids.
+#[test]
+fn matrix_tier_selects_the_expert_tasks_and_the_controls_hold() {
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    let agents = agents_file(
+        dir.path(),
+        json!([{"label": "oracle", "argv": []}, {"label": "null", "argv": []}]),
+    );
+    let artifacts = dir.path().join("retained");
+    let out = cli()
+        .args([
+            "matrix", "--tier", "expert", "--agents", &agents, "--trials", "1",
+        ])
+        .arg("--artifacts-dir")
+        .arg(&artifacts)
+        .output()
+        .unwrap();
+    let rows = rows(&out.stdout);
+    let expert = [
+        "otp-correction",
+        "digest-correction",
+        "otp-late",
+        "confirm-attachment",
+        "confirm-injection",
+    ];
+    assert_eq!(rows.len(), 10, "{}", stderr(&out));
+    for label in ["oracle", "null"] {
+        let of: Vec<_> = rows
+            .iter()
+            .filter(|r| r.agent.as_deref() == Some(label))
+            .collect();
+        let tasks: Vec<_> = of.iter().map(|r| r.task.clone().unwrap()).collect();
+        assert_eq!(tasks, expert, "{label}: catalogue order");
+        for row in of {
+            if label == "oracle" {
+                assert_eq!(row.outcome, Outcome::Pass, "{row:?}");
+            } else {
+                assert_eq!(row.outcome, Outcome::Fail, "{row:?}");
+                assert_eq!(
+                    row.failure_class,
+                    Some(swarmail_evals::state::FailureClass::GaveUp)
+                );
+            }
+        }
+    }
+    assert_eq!(out.status.code(), Some(1), "failures, no harness error");
+    let plan = std::fs::read_dir(&artifacts)
+        .unwrap()
+        .map(|e| e.unwrap().path().join("matrix-plan.json"))
+        .find(|p| p.exists())
+        .expect("a retained matrix plan");
+    let plan: Value = serde_json::from_slice(&std::fs::read(plan).unwrap()).unwrap();
+    assert_eq!(plan["tasks"], json!(expert));
+    assert!(plan.get("tier").is_none(), "{plan}");
+    assert_eq!(plan["schema_version"], 1, "no artifact version moved");
+}
+
+/// `--tier expert` stays exclusive with `--tasks`, and its near spellings
+/// are usage errors with no rows.
+#[test]
+fn matrix_tier_expert_refuses_ambiguity_and_near_spellings_with_no_rows() {
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    let agents = agents_file(dir.path(), json!([{"label": "oracle", "argv": []}]));
+    let cases: [&[&str]; 4] = [
+        &["--tier", "expert", "--tasks", "otp"],
+        &["--tasks", "otp", "--tier", "expert"],
+        &["--tier", "Expert"],
+        &["--tier", "expert-tier"],
+    ];
+    for extra in cases {
+        let out = cli()
+            .args(["matrix", "--agents", &agents, "--trials", "1"])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{extra:?}");
+        assert!(out.stdout.is_empty(), "{extra:?}: no rows");
+    }
+}
+
 /// AC3: every ambiguous, missing or unknown selection is a usage error with
 /// no result row and nothing launched.
 #[test]

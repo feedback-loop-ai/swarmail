@@ -50,6 +50,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/bulk_sender.rs` | Source-citing bulk rules, original header grammar, genuine text bodies, untrusted auth unknowns and inclusive analysis limits (proposed 0089) |
 | `tests/deliverability.rs` | Lazy typed report, REST/MCP parity, threshold assertions/waits, UI states, persistence, pruning and served contract documentation (proposed 0085) |
 | `tests/link_reachability.rs` | The opt-in link reachability probe (proposed 0121): off and lazy by default, outcomes and the address policy against loopback listeners only, and the request, target and permit bounds |
+| `tests/spam_rules.rs` | The six built-in spam signals over real SMTP, REST and MCP: a failing and a passing message per rule, the `swarmail-html/4` identity, no weight or total, determinism, laziness and the fail-closed 4 MiB text bound (proposed 0122) |
 | `tests/api.rs` | every REST route, happy + error branches |
 | `tests/config_cli.rs` | the CLI/env config surface, the independent SMTP/POP3 idle defaults, the rendered `serve --help` |
 | `tests/listen.rs` | every listener's bind: both address families, the bind error reported as-is, and (Linux) a burst of 600 fresh SMTP connections all greeted, past the platform default backlog of 128 |

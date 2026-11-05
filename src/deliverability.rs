@@ -10,6 +10,7 @@ use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 mod html;
 mod links;
 mod reach;
+mod spam;
 
 pub use reach::Mode as LinkReachability;
 
@@ -875,6 +876,7 @@ fn collect(raw: &[u8], inputs: &Inputs, out: &mut Collector) -> Result<(), Analy
     }
     bulk(raw, &fields, size, inputs, out)?;
     html::collect(raw, out)?;
+    spam::collect(raw, out)?;
     #[cfg(test)]
     for finding in &inputs.fixture {
         out.push(finding.clone())?;

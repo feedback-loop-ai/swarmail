@@ -213,3 +213,13 @@ has it). No test resolves a public name or touches the internet. The paired
 tasks and the gate inventory are in the [specification](../../specs/deliverability-link-checks/spec.md)
 and its [tasks](../../specs/deliverability-link-checks/tasks.md). This
 record stays proposed until the operator rules. No seat accepts it.
+
+## Integration note — 2026-11-05 (merge of `main` after #260)
+
+`main` took `swarmail-spam/1` for #260's spam signals (proposed
+[0122](0122-deterministic-spam-rules.md)) while this branch held
+`swarmail-html/4`. Under §5 and 0122 §1.4 the branch integrating second takes
+a fresh id. `swarmail-html/4` has never shipped on `main` or in a release, so
+it is that fresh id: the merged report carries the spam signals and the five
+link rules under `swarmail-html/4`. No rule id, severity, hint or location of
+either story changes. This note changes no status; the record stays proposed.
