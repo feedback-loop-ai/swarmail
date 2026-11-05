@@ -11,7 +11,8 @@
   [plan](../../specs/ingest-parse-gate/plan.md),
   [tasks](../../specs/ingest-parse-gate/tasks.md).
 - **Extends:** accepted [0023](0023-off-worker-commits.md) §1 and accepted
-  [0030](0030-loopback-plane-bounded-results.md) §1 — the parse leg still runs
+  [0030](0030-loopback-plane-bounded-results.md) (its Extends of 0023 §1: the
+  parse moved onto the pool; §1 there is the loopback default) — the parse leg still runs
   on the blocking pool through the one `Store::offload`; it now begins with an
   asynchronous admission. Compatible work under 0045 §8: it preserves every
   accepted ruling and amends none, so it may land while this is proposed.
@@ -109,7 +110,7 @@ The cap has to match the cores the process may use; a loose one buys nothing.
    slow disk starve the next mail's parse. `Store::insert` and every other
    mutation are exactly as before (0001).
 5. **One offload.** The parse still goes through the one `Store::offload`
-   (0030 §1: no second helper); the permit is taken by the caller
+   (0030's parse move: no second helper); the permit is taken by the caller
    (`Store::parse_permit`) and moved into its closure.
 6. **The MCP `swarmail_seed_email` seed build** builds inline on the async
    worker today and is unchanged; it is not an ingest surface of the pool.
@@ -117,7 +118,7 @@ The cap has to match the cores the process may use; a loose one buys nothing.
 ## Considered and not done
 
 - **Fusing parse and insert into one pool job** (the design's first answer):
-  measured to change nothing (above) and it moves the 0030 §1 boundary — the
+  measured to change nothing (above) and it moves the boundary 0030 drew — the
   parse would run inside the same closure as the commit.
 - **An allocator swap** (jemalloc, mimalloc): fixes the musl lock at its root
   and is a new dependency; the dependency allowlist is the operator's. It

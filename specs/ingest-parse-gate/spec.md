@@ -65,7 +65,8 @@ and `scale.py`.
   the awaited insert returns `Ok`.
 - [0023](../../docs/decisions/0023-off-worker-commits.md) §5: a panicking parse
   still re-raises in the session (and returns its permit).
-- [0030](../../docs/decisions/0030-loopback-plane-bounded-results.md) §1: the
+- [0030](../../docs/decisions/0030-loopback-plane-bounded-results.md) (the parse
+  move it extends 0023 §1 with; its own §1 is the loopback default): the
   parse still runs before the mutation boundary through the one
   `Store::offload`; the gate is taken by the caller, no second helper.
 - [0014](../../docs/decisions/0014-one-ordered-mutation-boundary.md),

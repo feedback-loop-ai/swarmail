@@ -885,15 +885,21 @@ impl Store {
     /// mutex already serialise commits, and a permit held across an fsync
     /// would let one slow disk stall the next mail's parse.
     pub(crate) async fn parse_permit(self: &Arc<Self>) -> tokio::sync::OwnedSemaphorePermit {
-        #[cfg(test)]
-        if self.parse_gate.available_permits() == 0 {
-            self.parse_waits.fetch_add(1, Ordering::SeqCst);
+        match self.parse_gate.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                // Counted on the failed take itself, not on a separate
+                // look beforehand: a check followed by an acquire lets two
+                // callers both see the last free slot and one wait unseen.
+                #[cfg(test)]
+                self.parse_waits.fetch_add(1, Ordering::SeqCst);
+                self.parse_gate
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .expect("the parse gate is never closed")
+            }
         }
-        self.parse_gate
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("the parse gate is never closed")
     }
 
     /// Test instrument: how many callers have had to wait at the gate.

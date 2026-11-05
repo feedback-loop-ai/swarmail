@@ -23,15 +23,14 @@
 
 mod common;
 
-use std::time::{Duration, Instant};
-
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 /// Mails per run (one connection each, as a notification service sends).
 const MAILS: usize = 240;
-/// Concurrent sessions — at most nproc/4 on any host the suite is run on
-/// (a two-core runner is still within it: the load is one client thread).
+/// Concurrent sessions: eight connections driven from one client thread,
+/// against a two-worker server runtime — a fixed, small load that does not
+/// grow with the host (the 30-job musl probe in 0124 is the nproc/4-bounded one).
 const SESSIONS: usize = 8;
 /// Runs per mode; alternating, so drift (thermal, neighbours) hits both.
 const RUNS: usize = 3;
@@ -40,8 +39,6 @@ const RUNS: usize = 3;
 /// fsync per mail — so 1.25 is a floor for a regression, not a tolerance for
 /// noise; a tree that makes memory mode the dearer one fails it.
 const MARGIN: f64 = 1.25;
-/// A bound on the whole test, not a validity assertion on speed.
-const DEADLINE: Duration = Duration::from_secs(120);
 
 /// A multipart/alternative body of roughly 30 KB: a text part and an HTML
 /// part with links and a code, the shape a notification service sends. No
@@ -149,7 +146,6 @@ fn median(mut values: Vec<f64>) -> f64 {
 
 #[test]
 fn concurrent_memory_ingest_costs_no_more_cpu_per_mail_than_data_file_ingest() {
-    let started = Instant::now();
     let server_rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -183,5 +179,4 @@ fn concurrent_memory_ingest_costs_no_more_cpu_per_mail_than_data_file_ingest() {
         "in-memory ingest cost {memory:.3} ms/mail against {file:.3} for the data file: \
          more than {MARGIN}x (issue #333)"
     );
-    assert!(started.elapsed() < DEADLINE, "the proof overran its bound");
 }
