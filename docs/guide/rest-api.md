@@ -15,6 +15,7 @@
 | `POST /api/v1/inboxes/{inbox}/seed` | a fixture without SMTP — full parse + extraction; `html` preserved verbatim (supersedes `text`), CR/LF/NUL envelope fields refused |
 | `GET /api/v1/messages/{id}` | one full mail |
 | `GET /api/v1/messages/{id}/raw` | the RFC 5322 source as `message/rfc822` |
+| `GET /api/v1/messages/{id}/deliverability[?reachability=true]` | the lazy deliverability report; `reachability=true` adds the opt-in link probe on a server started with `--link-reachability public\|loopback` (400 otherwise) — see [Deliverability reports](deliverability.md) |
 | `DELETE /api/v1/messages/{id}` | remove one mail |
 | `GET /api/v1/chaos` | inspect active chaos rules |
 | `DELETE /api/v1/chaos` | clear active chaos rules |

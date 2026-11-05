@@ -100,7 +100,7 @@ async fn report_rest_schema_and_refusals() {
     assert_eq!(stored, raw);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-spam/1");
+    assert_eq!(first["rule_set_id"], "swarmail-html/4");
     assert_eq!(first["findings"].as_array().unwrap().len(), 7);
     assert_eq!(
         first["findings"][6],
@@ -138,7 +138,7 @@ async fn report_rest_schema_and_refusals() {
     );
     let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
     for text in [
-        "swarmail-spam/1",
+        "swarmail-html/4",
         "warning",
         "demo.marker.v1",
         "x-swarmail-demo",
@@ -517,9 +517,31 @@ async fn report_served_docs_match_contract() {
     for status in ["200", "400", "403", "404", "503"] {
         assert!(route["responses"].get(status).is_some());
     }
-    assert_eq!(route["parameters"].as_array().unwrap().len(), 1);
+    assert_eq!(route["parameters"].as_array().unwrap().len(), 2);
     assert_eq!(route["parameters"][0]["name"], "id");
+    assert_eq!(route["parameters"][1]["name"], "reachability");
+    assert_eq!(route["parameters"][1]["in"], "query");
+    assert_eq!(route["parameters"][1]["schema"]["type"], "boolean");
+    assert!(
+        route["description"]
+            .as_str()
+            .unwrap()
+            .contains("link reachability is not enabled")
+    );
+    // Both OpenAPI descriptions name the per-link rules (AC13).
+    assert!(
+        route["description"]
+            .as_str()
+            .unwrap()
+            .contains("link.scheme")
+    );
     let schemas = &api["components"]["schemas"];
+    assert!(
+        schemas["DeliverabilityReport"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("link.")
+    );
     assert_eq!(
         schemas["DeliverabilitySeverity"]["enum"],
         json!(["info", "warning", "error"])
@@ -575,7 +597,9 @@ async fn report_served_docs_match_contract() {
         "structuredContent under a closed outputSchema",
         "historical",
         "JSON in one text block",
-        "swarmail-spam/1",
+        "swarmail-html/4",
+        "--link-reachability",
+        "link.reachability.v1",
         "104448",
         "classic Outlook",
         "conditional comments",
@@ -621,7 +645,7 @@ async fn html_findings_share_one_report_and_predicate_contract() {
     assert_eq!(expected.len(), 15);
     assert_eq!(
         first,
-        json!({"rule_set_id":"swarmail-spam/1","findings":expected})
+        json!({"rule_set_id":"swarmail-html/4","findings":expected})
     );
     assert_eq!(report(srv.http_addr, &id).await.1, first);
     let reply = rpc(
@@ -854,7 +878,7 @@ async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
                 findings.push(json!({"rule_id":"html.css.position.v1","severity":"warning","fix_hint":rule["fix_hint"],"location":{"kind":"mime_part","path":[]}}));
             }
             findings.sort_by_key(|f| f["rule_id"].as_str().unwrap().to_string());
-            let expected = json!({"rule_set_id":"swarmail-spam/1","findings":findings});
+            let expected = json!({"rule_set_id":"swarmail-html/4","findings":findings});
             for _ in 0..2 {
                 assert_eq!(report(srv.http_addr, &id).await, (200, expected.clone()));
             }
@@ -902,5 +926,112 @@ async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
             );
         }
     }
+    srv.stop().await;
+}
+
+/// The static link rules (0121 §1) through real SMTP, REST, MCP and the page,
+/// with expectations written here and not read back from the code under test.
+#[tokio::test]
+async fn link_rules_over_smtp_and_rest() {
+    let srv = start().await;
+    let html = "<p>Hi</p>\r\n\
+        <a href=\"javascript:alert(1)\">x</a>\r\n\
+        <a href=\"/relative\">r</a>\r\n\
+        <a href=\"http://example.test/p\">h</a>\r\n\
+        <a href=\"https://bit.ly/abc\">b</a>\r\n\
+        <a href=\"https://paypal.com.evil.test/\">paypal.com</a>\r\n\
+        <a href=\"https://ok.test/\">ok.test</a>\r\n\
+        <a href=\"http://localhost:3000/c\">dev</a>\r\n\
+        <a href=\"mailto:a@ok.test\">m</a>\r\n\
+        <a href=\"#top\">t</a>\r\n";
+    let raw = format!("Subject: links <&>\r\nContent-Type: text/html; charset=utf-8\r\n\r\n{html}");
+    let id = smtp_raw(srv.smtp_addr, "links", raw.as_bytes()).await;
+    let body_at = raw.find("\r\n\r\n").unwrap() + 4;
+    let at = |needle: &str| (raw.find(needle).unwrap() - body_at) as u64;
+    let expected: Vec<Value> = [
+        (
+            "link.anchor-host-mismatch.v1",
+            "warning",
+            "Make the visible link text name the host the link goes to.",
+            "https://paypal.com.evil.test/",
+        ),
+        (
+            "link.scheme.http.v1",
+            "warning",
+            "Serve the link over https.",
+            "http://example.test/p",
+        ),
+        (
+            "link.scheme.unsafe.v1",
+            "error",
+            "Replace the script, data or file link with an https link.",
+            "javascript:alert(1)",
+        ),
+        (
+            "link.shortener.v1",
+            "warning",
+            "Link to the destination directly instead of through a URL shortener.",
+            "https://bit.ly/abc",
+        ),
+        (
+            "link.url.invalid.v1",
+            "warning",
+            "Use an absolute https URL; mail has no base URL for relative links.",
+            "/relative",
+        ),
+    ]
+    .into_iter()
+    .map(|(rule, severity, hint, needle)| {
+        json!({"rule_id":rule,"severity":severity,"fix_hint":hint,
+            "location":{"kind":"link","part_path":[],"byte_offset":at(needle)}})
+    })
+    .collect();
+    let (status, first) = report(srv.http_addr, &id).await;
+    assert_eq!(status, 200);
+    assert_eq!(first["rule_set_id"], "swarmail-html/4");
+    let links = |report: &Value| -> Vec<Value> {
+        report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["rule_id"].as_str().unwrap().starts_with("link."))
+            .cloned()
+            .collect()
+    };
+    assert_eq!(links(&first), expected);
+    assert_eq!(report(srv.http_addr, &id).await.1, first);
+    let reply = rpc(
+        srv.http_addr,
+        "tools/call",
+        json!({"name":"swarmail_get_deliverability_report","arguments":{"id":id}}),
+    )
+    .await;
+    assert_eq!(result_text(&reply), first);
+    let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
+    for finding in &expected {
+        assert!(page.contains(finding["rule_id"].as_str().unwrap()));
+        assert!(page.contains(finding["fix_hint"].as_str().unwrap()));
+    }
+    // One error-level finding: the threshold predicate sees it.
+    let path = "/api/v1/inboxes/links/assert?count=1&no_findings_at_or_above=error";
+    assert_eq!(http_json(srv.http_addr, "GET", path, None).await.0, 409);
+    // Ingest extraction is untouched: only the http(s) targets are stored.
+    let (_, message) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        message["links"],
+        json!([
+            "http://example.test/p",
+            "https://bit.ly/abc",
+            "https://paypal.com.evil.test/",
+            "https://ok.test/",
+            "http://localhost:3000/c"
+        ])
+    );
     srv.stop().await;
 }

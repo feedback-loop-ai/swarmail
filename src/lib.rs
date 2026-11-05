@@ -118,9 +118,12 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     let store = match &cfg.data_file {
         Some(path) => Arc::new(
             store::Store::open(cfg.max_per_inbox, path)
-                .map_err(|e| std::io::Error::other(format!("data file {}: {e}", path.display())))?,
+                .map_err(|e| std::io::Error::other(format!("data file {}: {e}", path.display())))?
+                .with_link_reachability(cfg.link_reachability),
         ),
-        None => Arc::new(store::Store::new(cfg.max_per_inbox)),
+        None => Arc::new(
+            store::Store::new(cfg.max_per_inbox).with_link_reachability(cfg.link_reachability),
+        ),
     };
     let chaos = Arc::new(chaos::Chaos::default());
     webhook::ca_executor::initialize();
@@ -364,6 +367,7 @@ mod tests {
             tls_key: None,
             smtp: Default::default(),
             pop3_idle_timeout: pop3::DEFAULT_IDLE_TIMEOUT,
+            link_reachability: deliverability::LinkReachability::Off,
         };
         let mut server = run_on(&cfg).await.unwrap();
         let (serve_entered, entered) = oneshot::channel();

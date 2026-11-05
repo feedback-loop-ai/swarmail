@@ -84,7 +84,7 @@ fn minimal() -> swarmail::model::Email {
     minimal
 }
 
-// The bulk checklist inside swarmail-spam/1 restated from its published rule table, not
+// The bulk checklist inside swarmail-html/4 restated from its published rule table, not
 // from the formatter: every hint cites its RFC source and both provider pages.
 const GMAIL: &str = "https://support.google.com/mail/answer/81126";
 const YAHOO: &str = "https://senders.yahooinc.com/best-practices/";
@@ -145,7 +145,7 @@ fn checklist(from: Value) -> Vec<Value> {
     ]
 }
 fn report_of(findings: Vec<Value>) -> Value {
-    json!({"rule_set_id":"swarmail-spam/1","findings":findings})
+    json!({"rule_set_id":"swarmail-html/4","findings":findings})
 }
 
 pub(super) enum Wire {
@@ -917,7 +917,7 @@ async fn modern_all_tools_http_and_stdio() {
                     descriptor["description"] = original["description"].clone();
                 } else if i == 1 {
                     for clause in [
-                        "swarmail-spam/1",
+                        "swarmail-html/4",
                         "bulk-sender checklist",
                         "HTML client-compatibility heuristics",
                         "spam signals",
@@ -1060,7 +1060,7 @@ fn report_projection(c: &Value) -> Value {
             .as_object_mut()
             .unwrap()
             .remove("examples"),
-        Some(json!(["swarmail-spam/1"]))
+        Some(json!(["swarmail-html/4"]))
     );
     let location = &mut report["properties"]["findings"]["items"]["properties"]["location"];
     // oneOf over exclusive const tags carries the whole dispatch.

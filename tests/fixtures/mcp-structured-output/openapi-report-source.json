@@ -11,7 +11,7 @@
       "rule_set_id": {
         "type": "string",
         "examples": [
-          "swarmail-spam/1"
+          "swarmail-html/4"
         ]
       },
       "findings": {

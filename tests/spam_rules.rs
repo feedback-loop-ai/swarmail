@@ -177,7 +177,7 @@ async fn report_identity_and_shape() {
         let id = smtp_raw(srv.smtp_addr, "spam-identity", raw.as_bytes()).await;
         let (status, rest) = report(&srv, &id).await;
         assert_eq!(status, 200);
-        assert_eq!(rest["rule_set_id"], "swarmail-spam/1");
+        assert_eq!(rest["rule_set_id"], "swarmail-html/4");
         // No weight or total: exactly the contract keys (decision 0085).
         let mut keys: Vec<_> = rest.as_object().unwrap().keys().cloned().collect();
         keys.sort();
@@ -202,7 +202,7 @@ async fn report_identity_and_shape() {
             assert_eq!(modern["result"]["structuredContent"], rest, "{version}");
             assert_eq!(
                 modern["result"]["structuredContent"]["rule_set_id"],
-                "swarmail-spam/1"
+                "swarmail-html/4"
             );
         }
     }
