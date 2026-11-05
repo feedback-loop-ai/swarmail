@@ -406,7 +406,7 @@ supported.
 before the second the message was received (`received_ms` floored to seconds,
 clamped at zero). The receipt time never changes for a stored message, so a
 cached report stays correct. `t=` in the future is not enforced; an `x=` at or
-before `t=` is malformed (RFC 6376 section 3.5), and a literal `x=0` is an
+before `t=` is malformed (RFC 6376 section 3.5), and a literal `x=0` with no `t=` is an
 expiry in 1970 (`dkim.signature_expired.v1`), not an absent tag.
 
 **The clock residual (its full radius).** One read of the host clock remains,
@@ -480,7 +480,7 @@ rather than on a threshold.
 `p=` that is base64 but not a public key fails verification and reads as
 `dkim.signature_mismatch.v1`, not `dkim.key_invalid.v1`. A name with an `_atps`
 label and no `_domainkey` one is read as an ATPS record and fails closed as
-`dkim.key_invalid.v1`. **`l=`
+`dkim.atps_unauthorized.v1`. **`l=`
 interop gap:** the crate counts `l=` in raw bytes, RFC 6376 section 3.4.5 in
 canonicalized ones, so a conformant signer whose raw and canonical `l=` prefixes
 differ fails as `dkim.body_hash_mismatch.v1`. That is fail-closed and not detected:
@@ -543,7 +543,7 @@ check above guarantees the verifier lists the same fields).
 
 ### `dkim.signature_expired.v1`
 
-**Severity:** error. `x=` is at or before the second the message was received, or is a literal `x=0`.
+**Severity:** error. `x=` is at or before the second the message was received, or is a literal `x=0` with no `t=`.
 
 **Hint:** Sign again with an x= expiration later than the time the message was received (RFC 6376 section 3.5).
 

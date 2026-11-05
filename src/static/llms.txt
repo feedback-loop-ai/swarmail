@@ -661,7 +661,7 @@ message's root DKIM-Signature fields from zero), except a verified signature who
 the declared DNS map (`PUT /api/v1/inboxes/{inbox}/dns`, record
 `<s>._domainkey.<d>`); every name asked is recorded in `dns.lookups`; real DNS is
 not supported. A signature is judged at the message's receipt second: `x=` at or
-before it (or a literal `x=0`) is expired. The one residual,
+before it (or a literal `x=0` with no `t=`) is expired. The one residual,
 `dkim.expired_since_receipt.v1`, is the crate's own wall-clock check, and its
 radius is wide: once the host clock passes an `x=` that is after the receipt
 second, every verdict for that signature (a pass, the warning and every error

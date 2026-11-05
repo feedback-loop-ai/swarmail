@@ -282,7 +282,7 @@ impl Adapter<'_> {
 
 /// The record type is chosen by the shape of the name, because the crate asks
 /// the cache by name only. There are two types: a name with an `_atps` label and no
-/// `_domainkey` one is an ATPS record (and fails closed as `key_invalid` if the
+/// `_domainkey` one is an ATPS record (and fails closed as `atps_unauthorized` if the
 /// signature's selector put it there), and every other name is a key record. A
 /// report record is never built: the crate's RFC 6651 report sampling, which reads
 /// the clock, is reached only through one (0125 section 8), so even a failing
