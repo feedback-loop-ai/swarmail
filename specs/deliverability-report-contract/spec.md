@@ -56,6 +56,8 @@ missing input. All required inputs for this framing are present locally.
 
 ## Contract
 
+*Amended 2026-11-03 by proposed [0120](../../docs/decisions/0120-deliverability-dns-policy.md), if the operator accepts it: a report is `{rule_set_id, findings, dns}` under `swarmail-html/4`. The text below is kept as the accepted historical contract.*
+
 A report is `{rule_set_id, findings}`. Each finding has exactly `rule_id`,
 `severity`, `location`, `fix_hint`. Severity is `info`, `warning`, or `error`,
 ranked in that order. Rule IDs are stable nonempty ASCII identifiers; hints are
@@ -205,6 +207,8 @@ in the typed cache key; changing external facts cannot reuse an old-input report
 It owns refresh/wakeup, expiry and operational-failure policy before introducing
 live DNS. Future authentication must similarly identify envelope/client inputs.
 No ambient network/time reads are permitted inside this issue's evaluator.
+
+*Fulfilled 2026-11-03 by proposed [0120](../../docs/decisions/0120-deliverability-dns-policy.md) (#253): the policy snapshot, its identity in the cache key, and the expiry, refresh and wake rules are stated there; live DNS is deferred to #254.*
 
 ## Panel adjudication — 2026-10-26 synthesis
 

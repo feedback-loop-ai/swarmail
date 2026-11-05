@@ -397,7 +397,7 @@ pub(super) fn compose(report: &Report, observed: Vec<Finding>) -> Result<Report,
     for finding in report.findings.iter().cloned().chain(observed) {
         out.push(finding)?;
     }
-    out.finish(&Inputs::default())
+    out.finish_with(&Inputs::default(), report.dns.clone())
 }
 
 #[cfg(test)]
@@ -552,7 +552,7 @@ mod tests {
             (SHORTENERS_VERSION, super::super::RULE_SET_ID, digest),
             (
                 "swarmail-shorteners/1",
-                "swarmail-html/4",
+                "swarmail-html/5",
                 0xd850a45b7e464f79
             )
         );
@@ -1057,6 +1057,21 @@ mod tests {
         assert_eq!(composed.findings.len(), base.findings.len() + 2);
         assert_eq!(composed.rule_set_id, base.rule_set_id);
         assert!(composed.findings.windows(2).all(|w| w[0] <= w[1]));
+        // The probed response keeps the cached report's `dns` record (0120 §5).
+        let mut declared = base.clone();
+        declared.dns.source = super::super::dns::Source::Inbox;
+        declared.dns.lookups.push(super::super::dns::LookupView {
+            name: "_dmarc.example.org".into(),
+            kind: super::super::dns::RecordType::Txt,
+            outcome: super::super::dns::Outcome::TempFail,
+            values: Vec::new(),
+        });
+        assert_eq!(
+            compose(&declared, observed(&raw, &forward).unwrap())
+                .unwrap()
+                .dns,
+            declared.dns
+        );
     }
 
     #[test]

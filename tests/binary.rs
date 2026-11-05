@@ -643,6 +643,148 @@ async fn implicit_tls_without_a_pair_exits_non_zero_with_the_message() {
     }
 }
 
+/// `--dns-resolver real` is refused by the argument parser with the message
+/// naming #254, in both spellings, and nothing binds (decision 0120 §10).
+#[tokio::test]
+async fn real_dns_resolution_exits_non_zero_with_the_message() {
+    for env_spelling in [false, true] {
+        let mut cmd = serve_command();
+        if env_spelling {
+            cmd.env("SWARMAIL_DNS_RESOLVER", "real");
+        } else {
+            cmd.args(["--dns-resolver", "real"]);
+        }
+        let out = command_output(&mut cmd).await;
+        let transcript = String::from_utf8_lossy(&out.stdout);
+        let reason = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "env={env_spelling}: {transcript}{reason}"
+        );
+        assert!(
+            transcript.lines().all(|line| parse_addrs(line).is_none()),
+            "env={env_spelling}: the refused server came up: {transcript}"
+        );
+        assert!(
+            reason.contains("real DNS needs the resolver that #254 adds; this build has none"),
+            "env={env_spelling}: {reason}"
+        );
+    }
+}
+
+/// A bad `--dns-policy` file ends `serve` non-zero before anything binds, and
+/// the message names the file and the reason. There is no fallback to an empty
+/// map that would make every later authentication check falsely clean.
+#[tokio::test]
+async fn serve_refuses_bad_dns_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, bytes: &[u8]| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    };
+    let fifo = dir.path().join("fifo");
+    let c_path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    // SAFETY: `c_path` is a valid NUL-terminated string that outlives the call.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    let cases = [
+        (
+            write("malformed.json", b"{"),
+            "not a DNS policy declaration",
+        ),
+        (write("unknown.json", br#"{"mx":[]}"#), "unknown field"),
+        (write("empty.json", b""), "not a DNS policy declaration"),
+        (
+            write("binary.json", b"{\"txt\":[],\"x\":\"\xff\"}"),
+            "not valid UTF-8",
+        ),
+        (
+            write("big.json", &vec![b' '; 8_193]),
+            "larger than 8192 bytes",
+        ),
+        (
+            write(
+                "bad-name.json",
+                br#"{"txt":[{"name":"a b","values":["x"]}]}"#,
+            ),
+            "txt[0].name is not a valid owner name",
+        ),
+        (
+            write(
+                "overlap.json",
+                br#"{"txt":[{"name":"a","values":["x"]}],"tempfail":["A."]}"#,
+            ),
+            "also declared under txt",
+        ),
+        (fifo, "not a regular file"),
+        (dir.path().to_path_buf(), "not a regular file"),
+        (dir.path().join("missing.json"), "No such file"),
+    ];
+    for (path, reason) in cases {
+        for env_spelling in [false, true] {
+            let mut cmd = serve_command();
+            if env_spelling {
+                cmd.env("SWARMAIL_DNS_POLICY", &path);
+            } else {
+                cmd.arg("--dns-policy").arg(&path);
+            }
+            let out = command_output(&mut cmd).await;
+            let transcript = String::from_utf8_lossy(&out.stdout);
+            let message = String::from_utf8_lossy(&out.stderr);
+            assert!(!out.status.success(), "{path:?}: {transcript}{message}");
+            assert!(
+                transcript.lines().all(|line| parse_addrs(line).is_none()),
+                "{path:?}: the refused server came up: {transcript}"
+            );
+            assert!(
+                message.contains(&format!("dns policy file {}: ", path.display()))
+                    && message.contains(reason),
+                "{path:?} wants {reason:?}: {message}"
+            );
+        }
+    }
+}
+
+/// One message under one server file, served by two processes started from
+/// different working directories with the file at different paths, gives
+/// byte-identical report JSON, and no path appears in it (decision 0120 §5).
+#[tokio::test]
+async fn dns_report_identical_across_processes() {
+    const POLICY: &str = r#"{"tempfail":["_dmarc.example.org"],"txt":[{"name":"S1._domainkey.example.com","values":["v=DKIM1; p=AAAA"]}]}"#;
+    const RAW: &[u8] = b"From: sender@example.com\r\nMessage-ID: <same@example.com>\r\nDate: Mon, 26 Oct 2026 12:00:00 +0000\r\nSubject: same\r\n\r\nbody\r\n";
+    let mut reports = Vec::new();
+    for tag in ["first", "second-with-a-longer-directory-name"] {
+        let cwd = tempfile::tempdir().unwrap();
+        let nested = cwd.path().join(tag);
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = nested.join(format!("{tag}-dns.json"));
+        std::fs::write(&file, POLICY).unwrap();
+        let mut cmd = serve_command();
+        cmd.current_dir(&nested).arg("--dns-policy").arg(&file);
+        let mut serve = spawn_serve(cmd).await;
+        let id = common::smtp_raw(serve.smtp_addr, "same", RAW).await;
+        let (status, text) = common::http_get_text(
+            serve.http_addr,
+            &format!("/api/v1/messages/{id}/deliverability"),
+        )
+        .await;
+        assert_eq!(status, 200, "{text}");
+        assert!(
+            !text.contains(tag) && !text.contains(cwd.path().to_str().unwrap()),
+            "{text}"
+        );
+        let report: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(report["dns"]["source"], "server");
+        assert_eq!(
+            report["dns"]["policy"]["tempfail"],
+            serde_json::json!(["_dmarc.example.org"])
+        );
+        kill_serve(&mut serve).await;
+        reports.push(text);
+    }
+    assert_eq!(reports[0], reports[1], "byte-identical across processes");
+}
+
 /// `SWARMAIL_SMTP_IMPLICIT_TLS=false` is off (the clap bool env parse is
 /// the thing under test): no pair is needed and the listener greets in
 /// plaintext.

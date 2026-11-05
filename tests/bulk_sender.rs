@@ -333,7 +333,7 @@ async fn bulk_untrusted_auth_headers_stay_unknown() {
         );
         let (_, status, value) = report(&srv, raw.as_bytes()).await;
         assert_eq!(status, 200);
-        assert_eq!(value["rule_set_id"], "swarmail-html/4");
+        assert_eq!(value["rule_set_id"], "swarmail-html/5");
         let occurrence = match from {
             "" => Value::Null,
             "From: sender@example.test\r\n" => json!(0),
@@ -361,7 +361,7 @@ async fn bulk_untrusted_auth_headers_stay_unknown() {
         }
         assert_eq!(
             value,
-            json!({"rule_set_id":"swarmail-html/4","findings":expected})
+            json!({"rule_set_id":"swarmail-html/5","findings":expected,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
         );
     }
     srv.stop().await;

@@ -161,6 +161,7 @@ async fn smtp_roundtrips(transactions: usize) {
         tls_key: None,
         smtp: Default::default(),
         pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+        dns_policy: None,
         link_reachability: swarmail::deliverability::LinkReachability::Off,
     };
     let srv = swarmail::run_on(&cfg).await.expect("bench server");
@@ -256,6 +257,7 @@ async fn pipeline_groups(groups: usize) {
         tls_key: None,
         smtp: Default::default(),
         pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+        dns_policy: None,
         link_reachability: swarmail::deliverability::LinkReachability::Off,
     };
     let srv = swarmail::run_on(&cfg).await.expect("bench server");

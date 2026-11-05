@@ -23,7 +23,7 @@
 //! or clock steps. Per-inbox order, POP3 numbering, oldest-only pruning and
 //! the data file's restore sequence follow acceptance.
 
-use crate::deliverability::{AnalysisError, Report, Service, Severity};
+use crate::deliverability::{AnalysisError, Report, Service, Severity, dns::Effective};
 use crate::model::Email;
 use crate::persist;
 use dashmap::DashMap;
@@ -976,6 +976,7 @@ impl Store {
     pub(crate) async fn qualify(
         &self,
         candidates: Vec<Arc<Email>>,
+        policy: Arc<Effective>,
         threshold: Severity,
         stop_after: usize,
         ready_only: bool,
@@ -984,7 +985,7 @@ impl Store {
         for email in candidates {
             if self
                 .reports
-                .report(email.clone(), ready_only)
+                .report_under(email.clone(), policy.clone(), ready_only)
                 .await?
                 .qualifies(threshold)
             {
@@ -1031,6 +1032,9 @@ impl Store {
         threshold: Option<Severity>,
     ) -> Result<WaitOutcome, AnalysisError> {
         let deadline = Instant::now() + timeout;
+        // One policy snapshot per request, taken before the subscribe (0120 §6).
+        // It is configuration, not mail, so decision 0002's order is unchanged.
+        let policy = self.reports.policy_for(inbox);
         let mut rx = self.subscribe(inbox);
         #[cfg(test)]
         self.run_post_subscribe_gate();
@@ -1038,11 +1042,12 @@ impl Store {
             let candidates = self.list(inbox, filter);
             let mut matches = if let Some(threshold) = threshold {
                 if timeout.is_zero() {
-                    self.qualify(candidates, threshold, want, true).await?
+                    self.qualify(candidates, policy.clone(), threshold, want, true)
+                        .await?
                 } else {
                     tokio::time::timeout_at(
                         deadline.into(),
-                        self.qualify(candidates, threshold, want, false),
+                        self.qualify(candidates, policy.clone(), threshold, want, false),
                     )
                     .await
                     .map_err(|_| AnalysisError::Unavailable)??

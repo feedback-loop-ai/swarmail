@@ -3,12 +3,12 @@
 [← README](../../README.md) · [Guide index](README.md)
 
 GET /api/v1/messages/{id}/deliverability takes only the optional query key `reachability` (see Opt-in reachability below) and returns
-{rule_set_id, findings:[{rule_id,severity,location,fix_hint}]}. Severity is
+{rule_set_id, findings:[{rule_id,severity,location,fix_hint}], dns}. Severity is
 info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/4):
+The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/5):
 one_click, message_id and date are errors; plain_text is warning-level presence
 advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
 are independent checks. Their error-level *.not_evaluated.v1 findings explicitly
@@ -37,7 +37,7 @@ https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 204
 or 7489 sections. These are fixed published references, not live verification or
 provider certification. The proposed rule record is decision 0089.
 
-`swarmail-html/4` retains the synthetic demo.marker.v1: the first root
+`swarmail-html/5` retains the synthetic demo.marker.v1: the first root
 X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
 and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
 html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
@@ -88,6 +88,47 @@ Assertions and waits needing that report also fail rather than count it clean.
 Nonempty parse failures still fail.
 Analysis is lazy from stored bytes, off SMTP; extraction stays at ingest.
 The existing message page renders the same report without polling.
+
+DNS policy (proposed 0120). Report checks that need DNS answers (DKIM keys, SPF,
+DMARC; #254, #255, #256) read a declared, offline TXT map, never the network.
+Every report carries a required `dns` member
+{source:"default"|"server"|"inbox", policy:{txt:[{name,values}],tempfail:[name]},
+lookups:[{name,type:"txt",outcome:"records"|"no_records"|"temp_fail",values}]}.
+`policy` is the complete canonical effective policy; `lookups` lists each name an
+evaluation resolved, once, sorted. No rule resolves a name yet, so `lookups` is
+empty today. `temp_fail` is never a pass and never clean: a report with a
+`temp_fail` lookup qualifies at no no_findings_at_or_above threshold, so an assert
+does not match it and a wait rides to its deadline. `no_records` is a definite
+negative. The same message under the same configuration gives byte-identical
+report JSON; no path, time or generation appears.
+Declare a server map with `serve --dns-policy FILE` (env SWARMAIL_DNS_POLICY): a
+JSON file of at most 8192 bytes, `{"txt":[{"name":"s1._domainkey.example.com",
+"values":["v=DKIM1; k=rsa; p=..."]}],"tempfail":["_dmarc.example.org"]}`; `{}` is
+an empty map and source "server". A bad file stops startup before any listener
+binds; there is no fallback to an empty map. Declare an inbox map with
+PUT /api/v1/inboxes/{inbox}/dns (same body; 200 echoes the object
+{"inbox","source","policy"}; 400 for an invalid declaration or an inbox label over
+512 bytes, 413 for a body over 8192 bytes, 503 when 4096 inboxes already hold one)
+and clear it with DELETE /api/v1/inboxes/{inbox}/dns (idempotent; it echoes the
+fallback, the server map else the default). An inbox map replaces the server map;
+there is no merge. A declaration is bounded twice, on its raw bytes and on its
+canonical form (what a report embeds), at most 8192 bytes each, so a report's
+`dns.policy` can always be declared back verbatim. An input that fits on the wire
+but whose canonical form does not, for example one near the bound that omits
+`tempfail`, is refused with 400
+`canonical declaration is larger than 8192 bytes`. It also holds at most 256 names
+and values in all (each txt owner, each value and each tempfail name counts one);
+one more is refused with `declaration has more than 256 names and values`. A
+declaration is kept in memory under its inbox label, so the label may be at most
+512 bytes: `inbox label is longer than 512 bytes`. Names are ASCII labels of
+[A-Za-z0-9_-], folded to lowercase with one trailing dot stripped, at most 253
+bytes; a name matches only itself (no wildcard, no IDNA). Values are exact
+printable ASCII, never trimmed. Duplicates, an empty values list and a name under
+both txt and tempfail are refused, never repaired. Inbox declarations are
+process-local and are not persisted; each request freezes one policy snapshot,
+and a change wakes no waiter. Real DNS is configured but refused:
+`--dns-resolver real` (env SWARMAIL_DNS_RESOLVER) exits with "real DNS needs the
+resolver that #254 adds; this build has none"; `declared` is the default.
 
 swarmail_get_deliverability_report requires string id and admits no other keys.
 Under MCP 2025-03-26, missing-version requests included, it returns report
@@ -327,7 +368,8 @@ configuration; the same stored bytes always give the same findings. Each rule
 emits at most one finding per report, severity info or warning (error stays the
 bulk checklist's requirement level), so a large message can never flood the
 report. They arrived as `swarmail-spam/1`; with the link rules of proposed 0121
-the report's `rule_set_id` is now `swarmail-html/4`, so the rule-set version
+and the `dns` member of proposed 0120 the report's `rule_set_id` is now
+`swarmail-html/5`, so the rule-set version
 is recorded in every report and in the cache key. Reports carry no weight and no
 total: the weights below are the proposal in decision 0122 and wait for the
 operator to accept it; they are labelled "proposed in 0122 — not in the report"
@@ -475,5 +517,7 @@ not mean the message will reach the inbox.
 checklist), `swarmail-html/2` and `swarmail-html/3` (HTML heuristics), then
 `swarmail-spam/1` (these six rules; no existing rule changed meaning), then
 `swarmail-html/4` (the five link rules of proposed 0121, integrated after
-`swarmail-spam/1`; no existing rule changed meaning). A change to
+`swarmail-spam/1`; no existing rule changed meaning), then
+`swarmail-html/5` (the required `dns` report member of proposed 0120,
+integrated after `swarmail-html/4`; no rule changed meaning). A change to
 any rule's meaning, hint, location or order requires a new id.

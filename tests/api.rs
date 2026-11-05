@@ -1225,6 +1225,45 @@ async fn machine_docs_are_served_from_the_binary() {
         "the real HTTP payload is the pinned OpenAPI document"
     );
     assert_eq!(doc["openapi"], "3.1.0");
+    // The DNS policy surface (decision 0120): both operations and the four
+    // schemas exist, and no `$ref` anywhere dangles, so deleting a schema that a
+    // route or the report names is red.
+    let dns_route = &doc["paths"]["/api/v1/inboxes/{inbox}/dns"];
+    for operation in ["put", "delete"] {
+        assert!(
+            dns_route[operation].is_object(),
+            "dns route lacks {operation}"
+        );
+    }
+    for schema in ["DnsRecord", "DnsPolicy", "DnsLookup", "DnsEcho"] {
+        assert!(
+            doc["components"]["schemas"][schema].is_object(),
+            "components.schemas lacks {schema}"
+        );
+    }
+    fn refs<'a>(node: &'a serde_json::Value, found: &mut Vec<&'a str>) {
+        match node {
+            serde_json::Value::Object(map) => {
+                for (key, value) in map {
+                    match (key.as_str(), value) {
+                        ("$ref", serde_json::Value::String(target)) => found.push(target),
+                        _ => refs(value, found),
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|item| refs(item, found)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    refs(&doc, &mut found);
+    assert!(found.len() > 20, "the walk must find the document's refs");
+    for target in found {
+        let pointer = target
+            .strip_prefix('#')
+            .unwrap_or_else(|| panic!("{target}"));
+        assert!(doc.pointer(pointer).is_some(), "dangling $ref {target}");
+    }
     assert_eq!(
         doc["info"]["description"],
         concat!(
@@ -4830,6 +4869,8 @@ async fn query_free_native_contracts_match_served_docs() {
         "GET /api/v1/webhooks",
         "DELETE /api/v1/webhooks",
         "POST /api/v1/inboxes/{inbox}/seed",
+        "PUT /api/v1/inboxes/{inbox}/dns",
+        "DELETE /api/v1/inboxes/{inbox}/dns",
     ] {
         assert!(
             readme.contains(route),

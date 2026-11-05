@@ -553,6 +553,7 @@ async fn a_broken_data_file_refuses_to_serve() {
         tls_key: None,
         smtp: Default::default(),
         pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+        dns_policy: None,
         link_reachability: swarmail::deliverability::LinkReachability::Off,
     };
     let err = match swarmail::run_on(&cfg).await {
@@ -1492,6 +1493,7 @@ async fn a_corrupt_occurrence_column_refuses_to_serve() {
             tls_key: None,
             smtp: Default::default(),
             pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+            dns_policy: None,
             link_reachability: swarmail::deliverability::LinkReachability::Off,
         };
         let err = match swarmail::run_on(&cfg).await {
@@ -1927,6 +1929,7 @@ async fn damaged_attachment_columns_refuse_to_serve_by_name() {
             tls_key: None,
             smtp: Default::default(),
             pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+            dns_policy: None,
             link_reachability: swarmail::deliverability::LinkReachability::Off,
         };
         let error = match swarmail::run_on(&cfg).await {
@@ -2140,6 +2143,7 @@ async fn a_corrupt_attachment_column_refuses_to_serve() {
             tls_key: None,
             smtp: Default::default(),
             pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+            dns_policy: None,
             link_reachability: swarmail::deliverability::LinkReachability::Off,
         };
         let err = match swarmail::run_on(&cfg).await {

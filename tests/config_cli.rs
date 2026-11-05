@@ -34,9 +34,15 @@ fn config_maps_the_cli_args() {
         tls_handshake_timeout_ms: 2500,
         smtp_implicit_tls: false,
         route_domain: Some("swarmail.test".into()),
+        dns_policy: Some("/tmp/dns.json".into()),
+        dns_resolver: swarmail::config::DnsResolver::Declared,
         link_reachability: LinkReachability::Public,
     };
     let cfg = Config::from(&args);
+    assert_eq!(
+        cfg.dns_policy.as_deref(),
+        Some(std::path::Path::new("/tmp/dns.json"))
+    );
     assert_eq!(cfg.smtp.route_domain.as_deref(), Some("swarmail.test"));
     assert_eq!(cfg.smtp_listen, "127.0.0.1:2525");
     assert_eq!(cfg.http_listen, "127.0.0.1:8080");
@@ -440,6 +446,50 @@ fn the_binary_refuses_a_bad_route_domain_before_serving() {
     assert!(out.stdout.is_empty(), "nothing was served or logged");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("--route-domain"), "{stderr}");
+}
+
+#[test]
+fn dns_flags_parse_and_real_resolution_is_refused() {
+    use swarmail::config::DnsResolver;
+    // Absent: the offline default, no server file.
+    let args = serve_args_or_panic(Cli::try_parse_from(["swarmail", "serve"]).unwrap());
+    assert_eq!(args.dns_resolver, DnsResolver::Declared);
+    assert_eq!(args.dns_policy, None);
+    assert_eq!(Config::from(&args).dns_policy, None);
+    // `declared` is accepted explicitly; the policy path reaches `Config`.
+    let args = serve_args_or_panic(
+        Cli::try_parse_from([
+            "swarmail",
+            "serve",
+            "--dns-resolver",
+            "declared",
+            "--dns-policy",
+            "/etc/swarmail/dns.json",
+        ])
+        .unwrap(),
+    );
+    assert_eq!(args.dns_resolver, DnsResolver::Declared);
+    assert_eq!(
+        Config::from(&args).dns_policy.as_deref(),
+        Some(std::path::Path::new("/etc/swarmail/dns.json"))
+    );
+    // `real` is configured and refused with the message that names #254.
+    let refused = Cli::try_parse_from(["swarmail", "serve", "--dns-resolver", "real"])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("real DNS needs the resolver that #254 adds; this build has none"),
+        "{refused}"
+    );
+    // Anything else is simply unknown.
+    let unknown = Cli::try_parse_from(["swarmail", "serve", "--dns-resolver", "system"])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        unknown.contains("must be `declared` or `real`"),
+        "{unknown}"
+    );
+    assert!(!unknown.contains("#254"), "{unknown}");
 }
 
 /// Decision 0121 §6: the reachability probe is off unless the operator names
