@@ -36,6 +36,8 @@ pub async fn start_with(override_cfg: impl FnOnce(Config) -> Config) -> RunningS
         tls_key: None,
         smtp: Default::default(),
         pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+        dns_policy: None,
+        link_reachability: swarmail::deliverability::LinkReachability::Off,
     });
     swarmail::run_on(&cfg).await.unwrap()
 }

@@ -100,7 +100,7 @@ async fn report_rest_schema_and_refusals() {
     assert_eq!(stored, raw);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-spam/1");
+    assert_eq!(first["rule_set_id"], "swarmail-html/5");
     assert_eq!(first["findings"].as_array().unwrap().len(), 7);
     assert_eq!(
         first["findings"][6],
@@ -138,7 +138,7 @@ async fn report_rest_schema_and_refusals() {
     );
     let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
     for text in [
-        "swarmail-spam/1",
+        "swarmail-html/5",
         "warning",
         "demo.marker.v1",
         "x-swarmail-demo",
@@ -517,9 +517,31 @@ async fn report_served_docs_match_contract() {
     for status in ["200", "400", "403", "404", "503"] {
         assert!(route["responses"].get(status).is_some());
     }
-    assert_eq!(route["parameters"].as_array().unwrap().len(), 1);
+    assert_eq!(route["parameters"].as_array().unwrap().len(), 2);
     assert_eq!(route["parameters"][0]["name"], "id");
+    assert_eq!(route["parameters"][1]["name"], "reachability");
+    assert_eq!(route["parameters"][1]["in"], "query");
+    assert_eq!(route["parameters"][1]["schema"]["type"], "boolean");
+    assert!(
+        route["description"]
+            .as_str()
+            .unwrap()
+            .contains("link reachability is not enabled")
+    );
+    // Both OpenAPI descriptions name the per-link rules (AC13).
+    assert!(
+        route["description"]
+            .as_str()
+            .unwrap()
+            .contains("link.scheme")
+    );
     let schemas = &api["components"]["schemas"];
+    assert!(
+        schemas["DeliverabilityReport"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("link.")
+    );
     assert_eq!(
         schemas["DeliverabilitySeverity"]["enum"],
         json!(["info", "warning", "error"])
@@ -530,7 +552,7 @@ async fn report_served_docs_match_contract() {
     );
     assert_eq!(
         schemas["DeliverabilityReport"]["required"],
-        json!(["rule_set_id", "findings"])
+        json!(["rule_set_id", "findings", "dns"])
     );
     assert_eq!(
         schemas["DeliverabilityFinding"]["required"],
@@ -575,12 +597,20 @@ async fn report_served_docs_match_contract() {
         "structuredContent under a closed outputSchema",
         "historical",
         "JSON in one text block",
-        "swarmail-spam/1",
+        "swarmail-html/5",
+        "--link-reachability",
+        "link.reachability.v1",
         "104448",
         "classic Outlook",
         "conditional comments",
         "4 MiB",
         "Can I email",
+        // The DNS policy (decision 0120): the contract a client reads.
+        "temp_fail",
+        "\"source\"",
+        "canonical declaration is larger than 8192 bytes",
+        "256 names and values",
+        "512 bytes",
     ] {
         assert!(llms.contains(expected), "{expected}");
     }
@@ -621,7 +651,7 @@ async fn html_findings_share_one_report_and_predicate_contract() {
     assert_eq!(expected.len(), 15);
     assert_eq!(
         first,
-        json!({"rule_set_id":"swarmail-spam/1","findings":expected})
+        json!({"rule_set_id":"swarmail-html/5","findings":expected,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
     );
     assert_eq!(report(srv.http_addr, &id).await.1, first);
     let reply = rpc(
@@ -854,7 +884,7 @@ async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
                 findings.push(json!({"rule_id":"html.css.position.v1","severity":"warning","fix_hint":rule["fix_hint"],"location":{"kind":"mime_part","path":[]}}));
             }
             findings.sort_by_key(|f| f["rule_id"].as_str().unwrap().to_string());
-            let expected = json!({"rule_set_id":"swarmail-spam/1","findings":findings});
+            let expected = json!({"rule_set_id":"swarmail-html/5","findings":findings,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}});
             for _ in 0..2 {
                 assert_eq!(report(srv.http_addr, &id).await, (200, expected.clone()));
             }
@@ -902,5 +932,662 @@ async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
             );
         }
     }
+    srv.stop().await;
+}
+
+// ---------- the DNS policy (decision 0120, #253) ----------
+
+const DEFAULT_DNS: &str =
+    r#""dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}"#;
+/// Mixed case, a trailing dot, unsorted values and both members.
+const DECLARATION: &str = r#"{"tempfail":["_DMARC.example.org."],"txt":[{"name":"S1._DomainKey.Example.COM.","values":["v=DKIM1; p=AAAA"]},{"name":"example.com","values":["v=spf1 -all","a-first"]}]}"#;
+const CANONICAL: &str = r#"{"txt":[{"name":"example.com","values":["a-first","v=spf1 -all"]},{"name":"s1._domainkey.example.com","values":["v=DKIM1; p=AAAA"]}],"tempfail":["_dmarc.example.org"]}"#;
+const MAIL: &[u8] = b"From: sender@example.com\r\nDKIM-Signature: v=1; a=rsa-sha256; d=example.com; s=s1; h=from; bh=x; b=y\r\nSubject: dns\r\n\r\nbody\r\n";
+
+fn canonical() -> Value {
+    serde_json::from_str(CANONICAL).unwrap()
+}
+async fn put_dns(srv: &swarmail::RunningServer, inbox: &str, body: &str) -> (u16, Value) {
+    http_json(
+        srv.http_addr,
+        "PUT",
+        &format!("/api/v1/inboxes/{inbox}/dns"),
+        Some(body),
+    )
+    .await
+}
+async fn delete_dns(srv: &swarmail::RunningServer, inbox: &str) -> (u16, Value) {
+    http_json(
+        srv.http_addr,
+        "DELETE",
+        &format!("/api/v1/inboxes/{inbox}/dns"),
+        None,
+    )
+    .await
+}
+/// The report's exact bytes: the byte comparisons below are of the wire body.
+async fn report_text(srv: &swarmail::RunningServer, id: &str) -> String {
+    let (status, text) = http_get_text(
+        srv.http_addr,
+        &format!("/api/v1/messages/{id}/deliverability"),
+    )
+    .await;
+    assert_eq!(status, 200, "{text}");
+    text
+}
+async fn dns_of(srv: &swarmail::RunningServer, id: &str) -> Value {
+    report(srv.http_addr, id).await.1["dns"].clone()
+}
+
+#[tokio::test]
+async fn default_dns_policy_exact_json() {
+    let srv = start().await;
+    let id = smtp_raw(srv.smtp_addr, "plain", MAIL).await;
+    let text = report_text(&srv, &id).await;
+    assert!(
+        text.starts_with(r#"{"rule_set_id":"swarmail-html/5","findings":["#),
+        "{text}"
+    );
+    assert!(text.ends_with(&format!("],{DEFAULT_DNS}}}")), "{text}");
+    let body: Value = serde_json::from_str(&text).unwrap();
+    // The DKIM-Signature header is mail, not DNS: nothing was looked up.
+    assert_eq!(body["dns"]["lookups"], json!([]));
+    let mut keys: Vec<_> = body.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(keys, ["dns", "findings", "rule_set_id"]);
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn inbox_dns_declarations_over_http() {
+    let srv = start().await;
+    let (a, b) = (
+        smtp_raw(srv.smtp_addr, "a", MAIL).await,
+        smtp_raw(srv.smtp_addr, "b", MAIL).await,
+    );
+    assert_eq!(
+        put_dns(&srv, "a", DECLARATION).await,
+        (
+            200,
+            json!({"inbox":"a","source":"inbox","policy":canonical()})
+        )
+    );
+    assert_eq!(
+        dns_of(&srv, &a).await,
+        json!({"source":"inbox","policy":canonical(),"lookups":[]})
+    );
+    assert_eq!(dns_of(&srv, &b).await["source"], "default");
+    let declared = report_text(&srv, &a).await;
+
+    // Refusals leave the previous declaration byte-identical in the next report.
+    let (status, error) =
+        put_dns(&srv, "a", r#"{"txt":[{"name":"bad name","values":["x"]}]}"#).await;
+    assert_eq!(status, 400);
+    assert_eq!(error["error"], "txt[0].name is not a valid owner name");
+    let too_big = format!(r#"{{"txt":[],"tempfail":[]}}{}"#, " ".repeat(8_169));
+    assert_eq!(too_big.len(), 8_193);
+    assert_eq!(put_dns(&srv, "a", &too_big).await.0, 413);
+    assert_eq!(put_dns(&srv, "a", "").await.0, 400);
+    assert_eq!(put_dns(&srv, "a", "[]").await.0, 400);
+    assert_eq!(
+        put_dns(&srv, "%20", DECLARATION).await.0,
+        400,
+        "a blank inbox label refuses like every other inbox route"
+    );
+    assert_eq!(delete_dns(&srv, "%20").await.0, 400);
+    assert_eq!(
+        http_json(
+            srv.http_addr,
+            "PUT",
+            "/api/v1/inboxes/a/dns?x=1",
+            Some("{}")
+        )
+        .await
+        .0,
+        400,
+        "no query keys"
+    );
+    // 257 names and values are refused; 256 are not. Nothing changes.
+    let names = |n: usize| {
+        let names: Vec<_> = (0..n).map(|i| format!("t{i}.example")).collect();
+        json!({ "tempfail": names }).to_string()
+    };
+    let (status, error) = put_dns(&srv, "a", &names(257)).await;
+    assert_eq!(
+        (status, error),
+        (
+            400,
+            json!({"error":"declaration has more than 256 names and values"})
+        )
+    );
+    // Fits 8,192 raw bytes but not canonically: 400 with its own message, not 413.
+    let head = r#"{"txt":[{"name":"big.example","values":[""#;
+    let fill = 8_192 - head.len() - r#""]}]}"#.len();
+    let omits_tempfail = format!("{head}{}\"]}}]}}", "x".repeat(fill));
+    assert_eq!(omits_tempfail.len(), 8_192);
+    assert_eq!(
+        put_dns(&srv, "a", &omits_tempfail).await,
+        (
+            400,
+            json!({"error":"canonical declaration is larger than 8192 bytes"})
+        )
+    );
+    assert_eq!(report_text(&srv, &a).await, declared);
+    assert_eq!(put_dns(&srv, "names", &names(256)).await.0, 200);
+    // An inbox label of 513 bytes may hold mail but not a declaration; 512 may.
+    let (long, edge) = ("l".repeat(513), "e".repeat(512));
+    let (status, error) = put_dns(&srv, &long, DECLARATION).await;
+    assert_eq!(
+        (status, error),
+        (400, json!({"error":"inbox label is longer than 512 bytes"}))
+    );
+    let seeded = |inbox: String| {
+        let addr = srv.http_addr;
+        async move {
+            let (status, mail) = http_json(
+                addr,
+                "POST",
+                &format!("/api/v1/inboxes/{inbox}/seed"),
+                Some(r#"{"to":"x@example.com","text":"hello"}"#),
+            )
+            .await;
+            assert_eq!(status, 200, "{mail}");
+            mail["id"].as_str().unwrap().to_string()
+        }
+    };
+    let long_id = seeded(long.clone()).await;
+    assert_eq!(
+        dns_of(&srv, &long_id).await["source"],
+        "default",
+        "the refused label holds no declaration"
+    );
+    assert_eq!(delete_dns(&srv, &long).await.1["source"], "default");
+    assert_eq!(put_dns(&srv, &edge, DECLARATION).await.0, 200);
+    let edge_id = seeded(edge).await;
+    assert_eq!(dns_of(&srv, &edge_id).await["source"], "inbox");
+    assert_eq!(dns_of(&srv, &long_id).await["source"], "default");
+    assert_eq!(report_text(&srv, &a).await, declared);
+    // 8,192 bytes is accepted.
+    let exactly = format!(r#"{{"txt":[],"tempfail":[]}}{}"#, " ".repeat(8_168));
+    assert_eq!(put_dns(&srv, "edge", &exactly).await.0, 200);
+
+    // DELETE is idempotent and answers the fallback.
+    for _ in 0..2 {
+        assert_eq!(
+            delete_dns(&srv, "a").await,
+            (
+                200,
+                json!({"inbox":"a","source":"default","policy":{"txt":[],"tempfail":[]}})
+            )
+        );
+    }
+    assert_eq!(dns_of(&srv, &a).await["source"], "default");
+
+    // Clearing an inbox's mail keeps its declaration.
+    put_dns(&srv, "a", DECLARATION).await;
+    let (status, _) = http_json(srv.http_addr, "DELETE", "/api/v1/inboxes/a/messages", None).await;
+    assert_eq!(status, 200);
+    let again = smtp_raw(srv.smtp_addr, "a", MAIL).await;
+    assert_eq!(dns_of(&srv, &again).await["source"], "inbox");
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn inbox_map_replaces_the_server_map_without_merging() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("dns.json");
+    std::fs::write(
+        &file,
+        r#"{"txt":[{"name":"server.example","values":["s"]}]}"#,
+    )
+    .unwrap();
+    let srv = start_with(|c| swarmail::config::Config {
+        dns_policy: Some(file.clone()),
+        ..c
+    })
+    .await;
+    let (a, b) = (
+        smtp_raw(srv.smtp_addr, "a", MAIL).await,
+        smtp_raw(srv.smtp_addr, "b", MAIL).await,
+    );
+    let server = json!({"source":"server","policy":{"txt":[{"name":"server.example","values":["s"]}],"tempfail":[]},"lookups":[]});
+    assert_eq!(dns_of(&srv, &a).await, server);
+    put_dns(&srv, "a", r#"{"tempfail":["inbox.example"]}"#).await;
+    assert_eq!(
+        dns_of(&srv, &a).await,
+        json!({"source":"inbox","policy":{"txt":[],"tempfail":["inbox.example"]},"lookups":[]})
+    );
+    assert_eq!(dns_of(&srv, &b).await, server);
+    // The echo of a clear is the server map, not the empty default.
+    assert_eq!(
+        delete_dns(&srv, "a").await,
+        (
+            200,
+            json!({"inbox":"a","source":"server","policy":server["policy"]})
+        )
+    );
+    assert_eq!(dns_of(&srv, &a).await, server);
+    srv.stop().await;
+
+    // `{}` is a valid, empty server map and still reports `server`.
+    std::fs::write(&file, "{}").unwrap();
+    let srv = start_with(|c| swarmail::config::Config {
+        dns_policy: Some(file.clone()),
+        ..c
+    })
+    .await;
+    let id = smtp_raw(srv.smtp_addr, "a", MAIL).await;
+    assert_eq!(
+        dns_of(&srv, &id).await,
+        json!({"source":"server","policy":{"txt":[],"tempfail":[]},"lookups":[]})
+    );
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn dns_policy_canonical_over_http() {
+    let srv = start().await;
+    let (a, b) = (
+        smtp_raw(srv.smtp_addr, "a", MAIL).await,
+        smtp_raw(srv.smtp_addr, "b", MAIL).await,
+    );
+    let permuted = r#"{"txt":[{"values":["v=spf1 -all","a-first"],"name":"EXAMPLE.com"},{"name":"s1._domainkey.example.com.","values":["v=DKIM1; p=AAAA"]}],"tempfail":["_dmarc.example.org"]}"#;
+    let first = http_send_text(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/inboxes/a/dns",
+        Some(DECLARATION),
+    )
+    .await;
+    let second = http_send_text(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/inboxes/b/dns",
+        Some(permuted),
+    )
+    .await;
+    assert_eq!(first.0, 200);
+    assert_eq!(
+        first.1.replace("\"a\"", "\"x\""),
+        second.1.replace("\"b\"", "\"x\""),
+        "byte-identical echoes"
+    );
+    assert_eq!(
+        report_text(&srv, &a).await,
+        report_text(&srv, &b).await,
+        "byte-identical reports for the same message"
+    );
+    // A report's `dns.policy` declares back verbatim.
+    let policy = dns_of(&srv, &a).await["policy"].to_string();
+    let (status, echo) = put_dns(&srv, "c", &policy).await;
+    assert_eq!((status, echo["policy"].to_string()), (200, policy));
+
+    // At the boundary too: a canonical form of exactly 8,192 bytes is accepted,
+    // its report embeds those bytes, and the report's `dns.policy` declares back
+    // byte for byte, with a byte-identical echo and next report.
+    let head = r#"{"txt":[{"name":"big.example","values":[""#;
+    let tail = r#""]}],"tempfail":[]}"#;
+    let edge = format!(
+        "{head}{}{tail}",
+        "x".repeat(8_192 - head.len() - tail.len())
+    );
+    assert_eq!(edge.len(), 8_192);
+    let (status, first_echo) = http_send_text(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/inboxes/edge/dns",
+        Some(&edge),
+    )
+    .await;
+    assert_eq!(status, 200, "{first_echo}");
+    let id = smtp_raw(srv.smtp_addr, "edge", MAIL).await;
+    let before = report_text(&srv, &id).await;
+    // The bytes of the wire body, not a re-serialized `Value`, which would sort keys.
+    let embedded_in = |text: &str| {
+        let (_, dns) = text
+            .split_once(r#""dns":{"source":"inbox","policy":"#)
+            .unwrap();
+        dns.strip_suffix(r#","lookups":[]}}"#).unwrap().to_string()
+    };
+    let embedded = embedded_in(&before);
+    assert!(
+        embedded == edge,
+        "the report embeds exactly the 8,192 bytes"
+    );
+    let (status, second_echo) = http_send_text(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/inboxes/edge/dns",
+        Some(&embedded),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(second_echo == first_echo, "byte-identical echo");
+    assert!(
+        report_text(&srv, &id).await == before,
+        "byte-identical report"
+    );
+    // The same declaration omitting `tempfail` is 8,192 - 14 bytes of input and
+    // is accepted; one byte more of value fits on the wire but not canonically.
+    let omitting = |extra: usize| {
+        let head = r#"{"txt":[{"name":"big.example","values":[""#;
+        let fill = 8_192 - head.len() - r#""]}]}"#.len() - 14 + extra;
+        format!("{head}{}\"]}}]}}", "x".repeat(fill))
+    };
+    assert_eq!(put_dns(&srv, "edge2", &omitting(0)).await.0, 200);
+    let (status, error) = put_dns(&srv, "edge2", &omitting(1)).await;
+    assert_eq!(
+        (status, error["error"].as_str().unwrap()),
+        (400, "canonical declaration is larger than 8192 bytes")
+    );
+    // The refused body left the accepted declaration in place: the same bytes.
+    let id2 = smtp_raw(srv.smtp_addr, "edge2", MAIL).await;
+    assert!(
+        embedded_in(&report_text(&srv, &id2).await) == embedded,
+        "same canonical bytes as the first boundary declaration"
+    );
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn dns_change_reaches_next_report() {
+    let srv = start().await;
+    let id = smtp_raw(srv.smtp_addr, "a", MAIL).await;
+    put_dns(&srv, "a", r#"{"tempfail":["one.example"]}"#).await;
+    let first = dns_of(&srv, &id).await;
+    assert_eq!(first["policy"]["tempfail"], json!(["one.example"]));
+    // A name no rule reads still changes the report: policy is part of its identity.
+    put_dns(&srv, "a", r#"{"tempfail":["two.example"]}"#).await;
+    let second = dns_of(&srv, &id).await;
+    assert_eq!(second["policy"]["tempfail"], json!(["two.example"]));
+    put_dns(&srv, "a", r#"{"tempfail":["one.example"]}"#).await;
+    assert_eq!(dns_of(&srv, &id).await, first);
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn tempfail_policy_does_not_touch_delivery() {
+    let srv = start().await;
+    let names = r#"{"tempfail":["example.com","s1._domainkey.example.com","_dmarc.example.com"]}"#;
+    assert_eq!(put_dns(&srv, "a", names).await.0, 200);
+    let id = smtp_raw(srv.smtp_addr, "a", MAIL).await;
+    let (status, listed) =
+        http_json(srv.http_addr, "GET", "/api/v1/inboxes/a/messages", None).await;
+    assert_eq!(status, 200);
+    assert_eq!(listed["total"], 1, "stored and queryable at the 250");
+    assert_eq!(listed["emails"][0]["id"], id);
+    let dns = dns_of(&srv, &id).await;
+    assert_eq!(dns["source"], "inbox");
+    assert_eq!(dns["lookups"], json!([]));
+    srv.stop().await;
+}
+
+/// Names that would mean DNS on a path that must not know about it.
+fn mentions_dns(source: &str) -> bool {
+    source.to_ascii_lowercase().contains("dns")
+        || source.contains("Effective")
+        || source.contains("policy_for")
+}
+
+/// The functions of `src/store.rs` that start at the `impl` indentation, as
+/// (first line, text) pairs. A doc comment belongs to the function before it.
+fn store_functions(source: &str) -> Vec<(&str, &str)> {
+    let starts_fn = |line: &str| {
+        let item = line
+            .strip_prefix("    ")
+            .filter(|rest| !rest.starts_with(' '));
+        item.map(|rest| {
+            rest.strip_prefix("pub(crate) ")
+                .or_else(|| rest.strip_prefix("pub "))
+                .unwrap_or(rest)
+        })
+        .is_some_and(|rest| rest.starts_with("fn ") || rest.starts_with("async fn "))
+    };
+    let mut starts = Vec::new();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        if starts_fn(line) {
+            starts.push(offset);
+        }
+        offset += line.len();
+    }
+    starts.push(source.len());
+    starts
+        .windows(2)
+        .map(|w| {
+            let text = &source[w[0]..w[1]];
+            (text.lines().next().unwrap(), text)
+        })
+        .collect()
+}
+
+/// AC9, structural half. Accept, extraction, persistence and the Store's
+/// mutation code gain no DNS reference: an accepted mail is stored without
+/// asking what any policy says (decisions 0001, 0005). The named exemption is
+/// the Store's read path (`report`, `qualify`, `wait_for_report`), which holds
+/// the effective policy because decision 0085 puts analysis there.
+#[test]
+fn the_accept_path_has_no_dns_reference() {
+    let mut files = vec![
+        ("src/smtp.rs", include_str!("../src/smtp.rs")),
+        ("src/persist.rs", include_str!("../src/persist.rs")),
+        ("src/extract.rs", include_str!("../src/extract.rs")),
+        (
+            "src/extract/entities.rs",
+            include_str!("../src/extract/entities.rs"),
+        ),
+    ];
+    // A new file under src/extract cannot escape the scan.
+    let mut on_disk: Vec<String> =
+        std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src/extract"))
+            .unwrap()
+            .map(|entry| {
+                format!(
+                    "src/extract/{}",
+                    entry.unwrap().file_name().to_string_lossy()
+                )
+            })
+            .collect();
+    on_disk.sort();
+    let mut listed: Vec<_> = files
+        .iter()
+        .map(|(f, _)| f.to_string())
+        .filter(|f| f.starts_with("src/extract/"))
+        .collect();
+    listed.sort();
+    assert_eq!(listed, on_disk, "list every file under src/extract above");
+    for (file, source) in files.drain(..) {
+        assert!(!mentions_dns(source), "{file} mentions DNS");
+    }
+
+    // Every Store function that takes the mutation lock, `insert` and its
+    // oldest-only prune among them.
+    let store = include_str!("../src/store.rs");
+    let locked: Vec<_> = store_functions(store)
+        .into_iter()
+        .filter(|(_, text)| text.contains("self.mutation.lock()"))
+        .collect();
+    assert!(!locked.is_empty());
+    assert!(
+        locked
+            .iter()
+            .any(|(first, _)| first.contains("pub fn insert(")),
+        "the scan must find Store::insert among {:?}",
+        locked.iter().map(|(first, _)| *first).collect::<Vec<_>>()
+    );
+    for (first, text) in &locked {
+        assert!(!mentions_dns(text), "{first} mentions DNS");
+    }
+    // The scan can fail: the read path is a function it splits out and does
+    // mention the policy.
+    let read_path: Vec<_> = store_functions(store)
+        .into_iter()
+        .filter(|(first, _)| first.contains("fn qualify(") || first.contains("fn wait_for_report("))
+        .collect();
+    assert_eq!(read_path.len(), 2);
+    assert!(read_path.iter().all(|(_, text)| mentions_dns(text)));
+}
+
+#[tokio::test]
+async fn declared_dmarc_does_not_satisfy_bulk_rules() {
+    let srv = start().await;
+    put_dns(
+        &srv,
+        "a",
+        r#"{"txt":[{"name":"_dmarc.example.com","values":["v=DMARC1; p=reject"]},{"name":"s1._domainkey.example.com","values":["v=DKIM1; p=AAAA"]},{"name":"example.com","values":["v=spf1 -all"]}]}"#,
+    )
+    .await;
+    let id = smtp_raw(srv.smtp_addr, "a", MAIL).await;
+    let (_, body) = report(srv.http_addr, &id).await;
+    let ids: Vec<&str> = body["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule_id"].as_str().unwrap())
+        .collect();
+    for rule in [
+        "bulk.dmarc_presence.not_evaluated.v1",
+        "bulk.from_alignment.not_evaluated.v1",
+        "bulk.authenticated_sender.not_evaluated.v1",
+    ] {
+        assert!(ids.contains(&rule), "{rule} in {ids:?}");
+    }
+    assert_eq!(
+        body["dns"]["lookups"],
+        json!([]),
+        "no rule resolves a name yet"
+    );
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn dns_declarations_full_is_503() {
+    let srv = start().await;
+    for n in 0..4096 {
+        let (status, _) = put_dns(&srv, &format!("full{n}"), "{}").await;
+        assert_eq!(status, 200, "inbox {n}");
+    }
+    let (status, error) = put_dns(&srv, "one-too-many", DECLARATION).await;
+    assert_eq!(
+        (status, error),
+        (503, json!({"error":"dns declarations full"}))
+    );
+    // A replacement at capacity succeeds, and a cleared slot is reusable.
+    assert_eq!(put_dns(&srv, "full0", DECLARATION).await.0, 200);
+    assert_eq!(delete_dns(&srv, "full1").await.0, 200);
+    assert_eq!(put_dns(&srv, "one-too-many", DECLARATION).await.0, 200);
+    let id = smtp_raw(srv.smtp_addr, "full2", MAIL).await;
+    assert_eq!(
+        dns_of(&srv, &id).await["source"],
+        "inbox",
+        "nothing was evicted"
+    );
+    srv.stop().await;
+}
+
+/// The static link rules (0121 §1) through real SMTP, REST, MCP and the page,
+/// with expectations written here and not read back from the code under test.
+#[tokio::test]
+async fn link_rules_over_smtp_and_rest() {
+    let srv = start().await;
+    let html = "<p>Hi</p>\r\n\
+        <a href=\"javascript:alert(1)\">x</a>\r\n\
+        <a href=\"/relative\">r</a>\r\n\
+        <a href=\"http://example.test/p\">h</a>\r\n\
+        <a href=\"https://bit.ly/abc\">b</a>\r\n\
+        <a href=\"https://paypal.com.evil.test/\">paypal.com</a>\r\n\
+        <a href=\"https://ok.test/\">ok.test</a>\r\n\
+        <a href=\"http://localhost:3000/c\">dev</a>\r\n\
+        <a href=\"mailto:a@ok.test\">m</a>\r\n\
+        <a href=\"#top\">t</a>\r\n";
+    let raw = format!("Subject: links <&>\r\nContent-Type: text/html; charset=utf-8\r\n\r\n{html}");
+    let id = smtp_raw(srv.smtp_addr, "links", raw.as_bytes()).await;
+    let body_at = raw.find("\r\n\r\n").unwrap() + 4;
+    let at = |needle: &str| (raw.find(needle).unwrap() - body_at) as u64;
+    let expected: Vec<Value> = [
+        (
+            "link.anchor-host-mismatch.v1",
+            "warning",
+            "Make the visible link text name the host the link goes to.",
+            "https://paypal.com.evil.test/",
+        ),
+        (
+            "link.scheme.http.v1",
+            "warning",
+            "Serve the link over https.",
+            "http://example.test/p",
+        ),
+        (
+            "link.scheme.unsafe.v1",
+            "error",
+            "Replace the script, data or file link with an https link.",
+            "javascript:alert(1)",
+        ),
+        (
+            "link.shortener.v1",
+            "warning",
+            "Link to the destination directly instead of through a URL shortener.",
+            "https://bit.ly/abc",
+        ),
+        (
+            "link.url.invalid.v1",
+            "warning",
+            "Use an absolute https URL; mail has no base URL for relative links.",
+            "/relative",
+        ),
+    ]
+    .into_iter()
+    .map(|(rule, severity, hint, needle)| {
+        json!({"rule_id":rule,"severity":severity,"fix_hint":hint,
+            "location":{"kind":"link","part_path":[],"byte_offset":at(needle)}})
+    })
+    .collect();
+    let (status, first) = report(srv.http_addr, &id).await;
+    assert_eq!(status, 200);
+    assert_eq!(first["rule_set_id"], "swarmail-html/5");
+    let links = |report: &Value| -> Vec<Value> {
+        report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["rule_id"].as_str().unwrap().starts_with("link."))
+            .cloned()
+            .collect()
+    };
+    assert_eq!(links(&first), expected);
+    assert_eq!(report(srv.http_addr, &id).await.1, first);
+    let reply = rpc(
+        srv.http_addr,
+        "tools/call",
+        json!({"name":"swarmail_get_deliverability_report","arguments":{"id":id}}),
+    )
+    .await;
+    assert_eq!(result_text(&reply), first);
+    let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
+    for finding in &expected {
+        assert!(page.contains(finding["rule_id"].as_str().unwrap()));
+        assert!(page.contains(finding["fix_hint"].as_str().unwrap()));
+    }
+    // One error-level finding: the threshold predicate sees it.
+    let path = "/api/v1/inboxes/links/assert?count=1&no_findings_at_or_above=error";
+    assert_eq!(http_json(srv.http_addr, "GET", path, None).await.0, 409);
+    // Ingest extraction is untouched: only the http(s) targets are stored.
+    let (_, message) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        message["links"],
+        json!([
+            "http://example.test/p",
+            "https://bit.ly/abc",
+            "https://paypal.com.evil.test/",
+            "https://ok.test/",
+            "http://localhost:3000/c"
+        ])
+    );
     srv.stop().await;
 }

@@ -92,7 +92,7 @@ pub(crate) fn decode_refs(input: &str) -> String {
 /// fields are read only by the bounded-work tests.
 #[derive(Default)]
 #[cfg_attr(not(test), allow(dead_code))]
-struct RefScanStats {
+pub(crate) struct RefScanStats {
     /// Well-formed or not, each '&' costs exactly one bounded scan.
     scans: u64,
     /// Bytes that scan actually examined: the window is up to `REF_MAX`
@@ -400,7 +400,7 @@ struct Region {
 
 /// The block boundaries that separate label words (decision 0094 §1);
 /// `br` separates as a start tag only.
-const LABEL_BREAKS: [&[u8]; 10] = [
+pub(crate) const LABEL_BREAKS: [&[u8]; 10] = [
     b"p", b"div", b"li", b"tr", b"h1", b"h2", b"h3", b"h4", b"h5", b"h6",
 ];
 
@@ -486,7 +486,7 @@ impl LinkRegions<'_> {
 }
 
 /// Collapse: a label never starts with, or repeats, the one space.
-fn space(label: &mut String) {
+pub(crate) fn space(label: &mut String) {
     if !label.is_empty() && !label.ends_with(' ') {
         label.push(' ');
     }
@@ -663,7 +663,7 @@ impl Regions for CodeSet {
 /// scan is linear in the source.
 #[derive(Default)]
 #[cfg_attr(not(test), allow(dead_code))]
-struct TagScanStats {
+pub(crate) struct TagScanStats {
     /// Bytes outside markup — text runs, emitted or suppressed, including
     /// every `<` that does not open markup.
     text_bytes: u64,
@@ -706,7 +706,7 @@ fn html_codes_with_stats(html: &str) -> (Vec<String>, TagScanStats) {
 /// text runs and the link consumer's quoted attribute values, both from
 /// the same lexical recognition — one owner of where a quote opens and
 /// where a tag ends, two consumers with their own suppression.
-trait Regions {
+pub(crate) trait Regions {
     /// A text run outside every suppressed region, still undecoded.
     fn text(&mut self, run: &str, refs: &mut RefScanStats);
     /// The source byte range of one quoted attribute value, its quotes
@@ -730,9 +730,9 @@ trait Regions {
 /// values (decision 0094 §1). A valueless attribute is an empty span:
 /// present and empty, never absent.
 #[derive(Clone, Copy, Default)]
-struct AnchorAttrs {
-    href: Option<(usize, usize)>,
-    rel: Option<(usize, usize)>,
+pub(crate) struct AnchorAttrs {
+    pub(crate) href: Option<(usize, usize)>,
+    pub(crate) rel: Option<(usize, usize)>,
 }
 
 impl AnchorAttrs {
@@ -1106,7 +1106,7 @@ fn skip_markup(
 /// the walk; what follows is the caller's. Slicing happens only at ASCII
 /// `<`/`>`/quote positions or the ends, so it never splits a UTF-8
 /// character.
-fn walk(html: &str, stats: &mut TagScanStats, regions: &mut dyn Regions) {
+pub(crate) fn walk(html: &str, stats: &mut TagScanStats, regions: &mut dyn Regions) {
     let mut containers = Vec::new();
     let mut run = 0;
     let mut search = 0;

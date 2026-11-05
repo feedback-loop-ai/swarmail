@@ -1061,6 +1061,24 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         output_object(json!({"kind":{"type":"string","const":"mime_part"},"path":path}), json!(["kind","path"])),
         output_object(json!({"kind":{"type":"string","const":"link"},"part_path":path,"byte_offset":coordinate}), json!(["kind","part_path","byte_offset"]))
     ]});
+    // The report's `dns` member (decision 0120 §5): the effective policy and the lookups.
+    let dns_name = json!({"type":"string","minLength":1});
+    let dns = output_object(
+        json!({
+            "source":{"type":"string","enum":["default","server","inbox"]},
+            "policy":output_object(json!({
+                "txt":{"type":"array","items":output_object(json!({"name":dns_name,"values":{"type":"array","minItems":1,"items":{"type":"string"}}}), json!(["name","values"]))},
+                "tempfail":{"type":"array","items":dns_name}
+            }), json!(["txt","tempfail"])),
+            "lookups":{"type":"array","items":output_object(json!({
+                "name":dns_name,
+                "type":{"type":"string","const":"txt"},
+                "outcome":{"type":"string","enum":["records","no_records","temp_fail"]},
+                "values":{"type":"array","items":{"type":"string"}}
+            }), json!(["name","type","outcome","values"]))}
+        }),
+        json!(["source", "policy", "lookups"]),
+    );
     let finding = output_object(
         json!({
             "rule_id":{"type":"string","minLength":1,"pattern":"^[!-~]+$"},
@@ -1071,7 +1089,7 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         json!(["rule_id", "severity", "location", "fix_hint"]),
     );
     json!({
-        "swarmail_get_deliverability_report":output_object(json!({"rule_set_id":{"type":"string"},"findings":{"type":"array","maxItems":crate::deliverability::MAX_FINDINGS,"items":finding}}), json!(["rule_set_id","findings"])),
+        "swarmail_get_deliverability_report":output_object(json!({"rule_set_id":{"type":"string"},"findings":{"type":"array","maxItems":crate::deliverability::MAX_FINDINGS,"items":finding},"dns":dns}), json!(["rule_set_id","findings","dns"])),
         "swarmail_search_emails":output_object(json!({"inbox":{"type":"string"},"total":count,"emails":emails}), json!(["inbox","total","emails"])),
         "swarmail_get_email":email,
         "swarmail_get_latest_email":output_object(json!({"emails":nonempty}), json!(["emails"])),
@@ -1097,7 +1115,7 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
 });
 
 /// Modern-only report description; March keeps the historical TOOLS literal.
-const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-spam/1) from the stored bytes, off the SMTP path: the bulk-sender checklist, the HTML client-compatibility heuristics, the built-in spam signals and the synthetic demo marker. Missing trusted authentication evidence yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
+const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-html/5) from the stored bytes, off the SMTP path: the bulk-sender checklist, the HTML client-compatibility heuristics, the per-link link.* rules (unsafe schemes, invalid URLs, plain http, URL shorteners, anchor-host mismatch; no link is fetched), the built-in spam signals and the synthetic demo marker. Missing trusted authentication evidence yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. The dns member records the declared DNS policy (source default, server or inbox) and the lookups the evaluation made; a temp_fail lookup is never clean, so such a report qualifies at no threshold. At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
 
 /// MCP-compatible JSON input schemas. These are objects — the MCP spec
 /// requires an object, and a `&str` schema embedded in `json!` serialized as
@@ -1235,6 +1253,21 @@ mod tests {
         }
         for tool in tool_descriptors(Revision::March).as_array().unwrap() {
             assert!(tool.get("outputSchema").is_none());
+        }
+    }
+
+    // The modern report description names the per-link rules beside the others.
+    #[test]
+    fn report_descriptions_name_link_rules() {
+        for revision in [Revision::June, Revision::November] {
+            let tools = tool_descriptors(revision);
+            let report = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "swarmail_get_deliverability_report")
+                .unwrap();
+            assert!(report["description"].as_str().unwrap().contains("link."));
         }
     }
 

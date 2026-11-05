@@ -266,6 +266,7 @@ mod tests {
         use crate::deliverability::{Finding, Location, Report, Severity};
         let attack = "<img src=\"https://attacker/\">&'";
         let report = Report {
+            dns: Default::default(),
             rule_set_id: attack.into(),
             findings: vec![
                 Finding {

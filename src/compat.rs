@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value, json};
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::fmt;
 use std::sync::Arc;
 
 pub fn router() -> Router<AppState> {
@@ -1408,9 +1409,46 @@ struct SlurperView<'a> {
     to_addresses: Vec<&'a str>,
     #[serde(rename = "ccAddresses")]
     cc_addresses: Vec<&'a str>,
-    subject: &'a str,
+    subject: GoHtmlEscaped<'a>,
     body: &'a str,
     attachments: [(); 0],
+}
+
+/// A `subject` as MailSlurper serves it: the five substitutions of Go's
+/// `html.EscapeString`, in one pass, so each stored character is replaced at
+/// most once and nothing is escaped twice (0118 §4, dated addendum
+/// 2026-11-04, proposed; issue #326). Only `"` → `&#34;` is observed (the
+/// Alkemio trial, run 41808342506); `& < > '` are inferred from MailSlurper
+/// being Go. It is a view over the stored subject, computed as the item is
+/// serialized and never stored (0005 is untouched). It is written through
+/// `collect_str` in chunks straight into the page's capped buffer, so no
+/// owned copy of the subject exists ahead of the cap (0044 §6). It is not
+/// `ui::esc`, which spells `"` as `&quot;` and guards the web UI.
+struct GoHtmlEscaped<'a>(&'a str);
+
+impl fmt::Display for GoHtmlEscaped<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut rest = self.0;
+        while let Some(at) = rest.find(['&', '<', '>', '"', '\'']) {
+            f.write_str(&rest[..at])?;
+            f.write_str(match rest.as_bytes()[at] {
+                b'&' => "&amp;",
+                b'<' => "&lt;",
+                b'>' => "&gt;",
+                b'"' => "&#34;",
+                _ => "&#39;",
+            })?;
+            // The five targets are ASCII, so `at + 1` is a char boundary.
+            rest = &rest[at + 1..];
+        }
+        f.write_str(rest)
+    }
+}
+
+impl Serialize for GoHtmlEscaped<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
 }
 
 impl Serialize for SlurperItem<'_> {
@@ -1427,7 +1465,7 @@ impl Serialize for SlurperItem<'_> {
             from_address: compat_sender(email).unwrap_or_default(),
             to_addresses,
             cc_addresses: email.cc.iter().map(|a| a.address.as_str()).collect(),
-            subject: email.subject.as_deref().unwrap_or_default(),
+            subject: GoHtmlEscaped(email.subject.as_deref().unwrap_or_default()),
             body: slurper_body(email),
             attachments: [],
         }
@@ -2175,6 +2213,84 @@ mod tests {
         );
     }
 
+    /// The escape table: each of the five alone, a mix, no double escape
+    /// (text that already reads as an entity is escaped again, as Go does),
+    /// and text that needs nothing. Every expected value is a literal.
+    #[test]
+    fn the_slurper_subject_is_escaped_with_gos_five_substitutions() {
+        let escaped = |s: &str| GoHtmlEscaped(s).to_string();
+        assert_eq!(escaped("&"), "&amp;");
+        assert_eq!(escaped("<"), "&lt;");
+        assert_eq!(escaped(">"), "&gt;");
+        assert_eq!(escaped("\""), "&#34;");
+        assert_eq!(escaped("'"), "&#39;");
+        assert_eq!(escaped("a&b<c>d\"e'f"), "a&amp;b&lt;c&gt;d&#34;e&#39;f");
+        assert_eq!(escaped("&amp;"), "&amp;amp;");
+        assert_eq!(escaped("&#34;"), "&amp;#34;");
+        assert_eq!(escaped(""), "");
+        assert_eq!(escaped("plain"), "plain");
+        assert_eq!(escaped("Grüße ✓"), "Grüße ✓");
+        assert_eq!(escaped("✓&✓"), "✓&amp;✓");
+    }
+
+    /// An item with no subject serves `""`; one with a subject serves it
+    /// escaped, and the body beside it stays exactly as stored.
+    #[test]
+    fn a_slurper_item_escapes_its_subject_and_not_its_body() {
+        let mut m = mail();
+        let item = |m: &Email| serde_json::to_value(SlurperItem(m)).unwrap();
+        assert_eq!(item(&m)["subject"], json!(""));
+        m.subject = Some("Hi \"a\" & <b>'c'</b>".into());
+        m.text = Some("\"q\" & <i>'y'</i>".into());
+        let v = item(&m);
+        assert_eq!(
+            v["subject"],
+            json!("Hi &#34;a&#34; &amp; &lt;b&gt;&#39;c&#39;&lt;/b&gt;")
+        );
+        assert_eq!(v["body"], json!("\"q\" & <i>'y'</i>"));
+        assert_eq!(
+            m.subject.as_deref(),
+            Some("Hi \"a\" & <b>'c'</b>"),
+            "stored raw"
+        );
+    }
+
+    /// A `fmt::Write` that refuses a chunk whole once it would cross its
+    /// budget, as `CappedBuffer` does. Every write the escape makes must
+    /// propagate that refusal and never write past the budget.
+    #[test]
+    fn the_subject_escape_propagates_a_writer_failure_at_every_write() {
+        struct Capped {
+            seen: String,
+            budget: usize,
+        }
+        impl fmt::Write for Capped {
+            fn write_str(&mut self, chunk: &str) -> fmt::Result {
+                if chunk.len() > self.budget - self.seen.len() {
+                    return Err(fmt::Error);
+                }
+                self.seen.push_str(chunk);
+                Ok(())
+            }
+        }
+        use fmt::Write as _;
+        let escaped = "a&#34;b";
+        for n in 0..escaped.len() {
+            let mut w = Capped {
+                seen: String::new(),
+                budget: n,
+            };
+            assert!(write!(w, "{}", GoHtmlEscaped("a\"b")).is_err(), "n = {n}");
+            assert!(w.seen.len() <= n, "n = {n}");
+        }
+        let mut w = Capped {
+            seen: String::new(),
+            budget: escaped.len(),
+        };
+        write!(w, "{}", GoHtmlEscaped("a\"b")).unwrap();
+        assert_eq!(w.seen, escaped);
+    }
+
     /// HTML before text before `""`.
     #[test]
     fn the_slurper_body_prefers_html_then_text_then_nothing() {
@@ -2259,6 +2375,22 @@ mod tests {
         assert_eq!(refusal.0, StatusCode::BAD_REQUEST);
         assert!(refusal.1.contains(&MAX_COMPAT_PAGE_BYTES.to_string()));
         assert!(refusal.1.contains("GET /mail/{id}"));
+    }
+
+    /// The escaped bytes, not the stored ones, count against the page
+    /// budget: a budget that ends inside the escaped `&#34;` refuses, and
+    /// the exact budget fits.
+    #[test]
+    fn the_slurper_page_budget_counts_the_escaped_subject() {
+        let mut m = mail();
+        m.subject = Some("\"q\"".into());
+        let page = vec![Arc::new(m)];
+        let exact = slurper_page_body(&page, 1, usize::MAX).unwrap();
+        let wire = String::from_utf8(exact.clone()).unwrap();
+        assert!(wire.contains(r#""subject":"&#34;q&#34;""#));
+        assert_eq!(slurper_page_body(&page, 1, exact.len()).unwrap(), exact);
+        let at = wire.find("&#34;").unwrap();
+        assert_eq!(slurper_page_body(&page, 1, at + 2), Err(OverBudget));
     }
 
     /// The route's own refusal: a real store, a real page, a budget one

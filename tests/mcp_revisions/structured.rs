@@ -84,7 +84,7 @@ fn minimal() -> swarmail::model::Email {
     minimal
 }
 
-// The bulk checklist inside swarmail-spam/1 restated from its published rule table, not
+// The bulk checklist inside swarmail-html/5 restated from its published rule table, not
 // from the formatter: every hint cites its RFC source and both provider pages.
 const GMAIL: &str = "https://support.google.com/mail/answer/81126";
 const YAHOO: &str = "https://senders.yahooinc.com/best-practices/";
@@ -145,7 +145,7 @@ fn checklist(from: Value) -> Vec<Value> {
     ]
 }
 fn report_of(findings: Vec<Value>) -> Value {
-    json!({"rule_set_id":"swarmail-spam/1","findings":findings})
+    json!({"rule_set_id":"swarmail-html/5","findings":findings,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
 }
 
 pub(super) enum Wire {
@@ -917,7 +917,7 @@ async fn modern_all_tools_http_and_stdio() {
                     descriptor["description"] = original["description"].clone();
                 } else if i == 1 {
                     for clause in [
-                        "swarmail-spam/1",
+                        "swarmail-html/5",
                         "bulk-sender checklist",
                         "HTML client-compatibility heuristics",
                         "spam signals",
@@ -1060,7 +1060,7 @@ fn report_projection(c: &Value) -> Value {
             .as_object_mut()
             .unwrap()
             .remove("examples"),
-        Some(json!(["swarmail-spam/1"]))
+        Some(json!(["swarmail-html/5"]))
     );
     let location = &mut report["properties"]["findings"]["items"]["properties"]["location"];
     // oneOf over exclusive const tags carries the whole dispatch.
@@ -1536,22 +1536,25 @@ async fn report_schema_typed_forms_and_negatives() {
     let empty = serde_json::to_value(Report {
         rule_set_id: "swarmail-bulk/1".into(),
         findings: vec![],
+        dns: Default::default(),
     })
     .unwrap();
     assert_eq!(
         empty,
-        json!({"rule_set_id":"swarmail-bulk/1","findings":[]})
+        json!({"rule_set_id":"swarmail-bulk/1","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
     );
     assert!(valid(&schema, &empty));
     // No invented minimum length or constant for the rule-set ID.
     let full = serde_json::to_value(Report {
         rule_set_id: String::new(),
         findings,
+        dns: Default::default(),
     })
     .unwrap();
     assert!(valid(&schema, &full), "{full}");
     let base = full["findings"][0].clone();
-    let at = |n: usize| json!({"rule_set_id":"r","findings":vec![base.clone(); n]});
+    let dns = json!({"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]});
+    let at = |n: usize| json!({"rule_set_id":"r","findings":vec![base.clone(); n],"dns":dns});
     assert!(valid(&schema, &at(256)));
     assert!(!valid(&schema, &at(257)));
 
@@ -1559,7 +1562,7 @@ async fn report_schema_typed_forms_and_negatives() {
     let with_location = |location: Value| {
         let mut finding = base.clone();
         finding["location"] = location;
-        json!({"rule_set_id":"r","findings":[finding]})
+        json!({"rule_set_id":"r","findings":[finding],"dns":dns})
     };
     let with_finding = |key: &str, value: Option<Value>| {
         let mut finding = base.clone();
@@ -1569,16 +1572,110 @@ async fn report_schema_typed_forms_and_negatives() {
                 finding.as_object_mut().unwrap().remove(key).unwrap();
             }
         }
-        json!({"rule_set_id":"r","findings":[finding]})
+        json!({"rule_set_id":"r","findings":[finding],"dns":dns})
     };
-    refuse(json!({"findings":[]}), "no rule_set_id");
-    refuse(json!({"rule_set_id":"r"}), "no findings");
+    refuse(json!({"findings":[],"dns":dns}), "no rule_set_id");
+    refuse(json!({"rule_set_id":"r","dns":dns}), "no findings");
     refuse(
-        json!({"rule_set_id":"r","findings":[],"extra":1}),
+        json!({"rule_set_id":"r","findings":[],"dns":dns,"extra":1}),
         "report extra",
     );
-    refuse(json!({"rule_set_id":1,"findings":[]}), "numeric rule set");
-    refuse(json!({"rule_set_id":"r","findings":null}), "null findings");
+    refuse(
+        json!({"rule_set_id":1,"findings":[],"dns":dns}),
+        "numeric rule set",
+    );
+    refuse(
+        json!({"rule_set_id":"r","findings":null,"dns":dns}),
+        "null findings",
+    );
+    // The `dns` member is required and closed (decision 0120 §5).
+    refuse(json!({"rule_set_id":"r","findings":[]}), "no dns");
+    let with_dns = |edit: &dyn Fn(&mut Value)| {
+        let mut value = json!({"rule_set_id":"r","findings":[],"dns":dns});
+        edit(&mut value["dns"]);
+        value
+    };
+    assert!(valid(&schema, &with_dns(&|_| {})));
+    let lookup =
+        json!({"name":"a.example","type":"txt","outcome":"records","values":["v=spf1 -all"]});
+    assert!(valid(
+        &schema,
+        &with_dns(&|d| {
+            d["source"] = json!("inbox");
+            d["policy"] =
+                json!({"txt":[{"name":"a.example","values":["x"]}],"tempfail":["b.example"]});
+            d["lookups"] = json!([lookup]);
+        })
+    ));
+    for (label, edit) in [
+        (
+            "dns null",
+            Box::new(|d: &mut Value| *d = Value::Null) as Box<dyn Fn(&mut Value)>,
+        ),
+        ("dns extra", Box::new(|d| d["extra"] = json!(1))),
+        ("source unknown", Box::new(|d| d["source"] = json!("real"))),
+        (
+            "no source",
+            Box::new(|d| {
+                d.as_object_mut().unwrap().remove("source");
+            }),
+        ),
+        (
+            "no policy",
+            Box::new(|d| {
+                d.as_object_mut().unwrap().remove("policy");
+            }),
+        ),
+        (
+            "no lookups",
+            Box::new(|d| {
+                d.as_object_mut().unwrap().remove("lookups");
+            }),
+        ),
+        (
+            "policy extra",
+            Box::new(|d| d["policy"]["extra"] = json!(1)),
+        ),
+        (
+            "no tempfail",
+            Box::new(|d| {
+                d["policy"].as_object_mut().unwrap().remove("tempfail");
+            }),
+        ),
+        (
+            "txt empty values",
+            Box::new(|d| d["policy"]["txt"] = json!([{"name":"a","values":[]}])),
+        ),
+        (
+            "txt extra",
+            Box::new(|d| d["policy"]["txt"] = json!([{"name":"a","values":["x"],"ttl":1}])),
+        ),
+        (
+            "lookup type",
+            Box::new(|d| {
+                d["lookups"] = json!([{"name":"a","type":"a","outcome":"records","values":[]}])
+            }),
+        ),
+        (
+            "lookup outcome",
+            Box::new(|d| {
+                d["lookups"] = json!([{"name":"a","type":"txt","outcome":"nxdomain","values":[]}])
+            }),
+        ),
+        (
+            "lookup extra",
+            Box::new(|d| {
+                d["lookups"] =
+                    json!([{"name":"a","type":"txt","outcome":"records","values":[],"ttl":1}])
+            }),
+        ),
+        (
+            "lookup no values",
+            Box::new(|d| d["lookups"] = json!([{"name":"a","type":"txt","outcome":"records"}])),
+        ),
+    ] {
+        refuse(with_dns(&*edit), label);
+    }
     for key in ["rule_id", "severity", "location", "fix_hint"] {
         refuse(with_finding(key, None), key);
     }
