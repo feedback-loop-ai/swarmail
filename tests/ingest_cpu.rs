@@ -18,8 +18,14 @@
 //!
 //! Load, bounded by construction: one client thread, `SESSIONS` concurrent
 //! connections, `MAILS` mails of ~30 KB per run, a two-worker server runtime,
-//! six runs, and a deadline on the whole test. Measured, not timed: nothing
-//! here asserts on wall-clock speed.
+//! six runs, and a watchdog on each run's client side (`RUN_BOUND`: a wedged
+//! peer fails the test with a named message instead of hanging the CI slot; it
+//! bounds the procedure and asserts nothing about speed). Measured, not timed:
+//! nothing here asserts on wall-clock speed. `getrusage` counts the client
+//! thread too (formatting ~30 KB and the socket writes, the same in both
+//! modes), which pulls the ratio toward 1: the margin is a looser bound on
+//! server cost than it reads, and on hosts with more than `SESSIONS` usable
+//! cores the gate itself is never reached here.
 
 mod common;
 
@@ -39,6 +45,10 @@ const RUNS: usize = 3;
 /// fsync per mail — so 1.25 is a floor for a regression, not a tolerance for
 /// noise; a tree that makes memory mode the dearer one fails it.
 const MARGIN: f64 = 1.25;
+/// Watchdog on one run's client side. Generous (a run takes seconds); it exists
+/// so a stalled server fails with a message rather than waiting on the CI job's
+/// own timeout.
+const RUN_BOUND: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// A multipart/alternative body of roughly 30 KB: a text part and an HTML
 /// part with links and a code, the shape a notification service sends. No
@@ -111,27 +121,31 @@ fn run(server_rt: &tokio::runtime::Runtime, data_file: Option<std::path::PathBuf
         .build()
         .unwrap();
     let before = process_cpu_seconds();
-    client.block_on(async {
-        let mut sessions = tokio::task::JoinSet::new();
-        for worker in 0..SESSIONS {
-            sessions.spawn(async move {
-                let mut accepted = 0;
-                let mut seed = worker;
-                while seed < MAILS {
-                    let reply = deliver(addr, seed).await;
-                    assert!(reply.starts_with("250"), "{reply}");
-                    accepted += 1;
-                    seed += SESSIONS;
-                }
-                accepted
-            });
-        }
-        let mut total = 0;
-        while let Some(done) = sessions.join_next().await {
-            total += done.unwrap();
-        }
-        assert_eq!(total, MAILS);
+    let finished = client.block_on(async {
+        tokio::time::timeout(RUN_BOUND, async {
+            let mut sessions = tokio::task::JoinSet::new();
+            for worker in 0..SESSIONS {
+                sessions.spawn(async move {
+                    let mut accepted = 0;
+                    let mut seed = worker;
+                    while seed < MAILS {
+                        let reply = deliver(addr, seed).await;
+                        assert!(reply.starts_with("250"), "{reply}");
+                        accepted += 1;
+                        seed += SESSIONS;
+                    }
+                    accepted
+                });
+            }
+            let mut total = 0;
+            while let Some(done) = sessions.join_next().await {
+                total += done.unwrap();
+            }
+            assert_eq!(total, MAILS);
+        })
+        .await
     });
+    finished.unwrap_or_else(|_| panic!("{MAILS} mails did not finish within {RUN_BOUND:?}"));
     let spent = process_cpu_seconds() - before;
     // Every 250 is a queryable mail (0001); with a data file also committed.
     assert_eq!(server.store.emails_inserted(), MAILS as u64);

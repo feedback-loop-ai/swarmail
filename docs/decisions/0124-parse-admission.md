@@ -53,7 +53,8 @@ spin, retry loop or contended lock turns up:
 - the no-spin instruments (`CLOSED_PROBE`, the starved-ticker test) are
   unaffected.
 
-What does reproduce, on a static musl build (`i686-unknown-linux-musl` is the
+What does reproduce — and is offered as the **candidate** cause, not a proven
+one (see *Magnitude* below) — on a static musl build (`i686-unknown-linux-musl` is the
 only musl target this sandbox carries; the full crate needs a C toolchain for
 `ring` and bundled SQLite that is not installed, so the probe is a standalone
 crate with `tokio` and `mail-parser` — the same parser — and the same 24.7 KB
@@ -78,8 +79,8 @@ fighting for the allocator, and then be throttled for the rest of the period.
 The data-file mode escapes it by accident — the fsync parks the pool threads,
 so fewer are ever running — which is why the cheaper mode was the dearer one.
 
-Capping the in-flight parses at the usable core count removes it. The same
-probe, 30 sessions, 16 CPUs, musl i686:
+Capping the in-flight parses at the usable core count removes it *in the
+probe*. The same probe, 30 sessions, 16 CPUs, musl i686:
 
 | parse concurrency cap | CPU per parse | kernel time |
 |---|---|---|
@@ -89,6 +90,17 @@ probe, 30 sessions, 16 CPUs, musl i686:
 | 2 (the quota) | 0.110–0.133 ms | 1.1–2.3 s |
 
 The cap has to match the cores the process may use; a loose one buys nothing.
+
+**Magnitude.** The probe's excess is about 0.10–0.13 ms per parse; the issue's
+is about 8–15 ms per mail (in memory 11.9–18.7 ms against about 3.5 ms with a
+data file). The probe is mail-parser alone on i686 musl; the issue is the full
+`build_email` (HTML pipeline, link and code extraction) on x86_64 musl under
+`--cpus=2`, where the two runtime workers (rustls implicit TLS), the insert
+jobs and the session buffers contend on the same global allocator lock outside
+the gate. The gap between the two is not reconciled here, so the gate may close
+only part of the reported excess. If the bench shows a small effect, the next
+suspects are the ungated in-memory insert on the pool and musl free/madvise
+churn.
 
 ## Proposed ruling
 
@@ -144,10 +156,12 @@ The cap has to match the cores the process may use; a loose one buys nothing.
   amplification, and the parse still happens before the mutation boundary, so
   no lock is held through it.
 - With one usable core the parses are serial. That is what one core does.
-- **Not claimed:** a measurement of the musl image under `--cpus=2`. The probe
-  above is the evidence this sandbox can produce; the container numbers (the
-  40-connection bench against the fixed image) are owed by the dispatcher's
-  `load.py` and `scale.py`.
+- **Not claimed:** a measurement of the musl image under `--cpus=2`, or that
+  the gate removes the whole reported excess. The probe above is the evidence
+  this sandbox can produce; the container numbers (the 40-connection bench
+  against an image built from this tree) are owed by the dispatcher's
+  `load.py` and `scale.py`. Issue #333 is mitigated by this change and stays
+  open until they are in.
 
 ## Proof
 
@@ -163,4 +177,8 @@ The cap has to match the cores the process may use; a loose one buys nothing.
   Each is red when its call site skips the gate.
 - `tests/ingest_cpu.rs`: one test, its own process, real SMTP sessions
   (~30 KB, 8 concurrent, 240 mails, six alternating runs): in-memory CPU per
-  mail is at most 1.25× the data file's, by `getrusage`.
+  mail is at most 1.25× the data file's, by `getrusage` (which also counts the
+  client thread, so the margin is looser than it reads), with a watchdog that
+  fails a stalled run by name. On glibc it passes with or without the gate: it
+  guards the relation, not the cause; the parse-gate tests above are the
+  cause's detector.

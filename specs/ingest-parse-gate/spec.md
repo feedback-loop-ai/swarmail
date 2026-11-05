@@ -27,9 +27,10 @@ in `docs/guide/network-posture.md`.
 
 ## Why — the cause, with its evidence (AC-1)
 
-Not a spin, not a lock, not blocking-pool churn from two handoffs. Allocator
-contention among *parallel* parse threads, on the static musl image under a CFS
-quota. Full numbers and commands are in decision 0124 §Context; in short:
+Not a spin, not a lock, not blocking-pool churn from two handoffs. The
+**candidate** cause — plausible, partly measured, not yet shown at the issue's
+magnitude — is allocator contention among *parallel* parse threads, on the
+static musl image under a CFS quota. Full numbers and commands are in decision 0124 §Context; in short:
 
 - **The first working cause is falsified.** On glibc, two-trip memory
   0.408/0.372/0.376 ms/mail against one-trip 0.388/0.386/0.392 (two CPUs,
@@ -52,6 +53,18 @@ quota. Full numbers and commands are in decision 0124 §Context; in short:
   0.110–0.133 (kernel time 6.2–6.7 s → 1.1–2.3 s).
 - **Why data-file mode looked cheaper:** its fsync parks the pool threads, so
   fewer run at once; it escapes the contention by accident.
+
+**Magnitude gap, named.** The probe's excess is about 0.10–0.13 ms per parse
+(mail-parser alone, i686 musl); the issue's excess is about 8–15 ms per mail
+(11.9–18.7 ms in memory against about 3.5 ms with the data file) on x86_64
+musl under `--cpus=2`. The probe covers the parser, not the full `build_email`
+(HTML pipeline, link and code extraction), and the allocations outside the
+gate — rustls on the two runtime workers, the insert jobs, the session buffers
+— contend on the same musl lock. The gate may therefore close the gap only
+partly. **#333 is mitigated, not closed:** it stays open until the dispatcher's
+bench runs against an image built from this tree. If the effect is small, the
+next suspects are the ungated in-memory insert on the pool and musl
+free/madvise churn.
 
 Not measured here: the musl image under `--cpus=2`. The sandbox has no Docker
 daemon, no `perf` access and no musl C toolchain (so `ring` and bundled SQLite
@@ -97,7 +110,8 @@ and `scale.py`.
   `tests/ingest_cpu.rs`, one `#[test]`: real SMTP, ~30 KB multipart mail, 8
   concurrent sessions on one client thread, 240 mails/run, six alternating
   runs, a two-worker server runtime, `getrusage`. Median in-memory CPU per mail
-  ≤ 1.25 × median data-file CPU per mail, under a 120 s bound. On glibc it
+  ≤ 1.25 × median data-file CPU per mail, with a 120 s watchdog on each run's
+  client side (a stalled server fails by name; nothing asserts on speed). On glibc it
   passes with or without the gate (ratio ≈ 0.75); it guards the issue's class,
   and AC-4 is the detector of the cause.
 - **AC-6: load reported.** Every load at most nproc/4 workers for at most 10
