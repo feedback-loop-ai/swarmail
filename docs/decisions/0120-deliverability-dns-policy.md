@@ -322,8 +322,11 @@ and changes no status; the record stays proposed.
   and the one authenticator has no name servers). The one place the report
   can differ between two evaluations of the same bytes is 0125 §8's clock
   residual, a proposed amendment of accepted 0085 §8 held for the operator.
-- **§10, "real DNS is configured and refused".** The refusal text and the
-  `declared` default stand. The promise that a later story adds a `Real`
+- **§10, "real DNS is configured and refused".** The `declared` default
+  stands. The refusal text does not: its fixed message ('real DNS needs the
+  resolver that #254 adds; this build has none') is corrected by 0125 §3 to
+  'real DNS is not supported; declare records with --dns-policy or PUT
+  /api/v1/inboxes/{inbox}/dns', because #254 adds no resolver that answers. The promise that a later story adds a `Real`
   variant moves to a later story with its own decision; 0125 adds none, and
   no network lookup exists in this build.
 

@@ -96,7 +96,7 @@ Every report carries a required `dns` member
 lookups:[{name,type:"txt",outcome:"records"|"no_records"|"temp_fail",values}]}.
 `policy` is the complete canonical effective policy; `lookups` lists each name an
 evaluation resolved, once, sorted. DKIM verification (proposed 0125, below) records
-every key, ATPS and report name it asks for; a message with no `DKIM-Signature`
+every key, ATPS and report name it asks for that lies inside decision 0120's name grammar (an out-of-grammar name fails closed and is not recorded); a message with no `DKIM-Signature`
 records none, and SPF and DMARC (#255) record theirs when they arrive. `temp_fail` is never a pass and never clean: a report with a
 `temp_fail` lookup qualifies at no no_findings_at_or_above threshold, so an assert
 does not match it and a wait rides to its deadline. `no_records` is a definite
