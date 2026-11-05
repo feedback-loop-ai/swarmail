@@ -38,6 +38,12 @@
   3. §2, the resolver is compiled in: the operator accepts this deviation from
      the brief, or rules otherwise.
 
+  *(2026-11-05, return revision 3.)* The three holds are **one merge
+  question**. The delivery merges as built only when all three are resolved.
+  If the operator refuses any one, the delivery does not merge, and that
+  ruling starts a new design return. They stay three items because they answer
+  to three authorities.
+
 ## Decision proposed
 
 1. **The crate and its features.**
@@ -107,7 +113,9 @@
      mail-auth body offset differs from Swarmail's, whose strict parse fails,
      or whose DKIM-Signature field count differs from Swarmail's root count
      (return revision 2) gets one boundary finding and nothing else, so a
-     finding's occurrence is always the root occurrence;
+     finding's occurrence is always the root occurrence. The boundary finding
+     itself is at occurrence 0, or at `null` when the root list holds no
+     DKIM-Signature field (return revision 3);
    - duplicate tags, a missing `v=` or `a=`, and non-numeric or overflowing
      `t=`/`x=`/`l=` as malformed (the crate defaults `a=` to rsa-sha256 and
      reads bad numbers as 0);
@@ -162,9 +170,25 @@
    - Swarmail's own rows, the message-level steps and every unsigned message
      are clock-free.
 
+   *Every crate clock read, reachable or not (2026-11-05, return revision
+   3).* `verify_dkim` reads `SystemTime::now()` once per call
+   (`dkim/verify.rs:84`) and uses it only to compare `x=`. That is the one
+   **reachable** read, with the radius above. mail-auth 0.14.0 has one more
+   read on this path: `is_within_pct` (`sampling.rs:15-26`), which reads
+   `SystemTime::now()` and a thread-local counter to sample RFC 6651 reports
+   for a non-passing `r=y` signature whose `_report._domainkey.<d>` record has
+   `rp<100`. Swarmail's cache adapter never answers with a report record.
+   `txt_lookup::<DkimReportRecord>` then unwraps every cached answer to `Err`,
+   and the report loop `continue`s before the sample
+   (`dkim/verify.rs:222-236`). The sampling read is therefore **unreachable**.
+   The `_report` name is still looked up and recorded, and no verdict changes,
+   because `report_address` is unused. No resolver path runs, so no
+   resolver-side time read is reached either.
+
    *The amendment proposed.* Accepted 0085 §8 says no ambient time is
    introduced into the collector. This record proposes that the sentence does
-   not cover this one crate-internal `x=` read, bounded as stated above. The
+   not cover this one reachable crate-internal `x=` read, bounded as stated
+   above. It covers no other read, because no other read is reachable. The
    record does not decide that the read is compatible. Under 0045 §8 the
    delivery PR waits for the operator's acceptance of this section.
 
@@ -559,5 +583,31 @@ since `38fd111`; accepted 0085 is unchanged. No load proof was run.
 
 The three operator holds stand: the clock (§8), the compiled resolver (§2), and
 the `Cargo.lock` additions. #255's intake inherits AC11's await clause.
+
+This record stays proposed. Only the operator accepts it.
+
+## Return revision 3 (2026-11-05, review return 3)
+
+The review panel returned the design a third time (`spec_defect: true` from
+security and independent). Every member found 0001–0003 and 0005 intact and no
+security hold. The chief's revision is in the
+[specification's revision 3 adjudication](../../specs/dkim-verification/spec.md#return-adjudication--2026-11-05-revision-3).
+In this record:
+- §8 states every crate clock read on the verification path. The
+  report-sampling read (`is_within_pct`) is made unreachable: the cache adapter
+  no longer types any answer as an RFC 6651 report record. The amendment
+  therefore covers exactly one reachable read, the `x=` comparison. One side
+  effect, a correction: a selector literally named `_report` is now read as
+  the key record it is, not failed closed as `key_invalid`;
+- §5's boundary finding is located at occurrence 0 when the root list holds a
+  DKIM-Signature field, and at `null` (0085 §1's missing field) when it holds
+  none;
+- the header says the three holds are one merge question;
+- the implementation adds a dated integration note on proposed 0121 §7, which
+  still says the evaluator is free of clock and resolver access.
+
+No rule id, schema member, dependency, feature or allowlist entry changes.
+`rule_set_id` stays `swarmail-html/6`, which has never shipped. The three
+operator holds stand.
 
 This record stays proposed. Only the operator accepts it.

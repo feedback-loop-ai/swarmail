@@ -4,6 +4,11 @@ Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Decision:
 [0125](../../docs/decisions/0125-offline-dkim-verification.md) (proposed; never
 accept it).
 
+**Revision 3, 2026-11-05.** The review returned the run to design a third
+time. Phases T, R and S are delivered (S in `8241489`, verify green). **Phase U
+is the open work, in order.** Each U task answers the findings named in
+[plan § Revision 3](plan.md#revision-3-what-changes-and-which-finding-it-answers).
+
 **Revision 2, 2026-11-05.** The review returned the run to design a second
 time. The T tasks were delivered in `adeaa12` and the R tasks in `38fd111`
 (verify passed both). Both are checked off below, with their text corrected to
@@ -243,7 +248,7 @@ Commit unsigned, in the repository's style. Never push.
   The PR body lists the three operator holds of spec § Operator holds.
   *Test:* the gate outputs, quoted in the implementation summary.
 
-## Phase S: review return 2 (in order; the open work)
+## Phase S: review return 2 (delivered in `8241489`)
 
 Order matters: S1's premise test runs before S2's guard change is trusted.
 
@@ -371,3 +376,159 @@ Order matters: S1's premise test runs before S2's guard change is trusted.
     that #255's intake inherits AC11's await clause.
 
   *Test:* the gate outputs, quoted in the implementation summary.
+
+## Phase U: review return 3 (in order; the open work)
+
+U1 runs first, because U2's text depends on the variants it measures.
+
+- [ ] **U1. Make the report sample unreachable (S spec defect; AC24).**
+  - In `src/deliverability/dkim.rs` `record()`, delete the
+    `name.starts_with("_report._domainkey.")` arm, and remove
+    `DkimReportRecord` from the `mail_auth` import (plan § Revision 3,
+    detail 1). Rewrite `record()`'s doc comment: two record types, chosen by
+    name; a report record is never built, because the crate's sampling read is
+    reached only through one; an `_atps`-shaped name is still read as ATPS. The
+    comment no longer says a selector "literally named `_report`" fails closed.
+  - `adapter_answers_without_resolver`: replace the `TxtRecord::DkimReport(_)`
+    assertion, and the `broken.example` one, with the exact variants that
+    `DomainKey::parse_records` gives for `v=DKIM1; ra=postmaster` and for
+    `nonsense`. Measure both first (detail 3). Do not name `DkimReport`.
+  - `failure_reports_ask_for_the_report_name`: add a leg declaring
+    `_report._domainkey.example.com` as `v=DKIM1; ra=postmaster; rp=0`. Assert
+    exactly `one("dkim.body_hash_mismatch.v1", 0, ERROR)` and exactly the one
+    `("_report._domainkey.example.com", Outcome::Records)` lookup, equal to the
+    `rp=100` leg. Then assert that two evaluations of that message give
+    byte-identical report JSON. Rewrite the comment "Declared, it is read as a
+    report record" to say the answer is never typed as a report record.
+  - New `report_selector_is_a_key`: a kit signature with
+    `Sign { selector: "_report", ..Sign::default() }` and its key declared at
+    `_report._domainkey.example.com` gives no `dkim.*` finding and exactly one
+    `records` lookup for that name.
+
+  *Tests:* `adapter_answers_without_resolver`,
+  `failure_reports_ask_for_the_report_name`, `report_selector_is_a_key`;
+  `grep -rn "DkimReport" src/` empty. `report_selector_is_a_key` should be
+  seen to fail (`dkim.key_invalid.v1`) before the arm is deleted.
+- [ ] **U2. Locate the boundary finding at `null` when the root holds no
+  DKIM-Signature field (I1 spec defect; AC17, AC22, AC25).**
+  - Add `Rule::located(self, occurrence: Option<u64>) -> Finding`, holding
+    today's `finding` body. `finding(usize)` calls
+    `self.located(Some(occurrence as u64))`. In `collect`'s guard `else` arm,
+    push `Rule::HeaderBoundaryAmbiguous.located((root_count > 0).then_some(0))`
+    (detail 2). No other call site changes.
+  - Update `collect`'s comment to name the `null` case.
+  - New `boundary_lone_spaced_field_is_ambiguous_at_null`: a kit-signed
+    message whose only DKIM field is renamed `DKIM-Signature :` (a space before
+    the colon). Assert that its `dkim.*` findings are exactly one
+    `dkim.header_boundary_ambiguous.v1`, `ERROR`, at
+    `Location::Header { name: "dkim-signature", occurrence: None }`, and that
+    `dns.lookups` is empty. Add the same case to
+    `rule_header_boundary_ambiguous`'s failing fixtures. Seen to fail
+    (`Some(0)`) before the change.
+  - Every existing boundary fixture keeps occurrence 0 unchanged.
+
+  *Tests:* `boundary_lone_spaced_field_is_ambiguous_at_null`,
+  `rule_header_boundary_ambiguous`,
+  `boundary_dkim_field_name_with_space_is_ambiguous` (unchanged), and exact
+  branch coverage of both `then_some` arms.
+- [ ] **U3. Surface the `null` location (I1; AC15, AC25).**
+  - `docs/guide/deliverability.md` § `dkim.header_boundary_ambiguous.v1`
+    (~l.507) and its overview (~l.440 and ~l.480): the finding is on
+    occurrence 0, or `null` when the message has no root DKIM-Signature field.
+  - `src/static/llms.txt` (~l.670): the same clause. The boundary sentence also
+    names the field-name trigger (a space before the colon).
+  - `src/static/openapi.json`, the deliverability route description: after
+    "or one message-level finding (…)", say the boundary finding is at
+    occurrence 0, or `null` when the message has no root DKIM-Signature field.
+  - Update any snapshot or test that pins the old OpenAPI or llms.txt text
+    (for example a description hash). Never keep a false one.
+
+  *Tests:* `grep -c "no root DKIM-Signature field" docs/guide/deliverability.md src/static/llms.txt src/static/openapi.json`
+  is at least 1 in each file; the OpenAPI/llms snapshot tests pass.
+- [ ] **U4. Evidence that fails on drift (C2, C3, C4, T; AC22, AC26).**
+  - `crate_lists_every_root_dkim_field`: hoist `unfold`. In the combined
+    message, make sure the empty-value case sits between two parseable
+    cases, and replace the two count assertions with list equality by
+    unfolded value (detail 5).
+  - New `strict_and_full_parses_list_the_same_fields`: a message with an `l=`
+    kit signature, a non-`l=` kit signature and a missing-`bh=` field. Assert
+    equal lengths and equal raw offsets, position by position, between
+    `fields()` of `parse_with_opts(raw, None, true)` and of
+    `parse_with_opts(raw, None, false)` (detail 6). No `debug_assert!` in
+    production code.
+  - `tests/deliverability.rs`, the `nokey` leg: replace
+    `dkim_findings(&report_none)[0]["rule_id"]` with a full-vector equality on
+    the one `dkim.key_missing.v1` finding (rule id, severity, location
+    occurrence 0, fix hint). The `tempfail` leg: the same for
+    `dkim.not_evaluated.v1`, and replace
+    `report_temp["dns"]["lookups"][0]["outcome"]` with full equality on the
+    lookups array (`[{"name":DKIM_KEY_NAME,"type":"txt","outcome":"temp_fail","values":[]}]`,
+    or whatever exact shape the live server returns; measure and pin it).
+  - The same file's `over_mcp["dns"]["lookups"][0]["name"]` read (~l.1727)
+    becomes full equality on the lookups array, like the legs above.
+  - The altered-body leg's `assert_eq!(report_bad["dns"]["lookups"], json!([]))`
+    gains a comment: this pins the crate's measured ask order on the pinned
+    version, an upgrade tripwire, not a lookup contract (spec § Report and
+    version).
+
+  *Tests:* `crate_lists_every_root_dkim_field`,
+  `strict_and_full_parses_list_the_same_fields`, and
+  `cargo test --locked --test deliverability`; `grep -n '\[0\]\["rule_id"\]\|lookups"\]\[0\]' tests/deliverability.rs`
+  is empty.
+- [ ] **U5. The clock account and comments (S; AC15, AC24).**
+  - `docs/guide/deliverability.md`, the clock-residual paragraph: after "One
+    read of the host clock remains", add one sentence. The crate's
+    RFC 6651 report sampling also reads the clock, but Swarmail never hands
+    it a report record, so that read is never reached. Add the await warning:
+    a test that awaits a clean report on a signature whose `x=` is near the
+    host clock can start to fail without new mail, so keep fixture `x=` far
+    from the wall clock or derive it from the receipt.
+  - The guide's Known limits: delete the `_report` selector clause and keep
+    the `_atps` one ("a name with an `_atps` label and no `_domainkey` one is
+    read as an ATPS record and fails closed as `dkim.key_invalid.v1`").
+  - `src/deliverability.rs` header comment: "the one reachable clock read"
+    wording, if the comment says the crate reads the clock once without that
+    qualifier. Keep it short.
+  - `Cargo.toml` mail-auth comment: "`aws-lc-rs` compiles hickory in; it is
+    unreachable because the adapter answers every name and the authenticator
+    has no name servers. Exact pin."
+
+  *Tests:* `grep -n "literally named" docs/guide/deliverability.md src/deliverability/dkim.rs`
+  empty; `guide_lists_every_dkim_rule` passes; review.
+- [ ] **U6. The 0121 integration note (G3; AC21).**
+  - Append to `docs/decisions/0121-deliverability-link-checks.md` a section
+    `## Integration note — 2026-11-05 (proposed 0125, issue #254)`. It
+    says that §7's "free of network, clock and resolver access" holds for the
+    link probe and the static link rules. Under proposed 0125 §8 the report
+    evaluator now holds one reachable crate-internal clock read (mail-auth's
+    `x=` comparison, operator hold 2), the crate's report-sampling read is
+    unreachable, and a hickory resolver is compiled in and unreachable
+    (hold 3). It also says the note changes no status, the record stays
+    proposed, and §7's text is not edited.
+  - Do not edit 0121 §7 or any other ruling text, and do not edit accepted
+    0085.
+
+  *Tests:* `grep -n "Integration note — 2026-11-05 (proposed 0125" docs/decisions/0121-deliverability-link-checks.md`
+  finds one line; `git diff fad9e7e -- docs/decisions/0085-deliverability-report.md`
+  is empty.
+- [ ] **U7. Records, PR body and gates (AC16, AC20; standing rule).**
+  - Append a dated "Implementation of return revision 3" evidence entry to
+    0125: the measured `_report` variants, the `rp=0` leg, the
+    `s=_report` verdict before and after, the `null` fixture, and the test
+    names. Edit no ruling text. If any mechanism in spec.md proves wrong,
+    correct spec.md, plan.md and this file in the same commit (standing rule).
+  - `Cargo.lock`, `evals/Cargo.lock` and `deny.toml` are unchanged since
+    `8241489`. `RULE_SET_ID` stays `swarmail-html/6`.
+  - The PR body lists the three operator holds as **one merge question**
+    (spec § Operator holds): hold 2 now covers exactly one reachable clock
+    read. It also says that #255's intake inherits AC11's await clause.
+  - Run every house gate `--locked`: fmt, clippy, tests, the binary build,
+    the evals fmt/clippy/tests against that binary, the coverage gate at exact
+    100% and its selftest, publish-guard, seal-branch,
+    `cargo deny check licenses`, the `native-tls` absence proof, and the
+    brokkr bundle compile if brokkr is present (otherwise say that verify
+    runs it). No load proof is needed. If one is run, cap it at nproc/4
+    workers for 10 minutes with a named, timed command, and report the load.
+
+  *Test:* the gate outputs, quoted in the implementation summary, and
+  `grep -rn "DkimReport" src/` empty.

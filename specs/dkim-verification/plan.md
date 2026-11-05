@@ -3,6 +3,14 @@
 Spec: [spec.md](spec.md) · Tasks: [tasks.md](tasks.md) · Decision:
 [0125](../../docs/decisions/0125-offline-dkim-verification.md) (proposed).
 
+**Revision 3, 2026-11-05.** The review returned the run to design a third
+time, on two false sentences: the clock account missed the crate's
+report-sampling read, and the boundary finding pointed at occurrence 0 when the
+root list holds no DKIM-Signature field. The return work is in
+[§ Revision 3](#revision-3-what-changes-and-which-finding-it-answers), with the
+finding each change answers and its task. Revision 2's text below stays; where
+revision 3 changes a mechanism, § Revision 3 rules.
+
 **Revision 2, 2026-11-05.** The review returned the run to design a second
 time. This plan is repaired in place again:
 - the mechanisms that the revision 1 implementation (`38fd111`) corrected only
@@ -89,7 +97,22 @@ The first plan's text is in git history at `8705096`, and revision 1's at
 | PR hold (0056 addendum) | `Cargo.lock` additions and the `deny.toml` comment; plus holds 2 and 3 |
 | decisions | 0125 stays `proposed`; 0120 gains a dated integration note; accepted 0085 is not edited |
 
-## Project structure (files touched by revision 2)
+## Project structure (files touched by revision 3)
+
+| path | change |
+|---|---|
+| `src/deliverability/dkim.rs` | `record()` loses its `_report._domainkey.` arm, and the `DkimReportRecord` import goes with it; `record()`'s doc comment is rewritten; `Rule::located(Option<u64>)` behind `finding(usize)`; the guard's refusal is located at `(root_count > 0).then_some(0)`; tests: the adapter's exact `_report` variants, the `rp=0` leg, the `s=_report` pass, the lone spaced-field fixture, value-order assertions, strict/full field equality |
+| `tests/deliverability.rs` | exact vectors for the `nokey` and `tempfail` legs; a comment on the `lookups == []` pin |
+| `docs/guide/deliverability.md`, `src/static/llms.txt`, `src/static/openapi.json` | the `null` location sentence; the unreachable sampling read; the await warning; Known limits without the `_report` selector; llms.txt's field-name trigger |
+| `Cargo.toml` | the mail-auth comment only |
+| `docs/decisions/0121-deliverability-link-checks.md` | a dated 2026-11-05 integration note on §7 (no edit of §7) |
+| `docs/decisions/0125-offline-dkim-verification.md` | revised by the chief in this design commit (header, §5, §8, return revision 3); the implementer appends evidence only |
+
+Not touched: `Cargo.lock`, `evals/`, `deny.toml`, dependencies or features,
+`.github/`, `scripts/`, `.brokkr/`, accepted 0085, the shared `headers()`
+scanner, `RULE_SET_ID`, and any schema member.
+
+## Project structure (files touched by revision 2, history)
 
 | path | change |
 |---|---|
@@ -124,6 +147,72 @@ scanner.
 
 Not touched: `Cargo.toml`, `Cargo.lock`, `evals/`, the `deny.toml` allowlist,
 `.github/`, `scripts/`, `.brokkr/`, and accepted 0085.
+
+## Revision 3: what changes, and which finding it answers
+
+Members: **G** guarantees, **C** correctness, **I** independent, **S**
+security, **T** tests. The spec's
+[revision 3 adjudication](spec.md#return-adjudication--2026-11-05-revision-3)
+gives the rulings. Every finding the panel reported at or above low, and every
+info finding with a concrete correction, has its own task in Phase U.
+
+| finding | severity | answer | where | task |
+|---|---|---|---|---|
+| S: a second ambient clock read (`is_within_pct`, report sampling) missing from the clock account | spec defect; low security residual | delete `record()`'s report-record arm, so the sample is unreachable; state every crate clock read, reachable or not | spec § Key source, § Verification time, § Operator holds, AC24; 0125 §8 (this commit) | U1, U2, U5 |
+| I1: `header_boundary_ambiguous` at occurrence 0 when the root holds no DKIM-Signature field | low; spec defect | occurrence `null` in that case, 0 otherwise | spec step 4, rule table, AC17, AC22, AC25; 0125 §5 (this commit) | U3, U5 |
+| G3: 0121 §7 still says the evaluator is free of clock and resolver access | low | a dated integration note on 0121 | spec § Scope, AC21 | U6 |
+| C2: `fields()` value order unasserted; the empty value's position never checked | low | assert the root list equals the crate's list by unfolded value in the combined message, with an empty value between two fields | AC22 | U4 |
+| C3: strict and full parse counts assumed equal | info | a test, not a `debug_assert!` (adjudication) | AC26 | U4 |
+| C4: the wire test's `lookups == []` reads as a contract | info | a comment marking it a measured ask order | AC26 | U4 |
+| T: `[0]` indexed reads on the `nokey`/`tempfail` wire legs | info | exact-vector equality | AC26 | U4 |
+| I (info b): the `Cargo.toml` hickory comment | info | reworded | spec § Live surfaces | U5 |
+| G1, C1, I (info a), S: the crate's `x=` read against accepted 0085 §8 | HIGH (held) | unchanged hold 2, now covering exactly one reachable read | spec § Operator holds; 0125 §8 | U7 (PR body) |
+| G2: the compiled resolver | MEDIUM (held) | unchanged hold 3 | 0125 §2 | U7 |
+| robustness F4: three holds could be partially accepted into a contradictory record | position | spec § Operator holds and 0125's header: one merge question | spec, 0125 header (this commit) | U7 |
+
+**No criterion was weakened.** AC15 loses one known limit (the `_report`
+selector) because revision 3's code removes the limit. AC24's `s=_report`
+fixture asserts the stronger behaviour: a pass with the key declared. AC17 and
+AC22 gain the `null` case. The criterion "never a finding at an occurrence the
+root list does not hold" was sound, so the code moves to meet it. 0125 §8's
+"one read" sentence was sound once true, so the code moves to make it true.
+
+### Design detail for revision 3
+
+1. **`record()`** keeps two arms:
+   `if !name.contains("._domainkey.") && name.contains("._atps.") { AtpsRecord::parse_records(..).into() } else { DomainKey::parse_records(..).into() }`.
+   Delete `DkimReportRecord` from the `use mail_auth::…` list. Adapter's
+   `answer` is unchanged: it records the name, then parses, so `dns.lookups`
+   bytes do not move. The doc comment says the record type is chosen by name
+   because the crate asks the cache by name only. A report record is never
+   built, because the crate's sampling read is reached only through one
+   (0125 §8). An `_atps`-shaped name with no `_domainkey` label is still read
+   as ATPS.
+2. **`Rule::located(self, occurrence: Option<u64>) -> Finding`** holds the
+   body of today's `finding`. `finding(self, occurrence: usize)` becomes
+   `self.located(Some(occurrence as u64))`. In `collect`, the guard's `else`
+   arm becomes
+   `return out.push(Rule::HeaderBoundaryAmbiguous.located((root_count > 0).then_some(0)));`.
+   `root_count` is already computed above it. No other call site changes.
+3. **Measure, don't guess.** The adapter test's two `_report` cases assert the
+   exact `TxtRecord` variant that `DomainKey::parse_records` gives for
+   `v=DKIM1; ra=postmaster` and for `nonsense`. Run it once, read the variant,
+   and pin it. Name the variant (`DomainKey(_)`, or `Error(..)` with its exact
+   error), never `DkimReport`.
+4. **`s=_report` fixture.** Sign with the kit using
+   `Sign { selector: "_report", ..Sign::default() }` (the kit already has the
+   field), and declare the kit's key at `_report._domainkey.example.com`.
+5. **Order assertion.** In `crate_lists_every_root_dkim_field`'s combined
+   message, insert the empty-value case between two parseable cases (the
+   existing `cases` order already does this if the empty value is not last;
+   check it). Replace the two count assertions with
+   `assert_eq!(root.iter().map(unfold).collect::<Vec<_>>(), ours.iter().map(unfold).collect::<Vec<_>>())`.
+   Hoist `unfold` out of the loop.
+6. **Strict/full equality** (`strict_and_full_parses_list_the_same_fields`):
+   take a message with an `l=` kit signature, a non-`l=` kit signature and a
+   missing-`bh=` field. Assert that `fields(&strict)` and `fields(&full)` have
+   equal lengths, and equal `value.as_ptr()` offsets into `raw`, position by
+   position.
 
 ## Revision 2: what changes, and which finding it answers
 
@@ -346,6 +435,19 @@ The `await … no_findings_at_or_above=warning` example moves to #255 (AC11).
 | **The operator refuses hold 2 or 3 after revision 2** | Unchanged from revision 1's rows above: the PR does not merge, and the operator rules on B/B′ or another crate |
 | **Load** | Optional. If run: `timeout 600 cargo test --locked --test deliverability -- --test-threads=$(( $(nproc)/4 ))` (at most nproc/4 workers, at most 10 minutes). Report the load applied. Nothing paid |
 
+## Revision 3 risks
+
+| risk | mitigation |
+|---|---|
+| **The sample's unreachability rests on a crate internal** (`unwrap_txt` rejecting a foreign variant) | mail-auth is pinned exactly (`=0.14.0`). AC24's adapter test, `rp=0` leg and `DkimReport` grep make the property checkable, and an upgrade re-runs all of them. A crate upgrade that changes `txt_lookup` is a reviewed dependency change, held for the operator anyway |
+| **A `_report`-named selector changes verdict** (`key_invalid` becomes a real key verification) | Intended: the old verdict came from typing records by name, and it was a documented known limit. Only the never-shipped `/6` bytes move. AC24's passing fixture proves the new verdict |
+| **The `_report` lookup answer changes type** (`DomainKey` parse, not a report record) | `dns.lookups` records the name before the parse, so the bytes are identical. `failure_reports_ask_for_the_report_name`'s `rp=100` and `rp=0` legs assert the same verdict and lookups |
+| **A consumer does not expect `occurrence: null` on a DKIM finding** | `null` is already in accepted 0085 §1 and OpenAPI's `DeliverabilityLocation` schema. The MCP structured output schema already admits it (`src/mcp.rs`, the header location's `occurrence` is `anyOf` a coordinate or `null`). The guide, llms.txt and OpenAPI say when it occurs |
+| **`located`/`finding` leaves an uncovered arm** | Both functions run on every boundary fixture. Both values of `root_count > 0` are taken: by the existing fixtures and by AC25's lone-field fixture. Exact 100% |
+| **The strict/full equality test pins pointer offsets that a crate upgrade moves** | It is meant to fail on such an upgrade. Fix the occurrence mapping first, then the test |
+| **Partial acceptance of the holds** | Spec § Operator holds and 0125's header say they are one merge question. The PR body says the same (U7) |
+| **Load** | None needed. If run: `timeout 600 cargo test --locked --test deliverability -- --test-threads=$(( $(nproc)/4 ))`, at most nproc/4 workers and 10 minutes. Report the load applied |
+
 ## Panel rulings carried into this plan
 
 The spec's [return adjudication](spec.md#return-adjudication--2026-11-05-revision-1)
@@ -369,3 +471,13 @@ Revision 2 (spec's
   wrong-key proofs for both algorithms, the derived `x=` fixture, and AC15's
   grep binding the false sentences themselves.
 - **Both** fold the record into the spec and keep the three holds.
+
+Revision 3 (spec's
+[revision 3 adjudication](spec.md#return-adjudication--2026-11-05-revision-3)):
+- **Simplicity wins** on deleting the report-record arm over normalising `rp`,
+  and on a test rather than a `debug_assert!` for parse-count equality.
+- **Robustness wins** on stating every crate clock read, reachable or not, on
+  one merge question for the three holds, and on the guide's await warning.
+- **Both** place the boundary finding at `null` only when the root list holds
+  no DKIM-Signature field, add the 0121 note, and tighten the order and wire
+  assertions.
