@@ -1672,6 +1672,9 @@ async fn dkim_signed_mail_verifies_over_the_wire() {
             "fix_hint": "The body differs from what was signed; sign the final body with the same c= (RFC 6376 section 3.7).",
         })]
     );
+    // This pins the crate's measured ask order on the pinned mail-auth version (it
+    // checks the body hash before it asks for the key): an upgrade tripwire, not a
+    // contract about which names a failing signature looks up.
     assert_eq!(report_bad["dns"]["lookups"], json!([]));
     // An inbox with no declaration sees no key: a definite negative, never a
     // resolver error, and the lookup is on the record.
@@ -1683,8 +1686,13 @@ async fn dkim_signed_mail_verifies_over_the_wire() {
     .await;
     let (_, report_none) = report(srv.http_addr, &undeclared).await;
     assert_eq!(
-        dkim_findings(&report_none)[0]["rule_id"],
-        "dkim.key_missing.v1"
+        dkim_findings(&report_none),
+        vec![json!({
+            "rule_id": "dkim.key_missing.v1",
+            "severity": "error",
+            "location": {"kind":"header","name":"dkim-signature","occurrence":0},
+            "fix_hint": "Declare a TXT record at <s>._domainkey.<d> in the DNS policy; none is declared (RFC 6376 section 3.6.2.1).",
+        })]
     );
     assert_eq!(
         report_none["dns"]["lookups"],
@@ -1701,10 +1709,18 @@ async fn dkim_signed_mail_verifies_over_the_wire() {
     .await;
     let (_, report_temp) = report(srv.http_addr, &temp).await;
     assert_eq!(
-        dkim_findings(&report_temp)[0]["rule_id"],
-        "dkim.not_evaluated.v1"
+        dkim_findings(&report_temp),
+        vec![json!({
+            "rule_id": "dkim.not_evaluated.v1",
+            "severity": "error",
+            "location": {"kind":"header","name":"dkim-signature","occurrence":0},
+            "fix_hint": "The key lookup failed temporarily, so the signature was not evaluated; fix the DNS answer and retry (RFC 6376 section 6.1.2).",
+        })]
     );
-    assert_eq!(report_temp["dns"]["lookups"][0]["outcome"], "temp_fail");
+    assert_eq!(
+        report_temp["dns"]["lookups"],
+        json!([{"name":DKIM_KEY_NAME,"type":"txt","outcome":"temp_fail","values":[]}])
+    );
     // MCP serves the same report text on both messages: no DKIM finding and the
     // recorded key lookup for the signed one, the named finding for the altered one.
     for (id, expected) in [(&good, &report_good), (&bad, &report_bad)] {
@@ -1724,7 +1740,11 @@ async fn dkim_signed_mail_verifies_over_the_wire() {
     .await;
     let over_mcp = result_text(&reply);
     assert_eq!(dkim_findings(&over_mcp), Vec::<Value>::new());
-    assert_eq!(over_mcp["dns"]["lookups"][0]["name"], DKIM_KEY_NAME);
+    assert_eq!(
+        over_mcp["dns"]["lookups"],
+        json!([{"name":DKIM_KEY_NAME,"type":"txt","outcome":"records",
+                "values":[format!("v=DKIM1; k=ed25519; p={DKIM_PUBLIC}")]}])
+    );
     srv.stop().await;
 }
 

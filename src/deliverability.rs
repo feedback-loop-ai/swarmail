@@ -1,8 +1,10 @@
 //! Lazy analysis of immutable stored bytes. This is separate from ingest extraction.
 //! No network, clock, persistence or Store guard enters the evaluator (0085), with
 //! one stated exception: the `mail-auth` DKIM verifier compares a signature's `x=`
-//! with the wall clock inside the crate. Swarmail reads no clock and judges `x=` at
-//! the message's receipt second. The crate's read is the clock residual: once the
+//! with the wall clock inside the crate, its one reachable clock read (its report
+//! sampling reads the clock too, but is never reached). Swarmail reads no clock and
+//! judges `x=` at the message's receipt second. The crate's read is the clock
+//! residual: once the
 //! host clock reaches an `x=` that is after the receipt second, every verdict the
 //! crate would have decided for that signature becomes
 //! `dkim.expired_since_receipt.v1` and its key lookups vanish, so a clean report

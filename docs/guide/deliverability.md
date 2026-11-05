@@ -394,7 +394,9 @@ curl -X PUT localhost:8025/api/v1/inboxes/qa/dns -d '{"txt":[
 Every name the verifier asks for is answered from that map and recorded in the
 report's `dns.lookups`: the key name `<s>._domainkey.<d>`, the RFC 6541 ATPS name
 when a verified signature carries `atps=` for a From domain, and the RFC 6651
-`_report._domainkey.<d>` name when a failing signature has `r=y`. A name outside
+`_report._domainkey.<d>` name when a failing signature has `r=y` (asked, answered
+and recorded like any name, but never typed as a report record: see the clock
+residual). A name outside
 the policy's grammar is never looked up. The crate compiles in a DNS resolver (it
 cannot be built without one) and it is unreachable: every name is answered by the
 declared map, and the one authenticator has no name servers. Real DNS is not
@@ -419,6 +421,11 @@ ATPS lookups for that signature also disappear from `dns.lookups`. So a clean or
 warning-only report can begin to disqualify, and a report recomputed after cache
 eviction can differ from the cached one: the one stated exception to
 byte-identical reports. The move is one-way unless the host clock is set back.
+The crate's RFC 6651 report sampling also reads the clock, but Swarmail never
+hands it a report record, so that read is never reached. A test that awaits a
+clean report on a signature whose `x=` is near the host clock can start to fail
+without any new mail: keep a fixture's `x=` far from the wall clock, or derive it
+from the receipt.
 Malformed, unsupported, `from_unsigned` and `signature_expired` verdicts, every
 message-level finding and every unsigned message are clock-free. Whether this
 read is compatible with accepted decision 0085 section 8 is the operator's to
@@ -446,7 +453,9 @@ goes on, so the two would hash different bodies; and it reads a name with a spac
 before the colon (`DKIM-Signature :`) as a signature where Swarmail's scanner
 names no field, so the two would count different fields. A whitespace-only line
 among the fields is a continuation for both and is no difference. A message with
-no `DKIM-Signature` never gets this finding. A passing check proves the body and
+no `DKIM-Signature` never gets this finding. The finding is on occurrence 0, or
+on `null` when the message has no root DKIM-Signature field (a lone
+`DKIM-Signature :` is no field to Swarmail). A passing check proves the body and
 the field count are shared, and nothing more.
 
 **Bounds.** At most 16 `DKIM-Signature` fields per message and at most 128 names
@@ -469,9 +478,9 @@ rather than on a threshold.
 
 **Known limits.** The crate does not check a key's bytes before using it, so a
 `p=` that is base64 but not a public key fails verification and reads as
-`dkim.signature_mismatch.v1`, not `dkim.key_invalid.v1`. A selector literally
-named `_report`, or a name with an `_atps` label and no `_domainkey` one, is read
-as the other record type and fails closed as `dkim.key_invalid.v1`. **`l=`
+`dkim.signature_mismatch.v1`, not `dkim.key_invalid.v1`. A name with an `_atps`
+label and no `_domainkey` one is read as an ATPS record and fails closed as
+`dkim.key_invalid.v1`. **`l=`
 interop gap:** the crate counts `l=` in raw bytes, RFC 6376 section 3.4.5 in
 canonicalized ones, so a conformant signer whose raw and canonical `l=` prefixes
 differ fails as `dkim.body_hash_mismatch.v1`. That is fail-closed and not detected:
@@ -504,7 +513,7 @@ check above guarantees the verifier lists the same fields).
 
 ### `dkim.header_boundary_ambiguous.v1`
 
-**Severity:** error. The verifier's header/body boundary differs from Swarmail's, so the body it would hash is not the body the rest of the report reads (a line without a colon in the header block, or a whitespace-only first line), or the verifier lists a different number of `DKIM-Signature` fields than Swarmail's root list (a field name with a space before the colon). Only a message with a `DKIM-Signature` gets it; the finding is on occurrence 0 and nothing else is judged or looked up.
+**Severity:** error. The verifier's header/body boundary differs from Swarmail's, so the body it would hash is not the body the rest of the report reads (a line without a colon in the header block, or a whitespace-only first line), or the verifier lists a different number of `DKIM-Signature` fields than Swarmail's root list (a field name with a space before the colon). Only a message with a `DKIM-Signature` gets it; the finding is on occurrence 0 (`null` when the message has no root DKIM-Signature field, as with a lone `DKIM-Signature :`) and nothing else is judged or looked up.
 
 **Hint:** A line in the header block that is not a header field (no colon, or only whitespace at the very top), or a DKIM-Signature field name that not every parser accepts (such as a space before the colon), ends or splits the headers differently at different receivers; remove it, fold it into the previous field, or write the name as DKIM-Signature: (RFC 5322 sections 2.2 and 2.2.3).
 

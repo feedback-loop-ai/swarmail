@@ -381,7 +381,7 @@ Order matters: S1's premise test runs before S2's guard change is trusted.
 
 U1 runs first, because U2's text depends on the variants it measures.
 
-- [ ] **U1. Make the report sample unreachable (S spec defect; AC24).**
+- [x] **U1. Make the report sample unreachable (S spec defect; AC24).**
   - In `src/deliverability/dkim.rs` `record()`, delete the
     `name.starts_with("_report._domainkey.")` arm, and remove
     `DkimReportRecord` from the `mail_auth` import (plan § Revision 3,
@@ -409,7 +409,7 @@ U1 runs first, because U2's text depends on the variants it measures.
   `failure_reports_ask_for_the_report_name`, `report_selector_is_a_key`;
   `grep -rn "DkimReport" src/` empty. `report_selector_is_a_key` should be
   seen to fail (`dkim.key_invalid.v1`) before the arm is deleted.
-- [ ] **U2. Locate the boundary finding at `null` when the root holds no
+- [x] **U2. Locate the boundary finding at `null` when the root holds no
   DKIM-Signature field (I1 spec defect; AC17, AC22, AC25).**
   - Add `Rule::located(self, occurrence: Option<u64>) -> Finding`, holding
     today's `finding` body. `finding(usize)` calls
@@ -431,7 +431,7 @@ U1 runs first, because U2's text depends on the variants it measures.
   `rule_header_boundary_ambiguous`,
   `boundary_dkim_field_name_with_space_is_ambiguous` (unchanged), and exact
   branch coverage of both `then_some` arms.
-- [ ] **U3. Surface the `null` location (I1; AC15, AC25).**
+- [x] **U3. Surface the `null` location (I1; AC15, AC25).**
   - `docs/guide/deliverability.md` § `dkim.header_boundary_ambiguous.v1`
     (~l.507) and its overview (~l.440 and ~l.480): the finding is on
     occurrence 0, or `null` when the message has no root DKIM-Signature field.
@@ -445,7 +445,7 @@ U1 runs first, because U2's text depends on the variants it measures.
 
   *Tests:* `grep -c "no root DKIM-Signature field" docs/guide/deliverability.md src/static/llms.txt src/static/openapi.json`
   is at least 1 in each file; the OpenAPI/llms snapshot tests pass.
-- [ ] **U4. Evidence that fails on drift (C2, C3, C4, T; AC22, AC26).**
+- [x] **U4. Evidence that fails on drift (C2, C3, C4, T; AC22, AC26).**
   - `crate_lists_every_root_dkim_field`: hoist `unfold`. In the combined
     message, make sure the empty-value case sits between two parseable
     cases, and replace the two count assertions with list equality by
@@ -475,7 +475,7 @@ U1 runs first, because U2's text depends on the variants it measures.
   `strict_and_full_parses_list_the_same_fields`, and
   `cargo test --locked --test deliverability`; `grep -n '\[0\]\["rule_id"\]\|lookups"\]\[0\]' tests/deliverability.rs`
   is empty.
-- [ ] **U5. The clock account and comments (S; AC15, AC24).**
+- [x] **U5. The clock account and comments (S; AC15, AC24).**
   - `docs/guide/deliverability.md`, the clock-residual paragraph: after "One
     read of the host clock remains", add one sentence. The crate's
     RFC 6651 report sampling also reads the clock, but Swarmail never hands
@@ -495,7 +495,7 @@ U1 runs first, because U2's text depends on the variants it measures.
 
   *Tests:* `grep -n "literally named" docs/guide/deliverability.md src/deliverability/dkim.rs`
   empty; `guide_lists_every_dkim_rule` passes; review.
-- [ ] **U6. The 0121 integration note (G3; AC21).**
+- [x] **U6. The 0121 integration note (G3; AC21).**
   - Append to `docs/decisions/0121-deliverability-link-checks.md` a section
     `## Integration note — 2026-11-05 (proposed 0125, issue #254)`. It
     says that §7's "free of network, clock and resolver access" holds for the
@@ -511,7 +511,7 @@ U1 runs first, because U2's text depends on the variants it measures.
   *Tests:* `grep -n "Integration note — 2026-11-05 (proposed 0125" docs/decisions/0121-deliverability-link-checks.md`
   finds one line; `git diff fad9e7e -- docs/decisions/0085-deliverability-report.md`
   is empty.
-- [ ] **U7. Records, PR body and gates (AC16, AC20; standing rule).**
+- [x] **U7. Records, PR body and gates (AC16, AC20; standing rule).**
   - Append a dated "Implementation of return revision 3" evidence entry to
     0125: the measured `_report` variants, the `rp=0` leg, the
     `s=_report` verdict before and after, the `null` fixture, and the test

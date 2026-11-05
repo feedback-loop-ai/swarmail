@@ -35,8 +35,7 @@ use super::{AnalysisError, Collector, Finding, Headers, Location, Severity};
 use futures_util::FutureExt;
 use mail_auth::crypto::{Algorithm, CryptoError};
 use mail_auth::dkim::{
-    AtpsRecord, Canonicalization, DkimError, DkimReportRecord, DomainKey, Signature,
-    VerifySignature,
+    AtpsRecord, Canonicalization, DkimError, DomainKey, Signature, VerifySignature,
 };
 use mail_auth::dns::TxtRecordParser;
 use mail_auth::headers::Writer;
@@ -195,11 +194,17 @@ impl Rule {
     }
 
     fn finding(self, occurrence: usize) -> Finding {
+        self.located(Some(occurrence as u64))
+    }
+
+    /// The finding at an occurrence of the root header list, or at `None` (0085
+    /// section 1's value for a missing field) when the list holds none.
+    fn located(self, occurrence: Option<u64>) -> Finding {
         Finding {
             rule_id: self.id().into(),
             location: Location::Header {
                 name: "dkim-signature".into(),
-                occurrence: Some(occurrence as u64),
+                occurrence,
             },
             severity: self.severity(),
             fix_hint: self.hint().into(),
@@ -276,14 +281,16 @@ impl Adapter<'_> {
 }
 
 /// The record type is chosen by the shape of the name, because the crate asks
-/// the cache by name only. A selector literally named `_report` (or one whose
-/// name has an `_atps` label and no `_domainkey` one) reads as the wrong type and
-/// fails closed as `key_invalid`, never as a pass.
+/// the cache by name only. There are two types: a name with an `_atps` label and no
+/// `_domainkey` one is an ATPS record (and fails closed as `key_invalid` if the
+/// signature's selector put it there), and every other name is a key record. A
+/// report record is never built: the crate's RFC 6651 report sampling, which reads
+/// the clock, is reached only through one (0125 section 8), so even a failing
+/// `r=y` signature's `_report._domainkey.<d>` name is looked up, recorded and
+/// answered as a key record, which the crate's report loop discards unused.
 fn record(name: &str, values: Vec<String>) -> TxtRecord {
     let records: Vec<Vec<u8>> = values.into_iter().map(String::into_bytes).collect();
-    if name.starts_with("_report._domainkey.") {
-        DkimReportRecord::parse_records(&records).into()
-    } else if !name.contains("._domainkey.") && name.contains("._atps.") {
+    if !name.contains("._domainkey.") && name.contains("._atps.") {
         AtpsRecord::parse_records(&records).into()
     } else {
         DomainKey::parse_records(&records).into()
@@ -677,7 +684,9 @@ pub(super) fn collect(
     // colon-less line ends the crate's headers and not Swarmail's, or the other
     // way round), and it must list as many DKIM-Signature fields as the root list
     // does, or the occurrence of a finding is not the root's (a name with a space
-    // before the colon is a signature to the crate and no field to Swarmail).
+    // before the colon is a signature to the crate and no field to Swarmail). The
+    // boundary finding itself sits at root occurrence 0, or at `null` when the root
+    // list holds no DKIM-Signature field to point at.
     let root_count = root
         .iter()
         .filter(|(name, _)| is_dkim_signature(name))
@@ -686,7 +695,7 @@ pub(super) fn collect(
         .as_ref()
         .filter(|message| message.body_offset() == size && first.len() == root_count)
     else {
-        return out.push(Rule::HeaderBoundaryAmbiguous.finding(0));
+        return out.push(Rule::HeaderBoundaryAmbiguous.located((root_count > 0).then_some(0)));
     };
     let by_count = (first.len() > MAX_DKIM_SIGNATURES).then_some(MAX_DKIM_SIGNATURES);
     let by_names = first
@@ -1051,14 +1060,22 @@ mod tests {
             ask(&adapter, "SEL._DomainKey.Example.COM."),
             TxtRecord::DomainKey(_)
         ));
-        assert!(matches!(
-            ask(&adapter, "_report._domainkey.example.com."),
-            TxtRecord::DkimReport(_)
-        ));
-        assert!(matches!(
-            ask(&adapter, "_report._domainkey.broken.example."),
-            TxtRecord::Error(Error::Dns(DnsError::InvalidRecordType))
-        ));
+        // A report record is never built, even for a `_report` name: a report-shaped
+        // string there is a key record without a key, and a nonsense one is no key
+        // either (measured: `DomainKey::parse_records` gives `InvalidRecordType` for
+        // both `v=DKIM1; ra=postmaster` and `nonsense`).
+        for name in [
+            "_report._domainkey.example.com.",
+            "_report._domainkey.broken.example.",
+        ] {
+            assert!(
+                matches!(
+                    ask(&adapter, name),
+                    TxtRecord::Error(Error::Dns(DnsError::InvalidRecordType))
+                ),
+                "{name}"
+            );
+        }
         assert!(matches!(
             ask(&adapter, &format!("{atps}.")),
             TxtRecord::Atps(_)
@@ -2259,6 +2276,40 @@ mod tests {
         }
     }
 
+    /// The one `dkim.header_boundary_ambiguous.v1` finding, at `null`: the root list
+    /// holds no DKIM-Signature field, so there is no occurrence to point at.
+    fn assert_ambiguous_at_null(raw: &[u8], world: &Arc<Effective>) {
+        let report = report(raw, 0, world);
+        let found: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.rule_id.starts_with("dkim."))
+            .collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].rule_id, "dkim.header_boundary_ambiguous.v1");
+        assert_eq!(found[0].severity, ERROR);
+        assert_eq!(
+            found[0].location,
+            Location::Header {
+                name: "dkim-signature".into(),
+                occurrence: None,
+            }
+        );
+        assert!(report.dns.lookups.is_empty());
+    }
+
+    #[test]
+    fn boundary_lone_spaced_field_is_ambiguous_at_null() {
+        // The only DKIM field is named with a space before the colon: the crate reads
+        // a signature, the root list holds none (U2: the finding is located at null).
+        let world = key_of(Kind::Ed25519);
+        let mut raw = spaced_name();
+        raw.extend_from_slice(&msg());
+        let (root, listed) = root_and_crate_values(&raw);
+        assert_eq!((root.len(), listed.len()), (0, 1));
+        assert_ambiguous_at_null(&raw, &world);
+    }
+
     #[test]
     fn unsigned_stray_and_whitespace_lines_have_no_dkim_finding() {
         // The guard is gated on "signed": mail with no signature gains nothing,
@@ -2294,6 +2345,11 @@ mod tests {
         let mut spaced = spaced_name();
         spaced.extend_from_slice(&base());
         assert_ambiguous(&spaced, &world);
+        // Failing fixture, located at null: the lone field the root list does not
+        // hold, so the finding has no occurrence to point at.
+        let mut lone = spaced_name();
+        lone.extend_from_slice(&msg());
+        assert_ambiguous_at_null(&lone, &world);
         // Passing: a whitespace-only line inside the block is no difference.
         let mut inside = header_of(&Sign::default(), &msg());
         inside.extend_from_slice(b" \r\n");
@@ -2328,36 +2384,38 @@ mod tests {
         let good = header_of(&Sign::default(), &msg());
         let good = String::from_utf8(good).unwrap();
         let value = good.strip_prefix("DKIM-Signature:").unwrap().to_string();
+        // The empty value sits between two fields that parse, so a list that put it
+        // first or last, or dropped it, would differ from the root's.
         let cases: Vec<(&str, String)> = vec![
             ("DKIM-Signature", value.clone()),
             ("dkim-signature", value.clone()),
+            ("DKIM-Signature", "\r\n".into()),
             ("DKIM-SIGNATURE", value.clone()),
             ("dKiM-sIgNaTuRe", value.clone()),
-            // A value the parser rejects: no `bh=`, then an empty value.
+            // A value the parser rejects: no `bh=`.
             (
                 "DKIM-Signature",
                 " v=1; a=ed25519-sha256; d=example.com; s=sel; h=from; b=AAAA\r\n".into(),
             ),
-            ("DKIM-Signature", "\r\n".into()),
             // A value folded across lines.
             ("DKIM-Signature", value.replacen("; ", ";\r\n\t", 3)),
         ];
+        let unfold = |bytes: &Vec<u8>| -> String {
+            String::from_utf8_lossy(bytes)
+                .split(|c: char| c.is_ascii_whitespace())
+                .filter(|word| !word.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
         for (name, value) in &cases {
             let mut raw = format!("{name}:{value}").into_bytes();
             raw.extend_from_slice(&msg());
             let (root, ours) = root_and_crate_values(&raw);
             assert_eq!(root.len(), 1, "{name}: the root list holds the field");
             assert_eq!(ours.len(), 1, "{name}: the crate lists the field");
-            let unfold = |bytes: &[u8]| -> String {
-                String::from_utf8_lossy(bytes)
-                    .split(|c: char| c.is_ascii_whitespace())
-                    .filter(|word| !word.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            };
             assert_eq!(unfold(&root[0]), unfold(&ours[0]), "{name}: same field");
         }
-        // Several spellings in one message keep their order and their count.
+        // Several spellings in one message: the same fields, in the same order.
         let mut raw = Vec::new();
         for (name, value) in &cases {
             raw.extend_from_slice(format!("{name}:{value}").as_bytes());
@@ -2365,7 +2423,43 @@ mod tests {
         raw.extend_from_slice(&msg());
         let (root, ours) = root_and_crate_values(&raw);
         assert_eq!(root.len(), cases.len());
-        assert_eq!(ours.len(), cases.len());
+        assert_eq!(
+            root.iter().map(unfold).collect::<Vec<_>>(),
+            ours.iter().map(unfold).collect::<Vec<_>>()
+        );
+    }
+
+    /// The strict parse and the full one (used when a field carries `l=`) list the
+    /// same fields at the same places, so the occurrence of a finding does not move
+    /// between them.
+    #[test]
+    fn strict_and_full_parses_list_the_same_fields() {
+        let with_l = header_of(
+            &Sign {
+                body_length: true,
+                ..Sign::default()
+            },
+            &msg(),
+        );
+        let without_l = header_of(&Sign::default(), &msg());
+        let no_bh =
+            b"DKIM-Signature: v=1; a=ed25519-sha256; d=example.com; s=sel; h=from; b=AAAA\r\n";
+        let mut raw = with_l.clone();
+        raw.extend_from_slice(&without_l);
+        raw.extend_from_slice(no_bh);
+        raw.extend_from_slice(&msg());
+        let strict = AuthenticatedMessage::parse_with_opts(&raw, None, true).unwrap();
+        let full = AuthenticatedMessage::parse_with_opts(&raw, None, false).unwrap();
+        let (strict, full) = (fields(&strict), fields(&full));
+        assert_eq!(strict.len(), 3);
+        assert_eq!(strict.iter().filter(|f| f.scan.has_l).count(), 1);
+        assert_eq!(strict.len(), full.len());
+        let base = raw.as_ptr() as usize;
+        let at = |field: &Field<'_>| field.value.as_ptr() as usize - base;
+        assert_eq!(
+            strict.iter().map(at).collect::<Vec<_>>(),
+            full.iter().map(at).collect::<Vec<_>>()
+        );
     }
 
     /// S3: a finding's occurrence is the field's index among the root list's
@@ -2737,16 +2831,53 @@ mod tests {
                 Outcome::NoRecords
             )]
         );
-        // Declared, it is read as a report record; the verdict is unchanged.
-        let declared = policy(
-            &[(
-                "_report._domainkey.example.com",
-                "v=DKIM1; ra=postmaster".into(),
-            )],
+        // Declared, the answer is never typed as a report record (0125 section 8:
+        // the crate's report sampling reads the clock, and is reached only through
+        // one), so the verdict and the one lookup are the same whatever `rp=` says.
+        for rp in ["100", "0"] {
+            let declared = policy(
+                &[(
+                    "_report._domainkey.example.com",
+                    format!("v=DKIM1; ra=postmaster; rp={rp}"),
+                )],
+                &[],
+            );
+            let report = report_of(altered.as_bytes(), &declared);
+            assert_eq!(dkim(&report), one("dkim.body_hash_mismatch.v1", 0, ERROR));
+            assert_eq!(
+                lookups(&report.dns),
+                vec![(
+                    "_report._domainkey.example.com".to_string(),
+                    Outcome::Records
+                )],
+                "rp={rp}"
+            );
+            // Two evaluations of the same message agree byte for byte.
+            let first = serde_json::to_vec(&report).unwrap();
+            let second = serde_json::to_vec(&report_of(altered.as_bytes(), &declared)).unwrap();
+            assert!(first == second, "rp={rp}");
+        }
+        // A passing signature asks for no report record.
+        let report = report_of(&signed(&o, &msg()), &key_of(Kind::Ed25519));
+        assert_eq!(lookups(&report.dns).len(), 1);
+    }
+
+    #[test]
+    fn report_selector_is_a_key() {
+        // A selector of `_report` makes an ordinary key name: the answer is read as a
+        // key record, so the signature passes. (Read as a report record, it would
+        // fail closed as `key_invalid`.)
+        let o = Sign {
+            selector: "_report",
+            ..Sign::default()
+        };
+        let raw = signed(&o, &msg());
+        let world = policy(
+            &[("_report._domainkey.example.com", Kind::Ed25519.record())],
             &[],
         );
-        let report = report_of(altered.as_bytes(), &declared);
-        assert_eq!(dkim(&report), one("dkim.body_hash_mismatch.v1", 0, ERROR));
+        let report = report_of(&raw, &world);
+        assert_eq!(dkim(&report), vec![]);
         assert_eq!(
             lookups(&report.dns),
             vec![(
@@ -2754,9 +2885,6 @@ mod tests {
                 Outcome::Records
             )]
         );
-        // A passing signature asks for no report record.
-        let report = report_of(&signed(&o, &msg()), &key_of(Kind::Ed25519));
-        assert_eq!(lookups(&report.dns).len(), 1);
     }
 
     #[test]

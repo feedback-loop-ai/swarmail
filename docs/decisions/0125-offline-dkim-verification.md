@@ -611,3 +611,51 @@ No rule id, schema member, dependency, feature or allowlist entry changes.
 operator holds stand.
 
 This record stays proposed. Only the operator accepts it.
+
+## Implementation of return revision 3 (2026-11-05)
+
+The implementation seat brought the branch into line with the revision 3
+specification. No ruling text above changes. Evidence:
+
+1. **The report sample is unreachable.** `record()` lost its
+   `_report._domainkey.` arm and `DkimReportRecord` left the `mail_auth` import;
+   `grep -rn "DkimReport" src/` is empty. The adapter's `answer` still records the
+   name before it parses, so `dns.lookups` bytes do not move.
+2. **Measured variants.** `DomainKey::parse_records` gives
+   `Error(Dns(InvalidRecordType))` for both `v=DKIM1; ra=postmaster` and
+   `nonsense`; `adapter_answers_without_resolver` pins both and names no report
+   variant.
+3. **The `rp=0` leg.** `failure_reports_ask_for_the_report_name` declares
+   `_report._domainkey.example.com` with `rp=100` and with `rp=0`. Each gives
+   exactly one `dkim.body_hash_mismatch.v1` at occurrence 0 and exactly one
+   `records` lookup of that name, and two evaluations of each are
+   byte-identical. (The two legs' reports differ from each other only by the
+   declared policy they echo.)
+4. **`s=_report` before and after.** `report_selector_is_a_key` signs with the
+   selector `_report` and declares the key at `_report._domainkey.example.com`.
+   Before the arm was deleted it gave `dkim.key_invalid.v1`; after, no `dkim.*`
+   finding and one `records` lookup.
+5. **The `null` location.** `Rule::located(Option<u64>)` holds the finding body;
+   the boundary guard passes `(root_count > 0).then_some(0)`.
+   `boundary_lone_spaced_field_is_ambiguous_at_null` (a lone `DKIM-Signature :`
+   field) was seen to fail with `Some(0)` before the change; it now finds exactly
+   one `dkim.header_boundary_ambiguous.v1` at `occurrence: None` and no lookup.
+   The same case is a failing fixture of `rule_header_boundary_ambiguous`, and
+   every older boundary fixture keeps occurrence 0.
+6. **Evidence that fails on drift.** `crate_lists_every_root_dkim_field` asserts
+   list equality by unfolded value, with the empty value between two parseable
+   fields; `strict_and_full_parses_list_the_same_fields` asserts equal length and
+   equal raw offsets between the strict and the full parse; the wire test's
+   `nokey`, `tempfail` and MCP legs assert whole findings and whole lookups
+   arrays, and its `lookups == []` carries a comment marking it a measured ask
+   order on the pinned version.
+7. **Surfaces.** The guide, `llms.txt` and the OpenAPI description state the
+   `null` case; the guide's clock paragraph names the unreachable sampling read and
+   the await warning, and its known limits lost the `_report` clause. A dated
+   integration note was appended to proposed 0121 (§7's text is not edited).
+
+`Cargo.lock`, `evals/Cargo.lock` and `deny.toml` are unchanged since `8241489`,
+and `rule_set_id` stays `swarmail-html/6`. The three operator holds stand as one
+merge question; #255's intake inherits AC11's await clause.
+
+This record stays proposed. Only the operator accepts it.

@@ -79,8 +79,9 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # one widening for the authentication stories (epic #251, 2026-10-26), so
 # #255 and #256 reuse it. mail-auth (Apache-2.0 OR MIT) parses, canonicalizes
 # and verifies DKIM; every key it asks for is answered from 0120's declared DNS
-# map through a cache adapter. It cannot be built without a DNS backend, so
-# `aws-lc-rs` brings hickory in unreachable (empty name-server list). Exact pin.
+# map through a cache adapter. `aws-lc-rs` compiles hickory in; it is
+# unreachable because the adapter answers every name and the authenticator has no
+# name servers. Exact pin.
 mail-auth = { version = "=0.14.0", default-features = false, features = ["aws-lc-rs"] }
 
 [[bench]]
