@@ -151,6 +151,17 @@ pub fn newest_first(a: &Arc<Email>, b: &Arc<Email>) -> std::cmp::Ordering {
     (b.received_ms, &b.id).cmp(&(a.received_ms, &a.id))
 }
 
+/// How many parses may run at once (decision 0124): the cores this process
+/// may actually use. `available_parallelism` reads the affinity mask and the
+/// cgroup CPU quota, so `docker run --cpus=2` yields 2 on a 128-core host —
+/// the limit the quota enforces in time is then also the limit on how many
+/// threads contend in space. Never zero: an unreadable answer is one.
+fn parse_width() -> usize {
+    std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
+}
+
 pub struct Store {
     pub(crate) reports: Service,
     /// Oldest at the front, newest at the back (insertion order). A deque
@@ -181,6 +192,24 @@ pub struct Store {
     /// lock-free — they only ever take DashMap shard guards, and no path
     /// takes a shard guard and then this lock (the order is one-way).
     mutation: std::sync::Mutex<()>,
+    /// Admission to the CPU-bound parse that runs on the blocking pool
+    /// before a mail reaches [`Store::insert`] (decision 0124): one permit
+    /// per core the process may use. The parse is pure CPU and allocates
+    /// heavily; unadmitted, a burst of N sessions runs N parses at once on
+    /// N short-lived pool threads, all fighting for the allocator — on a
+    /// static musl build (the shipped image) the allocator is one global
+    /// lock, and the burst then costs several times the CPU of the same
+    /// work done a core's worth at a time (issue #333). The permit is taken
+    /// *asynchronously*, so no pool thread ever parks on it, and it covers
+    /// the parse only: the commit is not behind it (the mutation boundary
+    /// and the persist mutex already order commits, 0014), so a slow fsync
+    /// never starves the parse of the next mail.
+    parse_gate: Arc<tokio::sync::Semaphore>,
+    /// Test instrument: how many `parse_permit` calls found the gate full
+    /// and so had to wait. A test reads it to know a session has reached the
+    /// wait, rather than sleeping and hoping.
+    #[cfg(test)]
+    parse_waits: std::sync::atomic::AtomicUsize,
     /// Maximum emails retained per inbox (oldest pruned). 0 = unlimited.
     max_per_inbox: usize,
     totals: Totals,
@@ -270,6 +299,9 @@ impl Store {
             watchers: DashMap::new(),
             global_tx,
             mutation: std::sync::Mutex::new(()),
+            parse_gate: Arc::new(tokio::sync::Semaphore::new(parse_width())),
+            #[cfg(test)]
+            parse_waits: std::sync::atomic::AtomicUsize::new(0),
             max_per_inbox,
             totals: Totals::default(),
             persist: None,
@@ -840,6 +872,41 @@ impl Store {
         }
         self.watchers.clear();
         Ok(drained_ids.len())
+    }
+
+    /// Waits for one slot of the parse gate (decision 0124) and returns the
+    /// permit the caller moves into its [`Store::offload`] closure, so the
+    /// slot is held for exactly the CPU-bound parse and released when the
+    /// closure ends — returns, panics, or is dropped unrun by a stopping
+    /// runtime. Dropping the future while it waits gives its place up; the
+    /// gate is FIFO, so waiting sessions are admitted in arrival order. It is
+    /// taken **before** the parse and released **before** the commit, never
+    /// held across [`Store::insert`]: the 0014 boundary and the persist
+    /// mutex already serialise commits, and a permit held across an fsync
+    /// would let one slow disk stall the next mail's parse.
+    pub(crate) async fn parse_permit(self: &Arc<Self>) -> tokio::sync::OwnedSemaphorePermit {
+        #[cfg(test)]
+        if self.parse_gate.available_permits() == 0 {
+            self.parse_waits.fetch_add(1, Ordering::SeqCst);
+        }
+        self.parse_gate
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("the parse gate is never closed")
+    }
+
+    /// Test instrument: how many callers have had to wait at the gate.
+    #[cfg(test)]
+    pub(crate) fn parse_waits_for_test(&self) -> usize {
+        self.parse_waits.load(Ordering::SeqCst)
+    }
+
+    /// Test seam: narrows the gate before the store is shared, so a test can
+    /// drive more sessions than permits on a host of any width.
+    #[cfg(test)]
+    pub(crate) fn set_parse_width_for_test(&mut self, width: usize) {
+        self.parse_gate = Arc::new(tokio::sync::Semaphore::new(width));
     }
 
     /// Runs a whole mutation on tokio's blocking pool. The returned future
@@ -2772,5 +2839,183 @@ mod focused_wait_tests {
             .unwrap();
         assert_eq!(outcome, Some(json!(["target"])));
         store.set_wait_clock(None);
+    }
+}
+
+/// The parse gate (decision 0124, issue #333): at most one CPU-bound parse
+/// per usable core runs on the blocking pool at a time, however many
+/// sessions are in flight. Deterministic — counters and a held condition, no
+/// CPU measurement and no sleep: every wait is a poll against a real deadline.
+#[cfg(test)]
+mod parse_gate_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
+    /// Polls `ready` on the test's runtime until it holds, or fails at a real
+    /// deadline: a condition awaited, never a sleep depended on.
+    async fn until(what: &str, ready: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !ready() {
+            assert!(Instant::now() < deadline, "never reached: {what}");
+            tokio::task::yield_now().await;
+        }
+    }
+
+    type Latch = Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>;
+
+    /// Opens the latch when it drops — on the success path and on an unwind
+    /// alike. A failed assertion must not leave pool threads parked on the
+    /// latch: the runtime would wait for them forever and the failure would
+    /// show as a hang rather than a message.
+    struct OpenOnDrop(Latch);
+
+    impl OpenOnDrop {
+        fn open(&self) {
+            *self.0.0.lock().unwrap() = true;
+            self.0.1.notify_all();
+        }
+    }
+
+    impl Drop for OpenOnDrop {
+        fn drop(&mut self) {
+            self.open();
+        }
+    }
+
+    fn gated(width: usize) -> Arc<Store> {
+        let mut store = Store::new(0);
+        store.set_parse_width_for_test(width);
+        Arc::new(store)
+    }
+
+    /// The default width is the cores this process may use, and never zero.
+    #[test]
+    fn the_default_width_is_the_usable_core_count() {
+        let store = Store::new(0);
+        let cores = std::thread::available_parallelism().map_or(1, usize::from);
+        assert_eq!(store.parse_gate.available_permits(), cores);
+        assert!(parse_width() >= 1);
+    }
+
+    /// Eight sessions, two slots: exactly two parses run at once, the other
+    /// six wait at the gate (not on pool threads), and all eight finish.
+    /// Red on a tree without the gate: eight parses run, `running` reaches
+    /// eight and the six waits never register.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_parses_never_exceed_the_gate_width() {
+        let store = gated(2);
+        let running = Arc::new(AtomicUsize::new(0));
+        let high_water = Arc::new(AtomicUsize::new(0));
+        let finished = Arc::new(AtomicUsize::new(0));
+        let open: Latch = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let latch = OpenOnDrop(open.clone());
+
+        let mut sessions = Vec::new();
+        for _ in 0..8 {
+            let (store, running, high_water, finished, open) = (
+                store.clone(),
+                running.clone(),
+                high_water.clone(),
+                finished.clone(),
+                open.clone(),
+            );
+            sessions.push(tokio::spawn(async move {
+                let permit = store.parse_permit().await;
+                Store::offload(move || {
+                    let _admitted = permit;
+                    let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                    high_water.fetch_max(now, Ordering::SeqCst);
+                    let (flag, signal) = &*open;
+                    let mut released = flag.lock().unwrap();
+                    while !*released {
+                        released = signal.wait(released).unwrap();
+                    }
+                    drop(released);
+                    running.fetch_sub(1, Ordering::SeqCst);
+                    finished.fetch_add(1, Ordering::SeqCst);
+                })
+                .await;
+            }));
+        }
+
+        until("two parses running and six sessions waiting", || {
+            running.load(Ordering::SeqCst) == 2 && store.parse_waits_for_test() == 6
+        })
+        .await;
+        assert_eq!(high_water.load(Ordering::SeqCst), 2);
+        assert_eq!(store.parse_gate.available_permits(), 0);
+
+        latch.open();
+        for session in sessions {
+            session.await.unwrap();
+        }
+        assert_eq!(finished.load(Ordering::SeqCst), 8);
+        assert_eq!(
+            high_water.load(Ordering::SeqCst),
+            2,
+            "no more than the gate width ever ran at once"
+        );
+        assert_eq!(
+            store.parse_gate.available_permits(),
+            2,
+            "every slot returned"
+        );
+    }
+
+    /// A parse that panics gives its slot back, and the panic still reaches
+    /// the awaiting session (0023 §5): a dead parse never wedges the gate.
+    #[tokio::test]
+    async fn a_panicking_parse_returns_its_slot_and_still_propagates() {
+        let store = gated(1);
+        let permit = store.parse_permit().await;
+        let session = tokio::spawn(Store::offload(move || {
+            let _admitted = permit;
+            panic!("parse blew up");
+        }));
+        let error = session.await.expect_err("the panic must reach the session");
+        assert!(error.is_panic());
+        assert_eq!(store.parse_gate.available_permits(), 1);
+        drop(store.parse_permit().await);
+    }
+
+    /// A session that goes away while waiting gives its place up: the next
+    /// caller is admitted the moment the holder lets go.
+    #[tokio::test]
+    async fn a_waiter_that_goes_away_gives_up_its_place() {
+        let store = gated(1);
+        let held = store.parse_permit().await;
+        let waiter = {
+            let store = store.clone();
+            tokio::spawn(async move { drop(store.parse_permit().await) })
+        };
+        until("the waiter is queued", || store.parse_waits_for_test() == 1).await;
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        drop(held);
+        assert_eq!(store.parse_gate.available_permits(), 1);
+        drop(store.parse_permit().await);
+        assert_eq!(
+            store.parse_waits_for_test(),
+            1,
+            "the later call did not wait"
+        );
+    }
+
+    /// The gate covers the parse only: with every slot held, a commit still
+    /// runs to completion and is queryable (0001) — a slow fsync can never
+    /// back the next mail's parse up behind it.
+    #[tokio::test]
+    async fn the_commit_is_not_behind_the_gate() {
+        let store = gated(1);
+        let _held = store.parse_permit().await;
+        let stored = store
+            .clone()
+            .insert_async(email("gate-1", "gate-box", "a@x.io"))
+            .await
+            .unwrap();
+        assert_eq!(stored.id, "gate-1");
+        assert_eq!(store.count("gate-box", &Filter::default()), 1);
+        assert_eq!(store.parse_waits_for_test(), 0);
     }
 }

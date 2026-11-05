@@ -2345,7 +2345,9 @@ impl<'de> Deserialize<'de> for SeedRequest {
 /// decision 0010); a refused fixture (a hostile envelope field) answers `400`
 /// naming the field and stores nothing. The build is pure CPU with no await
 /// inside, so it is offloaded like the DATA-arm parse (decision 0030 §1) —
-/// the async worker never pays the HTML pipeline.
+/// the async worker never pays the HTML pipeline — and admitted through the
+/// same parse gate (decision 0124), so seeds and SMTP sessions share one
+/// bound on concurrent parses.
 async fn seed_inbox(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
@@ -2357,7 +2359,9 @@ async fn seed_inbox(
         raw.0.as_deref().unwrap_or(""),
         "POST /api/v1/inboxes/{inbox}/seed",
     )?;
+    let permit = state.store.parse_permit().await;
     let email = Store::offload(move || {
+        let _admitted = permit;
         smtp::build_seed_email(
             &inbox,
             &seed.to,
@@ -3291,6 +3295,66 @@ mod tests {
             .expect("the drain ends once the probe is answered")
             .expect("the serve task completes")
             .expect("the serve returns cleanly");
+    }
+
+    /// The seed handler shares the SMTP parse gate (decision 0124, issue
+    /// #333): with the only slot held, a real `POST /seed` is parked at the
+    /// gate — nothing stored, no answer — and the moment the slot is released
+    /// it builds, commits and answers 200 with the stored mail. Red on a
+    /// handler that skips the gate: it answers while the slot is still held.
+    #[tokio::test]
+    async fn a_seed_waits_for_a_parse_gate_slot_then_answers_with_the_stored_mail() {
+        let mut store = Store::new(0);
+        store.set_parse_width_for_test(1);
+        let store = Arc::new(store);
+        let held = store.parse_permit().await;
+        let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let http_addr = http_listener.local_addr().unwrap();
+        let state = AppState {
+            store: store.clone(),
+            chaos: Arc::new(Chaos::default()),
+            webhooks: Arc::new(Webhooks::default()),
+            started: Instant::now(),
+            shutdown: tokio::sync::watch::channel(false).1,
+            smtp_degraded: Arc::new(AtomicBool::new(false)),
+            pop3_degraded: Arc::new(AtomicBool::new(false)),
+            http_origin_guard: None,
+            route_domain: None,
+        };
+        let api_task = tokio::spawn(serve(http_listener, state, std::future::pending()));
+        let seeding = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("http://{http_addr}/api/v1/inboxes/gated/seed"))
+                .header("content-type", "application/json")
+                .body(r#"{"to":"gated@x.io","subject":"gated","text":"body"}"#)
+                .send()
+                .await
+                .unwrap()
+        });
+
+        // Parked at the gate: awaited against a real deadline, not slept on.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while store.parse_waits_for_test() == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the seed never reached the parse gate"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert!(!seeding.is_finished(), "the seed answered past a held gate");
+        assert_eq!(store.count("gated", &crate::store::Filter::default()), 0);
+
+        drop(held);
+        let response = tokio::time::timeout(Duration::from_secs(10), seeding)
+            .await
+            .expect("the seed answers once a slot is free")
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let stored: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap())
+            .expect("the answer is the stored mail");
+        assert_eq!(stored["subject"], "gated");
+        assert_eq!(store.count("gated", &crate::store::Filter::default()), 1);
+        api_task.abort();
     }
 
     /// The wire red-proof (C36.2): the SMTP accept loop, driven by its own

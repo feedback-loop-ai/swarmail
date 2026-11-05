@@ -130,8 +130,10 @@ the UI's message page and the SSE thread-view serialization still run
 inline on the async workers: a 50 MiB mail read through them *can* delay
 an SMTP greeting, and that residual is named here rather than hidden. The
 pool is shared with ingest, so offloading is not an admission bound
-either. A Mailpit snippet reads at
-most an 8192-byte prefix of its body; a MailHog v2 page refuses whole once
+either — except for the ingest parse itself, which waits for one of as many
+slots as the process has usable cores (decision
+[0124](../decisions/0124-parse-admission.md)) before it takes a pool thread.
+A Mailpit snippet reads at most an 8192-byte prefix of its body; a MailHog v2 page refuses whole once
 its JSON would pass 64 MiB (`compat page exceeds byte budget 67108864;
 reduce limit or fetch raw by id`). These bound responses, not memory: the
 stored mail, a full-scope search's candidates and concurrent requests still
