@@ -4,11 +4,17 @@ Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Decision:
 [0125](../../docs/decisions/0125-offline-dkim-verification.md) (proposed; never
 accept it).
 
-**Revision 1, 2026-11-05.** The review returned the run to design. Phase 0–4
-tasks were delivered in `adeaa12` (verify passed there). They are checked off
-below, with their text corrected to the mechanism actually built. Phase R is
-the return work, in order. Each R task answers the review findings named in
-[plan § Revision 1](plan.md#revision-1-what-changes-and-which-finding-it-answers).
+**Revision 2, 2026-11-05.** The review returned the run to design a second
+time. The T tasks were delivered in `adeaa12` and the R tasks in `38fd111`
+(verify passed both). Both are checked off below, with their text corrected to
+the mechanism actually built. **Phase S is the open work, in order.** Each S
+task answers the review findings named in
+[plan § Revision 2](plan.md#revision-2-what-changes-and-which-finding-it-answers).
+
+**Standing rule (spec header):** if implementing a task shows a mechanism in
+spec.md to be wrong, correct spec.md (and this file and plan.md) in the same
+commit, beside any dated record in 0125. A correction that lives only in 0125
+is the defect this return was about.
 
 A task is done only when all of these hold:
 - its test runs;
@@ -82,9 +88,9 @@ Commit unsigned, in the repository's style. Never push.
 - [x] **T19. 0125 §9 and the README row.** *Test:* review.
 - [x] **T20. Gates.** *Test:* verify's pass at `adeaa12`.
 
-## Phase R: review return 1 (in order)
+## Phase R: review return 1 (delivered in `38fd111`; corrected record)
 
-- [ ] **R1. Record the clock hold honestly (G1).**
+- [x] **R1. Record the clock hold honestly (G1).**
   - Change only the evidence and the code comment. The chief has already
     redrafted 0125 §8 and its header in the design commit, so do not edit that
     text.
@@ -99,7 +105,7 @@ Commit unsigned, in the repository's style. Never push.
 
   Accepting 0125 §8 is not part of R1, or of any task: only the operator
   accepts it.
-- [ ] **R2. One body boundary (S; G12).**
+- [x] **R2. One body boundary (S; G12).**
   - Pass `fields` and `size` from `collect` into `dkim::collect`.
   - Add `Rule::HeaderBoundaryAmbiguous` (`dkim.header_boundary_ambiguous.v1`,
     error, plus its hint).
@@ -109,12 +115,15 @@ Commit unsigned, in the repository's style. Never push.
   *Tests:*
   - `boundary_agrees_for_crlf_lf_and_empty_body`: no boundary finding, normal
     verdicts;
-  - `boundary_whitespace_line_after_signature` and
-    `boundary_whitespace_line_before_signature`: exactly one finding at
+  - *(Corrected: the whitespace-line fixtures did not trigger; mail-auth folds
+    an inside-block whitespace line.)* `boundary_stray_line_after_signature`
+    and `boundary_stray_line_before_signature`: exactly one finding at
     occurrence 0, no other `dkim.*`, empty `dns.lookups`;
+  - `boundary_whitespace_line_inside_the_block_is_no_difference`: agreeing
+    offsets, normal verdicts;
   - `boundary_strict_parse_none_while_signed`;
   - `unsigned_whitespace_line_has_no_dkim_finding` (AC1, AC17).
-- [ ] **R3. Pre-scan what the crate defaults (G3; I info on `l=abc`).**
+- [x] **R3. Pre-scan what the crate defaults (G3; I info on `l=abc`).**
   - `Scan` gains `has_a`, `has_t`, `has_x` and `numbers_ok`.
   - Rows a, d, f and g change as in plan detail 2.
   - The `malformed` and `unsupported` hints are corrected.
@@ -127,7 +136,7 @@ Commit unsigned, in the repository's style. Never push.
     `x=99999999999999999999`;
   - `folded_numeric_tag_is_clean`;
   - `x_zero_without_t_is_expired` and `x_zero_with_t_is_malformed` (AC18).
-- [ ] **R4. Pair outputs by identity (C4; I residual).**
+- [x] **R4. Pair outputs by identity (C4; I residual).**
   - `Field.parsed` becomes `Result<&Signature, &Error>`.
   - Pick the output by `ptr::eq` on `DkimOutput::signature()`, with the fixed
     `expect`.
@@ -139,15 +148,15 @@ Commit unsigned, in the repository's style. Never push.
     DKIM-Signature keeps its own verdict and occurrence;
   - the existing precedence tests stay green;
   - `grep -n first_parsed src/deliverability/dkim.rs` is empty (AC19).
-- [ ] **R5. Judge the name the crate asked (G11).**
-  - Add `owner_of(name)`, which strips one trailing dot and then calls
-    `OwnerName::parse`.
+- [x] **R5. Judge the name the crate asked (G11).**
+  - Add `owner_of(name)`. *(Corrected: it is `OwnerName::parse` alone, which
+    already strips one trailing dot; a second strip would accept `..`.)*
   - The adapter's `get` uses it, and so does row l, on `signature.domain_key()`.
   - The `format!` reconstruction is deleted.
 
   *Test:* `trailing_dot_domain_is_selector_invalid`: `d=example.com.` gives
   `selector_invalid` and no lookup. The `s=bad*sel` case stays (AC9).
-- [ ] **R6. Wire proof on both surfaces (G6, T1).**
+- [x] **R6. Wire proof on both surfaces (G6, T1).**
   - Make sure the over-the-wire test reads the MCP report as well as the REST
     one. Add the MCP read if it is missing.
   - Assert no `dkim.*` finding plus the recorded key lookup for the signed
@@ -156,7 +165,7 @@ Commit unsigned, in the repository's style. Never push.
 
   *Test:* `tests/deliverability.rs::dkim_signed_mail_verifies_over_the_wire`
   (or the existing name), over real SMTP, REST and MCP.
-- [ ] **R7. Live-surface and guide sweep (G8, G13, C2; G4 text).**
+- [x] **R7. Live-surface and guide sweep (G8, G13, C2; G4 text).**
   - Edit every surface in spec § Live surfaces:
     - `openapi.json`: `DnsRecord`, the route and `DeliverabilityReport`. The
       route's "no network or ambient time input" names the 0125 §8 exception;
@@ -175,7 +184,7 @@ Commit unsigned, in the repository's style. Never push.
   - `grep -rn -e "No rule resolves a name" -e "until #254" src/static docs/guide docs/decisions/README.md`
     finds nothing outside dated history;
   - the MCP and OpenAPI snapshot tests (AC15).
-- [ ] **R8. Resolver proofs (G2).**
+- [x] **R8. Resolver proofs (G2).**
   - Preflight: call `AUTHENTICATOR.verify_dkim(Parameters::new(&msg))` with
     **no** cache on a signed fixture, under `now_or_never()`.
   - If it completes on the first poll with a `TempError` or `PermError`
@@ -186,7 +195,7 @@ Commit unsigned, in the repository's style. Never push.
 
   *Test:* `resolver_without_nameservers_answers_nothing` (conditional), plus
   the existing `adapter_outcomes`.
-- [ ] **R9. Rule table at 18 (AC5, AC6).**
+- [x] **R9. Rule table at 18 (AC5, AC6).**
   - Add a passing and a failing fixture for `header_boundary_ambiguous` (from
     R2).
   - Add the new failing fixtures the spec's rule table lists for `malformed`,
@@ -195,7 +204,7 @@ Commit unsigned, in the repository's style. Never push.
   - Extend the row-coverage test to the message-level steps 3, 4 and 5.
 
   *Test:* `rule_*` pairs for all 18 rules, plus exact branch coverage.
-- [ ] **R10. Records (G9, G14, C5).**
+- [x] **R10. Records (G9, G14, C5).**
   - Add a dated 2026-11-05 integration note to proposed 0120 covering §4/§5,
     §7 and §10 (spec AC21). Do not touch accepted 0085.
   - Correct the 0120 and 0125 rows in `docs/decisions/README.md`.
@@ -208,7 +217,7 @@ Commit unsigned, in the repository's style. Never push.
     empty;
   - `git diff fad9e7e -- deny.toml` touches comment lines only;
   - `cargo deny check licenses` passes (AC13, AC20, AC21).
-- [ ] **R11. Docker evidence (G10).**
+- [x] **R11. Docker evidence (G10).**
   - If a usable Docker daemon exists, run one bounded image build, as in plan
     § Risks. Cap it at nproc/4 CPUs and 10 minutes, with a named, timed
     command, and report the load applied.
@@ -218,7 +227,7 @@ Commit unsigned, in the repository's style. Never push.
     `docker smoke` is the CI-owned proof.
 
   *Test:* the bounded build's output, or the named CI check.
-- [ ] **R12. Every house gate, `--locked` (AC16).**
+- [x] **R12. Every house gate, `--locked` (AC16).**
   - fmt, clippy and tests;
   - `cargo build --locked --bin swarmail`;
   - the evals fmt, clippy and tests against that binary;
@@ -232,4 +241,133 @@ Commit unsigned, in the repository's style. Never push.
     runs it.
 
   The PR body lists the three operator holds of spec § Operator holds.
+  *Test:* the gate outputs, quoted in the implementation summary.
+
+## Phase S: review return 2 (in order; the open work)
+
+Order matters: S1's premise test runs before S2's guard change is trusted.
+
+- [ ] **S1. Prove the premise first (C3, I3; AC22).**
+  - Add a table test: for each spelling of a field that Swarmail's
+    `headers()` names `dkim-signature` (`DKIM-Signature`, `dkim-signature`,
+    `DKIM-SIGNATURE`, `dKiM-sIgNaTuRe`; a kit-signed value, a value missing
+    `bh=`, an empty value, a value folded across lines), the crate's
+    `fields()` of the strict parse holds exactly the fields that the root
+    list holds, in the same order. Assert the counts per case.
+  - If any case fails, **stop and report** to the run. Do not weaken the
+    guard, and do not change the shared `headers()` scanner.
+
+  *Test:* `dkim::tests::crate_lists_every_root_dkim_field`.
+- [ ] **S2. Count conjunct in the boundary guard (C3, I3, I4; G3a/G3e text;
+  AC17, AC22).**
+  - In `collect`, compute
+    `root_count = root.iter().filter(|(n, _)| is_dkim_signature(n)).count()`
+    and require `first.len() == root_count` beside
+    `body_offset() == size` (plan detail 1). A mismatch is the existing
+    `Rule::HeaderBoundaryAmbiguous.finding(0)`: no verification, no lookup.
+  - Widen the `header_boundary_ambiguous` hint to name both conditions the
+    code tests (plan detail 5).
+  - Rewrite the module comment ("One body.") and the `collect` comment
+    ("a whitespace-only line ends the crate's headers and continues
+    Swarmail's field") to the real triggers and the field-count condition.
+  - The existing boundary, limits and precedence tests stay green unchanged.
+
+  *Tests:*
+  - `boundary_dkim_field_name_with_space_is_ambiguous`: a kit-signed valid
+    message plus a `DKIM-Signature : v=1; …` field, before it and (in a second
+    case) after it, gives exactly
+    `one("dkim.header_boundary_ambiguous.v1", 0, ERROR)` and empty
+    `dns.lookups`. Seen to fail (a finding at occurrence 1, or a pass) before
+    the conjunct;
+  - `rule_header_boundary_ambiguous` gains that failing fixture and keeps the
+    inside-block whitespace passing fixture;
+  - `boundary_whitespace_line_inside_the_block_is_no_difference` stays.
+- [ ] **S3. Occurrence agreement (AC22).**
+  - A message with two kit-signed fields and a parser-rejected
+    (missing-`bh=`) field between them, with the second signature's body
+    altered so it fails: assert each finding's occurrence equals its index
+    among `headers(raw).0` entries named `dkim-signature` (compute the
+    expected index from the root list in the test, not by hand).
+
+  *Test:* `dkim::tests::finding_occurrence_is_the_root_occurrence`.
+- [ ] **S4. Same-type wrong key, both algorithms (C4, I6; AC5).**
+  - In `rule_signature_mismatch`, delete the block commented "A signature
+    made with another key is the same verdict", whose `other_key` and
+    `wrong_key` bind the correct keys and assert passes. Keep the
+    `IncompatibleAlgorithms` assertion (`key_invalid`) under an honest comment.
+  - Add: the kit's ed25519 signature with RFC 8463's published `brisbane`
+    ed25519 `p=` declared at `sel._domainkey.example.com` gives exactly
+    `one("dkim.signature_mismatch.v1", 0, ERROR)` and one `records` lookup;
+    the kit's RSA-2048 signature with RFC 8463's published 1,024-bit `test`
+    RSA `p=` declared there gives the same. Share the two published key
+    strings with `rfc8463_appendix_a_verifies_both_signatures` as test
+    constants. No new key material.
+
+  *Test:* `dkim::tests::rule_signature_mismatch`.
+- [ ] **S5. Pin the measured lookups (G3d, G6; AC9).**
+  - `x_zero_with_t_is_malformed` also asserts that `dns.lookups` is exactly
+    the one `sel._domainkey.example.com` `records` lookup.
+  - Confirm, and add where missing, exact empty-lookup assertions for an
+    unsigned message, each boundary refusal, a bounds refusal and the row-h
+    residual (`expired_since_receipt_hides_key_and_lookup`).
+  - `failure_reports_ask_for_the_report_name` stays as the `r=y` pin.
+
+  *Tests:* `x_zero_with_t_is_malformed`, plus the listed existing tests.
+- [ ] **S6. No calendar expiry in a passing fixture (AC23).**
+  - In `forged_signatures_verify_for_both_algorithms`, replace
+    `"t=1000; x=9000000000"` and receipt 1500 with an `x` derived from
+    `parsed(&base()).t` (as `folded_numeric_tag_is_clean` does) and a receipt
+    before it. Review every other `forged(` call that expects a pass.
+
+  *Test:* `forged_signatures_verify_for_both_algorithms`; `grep -n "x=9000000000" src/deliverability/dkim.rs`
+  empty.
+- [ ] **S7. Live surfaces and comments (G4, G5, G6, C5, I5; AC15, AC22).**
+  - `docs/guide/deliverability.md` ~180–183 and `src/static/llms.txt`
+    ~645–648: replace "no DNS/authentication verification, external spam
+    scorer, external service or new dependency ships here" with the claim in
+    spec § Live surfaces (#253 shipped no verification; DKIM arrives with
+    proposed 0125 on mail-auth, offline; SPF/DMARC/ARC are #255/#256; no
+    external scorer or service).
+  - `src/mcp.rs` `MODERN_REPORT_DESCRIPTION`: one finding per field that does
+    not verify, a `body_length_partial` warning on a field that verifies only
+    a prefix, or one message-level finding.
+  - Guide and llms.txt: occurrence k is the root `dkim-signature` occurrence;
+    the boundary rule lists the field-name trigger. Touch `openapi.json` only
+    if a sentence contradicts the spec.
+  - `src/deliverability/dns.rs` module comment: bytes, receipt time and
+    configuration, except proposed 0125 §8.
+  - `Cargo.toml` rustls comment (no `rustls/ring everywhere`); `deny.toml`
+    CDLA-Permissive-2.0 **comment only** (`webpki-root-certs` only through
+    hickory's unreachable platform verifier).
+  - Update any snapshot that pins the old text; never keep a false one.
+
+  *Tests:*
+  - `grep -rn -e "No rule resolves a name" -e "until #254" -e "no DNS/authentication verification" -e "one finding per signature that does not verify" src/static src/mcp.rs docs/guide docs/decisions/README.md`
+    finds nothing outside dated history;
+  - `grep -n "and the configuration (decision 0085)" src/deliverability/dns.rs`
+    and `grep -n "rustls/ring everywhere" Cargo.toml` are empty;
+  - `grep -c "root DKIM-Signature" docs/guide/deliverability.md src/static/llms.txt`
+    finds at least one line in each (the occurrence sentence: k is the
+    zero-based occurrence among the message's root DKIM-Signature fields);
+  - `guide_lists_every_dkim_rule` (18 headings) and the MCP/OpenAPI snapshot
+    tests;
+  - `git diff fad9e7e -- deny.toml` touches comment lines only.
+- [ ] **S8. Records and gates (AC16, AC20; standing rule).**
+  - Append a dated "Implementation of return revision 2" evidence entry to
+    0125: the premise result, the conjunct, the test names. Edit no ruling
+    text in 0125, and if anything in spec.md proves wrong, correct spec.md in
+    the same commit (standing rule).
+  - `git diff fad9e7e -- docs/decisions/0085-deliverability-report.md` empty;
+    `Cargo.lock`, `evals/Cargo.lock` and the `deny.toml` allowlist unchanged
+    since `38fd111`.
+  - Run every house gate `--locked`, as R12 lists: fmt, clippy, tests, the
+    binary build, the evals fmt/clippy/tests against that binary, the
+    coverage gate at exact 100% and its selftest, publish-guard,
+    seal-branch, `cargo deny check licenses`, the `native-tls` absence proof,
+    and the brokkr bundle compile if brokkr is present (otherwise say verify
+    runs it). No load proof is needed; if one is run, cap it at nproc/4
+    workers for 10 minutes with a named, timed command.
+  - The PR body lists the three operator holds (spec § Operator holds), and
+    that #255's intake inherits AC11's await clause.
+
   *Test:* the gate outputs, quoted in the implementation summary.

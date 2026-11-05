@@ -71,10 +71,14 @@
    remedy is a different crate or an upstream change, which is a scope ruling
    this record does not make.
 3. **One key source.** 0120's declared TXT map, through `Lookups`, is the
-   only source of DKIM keys. Every name mail-auth asks for is recorded in
-   the report's `dns.lookups`. That covers the key name
+   only source of DKIM keys. Every name inside 0120's grammar that mail-auth
+   asks for is recorded in the report's `dns.lookups`: the key name
    `<s>._domainkey.<d>`, the RFC 6541 ATPS name, and the RFC 6651
-   `_report._domainkey.<d>` name when `r=y` is set. Real DNS stays
+   `_report._domainkey.<d>` name when `r=y` is set. A name outside the grammar
+   is not looked up, not recorded, and fails closed. *(Narrowed in return
+   revision 2.)* Which names a given field causes is the crate's choice, not a
+   promise of this record; the specification lists the absences Swarmail
+   guarantees and the measured presences its tests pin. Real DNS stays
    refused, and no `Real` policy variant is added. 0120 §10 said #254
    would bring the resolver; that promise moves to a later story with its
    own decision. 0120 §7's live-answer TTL, refresh and wake semantics move
@@ -99,8 +103,11 @@
    `dkim.header_boundary_ambiguous.v1`), each proven by a passing and a
    failing fixture. Swarmail owns every check that the crate would otherwise
    settle by a silent default:
-   - one body boundary: a signed message whose mail-auth header/body boundary
-     differs from Swarmail's gets one boundary finding and nothing else;
+   - one body boundary and one set of DKIM fields: a signed message whose
+     mail-auth body offset differs from Swarmail's, whose strict parse fails,
+     or whose DKIM-Signature field count differs from Swarmail's root count
+     (return revision 2) gets one boundary finding and nothing else, so a
+     finding's occurrence is always the root occurrence;
    - duplicate tags, a missing `v=` or `a=`, and non-numeric or overflowing
      `t=`/`x=`/`l=` as malformed (the crate defaults `a=` to rsa-sha256 and
      reads bad numbers as 0);
@@ -464,5 +471,34 @@ Other evidence:
 - Docker: this sandbox has the client but no daemon (`/var/run/docker.sock`
   absent), so no image was built. CI's `docker smoke` is the named proof, per the
   spec's risk table; no `apk` change is made speculatively.
+
+Items 1–3 above were **folded into specs/dkim-verification/spec.md on return
+2, 2026-11-05** (step 4, the rule table, AC17, § Key source and row a).
+
+This record stays proposed. Only the operator accepts it.
+
+## Return revision 2 (2026-11-05, review return 2)
+
+The review panel returned the design again (`spec_defect: true`). Four of five
+members found the code right and the specification stale: items 1–3 of the
+implementation of the return revision, above, were never folded into the specification. The
+chief's revision is in the
+[specification's revision 2 adjudication](../../specs/dkim-verification/spec.md#return-adjudication--2026-11-05-revision-2).
+In this record:
+- §3 is narrowed to names inside 0120's grammar, and no longer reads as a
+  per-field promise of which names are asked;
+- §5's boundary bullet gains the DKIM field-count condition, which makes a
+  finding's occurrence the root `dkim-signature` occurrence and closes the
+  case where Swarmail sees a signature the crate does not list;
+- **#255's intake inherits AC11's await clause as a required acceptance
+  criterion** (an await with `no_findings_at_or_above=warning` returns the
+  correctly signed message and not the altered one). It cannot hold here
+  while the bulk `*.not_evaluated.v1` errors disqualify every report; it is a
+  handoff, not a deletion.
+
+The three operator holds stand unchanged, and this revision does not argue
+them: the clock (§8) against accepted 0085 §8, the compiled resolver (§2), and
+the `Cargo.lock` additions. `rule_set_id` stays `swarmail-html/6` (unshipped).
+No dependency, feature or allowlist entry changes.
 
 This record stays proposed. Only the operator accepts it.

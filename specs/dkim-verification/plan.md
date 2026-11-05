@@ -3,36 +3,48 @@
 Spec: [spec.md](spec.md) · Tasks: [tasks.md](tasks.md) · Decision:
 [0125](../../docs/decisions/0125-offline-dkim-verification.md) (proposed).
 
-**Revision 1, 2026-11-05.** The review returned the run to design. This plan is
-repaired in place:
-- the mechanisms that the implementation (`adeaa12`) replaced are rewritten as
-  built;
-- the return work is in [§ Revision 1](#revision-1-what-changes-and-which-finding-it-answers),
-  with the finding each change answers.
+**Revision 2, 2026-11-05.** The review returned the run to design a second
+time. This plan is repaired in place again:
+- the mechanisms that the revision 1 implementation (`38fd111`) corrected only
+  in 0125's dated record are rewritten as built (technical context, design
+  detail);
+- the return work is in [§ Revision 2](#revision-2-what-changes-and-which-finding-it-answers),
+  with the finding each change answers;
+- [§ Revision 1](#revision-1-what-changes-and-which-finding-it-answers) stays as
+  dated history.
 
-The first plan's text is in git history at `8705096`.
+The first plan's text is in git history at `8705096`, and revision 1's at
+`eaa4178`.
 
 ## Technical context
 
 - **Language and crate.** Rust 2024, a single crate. The evaluator lives in
   `src/deliverability.rs` (`evaluate_at(raw, receipt, &Inputs)`), beside the
   `html`, `links`, `spam`, `reach`, `dns` and `dkim` collectors.
-- **The DKIM module.** `src/deliverability/dkim.rs`, as built in `adeaa12`:
-  - `Rule` (17 variants; 18 after this revision);
-  - the adapter and `name_of`;
+- **The DKIM module.** `src/deliverability/dkim.rs`, as built in `38fd111`:
+  - `Rule` (18 variants);
+  - the adapter, `name_of` and `owner_of` (which is `OwnerName::parse`);
   - `AUTHENTICATOR` (`LazyLock`, no name servers);
   - `canonicalize` / `canonical_len`;
-  - `Scan` (`duplicate`, `has_v`, `has_l`, `h_names`);
+  - `Scan` (`duplicate`, `has_v`, `has_a`, `has_t`, `has_x`, `has_l`,
+    `numbers_ok`, `h_names`);
   - `fields()`, the crate's view sorted by position;
-  - `Context { outputs, first_parsed, body, receipt }`, `verdict` and
-    `body_length`;
-  - `collect(raw, receipt, lookups, out)`;
-  - the inline suite: a signing kit, 17 rule pairs, the c= matrix, the RFC 8463
-    vector and the 55,987-body oracle.
+  - `Context { outputs, body, receipt }`, `verdict` (identity pairing by
+    `ptr::eq`) and `body_length`;
+  - `collect(raw, root, size, receipt, lookups, out)`, whose guard is at
+    ~l.672 (`.filter(|message| message.body_offset() == size)`);
+  - the inline suite: a signing kit, 18 rule pairs, the c= matrix, the RFC 8463
+    vector (its two published keys are in `rfc8463_appendix_a_verifies_both_signatures`),
+    the 55,987-body oracle and the boundary tests (`stray_line_after`,
+    `stray_line_before`, `boundary_*`).
 - **Shared boundary.** `headers(raw) -> (Headers, size)` in
-  `src/deliverability.rs`. It caps at 64 KiB (`MAX_HEADER_BYTES`), and it treats
-  a whitespace-only line as a continuation. `evaluate`'s `collect` already holds
-  `fields` and `size` (line ~896).
+  `src/deliverability.rs`. `Headers` is `Vec<(Vec<u8>, Vec<u8>)>`: owned,
+  lowercased names and unfolded values, **no positions**. It caps at 64 KiB
+  (`MAX_HEADER_BYTES`), treats a line starting with SP/HTAB as a continuation,
+  skips a colon-less line, and keeps a field only when its name is non-empty
+  and every byte is in 33..=126 (so `DKIM-Signature :` is dropped).
+  `evaluate`'s `collect` passes `&fields` and `size` to `dkim::collect`
+  (~l.923).
 - **The crate.** `mail-auth 0.14.0`. Facts the revision depends on, read from
   `~/.cargo/registry/src/index.crates.io-*/mail-auth-0.14.0`:
   - `verify_dkim` reads `SystemTime::now()` and calls the `pub(crate)`
@@ -45,10 +57,18 @@ The first plan's text is in git history at `8705096`.
     `dkim_signatures()`.
   - `VerifySignature::domain_key()` is public and returns
     `<s>._domainkey.<d>.`, with a trailing dot.
-  - The header parser treats a whitespace-only CRLF line as the header/body
-    separator (`headers/parse.rs`, per the security finding).
-  - A missing `a=` defaults to rsa-sha256, and `number()` reads non-digits or
-    overflow as 0 (per the guarantees finding).
+  - The header parser folds a whitespace-only line inside the block into the
+    previous field, as Swarmail does (`headers/parse.rs`, `scan_value`). It
+    ends the headers at a CRLF line with no colon that does not start with
+    SP/HTAB, and a whitespace-only first line makes `parse_with_opts` return
+    `None` (0125 implementation of the return revision, item 1; *revision 1's
+    text here was wrong*).
+  - Its folded-name scanner accepts names `headers()` skips, such as
+    `DKIM-Signature :` (0125 implementation record, item 1).
+  - A missing `a=` defaults to rsa-sha256; `number()` reads non-digits as 0 and
+    saturates overflowing digits to `u64::MAX` (*revision 1 said "as 0"*).
+  - It reads `x=0` as no expiry, so a `t=1000; x=0` field reaches key fetch;
+    with `r=y` it asks `_report._domainkey.<d>` on a failing signature.
 - **aws-lc-sys 0.46.0.** It uses the cc builder unless the build is FIPS,
   `NO_ASM`, a sanitizer build or `CMAKE_BUILDER`, and it ships pregenerated
   bindings for musl (`builder/main.rs` ~584, ~704–790).
@@ -69,7 +89,25 @@ The first plan's text is in git history at `8705096`.
 | PR hold (0056 addendum) | `Cargo.lock` additions and the `deny.toml` comment; plus holds 2 and 3 |
 | decisions | 0125 stays `proposed`; 0120 gains a dated integration note; accepted 0085 is not edited |
 
-## Project structure (files touched by revision 1)
+## Project structure (files touched by revision 2)
+
+| path | change |
+|---|---|
+| `src/deliverability/dkim.rs` | the count conjunct in `collect`'s guard; the `header_boundary_ambiguous` hint gains the name clause; the module and `collect` comments name the real triggers; tests: the count-mismatch fixture, the AC22 premise and agreement tests, the corrected `rule_signature_mismatch`, the lookup pin in `x_zero_with_t_is_malformed`, the derived `x=` in `forged_signatures_verify_for_both_algorithms` |
+| `src/deliverability/dns.rs` | module comment: bytes, receipt time and configuration, except 0125 §8 |
+| `src/mcp.rs` | `MODERN_REPORT_DESCRIPTION` wording (spec § Live surfaces) |
+| `src/static/llms.txt`, `docs/guide/deliverability.md` | the #253 "no verification" paragraph; occurrence k as the root occurrence; the boundary rule's fourth trigger |
+| `src/static/openapi.json` | none expected: `DeliverabilityLocation` already defines a root occurrence, which the conjunct makes true; edit description text only if a sentence contradicts the spec |
+| `Cargo.toml` | the rustls comment only |
+| `deny.toml` | the CDLA-Permissive-2.0 comment only (already an operator hold) |
+| `docs/decisions/0125-offline-dkim-verification.md` | revised by the chief in this design commit; the implementer appends evidence only |
+
+Not touched: `Cargo.lock`, `evals/`, the `deny.toml` allowlist, dependencies or
+features, `.github/`, `scripts/`, `.brokkr/`, accepted 0085, any snapshot of
+report bytes other than what the hint change forces, and the shared `headers()`
+scanner.
+
+## Project structure (files touched by revision 1, history)
 
 | path | change |
 |---|---|
@@ -87,7 +125,48 @@ The first plan's text is in git history at `8705096`.
 Not touched: `Cargo.toml`, `Cargo.lock`, `evals/`, the `deny.toml` allowlist,
 `.github/`, `scripts/`, `.brokkr/`, and accepted 0085.
 
+## Revision 2: what changes, and which finding it answers
+
+Members: **G** guarantees, **C** correctness, **I** independent, **S**
+security, **T** tests (T found no defect). Each row names the owning artifact
+and the task that carries it to code. The spec's
+[revision 2 adjudication](spec.md#return-adjudication--2026-11-05-revision-2)
+gives the rulings.
+
+| finding | severity | answer | where | task |
+|---|---|---|---|---|
+| G3a, S (spec defect), C2, I2: boundary trigger text says a whitespace-only line after/before the field | spec defect | step 4, the rule-table row and AC17 name the real triggers; the inside-block whitespace line is a passing fixture | spec step 4, rule table, AC17 | S2, S7 |
+| G3e, S: "the crate's header block then equals Swarmail's" | spec defect | deleted; a passing guard proves the body and (with the conjunct) the DKIM field list, nothing else | spec step 4 | S2 |
+| C3, I3: occurrence k counts the crate's fields, not the root's | LOW | count conjunct in the guard makes k the root occurrence; premise test; docs say root occurrence | spec step 4, rule table, AC22 | S1, S2, S3, S7 |
+| I4: fail-open corner (root field, no crate field, offsets agree) | info | closed by the same conjunct | spec step 4, AC17 | S2 |
+| G3b: `owner_of` strip-then-parse | spec defect | `owner_of` is `OwnerName::parse` alone (code already right) | spec § Key source; this plan's detail 4; tasks R5 corrected | none in code; R5 text corrected |
+| G3c: "overflow reads as 0" | spec defect | saturates to `u64::MAX`; row a refuses both | spec row a; adjudication r1 annotated | none |
+| G3d, G6: lookup enumeration false; 0125 §3 overbroad | spec defect / info | per-row enumeration deleted; contract = guaranteed absences + pinned measured presences; 0125 §3 narrowed to in-grammar names | spec § Report and version, AC9; 0125 §3 (this commit) | S5 |
+| S: `rsa-sha1` fixture "re-signed" | spec defect | "rewritten, not re-signed" | spec rule table | none |
+| C4, I6: `rule_signature_mismatch` asserts passes under a failure comment | LOW | same-type different key for both algorithms with RFC 8463's published keys; vacuous lines removed | spec rule table, AC5 | S4 |
+| robustness 2.7: a passing fixture hardcodes `x=9000000000` | low (0020 §5) | derive `x` from the signer's `t=` | AC23 | S6 |
+| G4: guide/llms "no DNS/authentication verification … ships here" | LOW | rewritten | spec § Live surfaces, AC15 | S7 |
+| G5: MCP "one finding per signature that does not verify" | LOW | OpenAPI's wording | spec § Live surfaces, AC15 | S7 |
+| G6: `dns.rs` "pure function of the stored bytes and the configuration" | info | receipt time plus the 0125 §8 exception | spec § Live surfaces, AC15 | S7 |
+| C5, I5: `Cargo.toml` "rustls/ring everywhere"; `deny.toml` CDLA comment | info | comments corrected; no startup provider install (adjudication) | spec § Live surfaces | S7 |
+| C6: AC11 await clause moved by text only | info | 0125 records that #255's intake inherits it as a required criterion | 0125 (this commit) | none |
+| G1, G2, C1, I1, S residual: clock vs accepted 0085 §8; compiled resolver | HIGH (held) / MEDIUM | unchanged operator holds 2 and 3; not re-argued, not self-accepted | spec § Operator holds, 0125 §2/§8 | S8 (PR body) |
+| I7: aws-lc-sys on macOS/Alpine, RustSec | info | CI-owned, unchanged | plan § Risks | none |
+| stale plan/tasks (G3 correction list) | spec defect | technical context, detail 1/4/5 and tasks R2/R5 corrected; R1–R12 checked off as delivered | plan, tasks | none |
+
+**No criterion was weakened.** AC17's first two failing fixtures change because
+the finding showed them wrong: mail-auth 0.14.0 folds an inside-block
+whitespace line, and `boundary_whitespace_line_inside_the_block_is_no_difference`
+proves the offsets agree. The real triggers replace them, and the old fixture
+becomes a passing one, so AC17 now covers more cases than before. The
+lookup enumeration is replaced, not loosened: two of its rows were measured
+false (`failure_reports_ask_for_the_report_name`, and the key lookup of
+`t=1000; x=0`), and the replacement pins both measured cases exactly.
+
 ## Revision 1: what changes, and which finding it answers
+
+*Dated history: revision 1's table, delivered in `38fd111`. Where a row's
+mechanism was later corrected, § Revision 2 and the technical context rule.*
 
 Members: **G** guarantees, **C** correctness, **I** independent, **S**
 security, **T** tests. Each row is the owning artifact's answer. Each
@@ -143,6 +222,13 @@ the published vector proves the 1,024-bit verify path.
      non-empty `fields(&strict)`.
    - The guard compares `strict.body_offset()` with `size`. Both are offsets of
      the first body byte; a normal-message fixture proves the convention.
+   - *(Revision 2.)* It also requires
+     `first.len() == root.iter().filter(|(n, _)| is_dkim_signature(n)).count()`.
+     `first` is the strict parse's list, which includes strict-rejected `l=`
+     fields through `errors()`, so like is compared with like. Shape:
+     `.filter(|m| m.body_offset() == size && first.len() == root_count)`.
+     The guard runs before the bounds, so 17 valid fields still give
+     `limits_exceeded` (both lists hold 17).
    - Its finding uses `Rule::HeaderBoundaryAmbiguous.finding(0)` and returns
      through the same path as `limits_exceeded`.
 2. **`Scan`.**
@@ -161,14 +247,21 @@ the published vector proves the 1,024-bit verify path.
    `outputs.iter().find(|o| o.signature().is_some_and(|s| ptr::eq(s, sig)))`,
    then `.expect("every parsed signature has one output")`. `Context` loses
    `first_parsed`.
-4. **`owner_of(name: &str) -> Option<OwnerName>`.** It strips one trailing dot,
-   then calls `OwnerName::parse`. The adapter's `get` calls it, and so does row
-   l, with `signature.domain_key()`.
+4. **`owner_of(name: &str) -> Option<OwnerName>`** is `OwnerName::parse`, which
+   already strips exactly one trailing dot; `owner_of` strips none of its own
+   (*revision 1's "strips one trailing dot, then parses" was wrong*). The
+   adapter's `get` calls it, and so does row l, with `signature.domain_key()`
+   unchanged.
 5. **Hints.**
    - The `malformed` hint lists the row-a causes.
-   - `header_boundary_ambiguous`: "A whitespace-only line in the header block
-     can end the headers at some receivers; remove it or fold it with text
-     (RFC 5322 section 2.2.3)."
+   - `header_boundary_ambiguous` (as built, plus the revision 2 clause): "A
+     line in the header block that is not a header field (no colon, or only
+     whitespace at the very top), or a DKIM-Signature field name that not every
+     parser accepts (such as a space before the colon), ends or splits the
+     headers differently at different receivers; remove it, fold it into the
+     previous field, or write the name as `DKIM-Signature:` (RFC 5322 sections
+     2.2 and 2.2.3)." The exact words are the implementer's; they must name
+     both conditions the code tests.
    - `unsupported` no longer mentions `l=abc`.
 6. **Header comment** in `src/deliverability.rs`: the radius sentence from spec
    § Verification time, in place of "can only move verified to not verified".
@@ -245,6 +338,12 @@ The `await … no_findings_at_or_above=warning` example moves to #255 (AC11).
 | **RustSec on the new tree** | A CI-owned, network-backed job. An advisory needing an ignore is a second widening: stop and report |
 | **Live-surface snapshot tests** (the MCP description, OpenAPI) | Update the snapshot with the text. A test that pins the old false text is corrected, not kept |
 | **Coverage of new branches** | Each new branch has a fixture: the guard (three ways), each `Scan` flag, the `owner_of` arms, and the pairing `expect` (unreachable by construction, so it is an `expect`, not an arm). Exact 100% |
+| **The count conjunct's premise is false** (the crate drops a field Swarmail names `dkim-signature`) | AC22's spelling table runs first (task S1). A single dropped field makes counts differ, which refuses (fail-closed). Only a drop and an extra field in one message could mislocate, and the premise test rules out the drop. If any spelling fails, the implementer stops and reports; the guard is never weakened and the shared `headers()` scanner is not changed |
+| **The conjunct refuses legitimate mail** | Only a DKIM-Signature field whose name is not RFC 5322 syntax (a space before the colon) can make counts differ while offsets agree. Every existing passing fixture, the c= matrix, the RFC 8463 vector and the 16-field fixture must stay clean; the full suite is the proof |
+| **The count and the re-parse disagree** (the non-strict `l=` re-parse lists a different number of fields than the strict one) | Both parses read the same header block; the re-parse only moves `l=` fields from `errors()` to `dkim_signatures()`. The existing `l=` tests and `precedence_and_occurrences` assert exact occurrences across a re-parse |
+| **Spec text drifts from the code again** | The spec header's standing rule: an implementation record that corrects a mechanism edits spec.md in the same commit (task S8 checks it). No checker script is added (adjudication) |
+| **A future rustls builder without a provider** (ring and aws-lc-rs both compiled) | The `Cargo.toml` comment states that every rustls config names ring explicitly. No `install_default` call is added; review catches a new call site |
+| **The operator refuses hold 2 or 3 after revision 2** | Unchanged from revision 1's rows above: the PR does not merge, and the operator rules on B/B′ or another crate |
 | **Load** | Optional. If run: `timeout 600 cargo test --locked --test deliverability -- --test-threads=$(( $(nproc)/4 ))` (at most nproc/4 workers, at most 10 minutes). Report the load applied. Nothing paid |
 
 ## Panel rulings carried into this plan
@@ -260,3 +359,13 @@ In short:
   build when a daemon exists, the radius fixture in AC7, and the conditional
   no-cache resolver proof.
 - **Both** route the clock and the resolver to the operator as merge holds.
+
+Revision 2 (spec's
+[revision 2 adjudication](spec.md#return-adjudication--2026-11-05-revision-2)):
+- **Simplicity wins** on the count conjunct over root mapping with
+  `occurrence: null`, on deleting the per-row lookup enumeration, on no
+  checker script, and on no startup provider install.
+- **Robustness wins** on pinning the measured lookup presences by exact tests,
+  wrong-key proofs for both algorithms, the derived `x=` fixture, and AC15's
+  grep binding the false sentences themselves.
+- **Both** fold the record into the spec and keep the three holds.

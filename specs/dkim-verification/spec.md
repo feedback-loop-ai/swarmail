@@ -7,14 +7,23 @@ base `main` `fad9e7e`, recipe `claude-careful`. Framing: the issue text and the
 operator brief (no `.brokkr/state/tasks/` framing exists in this worktree).
 
 - **First design:** 2026-11-05, commit `8705096`. Implemented in `adeaa12`.
-- **Revision 1 (this text):** 2026-11-05, after the review panel returned the
-  run to design (`spec_defect: true`, a HIGH accepted-ruling finding and a
-  security residual; decision 0102's addendum of 2026-10-31). This file is now
-  the **single normative account**. It absorbs 0125's implementation record
-  items 1–5 and replaces every mechanism that record superseded. The
-  [return adjudication](#return-adjudication--2026-11-05-revision-1) says what
-  changed and why. The [first panel adjudication](#panel-adjudication--2026-11-05)
-  is kept as dated history.
+- **Revision 1:** 2026-11-05, commit `eaa4178`, after the first review return.
+  Implemented in `38fd111`.
+- **Revision 2 (this text):** 2026-11-05, after review return 2
+  (`spec_defect: true`; the code was judged right and the normative text stale).
+  This file is the **single normative account**. It now also absorbs 0125's
+  "Implementation of the return revision" items 1–3, which the first return's
+  implementation recorded in 0125 but never folded in here. It adds one guard
+  conjunct (equal DKIM field counts), so that a finding's occurrence is the
+  root occurrence. The
+  [revision 2 adjudication](#return-adjudication--2026-11-05-revision-2) says
+  what changed and why. The
+  [revision 1 adjudication](#return-adjudication--2026-11-05-revision-1) and the
+  [first panel adjudication](#panel-adjudication--2026-11-05) are kept as dated
+  history.
+- **Standing rule for later seats:** an implementation record that finds a
+  mechanism in this file wrong edits this file in the same commit. A
+  correction that lives only in 0125's dated history is a defect.
 
 Authorities:
 - the operator's #251 ruling of 2026-10-26: build on an existing permissive
@@ -152,9 +161,13 @@ mail-auth's `DnsCache`, with only its `txt()` member present. Its
   borrowed key, so this is the only way to read it. This is a **known
   off-idiom read** of a std internal. A test holds it to the real lookups. Any
   other key shape reads as no name and answers "not found", which fails closed.
-- **One function judges a name** (`owner_of(name) -> Option<OwnerName>`): strip
-  exactly one trailing dot, then `OwnerName::parse`. A name outside 0120's
-  grammar is not looked up and not recorded, and it answers
+- **One function judges a name** (`owner_of(name) -> Option<OwnerName>`). It
+  **is** `OwnerName::parse`, under one name that the adapter and row l both
+  call. `OwnerName::parse` already strips exactly one trailing dot, so
+  `owner_of` strips none of its own: a second strip would accept the crate's
+  `sel._domainkey.example.com..` for `d=example.com.`. Row l hands it
+  `signature.domain_key()` unchanged. A name outside 0120's grammar is not
+  looked up and not recorded, and it answers
   `TxtRecord::Error(DnsError::RecordNotFound)`.
 - Otherwise the adapter calls `Lookups::resolve_txt`, which records the name:
   - `Records(values)` is parsed into the record type the name's shape selects:
@@ -215,15 +228,42 @@ offset where Swarmail's body starts.
 3. **Signed?** The message is signed when `root` holds a field named
    `DKIM-Signature` by `is_dkim_signature`, or when step 2 lists any field. An
    unsigned message returns at once, with no lookup and no finding.
-4. **Boundary guard.** If `strict` is `None`, or `strict.body_offset() != size`,
-   the message gets exactly one `dkim.header_boundary_ambiguous.v1`. It is
-   located at occurrence 0, and the step returns: no verification, no lookup, no
-   other `dkim.*` finding. Example: a whitespace-only line `" \r\n"` ends the
-   header block for mail-auth, but Swarmail folds it as a continuation.
-   - When the boundaries agree, DKIM's body is exactly `raw[size..]`, the body
-     every other collector and the UI see.
-   - The crate's header block then equals Swarmail's, which `headers()` caps at
-     64 KiB.
+4. **Boundary guard: one body, one set of DKIM fields.** The guard passes only
+   when **both** hold:
+   - `strict` is `Some` and `strict.body_offset() == size`; and
+   - step 2 lists exactly as many fields as `root` holds fields named
+     `DKIM-Signature` by `is_dkim_signature` (*revision 2*).
+
+   Otherwise the message gets exactly one `dkim.header_boundary_ambiguous.v1`.
+   It is located at occurrence 0, and the step returns: no verification, no
+   lookup, no other `dkim.*` finding. The definition is "the two parsers do not
+   see the same body or the same DKIM fields". The known triggers are examples
+   and fixtures, not the definition:
+   - a CRLF line that holds no colon and does not start with SP or HTAB (for
+     example `stray line`), after the DKIM-Signature field: the crate ends its
+     headers there, and Swarmail skips the line;
+   - the same line before the field, where the crate sees no signature at all;
+   - a whitespace-only **first** line, after which `parse_with_opts` returns
+     `None`;
+   - a field whose name only one parser recognises, for example
+     `DKIM-Signature : v=1; …` (a space before the colon): the crate lists it,
+     and Swarmail's `headers()` drops it, because SP is not a field-name byte.
+
+   A whitespace-only line **inside** the block is not a trigger. Both parsers
+   fold it into the previous field (mail-auth 0.14.0 `headers/parse.rs`,
+   `scan_value`), so it is a passing fixture.
+
+   What a passing guard proves, and no more:
+   - DKIM's body is exactly `raw[size..]`, the body every other collector and
+     the UI see.
+   - Both views list the same DKIM-Signature fields in the same header order.
+     This rests on a tested premise: the crate lists every field that
+     Swarmail's `headers()` names `dkim-signature` (AC22). With that premise,
+     equal counts mean equal lists, so the k-th field of step 2 is the k-th
+     root `dkim-signature` field.
+   - No claim is made about any other header name. The crate's folded-name
+     scanner accepts names that `headers()` skips, and nothing here compares
+     the other header sets.
 5. **Bounds.** Two limits apply: more than `MAX_DKIM_SIGNATURES = 16` fields in
    step 2, or any field whose `h=` lists more than
    `MAX_DKIM_SIGNED_HEADERS = 128` names. Past either, the message gets exactly
@@ -251,7 +291,7 @@ offset where Swarmail's body starts.
 
 | # | condition | verdict |
 |---|---|---|
-| a | pre-scan: a repeated tag name (RFC 6376 §3.2); no `v=`; **no `a=`** (RFC 6376 §3.5: the crate would default to rsa-sha256); or a `t=`, `x=` or `l=` value that is not one or more ASCII digits fitting `u64` (the crate reads garbage or overflow as 0, which means "absent") | `dkim.malformed.v1` |
+| a | pre-scan: a repeated tag name (RFC 6376 §3.2); no `v=`; **no `a=`** (RFC 6376 §3.5: the crate would default to rsa-sha256); or a `t=`, `x=` or `l=` value that is not one or more ASCII digits fitting `u64` (the crate reads non-digits as 0, which means "absent", and saturates overflowing digits to `u64::MAX`; row a refuses both) | `dkim.malformed.v1` |
 | b | the crate's parse error `UnsupportedVersion`, `UnsupportedAlgorithm` or `UnsupportedCanonicalization` | `dkim.unsupported.v1` |
 | c | any other parse error: missing `d=`, `s=`, `b=`, `bh=` or `h=`, bad base64 or bad quoted-printable | `dkim.malformed.v1` |
 | d | `a=rsa-sha1` (RFC 8301), or a literal `l=0` (the crate cannot tell it from an absent `l=`) | `dkim.unsupported.v1` |
@@ -315,7 +355,10 @@ is well under 0085's 256.
 ### Rule table
 
 Each rule's id is `dkim.<mode>.v1`. Its location is
-`{"kind":"header","name":"dkim-signature","occurrence":k}`; the two
+`{"kind":"header","name":"dkim-signature","occurrence":k}`, where k is the
+zero-based occurrence of the **root** `dkim-signature` field, as 0085 §1 and
+OpenAPI's `DeliverabilityLocation` define it. Step 4's count conjunct makes the
+crate's field index and the root occurrence the same number. The two
 message-level rules use occurrence 0 or the first offending field. Each fix
 hint is a fixed string that cites the RFC section and names the condition the
 code actually tests.
@@ -323,9 +366,9 @@ code actually tests.
 | rule id | severity | failure mode | passing fixture | failing fixture |
 |---|---|---|---|---|
 | `dkim.malformed.v1` | error | duplicate tag; missing `v=`, `a=`, `d=`, `s=`, `b=`, `bh=` or `h=`; bad base64; non-numeric or overflowing `t=`/`x=`/`l=`; `x` ≤ `t` | well-formed signature | `bh=` missing; `d=` twice; no `v=`; no `a=`; `x=abc`; `t=abc`; `l=abc`; `x=` 99999999999999999999; `x=t` |
-| `dkim.unsupported.v1` | error | `v`≠1, unknown `a=`/`c=`, `rsa-sha1`, literal `l=0` | ed25519-sha256 | `a=rsa-sha1` (the tag rewritten on a signed header and re-signed); `l=0` |
+| `dkim.unsupported.v1` | error | `v`≠1, unknown `a=`/`c=`, `rsa-sha1`, literal `l=0` | ed25519-sha256 | `a=rsa-sha1` (the `a=` tag rewritten on a signed field and **not** re-signed: this crate signs only rsa-sha256 and ed25519, and the verdict comes before the crypto); `l=0` |
 | `dkim.from_unsigned.v1` | error | `h=` omits `from` | `h=from:subject` | `h=subject` |
-| `dkim.header_boundary_ambiguous.v1` | error | mail-auth's header/body boundary differs from Swarmail's, for example a whitespace-only line in the header block | signed message whose boundaries agree | `" \r\n"` after the DKIM-Signature field; `" \r\n"` before it |
+| `dkim.header_boundary_ambiguous.v1` | error | mail-auth's body offset differs from Swarmail's, its strict parse fails, or it lists a different number of DKIM-Signature fields than Swarmail's root | signed message whose boundaries agree, including one with a whitespace-only `" \r\n"` line inside the block | `stray line` CRLF after the DKIM-Signature field; the same line before it; a leading `" \r\n"` first line; a `DKIM-Signature :` field beside a valid signature |
 | `dkim.limits_exceeded.v1` | error | more than 16 fields, or more than 128 `h=` names | 16 valid fields; 128 names | 17 fields; 129 names |
 | `dkim.signature_expired.v1` | error | `x` ≤ receipt, or a literal `x=0` | `x` = receipt + 1 | `x` = receipt; `x=0` with no `t=` |
 | `dkim.expired_since_receipt.v1` | error | `x` after receipt but reached by the host clock (0125 §8) | `x` one day after signing, receipt at signing | receipt 1,500 s, `t` 1,000, `x` 2,000 |
@@ -335,7 +378,7 @@ code actually tests.
 | `dkim.key_revoked.v1` | error | `p=` empty | valid `p=` | `v=DKIM1; p=` |
 | `dkim.not_evaluated.v1` | error | the key name (or ATPS name) is declared `tempfail` | key declared | key name in `tempfail` |
 | `dkim.body_hash_mismatch.v1` | error | body hash ≠ `bh=` | intact body | one body byte altered (both algorithms) |
-| `dkim.signature_mismatch.v1` | error | the header hash does not verify against `b=` with the declared key, including a `p=` that is base64 but no key | intact headers | signed `Subject` altered (both algorithms); `p=` of base64 non-key bytes |
+| `dkim.signature_mismatch.v1` | error | the header hash does not verify against `b=` with the declared key, including a `p=` that is base64 but no key | intact headers | signed `Subject` altered (both algorithms); a same-type key that did not sign (both algorithms: RFC 8463's published `test` RSA key and `brisbane` ed25519 key declared for the kit's signatures); `p=` of base64 non-key bytes |
 | `dkim.auid_mismatch.v1` | error | the `i=` domain is not `d=` or a subdomain of it (or a `t=s` key and a subdomain) | `i=@d` | `i=@other.example` |
 | `dkim.atps_unauthorized.v1` | error | `atps=` matches a From domain, and the ATPS record is undeclared, empty or invalid | ATPS record declared | ATPS record undeclared; ATPS name declared with a junk value |
 | `dkim.body_length_exceeds.v1` | error | `l` > max(raw, canonical) body length | `l` = raw body length | `l` = raw length + 10 |
@@ -353,14 +396,26 @@ no `dkim.*` finding at any severity. No `dkim.pass`, `dkim.missing` or
   shipped, because the PR is unmerged. Under 0121 §5 and 0122 §1.4, an
   unshipped id still owns its bytes.
 - An unsigned message's report differs from `/5` only in `rule_set_id`.
-- A signed message's `dns.lookups` lists each name mail-auth asked for, once,
-  sorted, with its outcome (0120 §5, as amended by the integration note).
-- The crate asks for a key only for a parsed signature that it judges
-  unexpired and whose body hash matches.
-  - Rows b, c, f, h and i record no lookup for their field.
-  - Rows a, d, e and g (for example `x=0`, or a missing `a=`) can record the
-    lookup the crate made. The report says so, and the verdict is still
-    Swarmail's.
+- A signed message's `dns.lookups` lists each **in-grammar** name mail-auth
+  asked for, once, sorted, with its outcome (0120 §5, as amended by the
+  integration note). A name outside 0120's grammar is never looked up and never
+  recorded (AC9).
+- **Which names a field causes is the crate's choice, not a Swarmail
+  contract.** The verdict is always Swarmail's row. *Revision 2 deletes the
+  per-row enumeration* ("rows b, c, f, h and i record no lookup"), because two
+  measured cases contradicted it. The contract is these tested facts only:
+  - **Absences Swarmail guarantees:** an unsigned message, a boundary-guard
+    refusal and a bounds refusal record no lookup (`verify_dkim` is not
+    called); a row-h field (the clock residual) records no key or ATPS lookup;
+    an out-of-grammar name is not recorded.
+  - **Presences measured on the pinned crate, pinned by tests so an upgrade
+    is loud:** a passing signature records its key; `r=y` on a failing
+    signature also records `_report._domainkey.<d>`; a row-f field with a
+    literal `x=0` and a `t=` records its key, because mail-auth reads `x=0` as
+    no expiry and goes on to fetch it.
+  - Fields judged by rows a and d–g may record whatever the crate asked for.
+    Consumers, #255 included, must not read an empty or non-empty lookup list
+    as a verdict.
 - A report with a `temp_fail` lookup still never qualifies (0120 §4).
 
 ### Configuration
@@ -379,7 +434,15 @@ Every live text that describes the report must be true of this build:
 - `src/static/llms.txt`;
 - `docs/guide/deliverability.md`;
 - `src/mcp.rs` `MODERN_REPORT_DESCRIPTION`;
-- `docs/decisions/README.md` (the 0120 and 0125 rows).
+- `docs/decisions/README.md` (the 0120 and 0125 rows);
+- *(revision 2)* the paragraph of `docs/guide/deliverability.md` (~180–183)
+  and `src/static/llms.txt` (~645–648) that says "no DNS/authentication
+  verification, external spam scorer, external service or new dependency ships
+  here";
+- *(revision 2)* code comments a maintainer reads before reasoning about the
+  report: the `src/deliverability/dns.rs` module comment, the
+  `src/deliverability/dkim.rs` module and `collect` comments, the `Cargo.toml`
+  rustls comment, and the `deny.toml` CDLA-Permissive-2.0 comment.
 
 The claims they make:
 - DKIM records the names it asks for, and SPF and DMARC come later.
@@ -389,6 +452,22 @@ The claims they make:
 - `key_invalid` and `signature_mismatch` are worded as rows o, q and r.
 - `atps_unauthorized` covers junk records.
 - The `l=` overview matches rows s and t and the interop gap.
+- *(revision 2)* #253 shipped no verification; DKIM verification arrives with
+  proposed 0125 on `mail-auth`, offline; SPF, DMARC and ARC are #255 and #256;
+  there is no external scorer or service.
+- *(revision 2)* The MCP description says one finding per field that does not
+  verify, a `body_length_partial` **warning** on a field that verifies only a
+  body prefix, or one message-level finding (`limits_exceeded`,
+  `header_boundary_ambiguous`), matching the OpenAPI wording.
+- *(revision 2)* A DKIM finding's occurrence is the root `dkim-signature`
+  occurrence (guide, llms.txt and OpenAPI say the same thing).
+- *(revision 2)* `dns.rs`: a report is a function of the stored bytes, the
+  receipt time and the configuration, except the clock residual of proposed
+  0125 §8.
+- *(revision 2)* `Cargo.toml`: every rustls config in this crate names the
+  ring provider explicitly; aws-lc-rs is in the tree only for mail-auth.
+  `deny.toml`: `webpki-root-certs` is pulled in only by hickory's platform
+  verifier, which this build never reaches. The allowlist does not change.
 
 Historical version notes stay as written.
 
@@ -399,7 +478,7 @@ Historical version notes stay as written.
 | 0001 accept == stored | nothing in DKIM runs before or inside `Store::insert`; verification is lazy, after the `250`, from stored bytes |
 | 0002 subscribe-before-check | the wait loop is untouched; a `temp_fail` lookup is never clean, so a wait reaches its existing deadline outcome |
 | 0003 oldest-only pruning | verification holds the selected `Arc<Email>` like every collector; no slot, no retention exception |
-| 0005 ingest extraction | the evaluator reads the committed bytes, and the boundary guard makes DKIM's body the committed body every collector sees; nothing is persisted |
+| 0005 ingest extraction | the evaluator reads the committed bytes, and the boundary guard makes DKIM's body the committed body every collector sees and its fields the root's fields; nothing is persisted |
 | crash between accept and commit | no DKIM state exists to lose; the stored bytes are the only durable state, and the next report re-derives |
 | a hanging webhook / the network | DKIM shares no task, client or permit with webhooks; declared lookups are map reads; the compiled resolver is unreachable (the adapter always answers, and there are no name servers) |
 | per-inbox cap racing a burst | one `Arc<Effective>` policy snapshot per request, the policy in the cache key, the selected `Arc<Email>` held; pruning stays oldest-only; no lock across evaluation |
@@ -408,6 +487,81 @@ Historical version notes stay as written.
 | a cert expiring under a test | DKIM touches no TLS; the only time input Swarmail supplies is the immutable receipt; fixtures derive receipts from the signature's own `t`/`x`, so there is no sleep and no wall-clock assertion |
 | clock | the crate's internal read only (0125 §8, [Operator holds](#operator-holds) item 2), with the blast radius stated in [Verification time](#verification-time) |
 | 1,000 sessions | four report permits and the 128-slot cache unchanged; the [work bound](#work-bound) per cold report; a cache hit does no analysis |
+
+## Return adjudication — 2026-11-05 (revision 2)
+
+The review panel returned the design a second time (`spec_defect: true`,
+`has_security_residual: true`, max residual `high`). Four of five members found
+the code right and this file stale; tests found no defect. The cause is single:
+the first return's implementation corrected three mechanisms in 0125's dated
+record and never edited this file. The positions agreed on that and on the
+holds, and split on three questions, ruled here.
+
+- **Fold the record in (both positions).** Step 4's triggers, the boundary
+  rule-table row and AC17 now name the colon-less line and the whitespace-only
+  first line; the inside-block whitespace line is a passing fixture.
+  `owner_of` is `OwnerName::parse` alone. Overflow saturates to `u64::MAX`. The
+  header-block equality sentence is deleted and replaced by what a passing
+  guard proves. The `rsa-sha1` fixture says "not re-signed". The header gains
+  a standing rule: an implementation record edits this file in the same
+  commit. Simplicity's "no consistency-checker script" is adopted: none would
+  have caught a mechanism claim.
+- **Occurrence k (correctness 3, independent 3 and 4): simplicity's count
+  conjunct is adopted over robustness's root mapping with `occurrence: null`.**
+  - `Headers` is a list of owned copies with no position, shared by every
+    collector, so mapping each crate field to a root position means changing
+    the shared scanner's type for one rule family.
+  - OpenAPI's `DeliverabilityLocation` reserves `null` for a **missing** field.
+    A present field located at `null` would misstate the contract robustness
+    wants to protect.
+  - The conjunct makes k the root occurrence by construction (given the AC22
+    premise), and it closes independent's fail-open corner (root has a field,
+    the crate lists none, offsets agree) without a new rule id, member or file.
+  - Robustness's fallback (documenting k as "the crate's count") is rejected
+    too: it writes a parser quirk into the public contract.
+  - *Cost to robustness:* a message carrying an obs-syntax
+    `DKIM-Signature :` field gets one ambiguity error and no per-signature
+    verdicts. RFC 5322 field names cannot contain SP, and a test sink should
+    flag such mail. If the premise were false somewhere, the conjunct still
+    refuses (fail-closed), unless a dropped field and an extra one coincide in
+    one message. AC22's spelling table proves no field that Swarmail names is
+    dropped.
+- **The lookup contract: simplicity's deletion of the per-row enumeration is
+  adopted, with robustness's demand that the measured presences are pinned.**
+  The enumeration was a second contract over the crate's internals and was
+  wrong twice. The contract keeps only what Swarmail guarantees (the
+  absences). The measured presences become exact test assertions, so a crate
+  upgrade that changes them fails loudly. Robustness's full row-by-row
+  enumeration is rejected: it would freeze the crate's ask order as Swarmail's
+  promise. *Cost to robustness:* #255 cannot infer a verdict from
+  `dns.lookups`. The spec now says so explicitly, which is the safe reading.
+- **The wrong-key test (correctness 4, independent 6): robustness's "both
+  algorithms" with simplicity's "no new key material".** RFC 8463's published
+  `test` RSA key and `brisbane` ed25519 key are already committed for AC3.
+  Declaring each for the kit's own signature of the same type proves that a
+  same-type, different key gives `signature_mismatch`.
+- **Fixture clock: robustness is adopted, narrowly.** One passing fixture
+  (`forged_signatures_verify_for_both_algorithms`) hardcodes `x=9000000000`.
+  It now derives `x` from the signer's own `t=`, like the others. No passing
+  fixture keeps an absolute expiry (AC23).
+- **Live surfaces (guarantees 4–6, correctness 5): both positions.** The
+  sentences named in § Live surfaces are rewritten, and AC15's grep now
+  matches the false sentences themselves, not only `until #254`.
+- **The rustls provider trap (independent 5): simplicity.** A comment states
+  the rule; no `CryptoProvider::install_default` is added. *Cost:* a future
+  rustls builder without a provider panics at runtime. Every current site pins
+  ring, and review catches a new one.
+- **AC11's await clause (correctness 6): both positions.** 0125 now says #255's
+  intake inherits it as a required criterion. That is a dispatcher handoff, not
+  code here.
+- **The holds stand (guarantees 1–2, security, independent 1).** The HIGH
+  residual is the clock against accepted 0085 §8. It is fail-closed and stated
+  with its full radius, and it stays operator hold 2. The compiled resolver
+  stays hold 3, and `Cargo.lock` stays hold 1. This revision neither claims
+  compatibility nor builds option B. The PR stays held for the operator
+  whatever the next review's residual severity, which is the correct state.
+- `rule_set_id` stays `swarmail-html/6`: the conjunct and the hint clause
+  change bytes only under the unshipped `/6`.
 
 ## Return adjudication — 2026-11-05 (revision 1)
 
@@ -441,6 +595,8 @@ on each disputed fact.
   is added.**
   - The added checks are missing `a=` and non-numeric `t=`, `x=` and `l=`.
     Overflowing digits are malformed too, because the crate reads them as 0.
+    *(Corrected in revision 2: the crate saturates overflow to `u64::MAX`;
+    row a refuses it either way.)*
   - A literal `x=0` is a 1970 expiry, not "absent".
   - Robustness's own checks of `c=` grammar, base64 and the presence of `d`,
     `s`, `b`, `bh` and `h` are rejected. The crate already rejects each of those
@@ -524,7 +680,8 @@ the mechanism changed, the return adjudication above rules.*
 ## Acceptance Criteria
 
 Each criterion names the proof that can fail it. AC1–AC16 keep their numbers.
-Where revision 1 amends one, it says so. AC17–AC21 are new.
+Where revision 1 or 2 amends one, it says so. AC17–AC21 are revision 1's;
+AC22–AC23 are revision 2's.
 
 - **AC1: Unsigned reports unchanged.** A message with no `DKIM-Signature` gives
   exactly the previous report, with `rule_set_id` `swarmail-html/6` and empty
@@ -548,8 +705,11 @@ Where revision 1 amends one, it says so. AC17–AC21 are new.
   rules, every failing fixture listed in the rule table yields exactly that rule
   id, severity and occurrence, and the passing fixture yields no finding of that
   id. Both algorithms are exercised for `body_hash_mismatch` and
-  `signature_mismatch`. *Proof:* inline `dkim` tests, one pair per rule, and one
-  case per listed failing fixture.
+  `signature_mismatch`. *(Amended in revision 2.)* `signature_mismatch`'s
+  failing fixtures include a **same-type key that did not sign**, for both
+  algorithms, and no test asserts a pass under a comment that claims a
+  failure. *Proof:* inline `dkim` tests, one pair per rule, and one case per
+  listed failing fixture.
 - **AC6: Precedence, independence and row coverage.** One message holds a
   passing signature, a malformed one before it and a failing one. It gives
   exactly two findings, at the correct occurrences. A field rejected by the
@@ -581,7 +741,13 @@ Where revision 1 amends one, it says so. AC17–AC21 are new.
     `Report::qualifies` is false at every threshold.
   - An invalid owner name (`s=bad*sel`, and the trailing-dot `d=example.com.`)
     yields `selector_invalid` and records no lookup.
-  - `r=y` on a failing signature records the `_report._domainkey.<d>` lookup.
+  - *(Amended in revision 2, per the lookup contract in
+    [Report and version](#report-and-version).)* Exact `dns.lookups`
+    assertions pin the measured presences: `r=y` on a failing signature
+    records the `_report._domainkey.<d>` lookup, and a `t=1000; x=0` field
+    (`malformed`) records its key lookup. They also pin the guaranteed
+    absences: an unsigned message, a boundary refusal, a bounds refusal and a
+    row-h field record no key lookup.
 
   *Proof:* inline tests.
 - **AC10: Bounds.** 16 valid signatures are all verified. 17 give exactly one
@@ -633,11 +799,19 @@ Where revision 1 amends one, it says so. AC17–AC21 are new.
   - The evaluator's header comment states the radius as
     [Verification time](#verification-time) does.
 
+  *(Amended in revision 2.)* The sentences named in
+  [Live surfaces](#live-surfaces) under *revision 2* are rewritten.
+
   *Proof:*
   - a test binding the guide's rule headings to `Rule`, 18 of them;
-  - `grep -rn -e "No rule resolves a name" -e "until #254"` over `src/static`,
-    `docs/guide` and `docs/decisions/README.md`, which must find nothing
-    outside dated history;
+  - `grep -rn -e "No rule resolves a name" -e "until #254" -e "no DNS/authentication verification" -e "one finding per signature that does not verify"`
+    over `src/static`, `src/mcp.rs`, `docs/guide` and
+    `docs/decisions/README.md`, which must find nothing outside dated history;
+  - `grep -n "and the configuration (decision 0085)" src/deliverability/dns.rs`
+    and `grep -n "rustls/ring everywhere" Cargo.toml`, both empty;
+  - `grep -c "root DKIM-Signature" docs/guide/deliverability.md src/static/llms.txt`
+    finds at least one line in each file: the occurrence sentence says k is the
+    zero-based occurrence among the message's root DKIM-Signature fields;
   - review.
 - **AC16: Gates.** Every house gate passes `--locked`:
   - fmt, clippy and tests;
@@ -648,14 +822,19 @@ Where revision 1 amends one, it says so. AC17–AC21 are new.
 
   The brokkr bundle compile runs in verify if the sandbox has no brokkr. *Proof:*
   the gate outputs.
-- **AC17: One body boundary (new; security).** A signed message whose boundaries
-  agree is verified normally. Each of the following gives exactly one
-  `dkim.header_boundary_ambiguous.v1` at occurrence 0, no other `dkim.*` finding,
-  and no lookup:
-  - a whitespace-only line `" \r\n"` after the DKIM-Signature field;
+- **AC17: One body boundary (security; amended in revision 2).** A signed
+  message whose boundaries agree is verified normally. That includes CRLF,
+  LF-only and empty-body messages, and **a signed message with a
+  whitespace-only `" \r\n"` line inside the header block** (both parsers fold
+  it: normal verdicts, no boundary finding). Each of the following gives
+  exactly one `dkim.header_boundary_ambiguous.v1` at occurrence 0, no other
+  `dkim.*` finding, and no lookup:
+  - a colon-less `stray line` CRLF line after the DKIM-Signature field;
   - the same line before the field, where mail-auth sees no signature at all;
-  - a message whose strict parse returns `None` while Swarmail sees a
-    DKIM-Signature field.
+  - a leading whitespace-only first line, where the strict parse returns
+    `None` while Swarmail sees a DKIM-Signature field;
+  - *(revision 2)* a `DKIM-Signature : v=1; …` field (a space before the
+    colon) beside a valid signature: the offsets agree and the counts differ.
 
   *Proof:* inline tests.
 - **AC18: Required tags and numbers (new).** Each of these is
@@ -686,3 +865,28 @@ Where revision 1 amends one, it says so. AC17–AC21 are new.
   - 0125's header says "with an integration note on proposed 0120".
 
   *Proof:* review, plus the AC15 grep.
+- **AC22: Occurrence is the root occurrence (new in revision 2).**
+  - *Premise:* the crate's step-2 list holds every field that Swarmail's
+    `headers()` names `dkim-signature`, in every spelling: case variants such
+    as `DKIM-Signature`, `dkim-signature`, `DKIM-SIGNATURE` and
+    `dKiM-sIgNaTuRe`; a parseable value; a value the crate rejects, such as
+    one missing `bh=`; an empty value; and a value folded across lines. If any
+    spelling fails, the implementer stops and reports rather than weakening the
+    guard.
+  - *Agreement:* in a message with two valid signatures and a parser-rejected
+    one between them, each finding's occurrence equals the index of its field
+    among the root `dkim-signature` fields.
+  - *Divergence:* a `DKIM-Signature :` field before a valid signature gives one
+    `header_boundary_ambiguous` at occurrence 0 and no lookup (AC17), never a
+    finding at an occurrence the root list does not hold.
+  - The guide, llms.txt and OpenAPI describe k as the root occurrence (the
+    AC15 `root DKIM-Signature` grep).
+
+  *Proof:* inline tests, plus the AC15 grep.
+- **AC23: No passing fixture has a calendar expiry (new in revision 2).** Every
+  fixture that expects a pass on an `x=`-bearing signature derives `x` from the
+  signature's own wall-clock-stamped `t=`, or from the receipt it sets, never
+  from an absolute future second. The residual fixtures keep their 1970 `x=`,
+  which is deterministic in the other direction. *Proof:*
+  `grep -n "x=9000000000" src/deliverability/dkim.rs` empty, plus review of the
+  `forged(` call sites.
