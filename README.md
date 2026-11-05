@@ -104,7 +104,7 @@ per inbox, and how to stop the server gracefully.
 | Chaos | per-stage SMTP failures and delays, on purpose | [chaos.md](docs/guide/chaos.md) |
 | Persistence | an SQLite restart copy, one server per data file | [persistence.md](docs/guide/persistence.md) |
 | Recipient routing | one sending identity, a private inbox per agent | [recipient-routing.md](docs/guide/recipient-routing.md) |
-| Deliverability reports | per-mail findings: the bulk-sender checklist, HTML client rules and per-link `link.*` rules | [deliverability.md](docs/guide/deliverability.md) |
+| Deliverability reports | per-mail findings: the bulk-sender checklist, HTML client rules, per-link `link.*` rules and offline DKIM verification (`dkim.*`) against declared keys | [deliverability.md](docs/guide/deliverability.md) |
 | Network posture and limits | loopback by default, Origin checks, `/metrics`, bounded pages | [network-posture.md](docs/guide/network-posture.md) |
 | Benchmarks | ingest microbenchmarks and the 5000/5000 proof | [benchmarks.md](docs/guide/benchmarks.md) |
 

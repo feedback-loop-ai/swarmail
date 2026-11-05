@@ -35,13 +35,19 @@ async fn tls_sink_requests(
         ])));
     leaf_params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
     let leaf = leaf_params.signed_by(&leaf_key, &ca, &ca_key).unwrap();
-    let server_config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![CertificateDer::from(leaf.der().to_vec())],
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der())),
-        )
-        .unwrap();
+    // Pin the provider: the tree holds ring and aws-lc-rs once mail-auth is in
+    // it, and rustls refuses to choose between them (decision 0125).
+    let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![CertificateDer::from(leaf.der().to_vec())],
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der())),
+    )
+    .unwrap();
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

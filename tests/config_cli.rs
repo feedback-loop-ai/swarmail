@@ -478,7 +478,7 @@ fn dns_flags_parse_and_real_resolution_is_refused() {
         .unwrap_err()
         .to_string();
     assert!(
-        refused.contains("real DNS needs the resolver that #254 adds; this build has none"),
+        refused.contains("real DNS is not supported; declare records with --dns-policy or PUT /api/v1/inboxes/{inbox}/dns"),
         "{refused}"
     );
     // Anything else is simply unknown.

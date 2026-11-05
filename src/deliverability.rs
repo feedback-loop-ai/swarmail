@@ -1,5 +1,10 @@
 //! Lazy analysis of immutable stored bytes. This is separate from ingest extraction.
-//! No network, clock, persistence or Store guard enters the evaluator (0085).
+//! No network, clock, persistence or Store guard enters the evaluator (0085), with
+//! one stated exception: the `mail-auth` DKIM verifier compares a signature's `x=`
+//! with the wall clock inside the crate. Swarmail reads no clock and judges `x=` at
+//! the message's receipt second; the crate's read can only move one verdict from
+//! "verified" to "not verified", and `dkim.expired_since_receipt.v1` names it
+//! (decision 0125 section 8, awaiting the operator's ruling).
 
 use crate::{model::Email, store::Store};
 use serde::{Deserialize, Serialize};
@@ -7,6 +12,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
+mod dkim;
 pub mod dns;
 mod html;
 mod links;
@@ -16,7 +22,7 @@ mod spam;
 use dns::{DeclarationsFull, DnsRecord, Effective, Lookups, Policy, Source};
 pub use reach::Mode as LinkReachability;
 
-pub const RULE_SET_ID: &str = "swarmail-html/5";
+pub const RULE_SET_ID: &str = "swarmail-html/6";
 pub const MAX_FINDINGS: usize = 256;
 pub const MAX_REPORT_BYTES: usize = 65_536;
 const MAX_HEADER_BYTES: usize = 65_536;
@@ -879,12 +885,9 @@ fn trim_value(mut value: &[u8]) -> &[u8] {
 
 fn collect(
     raw: &[u8],
+    receipt: u64,
     inputs: &Inputs,
     out: &mut Collector,
-    #[cfg_attr(
-        not(test),
-        expect(unused_variables, reason = "#254/#255 verifiers resolve through it")
-    )]
     lookups: &mut Lookups,
 ) -> Result<(), AnalysisError> {
     if raw.len() > MAX_RAW_BYTES {
@@ -914,6 +917,7 @@ fn collect(
     bulk(raw, &fields, size, inputs, out)?;
     html::collect(raw, out)?;
     spam::collect(raw, out)?;
+    dkim::collect(raw, receipt, lookups, out)?;
     #[cfg(test)]
     for finding in &inputs.fixture {
         out.push(finding.clone())?;
@@ -925,11 +929,20 @@ fn collect(
     Ok(())
 }
 
-fn evaluate(raw: &[u8], inputs: &Inputs) -> Result<Report, AnalysisError> {
+/// `receipt` is the stored message's receipt second: the time its DKIM
+/// signatures are judged at (decision 0125 section 4). It is immutable for an
+/// `Email`, so the cache's identity of the `Email` already covers it.
+fn evaluate_at(raw: &[u8], receipt: u64, inputs: &Inputs) -> Result<Report, AnalysisError> {
     let mut out = Collector(Vec::new());
     let mut lookups = Lookups::new(inputs.dns.clone());
-    collect(raw, inputs, &mut out, &mut lookups)?;
+    collect(raw, receipt, inputs, &mut out, &mut lookups)?;
     out.finish(inputs, lookups)
+}
+
+/// The tests that predate DKIM judge unsigned bytes, so their receipt is moot.
+#[cfg(test)]
+fn evaluate(raw: &[u8], inputs: &Inputs) -> Result<Report, AnalysisError> {
+    evaluate_at(raw, 0, inputs)
 }
 
 struct Slot {
@@ -1092,7 +1105,8 @@ impl Service {
             if let Some(gate) = gate {
                 gate();
             }
-            let report = Arc::new(evaluate(&email.raw, &inputs)?);
+            let receipt = email.received_ms.max(0) as u64 / 1000;
+            let report = Arc::new(evaluate_at(&email.raw, receipt, &inputs)?);
             *guard = Some(report.clone());
             Ok(report)
         })
@@ -1271,7 +1285,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             serde_json::to_value(&empty).unwrap(),
-            json!({"rule_set_id":"swarmail-html/5","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
+            json!({"rule_set_id":"swarmail-html/6","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
         );
         assert!(empty.qualifies(Severity::Info));
         // `dns` is required and closed (decision 0120 §5): no serde default.
@@ -1458,6 +1472,7 @@ mod tests {
         assert_eq!(
             collect(
                 b"X-Swarmail-Demo: error\n\n",
+                0,
                 &Inputs::default(),
                 &mut full,
                 &mut Lookups::default(),
@@ -1467,6 +1482,7 @@ mod tests {
         assert_eq!(
             collect(
                 b"\n",
+                0,
                 &Inputs::default(),
                 &mut full,
                 &mut Lookups::default()

@@ -100,7 +100,7 @@ async fn report_rest_schema_and_refusals() {
     assert_eq!(stored, raw);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-html/5");
+    assert_eq!(first["rule_set_id"], "swarmail-html/6");
     assert_eq!(first["findings"].as_array().unwrap().len(), 7);
     assert_eq!(
         first["findings"][6],
@@ -138,7 +138,7 @@ async fn report_rest_schema_and_refusals() {
     );
     let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
     for text in [
-        "swarmail-html/5",
+        "swarmail-html/6",
         "warning",
         "demo.marker.v1",
         "x-swarmail-demo",
@@ -597,7 +597,7 @@ async fn report_served_docs_match_contract() {
         "structuredContent under a closed outputSchema",
         "historical",
         "JSON in one text block",
-        "swarmail-html/5",
+        "swarmail-html/6",
         "--link-reachability",
         "link.reachability.v1",
         "104448",
@@ -651,7 +651,7 @@ async fn html_findings_share_one_report_and_predicate_contract() {
     assert_eq!(expected.len(), 15);
     assert_eq!(
         first,
-        json!({"rule_set_id":"swarmail-html/5","findings":expected,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
+        json!({"rule_set_id":"swarmail-html/6","findings":expected,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
     );
     assert_eq!(report(srv.http_addr, &id).await.1, first);
     let reply = rpc(
@@ -884,7 +884,7 @@ async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
                 findings.push(json!({"rule_id":"html.css.position.v1","severity":"warning","fix_hint":rule["fix_hint"],"location":{"kind":"mime_part","path":[]}}));
             }
             findings.sort_by_key(|f| f["rule_id"].as_str().unwrap().to_string());
-            let expected = json!({"rule_set_id":"swarmail-html/5","findings":findings,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}});
+            let expected = json!({"rule_set_id":"swarmail-html/6","findings":findings,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}});
             for _ in 0..2 {
                 assert_eq!(report(srv.http_addr, &id).await, (200, expected.clone()));
             }
@@ -985,7 +985,7 @@ async fn default_dns_policy_exact_json() {
     let id = smtp_raw(srv.smtp_addr, "plain", MAIL).await;
     let text = report_text(&srv, &id).await;
     assert!(
-        text.starts_with(r#"{"rule_set_id":"swarmail-html/5","findings":["#),
+        text.starts_with(r#"{"rule_set_id":"swarmail-html/6","findings":["#),
         "{text}"
     );
     assert!(text.ends_with(&format!("],{DEFAULT_DNS}}}")), "{text}");
@@ -1455,7 +1455,7 @@ async fn declared_dmarc_does_not_satisfy_bulk_rules() {
     assert_eq!(
         body["dns"]["lookups"],
         json!([]),
-        "no rule resolves a name yet"
+        "no bulk rule resolves a name, and the fake signature fails before any key lookup"
     );
     srv.stop().await;
 }
@@ -1544,7 +1544,7 @@ async fn link_rules_over_smtp_and_rest() {
     .collect();
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-html/5");
+    assert_eq!(first["rule_set_id"], "swarmail-html/6");
     let links = |report: &Value| -> Vec<Value> {
         report["findings"]
             .as_array()
@@ -1590,4 +1590,155 @@ async fn link_rules_over_smtp_and_rest() {
         ])
     );
     srv.stop().await;
+}
+
+// ---- DKIM verification over the wire (issue #254, proposed decision 0125) ----
+
+/// A throwaway ed25519 test key (PKCS#8) and its raw public half, the same pair the
+/// unit tests use; nothing but these tests ever signs with it.
+const DKIM_PRIVATE: &str = "MC4CAQAwBQYDK2VwBCIEIAtvV61x8r6mErlreyiGrmEK48yeio3jk3mzi+LgprfU";
+const DKIM_PUBLIC: &str = "UodvhlES5fJESplf9URbrh0U2TXyG7w5hvtVVBMrQRg=";
+const DKIM_KEY_NAME: &str = "sel._domainkey.example.com";
+
+/// A message signed by the real crate: `d=example.com`, `s=sel`, no `x=` or `l=`.
+fn dkim_mail(body: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    use mail_auth::{crypto::Ed25519Key, dkim::DkimSigner, headers::HeaderWriter};
+    let message = format!(
+        "From: Alice <alice@example.com>\r\nTo: bob@example.org\r\nSubject: signed\r\nDate: Mon, 02 Nov 2026 10:00:00 +0000\r\nMessage-ID: <wire@example.com>\r\n\r\n{body}"
+    );
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(DKIM_PRIVATE)
+        .unwrap();
+    let signature = DkimSigner::from_key(Ed25519Key::from_pkcs8_maybe_unchecked_der(&der).unwrap())
+        .domain("example.com")
+        .selector("sel")
+        .headers(["From", "Subject"])
+        .sign(message.as_bytes())
+        .unwrap();
+    [signature.to_header().as_bytes(), message.as_bytes()].concat()
+}
+
+fn key_declaration() -> String {
+    json!({"txt":[{"name":DKIM_KEY_NAME,"values":[format!("v=DKIM1; k=ed25519; p={DKIM_PUBLIC}")]}]})
+        .to_string()
+}
+
+fn dkim_findings(report: &Value) -> Vec<Value> {
+    report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"].as_str().unwrap().starts_with("dkim."))
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn dkim_signed_mail_verifies_over_the_wire() {
+    let srv = start().await;
+    assert_eq!(put_dns(&srv, "dkim", &key_declaration()).await.0, 200);
+    // A signed message delivered over real SMTP verifies against the declared key:
+    // no DKIM finding, and the report says which name it asked for.
+    let good = smtp_raw(
+        srv.smtp_addr,
+        "dkim",
+        &dkim_mail("Hello Bob,\r\nsigned text.\r\n"),
+    )
+    .await;
+    let (status, report_good) = report(srv.http_addr, &good).await;
+    assert_eq!(status, 200);
+    assert_eq!(report_good["rule_set_id"], "swarmail-html/6");
+    assert_eq!(dkim_findings(&report_good), Vec::<Value>::new());
+    assert_eq!(
+        report_good["dns"]["lookups"],
+        json!([{"name":DKIM_KEY_NAME,"type":"txt","outcome":"records",
+                "values":[format!("v=DKIM1; k=ed25519; p={DKIM_PUBLIC}")]}])
+    );
+    // The same signature over an altered body is a named finding at its header,
+    // and the crate never reached the key.
+    let altered = dkim_mail("Hello Bob,\r\nsigned text.\r\n");
+    let altered = String::from_utf8(altered)
+        .unwrap()
+        .replace("signed text", "forged text");
+    let bad = smtp_raw(srv.smtp_addr, "dkim", altered.as_bytes()).await;
+    let (_, report_bad) = report(srv.http_addr, &bad).await;
+    assert_eq!(
+        dkim_findings(&report_bad),
+        vec![json!({
+            "rule_id": "dkim.body_hash_mismatch.v1",
+            "severity": "error",
+            "location": {"kind":"header","name":"dkim-signature","occurrence":0},
+            "fix_hint": "The body differs from what was signed; sign the final body with the same c= (RFC 6376 section 3.7).",
+        })]
+    );
+    assert_eq!(report_bad["dns"]["lookups"], json!([]));
+    // An inbox with no declaration sees no key: a definite negative, never a
+    // resolver error, and the lookup is on the record.
+    let undeclared = smtp_raw(
+        srv.smtp_addr,
+        "nokey",
+        &dkim_mail("Hello Bob,\r\nsigned text.\r\n"),
+    )
+    .await;
+    let (_, report_none) = report(srv.http_addr, &undeclared).await;
+    assert_eq!(
+        dkim_findings(&report_none)[0]["rule_id"],
+        "dkim.key_missing.v1"
+    );
+    assert_eq!(
+        report_none["dns"]["lookups"],
+        json!([{"name":DKIM_KEY_NAME,"type":"txt","outcome":"no_records","values":[]}])
+    );
+    // A declared failure is never clean: not_evaluated, and a temp_fail lookup.
+    let down = json!({"tempfail":[DKIM_KEY_NAME]}).to_string();
+    assert_eq!(put_dns(&srv, "down", &down).await.0, 200);
+    let temp = smtp_raw(
+        srv.smtp_addr,
+        "down",
+        &dkim_mail("Hello Bob,\r\nsigned text.\r\n"),
+    )
+    .await;
+    let (_, report_temp) = report(srv.http_addr, &temp).await;
+    assert_eq!(
+        dkim_findings(&report_temp)[0]["rule_id"],
+        "dkim.not_evaluated.v1"
+    );
+    assert_eq!(report_temp["dns"]["lookups"][0]["outcome"], "temp_fail");
+    // MCP serves the same report text, DKIM findings included.
+    let reply = rpc(
+        srv.http_addr,
+        "tools/call",
+        json!({"name":"swarmail_get_deliverability_report","arguments":{"id":bad}}),
+    )
+    .await;
+    assert_eq!(result_text(&reply), report_bad);
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn dkim_reports_are_byte_identical_across_servers() {
+    // Two separate servers, one declaration, the same bytes: the same report
+    // text, byte for byte, for a verified message and for a failing one.
+    let mail = dkim_mail("Hello Bob,\r\nsigned text.\r\n");
+    let altered = String::from_utf8(mail.clone())
+        .unwrap()
+        .replace("signed text", "forged text");
+    let mut texts = Vec::new();
+    for _ in 0..2 {
+        let srv = start().await;
+        assert_eq!(put_dns(&srv, "same", &key_declaration()).await.0, 200);
+        let mut one = Vec::new();
+        for raw in [mail.as_slice(), altered.as_bytes()] {
+            let id = smtp_raw(srv.smtp_addr, "same", raw).await;
+            one.push(report_text(&srv, &id).await);
+        }
+        // And twice on one server: the cached report and the served report agree.
+        let id = smtp_raw(srv.smtp_addr, "same", &mail).await;
+        assert_eq!(report_text(&srv, &id).await, report_text(&srv, &id).await);
+        texts.push(one);
+        srv.stop().await;
+    }
+    assert_eq!(texts[0], texts[1]);
+    assert_ne!(texts[0][0], texts[0][1]);
 }

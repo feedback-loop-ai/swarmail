@@ -72,6 +72,13 @@ rcgen = "0.13"
 # `stream::unfold` builds the SSE inbox feed out of the store's broadcast
 # watcher; already in the dependency tree via axum.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Offline DKIM verification (issue #254, proposed decision 0125): the operator's
+# one widening for the authentication stories (epic #251, 2026-10-26), so
+# #255 and #256 reuse it. mail-auth (Apache-2.0 OR MIT) parses, canonicalizes
+# and verifies DKIM; every key it asks for is answered from 0120's declared DNS
+# map through a cache adapter. It cannot be built without a DNS backend, so
+# `aws-lc-rs` brings hickory in unreachable (empty name-server list). Exact pin.
+mail-auth = { version = "=0.14.0", default-features = false, features = ["aws-lc-rs"] }
 
 [[bench]]
 name = "ingest"

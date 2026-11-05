@@ -8,7 +8,7 @@ info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/5):
+The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/6):
 one_click, message_id and date are errors; plain_text is warning-level presence
 advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
 are independent checks. Their error-level *.not_evaluated.v1 findings explicitly
@@ -37,7 +37,7 @@ https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 204
 or 7489 sections. These are fixed published references, not live verification or
 provider certification. The proposed rule record is decision 0089.
 
-`swarmail-html/5` retains the synthetic demo.marker.v1: the first root
+`swarmail-html/6` retains the synthetic demo.marker.v1: the first root
 X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
 and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
 html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
@@ -100,7 +100,8 @@ empty today. `temp_fail` is never a pass and never clean: a report with a
 `temp_fail` lookup qualifies at no no_findings_at_or_above threshold, so an assert
 does not match it and a wait rides to its deadline. `no_records` is a definite
 negative. The same message under the same configuration gives byte-identical
-report JSON; no path, time or generation appears.
+report JSON; no path, time or generation appears (the one stated exception is the
+DKIM wall-clock residual, `dkim.expired_since_receipt.v1`, described below).
 Declare a server map with `serve --dns-policy FILE` (env SWARMAIL_DNS_POLICY): a
 JSON file of at most 8192 bytes, `{"txt":[{"name":"s1._domainkey.example.com",
 "values":["v=DKIM1; k=rsa; p=..."]}],"tempfail":["_dmarc.example.org"]}`; `{}` is
@@ -127,8 +128,9 @@ printable ASCII, never trimmed. Duplicates, an empty values list and a name unde
 both txt and tempfail are refused, never repaired. Inbox declarations are
 process-local and are not persisted; each request freezes one policy snapshot,
 and a change wakes no waiter. Real DNS is configured but refused:
-`--dns-resolver real` (env SWARMAIL_DNS_RESOLVER) exits with "real DNS needs the
-resolver that #254 adds; this build has none"; `declared` is the default.
+`--dns-resolver real` (env SWARMAIL_DNS_RESOLVER) exits with "real DNS is not
+supported; declare records with --dns-policy or PUT /api/v1/inboxes/{inbox}/dns";
+`declared` is the default.
 
 swarmail_get_deliverability_report requires string id and admits no other keys.
 Under MCP 2025-03-26, missing-version requests included, it returns report
@@ -359,6 +361,253 @@ the configuration and the network's answers at that moment, and it is never
 cached or stored: two probes at different times can differ. Empty findings
 mean "nothing found", not "the links are safe".
 
+## DKIM verification (`swarmail-html/6`)
+
+Proposed decision 0125 (issue #254) verifies every `DKIM-Signature` field of a
+stored message and reports each way a signature fails to verify as a named
+finding, so a test can assert "my signer works" by the absence of `dkim.*`
+findings and each specific breakage by its rule id. It runs lazily, inside the
+report evaluator, on the stored bytes after the SMTP `250`; nothing runs at
+ingest or on the accept path. A signature that verifies emits nothing, and so
+does a message with no signature: there is no `dkim.pass`, `dkim.missing` or
+`dkim.valid` id.
+
+**What is verified.** `rsa-sha256` (keys of 1,024 to 8,192 bits, RFC 8301) and
+`ed25519-sha256` (RFC 8463); `simple` and `relaxed` canonicalization for headers
+and for the body, in any pair; the body hash and the header hash; `l=`; `x=`.
+`rsa-sha1` is unsupported. The cryptography, parsing and canonicalization are
+the `mail-auth` crate's (the operator's ruling of 2026-10-26 on epic #251); what
+decides a verdict around it is Swarmail's.
+
+**Keys come from the declared DNS map only.** Declare the key like any other
+record (see the DNS policy above):
+
+```
+curl -X PUT localhost:8025/api/v1/inboxes/qa/dns -d '{"txt":[
+  {"name":"sel._domainkey.example.com","values":["v=DKIM1; k=ed25519; p=<base64>"]}]}'
+```
+
+Every name the verifier asks for is answered from that map and recorded in the
+report's `dns.lookups`: the key name `<s>._domainkey.<d>`, the RFC 6541 ATPS name
+when a verified signature carries `atps=` for a From domain, and the RFC 6651
+`_report._domainkey.<d>` name when a failing signature has `r=y`. A name outside
+the policy's grammar is never looked up. The crate compiles in a DNS resolver (it
+cannot be built without one) and it is unreachable: every name is answered by the
+declared map, and the one authenticator has no name servers. Real DNS is not
+supported.
+
+**Time is the receipt time.** A signature is expired when its `x=` is at or
+before the second the message was received (`received_ms` floored to seconds,
+clamped at zero). The receipt time never changes for a stored message, so a
+cached report stays correct. `t=` in the future is not enforced; an `x=` at or
+before `t=` is malformed (RFC 6376 section 3.5). One residual remains, named
+`dkim.expired_since_receipt.v1`: the crate also compares `x=` with the wall clock
+inside its verifier and returns "expired" without checking the signature, so a
+message whose `x=` is after its receipt but has since passed is reported as such,
+never as clean. That read can only move a verdict from verified to not verified,
+and it is the one stated exception to byte-identical reports: a report recomputed
+after cache eviction can differ from the cached one for a message in that window.
+
+**`l=`.** The crate counts `l=` in raw body bytes, in its signer and in its
+verifier, and hashes the first `l=` raw bytes (all of them when it is longer than
+the body). A literal `l=0` cannot be told from no `l=` and is unsupported. A
+verified signature whose `l=` leaves canonical content out is a warning, because
+text can be appended after it unsigned (RFC 6376 section 8.2); an `l=` longer than
+the body is an error.
+
+**Bounds.** At most 16 `DKIM-Signature` fields per message and at most 128 names
+in any `h=`. Past either bound the message gets one `dkim.limits_exceeded.v1`
+finding on the first field past it, nothing else is judged and nothing is looked
+up, so a report carries at most 16 DKIM findings.
+
+**Severity.** Every outcome that leaves a signature unverified is an error; the
+only warning is a verified signature with a partial `l=`. A `temp_fail` lookup
+(a key declared in `tempfail`) gives `dkim.not_evaluated.v1` and no report with a
+`temp_fail` lookup ever qualifies. Until #255 replaces the bulk checklist's
+`*.not_evaluated.v1` errors with real evidence they disqualify every report at
+every threshold, so assert on DKIM rule ids (`GET /api/v1/messages/{id}/deliverability`)
+rather than on a threshold.
+
+**Known limits.** The crate does not check a key's bytes before using it, so a
+`p=` that is base64 but not a public key fails verification and reads as
+`dkim.signature_mismatch.v1`, not `dkim.key_invalid.v1`. A selector literally
+named `_report`, or a name with an `_atps` label and no `_domainkey` one, is read
+as the other record type and fails closed as `dkim.key_invalid.v1`. A signature
+whose `l=` counts canonical bytes where the raw and canonical prefixes differ
+fails its body hash. Each finding is on
+`{"kind":"header","name":"dkim-signature","occurrence":k}`, `k` counting the
+message's `DKIM-Signature` fields in header order from zero.
+
+### `dkim.malformed.v1`
+
+**Severity:** error. A duplicate tag, a missing required tag (`d=`, `s=`, `b=`, `bh=`, `h=`), a value that is not base64, or an `x=` at or before `t=`.
+
+**Hint:** Fix the DKIM-Signature tag list: each tag once, d=, s=, b=, bh= and h= present, valid base64, and x= later than t= (RFC 6376 section 3.5).
+
+**Passing:** a well-formed signature.
+
+**Failing:** `bh=` missing; `d=` twice; `x=` equal to `t=`.
+
+### `dkim.unsupported.v1`
+
+**Severity:** error. `v=` other than 1, an unknown `a=` or `c=`, `a=rsa-sha1` (RFC 8301), or an `l=` tag that reads as 0 (the crate cannot tell `l=0` from no `l=`).
+
+**Hint:** Use v=1, a=rsa-sha256 or ed25519-sha256, c= simple or relaxed, and no l=0 (RFC 6376 section 3.5, RFC 8301 section 3.1, RFC 8463).
+
+**Passing:** `a=ed25519-sha256`.
+
+**Failing:** `a=rsa-sha1`; `l=0`; `v=2`.
+
+### `dkim.from_unsigned.v1`
+
+**Severity:** error. `h=` does not name `from`, case-insensitively. The crate does not check this.
+
+**Hint:** Sign the From header: list from in h= (RFC 6376 section 5.4).
+
+**Passing:** `h=from:subject`.
+
+**Failing:** `h=subject`.
+
+### `dkim.limits_exceeded.v1`
+
+**Severity:** error. More than 16 `DKIM-Signature` fields, or more than 128 names in one `h=`. The finding sits on the first field past a bound, nothing else is judged and nothing is looked up.
+
+**Hint:** Send at most 16 DKIM-Signature fields, each with at most 128 header names in h=.
+
+**Passing:** 16 valid fields; 128 `h=` names.
+
+**Failing:** 17 fields; 129 `h=` names.
+
+### `dkim.signature_expired.v1`
+
+**Severity:** error. `x=` is at or before the second the message was received.
+
+**Hint:** Sign again with an x= expiration later than the time the message was received (RFC 6376 section 3.5).
+
+**Passing:** `x=` one second after receipt.
+
+**Failing:** `x=` equal to the receipt second.
+
+### `dkim.expired_since_receipt.v1`
+
+**Severity:** error. `x=` is after receipt, but the crate's own wall clock has passed it (the one residual, below).
+
+**Hint:** The signature's x= has passed on this machine's clock since the message was received; sign with a later x= (RFC 6376 section 3.5).
+
+**Passing:** `x=` a day after the wall clock.
+
+**Failing:** `t=1000; x=2000`, received at 1,500.
+
+### `dkim.selector_invalid.v1`
+
+**Severity:** error. `<s>._domainkey.<d>` is not a valid DNS name under the policy's grammar; it is never looked up.
+
+**Hint:** Use an s= and d= that form a valid DNS name, <s>._domainkey.<d> (RFC 6376 section 3.6.2.1).
+
+**Passing:** `s=sel`.
+
+**Failing:** `s=bad*sel`.
+
+### `dkim.key_missing.v1`
+
+**Severity:** error. No record is declared at `<s>._domainkey.<d>`.
+
+**Hint:** Declare a TXT record at <s>._domainkey.<d> in the DNS policy; none is declared (RFC 6376 section 3.6.2.1).
+
+**Passing:** the key is declared.
+
+**Failing:** the key is not declared.
+
+### `dkim.key_invalid.v1`
+
+**Severity:** error. The record is not a key: no valid `p=`, an unsupported `k=`, not `v=DKIM1`, or a key type that does not match `a=` (an ed25519 key for `rsa-sha256`).
+
+**Hint:** Publish a v=DKIM1 key record with a valid p= and a k= that matches a= (RFC 6376 section 3.6.1, RFC 8463).
+
+**Passing:** a valid `p=`.
+
+**Failing:** `p=!!!!`; an ed25519 key for `a=rsa-sha256`.
+
+### `dkim.key_revoked.v1`
+
+**Severity:** error. `p=` is empty, which revokes the key.
+
+**Hint:** The key record has an empty p=, which revokes the key; publish a non-empty p= (RFC 6376 section 3.6.1).
+
+**Passing:** a valid `p=`.
+
+**Failing:** `v=DKIM1; p=`.
+
+### `dkim.not_evaluated.v1`
+
+**Severity:** error. The key name (or the ATPS name) is declared in `tempfail`. A report with a `temp_fail` lookup never qualifies.
+
+**Hint:** The key lookup failed temporarily, so the signature was not evaluated; fix the DNS answer and retry (RFC 6376 section 6.1.2).
+
+**Passing:** the key is declared.
+
+**Failing:** the key name is in `tempfail`.
+
+### `dkim.body_hash_mismatch.v1`
+
+**Severity:** error. The canonicalized body does not hash to `bh=`.
+
+**Hint:** The body differs from what was signed; sign the final body with the same c= (RFC 6376 section 3.7).
+
+**Passing:** the intact body.
+
+**Failing:** one body byte altered.
+
+### `dkim.signature_mismatch.v1`
+
+**Severity:** error. The signed headers do not verify against `b=`: a signed header changed, another key signed, or `p=` is not a usable key.
+
+**Hint:** A signed header changed after signing, b= was made with another key, or p= is not a usable public key; sign the final headers with the declared key (RFC 6376 section 3.7).
+
+**Passing:** intact headers.
+
+**Failing:** a signed `Subject` altered.
+
+### `dkim.auid_mismatch.v1`
+
+**Severity:** error. `i=` is not at `d=` or a subdomain of it, or the key has `t=s` and `i=` is a subdomain.
+
+**Hint:** Make the i= domain equal to d= or a subdomain of it, and equal to d= when the key has t=s (RFC 6376 sections 3.5 and 3.6.1).
+
+**Passing:** `i=@d`.
+
+**Failing:** `i=@other.example`.
+
+### `dkim.atps_unauthorized.v1`
+
+**Severity:** error. `atps=` names the From domain and the RFC 6541 record `<d>._atps.<atps>` is not declared.
+
+**Hint:** Declare the RFC 6541 ATPS record for the signing domain, or remove atps= from the signature (RFC 6541 section 4).
+
+**Passing:** the ATPS record is declared.
+
+**Failing:** the ATPS record is not declared.
+
+### `dkim.body_length_exceeds.v1`
+
+**Severity:** error. `l=` is longer than the body (and than its canonical form). The crate hashes the whole body and passes it.
+
+**Hint:** Remove l= or set it to the body length; l= is longer than the body (RFC 6376 section 3.4.5).
+
+**Passing:** `l=` equal to the body length.
+
+**Failing:** `l=` ten bytes longer.
+
+### `dkim.body_length_partial.v1`
+
+**Severity:** warning. The signature verified, but `l=` covers only a prefix of the body that leaves canonical content out (RFC 6376 section 8.2).
+
+**Hint:** Remove l=: it signs only a prefix of the body, so text can be appended unsigned (RFC 6376 section 8.2).
+
+**Passing:** `l=` equal to the body length.
+
+**Failing:** `l=` short and text appended after it.
+
 ## Spam signals (`swarmail-spam/1`)
 
 Six built-in, offline, deterministic rules read only the captured message: the
@@ -367,9 +616,9 @@ root Subject, the root From display name and the sender's `text/plain` bodies
 configuration; the same stored bytes always give the same findings. Each rule
 emits at most one finding per report, severity info or warning (error stays the
 bulk checklist's requirement level), so a large message can never flood the
-report. They arrived as `swarmail-spam/1`; with the link rules of proposed 0121
-and the `dns` member of proposed 0120 the report's `rule_set_id` is now
-`swarmail-html/5`, so the rule-set version
+report. They arrived as `swarmail-spam/1`; with the link rules of proposed 0121,
+the `dns` member of proposed 0120 and the DKIM rules of proposed 0125 the report's
+`rule_set_id` is now `swarmail-html/6`, so the rule-set version
 is recorded in every report and in the cache key. Reports carry no weight and no
 total: the weights below are the proposal in decision 0122 and wait for the
 operator to accept it; they are labelled "proposed in 0122 — not in the report"
@@ -519,5 +768,7 @@ checklist), `swarmail-html/2` and `swarmail-html/3` (HTML heuristics), then
 `swarmail-html/4` (the five link rules of proposed 0121, integrated after
 `swarmail-spam/1`; no existing rule changed meaning), then
 `swarmail-html/5` (the required `dns` report member of proposed 0120,
-integrated after `swarmail-html/4`; no rule changed meaning). A change to
+integrated after `swarmail-html/4`; no rule changed meaning), then
+`swarmail-html/6` (the seventeen DKIM rules of proposed 0125, integrated after
+`swarmail-html/5`; no existing rule changed meaning). A change to
 any rule's meaning, hint, location or order requires a new id.
