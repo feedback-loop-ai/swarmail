@@ -2346,8 +2346,9 @@ impl<'de> Deserialize<'de> for SeedRequest {
 /// naming the field and stores nothing. The build is pure CPU with no await
 /// inside, so it is offloaded like the DATA-arm parse (decision 0030 §1) —
 /// the async worker never pays the HTML pipeline — and admitted through the
-/// same parse gate (decision 0124), so seeds and SMTP sessions share one
-/// bound on concurrent parses.
+/// same parse gate (decision 0124), so HTTP seeds and SMTP sessions share one
+/// bound on concurrent parses (the MCP seed tool builds inline, ungated:
+/// decision 0124 §6).
 async fn seed_inbox(
     State(state): State<AppState>,
     Path(inbox): Path<String>,

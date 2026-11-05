@@ -3015,11 +3015,17 @@ mod parse_gate_tests {
     async fn the_commit_is_not_behind_the_gate() {
         let store = gated(1);
         let _held = store.parse_permit().await;
-        let stored = store
-            .clone()
-            .insert_async(email("gate-1", "gate-box", "a@x.io"))
-            .await
-            .unwrap();
+        // A real deadline: a commit queued behind the gate would otherwise
+        // hang the test instead of failing it by name.
+        let stored = tokio::time::timeout(
+            Duration::from_secs(20),
+            store
+                .clone()
+                .insert_async(email("gate-1", "gate-box", "a@x.io")),
+        )
+        .await
+        .expect("the commit waited behind the parse gate")
+        .unwrap();
         assert_eq!(stored.id, "gate-1");
         assert_eq!(store.count("gate-box", &Filter::default()), 1);
         assert_eq!(store.parse_waits_for_test(), 0);
