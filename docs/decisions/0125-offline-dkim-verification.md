@@ -12,11 +12,14 @@
   and ARC are built on an existing permissive-licensed crate, widening the
   dependency allowlist once with that justification. This record takes that
   one widening, so #255 and #256 reuse it.
-- **Builds on, without amending:** accepted
-  [0085](0085-deliverability-report.md) (lazy, cached, bounded reports; the
-  report shape is unchanged), proposed
-  [0120](0120-deliverability-dns-policy.md) (the declared TXT map and its
-  `Lookups` recorder are the only key source), proposed
+- **Builds on:** accepted [0085](0085-deliverability-report.md) (lazy,
+  cached, bounded reports; the report shape is unchanged; §8 below proposes an
+  amendment of its ambient-time sentence and is not compatible work until the
+  operator accepts it); proposed
+  [0120](0120-deliverability-dns-policy.md), **with an integration note on
+  proposed 0120** dated 2026-11-05 (the declared TXT map and its `Lookups`
+  recorder are the only key source; §3 below moves 0120 §5's empty-lookups
+  scope, §7's live-answer semantics and §10's resolver promise); proposed
   [0121](0121-deliverability-link-checks.md) §5 and proposed
   [0122](0122-deterministic-spam-rules.md) §1.4 (the next never-shipped
   `rule_set_id`).
@@ -26,9 +29,14 @@
   the lazy report evaluator, on the stored bytes, after the `250`. Nothing
   runs on the SMTP path, at ingest, in `Store::insert`, at seed or restore,
   or in fan-out.
-- **Held for the operator.** The delivery PR adds packages to `Cargo.lock`,
-  so under 0056's 2026-11-01 addendum it is not merged on green. §8 asks the
-  operator one question about the crate's clock.
+- **Held for the operator: three named holds.** The delivery PR is not
+  merged on green:
+  1. it adds packages to `Cargo.lock` and changes a `deny.toml` comment
+     (0056's 2026-11-01 addendum);
+  2. §8, the crate's clock, is a proposed amendment of accepted 0085 §8, and
+     under 0045 §8 it waits for the operator's acceptance;
+  3. §2, the resolver is compiled in: the operator accepts this deviation from
+     the brief, or rules otherwise.
 
 ## Decision proposed
 
@@ -56,6 +64,12 @@
      never calls its resolver; and
    - the one `MessageAuthenticator` is built with an empty name-server list,
      so even a miss would have nowhere to send a packet.
+
+   **Operator question (hold 3).** Does a compiled-in but unreachable
+   resolver satisfy the brief's "turn off any network resolver features"? No
+   mail-auth 0.14.0 feature set builds without one. If the answer is no, the
+   remedy is a different crate or an upstream change, which is a scope ruling
+   this record does not make.
 3. **One key source.** 0120's declared TXT map, through `Lookups`, is the
    only source of DKIM keys. Every name mail-auth asks for is recorded in
    the report's `dns.lookups`. That covers the key name
@@ -81,42 +95,87 @@
    `warning`: a verified signature whose `l=` covers only a prefix of the
    body. A pass emits nothing, and so does an unsigned message. The
    [specification](../../specs/dkim-verification/spec.md#rule-table) holds
-   the normative table of 17 finding rules, each proven by a passing and a
-   failing fixture. Swarmail owns these checks:
-   - duplicate tags;
+   the normative table of **18** finding rules (revision 1 adds
+   `dkim.header_boundary_ambiguous.v1`), each proven by a passing and a
+   failing fixture. Swarmail owns every check that the crate would otherwise
+   settle by a silent default:
+   - one body boundary: a signed message whose mail-auth header/body boundary
+     differs from Swarmail's gets one boundary finding and nothing else;
+   - duplicate tags, a missing `v=` or `a=`, and non-numeric or overflowing
+     `t=`/`x=`/`l=` as malformed (the crate defaults `a=` to rsa-sha256 and
+     reads bad numbers as 0);
    - `rsa-sha1` and a literal `l=0` as unsupported;
    - `From` missing from `h=`;
-   - `x=` against `t=` and against receipt;
-   - `l=` against the canonicalized body length;
+   - `x=` (a literal `x=0` included) against `t=` and against receipt;
+   - `l=` against the raw and canonicalized body lengths;
+   - pairing each crate output to its field by signature identity, never by
+     index;
+   - judging the exact key name the crate asked for;
    - the bounds.
 
    mail-auth owns parsing, canonicalization, the hashes and the signature
    check.
-6. **Bounds.** At most 16 `DKIM-Signature` fields per message, and at most
-   128 `h=` names per signature. Past either bound, mail-auth is not
-   called. The message gets one `dkim.limits_exceeded.v1` error finding and
-   no other DKIM finding, and nothing is looked up. A report therefore
-   carries at most 16 DKIM findings, well under 0085's 256.
+6. **Bounds and the real work bound.** At most 16 `DKIM-Signature` fields
+   per message, and at most 128 `h=` names per signature, counted from the
+   crate's strict parse. That parse runs first: it hashes the body at most
+   once per distinct (canonicalization, hash) pair of an `l=`-less
+   signature, so at most four hashes over at most 8 MiB, and rejects every
+   `l=` signature unhashed. Past the boundary guard or either bound,
+   `verify_dkim` is not called, nothing is looked up, and the message gets
+   one error finding and no other DKIM finding. Within the bounds: at most one
+   re-parse (at most 16 more hashes), 16 verifications, and at most three
+   names per signature (key, ATPS, `_report`), so 48 in all. A report carries
+   at most 16 DKIM findings, well under 0085's 256.
 7. **Version.** Signed messages' report bytes change, so `RULE_SET_ID`
    becomes `swarmail-html/6`, the next never-shipped id (0121 §5, 0122
    §1.4). The report shape `{rule_set_id, findings, dns}` is unchanged. No
    OpenAPI or MCP schema member is added, and `AuthEvidence` and the
    `bulk.*` rules are untouched (#255 owns them).
-8. **The crate's clock: one named residual, and a question for the
-   operator.** mail-auth 0.14.0 checks `x=` against `SystemTime::now()`, and
-   its variant that takes a time is crate-private. Swarmail reads no clock.
-   When `x=` is after receipt but at or before the wall clock, so a stored
-   message has aged past its own `x=`, mail-auth returns "expired" without
-   checking the signature. Swarmail then reports
-   `dkim.expired_since_receipt.v1`. That finding is never a pass and never
-   clean. The wall clock can move only that one verdict, and only from
-   "verified" to "not verified". For a message in that window, a report
-   recomputed after cache eviction can differ from the earlier cached one.
-   That is the one stated exception to 0120 §5's byte-identical reports.
-   Accepted 0085 §8 forbade ambient time in #252's collector. The operator
-   is asked whether this crate-internal read is compatible with it. If it
-   is not, the alternative is to vendor or re-implement mail-auth's verifier
-   at exact coverage, which this record declines.
+8. **The crate's clock: a proposed amendment of accepted 0085 §8 (hold 2).**
+   mail-auth 0.14.0 checks `x=` against `SystemTime::now()` inside
+   `verify_dkim`. No public path verifies with a given time or a parsed key:
+   `verify_dkim_(.., now)`, `DomainKey.p` and the public-key types are
+   `pub(crate)`. Swarmail itself reads no clock.
+
+   *The true blast radius.* It applies only to a parsed signature that
+   Swarmail's own rows let through, so one carrying a numeric `x=` after both
+   `t=` and the receipt second. Once the host clock reaches that `x=`, the
+   crate returns "expired" before it checks the body hash, fetches the key,
+   checks the AUID or verifies `b=`.
+   - Every verdict the crate would have decided for that field becomes
+     `dkim.expired_since_receipt.v1`, an `error`: a pass, the `l=` partial
+     warning, body_length_exceeds, body_hash_mismatch, not_evaluated,
+     atps_unauthorized, selector_invalid, key_missing, key_revoked,
+     key_invalid, auid_mismatch and signature_mismatch.
+   - The field's key and ATPS lookups disappear from `dns.lookups`.
+   - So a clean or warning-only report can begin to disqualify, and a report
+     recomputed after cache eviction can differ from the cached one. This is
+     the one exception to 0120 §5's byte-identical reports.
+   - The move is one-way unless the host clock is set back.
+   - Swarmail's own rows, the message-level steps and every unsigned message
+     are clock-free.
+
+   *The amendment proposed.* Accepted 0085 §8 says no ambient time is
+   introduced into the collector. This record proposes that the sentence does
+   not cover this one crate-internal `x=` read, bounded as stated above. The
+   record does not decide that the read is compatible. Under 0045 §8 the
+   delivery PR waits for the operator's acceptance of this section.
+
+   *If the operator refuses,* the choice is a scope ruling, and neither option
+   is built here:
+   - **B:** exclude every signature whose `x=` is after the receipt second
+     from the crate's verification (the public `retain_dkim_signatures`), and
+     give it one deterministic error id. This is deterministic, but such
+     signatures go unverified.
+   - **B′:** wait for an upstream mail-auth API that takes the verification
+     time.
+
+   Two options are ruled out:
+   - vendoring or `[patch]`ing the crate, because the coverage gate refuses a
+     local path package (house rules § Gates, rule 6) and a git patch does not
+     resolve offline;
+   - re-implementing the verifier, because that makes a second owner of the
+     crypto verdict.
 9. **Transitive additions and licences.** On the offline registry, `deny.toml`
    passes unchanged (`cargo deny check licenses`: `licenses ok`), so the "one
    widening" widens the dependency tree, not the licence allowlist. #142 forbids
@@ -325,8 +384,38 @@ so the adapter reads the name back from the key's `Hash` output (the bytes of th
 `str`, then `0xff`); a test holds that to the real lookups, and any other key
 shape reads as no name and answers "not found".
 
-**The operator's question in section 8 stands.** The wall-clock read inside
-`verify_dkim` is the one residual; if it is not compatible with accepted 0085
-section 8, the alternative named there is the only one.
+**The operator's question in section 8 stands.** Revision 1 below
+supersedes this paragraph's wording.
+
+Items 1–5 and the two undeliverable clauses were **folded into
+specs/dkim-verification/spec.md on return, 2026-11-05**. That file is now the
+single normative account; this record is kept as dated history.
+
+## Return revision (2026-11-05, review return 1)
+
+The review panel returned the design (`spec_defect: true`):
+- a HIGH finding that §8 understated the clock's radius against accepted
+  0085 §8;
+- a security residual: mail-auth's and Swarmail's header/body boundaries can
+  differ;
+- several places where the crate's defaults decided a verdict: a missing
+  `a=`, non-numeric `x=`/`t=`/`l=`, index-based output pairing, and the
+  reconstructed key name.
+
+The chief's revision, argued by both panel positions, is in the
+[specification's return adjudication](../../specs/dkim-verification/spec.md#return-adjudication--2026-11-05-revision-1).
+In this record:
+- §5 now lists 18 rules and the checks Swarmail took back from the crate's
+  defaults;
+- §6 states the real work bound;
+- §8 is redrafted as a proposed amendment of 0085 §8, with the full radius
+  and the operator's options;
+- §2 asks the resolver question;
+- the header names the three holds and the integration note on proposed
+  0120.
+
+`rule_set_id` stays `swarmail-html/6`, because it has never shipped. No
+dependency, feature or allowlist entry changes. Only the `deny.toml` comment
+on CDLA-Permissive-2.0 changes: it now also covers `webpki-root-certs`.
 
 This record stays proposed. Only the operator accepts it.

@@ -3,129 +3,217 @@
 Spec: [spec.md](spec.md) · Tasks: [tasks.md](tasks.md) · Decision:
 [0125](../../docs/decisions/0125-offline-dkim-verification.md) (proposed).
 
+**Revision 1, 2026-11-05.** The review returned the run to design. This plan is
+repaired in place:
+- the mechanisms that the implementation (`adeaa12`) replaced are rewritten as
+  built;
+- the return work is in [§ Revision 1](#revision-1-what-changes-and-which-finding-it-answers),
+  with the finding each change answers.
+
+The first plan's text is in git history at `8705096`.
+
 ## Technical context
 
 - **Language and crate.** Rust 2024, a single crate. The evaluator lives in
-  `src/deliverability.rs`, beside the `html`, `links`, `spam`, `reach` and
-  `dns` collectors.
-- **Evaluator.** `evaluate(raw, &Inputs)` runs on the blocking pool under one
-  of four permits, and its reports are cached in 128 Weak-identity slots
-  (0085).
-- **DNS.** `Lookups` (0120 §3) is the synchronous, recording TXT resolver
-  over the frozen `Arc<Effective>`. Outside tests it is unused today, which
-  is why `collect` still carries an
-  `expect(unused_variables, reason = "#254/#255 verifiers resolve through it")`.
-  `Txt` and `resolve_txt` carry matching `expect(dead_code)` attributes.
-  This story removes all three.
-- **The new dependency.** `mail-auth 0.14.0`, checked in the offline
-  registry at `~/.cargo/registry/src/index.crates.io-*/mail-auth-0.14.0`.
-  - Public API used: `AuthenticatedMessage::parse_with_opts`,
-    `MessageAuthenticator::new(ResolverConfig, ResolverOpts)`,
-    `verify_dkim(Parameters::new(..).with_cache(..))`, `DnsCache`,
-    `ResolverCache`, `TxtRecord`, `DnsError`, `DkimOutput::{result, signature, is_atps}`,
-    `DkimResult` and `dkim::{Signature, DkimError, DomainKey, Canonicalization}`.
-  - Used by tests only: `DkimSigner`, `crypto::{SigningKey, RsaKey, Ed25519Key}`
-    and `AuthenticatedMessage::canonicalized_dkim_headers`.
-  - Crate behaviour the design depends on:
-    - `verify_dkim` reads `SystemTime::now()` for `x=`;
-    - the header's `l` and `x` fields use 0 to mean "absent";
-    - the crate does not check `From` in `h=`;
-    - the crate hashes `min(l, body)`;
-    - outputs list `DkimError`-rejected fields first;
-    - the crate asks for ATPS and `_report` names through the same cache.
-- **Constraints.** 100% line, branch and function coverage, exact; no mocks
-  in the wire tests (0004); the sleep and wall-clock disciplines of 0020 §5.
+  `src/deliverability.rs` (`evaluate_at(raw, receipt, &Inputs)`), beside the
+  `html`, `links`, `spam`, `reach`, `dns` and `dkim` collectors.
+- **The DKIM module.** `src/deliverability/dkim.rs`, as built in `adeaa12`:
+  - `Rule` (17 variants; 18 after this revision);
+  - the adapter and `name_of`;
+  - `AUTHENTICATOR` (`LazyLock`, no name servers);
+  - `canonicalize` / `canonical_len`;
+  - `Scan` (`duplicate`, `has_v`, `has_l`, `h_names`);
+  - `fields()`, the crate's view sorted by position;
+  - `Context { outputs, first_parsed, body, receipt }`, `verdict` and
+    `body_length`;
+  - `collect(raw, receipt, lookups, out)`;
+  - the inline suite: a signing kit, 17 rule pairs, the c= matrix, the RFC 8463
+    vector and the 55,987-body oracle.
+- **Shared boundary.** `headers(raw) -> (Headers, size)` in
+  `src/deliverability.rs`. It caps at 64 KiB (`MAX_HEADER_BYTES`), and it treats
+  a whitespace-only line as a continuation. `evaluate`'s `collect` already holds
+  `fields` and `size` (line ~896).
+- **The crate.** `mail-auth 0.14.0`. Facts the revision depends on, read from
+  `~/.cargo/registry/src/index.crates.io-*/mail-auth-0.14.0`:
+  - `verify_dkim` reads `SystemTime::now()` and calls the `pub(crate)`
+    `verify_dkim_(.., now)`, which checks `x` before the body hash and the key.
+    `DomainKey.p` and the public-key types are `pub(crate)`.
+  - `AuthenticatedMessage::{body_offset, raw_body, dkim_signatures, errors,
+    retain_dkim_signatures}` are public.
+  - `DkimOutput::signature()` returns `Option<&Signature>`. That reference is
+    the one `with_signature(&header.header)` stored, which points into
+    `dkim_signatures()`.
+  - `VerifySignature::domain_key()` is public and returns
+    `<s>._domainkey.<d>.`, with a trailing dot.
+  - The header parser treats a whitespace-only CRLF line as the header/body
+    separator (`headers/parse.rs`, per the security finding).
+  - A missing `a=` defaults to rsa-sha256, and `number()` reads non-digits or
+    overflow as 0 (per the guarantees finding).
+- **aws-lc-sys 0.46.0.** It uses the cc builder unless the build is FIPS,
+  `NO_ASM`, a sanitizer build or `CMAKE_BUILDER`, and it ships pregenerated
+  bindings for musl (`builder/main.rs` ~584, ~704–790).
+- **Constraints.** 100% line, branch and function coverage, exact; no
+  `coverage(off)`; no mocks on the wire (0004); the 0020 §5 disciplines.
 
 ## Constitution check (house rules)
 
 | rule | how this plan meets it |
 |---|---|
-| 0001 accept == stored | `dkim::collect` is called only from `collect`, which only the evaluator calls; nothing touches the SMTP path or `Store::insert` |
+| 0001 accept == stored | `dkim::collect` is called only from the evaluator; nothing touches the SMTP path or `Store::insert` |
 | 0002 subscribe-before-check | the wait loop is untouched |
 | 0003 oldest-only pruning | no retention change |
-| 0005 extraction at ingest | stored bytes are read, never rewritten; no persisted verdict |
-| 0020 test placement | every DKIM branch is reachable by a fixture, so all tests are inline `#[cfg(test)]` in `src/deliverability/dkim.rs`; no `_tests.rs` harness unless a concrete cold path appears; the wire proof is in `tests/deliverability.rs` |
-| dependency policy | one exact pin, minimal features, `cargo deny` with `deny.toml` unchanged; a one-sentence reason in `Cargo.toml`; the transitive list in 0125 |
-| PR hold | `Cargo.lock` gains packages, so the PR is held for the operator (0056 addendum) |
-| no `coverage(off)` | none; the `expect` on `now_or_never` and on output/field agreement replace unreachable arms |
-| decisions | 0125 is drafted `proposed`; nothing is accepted |
+| 0005 extraction at ingest | stored bytes are read, never rewritten; the boundary guard ties DKIM's body to the committed body |
+| 0020 test placement | every new branch is reachable by a deterministic fixture, so all tests are inline in `src/deliverability/dkim.rs`; no harness file; the wire proof is in `tests/deliverability.rs` |
+| 0045 §8 | the crate clock may contradict accepted 0085 §8, so the PR is held for the operator's acceptance of 0125 §8 (hold 2); nothing is self-accepted |
+| dependency policy | no new package; `deny.toml` changes in a comment only (the PR is held anyway); house rules § Dependencies updated |
+| PR hold (0056 addendum) | `Cargo.lock` additions and the `deny.toml` comment; plus holds 2 and 3 |
+| decisions | 0125 stays `proposed`; 0120 gains a dated integration note; accepted 0085 is not edited |
 
-## Project structure (files touched)
+## Project structure (files touched by revision 1)
 
 | path | change |
 |---|---|
-| `Cargo.toml` | the `mail-auth` line and its one-sentence reason |
-| `Cargo.lock` | the locked additions (generated with `--locked` resolution, then checked in) |
-| `src/deliverability/dkim.rs` | **new**: pre-scan, bounds, the cache adapter, the authenticator `LazyLock`, `canonical_len`, the verdict mapping, inline tests and test signing helpers |
-| `src/deliverability.rs` | `mod dkim;`; `RULE_SET_ID` becomes `swarmail-html/6`; `evaluate` and `collect` take `receipt`; the call after `spam::collect`; drop the `expect(unused_variables)`; an honest header comment; literal-report tests updated |
-| `src/deliverability/dns.rs` | drop the two `expect(dead_code)` attributes now that production calls `resolve_txt` and reads `Txt` |
-| `src/deliverability/html-rules.json` | `rule_set_id` |
-| `src/config.rs` | the `--dns-resolver real` refusal text and its test |
-| `src/static/llms.txt`, `src/static/openapi.json`, `src/mcp.rs` | the id and refusal text where they appear |
-| `docs/guide/deliverability.md`, `docs/guide/testing.md` | a "DKIM verification" section (rules, receipt time, residual, bounds, how to declare keys) and the version history |
-| `docs/decisions/0125-offline-dkim-verification.md` | §9 completed with the real lockfile list and licences |
-| `docs/decisions/README.md` | the 0125 index row |
-| `tests/deliverability.rs` | the wire proof (AC11) and the signed two-process comparison (AC12); id updates |
-| `tests/bulk_sender.rs`, `tests/spam_rules.rs`, `tests/mcp_revisions/structured.rs`, `tests/fixtures/**` | the mechanical id update only |
-| `Dockerfile` | only if the Alpine build of `aws-lc-sys` needs a build tool (see Risks) |
+| `src/deliverability/dkim.rs` | the boundary guard and the new rule; `Scan` gains `has_a`, `has_t`, `has_x` and `numbers_ok`; rows a, f and g as specified; identity pairing (deletes `first_parsed`); `owner_of`, shared by the adapter and row l; hints; new inline tests |
+| `src/deliverability.rs` | pass `fields` and `size` to `dkim::collect`; a header comment stating the clock radius |
+| `src/static/openapi.json`, `src/static/llms.txt`, `src/mcp.rs` | the live-surface sweep (spec § Live surfaces) |
+| `docs/guide/deliverability.md` | the 18 rules, the radius, the work bound, the known limits, and the sweep |
+| `docs/decisions/0120-deliverability-dns-policy.md` | a dated 2026-11-05 integration note (§4/§5/§7/§10) |
+| `docs/decisions/0125-offline-dkim-verification.md` | revised by the chief in this design commit (§2, §5, §6, §8, header); the implementer adds nothing but evidence to §9 |
+| `docs/decisions/README.md` | the 0120 and 0125 rows |
+| `docs/house-rules.md`, `deny.toml` (comment only) | CDLA-Permissive-2.0 covers `webpki-roots` and `webpki-root-certs` |
+| `tests/deliverability.rs` | the wire test asserts the MCP report too, if it does not already (AC11) |
+| `Dockerfile` | **only** if a bounded local build or CI's docker smoke shows a missing tool; then exactly that `apk` package |
+
+Not touched: `Cargo.toml`, `Cargo.lock`, `evals/`, the `deny.toml` allowlist,
+`.github/`, `scripts/`, `.brokkr/`, and accepted 0085.
+
+## Revision 1: what changes, and which finding it answers
+
+Members: **G** guarantees, **C** correctness, **I** independent, **S**
+security, **T** tests. Each row is the owning artifact's answer. Each
+implementer-facing change has its own task in [tasks.md](tasks.md).
+
+| finding | severity | answer | where | task |
+|---|---|---|---|---|
+| G1, C1, I-residual: crate wall clock vs accepted 0085 §8; the radius was understated | HIGH | 0125 §8 is redrafted as a proposed amendment, with the full radius (every crate-mapped verdict plus lookups) and a merge hold; operator options B/B′ are named; vendoring and re-implementation are ruled out with evidence; spec § Verification time and AC7's radius fixture | spec, 0125 (this commit) | R1, R9 |
+| S: header/body parser differential (`" \r\n"`) | security, low | boundary guard: step 4 and `dkim.header_boundary_ambiguous.v1`, gated on "signed" | spec step 4, AC17 | R2 |
+| G3: missing `a=`; non-numeric `x=`/`t=` read as 0 | MEDIUM | pre-scan row a (`has_a`, `numbers_ok` with digits fitting `u64`); `has_x`/`has_t` in rows f/g; `x=0` is an expiry | spec rows a, f, g; AC18 | R3 |
+| I info: `l=abc` maps to unsupported with an `l=0` hint | info | falls under row a (malformed) | AC8, AC18 | R3 |
+| C4, I-residual: `first_parsed + index` pairing; the equality check was dropped | LOW | identity pairing (`ptr::eq`) plus `expect`; `first_parsed` deleted; malformed-ARC fixture | spec step 8, AC19 | R4 |
+| G11: trailing-dot `d=` gives `key_missing` | LOW | `owner_of` shared by the adapter and row l, applied to `domain_key()` | spec row l, AC9 | R5 |
+| G4, C3, I(2): `l=` contract; AC8 oracle | MEDIUM | rows s/t restated in raw-byte terms; oracle = canonicalizer vs the crate's `bh=`; the RFC 6376 §3.4.5 gap named, with an instruction to #255 | spec rows s/t, AC8 | R7 (docs); code unchanged |
+| G5, I(3), I(4), T2: stale Evaluation contract (signature, strict order, row q, equality expect, missing `v=`) | MEDIUM | spec § Evaluation rewritten to the code plus revision 1; rows a/c/q/r corrected | spec | none (text); R2–R5 make the code match the new steps |
+| G6, I(1), T1: AC11 await clause unmet | MEDIUM | AC11 amended; the clause moves to #255 by name; the wire test asserts REST and MCP | spec AC11 | R6 |
+| I(5): AC12 cites a two-process test that does not exist | LOW | AC12 reworded to two in-process servers | spec AC12 | none |
+| G7: §6 says "mail-auth is not called" past a bound | MEDIUM | the honest work bound (strict parse first: ≤ 4 hashes, ≤ 8 MiB) | spec § Work bound, 0125 §6 | none (text) |
+| G12: "16 lookups"; the 64 KiB claim | LOW | at most 48 names; the 64 KiB bound becomes true through the boundary guard | spec § Work bound | R2 |
+| G2: resolver feature not off | MEDIUM | operator hold 3; 0125 §2 asks the question; conditional no-cache proof | spec § Operator holds, 0125 §2 | R8 |
+| G8, C2: stale live docs (openapi, llms, guide, MCP; "no ambient time") | MEDIUM | spec § Live surfaces sweep | spec, AC15 | R7 |
+| G13: guide contradictions (malformed list, `key_invalid` wording, `atps_unauthorized`) | LOW | rule table rows and § Live surfaces | spec, AC15 | R7 |
+| G9: 0125 "without amending" 0120; README row "until #254" | MEDIUM | 0120 integration note; 0125 header corrected; README rows | spec AC21, 0125 header (this commit) | R10 |
+| G10, I info: aws-lc-sys on Alpine | MEDIUM | no speculative `apk` change, on the builder-source evidence; one bounded build if a daemon exists; on a CI failure, add exactly the missing package | plan Risks | R11 |
+| G14, C5: the CDLA comment covers two crates | LOW/info | `deny.toml` comment and house-rules sentence | spec § Dependency, AC13 | R10 |
+| G15: stale plan/tasks | info | this plan and tasks.md repaired in place | plan, tasks | none |
+| C6: `name_of` reads std's Hash layout | info | kept, and named as a known off-idiom read | spec § Key source | none |
+| I info: `Neutral(_) \| None` read as `body_hash_mismatch` | info | kept; identity pairing removes the misattribution risk | spec row i | none |
+
+**No criterion was weakened to pass review.** Three were changed because the
+finding showed the criterion itself was wrong. The evidence for each:
+
+- **AC8's oracle.** "`canonical_len` equals the `l=` the signer writes" cannot
+  hold, because mail-auth's signer writes the raw length (0125 implementation
+  item 2). The stronger oracle replaces it: Swarmail's canonicalizer is
+  byte-equal to the crate's `bh=` input over 55,987 bodies.
+- **AC11's await clause.** No message can satisfy it before #255, because the
+  bulk `*.not_evaluated.v1` errors disqualify every report. It is moved to #255
+  by name, not deleted.
+- **AC12's "existing two-process comparison".** No such test exists. The
+  criterion names the two-server test that does.
+
+AC2's 1,024-bit clause moves to AC3: aws-lc will not sign with 1,024 bits, and
+the published vector proves the 1,024-bit verify path.
+
+## Design detail for the implementer
+
+1. **`collect(raw, root: &Headers, size: usize, receipt, lookups, out)`.**
+   - The order is fixed: strict parse, then fields, then signed?, then the
+     boundary guard, then the bounds, then the re-parse, then verify, then pair,
+     then the verdict.
+   - "Signed" is `root.iter().any(|(n, _)| is_dkim_signature(n))` or a
+     non-empty `fields(&strict)`.
+   - The guard compares `strict.body_offset()` with `size`. Both are offsets of
+     the first body byte; a normal-message fixture proves the convention.
+   - Its finding uses `Rule::HeaderBoundaryAmbiguous.finding(0)` and returns
+     through the same path as `limits_exceeded`.
+2. **`Scan`.**
+   - It gains `has_a`, `has_t`, `has_x` and `numbers_ok`.
+   - `numbers_ok` is false when a `t=`, `x=` or `l=` value, with its FWS
+     trimmed, is empty, has a non-digit, or does not fit `u64`.
+   - Row a becomes:
+     `duplicate || !has_v || !has_a || !numbers_ok`.
+   - Row d becomes: `rsa-sha1 || (has_l && l == 0)`.
+   - Row f becomes: `has_x && has_t && x <= t`.
+   - Row g becomes: `has_x && x <= receipt`.
+   - Once `numbers_ok` holds, the crate's `x`, `t` and `l` equal the literal
+     values.
+3. **Pairing.** `Field.parsed` becomes `Result<&Signature, &Error>`, which
+   drops the index. The output is found with
+   `outputs.iter().find(|o| o.signature().is_some_and(|s| ptr::eq(s, sig)))`,
+   then `.expect("every parsed signature has one output")`. `Context` loses
+   `first_parsed`.
+4. **`owner_of(name: &str) -> Option<OwnerName>`.** It strips one trailing dot,
+   then calls `OwnerName::parse`. The adapter's `get` calls it, and so does row
+   l, with `signature.domain_key()`.
+5. **Hints.**
+   - The `malformed` hint lists the row-a causes.
+   - `header_boundary_ambiguous`: "A whitespace-only line in the header block
+     can end the headers at some receivers; remove it or fold it with text
+     (RFC 5322 section 2.2.3)."
+   - `unsupported` no longer mentions `l=abc`.
+6. **Header comment** in `src/deliverability.rs`: the radius sentence from spec
+   § Verification time, in place of "can only move verified to not verified".
 
 ## Research (decisions with their evidence)
 
-1. **Backend.** mail-auth's `[features]` list has no `ring`. `aws-lc-rs`
-   enables `dns-hickory` and hickory's TLS and DNSSEC on aws-lc. The aws-lc
-   verifier uses `RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY`, so it
-   accepts RSA keys of 1,024 to 8,192 bits, which RFC 8301 requires.
-   `rust-crypto` needs uncached crates and `rsa` 0.9.
-2. **Offline injection.** `txt_lookup` reads `cache.get(name)` before
-   `resolve_txt`, and a `Some` returns at once. With an adapter that never
-   misses, the resolver is never called.
-3. **Clock.** `verify_dkim` passes `SystemTime::now()` to the crate-private
-   `verify_dkim_`, and its check is
-   `x == 0 || (x > t && x > now)`. That gives the receipt-time rule and its
-   residual in 0125 §8.
-4. **Fields are crate-private.** `AuthenticatedMessage`'s fields are
-   `pub(crate)`. That is why Swarmail calls the public `Signature::parse`
-   per field to learn which output belongs to which field, and computes the
-   canonical body length itself.
-5. **`l=`.** The crate's body hasher truncates to `min(l, len)` and treats
-   `l = 0` as "whole body". That gives `body_length_exceeds` and the
-   literal-`l=0` refusal.
-6. **Time in test fixtures.** `DkimSigner::sign` stamps `t=` from the wall
-   clock. Fixtures that need explicit `t`/`x`/`l` use a test helper:
-   - write the tag list with the chosen tags and an empty `b=`;
-   - take `bh=` from a `DkimSigner` signature of the same body and `c=`;
-   - parse, call `canonicalized_dkim_headers()`, sign with
-     `SigningKey::sign`, and fill in `b=`.
-
-   Expiry fixtures that only need "receipt before or after `x`" sign
-   normally with `expiration(1 day)` and generate `received_ms` from the
-   signature's own `t`/`x`.
-7. **Keys for tests.**
-   - The RFC 8463 Appendix A.1 private keys are published: an ed25519 seed
-     and an RSA key, believed to be 1,024-bit; the seat confirms the size.
-   - One fixed, test-only 2,048-bit RSA key is embedded as a constant.
-   - No key is generated at run time, and no `generate` feature is
-     enabled.
+1. **Backend.** mail-auth's features include no `ring`. `aws-lc-rs` enables
+   `dns-hickory`. The aws-lc verifier accepts RSA keys of 1,024 to 8,192 bits.
+2. **Offline injection.** `txt_lookup` reads `cache.get(name)` first. With an
+   adapter that never misses, the resolver is never called.
+3. **Clock.** `verify_dkim` passes `SystemTime::now()` to the `pub(crate)`
+   `verify_dkim_`. Its check is `x == 0 || (x > t && x > now)`, run before the
+   body hash. No public path takes a time (spec § Operator holds).
+4. **Fields.** The crate's `dkim_signatures()` and filtered `errors()`, sorted
+   by position (0125 implementation item 1).
+5. **`l=`.** The crate counts raw bytes and hashes `min(l, len)` raw bytes. A
+   literal `l=0` reads as absent (0125 item 2).
+6. **Keys and failure wording.** Any base64 builds a key, and aws-lc's ed25519
+   path words a failed check as a library error (0125 item 3).
+7. **Time in fixtures.** `DkimSigner` stamps `t=` from the wall clock.
+   Explicit-tag fixtures splice the tag list and re-sign it through
+   `canonicalized_dkim_headers` and `SigningKey::sign`. Receipts are generated
+   from the signature's own `t`/`x`. The residual fixture uses an absolute
+   1970 `x=2000`.
 
 ## Data model
 
-- `MAX_DKIM_SIGNATURES: usize = 16` and `MAX_DKIM_SIGNED_HEADERS: usize = 128`.
-- `struct Field<'a> { occurrence: u64, value: &'a [u8], tags: PreScan, parsed: Result<Signature, mail_auth::Error> }`,
-  where `PreScan` is `{ duplicate: bool, literal_l_zero: bool, h_names: usize }`.
-- `struct Adapter<'l> { lookups: RefCell<&'l mut Lookups>, invalid: RefCell<BTreeSet<String>> }`,
-  which implements `ResolverCache<Box<str>, TxtRecord>` and `DnsCache`.
-- `enum Rule`: 17 variants, each with `id()`, `severity()` and `hint()`
-  as `const` strings. A test binds the list to the guide.
-- `canonical_len(body: &[u8], c: Canonicalization) -> u64`.
+- `MAX_DKIM_SIGNATURES = 16` and `MAX_DKIM_SIGNED_HEADERS = 128`.
+- `struct Scan { duplicate, has_v, has_a, has_t, has_x, has_l, numbers_ok: bool, h_names: usize }`.
+- `struct Field<'m> { value: &'m [u8], parsed: Result<&'m Signature, &'m Error>, scan: Scan }`.
+- `struct Adapter<'l> { lookups: RefCell<&'l mut Lookups> }`. It has no
+  `invalid` set: `owner_of` is the single judge.
+- `enum Rule`: 18 variants, each with a `const` id, severity and hint. A test
+  binds the list to the guide's headings.
+- `canonicalize` / `canonical_len(body, c, limit)`.
 - The report types are unchanged.
 
 ## Contracts
 
-- Report JSON is unchanged in shape. `rule_set_id` is `swarmail-html/6`.
-  `findings` may carry `dkim.*` entries at `header`/`dkim-signature`
-  locations, and `dns.lookups` may be non-empty in production.
-- The CLI refusal text changes as the spec states.
-- No REST, MCP, OpenAPI schema or UI change beyond example ids.
+- The report JSON shape is unchanged, and `rule_set_id` is `swarmail-html/6`.
+- `findings` may carry `dkim.*` entries at `header`/`dkim-signature`
+  locations.
+- `dns.lookups` may be non-empty in production.
+- No REST, MCP, OpenAPI schema or UI member changes. Only descriptions change
+  (§ Live surfaces).
 
 ## Quickstart
 
@@ -134,42 +222,41 @@ swarmail serve &
 curl -X PUT localhost:8025/api/v1/inboxes/qa/dns \
   -d '{"txt":[{"name":"sel._domainkey.example.com","values":["v=DKIM1; k=ed25519; p=<base64>"]}]}'
 # send a message signed d=example.com s=sel to qa@… over SMTP
-curl localhost:8025/api/v1/messages/<id>/deliverability   # no dkim.* finding
-curl 'localhost:8025/api/v1/inboxes/qa/await?no_findings_at_or_above=warning'
+curl localhost:8025/api/v1/messages/<id>/deliverability   # no dkim.* finding; the key lookup recorded
 ```
+
+The `await … no_findings_at_or_above=warning` example moves to #255 (AC11).
 
 ## Risks
 
 | risk | mitigation |
 |---|---|
-| **The hickory construction.** Building `MessageAuthenticator` with an empty name-server list may be refused, may need a Tokio context, or may read system files | Preflight it first (T1). The evaluator runs inside `spawn_blocking`, so a runtime handle exists there, and unit tests use `#[tokio::test]`. If hickory refuses an empty list, record the evidence in the 0125 §9 ledger and keep the no-miss guarantee (AC9's `key_missing`-not-`TempError` proof) as the sole offline proof. Never point it at a real resolver. If the crate cannot answer from the adapter at all, **stop and report** (0125 §9) |
-| **Field/output misalignment.** Swarmail's header scanner and mail-auth's could disagree on which fields are `DKIM-Signature` (odd folding, a missing colon) | The signature-equality `expect` turns disagreement into a failed analysis, never a wrong verdict. AC6 fixtures cover malformed fields between parsed fields. If a fixture finds a real disagreement, make it a tested `AnalysisError::Failed` branch |
-| **A wrong record type for the `_report` selector.** A selector literally named `_report` collides with the RFC 6651 name shape, and the crate's own cache has the same ambiguity | Fail closed: such a key reads as a report record and gives `key_invalid`, never a pass. Documented in the guide's known limits |
-| **Wall-clock residual** (0125 §8) | Named rule, pole fixture, operator question in 0125, guide text |
-| **Crate upgrade drift** | Exact `=0.14.0` pin, one fixture per rule asserting the id, and a canonical-length oracle test |
-| **aws-lc-sys build on Alpine/musl (Docker smoke) and macOS** | Run `cargo build --locked` locally. If Docker is available, run the image build; if the musl build needs `cmake` or `clang`, add it to the Dockerfile's `apk add` line and say so. CI's docker-smoke and macOS jobs are the final proof, which the seat reports as CI-owned |
-| **Two rustls providers.** hickory turns on rustls' `aws_lc_rs`, so a `ClientConfig::builder()` without a provider would panic with an ambiguous provider | Every Swarmail config already uses `builder_with_provider(ring)`. The existing real-HTTPS webhook and STARTTLS tests must pass unchanged (AC13). Any panic there is fixed by pinning ring explicitly at that call site, never by removing a feature |
-| **RustSec advisories on the new tree** (aws-lc-sys, hickory, rsa if pulled) | `cargo deny check licenses` runs locally. The RustSec job is CI-owned and network-backed. The seat runs `cargo deny check advisories` if an advisory DB is cached and reports the result. An advisory needing an ignore is a second widening, and the seat stops and reports it |
-| **Report size** | ≤ 16 DKIM findings, and lookups bounded by the 8 KiB policy, so the 65,536-byte bound still holds. The existing over-bound test stands |
-| **Many literal-report updates** | Mechanical; `grep -rn swarmail-html/5` must return nothing outside history notes in decisions and release notes |
-| **Load** | Optional. If the seat proves anything under load, it uses at most `nproc/4` workers for at most 10 minutes with a named, timed command, for example `timeout 600 cargo test --locked --test deliverability -- --test-threads=$(( $(nproc)/4 ))`, and reports the load applied |
+| **The operator refuses 0125 §8** (hold 2) | The PR does not merge. Options B (`retain_dkim_signatures` plus one deterministic id for every `x=`-bearing signature after receipt) and B′ (an upstream timed API) are named in spec § Operator holds and 0125 §8. A new design return builds the one chosen. Nothing is self-accepted, and nothing merges on green |
+| **The operator refuses the compiled-in resolver** (hold 3) | mail-auth 0.14.0 cannot build without a DNS backend (`compile_error!`). The only way to meet the literal brief is a different crate or upstream, which is an operator scope ruling. The two unreachability proofs stand meanwhile |
+| **The boundary guard misfires on ordinary mail.** Offsets disagree by convention (for example, LF-only mail) | Both values are offsets of the first body byte. Fixtures cover CRLF, LF-only and no-body messages whose boundaries agree, and each asserts no `header_boundary_ambiguous`. If a real convention difference appears, normalise the comparison and test it; never drop the guard |
+| **The boundary guard and unsigned mail** | "Signed" gates the guard. AC1's unsigned whitespace-line fixture proves no finding |
+| **The pre-scan disagrees with the crate on FWS inside a numeric tag** | The scan trims FWS the way the crate's tag parser does. A fixture with folded `x=` digits verifies cleanly. A disagreement fails closed as `malformed`, never as a pass |
+| **Identity pairing: the crate stores a copy, not a reference** | Verified: `with_signature(signature)` stores the `&header.header` reference that `dkim_signatures()` returns. If a crate upgrade copies it, the `expect` fails one analysis loudly (503) and the exact pin makes that a deliberate change |
+| **`domain_key()` and the adapter's asked name differ** | Both come from the crate's one `domain_key()`. AC9's trailing-dot fixture asserts `selector_invalid` and no lookup |
+| **Wall-clock residual** | The radius is stated, a pole fixture exists (absolute 1970 `x=`), AC7 has a radius fixture, and the operator holds the merge |
+| **The `l=` interop gap** | Fail-closed and documented in the guide, 0125 and the spec, with the #255 instruction. No detector is built (return adjudication) |
+| **aws-lc-sys on Alpine (docker smoke) and macOS** | The builder-source evidence is in the spec. If a daemon is present, run one bounded build: `timeout 600 docker build --cpu-quota=$(( $(nproc)/4 * 100000 )) .` or the closest bounded form the daemon accepts, and report the applied CPU limit. Otherwise CI's `docker smoke` and macOS jobs are the named CI-owned proof. On failure, add exactly the missing `apk` package. Never merge red |
+| **Two rustls providers** | Every Swarmail TLS config pins ring. The existing real-HTTPS webhook and STARTTLS suites must stay green (AC13) |
+| **RustSec on the new tree** | A CI-owned, network-backed job. An advisory needing an ignore is a second widening: stop and report |
+| **Live-surface snapshot tests** (the MCP description, OpenAPI) | Update the snapshot with the text. A test that pins the old false text is corrected, not kept |
+| **Coverage of new branches** | Each new branch has a fixture: the guard (three ways), each `Scan` flag, the `owner_of` arms, and the pairing `expect` (unreachable by construction, so it is an `expect`, not an arm). Exact 100% |
+| **Load** | Optional. If run: `timeout 600 cargo test --locked --test deliverability -- --test-threads=$(( $(nproc)/4 ))` (at most nproc/4 workers, at most 10 minutes). Report the load applied. Nothing paid |
 
 ## Panel rulings carried into this plan
 
-The spec's [panel adjudication](spec.md#panel-adjudication--2026-11-05) is
-authoritative. In short, simplicity wins on:
-- the backend;
-- the key source inside the evaluator;
-- receipt time;
-- severities;
-- the 16-signature bound;
-- "no new surface".
-
-Robustness wins on:
-- `l=` length checks;
-- the `from_unsigned`, `key_revoked` and `selector_invalid` rules;
-- the duplicate-tag pre-scan;
-- the `h=` cap;
-- bounds as findings rather than `Failed`;
-- the honest determinism exception;
-- per-rule snapshot tests against crate drift.
+The spec's [return adjudication](spec.md#return-adjudication--2026-11-05-revision-1)
+rules revision 1, and its
+[first adjudication](spec.md#panel-adjudication--2026-11-05) stands as history.
+In short:
+- **Simplicity wins** on the guard's short-circuit, the narrow pre-scan, the
+  pointer pairing, `domain_key()`, the honest work bound, no `l=` detector, no
+  speculative Dockerfile change, and no new rule-set id.
+- **Robustness wins** on "fits `u64`", the ARC fixture, the bounded docker
+  build when a daemon exists, the radius fixture in AC7, and the conditional
+  no-cache resolver proof.
+- **Both** route the clock and the resolver to the operator as merge holds.
