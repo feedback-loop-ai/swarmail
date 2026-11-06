@@ -14,16 +14,18 @@
   #256), and the operator's 2026-11-06 acceptance of 0125's three holds.
 - **Builds on:** accepted [0085](0085-deliverability-report.md) (lazy, cached,
   bounded reports; the report shape `{rule_set_id, findings, dns}` is unchanged
-  here; §8 below proposes one more amendment of its ambient-time sentence);
-  accepted [0089](0089-bulk-sender-checklist.md) (the three-state facts and
-  the `bulk.*` checklist, read as §6 states); proposed
-  [0120](0120-deliverability-dns-policy.md) **with an integration note**
-  (one optional policy member, and how non-TXT queries are answered, §3 and
-  §4); proposed [0125](0125-offline-dkim-verification.md) **with an
-  integration note** (its per-signature verdicts feed DMARC, §7); proposed
-  [0121](0121-deliverability-link-checks.md) §5 and proposed
-  [0122](0122-deterministic-spam-rules.md) §1.4 (the next never-shipped
-  `rule_set_id`); accepted 0044 §8 (the envelope sender).
+  here; §8 below proposes one more amendment of its ambient-time sentence,
+  hold 2); accepted [0089](0089-bulk-sender-checklist.md) (the three-state
+  facts and the `bulk.*` checklist, read as §6 states, hold 3); accepted
+  [0120](0120-deliverability-dns-policy.md) (operator, 2026-11-06) **with an
+  integration note**: §3 and §4 below amend its §2, §3 and §4, hold 1, and §8
+  adds a second exception to its §5, hold 2; accepted
+  [0125](0125-offline-dkim-verification.md) (operator, 2026-11-06) **with an
+  integration note** (its per-signature verdicts feed DMARC, §7; nothing in it
+  is amended); accepted [0121](0121-deliverability-link-checks.md) §5 and
+  accepted [0122](0122-deterministic-spam-rules.md) §1.4 (the next
+  never-shipped `rule_set_id`; both operator, 2026-11-06); accepted 0044 §8
+  (the envelope sender).
 - **Preserves:** [0001](0001-synchronous-insert-lossless.md),
   [0002](0002-awaits-subscribe-before-checking.md),
   [0003](0003-oldest-only-pruning.md) and 0005. The two new envelope facts
@@ -32,25 +34,63 @@
   the `250`. Nothing is evaluated on the SMTP path, at ingest, in
   `Store::insert`, at seed or restore, or in fan-out. Evaluation stays inside
   the lazy report evaluator.
-- **Held for the operator: one named hold.** The delivery PR is not merged on
-  green:
-  1. §8, SPF's monotonic lookup timer inside mail-auth's `check_host`, is a
-     proposed amendment of accepted 0085 §8 (as already amended for DKIM's
-     `x=` by 0125 §8, accepted 2026-11-06). Under 0045 §8 the delivery waits
-     for the operator's acceptance of §8.
+- **Held for the operator: three holds against three accepted records, five
+  named items.** The delivery PR is not merged on green; under 0045 §8 it waits
+  for the operator's acceptance of every item below. The operator may rule on
+  each item separately; a refusal of any item returns the run to design with
+  the remedy that item names.
+  1. **An amendment of accepted 0120** (operator, 2026-11-06), in three
+     sections:
+     - **1a, 0120 §2, the declaration shape.** "Both members … optional on
+       input and always present on output" no longer describes the whole
+       shape: §3 below adds a third member, `spf_client_ip`, optional on input
+       and present on output (and in `dns.policy`) only when declared. It
+       changes the API body, the server file, the OpenAPI and MCP policy
+       schemas and, when declared, the report's `dns.policy` bytes.
+       *If refused:* tests bind the SPF record to the loopback peer they
+       actually use (`ip4:127.0.0.1`, `ip6:::1`), and the "a record listing
+       only the declared address" fixtures of AC5 go with the member.
+     - **1b, 0120 §3, "the only path that answers, and it records every name
+       it answers".** Two answers bypass the recorder: DMARC's `np=` existence
+       query (an A query) is answered by `Lookups::exists` from the embedded
+       policy and recorded nowhere, and SPF's A, AAAA, MX and PTR queries get a
+       fixed negative (§4). `dns.lookups` keeps listing TXT answers only. Each
+       unrecorded answer is a pure function of the policy the report embeds,
+       so the report stays reproducible from its own bytes. *If refused:* the
+       answers are recorded, which amends 0120 §5's lookup shape (`type`
+       beyond `txt`) instead; that is a new design return.
+     - **1c, 0120 §4, "NXDOMAIN and NODATA are not distinguished".** §4 below
+       distinguishes them for `np=` only, by a fixed rule over the declared
+       names: a name exists when it or a name below it is declared (a TXT
+       owner or `tempfail`). *If refused:* every Author Domain is treated as
+       existing, so `np=` never applies, and AC10's `np=` fixture pair goes.
+  2. **SPF's monotonic lookup timer (§8): an amendment of accepted 0085 §8**,
+     as already amended for DKIM's `x=` by 0125 §8 (accepted 2026-11-06),
+     **and the second stated exception to accepted 0120 §5's byte-identical
+     reports**, after 0125 §8's. One mechanism, two accepted sentences; the
+     operator rules on it once. §8 names the remedies if refused.
+  3. **A reading of accepted 0089 §5** (operator, 2026-11-02): "Include all
+     effective facts/policy identity in Inputs equality". §6 below meets it by
+     the facts' determinants (mail identity carrying the envelope
+     observation, policy snapshot, rule set), not by the facts as request
+     inputs. It is a reading of accepted text, so the operator rules on it.
+     *If refused:* the facts are computed before the cache lookup, outside
+     0085's cache and its four job permits, which amends accepted 0085's
+     bounds instead; that is a new design return.
 - **Not holds, stated for the operator:**
   - `Cargo.toml`, `Cargo.lock`, `evals/Cargo.lock` and `deny.toml` stay
-    byte-identical. No crate and no feature is added: mail-auth 0.14.0
-    compiles `spf` and `dmarc` with the features #254 enabled.
+    byte-identical to `main` `c95386e` (the merge-base) and to `7478073`'s
+    package set. No crate and no feature is added: mail-auth 0.14.0 compiles
+    `spf` and `dmarc` with the features #254 enabled.
   - No file under `.github/`, `scripts/`, `.brokkr/` or the toolchain changes.
-  - No accepted ruling is contradicted. §6 states how 0089 §5's "Inputs
-    equality" is met by the facts' determinants. If the operator reads §5 as
-    requiring the facts themselves as request inputs, that reading conflicts
-    with accepted 0085's cache and permit bounds, and is the operator's to
-    rule.
   - The report's top-level shape is unchanged, so accepted 0085 §1 is not
-    amended. The one public contract change is an optional member of 0120's
-    proposed declaration grammar.
+    amended. The one public input change is 0120 §2's optional member, hold
+    1a.
+  - Accepted 0125 is not amended: DMARC consumes its verdicts as they are.
+  - Accepted 0121 §5 and 0122 §1.4 are followed, not amended:
+    `swarmail-html/7` is the next never-shipped id (`/6` shipped in v0.4.0).
+  - The null-sender baseline (§5) and DMARC record selection (§7) follow the
+    pinned crate and RFC text; neither touches an accepted record.
 
 ## Decision proposed
 
@@ -111,10 +151,26 @@
    answers are not listed, and each is reproducible from the embedded policy.
 5. **SPF.** One `check_host` per message, for one identity: MAIL FROM when
    `envelope_from` is non-empty, the HELO name when it is the null reverse
-   path (RFC 7208 §2.4; RFC 7489's SPF identity). SPF runs only when the row
+   path (RFC 7208 §2.4). SPF runs only when the row
    has an observed peer and a known envelope sender, and, for the HELO
    identity, a HELO name. Otherwise the message gets one
    `spf.not_evaluated.v1` (info) finding.
+   - **The DMARC baseline for the null sender is the pinned crate's RFC 9989
+     contract** (design return, 2026-11-06). `mail-auth 0.14.0` implements
+     RFC 9989, and its `DmarcParameters::mail_from_domain` is "the
+     RFC5321.MailFrom domain (or the HELO domain for a null reverse-path) that
+     SPF was evaluated for" (`dmarc/verify.rs`, the field and
+     `DmarcParameters::new`). Swarmail passes exactly that, so for the null
+     sender the HELO identity's domain is DMARC's SPF identifier, as RFC 7489
+     §4.1 also provides through RFC 7208 §2.4's null-path processing. The realm holds no copy of RFC 9989's
+     text, so the crate the operator pinned in 0125 is the authority, as it is
+     for DKIM. This is not a security exposure: the HELO identity aligns only
+     when its own SPF record authorizes the connecting address and its domain
+     aligns with the From domain, so no unauthenticated party gains alignment.
+     *If the operator reads RFC 9989 as dropping HELO,* the remedy is one
+     adapter arm: the null sender passes the empty SPF slot, so `spf_aligned`
+     is False and a bounce passes DMARC through DKIM only. `spf_pass` keeps
+     the HELO `check_host` result either way.
    - Record selection is Swarmail's (RFC 7208 §4.5): of a name's declared
      values, only those beginning `v=spf1` followed by a space or the end
      count; none is "no record", and more than one is `permerror`. The
@@ -170,10 +226,29 @@
      fetched, checked in or compiled in: a second owner of the organizational
      domain would disagree with the walk that decides alignment, and 0085 §8
      forbids an ambient registry.
-   - Record selection is Swarmail's: only values beginning `v=DMARC1` count.
-     More than one at a name, or one that does not parse, is
-     `dmarc.permerror.v1`. A declared `tempfail` on a walked name is
-     `dmarc.temperror.v1`. No applicable record is `dmarc.none.v1`.
+   - **Record selection is Swarmail's** (revised on the design return,
+     2026-11-06). A value is a DMARC record when it opens with the version
+     tag in its ABNF form, `v` *WSP `=` *WSP `DMARC1` (RFC 7489 §6.4): the
+     tag name `v` is case-insensitive, whitespace (space or tab) around `=` is
+     allowed, `DMARC1` is case-sensitive (`%x` octets), and it is followed by
+     whitespace, `;` or the end. So `v = DMARC1; p=reject` is a record and
+     `v=dmarc1; p=reject` and `v=DMARC10` are not. The crate's own parser is
+     whitespace- and case-tolerant, so this selector is what decides.
+     - **Two or more `v=DMARC1` values at one name are all discarded**, as
+       though the name held no record, and the tree walk goes on, as the
+       crate's RFC 9989 §4.10 walk treats any name without a record (RFC 7489
+       §6.6.3 step 5: multiple records mean the policy is not applied, A-R
+       `none`). Permerror is kept for one record that does
+       not parse (RFC 7489 §11.2: "a syntactically incorrect DMARC record").
+       When nothing else on the walk applies the finding is `dmarc.none.v1`,
+       whose hint says "exactly one v=DMARC1 record". The discarded values
+       stay visible in `dns.lookups`, which records the name and its values.
+       This replaces the earlier `dmarc.permerror.v1` for multiplicity; both
+       are errors with `policy_present` False, so no `bulk.*` verdict moves.
+     - SPF keeps `permerror` for more than one `v=spf1` value: RFC 7208 §4.5
+       says so explicitly.
+     - A declared `tempfail` on a walked name is `dmarc.temperror.v1`. No
+       applicable record is `dmarc.none.v1`.
    - **Disposition.** The crate applies `p=` to the Author Domain's own
      record, `sp=` (or `np=` for a non-existent Author Domain, §4) to a
      record found above it, and `t=y`'s one-step downgrade. A DMARC failure
@@ -196,7 +271,7 @@
      (`occurrence` null when absent, 1 when duplicated, 0 otherwise). The
      DMARC result is derived from the facts with 0089 §5's formula; Swarmail
      computes no second DMARC verdict.
-8. **Ambient reads on the SPF and DMARC paths: one reachable, held.** Read in
+8. **Ambient reads on the SPF and DMARC paths: one reachable, hold 2.** Read in
    the pinned source (`mail-auth-0.14.0/src`), every one:
    - `LookupLimit` (`spf/verify.rs`) reads `Instant::now()` once `check_host`
      passes its domain check, and `elapsed()` at every DNS-querying term,
@@ -225,8 +300,10 @@
    *The amendment proposed.* Accepted 0085 §8, as amended by 0125 §8, admits
    no ambient time into the collector other than DKIM's `x=` read. This record
    proposes that it does not cover SPF's monotonic lookup timer, bounded as
-   above, and still covers every other read. Under 0045 §8 the delivery PR
-   waits for the operator's acceptance of this section. *If the operator
+   above, and still covers every other read. The same timer is the second
+   stated exception to accepted 0120 §5's byte-identical reports, after
+   0125 §8's `x=` read. Under 0045 §8 the delivery PR waits for the
+   operator's acceptance of this section (hold 2). *If the operator
    refuses,* the remedies are a scope ruling that is not built here: an
    upstream mail-auth API that takes the time or skips the timer, or not
    evaluating SPF (the SPF facts stay Unknown and DMARC passes through DKIM
@@ -374,3 +451,25 @@ the delivery result. AC20: this record, the README row, the notes on 0120 and
 `tests/fixtures/mcp-structured-output/march-current-main.jsonl` is replaced by the
 report this tree serves for the same seeded mail, with its provenance and hash
 recorded; unlike the earlier id-only edits it gains findings and lookups.
+
+## Design return — 2026-11-06 (review 1, `spec_defect`)
+
+The first review (run `issue-255-evaluate-spf-and-dmarc-2586f754`, head
+`6653277`, tree `578acbd`) found the frozen guarantees intact, the code true
+to §1–§10 and every gate green, and returned the design for one medium defect
+that four of five members reported: this record's hold statement. It was
+written while 0120, 0121, 0122 and 0125 were proposed; the operator accepted
+them on 2026-11-06, after the design commit, so what had been integration
+notes on proposals became amendments of accepted records. The header now names
+three holds and five items, and lists those records as accepted. The
+implementation record above says "the one hold (§8)": that sentence is dated
+history, and the header supersedes it.
+
+The return also settles three RFC-fidelity points the review raised, each in
+its section: DMARC record selection (§7: multiplicity discarded instead of
+permerror, the `v=DMARC1` ABNF), and the null-sender baseline (§5: the pinned
+crate's contract, unchanged behaviour). The other review items (two stale
+OpenAPI descriptions, the "one exception" wording that predates §8, the
+AC18 proof base `c95386e`) are tasks in the specification. Nothing else
+changes: no rule id is added or removed, `swarmail-html/7` stays the id, and
+this record stays proposed.

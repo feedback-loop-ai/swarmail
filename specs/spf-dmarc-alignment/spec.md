@@ -1,18 +1,22 @@
 # SPF and DMARC alignment (issue #255)
 
-Decision: 0126 — [SPF for the observed envelope, DMARC by the RFC 9989 tree walk](../../docs/decisions/0126-spf-dmarc-alignment.md) (proposed; one operator hold)
+Decision: 0126 — [SPF for the observed envelope, DMARC by the RFC 9989 tree walk](../../docs/decisions/0126-spf-dmarc-alignment.md) (proposed; three operator holds, five named items)
 
 - **Epic:** #251, phase 1, P1. Same crate as the DKIM story.
 - **Run:** `issue-255-evaluate-spf-and-dmarc-d2898123`, `claude-careful`, from
-  `main` `7478073` (which carries #254 as #336).
+  `main` `7478073` (which carries #254 as #336); continued as
+  `issue-255-evaluate-spf-and-dmarc-2586f754` after `main` `c95386e` (v0.4.0)
+  was merged in at `6653277`, and returned from review once (the design
+  return below).
 - **Authorities read:** house rules and `deny.toml`; accepted
   [0085](../../docs/decisions/0085-deliverability-report.md) with its dated
   pointer; accepted [0089](../../docs/decisions/0089-bulk-sender-checklist.md);
-  proposed [0120](../../docs/decisions/0120-deliverability-dns-policy.md),
+  accepted [0120](../../docs/decisions/0120-deliverability-dns-policy.md),
   [0121](../../docs/decisions/0121-deliverability-link-checks.md),
   [0122](../../docs/decisions/0122-deterministic-spam-rules.md) and
-  [0125](../../docs/decisions/0125-offline-dkim-verification.md) (its three
-  holds accepted 2026-11-06); the pinned `mail-auth-0.14.0` source.
+  [0125](../../docs/decisions/0125-offline-dkim-verification.md) (all four
+  accepted by the operator on 2026-11-06, after this design was first
+  committed); the pinned `mail-auth-0.14.0` source.
 
 ## Feature and rationale
 
@@ -64,16 +68,30 @@ Out of scope:
 
 ## Operator holds
 
-One hold, named in 0126's header:
+Three holds against three accepted records, five named items. 0126's header
+owns the list and each item's remedy if refused; this section repeats it by
+number. The delivery PR is not merged on green: under 0045 §8 it waits for
+the operator's acceptance of every item.
 
-1. **SPF's monotonic lookup timer** (0126 §8), a proposed amendment of
-   accepted 0085 §8 as already amended by 0125 §8. The delivery PR waits for
-   the operator's acceptance under 0045 §8.
+1. **An amendment of accepted 0120** (operator, 2026-11-06):
+   - **1a, §2, the declaration shape:** the optional `spf_client_ip` member,
+     present on output only when declared;
+   - **1b, §3, "the only path that answers, and it records every name it
+     answers":** DMARC's `np=` existence answer (`Lookups::exists`) and SPF's
+     fixed A/AAAA/MX/PTR negatives are answered and not recorded;
+   - **1c, §4, "NXDOMAIN and NODATA are not distinguished":** they are
+     distinguished for `np=` by the declared-subtree rule.
+2. **SPF's monotonic `LookupLimit` timer** (0126 §8): an amendment of accepted
+   0085 §8 (as amended by accepted 0125 §8), and the second stated exception
+   to accepted 0120 §5's byte-identical reports. One mechanism, ruled once.
+3. **A reading of accepted 0089 §5** ("Include all effective facts/policy
+   identity in Inputs equality"), met by the facts' determinants (0126 §6).
 
 Not holds: no crate, feature, lockfile or allowlist change; no `.github/`,
-`scripts/`, `.brokkr/` or toolchain change; no accepted ruling contradicted
-(0126 §6 states the reading of 0089 §5); the report's top-level shape is
-unchanged.
+`scripts/`, `.brokkr/` or toolchain change; the report's top-level shape is
+unchanged (0085 §1 not amended); accepted 0125 is consumed, not amended;
+accepted 0121 §5 and 0122 §1.4 are followed (`swarmail-html/7`); the
+null-sender baseline and DMARC record selection touch no accepted record.
 
 ## Contract
 
@@ -81,7 +99,8 @@ unchanged.
 
 `mail-auth = { version = "=0.14.0", default-features = false, features =
 ["aws-lc-rs"] }`, unchanged. `Cargo.toml`, `Cargo.lock`, `evals/Cargo.lock`
-and `deny.toml` are byte-identical to `7478073`. The crate's `spf` and `dmarc`
+and `deny.toml` are byte-identical to `main` `c95386e`, the merge-base (whose
+dependency set is `7478073`'s). The crate's `spf` and `dmarc`
 modules are not feature-gated. If implementation finds that SPF or DMARC needs
 a feature or crate #254 did not add, it stops and reports.
 
@@ -171,9 +190,13 @@ Verdict: marked → `spf.unsupported_mechanism.v1`; else the crate's result.
 
 The DMARC adapter (per evaluation, over `Lookups`):
 
-- **TXT:** as SPF's, with the filter "begins with `v=DMARC1`" (records that
-  do not start with the version tag are discarded) and `DmarcRecord`
-  parsing; more than one → parse error.
+- **TXT:** as SPF's, with the version filter `v` *WSP `=` *WSP `DMARC1`
+  followed by whitespace, `;` or the end (RFC 7489 §6.4 ABNF: `v`
+  case-insensitive, `DMARC1` case-sensitive, space or tab around `=`); values
+  that fail it are discarded. None left, **or more than one left**, is "no
+  record" at that name (`not_found`), so the walk continues (RFC 7489 §6.6.3
+  step 5; 0126 §7). Exactly one is parsed as `DmarcRecord`; a parse failure
+  is a parse error.
 - **A** (the `np=` existence query): NODATA when the queried name, or any
   declared name below it (TXT owner or `tempfail`), is declared; NXDOMAIN
   otherwise. Not recorded.
@@ -187,7 +210,12 @@ The inputs of the one `verify_dmarc` call:
   verdict is dropped.
   Unsigned mail passes an empty slice.
 - `mail_from_domain`: the evaluated SPF identity's domain
-  (`SpfOutput::domain()`), or `""` when SPF was not evaluated.
+  (`SpfOutput::domain()`), or `""` when SPF was not evaluated. For the null
+  sender that is the HELO identity's domain: the pinned crate's RFC 9989
+  contract for `DmarcParameters::mail_from_domain` ("or the HELO domain for a
+  null reverse-path"), as RFC 7489 §4.1 provides through RFC 7208 §2.4 (0126
+  §5). Unchanged by the design return; the remedy if the operator reads RFC
+  9989 otherwise is one arm.
 - `spf_output`: `SpfOutput::new(domain).with_result(SpfResult::Pass)` when
   SPF was evaluated (so the crate reports identity alignment), else
   `SpfOutput::new("").with_result(SpfResult::None)`.
@@ -227,9 +255,9 @@ A pass emits nothing. Every hint is static and never echoes sender data
 | `spf.unsupported_mechanism.v1` | error | `return-path`, null | evaluation reached `a`, `mx`, `ptr`, `exists` or `%{p}` |
 | `spf.not_evaluated.v1` | info | `return-path`, null | no observed peer, unknown envelope, or null MAIL FROM without HELO |
 | `dmarc.from_invalid.v1` | error | `from`, null/1/0 | not exactly one From field, or no single domain |
-| `dmarc.none.v1` | error | `from`, 0 | no applicable record |
+| `dmarc.none.v1` | error | `from`, 0 | no applicable record (including a walk whose only `v=DMARC1` name held more than one value, all discarded) |
 | `dmarc.temperror.v1` | error | `from`, 0 | a walked `_dmarc` name is declared `tempfail` |
-| `dmarc.permerror.v1` | error | `from`, 0 | a walked name holds more than one `v=DMARC1` value, or one that does not parse |
+| `dmarc.permerror.v1` | error | `from`, 0 | a walked name holds exactly one `v=DMARC1` value and it does not parse |
 | `dmarc.fail.none.v1` | error | `from`, 0 | result fail, applied policy none |
 | `dmarc.fail.quarantine.v1` | error | `from`, 0 | result fail, applied policy quarantine |
 | `dmarc.fail.reject.v1` | error | `from`, 0 | result fail, applied policy reject |
@@ -283,7 +311,7 @@ list exists in the tree. Pinned by `mail-auth =0.14.0`.
 
 | read | where | reachable | radius |
 |---|---|---|---|
-| `Instant::now()`/`elapsed()` | `spf/verify.rs` `LookupLimit` | yes, every SPF evaluation | ≥20 s inside one synchronous poll turns the verdict into `spf.permerror.v1` (fail-closed). **Operator hold.** |
+| `Instant::now()`/`elapsed()` | `spf/verify.rs` `LookupLimit` | yes, every SPF evaluation | ≥20 s inside one synchronous poll turns the verdict into `spf.permerror.v1` (fail-closed). **Operator hold 2.** |
 | `SystemTime::now()` + thread-local | `sampling.rs` `is_within_pct` via `with_report` | no: the adapter clears `ra=` | none |
 | `SystemTime::now()` | `spf/macros.rs` `current_time` (`%{t}`) | no: `exp=` text is never parsed as a `Macro` | none |
 | any | `dmarc/verify.rs` | none present | none |
@@ -319,7 +347,7 @@ unchanged; `dns.policy` gains `spf_client_ip` only when declared;
 | hostile policy | 0120's bounds and parser refuse before use; `spf_client_ip` must be an IP literal | startup, with a named refusal |
 | `tempfail` | `*.temperror.v1`, facts Unknown, report never qualifies | the verdict under a temporary failure |
 | SPF record using `a`/`mx`/`ptr`/`exists` | `spf.unsupported_mechanism.v1`, `spf_pass` Unknown | that SPF verdict, until address records are declared by a later story |
-| descheduled process (≥20 s) | the crate's timer yields `spf.permerror.v1` (hold) | determinism inside that window |
+| descheduled process (≥20 s) | the crate's timer yields `spf.permerror.v1` (hold 2) | determinism inside that window |
 | many parallel reports | per-evaluation adapters, no global mutable state, 0085's four permits | nothing new |
 | report too large | `AnalysisError::Failed` | the report, never a truncated one |
 
@@ -374,6 +402,84 @@ Record selection (one `v=spf1`, one `v=DMARC1`) is added by the chief, on
 0125's principle that Swarmail owns every check the crate settles by a silent
 default.
 
+## Design return adjudication — 2026-11-06
+
+Review 1 returned the design (`spec_defect: true`, medium) for one defect that
+four of five members reported: 0126's hold statement predates the operator's
+acceptance of 0120, 0121, 0122 and 0125 and names one hold where the record
+amends accepted text in three places. Security found nothing. Both positions
+passed. They agree on the defect and on keeping the mechanism, and disagree on
+how many holds there are, on four substantive edges and on the test seam. Each
+point is ruled below.
+
+1. **Hold count: neither five (robustness) nor three flat (simplicity).**
+   There are three holds, one per accepted record, with 0120's split into the
+   three sentences it amends (1a §2, 1b §3, 1c §4). That gives five items the
+   operator can rule on one at a time. Robustness's separate "0120 §5" hold is
+   folded into hold 2: the §5 byte-identity exception *is* the SPF timer, and
+   ruling on one mechanism twice invites contradictory rulings. *Cost to
+   robustness:* none in protection, because §5 is named in hold 2's text.
+   *Cost to simplicity:* a longer header.
+2. **Recording the `np=` answer: simplicity wins.** It is named as hold 1b
+   and not recorded. Recording it would widen `DnsLookup.type` past the
+   accepted `txt` constant, which amends accepted 0120 §5's lookup shape (a
+   fourth amendment) and breaks AC17. The answer is a pure function of
+   `dns.policy`, which the report embeds, so the report stays reproducible
+   from its own bytes. *Cost to robustness:* a reader of a `dmarc.fail.*`
+   report must derive the `np=` existence answer from the embedded policy
+   instead of reading it off `dns.lookups`. The header sentence and 0120's
+   note say so, so no comment claims more than is true.
+3. **Two `v=DMARC1` values: both positions, under RFC 7489's text.** They
+   are discarded as "no record at this name" (`dmarc.none.v1` when nothing
+   else applies). RFC 7489 §6.6.3 says multiple records mean the policy is
+   not applied, and §11.2 reserves `permerror` for a syntactically bad
+   record. The realm has no copy of RFC 9989's text. The crate's walk treats
+   any name without a record by moving on, and the selector uses that path,
+   so the change is one match arm. AC10's old "two values →
+   `dmarc.permerror.v1`" example is **wrong, not weakened**: it gave the
+   RFC's "not applied" case the error token for a broken record. It moves to
+   AC21 with the correct expectation and a second fixture (the walk reaching
+   an organizational record). *Cost:* when a parent record applies, the
+   duplicate yields no finding of its own. It stays visible in
+   `dns.lookups`.
+4. **`v=DMARC1` grammar: robustness wins over "pin what is there".** It
+   follows RFC 7489 §6.4's ABNF: `v` is case-insensitive, whitespace is
+   allowed around `=`, and `DMARC1` is case-sensitive. Today `v = DMARC1`, a
+   valid record, reads as no policy and `v=dmarc1`, an invalid one, reads as
+   a policy. Pinning that with a fixture would prove a wrong behaviour. The
+   crate's parser accepts both forms, so Swarmail's selector is what decides,
+   and it should decide correctly. *Cost:* one function and four fixtures.
+   SPF's `v=spf1` (no whitespace, case-insensitive, RFC 7208 §4.5) is right
+   as it is.
+5. **HELO under the null sender: simplicity's "state and cite" wins over
+   robustness's RFC 9989 drop.** The pinned crate implements RFC 9989 and
+   documents `mail_from_domain` as "the HELO domain for a null
+   reverse-path". With no RFC 9989 text in the realm, the crate is the
+   authority here, as 0125 made it for DKIM. Robustness's safety argument
+   does not hold: the HELO identity aligns only if its own SPF record
+   authorizes the connecting address *and* its domain aligns with From, so
+   no one gains alignment without authenticating. The baseline is stated in
+   0126 §5 and pinned by AC23, with a one-arm remedy if the operator reads
+   RFC 9989 otherwise. It is not a hold, because no accepted record is
+   touched. *Cost to robustness:* if RFC 9989 does drop HELO, null-sender
+   reports can show `spf_aligned` True where the RFC has no identifier.
+6. **The `cfg(test)` `Inputs.auth` default: rejected (robustness).** The
+   default of unknown facts exists only in the library's test build. Every
+   `tests/` suite links the production build, which has no such input, and
+   AC13, AC14 and AC21–AC23 run the real evaluation, inline with the override
+   unset or over the wire. Correctness found it acceptable and the tests
+   lens found no vacuity. A test asserting the default would prove nothing
+   about production. *Cost:* a future inline test that forgets to opt out
+   proves only the checklist. The wire suites still cover production.
+7. **Stale served text, ambient-read wording, AC18's base: adopted from both
+   positions and the review (AC18, AC24).** These are sentences #255 itself
+   made false. The "proposed 0120/0121/0125" status wording in served text
+   #255 did not author stays for #337, as the continuation directs.
+8. **No redesign (simplicity).** Capture, provenance, TXT-only with the
+   named unsupported term, no public-suffix list, no `auth` member, and
+   facts in the evaluator all stand. Both positions defend them and all five
+   reviewers found them sound.
+
 ## Acceptance Criteria
 
 Each criterion names its proof. "Fixture pair" means one fixture that fires
@@ -398,7 +504,7 @@ the rule and one that does not, both run.
 - **AC4: No new mail surface.** REST, MCP, webhook and feed payloads of an
   `Email` are byte-identical to `7478073`'s for the same mail; `FIELD_NAMES`
   is 21; the OpenAPI and MCP mail schemas are unchanged. *Proof:* existing
-  pinned payload tests pass unchanged.
+  pinned payload tests pass unchanged (the payloads are also `c95386e`'s).
 - **AC5: Declared client address.** `spf_client_ip` is accepted from the
   server file and the inbox `PUT`, canonicalized, echoed in `dns.policy`
   only when declared, and refused (400 / startup refusal) when not an IP
@@ -428,8 +534,8 @@ the rule and one that does not, both run.
   with ten labels records at most eight `_dmarc` names for its walk.
   *Proof:* inline.
 - **AC10: DMARC discovery and disposition.** Fixture pairs for
-  `dmarc.none.v1`, `dmarc.temperror.v1`, `dmarc.permerror.v1` (two
-  `v=DMARC1` values; an unparseable one), `dmarc.fail.none.v1`,
+  `dmarc.none.v1`, `dmarc.temperror.v1`, `dmarc.permerror.v1` (one
+  unparseable `v=DMARC1` value; multiplicity is AC21), `dmarc.fail.none.v1`,
   `dmarc.fail.quarantine.v1` and `dmarc.fail.reject.v1`. A subdomain From
   with only an organizational record finds it (`policy_present` True) and
   applies `sp=`; an Author Domain record applies `p=`; a non-existent
@@ -467,7 +573,7 @@ the rule and one that does not, both run.
   query (a test asserts `Some` from each), and each crate call completes on
   the first poll. A record with `ra=` and `rp=0` evaluates with no sampling
   (the adapter's record has no `ra`). The only reachable clock read is the
-  `LookupLimit` timer, recorded as the hold. *Proof:* inline.
+  `LookupLimit` timer, recorded as hold 2. *Proof:* inline.
 - **AC16: Determinism.** Two evaluations of the same `Email` and policy give
   byte-identical report JSON, and so do two in-process servers with separate
   stores, outside the §8 window. *Proof:* inline; `tests/deliverability.rs`.
@@ -476,9 +582,12 @@ the rule and one that does not, both run.
   `dns.lookups[].type` is `txt` only. *Proof:* existing shape tests, updated
   for the id.
 - **AC18: Dependency.** `Cargo.toml`, `Cargo.lock`, `evals/Cargo.lock` and
-  `deny.toml` are byte-identical to `7478073`; `cargo deny check licenses`
-  passes. *Proof:* `git diff --exit-code 7478073 -- Cargo.toml Cargo.lock
-  evals/Cargo.lock deny.toml`.
+  `deny.toml` are byte-identical to `main` `c95386e`, the merge-base (the
+  v0.4.0 version bump makes `7478073` the wrong base since the merge);
+  `cargo deny check licenses` passes. *Proof:* `git diff --exit-code c95386e
+  -- Cargo.toml Cargo.lock evals/Cargo.lock deny.toml`, and
+  `git diff c95386e 7478073 -- Cargo.lock` shows only the `swarmail` package's
+  own version line (no package added or removed).
 - **AC19: Gates.** Every house gate passes `--locked`: fmt, clippy, tests,
   the binary build, the evals crate's fmt/clippy/tests against the
   candidate's binary, the coverage gate at exactly 100% and its selftest, the
@@ -486,7 +595,58 @@ the rule and one that does not, both run.
   where a pinned brokkr binary exists; otherwise verify runs it and the
   implementer says so. *Proof:* the gate log.
 - **AC20: Records and docs.** 0126 is listed in `docs/decisions/README.md` as
-  proposed; 0120 and 0125 carry dated integration notes; the guide,
+  proposed; 0120 and 0125 carry dated integration notes (AC22 states what
+  0120's must say); the guide,
   `llms.txt` and OpenAPI describe `spf_client_ip`, the new ids, the A-R table
   and the unsupported mechanisms. *Proof:* the existing doc-consistency tests
   and review.
+
+Added on the design return (2026-11-06; plan.md says which finding each
+answers):
+
+- **AC21: DMARC record selection.** Fixture pairs, each run:
+  `v = DMARC1; p=reject` (whitespace around `=`) and `v=DMARC1\t;p=reject` are
+  records and apply `p=reject`, against `v=dmarc1; p=reject` and
+  `v=DMARC10; p=reject`, which are not (`dmarc.none.v1` when nothing else
+  applies). Two `v=DMARC1` values at the Author Domain's `_dmarc` name, with
+  nothing above, give `dmarc.none.v1` and `policy_present` False, never
+  `dmarc.permerror.v1`; the same two values below an organizational record
+  `v=DMARC1; p=reject; sp=quarantine` let the walk find it and apply `sp=`
+  (`dmarc.fail.quarantine.v1` on failure); both names and all their values
+  appear in `dns.lookups`. One unparseable value stays `dmarc.permerror.v1`.
+  Two `v=spf1` values stay `spf.permerror.v1` (AC7, unchanged). The
+  `dmarc.none.v1` hint names "exactly one" record; the `dmarc.permerror.v1`
+  hint no longer does; the guide's rule table matches the code
+  (`guide_lists_every_auth_rule`). *Proof:* inline `auth.rs` fixture pairs.
+- **AC22: Holds on record.** 0126's header names holds 1 (1a/1b/1c), 2 and 3
+  as amendments or readings of accepted 0120, 0085 and 0089 and lists 0120,
+  0121, 0122 and 0125 as accepted; it no longer says "one named hold", "no
+  accepted ruling is contradicted" or "0120's proposed declaration grammar".
+  The `docs/decisions/README.md` row for 0126 names the same three holds and
+  says "integration notes on accepted 0120 and 0125". 0120's dated
+  integration note labels the grammar member §2 (not §3) and adds the §3
+  (unrecorded answers) and §4 (NXDOMAIN/NODATA for `np=`) items as hold 1,
+  with the §5 timer as hold 2. 0085 and 0089 each carry a dated pointer to
+  the pending item (0085 §8: hold 2; 0089 §5: hold 3) that changes no status.
+  No decision's status changes. *Proof:* `grep` checks in the task list;
+  review.
+- **AC23: The null-sender baseline is pinned.** A null-sender message whose
+  HELO name passes SPF and aligns (relaxed) with the From domain has
+  `spf_aligned` True and passes DMARC through SPF; with a HELO name that does
+  not align, `spf_aligned` is False. 0126 §5 states the baseline (the pinned
+  crate's RFC 9989 contract) and the one-arm remedy. *Proof:* an inline
+  `auth.rs` fixture pair, plus the existing wire test in
+  `tests/deliverability.rs` (`mx.x.io` aligning with `x.io`).
+- **AC24: Served text #255 made false is corrected.** `src/static/openapi.json`'s
+  `DeliverabilityReport` description no longer says "no production message
+  currently qualifies at any predicate threshold" and says the authentication
+  entries read facts computed from the stored mail, the envelope observation
+  and the policy; its `DnsRecord` description no longer says "SPF and DMARC
+  will record theirs when they land" and says DKIM, SPF and DMARC record the
+  TXT names they resolve. The "one stated exception" sentences in
+  `src/deliverability.rs`, `src/deliverability/dns.rs`,
+  `docs/guide/deliverability.md` and `src/static/llms.txt` name both reads
+  (0125 §8's `x=` comparison and 0126 §8's SPF timer). Status wording that
+  still says "proposed 0120/0121/0125" in served text #255 did not author is
+  left for #337. *Proof:* any test that pins the OpenAPI bytes or the guide
+  is updated in the same commit and passes; `grep` checks in the task list.

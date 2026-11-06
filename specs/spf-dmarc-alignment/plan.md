@@ -1,7 +1,7 @@
 # Plan: SPF and DMARC alignment (issue #255)
 
 Specification: [spec.md](spec.md). Decision: [0126](../../docs/decisions/0126-spf-dmarc-alignment.md)
-(proposed; one operator hold).
+(proposed; three operator holds, five named items).
 
 ## Technical context
 
@@ -26,13 +26,14 @@ Specification: [spec.md](spec.md). Decision: [0126](../../docs/decisions/0126-sp
 | 0003 oldest-only pruning | kept: no pruning code changes |
 | 0005 extraction at ingest | kept: capture at ingest; evaluation lazy as 0085 rules |
 | 0085 §1 report shape | kept: `{rule_set_id, findings, dns}` |
-| 0085 §8 ambient time | **amended only if accepted**: the SPF `LookupLimit` timer (0126 §8, hold) |
-| 0089 §5 facts in Inputs equality | met by the facts' determinants (0126 §6) |
-| 0120 (proposed) | integration note: `spf_client_ip`; non-TXT answers |
-| 0125 (proposed) | integration note: DMARC consumes #254's verdicts |
+| 0085 §8 ambient time (accepted) | **amended only if accepted**: the SPF `LookupLimit` timer (0126 §8, hold 2) |
+| 0089 §5 facts in Inputs equality (accepted) | **a reading, the operator's**: met by the facts' determinants (0126 §6, hold 3) |
+| 0120 (accepted 2026-11-06) | **amended only if accepted**: §2 `spf_client_ip` (1a), §3 unrecorded non-TXT answers (1b), §4 NXDOMAIN/NODATA for `np=` (1c); §5's second byte-identity exception is hold 2 |
+| 0125 (accepted 2026-11-06) | integration note only: DMARC consumes #254's verdicts; not amended |
+| 0121 §5, 0122 §1.4 (accepted) | followed: `swarmail-html/7`, the next never-shipped id |
 | dependency policy | no change; `Cargo.lock` byte-identical |
 | coverage | exact; no `coverage(off)`; every new line tested inline |
-| merge holds (0056 addendum) | no `.github/`, `scripts/`, `.brokkr/`, lockfile or `deny.toml` change; only the 0045 §8 hold |
+| merge holds (0056 addendum) | no `.github/`, `scripts/`, `.brokkr/`, lockfile or `deny.toml` change; the 0045 §8 holds 1–3 |
 
 ## Project structure (files touched)
 
@@ -134,6 +135,49 @@ curl -X PUT "$SWARMAIL_HTTP/api/v1/inboxes/t/dns" -d '{
 7. **Wire proofs, then docs and records** (integration notes on 0120 and
    0125, the 0126 implementation record, the README index row).
 
+## Design return (review 1, 2026-11-06)
+
+The first review passed the code and returned the design for its hold
+statement. This section maps each review finding to the change that answers
+it, the artifact that owns that change and the task that carries it. The
+rulings are in [spec.md](spec.md#design-return-adjudication--2026-11-06).
+T0–T26 were delivered at `6653277` and verify passed them there; the return
+adds T27–T36 on top and changes no earlier task's proof except the base
+commit.
+
+| finding (member, severity) | answer | owner | task |
+|---|---|---|---|
+| Hold statement names one hold; 0120/0121/0122/0125 called proposed; "no accepted ruling is contradicted" (correctness 1, guarantees 1, independent 1, security, tests; medium, the `spec_defect`) | 0126's header rewritten in this design commit: holds 1 (1a/1b/1c), 2 and 3, accepted statuses, corrected "Not holds"; spec's Operator holds section matches. The index row, 0120's note (§3→§2 relabel plus §3/§4 items) and dated pointers in 0085 and 0089 remain | 0126 (done here); spec (done here); README, 0120, 0085, 0089 | T27, T28 |
+| 0089 §5 reading listed under "Not holds" (correctness 5, independent 2; low/info) | moved into the list as hold 3 | 0126 (done here) | T28 (the 0089 pointer) |
+| DeliverabilityReport "no production message currently qualifies" and DnsRecord "SPF and DMARC will record theirs" are false (correctness 2, guarantees 2, tests; low) | both descriptions corrected | `src/static/openapi.json` | T29 |
+| "One stated exception" wording predates the SPF timer (guarantees 3; low) | both reads named | `src/deliverability.rs`, `src/deliverability/dns.rs`, the guide, `llms.txt` | T30 |
+| Two `v=DMARC1` values give permerror; RFC says not applied (correctness 3; low) | discarded as no record; `dmarc.none.v1`; hints moved; AC10's example corrected and moved to AC21 | `src/deliverability/auth.rs`, the guide's rule table | T31, T32 |
+| `v = DMARC1` reads as no record, `v=dmarc1` as one (independent 3; info) | RFC 7489 §6.4 ABNF in `Kind::is_ours` for DMARC; SPF unchanged | `src/deliverability/auth.rs` | T31, T32 |
+| Null sender's HELO fed to DMARC; baseline unstated (correctness 4; info) | baseline stated (the pinned crate's RFC 9989 contract), behaviour unchanged, pinned by AC23 | 0126 §5 (done here); `auth.rs` tests | T33 |
+| AC18's `git diff 7478073` fails since the v0.4.0 merge (correctness 6; info) | base `c95386e` | spec AC18 (done here); 0126 implementation record left as dated history | T34 |
+| `cfg(test)` `Inputs.auth` default (correctness 7; info, "acceptable") | no change, ruled in the adjudication (point 6) | — | — |
+
+**Criteria changed, with the evidence.** AC10 loses one example, "two
+`v=DMARC1` values" → `dmarc.permerror.v1`. The criterion was wrong: RFC 7489
+§6.6.3 step 5 says multiple records mean DMARC is not applied, and §11.2 keeps
+`permerror` for a syntactically incorrect record. The replacement, AC21,
+proves more: the `none` outcome, the walk continuing to a parent, and the
+lookups record. AC4 and AC18 change their base commit from `7478073` to
+`c95386e` because the v0.4.0 merge moved `Cargo.toml` and `Cargo.lock`'s own
+version line. The dependency set is the same, and AC18 now proves that too.
+No criterion is loosened. AC21–AC24 are new.
+
+**Files the return touches** (beyond those listed above): `src/deliverability/auth.rs`
+(`Kind::is_ours`, `Kind::select`'s multiplicity arm for DMARC, two hint
+constants, fixtures), `src/deliverability.rs` and
+`src/deliverability/dns.rs` (module doc comments only), `src/static/openapi.json`
+(two description strings), `src/static/llms.txt` and
+`docs/guide/deliverability.md` (the exception sentences, the rule table's
+`dmarc.none`/`dmarc.permerror` lines), `docs/decisions/README.md`,
+`0120-…`, `0085-…`, `0089-…` (record text only; no status changes). No new file
+and no new rule id. `swarmail-html/7` already covers the byte change, since
+`/7` has never shipped.
+
 ## Risks
 
 | risk | mitigation |
@@ -151,3 +195,10 @@ curl -X PUT "$SWARMAIL_HTTP/api/v1/inboxes/t/dns" -d '{
 | Double reporting (`dmarc.fail.*` and `bulk.*`) confuses users | The guide's A-R table explains both; the ids and hints are static. |
 | A load proof is wanted | None is required. If one is run, it is bounded to `nproc/4` workers for at most 10 minutes with a named, timed command, and the applied load is reported. |
 | No brokkr binary in the implementer's sandbox | The bundle-compile gate runs in verify; the implementer says so instead of reporting a broken gate. |
+| The operator refuses an item of hold 1 or hold 3 | Each item names its remedy in 0126's header. Every remedy is a new design return, never a silent edit, and nothing merges on green under 0045 §8. |
+| The record-text edits (README, 0120 note, pointers) contradict 0126's header | One owner: 0126's header. Each other text repeats the list by number. T27 and T28's `grep` proofs check the same three numbers and the 1a/1b/1c labels everywhere. |
+| Changing DMARC multiplicity alters an existing wire or MCP fixture | The id moves only for a name holding two `v=DMARC1` values. T32 lists every fixture that asserts `dmarc.permerror.v1` and moves only the multiplicity ones. Report bytes still change under the unshipped `/7`, so no new id is needed. |
+| The ABNF selector diverges from the crate's parser on an odd value | The selector only filters, and the crate still parses what passes. AC21's fixtures cover space, tab, case and `DMARC10`, and a value the selector admits that the crate refuses stays `dmarc.permerror.v1` (one record, unparseable). |
+| RFC 9989's real text differs from the RFC 7489 and crate readings used for multiplicity, grammar or HELO | Each reading is cited in 0126 §5 and §7 with a one-arm remedy. The realm holds no RFC 9989 copy and the seats have no web access, so the implementer must not claim to have checked it. A later reading is a design return, not a hidden fix. |
+| Coverage of the new selector arms | Every arm (WSP before and after `=`, the case-exact token, each delimiter, multiplicity) has an inline fixture. No `coverage(off)`. The exact gate and its selftest rerun on the new tree. |
+| Re-verify cost | Every house gate reruns `--locked` on the new tree, since `auth.rs` and `openapi.json` change. The brokkr compile runs in verify if the implementer's sandbox has no pinned binary. |
