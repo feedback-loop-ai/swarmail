@@ -806,7 +806,7 @@ pub(super) fn verify<'m>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::dns::{self, DnsRecord, Effective, Outcome, Source};
     use super::super::{Inputs, Report, evaluate_at};
     use super::*;
@@ -836,7 +836,7 @@ mod tests {
     const RFC8463_RSA1024_PUBLIC: &str = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDkHlOQoBTzWRiGs5V6NpP3idY6Wk08a5qhdR6wy5bdOKb2jLQiY/J16JYi0Qvx/byYzCNb3W91y3FutACDfzwQ/BC/e/8uBsCR+yz1Lxj+PL6lHvqMKrM3rG4hstT5QjvHO9PzoxZyVYLzBfO2EeC3Ip3G+2kryOTIKT+l/K4w3QIDAQAB";
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Kind {
+    pub(in crate::deliverability) enum Kind {
         Rsa2048,
         Ed25519,
     }
@@ -844,7 +844,7 @@ mod tests {
     impl Kind {
         const ALL: [Kind; 2] = [Kind::Rsa2048, Kind::Ed25519];
 
-        fn record(self) -> String {
+        pub(in crate::deliverability) fn record(self) -> String {
             match self {
                 Kind::Rsa2048 => format!("v=DKIM1; k=rsa; p={RSA2048_PUBLIC}"),
                 Kind::Ed25519 => format!("v=DKIM1; k=ed25519; p={ED25519_PUBLIC}"),
@@ -870,18 +870,18 @@ mod tests {
 
     /// What the signer writes: everything the crate's `DkimSigner` can set.
     #[derive(Clone)]
-    struct Sign {
-        kind: Kind,
-        domain: &'static str,
-        selector: &'static str,
-        ch: Canonicalization,
-        cb: Canonicalization,
-        headers: Vec<String>,
-        identity: Option<&'static str>,
-        expiration: Option<u64>,
-        body_length: bool,
-        atps: Option<&'static str>,
-        reporting: bool,
+    pub(in crate::deliverability) struct Sign {
+        pub(in crate::deliverability) kind: Kind,
+        pub(in crate::deliverability) domain: &'static str,
+        pub(in crate::deliverability) selector: &'static str,
+        pub(in crate::deliverability) ch: Canonicalization,
+        pub(in crate::deliverability) cb: Canonicalization,
+        pub(in crate::deliverability) headers: Vec<String>,
+        pub(in crate::deliverability) identity: Option<&'static str>,
+        pub(in crate::deliverability) expiration: Option<u64>,
+        pub(in crate::deliverability) body_length: bool,
+        pub(in crate::deliverability) atps: Option<&'static str>,
+        pub(in crate::deliverability) reporting: bool,
     }
 
     impl Default for Sign {
@@ -934,16 +934,16 @@ mod tests {
         text.replace('\n', "\r\n").into_bytes()
     }
 
-    const BODY: &str = "Hello Bob,\nthis  is a test.\n";
+    pub(in crate::deliverability) const BODY: &str = "Hello Bob,\nthis  is a test.\n";
 
-    fn message(body: &str) -> Vec<u8> {
+    pub(in crate::deliverability) fn message(body: &str) -> Vec<u8> {
         crlf(&format!(
             "From: Alice <alice@example.com>\nTo: bob@example.org\nSubject: Hello\nDate: Mon, 02 Nov 2026 10:00:00 +0000\nMessage-ID: <1@example.com>\n\n{body}"
         ))
     }
 
     /// The signature header followed by the message.
-    fn signed(o: &Sign, message: &[u8]) -> Vec<u8> {
+    pub(in crate::deliverability) fn signed(o: &Sign, message: &[u8]) -> Vec<u8> {
         let mut raw = signature(o, message).to_header().into_bytes();
         raw.extend_from_slice(message);
         raw
