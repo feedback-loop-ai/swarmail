@@ -249,7 +249,7 @@ fn known_terms(record: &str) -> bool {
             let body = body.unwrap_or(term);
             match body.find([':', '/', '=']) {
                 Some(end) if body.as_bytes()[end] == b'=' => {
-                    let name = body[..end].as_bytes();
+                    let name = &body.as_bytes()[..end];
                     !qualified
                         && name.first().is_some_and(u8::is_ascii_alphabetic)
                         && name
@@ -2319,7 +2319,6 @@ mod tests {
         assert!(caches.ipv4().is_some());
         assert!(caches.ipv6().is_some());
         assert!(caches.ptr().is_some());
-        drop(shared);
         // Only the TXT names that were asked and declared were recorded.
         let names: Vec<String> = lookups
             .finish()
