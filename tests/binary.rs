@@ -716,6 +716,10 @@ async fn serve_refuses_bad_dns_policy() {
             ),
             "also declared under txt",
         ),
+        (
+            write("spf-client-ip.json", br#"{"spf_client_ip":"example.com"}"#),
+            "spf_client_ip is not an IPv4 or IPv6 address literal",
+        ),
         (fifo, "not a regular file"),
         (dir.path().to_path_buf(), "not a regular file"),
         (dir.path().join("missing.json"), "No such file"),

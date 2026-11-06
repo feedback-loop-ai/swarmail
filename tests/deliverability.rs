@@ -1851,3 +1851,495 @@ async fn dkim_reports_are_byte_identical_across_servers() {
     assert_eq!(texts[0], texts[1]);
     assert_ne!(texts[0][0], texts[0][1]);
 }
+
+// ---------- SPF and DMARC over the wire (decision 0126, #255) ----------
+
+/// Deliver `raw` to `inbox` with the given greeting and envelope sender (the
+/// null reverse path for ""), over a real loopback SMTP session: the peer the
+/// server sees is 127.0.0.1.
+async fn smtp_as(
+    addr: std::net::SocketAddr,
+    inbox: &str,
+    helo: &str,
+    mail_from: &str,
+    raw: &[u8],
+) -> String {
+    let mut conn = SmtpConn::connect(addr).await;
+    conn.send(&format!("EHLO {helo}")).await;
+    assert!(conn.reply().await.starts_with("250"));
+    let auth = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        format!("\0{inbox}\0x"),
+    );
+    conn.send(&format!("AUTH PLAIN {auth}")).await;
+    assert!(conn.reply().await.starts_with("235"));
+    conn.send(&format!("MAIL FROM:<{mail_from}>")).await;
+    assert!(conn.reply().await.starts_with("250"));
+    conn.send("RCPT TO:<rcpt@x.io>").await;
+    assert!(conn.reply().await.starts_with("250"));
+    conn.send("DATA").await;
+    assert!(conn.reply().await.starts_with("354"));
+    conn.send_bytes(raw).await;
+    conn.send(".").await;
+    let accepted = conn.reply().await;
+    assert!(accepted.starts_with("250"), "{accepted}");
+    accepted.split_whitespace().last().unwrap().into()
+}
+
+/// The report over MCP, which must be the REST report byte for byte.
+async fn report_both(srv: &swarmail::RunningServer, id: &str) -> Value {
+    let (status, rest) = report(srv.http_addr, id).await;
+    assert_eq!(status, 200);
+    let reply = rpc(
+        srv.http_addr,
+        "tools/call",
+        json!({"name":"swarmail_get_deliverability_report","arguments":{"id":id}}),
+    )
+    .await;
+    assert_eq!(result_text(&reply), rest);
+    rest
+}
+
+fn auth_ids(report: &Value) -> Vec<String> {
+    report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule_id"].as_str().unwrap().to_string())
+        .filter(|id| id.starts_with("spf.") || id.starts_with("dmarc.") || id.starts_with("dkim."))
+        .collect()
+}
+
+fn plain_mail(from: &str) -> Vec<u8> {
+    format!(
+        "From: {from}\r\nTo: bob@example.org\r\nSubject: hi\r\nDate: Mon, 02 Nov 2026 10:00:00 +0000\r\nMessage-ID: <1@x.io>\r\n\r\nbody\r\n"
+    )
+    .into_bytes()
+}
+
+const OPEN_SPF: &str = "v=spf1 ip4:127.0.0.1 ip6:::1 -all";
+
+fn declare(records: &[(&str, &str)]) -> String {
+    let txt: Vec<Value> = records
+        .iter()
+        .map(|(name, value)| json!({"name":name,"values":[value]}))
+        .collect();
+    json!({ "txt": txt }).to_string()
+}
+
+/// AC6, AC10, AC13 over real SMTP, REST and MCP: SPF from the observed
+/// session against the inbox's declared records, and DMARC from SPF alone.
+#[tokio::test]
+async fn spf_and_dmarc_over_the_wire() {
+    let srv = start().await;
+    let at = |inbox: &'static str, spf: &str| {
+        let body = declare(&[("x.io", spf), ("_dmarc.x.io", "v=DMARC1; p=reject")]);
+        let srv = &srv;
+        let inbox = inbox.to_string();
+        async move { assert_eq!(put_dns(srv, &inbox, &body).await.0, 200) }
+    };
+    at("spf-pass", OPEN_SPF).await;
+    at("spf-fail", "v=spf1 ip4:192.0.2.1 -all").await;
+    at("spf-soft", "v=spf1 ip4:192.0.2.1 ~all").await;
+    at("spf-unsupported", "v=spf1 a -all").await;
+    let mail = plain_mail("a@x.io");
+    for (inbox, ids) in [
+        ("spf-pass", vec![]),
+        ("spf-fail", vec!["dmarc.fail.reject.v1", "spf.fail.v1"]),
+        ("spf-soft", vec!["dmarc.fail.reject.v1", "spf.softfail.v1"]),
+        (
+            "spf-unsupported",
+            vec!["dmarc.not_evaluated.v1", "spf.unsupported_mechanism.v1"],
+        ),
+    ] {
+        let id = smtp_as(srv.smtp_addr, inbox, "mx.x.io", "a@x.io", &mail).await;
+        let report = report_both(&srv, &id).await;
+        let mut found = auth_ids(&report);
+        found.sort();
+        assert_eq!(found, ids, "{inbox}");
+        // The SPF lookups are on the record, in the report.
+        let names: Vec<&str> = report["dns"]["lookups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"x.io") && names.contains(&"_dmarc.x.io"),
+            "{names:?}"
+        );
+        assert!(
+            report["dns"]["lookups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|l| l["type"] == "txt")
+        );
+    }
+    // A passing SPF aligned with the From leaves the whole auth checklist clean.
+    let id = smtp_as(srv.smtp_addr, "spf-pass", "mx.x.io", "a@x.io", &mail).await;
+    let clean = report_both(&srv, &id).await;
+    let bulk: Vec<&str> = clean["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule_id"].as_str().unwrap())
+        .filter(|id| {
+            id.starts_with("bulk.dmarc")
+                || id.starts_with("bulk.from")
+                || id.starts_with("bulk.auth")
+        })
+        .collect();
+    assert_eq!(bulk, Vec::<&str>::new());
+    // The null sender is judged by its HELO name.
+    at("spf-pass", OPEN_SPF).await;
+    let helo_policy = declare(&[
+        ("mx.x.io", OPEN_SPF),
+        ("x.io", "v=spf1 -all"),
+        ("_dmarc.x.io", "v=DMARC1; p=reject"),
+    ]);
+    assert_eq!(put_dns(&srv, "bounce", &helo_policy).await.0, 200);
+    let id = smtp_as(srv.smtp_addr, "bounce", "mx.x.io", "", &mail).await;
+    // The HELO identity passes, and mx.x.io aligns with x.io (relaxed).
+    assert_eq!(
+        auth_ids(&report_both(&srv, &id).await),
+        Vec::<String>::new()
+    );
+    let id = smtp_as(srv.smtp_addr, "bounce", "other.example", "", &mail).await;
+    assert_eq!(
+        auth_ids(&report_both(&srv, &id).await),
+        ["dmarc.fail.reject.v1", "spf.none.v1"].map(String::from)
+    );
+    // A forged Received header or X-Forwarded-For changes nothing.
+    let mut forged =
+        b"Received: from mx.x.io ([192.0.2.1])\r\nX-Forwarded-For: 192.0.2.1\r\n".to_vec();
+    forged.extend_from_slice(&mail);
+    let id = smtp_as(srv.smtp_addr, "spf-fail", "mx.x.io", "a@x.io", &forged).await;
+    assert!(auth_ids(&report_both(&srv, &id).await).contains(&"spf.fail.v1".to_string()));
+    srv.stop().await;
+}
+
+/// AC5: the declared client address decides SPF for a loopback peer, is
+/// canonical, is echoed only when declared, and a non-address is refused.
+#[tokio::test]
+async fn spf_client_ip_is_declared_per_inbox() {
+    let srv = start().await;
+    let mail = plain_mail("a@x.io");
+    let with = |ip: &str, spf: &str| {
+        let mut declaration: Value = serde_json::from_str(&declare(&[
+            ("x.io", spf),
+            ("_dmarc.x.io", "v=DMARC1; p=reject"),
+        ]))
+        .unwrap();
+        declaration["spf_client_ip"] = ip.into();
+        declaration.to_string()
+    };
+    // Declared and listed: passes though the socket is 127.0.0.1.
+    let (status, echo) = put_dns(
+        &srv,
+        "ip-pass",
+        &with("192.0.2.9", "v=spf1 ip4:192.0.2.9 -all"),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(echo["policy"]["spf_client_ip"], "192.0.2.9");
+    let id = smtp_as(srv.smtp_addr, "ip-pass", "mx.x.io", "a@x.io", &mail).await;
+    let report = report_both(&srv, &id).await;
+    assert_eq!(auth_ids(&report), Vec::<String>::new());
+    assert_eq!(report["dns"]["policy"]["spf_client_ip"], "192.0.2.9");
+    // Declared and the record lists only the socket's address: fails.
+    assert_eq!(
+        put_dns(&srv, "ip-fail", &with("192.0.2.9", OPEN_SPF))
+            .await
+            .0,
+        200
+    );
+    let id = smtp_as(srv.smtp_addr, "ip-fail", "mx.x.io", "a@x.io", &mail).await;
+    assert_eq!(
+        {
+            let mut ids = auth_ids(&report_both(&srv, &id).await);
+            ids.sort();
+            ids
+        },
+        ["dmarc.fail.reject.v1", "spf.fail.v1"]
+    );
+    // Canonical on output: an IPv4-mapped address is the IPv4 it maps, IPv6 is lowercase.
+    let (_, echo) = put_dns(&srv, "ip-canonical", &with("::ffff:192.0.2.9", OPEN_SPF)).await;
+    assert_eq!(echo["policy"]["spf_client_ip"], "192.0.2.9");
+    let (_, echo) = put_dns(&srv, "ip-canonical", &with("2001:DB8::25", OPEN_SPF)).await;
+    assert_eq!(echo["policy"]["spf_client_ip"], "2001:db8::25");
+    // Absent, the member is absent from the echo and from the report's policy.
+    let (_, echo) = put_dns(&srv, "ip-none", &declare(&[("x.io", OPEN_SPF)])).await;
+    assert!(echo["policy"].get("spf_client_ip").is_none(), "{echo}");
+    let id = smtp_as(srv.smtp_addr, "ip-none", "mx.x.io", "a@x.io", &mail).await;
+    assert!(
+        report_both(&srv, &id).await["dns"]["policy"]
+            .get("spf_client_ip")
+            .is_none()
+    );
+    // Anything that is not an address literal is refused, and nothing changes.
+    for bad in [
+        "example.com",
+        "",
+        "127.0.0.1:25",
+        "fe80::1%eth0",
+        "10.0.0.0/8",
+    ] {
+        let (status, error) =
+            put_dns(&srv, "ip-pass", &json!({"spf_client_ip": bad}).to_string()).await;
+        assert_eq!(status, 400, "{bad}");
+        assert_eq!(
+            error["error"],
+            "spf_client_ip is not an IPv4 or IPv6 address literal"
+        );
+    }
+    assert_eq!(
+        put_dns(&srv, "ip-pass", r#"{"spf_client_ip":7}"#).await.0,
+        400
+    );
+    let id = smtp_as(srv.smtp_addr, "ip-pass", "mx.x.io", "a@x.io", &mail).await;
+    assert_eq!(
+        auth_ids(&report_both(&srv, &id).await),
+        Vec::<String>::new()
+    );
+    // A REST-seeded mail has no observed peer: the declaration cannot create one.
+    let (status, seeded) = http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/ip-pass/seed",
+        Some(r#"{"to":"x@example.com","from":"a@x.io","text":"hello"}"#),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let report = report_both(&srv, seeded["id"].as_str().unwrap()).await;
+    // Not evaluated, and DMARC cannot call it a failure: nothing was judged.
+    assert_eq!(
+        auth_ids(&report),
+        ["dmarc.not_evaluated.v1", "spf.not_evaluated.v1"].map(String::from)
+    );
+    srv.stop().await;
+}
+
+/// A signed message that satisfies the whole bulk-sender checklist: one-click
+/// unsubscribe, Message-ID, Date, a text/plain body and `From: alice@example.com`
+/// signed by `d=example.com` (the key of `key_declaration`).
+fn gate_mail(body: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    use mail_auth::{crypto::Ed25519Key, dkim::DkimSigner, headers::HeaderWriter};
+    let message = format!(
+        "From: Alice <alice@example.com>\r\nTo: bob@example.org\r\nSubject: signed\r\nDate: Mon, 02 Nov 2026 10:00:00 +0000\r\nMessage-ID: <gate@example.com>\r\nList-Unsubscribe: <https://example.com/unsubscribe>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}"
+    );
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(DKIM_PRIVATE)
+        .unwrap();
+    let signature = DkimSigner::from_key(Ed25519Key::from_pkcs8_maybe_unchecked_der(&der).unwrap())
+        .domain("example.com")
+        .selector("sel")
+        .headers(["From", "Subject", "Date", "Message-ID"])
+        .sign(message.as_bytes())
+        .unwrap();
+    [signature.to_header().as_bytes(), message.as_bytes()].concat()
+}
+
+fn gate_policy() -> String {
+    declare(&[
+        (
+            DKIM_KEY_NAME,
+            &format!("v=DKIM1; k=ed25519; p={DKIM_PUBLIC}"),
+        ),
+        ("example.com", OPEN_SPF),
+        ("_dmarc.example.com", "v=DMARC1; p=reject"),
+    ])
+}
+
+/// Findings of the authentication stories at `warning` or above.
+fn auth_findings_at_warning(report: &Value) -> Vec<String> {
+    report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["severity"] != "info")
+        .map(|f| f["rule_id"].as_str().unwrap().to_string())
+        .filter(|id| {
+            ["spf.", "dkim.", "dmarc.", "bulk."]
+                .iter()
+                .any(|prefix| id.starts_with(prefix))
+        })
+        .collect()
+}
+
+/// AC14, the await clause 0125 deferred by name (its AC11): a signed message
+/// that passes SPF, DKIM and DMARC and satisfies the whole checklist is
+/// returned by an await with `no_findings_at_or_above=warning`; the same
+/// message with an altered body is not, and says why.
+#[tokio::test]
+async fn a_message_that_passes_everything_is_returned_by_an_await() {
+    let srv = start().await;
+    for inbox in ["gate-good", "gate-bad"] {
+        assert_eq!(put_dns(&srv, inbox, &gate_policy()).await.0, 200);
+    }
+    let good = gate_mail("Hello Bob,\r\nsigned text.\r\n");
+    let altered = String::from_utf8(good.clone())
+        .unwrap()
+        .replace("signed text", "forged text")
+        .into_bytes();
+    let good_id = smtp_as(
+        srv.smtp_addr,
+        "gate-good",
+        "mx.example.com",
+        "alice@example.com",
+        &good,
+    )
+    .await;
+    let bad_id = smtp_as(
+        srv.smtp_addr,
+        "gate-bad",
+        "mx.example.com",
+        "alice@example.com",
+        &altered,
+    )
+    .await;
+
+    // Over REST and over MCP the passing message qualifies at warning.
+    let report = report_both(&srv, &good_id).await;
+    assert_eq!(
+        auth_findings_at_warning(&report),
+        Vec::<String>::new(),
+        "{report}"
+    );
+    assert!(
+        !report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["severity"] != "info"),
+        "{report}"
+    );
+    assert_eq!(auth_ids(&report), Vec::<String>::new());
+    let (status, awaited) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/gate-good/await?count=1&timeout_ms=2000&no_findings_at_or_above=warning",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{awaited}");
+    assert_eq!(awaited["emails"][0]["id"], good_id.as_str());
+    let reply = rpc(
+        srv.http_addr,
+        "tools/call",
+        json!({"name":"swarmail_wait_for_email","arguments":{"inbox":"gate-good","count":1,"timeout_ms":2000,"no_findings_at_or_above":"warning"}}),
+    )
+    .await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    assert_eq!(result_text(&reply)["emails"][0]["id"], good_id.as_str());
+
+    // The altered copy is not returned, and its report says which check failed.
+    let bad = report_both(&srv, &bad_id).await;
+    assert!(
+        auth_ids(&bad).contains(&"dkim.body_hash_mismatch.v1".to_string()),
+        "{bad}"
+    );
+    let (status, timed_out) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/gate-bad/await?count=1&timeout_ms=0&no_findings_at_or_above=warning",
+        None,
+    )
+    .await;
+    assert_eq!(status, 408, "{timed_out}");
+    assert_eq!(timed_out["matched"], 0);
+    let reply = rpc(
+        srv.http_addr,
+        "tools/call",
+        json!({"name":"swarmail_wait_for_email","arguments":{"inbox":"gate-bad","count":1,"timeout_ms":0,"no_findings_at_or_above":"warning"}}),
+    )
+    .await;
+    assert_eq!(result_text(&reply)["matched"], 0);
+    srv.stop().await;
+}
+
+/// AC13: DMARC through DKIM alone, with SPF on a different domain, and a row
+/// stored before the observation columns existed (no envelope, no peer): its
+/// SPF is not evaluated, never backfilled, and its DKIM setup still
+/// authenticates it.
+#[tokio::test]
+async fn dmarc_passes_through_dkim_alone_for_an_old_row() {
+    let srv = start().await;
+    let policy = declare(&[
+        (
+            DKIM_KEY_NAME,
+            &format!("v=DKIM1; k=ed25519; p={DKIM_PUBLIC}"),
+        ),
+        ("_dmarc.example.com", "v=DMARC1; p=reject"),
+    ]);
+    assert_eq!(put_dns(&srv, "dkim-only", &policy).await.0, 200);
+    // Sent over SMTP with an envelope domain that has no record: SPF is none,
+    // and the signature alone authenticates the From domain.
+    let mail = gate_mail("Hello Bob,\r\nsigned text.\r\n");
+    let id = smtp_as(
+        srv.smtp_addr,
+        "dkim-only",
+        "mx.elsewhere.example",
+        "bounce@x.io",
+        &mail,
+    )
+    .await;
+    let report = report_both(&srv, &id).await;
+    assert_eq!(auth_ids(&report), ["spf.none.v1"]);
+    assert_eq!(auth_findings_at_warning(&report), ["spf.none.v1"]);
+    srv.stop().await;
+
+    // The same bytes in a row of the first release's shape (no envelope, no
+    // peer columns), restored from a data file.
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("old.db");
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE emails (
+                id TEXT PRIMARY KEY, inbox TEXT NOT NULL, seq INTEGER NOT NULL,
+                from_json TEXT NOT NULL, to_json TEXT NOT NULL, cc_json TEXT NOT NULL,
+                recipients_json TEXT NOT NULL, subject TEXT, received_at TEXT NOT NULL,
+                received_ms INTEGER NOT NULL, size INTEGER NOT NULL, text TEXT, html TEXT,
+                links_json TEXT NOT NULL, codes_json TEXT NOT NULL, message_id TEXT,
+                in_reply_to TEXT, references_json TEXT NOT NULL DEFAULT '[]',
+                raw BLOB NOT NULL, envelope_from TEXT);
+             CREATE INDEX emails_seq ON emails(seq);
+             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta VALUES ('emails_inserted', '1'), ('emails_dropped', '0');",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO emails (id, inbox, seq, from_json, to_json, cc_json, recipients_json, subject,
+                received_at, received_ms, size, text, html, links_json, codes_json, raw)
+             VALUES ('old-row', 'dkim-only', 0, 'null', '[]', '[]', '[]', 'signed',
+                't', 1000, 3, NULL, NULL, '[]', '[]', ?1)",
+            [&mail],
+        )
+        .unwrap();
+    }
+    for _ in 0..2 {
+        let srv = start_with(|mut c| {
+            c.data_file = Some(db.clone());
+            c
+        })
+        .await;
+        assert_eq!(put_dns(&srv, "dkim-only", &policy).await.0, 200);
+        let report = report_both(&srv, "old-row").await;
+        assert_eq!(auth_ids(&report), ["spf.not_evaluated.v1"]);
+        assert_eq!(
+            auth_findings_at_warning(&report),
+            Vec::<String>::new(),
+            "{report}"
+        );
+        srv.stop().await;
+    }
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let observed: (Option<String>, Option<String>) = conn
+        .query_row("SELECT smtp_client_ip, smtp_helo FROM emails", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(observed, (None, None), "never backfilled");
+}
