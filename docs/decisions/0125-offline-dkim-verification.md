@@ -690,3 +690,29 @@ the OpenAPI `DnsRecord` description and the guide, and §8's radius naming the
 no-`t=` case (also in the guide and the specification). The rest of this
 record stays proposed. CI remains the first proof of the Alpine and macOS
 `aws-lc-sys` builds (§9).
+
+## Integration note — 2026-11-06 (proposed 0126, issue #255)
+
+[0126](0126-spf-dmarc-alignment.md) builds on this record and changes no
+status; the record stays as the operator left it above.
+
+- **DMARC consumes §6's verdicts, not the crate's raw results.** The crate
+  outputs that reach DMARC's alignment are exactly those whose field's
+  verdict here is a pass, `dkim.body_length_partial.v1` (it verified) or
+  `dkim.not_evaluated.v1` (a declared temporary failure, which leaves the
+  alignment Unknown). Every other verdict drops its output, so a signature
+  this record refuses (an unsigned `From`, `rsa-sha1`, an expired or
+  mismatched signature) never aligns, and an unverified `d=` equal to the From
+  domain never aligns.
+- **The shape of `collect`.** The single entry point is split into `prepare`
+  (the strict parse and the boundary and bound guards, which still produce
+  their one finding and stop) and `verify` (the verdicts, unchanged), so the
+  parse and the crate's outputs can be handed to DMARC while the cache adapter
+  is alive. No verdict, finding, bound or lookup changed.
+- **§8, the clock.** SPF adds one more reachable ambient read, the monotonic
+  lookup timer of `check_host`, proposed as a further amendment of accepted
+  0085 §8 in 0126 §8 and held for the operator. The `x=` read is unchanged.
+- **The inherited await clause.** AC11's deferred clause is delivered by 0126
+  §10: over real SMTP a signed message that passes SPF, DKIM and DMARC and
+  satisfies the whole checklist is returned by an await with
+  `no_findings_at_or_above=warning`, and an altered copy is not.

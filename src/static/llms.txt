@@ -440,16 +440,20 @@ info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/6):
+The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/7):
 one_click, message_id and date are errors; plain_text is warning-level presence
 advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
-are independent checks. Their error-level *.not_evaluated.v1 findings explicitly
-say "Not evaluated:" until trusted observations exist. Sender-written
-Authentication-Results and DKIM-Signature never supply evidence. #255 owns that
-verification and strict/relaxed alignment; #253/#255 own expiry and refresh.
-Production therefore excludes every message at every report predicate threshold;
-exact zero assertions count qualifying messages when every required analysis succeeds;
-an analysis failure aborts the assertion. Waits still require a qualifying message.
+are independent checks. They read six facts that the report evaluator computes
+from the stored bytes, the SMTP envelope observed at ingest, DKIM's verdicts and
+the declared DNS policy (SPF and DMARC, below). A fact that cannot be determined
+is Unknown, and its entry is an error-level *.not_evaluated.v1 finding that
+explicitly says "Not evaluated:". Sender-written Authentication-Results and
+DKIM-Signature never supply evidence. A message qualifies at a threshold only when
+every finding is below it, so a wait or an exact zero assertion matches mail whose
+SPF, DKIM and DMARC evidence passes and whose checklist is clean at that
+threshold; exact zero assertions count qualifying messages when every required
+analysis succeeds; an analysis failure aborts the assertion. Waits still require a
+qualifying message.
 
 Headers use original bytes and complete singleton values, with root lowercase
 names and occurrence null/0/1 for absent/invalid/duplicate. Message-ID and Date
@@ -469,7 +473,7 @@ https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 204
 or 7489 sections. These are fixed published references, not live verification or
 provider certification. The proposed rule record is decision 0089.
 
-`swarmail-html/6` retains the synthetic demo.marker.v1: the first root
+`swarmail-html/7` retains the synthetic demo.marker.v1: the first root
 X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
 and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
 html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
@@ -558,12 +562,13 @@ The existing message page renders the same report without polling.
 DNS policy (proposed 0120). Report checks that need DNS answers (DKIM keys, SPF,
 DMARC; #254, #255, #256) read a declared, offline TXT map, never the network.
 Every report carries a required `dns` member
-{source:"default"|"server"|"inbox", policy:{txt:[{name,values}],tempfail:[name]},
+{source:"default"|"server"|"inbox", policy:{txt:[{name,values}],tempfail:[name],spf_client_ip?},
 lookups:[{name,type:"txt",outcome:"records"|"no_records"|"temp_fail",values}]}.
 `policy` is the complete canonical effective policy; `lookups` lists each name an
 evaluation resolved, once, sorted. DKIM verification (proposed 0125, below) records
 every key, ATPS and report name it asks for that lies inside decision 0120's name grammar (an out-of-grammar name fails closed and is not recorded); a message with no `DKIM-Signature`
-records none, and SPF and DMARC (#255) record theirs when they arrive. `temp_fail` is never a pass and never clean: a report with a
+records none, and SPF and DMARC (proposed 0126, below) record the TXT names they ask for
+(the record, its `include:` and `redirect=` targets, an `exp=` name, and the `_dmarc` names of the tree walk). `temp_fail` is never a pass and never clean: a report with a
 `temp_fail` lookup qualifies at no no_findings_at_or_above threshold, so an assert
 does not match it and a wait rides to its deadline. `no_records` is a definite
 negative. The same message under the same configuration gives byte-identical
@@ -573,7 +578,10 @@ described below).
 Declare a server map with `serve --dns-policy FILE` (env SWARMAIL_DNS_POLICY): a
 JSON file of at most 8192 bytes, `{"txt":[{"name":"s1._domainkey.example.com",
 "values":["v=DKIM1; k=rsa; p=..."]}],"tempfail":["_dmarc.example.org"]}`; `{}` is
-an empty map and source "server". A bad file stops startup before any listener
+an empty map and source "server". The declaration also takes an optional
+`spf_client_ip`, an IPv4 or IPv6 address literal (stored canonical, present in
+`dns.policy` only when declared) that SPF evaluates instead of the connecting
+address the SMTP session saw; see SPF and DMARC below. A bad file stops startup before any listener
 binds; there is no fallback to an empty map. Declare an inbox map with
 PUT /api/v1/inboxes/{inbox}/dns (same body; 200 echoes the object
 {"inbox","source","policy"}; 400 for an invalid declaration or an inbox label over
@@ -644,11 +652,14 @@ Selected pre-removal reads may finish; fresh lookups cannot resurrect removed ma
 Cache loss at restart costs recomputation. These are cache/job bounds, not total
 memory or latency promises. #253 owns DNS observation/policy/expiry/wakeup semantics;
 #253 shipped no verification: DKIM verification arrives with proposed 0125 on
-`mail-auth`, offline against the declared keys; SPF, DMARC and ARC are #255 and
-#256; no external spam scorer or service ships here. The cache key includes every effective authentication fact and the
-immutable policy/observation identity, alongside selected Weak mail identity.
+`mail-auth`, offline against the declared keys; SPF and DMARC arrive with proposed
+0126 on the same crate (below), and ARC is #256; no external spam scorer or service
+ships here. The cache key is the selected Weak mail identity (which carries the
+row's immutable SMTP envelope observation), the frozen policy snapshot (including
+`spf_client_ip`) and the rule set; every authentication fact is a function of
+those, so two requests with equal keys get equal facts.
 
-## DKIM verification (`swarmail-html/6`)
+## DKIM verification (`swarmail-html/7`)
 
 Proposed decision 0125 (issue #254): each `DKIM-Signature` field of a stored
 message is verified lazily in the report, from the stored bytes, after the SMTP
@@ -678,9 +689,50 @@ on a signature with `l=` is not evidence of tampering. At most 16 signature fiel
 and 128 `h=` names are judged; past either bound one `dkim.limits_exceeded.v1`
 finding stands alone.
 Rule ids, each at version 1: `dkim.malformed.v1`, `dkim.unsupported.v1`, `dkim.from_unsigned.v1`, `dkim.header_boundary_ambiguous.v1`, `dkim.limits_exceeded.v1`, `dkim.signature_expired.v1`, `dkim.expired_since_receipt.v1`, `dkim.selector_invalid.v1`, `dkim.key_missing.v1`, `dkim.key_invalid.v1`, `dkim.key_revoked.v1`, `dkim.not_evaluated.v1`, `dkim.body_hash_mismatch.v1`, `dkim.signature_mismatch.v1`, `dkim.auid_mismatch.v1`, `dkim.atps_unauthorized.v1`, `dkim.body_length_exceeds.v1`, `dkim.body_length_partial.v1`.
-The bulk checklist's `*.not_evaluated.v1` errors disqualify every report until
-#255, so assert on DKIM rule ids rather than on a threshold. See the deliverability
-guide for each rule's hint, passing and failing fixture.
+A report also needs its SPF and DMARC evidence and the rest of the checklist to be
+clean before it qualifies at a threshold; assert on DKIM rule ids to judge a signer
+alone. See the deliverability guide for each rule's hint, passing and failing fixture.
+
+## SPF and DMARC (`swarmail-html/7`)
+
+Proposed decision 0126 (issue #255): SPF for the SMTP envelope and DMARC for the
+root From, lazily in the report on the stored bytes after the SMTP 250, on
+`mail-auth` with DNS only from the declared policy. A pass emits nothing. The
+SMTP session records the TCP peer (IPv4-mapped IPv6 as the IPv4) and the last
+HELO/EHLO name in the stored row before the insert, never from a header; REST-seeded
+mail and rows from before the columns hold none and are never backfilled. One
+`check_host` per message: the MAIL FROM domain, or the HELO name for the null
+sender, against the observed address, or against `spf_client_ip` when the policy
+declares one (an IP literal, canonical, for every peer; it never makes mail with no
+observed peer evaluable). A test over loopback declares `ip4:127.0.0.1` in its
+record. Of a name's values only one `v=spf1` (or one `v=DMARC1`) counts; two are a
+permanent error, and a term that names no mechanism is a permanent error. The
+policy is TXT-only, so `a`, `mx`, `ptr`, `exists` and `%{p}` are not evaluated:
+`spf.unsupported_mechanism.v1`, `spf_pass` Unknown, never a failure (a term after
+the first match is never reached). Ten DNS-querying terms are admitted and the
+eleventh is `spf.permerror.v1`; a target with no record is already a permanent
+error, so void lookups need no counter; at most twelve names per SPF evaluation
+and eight per DMARC tree walk. DMARC: exactly one root From with one domain (else
+`dmarc.from_invalid.v1`; `Email.from` is never read), the RFC 9989 tree walk over
+the declared `_dmarc` records, the organizational domain determined offline by
+those records alone (`psd=y` marks a public suffix; no list exists), the applied
+policy `p=`, `sp=` or `np=` (a name exists when it or a name below it is
+declared) stepped down by `t=y`, and `pct=` ignored. Relaxed and strict alignment
+(`adkim`, `aspf`) with DKIM signatures that DKIM's own verdicts accept and SPF's
+identity domain. Rule ids, each at version 1, severity error unless noted:
+`spf.fail.v1`, `spf.softfail.v1`, `spf.neutral.v1`, `spf.none.v1`,
+`spf.temperror.v1`, `spf.permerror.v1`, `spf.unsupported_mechanism.v1`,
+`spf.not_evaluated.v1` (info), `dmarc.from_invalid.v1`, `dmarc.none.v1`,
+`dmarc.temperror.v1`, `dmarc.permerror.v1`, `dmarc.fail.none.v1`,
+`dmarc.fail.quarantine.v1`, `dmarc.fail.reject.v1`, `dmarc.not_evaluated.v1`. They
+name results as Authentication-Results does (`spf=fail` is `spf.fail.v1`,
+`dmarc=fail` is `dmarc.fail.<policy>.v1`). SPF findings sit at header
+return-path (occurrence null: the envelope); DMARC findings at the root from.
+The one clock: SPF's evaluation starts a monotonic timer in the crate and refuses
+a DNS-querying term after 20 seconds, so only a process descheduled for 20 seconds
+inside one evaluation turns a verdict into `spf.permerror.v1` (fail-closed; a held
+amendment of the no-ambient-time rule, decision 0126 section 8). See the
+deliverability guide for each rule's hint, passing and failing fixture.
 
 ## Spam signals (`swarmail-spam/1`)
 
@@ -691,8 +743,9 @@ configuration; the same stored bytes always give the same findings. Each rule
 emits at most one finding per report, severity info or warning (error stays the
 bulk checklist's requirement level), so a large message can never flood the
 report. They arrived as `swarmail-spam/1`; with the link rules of proposed 0121,
-the `dns` member of proposed 0120 and the DKIM rules of proposed 0125 the report's
-`rule_set_id` is now `swarmail-html/6`, so the rule-set version
+the `dns` member of proposed 0120, the DKIM rules of proposed 0125 and the SPF and
+DMARC rules of proposed 0126 the report's
+`rule_set_id` is now `swarmail-html/7`, so the rule-set version
 is recorded in every report and in the cache key. Reports carry no weight and no
 total: the weights below are the proposal in decision 0122 and wait for the
 operator to accept it; they are labelled "proposed in 0122 — not in the report"
@@ -844,5 +897,8 @@ checklist), `swarmail-html/2` and `swarmail-html/3` (HTML heuristics), then
 `swarmail-html/5` (the required `dns` report member of proposed 0120,
 integrated after `swarmail-html/4`; no rule changed meaning), then
 `swarmail-html/6` (the eighteen DKIM rules of proposed 0125, integrated after
-`swarmail-html/5`; no existing rule changed meaning). A change to
+`swarmail-html/5`; no existing rule changed meaning), then
+`swarmail-html/7` (the sixteen SPF and DMARC rules of proposed 0126, integrated
+after `swarmail-html/6`; the three authentication entries of the bulk checklist
+now read evaluated facts, so their findings changed). A change to
 any rule's meaning, hint, location or order requires a new id.

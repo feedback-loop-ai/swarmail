@@ -3065,7 +3065,7 @@ pub(super) mod tests {
             .filter(|r| r.severity() == Severity::Warning);
         assert_eq!(warnings.count(), 1);
         for fact in [
-            "## DKIM verification (`swarmail-html/6`)",
+            "## DKIM verification (`swarmail-html/7`)",
             "**Time is the receipt time.**",
             "`dkim.expired_since_receipt.v1`",
             "**The clock residual (its full radius).**",

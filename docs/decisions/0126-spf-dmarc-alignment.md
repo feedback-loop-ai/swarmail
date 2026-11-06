@@ -289,3 +289,88 @@ holds the acceptance criteria. Every house gate runs `--locked`, including
 the evals crate, the exact coverage gate and its selftest, the publish-guard
 and seal proofs, and `cargo deny`. This record stays proposed; only the
 operator accepts it.
+
+## Implementation record — 2026-11-06 (the implement seat)
+
+The implementation follows §1–§10. This record states what was confirmed in the
+pinned source, and the few places where building it settled something the design
+left to the builder. None changes a ruling above; the status stays proposed and
+the one hold (§8) stands.
+
+**Task 0, the source re-read.** `mail-auth-0.14.0` `spf/verify.rs`,
+`spf/output.rs`, `spf/macros.rs`, `sampling.rs`, `dmarc/verify.rs` and
+`dns/lookup.rs` were read again. §8's inventory is exact and complete:
+
+- `spf/verify.rs` `LookupLimit::new` calls `Instant::now()` once `check_host`
+  passes its domain check, and `can_lookup` reads `elapsed()`: reachable on every
+  evaluation, the one hold.
+- `sampling.rs` `is_within_pct` (`SystemTime::now()`) is reached only through
+  `SpfOutput::with_report` with an `ra=` in the record in effect; the adapter
+  clears `ra=` from every record, and a test asserts both the cleared record and
+  the crate's own parse of the same text still carrying it.
+- `spf/macros.rs` `current_time` is reached only by `%{t}`, which parses only in
+  `exp=` text, fetched as a `Macro` record the SPF adapter never builds.
+- `dmarc/verify.rs` reads no clock, random value or environment variable.
+- `dns/lookup.rs` consults the cache before any resolver call, and every cache
+  answers every query, so no resolver is reached. `cache.insert` is the only
+  other use of an `Instant`, and the adapter's `insert` ignores it.
+- `Cargo.toml`, `Cargo.lock`, `evals/Cargo.lock` and `deny.toml` are
+  byte-identical to `7478073` (`git diff --exit-code`); `spf` and `dmarc` are not
+  feature-gated. No new reachable ambient read exists.
+
+**One crate leniency found and closed.** `SpfRecord::parse` treats a bare word
+that is no mechanism (`inlcude:x.example`) as an unknown modifier-like term,
+skips it, and swallows the term after it, so `v=spf1 inlcude:x.example -all`
+reads as neutral where RFC 7208 section 4.6 requires a permanent error. Under
+0125's principle that Swarmail owns every check the crate settles by a silent
+default, the SPF adapter checks that every term names a mechanism or is a
+`name=value` modifier before the crate parses the record (`known_terms`); the
+crate still parses every argument. A typo is `spf.permerror.v1`.
+
+**Where building settled a detail the design left open.**
+
+- **DKIM stopped at its bound.** When #254 stops at the 16-field or 128-name
+  bound it pushes its one finding and verifies nothing, but the parse is sound,
+  so DMARC still runs with no DKIM outputs; `dkim_pass` and `dkim_aligned` are
+  Unknown then, not False. At the boundary guard the crate's parse is not the one
+  Swarmail's collectors read, so DMARC is `dmarc.not_evaluated.v1` and
+  `valid_from` and `policy_present` are Unknown.
+- **The DKIM hand-off.** `dkim::collect` became `prepare` (parse and guards, an
+  enum of unsigned, stopped, limited, ready) and `verify` (the verdicts, unchanged,
+  returning the retained crate outputs and `dkim_pass`). The cache adapter is
+  owned by the caller, because the crate's outputs borrow the message and the
+  cache for one lifetime and DMARC reads them afterwards. One shared borrow of
+  the `Lookups` serves the three evaluations, which run in sequence.
+- **Test builds.** `Inputs.auth` is a `#[cfg(test)] Option<AuthEvidence>`; test
+  builds default it to `Some(unknown facts)` so every test that predates the
+  evaluation keeps its meaning, and a test of the evaluation sets `None`
+  (`Service::auth` carries `None` for the same purpose at the service level).
+  Production has no such input.
+- **Hints.** The sixteen fix hints are constants with no character the page or a
+  JSON string must escape (no apostrophe, angle bracket, ampersand, quote or
+  backslash), and the guide binds each rule's id, severity and hint to the code.
+- **`known_terms` placement, and `HOST`.** `swarmail.invalid` (RFC 2606) is the
+  fixed `%{r}` host name.
+
+**Where each acceptance criterion is proved.** AC1: `smtp.rs` inline tests
+(`the_peer_and_the_greeting_ride_the_row_before_the_250`,
+`starttls_forgets_the_greeting_but_not_the_peer`, a mapped-peer unit test) and
+`tests/deliverability.rs`. AC2: `persist.rs` inline tests and
+`tests/persistence.rs` (round trip across restarts, an old-schema file, a corrupt
+address refusing to serve). AC3: no line of `Store::insert`, await or pruning
+changed; the burst, p2 and rate suites run in the gates. AC4:
+`the_observed_envelope_never_serializes` and every pinned payload test, unchanged.
+AC5: `dns.rs` and `auth.rs` inline tests, `tests/deliverability.rs`,
+`tests/binary.rs` and the `lib.rs` startup test. AC6–AC12, AC15, AC16: the
+`auth.rs` inline tests. AC13: the six-facts table test,
+`tests/bulk_sender.rs` and a pre-columns data file in
+`tests/deliverability.rs`. AC14: `tests/deliverability.rs`
+(`a_message_that_passes_everything_is_returned_by_an_await`). AC17: the shape
+tests, updated for `swarmail-html/7`. AC18: the diff above. AC19: the gate log in
+the delivery result. AC20: this record, the README row, the notes on 0120 and
+0125, the guide, `llms.txt` and the OpenAPI text.
+
+**Fixtures edited by hand.** The seed report row of
+`tests/fixtures/mcp-structured-output/march-current-main.jsonl` is replaced by the
+report this tree serves for the same seeded mail, with its provenance and hash
+recorded; unlike the earlier id-only edits it gains findings and lookups.

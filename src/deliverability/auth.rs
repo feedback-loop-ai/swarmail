@@ -2495,4 +2495,48 @@ mod tests {
         assert_eq!(ids(&report), ["spf.fail.v1"]);
         assert!(checklist(&report).is_empty(), "DKIM still authenticates it");
     }
+
+    /// The guide lists every rule exactly once, with the hint the code emits,
+    /// and the bounds and tables it states are the ones the code enforces.
+    #[test]
+    fn guide_lists_every_auth_rule() {
+        let guide = include_str!("../../docs/guide/deliverability.md");
+        for rule in Rule::ALL {
+            let heading = format!("### `{}`\n", rule.id());
+            assert_eq!(guide.matches(&heading).count(), 1, "{}", rule.id());
+            let start = guide.find(&heading).unwrap();
+            let rest = &guide[start + heading.len()..];
+            let section = &rest[..rest.find("\n##").unwrap()];
+            let word = format!("{:?}", rule.severity()).to_lowercase();
+            assert!(
+                section.contains(&format!("**Severity:** {word}.")),
+                "{}",
+                rule.id()
+            );
+            assert!(
+                section.contains(&format!("**Hint:** {}", rule.hint())),
+                "{}",
+                rule.id()
+            );
+            assert!(section.contains("**Passing:**") && section.contains("**Failing:**"));
+        }
+        assert_eq!(guide.matches("\n### `spf.").count(), 8);
+        assert_eq!(guide.matches("\n### `dmarc.").count(), 8);
+        for fact in [
+            "## SPF and DMARC (`swarmail-html/7`)",
+            "**The observed envelope.**",
+            "**Record types: TXT only.**",
+            "**Limits (RFC 7208 section 4.6.4).**",
+            "Ten DNS-querying terms are admitted and the\neleventh is `spf.permerror.v1`",
+            "at most twelve names",
+            "**Authentication-Results correspondence.**",
+            "**The facts, and the checklist.**",
+            "determined offline by the declared records alone",
+            "`swarmail-html/7` (the sixteen SPF and DMARC rules of proposed 0126",
+            "monotonic timer",
+        ] {
+            assert!(guide.contains(fact), "{fact}");
+        }
+        assert_eq!(HOST, "swarmail.invalid");
+    }
 }
