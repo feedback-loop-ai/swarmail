@@ -2298,8 +2298,13 @@ async fn a_pre_observation_data_file_keeps_unknown_facts_and_is_never_backfilled
     }
     for restart in 0..2 {
         let srv = serve_data_file(&db).await;
-        let (status, listed) =
-            common::http_json(srv.http_addr, "GET", "/api/v1/inboxes/legacy/emails", None).await;
+        let (status, listed) = common::http_json(
+            srv.http_addr,
+            "GET",
+            "/api/v1/inboxes/legacy/messages",
+            None,
+        )
+        .await;
         assert_eq!(status, 200);
         assert!(listed.to_string().contains("legacy-row"), "{listed}");
         if restart == 0 {

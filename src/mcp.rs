@@ -1068,7 +1068,8 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
             "source":{"type":"string","enum":["default","server","inbox"]},
             "policy":output_object(json!({
                 "txt":{"type":"array","items":output_object(json!({"name":dns_name,"values":{"type":"array","minItems":1,"items":{"type":"string"}}}), json!(["name","values"]))},
-                "tempfail":{"type":"array","items":dns_name}
+                "tempfail":{"type":"array","items":dns_name},
+                "spf_client_ip":{"type":"string","minLength":1}
             }), json!(["txt","tempfail"])),
             "lookups":{"type":"array","items":output_object(json!({
                 "name":dns_name,
@@ -1115,7 +1116,7 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
 });
 
 /// Modern-only report description; March keeps the historical TOOLS literal.
-const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-html/6) from the stored bytes, off the SMTP path: the bulk-sender checklist, the HTML client-compatibility heuristics, the per-link link.* rules (unsafe schemes, invalid URLs, plain http, URL shorteners, anchor-host mismatch; no link is fetched), the built-in spam signals, the dkim.* rules (each DKIM-Signature verified offline against keys declared in the DNS policy; one finding per field that does not verify, a body_length_partial warning on a field that verifies only a body prefix, or one message-level finding) and the synthetic demo marker. Missing trusted authentication evidence yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. The dns member records the declared DNS policy (source default, server or inbox) and the lookups the evaluation made; a temp_fail lookup is never clean, so such a report qualifies at no threshold. At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
+const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-html/7) from the stored bytes, off the SMTP path: the bulk-sender checklist, the HTML client-compatibility heuristics, the per-link link.* rules (unsafe schemes, invalid URLs, plain http, URL shorteners, anchor-host mismatch; no link is fetched), the built-in spam signals, the dkim.* rules (each DKIM-Signature verified offline against keys declared in the DNS policy; one finding per field that does not verify, a body_length_partial warning on a field that verifies only a body prefix, or one message-level finding) and the synthetic demo marker. Missing trusted authentication evidence yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. The dns member records the declared DNS policy (source default, server or inbox) and the lookups the evaluation made; a temp_fail lookup is never clean, so such a report qualifies at no threshold. At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
 
 /// MCP-compatible JSON input schemas. These are objects — the MCP spec
 /// requires an object, and a `&str` schema embedded in `json!` serialized as

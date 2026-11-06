@@ -100,7 +100,7 @@ async fn report_rest_schema_and_refusals() {
     assert_eq!(stored, raw);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-html/6");
+    assert_eq!(first["rule_set_id"], "swarmail-html/7");
     assert_eq!(first["findings"].as_array().unwrap().len(), 7);
     assert_eq!(
         first["findings"][6],
@@ -138,7 +138,7 @@ async fn report_rest_schema_and_refusals() {
     );
     let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
     for text in [
-        "swarmail-html/6",
+        "swarmail-html/7",
         "warning",
         "demo.marker.v1",
         "x-swarmail-demo",
@@ -597,7 +597,7 @@ async fn report_served_docs_match_contract() {
         "structuredContent under a closed outputSchema",
         "historical",
         "JSON in one text block",
-        "swarmail-html/6",
+        "swarmail-html/7",
         "--link-reachability",
         "link.reachability.v1",
         "104448",
@@ -651,7 +651,7 @@ async fn html_findings_share_one_report_and_predicate_contract() {
     assert_eq!(expected.len(), 15);
     assert_eq!(
         first,
-        json!({"rule_set_id":"swarmail-html/6","findings":expected,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
+        json!({"rule_set_id":"swarmail-html/7","findings":expected,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
     );
     assert_eq!(report(srv.http_addr, &id).await.1, first);
     let reply = rpc(
@@ -884,7 +884,7 @@ async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
                 findings.push(json!({"rule_id":"html.css.position.v1","severity":"warning","fix_hint":rule["fix_hint"],"location":{"kind":"mime_part","path":[]}}));
             }
             findings.sort_by_key(|f| f["rule_id"].as_str().unwrap().to_string());
-            let expected = json!({"rule_set_id":"swarmail-html/6","findings":findings,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}});
+            let expected = json!({"rule_set_id":"swarmail-html/7","findings":findings,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}});
             for _ in 0..2 {
                 assert_eq!(report(srv.http_addr, &id).await, (200, expected.clone()));
             }
@@ -985,7 +985,7 @@ async fn default_dns_policy_exact_json() {
     let id = smtp_raw(srv.smtp_addr, "plain", MAIL).await;
     let text = report_text(&srv, &id).await;
     assert!(
-        text.starts_with(r#"{"rule_set_id":"swarmail-html/6","findings":["#),
+        text.starts_with(r#"{"rule_set_id":"swarmail-html/7","findings":["#),
         "{text}"
     );
     assert!(text.ends_with(&format!("],{DEFAULT_DNS}}}")), "{text}");
@@ -1544,7 +1544,7 @@ async fn link_rules_over_smtp_and_rest() {
     .collect();
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-html/6");
+    assert_eq!(first["rule_set_id"], "swarmail-html/7");
     let links = |report: &Value| -> Vec<Value> {
         report["findings"]
             .as_array()
@@ -1648,7 +1648,7 @@ async fn dkim_signed_mail_verifies_over_the_wire() {
     .await;
     let (status, report_good) = report(srv.http_addr, &good).await;
     assert_eq!(status, 200);
-    assert_eq!(report_good["rule_set_id"], "swarmail-html/6");
+    assert_eq!(report_good["rule_set_id"], "swarmail-html/7");
     assert_eq!(dkim_findings(&report_good), Vec::<Value>::new());
     assert_eq!(
         report_good["dns"]["lookups"],

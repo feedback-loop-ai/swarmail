@@ -31,7 +31,7 @@
 //! those two facts and no more.
 
 use super::dns::{Lookups, OwnerName, Txt};
-use super::{AnalysisError, Collector, Finding, Headers, Location, Severity};
+use super::{AnalysisError, Collector, Fact, Finding, Headers, Location, Severity};
 use futures_util::FutureExt;
 use mail_auth::crypto::{Algorithm, CryptoError};
 use mail_auth::dkim::{
@@ -214,7 +214,7 @@ impl Rule {
 
 /// The only authenticator: a resolver with no name servers, so even a lookup that
 /// somehow escaped the adapter would have nowhere to send a packet.
-static AUTHENTICATOR: LazyLock<MessageAuthenticator> = LazyLock::new(|| {
+pub(super) static AUTHENTICATOR: LazyLock<MessageAuthenticator> = LazyLock::new(|| {
     MessageAuthenticator::new(
         ResolverConfig::from_parts(None, Vec::new(), Vec::new()),
         ResolverOpts::default(),
@@ -237,7 +237,7 @@ impl Hasher for NameRecorder {
     }
 }
 
-fn name_of<Q: Hash + ?Sized>(key: &Q) -> Option<String> {
+pub(super) fn name_of<Q: Hash + ?Sized>(key: &Q) -> Option<String> {
     let mut recorder = NameRecorder(Vec::new());
     key.hash(&mut recorder);
     (recorder.0.pop() == Some(0xff))
@@ -247,8 +247,8 @@ fn name_of<Q: Hash + ?Sized>(key: &Q) -> Option<String> {
 
 /// The crate's TXT cache over 0120's declared map. `get` always answers, so the
 /// crate never reaches its resolver; every answered name is recorded by `Lookups`.
-struct Adapter<'l> {
-    lookups: RefCell<&'l mut Lookups>,
+pub(super) struct Adapter<'a, 'l> {
+    pub(super) lookups: &'a RefCell<&'l mut Lookups>,
 }
 
 /// The one judge of a DNS name. The crate asks for `<s>._domainkey.<d>.` with a
@@ -256,15 +256,15 @@ struct Adapter<'l> {
 /// in a dot leaves an empty label and is outside the grammar. The adapter and the
 /// verdict both ask this function, so what is looked up and what is reported
 /// cannot disagree.
-fn owner_of(name: &str) -> Option<OwnerName> {
+pub(super) fn owner_of(name: &str) -> Option<OwnerName> {
     OwnerName::parse(name)
 }
 
-fn not_found() -> TxtRecord {
+pub(super) fn not_found() -> TxtRecord {
     TxtRecord::Error(Error::Dns(DnsError::RecordNotFound(ResponseCode::NXDomain)))
 }
 
-impl Adapter<'_> {
+impl Adapter<'_, '_> {
     fn answer(&self, name: &str) -> TxtRecord {
         // A name outside 0120's grammar is never looked up and never recorded.
         let Some(owner) = owner_of(name) else {
@@ -297,7 +297,7 @@ fn record(name: &str, values: Vec<String>) -> TxtRecord {
     }
 }
 
-impl ResolverCache<Box<str>, TxtRecord> for Adapter<'_> {
+impl ResolverCache<Box<str>, TxtRecord> for Adapter<'_, '_> {
     fn get<Q>(&self, name: &Q) -> Option<TxtRecord>
     where
         Box<str>: Borrow<Q>,
@@ -317,7 +317,7 @@ impl ResolverCache<Box<str>, TxtRecord> for Adapter<'_> {
     fn insert(&self, _: Box<str>, _: TxtRecord, _: Instant) {}
 }
 
-impl DnsCache for Adapter<'_> {
+impl<'a, 'l> DnsCache for Adapter<'a, 'l> {
     type Txt = Self;
     type Mx = NoCache;
     type Ipv4 = NoCache;
@@ -658,16 +658,43 @@ fn body_length(signature: &Signature, body: &[u8]) -> Option<Rule> {
     }
 }
 
-/// Verify every `DKIM-Signature` of `raw` against the declared map. `root` and
-/// `size` are the root header list and body offset every other collector uses.
-pub(super) fn collect(
-    raw: &[u8],
+/// What the strict parse and the guards decided before any signature is
+/// verified, and the parse DMARC reads the From header from (decision 0126 §7):
+/// one parse of the stored bytes serves both, so the two cannot disagree.
+pub(super) enum Prepared<'r> {
+    /// No `DKIM-Signature` in the root list or the crate's: not DKIM's business.
+    /// The parse is `None` when the crate cannot read the message at all.
+    Unsigned(Option<AuthenticatedMessage<'r>>),
+    /// The boundary guard fired and its one finding is pushed. The crate's parse
+    /// is not the one Swarmail's collectors read, so nothing may use it.
+    Stopped,
+    /// A bound fired and its one finding is pushed. The parse is sound.
+    Limited(AuthenticatedMessage<'r>),
+    /// Every guard passed: the signatures can be verified.
+    Ready(AuthenticatedMessage<'r>),
+}
+
+impl<'r> Prepared<'r> {
+    /// The crate's parse of the message, unless the boundary guard refused it.
+    /// For unsigned mail the guard has not run: the caller checks that the parse
+    /// ends the headers where Swarmail's own scan does.
+    pub(super) fn message(&self) -> Option<&AuthenticatedMessage<'r>> {
+        match self {
+            Self::Unsigned(message) => message.as_ref(),
+            Self::Stopped => None,
+            Self::Limited(message) | Self::Ready(message) => Some(message),
+        }
+    }
+}
+
+/// Parse `raw` once and apply the guards. `root` and `size` are the root header
+/// list and body offset every other collector uses.
+pub(super) fn prepare<'r>(
+    raw: &'r [u8],
     root: &Headers,
     size: usize,
-    receipt: u64,
-    lookups: &mut Lookups,
     out: &mut Collector,
-) -> Result<(), AnalysisError> {
+) -> Result<Prepared<'r>, AnalysisError> {
     // The strict parse bounds the work first: it hashes the body once per
     // distinct canonicalization of an `l=`-less signature (at most four) and
     // rejects every `l=` signature unhashed. The fields it lists are the crate's
@@ -677,7 +704,8 @@ pub(super) fn collect(
     let first = parsed.as_ref().map_or_else(Vec::new, fields);
     // Unsigned mail is none of DKIM's business, whatever its header block holds.
     if first.is_empty() && !root.iter().any(|(name, _)| is_dkim_signature(name)) {
-        return Ok(());
+        drop(first);
+        return Ok(Prepared::Unsigned(parsed));
     }
     // One body and one field list: the crate must end the headers where Swarmail
     // does, or its body is not the one every other collector and the UI see (a
@@ -691,33 +719,57 @@ pub(super) fn collect(
         .iter()
         .filter(|(name, _)| is_dkim_signature(name))
         .count();
-    let Some(strict) = parsed
+    let agreed = parsed
         .as_ref()
-        .filter(|message| message.body_offset() == size && first.len() == root_count)
-    else {
-        return out.push(Rule::HeaderBoundaryAmbiguous.located((root_count > 0).then_some(0)));
-    };
+        .is_some_and(|message| message.body_offset() == size && first.len() == root_count);
+    if !agreed {
+        out.push(Rule::HeaderBoundaryAmbiguous.located((root_count > 0).then_some(0)))?;
+        return Ok(Prepared::Stopped);
+    }
     let by_count = (first.len() > MAX_DKIM_SIGNATURES).then_some(MAX_DKIM_SIGNATURES);
     let by_names = first
         .iter()
         .position(|f| f.scan.h_names > MAX_DKIM_SIGNED_HEADERS);
+    let has_l = first.iter().any(|f| f.scan.has_l);
+    drop(first);
+    let strict = parsed.expect("an agreed parse exists");
     if let Some(over) = [by_count, by_names].into_iter().flatten().min() {
-        return out.push(Rule::LimitsExceeded.finding(over));
+        out.push(Rule::LimitsExceeded.finding(over))?;
+        return Ok(Prepared::Limited(strict));
     }
     // A signature with `l=` is judged, not ignored: parse again without strict.
-    let full;
-    let message = if first.iter().any(|f| f.scan.has_l) {
-        full = AuthenticatedMessage::parse_with_opts(raw, None, false)
+    if has_l {
+        let full = AuthenticatedMessage::parse_with_opts(raw, None, false)
             .expect("a message that parsed strictly parses without strict");
-        &full
-    } else {
-        strict
-    };
-    let adapter = Adapter {
-        lookups: RefCell::new(lookups),
-    };
-    let outputs = AUTHENTICATOR
-        .verify_dkim(Parameters::new(message).with_cache(&adapter))
+        return Ok(Prepared::Ready(full));
+    }
+    Ok(Prepared::Ready(strict))
+}
+
+/// What verification hands to DMARC (decision 0126 §7): the crate's outputs
+/// that Swarmail's own verdicts accept, and whether any signature passed.
+pub(super) struct Verified<'m> {
+    /// The crate outputs whose field's verdict is a pass, the `l=` partial
+    /// warning (it verified), or a declared temporary failure. Every other
+    /// output is dropped, so a signature Swarmail refuses never aligns.
+    pub(super) outputs: Vec<DkimOutput<'m>>,
+    /// True when a field passed (`l=` partial included); Unknown when none did and
+    /// a key lookup failed temporarily; False when none did and none could.
+    pub(super) pass: Fact,
+}
+
+/// Verify every `DKIM-Signature` of a prepared message against the declared map.
+///
+/// The caller owns the adapter: the crate's outputs borrow the message and the
+/// cache for one lifetime, and DMARC reads them after this returns.
+pub(super) fn verify<'m>(
+    message: &'m AuthenticatedMessage<'m>,
+    adapter: &'m Adapter<'_, '_>,
+    receipt: u64,
+    out: &mut Collector,
+) -> Result<Verified<'m>, AnalysisError> {
+    let mut outputs = AUTHENTICATOR
+        .verify_dkim(Parameters::new(message).with_cache(adapter))
         .now_or_never()
         .expect("a declared map answers on the first poll");
     let context = Context {
@@ -725,12 +777,32 @@ pub(super) fn collect(
         body: message.raw_body(),
         receipt,
     };
+    let (mut passed, mut deferred) = (false, false);
+    let mut accepted: Vec<&Signature> = Vec::new();
     for (occurrence, field) in fields(message).iter().enumerate() {
-        if let Some(rule) = verdict(field, &context) {
+        let rule = verdict(field, &context);
+        if let Some(rule) = rule {
             out.push(rule.finding(occurrence))?;
         }
+        match rule {
+            None | Some(Rule::BodyLengthPartial) => passed = true,
+            Some(Rule::NotEvaluated) => deferred = true,
+            Some(_) => continue,
+        }
+        // Only a parsed field can have a pass, a partial pass or a deferral.
+        accepted.extend(field.parsed.ok());
     }
-    Ok(())
+    outputs.retain(|output| {
+        output
+            .signature()
+            .is_some_and(|found| accepted.iter().any(|kept| std::ptr::eq(*kept, found)))
+    });
+    let pass = match (passed, deferred) {
+        (true, _) => Fact::True,
+        (false, true) => Fact::Unknown,
+        (false, false) => Fact::False,
+    };
+    Ok(Verified { outputs, pass })
 }
 
 #[cfg(test)]
@@ -953,9 +1025,23 @@ mod tests {
     fn report(raw: &[u8], receipt: u64, world: &Arc<Effective>) -> Report {
         let inputs = Inputs {
             dns: world.clone(),
+            auth: None,
             ..Inputs::default()
         };
-        evaluate_at(raw, receipt, &inputs).unwrap()
+        let mut report = evaluate_at(
+            raw,
+            receipt,
+            &super::super::auth::Envelope::default(),
+            &inputs,
+        )
+        .unwrap();
+        // These tests judge DKIM in isolation: DMARC's own walk (0126) asks for
+        // `_dmarc` names of the From domain, which they do not declare.
+        report
+            .dns
+            .lookups
+            .retain(|lookup| !lookup.name.starts_with("_dmarc."));
+        report
     }
 
     /// The DKIM findings only: `(rule id, occurrence, severity)`, by occurrence.
@@ -1024,7 +1110,7 @@ mod tests {
         Lookups::new(world.clone())
     }
 
-    fn ask(adapter: &Adapter<'_>, name: &str) -> TxtRecord {
+    fn ask(adapter: &Adapter<'_, '_>, name: &str) -> TxtRecord {
         ResolverCache::<Box<str>, TxtRecord>::get::<str>(adapter, name).unwrap()
     }
 
@@ -1048,9 +1134,8 @@ mod tests {
             &["down._domainkey.example.com"],
         );
         let mut lookups = declared_lookups(&world);
-        let adapter = Adapter {
-            lookups: RefCell::new(&mut lookups),
-        };
+        let shared = RefCell::new(&mut lookups);
+        let adapter = Adapter { lookups: &shared };
         // Every shape of name gets the record type its shape selects.
         assert!(matches!(
             ask(&adapter, "sel._domainkey.example.com."),
@@ -1135,9 +1220,8 @@ mod tests {
     fn adapter_surface_and_name_recovery() {
         let world = policy(&[], &[]);
         let mut lookups = declared_lookups(&world);
-        let adapter = Adapter {
-            lookups: RefCell::new(&mut lookups),
-        };
+        let shared = RefCell::new(&mut lookups);
+        let adapter = Adapter { lookups: &shared };
         // The crate never inserts, removes or asks another cache; each is inert.
         ResolverCache::<Box<str>, TxtRecord>::insert(
             &adapter,
@@ -2506,9 +2590,8 @@ mod tests {
     fn crate_passes(raw: &[u8], world: &Arc<Effective>) -> bool {
         let message = AuthenticatedMessage::parse_with_opts(raw, None, false).unwrap();
         let mut lookups = declared_lookups(world);
-        let adapter = Adapter {
-            lookups: RefCell::new(&mut lookups),
-        };
+        let shared = RefCell::new(&mut lookups);
+        let adapter = Adapter { lookups: &shared };
         let outputs = AUTHENTICATOR
             .verify_dkim(Parameters::new(&message).with_cache(&adapter))
             .now_or_never()
@@ -2904,6 +2987,7 @@ mod tests {
     #[tokio::test]
     async fn service_judges_at_the_receipt_second() {
         let service = super::super::Service::default();
+        service.auth.set(None).unwrap();
         let o = Sign {
             expiration: Some(86_400),
             ..Sign::default()
@@ -3043,7 +3127,13 @@ mod tests {
         let mut lookups = Lookups::new(policy(&[], &[]));
         let run = |raw: &[u8], lookups: &mut Lookups| {
             let (root, size) = super::super::headers(raw).unwrap();
-            collect(raw, &root, size, 0, lookups, &mut full())
+            let mut out = full();
+            let shared = RefCell::new(lookups);
+            let adapter = Adapter { lookups: &shared };
+            match prepare(raw, &root, size, &mut out)? {
+                Prepared::Ready(message) => verify(&message, &adapter, 0, &mut out).map(|_| ()),
+                _ => Ok(()),
+            }
         };
         let no_key = signed(&Sign::default(), &msg());
         assert_eq!(run(&no_key, &mut lookups), Err(AnalysisError::Failed));
