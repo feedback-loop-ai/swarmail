@@ -1,6 +1,7 @@
 # 0120 — A declared, offline DNS policy that every deliverability report records
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-06 — "every decision"; see the
+  dated acceptance note at the end)
 - **Date:** 2026-11-03; revised 2026-11-04 after the review of `e80aa822`
   returned the design (run `issue-253-the-deliverability-dns-c76ebc80`). The
   revision corrects §2, §4, §8 and §9 and one alternative below; the
@@ -333,11 +334,35 @@ and changes no status; the record stays proposed.
 The `swarmail-html/6` id belongs to 0125 (it has never shipped), after this
 record's `/5`.
 
-## Integration note — 2026-11-06 (proposed 0126, issue #255)
+## Dated acceptance note — 2026-11-06
+
+The operator ruled on 2026-11-06, in chat to the dispatcher, "every decision": every decision on `main` that was still proposed is accepted in full. That covers 0119, 0120, 0121, 0122, 0123, 0124 and the rest of 0125, whose three holds the operator had accepted earlier the same day. This record was proposed when written; the text above is
+unchanged.
+
+- **The merge preceded the acceptance.** The header held the delivery PR
+  for the operator, but #329 merged on 2026-11-05, a day before this
+  ruling: the merge pipeline detected only dependency holds, not a 0045 §8
+  hold. This acceptance legitimises that merge after the fact and lifts the
+  0045 §8 hold it should have kept.
+- **It amends accepted [0085](0085-deliverability-report.md) §1**, as the
+  header says: the normative report shape is `{rule_set_id, findings, dns}`,
+  and the contract specification's literal `{rule_set_id, findings}` is the
+  historical shape. 0085 carries a dated pointer to this note.
+- **The integration notes above read with it.** Where §1 and §5 name
+  `swarmail-html/4`, the id this record shipped under is `swarmail-html/5`,
+  and the current id is `swarmail-html/6` (0125). Accepted
+  [0125](0125-offline-dkim-verification.md) §3 governs what it moved: §4/§5's
+  empty production lookups, §7's resolver wording, and §10's refusal text and
+  the promise that #254 brings a resolver, which moves to a later story with
+  its own decision.
+
+## Dated integration note — 2026-11-06 (proposed 0126, issue #255)
 
 Proposed [0126](0126-spf-dmarc-alignment.md) is the second verifier to call
 `Lookups` from production code, and it changes two things this record said. It
-changes no status; the record stays proposed.
+changes no status. This record is accepted (operator, 2026-11-06), so the two
+changes below are proposed amendments of an accepted record; they wait for the
+operator's acceptance of 0126 (0045 §8).
 
 - **§3, the declaration grammar.** The declaration gains one optional member,
   `spf_client_ip`: an IPv4 or IPv6 address literal, stored canonical (an

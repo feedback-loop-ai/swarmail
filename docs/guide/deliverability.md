@@ -93,13 +93,13 @@ Nonempty parse failures still fail.
 Analysis is lazy from stored bytes, off SMTP; extraction stays at ingest.
 The existing message page renders the same report without polling.
 
-DNS policy (proposed 0120). Report checks that need DNS answers (DKIM keys, SPF,
+DNS policy (decision 0120, accepted). Report checks that need DNS answers (DKIM keys, SPF,
 DMARC; #254, #255, #256) read a declared, offline TXT map, never the network.
 Every report carries a required `dns` member
 {source:"default"|"server"|"inbox", policy:{txt:[{name,values}],tempfail:[name],spf_client_ip?},
 lookups:[{name,type:"txt",outcome:"records"|"no_records"|"temp_fail",values}]}.
 `policy` is the complete canonical effective policy; `lookups` lists each name an
-evaluation resolved, once, sorted. DKIM verification (proposed 0125, below) records
+evaluation resolved, once, sorted. DKIM verification (decision 0125, accepted, below) records
 every key, ATPS and report name it asks for that lies inside decision 0120's name grammar (an out-of-grammar name fails closed and is not recorded); a message with no `DKIM-Signature`
 records none, and SPF and DMARC (proposed 0126, below) record the TXT names they ask for
 (the record, its `include:` and `redirect=` targets, an `exp=` name, and the `_dmarc` names of the tree walk). `temp_fail` is never a pass and never clean: a report with a
@@ -186,7 +186,7 @@ or deadline) / "deliverability analysis failed" (analysis/size), native JSON err
 Selected pre-removal reads may finish; fresh lookups cannot resurrect removed mail.
 Cache loss at restart costs recomputation. These are cache/job bounds, not total
 memory or latency promises. #253 owns DNS observation/policy/expiry/wakeup semantics;
-#253 shipped no verification: DKIM verification arrives with proposed 0125 on
+#253 shipped no verification: DKIM verification arrives with accepted 0125 on
 `mail-auth`, offline against the declared keys; SPF and DMARC arrive with proposed
 0126 on the same crate (below), and ARC is #256; no external spam scorer or service
 ships here. The cache key is the selected Weak mail identity (which carries the
@@ -196,7 +196,7 @@ those, so two requests with equal keys get equal facts.
 
 ## Link rules
 
-Proposed decision 0121 (issue #258) added five per-link rules to the default
+Decision 0121 (accepted; issue #258) added five per-link rules to the default
 report. They arrived in rule set `swarmail-html/4` and are part of the current
 rule set (`swarmail-html/7`). They read the same eligible outer
 `text/html` parts as the HTML heuristics above (attachments and attached
@@ -378,7 +378,7 @@ mean "nothing found", not "the links are safe".
 
 ## DKIM verification (`swarmail-html/7`)
 
-Proposed decision 0125 (issue #254) verifies every `DKIM-Signature` field of a
+Decision 0125 (accepted; issue #254) verifies every `DKIM-Signature` field of a
 stored message and reports each way a signature fails to verify as a named
 finding, so a test can assert "my signer works" by the absence of `dkim.*`
 findings and each specific breakage by its rule id. It runs lazily, inside the
@@ -438,9 +438,9 @@ clean report on a signature whose `x=` is near the host clock can start to fail
 without any new mail: keep a fixture's `x=` far from the wall clock, or derive it
 from the receipt.
 Malformed, unsupported, `from_unsigned` and `signature_expired` verdicts, every
-message-level finding and every unsigned message are clock-free. Whether this
-read is compatible with accepted decision 0085 section 8 is the operator's to
-rule (0125 section 8).
+message-level finding and every unsigned message are clock-free. The operator
+accepted this read on 2026-11-06 as an amendment of decision 0085 section 8
+(0125 section 8).
 
 **`l=`.** The crate counts `l=` in raw body bytes, in its signer and in its
 verifier, and hashes the first `l=` raw bytes (all of them when it is longer than
@@ -974,18 +974,18 @@ field, `null` when absent, `1` when duplicated, else `0`.
 
 Six built-in, offline, deterministic rules read only the captured message: the
 root Subject, the root From display name and the sender's `text/plain` bodies
-(decision 0122, proposed). There is no external scorer, network, clock, locale or
+(decision 0122, accepted). There is no external scorer, network, clock, locale or
 configuration; the same stored bytes always give the same findings. Each rule
 emits at most one finding per report, severity info or warning (error stays the
 bulk checklist's requirement level), so a large message can never flood the
-report. They arrived as `swarmail-spam/1`; with the link rules of proposed 0121,
-the `dns` member of proposed 0120, the DKIM rules of proposed 0125 and the SPF and
+report. They arrived as `swarmail-spam/1`; with the link rules of decision 0121,
+the `dns` member of decision 0120, the DKIM rules of accepted 0125 and the SPF and
 DMARC rules of proposed 0126 the report's
 `rule_set_id` is now `swarmail-html/7`, so the rule-set version
 is recorded in every report and in the cache key. Reports carry no weight and no
-total: the weights below are the proposal in decision 0122 and wait for the
-operator to accept it; they are labelled "proposed in 0122 — not in the report"
-because they are not emitted.
+total yet: the operator accepted decision 0122 on 2026-11-06, including the
+weights below, but the follow-up that emits them is not built, so they are
+labelled "proposed in 0122 — not in the report".
 
 Subject means the first root Subject field in wire order, RFC 2047-decoded and
 unfolded; From means the first mailbox of the first root From field, display name

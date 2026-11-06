@@ -117,7 +117,7 @@ and measured main `a4f552d`, which already carries it.
 $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{…}}'
 {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26",
-  "serverInfo":{"name":"swarmail","version":"0.3.0"}, …}}
+  "serverInfo":{"name":"swarmail","version":"0.4.0"}, …}}
 
 $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
     -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",

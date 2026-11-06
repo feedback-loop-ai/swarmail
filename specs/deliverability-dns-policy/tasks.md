@@ -1,8 +1,8 @@
 # Tasks — deliverability DNS policy (#253)
 
 Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Decision:
-[0120](../../docs/decisions/0120-deliverability-dns-policy.md) (proposed; never
-accept it).
+[0120](../../docs/decisions/0120-deliverability-dns-policy.md) (accepted (operator, 2026-11-06); the seats
+never accepted it).
 
 Work in order. Each task names the test that proves it. A task is done only when
 that test runs, has been seen to fail without the change where that is possible,

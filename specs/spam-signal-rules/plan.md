@@ -1,6 +1,6 @@
 # Plan — built-in deterministic spam signals (#260)
 
-Spec: [spec.md](spec.md). Proposed decision:
+Spec: [spec.md](spec.md). Decision (accepted (operator, 2026-11-06)):
 [0122](../../docs/decisions/0122-deterministic-spam-rules.md). Base `main` 8732445.
 
 ## Technical context

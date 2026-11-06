@@ -50,7 +50,7 @@ authentication.
 
 **One opt-in outbound path: the link reachability probe.** Swarmail makes no
 outbound connection for mail content by default (webhooks are the other
-operator-configured sender). Proposed decision 0121 adds one more, and it needs two
+operator-configured sender). Decision 0121 (accepted) adds one more, and it needs two
 explicit steps: the operator starts the server with `--link-reachability
 public|loopback` (`SWARMAIL_LINK_REACHABILITY`, default `off`), and a caller
 asks with `GET /api/v1/messages/{id}/deliverability?reachability=true`. SMTP,

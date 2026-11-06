@@ -1,6 +1,7 @@
 # 0123 — An expert eval tier: traps one careful read cannot pass
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-06 — "every decision"; see the
+  dated acceptance note at the end)
 - **Date:** 2026-11-04.
 - **Scope:** Issue #325, epic #164; the operator's 2026-11-04 direction "make
   it harder". Base: main `8732445` (v0.3.0).
@@ -326,3 +327,23 @@ does now. It supersedes the first entry's table, which stays above as history.
   mistakes, both `confirm-injection` mistakes, and a part submitted alone) was
   run through the real trial path. Trials stay sequential (0076), so no load
   proof was needed or applied. Nothing paid ran.
+
+## Dated acceptance note — 2026-11-06
+
+The operator ruled on 2026-11-06, in chat to the dispatcher, "every decision": every decision on `main` that was still proposed is accepted in full. That covers 0119, 0120, 0121, 0122, 0123, 0124 and the rest of 0125, whose three holds the operator had accepted earlier the same day. This record was proposed when written; the text above is
+unchanged.
+
+- **It amends accepted [0071](0071-eval-trap-scoring.md) §1**: the five
+  expert task rows join the named-trap list, as accepted 0117 appended
+  three. 0071 carries a dated pointer to this note.
+- **It amends the agent eval harness specification's `tier` list**, which
+  now reads `straight|traps|multi_step|hard|expert`.
+- **§1's question put to the operator by name** (whether an attachment
+  part counts as a read, on which `confirm-attachment` rests) is accepted
+  as §1 frames it, with the rest of the record. The follow-up §1 described
+  for the other answer is not needed.
+- **§5's product** `baseline --tier expert` (5 tasks, 10 controls, 150 paid
+  slots) is accepted as a separate product; the paid run itself is still
+  the operator's to start, and none has run.
+- **§7's unbuilt families** stay unbuilt: the budget cap derivation is for
+  a follow-up that needs an agent-side counter and an amended paid plan.

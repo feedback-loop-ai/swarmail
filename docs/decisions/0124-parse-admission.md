@@ -1,6 +1,7 @@
 # 0124 — Parse admission: at most one ingest parse per usable core
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-06 — "every decision"; see the
+  dated acceptance note at the end)
 - **Date:** 2026-11-05
 - **Scope:** Issue #333 ("in-memory mode burns 2–7× the CPU of data-file mode
   under concurrent SMTP ingest"), delivered from `main` 5950af6 on the
@@ -182,3 +183,15 @@ churn.
   fails a stalled run by name. On glibc it passes with or without the gate: it
   guards the relation, not the cause; the parse-gate tests above are the
   cause's detector.
+
+## Dated acceptance note — 2026-11-06
+
+The operator ruled on 2026-11-06, in chat to the dispatcher, "every decision": every decision on `main` that was still proposed is accepted in full. That covers 0119, 0120, 0121, 0122, 0123, 0124 and the rest of 0125, whose three holds the operator had accepted earlier the same day. This record was proposed when written; the text above is
+unchanged.
+
+The record amends no accepted ruling: it extends accepted 0023 §1 and 0030
+compatibly and landed as compatible work under 0045 §8 (#335). The
+container bench the Consequences section said was owed was posted on issue
+#333 on 2026-11-05 after the merge: in memory, a 40-connection burst under
+`--cpus=2` took 5.7–5.8 s of CPU where v0.3.0 took 27.9–37.4 s. Issue #333
+is closed.

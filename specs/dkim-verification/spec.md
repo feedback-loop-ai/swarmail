@@ -1,6 +1,6 @@
 # Offline DKIM verification (#254)
 
-Decision: 0125 — [docs/decisions/0125-offline-dkim-verification.md](../../docs/decisions/0125-offline-dkim-verification.md) (proposed; only the operator accepts it)
+Decision: 0125 — [docs/decisions/0125-offline-dkim-verification.md](../../docs/decisions/0125-offline-dkim-verification.md) (accepted (operator, 2026-11-06); proposed when this spec was written)
 
 Epic #251, issue #254, priority P1. Run `issue-254-verify-dkim-signatures-bac57cf3`,
 base `main` `fad9e7e`, recipe `claude-careful`. Framing: the issue text and the

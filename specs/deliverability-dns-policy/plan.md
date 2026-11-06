@@ -1,7 +1,7 @@
 # Plan — deliverability DNS policy (#253)
 
 Spec: [spec.md](spec.md). Decision: [0120](../../docs/decisions/0120-deliverability-dns-policy.md)
-(proposed). Base `main` `8732445`; recipe `claude-careful`. Revised
+(accepted (operator, 2026-11-06)). Base `main` `8732445`; recipe `claude-careful`. Revised
 2026-11-04 after the review of `e80aa822`; the
 [review return log](#review-return-log) maps each finding to its change.
 

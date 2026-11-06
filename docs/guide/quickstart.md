@@ -17,15 +17,16 @@ graceful drain room (see *Stopping* below).
 `:sha-<commit>` (or build locally) when you need a reproducible image.
 `:v0.1.0` was never published, and `:0.1.0` is the 2026-10-12 first
 build. A release tag publishes both `:v<version>` and `:<version>`: the
-`v0.2.0` release run published `:v0.2.0` and `:0.2.0` on 2026-11-02, and
-the `v0.3.0` tag publishes `:v0.3.0` and `:0.3.0` once its release run
+`v0.2.0` release run published `:v0.2.0` and `:0.2.0` on 2026-11-02, the
+`v0.3.0` release run published `:v0.3.0` and `:0.3.0` on 2026-11-03, and
+the `v0.4.0` tag publishes `:v0.4.0` and `:0.4.0` once its release run
 passes (see [Kubernetes](kubernetes.md) for the conditions).
 
 **Persistence in Docker:** set `SWARMAIL_DATA_FILE` and mount a named
 volume at `/data`. The image ships `/data` owned by its runtime uid 65532,
-so a fresh named volume is writable (`:main` carries it, as do `:0.2.0`
-and, once the `v0.3.0` release run publishes it, `:0.3.0`; the 2026-10-12
-`:0.1.0` build predates it):
+so a fresh named volume is writable (`:main` carries it, as do `:0.2.0`,
+`:0.3.0` and, once the `v0.4.0` release run publishes it, `:0.4.0`; the
+2026-10-12 `:0.1.0` build predates it):
 
 ```
 docker run --rm --stop-timeout 30 -p 1025:1025 -p 1110:1110 -p 8025:8025 \
@@ -107,7 +108,7 @@ sized so that three times the cap stays under the usual 1024 soft limit
 `SWARMAIL_DNS_POLICY` (a JSON file of declared DNS TXT records for deliverability
 reports; the flag is `--dns-policy`; a bad file stops startup) and
 `SWARMAIL_DNS_RESOLVER` (`declared`, the default; `real` is refused, as there is no real DNS;
-see [*Deliverability reports*](deliverability.md); proposed 0120).
+see [*Deliverability reports*](deliverability.md); decision 0120, accepted).
 Logging: `RUST_LOG` (env-filter syntax; default
 `swarmail=info,tower_http=off`). `serve` and `gen-cert` log to stdout —
 `gen-cert` also prints its `wrote <cert> and <key>` line there — and

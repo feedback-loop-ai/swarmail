@@ -1,9 +1,8 @@
 # 0125 — Offline DKIM verification on mail-auth, keyed by receipt time
 
-- **Status:** proposed; its three operator holds (§2 the compiled-in
-  resolver, §8 the crate's clock as an amendment of accepted 0085 §8, §9 the
-  `Cargo.lock` additions) were accepted by the operator on 2026-11-06 (see the
-  dated acceptance note at the end)
+- **Status:** accepted (operator, 2026-11-06 — its three holds as "Accept
+  all, fix docs", then the rest as "every decision"; see the dated
+  acceptance notes at the end)
 - **Date:** 2026-11-05
 - **Scope:** epic #251, issue #254 (operator direction: the remaining
   deliverability stories in the order #253, #254, #255). Run
@@ -691,10 +690,22 @@ no-`t=` case (also in the guide and the specification). The rest of this
 record stays proposed. CI remains the first proof of the Alpine and macOS
 `aws-lc-sys` builds (§9).
 
-## Integration note — 2026-11-06 (proposed 0126, issue #255)
+## Dated acceptance note — 2026-11-06 ("every decision")
+
+The operator ruled on 2026-11-06, in chat to the dispatcher, "every decision": every decision on `main` that was still proposed is accepted in full. That covers 0119, 0120, 0121, 0122, 0123, 0124 and the rest of 0125, whose three holds the operator had accepted earlier the same day. The three holds were accepted by the note above; this
+ruling accepts the rest of the record. Its text is unchanged.
+
+The record's amendment of accepted 0085 §8 is the one the note above
+records, and 0085's dated pointer already names it. §3's moves of 0120
+§4/§5, §7 and §10 now stand between two accepted records, and 0120's own
+acceptance note names them.
+
+## Dated integration note — 2026-11-06 (proposed 0126, issue #255)
 
 [0126](0126-spf-dmarc-alignment.md) builds on this record and changes no
-status; the record stays as the operator left it above.
+status. This record is accepted (operator, 2026-11-06). DMARC's use of §6's
+verdicts and the `prepare`/`verify` split change no verdict, finding, bound or
+lookup; the clock read below is a proposed amendment held in 0126 §8.
 
 - **DMARC consumes §6's verdicts, not the crate's raw results.** The crate
   outputs that reach DMARC's alignment are exactly those whose field's

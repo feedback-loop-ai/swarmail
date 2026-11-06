@@ -3,7 +3,7 @@
 Date: 2026-11-03. Base: `main` 8732445. Run: `issue-260-built-in-deterministic-9e9f4283`
 (claude-careful). Epic #251, phase 3, priority P2.
 
-Decision: 0122 — [Deterministic spam-signal rules, and a proposed weight and total](../../docs/decisions/0122-deterministic-spam-rules.md), proposed.
+Decision: 0122 — [Deterministic spam-signal rules, and a proposed weight and total](../../docs/decisions/0122-deterministic-spam-rules.md), accepted (operator, 2026-11-06).
 
 Authorities (accepted, cited, not declared): [0085](../../docs/decisions/0085-deliverability-report.md)
 and its [report contract](../deliverability-report-contract/spec.md#contract);

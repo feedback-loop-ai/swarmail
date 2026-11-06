@@ -1,6 +1,7 @@
 # 0122 — Deterministic spam-signal rules, and a proposed weight and total
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-06 — "every decision"; see the
+  dated acceptance note at the end)
 - **Date:** 2026-11-03
 - **Scope:** Epic #251 issue #260 (phase 3, P2), delivered from `main` 8732445 on
   the `claude-careful` recipe, run `issue-260-built-in-deterministic-9e9f4283`.
@@ -109,3 +110,25 @@ real-SMTP fixtures, a passing and a failing one per rule. AC16 (§2) is held for
 the operator. Accepting §1 alone is possible; accepting §2 authorizes the
 follow-up described in §2.5. This record does not change any other decision's
 status.
+
+## Dated acceptance note — 2026-11-06
+
+The operator ruled on 2026-11-06, in chat to the dispatcher, "every decision": every decision on `main` that was still proposed is accepted in full. That covers 0119, 0120, 0121, 0122, 0123, 0124 and the rest of 0125, whose three holds the operator had accepted earlier the same day. This record was proposed when written; the text above is
+unchanged.
+
+- **§1, the rule set**, is accepted as the compatible work #327 merged.
+- **§2 amends accepted [0085](0085-deliverability-report.md)**: its report
+  contract sentence "no … scores … enter the report" and its exact
+  four-key finding. A severity-derived `weight` per finding and a report
+  `total` are now authorized. Under the Disposition, accepting §2
+  "authorizes the follow-up described in §2.5": that follow-up (the two
+  fields, the `swarmail-spam/2` bump, the closed OpenAPI and MCP schemas'
+  required properties, and the guide's emitted weights) is **authorized but
+  not built**. Reports carry no weight and no total until it lands, and
+  AC16 stays open. 0085 carries a dated pointer to this note.
+- **Read with records accepted since.** §2.1 places `total` as the
+  report's last key, but the report now ends with accepted
+  [0120](0120-deliverability-dns-policy.md)'s `dns` member, and §2.5 names
+  `swarmail-spam/2` where the id is `swarmail-html/6` and the next one must
+  be a fresh, never-used id (§1.4). The follow-up settles the key order and
+  the id against those records; this note rules on neither.

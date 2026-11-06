@@ -1,7 +1,7 @@
 # Plan: offline DKIM verification (#254)
 
 Spec: [spec.md](spec.md) · Tasks: [tasks.md](tasks.md) · Decision:
-[0125](../../docs/decisions/0125-offline-dkim-verification.md) (proposed).
+[0125](../../docs/decisions/0125-offline-dkim-verification.md) (accepted (operator, 2026-11-06)).
 
 **Revision 3, 2026-11-05.** The review returned the run to design a third
 time, on two false sentences: the clock account missed the crate's

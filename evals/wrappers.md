@@ -158,7 +158,7 @@ publication, failure-taxonomy reprioritization and sealing are operator work.
 No paid or networked agent is run by this delivery. Root and standalone test
 receipts, including carried failures, must be assessed separately from smoke.
 
-## Launching through a brokkr driver (`--via-brokkr`, proposed 0119)
+## Launching through a brokkr driver (`--via-brokkr`, 0119)
 
 **`--via-brokkr` fails closed today.** `agent-claude|agent-codex|agent-dsh ...
 --via-brokkr /abs/driver` validates `DRIVER` (an absolute path to a regular

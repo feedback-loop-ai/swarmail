@@ -82,3 +82,12 @@ names regressions, original non-security findings and proof boundaries. The
 historical text above remains as recorded; no proposal is accepted here. Later
 main integration must preserve bulk/unknown-authentication semantics and receive
 fresh combined verification/review.
+
+## Dated pointer — 2026-11-06 (0121, accepted)
+
+The operator accepted [0121](0121-deliverability-link-checks.md) on
+2026-11-06 ("every decision"). §1's "no … runtime network access" is
+narrowed by it to the deterministic evaluator, which stays network-free. An
+operator-enabled link reachability probe (`--link-reachability` and
+`?reachability=true`) runs outside the evaluator and is never cached. The
+text above is unchanged.
