@@ -391,8 +391,8 @@ curl -X PUT localhost:8025/api/v1/inboxes/qa/dns -d '{"txt":[
   {"name":"sel._domainkey.example.com","values":["v=DKIM1; k=ed25519; p=<base64>"]}]}'
 ```
 
-Every name the verifier asks for is answered from that map and recorded in the
-report's `dns.lookups`: the key name `<s>._domainkey.<d>`, the RFC 6541 ATPS name
+Every name inside 0120's grammar that the verifier asks for is answered from that
+map and recorded in the report's `dns.lookups`: the key name `<s>._domainkey.<d>`, the RFC 6541 ATPS name
 when a verified signature carries `atps=` for a From domain, and the RFC 6651
 `_report._domainkey.<d>` name when a failing signature has `r=y` (asked, answered
 and recorded like any name, but never typed as a report record: see the clock
@@ -411,8 +411,8 @@ expiry in 1970 (`dkim.signature_expired.v1`), not an absent tag.
 
 **The clock residual (its full radius).** One read of the host clock remains,
 inside the `mail-auth` verifier, which compares `x=` with it before it checks
-anything else. It applies only to a signature with an `x=` that is after both
-`t=` and the receipt second. Once the host clock reaches that `x=`, the crate
+anything else. It applies only to a signature with an `x=` that is after the
+receipt second and, when `t=` is present, after `t=` too. Once the host clock reaches that `x=`, the crate
 stops at the expiry, so *every* verdict the later rules could have given that
 signature becomes `dkim.expired_since_receipt.v1`: a pass (no finding), the
 `dkim.body_length_partial.v1` warning, and every error from

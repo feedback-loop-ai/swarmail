@@ -1,6 +1,9 @@
 # 0125 — Offline DKIM verification on mail-auth, keyed by receipt time
 
-- **Status:** proposed
+- **Status:** proposed; its three operator holds (§2 the compiled-in
+  resolver, §8 the crate's clock as an amendment of accepted 0085 §8, §9 the
+  `Cargo.lock` additions) were accepted by the operator on 2026-11-06 (see the
+  dated acceptance note at the end)
 - **Date:** 2026-11-05
 - **Scope:** epic #251, issue #254 (operator direction: the remaining
   deliverability stories in the order #253, #254, #255). Run
@@ -153,8 +156,9 @@
    `pub(crate)`. Swarmail itself reads no clock.
 
    *The true blast radius.* It applies only to a parsed signature that
-   Swarmail's own rows let through, so one carrying a numeric `x=` after both
-   `t=` and the receipt second. Once the host clock reaches that `x=`, the
+   Swarmail's own rows let through, so one carrying a numeric `x=` after the
+   receipt second and, when `t=` is present, after `t=` too (an `x=` after
+   receipt with no `t=` is inside the radius). Once the host clock reaches that `x=`, the
    crate returns "expired" before it checks the body hash, fetches the key,
    checks the AUID or verifies `b=`.
    - Every verdict the crate would have decided for that field becomes
@@ -659,3 +663,30 @@ and `rule_set_id` stays `swarmail-html/6`. The three operator holds stand as one
 merge question; #255's intake inherits AC11's await clause.
 
 This record stays proposed. Only the operator accepts it.
+
+## Dated acceptance note — 2026-11-06
+
+The operator ruled on 2026-11-06, in chat to the dispatcher, choosing
+"Accept all, fix docs" for the three holds named in the header. The question
+put to them stated each hold: `Cargo.lock` gains 58 packages, including
+`aws-lc-sys` (C crypto built with `cmake`) and `hickory-resolver`, with the
+licence allowlist unchanged (§9 and 0056's 2026-11-01 addendum); mail-auth's
+one reachable `SystemTime::now()` read for `x=`, whose radius is §8's and is
+the one exception to byte-identical reports (§8, amending accepted 0085 §8);
+and the compiled-in, twice-guarded, unreachable resolver (§2). The ruling:
+
+1. §9 is accepted: the `Cargo.lock` additions and the `deny.toml` comment
+   change may merge.
+2. §8 is accepted as the amendment of accepted 0085 §8 it proposes, bounded
+   as stated there; 0085 carries a dated pointer to this note. This lifts the
+   0045 §8 hold on #254.
+3. §2 is accepted: a compiled-in resolver that is unreachable by the two
+   stated means satisfies the brief's "turn off any network resolver
+   features" for mail-auth 0.14.0.
+
+The same ruling asked for the review's four low documentation findings to be
+fixed before merge: the in-grammar qualifier on recorded names in `llms.txt`,
+the OpenAPI `DnsRecord` description and the guide, and §8's radius naming the
+no-`t=` case (also in the guide and the specification). The rest of this
+record stays proposed. CI remains the first proof of the Alpine and macOS
+`aws-lc-sys` builds (§9).

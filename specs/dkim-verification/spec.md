@@ -241,8 +241,8 @@ cache's Weak identity of the immutable `Email` already covers it.
     reached either.
 - The reachable read's effect is the **clock residual** (0125 §8):
   1. It applies only to a parsed signature that passed every Swarmail row a–g
-     below, so it carries a numeric `x=` after both `t=` and the receipt
-     second.
+     below, so it carries a numeric `x=` after the receipt second and, when
+     `t=` is present, after `t=` too (no `t=` is inside the radius).
   2. Once the host clock reaches that `x=`, the crate returns
      `Neutral(SignatureExpired)` **before** it checks the body hash, fetches
      the key, checks the AUID or verifies `b=`.
