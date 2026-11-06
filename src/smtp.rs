@@ -540,7 +540,7 @@ pub async fn serve(
         let tls = tls.clone();
         #[cfg_attr(not(test), allow(unused_variables))]
         let handle = sessions.spawn(async move {
-            if let Err(e) = handle_conn(stream, store, chaos, cfg, tls).await {
+            if let Err(e) = handle_conn(stream, peer, store, chaos, cfg, tls).await {
                 debug!(session, error = %e, "connection ended");
             }
         });
@@ -862,6 +862,7 @@ async fn tls_handshake(
 
 async fn handle_conn(
     stream: TcpStream,
+    peer: std::net::SocketAddr,
     store: Arc<Store>,
     chaos: Arc<Chaos>,
     cfg: SmtpConfig,
@@ -900,7 +901,15 @@ async fn handle_conn(
     }
 
     let mut reader = BufReader::new(conn);
-    let result = session(&mut reader, &store, &chaos, &cfg, offer).await;
+    let result = session(
+        &mut reader,
+        &store,
+        &chaos,
+        &cfg,
+        offer,
+        canonical_peer(peer),
+    )
+    .await;
     close(result, reader.into_inner(), cfg.idle_timeout).await
 }
 
@@ -1059,6 +1068,7 @@ async fn session(
     chaos: &Arc<Chaos>,
     cfg: &SmtpConfig,
     mut offer: TlsOffer,
+    client_ip: std::net::IpAddr,
 ) -> io::Result<()> {
     write_line(
         reader.get_mut(),
@@ -1072,6 +1082,9 @@ async fn session(
     // success itself, `Some("default")` included (§5).
     let mut envelope: Option<Envelope> = None;
     let mut identity: Option<String> = None;
+    // The last greeting's name (decision 0126 §2): what the client called
+    // itself, kept for the mail it sends next; never read from a header.
+    let mut helo: Option<String> = None;
 
     loop {
         let cmd_line = match read_command_line(reader, cfg.idle_timeout).await {
@@ -1111,6 +1124,7 @@ async fn session(
             // named leniencies (§6).
             "HELO" => {
                 envelope = None;
+                helo = greeting_name(&arg);
                 write_line(
                     reader.get_mut(),
                     &format!("250 {}", cfg.hostname),
@@ -1120,6 +1134,7 @@ async fn session(
             }
             "EHLO" => {
                 envelope = None;
+                helo = greeting_name(&arg);
                 let mut resp = format!("250-{}\r\n", cfg.hostname);
                 resp.push_str("250-PIPELINING\r\n250-8BITMIME\r\n250-SMTPUTF8\r\n250-SIZE ");
                 resp.push_str(&cfg.max_message_size.to_string());
@@ -1186,6 +1201,7 @@ async fn session(
                         // auth, and the buffer went with it.
                         envelope = None;
                         identity = None;
+                        helo = None;
                         TlsOffer::Active
                     }
                 };
@@ -1640,9 +1656,15 @@ async fn session(
                 signal_data_parse_submission_for_test();
                 let email = Store::offload({
                     let inbox = inbox.to_string();
+                    let helo = helo.clone();
                     move || {
                         let _admitted = permit;
-                        build_email(&raw, &inbox, &rcpts, from)
+                        let mut email = build_email(&raw, &inbox, &rcpts, from);
+                        // The observed envelope rides the same row and the
+                        // same synchronous insert (decisions 0001, 0126 §2).
+                        email.smtp_client_ip = Some(client_ip);
+                        email.smtp_helo = helo;
+                        email
                     }
                 })
                 .await;
@@ -1693,6 +1715,19 @@ async fn session(
             }
         }
     }
+}
+
+/// The address SPF will judge for a session (decision 0126 §2): the TCP peer
+/// as accepted, an IPv4-mapped IPv6 address written as the IPv4 it maps.
+fn canonical_peer(peer: std::net::SocketAddr) -> std::net::IpAddr {
+    peer.ip().to_canonical()
+}
+
+/// The name a `HELO`/`EHLO` gave, trimmed; an empty argument names nothing
+/// (decision 0126 §2).
+fn greeting_name(arg: &str) -> Option<String> {
+    let name = arg.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// The inbox a PLAIN credential names, or `None` when it names nothing:
@@ -2009,6 +2044,10 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
         // Listed once, here at ingest (decision 0110): total, so it cannot
         // fail the mail; unknown only where the parser read nothing.
         attachments: parsed.as_ref().map(crate::attachments::extract),
+        // The session fills the observed envelope after the parse (decision
+        // 0126 §2); the builder itself has no session behind it.
+        smtp_client_ip: None,
+        smtp_helo: None,
         raw: raw.to_vec(),
     }
 }
@@ -3613,5 +3652,197 @@ mod tests {
         let _served = greeted(addr).await;
         assert_eq!(NODELAY_SEEN.with(|seen| seen.borrow().clone()), vec![true]);
         server.abort();
+    }
+    /// One full reply (every line of a multi-line one) from any transport,
+    /// byte at a time so nothing past the reply is consumed.
+    async fn full_reply<S: AsyncRead + Unpin>(stream: &mut S) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut all = String::new();
+        loop {
+            let mut line = Vec::new();
+            loop {
+                let mut byte = [0u8; 1];
+                stream.read_exact(&mut byte).await.unwrap();
+                line.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+            let line = String::from_utf8(line).unwrap();
+            let last = line.as_bytes().get(3) != Some(&b'-');
+            all.push_str(&line);
+            if last {
+                return all;
+            }
+        }
+    }
+
+    async fn say<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, line: &str) -> String {
+        stream.write_all(line.as_bytes()).await.unwrap();
+        full_reply(stream).await
+    }
+
+    /// One mail on an already open session; returns the stored id.
+    async fn mail_on<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, headers: &str) -> String {
+        assert!(
+            say(stream, "MAIL FROM:<sender@example.com>\r\n")
+                .await
+                .starts_with("250 ")
+        );
+        assert!(say(stream, "RCPT TO:<probe>\r\n").await.starts_with("250 "));
+        assert!(say(stream, "DATA\r\n").await.starts_with("354 "));
+        let stored = say(stream, &format!("{headers}Subject: s\r\n\r\nbody\r\n.\r\n")).await;
+        stored
+            .strip_prefix("250 2.0.0 OK: stored as ")
+            .and_then(|line| line.strip_suffix("\r\n"))
+            .expect("a 250 that names the stored id")
+            .to_string()
+    }
+
+    async fn serve_for_observation(
+        tls: Option<Arc<rustls::ServerConfig>>,
+    ) -> (
+        Arc<Store>,
+        std::net::SocketAddr,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
+        let store = Arc::new(Store::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve(
+            listener,
+            store.clone(),
+            Arc::new(Chaos::default()),
+            SmtpConfig::default(),
+            tls,
+            Arc::new(AtomicBool::new(false)),
+            std::future::pending(),
+        ));
+        (store, addr, server)
+    }
+
+    /// Decision 0126 §2: the session records the TCP peer and the last
+    /// greeting's name in the row the one synchronous insert stores, before
+    /// the 250; a later greeting replaces the name, an empty one clears it, a
+    /// session with no greeting stores none, and no header ever supplies
+    /// either fact.
+    #[tokio::test]
+    async fn the_peer_and_the_greeting_ride_the_row_before_the_250() {
+        let (store, addr, server) = serve_for_observation(None).await;
+        let mut c = TcpStream::connect(addr).await.unwrap();
+        assert!(full_reply(&mut c).await.starts_with("220 "));
+        let forged = "Received: from forged.example (forged.example [203.0.113.9])\r\n\
+                      X-Forwarded-For: 203.0.113.9\r\n\
+                      Authentication-Results: x; spf=pass smtp.mailfrom=a@b\r\n";
+        // No greeting yet: the peer is known and the name is not.
+        let none = mail_on(&mut c, forged).await;
+        let stored = store.get(&none).expect("the 250 means queryable");
+        assert_eq!(
+            stored.smtp_client_ip,
+            Some("127.0.0.1".parse::<std::net::IpAddr>().unwrap())
+        );
+        assert_eq!(stored.smtp_helo, None);
+        // HELO, trimmed; a later EHLO replaces it.
+        assert!(
+            say(&mut c, "HELO   first.example  \r\n")
+                .await
+                .starts_with("250 ")
+        );
+        let first = mail_on(&mut c, forged).await;
+        assert_eq!(
+            store.get(&first).unwrap().smtp_helo.as_deref(),
+            Some("first.example")
+        );
+        assert!(
+            say(&mut c, "EHLO second.example\r\n")
+                .await
+                .starts_with("250-")
+        );
+        let second = mail_on(&mut c, forged).await;
+        assert_eq!(
+            store.get(&second).unwrap().smtp_helo.as_deref(),
+            Some("second.example")
+        );
+        // An empty argument names nothing and replaces the earlier name.
+        assert!(say(&mut c, "EHLO\r\n").await.starts_with("250-"));
+        let empty = mail_on(&mut c, forged).await;
+        assert_eq!(store.get(&empty).unwrap().smtp_helo, None);
+        assert_eq!(
+            store.get(&empty).unwrap().smtp_client_ip,
+            Some("127.0.0.1".parse().unwrap())
+        );
+        server.abort();
+    }
+
+    /// An IPv4-mapped IPv6 peer is the IPv4 it maps; every other address is
+    /// untouched.
+    #[test]
+    fn a_mapped_peer_is_canonicalized() {
+        for (peer, want) in [
+            ("[::ffff:127.0.0.1]:25", "127.0.0.1"),
+            ("[::ffff:192.0.2.7]:25", "192.0.2.7"),
+            ("[2001:db8::1]:25", "2001:db8::1"),
+            ("198.51.100.4:25", "198.51.100.4"),
+        ] {
+            let peer: std::net::SocketAddr = peer.parse().unwrap();
+            assert_eq!(canonical_peer(peer).to_string(), want);
+        }
+    }
+
+    /// RFC 3207 §4.2: what the client said before the handshake is
+    /// forgotten, the greeting name included. A mail sent over the upgraded
+    /// session without a new greeting has none; a new greeting names it
+    /// again; the peer survives the upgrade.
+    #[tokio::test]
+    async fn starttls_forgets_the_greeting_but_not_the_peer() {
+        let pair = crate::tls::TlsConfig::generate_self_signed("localhost").unwrap();
+        let (store, addr, server) =
+            serve_for_observation(Some(Arc::new(pair.server_config().unwrap()))).await;
+        let mut tcp = TcpStream::connect(addr).await.unwrap();
+        assert!(full_reply(&mut tcp).await.starts_with("220 "));
+        assert!(
+            say(&mut tcp, "EHLO plain.example\r\n")
+                .await
+                .starts_with("250-")
+        );
+        assert_eq!(
+            say(&mut tcp, "STARTTLS\r\n").await,
+            "220 2.0.0 Ready to start TLS\r\n"
+        );
+        let connector = tls_connector(&pair);
+        let mut tls = tls_connect(&connector, tcp).await;
+        let silent = mail_on(&mut tls, "").await;
+        let stored = store.get(&silent).unwrap();
+        assert_eq!(stored.smtp_helo, None);
+        assert_eq!(stored.smtp_client_ip, Some("127.0.0.1".parse().unwrap()));
+        assert!(
+            say(&mut tls, "EHLO secure.example\r\n")
+                .await
+                .starts_with("250-")
+        );
+        let named = mail_on(&mut tls, "").await;
+        assert_eq!(
+            store.get(&named).unwrap().smtp_helo.as_deref(),
+            Some("secure.example")
+        );
+        server.abort();
+    }
+
+    /// Decision 0126 §2: only a live SMTP session observes an envelope. The
+    /// seed transports (REST and MCP share `build_seed_email`; the compat
+    /// shims only read) and the bare builder store no peer and no name, and
+    /// a header in the bytes never supplies one.
+    #[test]
+    fn mail_that_did_not_arrive_over_smtp_has_no_observed_envelope() {
+        let seeded = build_seed_email("box", "a@x.io", Some("s@x.io"), None, None, None).unwrap();
+        let built = build_email(
+            b"Received: from evil.example ([203.0.113.9])\r\nX-Forwarded-For: 203.0.113.9\r\n\r\nb\r\n",
+            "box",
+            &[],
+            "s@x.io".into(),
+        );
+        for email in [seeded, built] {
+            assert_eq!((email.smtp_client_ip, email.smtp_helo), (None, None));
+        }
     }
 }

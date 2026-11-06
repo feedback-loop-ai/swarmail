@@ -55,6 +55,8 @@ pub(super) fn historical() -> swarmail::model::Email {
         html: Some("<b>untrusted</b>".into()),
         link_metadata: None,
         attachments: None,
+        smtp_client_ip: None,
+        smtp_helo: None,
         links: vec!["https://x.io/?q=雪".into()],
         codes: (0..65).map(|i| format!("{i:04}")).collect(),
         message_id: Some("message@x".into()),
