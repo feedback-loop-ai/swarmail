@@ -4,8 +4,8 @@ description: >-
   An SMTP mail mock built for a program waiting on mail: lossless bursts,
   per-test inboxes, wait_for assertions, chaos injection, MCP built in.
 type: application
-version: 0.3.0
-appVersion: "0.3.0"
+version: 0.4.0
+appVersion: "0.4.0"
 home: https://github.com/feedback-loop-ai/swarmail
 sources:
   - https://github.com/feedback-loop-ai/swarmail
@@ -25,4 +25,4 @@ annotations:
       url: https://github.com/feedback-loop-ai/swarmail
   artifacthub.io/images: |
     - name: swarmail
-      image: ghcr.io/feedback-loop-ai/swarmail:0.3.0
+      image: ghcr.io/feedback-loop-ai/swarmail:0.4.0
