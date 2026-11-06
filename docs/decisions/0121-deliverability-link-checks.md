@@ -223,3 +223,14 @@ a fresh id. `swarmail-html/4` has never shipped on `main` or in a release, so
 it is that fresh id: the merged report carries the spam signals and the five
 link rules under `swarmail-html/4`. No rule id, severity, hint or location of
 either story changes. This note changes no status; the record stays proposed.
+
+## Integration note — 2026-11-05 (proposed 0125, issue #254)
+
+Section 7's "free of network, clock and resolver access" holds for the link
+probe and the static link rules. Under proposed
+[0125](0125-offline-dkim-verification.md) section 8 the report evaluator as a
+whole now holds one reachable crate-internal clock read: `mail-auth`'s `x=`
+comparison (operator hold 2). The crate's RFC 6651 report-sampling clock read
+is unreachable, because Swarmail never hands the crate a report record. A
+hickory resolver is compiled in and unreachable (hold 3). This note changes no
+status: the record stays proposed, and section 7's text is not edited.

@@ -141,7 +141,8 @@ pub struct ServeArgs {
     pub dns_policy: Option<PathBuf>,
 
     /// Where DNS answers come from: `declared` (the default, offline) or
-    /// `real`, which this build refuses until #254 brings a resolver.
+    /// `real`, which this build refuses (DKIM verification reads declared keys
+    /// only, proposed decision 0125).
     #[arg(
         long,
         value_name = "MODE",
@@ -175,11 +176,15 @@ pub enum DnsResolver {
 }
 
 /// Validate `--dns-resolver`. `real` is configured and refused with a message
-/// that names the story that adds the resolver; anything else is unknown.
+/// that says how to declare records instead (decision 0125 section 3); anything
+/// else is unknown.
 pub fn parse_dns_resolver(value: &str) -> Result<DnsResolver, String> {
     match value {
         "declared" => Ok(DnsResolver::Declared),
-        "real" => Err("real DNS needs the resolver that #254 adds; this build has none".into()),
+        "real" => Err(
+            "real DNS is not supported; declare records with --dns-policy or PUT /api/v1/inboxes/{inbox}/dns"
+                .into(),
+        ),
         other => Err(format!(
             "--dns-resolver must be `declared` or `real`, got {other:?}"
         )),
