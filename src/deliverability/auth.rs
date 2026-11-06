@@ -151,16 +151,16 @@ impl Rule {
     const fn hint(self) -> &'static str {
         match self {
             Self::SpfFail => {
-                "The connecting address is not authorized by the SPF record of the envelope sender's domain, which ends in -all; add the address to the record or send from an authorized host (RFC 7208 section 2.6.4)."
+                "The connecting address is not authorized by the SPF record of the domain of the envelope sender, which ends in -all; add the address to the record or send from an authorized host (RFC 7208 section 2.6.4)."
             }
             Self::SpfSoftfail => {
-                "The connecting address is probably not authorized by the SPF record of the envelope sender's domain (~all); add the address to the record or send from an authorized host (RFC 7208 section 2.6.5)."
+                "The connecting address is probably not authorized by the SPF record of the domain of the envelope sender (~all); add the address to the record or send from an authorized host (RFC 7208 section 2.6.5)."
             }
             Self::SpfNeutral => {
-                "No mechanism of the SPF record of the envelope sender's domain matched the connecting address, or the record says ?all; add the address to the record (RFC 7208 section 2.6.2)."
+                "No mechanism of the SPF record of the domain of the envelope sender matched the connecting address, or the record says ?all; add the address to the record (RFC 7208 section 2.6.2)."
             }
             Self::SpfNone => {
-                "Declare a v=spf1 TXT record for the envelope sender's domain in the DNS policy; none is declared, or the domain is not a valid name (RFC 7208 section 2.6.1)."
+                "Declare a v=spf1 TXT record for the domain of the envelope sender in the DNS policy; none is declared, or the domain is not a valid name (RFC 7208 section 2.6.1)."
             }
             Self::SpfTemperror => {
                 "A DNS lookup the SPF check needed failed temporarily, so the check was not evaluated; fix the DNS answer and retry (RFC 7208 section 2.6.6)."
@@ -178,7 +178,7 @@ impl Rule {
                 "Send exactly one From header field whose addresses share one domain (RFC 5322 section 3.6.2, RFC 9989 section 4.4)."
             }
             Self::DmarcNone => {
-                "Declare a v=DMARC1 record with a p= policy at _dmarc.<the From domain or its organizational domain> in the DNS policy; none applies (RFC 9989 section 4.10)."
+                "Declare a v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies (RFC 9989 section 4.10)."
             }
             Self::DmarcTemperror => {
                 "A DNS lookup the DMARC policy discovery needed failed temporarily, so the message was not evaluated; fix the DNS answer and retry (RFC 9989 section 4.10)."
@@ -196,7 +196,7 @@ impl Rule {
                 "Neither SPF nor DKIM passed with a domain aligned to the From domain; the applied policy is reject. Align a passing DKIM d= or SPF MAIL FROM domain with the From domain (RFC 9989 section 4.10)."
             }
             Self::DmarcNotEvaluated => {
-                "DMARC was not evaluated: the From header cannot be judged the way Swarmail's own header scan reads it, or SPF or DKIM could not be evaluated and no aligned pass was found (RFC 9989 section 4.10)."
+                "DMARC was not evaluated: the From header cannot be judged the way the Swarmail header scan reads it, or SPF or DKIM could not be evaluated and no aligned pass was found (RFC 9989 section 4.10)."
             }
         }
     }
@@ -2406,7 +2406,13 @@ mod tests {
                     Severity::Error
                 }
             );
-            // The hint is a constant: nothing a message holds can reach it.
+            // The hint is a constant: nothing a message holds can reach it, and no
+            // character the UI or a JSON string has to escape is in it.
+            assert!(
+                !finding.fix_hint.contains(['\'', '"', '<', '>', '&', '\\']),
+                "{}",
+                rule.id()
+            );
             assert!(finding.fix_hint.ends_with('.'), "{}", rule.id());
             let location = serde_json::to_value(&finding.location).unwrap();
             if rule.id().starts_with("spf.") {

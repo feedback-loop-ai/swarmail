@@ -319,9 +319,40 @@ async fn bulk_plain_text_pairs_preserve_stored_fields() {
     srv.stop().await;
 }
 
+/// Sender-written headers never supply evidence (decision 0089 section 7): a
+/// forged `Authentication-Results` and a forged `DKIM-Signature` change
+/// nothing about SPF, DMARC or the checklist. The evidence is the real
+/// evaluation (decision 0126): SPF from the SMTP session (`MAIL FROM:<sender@x.io>`
+/// from loopback, nothing declared), DMARC from the declared policy (nothing),
+/// DKIM from the signature, which is malformed.
 #[tokio::test]
-async fn bulk_untrusted_auth_headers_stay_unknown() {
+async fn bulk_untrusted_auth_headers_never_supply_evidence() {
     let srv = start().await;
+    let checklist = |rule: &str, unknown: bool, occurrence: &Value| {
+        let (hint, unknown_hint, rfc) = match rule {
+            "authenticated_sender" => (
+                "Supply a passing DKIM or SPF result aligned with RFC5322.From. This scoped check does not certify every provider authentication requirement.",
+                "Not evaluated: trusted From identity or passing-and-aligned DKIM/SPF evidence is incomplete.",
+                "https://www.rfc-editor.org/rfc/rfc7489#section-3.1",
+            ),
+            "dmarc_presence" => (
+                "Publish a valid applicable DMARC policy; p=none satisfies this presence check.",
+                "Not evaluated: trusted applicable DMARC policy evidence is unavailable.",
+                "https://www.rfc-editor.org/rfc/rfc7489#section-6.1",
+            ),
+            _ => (
+                "Align a DKIM d= or SPF MAIL FROM identity with an unambiguous RFC5322.From domain under the applicable DMARC policy.",
+                "Not evaluated: trusted From identity or DKIM/SPF alignment evidence is incomplete.",
+                "https://www.rfc-editor.org/rfc/rfc7489#section-3.1",
+            ),
+        };
+        let hint = if unknown { unknown_hint } else { hint };
+        json!({"rule_id":format!("bulk.{rule}.{}v1",if unknown { "not_evaluated." } else { "" }),"severity":"error","location":{"kind":"header","name":"from","occurrence":occurrence},"fix_hint":format!("{hint} Sources: {rfc} {SOURCES}")})
+    };
+    let spf_none = json!({"rule_id":"spf.none.v1","severity":"error","location":{"kind":"header","name":"return-path","occurrence":null},"fix_hint":"Declare a v=spf1 TXT record for the domain of the envelope sender in the DNS policy; none is declared, or the domain is not a valid name (RFC 7208 section 2.6.1)."});
+    // The sender-written signature is judged as mail, and is malformed (no
+    // s=, bh= or h=); it still never becomes trusted evidence (decision 0125).
+    let malformed = json!({"rule_id":"dkim.malformed.v1","severity":"error","location":{"kind":"header","name":"dkim-signature","occurrence":0},"fix_hint":"Fix the DKIM-Signature tag list: each tag once; v=, a=, d=, s=, b=, bh= and h= present; valid base64; t=, x= and l= plain decimal numbers; and x= later than t= (RFC 6376 sections 3.2 and 3.5)."});
     for from in [
         "",
         "From: sender@example.test\r\n",
@@ -339,32 +370,58 @@ async fn bulk_untrusted_auth_headers_stay_unknown() {
             "From: sender@example.test\r\n" => json!(0),
             _ => json!(1),
         };
-        let mut expected = Vec::new();
-        for (rule, hint, rfc) in [
-            (
-                "authenticated_sender",
-                "Not evaluated: trusted From identity or passing-and-aligned DKIM/SPF evidence is incomplete.",
-                "https://www.rfc-editor.org/rfc/rfc7489#section-3.1",
+        let invalid = json!({"rule_id":"dmarc.from_invalid.v1","severity":"error","location":{"kind":"header","name":"from","occurrence":occurrence},"fix_hint":"Send exactly one From header field whose addresses share one domain (RFC 5322 section 3.6.2, RFC 9989 section 4.4)."});
+        let none = json!({"rule_id":"dmarc.none.v1","severity":"error","location":{"kind":"header","name":"from","occurrence":0},"fix_hint":"Declare a v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies (RFC 9989 section 4.10)."});
+        // (checklist entries as (rule, not evaluated), the findings of the other
+        // rules, and the names looked up)
+        let (entries, others, names): (Vec<(&str, bool)>, Vec<Value>, Vec<&str>) = match from {
+            // Several From fields, or none: no single Author Domain, so the
+            // policy is unknown and alignment and authentication are failures.
+            "" | "From: a@x\r\nFrom: b@y\r\n" => (
+                vec![
+                    ("authenticated_sender", false),
+                    ("dmarc_presence", true),
+                    ("from_alignment", false),
+                ],
+                vec![malformed.clone(), invalid, spf_none.clone()],
+                vec!["x.io"],
             ),
-            (
-                "dmarc_presence",
-                "Not evaluated: trusted applicable DMARC policy evidence is unavailable.",
-                "https://www.rfc-editor.org/rfc/rfc7489#section-6.1",
+            // One From and no declared policy: no policy, and nothing to align
+            // with it.
+            _ => (
+                vec![
+                    ("authenticated_sender", false),
+                    ("dmarc_presence", false),
+                    ("from_alignment", true),
+                ],
+                vec![malformed.clone(), none, spf_none.clone()],
+                vec!["_dmarc.example.test", "_dmarc.test", "x.io"],
             ),
-            (
-                "from_alignment",
-                "Not evaluated: trusted From identity or DKIM/SPF alignment evidence is incomplete.",
-                "https://www.rfc-editor.org/rfc/rfc7489#section-3.1",
-            ),
-        ] {
-            expected.push(json!({"rule_id":format!("bulk.{rule}.not_evaluated.v1"),"severity":"error","location":{"kind":"header","name":"from","occurrence":occurrence},"fix_hint":format!("{hint} Sources: {rfc} {SOURCES}")}));
-        }
-        // The sender-written signature is judged as mail, and is malformed (no
-        // s=, bh= or h=); it still never becomes trusted evidence (decision 0125).
-        expected.push(json!({"rule_id":"dkim.malformed.v1","severity":"error","location":{"kind":"header","name":"dkim-signature","occurrence":0},"fix_hint":"Fix the DKIM-Signature tag list: each tag once; v=, a=, d=, s=, b=, bh= and h= present; valid base64; t=, x= and l= plain decimal numbers; and x= later than t= (RFC 6376 sections 3.2 and 3.5)."}));
-        assert_eq!(
-            value,
-            json!({"rule_set_id":"swarmail-html/7","findings":expected,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
+        };
+        let mut expected: Vec<Value> = entries
+            .into_iter()
+            .map(|(rule, unknown)| checklist(rule, unknown, &occurrence))
+            .collect();
+        expected.extend(others);
+        expected.sort_by_key(|f| f.to_string());
+        let mut got = value["findings"].as_array().unwrap().clone();
+        got.sort_by_key(|f| f.to_string());
+        assert_eq!(got, expected, "{from:?}");
+        let looked: Vec<&str> = value["dns"]["lookups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(looked, names, "{from:?}");
+        assert!(
+            value["dns"]["lookups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|l| l["type"] == "txt"
+                    && l["outcome"] == "no_records"
+                    && l["values"] == json!([]))
         );
     }
     srv.stop().await;
