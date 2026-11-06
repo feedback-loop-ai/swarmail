@@ -745,6 +745,7 @@ mod tests {
     use super::super::{Inputs, Report, evaluate_at, headers};
     use super::*;
     use mail_auth::Mx;
+    use mail_auth::dns::UnwrapTxtRecord;
     use std::sync::Arc;
 
     const RECEIPT: u64 = 1_793_000_000;
@@ -1833,21 +1834,17 @@ mod tests {
     fn only_signatures_swarmail_accepts_align() {
         let w = signed_world("example.com", REJECT);
         let m = message(BODY);
-        let failing_spf = |extra: &[(&str, &str)]| {
+        let failing_spf = || {
             let key = KeyKind::Ed25519.record();
-            let mut records = vec![
-                ("example.com", vec!["v=spf1 -all".to_string()]),
-                ("sel._domainkey.example.com", vec![key]),
-                ("_dmarc.example.com", vec![REJECT.to_string()]),
-            ];
-            records.extend(extra.iter().map(|(n, v)| (*n, vec![v.to_string()])));
-            let declared: Vec<(&str, Vec<&str>)> = records
-                .iter()
-                .map(|(n, v)| (*n, v.iter().map(String::as_str).collect()))
-                .collect();
-            let refs: Vec<(&str, &[&str])> =
-                declared.iter().map(|(n, v)| (*n, v.as_slice())).collect();
-            world(&refs, &[], None)
+            world(
+                &[
+                    ("example.com", &["v=spf1 -all"]),
+                    ("sel._domainkey.example.com", &[key.as_str()]),
+                    ("_dmarc.example.com", &[REJECT]),
+                ],
+                &[],
+                None,
+            )
         };
         // Passing: verified, aligned.
         let good = signed(&Sign::default(), &m);
@@ -1859,7 +1856,7 @@ mod tests {
         let altered = String::from_utf8(good.clone())
             .unwrap()
             .replace("this  is a test", "this is a test!");
-        let w2 = failing_spf(&[]);
+        let w2 = failing_spf();
         let r = run(altered.as_bytes(), &env("a@example.com"), &w2);
         assert_eq!(dkim_pair(&r), (F, F));
         assert_eq!(dmarc_ids(&r), ["dmarc.fail.reject.v1"]);
@@ -2345,9 +2342,7 @@ mod tests {
     #[test]
     fn ra_is_cleared_before_the_crate_sees_a_record() {
         let record = "v=spf1 ra=postmaster rp=0 rr=all ip4:127.0.0.1 -all";
-        let TxtRecord::Spf(parsed) = Kind::Spf.select(vec![record.into()]) else {
-            panic!("an SPF record");
-        };
+        let parsed = SpfRecord::unwrap_txt(Kind::Spf.select(vec![record.into()])).unwrap();
         assert!(parsed.ra.is_none());
         assert_eq!(parsed.rp, 0, "everything else is the crate's parse");
         // What the crate itself would have kept, to prove the adapter cleared it.
@@ -2468,7 +2463,9 @@ mod tests {
                 .iter()
                 .map(|f| f.rule_id.clone())
                 .filter(|id| {
-                    id.starts_with("spf.") || id.starts_with("dmarc.") || id.starts_with("dkim.")
+                    ["spf.", "dmarc.", "dkim."]
+                        .iter()
+                        .any(|prefix| id.starts_with(prefix))
                 })
                 .collect()
         };
@@ -2517,7 +2514,8 @@ mod tests {
                 "{}",
                 rule.id()
             );
-            assert!(section.contains("**Passing:**") && section.contains("**Failing:**"));
+            assert!(section.contains("**Passing:**"));
+            assert!(section.contains("**Failing:**"));
         }
         assert_eq!(guide.matches("\n### `spf.").count(), 8);
         assert_eq!(guide.matches("\n### `dmarc.").count(), 8);

@@ -371,7 +371,8 @@ mod tests {
         email.smtp_helo = Some("mail.example.org".into());
         let observed = serde_json::to_string(&email).unwrap();
         assert_eq!(observed, bare);
-        assert!(!observed.contains("smtp") && !observed.contains("192.0.2.7"));
+        assert!(!observed.contains("smtp"));
+        assert!(!observed.contains("192.0.2.7"));
     }
 
     fn part_json(extra: &str) -> String {
