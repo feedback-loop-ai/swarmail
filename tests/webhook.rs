@@ -233,15 +233,21 @@ async fn tls_sink_cfg(
     let key = tokio_rustls::rustls::pki_types::PrivateKeyDer::Pkcs8(
         tokio_rustls::rustls::pki_types::PrivatePkcs8KeyDer::from(key_der),
     );
-    let config = tokio_rustls::rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![tokio_rustls::rustls::pki_types::CertificateDer::from(
-                cert_der,
-            )],
-            key,
-        )
-        .unwrap();
+    // Pin the provider: the tree holds ring and aws-lc-rs once mail-auth is in
+    // it, and rustls refuses to choose between them (decision 0125).
+    let config = tokio_rustls::rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+        tokio_rustls::rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![tokio_rustls::rustls::pki_types::CertificateDer::from(
+            cert_der,
+        )],
+        key,
+    )
+    .unwrap();
     let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
     let (tx_req, rx_req) = tokio::sync::oneshot::channel();
     let hits: Hits = Arc::new(AtomicUsize::new(0));

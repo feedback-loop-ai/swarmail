@@ -552,7 +552,7 @@ mod tests {
             (SHORTENERS_VERSION, super::super::RULE_SET_ID, digest),
             (
                 "swarmail-shorteners/1",
-                "swarmail-html/5",
+                "swarmail-html/6",
                 0xd850a45b7e464f79
             )
         );

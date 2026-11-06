@@ -12,7 +12,7 @@
       "rule_set_id": {
         "type": "string",
         "examples": [
-          "swarmail-html/5"
+          "swarmail-html/6"
         ]
       },
       "findings": {

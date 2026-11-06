@@ -2335,13 +2335,19 @@ mod delivery_tests {
         params.not_after =
             rcgen::date_time_ymd(after.year(), after.month() as u8, after.day() as u8);
         let cert = params.self_signed(&key).unwrap();
-        let config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![CertificateDer::from(cert.der().to_vec())],
-                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
-            )
-            .unwrap();
+        // Pin the provider: the tree holds ring and aws-lc-rs once mail-auth is
+        // in it, and rustls refuses to choose between them (decision 0125).
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![CertificateDer::from(cert.der().to_vec())],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
+        )
+        .unwrap();
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

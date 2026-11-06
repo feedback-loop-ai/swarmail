@@ -644,7 +644,7 @@ async fn implicit_tls_without_a_pair_exits_non_zero_with_the_message() {
 }
 
 /// `--dns-resolver real` is refused by the argument parser with the message
-/// naming #254, in both spellings, and nothing binds (decision 0120 §10).
+/// saying how to declare records instead, in both spellings, and nothing binds (decision 0120 §10).
 #[tokio::test]
 async fn real_dns_resolution_exits_non_zero_with_the_message() {
     for env_spelling in [false, true] {
@@ -666,7 +666,7 @@ async fn real_dns_resolution_exits_non_zero_with_the_message() {
             "env={env_spelling}: the refused server came up: {transcript}"
         );
         assert!(
-            reason.contains("real DNS needs the resolver that #254 adds; this build has none"),
+            reason.contains("real DNS is not supported; declare records with --dns-policy or PUT /api/v1/inboxes/{inbox}/dns"),
             "env={env_spelling}: {reason}"
         );
     }

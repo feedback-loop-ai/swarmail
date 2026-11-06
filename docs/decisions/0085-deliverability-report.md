@@ -144,3 +144,13 @@ names regressions, original non-security findings and proof boundaries. The
 historical text above remains as recorded; no proposal is accepted here. Later
 main integration must preserve bulk/unknown-authentication semantics and receive
 fresh combined verification/review.
+
+## Dated pointer — 2026-11-06 (0125 §8, accepted)
+
+The operator accepted [0125](0125-offline-dkim-verification.md) §8 on
+2026-11-06. §8 of this record ("No ambient DNS/time, resolver, registry or
+authentication crate is introduced here") does not cover the one reachable clock read inside mail-auth
+0.14.0's `verify_dkim`, which compares a signature's `x=` with the host
+clock, within the radius 0125 §8 states, nor the authentication crate 0125 adds. It
+covers every other ambient read. The text
+above is unchanged.

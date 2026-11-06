@@ -5,7 +5,8 @@
 //! `PUT` supplies it, a request freezes it once, and every report records the
 //! whole effective policy and each lookup a verifier made. Nothing here touches
 //! the network, a clock, a global or a lock, so a report is a pure function of
-//! the stored bytes and the configuration (decision 0085).
+//! the stored bytes, the receipt time, and this configuration (decision 0085),
+//! except for the one clock read of proposed decision 0125 section 8.
 
 use serde::de::{Deserializer, Error as _, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,11 @@ impl OwnerName {
             });
         valid.then(|| Self(name.to_ascii_lowercase()))
     }
+
+    /// The canonical name, which the DKIM adapter reads to pick a record type.
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 /// The per-inbox declarations are at capacity (`MAX_DECLARED_INBOXES`).
@@ -87,10 +93,6 @@ impl Effective {
         Arc::new(Self { source, policy })
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "#254/#255 verifiers call it through Lookups")
-    )]
     fn answer(&self, name: &OwnerName) -> Txt {
         if self.policy.tempfail.contains(name) {
             Txt::TempFail
@@ -300,10 +302,6 @@ pub(crate) fn load_file(path: &Path) -> Result<Policy, String> {
 
 /// What a declared map answers for a TXT query.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "#254/#255 verifiers receive these answers")
-)]
 pub(crate) enum Txt {
     /// The record's canonical values, sorted.
     Records(Vec<String>),
@@ -365,7 +363,6 @@ impl Lookups {
         }
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "#254/#255 verifiers call it"))]
     pub(crate) fn resolve_txt(&mut self, name: &OwnerName) -> Txt {
         self.used
             .entry(name.clone())
