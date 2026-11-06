@@ -1629,11 +1629,21 @@ async fn session(
                 // aborted), distinct from chaos's fixed `451 4.3.0 chaos`,
                 // internals to the log and never to the peer — where the old
                 // tree acknowledged the lie.
+                // The parse waits for a slot of the store's parse gate first
+                // (decision 0124): at most one parse per usable core runs at
+                // a time, whatever the session count. The wait is an await
+                // — no pool thread parks on it — and the permit moves into
+                // the closure, so it is released when the parse ends and the
+                // commit below is not behind it.
+                let permit = store.parse_permit().await;
                 #[cfg(test)]
                 signal_data_parse_submission_for_test();
                 let email = Store::offload({
                     let inbox = inbox.to_string();
-                    move || build_email(&raw, &inbox, &rcpts, from)
+                    move || {
+                        let _admitted = permit;
+                        build_email(&raw, &inbox, &rcpts, from)
+                    }
                 })
                 .await;
                 let id = email.id.clone();
@@ -3057,6 +3067,79 @@ mod tests {
             1,
             "the 250 means the mail is queryable (0001)"
         );
+    }
+
+    /// A DATA session's parse waits for a slot of the store's parse gate
+    /// (decision 0124, issue #333) and the 250 still follows the commit
+    /// (0001): with the only slot held, a complete mail is on the wire but
+    /// its parse is not submitted to the pool and nothing is stored; the
+    /// moment the slot is released the parse is submitted, the mail commits
+    /// and the 250 names it. Red on a tree whose DATA arm skips the gate: the
+    /// parse is submitted at once and the wait is never registered.
+    #[tokio::test]
+    async fn a_data_parse_waits_for_a_gate_slot_then_the_250_follows_the_commit() {
+        let mut store = Store::new(0);
+        store.set_parse_width_for_test(1);
+        let store = Arc::new(store);
+        let held = store.parse_permit().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve(
+            listener,
+            store.clone(),
+            Arc::new(Chaos::default()),
+            SmtpConfig::default(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+            std::future::pending(),
+        ));
+        let mut submitted = observe_next_data_parse_submission_for_test();
+
+        let mut c = TcpStream::connect(addr).await.unwrap();
+        assert!(reply(&mut c).await.starts_with("220 "));
+        for (line, want) in [
+            ("MAIL FROM:<sender@example.com>\r\n", "250 "),
+            ("RCPT TO:<gated>\r\n", "250 "),
+            ("DATA\r\n", "354 "),
+        ] {
+            c.write_all(line.as_bytes()).await.unwrap();
+            assert!(reply(&mut c).await.starts_with(want));
+        }
+        c.write_all(b"Subject: gated\r\n\r\nbody\r\n.\r\n")
+            .await
+            .unwrap();
+
+        // The session is parked at the gate: awaited against a real
+        // deadline, never slept on.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while store.parse_waits_for_test() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the DATA arm never reached the parse gate"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            submitted.try_recv().is_err(),
+            "the parse was submitted while every slot was held"
+        );
+        assert_eq!(store.count("default", &Filter::default()), 0);
+
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(5), &mut submitted)
+            .await
+            .expect("the parse is submitted once a slot is free")
+            .expect("the observer stays connected");
+        let stored = reply(&mut c).await;
+        assert!(stored.starts_with("250 2.0.0 OK: stored as "), "{stored}");
+        assert_eq!(
+            store.count("default", &Filter::default()),
+            1,
+            "the 250 means the mail is queryable (0001)"
+        );
+        c.write_all(b"QUIT\r\n").await.unwrap();
+        assert!(reply(&mut c).await.starts_with("221 "));
+        server.abort();
     }
 
     /// One injected accept failure with nothing queued: the loop flags
