@@ -173,7 +173,7 @@ design commit. Each task below answers a review finding (plan.md, "Design
 return"). Do not edit 0126's header again except to fix a factual error, and
 change no decision's status.
 
-- [ ] T27. Records: rewrite the 0126 row in `docs/decisions/README.md` to
+- [x] T27. Records: rewrite the 0126 row in `docs/decisions/README.md` to
   "held for the operator on three holds: (1) an amendment of accepted 0120
   §2/§3/§4 (`spf_client_ip`; unrecorded non-TXT answers; NXDOMAIN/NODATA for
   `np=`), (2) SPF's monotonic timer, an amendment of accepted 0085 §8 and a
@@ -189,14 +189,14 @@ change no decision's status.
   docs/decisions/0120-deliverability-dns-policy.md` matches;
   `git diff <the design-return commit> -- docs/decisions | grep -i '^[-+].*\*\*Status'`
   is empty (AC22).
-- [ ] T28. Dated pointers, no status change: add "Dated pointer — 2026-11-06
+- [x] T28. Dated pointers, no status change: add "Dated pointer — 2026-11-06
   (proposed 0126 §8, hold 2)" to `0085-deliverability-report.md`, in the form
   of its existing 0125 pointer, and "Dated pointer — 2026-11-06 (proposed 0126
   §6, hold 3)" to `0089-bulk-sender-checklist.md`. Each is at most five lines,
   states that the item waits for the operator under 0045 §8, and links 0126.
   *Proof:* `grep -n '0126' docs/decisions/0085-*.md docs/decisions/0089-*.md`
   shows both; each record keeps exactly one status line (AC22).
-- [ ] T29. `src/static/openapi.json`: rewrite the `DeliverabilityReport`
+- [x] T29. `src/static/openapi.json`: rewrite the `DeliverabilityReport`
   description's "authentication unknown … no production message currently
   qualifies at any predicate threshold" to say the authentication entries
   read facts computed from the stored mail, its envelope observation and the
@@ -208,7 +208,7 @@ change no decision's status.
   doc-consistency test (`tests/agent_setup_docs.rs` and peers, the MCP and
   OpenAPI schema tests) passes, updated in the same commit if it pins these
   bytes (AC24).
-- [ ] T30. The ambient-read wording: in `src/deliverability.rs`'s module
+- [x] T30. The ambient-read wording: in `src/deliverability.rs`'s module
   comment ("one stated exception"), `src/deliverability/dns.rs` ("the one
   clock read of proposed decision 0125 section 8"),
   `docs/guide/deliverability.md` (the "one stated exception" sentences near
@@ -219,7 +219,7 @@ change no decision's status.
   *Proof:* `grep -rn 'one stated exception\|the one clock read' src docs/guide`
   returns nothing; the guide and llms.txt consistency tests pass; the coverage
   gate is unchanged (AC24).
-- [ ] T31. DMARC version grammar in `Kind::is_ours` (`src/deliverability/auth.rs`):
+- [x] T31. DMARC version grammar in `Kind::is_ours` (`src/deliverability/auth.rs`):
   for DMARC, accept `v`/`V`, then optional space or tab, `=`, optional space
   or tab, then case-exact `DMARC1`, followed by space, tab, `;` or the end.
   SPF is unchanged (`v=spf1`, case-insensitive, followed by a space or the
@@ -229,7 +229,7 @@ change no decision's status.
   `v=DMARC10; p=reject` and `vv=DMARC1; p=reject` are not records
   (`dmarc.none.v1` when alone); the existing `v=spf10` and `v=spf1` cases stay
   green (AC21).
-- [ ] T32. DMARC multiplicity in `Kind::select`: for `Kind::Dmarc`, two or more
+- [x] T32. DMARC multiplicity in `Kind::select`: for `Kind::Dmarc`, two or more
   values that pass `is_ours` return `not_found()` (no record at that name, so
   the crate's walk continues). SPF keeps `TxtRecord::Error(Error::Parse)`.
   Move "exactly one v=DMARC1 record per _dmarc name" from the
@@ -245,7 +245,7 @@ change no decision's status.
   Both names and their values appear in `dns.lookups`. `v=DMARC1; p=bogus`
   stays `dmarc.permerror.v1`; two `v=spf1` values stay `spf.permerror.v1`;
   `guide_lists_every_auth_rule` passes (AC10, AC21).
-- [ ] T33. Pin the null-sender baseline (no behaviour change): add an inline
+- [x] T33. Pin the null-sender baseline (no behaviour change): add an inline
   fixture pair in `auth.rs`. A null MAIL FROM with HELO `mx.example.com`, a
   passing SPF record there and From `a@example.com` under
   `v=DMARC1; p=reject` has `spf_aligned` True and no `dmarc.*` finding; with
@@ -254,20 +254,20 @@ change no decision's status.
   the 0126 implementation record instead of duplicating it.
   *Proof:* the pair, plus the existing `tests/deliverability.rs` null-sender
   wire test (AC23).
-- [ ] T34. AC18's base: the proof is `git diff --exit-code c95386e --
+- [x] T34. AC18's base: the proof is `git diff --exit-code c95386e --
   Cargo.toml Cargo.lock evals/Cargo.lock deny.toml`, and `git diff c95386e
   7478073 -- Cargo.lock evals/Cargo.lock deny.toml` changes only the
   `swarmail` package's own `version` line. Add a dated line to 0126's
   implementation record that the earlier `7478073` proof is superseded for
   this reason; do not rewrite the earlier record.
   *Proof:* both commands, with their output in the gate log (AC18).
-- [ ] T35. Implementation note for the return: append a dated
+- [x] T35. Implementation note for the return: append a dated
   "Implementation record — design return" to 0126. It says which tasks
   landed, the fixture names for AC21 and AC23, and that the RFC 9989 text was
   not consulted (no copy in the realm, no web access), so the readings rest
   on RFC 7489 and the pinned crate as 0126 §5 and §7 state.
   *Proof:* review; the status line stays `proposed` (AC20, AC22).
-- [ ] T36. Rerun every house gate `--locked` on the new tree, as T25 lists,
+- [x] T36. Rerun every house gate `--locked` on the new tree, as T25 lists,
   and commit unsigned in the repository's style (never push, merge or accept
   a decision). Report holds 1a/1b/1c, 2 and 3 in the result.
   *Proof:* the gate log; `git log --format='%G? %s'` shows `N` (AC19).

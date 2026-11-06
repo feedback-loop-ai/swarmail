@@ -364,28 +364,33 @@ changes no status. This record is accepted (operator, 2026-11-06), so the two
 changes below are proposed amendments of an accepted record; they wait for the
 operator's acceptance of 0126 (0045 §8).
 
-- **§3, the declaration grammar.** The declaration gains one optional member,
-  `spf_client_ip`: an IPv4 or IPv6 address literal, stored canonical (an
-  IPv4-mapped IPv6 address is the IPv4 it maps) and present in `dns.policy`
-  only when declared, so a policy that does not declare it keeps the bytes it
-  had. It is the address SPF evaluates instead of the one the SMTP session
-  saw, for every peer, and it never makes a message with no observed peer
-  evaluable. Anything but an address literal is refused by the one parser
+- **§2, the declaration grammar** (0126 hold 1a). The declaration gains one
+  optional member, `spf_client_ip`: an IPv4 or IPv6 address literal, stored
+  canonical (an IPv4-mapped IPv6 address is the IPv4 it maps) and present in
+  `dns.policy` only when declared, so a policy that does not declare it keeps
+  the bytes it had. It is the address SPF evaluates instead of the one the SMTP
+  session saw, for every peer, and it never makes a message with no observed
+  peer evaluable. Anything but an address literal is refused by the one parser
   (`400` on the API, a startup refusal for the server file, before any
   listener binds). It counts toward the byte bounds (the canonical form
-  is measured) and not toward the 256 names and values.
-- **§4, non-TXT answers.** The map stays a TXT map. SPF's `a`, `mx`, `ptr` and
-  `exists` mechanisms and the `%{p}` macro need A, AAAA, MX or PTR answers it
-  cannot hold; they are answered with a fixed negative and a named finding
-  whose fact is Unknown, never a failure (0126 §4). DMARC's one non-TXT
-  query, the A query that decides `np=`, is answered by a fixed rule over the
-  declared names (a name exists when it or any name below it is declared as a
-  TXT owner or in `tempfail`). `dns.lookups` still lists TXT answers only
-  (`type` is `txt`), and each non-TXT answer is reproducible from the
-  embedded policy.
+  is measured) and not toward the 256 names and values. This moves §2's "both
+  members optional on input and always present on output".
+- **§3, "the only path that answers, and it records every name it answers"**
+  (0126 hold 1b). SPF's `a`, `mx`, `ptr` and `exists` mechanisms and the
+  `%{p}` macro need A, AAAA, MX or PTR answers the TXT map cannot hold; they
+  are answered with a fixed negative and a named finding whose fact is
+  Unknown, never a failure (0126 §4). DMARC's one non-TXT query, the A query
+  that decides `np=`, is answered from the embedded policy. None of these
+  answers is recorded: `dns.lookups` still lists TXT answers only (`type` is
+  `txt`), and each is reproducible from the embedded policy.
+- **§4, "NXDOMAIN and NODATA are not distinguished"** (0126 hold 1c). For
+  `np=` only, the two are distinguished by a fixed rule over the declared
+  names: a name exists when it or any name below it is declared as a TXT owner
+  or in `tempfail`.
 
 The report's byte-identity claim (§5) holds as 0125 §8 states it, plus one
-more stated exception proposed in 0126 §8: SPF's monotonic lookup timer inside
-the crate, a proposed amendment of accepted 0085 §8 held for the operator.
+more stated exception proposed in 0126 §8 (hold 2): SPF's monotonic lookup
+timer inside the crate, a proposed amendment of accepted 0085 §8 held for the
+operator.
 The `swarmail-html/7` id belongs to 0126 (it has never shipped), after
 0125's `/6`.

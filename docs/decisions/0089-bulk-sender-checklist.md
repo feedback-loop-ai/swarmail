@@ -94,3 +94,11 @@ The [implementation record](../../specs/bulk-sender-checklist/implementation.md)
 names the evaluator, immutable evidence seam and real-protocol proofs. Production
 authentication observations remain Unknown. Implementation preserves the proposed
 0085 report shape and accepted 0001–0005; neither proposal is accepted here.
+
+## Dated pointer — 2026-11-06 (proposed 0126 §6, hold 3)
+
+Proposed [0126](0126-spf-dmarc-alignment.md) §6 reads §5's "Include all
+effective facts/policy identity in Inputs equality" by the facts' determinants
+(mail identity with its envelope observation, policy snapshot, rule set), not
+as request inputs. It waits for the operator's acceptance under 0045 §8. The
+text above is unchanged.

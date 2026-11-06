@@ -175,3 +175,10 @@ The text above is unchanged; three of its sentences now read with them:
   finding** are amended by 0122 §2: a severity-derived `weight` per finding
   and a report `total` are authorized. The follow-up that emits them is not
   built, so reports carry neither yet.
+
+## Dated pointer — 2026-11-06 (proposed 0126 §8, hold 2)
+
+Proposed [0126](0126-spf-dmarc-alignment.md) §8 asks the operator to extend this
+record's §8 and 0125's amendment of it by one more reachable read: the
+monotonic timer inside `mail-auth` 0.14.0's SPF `LookupLimit`. It waits for the
+operator's acceptance under 0045 §8. The text above is unchanged.

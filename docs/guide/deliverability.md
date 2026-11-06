@@ -106,9 +106,9 @@ records none, and SPF and DMARC (proposed 0126, below) record the TXT names they
 `temp_fail` lookup qualifies at no no_findings_at_or_above threshold, so an assert
 does not match it and a wait rides to its deadline. `no_records` is a definite
 negative. The same message under the same configuration gives byte-identical
-report JSON; no path, time or generation appears (the one stated exception is the
+report JSON; no path, time or generation appears (the two stated exceptions are the
 DKIM wall-clock residual, `dkim.expired_since_receipt.v1`, whose full radius is
-described below).
+described below, and SPF's 20-second monotonic lookup timer, below).
 Declare a server map with `serve --dns-policy FILE` (env SWARMAIL_DNS_POLICY): a
 JSON file of at most 8192 bytes, `{"txt":[{"name":"s1._domainkey.example.com",
 "values":["v=DKIM1; k=rsa; p=..."]}],"tempfail":["_dmarc.example.org"]}`; `{}` is
@@ -430,8 +430,8 @@ signature becomes `dkim.expired_since_receipt.v1`: a pass (no finding), the
 `dkim.body_hash_mismatch.v1` to `dkim.signature_mismatch.v1` alike. The key and
 ATPS lookups for that signature also disappear from `dns.lookups`. So a clean or
 warning-only report can begin to disqualify, and a report recomputed after cache
-eviction can differ from the cached one: the one stated exception to
-byte-identical reports. The move is one-way unless the host clock is set back.
+eviction can differ from the cached one: the first of the two stated exceptions to
+byte-identical reports (the second is SPF's lookup timer, below). The move is one-way unless the host clock is set back.
 The crate's RFC 6651 report sampling also reads the clock, but Swarmail never
 hands it a report record, so that read is never reached. A test that awaits a
 clean report on a signature whose `x=` is near the host clock can start to fail
@@ -727,7 +727,10 @@ record); none is "no record" and more than one is a permanent error (RFC 7208
 section 4.5). Every term of the record must name a mechanism or be a modifier
 `name=value`; the crate would skip an unknown bare word and swallow the term
 after it, so `inlcude:x.example` is a permanent error here. The same rule picks
-the one `v=DMARC1` value at a `_dmarc` name.
+the `v=DMARC1` value at a `_dmarc` name, with two differences: the tag follows
+RFC 7489 section 6.4 (spaces or tabs may surround the `=`, and `DMARC1` is
+case-exact), and two `v=DMARC1` values at one name are no record at that name,
+not an error (RFC 7489 section 6.6.3), so the walk goes on.
 
 **Record types: TXT only.** The declared policy is a TXT map, so SPF's `a`, `mx`,
 `ptr` and `exists` mechanisms and the `%{p}` macro, which need A, AAAA, MX or PTR
@@ -902,13 +905,13 @@ field, `null` when absent, `1` when duplicated, else `0`.
 
 ### `dmarc.none.v1`
 
-**Severity:** error. A valid From, and no applicable DMARC record along the tree walk from the Author Domain up: nothing declared, a value that is not a `v=DMARC1` record, a record with neither `p=` nor `rua=`, or a single-label Author Domain.
+**Severity:** error. A valid From, and no applicable DMARC record along the tree walk from the Author Domain up: nothing declared, a value that is not a `v=DMARC1` record, a record with neither `p=` nor `rua=`, two `v=DMARC1` values at one name (RFC 7489 section 6.6.3 applies no policy for multiple records, so the walk goes on to the organizational domain), or a single-label Author Domain.
 
-**Hint:** Declare a v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies (RFC 9989 section 4.10).
+**Hint:** Declare exactly one v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies, and two records at one name apply none (RFC 9989 section 4.10).
 
 **Passing:** A declared `v=DMARC1; p=...` record at `_dmarc.<domain>` or at its organizational domain.
 
-**Failing:** Nothing declared; `v=DMARC1; fo=1`.
+**Failing:** Nothing declared; `v=DMARC1; fo=1`; two `v=DMARC1` values at one name and nothing above them.
 
 ### `dmarc.temperror.v1`
 
@@ -922,13 +925,13 @@ field, `null` when absent, `1` when duplicated, else `0`.
 
 ### `dmarc.permerror.v1`
 
-**Severity:** error. A walked name holds more than one `v=DMARC1` value, or one that does not parse (RFC 9989 section 4.10).
+**Severity:** error. A walked name holds one `v=DMARC1` value that does not parse (RFC 9989 section 4.10). Two values are not this rule: they are no record at that name (`dmarc.none.v1`).
 
-**Hint:** Fix the DMARC policy record: exactly one v=DMARC1 record per _dmarc name, with valid tags (RFC 9989 section 4.10).
+**Hint:** Fix the DMARC policy record so that its tags are valid (RFC 9989 section 4.10).
 
 **Passing:** One valid record per name.
 
-**Failing:** Two `v=DMARC1` values; `v=DMARC1; p=bogus`.
+**Failing:** `v=DMARC1; p=bogus`.
 
 ### `dmarc.fail.none.v1`
 

@@ -473,3 +473,50 @@ OpenAPI descriptions, the "one exception" wording that predates §8, the
 AC18 proof base `c95386e`) are tasks in the specification. Nothing else
 changes: no rule id is added or removed, `swarmail-html/7` stays the id, and
 this record stays proposed.
+
+## Implementation record — design return, 2026-11-06 (the implement seat)
+
+Tasks T27–T36 of the specification landed on top of `35a0db2`. The status stays
+`proposed`, no decision's status changed, and no rule id was added or removed;
+`swarmail-html/7` stands.
+
+- **T27–T28, records.** The README row names the three holds and the accepted
+  0120 and 0125. 0120's dated integration note is relabelled §2 (declaration
+  grammar, hold 1a), §3 (unrecorded non-TXT answers, hold 1b) and §4
+  (NXDOMAIN/NODATA for `np=`, hold 1c), with the timer paragraph pointing at hold
+  2. Dated pointers were added to 0085 (hold 2) and 0089 (hold 3); each says
+  the item waits for the operator under 0045 §8.
+- **T29, OpenAPI.** `DeliverabilityReport` no longer says that no production
+  message qualifies, and `DnsRecord` no longer says SPF and DMARC "will record
+  theirs"; status wording is untouched (#337 owns that sweep). Descriptions are
+  not part of the structural OpenAPI pins.
+- **T30, ambient-read wording.** The module comments of `deliverability.rs` and
+  `dns.rs`, the guide and `llms.txt` name both reads: DKIM's `x=` (0125 §8,
+  accepted) and SPF's lookup timer (§8 above, hold 2).
+- **T31–T32, DMARC selection** (`Kind::is_ours`, `Kind::select`). The version
+  tag follows RFC 7489 §6.4. Two or more `v=DMARC1` values at a name are no
+  record there. The "exactly one record" hint moved from `dmarc.permerror.v1`
+  to `dmarc.none.v1`, which changes served hint bytes: the guide, the bulk-sender
+  test and the MCP structured-output test and fixture follow (the fixture's hash
+  and provenance were recomputed by hand). A declared value is printable ASCII,
+  so the tab forms of the tag are proved on the selector itself, not through a
+  policy. Fixtures: `dmarc_version_tag_grammar` (AC21),
+  `two_dmarc_records_at_a_name_are_no_record` (AC10, AC21).
+  `v=DMARC1 p=reject` (no `;`) is a record by the tag rule and a permerror by the
+  crate's parse; that is left as the crate decides.
+- **T33, null-sender baseline.** `null_sender_aligns_through_the_helo_identity`
+  (AC23): HELO `mx.example.com` aligns, HELO `mx.example.net` fails with
+  `dmarc.fail.reject.v1`. The older HELO-identity case in the facts-table test
+  and the null-sender wire test in `tests/deliverability.rs` remain.
+- **T34, AC18's base.** `git diff --exit-code c95386e -- Cargo.toml Cargo.lock
+  evals/Cargo.lock deny.toml` is empty. `git diff c95386e 7478073 -- Cargo.lock
+  evals/Cargo.lock deny.toml` changes only the `swarmail` package's own `version`
+  line (0.4.0 to 0.3.0). The earlier proof against `7478073` is superseded for
+  that reason; it is not rewritten.
+- **RFC 9989.** Its text was not consulted (no copy in the realm, no web
+  access). The readings of §5 and §7 rest on RFC 7489 and on the pinned crate.
+- **Gates**, all `--locked`, on this tree: fmt, clippy, `cargo test --workspace`,
+  the evals crate's fmt, clippy and tests against this tree's `swarmail`, the
+  coverage gate (exact 100/100/100) and its selftest, the publish-guard and seal
+  proofs, and `cargo deny check licenses`. The sandbox has no `brokkr`
+  binary, so the bundle-compile gate runs in verify.

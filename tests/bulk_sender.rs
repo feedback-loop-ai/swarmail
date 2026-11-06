@@ -371,7 +371,7 @@ async fn bulk_untrusted_auth_headers_never_supply_evidence() {
             _ => json!(1),
         };
         let invalid = json!({"rule_id":"dmarc.from_invalid.v1","severity":"error","location":{"kind":"header","name":"from","occurrence":occurrence},"fix_hint":"Send exactly one From header field whose addresses share one domain (RFC 5322 section 3.6.2, RFC 9989 section 4.4)."});
-        let none = json!({"rule_id":"dmarc.none.v1","severity":"error","location":{"kind":"header","name":"from","occurrence":0},"fix_hint":"Declare a v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies (RFC 9989 section 4.10)."});
+        let none = json!({"rule_id":"dmarc.none.v1","severity":"error","location":{"kind":"header","name":"from","occurrence":0},"fix_hint":"Declare exactly one v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies, and two records at one name apply none (RFC 9989 section 4.10)."});
         // (checklist entries as (rule, not evaluated), the findings of the other
         // rules, and the names looked up)
         let (entries, others, names): (Vec<(&str, bool)>, Vec<Value>, Vec<&str>) = match from {

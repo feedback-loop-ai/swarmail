@@ -178,13 +178,13 @@ impl Rule {
                 "Send exactly one From header field whose addresses share one domain (RFC 5322 section 3.6.2, RFC 9989 section 4.4)."
             }
             Self::DmarcNone => {
-                "Declare a v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies (RFC 9989 section 4.10)."
+                "Declare exactly one v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies, and two records at one name apply none (RFC 9989 section 4.10)."
             }
             Self::DmarcTemperror => {
                 "A DNS lookup the DMARC policy discovery needed failed temporarily, so the message was not evaluated; fix the DNS answer and retry (RFC 9989 section 4.10)."
             }
             Self::DmarcPermerror => {
-                "Fix the DMARC policy record: exactly one v=DMARC1 record per _dmarc name, with valid tags (RFC 9989 section 4.10)."
+                "Fix the DMARC policy record so that its tags are valid (RFC 9989 section 4.10)."
             }
             Self::DmarcFailNone => {
                 "Neither SPF nor DKIM passed with a domain aligned to the From domain; the applied policy is none. Align a passing DKIM d= or SPF MAIL FROM domain with the From domain (RFC 9989 section 4.10)."
@@ -266,6 +266,15 @@ fn known_terms(record: &str) -> bool {
         })
 }
 
+/// The bytes after any leading spaces and tabs.
+fn skip_blanks(bytes: &[u8]) -> &[u8] {
+    let blanks = bytes
+        .iter()
+        .take_while(|b| matches!(b, b' ' | b'\t'))
+        .count();
+    &bytes[blanks..]
+}
+
 /// Which record type a name's values are selected for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -275,42 +284,62 @@ enum Kind {
 
 impl Kind {
     /// Whether a TXT value is a record of this type at all: it begins with the
-    /// version tag and the tag ends there (RFC 7208 section 4.5 for `v=spf1`
-    /// followed by a space or the end; RFC 9989 for `v=DMARC1` followed by `;`,
-    /// a space or the end). A `v=spf10` value is not an SPF record.
+    /// version tag and the tag ends there. SPF is `v=spf1`, case-insensitive,
+    /// followed by a space or the end (RFC 7208 section 4.5), so `v=spf10` is not
+    /// an SPF record. DMARC follows the ABNF of RFC 7489 section 6.4: `v`, any
+    /// spaces or tabs, `=`, any spaces or tabs, then the case-exact `DMARC1`,
+    /// followed by a space, a tab, `;` or the end, so `v=dmarc1` and `v=DMARC10`
+    /// are not DMARC records and `v = DMARC1; p=reject` is.
     fn is_ours(self, value: &str) -> bool {
-        let (tag, delimiters): (&str, &[u8]) = match self {
-            Self::Spf => ("v=spf1", b" "),
-            Self::Dmarc => ("v=dmarc1", b"; "),
-        };
         let bytes = value.as_bytes();
-        bytes.len() >= tag.len()
-            && bytes[..tag.len()].eq_ignore_ascii_case(tag.as_bytes())
-            && bytes
-                .get(tag.len())
-                .is_none_or(|next| delimiters.contains(next))
+        match self {
+            Self::Spf => {
+                let tag = b"v=spf1";
+                bytes.len() >= tag.len()
+                    && bytes[..tag.len()].eq_ignore_ascii_case(tag)
+                    && bytes.get(tag.len()).is_none_or(|next| *next == b' ')
+            }
+            Self::Dmarc => {
+                let rest = match bytes.split_first() {
+                    Some((v, rest)) if v.eq_ignore_ascii_case(&b'v') => skip_blanks(rest),
+                    _ => return false,
+                };
+                let Some((b'=', rest)) = rest.split_first() else {
+                    return false;
+                };
+                skip_blanks(rest)
+                    .strip_prefix(b"DMARC1")
+                    .is_some_and(|after| {
+                        after
+                            .first()
+                            .is_none_or(|next| matches!(next, b' ' | b'\t' | b';'))
+                    })
+            }
+        }
     }
 
     /// The record of a name's declared values. Swarmail selects it, not the
     /// crate (whose default keeps the first value that parses): no value of the
-    /// type is "no record" and more than one is a parse error (RFC 7208 section
-    /// 4.5; RFC 9989). SPF's `ra=` is cleared so the crate's report sampling,
-    /// which reads the clock, is never reached.
+    /// type is "no record". Two or more SPF values are a parse error (RFC 7208
+    /// section 4.5). Two or more DMARC values are no record at that name, so the
+    /// tree walk goes on (RFC 7489 section 6.6.3 applies no policy for multiple
+    /// records; a single malformed record stays an error). SPF's `ra=` is cleared
+    /// so the crate's report sampling, which reads the clock, is never reached.
     fn select(self, values: Vec<String>) -> TxtRecord {
         let mut ours = values.into_iter().filter(|value| self.is_ours(value));
-        match (ours.next(), ours.next()) {
-            (None, _) => not_found(),
-            (Some(_), Some(_)) => TxtRecord::Error(Error::Parse),
-            (Some(value), None) => match self {
-                Self::Spf if !known_terms(&value) => TxtRecord::Error(Error::Parse),
-                Self::Spf => SpfRecord::parse(value.as_bytes())
-                    .map(|mut record| {
-                        record.ra = None;
-                        record
-                    })
-                    .into(),
-                Self::Dmarc => DmarcRecord::parse(value.as_bytes()).into(),
-            },
+        match (ours.next(), ours.next(), self) {
+            (None, _, _) | (Some(_), Some(_), Self::Dmarc) => not_found(),
+            (Some(_), Some(_), Self::Spf) => TxtRecord::Error(Error::Parse),
+            (Some(value), None, Self::Spf) if !known_terms(&value) => {
+                TxtRecord::Error(Error::Parse)
+            }
+            (Some(value), None, Self::Spf) => SpfRecord::parse(value.as_bytes())
+                .map(|mut record| {
+                    record.ra = None;
+                    record
+                })
+                .into(),
+            (Some(value), None, Self::Dmarc) => DmarcRecord::parse(value.as_bytes()).into(),
         }
     }
 }
@@ -1449,9 +1478,9 @@ mod tests {
             let whole = report(&msg("a@example.com"), &env("a@example.com"), &w);
             assert!(!whole.qualifies(Severity::Error));
         }
-        // Permerror: two DMARC values at a name, or one that does not parse.
+        // Permerror: one record that does not parse. (Two records at a name are
+        // no record at it: `two_dmarc_records_at_a_name_are_no_record`.)
         for values in [
-            vec!["v=DMARC1; p=reject", "v=DMARC1; p=none"],
             vec!["v=DMARC1; p=bogus"],
             vec!["v=DMARC1; p=reject; adkim=x"],
         ] {
@@ -1482,6 +1511,146 @@ mod tests {
         // A single-label Author Domain has no tree to walk.
         let r = run(&msg("a@localhost"), &env("a@localhost"), &w);
         assert_eq!(dmarc_ids(&r), ["dmarc.none.v1"]);
+    }
+
+    /// AC21: the version tag follows the ABNF of RFC 7489 section 6.4.
+    #[test]
+    fn dmarc_version_tag_grammar() {
+        let applies = |value: &str| {
+            let r = mail(&failing(&[value]));
+            dmarc_ids(&r) == ["dmarc.fail.reject.v1"]
+        };
+        // Spaces around `=` and before `;` still make the record.
+        for value in [
+            "v=DMARC1; p=reject",
+            "V=DMARC1; p=reject",
+            "v = DMARC1; p=reject",
+            "v=DMARC1 ;p=reject",
+        ] {
+            assert!(applies(value), "{value:?}");
+        }
+        // The tag is case-exact, ends there, and starts the value.
+        for value in [
+            "v=dmarc1; p=reject",
+            "v=DMARC10; p=reject",
+            "vv=DMARC1; p=reject",
+            "xv=DMARC1; p=reject",
+            "v DMARC1; p=reject",
+            "v=; p=reject",
+            "v=DMARC",
+            "v",
+        ] {
+            assert!(!applies(value), "{value:?}");
+            let r = mail(&failing(&[value]));
+            assert_eq!(dmarc_ids(&r), ["dmarc.none.v1"], "{value:?}");
+            assert_eq!(r.facts.policy_present, F, "{value:?}");
+        }
+        // A declared value is printable ASCII, so tabs and the empty value are
+        // judged on the selector itself.
+        for value in [
+            "v\t=\tDMARC1; p=reject",
+            "v=DMARC1\t;p=reject",
+            "v=DMARC1",
+            "v=DMARC1;",
+        ] {
+            assert!(Kind::Dmarc.is_ours(value), "{value:?}");
+        }
+        for value in ["", "\tv=DMARC1", "v=DMARC1x", "v=dmarc1"] {
+            assert!(!Kind::Dmarc.is_ours(value), "{value:?}");
+        }
+        // SPF is unchanged: case-insensitive, then a space or the end.
+        assert!(Kind::Spf.is_ours("V=SPF1 -all"));
+        assert!(Kind::Spf.is_ours("v=spf1"));
+        assert!(!Kind::Spf.is_ours("v=spf10 -all"));
+        assert!(!Kind::Spf.is_ours("v=spf1;"));
+        assert!(!Kind::Spf.is_ours("v=spf"));
+    }
+
+    /// AC10, AC21: two DMARC records at one name apply no policy there (RFC 7489
+    /// section 6.6.3), so the walk goes on; a single malformed record is an
+    /// error, and two SPF records stay a permerror.
+    #[test]
+    fn two_dmarc_records_at_a_name_are_no_record() {
+        let two = ["v=DMARC1; p=reject", "v=DMARC1; p=none"];
+        // Alone: no record, nothing applies.
+        let r = mail(&failing(&two));
+        assert_eq!(dmarc_ids(&r), ["dmarc.none.v1"]);
+        assert_eq!(r.facts.policy_present, F);
+        // Beneath a parent that has one record: the parent applies, sp= included.
+        let w = world(
+            &[
+                ("example.com", &["v=spf1 ip4:192.0.2.1 -all"]),
+                ("_dmarc.mail.example.com", &two),
+                ("_dmarc.example.com", &["v=DMARC1; p=reject; sp=quarantine"]),
+            ],
+            &[],
+            None,
+        );
+        let r = run(&msg("a@mail.example.com"), &env("a@mail.example.com"), &w);
+        assert_eq!(dmarc_ids(&r), ["dmarc.fail.quarantine.v1"]);
+        assert_eq!(r.facts.policy_present, T);
+        // Both names, with their values, are in the lookups.
+        assert_eq!(
+            r.names(),
+            [
+                "_dmarc.com",
+                "_dmarc.example.com",
+                "_dmarc.mail.example.com",
+                "mail.example.com"
+            ]
+        );
+        let values = |name: &str| {
+            r.dns
+                .lookups
+                .iter()
+                .find(|l| l.name == name)
+                .map(|l| l.values.clone())
+        };
+        assert_eq!(
+            values("_dmarc.mail.example.com").unwrap(),
+            ["v=DMARC1; p=none", "v=DMARC1; p=reject"].map(String::from)
+        );
+        // A malformed single record stays a permerror.
+        let r = mail(&failing(&["v=DMARC1; p=bogus"]));
+        assert_eq!(dmarc_ids(&r), ["dmarc.permerror.v1"]);
+        // Two SPF records stay a permerror.
+        let w = world(
+            &[("example.com", &["v=spf1 -all", "v=spf1 +all"])],
+            &[],
+            None,
+        );
+        let r = mail(&w);
+        assert!(r.ids().contains(&"spf.permerror.v1"));
+    }
+
+    /// AC23: the null sender's DMARC baseline is the HELO identity (0126 §5).
+    #[test]
+    fn null_sender_aligns_through_the_helo_identity() {
+        let w = world(
+            &[
+                ("mx.example.com", &[OPEN]),
+                ("mx.example.net", &[OPEN]),
+                ("_dmarc.example.com", &[REJECT]),
+            ],
+            &[],
+            None,
+        );
+        let at = |helo: &'static str| {
+            let envelope = Envelope {
+                mail_from: Some(""),
+                helo: Some(helo),
+                ..env("")
+            };
+            run(&msg("a@example.com"), &envelope, &w)
+        };
+        let aligned = at("mx.example.com");
+        assert_eq!(aligned.facts.spf_pass, T);
+        assert_eq!(aligned.facts.spf_aligned, T);
+        assert!(dmarc_ids(&aligned).is_empty());
+        let stranger = at("mx.example.net");
+        assert_eq!(stranger.facts.spf_pass, T);
+        assert_eq!(stranger.facts.spf_aligned, F);
+        assert_eq!(dmarc_ids(&stranger), ["dmarc.fail.reject.v1"]);
     }
 
     /// AC10: the applied disposition rides the id. `pct=` is not a tag of

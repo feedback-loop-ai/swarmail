@@ -189,7 +189,7 @@ fn checklist(case: Case, from: Value) -> Vec<Value> {
     });
     findings.push(match case {
         Case::SentWithoutFrom => json!({"rule_id":"dmarc.from_invalid.v1","severity":"error","location":header("from", Value::Null),"fix_hint":"Send exactly one From header field whose addresses share one domain (RFC 5322 section 3.6.2, RFC 9989 section 4.4)."}),
-        _ => json!({"rule_id":"dmarc.none.v1","severity":"error","location":header("from", json!(0)),"fix_hint":"Declare a v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies (RFC 9989 section 4.10)."}),
+        _ => json!({"rule_id":"dmarc.none.v1","severity":"error","location":header("from", json!(0)),"fix_hint":"Declare exactly one v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies, and two records at one name apply none (RFC 9989 section 4.10)."}),
     });
     findings
 }
