@@ -365,11 +365,11 @@ Hashes: the catalogue stays schema 2. `6068b687…` is the sha256 of the
 catalogue hashes differently (`5b312d98…`), and rows from the new catalogue
 carry that hash.
 
-## The expert tier (proposed 0123)
+## The expert tier (0123)
 
 The hard tier (0117) went 74/75 over five models on 2026-11-03, a 1.3% failure
 rate against the default tier's 1.25%: each hard trap is one exact comparison
-inside one mail, and current models make that comparison. Proposed
+inside one mail, and current models make that comparison. Accepted
 [0123](../docs/decisions/0123-expert-eval-tier.md) (spec
 [expert-eval-tier](../specs/expert-eval-tier/spec.md); issue #325, the
 operator's 2026-11-04 direction "make it harder") adds an `expert` tier:
@@ -529,7 +529,7 @@ v2 scores: they are different experiments.
 A rejected exact named action disqualifies its whole trial, before **or after**
 the goal. Application recovery remains usable and goal facts stay truthful.
 The seven affected goals disclose the rule; accepted 0117 appends three hard
-rows, and proposed 0123 appends five expert rows, which land as compatible work
+rows, and accepted 0123 appends five expert rows, which land as compatible work
 beside the proposal (0045 §8):
 
 | Task | Action / class |
@@ -579,7 +579,7 @@ exact identity and passes with no trap event; the same wait acting on
 `wrong_message`; and in slow-delivery the first timed-out wait carries no
 `near_misses` (nothing arrived), after which the release and confirmation pass.
 
-## The eval recipe on brokkr (#148, proposed 0119)
+## The eval recipe on brokkr (#148, 0119)
 
 The operator ruled on 2026-10-18 that the harness is built on brokkr. This is
 the **interim path**: brokkr cannot yet lawfully give a seat Swarmail's MCP
@@ -667,8 +667,8 @@ class, byte lengths and SHA-256 digests of each call's arguments and result,
 capped at 64 KiB and cut at a whole call with `"truncated": true` and
 `"retained": N`. A trial without tool rows gets no file and a typed
 `absent` reason. **No argument or result bytes
-are ever copied** (accepted 0075 §4). A value-bearing mode is proposed in 0119
-and is not implemented until the operator accepts it.
+are ever copied** (accepted 0075 §4). A value-bearing mode is authorized by
+0119 §4, which the operator accepted on 2026-11-06, and is not built yet.
 
 **Admission posture.** The trial's own advisory admission lock lives in the
 shared `/tmp`. If brokkr's exec box gives the trial seat a private `/tmp`, that
@@ -692,9 +692,10 @@ order: the operator's first engine run (oracle and null, offline, free); the
 operator's first authenticated via-brokkr smoke per family, which observes
 brokkr facts F1, F2 and F5; a follow-up change that forwards the observed
 channel through the four seams under 0119 section 6 (an exception to accepted
-0075 section 1 that only the operator can accept) and declares the binds; and
-then the paid matrix. Structural tool-call records land now; value-bearing
-records wait for 0119 section 4's acceptance.
+0075 section 1, accepted with 0119 on 2026-11-06, that lands once the observed
+channel is recorded) and declares the binds; and then the paid matrix.
+Structural tool-call records land now; value-bearing records are authorized by
+0119 section 4 and not built.
 
 ## Honest limits
 
@@ -721,7 +722,7 @@ records wait for 0119 section 4's acceptance.
   come from brokkr's journal, joined by trial id (next section). A paid run
   alone measures none of them: `--via-brokkr` refuses `driver_contract_unknown`
   until a follow-up forwards the observed accounting channel (brokkr facts F1
-  and F2, `wrappers.md`) and the operator accepts 0119 §6. Until then
+  and F2, `wrappers.md`) and records it under 0119 §6 (accepted 2026-11-06). Until then
   the #151 baseline still lacks tokens per success and per-trial tool-call
   records. No model was run in this batch.
 

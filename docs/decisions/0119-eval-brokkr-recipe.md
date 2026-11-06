@@ -1,6 +1,7 @@
 # 0119 — The eval recipe on brokkr: interim opaque driver, journal accounting, retained tool-call records
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-06 — "every decision"; see the
+  dated acceptance note at the end)
 - **Date:** 2026-11-02 (revised the same day after the first review return,
   decision 0102's 2026-10-31 addendum; the revision is marked **R2** below;
   revised again after the second return, which found the gate's agreement
@@ -408,3 +409,30 @@ this proposal, records the §5 invocation and the §6 channel by dated
 addendum, files or attaches the brokkr issues, and approves the held PR by
 name; the engine alone advances delivery. Commit unsigned; never push or
 merge.
+
+## Dated acceptance note — 2026-11-06
+
+The operator ruled on 2026-11-06, in chat to the dispatcher, "every decision": every decision on `main` that was still proposed is accepted in full. That covers 0119, 0120, 0121, 0122, 0123, 0124 and the rest of 0125, whose three holds the operator had accepted earlier the same day. This record was proposed when written; the text above is
+unchanged.
+
+What the acceptance settles, in this record's own terms:
+
+- **The 2026-10-18 rulings** recorded above stand as the operator's, and
+  §§1–3 and §7 (the recipe, the journal join and its typed facts, the
+  structural tool-call records, the gates) are the accepted shape of what
+  #316 merged.
+- **§4 amends accepted [0075](0075-eval-privacy.md) §4.** The
+  value-bearing evidence mode (argument values of Swarmail's MCP tools and
+  `eval_http`, value-redacted, fail-closed, bounded, hash-bound and never
+  scored) is now authorized. It is **not built**: §4 said it "is not
+  implemented until accepted", and no change has implemented it yet.
+- **§6 is an exception to accepted 0075 §1.** The acceptance admits the
+  exception; it still lands only in a follow-up, and only once the observed
+  variable name or stdout relay is recorded here by dated addendum. No
+  channel has been observed, so via-brokkr accounting stays unavailable.
+- **§5 is unchanged in effect.** `--via-brokkr` keeps refusing with
+  `driver_contract_unknown` until the real `brokkr driver <family>`
+  invocation is observed and recorded by dated addendum. Accepting the
+  record does not supply that observation.
+
+0075 carries a dated pointer to this note.

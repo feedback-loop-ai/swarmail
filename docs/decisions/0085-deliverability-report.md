@@ -154,3 +154,24 @@ authentication crate is introduced here") does not cover the one reachable clock
 clock, within the radius 0125 §8 states, nor the authentication crate 0125 adds. It
 covers every other ambient read. The text
 above is unchanged.
+
+## Dated pointer — 2026-11-06 (0120, 0121 and 0122, accepted)
+
+The operator accepted [0120](0120-deliverability-dns-policy.md),
+[0121](0121-deliverability-link-checks.md) and
+[0122](0122-deterministic-spam-rules.md) on 2026-11-06 ("every decision").
+The text above is unchanged; three of its sentences now read with them:
+
+- **§1's report shape** is amended by 0120: a report is
+  `{rule_set_id, findings, dns}`, where `dns` records the declared DNS
+  policy and the lookups the evaluation made. #329 merged this on 2026-11-05,
+  before the acceptance.
+- **The rejected "policy networking"** stays rejected for the evaluator. As
+  0121 frames it, its opt-in reachability probe is outside that rejection:
+  it is an observation outside the evaluator, entered through §8's seam,
+  never cached and off by default, and the evaluator stays network-free.
+  #328 merged it on 2026-11-05, before the acceptance.
+- **The contract's "no … scores … enter the report" and its exact four-key
+  finding** are amended by 0122 §2: a severity-derived `weight` per finding
+  and a report `total` are authorized. The follow-up that emits them is not
+  built, so reports carry neither yet.

@@ -1,7 +1,7 @@
 # Deliverability link checks — tasks
 
 Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Decision:
-[0121](../../docs/decisions/0121-deliverability-link-checks.md) (proposed).
+[0121](../../docs/decisions/0121-deliverability-link-checks.md) (accepted (operator, 2026-11-06)).
 
 Each task names the test that proves it. Test names are binding
 suggestions: the implementer may rename a test but must keep its

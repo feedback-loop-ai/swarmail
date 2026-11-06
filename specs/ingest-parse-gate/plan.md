@@ -1,7 +1,7 @@
 # Plan: parse admission
 
 Spec: [spec.md](spec.md). Decision: [0124](../../docs/decisions/0124-parse-admission.md)
-(proposed; compatible work under 0045 §8).
+(accepted (operator, 2026-11-06); it landed as compatible work under 0045 §8).
 
 ## Technical context
 

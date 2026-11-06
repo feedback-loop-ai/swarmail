@@ -1517,19 +1517,24 @@ fn the_expert_tier_is_documented_in_both_directions() {
     ] {
         assert!(flat.contains(phrase), "README.md: missing {phrase:?}");
     }
-    // The decision index has exactly one 0123 row, proposed; the record
-    // itself is proposed and names the issue.
+    // The decision index has exactly one 0123 row, accepted by the operator
+    // on 2026-11-06; the record itself says so, names the issue and carries
+    // its dated acceptance note.
     let index = std::fs::read_to_string(root().join("docs/decisions/README.md")).unwrap();
     let rows: Vec<_> = index
         .lines()
         .filter(|l| l.starts_with("| [0123]"))
         .collect();
     assert_eq!(rows.len(), 1);
-    assert!(rows[0].contains("proposed"), "{}", rows[0]);
-    assert!(!rows[0].contains("**accepted**"), "{}", rows[0]);
+    assert!(
+        rows[0].contains("**accepted** (operator, 2026-11-06"),
+        "{}",
+        rows[0]
+    );
     let decision =
         std::fs::read_to_string(root().join("docs/decisions/0123-expert-eval-tier.md")).unwrap();
-    assert!(decision.contains("**Status:** proposed"));
+    assert!(decision.contains("**Status:** accepted (operator, 2026-11-06"));
+    assert!(decision.contains("## Dated acceptance note — 2026-11-06"));
     assert!(decision.contains("Issue #325"));
     // The harness spec's tier list names `expert` with a dated amendment.
     let spec = std::fs::read_to_string(root().join("specs/agent-eval-harness/spec.md")).unwrap();

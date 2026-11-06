@@ -1,6 +1,6 @@
 # Deliverability DNS policy (#253)
 
-Decision: 0120 — [docs/decisions/0120-deliverability-dns-policy.md](../../docs/decisions/0120-deliverability-dns-policy.md) (proposed; only the operator accepts it)
+Decision: 0120 — [docs/decisions/0120-deliverability-dns-policy.md](../../docs/decisions/0120-deliverability-dns-policy.md) (accepted (operator, 2026-11-06); proposed when this spec was written)
 
 Epic #251, issue #253, priority P1. Run `issue-253-the-deliverability-dns-c704444e`,
 design phase, 2026-11-03, base `main` `8732445`. Framing: [intake.md](intake.md).

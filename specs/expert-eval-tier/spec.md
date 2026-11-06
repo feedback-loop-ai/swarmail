@@ -8,7 +8,7 @@
 - Route: `claude-careful` (accepted 0099); nothing paid runs in delivery.
 
 Decision: 0123 — [An expert eval tier](../../docs/decisions/0123-expert-eval-tier.md),
-status proposed. Acceptance is the operator's.
+status accepted (operator, 2026-11-06).
 
 Authority relied on and not amended: accepted
 [0055](../../docs/decisions/0055-agent-eval-harness.md) (closed taxonomy,

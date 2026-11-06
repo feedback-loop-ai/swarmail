@@ -13,7 +13,7 @@ alongside a separate harder-tier run. Zero-Codex `claude-careful` lane
 (accepted 0098 and 0099). Base: `main` at `f815d48`.
 
 Decision: 0119 — [the eval recipe on brokkr](../../docs/decisions/0119-eval-brokkr-recipe.md),
-status proposed. It records the operator's 2026-10-18 rulings (the harness
+status accepted (operator, 2026-11-06). It records the operator's 2026-10-18 rulings (the harness
 is built on brokkr; the interim opaque driver; every interim trial is
 unconfined; brokkr#766 tracks the move to the broker), the compatible
 reading of accepted 0075 this spec relies on, the value-bearing evidence

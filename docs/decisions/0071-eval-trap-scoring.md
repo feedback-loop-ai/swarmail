@@ -96,3 +96,13 @@ proof, gate success or feature completion.
   three named-trap rows appended (otp-backlog, recipient-crowd,
   digest-lookalike), and §4's "preserving tiers", read as preserving
   existing memberships with `hard` an additive tier value.)*
+
+## Later-decision marker — 2026-11-06 (0123)
+
+- *(Amended by [0123](0123-expert-eval-tier.md) (accepted 2026-11-06,
+  "every decision"): §1, five named-trap rows appended for the expert tier
+  (`otp-correction` and `otp-late` `superseded_code`/`stale_code`,
+  `digest-correction` `digest_decoy`/`wrong_link`, `confirm-attachment` and
+  `confirm-injection` `decoy_link`/`wrong_link`), each reusing an
+  action/class pair already in §1. `expert` is an additive tier value. The
+  text above is unchanged.)*

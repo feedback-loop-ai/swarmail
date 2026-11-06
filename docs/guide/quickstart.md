@@ -108,7 +108,7 @@ sized so that three times the cap stays under the usual 1024 soft limit
 `SWARMAIL_DNS_POLICY` (a JSON file of declared DNS TXT records for deliverability
 reports; the flag is `--dns-policy`; a bad file stops startup) and
 `SWARMAIL_DNS_RESOLVER` (`declared`, the default; `real` is refused, as there is no real DNS;
-see [*Deliverability reports*](deliverability.md); proposed 0120).
+see [*Deliverability reports*](deliverability.md); decision 0120, accepted).
 Logging: `RUST_LOG` (env-filter syntax; default
 `swarmail=info,tower_http=off`). `serve` and `gen-cert` log to stdout —
 `gen-cert` also prints its `wrote <cert> and <key>` line there — and

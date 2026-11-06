@@ -1,7 +1,7 @@
 # The eval recipe's protected review, and every recipe compiled (#148 rework)
 
 Decision: 0119 — [the eval recipe on brokkr](../../docs/decisions/0119-eval-brokkr-recipe.md),
-section **R4 (2026-11-02)**, status `proposed`. This design adds R4 and
+section **R4 (2026-11-02)**, status accepted (operator, 2026-11-06). This design adds R4 and
 changes no other ruling. Code that is compatible with R4 may land while
 the decision is proposed (accepted 0045 §8).
 

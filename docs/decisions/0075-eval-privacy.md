@@ -130,3 +130,15 @@ contract and reconciles dependent current documentation outside that commit.
 This clarification adds no accepted ruling and allocates no new decision number.
 Commit unsigned and never push. Only the operator accepts this proposal; the
 engine alone advances delivery.
+
+## Dated pointer — 2026-11-06 (0119, accepted)
+
+The operator accepted [0119](0119-eval-brokkr-recipe.md) on 2026-11-06
+("every decision"). Its §4 amends §4 of this record: a value-bearing
+evidence mode may retain the argument values of the two harness-owned tools
+(Swarmail's MCP tools and `eval_http`), value-redacted, fail-closed, bounded,
+hash-bound and never scored. That mode is authorized and not built. Its §6
+admits one exception to §1 of this record, a single named environment
+variable or a stdout relay for the accounting channel, which lands only once
+the observed channel is recorded in 0119 by dated addendum; none is recorded
+yet. The text above is unchanged.
