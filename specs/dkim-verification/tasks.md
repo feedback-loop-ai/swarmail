@@ -1,8 +1,8 @@
 # Tasks: offline DKIM verification (#254)
 
 Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Decision:
-[0125](../../docs/decisions/0125-offline-dkim-verification.md) (proposed; never
-accept it).
+[0125](../../docs/decisions/0125-offline-dkim-verification.md) (accepted (operator, 2026-11-06); the seats
+never accepted it).
 
 **Revision 3, 2026-11-05.** The review returned the run to design a third
 time. Phases T, R and S are delivered (S in `8241489`, verify green). **Phase U

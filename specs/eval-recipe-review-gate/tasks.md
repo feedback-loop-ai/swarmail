@@ -1,6 +1,6 @@
 # Tasks: the eval recipe's protected review, and every recipe compiled
 
-Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Decision: 0119 R4 (proposed).
+Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Decision: 0119 R4 (accepted (operator, 2026-11-06)).
 Order matters: every test task lands, and is recorded red, before the
 product change it proves.
 

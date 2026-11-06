@@ -1,6 +1,7 @@
 # 0121 — Per-link deliverability findings and an opt-in, bounded reachability probe
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-06 — "every decision"; see the
+  dated acceptance note at the end)
 - **Date:** 2026-11-03
 - **Revised:** 2026-11-04, still proposed. Review of `33efa4c` returned the
   design (run `issue-258-deliverability-link-ch-4052800f`). §6's address
@@ -234,3 +235,25 @@ comparison (operator hold 2). The crate's RFC 6651 report-sampling clock read
 is unreachable, because Swarmail never hands the crate a report record. A
 hickory resolver is compiled in and unreachable (hold 3). This note changes no
 status: the record stays proposed, and section 7's text is not edited.
+
+## Dated acceptance note — 2026-11-06
+
+The operator ruled on 2026-11-06, in chat to the dispatcher, "every decision": every decision on `main` that was still proposed is accepted in full. That covers 0119, 0120, 0121, 0122, 0123, 0124 and the rest of 0125, whose three holds the operator had accepted earlier the same day. This record was proposed when written; the text above is
+unchanged.
+
+- **The merge preceded the acceptance.** §7 held the reachability slice
+  for the operator's acceptance, but #328 merged both slices on
+  2026-11-05, a day before this ruling: the merge pipeline detected only
+  dependency holds, not a 0045 §8 hold. This acceptance legitimises that
+  merge after the fact and lifts the 0045 §8 hold on the reachability
+  slice. The static slice was compatible work either way.
+- **It narrows two accepted sentences to the deterministic evaluator**, as
+  the header and §7 frame it: accepted
+  [0085](0085-deliverability-report.md)'s rejected "policy networking"
+  alternative, and accepted
+  [0106](0106-html-client-compatibility.md) §1's "no runtime network
+  access". The evaluator stays network-free; the operator-enabled probe is
+  an observation outside it, entered through 0085 §8's seam. 0085 and 0106
+  carry dated pointers to this note.
+- The 2026-11-05 integration note on 0125 reads with accepted 0125 §8: the
+  evaluator's one reachable clock read is `mail-auth`'s `x=` comparison.

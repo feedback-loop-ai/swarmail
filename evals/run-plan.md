@@ -92,14 +92,14 @@ baseline by task id and per-task `definition_sha256`, which are unchanged for
 the sixteen; the catalogue hash is the live catalogue's identity and is not the
 comparison key.
 
-## The expert-tier run (proposed 0123)
+## The expert-tier run (0123)
 
 The hard tier's paid run (74/75 over five models, 2026-11-03) did not
-discriminate either. Proposed
+discriminate either. Accepted
 [0123](../docs/decisions/0123-expert-eval-tier.md) adds five `expert` tasks —
 `otp-correction` and `otp-late` (`stale_code`), `digest-correction`,
 `confirm-attachment` and `confirm-injection` (`wrong_link`) — documented trap by
-trap in the [README](README.md#the-expert-tier-proposed-0123). The 24-task
+trap in the [README](README.md#the-expert-tier-0123). The 24-task
 catalogue hashes differently from the 19-task one (`5b312d98…`); `hard`'s rows
 keep theirs.
 

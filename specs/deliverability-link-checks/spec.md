@@ -12,7 +12,7 @@ default-deny allow-list. [plan.md § Revision
 finding to the text that answers it. Git history keeps the spec the code
 was first built to (`a1977dc`).
 
-Decision: 0121 — [Per-link deliverability findings and an opt-in, bounded reachability probe](../../docs/decisions/0121-deliverability-link-checks.md) (proposed; only the operator accepts it).
+Decision: 0121 — [Per-link deliverability findings and an opt-in, bounded reachability probe](../../docs/decisions/0121-deliverability-link-checks.md) (accepted (operator, 2026-11-06); proposed when this spec was written).
 
 Authorities: accepted [0085](../../docs/decisions/0085-deliverability-report.md)
 and its [contract](../deliverability-report-contract/spec.md#contract);

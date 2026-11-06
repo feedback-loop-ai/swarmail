@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pytest-swarmail"
-version = "0.3.0"
+version = "0.4.0"
 description = "pytest fixture for swarmail: a per-test inbox with wait_for_code and wait_for_link over REST"
 readme = "README.md"
 requires-python = ">=3.9"

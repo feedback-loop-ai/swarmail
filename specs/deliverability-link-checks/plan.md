@@ -1,7 +1,7 @@
 # Deliverability link checks — plan
 
 Spec: [spec.md](spec.md). Decision: [0121](../../docs/decisions/0121-deliverability-link-checks.md)
-(proposed). Base: `main` `8732445`. Revised 2026-11-04 on top of `33efa4c`
+(accepted (operator, 2026-11-06)). Base: `main` `8732445`. Revised 2026-11-04 on top of `33efa4c`
 after review returned the design; see [§ Revision
 2026-11-04](#revision-2026-11-04--answering-the-review). The structure and
 data model below describe the shipped shape at `33efa4c` plus the

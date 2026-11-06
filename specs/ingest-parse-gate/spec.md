@@ -1,7 +1,7 @@
 # Parse admission: one ingest parse per usable core (issue #333)
 
 Created: 2026-11-05. Status: implemented; decision
-[0124](../../docs/decisions/0124-parse-admission.md) proposed. Issue #333.
+[0124](../../docs/decisions/0124-parse-admission.md) accepted (operator, 2026-11-06). Issue #333.
 Run: `issue-333-in-memory-mode-burns-2-1f7c3a65`. Base: main `5950af6`.
 Operator direction 2026-11-05: "fix 333".
 
