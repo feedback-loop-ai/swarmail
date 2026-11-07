@@ -224,6 +224,10 @@ controls_run() {
   build_evals
   local swarmail adapter
   resolve_binaries
+  # The harness embeds the commit it was built at, so every commit rebuilds
+  # it: the controls run, and the identity names, a frozen copy of it too.
+  evals_bin=$(freeze_binary "$evals_bin" "${COMPARE_MAIL_BIN_DIR:-target/compare-mail}") \
+    || blocked eval-build "cannot freeze the eval executable"
   local scratch product_id seed fixture_time head
   # Absolute: the eval suite runs from evals/, and must find its log there too.
   scratch=$(realpath -m "$output.scratch")
