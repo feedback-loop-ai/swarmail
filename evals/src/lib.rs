@@ -6,6 +6,7 @@
 //! crate and its coverage denominator by the operator's 2026-10-18 ruling.
 
 mod admission;
+pub mod bridge;
 pub mod fixture;
 pub mod isolation;
 pub mod mail;
