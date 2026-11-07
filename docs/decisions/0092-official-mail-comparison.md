@@ -126,3 +126,27 @@ nothing beyond the acceptance.
   contract MCP 2025-03-26. `docs/evals/README.md` records that the adapter
   refuses JSON-RPC batches, which falls short of 2025-03-26, and that this
   stays open with the final contracts.
+
+## Dated addendum — 2026-11-07 (the operator's widening, issue #339)
+
+This addendum only adds. The text above, and the 2026-11-02 addendum, are
+unchanged. It records the operator's ruling of 2026-11-07 on #163, quoted in
+issue #339: "compare with all that we have shims for". Authority is that
+ruling, not this note.
+
+- **Four targets, four agents, no GLM.** Swarmail, Mailpit, MailHog and
+  MailSlurper, on claude-opus, claude-sonnet, codex-sol and codex-luna.
+  There is no GLM (spark is down; the DashScope GLM quota is out until
+  2026-11-22).
+- **The MailHog agent-eval rejection of
+  [0091](0091-fair-mail-comparison.md) does not apply to this story.** The
+  ruling lifts it, and the comparison row's refusal of MailHog follows.
+- **MailSlurper joins under §3 unchanged.** Its adapter is held to the same
+  contract as Mailpit's: source-verified general upstream operations only,
+  bodies unchanged, no Swarmail-only capability emulated, no hint, no cache.
+- **The batch gap closes in this story.** The 2026-11-02 addendum records
+  that the adapter refuses JSON-RPC batches, short of MCP 2025-03-26. Issue
+  #339 closes that gap in every adapter, under the bound proposed in
+  [0129](0129-agent-suite-comparison.md) §6.
+- **Contracts** that implement the ruling are in proposed 0129; this
+  addendum rules nothing beyond recording the operator's words.

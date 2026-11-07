@@ -2,12 +2,16 @@
 
 Issue [#163](https://github.com/feedback-loop-ai/swarmail/issues/163) (epic #164).
 Specification: [fair mail comparison](../../specs/fair-mail-comparison/spec.md).
-Decisions: proposed [0091](../decisions/0091-fair-mail-comparison.md),
-proposed [0092](../decisions/0092-official-mail-comparison.md)
+Decisions: accepted [0091](../decisions/0091-fair-mail-comparison.md),
+accepted [0092](../decisions/0092-official-mail-comparison.md)
 ([continuation spec](../../specs/official-mail-comparison/spec.md)) and
-proposed [0093](../decisions/0093-source-mail-comparison.md)
-([source-attributed continuation](../../specs/source-mail-comparison/spec.md));
-none is accepted.
+accepted [0093](../decisions/0093-source-mail-comparison.md)
+([source-attributed continuation](../../specs/source-mail-comparison/spec.md)),
+all by the operator on 2026-11-02. The operator's 2026-11-07 widening of #163
+("compare with all that we have shims for") is recorded as dated addenda on
+0091 and 0092; its contracts are in proposed
+[0129](../decisions/0129-agent-suite-comparison.md)
+([spec](../../specs/agent-suite-comparison/spec.md)).
 
 **Status, 2026-11-02: one baseline, no comparison result.** The #151 paid
 baseline exists: [`baseline-2026-11-01.md`](baseline-2026-11-01.md), 395 of

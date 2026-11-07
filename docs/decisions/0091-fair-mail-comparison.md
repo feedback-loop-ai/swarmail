@@ -127,3 +127,31 @@ nothing beyond the acceptance.
 - **The #151 baseline exists.** It was published on 2026-11-01 (`f815d48`,
   [baseline](../evals/baseline-2026-11-01.md)), while `docs/evals/README.md`
   still says, under its 2026-10-30 status, that no baseline exists.
+
+## Dated addendum — 2026-11-07 (the operator's widening, issue #339)
+
+This addendum only adds. The text above, and the 2026-11-02 addendum, are
+unchanged and remain the record of what was proposed and accepted. It
+records the operator's ruling of 2026-11-07 on #163, quoted in issue #339:
+"compare with all that we have shims for". Authority is that ruling, not
+this note.
+
+- **Four targets, four agents, no GLM.** The agent-suite comparison covers
+  Swarmail, Mailpit, MailHog and MailSlurper, on claude-opus, claude-sonnet,
+  codex-sol and codex-luna. There is no GLM: spark is down and the
+  DashScope GLM quota is out until 2026-11-22.
+- **The "MailHog agent eval" rejection does not apply to this story.** The
+  synthesis above rejects a "MailHog agent eval". For the agent-suite
+  comparison of #339 and #163 the operator's ruling lifts that rejection,
+  and `evals/src/identity.rs`'s refusal of MailHog agent rows follows it.
+  Nothing else in the synthesis is lifted: one fixture and one scorer (§2),
+  a thin adapter that emulates no Swarmail-only capability (§3), controls
+  before any paid session (§5) and an honest cost basis (§7) all stand.
+- **MailSlurper joins unchanged under 0092 §3.** It is not named in this
+  record; it enters through 0092 §3's adapter contract with no new rule.
+- **Contracts.** The contracts that implement the ruling (a runner bridge
+  for adapters, batches, a source-lock v4, a frozen product record and the
+  wrapper's new scopes) are in proposed
+  [0129](0129-agent-suite-comparison.md). The ruling is recorded here; 0129
+  records only what implements it. No paid session is authorized, and the
+  planned 240 sessions are confirmed by the operator separately.
