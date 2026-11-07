@@ -182,3 +182,11 @@ Proposed [0126](0126-spf-dmarc-alignment.md) §8 asks the operator to extend thi
 record's §8 and 0125's amendment of it by one more reachable read: the
 monotonic timer inside `mail-auth` 0.14.0's SPF `LookupLimit`. It waits for the
 operator's acceptance under 0045 §8. The text above is unchanged.
+
+## Dated pointer — 2026-11-07 (0126 §8, accepted)
+
+The operator accepted [0126](0126-spf-dmarc-alignment.md) §8 on 2026-11-07.
+§8 of this record, as amended by 0125 §8, also does not cover mail-auth
+0.14.0's SPF lookup timer (`LookupLimit`, a 20-second monotonic bound inside
+`check_host`), within the radius 0126 §8 states. It covers every other
+ambient read. The text above is unchanged.

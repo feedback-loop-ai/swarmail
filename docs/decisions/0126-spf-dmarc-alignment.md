@@ -1,6 +1,6 @@
 # 0126 — SPF for the observed envelope, DMARC by the RFC 9989 tree walk, on mail-auth
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-07 — "accept all three"; see the dated acceptance note at the end)
 - **Date:** 2026-11-06
 - **Scope:** epic #251, issue #255 (operator direction: the remaining
   deliverability stories in the order #253, #254, #255; launched on
@@ -520,3 +520,27 @@ Tasks T27–T36 of the specification landed on top of `35a0db2`. The status stay
   coverage gate (exact 100/100/100) and its selftest, the publish-guard and seal
   proofs, and `cargo deny check licenses`. The sandbox has no `brokkr`
   binary, so the bundle-compile gate runs in verify.
+
+## Dated acceptance note — 2026-11-07
+
+The operator ruled on 2026-11-07, in chat to the dispatcher, "accept all
+three", for the three holds the header names. Each was put to them with its
+radius:
+
+1. **The amendment of accepted 0120** is accepted in all three parts:
+   - 1a, the optional `spf_client_ip` member;
+   - 1b, the unrecorded `np=` existence answer and SPF's fixed non-TXT
+     negatives, each reproducible from the embedded policy;
+   - 1c, the existence rule over the declared names for `np=`.
+
+   0120 carries a dated pointer to this note.
+2. **SPF's 20-second monotonic lookup timer** is accepted as a further
+   amendment of accepted 0085 §8 (after 0125 §8's `x=` read), and as the second
+   stated exception to accepted 0120 §5's byte-identical reports. It is bounded
+   as §8 states and fails closed. 0085 carries a dated pointer.
+3. **The reading of accepted 0089 §5** is accepted: §6 meets it through the
+   facts' determinants (mail identity with the envelope observation, policy
+   snapshot, rule set). 0089 carries a dated pointer.
+
+The ruling lifts the 0045 §8 holds on #255. The rest of the record, compatible
+work that held nothing, is accepted with it.

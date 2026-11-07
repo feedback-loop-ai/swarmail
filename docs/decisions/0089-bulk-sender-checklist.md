@@ -102,3 +102,11 @@ effective facts/policy identity in Inputs equality" by the facts' determinants
 (mail identity with its envelope observation, policy snapshot, rule set), not
 as request inputs. It waits for the operator's acceptance under 0045 §8. The
 text above is unchanged.
+
+## Dated pointer — 2026-11-07 (0126 §6, accepted)
+
+The operator accepted [0126](0126-spf-dmarc-alignment.md) on 2026-11-07,
+including its reading of §5 of this record: "all effective facts/policy
+identity in Inputs equality" is met through the facts' determinants (the
+selected mail identity carrying its envelope observation, the frozen policy
+snapshot and the rule set). The text above is unchanged.

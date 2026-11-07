@@ -394,3 +394,18 @@ timer inside the crate, a proposed amendment of accepted 0085 §8 held for the
 operator.
 The `swarmail-html/7` id belongs to 0126 (it has never shipped), after
 0125's `/6`.
+
+## Dated pointer — 2026-11-07 (0126, accepted)
+
+The operator accepted [0126](0126-spf-dmarc-alignment.md) on 2026-11-07. Its
+hold 1 amends this record:
+- §2: the declaration gains the optional `spf_client_ip` member, present on
+  output only when declared;
+- §3: DMARC's `np=` existence answer and SPF's fixed non-TXT negatives are
+  answered without being recorded, each a pure function of the embedded
+  policy;
+- §4: `np=` distinguishes a non-existent name by a fixed rule over the
+  declared names.
+
+Its hold 2 adds the second stated exception to §5's byte-identical reports.
+The text above is unchanged.
