@@ -10,7 +10,7 @@
 //!       --output DIR --scratch DIR --run-id ID --bin TARGET=PATH...
 //!       [--commit SHA --dirty true|false]
 //!   mail_compare admit DIR
-//!   mail_compare mailpit-mcp|mailhog-mcp --sources S
+//!   mail_compare mailpit-mcp|mailhog-mcp|mailslurper-mcp --sources S
 //!       (--endpoint http://127.0.0.1:PORT | --launch BIN --scratch DIR)
 //!
 //! Exit 0: the mode completed its declared checks. Exit 1: a complete,
@@ -22,6 +22,8 @@
 mod mailhog_mcp;
 #[path = "mail_compare/mailpit_mcp.rs"]
 mod mailpit_mcp;
+#[path = "mail_compare/mailslurper_mcp.rs"]
+mod mailslurper_mcp;
 #[path = "mail_compare/mcp.rs"]
 mod mcp;
 #[path = "mail_compare/protocol.rs"]
@@ -45,8 +47,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str =
-    "usage: mail_compare check|run|admit|mailpit-mcp|mailhog-mcp … (see scripts/compare-mail.sh)";
+const USAGE: &str = "usage: mail_compare check|run|admit|mailpit-mcp|mailhog-mcp|mailslurper-mcp … (see scripts/compare-mail.sh)";
 
 fn main() -> ExitCode {
     // cargo bench appends `--bench`; it selects nothing here.
@@ -68,6 +69,11 @@ fn main() -> ExitCode {
         Some("mailhog-mcp") => {
             adapter_mode::<mailhog_mcp::Mailhog>("mailhog-mcp", TargetKind::Mailhog, &args[1..])
         }
+        Some("mailslurper-mcp") => adapter_mode::<mailslurper_mcp::Mailslurper>(
+            "mailslurper-mcp",
+            TargetKind::Mailslurper,
+            &args[1..],
+        ),
         Some(_) => {
             eprintln!("{USAGE}");
             2

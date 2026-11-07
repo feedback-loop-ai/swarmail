@@ -1,0 +1,62 @@
+{
+  "executable_sha256": "262cfa28fae4554be198d1fea5ef83c0f8299317876d658623711c629a8edec8",
+  "files": [
+    {
+      "name": "list.json",
+      "request": "/api/v1/messages?start=0&limit=50",
+      "sha256": "f061709e7d990aa8061f9c0a0b1d809326c55970ad1fca19fe7db832647cfce1",
+      "size": 1219,
+      "status": 200
+    },
+    {
+      "name": "read.json",
+      "request": "/api/v1/message/3eaQ4UhBZPtpkE3XpL8yCD",
+      "sha256": "12d8725ea25d46e35ad307164d6851a67d9b83e79286c485592fda772c9acba5",
+      "size": 480,
+      "status": 200
+    },
+    {
+      "name": "read-multipart.json",
+      "request": "/api/v1/message/0HRBgQjWyYakpG6Imm6lLC",
+      "sha256": "fc2dd2343d52e999fcfd07f8135cda103aae66604aac00161b4400b3d77e4edb",
+      "size": 528,
+      "status": 200
+    },
+    {
+      "name": "search-filtered.json",
+      "request": "/api/v1/search?query=to%3Aann%40corpus%2Einvalid&start=0&limit=50",
+      "sha256": "8c189b3fe5bf6e953bad00f17e5e2513a7c41c6aba869c78aa8d0df26735424b",
+      "size": 1223,
+      "status": 200
+    },
+    {
+      "name": "search-empty.json",
+      "request": "/api/v1/search?query=to%3Anobody%40corpus%2Einvalid&start=0&limit=50",
+      "sha256": "952c14c858113069a396e7cdcec0e10f7d8fe96fa5907231e07d33f7e5a35a25",
+      "size": 106,
+      "status": 200
+    },
+    {
+      "name": "read-not-found.json",
+      "request": "/api/v1/message/not-an-id",
+      "sha256": "99eb12f2ab3c4866a353e098ffa3cb7a967e617c49b98480394ec5d8ea92b094",
+      "size": 18,
+      "status": 404
+    }
+  ],
+  "mail": [
+    {
+      "subject": "corpus-ann",
+      "to": "ann@corpus.invalid"
+    },
+    {
+      "subject": "corpus-joann",
+      "to": "joann@corpus.invalid"
+    },
+    {
+      "subject": "corpus-multipart",
+      "to": "ann@corpus.invalid"
+    }
+  ],
+  "target": "mailpit"
+}

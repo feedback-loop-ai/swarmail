@@ -22,17 +22,22 @@
 //!   message's stored bytes, so the adapter offers it, labelled.
 
 use crate::mcp::{Backend, Budget, begin, complete_scan};
-use crate::wire::{Http, query_value};
+use crate::wire::{Http, path_segment, query_value};
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::mailpit_mcp::{
-    Bounds, DEFAULT_LIMIT, MAX_ID_BYTES, MAX_LIMIT, MAX_QUERY_BYTES, MAX_START, SCAN_PAGE, Scan,
-    ToolError, poll_wait, text, uint,
+    Bounds, DEFAULT_LIMIT, MAX_LIMIT, MAX_QUERY_BYTES, MAX_START, SCAN_PAGE, Scan, ToolError,
+    id_arg, poll_wait, text, uint,
 };
 
 pub const SERVER_NAME: &str = "mail-compare-mailhog-mcp";
+
+/// Characters beyond `[A-Za-z0-9._-]` that MailHog's own ids carry: `=` and
+/// `@`. Every id in `docs/evals/wire-corpus/mailhog/list.json` has the form
+/// `<base64url, padded>@mailhog.example`; a test holds the alphabet to it.
+pub const MAILHOG_ID_EXTRA: &[u8] = b"=@";
 pub const WAIT_METHOD: &str = "client-side poll of /api/v2/search";
 
 /// The MailHog backend of the generic server.
@@ -144,7 +149,9 @@ pub fn tools(bounds: &Bounds) -> Value {
                 it (headers, body and raw MIME). This route is observed on the pinned executable and \
                 is not in MailHog's captured API document.",
             "inputSchema": {"type": "object", "additionalProperties": false, "required": ["id"],
-                "properties": {"id": {"type": "string", "minLength": 1, "maxLength": MAX_ID_BYTES}}}
+                "properties": {"id": {"type": "string", "minLength": 1,
+                    "maxLength": crate::mcp::MAX_ID_CHARS,
+                    "pattern": "^[A-Za-z0-9._=@-]+$"}}}
         },
         {
             "name": "mailhog_wait",
@@ -202,7 +209,7 @@ pub fn parse_call(params: &Value, bounds: &Bounds) -> Option<Call> {
             limit: limit()?,
         },
         "mailhog_read" => Call::Read {
-            id: text(args, "id", MAX_ID_BYTES)?,
+            id: id_arg(args, "id", MAILHOG_ID_EXTRA)?,
         },
         _ => Call::Wait {
             kind: kind()?,
@@ -219,7 +226,7 @@ type Page = (u64, Vec<(String, Value)>, Map<String, Value>);
 /// executable sends: counts are integers, `start` echoes the offset asked
 /// for, every item carries a string `ID`, and `count` (when present)
 /// agrees with the items.
-fn page(v: Value, start: u64) -> Result<Page, ToolError> {
+pub fn page(v: Value, start: u64) -> Result<Page, ToolError> {
     let Value::Object(mut page) = v else {
         return Err(ToolError::Malformed);
     };
@@ -270,6 +277,7 @@ async fn complete_search(
 ) -> Result<(u64, Vec<Value>), ToolError> {
     complete_scan(
         b,
+        SCAN_PAGE,
         |start| search_path(kind, query, start, SCAN_PAGE),
         |v, start| {
             let (total, ids, _) = page(v, start)?;
@@ -330,7 +338,7 @@ pub async fn run_call(
         }
         Call::Read { id } => {
             let (_, v) = b
-                .get(&format!("/api/v1/messages/{}", query_value(id)))
+                .get(&format!("/api/v1/messages/{}", path_segment(id)))
                 .await?;
             // MailHog answers an unknown id with `200 null`.
             if v.is_null() {

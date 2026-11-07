@@ -419,6 +419,19 @@ pub fn query_value(s: &str) -> String {
     percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
+/// One URL path segment, percent-encoded but for RFC 3986's unreserved
+/// characters: an id the adapters accept is already inside that alphabet, so
+/// nothing a server's router might leave undecoded (`%2D` for `-`) reaches
+/// it, and anything outside it is encoded, never passed raw.
+pub fn path_segment(s: &str) -> String {
+    const SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~');
+    percent_encoding::utf8_percent_encode(s, SEGMENT).to_string()
+}
+
 /// Body comparison that ignores only the transport's line-ending and
 /// trailing-whitespace choices; any other byte difference is a mismatch.
 pub fn same_body(authored: Option<&str>, observed: Option<&str>) -> bool {

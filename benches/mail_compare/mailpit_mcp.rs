@@ -12,7 +12,7 @@
 //! endpoint, or the adapter launches it.
 
 use crate::mcp::{Backend, Budget, begin, complete_scan};
-use crate::wire::{Http, query_value};
+use crate::wire::{Http, path_segment, query_value};
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -20,9 +20,13 @@ use tokio::time::Instant;
 #[allow(unused_imports)]
 pub use crate::mcp::{
     Bounds, DEFAULT_LIMIT, End, Frame, MAX_ID_BYTES, MAX_LIMIT, MAX_QUERY_BYTES, MAX_START,
-    SCAN_PAGE, Scan, ToolError, parse_endpoint, poll_wait, text, uint,
+    SCAN_PAGE, Scan, ToolError, id_arg, parse_endpoint, poll_wait, text, uint,
 };
 pub const SERVER_NAME: &str = "mail-compare-mailpit-mcp";
+
+/// Characters beyond `[A-Za-z0-9._-]` Mailpit's observed ids need: none (the
+/// wire corpus under docs/evals/wire-corpus/mailpit shows alphanumeric ids).
+pub const MAILPIT_ID_EXTRA: &[u8] = b"";
 
 /// The Mailpit backend of the generic server.
 pub struct Mailpit;
@@ -155,7 +159,7 @@ pub fn parse_call(params: &Value, bounds: &Bounds) -> Option<Call> {
             limit: limit()?,
         },
         "mailpit_read" => Call::Read {
-            id: text(args, "id", MAX_ID_BYTES)?,
+            id: id_arg(args, "id", MAILPIT_ID_EXTRA)?,
         },
         _ => Call::Wait {
             query: text(args, "query", MAX_QUERY_BYTES)?,
@@ -168,7 +172,7 @@ pub fn parse_call(params: &Value, bounds: &Bounds) -> Option<Call> {
 /// counts are integers, `start` echoes the offset asked for, every
 /// summary carries a string ID, and the undocumented page `count` the
 /// pinned binary also sends agrees with the summaries when present.
-fn summary_page(v: Value, start: u64) -> Result<Map<String, Value>, ToolError> {
+pub fn summary_page(v: Value, start: u64) -> Result<Map<String, Value>, ToolError> {
     let Value::Object(mut page) = v else {
         return Err(ToolError::Malformed);
     };
@@ -209,6 +213,7 @@ fn search_path(query: &str, start: u64, limit: u64) -> String {
 async fn complete_search(b: &mut Budget<'_>, query: &str) -> Result<(u64, Vec<Value>), ToolError> {
     complete_scan(
         b,
+        SCAN_PAGE,
         |start| search_path(query, start, SCAN_PAGE),
         |v, start| {
             let mut page = summary_page(v, start)?;
@@ -279,7 +284,7 @@ pub async fn run_call(
         }
         Call::Read { id } => {
             let (_, v) = b
-                .get(&format!("/api/v1/message/{}", query_value(id)))
+                .get(&format!("/api/v1/message/{}", path_segment(id)))
                 .await?;
             let got = v.get("ID").and_then(Value::as_str);
             if got.is_none_or(|g| g != id && id != "latest") {

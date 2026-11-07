@@ -204,6 +204,33 @@ pub fn uint(
     }
 }
 
+/// The longest id an adapter will put into a request path.
+pub const MAX_ID_CHARS: usize = 128;
+
+/// Whether `s` is an id an adapter may put into a URL path: at most
+/// [`MAX_ID_CHARS`] bytes, each in the alphabet the wire corpus shows real
+/// ids use (`extra` names the characters beyond `[A-Za-z0-9._-]` a backend's
+/// observed ids need). Refused before any request is made; an accepted id is
+/// still path-encoded, never percent-decoded or passed raw.
+pub fn valid_id(s: &str, extra: &[u8]) -> bool {
+    // An id made only of dots is a dot-segment (`.`, `..`): left unencoded
+    // in a path it would climb out of the route, so it is never an id.
+    !s.is_empty()
+        && s.len() <= MAX_ID_CHARS
+        && !s.bytes().all(|b| b == b'.')
+        && s.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-') || extra.contains(&b)
+        })
+}
+
+/// A tool argument that is an id under [`valid_id`].
+pub fn id_arg(args: &Map<String, Value>, key: &str, extra: &[u8]) -> Option<String> {
+    args.get(key)?
+        .as_str()
+        .filter(|s| valid_id(s, extra))
+        .map(str::to_owned)
+}
+
 pub fn text(args: &Map<String, Value>, key: &str, max: usize) -> Option<String> {
     args.get(key)?
         .as_str()
@@ -267,6 +294,7 @@ impl<'a> Budget<'a> {
 /// between pages can pass these checks.
 pub async fn complete_scan<P, R>(
     b: &mut Budget<'_>,
+    page: u64,
     path: P,
     parse: R,
 ) -> Result<(u64, Vec<Value>), ToolError>
@@ -297,7 +325,7 @@ where
             std::cmp::Ordering::Equal => return Ok((matching, out)),
             std::cmp::Ordering::Greater => return Err(ToolError::Incomplete),
             // A short page before the last is not progress either.
-            std::cmp::Ordering::Less if (got as u64) < SCAN_PAGE => {
+            std::cmp::Ordering::Less if (got as u64) < page => {
                 return Err(ToolError::Incomplete);
             }
             std::cmp::Ordering::Less => {}
