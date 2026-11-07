@@ -6096,14 +6096,7 @@ fn check_corpus(t: TargetKind, dir: &Path, lock: &SourceLock) -> Result<(), Stri
         return Err(format!("{t}: the empty search is not empty"));
     }
     for n in ["read.json", "read-multipart.json"] {
-        if body[n].0 != 200
-            || !mcp::valid_id(
-                v(n)?[if t == TargetKind::Mailpit { "ID" } else { "ID" }]
-                    .as_str()
-                    .unwrap_or(""),
-                extra,
-            )
-        {
+        if body[n].0 != 200 || !mcp::valid_id(v(n)?["ID"].as_str().unwrap_or(""), extra) {
             return Err(format!("{t}: {n} is not a read of one stored message"));
         }
     }
@@ -6191,7 +6184,7 @@ async fn auth_plain_probe(smtp: std::net::SocketAddr) -> Result<String, String> 
         .into_split();
     let mut r = tokio::io::BufReader::new(r);
     let mut transcript = String::new();
-    let mut line = async |r: &mut tokio::io::BufReader<_>| -> Result<Option<String>, String> {
+    let line = async |r: &mut tokio::io::BufReader<_>| -> Result<Option<String>, String> {
         let mut s = String::new();
         let n = tokio::time::timeout(step, r.read_line(&mut s))
             .await
