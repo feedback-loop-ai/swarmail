@@ -113,7 +113,12 @@ impl LaunchSpec {
         }
         match (&pin.runtime, runtime_dir) {
             (Some(rt), Some(dir)) => {
-                spec.binary = dir.join("bin/java");
+                // The entry program comes from the closed RUNTIMES table: a
+                // JRE's launcher, or a musl loader that is exec'd with the
+                // pinned binary as its program. Never a host loader.
+                let rule = crate::protocol::runtime_rule(kind)
+                    .ok_or_else(|| format!("{kind} may not pin a runtime"))?;
+                spec.binary = dir.join(rule.entry);
                 spec.extra.artifact = Some(binary);
                 spec.extra.members = rt
                     .checked_members
@@ -537,7 +542,13 @@ impl Owned {
         for [name, value] in &spec.extra.env {
             cmd.env(name, sub(value));
         }
-        cmd.current_dir(scratch)
+        // A config file marked `cwd` is a fixed relative name the program
+        // reads from its working directory: run it where it was rendered.
+        let workdir = match (&spec.extra.config, &config_path) {
+            (Some(c), Some(path)) if c.cwd => path.parent().unwrap_or(scratch).to_path_buf(),
+            _ => scratch.to_path_buf(),
+        };
+        cmd.current_dir(workdir)
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .stdout(if spec.kind == TargetKind::Swarmail {
@@ -797,20 +808,17 @@ impl Owned {
 
     // The competitor mappings below follow the captured API documents in
     // docs/evals/sources/ where those agree with the pinned executables,
-    // and the executables where they do not; every disagreement is listed
-    // in docs/evals/README.md and protocol.json's unresolved list. The
-    // MailSlurper, smtp4dev, Inbucket and Alkemio shapes below were authored
-    // from the upstream documentation as recalled. Two are now checked
-    // against real bytes in unmeasured tests: the Inbucket shape, read back
-    // from the pinned executable by round-trip, hostile-body and cap tests,
-    // and the GreenMail POP3 reader, by a labelled driver proof against the
-    // real jar under a JRE. The MailSlurper, smtp4dev and Alkemio shapes are
-    // still UNVERIFIED, because no executable of theirs has stored and
-    // served a message (MailSlurper's supplied binary cannot start its SQLite
-    // storage, smtp4dev's archive has no license document and Alkemio's
-    // binary has no musl loader); those rows stay pending until their real
-    // tests pass. A wrong shape fails loudly (malformed or incomplete),
-    // never as a shorter success.
+    // and the executables where they do not. Every shape below was checked
+    // against the real pinned executables in unmeasured tests (2026-11-07):
+    // a bounded round trip, a hostile-body set and a 600-message cap test for
+    // each launched row, and the GreenMail POP3 reader against the real jar
+    // under the pinned JRE. The checks corrected three shapes recalled from
+    // the upstream documentation: MailSlurper's listing count is
+    // `totalRecords`, smtp4dev's page parameter is `page`, and a path
+    // segment keeps `-._~` unescaped (MailSlurper's ids are uuids). MailSlurper
+    // and the Alkemio fork keep one decoded body and no raw message, so their
+    // body fidelity is reported per message, not exact. A wrong shape fails
+    // loudly (malformed or incomplete), never as a shorter success.
 
     fn list_path(&self, start: u32, limit: u32) -> String {
         let page = start / limit.max(1) + 1;
@@ -820,11 +828,13 @@ impl Owned {
             ),
             TargetKind::Mailpit => format!("/api/v1/messages?start={start}&limit={limit}"),
             TargetKind::Mailhog => format!("/api/v2/messages?start={start}&limit={limit}"),
-            TargetKind::Mailslurper | TargetKind::AlkemioMailslurper => {
+            TargetKind::Mailslurper
+            | TargetKind::MailslurperSourceBuild
+            | TargetKind::AlkemioMailslurper => {
                 format!("/mail?pageNumber={page}")
             }
             TargetKind::Smtp4dev => {
-                format!("/api/messages?pageNumber={page}&pageSize={limit}")
+                format!("/api/messages?page={page}&pageSize={limit}")
             }
             TargetKind::Inbucket => format!("/api/v1/mailbox/{}", mailbox()),
             // Read over POP3, never over HTTP; this path is the readiness
@@ -1042,7 +1052,9 @@ impl Owned {
                 }
                 parse_raw(&raw)
             }
-            TargetKind::Mailslurper | TargetKind::AlkemioMailslurper => {
+            TargetKind::Mailslurper
+            | TargetKind::MailslurperSourceBuild
+            | TargetKind::AlkemioMailslurper => {
                 let (status, v) = self.http.get_json(&format!("/mail/{id_q}")).await?;
                 if status != 200 {
                     return Err(WireError::Malformed);
@@ -1566,7 +1578,9 @@ pub fn has_server_search(kind: TargetKind) -> bool {
 /// before the count is an incomplete scan, so a wrong figure fails loudly.
 pub fn page_size(kind: TargetKind) -> u32 {
     match kind {
-        TargetKind::Mailslurper | TargetKind::AlkemioMailslurper => 50,
+        TargetKind::Mailslurper
+        | TargetKind::MailslurperSourceBuild
+        | TargetKind::AlkemioMailslurper => 50,
         _ => 250,
     }
 }
@@ -1612,13 +1626,15 @@ pub fn decode_page(
             }
             (v.get("items")?.as_array()?, v.get("total")?.as_u64()?)
         }
-        TargetKind::Mailslurper | TargetKind::AlkemioMailslurper => {
+        TargetKind::Mailslurper
+        | TargetKind::MailslurperSourceBuild
+        | TargetKind::AlkemioMailslurper => {
             if !start.is_multiple_of(size) {
                 return None;
             }
             (
                 v.get("mailItems")?.as_array()?,
-                v.get("totalMailItems")?.as_u64()?,
+                v.get("totalRecords")?.as_u64()?,
             )
         }
         TargetKind::Smtp4dev => {

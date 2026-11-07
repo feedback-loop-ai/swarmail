@@ -345,7 +345,9 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
         }
     }
     let mut specs = BTreeMap::new();
-    for &t in &p.targets {
+    // A published does-not-start target is never launched: it takes no
+    // --bin and has no spec (a --bin for it is refused below).
+    for &t in p.targets.iter().filter(|t| !p.does_not_start(**t)) {
         let binary = bins
             .remove(&t)
             .ok_or_else(|| format!("--bin {t}=PATH is required"))?;
@@ -373,7 +375,7 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
     }
     if let Some(t) = bins.keys().next() {
         return Err(format!(
-            "--bin {t} names a target the protocol does not declare"
+            "--bin {t} names a target the protocol does not declare or publishes as not starting"
         ));
     }
     if let Some(t) = runtimes.keys().next() {

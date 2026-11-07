@@ -62,7 +62,9 @@ pub fn plan(p: &Protocol) -> Vec<Planned> {
         .max()
         .unwrap_or(0);
     for rep in 0..reps {
-        for &target in p.order(rep) {
+        // A published does-not-start target is never planned: it has no
+        // coordinate to produce (its report row is blocked, not measured).
+        for &target in p.order(rep).iter().filter(|t| !p.does_not_start(**t)) {
             for t in p.throughput.iter().filter(|t| t.repetitions > rep) {
                 let mk = |phase, rows| Planned {
                     target,
@@ -178,7 +180,7 @@ pub async fn run(cfg: Config, clock: Clock) -> (Verdict, Lifecycle, Option<PathB
         .unwrap_or(0);
     let mut leaf = 0u32;
     for rep in 0..reps {
-        for &target in p.order(rep) {
+        for &target in p.order(rep).iter().filter(|t| !p.does_not_start(**t)) {
             let Some(spec) = cfg.specs.get(&target) else {
                 return (
                     Verdict::Infrastructure(format!("{target}: no launch spec")),

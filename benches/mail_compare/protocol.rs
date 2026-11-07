@@ -39,6 +39,12 @@ pub enum TargetKind {
     Mailpit,
     Mailhog,
     Mailslurper,
+    /// MailSlurper release-1.15.0 built from its pinned source with cgo
+    /// (operator ruling 2026-11-07). A different executable from the
+    /// official release artifact: its own row, never a relabelled
+    /// `mailslurper`, Alkemio's image or Swarmail's shim (decision 0118).
+    #[serde(rename = "mailslurper-source-build")]
+    MailslurperSourceBuild,
     Smtp4dev,
     Inbucket,
     Greenmail,
@@ -58,6 +64,9 @@ pub enum Provenance {
     Official(&'static str),
     /// A third party's OCI image reference: never an official artifact.
     ThirdPartyImage(&'static str),
+    /// An executable built from an official repository's tagged commit by
+    /// the operator's supply, never a release asset (ruling 2026-11-07).
+    SourceBuild(&'static str),
 }
 
 /// The Alkemio image the third-party row is extracted from.
@@ -70,12 +79,13 @@ impl TargetKind {
         TargetKind::Mailpit,
         TargetKind::Mailhog,
     ];
-    /// The eight targets protocol 3 and lock 4 require.
-    pub const ALL: [TargetKind; 8] = [
+    /// The nine targets protocol 3 and lock 4 require.
+    pub const ALL: [TargetKind; 9] = [
         TargetKind::Swarmail,
         TargetKind::Mailpit,
         TargetKind::Mailhog,
         TargetKind::Mailslurper,
+        TargetKind::MailslurperSourceBuild,
         TargetKind::Smtp4dev,
         TargetKind::Inbucket,
         TargetKind::Greenmail,
@@ -88,6 +98,7 @@ impl TargetKind {
             TargetKind::Mailpit => "mailpit",
             TargetKind::Mailhog => "mailhog",
             TargetKind::Mailslurper => "mailslurper",
+            TargetKind::MailslurperSourceBuild => "mailslurper-source-build",
             TargetKind::Smtp4dev => "smtp4dev",
             TargetKind::Inbucket => "inbucket",
             TargetKind::Greenmail => "greenmail",
@@ -112,6 +123,9 @@ impl TargetKind {
             TargetKind::Mailslurper => {
                 Provenance::Official("https://github.com/mailslurper/mailslurper")
             }
+            TargetKind::MailslurperSourceBuild => {
+                Provenance::SourceBuild("https://github.com/mailslurper/mailslurper")
+            }
             TargetKind::Smtp4dev => Provenance::Official("https://github.com/rnwood/smtp4dev"),
             TargetKind::Inbucket => Provenance::Official("https://github.com/inbucket/inbucket"),
             TargetKind::Greenmail => {
@@ -121,10 +135,11 @@ impl TargetKind {
         }
     }
 
-    /// The upstream repository of an official target, else `""`.
+    /// The upstream repository of an official or source-built target, else
+    /// `""`.
     pub fn official_home(self) -> &'static str {
         match self.provenance() {
-            Provenance::Official(home) => home,
+            Provenance::Official(home) | Provenance::SourceBuild(home) => home,
             _ => "",
         }
     }
@@ -192,10 +207,26 @@ pub struct Protocol {
     /// retention and raw reads, each with its citation or `not_inspected`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<Capabilities>>,
+    /// Version 3 (operator ruling 2026-11-07): targets whose published
+    /// result is that the pinned executable does not start. Each keeps its
+    /// row, pin, product, capabilities and rotation slot; the runner never
+    /// launches one and its report row carries no number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub does_not_start: Option<Vec<DoesNotStart>>,
     /// Every value the method still lacks, by name. Collection refuses
     /// while one remains; the list is how a draft says what it is missing
     /// instead of carrying a placeholder that looks like a value.
     pub unresolved: Vec<String>,
+}
+
+/// A target that does not start, with the document of its pin that records
+/// the failure (proposed decision 0130, 2026-11-07 addendum).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DoesNotStart {
+    pub target: TargetKind,
+    /// A document path of that target's pin: the captured failure output.
+    pub cite: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -401,6 +432,9 @@ pub enum ProductScope {
     Candidate,
     OfficialArtifact,
     ThirdPartyImage,
+    /// Built from an official repository's tagged commit; never a release
+    /// asset.
+    SourceBuild,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -856,6 +890,7 @@ impl Protocol {
                 .any(|x| x.backend.is_some() || x.prune.is_some() || x.compression.is_some()),
             self.capabilities.is_some(),
             self.products.iter().flatten().any(|p| p.scope.is_some()),
+            self.does_not_start.is_some(),
         ];
         if self.protocol_version == DRAFT_PROTOCOL_VERSION {
             if has.iter().any(|h| *h) {
@@ -865,9 +900,9 @@ impl Protocol {
             }
             return;
         }
-        if self.protocol_version == PROTOCOL_VERSION && (has[6] || has[7]) {
+        if self.protocol_version == PROTOCOL_VERSION && (has[6] || has[7] || has[8]) {
             out.push(format!(
-                "protocol_version {PROTOCOL_VERSION} carries version {PROTOCOL_VERSION_3} sections (capabilities, product scope)"
+                "protocol_version {PROTOCOL_VERSION} carries version {PROTOCOL_VERSION_3} sections (capabilities, product scope, does_not_start)"
             ));
         }
         let (Some(claim), Some(budgets), Some(products), Some(profile), Some(storage)) = (
@@ -967,11 +1002,13 @@ impl Protocol {
                 ));
             }
         }
+        self.validate_does_not_start(out);
         for p in self.products.iter().flatten() {
             let want = match p.target.provenance() {
                 Provenance::Candidate => ProductScope::Candidate,
                 Provenance::Official(_) => ProductScope::OfficialArtifact,
                 Provenance::ThirdPartyImage(_) => ProductScope::ThirdPartyImage,
+                Provenance::SourceBuild(_) => ProductScope::SourceBuild,
             };
             match p.scope {
                 None => out.push(format!("products: {} states no scope", p.target)),
@@ -982,6 +1019,35 @@ impl Protocol {
                 Some(_) => {}
             }
         }
+    }
+
+    /// `does_not_start` entries: declared competitors, listed once, each
+    /// citing something. That the cite is a document of the target's pin is
+    /// [`does_not_start_matches`]'s, which needs the lock.
+    fn validate_does_not_start(&self, out: &mut Vec<String>) {
+        for (i, d) in self.does_not_start.iter().flatten().enumerate() {
+            let t = d.target;
+            if !self.targets.contains(&t) || t == TargetKind::Swarmail {
+                out.push(format!("does_not_start: {t} is not a declared competitor"));
+            }
+            if self
+                .does_not_start
+                .iter()
+                .flatten()
+                .take(i)
+                .any(|o| o.target == t)
+            {
+                out.push(format!("does_not_start: {t} is listed twice"));
+            }
+            if d.cite.trim().is_empty() {
+                out.push(format!("does_not_start: {t} cites no document"));
+            }
+        }
+    }
+
+    /// Whether this protocol publishes `t` as a target that does not start.
+    pub fn does_not_start(&self, t: TargetKind) -> bool {
+        self.does_not_start.iter().flatten().any(|d| d.target == t)
     }
 
     fn validate_retention(&self, profile: StorageProfile, out: &mut Vec<String>) {
@@ -1107,7 +1173,9 @@ impl Protocol {
                 // Protocol 3 may name a product whose bytes are not
                 // available yet (a pending lock entry): its digest is then
                 // absent, and collection refuses the entry by name.
-                (Provenance::Official(_), Some(tag), sha) if sha.is_some() || v3 => {
+                (Provenance::Official(_) | Provenance::SourceBuild(_), Some(tag), sha)
+                    if sha.is_some() || v3 =>
+                {
                     if !tag_ok(tag) {
                         out.push(format!(
                             "products: {t} release tag {tag:?} is not an immutable version tag"
@@ -1117,7 +1185,7 @@ impl Protocol {
                         out.push(format!("products: {t} executable digest is not 64 hex digits"));
                     }
                 }
-                (Provenance::Official(_), ..) => out.push(format!(
+                (Provenance::Official(_) | Provenance::SourceBuild(_), ..) => out.push(format!(
                     "products: {t} needs a release tag and an executable digest"
                 )),
                 (Provenance::ThirdPartyImage(_), None, sha) if v3 => {
@@ -1219,6 +1287,12 @@ fn env_name_ok(n: &str) -> bool {
 pub struct ConfigFile {
     pub name: String,
     pub lines: Vec<String>,
+    /// The child's working directory is the directory the file is rendered
+    /// in: for a program that reads a fixed relative name and has no flag for
+    /// it (the Alkemio fork reads `./config.json`). Default false: the
+    /// working directory is the owned scratch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cwd: bool,
 }
 
 /// The slots a version 4 text may name: one address and one port per
@@ -1377,11 +1451,74 @@ pub fn launch_checks(
 /// binary is not linked, but its terms still have to be checkable.
 pub const PERMISSIVE: [&str; 5] = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC"];
 
-/// The licenses a pinned *runtime* may carry (proposed decision 0130 §6): a
-/// separate closed list that holds exactly the JRE's expression. A runtime
-/// is neither linked nor measured, so [`PERMISSIVE`] is never widened for it
-/// and `deny.toml` does not change.
-const RUNTIME_LICENSES: [&str; 1] = ["GPL-2.0-only WITH Classpath-exception-2.0"];
+/// The licenses a pinned *runtime* may carry (proposed decision 0130 §6,
+/// accepted by the operator on 2026-11-07): a separate closed list that
+/// holds the JRE's expression and musl's. A runtime is neither linked nor
+/// measured, so [`PERMISSIVE`] is never widened for it and `deny.toml` does
+/// not change.
+const RUNTIME_LICENSES: [&str; 2] = ["GPL-2.0-only WITH Classpath-exception-2.0", "MIT"];
+
+/// One runtime a target may pin (operator ruling 2026-11-07): the program the
+/// launcher execs, the members that must be digested, and whether the
+/// runtime is a layer of the target's own image (checked against the
+/// captured manifest). Any other target's runtime is refused.
+pub struct RuntimeRule {
+    pub target: TargetKind,
+    pub entry: &'static str,
+    pub members: &'static [&'static str],
+    pub image_layer: bool,
+}
+
+pub const RUNTIMES: [RuntimeRule; 2] = [
+    RuntimeRule {
+        target: TargetKind::Greenmail,
+        entry: "bin/java",
+        members: &["bin/java", "lib/server/libjvm.so"],
+        image_layer: false,
+    },
+    RuntimeRule {
+        target: TargetKind::AlkemioMailslurper,
+        entry: "lib/ld-musl-x86_64.so.1",
+        members: &["lib/ld-musl-x86_64.so.1"],
+        image_layer: true,
+    },
+];
+
+/// The runtime rule of `t`, if it may pin a runtime.
+pub fn runtime_rule(t: TargetKind) -> Option<&'static RuntimeRule> {
+    RUNTIMES.iter().find(|r| r.target == t)
+}
+
+/// A version an executable reports that differs from its release tag,
+/// recorded as a closed fact (operator ruling 2026-11-07): `(target, tag,
+/// reported version)`. The release-1.15.0 source hard-codes
+/// `SERVER_VERSION = "1.14.1"`, so both MailSlurper executables log 1.14.1.
+/// Data cannot excuse a version check: only this list can.
+pub const REPORTED_VERSIONS: [(TargetKind, &str, &str); 2] = [
+    (TargetKind::Mailslurper, "release-1.15.0", "1.14.1"),
+    (
+        TargetKind::MailslurperSourceBuild,
+        "release-1.15.0",
+        "1.14.1",
+    ),
+];
+
+/// The registries a pin's digest may be bound to instead of an asset of the
+/// official release (operator ruling 2026-11-07): `(target, base URL)`. The
+/// artifact's download is `{base}{version}/{file_name}`.
+pub const REGISTRY: [(TargetKind, &str); 1] = [(
+    TargetKind::Greenmail,
+    "https://repo1.maven.org/maven2/com/icegreen/greenmail-standalone/",
+)];
+
+/// A source archive whose members may attribute a document without a git
+/// tree listing: `(targets, archive sha256, the commit the archive is of)`.
+/// The commit is the archive's own pax comment (`git get-tar-commit-id`).
+pub const SOURCE_ARCHIVES: [(&[TargetKind], &str, &str); 1] = [(
+    &[TargetKind::Mailslurper, TargetKind::MailslurperSourceBuild],
+    "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+    "068acffdcd8960f248ea438c3b7ee51ead601bd2",
+)];
 
 /// Source lock version 3 (proposed decision 0093 §1). It keeps version 2's
 /// separate artifact, digest-basis and document facts, and replaces v2's
@@ -1629,6 +1766,11 @@ pub enum ArtifactKind {
 pub enum DigestBasis {
     UpstreamReleaseMetadata,
     LocallyComputed,
+    /// The digest is the one a package registry publishes beside the
+    /// artifact (a `.sha256` document), for an official artifact the GitHub
+    /// release does not list. Integrity against the registry's own checksum
+    /// only: nothing here authenticates the publisher.
+    RegistryChecksum,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1682,6 +1824,11 @@ pub enum DocKind {
     ImageIndex,
     /// Version 4: the captured platform manifest.
     ImageManifest,
+    /// Version 4: an API commit object, linking the tagged commit to its
+    /// root tree (the supplied trees are fetched by tree sha).
+    GitCommit,
+    /// Version 4: a registry's checksum document for the artifact.
+    Checksum,
 }
 
 impl DocKind {
@@ -1689,7 +1836,11 @@ impl DocKind {
     fn is_api_object(self) -> bool {
         matches!(
             self,
-            DocKind::ReleaseMetadata | DocKind::GitRef | DocKind::GitTag | DocKind::GitTree
+            DocKind::ReleaseMetadata
+                | DocKind::GitRef
+                | DocKind::GitTag
+                | DocKind::GitTree
+                | DocKind::GitCommit
         )
     }
 }
@@ -1719,6 +1870,19 @@ pub enum Attribution {
     Api { url: String },
     /// A document of the third-party image `reference`.
     Image { reference: String },
+    /// A member of a digested archive: the pin's artifact, its runtime
+    /// archive or a closed source archive. Proved by a real test that
+    /// re-extracts it; the bench has no archive reader.
+    Member {
+        archive_sha256: String,
+        member: String,
+    },
+    /// The pinned executable's own output for `argv`, proved by a real test
+    /// that re-runs it.
+    Output { argv: Vec<String> },
+    /// Operator-supplied evidence: `record` names the supply path and
+    /// carries the document's sha256.
+    Supplied { record: String },
 }
 
 /// What was read to characterise a server-side wait, and what it shows.
@@ -1883,8 +2047,18 @@ impl SourceLock {
                 if d.kind == DocKind::License {
                     license_text(&mut out, t, &pin.license, &d.path, &bytes);
                 }
+                if d.kind == DocKind::Checksum
+                    && pin.artifact.upstream_digest.as_deref()
+                        != Some(String::from_utf8_lossy(&bytes).trim())
+                {
+                    out.push(format!(
+                        "{t}: the checksum document {} disagrees with the pin's upstream digest",
+                        d.path
+                    ));
+                }
                 if let Some(img) = &pin.image {
-                    image_document(&mut out, t, img, d.kind, &d.path, &bytes);
+                    let layer = pin.runtime.as_ref().map(|r| format!("sha256:{}", r.sha256));
+                    image_document(&mut out, t, (img, layer), d.kind, &d.path, &bytes);
                 }
                 if !d.kind.is_api_object() {
                     continue;
@@ -1919,7 +2093,7 @@ impl SourceLock {
 fn image_document(
     out: &mut Vec<String>,
     t: TargetKind,
-    img: &ImageSource,
+    (img, runtime_layer): (&ImageSource, Option<String>),
     kind: DocKind,
     path: &str,
     bytes: &[u8],
@@ -1979,6 +2153,20 @@ fn image_document(
                     "{t}: the captured manifest does not name layer {}",
                     img.layer_digest
                 ));
+            }
+            if let Some(layer) = runtime_layer {
+                let listed = doc().is_some_and(|v| {
+                    v.get("layers")
+                        .and_then(|l| l.as_array())
+                        .into_iter()
+                        .flatten()
+                        .any(|l| l.get("digest").and_then(|d| d.as_str()) == Some(layer.as_str()))
+                });
+                if !listed {
+                    out.push(format!(
+                        "{t}: the captured manifest does not list the runtime's layer {layer}"
+                    ));
+                }
             }
         }
         _ => {}
@@ -2118,12 +2306,34 @@ fn tag_chain(
             ));
         }
     }
+    // The tree is asked for by commit (the tree's own id is then the commit,
+    // Mailpit's and MailHog's captures) or by tree id, linked to the tagged
+    // commit by a captured commit object whose `tree` names it. On the second
+    // route the listing is rebuilt into git's tree object and hashed, so an
+    // edited entry cannot vouch for a blob (ruling 2026-11-07).
+    let commit_object = json.get(&DocKind::GitCommit);
+    let route_ok = |tr: &serde_json::Value| match commit_object {
+        None => s(tr, "/sha") == ts.commit,
+        Some(c) => s(c, "/sha") == ts.commit && s(c, "/tree/sha") == s(tr, "/sha"),
+    };
+    if let Some(c) = commit_object {
+        if s(c, "/sha") != ts.commit {
+            out.push(format!(
+                "{t}: the captured commit object is not the tagged commit {}",
+                ts.commit
+            ));
+        } else if json
+            .get(&DocKind::GitTree)
+            .is_some_and(|tr| s(c, "/tree/sha") != s(tr, "/sha"))
+        {
+            out.push(format!(
+                "{t}: the captured commit object names a tree other than the captured one"
+            ));
+        }
+    }
     let tree = json
         .get(&DocKind::GitTree)
-        .filter(|tr| {
-            s(tr, "/sha") == ts.commit
-                && tr.get("truncated").and_then(|x| x.as_bool()) == Some(false)
-        })
+        .filter(|tr| route_ok(tr) && tr.get("truncated").and_then(|x| x.as_bool()) == Some(false))
         .and_then(|tr| tr.get("tree").and_then(|x| x.as_array()));
     let Some(tree) = tree else {
         out.push(format!(
@@ -2132,6 +2342,14 @@ fn tag_chain(
         ));
         return;
     };
+    if commit_object.is_some()
+        && let Some(listing) = json.get(&DocKind::GitTree)
+        && tree_object_id(tree).as_deref() != Some(s(listing, "/sha").as_str())
+    {
+        out.push(format!(
+            "{t}: the captured tree listing does not rebuild to its own id"
+        ));
+    }
     let holds = |path: &str, blob: &str, size: u64| {
         tree.iter().any(|e| {
             s(e, "/path") == path
@@ -2162,6 +2380,36 @@ fn tag_chain(
             ));
         }
     }
+}
+
+/// Git's tree object id of a non-recursive tree listing: SHA-1 over
+/// `tree <len>\0` and, per entry in listed order, `<mode> <path>\0` and the
+/// entry's 20 raw id bytes (`040000` is written `40000`). `None` for an
+/// entry that is not one.
+pub fn tree_object_id(entries: &[serde_json::Value]) -> Option<String> {
+    let mut body = Vec::new();
+    for e in entries {
+        let mode = match e.get("mode")?.as_str()? {
+            "040000" => "40000",
+            m @ ("100644" | "100755" | "120000" | "160000") => m,
+            _ => return None,
+        };
+        let path = e.get("path")?.as_str()?;
+        let sha = e.get("sha")?.as_str()?;
+        if !is_hex(sha, 40) {
+            return None;
+        }
+        body.extend_from_slice(mode.as_bytes());
+        body.push(b' ');
+        body.extend_from_slice(path.as_bytes());
+        body.push(0);
+        for i in 0..20 {
+            body.push(u8::from_str_radix(&sha[2 * i..2 * i + 2], 16).ok()?);
+        }
+    }
+    let mut m = format!("tree {}\0", body.len()).into_bytes();
+    m.extend_from_slice(&body);
+    Some(sha1(&m).iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// The captured documents are small text; a larger file is not one.
@@ -2253,6 +2501,14 @@ fn release_agrees(
             ));
         }
     }
+    // A registry-checksum pin and a source build are artifacts the GitHub
+    // release does not list; only the asset-list check is skipped, never
+    // the tag, page, commitish or date above (ruling 2026-11-07).
+    if a.digest_basis == DigestBasis::RegistryChecksum
+        || matches!(t.provenance(), Provenance::SourceBuild(_))
+    {
+        return;
+    }
     let asset = v
         .get("assets")
         .and_then(|x| x.as_array())
@@ -2339,11 +2595,33 @@ fn validate_common(
             r.published_at
         ));
     }
-    if a.download != format!("{official}/releases/download/{}/{}", r.tag, a.file_name) {
-        out.push(format!(
-            "{t}: download {:?} is not the official release asset",
-            a.download
-        ));
+    // Where the artifact comes from: an asset of the official release, a
+    // package registry's file under a closed base URL (ruling 2026-11-07), or
+    // (a source build) the tagged commit, which validate_pin checks because
+    // it needs the resolved commit.
+    match (a.digest_basis, t.provenance()) {
+        (DigestBasis::RegistryChecksum, _) => match REGISTRY.iter().find(|(rt, _)| *rt == t) {
+            Some((_, base)) => {
+                if a.download != format!("{base}{}/{}", version_of(&r.tag), a.file_name) {
+                    out.push(format!(
+                        "{t}: download {:?} is not under the registry {base}",
+                        a.download
+                    ));
+                }
+            }
+            None => out.push(format!(
+                "{t}: no registry is recorded for it; the registry checksum basis is refused"
+            )),
+        },
+        (_, Provenance::SourceBuild(_)) => {}
+        _ => {
+            if a.download != format!("{official}/releases/download/{}/{}", r.tag, a.file_name) {
+                out.push(format!(
+                    "{t}: download {:?} is not the official release asset",
+                    a.download
+                ));
+            }
+        }
     }
     if !is_name(&a.file_name) {
         out.push(format!("{t}: artifact file name is malformed"));
@@ -2362,6 +2640,10 @@ fn validate_common(
         (DigestBasis::LocallyComputed, Some(_)) => out.push(format!(
             "{t}: a locally computed digest cannot carry an upstream digest"
         )),
+        (DigestBasis::RegistryChecksum, Some(d)) if *d == a.sha256 => {}
+        (DigestBasis::RegistryChecksum, _) => out.push(format!(
+            "{t}: a registry checksum basis needs the published checksum, equal to the asset's"
+        )),
     }
     match (a.kind, &a.member) {
         (ArtifactKind::Executable, None) if a.executable_sha256 == a.sha256 => {}
@@ -2374,7 +2656,12 @@ fn validate_common(
     if a.os.trim().is_empty() || a.arch.trim().is_empty() {
         out.push(format!("{t}: artifact platform is incomplete"));
     }
-    if !a.version_output.contains(version_of(&r.tag)) {
+    // The version the tag stands for, or exactly the version the closed
+    // REPORTED_VERSIONS list records for this target and tag.
+    let reported = REPORTED_VERSIONS
+        .iter()
+        .any(|(rt, tag, v)| *rt == t && *tag == r.tag && a.version_output.contains(v));
+    if !a.version_output.contains(version_of(&r.tag)) && !reported {
         out.push(format!(
             "{t}: the observed version output does not name {}",
             r.tag
@@ -2468,24 +2755,49 @@ fn checked_members(out: &mut Vec<String>, t: TargetKind, whose: &str, m: &[Check
 }
 
 fn validate_runtime(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
+    let rule = runtime_rule(t);
     let Some(rt) = &pin.runtime else {
-        if t == TargetKind::Greenmail {
-            out.push(format!("{t}: greenmail needs a pinned runtime (a JRE)"));
+        if let Some(rule) = rule {
+            out.push(format!(
+                "{t}: {t} needs a pinned runtime (its entry program {})",
+                rule.entry
+            ));
         }
         return;
     };
-    if t != TargetKind::Greenmail {
-        out.push(format!("{t}: only greenmail pins a runtime"));
-    }
+    let Some(rule) = rule else {
+        out.push(format!(
+            "{t}: only greenmail (a JRE) and alkemio-mailslurper (a musl loader) pin a runtime"
+        ));
+        return;
+    };
     if !is_name(&rt.name) || !rt.download.starts_with("https://") || !is_hex(&rt.sha256, 64) {
         out.push(format!(
             "{t}: the runtime needs a name, an https download and a sha256"
         ));
     }
     checked_members(out, t, "runtime", &rt.checked_members);
-    for must in ["bin/java", "lib/server/libjvm.so"] {
-        if !rt.checked_members.iter().any(|m| m.path == must) {
+    for must in rule.members {
+        if !rt.checked_members.iter().any(|m| m.path == *must) {
             out.push(format!("{t}: the runtime does not check {must}"));
+        }
+    }
+    if rule.image_layer {
+        // Taken from the image's own layer: the runtime's archive digest is
+        // a layer of the pin's captured manifest (verify_files checks the
+        // manifest), and its download names that blob.
+        if pin.image.is_none() {
+            out.push(format!(
+                "{t}: a loader runtime is a layer of the pin's image"
+            ));
+        }
+        if !rt
+            .download
+            .ends_with(&format!("/blobs/sha256:{}", rt.sha256))
+        {
+            out.push(format!(
+                "{t}: the loader runtime's download is not the image blob of its own sha256"
+            ));
         }
     }
     if rt.version_output.trim().is_empty() {
@@ -2657,7 +2969,7 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin, v4: bool) {
         }
     }
     match (&pin.release, &pin.image, t.provenance()) {
-        (Some(rel), None, Provenance::Official(_)) => {
+        (Some(rel), None, Provenance::Official(_) | Provenance::SourceBuild(_)) => {
             validate_common(
                 out,
                 t,
@@ -2772,6 +3084,42 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin, v4: bool) {
             None
         }
     };
+    if let Provenance::SourceBuild(home) = t.provenance() {
+        // A source build is the operator's supply, built from the validated
+        // tagged commit: its download is that commit's tree, its digest is
+        // computed locally, and its build record is observed (ruling
+        // 2026-11-07), never unresolved.
+        let a = &pin.artifact;
+        match commit {
+            Some(c) => {
+                if a.download != format!("{home}/tree/{c}") {
+                    out.push(format!(
+                        "{t}: a source build's download is the tagged commit's tree {home}/tree/{c}"
+                    ));
+                }
+                match &pin.binary_build_provenance {
+                    Fact::Observed(bp) if bp.commit == c => {}
+                    Fact::Observed(_) => out.push(format!(
+                        "{t}: the build provenance names a commit other than the tagged {c}"
+                    )),
+                    Fact::Unresolved(_) => out.push(format!(
+                        "{t}: a source build needs observed build provenance, not an unresolved one"
+                    )),
+                }
+            }
+            None => out.push(format!(
+                "{t}: a source build needs an observed tagged source to be built from"
+            )),
+        }
+        if a.digest_basis != DigestBasis::LocallyComputed
+            || a.kind != ArtifactKind::Executable
+            || a.member.is_some()
+        {
+            out.push(format!(
+                "{t}: a source build is a bare executable digested locally"
+            ));
+        }
+    }
     match &pin.binary_build_provenance {
         Fact::Observed(bp) if pin.image.is_none() => {
             if !is_hex(&bp.commit, 40) {
@@ -2862,6 +3210,72 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin, v4: bool) {
                     ));
                 }
             }
+            Fact::Observed(Attribution::Member {
+                archive_sha256,
+                member,
+            }) => {
+                if d.kind.is_api_object() {
+                    out.push(format!(
+                        "{t}: {} is an API object, not a member of an archive",
+                        d.path
+                    ));
+                }
+                if !is_hex(archive_sha256, 64) || !is_upstream_path(member) {
+                    out.push(format!(
+                        "{t}: {} attribution needs an archive digest and a confined member path",
+                        d.path
+                    ));
+                }
+                let allowed = *archive_sha256 == pin.artifact.sha256
+                    || pin
+                        .runtime
+                        .as_ref()
+                        .is_some_and(|r| r.sha256 == *archive_sha256)
+                    || SOURCE_ARCHIVES.iter().any(|(targets, sha, c)| {
+                        targets.contains(&t) && sha == archive_sha256 && commit == Some(c)
+                    });
+                if !allowed {
+                    out.push(format!(
+                        "{t}: {} is attributed to an archive that is neither the pin's artifact, its runtime nor a source archive of its tagged commit",
+                        d.path
+                    ));
+                }
+            }
+            Fact::Observed(Attribution::Output { argv }) => {
+                if d.kind.is_api_object()
+                    || argv.is_empty()
+                    || argv.len() > 8
+                    || argv.iter().any(|x| {
+                        x.is_empty() || x.len() > 64 || !x.chars().all(|c| c.is_ascii_graphic())
+                    })
+                {
+                    out.push(format!(
+                        "{t}: {} output attribution needs a short, non-empty, printable argv",
+                        d.path
+                    ));
+                }
+            }
+            Fact::Observed(Attribution::Supplied { record }) => {
+                if d.kind.is_api_object()
+                    || record.trim().is_empty()
+                    || record.len() > 1024
+                    || !record.contains(".compare-bins/")
+                    || !record.contains(&d.sha256)
+                {
+                    out.push(format!(
+                        "{t}: {} supplied attribution must name the supply path and carry the document's sha256",
+                        d.path
+                    ));
+                }
+                if d.kind == DocKind::Checksum
+                    && !record.contains(&format!("{}.sha256", pin.artifact.download))
+                {
+                    out.push(format!(
+                        "{t}: the checksum record must name {}.sha256",
+                        pin.artifact.download
+                    ));
+                }
+            }
             Fact::Unresolved(why) => gap(out, t, &d.path, why),
         }
     }
@@ -2873,6 +3287,25 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin, v4: bool) {
     for kind in required {
         if !has(*kind) {
             out.push(format!("{t}: no captured {kind:?} document"));
+        }
+    }
+    if pin.artifact.digest_basis == DigestBasis::RegistryChecksum && !has(DocKind::Checksum) {
+        out.push(format!(
+            "{t}: a registry checksum pin needs its captured Checksum document"
+        ));
+    }
+    // A registry's checksum and a build record are operator-supplied
+    // evidence; no other attribution would be true of them.
+    for d in &pin.documents {
+        let supplied = matches!(d.attribution, Fact::Observed(Attribution::Supplied { .. }));
+        if matches!(d.kind, DocKind::Checksum | DocKind::BuildEvidence)
+            && !supplied
+            && d.attribution.gap().is_none()
+        {
+            out.push(format!(
+                "{t}: {} is supplied evidence and must be attributed as supplied",
+                d.path
+            ));
         }
     }
     let w = &pin.wait;
@@ -2968,6 +3401,11 @@ pub fn products_match(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> {
             ));
         }
         let kind = match (&pin.release, &pin.image) {
+            (Some(_), None)
+                if matches!(product.target.provenance(), Provenance::SourceBuild(_)) =>
+            {
+                Some(ProductScope::SourceBuild)
+            }
             (Some(_), None) => Some(ProductScope::OfficialArtifact),
             (None, Some(_)) => Some(ProductScope::ThirdPartyImage),
             _ => None,
@@ -3011,8 +3449,37 @@ pub fn declared_competitors(p: &Protocol) -> Vec<TargetKind> {
     p.targets
         .iter()
         .copied()
-        .filter(|t| *t != TargetKind::Swarmail)
+        .filter(|t| *t != TargetKind::Swarmail && !p.does_not_start(*t))
         .collect()
+}
+
+/// A published does-not-start result needs the lock behind it: the target
+/// has a pin, and the cite is a document of that pin (the captured failure
+/// output). The row keeps its pin, product and denominator; it is only
+/// never launched.
+pub fn does_not_start_matches(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> {
+    let mut out = Vec::new();
+    for d in p.does_not_start.iter().flatten() {
+        let t = d.target;
+        match lock.pin(t) {
+            None => out.push(format!(
+                "does_not_start: {t} has no pin, so there is no result to publish for it"
+            )),
+            Some(pin) => {
+                if !pin.documents.iter().any(|x| x.path == d.cite) {
+                    out.push(format!(
+                        "does_not_start: {t} cites {:?}, which is no document of its pin",
+                        d.cite
+                    ));
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        Ok(())
+    } else {
+        Err(Refusal(out))
+    }
 }
 
 /// Whether every declared target can launch: the candidate by its role, a
@@ -3144,6 +3611,9 @@ pub fn collection_ready(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> 
     if let Err(Refusal(r)) = capabilities_match(p, lock) {
         out.extend(r);
     }
+    if let Err(Refusal(r)) = does_not_start_matches(p, lock) {
+        out.extend(r);
+    }
     if p.status != Status::Frozen {
         out.push("protocol is a draft, not frozen".into());
     }
@@ -3174,7 +3644,14 @@ pub fn collection_ready(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> 
             continue;
         }
         let Some(pin) = &e.pin else { continue };
-        if let Some(why) = pin.tagged_source.gap() {
+        // An image pin has no tag of an official repository to observe
+        // (validate_image refuses an observed one), so the third-party
+        // image's identity is its index -> manifest -> layer digest chain,
+        // and its tagged-source gap is structural, not missing. Every other
+        // pin still needs an observed tagged source.
+        if let Some(why) = pin.tagged_source.gap()
+            && pin.image.is_none()
+        {
             out.push(format!("{t}: tagged source unresolved: {why}"));
         }
         // Proposed 0093 §2: the checked executable may be measured while

@@ -1110,7 +1110,16 @@ fn evals_copy(root: &Path) -> PathBuf {
     let dir = root.join("evals");
     std::fs::create_dir_all(dir.join("sources")).unwrap();
     // Every pinned row of the committed lock keeps its captured documents.
-    for t in ["mailpit", "mailhog", "inbucket"] {
+    for t in [
+        "mailpit",
+        "mailhog",
+        "inbucket",
+        "mailslurper",
+        "mailslurper-source-build",
+        "smtp4dev",
+        "greenmail",
+        "alkemio-mailslurper",
+    ] {
         copy_dir(
             &evals_dir().join("sources").join(t),
             &dir.join("sources").join(t),

@@ -13,7 +13,8 @@
 # NAME is a competitor the protocol declares (proposed decision 0130): the
 # required binaries are derived from the protocol, never from a fixed list.
 # --mailpit BIN and --mailhog BIN remain aliases of --bin mailpit=BIN and
-# --bin mailhog=BIN. A target whose lock pin needs a runtime (GreenMail's JRE)
+# --bin mailhog=BIN. A target whose lock pin needs a runtime (GreenMail's JRE, the
+# Alkemio row's musl loader root)
 # also takes --runtime NAME=DIR; the swarmail candidate is built here. A
 # historical lock (docs/evals/history/) is verified against the captured
 # documents given by --documents (docs/evals), not the directory it sits in.
@@ -145,12 +146,22 @@ eval_prerequisite() {
 }
 
 # The competitors a protocol declares: its top-level targets list, without the
-# candidate (this script builds it). A preflight read of the file so a missing
-# binary refuses before any build; the driver's own `targets` answer, taken
-# after the build, must agree with it.
+# candidate (this script builds it) and without a target the protocol
+# publishes as not starting (its `does_not_start` list: the driver never
+# launches one, so no binary is asked for it). A preflight read of the file so
+# a missing binary refuses before any build; the driver's own `targets`
+# answer, taken after the build, must agree with it.
 declared_competitors() {
+  local skip
+  skip=$(sed -n '/^  "does_not_start": \[/,/^  \]/p' "$1" | grep -o '"target": "[a-z0-9-]*"' | cut -d'"' -f4)
   sed -n '/^  "targets": \[/,/^  \]/p' "$1" | grep -o '"[a-z0-9-]*"' | tr -d '"' \
-    | grep -v -e '^targets$' -e '^swarmail$'
+    | grep -v -e '^targets$' -e '^swarmail$' \
+    | while IFS= read -r name; do
+        case $'\n'"$skip"$'\n' in
+          *$'\n'"$name"$'\n'*) ;;
+          *) printf '%s\n' "$name" ;;
+        esac
+      done
 }
 
 # The path given for one target by --bin (the last wins), or empty.

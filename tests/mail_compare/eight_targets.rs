@@ -11,10 +11,17 @@ use serde_json::{Value, json};
 
 /// SHA-256 of the bytes at `c95386e`, taken before the change.
 const V2_PROTOCOL_SHA: &str = "735da43a0cbaaa85cd0fd6ab55765cbf3f71ba176d58702dd71bc4444a82231d";
+/// The freeze (2026-11-07): sha256 of `docs/evals/protocol.json` and
+/// `docs/evals/sources.lock.json` as frozen; decision 0130's addendum records
+/// the same values. Set when the protocol is frozen, never edited after.
+const FROZEN_PROTOCOL_V3_SHA: &str =
+    "229babaac849ae832ecb1a9f8ec742c970d0f36edc9d26d4ff9bb9c3c0d7224e";
+const FROZEN_LOCK_V4_SHA: &str = "ed201599dd57441cbcf0c7e66e7c82a56dd217ef683b7bf4e72ae7ce9d3a04b1";
 const V3_LOCK_SHA: &str = "6523abf4df890d7aca8ea7e5112ae3e32ab35f2260e2528b070eefa70007b03c";
 
-/// The rows with no verified pin in the committed lock: each stays pending
-/// with its byte-grounded reason.
+/// The rows the pending-entry tests make pending in an authored copy of the
+/// committed lock: the vocabulary stays (a pending entry never launches and
+/// never collects) though no committed row is pending any more.
 const PENDING: [TargetKind; 4] = [
     TargetKind::Mailslurper,
     TargetKind::Smtp4dev,
@@ -22,8 +29,9 @@ const PENDING: [TargetKind; 4] = [
     TargetKind::AlkemioMailslurper,
 ];
 
-const NEW_TARGETS: [TargetKind; 5] = [
+const NEW_TARGETS: [TargetKind; 6] = [
     TargetKind::Mailslurper,
+    TargetKind::MailslurperSourceBuild,
     TargetKind::Smtp4dev,
     TargetKind::Inbucket,
     TargetKind::Greenmail,
@@ -44,6 +52,28 @@ fn v3() -> Value {
 
 fn lock4(v: Value) -> SourceLock {
     lock_from(v).expect("parses")
+}
+
+/// The committed lock 4 with `PENDING`'s rows made pending, each authored from
+/// what a pending entry states, never read back from a validator.
+fn pending_v4() -> Value {
+    let mut l = v4();
+    for t in PENDING {
+        let at = entry_of(&mut l, t.name());
+        let (tag, image) = match t {
+            TargetKind::AlkemioMailslurper => (Value::Null, json!(protocol::ALKEMIO_IMAGE)),
+            TargetKind::Smtp4dev => (json!("3.16.1"), Value::Null),
+            TargetKind::Greenmail => (json!("release-2.1.15"), Value::Null),
+            _ => (json!("release-1.15.0"), Value::Null),
+        };
+        l["entries"][at] = json!({
+            "target": t.name(), "role": "competitor", "pin": null,
+            "pending": {"release_tag": tag, "image": image,
+                "listeners": ["smtp", "http"], "launch": [], "launch_env": [],
+                "config_file": null, "reason": "authored: the bytes are not available"}
+        });
+    }
+    l
 }
 
 fn entry_of(v: &mut Value, t: &str) -> usize {
@@ -116,7 +146,7 @@ fn mailpit_mailhog_v3_documents_byte_unchanged() {
 
 #[test]
 fn target_names_round_trip_and_unknown_refused() {
-    assert_eq!(TargetKind::ALL.len(), 8);
+    assert_eq!(TargetKind::ALL.len(), 9);
     for t in TargetKind::ALL {
         assert_eq!(TargetKind::parse(t.name()), Some(t));
         assert_eq!(serde_json::to_value(t).unwrap(), t.name());
@@ -696,6 +726,7 @@ struct ImageKnobs {
     omit_manifest_doc: bool,
     observed_tagged_source: bool,
     observed_build_provenance: bool,
+    manifest_omits_runtime_layer: bool,
 }
 
 fn image_pin(root: &Path, k: &ImageKnobs) -> (PathBuf, Value) {
@@ -709,7 +740,14 @@ fn image_pin(root: &Path, k: &ImageKnobs) -> (PathBuf, Value) {
     } else {
         layer.clone()
     };
-    let manifest = json!({"schemaVersion": 2, "layers": [{"digest": format!("sha256:{listed}")}]});
+    let loader = "f".repeat(64);
+    let loader_listed = if k.manifest_omits_runtime_layer {
+        "a".repeat(64)
+    } else {
+        loader.clone()
+    };
+    let manifest = json!({"schemaVersion": 2, "layers": [
+        {"digest": format!("sha256:{listed}")}, {"digest": format!("sha256:{loader_listed}")}]});
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
     let m = sha(&manifest_bytes);
     let arch = if k.index_names_other_platform {
@@ -781,11 +819,17 @@ fn image_pin(root: &Path, k: &ImageKnobs) -> (PathBuf, Value) {
                      "os": "linux", "arch": "amd64", "version_output": "mailslurper authored-patched"},
         "license": {"spdx": "MIT", "holder": "Authored"},
         "documents": docs,
-        "launch": ["-config", "{config_path}", "--max", "10000"],
+        "launch": ["{artifact}", "--max", "10000"],
         "storage": {"backend": "scratch_file", "max_messages": 10000, "cap_flag": "--max", "basis": "authored"},
         "wait": {"reviewed": [], "finding": "an image has no tagged tree", "best_wait": {"unresolved": "none"}},
         "listeners": ["smtp", "http", "ui"],
         "config_file": {"name": "config.json", "lines": ["{{", "\"p\": {smtp_port} {http_port} {ui_port}", "}}"]},
+        "runtime": {"name": "musl-authored",
+            "download": format!("https://ghcr.io/v2/authored/blobs/sha256:{loader}"),
+            "sha256": loader, "digest_basis": "locally_computed",
+            "checked_members": [{"path": "lib/ld-musl-x86_64.so.1", "sha256": "9".repeat(64)}],
+            "version_output": "musl libc authored",
+            "license": {"spdx": "MIT", "holder": "authored"}},
     });
     (
         evals,
@@ -905,7 +949,7 @@ fn runtime_license_checked_against_runtime_list_only() {
         .expect("a greenmail pin with its JRE validates");
     lock.verify_files(&dir).expect("and verifies");
     // The runtime's own license must be on the runtime list.
-    for bad in ["MIT", "GPL-3.0-only", "GPL-2.0-only", ""] {
+    for bad in ["GPL-3.0-only", "GPL-2.0-only", "Apache-2.0", ""] {
         let root = tempfile::tempdir().unwrap();
         let (_d, mut entry) = release_pin(root.path(), &Knobs::new(TargetKind::Greenmail));
         entry["pin"]["runtime"]["license"]["spdx"] = bad.into();
@@ -945,7 +989,12 @@ fn runtime_pin_refused_on_target_other_than_greenmail() {
         .unwrap()
         .push("{artifact}".into());
     let why = refusals(lock_with(TargetKind::Mailslurper, entry).validate());
-    assert!(why.contains("only greenmail pins a runtime"), "{why}");
+    assert!(
+        why.contains(
+            "only greenmail (a JRE) and alkemio-mailslurper (a musl loader) pin a runtime"
+        ),
+        "{why}"
+    );
     // And greenmail without one, or with its checked members short.
     let root = tempfile::tempdir().unwrap();
     let (_d, mut entry) = release_pin(root.path(), &Knobs::new(TargetKind::Greenmail));
@@ -1089,7 +1138,7 @@ fn config_file_name_confined() {
 
 #[test]
 fn pending_entry_validates_but_refuses_collection_and_launch() {
-    let lock = lock4(v4());
+    let lock = lock4(pending_v4());
     lock.validate()
         .expect("pending entries are valid structure");
     let p = Protocol::parse(PROTOCOL_V3).unwrap();
@@ -1121,18 +1170,18 @@ fn pending_entry_validates_but_refuses_collection_and_launch() {
         );
     }
     // Both and neither are refused.
-    let mut l = v4();
+    let mut l = pending_v4();
     let at = entry_of(&mut l, "mailslurper");
     let root = tempfile::tempdir().unwrap();
     let (_dir, pinned) = release_pin(root.path(), &Knobs::new(TargetKind::Mailslurper));
     l["entries"][at]["pin"] = pinned["pin"].clone();
     assert!(refusals(lock4(l).validate()).contains("a pin or pending, never both"));
-    let mut l = v4();
+    let mut l = pending_v4();
     let at = entry_of(&mut l, "mailslurper");
     l["entries"][at].as_object_mut().unwrap().remove("pending");
     assert!(refusals(lock4(l).validate()).contains("mailslurper: a competitor needs a pin"));
     // A pending entry states what kind of source it is and why.
-    let mut l = v4();
+    let mut l = pending_v4();
     let at = entry_of(&mut l, "smtp4dev");
     l["entries"][at]["pending"]["release_tag"] = "latest".into();
     l["entries"][at]["pending"]["reason"] = " ".into();
@@ -1141,7 +1190,7 @@ fn pending_entry_validates_but_refuses_collection_and_launch() {
         why.contains("is not a version tag") && why.contains("states no reason"),
         "{why}"
     );
-    let mut l = v4();
+    let mut l = pending_v4();
     let at = entry_of(&mut l, "alkemio-mailslurper");
     l["entries"][at]["pending"]["image"] = "ghcr.io/other/x:1".into();
     assert!(refusals(lock4(l).validate()).contains("is not the labelled"));
@@ -1151,6 +1200,16 @@ fn pending_entry_validates_but_refuses_collection_and_launch() {
 
 fn p3() -> Value {
     json(PROTOCOL_V3)
+}
+
+/// The position of `target`'s record in the protocol's `key` list.
+fn idx(v: &Value, key: &str, target: &str) -> usize {
+    v[key]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|x| x["target"] == target)
+        .unwrap()
 }
 
 fn v3_refusals(f: impl Fn(&mut Value)) -> String {
@@ -1241,11 +1300,11 @@ fn current_protocol_v3_shape_and_v2_workloads_equal() {
             "observation {i}"
         );
     }
-    // The orders are the eight cyclic rotations of the target list.
+    // The orders are the nine cyclic rotations of the target list.
     let orders = p.statistics.orders.clone();
-    assert_eq!(orders.len(), 8);
+    assert_eq!(orders.len(), 9);
     for (k, order) in orders.iter().enumerate() {
-        let want: Vec<TargetKind> = (0..8).map(|i| p.targets[(i + k) % 8]).collect();
+        let want: Vec<TargetKind> = (0..9).map(|i| p.targets[(i + k) % 9]).collect();
         assert_eq!(*order, want);
     }
     // Every cap is the value set at launch, above every residency, or none.
@@ -1289,7 +1348,8 @@ fn protocol_v3_requires_all_eight_and_each_section() {
         "a missing capability key never parses: {why}"
     );
     let why = v3_refusals(|v| {
-        v["products"][4].as_object_mut().unwrap().remove("scope");
+        let at = idx(v, "products", "smtp4dev");
+        v["products"][at].as_object_mut().unwrap().remove("scope");
     });
     assert!(why.contains("products: smtp4dev states no scope"), "{why}");
     let why = v3_refusals(|v| {
@@ -1323,7 +1383,7 @@ fn protocol_v3_requires_all_eight_and_each_section() {
         v["statistics"]["orders"].as_array_mut().unwrap().pop();
     });
     assert!(
-        why.contains("not the 8 cyclic rotations") && why.contains("rotation 7 is missing"),
+        why.contains("not the 9 cyclic rotations") && why.contains("rotation 8 is missing"),
         "{why}"
     );
 }
@@ -1364,10 +1424,15 @@ fn capability_without_or_with_foreign_citation_refused() {
     let why = refusals(protocol::capabilities_match(&foreign, &lock));
     assert!(why.contains("mailhog server_search cites \"sources/mailpit/mailpit-swagger.json\", which is no document"), "{why}");
     let pending = p(&|v| {
-        v["capabilities"][6]["raw_source"] =
+        let at = idx(v, "capabilities", "greenmail");
+        v["capabilities"][at]["raw_source"] =
             json!({"status": "supported", "cite": "sources/greenmail/x.md"});
     });
-    let why = refusals(protocol::capabilities_match(&pending, &lock));
+    // A row with no pin has nothing to cite (an authored lock without it).
+    let mut without = v4();
+    let at = entry_of(&mut without, "greenmail");
+    without["entries"][at]["pin"] = Value::Null;
+    let why = refusals(protocol::capabilities_match(&pending, &lock4(without)));
     assert!(
         why.contains("greenmail raw_source cites") && why.contains("has no pin to cite"),
         "{why}"
@@ -1390,7 +1455,10 @@ fn capability_without_or_with_foreign_citation_refused() {
 
 #[test]
 fn product_scope_must_match_provenance() {
-    let why = v3_refusals(|v| v["products"][7]["scope"] = "official_artifact".into());
+    let why = v3_refusals(|v| {
+        let at = idx(v, "products", "alkemio-mailslurper");
+        v["products"][at]["scope"] = "official_artifact".into();
+    });
     assert!(
         why.contains(
             "alkemio-mailslurper scope OfficialArtifact is not its provenance's ThirdPartyImage"
@@ -1407,7 +1475,10 @@ fn product_scope_must_match_provenance() {
         why.contains("swarmail scope OfficialArtifact is not its provenance's Candidate"),
         "{why}"
     );
-    let why = v3_refusals(|v| v["products"][7]["release_tag"] = "v1.0.0".into());
+    let why = v3_refusals(|v| {
+        let at = idx(v, "products", "alkemio-mailslurper");
+        v["products"][at]["release_tag"] = "v1.0.0".into();
+    });
     assert!(
         why.contains("alkemio-mailslurper is a third-party image: it has no release tag"),
         "{why}"
@@ -1417,10 +1488,11 @@ fn product_scope_must_match_provenance() {
     let (_dir, entry) = image_pin(root.path(), &ImageKnobs::default());
     let lock = lock_with(TargetKind::AlkemioMailslurper, entry);
     let mut v = p3();
-    v["products"][7]["executable_sha256"] = "5".repeat(64).into();
+    let at = idx(&v, "products", "alkemio-mailslurper");
+    v["products"][at]["executable_sha256"] = "5".repeat(64).into();
     let ok = protocol_from(v.clone()).unwrap();
     protocol::products_match(&ok, &lock).expect("an image pin matches its image scope");
-    v["products"][7]["scope"] = "official_artifact".into();
+    v["products"][at]["scope"] = "official_artifact".into();
     let why = refusals(protocol::products_match(&protocol_from(v).unwrap(), &lock));
     assert!(
         why.contains("protocol scope Some(OfficialArtifact) is not what the lock's pin is"),
@@ -1498,16 +1570,24 @@ fn v2_protocol_refuses_v3_sections() {
 #[test]
 fn frozen_only_when_nothing_unresolved_and_no_pending() {
     let lock = lock4(v4());
-    let p = Protocol::parse(PROTOCOL_V3).unwrap();
-    // The committed protocol is a draft and says what it lacks.
-    assert_eq!(p.status, protocol::Status::Draft);
-    assert!(!p.unresolved.is_empty());
-    let why = refusals(protocol::collection_ready(&p, &lock));
+    let pending = lock4(pending_v4());
+    let frozen = Protocol::parse(PROTOCOL_V3).unwrap();
+    // The committed protocol is frozen with nothing unresolved.
+    assert_eq!(frozen.status, protocol::Status::Frozen);
+    assert!(frozen.unresolved.is_empty());
+    protocol::collection_ready(&frozen, &lock).expect("the committed pair is ready");
+    // A draft says what it lacks, and a lock that still has pending rows
+    // refuses each by name even once the protocol is frozen.
+    let mut draft = frozen.clone();
+    draft.status = protocol::Status::Draft;
+    draft.unresolved = vec!["mailslurper: authored gap".into()];
+    let why = refusals(protocol::collection_ready(&draft, &lock));
     assert!(why.contains("protocol is a draft, not frozen"), "{why}");
     assert!(
-        why.contains("unresolved: mailslurper: no verified pin"),
+        why.contains("unresolved: mailslurper: authored gap"),
         "{why}"
     );
+    let why = refusals(protocol::collection_ready(&frozen, &pending));
     for t in PENDING {
         assert!(
             why.contains(&format!("{t}: pending, no verified pin")),
@@ -1515,25 +1595,19 @@ fn frozen_only_when_nothing_unresolved_and_no_pending() {
         );
     }
     // Freezing it with entries still unresolved is itself refused.
-    let why = v3_refusals(|v| v["status"] = "frozen".into());
+    let why = v3_refusals(|v| v["unresolved"] = json!(["authored gap"]));
     assert!(
         why.contains("a frozen protocol has nothing unresolved"),
         "{why}"
     );
-    // Emptying `unresolved` alone does not admit it: the pending rows do.
-    let mut frozen = p.clone();
-    frozen.status = protocol::Status::Frozen;
-    frozen.unresolved.clear();
-    frozen
-        .validate()
-        .expect("structurally a frozen v3 can stand");
-    let why = refusals(protocol::collection_ready(&frozen, &lock));
-    assert!(why.contains("pending, no verified pin"), "{why}");
-    assert!(!why.contains("a frozen protocol has nothing unresolved"));
+    assert!(!why.contains("pending, no verified pin"));
     // The unenforced profile and unmatched storage stay labelled.
-    assert_eq!(p.storage.profile, Some(protocol::StorageProfile::Unmatched));
     assert_eq!(
-        p.resources.profile,
+        frozen.storage.profile,
+        Some(protocol::StorageProfile::Unmatched)
+    );
+    assert_eq!(
+        frozen.resources.profile,
         Some(protocol::ResourceProfile::UnenforcedLocal)
     );
 }
@@ -1547,25 +1621,71 @@ fn current_lock_v4_validates_and_verifies() {
     assert_eq!(lock.lock_version, 4);
     let p = Protocol::parse(PROTOCOL_V3).unwrap();
     protocol::pairing(&p, &lock).unwrap();
-    protocol::retention_matches(&p, &lock).expect("retention is as launched where a pin exists");
+    protocol::retention_matches(&p, &lock).expect("retention is as launched");
     protocol::products_match(&p, &lock).expect("products are the locked executables");
     protocol::capabilities_match(&p, &lock).expect("citations resolve");
-    // The pending rows have no capture directory, and no document of an
-    // official row moved.
-    for t in PENDING {
-        assert!(!evals_dir().join("sources").join(t.name()).exists(), "{t}");
+    protocol::does_not_start_matches(&p, &lock).expect("the published result cites its pin");
+    // Every competitor is pinned, none is pending, and each has a capture
+    // directory of its own.
+    for t in protocol::TargetKind::ALL.into_iter().skip(1) {
+        let e = lock.entry(t).unwrap();
+        assert!(e.pin.is_some() && e.pending.is_none(), "{t}");
+        assert!(evals_dir().join("sources").join(t.name()).is_dir(), "{t}");
     }
-    assert!(evals_dir().join("sources/inbucket").is_dir());
-    assert!(lock.pin(TargetKind::Inbucket).is_some());
+    // Every tagged source is observed, every document attribution too.
+    for t in [
+        TargetKind::Mailslurper,
+        TargetKind::MailslurperSourceBuild,
+        TargetKind::Smtp4dev,
+        TargetKind::Inbucket,
+        TargetKind::Greenmail,
+    ] {
+        let pin = lock.pin(t).unwrap();
+        assert!(pin.tagged_source.gap().is_none(), "{t}");
+        assert!(
+            pin.documents.iter().all(|d| d.attribution.gap().is_none()),
+            "{t}"
+        );
+    }
 }
 
-/// What `mail_compare check` prints over the committed files: it refuses,
-/// and it names each open gap (the four pending rows, the Inbucket pin's
-/// unresolved facts, and every line of the protocol's own unresolved list).
 #[test]
-fn committed_check_lists_every_open_gap() {
+fn committed_protocol_v3_is_ready_for_collection() {
+    // The same two checks `mail_compare check` runs over the committed files.
     let lock = lock4(v4());
     let p = Protocol::parse(PROTOCOL_V3).unwrap();
+    protocol::collection_ready(&p, &lock).expect("ready for collection");
+    lock.verify_files(&evals_dir())
+        .expect("and its documents verify");
+    assert_eq!(p.status, protocol::Status::Frozen);
+    assert!(p.unresolved.is_empty());
+    // Every capability is stated with a citation or not_inspected.
+    for c in p.capabilities.iter().flatten() {
+        for (key, cap) in c.each() {
+            match cap.status {
+                protocol::CapabilityStatus::NotInspected => assert!(cap.cite.is_none()),
+                _ => assert!(cap.cite.is_some(), "{} {key}", c.target),
+            }
+        }
+    }
+    assert_eq!(
+        p.claim.as_ref().unwrap().scope,
+        protocol::ClaimScope::OfficialArtifact
+    );
+}
+
+/// What `mail_compare check` prints while gaps remain: it refuses, and it
+/// names each one (a pending row, an unresolved tagged source, and every line
+/// of the protocol's own unresolved list). Authored from the committed pair.
+#[test]
+fn committed_check_lists_every_open_gap() {
+    let mut l = pending_v4();
+    let at = entry_of(&mut l, "inbucket");
+    l["entries"][at]["pin"]["tagged_source"] = json!({"unresolved": "authored gap"});
+    let lock = lock4(l);
+    let mut p = Protocol::parse(PROTOCOL_V3).unwrap();
+    p.status = protocol::Status::Draft;
+    p.unresolved = vec!["inbucket: authored protocol gap".into()];
     let why = refusals(protocol::collection_ready(&p, &lock));
     assert!(why.contains("protocol is a draft, not frozen"), "{why}");
     for t in PENDING {
@@ -1575,25 +1695,12 @@ fn committed_check_lists_every_open_gap() {
         );
     }
     assert!(
-        why.contains("inbucket: tagged source unresolved"),
-        "the Inbucket pin's own gap is named: {why}"
+        why.contains("inbucket: tagged source unresolved: authored gap"),
+        "the pin's own gap is named: {why}"
     );
-    assert!(
-        !why.contains("inbucket: pending"),
-        "Inbucket is pinned, not pending: {why}"
-    );
+    assert!(!why.contains("inbucket: pending"), "{why}");
     for gap in &p.unresolved {
         assert!(why.contains(&format!("unresolved: {gap}")), "{gap}: {why}");
-    }
-    for gap in [
-        "inbucket: tagged_source is unresolved",
-        "inbucket: best_wait is unresolved",
-        "greenmail: no verified pin",
-        "alkemio-mailslurper: no verified pin",
-        "smtp4dev: no verified pin",
-        "mailslurper: no verified pin",
-    ] {
-        assert!(p.unresolved.iter().any(|u| u.starts_with(gap)), "{gap}");
     }
 }
 
@@ -1609,7 +1716,7 @@ fn declared_competitors_come_from_the_protocol() {
         [
             "mailpit",
             "mailhog",
-            "mailslurper",
+            "mailslurper-source-build",
             "smtp4dev",
             "inbucket",
             "greenmail",
@@ -1644,7 +1751,7 @@ fn report_refuses_merged_v2_v3_runs() {
 fn row_labels_present_for_each_target() {
     let p = Protocol::parse(PROTOCOL_V3).unwrap();
     let labels = report::row_labels(&p);
-    assert_eq!(labels.len(), 8);
+    assert_eq!(labels.len(), 9);
     let of = |t: TargetKind| labels.iter().find(|l| l.target == t).unwrap();
     assert_eq!(
         of(TargetKind::AlkemioMailslurper).source,
@@ -1687,6 +1794,7 @@ fn declared(kind: TargetKind, roles: &[Role], script: &[&str]) -> LaunchSpec {
     spec.extra.config = Some(protocol::ConfigFile {
         name: "run.sh".into(),
         lines: script.iter().map(|l| (*l).to_owned()).collect(),
+        cwd: false,
     });
     spec
 }
@@ -2531,7 +2639,7 @@ fn page_body(kind: TargetKind, all: &[(String, String)], page: usize, total: usi
             for i in &mut items {
                 i["fromAddress"] = i["from"].take();
             }
-            json!({"mailItems": items, "totalPages": total.div_ceil(size), "totalMailItems": total})
+            json!({"mailItems": items, "totalPages": total.div_ceil(size), "totalRecords": total})
         }
         TargetKind::Smtp4dev => {
             json!({"results": slice, "currentPage": page, "pageCount": total.div_ceil(size),
@@ -2549,8 +2657,15 @@ fn mailbox(n: usize, prefix: &str) -> Vec<(String, String)> {
 }
 
 fn page_of(target: &str) -> usize {
+    // MailSlurper asks for `pageNumber`, smtp4dev (its API XML names the
+    // parameter) for `page`.
+    let key = if target.contains("pageNumber=") {
+        "pageNumber="
+    } else {
+        "page="
+    };
     target
-        .split("pageNumber=")
+        .split(key)
         .nth(1)
         .and_then(|r| r.split('&').next())
         .and_then(|n| n.parse().ok())
@@ -2592,7 +2707,7 @@ fn decode_page_refuses_incomplete_wrong_and_malformed_bodies() {
         for key in [
             "mailItems",
             "results",
-            "totalMailItems",
+            "totalRecords",
             "rowCount",
             "currentPage",
         ] {
@@ -3074,7 +3189,7 @@ fn wrapper_requires_every_declared_competitor() {
     let declared = [
         "mailpit",
         "mailhog",
-        "mailslurper",
+        "mailslurper-source-build",
         "smtp4dev",
         "inbucket",
         "greenmail",
@@ -3187,7 +3302,7 @@ fn wrapper_aliases_still_work() {
     );
     assert_eq!(code, 2);
     assert!(
-        text.contains("the protocol declares mailslurper; pass --bin mailslurper=PATH"),
+        text.contains("the protocol declares mailslurper-source-build; pass --bin mailslurper-source-build=PATH"),
         "{text}"
     );
     let (code, text) = wrapper(
@@ -3340,98 +3455,950 @@ async fn a_declared_bind_that_arrives_after_readiness_is_waited_for() {
     child.wait().unwrap();
 }
 
+// ---- ruling-scoped vocabulary: refusal tests (operator rulings 2026-11-07) -
+
+/// The committed lock's pin of `t`, edited, as a lock (never verified).
+fn lock_edited(t: &str, f: impl Fn(&mut Value)) -> SourceLock {
+    let mut l = v4();
+    let at = entry_of(&mut l, t);
+    f(&mut l["entries"][at]["pin"]);
+    lock4(l)
+}
+
+fn why_pin(t: &str, f: impl Fn(&mut Value)) -> String {
+    refusals(lock_edited(t, f).validate())
+}
+
+/// Edit one document of a pin in place (by its path).
+fn edit_doc(p: &mut Value, path: &str, f: impl Fn(&mut Value)) {
+    let mut hit = false;
+    for d in p["documents"].as_array_mut().unwrap() {
+        if d["path"] == path {
+            f(d);
+            hit = true;
+        }
+    }
+    assert!(hit, "{path}");
+}
+
+/// A copy of the committed documents with one document's bytes edited, and
+/// the lock's size and digest for it kept in step (so only the content's own
+/// meaning can refuse it).
+fn tampered(
+    t: &str,
+    doc: &str,
+    edit: impl Fn(Vec<u8>) -> Vec<u8>,
+) -> (tempfile::TempDir, PathBuf, SourceLock) {
+    let root = tempfile::tempdir().unwrap();
+    let dir = evals_copy(root.path());
+    let path = format!("sources/{t}/{doc}");
+    let bytes = edit(std::fs::read(dir.join(&path)).unwrap());
+    std::fs::write(dir.join(&path), &bytes).unwrap();
+    let mut l = v4();
+    let at = entry_of(&mut l, t);
+    edit_doc(&mut l["entries"][at]["pin"], &path, |d| {
+        d["size"] = bytes.len().into();
+        d["sha256"] = sha(&bytes).into();
+    });
+    (root, dir, lock4(l))
+}
+
+fn replace_bytes(bytes: Vec<u8>, from: &str, to: &str) -> Vec<u8> {
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(text.contains(from), "{from}");
+    text.replace(from, to).into_bytes()
+}
+
+#[test]
+fn mailslurper_source_build_is_neither_mailslurper_nor_the_shim() {
+    let b = TargetKind::MailslurperSourceBuild;
+    assert_eq!(b.name(), "mailslurper-source-build");
+    assert_eq!(TargetKind::parse("mailslurper-source-build"), Some(b));
+    for other in [
+        TargetKind::Mailslurper,
+        TargetKind::AlkemioMailslurper,
+        TargetKind::Smtp4dev,
+    ] {
+        assert_ne!(b, other);
+        assert_ne!(b.name(), other.name());
+    }
+    assert_ne!(b.name(), "mailslurper-shim");
+    assert_ne!(
+        b.provenance(),
+        TargetKind::Mailslurper.provenance(),
+        "a source build is not the official release"
+    );
+    assert!(
+        matches!(b.provenance(), protocol::Provenance::SourceBuild(h) if h.ends_with("/mailslurper"))
+    );
+    assert_eq!(b.official_home(), TargetKind::Mailslurper.official_home());
+    assert_ne!(format!("sources/{b}/"), "sources/mailslurper/");
+}
+
+#[test]
+fn source_build_refuses_unresolved_build_provenance() {
+    let why = why_pin("mailslurper-source-build", |p| {
+        p["binary_build_provenance"] = json!({"unresolved": "no record"});
+    });
+    assert!(why.contains("needs observed build provenance"), "{why}");
+}
+
+#[test]
+fn source_build_refuses_provenance_on_another_commit() {
+    let why = why_pin("mailslurper-source-build", |p| {
+        p["binary_build_provenance"]["observed"]["commit"] = "9".repeat(40).into();
+    });
+    assert!(
+        why.contains("names a commit other than the tagged"),
+        "{why}"
+    );
+}
+
+#[test]
+fn source_build_refuses_missing_build_evidence() {
+    let why = why_pin("mailslurper-source-build", |p| {
+        p["binary_build_provenance"]["observed"]["evidence"] =
+            "sources/mailslurper-source-build/mailslurper-license.txt".into();
+    });
+    assert!(why.contains("cites no captured build evidence"), "{why}");
+    // A build record that is not supplied evidence is refused too.
+    let why = why_pin("mailslurper-source-build", |p| {
+        for d in p["documents"].as_array_mut().unwrap() {
+            if d["kind"] == "build_evidence" {
+                d["attribution"] = json!({"observed": {"from": "api",
+                    "url": "https://api.github.com/repos/mailslurper/mailslurper/x"}});
+            }
+        }
+    });
+    assert!(why.contains("must be attributed as supplied"), "{why}");
+}
+
+#[test]
+fn source_build_refuses_other_download() {
+    let why = why_pin("mailslurper-source-build", |p| {
+        p["artifact"]["download"] = "https://github.com/mailslurper/mailslurper/releases/download/release-1.15.0/mailslurper".into();
+    });
+    assert!(
+        why.contains("download is the tagged commit's tree"),
+        "{why}"
+    );
+    let why = why_pin("mailslurper-source-build", |p| {
+        p["artifact"]["digest_basis"] = "upstream_release_metadata".into();
+        p["artifact"]["upstream_digest"] = p["artifact"]["sha256"].clone();
+    });
+    assert!(why.contains("a bare executable digested locally"), "{why}");
+}
+
+#[test]
+fn reported_version_accepted_for_mailslurper_rows_at_release_1_15_0() {
+    let lock = lock4(v4());
+    lock.validate().unwrap();
+    for t in [TargetKind::Mailslurper, TargetKind::MailslurperSourceBuild] {
+        let pin = lock.pin(t).unwrap();
+        assert_eq!(pin.release.as_ref().unwrap().tag, "release-1.15.0");
+        assert!(pin.artifact.version_output.contains("1.14.1"), "{t}");
+        assert!(!pin.artifact.version_output.contains("1.15.0"), "{t}");
+    }
+    // The report's version cell is derived from the closed constant.
+    let p = Protocol::parse(PROTOCOL_V3).unwrap();
+    let labels = report::row_labels(&p);
+    for t in [TargetKind::Mailslurper, TargetKind::MailslurperSourceBuild] {
+        let l = labels.iter().find(|l| l.target == t).unwrap();
+        assert_eq!(
+            l.version.as_deref(),
+            Some("1.14.1 reported / tag release-1.15.0")
+        );
+    }
+    assert_eq!(labels.iter().filter(|l| l.version.is_some()).count(), 2);
+}
+
+#[test]
+fn reported_version_refused_for_another_target() {
+    for t in ["smtp4dev", "inbucket"] {
+        let why = why_pin(t, |p| {
+            p["artifact"]["version_output"] = "Starting MailSlurper Server v1.14.1".into();
+        });
+        assert!(
+            why.contains("the observed version output does not name"),
+            "{t}: {why}"
+        );
+    }
+}
+
+#[test]
+fn reported_version_refused_for_another_tag() {
+    let why = why_pin("mailslurper", |p| {
+        p["release"]["tag"] = "release-1.15.1".into();
+        p["release"]["html_url"] =
+            "https://github.com/mailslurper/mailslurper/releases/tag/release-1.15.1".into();
+    });
+    assert!(
+        why.contains("the observed version output does not name release-1.15.1"),
+        "{why}"
+    );
+}
+
+#[test]
+fn version_output_naming_neither_version_is_refused() {
+    for t in ["mailslurper", "mailslurper-source-build"] {
+        let why = why_pin(t, |p| {
+            p["artifact"]["version_output"] = "Starting MailSlurper Server v9.9.9".into();
+        });
+        assert!(
+            why.contains("the observed version output does not name release-1.15.0"),
+            "{t}: {why}"
+        );
+    }
+}
+
+#[test]
+fn does_not_start_refuses_undeclared_target() {
+    let why = v3_refusals(|v| v["does_not_start"] = json!([{"target": "swarmail", "cite": "x"}]));
+    assert!(
+        why.contains("does_not_start: swarmail is not a declared competitor"),
+        "{why}"
+    );
+    let why = v3_refusals(|v| {
+        v["targets"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|t| t != "greenmail");
+        v["does_not_start"] = json!([{"target": "greenmail", "cite": "x"}]);
+    });
+    assert!(
+        why.contains("does_not_start: greenmail is not a declared competitor"),
+        "{why}"
+    );
+    let why = v3_refusals(|v| {
+        let d = v["does_not_start"][0].clone();
+        v["does_not_start"].as_array_mut().unwrap().push(d);
+    });
+    assert!(
+        why.contains("does_not_start: mailslurper is listed twice"),
+        "{why}"
+    );
+    let why = v3_refusals(|v| v["does_not_start"][0]["cite"] = " ".into());
+    assert!(
+        why.contains("does_not_start: mailslurper cites no document"),
+        "{why}"
+    );
+}
+
+#[test]
+fn does_not_start_refuses_target_without_pin() {
+    let p = Protocol::parse(PROTOCOL_V3).unwrap();
+    let mut l = v4();
+    let at = entry_of(&mut l, "mailslurper");
+    l["entries"][at]["pin"] = Value::Null;
+    let why = refusals(protocol::does_not_start_matches(&p, &lock4(l)));
+    assert!(
+        why.contains("does_not_start: mailslurper has no pin"),
+        "{why}"
+    );
+}
+
+#[test]
+fn does_not_start_refuses_cite_outside_pin() {
+    let lock = lock4(v4());
+    for cite in [
+        "sources/mailslurper/not-a-document.txt",
+        "sources/mailslurper-source-build/mailslurper-license.txt",
+    ] {
+        let mut p = Protocol::parse(PROTOCOL_V3).unwrap();
+        p.does_not_start.as_mut().unwrap()[0].cite = cite.into();
+        let why = refusals(protocol::does_not_start_matches(&p, &lock));
+        assert!(
+            why.contains("which is no document of its pin"),
+            "{cite}: {why}"
+        );
+        assert!(refusals(protocol::collection_ready(&p, &lock)).contains("does_not_start"));
+    }
+}
+
+#[test]
+fn does_not_start_refused_on_v2() {
+    let mut v = json(PROTOCOL);
+    v["does_not_start"] = json!([{"target": "mailpit", "cite": "x"}]);
+    let why = refusals(protocol_from(v).unwrap().validate());
+    assert!(why.contains("carries version 3 sections"), "{why}");
+}
+
+#[test]
+fn plan_yields_no_coordinate_for_a_does_not_start_target() {
+    let p = Protocol::parse(PROTOCOL_V3).unwrap();
+    let plan = runner::plan(&p);
+    assert!(!plan.is_empty());
+    assert!(plan.iter().all(|c| c.target != TargetKind::Mailslurper));
+    for t in protocol::declared_competitors(&p) {
+        assert!(plan.iter().any(|c| c.target == t), "{t}");
+    }
+    assert!(plan.iter().any(|c| c.target == TargetKind::Swarmail));
+    // The row keeps its slot in every rotation: the denominator is the suite.
+    assert!(
+        p.statistics
+            .orders
+            .iter()
+            .all(|o| o.contains(&TargetKind::Mailslurper))
+    );
+}
+
+#[test]
+fn report_row_for_does_not_start_has_label_and_no_number() {
+    let p = Protocol::parse(PROTOCOL_V3).unwrap();
+    let labels = report::row_labels(&p);
+    let l = labels
+        .iter()
+        .find(|l| l.target == TargetKind::Mailslurper)
+        .unwrap();
+    assert_eq!(
+        l.does_not_start.as_deref(),
+        Some(
+            "does not start (published result: sources/mailslurper/mailslurper-official-failure.txt)"
+        )
+    );
+    assert!(
+        labels
+            .iter()
+            .filter(|l| l.target != TargetKind::Mailslurper)
+            .all(|l| l.does_not_start.is_none())
+    );
+    let blocked = report::blocked_rows(&p);
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked[0].target, TargetKind::Mailslurper);
+    assert_eq!(blocked[0].cells.len(), p.throughput.len() + p.waits.len());
+    assert!(
+        blocked[0]
+            .cells
+            .iter()
+            .all(|c| c.outcome == "blocked" && c.requested > 0)
+    );
+    let text = serde_json::to_string(&blocked).unwrap();
+    assert!(
+        !text.contains("per_second") && !text.contains("latency"),
+        "{text}"
+    );
+    // The built-from-source row is labelled as such, with its runtime.
+    let sb = labels
+        .iter()
+        .find(|l| l.target == TargetKind::MailslurperSourceBuild)
+        .unwrap();
+    assert_eq!(sb.source, "built from source (cgo; host glibc, unpinned)");
+    assert_eq!(sb.runtime, Some("host glibc (unpinned)"));
+    let gm = labels
+        .iter()
+        .find(|l| l.target == TargetKind::Greenmail)
+        .unwrap();
+    assert!(gm.integrity.unwrap().contains("authenticity not verified"));
+    assert_eq!(gm.runtime, Some("JRE (pinned)"));
+    let ak = labels
+        .iter()
+        .find(|l| l.target == TargetKind::AlkemioMailslurper)
+        .unwrap();
+    assert!(ak.runtime.unwrap().starts_with("musl loader (pinned"));
+}
+
+#[test]
+fn runtime_refused_on_a_third_target() {
+    let jre = lock4(v4())
+        .pin(TargetKind::Greenmail)
+        .unwrap()
+        .runtime
+        .clone()
+        .unwrap();
+    for t in ["smtp4dev", "mailslurper", "inbucket"] {
+        let why = why_pin(t, |p| {
+            p["runtime"] = serde_json::to_value(&jre).unwrap();
+            p["launch"]
+                .as_array_mut()
+                .unwrap()
+                .push("{artifact}".into());
+        });
+        assert!(
+            why.contains(
+                "only greenmail (a JRE) and alkemio-mailslurper (a musl loader) pin a runtime"
+            ),
+            "{t}: {why}"
+        );
+    }
+}
+
+#[test]
+fn loader_runtime_refuses_missing_member() {
+    let why = why_pin("alkemio-mailslurper", |p| {
+        p["runtime"]["checked_members"] = json!([])
+    });
+    assert!(
+        why.contains("the runtime does not check lib/ld-musl-x86_64.so.1"),
+        "{why}"
+    );
+    let why = why_pin("alkemio-mailslurper", |p| {
+        p["runtime"]["checked_members"][0]["path"] = "lib/ld-musl-aarch64.so.1".into();
+    });
+    assert!(
+        why.contains("the runtime does not check lib/ld-musl-x86_64.so.1"),
+        "{why}"
+    );
+    let why = why_pin("alkemio-mailslurper", |p| {
+        p.as_object_mut().unwrap().remove("runtime");
+    });
+    assert!(why.contains("needs a pinned runtime"), "{why}");
+}
+
+#[test]
+fn loader_runtime_refuses_layer_absent_from_manifest() {
+    let other = "1".repeat(64);
+    let lock = lock_edited("alkemio-mailslurper", |p| {
+        p["runtime"]["sha256"] = other.clone().into();
+        p["runtime"]["download"] =
+            format!("https://ghcr.io/v2/alkem-io/test-suites/mailslurper/blobs/sha256:{other}")
+                .into();
+    });
+    lock.validate().expect("structurally fine");
+    let why = refusals(lock.verify_files(&evals_dir()));
+    assert!(
+        why.contains("does not list the runtime's layer sha256:"),
+        "{why}"
+    );
+    // The download must name the blob of the runtime's own digest.
+    let why = why_pin("alkemio-mailslurper", |p| {
+        p["runtime"]["download"] =
+            "https://ghcr.io/v2/alkem-io/test-suites/mailslurper/blobs/sha256:".into();
+    });
+    assert!(
+        why.contains("is not the image blob of its own sha256"),
+        "{why}"
+    );
+    // The committed loader layer is listed by the committed manifest.
+    lock4(v4()).verify_files(&evals_dir()).unwrap();
+}
+
+#[test]
+fn runtime_license_off_the_list_is_refused() {
+    for t in ["alkemio-mailslurper", "greenmail"] {
+        for bad in [
+            "GPL-3.0-only",
+            "GPL-2.0-only",
+            "Apache-2.0",
+            "LGPL-2.1-or-later",
+            "",
+        ] {
+            let why = why_pin(t, |p| p["runtime"]["license"]["spdx"] = bad.into());
+            assert!(
+                why.contains("is not on the runtime list"),
+                "{t} {bad:?}: {why}"
+            );
+        }
+        for ok in ["MIT", "GPL-2.0-only WITH Classpath-exception-2.0"] {
+            let r = lock_edited(t, |p| p["runtime"]["license"]["spdx"] = ok.into()).validate();
+            let why = r.err().map(|e| e.0.join("\n")).unwrap_or_default();
+            assert!(!why.contains("runtime list"), "{t} {ok}: {why}");
+        }
+    }
+}
+
+#[test]
+fn permissive_list_is_exactly_the_five() {
+    assert_eq!(
+        protocol::PERMISSIVE,
+        ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC"]
+    );
+    // MIT on the runtime list widens nothing for a measured product: a
+    // product license outside the five is still refused.
+    for bad in [
+        "GPL-2.0-only WITH Classpath-exception-2.0",
+        "MPL-2.0",
+        "Zlib",
+    ] {
+        let why = why_pin("inbucket", |p| p["license"]["spdx"] = bad.into());
+        assert!(
+            why.contains("is not on the permissive list"),
+            "{bad}: {why}"
+        );
+    }
+    // And deny.toml's own allowlist is untouched by the runtime ruling.
+    let deny =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("deny.toml")).unwrap();
+    assert!(!deny.contains("Classpath"));
+}
+
+#[test]
+fn loader_launch_execs_the_pinned_loader_with_the_binary_as_artifact() {
+    let lock = lock4(v4());
+    let pin = lock.pin(TargetKind::AlkemioMailslurper).unwrap();
+    let root = PathBuf::from("/runtime/root");
+    let exe = PathBuf::from("/bin/extracted/mailslurper");
+    let spec = LaunchSpec::from_pin(
+        TargetKind::AlkemioMailslurper,
+        exe.clone(),
+        Some(root.clone()),
+        pin,
+    )
+    .unwrap();
+    assert_eq!(spec.binary, root.join("lib/ld-musl-x86_64.so.1"));
+    assert_eq!(spec.extra.artifact, Some(exe));
+    assert_eq!(
+        spec.template.first().map(String::as_str),
+        Some("{artifact}")
+    );
+    assert_eq!(
+        spec.expected_sha256.as_deref(),
+        Some(pin.artifact.executable_sha256.as_str())
+    );
+    let rt = pin.runtime.as_ref().unwrap();
+    assert_eq!(
+        spec.extra.members,
+        vec![(
+            root.join("lib/ld-musl-x86_64.so.1"),
+            rt.checked_members[0].sha256.clone()
+        )]
+    );
+    // No host loader and no library path anywhere in the launch.
+    assert!(spec.extra.env.iter().all(|[n, _]| n != "LD_LIBRARY_PATH"));
+    assert!(!spec.binary.starts_with("/lib"));
+    // The config is rendered where the program, which has no flag for it, reads it.
+    assert!(spec.extra.config.as_ref().unwrap().cwd);
+    // GreenMail still execs bin/java; a pin with no runtime takes none.
+    let g = lock.pin(TargetKind::Greenmail).unwrap();
+    let gs = LaunchSpec::from_pin(
+        TargetKind::Greenmail,
+        PathBuf::from("/j.jar"),
+        Some(root.clone()),
+        g,
+    )
+    .unwrap();
+    assert_eq!(gs.binary, root.join("bin/java"));
+    let s4 = lock.pin(TargetKind::Smtp4dev).unwrap();
+    let err = LaunchSpec::from_pin(TargetKind::Smtp4dev, PathBuf::from("/x"), Some(root), s4);
+    assert!(err.unwrap_err().contains("its pin has no runtime"));
+}
+
+#[test]
+fn registry_download_outside_home_is_refused() {
+    let why = why_pin("greenmail", |p| {
+        p["artifact"]["download"] =
+            "https://example.invalid/greenmail-standalone-2.1.15.jar".into();
+    });
+    assert!(
+        why.contains("is not under the registry https://repo1.maven.org/maven2/com/icegreen/greenmail-standalone/"),
+        "{why}"
+    );
+    let why = why_pin("greenmail", |p| {
+        p["artifact"]["download"] = "https://repo1.maven.org/maven2/com/icegreen/greenmail-standalone/2.1.14/greenmail-standalone-2.1.15.jar".into();
+    });
+    assert!(why.contains("is not under the registry"), "{why}");
+}
+
+#[test]
+fn registry_basis_on_another_target_is_refused() {
+    let why = why_pin("smtp4dev", |p| {
+        p["artifact"]["digest_basis"] = "registry_checksum".into()
+    });
+    assert!(why.contains("no registry is recorded for it"), "{why}");
+}
+
+#[test]
+fn registry_checksum_document_disagreeing_is_refused() {
+    let (_r, dir, lock) = tampered("greenmail", "greenmail-jar.sha256", |_| {
+        "2".repeat(64).into_bytes()
+    });
+    let why = refusals(lock.verify_files(&dir));
+    assert!(
+        why.contains("disagrees with the pin's upstream digest"),
+        "{why}"
+    );
+    // The honest bytes agree.
+    lock4(v4()).verify_files(&evals_dir()).unwrap();
+}
+
+#[test]
+fn registry_pin_without_checksum_document_is_refused() {
+    let why = why_pin("greenmail", |p| {
+        p["documents"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|d| d["kind"] != "checksum");
+    });
+    assert!(
+        why.contains("needs its captured Checksum document"),
+        "{why}"
+    );
+}
+
+#[test]
+fn registry_checksum_record_must_name_the_sha256_url() {
+    let why = why_pin("greenmail", |p| {
+        edit_doc(p, "sources/greenmail/greenmail-jar.sha256", |d| {
+            let sha = d["sha256"].as_str().unwrap().to_owned();
+            d["attribution"]["observed"]["record"] =
+                format!(".compare-bins/2026-11-07-supply/greenmail-maven/x sha256 {sha}").into();
+        });
+    });
+    assert!(
+        why.contains("the checksum record must name https://repo1.maven.org/"),
+        "{why}"
+    );
+}
+
+#[test]
+fn upstream_release_pin_with_unlisted_asset_is_still_refused() {
+    let lock = lock_edited("inbucket", |p| {
+        p["artifact"]["file_name"] = "inbucket_9.9.9_linux_amd64.tar.gz".into();
+        p["artifact"]["download"] = "https://github.com/inbucket/inbucket/releases/download/v3.2.0/inbucket_9.9.9_linux_amd64.tar.gz".into();
+    });
+    let why = refusals(lock.verify_files(&evals_dir()));
+    assert!(
+        why.contains("release metadata lists no asset inbucket_9.9.9_linux_amd64.tar.gz"),
+        "{why}"
+    );
+    // The registry basis skips only the asset list: tag, page, commitish and
+    // date still apply to GreenMail's release metadata.
+    let lock = lock_edited("greenmail", |p| {
+        p["release"]["target_commitish"] = "main".into()
+    });
+    let why = refusals(lock.verify_files(&evals_dir()));
+    assert!(
+        why.contains("release metadata target_commitish disagrees with the pin"),
+        "{why}"
+    );
+}
+
+#[test]
+fn tree_rebuild_matches_authored_git_mktree_fixture() {
+    // Authored with `git mktree` (a blob, an executable, a symlink and a
+    // subtree), committed as bytes; the id is git's own answer.
+    let fixture = json(include_bytes!("mktree-fixture.json"));
+    assert_eq!(fixture["sha"], "7eecf41bf68c97fedabeb2d6727c78d5686810fd");
+    let entries = fixture["tree"].as_array().unwrap();
+    assert_eq!(entries.len(), 4);
+    assert_eq!(
+        protocol::tree_object_id(entries).as_deref(),
+        fixture["sha"].as_str()
+    );
+    // An edited sha, path, mode or order is a different object.
+    for edit in [
+        (|e: &mut Vec<Value>| e[0]["sha"] = "0".repeat(40).into()) as fn(&mut Vec<Value>),
+        |e| e[1]["path"] = "bb".into(),
+        |e| e[1]["mode"] = "100644".into(),
+        |e| e.swap(0, 1),
+        |e| e[3]["mode"] = "100644".into(),
+    ] {
+        let mut e = entries.clone();
+        edit(&mut e);
+        assert_ne!(
+            protocol::tree_object_id(&e).as_deref(),
+            fixture["sha"].as_str()
+        );
+    }
+    // An entry that is not one has no id.
+    let mut bad = entries.clone();
+    bad[0]["mode"] = "100664".into();
+    assert_eq!(protocol::tree_object_id(&bad), None);
+    let mut bad = entries.clone();
+    bad[0]["sha"] = "xyz".into();
+    assert_eq!(protocol::tree_object_id(&bad), None);
+}
+
+#[test]
+fn edited_tree_entry_fails_the_rebuild() {
+    let (_r, dir, lock) = tampered("mailslurper", "mailslurper-tree.json", |b| {
+        replace_bytes(
+            b,
+            "678bb2b4e7ee4195a0acfad0295d19c4ac1dc96f",
+            "778bb2b4e7ee4195a0acfad0295d19c4ac1dc96f",
+        )
+    });
+    let why = refusals(lock.verify_files(&dir));
+    assert!(why.contains("does not rebuild to its own id"), "{why}");
+    let (_r, dir, lock) = tampered("smtp4dev", "smtp4dev-tree.json", |b| {
+        replace_bytes(b, "\"LICENSE.md\"", "\"LICENSE.mx\"")
+    });
+    let why = refusals(lock.verify_files(&dir));
+    assert!(why.contains("does not rebuild to its own id"), "{why}");
+}
+
+#[test]
+fn git_commit_naming_another_tree_is_refused() {
+    let (_r, dir, lock) = tampered("mailslurper", "mailslurper-commit.json", |b| {
+        replace_bytes(
+            b,
+            "5f29f08a747241992f5e8ffc25ca8fb35d550729",
+            "6f29f08a747241992f5e8ffc25ca8fb35d550729",
+        )
+    });
+    let why = refusals(lock.verify_files(&dir));
+    assert!(
+        why.contains("names a tree other than the captured one"),
+        "{why}"
+    );
+}
+
+#[test]
+fn git_commit_for_another_commit_is_refused() {
+    let (_r, dir, lock) = tampered("inbucket", "inbucket-commit.json", |b| {
+        // Only the object's own id changes (its url keeps the real one).
+        String::from_utf8(b)
+            .unwrap()
+            .replacen(
+                "\"sha\":\"742249691d2f8f40253411394a8bbb8e50561849\"",
+                "\"sha\":\"842249691d2f8f40253411394a8bbb8e50561849\"",
+                1,
+            )
+            .into_bytes()
+    });
+    let why = refusals(lock.verify_files(&dir));
+    assert!(
+        why.contains("the captured commit object is not the tagged commit"),
+        "{why}"
+    );
+}
+
+#[test]
+fn commit_attributed_blob_absent_from_tree_is_refused() {
+    let (_r, dir, lock) = tampered("mailslurper", "mailslurper-tree.json", |b| {
+        replace_bytes(b, "\"path\":\"LICENSE\"", "\"path\":\"LICENSX\"")
+    });
+    let why = refusals(lock.verify_files(&dir));
+    assert!(
+        why.contains("mailslurper-license.txt is not LICENSE in the tagged tree"),
+        "{why}"
+    );
+}
+
+#[test]
+fn member_refuses_escaping_path() {
+    for bad in ["../etc/passwd", "/abs/path", "a/../../b", "a//b", ""] {
+        let why = why_pin("smtp4dev", |p| {
+            edit_doc(p, "sources/smtp4dev/smtp4dev-api.xml", |d| {
+                d["attribution"]["observed"]["member"] = bad.into();
+            });
+        });
+        assert!(
+            why.contains("needs an archive digest and a confined member path"),
+            "{bad:?}: {why}"
+        );
+    }
+}
+
+#[test]
+fn member_refuses_bad_digest() {
+    for bad in ["xyz", "", &"A".repeat(64), &"1".repeat(63)] {
+        let why = why_pin("smtp4dev", |p| {
+            edit_doc(p, "sources/smtp4dev/smtp4dev-api.xml", |d| {
+                d["attribution"]["observed"]["archive_sha256"] = bad.into();
+            });
+        });
+        assert!(
+            why.contains("needs an archive digest and a confined member path"),
+            "{bad:?}: {why}"
+        );
+    }
+}
+
+#[test]
+fn member_refuses_archive_outside_the_allowed_set() {
+    let why = why_pin("smtp4dev", |p| {
+        edit_doc(p, "sources/smtp4dev/smtp4dev-api.xml", |d| {
+            d["attribution"]["observed"]["archive_sha256"] = "7".repeat(64).into();
+        });
+    });
+    assert!(
+        why.contains("neither the pin's artifact, its runtime nor a source archive"),
+        "{why}"
+    );
+    // The MailSlurper source archive belongs to the two MailSlurper rows only.
+    let why = why_pin("smtp4dev", |p| {
+        edit_doc(p, "sources/smtp4dev/smtp4dev-api.xml", |d| {
+            d["attribution"]["observed"]["archive_sha256"] = protocol::SOURCE_ARCHIVES[0].1.into();
+        });
+    });
+    assert!(why.contains("neither the pin's artifact"), "{why}");
+    // And only while the pin's tagged commit is the archive's own commit.
+    let why = why_pin("mailslurper", |p| {
+        p["tagged_source"]["observed"]["commit"] = "9".repeat(40).into();
+    });
+    assert!(why.contains("neither the pin's artifact"), "{why}");
+}
+
+#[test]
+fn output_refuses_empty_argv() {
+    for bad in [
+        json!([]),
+        json!([""]),
+        json!(["a b"]),
+        json!(["1", "2", "3", "4", "5", "6", "7", "8", "9"]),
+    ] {
+        let why = why_pin("inbucket", |p| {
+            edit_doc(p, "sources/inbucket/inbucket-help.txt", |d| {
+                d["attribution"]["observed"]["argv"] = bad.clone();
+            });
+        });
+        assert!(
+            why.contains("output attribution needs a short, non-empty, printable argv"),
+            "{bad}: {why}"
+        );
+    }
+}
+
+#[test]
+fn supplied_refuses_empty_record() {
+    for bad in ["", "   "] {
+        let why = why_pin("mailslurper", |p| {
+            edit_doc(
+                p,
+                "sources/mailslurper/mailslurper-official-failure.txt",
+                |d| {
+                    d["attribution"]["observed"]["record"] = bad.into();
+                },
+            );
+        });
+        assert!(
+            why.contains("supplied attribution must name the supply path"),
+            "{bad:?}: {why}"
+        );
+    }
+}
+
+#[test]
+fn supplied_refuses_record_without_document_digest() {
+    let why = why_pin("mailslurper", |p| {
+        edit_doc(
+            p,
+            "sources/mailslurper/mailslurper-official-failure.txt",
+            |d| {
+                d["attribution"]["observed"]["record"] = ".compare-bins/2026-11-07-supply/x".into();
+            },
+        );
+    });
+    assert!(
+        why.contains("supplied attribution must name the supply path"),
+        "{why}"
+    );
+    // Nor a record that does not name the supply at all.
+    let why = why_pin("mailslurper", |p| {
+        edit_doc(
+            p,
+            "sources/mailslurper/mailslurper-official-failure.txt",
+            |d| {
+                let sha = d["sha256"].as_str().unwrap().to_owned();
+                d["attribution"]["observed"]["record"] = format!("somewhere sha256 {sha}").into();
+            },
+        );
+    });
+    assert!(
+        why.contains("supplied attribution must name the supply path"),
+        "{why}"
+    );
+}
+
+#[test]
+fn official_pin_still_needs_an_observed_tagged_source_but_an_image_pin_does_not() {
+    let p = Protocol::parse(PROTOCOL_V3).unwrap();
+    let lock = lock_edited("inbucket", |pin| {
+        pin["tagged_source"] = json!({"unresolved": "authored gap"});
+    });
+    let why = refusals(protocol::collection_ready(&p, &lock));
+    assert!(
+        why.contains("inbucket: tagged source unresolved: authored gap"),
+        "{why}"
+    );
+    // The image pin's tagged-source gap is structural (validate_image refuses
+    // an observed one), so readiness does not count it.
+    let lock = lock4(v4());
+    assert!(
+        lock.pin(TargetKind::AlkemioMailslurper)
+            .unwrap()
+            .tagged_source
+            .gap()
+            .is_some()
+    );
+    protocol::collection_ready(&p, &lock).expect("an image pin is ready without a tag");
+}
+
+#[tokio::test]
+async fn config_file_cwd_runs_where_rendered() {
+    for (cwd, want) in [(false, ""), (true, "config")] {
+        let root = tempfile::tempdir().unwrap();
+        let mut spec = declared(
+            TargetKind::Mailpit,
+            &[Role::Smtp, Role::Http],
+            &[
+                "# {smtp_addr} {http_addr}",
+                "pwd > \"$HOME/cwd.copy\"",
+                MARK_STARTED,
+            ],
+        );
+        spec.extra.config.as_mut().unwrap().cwd = cwd;
+        let scratch = root.path().join("leaf");
+        let keepers = targets::Keepers::default();
+        let mut lim = short_limits();
+        lim.startup = Duration::from_secs(60);
+        let clock = wire::Clock(Instant::now());
+        let launch = targets::Owned::launch(&spec, &scratch, &lim, &clock, &keepers);
+        tokio::select! {
+            r = launch => panic!("a never-ready server became ready: {:?}", r.err()),
+            _ = started(&scratch) => {}
+        }
+        let got = std::fs::read_to_string(scratch.join("home/cwd.copy")).unwrap();
+        let mut expect = scratch.canonicalize().unwrap();
+        if !want.is_empty() {
+            expect.push(want);
+        }
+        assert_eq!(got.trim(), expect.to_string_lossy(), "cwd={cwd}");
+        let settled = keepers.settle(lim.cleanup * 2).await;
+        assert!(settled[0].reaped && settled[0].group_gone && settled[0].scratch_removed);
+    }
+}
+
+#[test]
+fn frozen_v3_and_lock_v4_bytes_are_the_recorded_ones() {
+    // The freeze is identified by content hash (decision 0130's addendum
+    // records the same two values). After it neither file's bytes change:
+    // a change is a new protocol version, never an edit.
+    assert_eq!(sha(PROTOCOL_V3), FROZEN_PROTOCOL_V3_SHA);
+    assert_eq!(sha(SOURCES_V4), FROZEN_LOCK_V4_SHA);
+    // The history bytes keep their digests.
+    assert_eq!(sha(PROTOCOL), V2_PROTOCOL_SHA);
+    assert_eq!(sha(SOURCES), V3_LOCK_SHA);
+}
+
 // ---- real executables (ignored; they fail without their bytes) -----------
 
 fn env_name(t: TargetKind) -> String {
     format!("MAIL_COMPARE_{}", t.name().to_uppercase().replace('-', "_"))
 }
 
-/// How a real test gets its launch. `Pinned` is the committed lock's pin: a
-/// pending row has none, and the test fails naming why. `Unpinned` exists for
-/// GreenMail alone: a labelled driver proof built from the pending entry's
-/// own launch facts, never a pin and never evidence (its jar is not bound to
-/// a release asset, which is why the row is pending).
-#[derive(Clone, Copy)]
-enum Basis {
-    Pinned,
-    Unpinned,
+/// The root directory of the runtime a pin needs, from the environment:
+/// `MAIL_COMPARE_JRE` for GreenMail's JRE, `MAIL_COMPARE_MUSL` for the root
+/// holding Alkemio's `lib/ld-musl-x86_64.so.1`.
+fn runtime_env(t: TargetKind) -> &'static str {
+    match t {
+        TargetKind::AlkemioMailslurper => "MAIL_COMPARE_MUSL",
+        _ => "MAIL_COMPARE_JRE",
+    }
 }
 
 /// The launch of the pinned `t`, from the committed lock 4 and the bytes the
-/// environment names. A pending row has no pin: the test fails naming why.
+/// environment names. A target without a pin fails naming why.
 fn real_spec(t: TargetKind) -> LaunchSpec {
     let var = env_name(t);
     let binary = std::env::var_os(&var)
         .unwrap_or_else(|| panic!("{var} must name the pinned {t} executable"));
     let lock = lock4(v4());
-    let pin = lock.pin(t).unwrap_or_else(|| {
-        let why = lock
-            .entry(t)
-            .and_then(|e| e.pending.as_ref())
-            .map(|p| p.reason.clone())
-            .unwrap_or_default();
-        panic!("{t} has no verified pin in the committed lock: {why}")
-    });
+    let pin = lock
+        .pin(t)
+        .unwrap_or_else(|| panic!("{t} has no verified pin in the committed lock"));
     let runtime = pin.runtime.as_ref().map(|_| {
+        let var = runtime_env(t);
         std::path::PathBuf::from(
-            std::env::var_os("MAIL_COMPARE_JRE")
-                .expect("MAIL_COMPARE_JRE must name the pinned JRE's root directory"),
+            std::env::var_os(var)
+                .unwrap_or_else(|| panic!("{var} must name the pinned runtime's root directory")),
         )
     });
     LaunchSpec::from_pin(t, binary.into(), runtime, pin).expect("a launch from the pin")
 }
 
-/// The sha256 the GreenMail jar had when the delivery checked it against the
-/// `.sha256` file that ships beside it (the receipt in the delivery notes).
-const GREENMAIL_JAR_SHA: &str = "91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1";
-
-/// GreenMail's launch from its *pending* entry, for the labelled driver
-/// proof: the jar is compared with the receipt digest, the JRE's `java` and
-/// `libjvm.so` are digested from the extracted root the environment names.
-fn unpinned_greenmail_spec() -> LaunchSpec {
-    let jar = std::path::PathBuf::from(
-        std::env::var_os(env_name(TargetKind::Greenmail))
-            .expect("MAIL_COMPARE_GREENMAIL must name the GreenMail jar"),
-    );
-    let jar_sha = sha(&std::fs::read(&jar).expect("the jar is readable"));
-    assert_eq!(
-        jar_sha, GREENMAIL_JAR_SHA,
-        "the jar is not the one the receipt names"
-    );
-    let jre = std::path::PathBuf::from(
-        std::env::var_os("MAIL_COMPARE_JRE").expect("MAIL_COMPARE_JRE must name the JRE root"),
-    );
-    let lock = lock4(v4());
-    let pending = lock
-        .entry(TargetKind::Greenmail)
-        .and_then(|e| e.pending.as_ref())
-        .expect("greenmail is pending in the committed lock");
-    let mut spec = LaunchSpec::new(
-        TargetKind::Greenmail,
-        jre.join("bin/java"),
-        Some(jar_sha),
-        pending.launch.clone(),
-    );
-    spec.extra.listeners = pending.listeners.clone();
-    spec.extra.env = pending.launch_env.clone();
-    spec.extra.config = pending.config_file.clone();
-    spec.extra.artifact = Some(jar);
-    spec.extra.members = ["bin/java", "lib/server/libjvm.so"]
-        .iter()
-        .map(|m| {
-            let path = jre.join(m);
-            let digest = sha(&std::fs::read(&path).expect("a JRE member is readable"));
-            (path, digest)
-        })
-        .collect();
-    spec
-}
-
-async fn real_launch_as(t: TargetKind, basis: Basis, root: &Path) -> targets::Owned {
-    let spec = match basis {
-        Basis::Pinned => real_spec(t),
-        Basis::Unpinned => unpinned_greenmail_spec(),
-    };
+async fn real_launch(t: TargetKind, root: &Path) -> targets::Owned {
+    let spec = real_spec(t);
     let clock = wire::Clock(Instant::now());
     targets::Owned::launch(
         &spec,
@@ -3477,9 +4444,53 @@ async fn listed_all(owned: &targets::Owned, want: usize, max_pages: u32) -> Vec<
     }
 }
 
-async fn real_round_trip(t: TargetKind, basis: Basis) {
+/// MailSlurper (and the Alkemio fork) keep one decoded body per message and
+/// no raw message: the HTML part when there is one, else the plain text with
+/// each newline turned into `<br />` (`DataCommandExecutor.decodeBody` in the
+/// pinned source; observed on the real binaries). A multipart message's plain
+/// part is dropped. So their body fidelity is not exact by construction, and
+/// a collection reports it per message through `fidelity_ok`; these proofs
+/// assert the contract they do keep.
+fn loses_under_burst(t: TargetKind) -> bool {
+    stores_decoded_body(t)
+}
+
+fn stores_decoded_body(t: TargetKind) -> bool {
+    matches!(
+        t,
+        TargetKind::Mailslurper
+            | TargetKind::MailslurperSourceBuild
+            | TargetKind::AlkemioMailslurper
+    )
+}
+
+/// What a decoded-body target returns for one authored message: an HTML
+/// message's HTML as sent, a plain message's text with only `<br />` markers
+/// added, and for a multipart message nothing but its subject (the one stored
+/// body is not readable as a MIME part).
+fn decoded_body_contract(t: TargetKind, m: &wire::Message, got: &targets::Fetched) {
+    match m.kind {
+        protocol::MessageKind::Plain => {
+            let stripped = got
+                .text
+                .as_deref()
+                .map(|x| x.replace("<br />", "").replace("<br/>", ""));
+            assert!(
+                wire::same_body(m.text.as_deref(), stripped.as_deref()),
+                "{t} plain text {got:?}"
+            );
+        }
+        protocol::MessageKind::Html => assert!(
+            wire::same_body(m.html.as_deref(), got.html.as_deref()),
+            "{t} html {got:?}"
+        ),
+        _ => {}
+    }
+}
+
+async fn real_round_trip(t: TargetKind) {
     let root = tempfile::tempdir().unwrap();
-    let mut owned = real_launch_as(t, basis, root.path()).await;
+    let mut owned = real_launch(t, root.path()).await;
     if t == TargetKind::Greenmail {
         // The recipient's POP3 login must work before anything is sent, and
         // the store must read as empty: a rejected login on an empty store
@@ -3508,16 +4519,20 @@ async fn real_round_trip(t: TargetKind, basis: Basis) {
             "{t} {:?}",
             m.kind
         );
-        assert!(
-            wire::same_body(m.text.as_deref(), got.text.as_deref()),
-            "{t} {:?} text {got:?}",
-            m.kind
-        );
-        assert!(
-            wire::same_body(m.html.as_deref(), got.html.as_deref()),
-            "{t} {:?} html {got:?}",
-            m.kind
-        );
+        if stores_decoded_body(t) {
+            decoded_body_contract(t, m, &got);
+        } else {
+            assert!(
+                wire::same_body(m.text.as_deref(), got.text.as_deref()),
+                "{t} {:?} text {got:?}",
+                m.kind
+            );
+            assert!(
+                wire::same_body(m.html.as_deref(), got.html.as_deref()),
+                "{t} {:?} html {got:?}",
+                m.kind
+            );
+        }
         assert_eq!(
             owned.find(&m.token).await.unwrap(),
             vec![m.token.clone()],
@@ -3605,9 +4620,9 @@ fn hostile_messages() -> Vec<wire::Message> {
 /// The mid-line boundary message may be refused as malformed by the driver's
 /// own MIME reader (a cut part is not a success) and may never come back
 /// truncated.
-async fn real_hostile(t: TargetKind, basis: Basis) {
+async fn real_hostile(t: TargetKind) {
     let root = tempfile::tempdir().unwrap();
-    let mut owned = real_launch_as(t, basis, root.path()).await;
+    let mut owned = real_launch(t, root.path()).await;
     let msgs = hostile_messages();
     send_all(&owned, &msgs).await;
     let listed = listed_all(&owned, msgs.len(), 20).await;
@@ -3617,6 +4632,17 @@ async fn real_hostile(t: TargetKind, basis: Basis) {
             .find(|(tok, _)| *tok == m.token)
             .unwrap_or_else(|| panic!("{t}: hostile {} is not listed: {listed:?}", m.token));
         match owned.fetch(id).await {
+            Ok(got) if stores_decoded_body(t) => {
+                // The decoded-body targets keep one body and do not undo
+                // SMTP dot-stuffing (observed: ".leading dot" comes back as
+                // "..leading dot"), so only the subject is asserted; the
+                // observation is printed for the delivery notes.
+                assert_eq!(got.subject.as_deref(), Some(m.subject.as_str()), "{t}");
+                eprintln!(
+                    "OBSERVED {t} {}: text {:?} html {:?}",
+                    m.token, got.text, got.html
+                );
+            }
             Ok(got) => {
                 assert_eq!(got.subject.as_deref(), Some(m.subject.as_str()), "{t}");
                 assert!(
@@ -3644,11 +4670,24 @@ async fn real_hostile(t: TargetKind, basis: Basis) {
 
 /// Each tool's default retention (smtp4dev 100 per mailbox, Inbucket 500 per
 /// mailbox) is overridden at launch: 600 messages all stay.
-async fn real_caps(t: TargetKind, basis: Basis) {
+async fn real_caps(t: TargetKind) {
     let root = tempfile::tempdir().unwrap();
-    let mut owned = real_launch_as(t, basis, root.path()).await;
+    let mut owned = real_launch(t, root.path()).await;
     let msgs = corpus(600);
-    send_all(&owned, &msgs).await;
+    if loses_under_burst(t) {
+        // MailSlurper acknowledges a mail before it stores it and loses
+        // some under SQLite lock contention ("database is locked", 27 of 600
+        // in a probe sent in 0.23 s). That is an observation about the tool,
+        // recorded in the delivery notes, not a retention cap: the cap proof
+        // sends in small batches and waits for each to be listed, so only
+        // eviction could lower the count.
+        for (n, batch) in msgs.chunks(5).enumerate() {
+            send_all(&owned, batch).await;
+            listed_all(&owned, (n + 1) * 5, 100).await;
+        }
+    } else {
+        send_all(&owned, &msgs).await;
+    }
     assert_eq!(
         listed_all(&owned, 600, 100).await.len(),
         600,
@@ -3658,99 +4697,346 @@ async fn real_caps(t: TargetKind, basis: Basis) {
 }
 
 #[tokio::test]
-#[ignore = "needs MAIL_COMPARE_MAILSLURPER (the pinned MailSlurper executable)"]
-async fn real_mailslurper_smtp_to_native_api_round_trip() {
-    real_round_trip(TargetKind::Mailslurper, Basis::Pinned).await;
-}
-
-#[tokio::test]
 #[ignore = "needs MAIL_COMPARE_SMTP4DEV (the pinned smtp4dev executable)"]
 async fn real_smtp4dev_smtp_to_native_api_round_trip() {
-    real_round_trip(TargetKind::Smtp4dev, Basis::Pinned).await;
+    real_round_trip(TargetKind::Smtp4dev).await;
 }
 
 #[tokio::test]
 #[ignore = "needs MAIL_COMPARE_INBUCKET (the pinned Inbucket executable)"]
 async fn real_inbucket_smtp_to_native_api_round_trip() {
-    real_round_trip(TargetKind::Inbucket, Basis::Pinned).await;
+    real_round_trip(TargetKind::Inbucket).await;
 }
 
 #[tokio::test]
-#[ignore = "needs MAIL_COMPARE_ALKEMIO_MAILSLURPER (the extracted, digested Alkemio binary)"]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD (the pinned cgo build of MailSlurper)"]
+async fn real_mailslurper_source_build_smtp_to_native_api_round_trip() {
+    real_round_trip(TargetKind::MailslurperSourceBuild).await;
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_ALKEMIO_MAILSLURPER; MAIL_COMPARE_MUSL (the extracted Alkemio binary and its pinned loader root)"]
 async fn real_alkemio_mailslurper_smtp_to_native_api_round_trip() {
-    real_round_trip(TargetKind::AlkemioMailslurper, Basis::Pinned).await;
+    real_round_trip(TargetKind::AlkemioMailslurper).await;
 }
 
 #[tokio::test]
-#[ignore = "needs a GreenMail pin, which the committed lock does not have; fails naming why"]
-async fn real_greenmail_pop3_under_pinned_jre() {
-    real_round_trip(TargetKind::Greenmail, Basis::Pinned).await;
+#[ignore = "needs MAIL_COMPARE_GREENMAIL; MAIL_COMPARE_JRE (the pinned jar and the JRE root)"]
+async fn real_greenmail_smtp_to_native_api_round_trip() {
+    real_round_trip(TargetKind::Greenmail).await;
 }
 
 #[tokio::test]
-#[ignore = "labelled driver proof: needs MAIL_COMPARE_GREENMAIL (the jar) and MAIL_COMPARE_JRE (the JRE root)"]
-async fn real_greenmail_driver_proof_pop3_round_trip() {
-    real_round_trip(TargetKind::Greenmail, Basis::Unpinned).await;
-}
-
-#[tokio::test]
-#[ignore = "needs MAIL_COMPARE_MAILSLURPER (the pinned MailSlurper executable)"]
-async fn real_mailslurper_hostile_round_trip() {
-    real_hostile(TargetKind::Mailslurper, Basis::Pinned).await;
+#[ignore = "needs MAIL_COMPARE_SMTP4DEV (the pinned smtp4dev executable)"]
+async fn real_smtp4dev_hostile_round_trip() {
+    real_hostile(TargetKind::Smtp4dev).await;
 }
 
 #[tokio::test]
 #[ignore = "needs MAIL_COMPARE_INBUCKET (the pinned Inbucket executable)"]
 async fn real_inbucket_hostile_round_trip() {
-    real_hostile(TargetKind::Inbucket, Basis::Pinned).await;
+    real_hostile(TargetKind::Inbucket).await;
 }
 
 #[tokio::test]
-#[ignore = "needs a GreenMail pin, which the committed lock does not have; fails naming why"]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD (the pinned cgo build of MailSlurper)"]
+async fn real_mailslurper_source_build_hostile_round_trip() {
+    real_hostile(TargetKind::MailslurperSourceBuild).await;
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_ALKEMIO_MAILSLURPER; MAIL_COMPARE_MUSL (the extracted Alkemio binary and its pinned loader root)"]
+async fn real_alkemio_mailslurper_hostile_round_trip() {
+    real_hostile(TargetKind::AlkemioMailslurper).await;
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_GREENMAIL; MAIL_COMPARE_JRE (the pinned jar and the JRE root)"]
 async fn real_greenmail_hostile_round_trip() {
-    real_hostile(TargetKind::Greenmail, Basis::Pinned).await;
-}
-
-#[tokio::test]
-#[ignore = "labelled driver proof: needs MAIL_COMPARE_GREENMAIL (the jar) and MAIL_COMPARE_JRE (the JRE root)"]
-async fn real_greenmail_driver_proof_hostile_round_trip() {
-    real_hostile(TargetKind::Greenmail, Basis::Unpinned).await;
-}
-
-#[tokio::test]
-#[ignore = "needs MAIL_COMPARE_MAILSLURPER (the pinned MailSlurper executable)"]
-async fn real_caps_hold_mailslurper() {
-    real_caps(TargetKind::Mailslurper, Basis::Pinned).await;
+    real_hostile(TargetKind::Greenmail).await;
 }
 
 #[tokio::test]
 #[ignore = "needs MAIL_COMPARE_SMTP4DEV (the pinned smtp4dev executable)"]
 async fn real_caps_hold_smtp4dev() {
-    real_caps(TargetKind::Smtp4dev, Basis::Pinned).await;
+    real_caps(TargetKind::Smtp4dev).await;
 }
 
 #[tokio::test]
 #[ignore = "needs MAIL_COMPARE_INBUCKET (the pinned Inbucket executable)"]
 async fn real_caps_hold_inbucket() {
-    real_caps(TargetKind::Inbucket, Basis::Pinned).await;
+    real_caps(TargetKind::Inbucket).await;
 }
 
 #[tokio::test]
-#[ignore = "needs a GreenMail pin, which the committed lock does not have; fails naming why"]
-async fn real_caps_hold_greenmail() {
-    real_caps(TargetKind::Greenmail, Basis::Pinned).await;
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD (the pinned cgo build of MailSlurper)"]
+async fn real_caps_hold_mailslurper_source_build() {
+    real_caps(TargetKind::MailslurperSourceBuild).await;
 }
 
 #[tokio::test]
-#[ignore = "labelled driver proof: needs MAIL_COMPARE_GREENMAIL (the jar) and MAIL_COMPARE_JRE (the JRE root)"]
-async fn real_greenmail_driver_proof_caps_hold() {
-    real_caps(TargetKind::Greenmail, Basis::Unpinned).await;
-}
-
-#[tokio::test]
-#[ignore = "needs MAIL_COMPARE_ALKEMIO_MAILSLURPER (the extracted, digested Alkemio binary)"]
+#[ignore = "needs MAIL_COMPARE_ALKEMIO_MAILSLURPER; MAIL_COMPARE_MUSL (the extracted Alkemio binary and its pinned loader root)"]
 async fn real_caps_hold_alkemio_mailslurper() {
-    real_caps(TargetKind::AlkemioMailslurper, Basis::Pinned).await;
+    real_caps(TargetKind::AlkemioMailslurper).await;
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_GREENMAIL; MAIL_COMPARE_JRE (the pinned jar and the JRE root)"]
+async fn real_caps_hold_greenmail() {
+    real_caps(TargetKind::Greenmail).await;
+}
+
+/// The pinned official MailSlurper executable does not start: it exits
+/// non-zero within the startup deadline with go-sqlite3's cgo stub line,
+/// binds none of its declared listeners, and the launcher's own cleanup is
+/// proved. The executable runs as its pin launches it (`-config` on the
+/// rendered config), its stderr read directly because the launcher discards
+/// a child's output.
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER (the pinned official MailSlurper executable)"]
+async fn real_mailslurper_official_does_not_start() {
+    let t = TargetKind::Mailslurper;
+    let lock = lock4(v4());
+    let pin = lock.pin(t).expect("mailslurper is pinned");
+    let var = env_name(t);
+    let exe = PathBuf::from(
+        std::env::var_os(&var).unwrap_or_else(|| panic!("{var} must name the pinned executable")),
+    );
+    assert_eq!(
+        sha(&std::fs::read(&exe).expect("readable")),
+        pin.artifact.executable_sha256,
+        "the executable is not the pinned bytes"
+    );
+    // The published result is in the committed protocol, citing a document
+    // of this pin.
+    let p = Protocol::parse(PROTOCOL_V3).unwrap();
+    assert!(p.does_not_start(t));
+    // Ports for the rendered config: reserved, released, never connected to.
+    let ports: Vec<u16> = (0..3)
+        .map(|_| {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        })
+        .collect();
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    let roles = [
+        (
+            protocol::ListenerRole::Smtp,
+            format!("127.0.0.1:{}", ports[0]),
+        ),
+        (
+            protocol::ListenerRole::Http,
+            format!("127.0.0.1:{}", ports[1]),
+        ),
+        (
+            protocol::ListenerRole::Ui,
+            format!("127.0.0.1:{}", ports[2]),
+        ),
+    ];
+    let cfg = pin.config_file.as_ref().expect("a config file");
+    let text = cfg
+        .lines
+        .iter()
+        .map(|l| targets::substitute(l, &roles, (&data, root.path()), None, None))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let cfg_path = root.path().join(&cfg.name);
+    std::fs::write(&cfg_path, text).unwrap();
+    let started = Instant::now();
+    let out = tokio::process::Command::new(&exe)
+        .args(["-config", cfg_path.to_str().unwrap()])
+        .current_dir(root.path())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("LANG", "C")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let out = tokio::time::timeout(limits().startup, out)
+        .await
+        .expect("the executable exits within the startup deadline")
+        .expect("it runs");
+    assert!(started.elapsed() < limits().startup);
+    assert!(!out.status.success(), "it must not start: {:?}", out.status);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Binary was compiled with 'CGO_ENABLED=0'"),
+        "{stderr}"
+    );
+    // The recorded failure output names the same stub line.
+    let recorded = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/evals/sources/mailslurper/mailslurper-official-failure.txt"),
+    )
+    .unwrap();
+    assert!(recorded.contains("Binary was compiled with 'CGO_ENABLED=0'"));
+    // No declared listener is bound.
+    for port in &ports {
+        assert!(
+            tokio::net::TcpStream::connect(("127.0.0.1", *port))
+                .await
+                .is_err(),
+            "port {port} must not be bound"
+        );
+    }
+    // The launcher's own path refuses it and proves the cleanup.
+    let spec = real_spec(t);
+    let clock = wire::Clock(Instant::now());
+    match targets::Owned::launch(
+        &spec,
+        &root.path().join("leaf"),
+        &limits(),
+        &clock,
+        &targets::Keepers::default(),
+    )
+    .await
+    {
+        Err(LaunchError::NotReady(_, facts)) => assert!(facts.proved(), "{facts:?}"),
+        other => panic!(
+            "the official executable must not launch: {:?}",
+            other.map(|_| ())
+        ),
+    }
+}
+
+/// A real directory for a test's own files, under `target/` and never the
+/// RAM-backed temporary directory (the archives here are large).
+fn fresh_dir(label: &str) -> tempfile::TempDir {
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/compare-dl");
+    std::fs::create_dir_all(&base).unwrap();
+    tempfile::Builder::new()
+        .prefix(&format!("{label}-"))
+        .tempdir_in(base)
+        .unwrap()
+}
+
+/// Every file (one directory level) of the colon-separated directories in
+/// `MAIL_COMPARE_ARCHIVE_DIRS` whose sha256 is `want`.
+fn archive_by_digest(want: &str) -> PathBuf {
+    let dirs = std::env::var("MAIL_COMPARE_ARCHIVE_DIRS")
+        .expect("MAIL_COMPARE_ARCHIVE_DIRS must list the directories holding the pinned archives");
+    for d in dirs.split(':') {
+        for entry in std::fs::read_dir(d).unwrap_or_else(|e| panic!("{d}: {e}")) {
+            let path = entry.unwrap().path();
+            if path.is_file()
+                && path.metadata().unwrap().len() > 0
+                && sha(&std::fs::read(&path).unwrap()) == want
+            {
+                return path;
+            }
+        }
+    }
+    panic!("no archive with sha256 {want} in {dirs}");
+}
+
+fn extract_member(archive: &Path, member: &str, into: &Path) -> Vec<u8> {
+    let name = archive.to_string_lossy();
+    let status = if name.ends_with(".tar.gz") {
+        std::process::Command::new("tar")
+            .args(["-xzf", &name, "-C"])
+            .arg(into)
+            .arg(member)
+            .status()
+    } else {
+        std::process::Command::new("unzip")
+            .args(["-q", "-o", &name, member, "-d"])
+            .arg(into)
+            .status()
+    }
+    .expect("tar or unzip runs");
+    assert!(status.success(), "extracting {member} from {name}");
+    std::fs::read(into.join(member)).unwrap_or_else(|e| panic!("{member}: {e}"))
+}
+
+/// Every `Member` document is re-extracted from its archive with the system
+/// `unzip`/`tar` into a fresh directory, every `Output` document is
+/// reproduced by running the pinned executable bounded, and each committed
+/// document's sha256 must match. The MailSlurper source tarball's own pax
+/// comment names the tagged commit.
+#[test]
+#[ignore = "needs MAIL_COMPARE_ARCHIVE_DIRS and each pinned executable (MAIL_COMPARE_<TARGET>, MAIL_COMPARE_JRE)"]
+fn real_member_and_output_documents_match() {
+    let lock = lock4(v4());
+    let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/evals");
+    let (mut members, mut outputs) = (0, 0);
+    for e in &lock.entries {
+        let Some(pin) = &e.pin else { continue };
+        let t = e.target;
+        for d in &pin.documents {
+            let committed = std::fs::read(docs.join(&d.path)).unwrap();
+            assert_eq!(sha(&committed), d.sha256, "{t}: {}", d.path);
+            match &d.attribution {
+                protocol::Fact::Observed(protocol::Attribution::Member {
+                    archive_sha256,
+                    member,
+                }) => {
+                    let archive = archive_by_digest(archive_sha256);
+                    let dir = fresh_dir("member");
+                    let got = extract_member(&archive, member, dir.path());
+                    assert_eq!(sha(&got), d.sha256, "{t}: member {member} of {archive:?}");
+                    members += 1;
+                }
+                protocol::Fact::Observed(protocol::Attribution::Output { argv }) => {
+                    let var = env_name(t);
+                    let binary = std::env::var_os(&var)
+                        .unwrap_or_else(|| panic!("{var} must name the pinned executable"));
+                    assert_eq!(
+                        sha(&std::fs::read(&binary).unwrap()),
+                        pin.artifact.executable_sha256,
+                        "{t}: not the pinned bytes"
+                    );
+                    let program = match (&pin.runtime, protocol::runtime_rule(t)) {
+                        (Some(_), Some(rule)) => PathBuf::from(
+                            std::env::var_os(runtime_env(t)).expect("the runtime root"),
+                        )
+                        .join(rule.entry),
+                        _ => PathBuf::from(&binary),
+                    };
+                    let args: Vec<String> = argv
+                        .iter()
+                        .map(|a| a.replace("{artifact}", &binary.to_string_lossy()))
+                        .collect();
+                    let home = fresh_dir("output");
+                    let got = std::process::Command::new("timeout")
+                        .args(["60", "/bin/sh", "-c", "exec \"$0\" \"$@\" 2>&1"])
+                        .arg(&program)
+                        .args(&args)
+                        .env_clear()
+                        .env("PATH", "/usr/bin:/bin")
+                        .env("LANG", "C")
+                        .env("HOME", home.path())
+                        .env("DOTNET_BUNDLE_EXTRACT_BASE_DIR", home.path().join("x"))
+                        .current_dir(home.path())
+                        .output()
+                        .expect("the program runs");
+                    assert!(got.status.success(), "{t}: {argv:?}: {:?}", got.status);
+                    assert_eq!(sha(&got.stdout), d.sha256, "{t}: output of {argv:?}");
+                    outputs += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        members > 0 && outputs > 0,
+        "{members} members, {outputs} outputs"
+    );
+    // The MailSlurper source tarball is of the tagged commit: its pax header
+    // comment is that commit's id.
+    let (_, sha_hex, commit) = protocol::SOURCE_ARCHIVES[0];
+    let tarball = archive_by_digest(sha_hex);
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("gzip -dc \"$0\" | git get-tar-commit-id")
+        .arg(&tarball)
+        .output()
+        .expect("git get-tar-commit-id runs");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), commit);
 }
 
 // ---- the labelled smoke fixture ------------------------------------------
@@ -3773,30 +5059,17 @@ fn eight_target_smoke_fixture_is_a_valid_draft_that_cannot_launch_yet() {
     );
     let lock = lock4(v4());
     protocol::pairing(&p, &lock).unwrap();
-    // It never collects, and its smoke run launches only where every
-    // declared row has a pin: today four rows are pending and it refuses.
-    assert!(protocol::collection_ready(&p, &lock).is_err());
-    let why = refusals(protocol::launchable(&p, &lock));
-    for t in PENDING {
-        assert!(
-            why.contains(&format!(
-                "{t} has no source pin; it cannot be launched (pending:"
-            )),
-            "{t}: {why}"
-        );
-    }
-    // The pinned rows are not refused: only the four pending ones are.
-    for t in [
-        TargetKind::Mailpit,
-        TargetKind::Mailhog,
-        TargetKind::Inbucket,
-    ] {
-        assert!(lock.pin(t).is_some(), "{t}");
-        assert!(
-            !why.contains(&format!("{t} has no source pin")),
-            "{t}: {why}"
-        );
-    }
+    // It never collects (it is a draft), and its smoke run launches every
+    // declared row: each has a pin.
+    let why = refusals(protocol::collection_ready(&p, &lock));
+    assert!(why.contains("protocol is a draft, not frozen"), "{why}");
+    protocol::launchable(&p, &lock).expect("every declared row has a pin");
+    // The official MailSlurper row's published result rides in the draft too.
+    assert!(p.does_not_start(TargetKind::Mailslurper));
+    assert_eq!(
+        protocol::declared_competitors(&p).len(),
+        TargetKind::ALL.len() - 2
+    );
 }
 
 #[test]

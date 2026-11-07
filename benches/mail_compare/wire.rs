@@ -419,7 +419,16 @@ impl Http {
 
 /// Percent-encode a query value (RFC 3986 unreserved kept).
 pub fn query_value(s: &str) -> String {
-    percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+    // RFC 3986's unreserved characters (`-._~`) stay as they are: the same
+    // text is also a path segment (a message id), and a router that does not
+    // decode path parameters (MailSlurper's) would otherwise look up
+    // `feb8d58f%2D...` and answer an empty item for a uuid.
+    const KEEP: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~');
+    percent_encoding::utf8_percent_encode(s, KEEP).to_string()
 }
 
 /// Body comparison that ignores only the transport's line-ending and

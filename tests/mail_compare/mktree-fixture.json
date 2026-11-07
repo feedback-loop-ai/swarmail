@@ -1,0 +1,29 @@
+{
+  "sha": "7eecf41bf68c97fedabeb2d6727c78d5686810fd",
+  "tree": [
+    {
+      "path": "a",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4a58007052a65fbc2fc3f910f2855f45a4058e74"
+    },
+    {
+      "path": "b",
+      "mode": "100755",
+      "type": "blob",
+      "sha": "c4ced2b4e78ef20e3b8fb81c2083bc7680cbb544"
+    },
+    {
+      "path": "link",
+      "mode": "120000",
+      "type": "blob",
+      "sha": "2e65efe2a145dda7ee51d1741299f848e5bf752e"
+    },
+    {
+      "path": "sub",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "015182e40825518b4b5dff91a83cce4a87ceecbc"
+    }
+  ]
+}

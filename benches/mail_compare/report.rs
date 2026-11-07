@@ -35,6 +35,9 @@ pub struct Report {
     /// search method and storage, so no cell is read without its label
     /// (proposed decision 0130 §3).
     pub labels: Vec<RowLabel>,
+    /// Rows the protocol publishes as not starting: every profile's cell
+    /// is blocked, with what it scheduled and no number.
+    pub blocked: Vec<BlockedRow>,
     pub throughput: Vec<ThroughputCell>,
     pub waits: Vec<WaitCell>,
     pub launches: Vec<crate::targets::LaunchFacts>,
@@ -53,6 +56,63 @@ pub struct RowLabel {
     pub search: &'static str,
     pub storage_backend: Option<Backend>,
     pub retention_cap: Option<u64>,
+    /// The version the executable reports when it is not its tag's, derived
+    /// from the closed `REPORTED_VERSIONS` constant.
+    pub version: Option<String>,
+    /// What the row runs on besides its own bytes: a pinned JRE or musl
+    /// loader, the host's glibc (a source build, unpinned) or nothing.
+    pub runtime: Option<&'static str>,
+    /// What the artifact's digest is bound to when that is weaker than a
+    /// publisher's own statement.
+    pub integrity: Option<&'static str>,
+    /// `Some` when the protocol publishes that the pinned executable does
+    /// not start: the row carries this label and no number.
+    pub does_not_start: Option<String>,
+}
+
+/// A published does-not-start row: it keeps its place in the full suite,
+/// and each cell says what it would have been asked and that it was blocked.
+#[derive(Debug, Serialize)]
+pub struct BlockedRow {
+    pub target: TargetKind,
+    pub result: String,
+    pub cells: Vec<BlockedCell>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BlockedCell {
+    pub profile: String,
+    pub repetitions: u32,
+    /// Messages one repetition of the profile schedules.
+    pub requested: u64,
+    pub outcome: &'static str,
+}
+
+pub fn blocked_rows(p: &Protocol) -> Vec<BlockedRow> {
+    p.does_not_start
+        .iter()
+        .flatten()
+        .map(|d| BlockedRow {
+            target: d.target,
+            result: format!("does not start (published result: {})", d.cite),
+            cells: p
+                .throughput
+                .iter()
+                .map(|t| BlockedCell {
+                    profile: t.name.clone(),
+                    repetitions: t.repetitions,
+                    requested: u64::from(t.messages),
+                    outcome: "blocked",
+                })
+                .chain(p.waits.iter().map(|w| BlockedCell {
+                    profile: w.name.clone(),
+                    repetitions: w.repetitions,
+                    requested: u64::from(w.present + w.future + w.empty),
+                    outcome: "blocked",
+                }))
+                .collect(),
+        })
+        .collect()
 }
 
 pub fn row_labels(p: &Protocol) -> Vec<RowLabel> {
@@ -66,6 +126,7 @@ pub fn row_labels(p: &Protocol) -> Vec<RowLabel> {
                     Provenance::Candidate => "candidate",
                     Provenance::Official(_) => "official release",
                     Provenance::ThirdPartyImage(_) => "third-party image (extracted binary)",
+                    Provenance::SourceBuild(_) => "built from source (cgo; host glibc, unpinned)",
                 },
                 read_path: if *t == TargetKind::Greenmail {
                     "pop3"
@@ -79,6 +140,30 @@ pub fn row_labels(p: &Protocol) -> Vec<RowLabel> {
                 },
                 storage_backend: retention.and_then(|r| r.backend),
                 retention_cap: retention.and_then(|r| r.max_messages),
+                version: crate::protocol::REPORTED_VERSIONS
+                    .iter()
+                    .find(|(rt, _, _)| rt == t)
+                    .map(|(_, tag, v)| format!("{v} reported / tag {tag}")),
+                runtime: match (crate::protocol::runtime_rule(*t), t.provenance()) {
+                    (Some(rule), _) if rule.image_layer => {
+                        Some("musl loader (pinned, from the image's own layer)")
+                    }
+                    (Some(_), _) => Some("JRE (pinned)"),
+                    (None, Provenance::SourceBuild(_)) => Some("host glibc (unpinned)"),
+                    (None, _) => None,
+                },
+                integrity: crate::protocol::REGISTRY
+                    .iter()
+                    .any(|(rt, _)| rt == t)
+                    .then_some(
+                        "integrity against the registry's own checksum; authenticity not verified",
+                    ),
+                does_not_start: p
+                    .does_not_start
+                    .iter()
+                    .flatten()
+                    .find(|d| d.target == *t)
+                    .map(|d| format!("does not start (published result: {})", d.cite)),
             }
         })
         .collect()
@@ -214,6 +299,7 @@ pub fn report(p: &Protocol, m: &Manifest, rows: &[Row], life: &Lifecycle) -> Rep
             quantiles: "nearest-rank over successful samples; censored counted separately",
         },
         labels: row_labels(p),
+        blocked: blocked_rows(p),
         throughput,
         waits,
         launches: life.launches.clone(),
