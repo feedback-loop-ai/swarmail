@@ -165,7 +165,11 @@ bin_for() {
 case "$mode" in
   local|collect)
     declared=$(declared_competitors "$protocol")
-    [ -n "$declared" ] || blocked competitor-binaries "the protocol $protocol declares no competitor target"
+    # A smoke of the candidate alone declares no competitor; collection
+    # measures competitors, so a protocol with none cannot collect.
+    if [ "$mode" = collect ] && [ -z "$declared" ]; then
+      blocked competitor-binaries "collect measures competitors, and the protocol $protocol declares none"
+    fi
     for w in ${bin_args[@]+"${bin_args[@]}"}; do
       name="${w%%=*}"
       case $'\n'"$declared"$'\n' in

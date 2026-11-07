@@ -3413,3 +3413,24 @@ fn eight_target_smoke_fixture_is_a_valid_draft_that_cannot_launch_yet() {
         );
     }
 }
+
+#[test]
+fn wrapper_collect_needs_a_declared_competitor() {
+    let root = tempfile::tempdir().unwrap();
+    let w = root.path().join("w");
+    let out = root.path().join("out");
+    let o = out.to_str().unwrap();
+    let smoke =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mail_compare/swarmail-smoke.json");
+    let s = smoke.to_str().unwrap();
+    // `collect` measures competitors: a Swarmail-only protocol cannot collect.
+    // (`local` over it asks for no competitor binary; the bounded smoke run
+    // in the delivery notes covers that path, since it builds the candidate.)
+    let (_, text) = wrapper(&["collect", "--output", o, "--protocol", s], &w);
+    assert!(
+        text.contains("collect measures competitors, and the protocol")
+            && text.contains("declares none"),
+        "{text}"
+    );
+    assert!(!out.exists());
+}
