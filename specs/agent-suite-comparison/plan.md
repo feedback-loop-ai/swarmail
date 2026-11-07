@@ -40,12 +40,21 @@ Spec: [spec.md](spec.md). Decision: proposed
   one worker (0076), per target, each as a named command timed with
   `/usr/bin/time` and bounded to 10 minutes by `timeout 600`. `uptime` is
   recorded before and after each.
-- **Network.** The MailSlurper release and sources, and the Mailpit and
-  MailHog assets for the controls, are untrusted downloads. Each goes into
-  its own new directory under the worktree's ignored scratch (on `/home`,
-  never `/tmp`, which is a RAM tmpfs), is digest-verified against the lock
-  before use, and is read by Python only with `-I`. If the seat cannot get
-  them, the dependent tasks are reported **blocked**.
+- **Upstream bytes (rerun, 2026-11-07).** The pinned bytes are in the
+  worktree under `.compare-bins/`, git-ignored and untrusted (spec, "What the
+  pinned bytes establish"). They are not downloaded again. For every use:
+  - each artifact is copied or extracted into its own **new** directory
+    under ignored scratch on `/home`, never `/tmp`, which is a RAM tmpfs;
+  - its sha256 is compared, as a hex constant, with the lock (Mailpit,
+    MailHog) or the spec's recorded value (MailSlurper);
+  - Python that reads them runs with `-I`, with the script and the cwd
+    outside the bytes' directory;
+  - only the verified member is ever run.
+
+  `.compare-bins/2026-11-07-jre/` and `.compare-bins/2026-11-07-alkemio-mailslurper/`
+  are absent, and neither is needed. A digest mismatch stops the dependent
+  tasks, which are then reported **blocked**. The lock is never edited to fit
+  the bytes.
 
 ## Constitution check
 
@@ -78,7 +87,8 @@ docs/evals/agent-comparison.json                 new: frozen product record
 docs/evals/agent-comparison-cost.json            new: cost basis "unavailable"
 docs/evals/sources.lock.json                     lock v4 (+ mailslurper entry)
 docs/evals/history/2026-11-07-sources.lock.v3.json  v3 bytes, byte-identical
-docs/evals/sources/mailslurper/                  new: ref/tag/tree/licence/README/source captures
+docs/evals/sources/mailslurper/                  new: ref/release metadata, licence, README, the cited source files (spec R8)
+docs/evals/wire-corpus/{mailpit,mailhog,mailslurper}/  new (rerun): captured upstream responses + index.json
 docs/evals/agent-controls-2026-11-07/            new: controls rows, index, contracts, identity, receipts, dry-run transcript
 benches/mail_compare.rs                          mailhog-mcp / mailslurper-mcp modes; --launch mode
 benches/mail_compare/mcp.rs                      new: generic half + batches
@@ -86,13 +96,15 @@ benches/mail_compare/mailpit_mcp.rs              Mailpit backend only
 benches/mail_compare/mailhog_mcp.rs              new
 benches/mail_compare/mailslurper_mcp.rs          new
 benches/mail_compare/protocol.rs                 TargetKind::Mailslurper appended; lock v4 reader; v3 reader kept
-benches/mail_compare/targets.rs                  optional launch config template
+benches/mail_compare/targets.rs                  optional launch config template; third reserved port {www_addr}/{www_port} (rerun)
 tests/mail_compare.rs                            #[path] includes; batch suite; shim mechanics; ignored upstream tests
 evals/src/target.rs                              new: Target enum + backend tuple
-evals/src/bridge.rs                              new: HTTP→stdio bridge
+evals/src/bridge.rs                              HTTP→stdio bridge (built); in-flight bound (rerun)
 evals/src/runner.rs                              per-target server block; competitor prompt
 evals/src/tasks.rs                               competitor header template
 evals/src/oracle.rs                              MailSource trait + normalizers
+evals/src/mailsource.rs                          MailSource impls (built); MailSlurper normalizer, exact recipient match (rerun)
+evals/tests/{bridge,mailsource,target,smtp_auth,comparison}.rs  evals-side proofs; corpus decode tests (rerun)
 evals/src/wrappers.rs                            EVAL_MCP_SERVER / EVAL_MCP_TOOLS; dsh refusal
 evals/src/identity.rs                            four targets; agent in coordinate; smtp_auth; refusal removed
 evals/src/report.rs                              cite_comparison keys on (target, agent, task)
@@ -141,12 +153,26 @@ No file under `src/`, `.github/` or `.brokkr/` changes.
    public projection digest, and the check compares them across targets
    for each (task, seed). The digests match because the fixture never
    sees the target.
-8. **MailSlurper.** Its version, ports/config mechanism, service API
-   routes, filters, auth scheme and AUTH PLAIN behaviour are **unknown
-   until source review**. The design commits to the method (source-bound,
-   probe-checked, stated), not to an answer. If the service API needs
-   credentials, or the admin UI listener cannot be disabled, the launch
-   template reserves the extra port and the record states it.
+8. **MailSlurper (resolved from the bytes in the rerun).** Each answer below
+   cites the file it comes from in the spec's "What the pinned bytes
+   establish" section.
+   - **Version.** `release-1.15.0` is the newest release.
+   - **AUTH.** None. The `AUTH PLAIN` line draws `221 Bye` and the
+     connection closes, so `smtp_auth` is `none`, to be confirmed by the
+     probe.
+   - **Storage.** The `250` precedes storage, so the target is declared
+     `not-promised`.
+   - **Launch.** Three listeners, always started, configured from one
+     `-config` file. Hence the third owned port and the config template.
+   - **Service routes.** `/mail`, `/mail/:id` and their siblings. Service
+     auth is off by config.
+   - **Filters.** `LIKE` substring matches, so the oracle pre-filters with
+     upstream's filter and then matches exactly.
+   - **Bodies.** One `body` string per item, base64-decoded by `GetMail`
+     when possible.
+
+   The implementer re-reads each fact from the bytes before writing it into
+   the lock, and stops and reports on any disagreement with the spec.
 9. **Model-side contract.** The free controls prove the server side:
    negotiation with `swarmail-evals` as the client, capabilities, tool list
    and batches. Model-CLI negotiation is recorded per paid session by the
@@ -210,11 +236,45 @@ scripts/compare-mail.sh controls --output … --product docs/evals/agent-compari
 scripts/compare-mail.sh measure --dry-run …               # transcript committed
 ```
 
+## Rerun changes (2026-11-07), and which position each answers
+
+The run context carries no review return, so no review finding is open.
+These changes answer the rerun's two positions and the bytes, and they are
+ruled in the spec's "How the rerun's positions were ruled".
+
+| Change | Owning artifact | Answers |
+|---|---|---|
+| MailSlurper facts recorded from the bytes: release, digests, no AUTH, accept-before-store, three listeners, routes, `LIKE` filters, body shape | spec "What the pinned bytes establish"; R8; plan research 8 | Simplicity §1; robustness §2.1 |
+| Hex-constant digest checks; archive and member digests; no `sha256sum -c` on a foreign path; stop on mismatch | spec R8; plan technical context | Robustness §2.1 |
+| Tree unresolved; archive-attributed captures; only the cited files | spec R8 | Simplicity §2.1–§2.2 |
+| v4 reader is the v3 reader given an expected-target list | spec R8; T3.b | Simplicity §2.3 |
+| AUTH probe gates the product record; `221 Bye` and close is the expected result | spec R8, AC6; T3.c | Robustness §2.9; simplicity §1 |
+| Every announced tool called once against each pin before the record freezes | spec R9, AC4; T4.c, T7.b | Robustness §2.3 |
+| Wire corpus decoded in CI | spec AC4; T4.d | Robustness §2.2 |
+| Hostile-argument rules on every adapter | spec R5, AC4; T4.e | Robustness §2.7 |
+| Third owned port and config template for MailSlurper | spec R4, AC6; T3.b | Simplicity §1 |
+| Bridge in-flight bound; pretty-printed body; adapter stderr to a file | spec R3, R4, AC3; T5.e, T5.c | Robustness §2.4, partly |
+| Exact recipient match after MailSlurper's substring filter | spec R7, AC4; T6.d | Chief, from `CommonQueries.go` |
+| Receipts ancestry rule; row-count and torn-tail refusals | spec R9, AC11; T7.c | Robustness §2.5, with simplicity's no-new-ledger ruling |
+| README's "Not built" block replaced, not appended to | T8.c | Simplicity §0 |
+| Built tasks ticked with their commits | tasks.md | Simplicity §0 |
+
+No acceptance criterion was weakened. The only text changed rather than
+added is AC10's scratch location (`/home`, not a temp dir). It follows the
+host's `/tmp` quota and is stricter.
+
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| **The seat has no network for MailSlurper (and the competitor assets).** | The bytes are obtained as untrusted downloads into isolated dirs, digest-verified, and read with Python `-I`. If they cannot be obtained, T3/T4b/T8 are reported **blocked** with what is missing, and the run does not report `complete`. Nothing is written from memory. The MailHog/Mailpit/runner/bridge/prerequisite work still lands and is proved against the shims. |
+| **The shelf bytes are trusted because they are present.** | Each artifact is checked against a hex constant before use: the lock for Mailpit and MailHog, the spec's recorded digest for MailSlurper. Each is extracted into a new directory, and only the verified member runs. Python runs with `-I`. A mismatch stops the dependent tasks, which report **blocked**; the lock is never fitted to the bytes. `git ls-files .compare-bins` stays empty (AC12). |
+| **The source and the pinned binary disagree about AUTH** (for example, a build that differs from its tag). | The probe gates the record. A disagreement or an inconclusive probe refuses to freeze the record, and the MailSlurper items report blocked. Nothing is guessed. |
+| **MailSlurper's `250` precedes storage, so the oracle sees a short list.** | Declared `not-promised`. The oracle and the labelled poll wait poll until the count is met or the deadline passes. A shortfall at the deadline is an oracle error in controls, never a pass. |
+| **MailSlurper's substring `to` filter returns a lookalike recipient.** | Agents see upstream's real filter, described truthfully, which is the variable being measured. The oracle matches exactly after the pre-filter, and a test proves the exclusion (AC4). |
+| **MailSlurper binds a port the launcher does not own** (the admin www listener). | A third reserved port is filled into the config template, and a launch test proves three owned binds and their release (AC6). Bind corroboration covers all three. |
+| **MailSlurper writes outside its scratch** (the relative SQLite path, logs). | The config template's `dbDatabase` is an absolute path under `{data_dir}`, and the working directory is the trial's scratch. The cleanup receipt covers the scratch. |
+| **The wire corpus goes stale or carries private data.** | It is captured only from fixture-generated synthetic mail, and its index binds each pin's executable digest. A test refuses an index whose digest differs from the lock, so a moved pin forces a recapture. No agent body is ever in it (0075). |
+| **Committing the controls moves HEAD and makes the receipts look stale.** | The ancestry rule allows a diff touching only the evidence paths. Any code, lock, product or script change refuses (AC11). |
 | **The split changes Mailpit's tool list and breaks frozen protocol v2.** | A test asserts `sha256(tools(&Bounds::default()))` equals `protocol.json`'s `budgets.adapter.tools_sha256`. The protocol bytes are diffed against `c95386e`. |
 | **Lock v4 breaks the historical readers or the admitted 2026-10-30 collection.** | Each historical reader keeps its own three-target list. The v3 bytes are archived byte-identical and read by the v3 reader. Every existing protocol and lock test stays green. The wire `check` on protocol v2 with lock v4 is a test. |
 | **Adapter death leaks the backend's process group.** `targets.rs` gives the backend its own group. | Only the adapter's exit 0 after full cleanup is a receipt. Kill, non-zero exit and timeout all mark cleanup unknown and stop admission (0093 §7). A test kills the adapter mid-trial (AC11). |
@@ -227,4 +287,4 @@ scripts/compare-mail.sh measure --dry-run …               # transcript committ
 | **The dry run is mistaken for a stub.** | Every prerequisite is produced for real. Pending items (CI receipt) are printed. Non-dry measure refuses them. The transcript is committed. |
 | **Model-CLI negotiation fails in the first paid session.** | It is logged by the bridge, and a failure is a visible `harness_error` row. The contract evidence states the limit. |
 | **A competitor's tool names collide with the claude allowlist format.** | The tool names come from the adapter's announced list, which is validated against `^[a-z][a-z0-9_]{0,63}$`. A test covers the generated configs. |
-| **Upstream-backed tests are not in CI.** | The #287 precedent: ignored tests behind `MAIL_COMPARE_<T>`, the committed controls receipts, and CI mechanics against the Swarmail shims. The README names what only those receipts prove. |
+| **Upstream-backed tests are not in CI.** | The #287 precedent: ignored tests behind `MAIL_COMPARE_<T>`, the committed controls receipts, and CI mechanics against the Swarmail shims. *(rerun)* The committed wire corpus is also decoded in CI, so the adapter decoders and the oracle normalizers run on real upstream shapes on every run. The README names what only the receipts prove. |
