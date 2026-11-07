@@ -567,9 +567,17 @@ impl Owned {
         let deadline = Instant::now() + limits.startup;
         let declared: Option<Vec<(ListenerRole, SocketAddr)>> = match (spec.kind, stdout) {
             (TargetKind::Swarmail, Some(out)) => {
-                let (addrs, drain) = read_startup(out, deadline).await;
+                let (addrs, pop3, drain) = read_startup(out, deadline).await;
                 owned.shared.lock().expect("shared lock").drain = drain;
-                addrs.map(|(s, h)| vec![(ListenerRole::Smtp, s), (ListenerRole::Http, h)])
+                addrs.map(|(s, h)| {
+                    let mut v = vec![(ListenerRole::Smtp, s), (ListenerRole::Http, h)];
+                    // The candidate also reports its POP3 address; it is a
+                    // declared listener only when the launch declares it.
+                    if let (true, Some(p)) = (roles.contains(&ListenerRole::Pop3), pop3) {
+                        v.push((ListenerRole::Pop3, p));
+                    }
+                    v
+                })
             }
             _ => slots
                 .iter()
@@ -1389,6 +1397,7 @@ async fn read_startup(
     deadline: Instant,
 ) -> (
     Option<(SocketAddr, SocketAddr)>,
+    Option<SocketAddr>,
     Option<tokio::task::JoinHandle<()>>,
 ) {
     let mut reader = BufReader::new(out.take(STARTUP_LINE_MAX));
@@ -1399,7 +1408,7 @@ async fn read_startup(
         let _ = tokio::io::copy(&mut rest, &mut tokio::io::sink()).await;
     });
     if !matches!(read, Ok(Ok(n)) if n > 0) {
-        return (None, Some(drain));
+        return (None, None, Some(drain));
     }
     let field = |name: &str| -> Option<SocketAddr> {
         line.split(name)
@@ -1409,7 +1418,11 @@ async fn read_startup(
             .parse()
             .ok()
     };
-    (field("smtp=").zip(field("http=")), Some(drain))
+    (
+        field("smtp=").zip(field("http=")),
+        field("pop3="),
+        Some(drain),
+    )
 }
 
 /// `"mail-compare <token> …"` → `<token>`; anything else → `""`.

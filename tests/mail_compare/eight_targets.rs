@@ -1139,3 +1139,540 @@ fn row_labels_present_for_each_target() {
     assert!(labels.iter().all(|l| l.storage_backend.is_some()));
     assert_ne!(of(TargetKind::Mailslurper).source, of(TargetKind::AlkemioMailslurper).source);
 }
+
+// ---- lifecycle: listeners, environment, config file, checked members -----
+
+use protocol::ListenerRole as Role;
+use targets::{LaunchError, LaunchSpec};
+
+/// A scripted child: `/bin/sh` runs the rendered config file, whose lines are
+/// the script (argv elements cannot hold spaces; config lines can). The shell
+/// is an existing executable, so no freshly written script is ever "text file
+/// busy" while a parallel test forks.
+fn declared(kind: TargetKind, roles: &[Role], script: &[&str]) -> LaunchSpec {
+    let mut spec = LaunchSpec::new(kind, PathBuf::from("/bin/sh"), None, vec!["{config_path}".into()]);
+    spec.extra.listeners = roles.to_vec();
+    spec.extra.config = Some(protocol::ConfigFile {
+        name: "run.sh".into(),
+        lines: script.iter().map(|l| (*l).to_owned()).collect(),
+    });
+    spec
+}
+
+/// The pid marker a scripted child ends with, written atomically.
+const MARK_STARTED: &str = "echo $$ > \"$HOME/pid.tmp\"; mv \"$HOME/pid.tmp\" \"$HOME/pid\"; exec sleep 600";
+
+fn candidate_with_pop3_slot() -> Vec<String> {
+    let mut t = targets::swarmail_template(0);
+    let at = t.iter().position(|a| a == "--pop3-listen").unwrap();
+    t[at + 1] = "{pop3_addr}".into();
+    t
+}
+
+async fn launch_err(spec: &LaunchSpec, root: &Path) -> LaunchError {
+    let clock = wire::Clock(Instant::now());
+    targets::Owned::launch(spec, &root.join("leaf"), &short_limits(), &clock, &targets::Keepers::default())
+        .await
+        .err()
+        .expect("the launch must refuse")
+}
+
+#[tokio::test]
+async fn launch_template_must_use_exactly_the_declared_slots() {
+    let root = tempfile::tempdir().unwrap();
+    let all = [Role::Smtp, Role::Http];
+    // An undeclared slot, an omitted declared listener, a repeated role and
+    // a roleless launch are refused before anything starts.
+    for (roles, body) in [
+        (&all[..], "echo {smtp_addr} {http_addr} {imap_port}"),
+        (&all[..], "echo {smtp_addr}"),
+        (&[Role::Smtp, Role::Http, Role::Imap][..], "echo {smtp_addr} {http_addr}"),
+        (&[Role::Smtp, Role::Smtp, Role::Http][..], "echo {smtp_addr} {http_addr}"),
+        (&[Role::Smtp, Role::Pop3][..], "echo {smtp_addr} {pop3_addr}"),
+    ] {
+        // The scripted child is the one that would have run; it only has
+        // a Mailpit-shaped read path, so the pop3 case is Greenmail's.
+        let kind = if roles.contains(&Role::Pop3) { TargetKind::Greenmail } else { TargetKind::Mailpit };
+        let spec = declared(kind, roles, &[body]);
+        let spec = if roles == [Role::Smtp, Role::Pop3] {
+            // Declared right, but the pop3 slot is used and the http one is not
+            // declared: the only refusal is the undeclared `{http_addr}`.
+            declared(kind, roles, &["echo {smtp_addr} {pop3_addr} {http_addr}"])
+        } else {
+            spec
+        };
+        assert_eq!(launch_err(&spec, root.path()).await, LaunchError::Template, "{roles:?} {body}");
+        assert!(!root.path().join("leaf").exists(), "nothing was created");
+    }
+    // Greenmail reads over POP3 and so needs that role.
+    let spec = declared(TargetKind::Greenmail, &all, &["echo {smtp_addr} {http_addr}"]);
+    assert_eq!(launch_err(&spec, root.path()).await, LaunchError::Template);
+}
+
+#[tokio::test]
+async fn checked_member_or_jar_mismatch_refuses_launch() {
+    let root = tempfile::tempdir().unwrap();
+    let member = root.path().join("libjvm.so");
+    let jar = root.path().join("greenmail.jar");
+    std::fs::write(&member, b"authored member bytes").unwrap();
+    std::fs::write(&jar, b"authored jar bytes").unwrap();
+    let good_member = sha(b"authored member bytes");
+    let good_jar = sha(b"authored jar bytes");
+    let mk = |member_sha: &str, jar_sha: &str| {
+        let mut s = declared(TargetKind::Mailpit, &[Role::Smtp, Role::Http], &["echo {smtp_addr} {http_addr} {artifact}"]);
+        s.expected_sha256 = Some(jar_sha.to_owned());
+        s.extra.artifact = Some(jar.clone());
+        s.extra.members = vec![(member.clone(), member_sha.to_owned())];
+        s
+    };
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(launch_err(&mk(&"0".repeat(64), &good_jar), dir.path()).await, LaunchError::MemberDigestMismatch);
+    assert_eq!(launch_err(&mk(&good_member, &"0".repeat(64)), dir.path()).await, LaunchError::DigestMismatch);
+    assert!(!dir.path().join("leaf").exists(), "a refused launch creates no scratch");
+    // Both right: the launch starts and only readiness fails (nothing listens).
+    let why = launch_err(&mk(&good_member, &good_jar), dir.path()).await;
+    assert!(matches!(why, LaunchError::NotReady(..)), "{why:?}");
+    // The seal recheck: replacing either file after launch is detected.
+    let launched = targets::LaunchFacts {
+        target: TargetKind::Mailpit,
+        executable_sha256: good_jar.clone(),
+        argv_template: vec![],
+        ready_ns: 0,
+        members: vec![(member.to_string_lossy().into_owned(), good_member.clone())],
+    };
+    let spec = mk(&good_member, &good_jar);
+    assert!(targets::spec_unchanged(&spec, &launched));
+    std::fs::write(&member, b"swapped").unwrap();
+    assert!(!targets::spec_unchanged(&spec, &launched), "a swapped member refuses");
+    std::fs::write(&member, b"authored member bytes").unwrap();
+    std::fs::write(&jar, b"swapped").unwrap();
+    assert!(!targets::spec_unchanged(&spec, &launched), "a swapped jar refuses");
+}
+
+#[tokio::test]
+async fn config_file_rendered_in_scratch_and_removed_with_env_slots_substituted() {
+    let root = tempfile::tempdir().unwrap();
+    let mut spec = declared(
+        TargetKind::Mailpit,
+        &[Role::Smtp, Role::Http],
+        &[
+            "cp \"{config_path}\" \"$HOME/config.copy\"",
+            "echo \"$MC_SMTP|$MC_HTTP|$MC_NAME\" > \"$HOME/env.copy\"",
+            "# braces {{kept}} smtp={smtp_port} http={http_port}",
+            MARK_STARTED,
+        ],
+    );
+    spec.extra.env = vec![
+        ["MC_SMTP".into(), "{smtp_addr}".into()],
+        ["MC_HTTP".into(), "{http_addr}".into()],
+        ["MC_NAME".into(), "plain".into()],
+    ];
+    let scratch = root.path().join("leaf");
+    let keepers = targets::Keepers::default();
+    let mut lim = short_limits();
+    lim.startup = Duration::from_secs(60);
+    let clock = wire::Clock(Instant::now());
+    let launch = targets::Owned::launch(&spec, &scratch, &lim, &clock, &keepers);
+    tokio::select! {
+        r = launch => panic!("a never-ready server became ready: {:?}", r.err()),
+        _ = started(&scratch) => {}
+    }
+    let copy = std::fs::read_to_string(scratch.join("home/config.copy")).unwrap();
+    let env = std::fs::read_to_string(scratch.join("home/env.copy")).unwrap();
+    // The config was rendered into the owned scratch before the child ran,
+    // privately, with the braces unescaped and every port substituted.
+    let line = copy.lines().find(|l| l.starts_with("# braces")).unwrap();
+    assert!(line.starts_with("# braces {kept} smtp="), "{line}");
+    let num = |key: &str| -> u16 {
+        line.split(key).nth(1).unwrap().split(|c: char| !c.is_ascii_digit()).next().unwrap().parse().unwrap()
+    };
+    let (smtp_port, http_port) = (num("smtp="), num("http="));
+    assert_ne!(smtp_port, http_port, "every role has its own reserved port");
+    let parts: Vec<&str> = env.trim().split('|').collect();
+    assert_eq!(parts, [format!("127.0.0.1:{smtp_port}"), format!("127.0.0.1:{http_port}"), "plain".into()]);
+    let mode = std::fs::metadata(scratch.join("config/run.sh")).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    let settled = keepers.settle(lim.cleanup * 2).await;
+    assert!(settled[0].proved(), "{:?}", settled[0]);
+    assert!(!scratch.exists(), "the config file went with its scratch");
+}
+
+#[tokio::test]
+async fn cleanup_reports_each_listener_and_conjunction() {
+    let root = tempfile::tempdir().unwrap();
+    let spec = declared(
+        TargetKind::Mailpit,
+        &[Role::Smtp, Role::Http],
+        &[
+            "echo {smtp_addr} > \"$HOME/smtp.tmp\"; mv \"$HOME/smtp.tmp\" \"$HOME/smtp\"",
+            "echo {http_addr} > \"$HOME/http\"",
+            MARK_STARTED,
+        ],
+    );
+    let scratch = root.path().join("leaf");
+    let clock = wire::Clock(Instant::now());
+    let lim = short_limits();
+    let keepers = targets::Keepers::default();
+    let task = {
+        let (spec, scratch, lim, keepers) = (spec.clone(), scratch.clone(), lim.clone(), keepers.clone());
+        tokio::spawn(async move { targets::Owned::launch(&spec, &scratch, &lim, &clock, &keepers).await.err() })
+    };
+    started(&scratch).await;
+    let smtp: std::net::SocketAddr = std::fs::read_to_string(scratch.join("home/smtp")).unwrap().trim().parse().unwrap();
+    // A foreign listener takes one declared address; the other stays free.
+    let foreign = std::net::TcpListener::bind(smtp).expect("the reserved port was released");
+    let Some(LaunchError::NotReady(_, facts)) = task.await.unwrap() else { panic!("not ready expected") };
+    drop(foreign);
+    let by_role = |r: Role| facts.listeners.iter().find(|l| l.role == r).map(|l| l.closed);
+    assert_eq!(by_role(Role::Smtp), Some(false), "an address someone else holds is not closed");
+    assert_eq!(by_role(Role::Http), Some(true));
+    assert!(!facts.listeners_closed, "the conjunction fails when any one stays open: {facts:?}");
+    assert!(facts.reaped && facts.group_gone && facts.scratch_removed && !facts.proved());
+}
+
+#[tokio::test]
+#[cfg_attr(not(target_os = "linux"), ignore = "the listening set is read from /proc (Linux)")]
+async fn undeclared_listener_refused_and_cleaned() {
+    let root = tempfile::tempdir().unwrap();
+    let clock = wire::Clock(Instant::now());
+    let keepers = targets::Keepers::default();
+    // The candidate also listens for POP3, which this launch does not
+    // declare: the group's listening set is not the declared one.
+    let mut spec = swarmail_spec(targets::swarmail_template(0));
+    spec.extra.listeners = vec![Role::Smtp, Role::Http];
+    let scratch = root.path().join("leaf");
+    let err = targets::Owned::launch(&spec, &scratch, &limits(), &clock, &keepers).await.err();
+    let Some(LaunchError::UndeclaredListener(facts)) = err else { panic!("{err:?}") };
+    assert!(facts.proved(), "the refused launch was cleaned up: {facts:?}");
+    assert!(!scratch.exists());
+    let settled = keepers.settle(limits().cleanup * 2).await;
+    assert!(settled.iter().all(targets::CleanupFacts::proved));
+
+    // Declaring all three makes the same launch exact, and cleanup then
+    // proves each of the three closed.
+    let mut spec = swarmail_spec(candidate_with_pop3_slot());
+    spec.extra.listeners = vec![Role::Smtp, Role::Http, Role::Pop3];
+    let mut owned = targets::Owned::launch(&spec, &root.path().join("leaf2"), &limits(), &clock, &keepers)
+        .await
+        .expect("an exactly declared set launches");
+    let facts = owned.shutdown().await;
+    assert!(facts.proved() && facts.listeners_closed, "{facts:?}");
+    let roles: Vec<Role> = facts.listeners.iter().map(|l| l.role).collect();
+    assert_eq!(roles, [Role::Smtp, Role::Http, Role::Pop3]);
+    assert!(facts.listeners.iter().all(|l| l.closed));
+}
+
+#[test]
+fn group_listeners_reads_the_kernel_and_normalizes_mapped_addresses() {
+    // A listener of this very process group, named by address.
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    // SAFETY: getpgrp has no preconditions.
+    let pgid = unsafe { libc::getpgrp() };
+    if cfg!(target_os = "linux") {
+        let set = targets::group_listeners(pgid).expect("readable on linux");
+        assert!(set.contains(&addr), "{set:?} lacks {addr}");
+        drop(l);
+        let set = targets::group_listeners(pgid).unwrap();
+        assert!(!set.contains(&addr), "a closed listener is gone");
+    } else {
+        assert_eq!(targets::group_listeners(pgid), None);
+    }
+}
+
+// ---- the POP3 reader against a scripted responder ------------------------
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+enum Reply {
+    Bytes(Vec<u8>),
+    /// Say nothing, and keep the connection open until the peer leaves.
+    Stall,
+}
+
+type Handler = Arc<dyn Fn(&str) -> Reply + Send + Sync>;
+
+struct Responder {
+    addr: std::net::SocketAddr,
+    seen: Arc<Mutex<Vec<String>>>,
+    connections: Arc<AtomicUsize>,
+    closed: Arc<AtomicUsize>,
+}
+
+/// A local POP3 server that follows a script and records every command.
+async fn responder(greeting: Option<&'static str>, handler: Handler) -> Responder {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let r = Responder {
+        addr: listener.local_addr().unwrap(),
+        seen: Arc::default(),
+        connections: Arc::default(),
+        closed: Arc::default(),
+    };
+    let (seen, connections, closed) = (r.seen.clone(), r.connections.clone(), r.closed.clone());
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else { return };
+            connections.fetch_add(1, Ordering::SeqCst);
+            let (seen, closed, handler) = (seen.clone(), closed.clone(), handler.clone());
+            tokio::spawn(async move {
+                let (rd, mut wr) = stream.into_split();
+                let mut rd = tokio::io::BufReader::new(rd);
+                if let Some(g) = greeting {
+                    let _ = wr.write_all(g.as_bytes()).await;
+                }
+                loop {
+                    let mut line = String::new();
+                    match rd.read_line(&mut line).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let cmd = line.trim_end().to_owned();
+                    seen.lock().unwrap().push(cmd.clone());
+                    if let Reply::Bytes(b) = handler(&cmd) {
+                        let _ = wr.write_all(&b).await;
+                    }
+                }
+                closed.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+    });
+    r
+}
+
+/// RFC 1939 §3 byte-stuffing, written out here on its own.
+fn stuffed(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for line in raw.split_inclusive(|b| *b == b'\n') {
+        if line.first() == Some(&b'.') {
+            out.push(b'.');
+        }
+        out.extend_from_slice(line);
+    }
+    out
+}
+
+fn multi(body: &[u8]) -> Reply {
+    let mut v = b"+OK\r\n".to_vec();
+    v.extend(stuffed(body));
+    v.extend_from_slice(b".\r\n");
+    Reply::Bytes(v)
+}
+
+/// A faithful server holding `msgs` as `(unique id, raw message)`.
+fn standard(msgs: Vec<(&'static str, Vec<u8>)>) -> Handler {
+    Arc::new(move |cmd: &str| {
+        let n = |prefix: &str| cmd.strip_prefix(prefix).and_then(|r| r.split(' ').next()?.parse::<usize>().ok());
+        match cmd.split(' ').next().unwrap() {
+            "USER" | "PASS" => Reply::Bytes(b"+OK\r\n".to_vec()),
+            "STAT" => Reply::Bytes(format!("+OK {} 1000\r\n", msgs.len()).into_bytes()),
+            "UIDL" => {
+                let body: String = msgs.iter().enumerate().map(|(i, (u, _))| format!("{} {u}\r\n", i + 1)).collect();
+                multi(body.as_bytes())
+            }
+            "TOP" => {
+                let raw = &msgs[n("TOP ").unwrap() - 1].1;
+                let head_end = raw.windows(4).position(|w| w == b"\r\n\r\n").map_or(raw.len(), |i| i + 4);
+                multi(&raw[..head_end])
+            }
+            "RETR" => multi(&msgs[n("RETR ").unwrap() - 1].1),
+            "QUIT" => Reply::Bytes(b"+OK bye\r\n".to_vec()),
+            _ => Reply::Bytes(b"-ERR unknown\r\n".to_vec()),
+        }
+    })
+}
+
+fn pop3(addr: std::net::SocketAddr, step: Duration, max: u64) -> wire::Pop3 {
+    wire::Pop3::new(addr, step, max)
+}
+
+const GREETING: Option<&str> = Some("+OK authored pop3 ready\r\n");
+
+fn authored_mail(subject: &str, body: &str) -> Vec<u8> {
+    format!("From: <a@b.invalid>\r\nSubject: {subject}\r\n\r\n{body}").into_bytes()
+}
+
+#[tokio::test]
+async fn pop3_dot_unstuffing() {
+    // A body line `..lead` and a lone `.` line are stuffed on the wire as
+    // `...lead` and `..`; neither is the terminator, and both come back as
+    // authored.
+    let raw = authored_mail("dots", "..lead\r\n.\r\nplain\r\n");
+    let r = responder(GREETING, standard(vec![("u1", raw.clone())])).await;
+    let got = pop3(r.addr, Duration::from_secs(5), 1 << 20).retrieve("u1").await.unwrap();
+    assert_eq!(got, raw, "{}", String::from_utf8_lossy(&got));
+    // The wire really did carry the stuffed forms.
+    assert!(String::from_utf8_lossy(&stuffed(&raw)).contains("\r\n...lead\r\n..\r\n"));
+    // A listing returns the header block, blank line included.
+    let heads = pop3(r.addr, Duration::from_secs(5), 1 << 20).list().await.unwrap();
+    assert_eq!(heads, vec![("u1".to_owned(), b"From: <a@b.invalid>\r\nSubject: dots\r\n\r\n".to_vec())]);
+    assert_eq!(targets::subject_of_headers(&heads[0].1).unwrap(), "dots");
+}
+
+#[tokio::test]
+async fn pop3_err_each_step() {
+    let raw = authored_mail("one", "body\r\n");
+    for step in ["USER", "PASS", "STAT", "UIDL", "TOP", "RETR"] {
+        let inner = standard(vec![("u1", raw.clone())]);
+        let handler: Handler = Arc::new(move |cmd: &str| {
+            if cmd.starts_with(step) { Reply::Bytes(b"-ERR refused\r\n".to_vec()) } else { inner(cmd) }
+        });
+        let r = responder(GREETING, handler).await;
+        let client = pop3(r.addr, Duration::from_secs(5), 1 << 20);
+        let result = if step == "RETR" { client.retrieve("u1").await.map(|_| ()) } else { client.list().await.map(|_| ()) };
+        assert_eq!(result, Err(wire::WireError::Refused), "{step}");
+    }
+    // An error greeting is not a session at all.
+    let r = responder(Some("-ERR busy\r\n"), standard(vec![])).await;
+    assert_eq!(pop3(r.addr, Duration::from_secs(5), 1 << 20).list().await.map(|_| ()), Err(wire::WireError::Malformed));
+    // A status line that is neither +OK nor -ERR is malformed.
+    let handler: Handler = Arc::new(|_: &str| Reply::Bytes(b"OK?\r\n".to_vec()));
+    let r = responder(GREETING, handler).await;
+    assert_eq!(pop3(r.addr, Duration::from_secs(5), 1 << 20).list().await.map(|_| ()), Err(wire::WireError::Malformed));
+}
+
+#[tokio::test]
+async fn pop3_long_line_and_oversized_message() {
+    let long = "x".repeat(wire::MAX_POP3_LINE + 10);
+    let handler: Handler = Arc::new(move |cmd: &str| {
+        if cmd.starts_with("USER") { Reply::Bytes(format!("+OK {long}\r\n").into_bytes()) } else { Reply::Bytes(b"+OK\r\n".to_vec()) }
+    });
+    let r = responder(GREETING, handler).await;
+    assert_eq!(pop3(r.addr, Duration::from_secs(5), 1 << 20).list().await.map(|_| ()), Err(wire::WireError::Oversized));
+    // A body line over the cap, in a multi-line answer.
+    let raw = authored_mail("long", &format!("{}\r\n", "y".repeat(wire::MAX_POP3_LINE + 10)));
+    let r = responder(GREETING, standard(vec![("u1", raw.clone())])).await;
+    assert_eq!(pop3(r.addr, Duration::from_secs(5), 1 << 20).retrieve("u1").await, Err(wire::WireError::Oversized));
+    // A message over the byte cap, though every line is short.
+    let raw = authored_mail("big", &"z".repeat(300).repeat(4).chars().collect::<Vec<_>>().chunks(60).map(|c| c.iter().collect::<String>() + "\r\n").collect::<String>());
+    let r = responder(GREETING, standard(vec![("u1", raw.clone())])).await;
+    assert_eq!(pop3(r.addr, Duration::from_secs(5), 256).retrieve("u1").await, Err(wire::WireError::Oversized));
+    assert_eq!(pop3(r.addr, Duration::from_secs(5), 1 << 20).retrieve("u1").await.unwrap().len(), raw.len());
+}
+
+#[tokio::test]
+async fn pop3_stall_hits_deadline() {
+    // The deadline under test is a real one, kept short. (The paused clock
+    // was tried first: tokio auto-advances it whenever the runtime waits on
+    // a real loopback socket, so a successful greeting alone read as 28
+    // virtual seconds and a timeout could fire early. A deadline is a
+    // deadline; no test here sleeps to synchronize.)
+    let step = Duration::from_millis(150);
+    for stalled in ["STAT", "UIDL", "TOP", "USER"] {
+        let inner = standard(vec![("u1", authored_mail("one", "b\r\n"))]);
+        let handler: Handler = Arc::new(move |cmd: &str| if cmd.starts_with(stalled) { Reply::Stall } else { inner(cmd) });
+        let r = responder(GREETING, handler).await;
+        let started = Instant::now();
+        let result = pop3(r.addr, step, 1 << 20).list().await.map(|_| ());
+        assert_eq!(result, Err(wire::WireError::Timeout), "{stalled}");
+        let took = started.elapsed();
+        assert!(took >= step && took < Duration::from_secs(10), "{stalled}: one exchange's deadline: {took:?}");
+    }
+    // No greeting at all is readiness that never arrives.
+    let r = responder(None, standard(vec![])).await;
+    assert_eq!(pop3(r.addr, step, 1 << 20).greeting().await, Err(wire::WireError::Timeout));
+}
+
+#[tokio::test]
+async fn pop3_cancel_mid_retr_leaves_no_task_behind() {
+    // The server sends half a message and goes quiet; the caller gives up
+    // the moment the server reports having sent it.
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let signal = reached.clone();
+    let handler: Handler = Arc::new(move |cmd: &str| match cmd.split(' ').next().unwrap() {
+        "USER" | "PASS" => Reply::Bytes(b"+OK\r\n".to_vec()),
+        "STAT" => Reply::Bytes(b"+OK 1 100\r\n".to_vec()),
+        "UIDL" => multi(b"1 u1\r\n"),
+        "RETR" => {
+            signal.notify_one();
+            Reply::Bytes(b"+OK\r\nSubject: half\r\n".to_vec())
+        }
+        _ => Reply::Stall,
+    });
+    let r = responder(GREETING, handler).await;
+    let alive = || tokio::runtime::Handle::current().metrics().num_alive_tasks();
+    let before = alive();
+    let client = pop3(r.addr, Duration::from_secs(60), 1 << 20);
+    tokio::select! {
+        biased;
+        _ = reached.notified() => {}
+        got = client.retrieve("u1") => panic!("the read cannot finish: {got:?}"),
+    }
+    // The dropped future closed its socket: the server sees the peer leave
+    // (a real deadline bounds the wait), and nothing of the client's runs.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while r.closed.load(Ordering::SeqCst) < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the server saw the connection close");
+    assert_eq!(r.connections.load(Ordering::SeqCst), 1);
+    assert_eq!(alive(), before, "no task outlived the cancelled read");
+}
+
+#[tokio::test]
+async fn pop3_never_sends_dele() {
+    let mail = vec![("u1", authored_mail("one", "1\r\n")), ("u2", authored_mail("two", "2\r\n"))];
+    let r = responder(GREETING, standard(mail)).await;
+    let client = pop3(r.addr, Duration::from_secs(5), 1 << 20);
+    assert_eq!(client.list().await.unwrap().len(), 2);
+    client.retrieve("u2").await.unwrap();
+    assert_eq!(client.list().await.unwrap().len(), 2, "reading deleted nothing");
+    let seen = r.seen.lock().unwrap().clone();
+    assert!(!seen.iter().any(|c| c.starts_with("DELE")), "{seen:?}");
+    for c in &seen {
+        let word = c.split(' ').next().unwrap();
+        assert!(["USER", "PASS", "STAT", "UIDL", "TOP", "RETR", "QUIT"].contains(&word), "{c}");
+    }
+    // A fresh session per scan: three calls, three logins, three QUITs, and
+    // the request counter counts every command.
+    assert_eq!(r.connections.load(Ordering::SeqCst), 3);
+    for word in ["USER", "PASS", "STAT", "UIDL", "QUIT"] {
+        assert_eq!(seen.iter().filter(|c| c.starts_with(word)).count(), 3, "{word}");
+    }
+    assert_eq!(client.requests(), seen.len() as u64);
+}
+
+#[tokio::test]
+async fn pop3_stat_uidl_mismatch_incomplete() {
+    let two = |count: usize, listing: &'static str| -> Handler {
+        Arc::new(move |cmd: &str| match cmd.split(' ').next().unwrap() {
+            "STAT" => Reply::Bytes(format!("+OK {count} 10\r\n").into_bytes()),
+            "UIDL" => multi(listing.as_bytes()),
+            "QUIT" => Reply::Bytes(b"+OK\r\n".to_vec()),
+            _ => Reply::Bytes(b"+OK\r\n".to_vec()),
+        })
+    };
+    for (name, count, listing) in [
+        ("STAT counts more", 3, "1 a\r\n2 b\r\n"),
+        ("STAT counts fewer", 1, "1 a\r\n2 b\r\n"),
+        ("a number skipped", 2, "1 a\r\n3 b\r\n"),
+        ("a repeated unique id", 2, "1 a\r\n2 a\r\n"),
+    ] {
+        let r = responder(GREETING, two(count, listing)).await;
+        let got = pop3(r.addr, Duration::from_secs(5), 1 << 20).list().await.map(|_| ());
+        assert_eq!(got, Err(wire::WireError::Incomplete), "{name}");
+    }
+    // A malformed UIDL line is malformed, not incomplete.
+    let r = responder(GREETING, two(1, "just-one-word\r\n")).await;
+    assert_eq!(pop3(r.addr, Duration::from_secs(5), 1 << 20).list().await.map(|_| ()), Err(wire::WireError::Malformed));
+    // An id the server does not hold is not retrievable.
+    let r = responder(GREETING, standard(vec![("u1", authored_mail("one", "b\r\n"))])).await;
+    assert_eq!(pop3(r.addr, Duration::from_secs(5), 1 << 20).retrieve("nope").await, Err(wire::WireError::Malformed));
+}
+
+#[tokio::test]
+async fn pop3_readiness_needs_greeting() {
+    let r = responder(GREETING, standard(vec![])).await;
+    pop3(r.addr, Duration::from_secs(5), 1 << 20).greeting().await.expect("a +OK greeting is ready");
+    let r = responder(Some("-ERR starting\r\n"), standard(vec![])).await;
+    assert_eq!(pop3(r.addr, Duration::from_secs(5), 1 << 20).greeting().await, Err(wire::WireError::Malformed));
+    // Nothing listening is io, not readiness.
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    assert_eq!(pop3(dead, Duration::from_secs(5), 1 << 20).greeting().await, Err(wire::WireError::Io));
+}
