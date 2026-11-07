@@ -40,6 +40,9 @@ pub const ENV_INBOX: &str = "EVAL_INBOX";
 pub const ENV_GOAL: &str = "EVAL_GOAL";
 pub const ENV_PROMPT_FILE: &str = "EVAL_PROMPT_FILE";
 pub const ENV_DEADLINE_MS: &str = "EVAL_DEADLINE_MS";
+/// Set by the runner for a competitor target: the built-in oracle then solves
+/// through that backend's own adapter tools instead of Swarmail's.
+pub const ENV_COMPETITOR: &str = "EVAL_COMPETITOR";
 
 impl AgentEnv {
     pub fn from_env() -> Result<AgentEnv, String> {
@@ -396,7 +399,23 @@ pub fn exact_title_links_by_section(text: &str) -> Vec<(String, String)> {
 }
 
 async fn confirm_from_text(app: &App, email: &Value) -> Result<(), String> {
-    let link = labelled_url(&text_of(email), "Confirm your account:")
+    let text = text_of(email);
+    // A backend that keeps only a multipart's HTML part (MailSlurper) exposes
+    // no text alternative at all. Then, and only then, the control reads the
+    // one anchor titled as the labelled line is: the same link, from the one
+    // part the backend holds. A backend with a text part is read as ever.
+    let link = labelled_url(&text, "Confirm your account:")
+        .or_else(|| {
+            if !text.trim().is_empty() {
+                return None;
+            }
+            let html = email["html"].as_str()?;
+            let mut anchors = html_anchors(html)
+                .into_iter()
+                .filter(|(_, title)| title == "Confirm your account");
+            let (href, _) = anchors.next()?;
+            anchors.next().is_none().then_some(href)
+        })
         .ok_or("no confirmation link in the mail")?;
     ok("confirm", app.get(&link).await?)?;
     Ok(())

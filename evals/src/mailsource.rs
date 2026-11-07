@@ -75,6 +75,18 @@ pub enum Competitor {
     Mailslurper,
 }
 
+impl Competitor {
+    /// The competitor a `--target` name selects.
+    pub fn from_target(name: &str) -> Option<Competitor> {
+        match name {
+            "mailpit" => Some(Competitor::Mailpit),
+            "mailhog" => Some(Competitor::Mailhog),
+            "mailslurper" => Some(Competitor::Mailslurper),
+            _ => None,
+        }
+    }
+}
+
 /// A competitor reached through its adapter's tools over the bridge.
 pub struct CompetitorSource<'a> {
     mcp: &'a mut McpClient,

@@ -68,6 +68,12 @@ struct Inner {
     by_id: HashMap<String, u64>,
     slots: HashMap<u64, (Vec<String>, oneshot::Sender<Value>)>,
     sessions: Vec<Session>,
+    /// The adapter's answer to its one `initialize`. A stdio adapter has one
+    /// session but several HTTP clients reach it (the runner's probe, the
+    /// oracle, an agent CLI that reconnects), and each says `initialize`:
+    /// later ones are answered from this and never forwarded, since an
+    /// adapter refuses a second one.
+    init_result: Option<Value>,
 }
 
 struct Shared {
@@ -210,6 +216,8 @@ async fn post_mcp(State(sh): State<Arc<Shared>>, headers: HeaderMap, body: Bytes
             unavailable()
         };
     }
+    let single_initialize =
+        !batch && members[0].get("method").and_then(Value::as_str) == Some("initialize");
     // Register every request id of this body to one reply slot.
     let (tx, rx) = oneshot::channel();
     let slot = {
@@ -219,6 +227,20 @@ async fn post_mcp(State(sh): State<Arc<Shared>>, headers: HeaderMap, body: Bytes
     };
     {
         let mut inner = sh.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if single_initialize && let Some(cached) = inner.init_result.clone() {
+            let p = members[0].get("params");
+            let info = p.and_then(|p| p.get("clientInfo"));
+            inner.sessions.push(Session {
+                client_name: printable(info.and_then(|i| i.get("name"))),
+                client_version: printable(info.and_then(|i| i.get("version"))),
+                protocol_version: printable(p.and_then(|p| p.get("protocolVersion"))),
+            });
+            let id = ids[0].clone();
+            return json_response(
+                StatusCode::OK,
+                &json!({"jsonrpc": "2.0", "id": id, "result": cached}),
+            );
+        }
         let keys: Vec<String> = {
             let mut k: Vec<String> = ids.iter().map(|i| key_of(i)).collect();
             k.dedup();
@@ -274,7 +296,14 @@ async fn post_mcp(State(sh): State<Arc<Shared>>, headers: HeaderMap, body: Bytes
         return unavailable();
     }
     match tokio::time::timeout(REPLY_DEADLINE, rx).await {
-        Ok(Ok(reply)) => json_response(StatusCode::OK, &reply),
+        Ok(Ok(reply)) => {
+            if single_initialize && let Some(result) = reply.get("result").filter(|r| r.is_object())
+            {
+                let mut inner = sh.inner.lock().unwrap_or_else(|e| e.into_inner());
+                inner.init_result.get_or_insert_with(|| result.clone());
+            }
+            json_response(StatusCode::OK, &reply)
+        }
         // The reader dropped the slot: the adapter exited.
         Ok(Err(_)) => unavailable(),
         Err(_) => {

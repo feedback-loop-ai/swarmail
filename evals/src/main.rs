@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use swarmail_evals::runner::{self, TrialRequest, TrialResult};
 use swarmail_evals::tasks::{self, Catalogue, Outcome};
 use swarmail_evals::{
-    artifacts, baseline, fixture, fixture_http, identity, isolation, oracle, provenance, report,
-    state, wrappers,
+    artifacts, baseline, comparison, fixture, fixture_http, identity, isolation, mailsource,
+    oracle, provenance, report, state, wrappers,
 };
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -179,6 +179,38 @@ enum Cmd {
         /// working directory holding .brokkr/recipes/eval.
         #[arg(long)]
         brokkr: Option<PathBuf>,
+        /// Run against one comparison target (proposed decision 0129):
+        /// `swarmail`, `mailpit`, `mailhog` or `mailslurper`. The rows are
+        /// schema 3 comparison rows, bound to `--product`.
+        #[arg(long)]
+        target: Option<String>,
+        /// The `mail_compare` executable that serves a competitor's adapter.
+        #[arg(long, requires = "target")]
+        adapter: Option<PathBuf>,
+        /// The competitor's executable; its digest must be the product's.
+        #[arg(long, requires = "target")]
+        target_bin: Option<PathBuf>,
+        /// The source lock that binds the competitor.
+        #[arg(long, requires = "target")]
+        sources: Option<PathBuf>,
+        /// The frozen product record.
+        #[arg(long, requires = "target")]
+        product: Option<PathBuf>,
+    },
+    /// Probe one target's MCP contract and write it as JSON (free).
+    ComparisonContract {
+        #[arg(long)]
+        target: String,
+        #[arg(long)]
+        product: PathBuf,
+        #[arg(long)]
+        adapter: Option<PathBuf>,
+        #[arg(long)]
+        target_bin: Option<PathBuf>,
+        #[arg(long)]
+        sources: Option<PathBuf>,
+        #[arg(long)]
+        output: PathBuf,
     },
     /// Re-apply a task's check to a retained state.json.
     Check {
@@ -209,6 +241,14 @@ fn print_line(value: &impl serde::Serialize) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{}", serde_json::to_string(value).expect("serializes"));
     let _ = out.flush();
+}
+
+/// A comparison input refusal, by name and reason: nothing has been spawned.
+/// The text is a fixed name plus facts about the inputs (digests, flags), and
+/// never a body or a secret.
+fn comparison_refusal(msg: impl std::fmt::Display) -> ExitCode {
+    eprintln!("swarmail-evals: comparison refused: {msg}");
+    ExitCode::from(2)
 }
 
 fn fail(_msg: impl std::fmt::Display) -> ExitCode {
@@ -680,7 +720,16 @@ fn main() -> ExitCode {
                     Ok(env) => env,
                     Err(e) => return fail(e),
                 };
-                match rt.block_on(oracle::run_oracle(&env)) {
+                let solved = match std::env::var(oracle::ENV_COMPETITOR).ok() {
+                    None => rt.block_on(oracle::run_oracle(&env)),
+                    Some(name) => match mailsource::Competitor::from_target(&name) {
+                        Some(kind) => rt
+                            .block_on(oracle::run_oracle_competitor(&env, kind))
+                            .map(|_| ()),
+                        None => Err("unknown competitor".to_string()),
+                    },
+                };
+                match solved {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(_) => {
                         eprintln!("swarmail-evals: harness error: oracle_failed");
@@ -707,6 +756,11 @@ fn main() -> ExitCode {
             seed,
             fixture_time,
             brokkr,
+            target,
+            adapter,
+            target_bin,
+            sources,
+            product,
         } => {
             if concurrency != 1 {
                 eprintln!("swarmail-evals: harness error: concurrency_unsupported");
@@ -735,7 +789,31 @@ fn main() -> ExitCode {
                 eprintln!("swarmail-evals: harness error: {category}");
                 return ExitCode::from(2);
             }
-            rt.block_on(matrix_with_options(
+            let comparison = match target.as_deref() {
+                None => None,
+                Some(name) => {
+                    if brokkr.is_some() {
+                        return comparison_refusal(
+                            "competitor_brokkr_unsupported: --brokkr and --target are exclusive",
+                        );
+                    }
+                    let bound = match comparison::bind_inputs(
+                        name,
+                        adapter.as_deref(),
+                        target_bin.as_deref(),
+                        sources.as_deref(),
+                        product.as_deref(),
+                    ) {
+                        Ok(bound) => bound,
+                        Err(e) => return comparison_refusal(e),
+                    };
+                    if let Err(e) = bound.check_tasks(&ids) {
+                        return comparison_refusal(e);
+                    }
+                    Some(bound)
+                }
+            };
+            rt.block_on(matrix_with_target(
                 ids,
                 agents,
                 trials,
@@ -743,8 +821,19 @@ fn main() -> ExitCode {
                 fixture,
                 artifacts_dir,
                 brokkr,
+                comparison,
             ))
         }
+        Cmd::ComparisonContract {
+            target,
+            product,
+            adapter,
+            target_bin,
+            sources,
+            output,
+        } => rt.block_on(run_comparison_contract(
+            target, product, adapter, target_bin, sources, output,
+        )),
         Cmd::Check {
             task,
             state,
@@ -873,6 +962,10 @@ struct WorkerContext {
     cell: artifacts::PlannedCell,
     target: provenance::ExecutableIdentity,
     agent: provenance::AgentIdentity,
+    /// A competitor target's executables (decision 0129 §4); absent for
+    /// Swarmail, whose worker resolves its own as ever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    competitor: Option<comparison::CompetitorContext>,
 }
 impl WorkerContext {
     fn apply(self, req: &mut TrialRequest) -> Result<(), String> {
@@ -888,7 +981,11 @@ impl WorkerContext {
             return Err("worker_agent_context_invalid".into());
         }
         req.assigned_agent = Some(self.agent);
-        let path = runner::selected_swarmail_bin()?.ok_or("worker_target_missing")?;
+        let path = match &self.competitor {
+            Some(c) => c.target_bin.clone(),
+            None => runner::selected_swarmail_bin()?.ok_or("worker_target_missing")?,
+        };
+        req.competitor = self.competitor.as_ref().map(|c| c.plan()).transpose()?;
         let target = identity::TargetBuild {
             path,
             identity: self.target,
@@ -1305,6 +1402,9 @@ struct OutputMessage {
 struct OutputWriter {
     tx: std::sync::mpsc::SyncSender<OutputMessage>,
     wake: std::sync::Arc<tokio::sync::Notify>,
+    /// A comparison matrix writes schema 3 rows: each worker result is
+    /// converted at this one chokepoint, so no native row reaches the output.
+    convert: Option<comparison::RowConverter>,
 }
 
 fn start_output_writer() -> OutputWriter {
@@ -1333,7 +1433,11 @@ fn start_output_writer_to(file: Option<std::fs::File>) -> OutputWriter {
             }
         }
     });
-    OutputWriter { tx, wake }
+    OutputWriter {
+        tx,
+        wake,
+        convert: None,
+    }
 }
 
 #[cfg(test)]
@@ -1365,7 +1469,12 @@ async fn write_row(
     if let Some(signal) = pending_matrix_signal(term, int).await {
         return Ok(Some(signal));
     }
-    let mut bytes = serde_json::to_vec(row).expect("trial result serializes");
+    let mut bytes = match &writer.convert {
+        Some(convert) => {
+            serde_json::to_vec(&convert.convert(row)?).expect("comparison row serializes")
+        }
+        None => serde_json::to_vec(row).expect("trial result serializes"),
+    };
     bytes.push(b'\n');
     #[cfg(test)]
     let queued_len = bytes.len();
@@ -2321,6 +2430,61 @@ async fn resolve_matrix_bin(
     Ok(Some((exe, target)))
 }
 
+/// `comparison-contract`: probe one target's MCP contract and write it. The
+/// output file is created exclusively, and its contents are checked against
+/// the product by `comparison-check`, not here.
+async fn run_comparison_contract(
+    target: String,
+    product: PathBuf,
+    adapter: Option<PathBuf>,
+    target_bin: Option<PathBuf>,
+    sources: Option<PathBuf>,
+    output: PathBuf,
+) -> ExitCode {
+    let bound = match comparison::bind_inputs(
+        &target,
+        adapter.as_deref(),
+        target_bin.as_deref(),
+        sources.as_deref(),
+        Some(&product),
+    ) {
+        Ok(bound) => bound,
+        Err(e) => return comparison_refusal(e),
+    };
+    let (build, plan) = match &bound.competitor {
+        Some(ctx) => match ctx.plan() {
+            Ok(plan) => (None, Some(plan)),
+            Err(e) => return comparison_refusal(e),
+        },
+        None => match runner::selected_swarmail_bin() {
+            Ok(Some(path)) => (Some(identity::TargetBuild::external(path)), None),
+            _ => {
+                return comparison_refusal(
+                    "swarmail_bin_missing: set SWARMAIL_BIN to the candidate's executable",
+                );
+            }
+        },
+    };
+    let contract = match runner::probe_contract(bound.target, build.as_ref(), plan.as_ref()).await {
+        Ok(contract) => contract,
+        Err(e) => {
+            eprintln!("swarmail-evals: contract probe failed: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut text = serde_json::to_string_pretty(&contract).expect("contract serializes");
+    text.push('\n');
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&output)
+        .and_then(|mut f| f.write_all(text.as_bytes()));
+    match written {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => comparison_refusal(format!("output_unwritable: {e}")),
+    }
+}
+
 // Only the Linux-only matrix probe entrypoint drives the matrix this way.
 #[cfg(all(test, target_os = "linux"))]
 async fn matrix(
@@ -2341,6 +2505,7 @@ async fn matrix(
     .await
 }
 
+#[cfg(test)]
 async fn matrix_with_options(
     ids: Vec<String>,
     agents: PathBuf,
@@ -2349,6 +2514,30 @@ async fn matrix_with_options(
     master: provenance::FixtureInputs,
     retention: Option<PathBuf>,
     brokkr: Option<PathBuf>,
+) -> ExitCode {
+    matrix_with_target(
+        ids,
+        agents,
+        trials,
+        deadline_ms,
+        master,
+        retention,
+        brokkr,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn matrix_with_target(
+    ids: Vec<String>,
+    agents: PathBuf,
+    trials: u32,
+    deadline_ms: Option<u64>,
+    master: provenance::FixtureInputs,
+    retention: Option<PathBuf>,
+    brokkr: Option<PathBuf>,
+    comparison: Option<comparison::MatrixTarget>,
 ) -> ExitCode {
     if trials == 0 {
         return fail("--trials must be positive");
@@ -2376,6 +2565,27 @@ async fn matrix_with_options(
         Ok(s) => s,
         Err(e) => return fail(e),
     };
+    let mut resources = MatrixResources::default();
+    if let Some(c) = &comparison {
+        // The dsh wrapper takes no competitor: it has no MCP surface to name
+        // (spec R6), and spark is down. Refused before anything starts.
+        if c.target.is_competitor()
+            && specs
+                .iter()
+                .any(|s| s.wrapper_profile.is_some_and(|p| p.family() == "dsh"))
+        {
+            return comparison_refusal(
+                "competitor_dsh_unsupported: the dsh wrapper cannot serve a competitor target",
+            );
+        }
+        if let Some(ctx) = &c.competitor {
+            let Ok(exe) = std::env::current_exe() else {
+                return fail("program_missing");
+            };
+            resources.resolved =
+                Some((exe, identity::TargetBuild::external(ctx.target_bin.clone())));
+        }
+    }
     matrix_run(
         MatrixInvocation {
             ids,
@@ -2385,8 +2595,9 @@ async fn matrix_with_options(
             master,
             retention,
             brokkr,
+            comparison,
         },
-        &mut MatrixResources::default(),
+        &mut resources,
     )
     .await
 }
@@ -2399,6 +2610,9 @@ struct MatrixInvocation {
     master: provenance::FixtureInputs,
     retention: Option<PathBuf>,
     brokkr: Option<PathBuf>,
+    /// A comparison target: the rows are schema 3, and a competitor's
+    /// executables ride in each worker's context.
+    comparison: Option<comparison::MatrixTarget>,
 }
 #[derive(Default)]
 struct MatrixResources {
@@ -2417,6 +2631,7 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
         master,
         retention,
         brokkr,
+        comparison,
     } = invocation;
     if trials == 0
         || ids.is_empty()
@@ -2503,7 +2718,17 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
                 req.assigned_agent =
                     Some(agent_identities[(index / trials as usize) % specs.len()].clone());
                 let row = runner::refused_row(&req, &cell.trial_id);
-                print_line(&row);
+                match &comparison {
+                    // No target was measured: the row says so with a zero digest.
+                    Some(c) => {
+                        if let Ok(r) =
+                            comparison::RowConverter::new(c, "0".repeat(64)).convert(&row)
+                        {
+                            print_line(&r);
+                        }
+                    }
+                    None => print_line(&row),
+                }
                 if let Some(e) = &mut evidence {
                     e.committed(&req, &row);
                 }
@@ -2514,7 +2739,7 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
             return ExitCode::from(2);
         }
     };
-    let writer = resources.writer.take().unwrap_or_else(start_output_writer);
+    let mut writer = resources.writer.take().unwrap_or_else(start_output_writer);
     let mut interrupted = resources.interrupted;
     #[cfg(test)]
     matrix_test_hold(
@@ -2546,6 +2771,19 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
         }
     };
     resources.resolved = resolved.clone();
+    if let Some(c) = &comparison {
+        // The row names the executable that was measured. When the target
+        // could not be resolved there is none: the row is a harness error
+        // with an all-zero digest, never a borrowed identity.
+        let measured = resolved
+            .as_ref()
+            .and_then(|(_, t)| match &t.identity.executable_sha256 {
+                provenance::Availability::Present { value, .. } => Some(value.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "0".repeat(64));
+        writer.convert = Some(comparison::RowConverter::new(c, measured));
+    }
     if let Some(error) = resolution_error.as_deref() {
         let _ = error;
         eprintln!("swarmail-evals: harness error for every trial: target_unavailable");
@@ -2586,6 +2824,7 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
                         cell: cell.clone(),
                         target: bin.identity.clone(),
                         agent: expected_agent,
+                        competitor: comparison.as_ref().and_then(|c| c.competitor.clone()),
                     };
                     let trials_root = evidence.as_ref().map(|e| e.root.join("trials"));
                     run_child_assigned(
@@ -2868,6 +3107,7 @@ async fn baseline_execute(
                 master: master.clone(),
                 retention: Some(root.join("controls")),
                 brokkr: None,
+                comparison: None,
             },
             &mut resources,
         )
@@ -2923,6 +3163,7 @@ async fn baseline_execute(
                 master,
                 retention: Some(root.join("paid")),
                 brokkr: None,
+                comparison: None,
             },
             &mut resources,
         )

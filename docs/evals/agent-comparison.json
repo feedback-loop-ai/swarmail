@@ -1,0 +1,155 @@
+{
+  "id": "agent-suite-comparison-2026-11-07",
+  "version": 1,
+  "ruling": {
+    "date": "2026-11-07",
+    "quote": "compare with all that we have shims for",
+    "issue": "#339",
+    "records": [
+      "docs/decisions/0091-fair-mail-comparison.md",
+      "docs/decisions/0092-official-mail-comparison.md",
+      "docs/decisions/0129-agent-suite-comparison.md"
+    ]
+  },
+  "tier": "hard",
+  "tasks": [
+    "otp-backlog",
+    "recipient-crowd",
+    "digest-lookalike"
+  ],
+  "applicability": {
+    "otp-backlog": {
+      "swarmail": "requested",
+      "mailpit": "requested",
+      "mailhog": "requested",
+      "mailslurper": "requested"
+    },
+    "recipient-crowd": {
+      "swarmail": "requested",
+      "mailpit": "requested",
+      "mailhog": "requested",
+      "mailslurper": "requested"
+    },
+    "digest-lookalike": {
+      "swarmail": "requested",
+      "mailpit": "requested",
+      "mailhog": "requested",
+      "mailslurper": "requested"
+    }
+  },
+  "targets": [
+    {
+      "target": "swarmail",
+      "comparison_name": "swarmail-mcp",
+      "connection": "native-mcp",
+      "lock_entry": null,
+      "adapter_mode": null,
+      "artifact_kind": null,
+      "version_report": null,
+      "executable_sha256": null,
+      "tools_sha256": "607089344c86f8093d677528a88e2962f561fdc0353cc63add939fa4dbeefe1c",
+      "smtp_auth": "plain",
+      "isolation": "per-test-inbox",
+      "wait_method": "swarmail_wait_for_email: a long-poll that subscribes before it checks (decision 0002)",
+      "delivery": {
+        "accept_implies_queryable": "promised",
+        "native_wait": "subscribe-before-check"
+      },
+      "recipient_filter": "inbox-scoped: the agent names its inbox",
+      "prompt_header_sha256": "e19c21d8fc5a0b33c780dabb5b3f751e431db3dcc959d9c86c574531805e81e8"
+    },
+    {
+      "target": "mailpit",
+      "comparison_name": "mailpit-mcp",
+      "connection": "bridged-stdio-adapter",
+      "lock_entry": "mailpit",
+      "adapter_mode": "mailpit-mcp",
+      "artifact_kind": "archive",
+      "version_report": "mailpit v1.32.0",
+      "executable_sha256": "262cfa28fae4554be198d1fea5ef83c0f8299317876d658623711c629a8edec8",
+      "tools_sha256": "77ee96ebe04c77e9a79f6f4ba284fbba9fc4ea7acdd22edf4fb314250f819eaa",
+      "smtp_auth": "plain",
+      "isolation": "fresh-instance",
+      "wait_method": "mailpit_wait: a labelled client-side poll of the search route",
+      "delivery": {
+        "accept_implies_queryable": "not-promised",
+        "native_wait": "none"
+      },
+      "recipient_filter": "oracle-side: exact match over the complete listing",
+      "prompt_header_sha256": "db409f4cae3bba3e2364fe0ee5d6ad4098305d08fee76e4ad58c12853fa16c4f"
+    },
+    {
+      "target": "mailhog",
+      "comparison_name": "mailhog-mcp",
+      "connection": "bridged-stdio-adapter",
+      "lock_entry": "mailhog",
+      "adapter_mode": "mailhog-mcp",
+      "artifact_kind": "executable",
+      "version_report": "MailHog version: 1.0.1",
+      "executable_sha256": "e2ed634ded49929f089b20045581955ed217672078fd86082dd7a6c67c5d09c7",
+      "tools_sha256": "67f498714ed16475f1e103e369fafbb450c3d2c4ddc008ca89c382e44cb658e5",
+      "smtp_auth": "plain",
+      "isolation": "fresh-instance",
+      "wait_method": "mailhog_wait: a labelled client-side poll of the search route",
+      "delivery": {
+        "accept_implies_queryable": "not-promised",
+        "native_wait": "none"
+      },
+      "recipient_filter": "oracle-side: exact match over the complete listing",
+      "prompt_header_sha256": "dbf3120882c0360c1336744389f0f2ebed1e2bc66a64d548c503cb49167f3399"
+    },
+    {
+      "target": "mailslurper",
+      "comparison_name": "mailslurper-mcp",
+      "connection": "bridged-stdio-adapter",
+      "lock_entry": "mailslurper",
+      "adapter_mode": "mailslurper-mcp",
+      "artifact_kind": "built_from_source",
+      "version_report": "v1.14.1",
+      "executable_sha256": "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff",
+      "tools_sha256": "34c62466c2446356dc997690c84f64eed6a829b53dd75f5ac7a5d359b1f772dd",
+      "smtp_auth": "none",
+      "isolation": "fresh-instance",
+      "wait_method": "mailslurper_wait: a labelled client-side poll of the list route",
+      "delivery": {
+        "accept_implies_queryable": "not-promised",
+        "native_wait": "none"
+      },
+      "recipient_filter": "upstream-substring: the oracle pre-filters with the LIKE filter, then keeps an exact toAddresses match",
+      "prompt_header_sha256": "34a5ad44de571677f66a8075c5690e0f08a24b02f0dab4b08bc6192d07ede521"
+    }
+  ],
+  "agents": [
+    {
+      "label": "claude-opus",
+      "wrapper_profile": "claude_2_1_310"
+    },
+    {
+      "label": "claude-sonnet",
+      "wrapper_profile": "claude_2_1_310"
+    },
+    {
+      "label": "codex-sol",
+      "wrapper_profile": "codex_0_164_0"
+    },
+    {
+      "label": "codex-luna",
+      "wrapper_profile": "codex_0_164_0"
+    }
+  ],
+  "trials": 5,
+  "order": "task, then target, then agent, then attempt; one slot at a time (decision 0076)",
+  "seed_policy": "one master seed for the whole run; each cell derives its own from (master, task, agent, attempt), so a task and attempt see the same fixture on every target",
+  "planned_cells": 240,
+  "controls": {
+    "agents": [
+      "oracle",
+      "null"
+    ],
+    "trials": 5,
+    "cells": 120
+  },
+  "statistics": "per-cell pass counts with the exact binomial interval; no pooled claim across targets, tasks or agents (decision 0091)",
+  "cost_ref": "agent-comparison-cost.json",
+  "batch_semantics": "every adapter answers a JSON-RPC batch of up to 16 members in member order under one admission; Swarmail runs batch members concurrently. The hard tier does not batch."
+}

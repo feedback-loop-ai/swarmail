@@ -7,6 +7,7 @@
 
 mod admission;
 pub mod bridge;
+pub mod comparison;
 pub mod fixture;
 pub mod isolation;
 pub mod mail;

@@ -1,0 +1,4 @@
+{
+  "basis": "unavailable",
+  "reason": "The agent wrappers do not capture usage, and a capture needs a privacy review of vendor output for a basis that could not be priced (decisions 0091 §7, 0129 §10). No row or report writes a cost of 0; the comparison reports no cost until a measured basis exists."
+}
