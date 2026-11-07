@@ -161,12 +161,20 @@ impl SourceContext {
 /// legacy row is 1, and no reader accepts a number it does not own.
 pub const COMPARISON_SCHEMA: u32 = 3;
 const COMPARISON_KIND: &str = "comparison";
-/// The agent targets that exist. MailHog has no agent adapter, so its cells
-/// are refused by name and never invented.
-const COMPARISON_TARGETS: [(&str, &str); 2] = [
+/// The agent targets of the agent-suite comparison and how an agent reaches
+/// each (decision 0129 §1, §4): Swarmail natively, a competitor through the
+/// runner's loopback bridge to its stdio adapter. The operator's 2026-11-07
+/// ruling lifted the earlier refusal of MailHog; a bare backend name
+/// (`mailhog`) or any other name is still refused.
+pub const COMPARISON_TARGETS: [(&str, &str); 4] = [
     ("swarmail-mcp", "native-mcp"),
-    ("mailpit-mcp", "stdio-adapter"),
+    ("mailpit-mcp", "bridged-stdio-adapter"),
+    ("mailhog-mcp", "bridged-stdio-adapter"),
+    ("mailslurper-mcp", "bridged-stdio-adapter"),
 ];
+
+/// The values of the fixture's `smtp_auth` fact (decision 0129 §2).
+pub const SMTP_AUTH_VALUES: [&str; 2] = ["plain", "none"];
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -175,12 +183,19 @@ pub struct ComparisonSettings {
     pub connection: String,
     /// SHA-256 of the tool list the agent was offered.
     pub tools_sha256: String,
+    /// Whether the fixture's dialogue authenticated (`plain`) or left the
+    /// AUTH step out (`none`) for this target: the one per-target fixture
+    /// fact, stated so an asymmetry is never hidden.
+    pub smtp_auth: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComparisonCoordinate {
     pub task: String,
+    /// The agent label (for example `claude-opus`), the third coordinate of
+    /// the cell with the target and the task.
+    pub agent: String,
     pub attempt: u32,
 }
 
@@ -216,9 +231,6 @@ impl ComparisonRow {
         if self.schema_version != COMPARISON_SCHEMA || self.kind != COMPARISON_KIND {
             return Err(format!("not a schema {COMPARISON_SCHEMA} comparison row"));
         }
-        if self.target == "mailhog" {
-            return Err("mailhog agent cells are unsupported".into());
-        }
         let Some((_, connection)) = COMPARISON_TARGETS.iter().find(|(t, _)| *t == self.target)
         else {
             return Err("unknown comparison target".into());
@@ -232,8 +244,20 @@ impl ComparisonRow {
         {
             return Err("identity or settings digest is not a SHA-256".into());
         }
-        if self.coordinate.task.is_empty() || self.coordinate.attempt == 0 {
-            return Err("coordinate needs a task and an attempt from 1".into());
+        if !SMTP_AUTH_VALUES.contains(&self.settings.smtp_auth.as_str()) {
+            return Err("settings smtp_auth is not plain or none".into());
+        }
+        let label_ok = |s: &str| {
+            !s.is_empty()
+                && s.len() <= 64
+                && s.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-._".contains(&b))
+        };
+        if self.coordinate.task.is_empty()
+            || !label_ok(&self.coordinate.agent)
+            || self.coordinate.attempt == 0
+        {
+            return Err("coordinate needs a task, an agent label and an attempt from 1".into());
         }
         if self.hash != self.digest() {
             return Err("row hash does not match its contents".into());
