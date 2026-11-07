@@ -1654,10 +1654,8 @@ mod tests {
         let start = source.find("pub fn qualifies(").unwrap();
         let body = &source[start..start + source[start..].find("\n    }\n").unwrap()];
         assert!(body.contains("severity"));
-        assert!(
-            !body.contains("weight") && !body.contains("total"),
-            "{body}"
-        );
+        assert!(!body.contains("weight"), "{body}");
+        assert!(!body.contains("total"), "{body}");
     }
 
     #[test]

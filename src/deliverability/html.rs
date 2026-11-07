@@ -821,12 +821,10 @@ mod tests {
         r
     }
     /// The 0122 §2.2 table, written out independently of `weight_of`.
+    /// No HTML rule is an error, so only info and warning are written out.
     fn table(severity: Severity) -> u64 {
-        match severity {
-            Severity::Info => 1,
-            Severity::Warning => 3,
-            Severity::Error => 10,
-        }
+        assert!(severity < Severity::Error, "no HTML rule is an error");
+        if severity == Severity::Info { 1 } else { 3 }
     }
     fn ids(body: &str) -> Vec<String> {
         report(body)
