@@ -354,7 +354,7 @@ MAIL_COMPARE_MAILPIT=/path/to/pinned/mailpit MAIL_COMPARE_MAILHOG=/path/to/pinne
 
 Pointing `local` at a full protocol launches its whole workload as a smoke
 run, which is still not evidence (the committed protocol is now the v3 draft,
-which cannot launch while its five new rows are pending; protocol v2 and lock
+which cannot launch while four of its new rows are pending; protocol v2 and lock
 v3 under `history/` still can, with `--documents docs/evals`). The driver's `check`
 reports whether the protocol and lock admit collection. `collect --output
 DIR --mailpit BIN --mailhog BIN` runs the frozen protocol once (never
@@ -476,12 +476,13 @@ Read `protocol.json` and `sources.lock.json` in the 2026-10-30 record above
 as the two `history/` files; for instance
 `mail_compare admit <dir> docs/evals/history/2026-10-30-protocol.v2.json`.
 
-**State: draft, not frozen.** The five new rows have no verified pin. Their
-pinned bytes (`swarmail-landing/compare-bins/2026-11-07*`) were not visible to
-the delivery that built this, so each is a *pending* lock entry that records
-only what does not depend on the bytes, and never launches. Protocol v3's
-`unresolved` list names each missing fact; `mail_compare check` and
-`collect` refuse it by name.
+**State: draft, not frozen.** One of the five new rows, Inbucket, has a
+verified pin (the 2026-11-07 rerun, which had the upstream bytes in its
+worktree and re-derived every launch fact from them; decision 0130's rerun
+addendum lists each correction and quotes each receipt). The other four are
+*pending* lock entries that record what the bytes showed and never launch.
+Protocol v3's `unresolved` list names each missing fact; `mail_compare check`
+and `collect` refuse it by name.
 
 | Row | Source kind | Read path | Search | Pin |
 |---|---|---|---|---|
@@ -490,8 +491,8 @@ only what does not depend on the bytes, and never launches. Protocol v3's
 | mailhog v1.0.1 | official release, annotated tag | HTTP JSON | server | pinned (unchanged) |
 | mailslurper release-1.15.0 | official release, **lightweight** tag | HTTP JSON | client-side filter | pending |
 | smtp4dev 3.16.1 | official release, **lightweight** tag | HTTP JSON (paged) | client-side filter | pending |
-| inbucket v3.2.0 | official release, **lightweight** tag | HTTP JSON (per mailbox, unpaged) | client-side filter | pending |
-| greenmail 2.1.15 | official release, on a pinned JRE | **POP3** (fresh session per scan, no `DELE`) | client-side filter | pending |
+| inbucket v3.2.0 | official release, **lightweight** tag, source chain unresolved (no `git_tree` captured) | HTTP JSON (per mailbox, unpaged) | client-side filter | **pinned** |
+| greenmail 2.1.15 (tag `release-2.1.15`, annotated, source chain unresolved) | official release, on a pinned JRE | **POP3** (fresh session per scan: login, `STAT`, `UIDL`, and `TOP` per message; no `DELE`) | client-side filter | pending |
 | alkemio-mailslurper | **third-party image**, extracted binary, never an official row | HTTP JSON | client-side filter | pending |
 
 Every row keeps its own storage, cap and wait method as launched: an
@@ -504,53 +505,81 @@ is absent, not "unsigned"), so a lightweight pin carries weaker source
 evidence than an annotated one. Nothing here claims durability,
 accept==stored or equivalence.
 
-**What is built and proved without the bytes.** Lock v4 (lightweight tags,
+**What is built and proved.** Lock v4 (lightweight tags,
 image digests, a pinned runtime with checked members, declared listeners,
 launch environment, config file, pending entries) and its version gates; the
 N-listener launch whose group must listen on exactly the declared set
-(`UndeclaredListener`), with per-listener cleanup; per-target readiness; a
-tokio POP3 reader in `benches/mail_compare/wire.rs`; the listing and fetch
-decoders; the wrapper's `--bin NAME=PATH` and protocol-derived required
-binaries (`--mailpit` and `--mailhog` remain aliases); the report's row
-labels. They are proved against fixtures the tests author from the contract.
-The MailSlurper, smtp4dev, Inbucket and Alkemio API shapes were authored from
-upstream documentation as recalled, with no captured document or executable
-behind them: they are **unverified** until each `real_*_round_trip` test passes
-against the pinned bytes, and a wrong shape fails loudly. A message whose part
-holds its own boundary string mid-line is refused rather than returned cut
-short (the shared MIME parser reads it as a delimiter); the measured corpus
-never contains one.
+(`UndeclaredListener`), with per-listener cleanup, and a wait for a declared
+bind that arrives after readiness (GreenMail's REST API binds after its mail
+servers); per-target readiness; a tokio POP3 reader in
+`benches/mail_compare/wire.rs`; the listing and fetch decoders; the wrapper's
+`--bin NAME=PATH` and protocol-derived required binaries (`--mailpit` and
+`--mailhog` remain aliases); the report's row labels. They are proved against
+fixtures the tests author from the contract. Two shapes are also checked
+against real bytes in unmeasured, `#[ignore]`d tests that fail without them:
+the Inbucket API against the pinned executable (round trip, a hostile set of
+dot-leading lines, a lone `.` line, an RFC 2047 subject, a 998-octet line and a
+boundary string in the body, and the 600-message cap), and the GreenMail POP3
+reader in a *labelled driver proof* that runs the pending entry's own launch
+against the digest-checked jar under the digest-checked JRE (it is not a pin).
+The MailSlurper, smtp4dev and Alkemio API shapes were authored from upstream
+documentation as recalled and stay **unverified**: no executable of theirs has
+stored and served a message. A message whose part holds its own boundary string
+mid-line is refused rather than returned cut short (the shared MIME parser
+reads it as a delimiter); the measured corpus never contains one.
 
-**Bounded smoke, to run once the bytes are pinned.** Every measurement runs
-under `timeout 600` and `taskset` on at most `nproc/4` CPUs:
+**Labels each row carries.** Inbucket: lightweight tag with the source chain
+unresolved, `member` recorded as a leaf name, unmatched storage (a per-mailbox
+cap raised to 10000), unenforced local profile, client-side find. GreenMail
+(when pinned): POP3 read path, a fresh session per scan, `UIDL` and `TOP` per
+message, client-side find, in-memory unmatched storage, unenforced local
+profile; that per-scan login and per-message cost is POP3's own under the
+no-cache rule, and is part of the row.
+
+**Bounded runs.** Every real run is unmeasured and bounded under `timeout 600`
+and `taskset` on at most `nproc/4` CPUs, with the load recorded before and
+after. The Inbucket proofs and GreenMail's labelled driver proof run as:
 
 ```bash
-cap=$(( $(nproc) / 4 )); cpus="0-$(( cap - 1 ))"
+cap=$(( $(nproc) / 4 )); cpus="0-$(( cap - 1 ))"; export CARGO_BUILD_JOBS=$cap
 cat /proc/loadavg
-timeout 600 taskset -c "$cpus" env MAIL_COMPARE_MAILSLURPER=… MAIL_COMPARE_SMTP4DEV=… \
-  MAIL_COMPARE_INBUCKET=… MAIL_COMPARE_GREENMAIL=… MAIL_COMPARE_JRE=… \
-  MAIL_COMPARE_ALKEMIO_MAILSLURPER=… cargo test --locked --test mail_compare -- --ignored real_
+timeout 600 taskset -c "$cpus" env MAIL_COMPARE_INBUCKET=… cargo test --locked \
+  --test mail_compare -- --ignored --exact eight_targets::real_inbucket_smtp_to_native_api_round_trip
+timeout 600 taskset -c "$cpus" env MAIL_COMPARE_GREENMAIL=… MAIL_COMPARE_JRE=… cargo test --locked \
+  --test mail_compare -- --ignored --exact eight_targets::real_greenmail_driver_proof_pop3_round_trip
+cat /proc/loadavg
+```
+
+The local smoke over `tests/mail_compare/eight-target-smoke.json` launches
+only when every declared row has a pin, so it refuses today (four rows are
+pending) and names each. Once all are pinned it runs as:
+
+```bash
 timeout 600 taskset -c "$cpus" scripts/compare-mail.sh local --output "$PWD/target/smoke-v3" \
   --protocol tests/mail_compare/eight-target-smoke.json \
   --bin mailpit=… --bin mailhog=… --bin mailslurper=… --bin smtp4dev=… --bin inbucket=… \
   --bin greenmail=… --runtime greenmail=… --bin alkemio-mailslurper=…
-cat /proc/loadavg
 ```
 
 Download each artifact into its own new directory, verify its sha256 before
-use, and read it only with `python3 -I` from a script kept elsewhere.
+use, and read it only with `python3 -I` from a script kept elsewhere. A real
+test for a pending row fails and prints the entry's reason.
 
-**Still open after this record.** Collection and the v3 matrix; the five
-pins (bytes, digests, captured documents, default retention of smtp4dev and
-Inbucket read from them and overridden at launch, each API shape against the
-pinned executable); the JRE license against decision 0130 section 6's runtime
-list, which only the operator can rule on, and the Alkemio terms; GreenMail's
-REST listener (a stop trigger if it cannot be moved or disabled); the
-Alkemio image's full index digest (only the prefix `sha256:55029f54` is known
-here, never completed by guess); capabilities of the five rows
-(`not_inspected`); a best wait for any row; final contracts, comparison
-controls, cost, identity and the full product (the `controls`, `evidence` and
-`measure` prerequisites above); and #148/#201.
+**Still open after this record.** Collection and the v3 matrix; four pins:
+MailSlurper (the supplied Linux executable's SQLite storage is a stub built
+without cgo, and it reports v1.14.1 under tag `release-1.15.0`), smtp4dev (no
+license document in the release archive), GreenMail (the captured release lists
+no assets, so the jar cannot be bound to a release asset; the JRE license
+against decision 0130 section 6's runtime list is the operator's ruling) and
+the Alkemio image (a musl loader and the OCI index, manifest and layer bytes;
+its full index digest is only the dispatcher's recorded line, never verified
+here); each pending API shape against its executable; `git_tree` captures for
+the lightweight and annotated source chains; capabilities of every row but
+Inbucket's cap and raw source (`not_inspected`); a best wait for any row; final
+contracts, comparison controls, cost, identity and the full product (the
+`controls`, `evidence` and `measure` prerequisites above); and #148/#201.
+Decision 0130's rerun addendum states what each open row needs from the
+operator.
 
 ## What closes the remaining rows
 
