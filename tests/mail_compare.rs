@@ -4979,3 +4979,68 @@ fn launch_mode_uses_the_deadlines_protocol_v2_froze() {
     assert_eq!(l.max_response_bytes, r["max_response_bytes"]);
     assert_eq!(l.open_files, r["open_files"]);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs MAIL_COMPARE_MAILHOG (the pinned MailHog executable)"]
+async fn real_mailhog_through_the_adapter_lists_searches_reads_and_waits() {
+    let root = tempfile::tempdir().unwrap();
+    let mut owned = launch_pinned(TargetKind::Mailhog, &root.path().join("s")).await;
+    for (i, subject) in ["hogtoken-one", "hogtoken-two", "other-three"]
+        .iter()
+        .enumerate()
+    {
+        send_as(owned.smtp, None, subject, &format!("body {i}")).await;
+    }
+    let mut c = Mcp::start_backend::<mailhog_mcp::Mailhog>(
+        owned.http_addr,
+        mailpit_mcp::Bounds::default(),
+        1 << 20,
+    );
+    c.init().await;
+    let mut id = 100;
+    let mut call = async |c: &mut Mcp, name: &str, args: serde_json::Value| {
+        id += 1;
+        let (is_error, v) = c.tool(id, name, args.clone()).await;
+        assert!(!is_error, "{name} {args}: {v}");
+        v
+    };
+    // Accept is not presumed to be storage: wait for all three to be listed.
+    let until = Instant::now() + Duration::from_secs(10);
+    while call(&mut c, "mailhog_list", serde_json::json!({"limit": 1})).await["total"] != 3 {
+        assert!(Instant::now() < until, "MailHog never listed all three");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let listed = call(&mut c, "mailhog_list", serde_json::json!({"limit": 10})).await;
+    assert_eq!(listed["count"], 3, "{listed}");
+    let first = listed["items"][0]["ID"].as_str().unwrap().to_owned();
+    let hits = call(
+        &mut c,
+        "mailhog_search",
+        serde_json::json!({"kind": "containing", "query": "hogtoken"}),
+    )
+    .await;
+    assert_eq!(hits["total"], 2, "{hits}");
+    let read = call(&mut c, "mailhog_read", serde_json::json!({"id": first})).await;
+    assert_eq!(read["ID"], serde_json::json!(first));
+    assert!(
+        read["Raw"]["Data"].as_str().unwrap().contains("Subject: "),
+        "raw MIME stays raw"
+    );
+    let found = call(
+        &mut c,
+        "mailhog_wait",
+        serde_json::json!({"kind": "containing", "query": "hogtoken-one", "timeout_ms": 5000}),
+    )
+    .await;
+    assert_eq!(found["status"], "found", "{found}");
+    let none = call(
+        &mut c,
+        "mailhog_wait",
+        serde_json::json!({"kind": "containing", "query": "never-sent", "timeout_ms": 300}),
+    )
+    .await;
+    assert_eq!(none["status"], "timeout", "{none}");
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+    assert!(owned.shutdown().await.proved());
+}

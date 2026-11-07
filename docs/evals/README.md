@@ -29,6 +29,57 @@ artifacts are pinned, and each tag's source chain is now bound to captured
 bytes. Every local proof below ran against the real executables. These are
 untimed checks and labelled smoke runs, not collection.
 
+**Status, 2026-11-07 (issue #339): the agent-suite comparison is partly
+built, and not runnable.** The operator widened #163 ("compare with all that
+we have shims for"): Swarmail, Mailpit, MailHog and MailSlurper, on
+claude-opus, claude-sonnet, codex-sol and codex-luna, no GLM. Decision 0129
+(proposed) holds the contracts. No session that bills a model has run, and no
+comparison claim follows from anything below.
+
+Built and proved in this checkout (tests named in the commits):
+
+- the adapters' generic half (`benches/mail_compare/mcp.rs`) behind a small
+  backend interface, JSON-RPC batches in every adapter under Swarmail's own
+  bound (1 to 16 members, an empty or over-cap array one null-id error that
+  runs nothing), and Mailpit's tool list byte-identical to protocol v2's
+  frozen `tools_sha256`;
+- a MailHog adapter (list, search, read, a labelled poll). Its list and
+  search routes are the v2 routes the lock binds; its read route
+  (`GET /api/v1/messages/{id}`) is observed on the pinned executable and its
+  attribution to MailHog's source stays open;
+- adapter launch mode (`--launch BIN --scratch DIR`): the adapter owns the
+  backend through the verified launcher, announces `smtp=… tools_sha256=…`
+  and exits 0 only after stdin ended and every cleanup fact is true;
+- the runner's loopback bridge (`evals/src/bridge.rs`), proved against the
+  real `swarmail mcp` stdio transport; the closed target set and the
+  competitor prompt header (the goal and `PROMPT_TEMPLATE` byte-identical);
+  the wrappers' `EVAL_MCP_SERVER`/`EVAL_MCP_TOOLS` surface (the dsh wrapper
+  refuses a competitor); the oracle's per-backend `MailSource` with MIME
+  decoding for MailHog's raw bodies; the fixture's `smtp_auth plain|none`
+  knob; and the schema-3 comparison row with four targets, the agent
+  coordinate and `smtp_auth`, the MailHog refusal removed.
+
+**Not built, and why** (so nobody reads the list above as the whole story):
+
+- **MailSlurper (lock v4, its adapter, its oracle normalizer, its AUTH PLAIN
+  answer): blocked.** This seat had no network and the repository holds no
+  MailSlurper release, source or documentation. Nothing was written from
+  memory (spec R8). **Whether MailSlurper accepts the fixture's AUTH PLAIN
+  is therefore unanswered**, and no asymmetry is claimed either way. The lock
+  stays v3 and `docs/evals/protocol.json` is untouched.
+- **The runner's competitor path (`matrix --target`), the frozen product
+  record, the controls, the contract-evidence, receipts and identity
+  verifier, the cost-basis record, the `compare-mail.sh` scope change and the
+  removal of its `comparison-integration` refusal: not built.** The runner's
+  trial body, matrix workers, isolation and provenance are Swarmail-shaped
+  throughout, and the competitor server block was not reached. The wrapper
+  therefore still stops at `comparison-integration`, which is now accurate
+  about what is missing.
+- **No controls ran on any target, and no `measure --dry-run` ran.** The
+  ignored real-executable tests (`MAIL_COMPARE_MAILPIT`,
+  `MAIL_COMPARE_MAILHOG`) were not run: the pinned executables are not
+  here. The new ignored MailHog test is unrun.
+
 ## What exists, and what does not
 
 | Deliverable (spec) | State |
