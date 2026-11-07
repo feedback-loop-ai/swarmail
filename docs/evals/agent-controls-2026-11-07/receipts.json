@@ -1,11 +1,11 @@
 {
   "schema": 1,
-  "head": "eac40bda647c812ce3cff58f71d7ff1db9876a5c",
-  "controls_index_sha256": "557a320e0356213b47e03b1b62f3030c937271c6004e18d5871cf6849ec32b46",
-  "cleanup_receipts_sha256": "bd06b118b149064ae8f45f27002f6586c28816d44f1041f83f342b28f239ade4",
+  "head": "ad4526fdaf2e4a8aecc3a527bbeb081c16f8300b",
+  "controls_index_sha256": "aff2a208fc95b84fd4997e32ff4ea11e9031c1372910606377b977615bf29fe2",
+  "cleanup_receipts_sha256": "10f9ba513637dbe29e4013fc7bb52fff7a5c03a509796089ab29798b6adfd6a5",
   "eval_suite": {
-    "command": "cargo test --locked --offline -j 32 (in evals/, SWARMAIL_BIN=/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/debug/swarmail, RUST_TEST_THREADS=32, timeout 3000)",
-    "head": "eac40bda647c812ce3cff58f71d7ff1db9876a5c",
+    "command": "cargo test --locked --offline -j 32 (in evals/, SWARMAIL_BIN=/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-mail/swarmail-1e20ca28e62581ad, RUST_TEST_THREADS=32, timeout 3000)",
+    "head": "ad4526fdaf2e4a8aecc3a527bbeb081c16f8300b",
     "status": "pass"
   },
   "ci": {

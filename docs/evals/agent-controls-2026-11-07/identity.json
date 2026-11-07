@@ -4,7 +4,7 @@
   "entries": [
     {
       "role": "swarmail",
-      "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/debug/swarmail",
+      "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-mail/swarmail-1e20ca28e62581ad",
       "sha256": "1e20ca28e62581ad855b66ca3102e649c34a4fbe3ffb85f1f93ccf065021624e"
     },
     {
@@ -24,13 +24,13 @@
     },
     {
       "role": "adapter",
-      "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/release/deps/mail_compare-8961301c41490867",
+      "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-mail/mail_compare-8961301c41490867-582af475be6ab214",
       "sha256": "582af475be6ab2149486b1858136b5966c292f509eeffb1ca35522f5d9eff8fb"
     },
     {
       "role": "harness",
       "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/evals/target/debug/swarmail-evals",
-      "sha256": "aac3789a368f5b6d188951514bf6a3a092f102f005d1c02a6b9463aaa428c425"
+      "sha256": "0c6bc1ada3af1826a86e13d9aa66529d6104d1cf7963bc2fb34e051d18dc866c"
     }
   ]
 }
