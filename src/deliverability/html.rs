@@ -1205,7 +1205,7 @@ mod tests {
         );
         assert_eq!(
             fixture["catalogue_snapshot"]["rule_set_id"],
-            "swarmail-html/6"
+            "swarmail-html/7"
         );
         let c = catalogue(DATA).unwrap();
         assert_eq!(c.rules.len(), 7);

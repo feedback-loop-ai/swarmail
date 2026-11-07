@@ -71,7 +71,8 @@ use std::sync::Mutex;
 const COLUMNS: &str = "id, inbox, from_json, to_json, cc_json, recipients_json, subject, \
                        received_at, received_ms, size, text, html, links_json, codes_json, \
                        message_id, in_reply_to, references_json, raw, envelope_from, \
-                       link_metadata_json, attachments_json, attachment_bytes";
+                       link_metadata_json, attachments_json, attachment_bytes, \
+                       smtp_client_ip, smtp_helo";
 
 /// The whole schema, created idempotently on every open.
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
@@ -97,7 +98,9 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
     envelope_from TEXT,
     link_metadata_json TEXT,
     attachments_json TEXT,
-    attachment_bytes BLOB
+    attachment_bytes BLOB,
+    smtp_client_ip TEXT,
+    smtp_helo TEXT
 );
 -- Retired (issue #87): `emails_inbox` was maintained on every write and read
 -- by no query — the store answers per-inbox reads from memory, and restore
@@ -131,6 +134,11 @@ const ADDED_COLUMNS: &[(&str, &str)] = &[
     // parts is the current shape; a tuple array with no bytes is 0108's.
     ("attachments_json", "TEXT"),
     ("attachment_bytes", "BLOB"),
+    // Decision 0126 §2: the connecting address and the greeting name SMTP
+    // saw. NULL is a row from before ingest kept them, or mail that did not
+    // arrive over SMTP: unknown, never backfilled.
+    ("smtp_client_ip", "TEXT"),
+    ("smtp_helo", "TEXT"),
 ];
 
 /// The full restore scan `load` runs — one builder, so the plan test
@@ -467,11 +475,11 @@ impl Persist {
         state.next_seq += 1;
         let tx = state.conn.transaction()?;
         tx.execute(
-            // 23 columns: COLUMNS + the ordering seq.
+            // 25 columns: COLUMNS + the ordering seq.
             &format!(
                 "INSERT INTO emails ({COLUMNS}, seq)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-                         ?17, ?18, ?19, ?20, ?21, ?22, ?23)"
+                         ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)"
             ),
             params![
                 email.id,
@@ -501,6 +509,9 @@ impl Persist {
                 // '{"total":0,"parts":[]}' with an empty blob.
                 email.attachments.as_ref().map(json),
                 email.attachments.as_ref().map(stored_bytes),
+                // NULL is unknown; the address is stored in its text form.
+                email.smtp_client_ip.map(|ip| ip.to_string()),
+                email.smtp_helo,
                 seq,
             ],
         )?;
@@ -565,6 +576,8 @@ fn row_to_email(row: &rusqlite::Row<'_>) -> rusqlite::Result<Email> {
         links: from_json(row.get(12)?),
         link_metadata: strict_column(19, row.get(19)?)?,
         attachments: attachments(row.get(20)?, row.get(21)?)?,
+        smtp_client_ip: client_ip(row.get(22)?)?,
+        smtp_helo: row.get(23)?,
         codes: from_json(row.get(13)?),
         message_id: row.get(14)?,
         in_reply_to: row.get(15)?,
@@ -620,6 +633,18 @@ fn strict_column<T: DeserializeOwned>(
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
+        })
+    })
+    .transpose()
+}
+
+/// The stored connecting address (decision 0126 §2): NULL is unknown, and
+/// text that is not an address refuses the restore, because an unreadable
+/// observation must never read as "no observation".
+fn client_ip(raw: Option<String>) -> rusqlite::Result<Option<std::net::IpAddr>> {
+    raw.map(|text| {
+        text.parse().map_err(|error: std::net::AddrParseError| {
+            damaged("smtp_client_ip", 22, Type::Text, error.to_string())
         })
     })
     .transpose()
@@ -898,6 +923,8 @@ mod tests {
         // Deliberately unlike the header From: the envelope round-trips as
         // its own column.
         e.envelope_from = Some("bounce+1@x.io".into());
+        e.smtp_client_ip = Some("192.0.2.7".parse().unwrap());
+        e.smtp_helo = Some("mail.x.io".into());
         e.cc = vec![crate::model::EmailAddress {
             name: None,
             address: "cc@x.io".into(),
@@ -1362,12 +1389,67 @@ mod tests {
             let persist = Persist::open(&path).unwrap();
             let (emails, _, _) = persist.load().unwrap();
             assert_eq!(emails[0].attachments, None);
+            // Decision 0126 §2: the observed envelope is unknown for a row
+            // from before the columns, and never backfilled.
+            assert_eq!(
+                (emails[0].smtp_client_ip, &emails[0].smtp_helo),
+                (None, &None)
+            );
             assert_eq!(emails[0].raw, vec![0xFF, 0x00]);
             persist.record_insert(&fresh, &[], 2, 0).unwrap();
         }
         let (emails, _, _) = Persist::open(&path).unwrap().load().unwrap();
         assert_eq!(emails[0].attachments, None);
         assert_eq!(emails[1], fresh);
+    }
+
+    /// Decision 0126 §2: both observed-envelope columns round-trip (IPv4,
+    /// IPv6, and NULL), a restored older file keeps its rows with both
+    /// unknown, and a stored address that is not an address refuses the
+    /// restore by its column.
+    #[test]
+    fn the_observed_envelope_round_trips_and_a_bad_address_refuses() {
+        let (_guard, path) = db_path("observed-envelope");
+        let persist = Persist::open(&path).unwrap();
+        let mut mail = full_email("observed", "box");
+        for (ip, helo) in [
+            (Some("192.0.2.7"), Some("mail.x.io")),
+            (Some("2001:db8::25"), None),
+            (None, Some("name only")),
+            (None, None),
+        ] {
+            mail.smtp_client_ip = ip.map(|ip| ip.parse().unwrap());
+            mail.smtp_helo = helo.map(str::to_string);
+            persist.record_insert(&mail, &[], 1, 0).unwrap();
+            assert_eq!(persist.load().unwrap().0, [mail.clone()]);
+            let stored: (Option<String>, Option<String>) = persist
+                .state
+                .lock()
+                .unwrap()
+                .conn
+                .query_row("SELECT smtp_client_ip, smtp_helo FROM emails", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .unwrap();
+            assert_eq!(stored, (ip.map(str::to_string), helo.map(str::to_string)));
+            persist.record_delete(&mail.id).unwrap();
+        }
+        persist.record_insert(&mail, &[], 1, 0).unwrap();
+        for corrupt in ["", "not an address", "127.0.0.1:25", "1.2.3", " 127.0.0.1"] {
+            persist
+                .state
+                .lock()
+                .unwrap()
+                .conn
+                .execute("UPDATE emails SET smtp_client_ip=?1", [corrupt])
+                .unwrap();
+            let debug = format!("{:?}", persist.load().unwrap_err());
+            assert!(
+                debug.starts_with("FromSqlConversionFailure(22, Text, "),
+                "{corrupt:?}: {debug}"
+            );
+            assert!(debug.contains("smtp_client_ip"), "{corrupt:?}: {debug}");
+        }
     }
 
     /// Writes `corrupt` into the one row's occurrence column and returns the

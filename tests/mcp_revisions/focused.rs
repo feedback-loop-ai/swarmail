@@ -263,6 +263,8 @@ fn historical(inbox: &str) -> swarmail::model::Email {
         html: None,
         link_metadata: None,
         attachments: None,
+        smtp_client_ip: None,
+        smtp_helo: None,
         links: vec!["https://old.test/verify".into()],
         codes: vec!["777777".into()],
         message_id: None,

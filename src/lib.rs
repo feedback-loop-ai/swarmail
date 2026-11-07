@@ -479,11 +479,20 @@ mod tests {
         drop(std::net::TcpListener::bind(&smtp).unwrap());
         drop(std::net::TcpListener::bind(&http).unwrap());
         // The same configuration with a valid file starts, and serves it.
-        std::fs::write(&policy, br#"{"tempfail":["x.example"]}"#).unwrap();
+        std::fs::write(
+            &policy,
+            br#"{"tempfail":["x.example"],"spf_client_ip":"::ffff:192.0.2.9"}"#,
+        )
+        .unwrap();
         let server = run_on(&cfg).await.unwrap();
         let effective = server.store.reports.policy_for("any");
         assert_eq!(effective.source, deliverability::dns::Source::Server);
         assert_eq!(effective.policy.view().tempfail, ["x.example"]);
+        // The declared client address is accepted from the file, canonical.
+        assert_eq!(
+            effective.policy.view().spf_client_ip.as_deref(),
+            Some("192.0.2.9")
+        );
         server.stop().await;
     }
 }

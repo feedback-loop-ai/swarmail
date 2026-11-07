@@ -6,13 +6,16 @@
 //! whole effective policy and each lookup a verifier made. Nothing here touches
 //! the network, a clock, a global or a lock, so a report is a pure function of
 //! the stored bytes, the receipt time, and this configuration (decision 0085),
-//! except for the one clock read of proposed decision 0125 section 8.
+//! except for the two reads of the pinned crate: DKIM's `x=` clock read (decision
+//! 0125 section 8) and SPF's monotonic lookup timer (proposed decision 0126
+//! section 8).
 
 use serde::de::{Deserializer, Error as _, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
+use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -68,6 +71,30 @@ pub(crate) struct DeclarationsFull;
 pub(crate) struct Policy {
     txt: BTreeMap<OwnerName, BTreeSet<String>>,
     tempfail: BTreeSet<OwnerName>,
+    /// The address SPF evaluates instead of the one the SMTP session saw
+    /// (decision 0126 §3), canonical. Declared by whoever declares the records.
+    spf_client_ip: Option<IpAddr>,
+}
+
+impl Policy {
+    pub(crate) fn spf_client_ip(&self) -> Option<IpAddr> {
+        self.spf_client_ip
+    }
+
+    /// Whether `name` exists in the declared world (decision 0126 §4): it or
+    /// any name below it holds a declared record or a declared `tempfail`.
+    /// RFC 8020 reads a name with a name below it as existing (NODATA), and a
+    /// name with nothing at or below it as not existing.
+    pub(crate) fn exists(&self, name: &OwnerName) -> bool {
+        let below = |other: &OwnerName| {
+            other == name
+                || other
+                    .0
+                    .strip_suffix(name.0.as_str())
+                    .is_some_and(|rest| rest.ends_with('.'))
+        };
+        self.txt.keys().any(below) || self.tempfail.iter().any(below)
+    }
 }
 
 /// Where the effective policy came from.
@@ -111,6 +138,10 @@ impl Effective {
 pub struct PolicyView {
     pub txt: Vec<TxtView>,
     pub tempfail: Vec<String>,
+    /// Present only when declared (decision 0126 §3), so a policy that does
+    /// not declare it keeps the bytes it had before the member existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spf_client_ip: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +163,7 @@ impl Policy {
                 })
                 .collect(),
             tempfail: self.tempfail.iter().map(|name| name.0.clone()).collect(),
+            spf_client_ip: self.spf_client_ip.map(|ip| ip.to_string()),
         }
     }
 }
@@ -142,6 +174,7 @@ impl Policy {
 struct Declaration {
     txt: Vec<TxtDeclaration>,
     tempfail: Vec<String>,
+    spf_client_ip: Option<String>,
 }
 
 struct TxtDeclaration {
@@ -155,23 +188,32 @@ impl<'de> Deserialize<'de> for Declaration {
         impl<'de> Visitor<'de> for Members {
             type Value = Declaration;
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("an object with optional txt and tempfail members")
+                f.write_str("an object with optional txt, tempfail and spf_client_ip members")
             }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Declaration, A::Error> {
-                let (mut txt, mut tempfail) = (None, None);
+                let (mut txt, mut tempfail, mut spf_client_ip) = (None, None, None);
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "txt" if txt.is_none() => txt = Some(map.next_value()?),
                         "tempfail" if tempfail.is_none() => tempfail = Some(map.next_value()?),
-                        "txt" | "tempfail" => {
+                        "spf_client_ip" if spf_client_ip.is_none() => {
+                            spf_client_ip = Some(map.next_value()?);
+                        }
+                        "txt" | "tempfail" | "spf_client_ip" => {
                             return Err(A::Error::custom(format!("duplicate field `{key}`")));
                         }
-                        other => return Err(A::Error::unknown_field(other, &["txt", "tempfail"])),
+                        other => {
+                            return Err(A::Error::unknown_field(
+                                other,
+                                &["txt", "tempfail", "spf_client_ip"],
+                            ));
+                        }
                     }
                 }
                 Ok(Declaration {
                     txt: txt.unwrap_or_default(),
                     tempfail: tempfail.unwrap_or_default(),
+                    spf_client_ip,
                 })
             }
         }
@@ -267,7 +309,22 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Policy, String> {
             return Err(format!("tempfail[{i}] repeats an owner name"));
         }
     }
-    let policy = Policy { txt, tempfail };
+    // An IP literal in its canonical form (an IPv4-mapped IPv6 address is
+    // the IPv4 it maps), and nothing else: a name would be a lookup, and a
+    // zone or a port is not an address. It counts toward the byte bound only.
+    let spf_client_ip = declaration
+        .spf_client_ip
+        .map(|text| {
+            text.parse::<IpAddr>()
+                .map(|ip| ip.to_canonical())
+                .map_err(|_| "spf_client_ip is not an IPv4 or IPv6 address literal".to_string())
+        })
+        .transpose()?;
+    let policy = Policy {
+        txt,
+        tempfail,
+        spf_client_ip,
+    };
     // The form a report embeds must itself fit, or it could not be declared
     // back (a report's `dns.policy` is canonical, so it re-parses to itself).
     let canonical =
@@ -361,6 +418,18 @@ impl Lookups {
             effective,
             used: BTreeMap::new(),
         }
+    }
+
+    /// The address the declaration says SPF sees, if it declares one.
+    pub(crate) fn spf_client_ip(&self) -> Option<IpAddr> {
+        self.effective.policy.spf_client_ip()
+    }
+
+    /// Whether the declared world has `name` (see [`Policy::exists`]). It
+    /// answers from the embedded policy alone and records nothing: the report
+    /// lists TXT answers only, and this one is reproducible from them.
+    pub(crate) fn exists(&self, name: &OwnerName) -> bool {
+        self.effective.policy.exists(name)
     }
 
     pub(crate) fn resolve_txt(&mut self, name: &OwnerName) -> Txt {
@@ -795,5 +864,110 @@ mod tests {
         // An endless device is refused as not regular; it is never read.
         let zero = Path::new("/dev/zero");
         assert_eq!(load_file(zero).unwrap_err(), "not a regular file");
+    }
+    /// Decision 0126 §3: `spf_client_ip` is an IP literal, stored canonical,
+    /// echoed only when declared, counted toward the byte bound and not the
+    /// entry bound, and refused when anything else.
+    #[test]
+    fn spf_client_ip_is_an_address_literal_in_canonical_form() {
+        for (given, canonical) in [
+            ("192.0.2.9", "192.0.2.9"),
+            ("2001:DB8:0:0:0:0:0:25", "2001:db8::25"),
+            ("::1", "::1"),
+            ("::ffff:192.0.2.9", "192.0.2.9"),
+            ("0.0.0.0", "0.0.0.0"),
+        ] {
+            let policy = accept(json!({"spf_client_ip": given}));
+            assert_eq!(
+                serde_json::to_string(&policy.view()).unwrap(),
+                format!(r#"{{"txt":[],"tempfail":[],"spf_client_ip":"{canonical}"}}"#)
+            );
+            assert_eq!(policy.spf_client_ip(), Some(canonical.parse().unwrap()));
+            // A report's policy declares back to itself.
+            let view = serde_json::to_vec(&policy.view()).unwrap();
+            assert_eq!(parse(&view).unwrap(), policy);
+        }
+        // Absent, the view keeps its earlier bytes and there is no address.
+        let none = accept(json!({}));
+        assert_eq!(
+            serde_json::to_string(&none.view()).unwrap(),
+            r#"{"txt":[],"tempfail":[]}"#
+        );
+        assert_eq!(none.spf_client_ip(), None);
+        // Refused: not a literal, a name, a zone, a port, a prefix, spaces,
+        // the wrong JSON type, and a repeated member.
+        for bad in [
+            json!(""),
+            json!("example.com"),
+            json!("fe80::1%eth0"),
+            json!("127.0.0.1:25"),
+            json!("[::1]"),
+            json!("10.0.0.0/8"),
+            json!(" 127.0.0.1"),
+            json!("127.0.0.1\n"),
+            json!("1.2.3"),
+            json!("256.0.0.1"),
+            json!(7),
+            json!(null),
+            json!(["127.0.0.1"]),
+        ] {
+            let err = parse(json!({"spf_client_ip": bad}).to_string().as_bytes());
+            assert!(err.is_err(), "{bad}");
+        }
+        assert_eq!(
+            parse(json!({"spf_client_ip": "nope"}).to_string().as_bytes()).unwrap_err(),
+            "spf_client_ip is not an IPv4 or IPv6 address literal"
+        );
+        assert!(
+            parse(br#"{"spf_client_ip":"::1","spf_client_ip":"::1"}"#)
+                .unwrap_err()
+                .contains("duplicate field `spf_client_ip`")
+        );
+        // It counts toward the byte bound (the canonical form is measured)
+        // and not toward the entry bound.
+        let input = entries(128, 0);
+        assert!(parse(input.as_bytes()).is_ok());
+        let full = {
+            let mut declaration: serde_json::Value = serde_json::from_str(&input).unwrap();
+            declaration["spf_client_ip"] = json!("2001:db8::25");
+            declaration.to_string()
+        };
+        assert_eq!(
+            parse(full.as_bytes()).unwrap().txt.len() * 2,
+            256,
+            "the address added no entry"
+        );
+    }
+
+    /// Decision 0126 §4: a name exists when it, or a name below it, holds a
+    /// declared record or a declared `tempfail`; a longer label that merely
+    /// ends the same way is not below it.
+    #[test]
+    fn a_name_exists_when_it_or_a_descendant_is_declared() {
+        let policy = accept(json!({
+            "txt": [{"name": "a.b.example", "values": ["x"]}, {"name": "other.org", "values": ["y"]}],
+            "tempfail": ["t.fail.example"],
+        }));
+        for (asked, exists) in [
+            ("a.b.example", true),
+            ("b.example", true),
+            ("example", true),
+            ("t.fail.example", true),
+            ("fail.example", true),
+            ("other.org", true),
+            ("org", true),
+            ("c.b.example", false),
+            ("xb.example", false),
+            ("ample", false),
+            ("a.a.b.example", false),
+            ("com", false),
+        ] {
+            assert_eq!(policy.exists(&name(asked)), exists, "{asked}");
+        }
+        assert!(!Policy::default().exists(&name("example.com")));
+        let lookups = Lookups::new(Effective::new(Source::Inbox, policy));
+        assert!(lookups.exists(&name("example")));
+        assert_eq!(lookups.spf_client_ip(), None);
+        assert!(lookups.finish().lookups.is_empty(), "nothing is recorded");
     }
 }

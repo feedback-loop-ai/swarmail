@@ -1252,6 +1252,8 @@ pub(crate) fn email(id: &str, inbox: &str, to: &str) -> Email {
         html: None,
         link_metadata: None,
         attachments: None,
+        smtp_client_ip: None,
+        smtp_helo: None,
         links: vec![],
         codes: vec![],
         message_id: None,

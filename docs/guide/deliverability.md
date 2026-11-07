@@ -8,16 +8,20 @@ info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/6):
+The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/7):
 one_click, message_id and date are errors; plain_text is warning-level presence
 advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
-are independent checks. Their error-level *.not_evaluated.v1 findings explicitly
-say "Not evaluated:" until trusted observations exist. Sender-written
-Authentication-Results and DKIM-Signature never supply evidence. #255 owns that
-verification and strict/relaxed alignment; #253/#255 own expiry and refresh.
-Production therefore excludes every message at every report predicate threshold;
-exact zero assertions count qualifying messages when every required analysis succeeds;
-an analysis failure aborts the assertion. Waits still require a qualifying message.
+are independent checks. They read six facts that the report evaluator computes
+from the stored bytes, the SMTP envelope observed at ingest, DKIM's verdicts and
+the declared DNS policy (SPF and DMARC, below). A fact that cannot be determined
+is Unknown, and its entry is an error-level *.not_evaluated.v1 finding that
+explicitly says "Not evaluated:". Sender-written Authentication-Results and
+DKIM-Signature never supply evidence. A message qualifies at a threshold only when
+every finding is below it, so a wait or an exact zero assertion matches mail whose
+SPF, DKIM and DMARC evidence passes and whose checklist is clean at that
+threshold; exact zero assertions count qualifying messages when every required
+analysis succeeds; an analysis failure aborts the assertion. Waits still require a
+qualifying message.
 
 Headers use original bytes and complete singleton values, with root lowercase
 names and occurrence null/0/1 for absent/invalid/duplicate. Message-ID and Date
@@ -37,7 +41,7 @@ https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 204
 or 7489 sections. These are fixed published references, not live verification or
 provider certification. The proposed rule record is decision 0089.
 
-`swarmail-html/6` retains the synthetic demo.marker.v1: the first root
+`swarmail-html/7` retains the synthetic demo.marker.v1: the first root
 X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
 and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
 html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
@@ -92,22 +96,26 @@ The existing message page renders the same report without polling.
 DNS policy (decision 0120, accepted). Report checks that need DNS answers (DKIM keys, SPF,
 DMARC; #254, #255, #256) read a declared, offline TXT map, never the network.
 Every report carries a required `dns` member
-{source:"default"|"server"|"inbox", policy:{txt:[{name,values}],tempfail:[name]},
+{source:"default"|"server"|"inbox", policy:{txt:[{name,values}],tempfail:[name],spf_client_ip?},
 lookups:[{name,type:"txt",outcome:"records"|"no_records"|"temp_fail",values}]}.
 `policy` is the complete canonical effective policy; `lookups` lists each name an
 evaluation resolved, once, sorted. DKIM verification (decision 0125, accepted, below) records
 every key, ATPS and report name it asks for that lies inside decision 0120's name grammar (an out-of-grammar name fails closed and is not recorded); a message with no `DKIM-Signature`
-records none, and SPF and DMARC (#255) record theirs when they arrive. `temp_fail` is never a pass and never clean: a report with a
+records none, and SPF and DMARC (proposed 0126, below) record the TXT names they ask for
+(the record, its `include:` and `redirect=` targets, an `exp=` name, and the `_dmarc` names of the tree walk). `temp_fail` is never a pass and never clean: a report with a
 `temp_fail` lookup qualifies at no no_findings_at_or_above threshold, so an assert
 does not match it and a wait rides to its deadline. `no_records` is a definite
 negative. The same message under the same configuration gives byte-identical
-report JSON; no path, time or generation appears (the one stated exception is the
+report JSON; no path, time or generation appears (the two stated exceptions are the
 DKIM wall-clock residual, `dkim.expired_since_receipt.v1`, whose full radius is
-described below).
+described below, and SPF's 20-second monotonic lookup timer, below).
 Declare a server map with `serve --dns-policy FILE` (env SWARMAIL_DNS_POLICY): a
 JSON file of at most 8192 bytes, `{"txt":[{"name":"s1._domainkey.example.com",
 "values":["v=DKIM1; k=rsa; p=..."]}],"tempfail":["_dmarc.example.org"]}`; `{}` is
-an empty map and source "server". A bad file stops startup before any listener
+an empty map and source "server". The declaration also takes an optional
+`spf_client_ip`, an IPv4 or IPv6 address literal (stored canonical, present in
+`dns.policy` only when declared) that SPF evaluates instead of the connecting
+address the SMTP session saw; see SPF and DMARC below. A bad file stops startup before any listener
 binds; there is no fallback to an empty map. Declare an inbox map with
 PUT /api/v1/inboxes/{inbox}/dns (same body; 200 echoes the object
 {"inbox","source","policy"}; 400 for an invalid declaration or an inbox label over
@@ -179,15 +187,18 @@ Selected pre-removal reads may finish; fresh lookups cannot resurrect removed ma
 Cache loss at restart costs recomputation. These are cache/job bounds, not total
 memory or latency promises. #253 owns DNS observation/policy/expiry/wakeup semantics;
 #253 shipped no verification: DKIM verification arrives with accepted 0125 on
-`mail-auth`, offline against the declared keys; SPF, DMARC and ARC are #255 and
-#256; no external spam scorer or service ships here. The cache key includes every effective authentication fact and the
-immutable policy/observation identity, alongside selected Weak mail identity.
+`mail-auth`, offline against the declared keys; SPF and DMARC arrive with proposed
+0126 on the same crate (below), and ARC is #256; no external spam scorer or service
+ships here. The cache key is the selected Weak mail identity (which carries the
+row's immutable SMTP envelope observation), the frozen policy snapshot (including
+`spf_client_ip`) and the rule set; every authentication fact is a function of
+those, so two requests with equal keys get equal facts.
 
 ## Link rules
 
 Decision 0121 (accepted; issue #258) added five per-link rules to the default
 report. They arrived in rule set `swarmail-html/4` and are part of the current
-rule set (`swarmail-html/6`). They read the same eligible outer
+rule set (`swarmail-html/7`). They read the same eligible outer
 `text/html` parts as the HTML heuristics above (attachments and attached
 messages excluded, same budgets) and look at every visible `<a>` start tag
 that has an `href`, in source order. "Visible" and the link label follow the
@@ -365,7 +376,7 @@ the configuration and the network's answers at that moment, and it is never
 cached or stored: two probes at different times can differ. Empty findings
 mean "nothing found", not "the links are safe".
 
-## DKIM verification (`swarmail-html/6`)
+## DKIM verification (`swarmail-html/7`)
 
 Decision 0125 (accepted; issue #254) verifies every `DKIM-Signature` field of a
 stored message and reports each way a signature fails to verify as a named
@@ -419,8 +430,8 @@ signature becomes `dkim.expired_since_receipt.v1`: a pass (no finding), the
 `dkim.body_hash_mismatch.v1` to `dkim.signature_mismatch.v1` alike. The key and
 ATPS lookups for that signature also disappear from `dns.lookups`. So a clean or
 warning-only report can begin to disqualify, and a report recomputed after cache
-eviction can differ from the cached one: the one stated exception to
-byte-identical reports. The move is one-way unless the host clock is set back.
+eviction can differ from the cached one: the first of the two stated exceptions to
+byte-identical reports (the second is SPF's lookup timer, below). The move is one-way unless the host clock is set back.
 The crate's RFC 6651 report sampling also reads the clock, but Swarmail never
 hands it a report record, so that read is never reached. A test that awaits a
 clean report on a signature whose `x=` is near the host clock can start to fail
@@ -471,10 +482,10 @@ refuse the message; within the bounds, at most 16 verifications ask for at most
 **Severity.** Every outcome that leaves a signature unverified is an error; the
 only warning is a verified signature with a partial `l=`. A `temp_fail` lookup
 (a key declared in `tempfail`) gives `dkim.not_evaluated.v1` and no report with a
-`temp_fail` lookup ever qualifies. Until #255 replaces the bulk checklist's
-`*.not_evaluated.v1` errors with real evidence they disqualify every report at
-every threshold, so assert on DKIM rule ids (`GET /api/v1/messages/{id}/deliverability`)
-rather than on a threshold.
+`temp_fail` lookup ever qualifies. The report of a signed message that passes also
+needs its SPF and DMARC evidence and the rest of the checklist to be clean before it
+qualifies at a threshold; assert on DKIM rule ids
+(`GET /api/v1/messages/{id}/deliverability`) to judge a signer alone.
 
 **Known limits.** The crate does not check a key's bytes before using it, so a
 `p=` that is base64 but not a public key fails verification and reads as
@@ -485,7 +496,7 @@ interop gap:** the crate counts `l=` in raw bytes, RFC 6376 section 3.4.5 in
 canonicalized ones, so a conformant signer whose raw and canonical `l=` prefixes
 differ fails as `dkim.body_hash_mismatch.v1`. That is fail-closed and not detected:
 do not read a `body_hash_mismatch` on a signature with `l=` as evidence of
-tampering (#255 must not either). The wall-clock residual has the radius stated
+tampering (DMARC reads the same verdict and does not either). The wall-clock residual has the radius stated
 above. The compiled-in resolver is unreachable, not absent. Each finding is on
 `{"kind":"header","name":"dkim-signature","occurrence":k}`, `k` counting the
 message's root DKIM-Signature fields in header order from zero (the boundary
@@ -671,6 +682,297 @@ check above guarantees the verifier lists the same fields).
 
 **Failing:** `l=` short and text appended after it.
 
+## SPF and DMARC (`swarmail-html/7`)
+
+Proposed decision 0126 (issue #255) evaluates SPF for the SMTP envelope and
+DMARC for the root `From`, with relaxed and strict alignment of SPF and of the
+DKIM signatures above, and reports each outcome the way Authentication-Results
+(RFC 8601) names it. It runs lazily, inside the report evaluator, on the stored
+bytes after the SMTP `250`; nothing runs at ingest or on the accept path. A
+passing result emits nothing: there is no `spf.pass` or `dmarc.pass` id. The
+six facts the bulk checklist reads (`policy_present`, `valid_from`, `dkim_pass`,
+`dkim_aligned`, `spf_pass`, `spf_aligned`) are now outputs of this evaluation,
+so `bulk.dmarc_presence`, `bulk.from_alignment` and `bulk.authenticated_sender`
+carry real evidence. The crate is `mail-auth` 0.14.0, as for DKIM; DNS comes
+only from the declared policy.
+
+**The observed envelope.** SPF needs the address a message arrived from and the
+name the client gave, and Swarmail did not store either. The SMTP session now
+records the TCP peer (an IPv4-mapped IPv6 address is written as the IPv4 it
+maps) and the argument of the last `HELO`/`EHLO` (trimmed; an empty argument or
+no greeting is none; `STARTTLS` clears it) in the stored row, before the one
+synchronous insert, so they ride the same commit as the `250`. They are never
+read from a header: a forged `Received:`, `X-Forwarded-For:` or
+`Authentication-Results:` changes nothing. REST-seeded mail and any row stored
+before the columns existed hold none and are never backfilled. Neither fact
+appears in any REST, MCP, webhook or feed payload.
+
+**Which SPF identity.** One `check_host` per message: the MAIL FROM domain, or the
+HELO name when MAIL FROM is the null reverse path (RFC 7208 section 2.4). A
+sender with no `@` uses the HELO name as its domain. SPF is not evaluated, and
+the message gets the information finding `spf.not_evaluated.v1`, when there is
+no observed peer, no known envelope sender, or a null sender with no HELO name.
+
+**The address SPF sees.** The socket's, so a test over loopback declares
+`ip4:127.0.0.1` (and `ip6:::1`) in its record. Or declare `spf_client_ip` in the
+policy (the server file, or `PUT /api/v1/inboxes/{inbox}/dns`): an IPv4 or IPv6
+literal, stored in canonical form, echoed in the report's `dns.policy` only when
+declared, and applied to every peer. Anything else is a 400, or a startup
+refusal for the server file. It never makes a message with no observed peer
+evaluable.
+
+**Record selection is Swarmail's.** Of the values declared at a name, only those
+beginning `v=spf1` followed by a space or the end count (`v=spf10` is not a
+record); none is "no record" and more than one is a permanent error (RFC 7208
+section 4.5). Every term of the record must name a mechanism or be a modifier
+`name=value`; the crate would skip an unknown bare word and swallow the term
+after it, so `inlcude:x.example` is a permanent error here. The same rule picks
+the `v=DMARC1` value at a `_dmarc` name, with two differences: the tag follows
+RFC 7489 section 6.4 (spaces or tabs may surround the `=`, and `DMARC1` is
+case-exact), and two `v=DMARC1` values at one name are no record at that name,
+not an error (RFC 7489 section 6.6.3), so the walk goes on.
+
+**Record types: TXT only.** The declared policy is a TXT map, so SPF's `a`, `mx`,
+`ptr` and `exists` mechanisms and the `%{p}` macro, which need A, AAAA, MX or PTR
+answers, are not evaluated: the evaluation is marked and its verdict is
+`spf.unsupported_mechanism.v1`, whatever the crate decided, with `spf_pass`
+Unknown. That is "not evaluated", never a failure. A term after the first match
+is never evaluated (RFC 7208 section 4.6.2), so `ip4:127.0.0.1 a -all` passes
+for 127.0.0.1. The `exp=` name is looked up and recorded, but no explanation is
+ever expanded.
+
+**Limits (RFC 7208 section 4.6.4).** Ten DNS-querying terms are admitted and the
+eleventh is `spf.permerror.v1`; with the policy above only `include:` and
+`redirect=` can draw on the count without being unsupported. Void lookups need no
+counter of their own: an `include:` or `redirect=` target with no record is
+already a permanent error at its first void answer, and every other term that
+could be void is unsupported before a void answer can decide anything. One
+evaluation looks up at most twelve names (the record, ten terms, one `exp=`
+target). A DMARC tree walk asks at most eight names.
+
+**DMARC.** From validity is Swarmail's first: exactly one root `From` field, which
+the crate parses where Swarmail's own scan ends the headers, and whose addresses
+share one domain (else `dmarc.from_invalid.v1`, or `dmarc.not_evaluated.v1` when
+the two parsers disagree). The crate's RFC 9989 tree walk then asks for
+`_dmarc.<name>` from the Author Domain upward (at most eight names; a `psd=y` or
+`psd=n` record stops the walk). **The organizational domain, and the public
+suffix, are determined offline by the declared records alone**: a declared
+`psd=y` record marks a public suffix domain and the organizational domain is one
+label below it; otherwise it is the shortest name with a record. No public
+suffix list is fetched, checked in or compiled in, so a test that wants
+`example.co.uk` under a public suffix declares `_dmarc.co.uk` with `psd=y`. The
+applied policy is the record's `p=` for the Author Domain's own record, `sp=` for
+a record found above it, and `np=` when the Author Domain does not exist, which
+Swarmail answers from the declared names (it exists when it, or any name below it,
+is declared as a TXT owner or in `tempfail`; RFC 8020); `t=y` steps it down once.
+A failure carries the applied policy in its id (`dmarc.fail.none.v1`,
+`dmarc.fail.quarantine.v1`, `dmarc.fail.reject.v1`). `pct=` is not a tag of RFC
+9989: it is ignored and no message is sampled. Alignment is `adkim` and `aspf`,
+relaxed by default, from the crate. DKIM aligns only through signatures Swarmail's
+own DKIM verdicts accept (a pass or the `l=` warning; a deferred key lookup stays
+Unknown), so a signature that does not verify, or that the crate verifies but
+DKIM refuses (an unsigned `From`), never aligns. SPF aligns by its identity's
+domain whatever SPF's own result: an aligned MAIL FROM whose record rejects the
+sender is aligned and not authenticated, which is exactly the difference between
+`bulk.from_alignment` and `bulk.authenticated_sender`.
+
+**The facts, and the checklist.** `valid_from` is True for one From with one
+domain, False for none, several or two domains, Unknown when the parsers
+disagree. `policy_present` is True when a record applies, False when none does or
+a record is invalid, Unknown for a temporary failure. `dkim_pass` is True when a
+signature passed, False when there is none or all failed, Unknown when one is
+deferred or DKIM stopped at its bound. `spf_pass` is True for a pass and False for
+fail, softfail, neutral, none and permerror; Unknown for a temporary error, an
+unsupported term, or no evaluation. The two alignment facts are Unknown unless a
+policy record applies. The DMARC result is `valid_from` and ((`dkim_pass` and
+`dkim_aligned`) or (`spf_pass` and `spf_aligned`)); the three checklist entries
+read the same facts, so a failing DMARC message carries both its `dmarc.*` id
+and its `bulk.*` entry.
+
+**Authentication-Results correspondence.** `spf=pass`: no `spf.*` finding.
+`spf=fail|softfail|neutral|none|temperror|permerror`: `spf.<token>.v1`. No `spf=`
+clause (SPF not run): `spf.not_evaluated.v1` or `spf.unsupported_mechanism.v1`.
+`dkim=pass`: no `dkim.*` error for that field; any other `dkim=`: the ids above.
+`dmarc=pass`: no `dmarc.*` finding. `dmarc=fail`: `dmarc.fail.<policy>.v1`.
+`dmarc=none`: `dmarc.none.v1`. `dmarc=temperror`: `dmarc.temperror.v1`.
+`dmarc=permerror`: `dmarc.permerror.v1` or `dmarc.from_invalid.v1`. No `dmarc=`
+clause: `dmarc.not_evaluated.v1`.
+
+**Known limits and the clock.** SPF's evaluation starts a monotonic timer inside
+the crate and refuses a DNS-querying term once 20 seconds have passed on it. That
+is the one reachable ambient read on this path (decision 0126 section 8, a
+proposed amendment of the report's no-ambient-time rule held for the operator):
+only if the process is descheduled for 20 seconds inside a single evaluation does
+the verdict become `spf.permerror.v1` (fail-closed, never a pass), so a clean
+report cannot be made to pass by it. The crate's report sampling (`ra=`) reads the
+wall clock and is unreachable: every SPF record has `ra=` removed before the crate
+sees it; `%{t}` is unreachable too. DMARC reads no clock. The compiled-in resolver
+is unreachable, not absent.
+
+Every SPF finding is on `{"kind":"header","name":"return-path","occurrence":null}`
+(the envelope, never a stored header); every DMARC finding is on the root `From`
+field, `null` when absent, `1` when duplicated, else `0`.
+
+### `spf.fail.v1`
+
+**Severity:** error. The connecting address matches no term before a `-all`, or a term with a `-` qualifier matches it.
+
+**Hint:** The connecting address is not authorized by the SPF record of the domain of the envelope sender, which ends in -all; add the address to the record or send from an authorized host (RFC 7208 section 2.6.4).
+
+**Passing:** `v=spf1 ip4:127.0.0.1 -all` for a message sent from 127.0.0.1.
+
+**Failing:** `v=spf1 ip4:192.0.2.1 -all` for the same message.
+
+### `spf.softfail.v1`
+
+**Severity:** error. The first match, or the `all` fall-through, has the `~` qualifier.
+
+**Hint:** The connecting address is probably not authorized by the SPF record of the domain of the envelope sender (~all); add the address to the record or send from an authorized host (RFC 7208 section 2.6.5).
+
+**Passing:** `v=spf1 ip4:127.0.0.1 ~all` for 127.0.0.1.
+
+**Failing:** `v=spf1 ip4:192.0.2.1 ~all`.
+
+### `spf.neutral.v1`
+
+**Severity:** error. The first match has the `?` qualifier, or no term matches and the record has no `all` or `redirect=` (RFC 7208 section 4.7).
+
+**Hint:** No mechanism of the SPF record of the domain of the envelope sender matched the connecting address, or the record says ?all; add the address to the record (RFC 7208 section 2.6.2).
+
+**Passing:** `v=spf1 ip4:127.0.0.1 ?all` for 127.0.0.1: the term matches, and the match is a pass.
+
+**Failing:** `v=spf1 ip4:192.0.2.1`; `v=spf1 ip4:192.0.2.1 ?all`; `v=spf1`.
+
+### `spf.none.v1`
+
+**Severity:** error. The identity's domain declares no `v=spf1` record, or is not a valid domain name (an empty or malformed MAIL FROM domain).
+
+**Hint:** Declare a v=spf1 TXT record for the domain of the envelope sender in the DNS policy; none is declared, or the domain is not a valid name (RFC 7208 section 2.6.1).
+
+**Passing:** A declared `v=spf1` record at the domain.
+
+**Failing:** No record at the domain; `v=spf10 ...` (not an SPF record); a sender with no domain and no HELO name.
+
+### `spf.temperror.v1`
+
+**Severity:** error. A name SPF needed (the record, or an `include:` or `redirect=` target) is declared in `tempfail`. `spf_pass` is Unknown, never a failure, and a report with a `temp_fail` lookup never qualifies.
+
+**Hint:** A DNS lookup the SPF check needed failed temporarily, so the check was not evaluated; fix the DNS answer and retry (RFC 7208 section 2.6.6).
+
+**Passing:** A declared record.
+
+**Failing:** `tempfail: ["example.com"]`.
+
+### `spf.permerror.v1`
+
+**Severity:** error. Two `v=spf1` values at one name, a syntax error, a term that names no mechanism or modifier, an `include:` or `redirect=` target with no record, or the eleventh DNS-querying term (RFC 7208 sections 4.5, 4.6 and 4.6.4), or the lookup timer residual below.
+
+**Hint:** Fix the SPF record: one v=spf1 record per name, valid syntax, declared include: and redirect= targets, and at most 10 DNS-querying terms (RFC 7208 sections 4.5, 4.6.4 and 2.6.7).
+
+**Passing:** One record, valid terms, at most ten `include`/`redirect` terms, every target declared.
+
+**Failing:** `v=spf1 inlcude:x.example -all`; two `v=spf1` values; `include:gone.example` with nothing declared; eleven `include:` terms.
+
+### `spf.unsupported_mechanism.v1`
+
+**Severity:** error. The evaluation reached `a`, `mx`, `ptr`, `exists` or a `%{p}` macro. Swarmail's declared policy holds TXT records only, so it answered those queries with a fixed negative and did not look: this is not a failure. `spf_pass` is Unknown, so the `bulk.*` entries are `not_evaluated` and DMARC is `dmarc.not_evaluated.v1` unless DKIM passed aligned.
+
+**Hint:** The SPF record reaches a, mx, ptr, exists or a %{p} macro, which need address records the DNS policy cannot declare; Swarmail did not evaluate it, so this is not a failure. Put an ip4: or ip6: term before it, or declare spf_client_ip and an ip4:/ip6: record (RFC 7208 section 5).
+
+**Passing:** `v=spf1 ip4:127.0.0.1 a -all` for 127.0.0.1 (the match comes first; `a` is never evaluated).
+
+**Failing:** `v=spf1 a -all`; `v=spf1 mx -all`; `v=spf1 a ip4:127.0.0.1 -all` (`a` comes first).
+
+### `spf.not_evaluated.v1`
+
+**Severity:** info. SPF was not run: the message has no observed SMTP connection address (REST-seeded mail, or a row stored before the columns existed), no known envelope sender, or a null sender with no HELO name. Info severity: it disqualifies no threshold.
+
+**Hint:** SPF was not evaluated: the message has no observed SMTP connection address, no known envelope sender, or a null sender without a HELO name. Send it over SMTP with a HELO and a MAIL FROM (RFC 7208 section 2.2).
+
+**Passing:** A message sent over SMTP with a MAIL FROM and a connecting address.
+
+**Failing:** A REST-seeded message; a `MAIL FROM:<>` session with no HELO.
+
+### `dmarc.from_invalid.v1`
+
+**Severity:** error. Not exactly one root `From` field (none, or several), or the field's addresses do not share one domain. Located at occurrence `null` (absent), `1` (duplicated) or `0`. `Email.from` is never read: it falls back to the envelope sender, which would make a From-less message look valid.
+
+**Hint:** Send exactly one From header field whose addresses share one domain (RFC 5322 section 3.6.2, RFC 9989 section 4.4).
+
+**Passing:** One `From:` field; two addresses of one domain are one domain.
+
+**Failing:** No `From`; two `From` fields; `From: a@example.com, b@example.org`.
+
+### `dmarc.none.v1`
+
+**Severity:** error. A valid From, and no applicable DMARC record along the tree walk from the Author Domain up: nothing declared, a value that is not a `v=DMARC1` record, a record with neither `p=` nor `rua=`, two `v=DMARC1` values at one name (RFC 7489 section 6.6.3 applies no policy for multiple records, so the walk goes on to the organizational domain), or a single-label Author Domain.
+
+**Hint:** Declare exactly one v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies, and two records at one name apply none (RFC 9989 section 4.10).
+
+**Passing:** A declared `v=DMARC1; p=...` record at `_dmarc.<domain>` or at its organizational domain.
+
+**Failing:** Nothing declared; `v=DMARC1; fo=1`; two `v=DMARC1` values at one name and nothing above them.
+
+### `dmarc.temperror.v1`
+
+**Severity:** error. A `_dmarc` name on the walk is declared in `tempfail` (the Author Domain's own, or a parent's, even when a record was found below it). `policy_present` is Unknown and the report never qualifies.
+
+**Hint:** A DNS lookup the DMARC policy discovery needed failed temporarily, so the message was not evaluated; fix the DNS answer and retry (RFC 9989 section 4.10).
+
+**Passing:** Every walked name answers.
+
+**Failing:** `tempfail: ["_dmarc.example.com"]`.
+
+### `dmarc.permerror.v1`
+
+**Severity:** error. A walked name holds one `v=DMARC1` value that does not parse (RFC 9989 section 4.10). Two values are not this rule: they are no record at that name (`dmarc.none.v1`).
+
+**Hint:** Fix the DMARC policy record so that its tags are valid (RFC 9989 section 4.10).
+
+**Passing:** One valid record per name.
+
+**Failing:** `v=DMARC1; p=bogus`.
+
+### `dmarc.fail.none.v1`
+
+**Severity:** error. A record applies, neither SPF nor DKIM produced an aligned pass, and the applied policy is `none`.
+
+**Hint:** Neither SPF nor DKIM passed with a domain aligned to the From domain; the applied policy is none. Align a passing DKIM d= or SPF MAIL FROM domain with the From domain (RFC 9989 section 4.10).
+
+**Passing:** SPF or DKIM passes aligned.
+
+**Failing:** SPF fails and nothing is signed, with `p=none`.
+
+### `dmarc.fail.quarantine.v1`
+
+**Severity:** error. As above, with applied policy `quarantine` (the record's `p=`, `sp=` or `np=`, stepped down by `t=y`).
+
+**Hint:** Neither SPF nor DKIM passed with a domain aligned to the From domain; the applied policy is quarantine. Align a passing DKIM d= or SPF MAIL FROM domain with the From domain (RFC 9989 section 4.10).
+
+**Passing:** SPF or DKIM passes aligned.
+
+**Failing:** SPF fails and nothing is signed, with `p=quarantine`; `p=reject; t=y`.
+
+### `dmarc.fail.reject.v1`
+
+**Severity:** error. As above, with applied policy `reject`.
+
+**Hint:** Neither SPF nor DKIM passed with a domain aligned to the From domain; the applied policy is reject. Align a passing DKIM d= or SPF MAIL FROM domain with the From domain (RFC 9989 section 4.10).
+
+**Passing:** SPF or DKIM passes aligned.
+
+**Failing:** SPF fails and nothing is signed, with `p=reject`.
+
+### `dmarc.not_evaluated.v1`
+
+**Severity:** error. A From that the crate parses where Swarmail's own header scan ends the headers differently (a stray colon-less line), or a record applies and the result is Unknown because SPF or DKIM could not be evaluated (not evaluated, unsupported terms, a deferred key lookup) and nothing passed aligned.
+
+**Hint:** DMARC was not evaluated: the From header cannot be judged the way the Swarmail header scan reads it, or SPF or DKIM could not be evaluated and no aligned pass was found (RFC 9989 section 4.10).
+
+**Passing:** A From both parsers read the same way.
+
+**Failing:** `From: a@example.com` followed by a colon-less line; an SPF record `v=spf1 a -all` with no signature.
+
 ## Spam signals (`swarmail-spam/1`)
 
 Six built-in, offline, deterministic rules read only the captured message: the
@@ -680,8 +982,9 @@ configuration; the same stored bytes always give the same findings. Each rule
 emits at most one finding per report, severity info or warning (error stays the
 bulk checklist's requirement level), so a large message can never flood the
 report. They arrived as `swarmail-spam/1`; with the link rules of decision 0121,
-the `dns` member of decision 0120 and the DKIM rules of decision 0125 the report's
-`rule_set_id` is now `swarmail-html/6`, so the rule-set version
+the `dns` member of decision 0120, the DKIM rules of accepted 0125 and the SPF and
+DMARC rules of proposed 0126 the report's
+`rule_set_id` is now `swarmail-html/7`, so the rule-set version
 is recorded in every report and in the cache key. Reports carry no weight and no
 total yet: the operator accepted decision 0122 on 2026-11-06, including the
 weights below, but the follow-up that emits them is not built, so they are
@@ -833,5 +1136,8 @@ checklist), `swarmail-html/2` and `swarmail-html/3` (HTML heuristics), then
 `swarmail-html/5` (the required `dns` report member of proposed 0120,
 integrated after `swarmail-html/4`; no rule changed meaning), then
 `swarmail-html/6` (the eighteen DKIM rules of proposed 0125, integrated after
-`swarmail-html/5`; no existing rule changed meaning). A change to
+`swarmail-html/5`; no existing rule changed meaning), then
+`swarmail-html/7` (the sixteen SPF and DMARC rules of proposed 0126, integrated
+after `swarmail-html/6`; the three authentication entries of the bulk checklist
+now read evaluated facts, so their findings changed). A change to
 any rule's meaning, hint, location or order requires a new id.

@@ -1,15 +1,19 @@
 //! Lazy analysis of immutable stored bytes. This is separate from ingest extraction.
 //! No network, clock, persistence or Store guard enters the evaluator (0085), with
-//! one stated exception: the `mail-auth` DKIM verifier compares a signature's `x=`
-//! with the wall clock inside the crate, its one reachable clock read (its report
-//! sampling reads the clock too, but is never reached). Swarmail reads no clock and
-//! judges `x=` at the message's receipt second. The crate's read is the clock
-//! residual: once the
-//! host clock reaches an `x=` that is after the receipt second, every verdict the
-//! crate would have decided for that signature becomes
-//! `dkim.expired_since_receipt.v1` and its key lookups vanish, so a clean report
-//! can later begin to disqualify (decision 0125 section 8, a proposed amendment
-//! held for the operator).
+//! two stated exceptions, both reads inside the pinned `mail-auth` crate (its
+//! report sampling reads the clock too, but is never reached). Swarmail itself
+//! reads no clock.
+//! - The DKIM verifier compares a signature's `x=` with the wall clock. Swarmail
+//!   judges `x=` at the message's receipt second; the crate's read is the clock
+//!   residual: once the host clock reaches an `x=` that is after the receipt
+//!   second, every verdict the crate would have decided for that signature becomes
+//!   `dkim.expired_since_receipt.v1` and its key lookups vanish, so a clean report
+//!   can later begin to disqualify (decision 0125 section 8, accepted 2026-11-06).
+//! - The SPF evaluation reads a monotonic timer (`LookupLimit`) and refuses a
+//!   DNS-querying term once 20 s have passed since it started, so a process
+//!   stalled that long inside one evaluation yields `spf.permerror.v1`. It is
+//!   fail-closed and not one-way (decision 0126 section 8, a proposed amendment
+//!   held for the operator).
 
 use crate::{model::Email, store::Store};
 use serde::{Deserialize, Serialize};
@@ -17,6 +21,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
+mod auth;
 mod dkim;
 pub mod dns;
 mod html;
@@ -27,7 +32,7 @@ mod spam;
 use dns::{DeclarationsFull, DnsRecord, Effective, Lookups, Policy, Source};
 pub use reach::Mode as LinkReachability;
 
-pub const RULE_SET_ID: &str = "swarmail-html/6";
+pub const RULE_SET_ID: &str = "swarmail-html/7";
 pub const MAX_FINDINGS: usize = 256;
 pub const MAX_REPORT_BYTES: usize = 65_536;
 const MAX_HEADER_BYTES: usize = 65_536;
@@ -114,7 +119,11 @@ impl Default for AnalysisConfig {
 struct Inputs {
     config: AnalysisConfig,
     rule_set_id: &'static str,
-    auth: AuthEvidence,
+    /// Test-only override of the evaluated facts (decision 0126 §6): the 0089
+    /// truth tables and the checklist's wire pairs set facts directly. Production
+    /// has no such input: the facts are outputs of the evaluation.
+    #[cfg(test)]
+    auth: Option<AuthEvidence>,
     /// The request's frozen DNS policy, source and content: part of the exact key.
     dns: Arc<Effective>,
     #[cfg(test)]
@@ -128,7 +137,10 @@ impl Default for Inputs {
         Self {
             config: AnalysisConfig::default(),
             rule_set_id: RULE_SET_ID,
-            auth: AuthEvidence::default(),
+            // Test builds default to unknown facts, as every test that predates
+            // the evaluation expects; a test of the evaluation sets `None`.
+            #[cfg(test)]
+            auth: Some(AuthEvidence::default()),
             dns: Arc::default(),
             #[cfg(test)]
             fixture: Vec::new(),
@@ -189,12 +201,13 @@ impl Collector {
     }
 }
 
-/// Immutable trusted observations; sender headers never populate these facts.
-/// #255 owns verification, From validity, alignment, provenance and mail binding.
+/// The six facts the `bulk.*` checklist reads. They are outputs of the
+/// evaluation (decision 0126 §6), computed from the stored bytes, the row's
+/// immutable envelope observation, DKIM's verdicts and the frozen policy;
+/// sender headers never populate them, and a fact can describe only the message
+/// the report is for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct AuthEvidence {
-    policy_id: String,
-    observation_id: String,
     policy_present: Fact,
     valid_from: Fact,
     dkim_pass: Fact,
@@ -227,15 +240,21 @@ impl Fact {
     }
 }
 impl AuthEvidence {
+    /// The DMARC result (decision 0089 section 5): a valid From and an aligned
+    /// pass of DKIM or SPF.
+    fn dmarc_pass(&self) -> Fact {
+        self.valid_from.and(
+            self.dkim_pass
+                .and(self.dkim_aligned)
+                .or(self.spf_pass.and(self.spf_aligned)),
+        )
+    }
+
     fn rules(&self) -> [Fact; 3] {
         [
             self.policy_present,
             self.valid_from.and(self.dkim_aligned.or(self.spf_aligned)),
-            self.valid_from.and(
-                self.dkim_pass
-                    .and(self.dkim_aligned)
-                    .or(self.spf_pass.and(self.spf_aligned)),
-            ),
+            self.dmarc_pass(),
         ]
     }
 }
@@ -826,7 +845,7 @@ fn bulk(
     raw: &[u8],
     fields: &Headers,
     size: usize,
-    inputs: &Inputs,
+    facts: &AuthEvidence,
     out: &mut Collector,
 ) -> Result<(), AnalysisError> {
     let list_valid = singleton(fields, b"list-unsubscribe", unsubscribe);
@@ -836,7 +855,7 @@ fn bulk(
         singleton(fields, b"date", date),
         plain_body(raw, fields.clone(), size)?,
     ];
-    let auth = inputs.auth.rules();
+    let auth = facts.rules();
     for (i, (name, header, hint, source)) in RULES.iter().enumerate() {
         let fact = if i < known.len() {
             if known[i] { Fact::True } else { Fact::False }
@@ -891,6 +910,7 @@ fn trim_value(mut value: &[u8]) -> &[u8] {
 fn collect(
     raw: &[u8],
     receipt: u64,
+    envelope: &auth::Envelope<'_>,
     inputs: &Inputs,
     out: &mut Collector,
     lookups: &mut Lookups,
@@ -919,10 +939,18 @@ fn collect(
             })?;
         }
     }
-    bulk(raw, &fields, size, inputs, out)?;
+    // DKIM, SPF and DMARC first: the checklist reads the facts they produce.
+    #[cfg(test)]
+    let overridden = inputs.auth.clone();
+    #[cfg(not(test))]
+    let overridden: Option<AuthEvidence> = None;
+    let facts = match overridden {
+        Some(facts) => facts,
+        None => auth::collect(raw, &fields, size, receipt, envelope, lookups, out)?,
+    };
+    bulk(raw, &fields, size, &facts, out)?;
     html::collect(raw, out)?;
     spam::collect(raw, out)?;
-    dkim::collect(raw, &fields, size, receipt, lookups, out)?;
     #[cfg(test)]
     for finding in &inputs.fixture {
         out.push(finding.clone())?;
@@ -935,19 +963,25 @@ fn collect(
 }
 
 /// `receipt` is the stored message's receipt second: the time its DKIM
-/// signatures are judged at (decision 0125 section 4). It is immutable for an
-/// `Email`, so the cache's identity of the `Email` already covers it.
-fn evaluate_at(raw: &[u8], receipt: u64, inputs: &Inputs) -> Result<Report, AnalysisError> {
+/// signatures are judged at (decision 0125 section 4). `envelope` is what the
+/// SMTP session observed (decision 0126 section 2). Both are immutable for an
+/// `Email`, so the cache's identity of the `Email` already covers them.
+fn evaluate_at(
+    raw: &[u8],
+    receipt: u64,
+    envelope: &auth::Envelope<'_>,
+    inputs: &Inputs,
+) -> Result<Report, AnalysisError> {
     let mut out = Collector(Vec::new());
     let mut lookups = Lookups::new(inputs.dns.clone());
-    collect(raw, receipt, inputs, &mut out, &mut lookups)?;
+    collect(raw, receipt, envelope, inputs, &mut out, &mut lookups)?;
     out.finish(inputs, lookups)
 }
 
 /// The tests that predate DKIM judge unsigned bytes, so their receipt is moot.
 #[cfg(test)]
 fn evaluate(raw: &[u8], inputs: &Inputs) -> Result<Report, AnalysisError> {
-    evaluate_at(raw, 0, inputs)
+    evaluate_at(raw, 0, &auth::Envelope::default(), inputs)
 }
 
 struct Slot {
@@ -972,8 +1006,10 @@ pub(crate) struct Service {
     prober: reach::Prober,
     #[cfg(test)]
     pub(crate) gate: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// `Some(facts)` replaces the evaluation for every report; `None` asks for
+    /// the real evaluation, which test builds otherwise skip (see `Inputs`).
     #[cfg(test)]
-    auth: std::sync::OnceLock<AuthEvidence>,
+    auth: std::sync::OnceLock<Option<AuthEvidence>>,
     /// Names every report resolves, so a store-level test can see a lookup that
     /// production makes only once #254 adds a verifier.
     #[cfg(test)]
@@ -1111,7 +1147,8 @@ impl Service {
                 gate();
             }
             let receipt = email.received_ms.max(0) as u64 / 1000;
-            let report = Arc::new(evaluate_at(&email.raw, receipt, &inputs)?);
+            let envelope = auth::Envelope::of(&email);
+            let report = Arc::new(evaluate_at(&email.raw, receipt, &envelope, &inputs)?);
             *guard = Some(report.clone());
             Ok(report)
         })
@@ -1186,7 +1223,11 @@ impl Service {
         };
         #[cfg(test)]
         let inputs = Inputs {
-            auth: self.auth.get().cloned().unwrap_or_default(),
+            auth: self
+                .auth
+                .get()
+                .cloned()
+                .unwrap_or_else(|| inputs.auth.clone()),
             lookups: self.lookups.get().cloned().unwrap_or_default(),
             ..inputs
         };
@@ -1290,7 +1331,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             serde_json::to_value(&empty).unwrap(),
-            json!({"rule_set_id":"swarmail-html/6","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
+            json!({"rule_set_id":"swarmail-html/7","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
         );
         assert!(empty.qualifies(Severity::Info));
         // `dns` is required and closed (decision 0120 §5): no serde default.
@@ -1478,6 +1519,7 @@ mod tests {
             collect(
                 b"X-Swarmail-Demo: error\n\n",
                 0,
+                &auth::Envelope::default(),
                 &Inputs::default(),
                 &mut full,
                 &mut Lookups::default(),
@@ -1488,6 +1530,7 @@ mod tests {
             collect(
                 b"\n",
                 0,
+                &auth::Envelope::default(),
                 &Inputs::default(),
                 &mut full,
                 &mut Lookups::default()
@@ -1695,7 +1738,7 @@ mod tests {
         );
         let inputs = Inputs {
             rule_set_id: "fixture/1",
-            auth: super::concurrency_tests::passing(),
+            auth: Some(super::concurrency_tests::passing()),
             fixture: vec![link.clone(), part.clone(), link],
             ..Inputs::default()
         };
@@ -1719,7 +1762,7 @@ mod tests {
                 email,
                 Inputs {
                     rule_set_id: "fixture/1",
-                    auth: super::concurrency_tests::passing(),
+                    auth: Some(super::concurrency_tests::passing()),
                     ..Inputs::default()
                 },
                 false,
@@ -1912,7 +1955,6 @@ mod tests {
                                     dkim_aligned: da,
                                     spf_pass: sp,
                                     spf_aligned: sa,
-                                    ..AuthEvidence::default()
                                 };
                                 let possibilities = |v| match v {
                                     T => vec![true],
@@ -2179,7 +2221,7 @@ mod tests {
         let service = Service::default();
         let e = mail("same");
         let original = Inputs {
-            auth: super::concurrency_tests::passing(),
+            auth: Some(super::concurrency_tests::passing()),
             ..Inputs::default()
         };
         let first = service
@@ -2188,20 +2230,28 @@ mod tests {
             .unwrap();
         assert!(first.findings.is_empty());
         let mut variants = Vec::new();
-        for field in 0..8 {
+        for field in 0..6 {
             let mut input = original.clone();
+            let facts = input.auth.as_mut().unwrap();
             match field {
-                0 => input.auth.policy_present = Fact::False,
-                1 => input.auth.valid_from = Fact::False,
-                2 => input.auth.dkim_pass = Fact::Unknown,
-                3 => input.auth.dkim_aligned = Fact::False,
-                4 => input.auth.spf_pass = Fact::Unknown,
-                5 => input.auth.spf_aligned = Fact::Unknown,
-                6 => input.auth.policy_id.push('x'),
-                _ => input.auth.observation_id.push('x'),
+                0 => facts.policy_present = Fact::False,
+                1 => facts.valid_from = Fact::False,
+                2 => facts.dkim_pass = Fact::Unknown,
+                3 => facts.dkim_aligned = Fact::False,
+                4 => facts.spf_pass = Fact::Unknown,
+                _ => facts.spf_aligned = Fact::Unknown,
             }
             variants.push(input);
         }
+        // The policy snapshot is part of the key as well (decision 0126 §6): the
+        // facts' determinants, not the facts, are what real requests vary.
+        variants.push(Inputs {
+            dns: Effective::new(
+                Source::Inbox,
+                dns::parse(br#"{"spf_client_ip":"192.0.2.1"}"#).unwrap(),
+            ),
+            ..original.clone()
+        });
         for input in variants {
             let next = service
                 .with_inputs(e.clone(), input.clone(), false)
@@ -2221,7 +2271,7 @@ mod tests {
                 .await
                 .unwrap()
         ));
-        assert_eq!(service.slots.lock().unwrap().len(), 10);
+        assert_eq!(service.slots.lock().unwrap().len(), 9);
     }
     #[tokio::test]
     async fn bulk_auth_wire_pairs_and_positive_predicates() {
@@ -2249,16 +2299,14 @@ mod tests {
             srv.store
                 .reports
                 .auth
-                .set(AuthEvidence {
-                    policy_id: "p=none".into(),
-                    observation_id: "fixture-verifier".into(),
+                .set(Some(AuthEvidence {
                     policy_present,
                     valid_from,
                     dkim_pass,
                     dkim_aligned,
                     spf_pass,
                     spf_aligned,
-                })
+                }))
                 .unwrap();
             let id = smtp_bytes(&srv, GOOD).await;
             let path = format!("/api/v1/messages/{id}/deliverability");
@@ -2557,7 +2605,7 @@ mod tests {
         let report = |names: &[&str]| {
             let inputs = Inputs {
                 dns: world.clone(),
-                auth: super::concurrency_tests::passing(),
+                auth: Some(super::concurrency_tests::passing()),
                 lookups: names.iter().copied().map(owner).collect(),
                 ..Inputs::default()
             };
