@@ -12,8 +12,8 @@
 //! - The SPF evaluation reads a monotonic timer (`LookupLimit`) and refuses a
 //!   DNS-querying term once 20 s have passed since it started, so a process
 //!   stalled that long inside one evaluation yields `spf.permerror.v1`. It is
-//!   fail-closed and not one-way (decision 0126 section 8, a proposed amendment
-//!   held for the operator).
+//!   fail-closed and not one-way (decision 0126 section 8, an amendment accepted
+//!   on 2026-11-07).
 
 use crate::{model::Email, store::Store};
 use serde::{Deserialize, Serialize};
@@ -32,7 +32,7 @@ mod spam;
 use dns::{DeclarationsFull, DnsRecord, Effective, Lookups, Policy, Source};
 pub use reach::Mode as LinkReachability;
 
-pub const RULE_SET_ID: &str = "swarmail-html/7";
+pub const RULE_SET_ID: &str = "swarmail-html/8";
 pub const MAX_FINDINGS: usize = 256;
 pub const MAX_REPORT_BYTES: usize = 65_536;
 const MAX_HEADER_BYTES: usize = 65_536;
@@ -76,6 +76,9 @@ pub struct Finding {
     pub location: Location,
     pub severity: Severity,
     pub fix_hint: String,
+    /// Set by `Collector::push` from the severity and the id (decision 0122
+    /// §2.2): a collector's value is replaced there. It is the last key.
+    pub weight: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +88,9 @@ pub struct Report {
     pub findings: Vec<Finding>,
     /// Which DNS policy and which records this evaluation used (decision 0120).
     pub dns: DnsRecord,
+    /// The sum of the findings' weights, computed in `Collector::finish_with`
+    /// (decision 0122 §2.3). It is the last key, after `dns`.
+    pub total: u64,
 }
 
 impl Report {
@@ -169,11 +175,28 @@ impl AnalysisError {
 /// are checked individually, before an unbounded temporary vector can accumulate.
 struct Collector(Vec<Finding>);
 
+/// The one weighting (decision 0122 §2.2): `info` 1, `warning` 3, `error` 10,
+/// and 0 for the ids that are not a sender signal. A missing trusted fact
+/// (`.not_evaluated.`) is not evidence about the sender, and the demo marker is
+/// synthetic. There is no per-id table.
+fn weight_of(rule_id: &str, severity: Severity) -> u64 {
+    if rule_id == "demo.marker.v1" || rule_id.contains(".not_evaluated.") {
+        0
+    } else {
+        match severity {
+            Severity::Info => 1,
+            Severity::Warning => 3,
+            Severity::Error => 10,
+        }
+    }
+}
+
 impl Collector {
-    fn push(&mut self, finding: Finding) -> Result<(), AnalysisError> {
+    fn push(&mut self, mut finding: Finding) -> Result<(), AnalysisError> {
         if self.0.len() == MAX_FINDINGS {
             return Err(AnalysisError::Failed);
         }
+        finding.weight = weight_of(&finding.rule_id, finding.severity);
         self.0.push(finding);
         Ok(())
     }
@@ -188,10 +211,18 @@ impl Collector {
     fn finish_with(mut self, inputs: &Inputs, dns: DnsRecord) -> Result<Report, AnalysisError> {
         self.0.sort();
         self.0.dedup();
+        // The sum runs after deduplication, so a duplicate counts once, and it
+        // never wraps: an overflow fails the report (decision 0122 §2.3).
+        let total = self
+            .0
+            .iter()
+            .try_fold(0u64, |sum, f| sum.checked_add(f.weight))
+            .ok_or(AnalysisError::Failed)?;
         let report = Report {
             rule_set_id: inputs.rule_set_id.into(),
             findings: self.0,
             dns,
+            total,
         };
         // Report contains only infallibly serializable strings, enums and integers.
         if serde_json::to_vec(&report).unwrap().len() > MAX_REPORT_BYTES {
@@ -892,6 +923,7 @@ fn bulk(
                 Severity::Error
             },
             fix_hint: format!("{hint} Sources: {source} {GMAIL} {YAHOO}"),
+            weight: 0,
         })?;
     }
     Ok(())
@@ -936,6 +968,7 @@ fn collect(
                 },
                 severity,
                 fix_hint: "Remove the X-Swarmail-Demo header.".into(),
+                weight: 0,
             })?;
         }
     }
@@ -1253,7 +1286,18 @@ mod tests {
             location,
             severity,
             fix_hint: "Fix fixture.".into(),
+            weight: 0,
         }
+    }
+
+    /// A collector filled through `push`, as every production collector is, so
+    /// the findings carry their real weights.
+    fn pushed(findings: impl IntoIterator<Item = Finding>) -> Collector {
+        let mut out = Collector(Vec::new());
+        for f in findings {
+            out.push(f).unwrap();
+        }
+        out
     }
 
     #[test]
@@ -1314,7 +1358,8 @@ mod tests {
         assert_eq!(
             value["findings"][0],
             json!({"rule_id":"fixture.v1","severity":"info",
-            "location":{"kind":"header","name":"a","occurrence":null},"fix_hint":"Fix fixture."})
+            "location":{"kind":"header","name":"a","occurrence":null},"fix_hint":"Fix fixture.",
+            "weight":0})
         );
         assert_eq!(
             value["findings"][12]["location"],
@@ -1331,7 +1376,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             serde_json::to_value(&empty).unwrap(),
-            json!({"rule_set_id":"swarmail-html/7","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
+            json!({"rule_set_id":"swarmail-html/8","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]},"total":0})
         );
         assert!(empty.qualifies(Severity::Info));
         // `dns` is required and closed (decision 0120 §5): no serde default.
@@ -1351,6 +1396,268 @@ mod tests {
         assert!(serde_json::from_value::<Report>(source).is_err());
     }
 
+    /// A finding with its own id, for the weight tables.
+    fn with_id(id: &str, severity: Severity) -> Finding {
+        Finding {
+            rule_id: id.into(),
+            ..finding(Location::MimePart { path: vec![] }, severity)
+        }
+    }
+
+    #[test]
+    fn report_shape_is_required_and_closed() {
+        // `weight` and `total` are required and closed, with no serde default
+        // (decision 0122 §2.4 of this change's spec): a reader never infers one.
+        let report = pushed([with_id("spam.x.v1", Severity::Warning)])
+            .finish(&Inputs::default(), Lookups::default())
+            .unwrap();
+        let wire = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            serde_json::from_value::<Report>(wire.clone()).unwrap(),
+            report
+        );
+        let mut no_weight = wire.clone();
+        no_weight["findings"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("weight");
+        assert!(serde_json::from_value::<Report>(no_weight).is_err());
+        let mut no_total = wire.clone();
+        no_total.as_object_mut().unwrap().remove("total");
+        assert!(serde_json::from_value::<Report>(no_total).is_err());
+        let mut negative = wire.clone();
+        negative["findings"][0]["weight"] = json!(-1);
+        assert!(serde_json::from_value::<Report>(negative).is_err());
+        let mut extra_finding = wire.clone();
+        extra_finding["findings"][0]["score"] = json!(1);
+        assert!(serde_json::from_value::<Report>(extra_finding).is_err());
+        let mut extra_report = wire;
+        extra_report["score"] = json!(1);
+        assert!(serde_json::from_value::<Report>(extra_report).is_err());
+    }
+
+    #[test]
+    fn push_weighs_by_severity_across_families() {
+        // Severity alone sets the weight, for every family (decision 0122 §2.2),
+        // and `push` replaces whatever the collector wrote.
+        let table = [
+            ("spam.subject.all_caps.v1", Severity::Warning, 3),
+            ("html.tracking-pixel.v1", Severity::Info, 1),
+            ("bulk.one_click.v1", Severity::Error, 10),
+            ("link.scheme.unsafe.v1", Severity::Error, 10),
+            ("dkim.body_length_partial.v1", Severity::Warning, 3),
+            ("spf.fail.v1", Severity::Error, 10),
+            ("dmarc.policy_none.v1", Severity::Info, 1),
+        ];
+        let mut out = Collector(Vec::new());
+        for (id, severity, _) in table {
+            out.push(Finding {
+                weight: 99,
+                ..with_id(id, severity)
+            })
+            .unwrap();
+        }
+        let report = out.finish(&Inputs::default(), Lookups::default()).unwrap();
+        let wire = serde_json::to_value(&report).unwrap();
+        for (id, severity, weight) in table {
+            let i = report
+                .findings
+                .iter()
+                .position(|f| f.rule_id == id)
+                .unwrap();
+            assert_eq!(report.findings[i].severity, severity, "{id}");
+            assert_eq!(report.findings[i].weight, weight, "{id}");
+            assert_eq!(wire["findings"][i]["weight"], json!(weight), "{id}");
+        }
+    }
+
+    #[test]
+    fn zero_weight_exceptions() {
+        let weight_of_pushed = |id: &str, severity| {
+            let mut out = Collector(Vec::new());
+            out.push(with_id(id, severity)).unwrap();
+            out.0[0].weight
+        };
+        for severity in [Severity::Info, Severity::Warning, Severity::Error] {
+            assert_eq!(weight_of_pushed("demo.marker.v1", severity), 0);
+            assert_eq!(
+                weight_of_pushed("bulk.dmarc_presence.not_evaluated.v1", severity),
+                0
+            );
+            assert_eq!(weight_of_pushed("dkim.x.not_evaluated.v1", severity), 0);
+        }
+        // Failing controls: the neighbouring ids are ordinary findings, so an
+        // implementation that zeroes everything, or matches loosely, is refused.
+        assert_eq!(weight_of_pushed("bulk.x.v1", Severity::Error), 10);
+        assert_eq!(weight_of_pushed("bulk.not_evaluated", Severity::Error), 10);
+        assert_eq!(weight_of_pushed("demo.marker.v2", Severity::Error), 10);
+        assert_eq!(weight_of_pushed("demo.marker.v1.x", Severity::Error), 10);
+        let report = pushed([
+            with_id("demo.marker.v1", Severity::Error),
+            with_id("bulk.x.v1", Severity::Error),
+        ])
+        .finish(&Inputs::default(), Lookups::default())
+        .unwrap();
+        assert_eq!(report.total, 10);
+    }
+
+    #[test]
+    fn evaluator_not_evaluated_errors_weigh_zero() {
+        // The default test inputs leave every authentication fact unknown, so the
+        // evaluator itself emits the bulk `not_evaluated` errors.
+        let report = evaluate(b"Subject: hi\r\n\r\nbody\r\n", &Inputs::default()).unwrap();
+        let unknown: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.rule_id.contains(".not_evaluated."))
+            .collect();
+        assert!(!unknown.is_empty());
+        for f in unknown {
+            assert_eq!(
+                (f.severity, f.weight),
+                (Severity::Error, 0),
+                "{}",
+                f.rule_id
+            );
+        }
+        // Every other finding weighs by severity, and the total is their sum.
+        let sum: u64 = report.findings.iter().map(|f| f.weight).sum();
+        assert_eq!(report.total, sum);
+        assert!(report.findings.iter().any(|f| f.weight == 10));
+    }
+
+    #[test]
+    fn total_is_the_sum_after_dedup() {
+        let finish = |c: Collector| c.finish(&Inputs::default(), Lookups::default()).unwrap();
+        assert_eq!(finish(Collector(Vec::new())).total, 0);
+        let one = |id: &str, severity| with_id(id, severity);
+        let report = finish(pushed([
+            one("a.v1", Severity::Info),
+            one("b.v1", Severity::Warning),
+            one("c.v1", Severity::Error),
+        ]));
+        assert_eq!(report.total, 14);
+        // An exact duplicate pushed twice counts once: the sum before
+        // deduplication would be 24.
+        let report = finish(pushed([
+            one("a.v1", Severity::Info),
+            one("b.v1", Severity::Warning),
+            one("c.v1", Severity::Error),
+            one("c.v1", Severity::Error),
+        ]));
+        assert_eq!(report.findings.len(), 3);
+        assert_eq!(report.total, 14);
+        assert_ne!(report.total, 24);
+        // The ceiling: 256 distinct errors weigh exactly MAX_FINDINGS × 10.
+        let report = finish(pushed((0..MAX_FINDINGS as u64).map(|i| {
+            finding(
+                Location::Header {
+                    name: "h".into(),
+                    occurrence: Some(i),
+                },
+                Severity::Error,
+            )
+        })));
+        assert_eq!(report.findings.len(), MAX_FINDINGS);
+        assert_eq!(report.total, MAX_FINDINGS as u64 * 10);
+        assert_eq!(report.total, 2560);
+        // The total is the sum of the serialized weights.
+        let wire = serde_json::to_value(&report).unwrap();
+        let serialized: u64 = wire["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["weight"].as_u64().unwrap())
+            .sum();
+        assert_eq!(wire["total"], json!(serialized));
+    }
+
+    #[test]
+    fn total_overflow_fails_the_report() {
+        // Built directly, bypassing `push`: through `push` the sum cannot exceed
+        // MAX_FINDINGS × 10, so this is the only way to reach the arm. It must
+        // fail the report, never wrap to 0 or saturate at u64::MAX (0122 §2.3).
+        let big = Finding {
+            weight: u64::MAX,
+            ..finding(Location::MimePart { path: vec![] }, Severity::Info)
+        };
+        let one = Finding {
+            weight: 1,
+            ..finding(Location::MimePart { path: vec![0] }, Severity::Info)
+        };
+        assert_eq!(
+            Collector(vec![big.clone(), one.clone()])
+                .finish(&Inputs::default(), Lookups::default()),
+            Err(AnalysisError::Failed)
+        );
+        // Control: the largest sum that fits is accepted.
+        let zero = Finding { weight: 0, ..one };
+        let report = Collector(vec![big, zero])
+            .finish(&Inputs::default(), Lookups::default())
+            .unwrap();
+        assert_eq!(report.total, u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn cache_hit_and_miss_bytes_are_identical() {
+        let mut email = super::concurrency_tests::html_email("bytes", "box", "a@x.io");
+        email.raw = b"X-Swarmail-Demo: warning\nSubject: ABCDEFGHIJKL\n\nbody\n".to_vec();
+        let email = Arc::new(email);
+        let service = Service::default();
+        let miss = service.report(email.clone(), false).await.unwrap();
+        let hit = service.report(email.clone(), true).await.unwrap();
+        assert!(Arc::ptr_eq(&miss, &hit));
+        let fresh = Service::default().report(email, false).await.unwrap();
+        assert!(!Arc::ptr_eq(&miss, &fresh));
+        let miss_bytes = serde_json::to_vec(&miss).unwrap();
+        assert_eq!(miss_bytes, serde_json::to_vec(&hit).unwrap());
+        assert_eq!(miss_bytes, serde_json::to_vec(&fresh).unwrap());
+        let text = String::from_utf8(miss_bytes).unwrap();
+        assert!(text.contains(r#""weight":3}"#), "the spam warning: {text}");
+        assert!(text.contains(r#""weight":0}"#), "the demo warning: {text}");
+        assert!(text.ends_with(&format!(r#","total":{}}}"#, miss.total)));
+        assert!(miss.total >= 3);
+    }
+
+    #[test]
+    fn qualifies_ignores_weight_and_total() {
+        let finish = |c: Collector| c.finish(&Inputs::default(), Lookups::default()).unwrap();
+        // 256 info findings total 256, and still qualify at warning.
+        let infos = finish(pushed((0..MAX_FINDINGS as u64).map(|i| {
+            finding(
+                Location::Header {
+                    name: "h".into(),
+                    occurrence: Some(i),
+                },
+                Severity::Info,
+            )
+        })));
+        assert_eq!(infos.total, 256);
+        assert!(infos.qualifies(Severity::Warning));
+        assert!(infos.qualifies(Severity::Error));
+        assert!(!infos.qualifies(Severity::Info));
+        // One warning totals 3, and refuses at warning although 3 < 256.
+        let warning = finish(pushed([with_id("w.v1", Severity::Warning)]));
+        assert_eq!(warning.total, 3);
+        assert!(!warning.qualifies(Severity::Warning));
+        assert!(warning.qualifies(Severity::Error));
+        // A sole zero-weight error totals 0 and still refuses at error: "total 0
+        // is clean" would be wrong.
+        let silent = finish(pushed([with_id(
+            "bulk.x.not_evaluated.v1",
+            Severity::Error,
+        )]));
+        assert_eq!(silent.total, 0);
+        assert!(!silent.qualifies(Severity::Error));
+        // The predicate reads severity and the lookups alone.
+        let source = include_str!("deliverability.rs");
+        let start = source.find("pub fn qualifies(").unwrap();
+        let body = &source[start..start + source[start..].find("\n    }\n").unwrap()];
+        assert!(body.contains("severity"));
+        assert!(!body.contains("weight"), "{body}");
+        assert!(!body.contains("total"), "{body}");
+    }
+
     #[test]
     fn empty_html_keeps_later_collectors_and_finish_bounds() {
         let mut out = Collector(Vec::new());
@@ -1363,11 +1670,16 @@ mod tests {
             Severity::Warning,
         );
         out.push(f.clone()).unwrap();
+        // `push` replaces the placeholder with the warning weight (0122 §2.2).
+        let weighed = Finding {
+            weight: 3,
+            ..f.clone()
+        };
         assert_eq!(
             out.finish(&Inputs::default(), Lookups::default())
                 .unwrap()
                 .findings,
-            vec![f.clone()]
+            vec![weighed]
         );
         let mut bounded = Collector(Vec::new());
         html::collect(b"", &mut bounded).unwrap();
@@ -1403,9 +1715,15 @@ mod tests {
                 .len(),
             1
         );
-        let mut f = f;
+        // An error finding weighs 10, so the edge below counts `"weight":10` and
+        // `"total":10` (two digits each), which a report without the new keys
+        // would not (0122 §2.3). The overhead comes from the serialized report.
+        let mut f = Finding {
+            severity: Severity::Error,
+            ..f
+        };
         let overhead = serde_json::to_vec(
-            &Collector(vec![f.clone()])
+            &pushed([f.clone()])
                 .finish(&input, Lookups::default())
                 .unwrap(),
         )
@@ -1413,13 +1731,17 @@ mod tests {
         .len()
             - f.fix_hint.len();
         f.fix_hint = "x".repeat(MAX_REPORT_BYTES - overhead);
-        let report = Collector(vec![f.clone()])
+        let report = pushed([f.clone()])
             .finish(&input, Lookups::default())
             .unwrap();
-        assert_eq!(serde_json::to_vec(&report).unwrap().len(), MAX_REPORT_BYTES);
+        let wire = serde_json::to_vec(&report).unwrap();
+        assert_eq!(wire.len(), MAX_REPORT_BYTES);
+        let text = String::from_utf8(wire).unwrap();
+        assert!(text.contains(r#""weight":10}"#), "weight is counted");
+        assert!(text.ends_with(r#","total":10}"#), "total is counted");
         f.fix_hint.push('x');
         assert_eq!(
-            Collector(vec![f]).finish(&input, Lookups::default()),
+            pushed([f]).finish(&input, Lookups::default()),
             Err(AnalysisError::Failed)
         );
         let inputs = Inputs {
@@ -1747,7 +2069,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.findings.len(), 2);
-        assert_eq!(report.findings[0], part);
+        // The fixture is pushed, so it carries the warning weight, not the placeholder.
+        assert_eq!(report.findings[0], Finding { weight: 3, ..part });
         assert!(!report.qualifies(Severity::Warning));
         assert!(report.qualifies(Severity::Error));
         assert!(Arc::ptr_eq(
@@ -2356,7 +2679,7 @@ mod tests {
                 };
                 assert_eq!(
                     *found,
-                    serde_json::json!({"rule_id":format!("bulk.{rule}.{}v1",if expected[i] == U { "not_evaluated." } else { "" }),"severity":"error","location":{"kind":"header","name":"from","occurrence":0},"fix_hint":format!("{hint} Sources: {rfc} https://support.google.com/mail/answer/81126 https://senders.yahooinc.com/best-practices/")})
+                    serde_json::json!({"rule_id":format!("bulk.{rule}.{}v1",if expected[i] == U { "not_evaluated." } else { "" }),"severity":"error","location":{"kind":"header","name":"from","occurrence":0},"fix_hint":format!("{hint} Sources: {rfc} https://support.google.com/mail/answer/81126 https://senders.yahooinc.com/best-practices/"),"weight":if expected[i] == U { 0 } else { 10 }})
                 );
             }
             assert_eq!(get(&srv, &path).await, (status, body));
@@ -2488,9 +2811,9 @@ mod tests {
             dns: big.clone(),
             ..Inputs::default()
         };
-        let mut f = finding(Location::MimePart { path: vec![] }, Severity::Info);
+        let mut f = finding(Location::MimePart { path: vec![] }, Severity::Error);
         let overhead = serde_json::to_vec(
-            &Collector(vec![f.clone()])
+            &pushed([f.clone()])
                 .finish(&input, Lookups::default())
                 .unwrap(),
         )
@@ -2499,13 +2822,13 @@ mod tests {
             - f.fix_hint.len();
         // The finding fills the cap exactly when the policy is empty...
         f.fix_hint = "x".repeat(MAX_REPORT_BYTES - overhead);
-        let fits = Collector(vec![f.clone()])
+        let fits = pushed([f.clone()])
             .finish(&input, Lookups::default())
             .unwrap();
         assert_eq!(serde_json::to_vec(&fits).unwrap().len(), MAX_REPORT_BYTES);
         // ...and the same finding with the declared map is a failure, never a truncation.
         assert_eq!(
-            Collector(vec![f]).finish(&input, Lookups::new(big)),
+            pushed([f]).finish(&input, Lookups::new(big)),
             Err(AnalysisError::Failed)
         );
     }
@@ -2615,6 +2938,8 @@ mod tests {
         // No findings, and a lookup that failed temporarily: clean at no level.
         let failed = report(&["a.example", "tf.example"]).await.unwrap();
         assert!(failed.findings.is_empty());
+        // Its total is 0, and a total of 0 is not clean (0122 §2.4).
+        assert_eq!(failed.total, 0);
         for level in levels {
             assert!(!failed.qualifies(level), "{level:?}");
         }

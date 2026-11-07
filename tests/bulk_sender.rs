@@ -48,7 +48,7 @@ fn expected(index: usize, occurrence: Value, header: &str) -> Value {
     let (hint, rfc) = HINTS[index];
     json!({"rule_id":format!("bulk.{rule}.v1"), "severity":if index == 3 { "warning" } else { "error" },
         "location":if index == 3 { json!({"kind":"mime_part","path":[]}) } else { json!({"kind":"header","name":header,"occurrence":occurrence}) },
-        "fix_hint":format!("{hint} Sources: {rfc} {SOURCES}")})
+        "fix_hint":format!("{hint} Sources: {rfc} {SOURCES}"),"weight":if index == 3 { 3 } else { 10 }})
 }
 
 #[tokio::test]
@@ -347,12 +347,12 @@ async fn bulk_untrusted_auth_headers_never_supply_evidence() {
             ),
         };
         let hint = if unknown { unknown_hint } else { hint };
-        json!({"rule_id":format!("bulk.{rule}.{}v1",if unknown { "not_evaluated." } else { "" }),"severity":"error","location":{"kind":"header","name":"from","occurrence":occurrence},"fix_hint":format!("{hint} Sources: {rfc} {SOURCES}")})
+        json!({"rule_id":format!("bulk.{rule}.{}v1",if unknown { "not_evaluated." } else { "" }),"severity":"error","location":{"kind":"header","name":"from","occurrence":occurrence},"fix_hint":format!("{hint} Sources: {rfc} {SOURCES}"),"weight":if unknown { 0 } else { 10 }})
     };
-    let spf_none = json!({"rule_id":"spf.none.v1","severity":"error","location":{"kind":"header","name":"return-path","occurrence":null},"fix_hint":"Declare a v=spf1 TXT record for the domain of the envelope sender in the DNS policy; none is declared, or the domain is not a valid name (RFC 7208 section 2.6.1)."});
+    let spf_none = json!({"rule_id":"spf.none.v1","severity":"error","location":{"kind":"header","name":"return-path","occurrence":null},"fix_hint":"Declare a v=spf1 TXT record for the domain of the envelope sender in the DNS policy; none is declared, or the domain is not a valid name (RFC 7208 section 2.6.1).","weight":10});
     // The sender-written signature is judged as mail, and is malformed (no
     // s=, bh= or h=); it still never becomes trusted evidence (decision 0125).
-    let malformed = json!({"rule_id":"dkim.malformed.v1","severity":"error","location":{"kind":"header","name":"dkim-signature","occurrence":0},"fix_hint":"Fix the DKIM-Signature tag list: each tag once; v=, a=, d=, s=, b=, bh= and h= present; valid base64; t=, x= and l= plain decimal numbers; and x= later than t= (RFC 6376 sections 3.2 and 3.5)."});
+    let malformed = json!({"rule_id":"dkim.malformed.v1","severity":"error","location":{"kind":"header","name":"dkim-signature","occurrence":0},"fix_hint":"Fix the DKIM-Signature tag list: each tag once; v=, a=, d=, s=, b=, bh= and h= present; valid base64; t=, x= and l= plain decimal numbers; and x= later than t= (RFC 6376 sections 3.2 and 3.5).","weight":10});
     for from in [
         "",
         "From: sender@example.test\r\n",
@@ -364,14 +364,14 @@ async fn bulk_untrusted_auth_headers_never_supply_evidence() {
         );
         let (_, status, value) = report(&srv, raw.as_bytes()).await;
         assert_eq!(status, 200);
-        assert_eq!(value["rule_set_id"], "swarmail-html/7");
+        assert_eq!(value["rule_set_id"], "swarmail-html/8");
         let occurrence = match from {
             "" => Value::Null,
             "From: sender@example.test\r\n" => json!(0),
             _ => json!(1),
         };
-        let invalid = json!({"rule_id":"dmarc.from_invalid.v1","severity":"error","location":{"kind":"header","name":"from","occurrence":occurrence},"fix_hint":"Send exactly one From header field whose addresses share one domain (RFC 5322 section 3.6.2, RFC 9989 section 4.4)."});
-        let none = json!({"rule_id":"dmarc.none.v1","severity":"error","location":{"kind":"header","name":"from","occurrence":0},"fix_hint":"Declare exactly one v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies, and two records at one name apply none (RFC 9989 section 4.10)."});
+        let invalid = json!({"rule_id":"dmarc.from_invalid.v1","severity":"error","location":{"kind":"header","name":"from","occurrence":occurrence},"fix_hint":"Send exactly one From header field whose addresses share one domain (RFC 5322 section 3.6.2, RFC 9989 section 4.4).","weight":10});
+        let none = json!({"rule_id":"dmarc.none.v1","severity":"error","location":{"kind":"header","name":"from","occurrence":0},"fix_hint":"Declare exactly one v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies, and two records at one name apply none (RFC 9989 section 4.10).","weight":10});
         // (checklist entries as (rule, not evaluated), the findings of the other
         // rules, and the names looked up)
         let (entries, others, names): (Vec<(&str, bool)>, Vec<Value>, Vec<&str>) = match from {

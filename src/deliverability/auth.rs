@@ -1,4 +1,4 @@
-//! SPF and DMARC evaluation (issue #255, proposed decision 0126).
+//! SPF and DMARC evaluation (issue #255, decision 0126).
 //!
 //! Both run inside the lazy report evaluator, on `mail-auth` 0.14.0 exactly as
 //! #254 pinned it, and read DNS from one place only: the declared map, through
@@ -227,6 +227,7 @@ impl Rule {
             location: self.location(fields),
             severity: self.severity(),
             fix_hint: self.hint().into(),
+            weight: 0,
         }
     }
 }
@@ -2689,7 +2690,7 @@ mod tests {
         assert_eq!(guide.matches("\n### `spf.").count(), 8);
         assert_eq!(guide.matches("\n### `dmarc.").count(), 8);
         for fact in [
-            "## SPF and DMARC (`swarmail-html/7`)",
+            "## SPF and DMARC (`swarmail-html/8`)",
             "**The observed envelope.**",
             "**Record types: TXT only.**",
             "**Limits (RFC 7208 section 4.6.4).**",

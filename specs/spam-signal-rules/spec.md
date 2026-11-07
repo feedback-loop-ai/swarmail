@@ -258,6 +258,9 @@ Each criterion is testable; tasks.md pairs each with the test that proves it.
   a report `total` as proposed in 0122 ship only after the operator accepts 0122,
   under a new rule-set id. The delivery's final report states that #260 remains
   open for this criterion.
+  *2026-11-07:* 0122 was accepted on 2026-11-06, and AC16 is built by #337 as
+  `swarmail-html/8`; see [`specs/finding-weight-total/spec.md`](../finding-weight-total/spec.md)
+  (its AC1–AC9). The text above is unchanged.
 
 ## Out of scope
 
