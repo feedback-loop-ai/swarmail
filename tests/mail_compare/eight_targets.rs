@@ -3230,6 +3230,62 @@ fn wrapper_requires_every_declared_competitor() {
 }
 
 #[test]
+fn wrapper_reads_a_runtime_run_file_without_exec() {
+    // A file a pinned runtime runs (GreenMail's jar) is read, never exec'd, so
+    // it need not be an executable; without a runtime the same file is refused.
+    let root = tempfile::tempdir().unwrap();
+    let w = root.path().join("w");
+    let out = root.path().join("out");
+    let o = out.to_str().unwrap();
+    let jar = root.path().join("greenmail.jar");
+    std::fs::write(&jar, b"not exec").unwrap();
+    let jar = jar.to_str().unwrap().to_owned();
+    let mut base: Vec<String> = vec!["local".into(), "--output".into(), o.into()];
+    for t in [
+        "mailpit",
+        "mailhog",
+        "mailslurper-source-build",
+        "smtp4dev",
+        "inbucket",
+    ] {
+        base.extend(["--bin".into(), format!("{t}=/bin/sh")]);
+    }
+    base.extend(["--bin".into(), format!("greenmail={jar}")]);
+    let run = |extra: &[&str]| {
+        let mut args = base.clone();
+        args.extend(extra.iter().map(|a| (*a).to_owned()));
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        wrapper(&refs, &w)
+    };
+    let (code, text) = run(&[]);
+    assert_eq!(code, 2);
+    assert!(
+        text.contains(&format!("--bin greenmail={jar} is not an executable file")),
+        "{text}"
+    );
+    let (code, text) = run(&["--runtime", "greenmail=/runtime/root"]);
+    assert_eq!(code, 2);
+    assert!(
+        text.contains(
+            "the protocol declares alkemio-mailslurper; pass --bin alkemio-mailslurper=PATH"
+        ),
+        "the jar passed, the next declared row is the one missing: {text}"
+    );
+    // A runtime needs a file, not a missing path.
+    let (code, text) = run(&[
+        "--runtime",
+        "greenmail=/runtime/root",
+        "--bin",
+        "greenmail=/nonexistent/x.jar",
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("--bin greenmail=/nonexistent/x.jar is not a file"),
+        "{text}"
+    );
+}
+
+#[test]
 fn wrapper_refuses_unknown_bin() {
     let root = tempfile::tempdir().unwrap();
     let w = root.path().join("w");

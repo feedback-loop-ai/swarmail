@@ -669,3 +669,22 @@ for every executable but the cgo build's; GreenMail's license text (above); the
 operator's ruling on the sixth condition (above) and on the two issue premises
 (above). The PR is held for the operator: it changes `scripts/` and adds
 pointers to accepted records.
+
+### The wrapper smoke (unmeasured, never evidence)
+
+After the freeze, `scripts/compare-mail.sh local` ran the nine-target smoke
+fixture (`tests/mail_compare/eight-target-smoke.json`, tiny profiles) once,
+under `timeout 600 taskset -c 0-31` with the load at 5.01 before and 4.90
+after, in 32 s wall, with every `--bin` and both `--runtime` flags (GreenMail's
+JRE and the Alkemio loader root). It exercised the `does_not_start` skip (the
+official MailSlurper took no `--bin`, launched nothing and has a blocked report
+row), the loader runtime and the cwd config together. It exited 1 by design:
+the cgo build's and Alkemio's `smoke-c1-fresh` cells admitted 20 of 20 and lost
+none, but 13 of 20 bodies differed from what was sent (the decoded-body
+observation above), so those cells are "not an exact count"; every cleanup was
+proved. It found two defects that the offline tests had not: the wrapper's
+preflight required an executable file for a jar, and the driver refused a second
+`--runtime` (one flag could repeat only for `--bin`). Both are fixed (a runtime
+runs its file, which is then only read; `--runtime` repeats, once per target)
+and `wrapper_reads_a_runtime_run_file_without_exec` proves the first. A
+collection will exit 1 for the same fidelity reason.

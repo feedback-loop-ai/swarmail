@@ -164,6 +164,15 @@ declared_competitors() {
       done
 }
 
+# The directory given for one target by --runtime (the last wins), or empty.
+runtime_for() {
+  local want="$1" w found=''
+  for w in ${runtime_args[@]+"${runtime_args[@]}"}; do
+    [ "${w%%=*}" != "$want" ] || found="${w#*=}"
+  done
+  printf '%s' "$found"
+}
+
 # The path given for one target by --bin (the last wins), or empty.
 bin_for() {
   local want="$1" w found=''
@@ -198,7 +207,13 @@ case "$mode" in
     for t in $declared; do
       bin=$(bin_for "$t")
       [ -n "$bin" ] || blocked competitor-binaries "the protocol declares $t; pass --bin $t=PATH with its pinned executable"
-      [ -x "$bin" ] || blocked competitor-binaries "--bin $t=$bin is not an executable file"
+      if [ -n "$(runtime_for "$t")" ]; then
+        # A pinned runtime (GreenMail's JRE, the Alkemio row's musl loader)
+        # runs this file; it is read, never exec'd, so a jar is no executable.
+        [ -f "$bin" ] || blocked competitor-binaries "--bin $t=$bin is not a file"
+      else
+        [ -x "$bin" ] || blocked competitor-binaries "--bin $t=$bin is not an executable file"
+      fi
     done
     doc_args=()
     [ -z "$documents" ] || doc_args=(--documents "$documents")

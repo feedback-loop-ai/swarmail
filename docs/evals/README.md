@@ -532,7 +532,9 @@ how to read a table later: **MailSlurper keeps one decoded body, no raw message,
 and does not undo SMTP dot-stuffing** (its body fidelity is reported per
 message, not exact), and **it acknowledges a mail before it stores it and lost
 some under SQLite lock contention in a burst probe** (a collection will show
-accepted-but-missing mail in the cell). A message whose part holds its own
+accepted-but-missing mail in the cell). A collection therefore exits 1 (a sealed
+run whose workload failed somewhere): the MailSlurper-family cells are never
+"exact" because of the fidelity mismatches, and the report says where. A message whose part holds its own
 boundary string mid-line is refused rather than returned cut short; the
 measured corpus never contains one.
 

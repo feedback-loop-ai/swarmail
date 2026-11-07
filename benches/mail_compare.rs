@@ -70,8 +70,10 @@ fn main() -> ExitCode {
     ExitCode::from(code as u8)
 }
 
-/// `--flag value` pairs; a repeated flag other than `--bin`, a flag without
-/// a value or a stray word refuses.
+/// `--flag value` pairs; a repeated flag other than `--bin` and `--runtime`
+/// (one of each per target, so two targets may each need a runtime: GreenMail's
+/// JRE and the Alkemio row's musl loader), a flag without a value or a stray
+/// word refuses.
 fn flags(args: &[String]) -> Result<BTreeMap<String, Vec<String>>, String> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut it = args.iter();
@@ -81,7 +83,7 @@ fn flags(args: &[String]) -> Result<BTreeMap<String, Vec<String>>, String> {
             .ok_or_else(|| format!("unexpected argument {flag:?}"))?;
         let value = it.next().ok_or_else(|| format!("--{name} needs a value"))?;
         let slot = out.entry(name.to_owned()).or_default();
-        if !slot.is_empty() && name != "bin" {
+        if !slot.is_empty() && name != "bin" && name != "runtime" {
             return Err(format!("--{name} given twice"));
         }
         slot.push(value.clone());
