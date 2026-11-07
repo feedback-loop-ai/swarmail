@@ -69,6 +69,18 @@ pub enum Provenance {
     SourceBuild(&'static str),
 }
 
+impl Provenance {
+    /// Whether the target has a tagged commit of an official repository to
+    /// observe. Only a third-party image has none: its identity is its
+    /// index -> manifest -> layer digest chain, and `validate_image` refuses
+    /// an observed `tagged_source` on it (proposed decision 0130 §2). The
+    /// answer is keyed on this closed provenance, never on whether the lock
+    /// data happens to carry an `image` field.
+    pub fn has_tagged_source(self) -> bool {
+        !matches!(self, Provenance::ThirdPartyImage(_))
+    }
+}
+
 /// The Alkemio image the third-party row is extracted from.
 pub const ALKEMIO_IMAGE: &str = "ghcr.io/alkem-io/test-suites/mailslurper:smtps-4c6aecc-p2";
 
@@ -3647,10 +3659,11 @@ pub fn collection_ready(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> 
         // An image pin has no tag of an official repository to observe
         // (validate_image refuses an observed one), so the third-party
         // image's identity is its index -> manifest -> layer digest chain,
-        // and its tagged-source gap is structural, not missing. Every other
-        // pin still needs an observed tagged source.
+        // and its tagged-source gap is structural, not missing. The
+        // exemption is the closed provenance's, never the lock data's:
+        // every other pin still needs an observed tagged source.
         if let Some(why) = pin.tagged_source.gap()
-            && pin.image.is_none()
+            && t.provenance().has_tagged_source()
         {
             out.push(format!("{t}: tagged source unresolved: {why}"));
         }

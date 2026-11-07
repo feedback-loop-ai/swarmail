@@ -4370,6 +4370,40 @@ fn official_pin_still_needs_an_observed_tagged_source_but_an_image_pin_does_not(
     protocol::collection_ready(&p, &lock).expect("an image pin is ready without a tag");
 }
 
+#[test]
+fn has_tagged_source_is_false_only_for_the_image_provenance() {
+    let with: Vec<_> = TargetKind::ALL
+        .into_iter()
+        .filter(|t| t.provenance().has_tagged_source())
+        .collect();
+    let without: Vec<_> = TargetKind::ALL
+        .into_iter()
+        .filter(|t| !t.provenance().has_tagged_source())
+        .collect();
+    assert_eq!(TargetKind::ALL.len(), 9);
+    assert_eq!(without, [TargetKind::AlkemioMailslurper]);
+    assert_eq!(with.len(), 8);
+    // Only the image provenance is exempt; a lock that gives another target
+    // an `image` field does not inherit the exemption.
+    assert!(matches!(
+        TargetKind::AlkemioMailslurper.provenance(),
+        protocol::Provenance::ThirdPartyImage(_)
+    ));
+    let p = Protocol::parse(PROTOCOL_V3).unwrap();
+    let mut l = v4();
+    let from = entry_of(&mut l, "alkemio-mailslurper");
+    let image = l["entries"][from]["pin"]["image"].clone();
+    assert!(image.is_object(), "the image pin carries its `image` field");
+    let at = entry_of(&mut l, "smtp4dev");
+    l["entries"][at]["pin"]["tagged_source"] = json!({"unresolved": "authored gap"});
+    l["entries"][at]["pin"]["image"] = image;
+    let why = refusals(protocol::collection_ready(&p, &lock4(l)));
+    assert!(
+        why.contains("smtp4dev: tagged source unresolved: authored gap"),
+        "{why}"
+    );
+}
+
 #[tokio::test]
 async fn config_file_cwd_runs_where_rendered() {
     for (cwd, want) in [(false, ""), (true, "config")] {
