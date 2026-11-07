@@ -241,14 +241,17 @@ controls_run() {
     [ "$status" -le 1 ] || blocked "controls-$t" "the $t matrix ended with status $status (see $scratch/timing-$t.txt)"
   done
   head=$(git rev-parse HEAD 2>/dev/null) || blocked prerequisites "the candidate is not a git checkout"
-  local suite_cmd="cargo test --locked --offline -j 32 (in evals/, SWARMAIL_BIN=$swarmail, RUST_TEST_THREADS=32, timeout 600)"
+  # The suite is a gate, not a measurement: it takes about twenty minutes on
+  # this host at 32 threads, so it has its own bound, apart from the ten
+  # minutes each target's controls get.
+  local suite_cmd="cargo test --locked --offline -j 32 (in evals/, SWARMAIL_BIN=$swarmail, RUST_TEST_THREADS=32, timeout 3000)"
   local suite_status=pass
   if [ -n "${COMPARE_MAIL_EVAL_SUITE:-}" ]; then
     # A test seam: the wrapper's own logic is proved without the real suite.
     suite_cmd="COMPARE_MAIL_EVAL_SUITE=$COMPARE_MAIL_EVAL_SUITE (a stand-in, never a receipt)"
     "$COMPARE_MAIL_EVAL_SUITE" >"$scratch/eval-suite.log" 2>&1 || suite_status=fail
   else
-    (cd evals && SWARMAIL_BIN="$swarmail" RUST_TEST_THREADS=32 timeout 600 cargo test --locked --offline -j 32 >"$scratch/eval-suite.log" 2>&1) \
+    (cd evals && SWARMAIL_BIN="$swarmail" RUST_TEST_THREADS=32 timeout 3000 cargo test --locked --offline -j 32 >"$scratch/eval-suite.log" 2>&1) \
       || suite_status=fail
   fi
   "$evals_bin" comparison-index --scratch "$scratch" --output "$output" --product "$product" \
