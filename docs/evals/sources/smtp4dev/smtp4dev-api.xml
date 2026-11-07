@@ -1,0 +1,1185 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Rnwood.Smtp4dev</name>
+    </assembly>
+    <members>
+        <member name="M:Rnwood.Smtp4dev.Controllers.ClientSettingsController.Get">
+            <summary>
+            Gets client settings for the smtp4dev UI.
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Controllers.MailboxesController">
+            <summary>
+            Returns information about the version of smtp4dev
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MailboxesController.GetAll">
+            <summary>
+            Gets list of mailboxes.
+            </summary>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.GetNewSummaries(System.Nullable{System.Guid},System.String,System.Int32)">
+            <summary>
+            Returns all new messages in the INBOX folder since the provided message ID. Returns only the summary without message content.
+            </summary>
+            <param name="lastSeenMessageId">If not specified all recently received messages will be returned up to the page limit.</param>
+            <param name="mailboxName">Mailbox name. If not specified, defaults to the mailboxName with name 'Default'</param>
+            <param name="pageSize">Max number of messages to retrieve. The most recent X are returned.</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.GetSummaries(System.String,System.String,System.String,System.String,System.Boolean,System.Int32,System.Int32)">
+            <summary>
+            Returns a list of message summaries including basic details but not the content.
+            </summary>
+            <param name="searchTerms">Case insensitive term to search for in subject, from, to, cc, body content, and attachment filenames</param>
+            <param name="mailboxName">Mailbox name. If not specified, defaults to the mailboxName with name 'Default'</param>
+            <param name="folderName">Folder name (INBOX, Sent). If not specified, returns all messages in mailbox</param>
+            <param name="sortColumn">Property name from response type to sort by</param>
+            <param name="sortIsDescending">True if sort should be descending</param>
+            <param name="page">Page number to retrieve</param>
+            <param name="pageSize">Max number of items to retrieve</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.GetMessage(System.Guid)">
+            <summary>
+            Returns the full message details for a message.
+            </summary>
+            <param name="id">The message ID to get.</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.Reply(System.Guid,System.String,System.String,System.String,System.String,System.Boolean,System.String,System.String,System.Collections.Generic.List{Microsoft.AspNetCore.Http.IFormFile})">
+            <summary>
+            Replies to the message with the specified ID using the configured relay SMTP server.
+            Accepts either text/html (for body only) or multipart/form-data (for body with optional attachments).
+            </summary>
+            <param name="id">The Id of the message to reply to</param>
+            <param name="to">List of email addresses separated by commas</param>
+            <param name="cc">List of email addresses separated by commas</param>
+            <param name="bcc">List of email addresses separated by commas</param>
+            <param name="from">Email address</param>
+            <param name="deliverToAll">True if the message should be delivered to the CC and BCC recipients in addition to the TO recipients. When false, the message is only delivered to the TO recipients, but the message headers will show the specified other recipients.</param>
+            <param name="subject">The subject of message</param>
+            <param name="bodyHtml">HTML body content (when using multipart/form-data, or as body when using text/html)</param>
+            <param name="attachments">Optional files to attach (when using multipart/form-data)</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.Send(System.String,System.String,System.String,System.String,System.Boolean,System.String,System.String,System.Collections.Generic.List{Microsoft.AspNetCore.Http.IFormFile})">
+            <summary>
+            Sends a message via the configured upstream/relay SMTP server.
+            Accepts either text/html (for body only) or multipart/form-data (for body with optional attachments).
+            </summary>
+            <param name="to">List of email addresses separated by commas</param>
+            <param name="cc">List of email addresses separated by commas</param>
+            <param name="bcc">List of email addresses separated by commas</param>
+            <param name="from">Email address</param>
+            <param name="deliverToAll">True if the message should be delivered to the CC and BCC recipients in addition to the TO recipients. When false, the message is only delivered to the TO recipients, but the message headers will show the specified other recipients.</param>
+            <param name="subject">The subject of message</param>
+            <param name="bodyHtml">HTML body content (when using multipart/form-data)</param>
+            <param name="attachments">Optional files to attach (when using multipart/form-data)</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.MarkMessageRead(System.Guid)">
+            <summary>
+            Marks a single message as read
+            </summary>
+            <param name="id">The ID of the message to mark read.</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.MarkAllRead(System.String)">
+            <summary>
+            Marks all messages as read.
+            </summary>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.DownloadMessage(System.Guid)">
+            <summary>
+            Downloads message in .eml (message/rfc822) format.
+            </summary>
+            <param name="id">The ID of the message to download</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.RelayMessage(System.Guid,Rnwood.Smtp4dev.ApiModel.MessageRelayOptions)">
+            <summary>
+            Attempt to relay the specified message either to the original recipients or to those specified.
+            </summary>
+            <param name="id">The ID of the message to relay.</param>
+            <param name="options"></param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.GetPartContent(System.Guid,System.String,System.Boolean)">
+            <summary>
+            Returns the MIME part contents for the specified message and part.
+            </summary>
+            <param name="id">Message ID</param>
+            <param name="partid">Part ID</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.GetPartSource(System.Guid,System.String)">
+            <summary>
+            Returns the source text of MIME part contents for the specified message and part.
+            </summary>
+            <param name="id">Message ID</param>
+            <param name="partid">Part ID</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.GetPartSourceRaw(System.Guid,System.String)">
+            <summary>
+            Returns the raw source of MIME part contents for the specified message and part.
+            </summary>
+            RAW source is before any content decoding steps like base64.
+            <param name="id">Message ID</param>
+            <param name="partid">Part ID</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.GetMessageSourceRaw(System.Guid)">
+            <summary>
+            Returns the raw source text of the specified message.
+            </summary>
+            RAW source is before any content decoding steps like base64.
+            <param name="id">Message ID</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.GetMessageSource(System.Guid)">
+            <summary>
+            Returns the source text of the specified message.
+            </summary>
+            <param name="id">Message ID</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.GetMessagePlainText(System.Guid)">
+            <summary>
+            Returns the plain text body of the specified message if one exists.
+            </summary>
+            <param name="id">The ID of the message to get body of.</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.GetMessageHtml(System.Guid)">
+            <summary>
+            Returns the HTML text body of the specified message if one exists.
+            </summary>
+            <param name="id">The ID of the message to get body of.</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.Delete(System.Guid)">
+            <summary>
+            Deletes the specified message.
+            </summary>
+            <param name="id">Message ID</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.ImportMessage(System.String)">
+            <summary>
+            Imports a single EML file as a new message.
+            </summary>
+            <param name="mailboxName">Mailbox name to import the message into</param>
+            <returns>The ID of the imported message</returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.DeleteAll(System.String)">
+            <summary>
+            Deletes all messages.
+            </summary>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.MessagesController.GetFolders(System.String)">
+            <summary>
+            Returns available folders for the specified mailbox.
+            </summary>
+            <param name="mailboxName">Mailbox name. If not specified, defaults to the mailboxName with name 'Default'</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.ServerController.GetServer">
+            <summary>
+            Gets the current state and settings for the smtp4dev server.
+            </summary>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.ServerController.UpdateServer(Rnwood.Smtp4dev.ApiModel.Server)">
+            <summary>
+            Updates the state of and settings for the smtp4dev server.
+            </summary>
+            Settings can not be updated if disabled in smtp4dev settings or if the settings file is not writable.
+            <param name="serverUpdate"></param>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.Boolean">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.NullableBoolean">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.SecureSocketOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.NullableSecureSocketOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.SettingsFile">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.DesktopOptionsSource">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.HeaderFilterOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.HeaderFilterOptionsArray">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.MailboxOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.MailboxOptionsArray">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.RelayOptionsSource">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.ServerOptionsSource">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.SourceFilterOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.SourceFilterOptionsArray">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.UserOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.UserOptionsArray">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.TlsMode">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.NullableTlsMode">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.Int32">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.NullableInt32">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.Int64">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.NullableInt64">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.String">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.StringArray">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.Default">
+            <summary>
+            The default <see cref="T:System.Text.Json.Serialization.JsonSerializerContext"/> associated with a default <see cref="T:System.Text.Json.JsonSerializerOptions"/> instance.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.GeneratedSerializerOptions">
+            <summary>
+            The source-generated options associated with this context.
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.#ctor">
+            <inheritdoc/>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.#ctor(System.Text.Json.JsonSerializerOptions)">
+            <inheritdoc/>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.SettingsFileSerializationContext.GetTypeInfo(System.Type)">
+            <inheritdoc/>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.ServerLogController.GetLogs">
+            <summary>
+            Gets all server logs currently in memory (formatted as text).
+            </summary>
+            <returns>Server logs as plain text</returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.ServerLogController.GetLogEntries(System.String,System.String,System.String)">
+            <summary>
+            Gets structured log entries with optional filtering.
+            </summary>
+            <param name="level">Optional log level filter (e.g., "Information", "Warning", "Error")</param>
+            <param name="source">Optional source filter</param>
+            <param name="search">Optional text search filter</param>
+            <returns>Array of structured log entries</returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.ServerLogController.GetLogSources">
+            <summary>
+            Gets distinct log sources currently in the log buffer.
+            </summary>
+            <returns>Array of unique source names</returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.ServerLogController.GetLogLevels">
+            <summary>
+            Gets distinct log levels currently in the log buffer.
+            </summary>
+            <returns>Array of unique log levels</returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.ServerLogController.ClearLogs">
+            <summary>
+            Clears all server logs from memory.
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.SessionsController.GetSummaries(System.Int32,System.Int32)">
+            <summary>
+            Gets a a list of SMTP session summaries (without the details).
+            </summary>
+            <param name="page">The page number to get</param>
+            <param name="pageSize">Maximum number of items to get</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.SessionsController.GetSession(System.Guid)">
+            <summary>
+            Gets the details for the specified session.
+            This does not include the session log - <see cref="M:Rnwood.Smtp4dev.Controllers.SessionsController.GetSessionLog(System.Guid)"/>. 
+            </summary>
+            <param name="id">The ID of the session to get</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.SessionsController.GetSessionLog(System.Guid)">
+            <summary>
+            Gets the session log for the specified session.
+            </summary>
+            <param name="id">The ID for the session to get.</param>
+            <returns></returns>
+            
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.SessionsController.Delete(System.Guid)">
+            <summary>
+            Deletes the specified session.
+            </summary>
+            <param name="id">The ID of the session to delete.</param>
+            <returns></returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.SessionsController.DeleteAll">
+            <summary>
+            Deletes all sessions.
+            </summary>
+            <returns></returns>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Controllers.VersionController">
+            <summary>
+            Returns information about the version of smtp4dev
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Controllers.VersionController.Get">
+            <summary>
+            Gets version infomation about smtp4dev.
+            </summary>
+            <returns></returns>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Data.Smtp4devDbContextFactory">
+            <summary>
+            Design-time factory for creating Smtp4devDbContext instances.
+            This allows EF Core tools to create the context without running the application.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.DbModel.Message.MimeMetadata">
+            <summary>
+            JSON metadata extracted from MIME message including CC recipients, attachment filenames, etc.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.DbModel.Message.BodyText">
+            <summary>
+            Plain text body content extracted from MIME message for searching
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Migrations.AddSessionEncoding">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddSessionEncoding.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddSessionEncoding.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddSessionEncoding.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Migrations.AddMessageEightBitTransport">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddMessageEightBitTransport.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddMessageEightBitTransport.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddMessageEightBitTransport.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Migrations.AddMailboxes">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddMailboxes.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddMailboxes.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddMailboxes.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Migrations.AddDeliveredTo">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddDeliveredTo.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddDeliveredTo.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddDeliveredTo.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Migrations.FixSessionMessageCascasing">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.FixSessionMessageCascasing.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.FixSessionMessageCascasing.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.FixSessionMessageCascasing.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Migrations.AddBareLineFeedDetection">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddBareLineFeedDetection.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddBareLineFeedDetection.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddBareLineFeedDetection.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Migrations.AddSessionWarnings">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddSessionWarnings.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddSessionWarnings.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddSessionWarnings.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Migrations.AddMailboxFolders">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddMailboxFolders.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddMailboxFolders.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddMailboxFolders.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Migrations.AddMimeMetadataAndBodyText">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddMimeMetadataAndBodyText.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddMimeMetadataAndBodyText.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.AddMimeMetadataAndBodyText.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Migrations.PopulateMimeMetadataForExistingMessages">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.PopulateMimeMetadataForExistingMessages.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.PopulateMimeMetadataForExistingMessages.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Migrations.EnforceUniqueMailboxFolderNames">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.EnforceUniqueMailboxFolderNames.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.EnforceUniqueMailboxFolderNames.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Migrations.EnforceUniqueMailboxFolderNames.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Program.IsDeliverToStdoutEnabled(System.Collections.Generic.IEnumerable{System.String})">
+            <summary>
+            Checks if the --delivertostdout flag is present in command line arguments
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.Boolean">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.NullableBoolean">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.SecureSocketOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.NullableSecureSocketOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.CommandLineOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.DesktopOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.DesktopOptionsSource">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.HeaderFilterOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.HeaderFilterOptionsArray">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.MailboxOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.MailboxOptionsArray">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.RelayOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.RelayOptionsSource">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.ServerOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.ServerOptionsSource">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.SourceFilterOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.SourceFilterOptionsArray">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.UserOptions">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.UserOptionsArray">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.TlsMode">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.NullableTlsMode">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.SettingsDebugInfo">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.SettingsResultDebugInfo">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.SettingsSourceDebugInfo">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.SettingsSourceDebugInfoArray">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.Int32">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.NullableInt32">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.Int64">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.NullableInt64">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.String">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.StringArray">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.Default">
+            <summary>
+            The default <see cref="T:System.Text.Json.Serialization.JsonSerializerContext"/> associated with a default <see cref="T:System.Text.Json.JsonSerializerOptions"/> instance.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.GeneratedSerializerOptions">
+            <summary>
+            The source-generated options associated with this context.
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.#ctor">
+            <inheritdoc/>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.#ctor(System.Text.Json.JsonSerializerOptions)">
+            <inheritdoc/>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.SettingsDebugInfoSerializationContext.GetTypeInfo(System.Type)">
+            <inheritdoc/>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Utf7EncodingProvider">
+             <summary>
+             Re-enables UTF-7 encoding for legacy email parsing on .NET 9+.
+            
+             Background: .NET 9+ blocks <c>Encoding.GetEncoding("utf-7")</c> and
+             <c>Encoding.GetEncoding(65000)</c> with a <see cref="T:System.NotSupportedException"/>
+             before registered providers are consulted for the codepage path.
+             However, the NAME-based path (<c>Encoding.GetEncoding(string)</c>) DOES
+             consult providers first.
+            
+             MimeKit resolves charset names by converting "utf-7" → codepage 65000 and
+             calling <c>Encoding.GetEncoding(65000)</c> — which throws. To work around this
+             we return a <see cref="T:Rnwood.Smtp4dev.Utf7WrapperEncoding"/> whose <c>CodePage</c> is set to
+             a private-use value (65002) that is NOT blocked by .NET. MimeKit then caches
+             "utf-7" → 65002 and calls <c>Encoding.GetEncoding(65002)</c>, which our
+             provider intercepts and returns the working wrapper.
+             </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Utf7WrapperEncoding">
+            <summary>
+            A thin wrapper around <see cref="P:System.Text.Encoding.UTF7"/> that reports
+            codepage 65002 instead of 65000, allowing it to be retrieved via
+            <c>Encoding.GetEncoding(65002)</c> without hitting .NET 9+'s UTF-7 block.
+            All actual encoding/decoding is delegated to the real UTF-7 encoding.
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Server.Auth.OAuth2TokenValidator">
+            <summary>
+            Service for validating OAuth2/XOAUTH2 tokens against an Identity Provider.
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.Auth.OAuth2TokenValidator.#ctor(Serilog.ILogger)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Rnwood.Smtp4dev.Server.Auth.OAuth2TokenValidator"/> class.
+            </summary>
+            <param name="log">Logger instance.</param>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.Auth.OAuth2TokenValidator.ValidateTokenAsync(System.String,System.String,System.String,System.String)">
+            <summary>
+            Validates an OAuth2 access token against the configured IDP.
+            </summary>
+            <param name="token">The access token to validate.</param>
+            <param name="authority">The OAuth2 authority URL (e.g., https://login.microsoftonline.com/common/v2.0).</param>
+            <param name="audience">The expected audience for the token.</param>
+            <param name="issuer">The expected issuer for the token (optional, will use discovery if not provided).</param>
+            <returns>A tuple containing validation success status, subject claim, and error message if any.</returns>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Server.Imap.ImapFolderNames">
+            <summary>
+            Helpers for IMAP folder names, which use '/' as the hierarchy delimiter.
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.Imap.ImapFolderNames.Normalize(System.String)">
+            <summary>
+            Removes any trailing hierarchy delimiter and maps INBOX (which is case-insensitive per RFC 3501) to its canonical form.
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.Imap.ImapFolderNames.IsDefaultFolder(System.String)">
+            <summary>
+            Returns true for the folders which always exist in every mailbox and cannot be deleted or renamed.
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.Imap.ImapFolderNames.GetAncestors(System.String)">
+            <summary>
+            Returns the superior hierarchical names of a folder. E.g. "a/b/c" returns "a" and "a/b".
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.Imap.ImapFolderNames.IsMatch(System.String,System.String,System.String)">
+            <summary>
+            Checks if a folder name matches a LIST/LSUB reference name and mailbox pattern.
+            '*' matches zero or more characters and '%' matches zero or more characters except the hierarchy delimiter.
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Server.ImportedMessage">
+            <summary>
+            A message implementation for imported EML files.
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Server.AttachmentInfo">
+            <summary>
+            Represents an email attachment with its metadata and content.
+            The consumer is responsible for disposing the Content stream after use.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.AttachmentInfo.FileName">
+            <summary>
+            Gets or sets the filename of the attachment.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.AttachmentInfo.ContentType">
+            <summary>
+            Gets or sets the MIME content type of the attachment.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.AttachmentInfo.Content">
+            <summary>
+            Gets or sets the content stream of the attachment.
+            The stream will be disposed by the SMTP client after sending.
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Server.MailboxRouter">
+            <summary>
+            Handles routing logic for determining which mailbox(es) should receive a message
+            based on recipients, source, and header filters.
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.MailboxRouter.FindMailboxForRecipient(System.String,System.Collections.Generic.IEnumerable{Rnwood.Smtp4dev.Server.Settings.MailboxOptions},System.String,System.String,System.Collections.Generic.Dictionary{System.String,System.String},System.String,System.String)">
+            <summary>
+            Finds the target mailbox for a recipient based on mailbox configurations, message source, and message headers.
+            </summary>
+            <param name="recipient">The recipient email address</param>
+            <param name="mailboxes">Available mailbox configurations (in priority order)</param>
+            <param name="clientHostname">Client hostname from EHLO/HELO command</param>
+            <param name="clientAddress">Client IP address</param>
+            <param name="messageHeaders">Parsed message headers (case-insensitive dictionary)</param>
+            <param name="authenticatedUsername">Username of the authenticated user who sent the message, or null if not authenticated</param>
+            <param name="userDefaultMailbox">Default mailbox name for the authenticated user, or null if not applicable</param>
+            <returns>The matching mailbox or null if no match found</returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.MailboxRouter.MatchesRecipientPattern(System.String,System.String)">
+            <summary>
+            Checks if a recipient matches the recipient pattern(s) of a mailbox.
+            </summary>
+            <param name="recipient">The recipient email address</param>
+            <param name="recipientPatterns">Comma-separated patterns (glob or regex)</param>
+            <returns>True if the recipient matches any pattern</returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.MailboxRouter.MatchesHeaderFilter(System.Collections.Generic.Dictionary{System.String,System.String},Rnwood.Smtp4dev.Server.Settings.HeaderFilterOptions)">
+            <summary>
+            Checks if a message header matches a header filter.
+            </summary>
+            <param name="messageHeaders">Message headers (case-insensitive dictionary)</param>
+            <param name="headerFilter">The header filter configuration</param>
+            <returns>True if the header matches the filter</returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.MailboxRouter.MatchesSourceFilter(System.String,System.String,Rnwood.Smtp4dev.Server.Settings.SourceFilterOptions)">
+            <summary>
+            Checks if a message source (client hostname or IP address) matches a source filter.
+            </summary>
+            <param name="clientHostname">Client hostname from EHLO/HELO command</param>
+            <param name="clientAddress">Client IP address</param>
+            <param name="sourceFilter">The source filter configuration</param>
+            <returns>True if the source matches the filter</returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.MailboxRouter.MatchesRegexPattern(System.String,System.String)">
+            <summary>
+            Matches a value against a regex pattern with timeout protection.
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.MailboxRouter.MatchesGlobPattern(System.String,System.String)">
+            <summary>
+            Matches a value against a glob pattern.
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Server.MimeMetadata">
+            <summary>
+            Represents MIME metadata extracted from a message for storage in the database
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.MimeMetadata.CcRecipients">
+            <summary>
+            CC recipients extracted from MIME headers
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.MimeMetadata.AttachmentFilenames">
+            <summary>
+            Attachment filenames from Content-Disposition and Content-Type headers
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.MimeMetadata.HasHtmlBody">
+            <summary>
+            Whether the message has HTML body content
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.MimeMetadata.HasTextBody">
+            <summary>
+            Whether the message has plain text body content
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.MimeMetadata.ContentType">
+            <summary>
+            Content-Type of the main message
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.MimeMetadata.PartCount">
+            <summary>
+            Total number of MIME parts in the message
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.Pop3.ICommandHandler.ExecuteAsync(Rnwood.Smtp4dev.Server.Pop3.Pop3SessionContext,System.String,System.Threading.CancellationToken)">
+            <summary>
+            Execute a single POP3 command.
+            </summary>
+            <param name="context">The session context.</param>
+            <param name="argument">The argument string (may be null or empty).</param>
+            <param name="cancellationToken">Cancellation token.</param>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.Pop3.Pop3Server.TryCreateListenersWithFallback(System.Func{System.Collections.Generic.IEnumerable{System.Net.Sockets.TcpListener}},System.Func{System.Collections.Generic.IEnumerable{System.Net.Sockets.TcpListener}})">
+            <summary>
+            Tries to create listeners with IPv6, falls back to IPv4 if IPv6 is not supported
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Server.Pop3.Pop3Server.CreateTcpListenerWithDualMode(System.Net.IPAddress,System.Int32)">
+            <summary>
+            Creates a TcpListener with DualMode enabled for IPv6
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.Settings.ClientOptions.PageSize">
+            <summary>
+            Page size for message pagination
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.Settings.ClientOptions.AutoViewNewMessages">
+            <summary>
+            Whether to automatically view new messages as they arrive
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.Settings.ClientOptions.DarkMode">
+            <summary>
+            Dark mode setting: "follow" (default), "dark", or "light"
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.Settings.HeaderFilterOptions.Header">
+            <summary>
+            The header name to match (e.g., "X-Application", "X-Mailer")
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.Settings.HeaderFilterOptions.Pattern">
+            <summary>
+            The pattern to match against the header value.
+            - For exact match: "value"
+            - For regex: "/pattern/" (case-insensitive)
+            - For existence check: ".*" (header exists with any value)
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.Settings.SourceFilterOptions.Pattern">
+            <summary>
+            The pattern to match against the client hostname (from EHLO/HELO) or IP address.
+            - For exact match: "hostname.example.com" or "192.168.1.1"
+            - For wildcard: "*.example.com" or "192.168.*"
+            - For regex: "/pattern/" (case-insensitive)
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.Settings.MailboxOptions.HeaderFilters">
+            <summary>
+            Optional header-based filters for routing messages to this mailbox.
+            If specified, all filters must match for the message to be routed to this mailbox.
+            Header filters are checked before recipient patterns.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.Settings.MailboxOptions.SourceFilters">
+            <summary>
+            Optional source-based filters for routing messages to this mailbox.
+            If specified, all filters must match for the message to be routed to this mailbox.
+            Source filters are checked before header filters and recipient patterns.
+            Matches against the client hostname (from EHLO/HELO) or IP address.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.Settings.MailboxOptions.AuthenticatedUsers">
+            <summary>
+            Optional filter to route messages from specific authenticated users to this mailbox.
+            Accepts a single username or an array of usernames.
+            If specified, messages from these authenticated users will be routed to this mailbox
+            (matched against the user's DefaultMailbox setting).
+            This filter is checked before source, header, and recipient filters.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.Settings.ServerOptions.DeliverMessagesToUsersDefaultMailbox">
+            <summary>
+            DEPRECATED: Use mailbox configuration with AuthenticatedUsers property instead for better flexibility.
+            When true, authenticated SMTP sessions will deliver messages to the user's DefaultMailbox, 
+            bypassing all mailbox routing rules including header filters.
+            For more flexible routing that allows header-based filtering even for authenticated users,
+            configure mailboxes with the AuthenticatedUsers property and position them in the desired order.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.Settings.ServerOptions.OAuth2Authority">
+            <summary>
+            OAuth2/XOAUTH2 Identity Provider (IDP) Authority URL for token validation.
+            Example: https://login.microsoftonline.com/common/v2.0 for Azure AD
+            When SmtpAllowAnyCredentials is false, tokens will be validated against this IDP.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.Settings.ServerOptions.OAuth2Audience">
+            <summary>
+            OAuth2/XOAUTH2 Audience value for token validation.
+            The token must be issued for this audience to be accepted.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Server.Settings.ServerOptions.OAuth2Issuer">
+            <summary>
+            OAuth2/XOAUTH2 Issuer value for token validation.
+            The token must be issued by this issuer to be accepted.
+            If not specified, issuer validation is performed using the authority's discovery document.
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Service.ColoredConsoleFormatter">
+            <summary>
+            A Serilog formatter that outputs log messages with colors and conditional emoji support.
+            Emojis are only shown for Warning, Error, and Fatal levels, and only if emoji support is detected.
+            Colors are disabled when output is redirected (e.g., captured by tests).
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Service.ColoredConsoleFormatter.#ctor">
+            <summary>
+            Creates a new ColoredConsoleFormatter.
+            Colors are automatically disabled when console output is redirected.
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Service.ColoredConsoleFormatter.#ctor(System.Boolean)">
+            <summary>
+            Creates a new ColoredConsoleFormatter with explicit emoji control.
+            Colors are automatically disabled when console output is redirected.
+            </summary>
+            <param name="useEmoji">Whether to use emoji prefixes for warnings and errors.</param>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Service.ColoredConsoleFormatter.#ctor(System.Boolean,System.Boolean)">
+            <summary>
+            Creates a new ColoredConsoleFormatter with explicit emoji and color control.
+            </summary>
+            <param name="useEmoji">Whether to use emoji prefixes for warnings and errors.</param>
+            <param name="useColors">Whether to use ANSI color codes.</param>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Service.ColoredConsoleFormatter.Format(Serilog.Events.LogEvent,System.IO.TextWriter)">
+            <summary>
+            Format the log event to the output.
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Service.ConsoleHelper">
+            <summary>
+            Helper class for console-related functionality including emoji support detection.
+            </summary>
+        </member>
+        <member name="P:Rnwood.Smtp4dev.Service.ConsoleHelper.IsEmojiSupported">
+            <summary>
+            Gets whether emoji rendering is likely supported by the current console.
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Service.ConsoleHelper.DetectEmojiSupport">
+            <summary>
+            Detects whether the console is likely to support emoji rendering.
+            This uses heuristics based on environment variables and terminal type.
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Service.ConsoleHelper.EnsureUtf8Console">
+            <summary>
+            Sets the console output encoding to UTF-8 if not already set.
+            Call this early in program startup.
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Service.ConsoleStreamSink">
+            <summary>
+            A Serilog sink that writes to either Console.Out or Console.Error
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Service.HostingEnvironmentHelper.IsRunningInProcessIIS">
+            <summary>
+            Check if this process is running on Windows in an in process instance in IIS
+            </summary>
+            <returns>True if Windows and in an in process instance on IIS, false otherwise</returns>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Service.HostingEnvironmentHelper.GetEditableSettingsFilePath">
+            <summary>
+            Get path to appsettings.json to which settings changed at runtime should be saved.
+            For IIS this is inside the runtime directory.
+            </summary>
+            <returns>appsettings.json filePath</returns>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Service.LogEntry">
+            <summary>
+            Represents a structured log entry
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.Service.ServerLogService">
+            <summary>
+            Service to capture and store server logs in memory for streaming to web UI
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.Startup.ValidateDatabaseVersionCompatibility(Rnwood.Smtp4dev.Data.Smtp4devDbContext)">
+            <summary>
+            Validates that the database version is compatible with the current application version.
+            Throws an exception if the database has migrations that are newer than what this application knows about.
+            </summary>
+            <param name="context">The database context to check</param>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.TUI.HtmlRenderer">
+            <summary>
+            Converts HTML content to readable terminal format
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.TUI.UsersDialog">
+            <summary>
+            Dialog for managing SMTP users
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.TUI.MailboxesDialog">
+            <summary>
+            Dialog for managing mailboxes
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.TUI.MessagesTab">
+            <summary>
+            Messages tab with split view: message list on left, details on right
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.TUI.SessionsTab">
+            <summary>
+            Sessions tab with split view: session list on left, log details on right
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.TUI.SettingsDialog">
+            <summary>
+            Settings dialog with form-like layout for editing configuration
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.TUI.SettingsManager">
+            <summary>
+            Manages reading and writing settings to appsettings.json
+            </summary>
+        </member>
+        <member name="T:Rnwood.Smtp4dev.TUI.TerminalGuiApp">
+            <summary>
+            Terminal.Gui-based TUI application that mirrors the web UI layout
+            </summary>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.WindowsServiceManager.Install(System.String)">
+            <summary>
+            Installs smtp4dev as a Windows service. Requires administrator privileges.
+            </summary>
+            <param name="binaryPath">The full path to the executable (without --service flag).</param>
+        </member>
+        <member name="M:Rnwood.Smtp4dev.WindowsServiceManager.Uninstall">
+            <summary>
+            Uninstalls the smtp4dev Windows service. Requires administrator privileges.
+            </summary>
+        </member>
+    </members>
+</doc>

@@ -1,14 +1,15 @@
 {
   "protocol_version": 3,
   "id": "fair-mail-comparison-v3",
-  "status": "draft",
+  "status": "frozen",
   "supersedes": "fair-mail-comparison-v2",
-  "change_reason": "Protocol v3 (proposed decision 0130, issue #340, part of #163) widens the comparison from three targets to eight at the operator's 2026-11-07 direction as the issue states it: MailSlurper, smtp4dev, Inbucket and GreenMail join Mailpit and MailHog, and Alkemio's patched MailSlurper image is reported as its own labelled row. It copies protocol v2's corpus, throughput and wait profiles, budgets, resources and statistics unchanged and adds only the targets, each target's storage, cap and wait-method facts, a per-target capabilities record and a per-product scope. It is a separate run with a separate denominator: the 2026-10-30 v2 collection stays as recorded, and no table or statistic merges a v2 cell with a v3 cell. Its bytes are not frozen: four rows have no verified pin yet (MailSlurper, smtp4dev, GreenMail and Alkemio's image) and the Inbucket pin carries two open facts, so it is a draft whose unresolved list names every missing fact.",
+  "change_reason": "Protocol v3 (proposed decision 0130, issue #340, part of #163) widens the comparison from three targets to nine at the operator's 2026-11-07 direction and rulings: MailSlurper (the official release, whose executable does not start, and a separate row built from source), smtp4dev, Inbucket and GreenMail join Mailpit and MailHog, and Alkemio's patched MailSlurper image is reported as its own labelled row. It copies protocol v2's corpus, throughput and wait profiles, budgets, resources and statistics unchanged and adds only the targets, each target's storage, cap and wait-method facts, a per-target capabilities record, a per-product scope and the one does_not_start result. It is a separate run with a separate denominator: the 2026-10-30 v2 collection stays as recorded, and no table or statistic merges a v2 cell with a v3 cell.",
   "targets": [
     "swarmail",
     "mailpit",
     "mailhog",
     "mailslurper",
+    "mailslurper-source-build",
     "smtp4dev",
     "inbucket",
     "greenmail",
@@ -126,31 +127,37 @@
           "target": "mailslurper",
           "mode": "poll",
           "interval_ms": 100,
-          "justification": "Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. MailSlurper has no verified server search or wait, so each scan lists every message over its listing API and filters on the client by token; the method is labelled per row. Nothing about its wait facilities was inspected."
+          "justification": "Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. MailSlurper's service API registers no wait or push route (its pinned source), and the official executable does not start (a published result), so this row is blocked, not measured. The method is labelled per row."
+        },
+        {
+          "target": "mailslurper-source-build",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. MailSlurper's service API registers no wait or push route (its pinned source). Each scan lists every message over its listing API and filters on the client by token. The method is labelled per row."
         },
         {
           "target": "smtp4dev",
           "mode": "poll",
           "interval_ms": 100,
-          "justification": "Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. No server search of smtp4dev is verified, so each scan lists every message over its paged REST API and filters on the client by token; the method is labelled per row."
+          "justification": "Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. smtp4dev's pinned API documentation lists no blocking wait; each scan lists every message over its paged API and filters on the client by token. The method is labelled per row."
         },
         {
           "target": "inbucket",
           "mode": "poll",
           "interval_ms": 100,
-          "justification": "Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. No server search of Inbucket is verified, so each scan reads the whole per-mailbox listing (one unpaged response) and filters on the client by token; the method is labelled per row."
+          "justification": "Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. Inbucket's server-side wait, if any, was not inspected; each scan lists the one mailbox over its REST API and filters on the client by token. The method is labelled per row."
         },
         {
           "target": "greenmail",
           "mode": "poll",
           "interval_ms": 100,
-          "justification": "Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. GreenMail's REST API cannot read messages, so each scan opens a fresh POP3 session (login, STAT, UIDL, TOP) and filters on the client by token; the login cost is part of the scan and the read path is labelled per row."
+          "justification": "Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. GreenMail's pinned OpenAPI lists no wait route and POP3 has none; each scan reads the mailbox over POP3 with a fresh session and filters on the client by token, a per-scan cost labelled on the row. The method is labelled per row."
         },
         {
           "target": "alkemio-mailslurper",
           "mode": "poll",
           "interval_ms": 100,
-          "justification": "Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. A third-party patched image's extracted executable, never an official artifact: each scan lists every message over its listing API and filters on the client by token."
+          "justification": "Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. The image's MailSlurper fork shows no wait route; each scan lists every message over its listing API and filters on the client by token. The method is labelled per row."
         }
       ]
     }
@@ -196,14 +203,21 @@
         "max_messages": null,
         "backend": "scratch_file",
         "prune": "no_cap_observed",
-        "compression": "not established: SQLite storage inside the owned scratch is the launch, and the supplied executable's SQLite storage is a CGO_ENABLED=0 stub that cannot start (the lock's pending reason)"
+        "compression": "not established: SQLite storage inside the owned scratch; the official executable's SQLite storage is a CGO_ENABLED=0 stub that cannot start (a published result), so this row is blocked"
+      },
+      {
+        "target": "mailslurper-source-build",
+        "max_messages": null,
+        "backend": "scratch_file",
+        "prune": "no_cap_observed",
+        "compression": "not established: SQLite storage inside the owned scratch (go-sqlite3 compiled in with cgo)"
       },
       {
         "target": "smtp4dev",
         "max_messages": 10000,
         "backend": "scratch_file",
         "prune": "unestablished",
-        "compression": "not established: the launch sets --messagestokeep (per mailbox, default 100 in the captured appsettings.json) above every profile's residency, with the database inside the owned scratch; nothing of it was observed in a launch"
+        "compression": "not established: the launch sets --messagestokeep (per mailbox, default 100 in the pinned appsettings.json) above every profile's residency, with the database inside the owned scratch"
       },
       {
         "target": "inbucket",
@@ -217,14 +231,14 @@
         "max_messages": null,
         "backend": "memory",
         "prune": "no_cap_observed",
-        "compression": "not established: memory store; the property names read from the jar's classes include no retention cap"
+        "compression": "not established: memory store; the pinned jar's usage text and OpenAPI show no retention cap"
       },
       {
         "target": "alkemio-mailslurper",
         "max_messages": null,
         "backend": "scratch_file",
         "prune": "no_cap_observed",
-        "compression": "not established: nothing about its storage was observed: its executable cannot run from the supplied bytes"
+        "compression": "not established: SQLite inside the owned scratch on the rendered plain config; no retention-cap setting is shown"
       }
     ]
   },
@@ -241,6 +255,7 @@
         "mailpit",
         "mailhog",
         "mailslurper",
+        "mailslurper-source-build",
         "smtp4dev",
         "inbucket",
         "greenmail",
@@ -250,6 +265,7 @@
         "mailpit",
         "mailhog",
         "mailslurper",
+        "mailslurper-source-build",
         "smtp4dev",
         "inbucket",
         "greenmail",
@@ -259,6 +275,7 @@
       [
         "mailhog",
         "mailslurper",
+        "mailslurper-source-build",
         "smtp4dev",
         "inbucket",
         "greenmail",
@@ -268,6 +285,7 @@
       ],
       [
         "mailslurper",
+        "mailslurper-source-build",
         "smtp4dev",
         "inbucket",
         "greenmail",
@@ -277,6 +295,7 @@
         "mailhog"
       ],
       [
+        "mailslurper-source-build",
         "smtp4dev",
         "inbucket",
         "greenmail",
@@ -287,6 +306,7 @@
         "mailslurper"
       ],
       [
+        "smtp4dev",
         "inbucket",
         "greenmail",
         "alkemio-mailslurper",
@@ -294,6 +314,17 @@
         "mailpit",
         "mailhog",
         "mailslurper",
+        "mailslurper-source-build"
+      ],
+      [
+        "inbucket",
+        "greenmail",
+        "alkemio-mailslurper",
+        "swarmail",
+        "mailpit",
+        "mailhog",
+        "mailslurper",
+        "mailslurper-source-build",
         "smtp4dev"
       ],
       [
@@ -303,6 +334,7 @@
         "mailpit",
         "mailhog",
         "mailslurper",
+        "mailslurper-source-build",
         "smtp4dev",
         "inbucket"
       ],
@@ -312,6 +344,7 @@
         "mailpit",
         "mailhog",
         "mailslurper",
+        "mailslurper-source-build",
         "smtp4dev",
         "inbucket",
         "greenmail"
@@ -320,7 +353,7 @@
   },
   "claim": {
     "scope": "official_artifact",
-    "statement": "Measures the digest-checked executables named in products, launched with the lock's fixed launch. For an official target each release tag's commit is attributed source context only: nothing ties an executable to it, so no built-from, equivalence or same-build claim is made. Mailpit, MailHog, MailSlurper, smtp4dev and Inbucket are official artifacts; GreenMail is an official jar run on a pinned JRE; the alkemio-mailslurper row is a third-party patched image's extracted binary, run natively and never counted as an official competitor row, and the swarmail candidate is neither. MailSlurper, smtp4dev and Inbucket tag their releases lightweight, which carries weaker source evidence than an annotated tag. Throughput and observed visibility within the declared deadline are all that is claimed: no durability, no accept==stored and no equivalence. Storage is the unmatched profile and resources the unenforced local profile; both are stated in every report. Targets without a verified server search are scanned completely and filtered on the client, and GreenMail is read over POP3; both are labelled per row."
+    "statement": "Measures the digest-checked executables named in products, launched with the lock's fixed launch. For an official target each release tag's commit is attributed source context only: nothing ties an executable to it, so no built-from, equivalence or same-build claim is made. Mailpit, MailHog, MailSlurper, smtp4dev and Inbucket are official artifacts, and MailSlurper's official release executable does not start with its default SQLite storage (a CGO_ENABLED=0 build; a published result, so that row is blocked and carries no number); the mailslurper-source-build row is a different executable, MailSlurper release-1.15.0 built from source with cgo on a host glibc (unpinned runtime), not an official artifact, and both MailSlurper executables report v1.14.1 under tag release-1.15.0; GreenMail is an official jar bound to its Maven Central artifact by the registry's own checksum (integrity against that checksum; authenticity not verified), run on a pinned JRE; the alkemio-mailslurper row is a third-party patched image's extracted binary, run natively on the musl loader pinned from the image's own layer and never counted as an official competitor row, and the swarmail candidate is neither. MailSlurper, smtp4dev and Inbucket tag their releases lightweight, which carries weaker source evidence than an annotated tag. Throughput and observed visibility within the declared deadline are all that is claimed: no durability, no accept==stored and no equivalence. Storage is the unmatched profile and resources the unenforced local profile; both are stated in every report. Targets without a verified server search are scanned completely and filtered on the client, and GreenMail is read over POP3; both are labelled per row."
   },
   "budgets": {
     "poll_interval_ms": 100,
@@ -358,13 +391,19 @@
     {
       "target": "mailslurper",
       "release_tag": "release-1.15.0",
-      "executable_sha256": null,
+      "executable_sha256": "0cd9416b766deb26eed8aa01ad0873d06725a3464fdb9ac3cc82201e2c232627",
       "scope": "official_artifact"
+    },
+    {
+      "target": "mailslurper-source-build",
+      "release_tag": "release-1.15.0",
+      "executable_sha256": "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff",
+      "scope": "source_build"
     },
     {
       "target": "smtp4dev",
       "release_tag": "3.16.1",
-      "executable_sha256": null,
+      "executable_sha256": "bc4f4c334f6bb20e93fdf3bbc2264a6f67b1119a3a4c4fe4dc10df47ad741788",
       "scope": "official_artifact"
     },
     {
@@ -376,27 +415,17 @@
     {
       "target": "greenmail",
       "release_tag": "release-2.1.15",
-      "executable_sha256": null,
+      "executable_sha256": "91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1",
       "scope": "official_artifact"
     },
     {
       "target": "alkemio-mailslurper",
       "release_tag": null,
-      "executable_sha256": null,
+      "executable_sha256": "1c7556f3fd8da6fb6d2f5a66a1cff258c805407028aeb9eda0a2656f46db6379",
       "scope": "third_party_image"
     }
   ],
-  "unresolved": [
-    "mailslurper: no verified pin: the release-1.15.0 Linux executable's SQLite storage is a CGO_ENABLED=0 stub that dies at startup (a real bounded launch on 2026-11-07), and no database server or cgo build was supplied; its tag is lightweight and the executable reports v1.14.1",
-    "smtp4dev: no verified pin: the release archive has no license document (49 members, none a license) and none was captured, so no license can be pinned; its default retention (100 per mailbox, from the captured appsettings.json) is overridden by the launch, which was corrected from its --help and never run as a server",
-    "inbucket: tagged_source is unresolved: the captured ref names the commit directly (a lightweight tag) and no git_tree of that commit was captured; the pin's member field holds only the leaf name inbucket of the archive member inbucket_3.2.0_linux_amd64/inbucket",
-    "inbucket: best_wait is unresolved: no source, route or real-binary observation of a wait exists, and its server_search and native_wait capabilities are not_inspected",
-    "greenmail: no verified pin: the captured release release-2.1.15 lists no assets and no document records where the jar was fetched, so it cannot be bound to an official release asset; its tag is annotated and no git_tag or git_tree was captured; its JRE runtime pin and the runtime-list ruling (decision 0130 section 6) wait on that",
-    "alkemio-mailslurper: no verified pin: its executable needs the musl loader /lib/ld-musl-x86_64.so.1, which no supplied bytes carry, and the full index digest sha256:55029f542c19d0fe570450dc5a30f54dbdb24d9113a6e0e1bf96da000ebd0838 is only the dispatcher's recorded line, with no index, manifest or layer bytes supplied",
-    "capabilities of mailslurper, smtp4dev, greenmail and alkemio-mailslurper are not_inspected: they have no pin to cite",
-    "native waits of mailpit and mailhog stay not_inspected: the reviewed websocket sources establish no lossless wait, and best-wait is not declared",
-    "decoders for mailslurper, smtp4dev and alkemio-mailslurper are proved only on authored fixtures: no real-binary round trip has run for them; the inbucket decoder and the greenmail POP3 reader were proved against the real executables in unmeasured tests only"
-  ],
+  "unresolved": [],
   "capabilities": [
     {
       "target": "swarmail",
@@ -458,39 +487,58 @@
     {
       "target": "mailslurper",
       "server_search": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "supported",
+        "cite": "sources/mailslurper/mailslurper-service-controller.go"
       },
       "native_wait": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/mailslurper/mailslurper-setup-services-listener.go"
       },
       "retention_cap": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/mailslurper/mailslurper-config.json"
       },
       "raw_source": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/mailslurper/mailslurper-setup-services-listener.go"
+      }
+    },
+    {
+      "target": "mailslurper-source-build",
+      "server_search": {
+        "status": "supported",
+        "cite": "sources/mailslurper-source-build/mailslurper-service-controller.go"
+      },
+      "native_wait": {
+        "status": "not_supported",
+        "cite": "sources/mailslurper-source-build/mailslurper-setup-services-listener.go"
+      },
+      "retention_cap": {
+        "status": "not_supported",
+        "cite": "sources/mailslurper-source-build/mailslurper-config.json"
+      },
+      "raw_source": {
+        "status": "not_supported",
+        "cite": "sources/mailslurper-source-build/mailslurper-setup-services-listener.go"
       }
     },
     {
       "target": "smtp4dev",
       "server_search": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "supported",
+        "cite": "sources/smtp4dev/smtp4dev-api.xml"
       },
       "native_wait": {
         "status": "not_inspected",
         "cite": null
       },
       "retention_cap": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "supported",
+        "cite": "sources/smtp4dev/smtp4dev-appsettings.json"
       },
       "raw_source": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "supported",
+        "cite": "sources/smtp4dev/smtp4dev-api.xml"
       }
     },
     {
@@ -519,23 +567,23 @@
         "cite": null
       },
       "native_wait": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/greenmail/greenmail-openapi.yml"
       },
       "retention_cap": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/greenmail/greenmail-help.txt"
       },
       "raw_source": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "supported",
+        "cite": "sources/greenmail/greenmail-openapi.yml"
       }
     },
     {
       "target": "alkemio-mailslurper",
       "server_search": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "supported",
+        "cite": "sources/alkemio-mailslurper/alkemio-service-controller.go"
       },
       "native_wait": {
         "status": "not_inspected",
@@ -549,6 +597,12 @@
         "status": "not_inspected",
         "cite": null
       }
+    }
+  ],
+  "does_not_start": [
+    {
+      "target": "mailslurper",
+      "cite": "sources/mailslurper/mailslurper-official-failure.txt"
     }
   ]
 }
