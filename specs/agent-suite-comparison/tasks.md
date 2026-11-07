@@ -34,7 +34,7 @@ any Python over it with `-I`. Nothing paid runs.
   **Proof:** `grep -nE 'proposed \[009[123]\]' docs/evals/README.md` finds
   nothing.
 
-- [ ] T1.d *(rerun 2)* Record the operator's ruling:
+- [x] T1.d (second rerun, 14fc67c) *(rerun 2)* Record the operator's ruling:
   - add a second section, "Addendum — 2026-11-07 (operator ruling: the
     source-built MailSlurper)", to proposed 0129, and leave the first
     addendum unedited. It quotes the ruling and states:
@@ -119,7 +119,7 @@ any Python over it with `-I`. Nothing paid runs.
   - `git diff c95386e -- docs/evals/protocol.json` is empty;
   - a MailSlurper launch test proves three owned binds and their release on
     cleanup, and that Mailpit and MailHog launches are unchanged.
-- [ ] T3.d *(rerun 2)* The source-built lock entry (spec R11):
+- [x] T3.d (second rerun, e60da58) *(rerun 2)* The source-built lock entry (spec R11):
   - in `protocol.rs`, add `ArtifactKind::BuiltFromSource`, the optional
     `Artifact.build` and `Artifact.official_release`, and
     `DocKind::GitCommit`;
@@ -146,14 +146,14 @@ any Python over it with `-I`. Nothing paid runs.
     docs/evals/sources.lock.json` exits 0;
   - `git diff c95386e -- docs/evals/protocol.json` is empty;
   - `git ls-files .compare-bins` is empty.
-- [ ] T3.e *(rerun 2)* Recompute the tarball against the tree, once. Verify
+- [x] T3.e (second rerun, b5f83f3 (transcript), the tree itself in e60da58) *(rerun 2)* Recompute the tarball against the tree, once. Verify
   `83f66f25…359f`. Extract it into a new scratch directory on `/home`. Run
   `git init`, `git add -A` and `git write-tree` there, and compare the
   result with `5f29f08a…0729`. A mismatch stops the MailSlurper items, which
   are reported blocked. Never edit the tree or the extraction to agree.
   **Proof:** the named transcript (commands, digests, the tree id),
   committed beside the controls.
-- [ ] T3.c The AUTH PLAIN probe, an unscored setup step, run against the
+- [x] T3.c (second rerun, e60da58) The AUTH PLAIN probe, an unscored setup step, run against the
   pinned binary through the launcher. *(rerun 2)* The pinned binary is the
   source build `eb6cd97d…58ff` (T3.d). The transcript names that digest and
   says that the published executable does not start and was not probed. The expected result is: EHLO
@@ -182,7 +182,7 @@ any Python over it with `-I`. Nothing paid runs.
   - the no-forbidden-tool test, extended to MailSlurper;
   - a description test for the `LIKE` statement;
   - the `evals/tests/target.rs` adapter-mode test.
-- [ ] T4.c Run the ignored real-binary tests against the verified pins,
+- [x] T4.c (second rerun, 5694dd2) Run the ignored real-binary tests against the verified pins,
   one at a time: `MAIL_COMPARE_MAILPIT`, `MAIL_COMPARE_MAILHOG` and
   `MAIL_COMPARE_MAILSLURPER`. *(rerun 2: Mailpit and MailHog ran in the
   first rerun, and their transcripts are in
@@ -192,7 +192,7 @@ any Python over it with `-I`. Nothing paid runs.
   and re-run.
   **Proof:** the named, timed transcripts with `uptime` before and after,
   committed beside the controls, with every tool's outcome listed.
-- [ ] T4.d The wire corpus. The T4.c tests write each competitor's
+- [x] T4.d (second rerun, 5694dd2) The wire corpus. The T4.c tests write each competitor's
   responses to fixture-generated mail (list, read, empty result,
   not-found, filtered search) into `docs/evals/wire-corpus/<target>/`, with
   an `index.json` of file sha256s and the capture's executable digest.
@@ -225,7 +225,7 @@ any Python over it with `-I`. Nothing paid runs.
 - [x] T5.a (part) The `Target` enum and the backend table in
   `evals/src/target.rs` (`0d93fa4`).
   **Proof:** `evals/tests/target.rs`.
-- [ ] T5.a (rest) `matrix --target/--adapter/--target-bin/--sources`, with
+- [x] T5.a (rest) (second rerun, 82d7735) `matrix --target/--adapter/--target-bin/--sources`, with
   the named refusals: an unknown value, `--brokkr`, a dsh profile, and a
   task that is not applicable. *(rerun 2)* Add the input bindings of spec
   R2: regular-file and bounded reads of `--sources` and `--product`, and
@@ -239,7 +239,7 @@ any Python over it with `-I`. Nothing paid runs.
   - the existing matrix suite passes unchanged without `--target`.
 - [x] T5.b `evals/src/bridge.rs` under spec R3 (`345f847`).
   **Proof:** `evals/tests/bridge.rs` against the real `swarmail mcp`.
-- [ ] T5.c The runner's per-target server block (spec R4):
+- [x] T5.c (second rerun, 82d7735, 4fad21a) The runner's per-target server block (spec R4):
   - `ServerRole::Adapter`;
   - the announcement parse;
   - a `tools_sha256` check against the product;
@@ -291,7 +291,7 @@ any Python over it with `-I`. Nothing paid runs.
 - [x] T7.a Four targets, `coordinate.agent`, `settings.smtp_auth`, the MailHog
   refusal removed, and citation by (target, agent, task) (`91328e3`).
   **Proof:** `evals/tests/provenance.rs` and `evals/tests/report.rs`.
-- [ ] T7.b Commit `docs/evals/agent-comparison.json` and
+- [x] T7.b (second rerun, 82d7735) Commit `docs/evals/agent-comparison.json` and
   `docs/evals/agent-comparison-cost.json`. Do this only after T3.c and T4.c
   pass. `smtp_auth`, `tools_sha256` and the delivery semantics are copied
   from their results: MailSlurper is `none` and `not-promised`, and the
@@ -306,7 +306,7 @@ any Python over it with `-I`. Nothing paid runs.
   - *(rerun 2)* MailSlurper's tuple says `artifact_kind:
     "built_from_source"`, `version_report: "v1.14.1"` and
     `executable_sha256` `eb6cd97d…`, copied from the lock.
-- [ ] T7.c `evals/src/comparison.rs` and the `comparison-check` subcommand,
+- [x] T7.c (second rerun, 4fad21a) `evals/src/comparison.rs` and the `comparison-check` subcommand,
   with the dry-run, evidence and measure modes.
   **Proof:** one negative test per prerequisite in the fixed order, for
   missing, wrong-content and wrong-binding cases:
@@ -324,7 +324,7 @@ any Python over it with `-I`. Nothing paid runs.
 
   A positive test accepts an ancestor whose diff touches only the evidence
   paths.
-- [ ] T7.d `scripts/compare-mail.sh`:
+- [x] T7.d (second rerun, 4fad21a, 13d0750, ad4526f, 2cbc1a6) `scripts/compare-mail.sh`:
   - `controls` needs only `--product` and the executables;
   - `evidence` and `measure` run the stat chain, then the verifier;
   - `--authorized-product`;
@@ -344,7 +344,7 @@ any Python over it with `-I`. Nothing paid runs.
 
 ## T8 — The free proof (AC7, AC9)
 
-- [ ] T8.a Run `compare-mail.sh controls` on all four targets, with the
+- [x] T8.a (second rerun, the final controls commit) Run `compare-mail.sh controls` on all four targets, with the
   candidate's `swarmail` and the three verified pins:
   - one worker;
   - each target its own named command under `timeout 600`, with
@@ -359,13 +359,13 @@ any Python over it with `-I`. Nothing paid runs.
   - the index binds the product digest;
   - every contract file lists one outcome per announced tool;
   - the load and elapsed time are reported.
-- [ ] T8.b Run one `compare-mail.sh measure --dry-run` with every
+- [x] T8.b (second rerun, a766784) Run one `compare-mail.sh measure --dry-run` with every
   prerequisite genuine. Commit its transcript.
   **Proof:**
   - exit 0, with the 240-slot plan printed and the pending items named;
   - a test asserts that the dry run spawns nothing but the verifier and
     never opens `--config`.
-- [ ] T8.c *(rerun)* `docs/evals/README.md`: replace the 2026-11-07 "Not
+- [x] T8.c (second rerun, this commit) *(rerun)* `docs/evals/README.md`: replace the 2026-11-07 "Not
   built, and why" block with the outcome. Write in it:
   - the AUTH asymmetry sentence of spec R8;
   - MailSlurper's declared accept-before-store and its substring filter;
@@ -386,7 +386,7 @@ any Python over it with `-I`. Nothing paid runs.
 
 ## T9 — Gates (AC12)
 
-- [ ] T9.a Run the whole house inventory `--locked`:
+- [x] T9.a (second rerun, see the outcome below) Run the whole house inventory `--locked`:
   - root fmt, clippy, test and `build --bin swarmail`;
   - `evals` fmt, clippy and test, with `SWARMAIL_BIN` set to the
     candidate's binary;
@@ -431,3 +431,57 @@ MailSlurper), T7.c, T7.d, T8.a, T8.b. `scripts/compare-mail.sh` keeps its
 competitor. T8.c is done as a README block, which the T8.c box would otherwise
 leave open. T9.a ran every gate in the inventory except the brokkr bundle
 compile, which has no binary in this sandbox and runs in verify.
+
+## Second rerun outcome, 2026-11-07 (`second-rerun-of-339-operator-dir-e9c4d893`)
+
+Every open box above is built and proved in the commit named. The free half ran
+for real: `compare-mail.sh controls` on all four targets and one
+`measure --dry-run` with every prerequisite genuine
+(`docs/evals/agent-controls-2026-11-07/`). Nothing paid ran.
+
+What differs from the plan, and why:
+
+- **The AUTH probe accepts one or two `221 Bye` lines.** The pinned build draws
+  two, all three runs. The reviewed source explains the second (the command
+  goroutine's `break` only leaves its `select`, so it reads again and the read error
+  on the closed connection draws another goodbye). EHLO advertises no AUTH, there is
+  no `235` and no `334`, and the server closes. T3.c's stop rule asked for exactly
+  `221 Bye`; this reading keeps its meaning and is stated in the lock, 0129's
+  addendum and the README.
+- **The real shapes overrode the first rerun's normalizer.** MailSlurper's
+  `boundary` and `transferEncoding` are always empty, a plain body carries `\n<br/>`
+  and HTML escapes, a multipart keeps only its HTML part, and an unknown id is an
+  empty item at 200. The oracle's MailSlurper normalizer and the adapter's read were
+  rewritten from the captured corpus, and `recipient-crowd`'s control reads the HTML
+  anchor when a backend exposes no text part (T6.d, T4.d).
+- **The adapter is spawned by `spawn_adapter`, not as a `ServerRole::Adapter`.** The
+  announcement is read from the adapter's own stdout before the bridge takes the
+  pipe, so no second reader exists. The behaviour spec R4 asks for is the same.
+- **The bridge answers a later `initialize` from the first.** Several clients reach
+  one stdio session and every adapter refuses a second `initialize`.
+- **`evidence` is the verifier plus a citation** of `<final>/rows.jsonl` by
+  `comparison-cite`; with no paid run there is nothing to cite, and the mode refuses
+  by name (`final-rows`).
+- **The eval-suite receipt has its own bound.** The locked evals suite takes about
+  twenty minutes at 32 threads, so it is not under the ten-minute `timeout 600`
+  that holds each target's controls.
+- **Test seams in the wrapper** (`COMPARE_MAIL_EVALS_BIN`, `_SWARMAIL_BIN`,
+  `_ADAPTER_BIN`, `_EVAL_SUITE`) name prebuilt stand-ins so the script's own logic
+  is proved without a build; the verifier's checks are proved on real bytes in the
+  eval crate. A real `controls` run never uses them.
+- **The receipts went stale three times** (verifier's git-status reading, the
+  candidate binary relinked by a later test run, the harness embedding the commit),
+  each a code change after the controls; the controls ran on each final head and the
+  last run is the committed one.
+
+Gates, at the final code head `2cbc1a6` (`transcripts/gates.txt` has the commands,
+times and load): fmt, clippy, workspace tests, build, the evals fmt/clippy/suite,
+the coverage gate and its selftest, the publish-guard and seal proofs and
+`cargo deny check licenses` are green. The coverage gate refused twice on a flake
+(an existing `src/store.rs` test branch; this branch's own MailSlurper shim launch
+answering `NotReady` under instrumented load) and passed on the third run, exact
+100/100/100. **`brokkr compile` was not run: this sandbox has no brokkr binary, so
+the verify seat runs it.** `git diff c95386e -- src/ .github/ .brokkr/ Cargo.lock
+evals/Cargo.lock deny.toml` is empty and `git ls-files .compare-bins` is empty.
+The operator holds the PR (`scripts/compare-mail.sh` changes), and it contends with
+#340 for the lock's MailSlurper entry.
