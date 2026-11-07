@@ -181,3 +181,33 @@ coverage denominator are untouched by construction. No dependency is added.
 assistant holds the PR for the operator. This record authorizes no paid
 session, publication, push, merge, acceptance or comparison claim. The
 operator confirms the planned 240 sessions separately.
+
+## Addendum — 2026-11-07 (rerun `rerun-of-339-operator-direction--305a5aec`)
+
+This addendum records what the pinned bytes changed in §7, under the same
+proposed status. It weakens no accepted ruling.
+
+- **§7's lock v4 carries more than a config template.** The MailSlurper entry
+  needed fields the v3 shape had no place for, all optional, all refused where
+  absent in v3: `tagged_source.tag_kind` (`lightweight`, with `tag_object` and
+  `tag_signature` null), an explicitly unresolved `tree` and a
+  `source_archive` (name, size, SHA-256 and the commit its pax comment names);
+  an `archive` attribution for files read from that archive, bound by a
+  locally computed blob id and never by a synthesised tree; an artifact
+  `version_note` for a version report that disagrees with the tag; and an
+  `smtp_auth` fact holding the source's answer and the probe's result, the
+  probe `unresolved` with its reason when it could not run. The v4 reader is
+  the v3 reader given an expected-target list; the three historical readers
+  keep their three-target list.
+- **§2's `smtp_auth` for MailSlurper is the source's answer only.** MailSlurper
+  1.15.0 has no SMTP AUTH (reviewed source), so the fixture would omit the AUTH
+  step for it; the probe that §2's reading needs before the product record
+  freezes has not run, because the pinned linux executable was built with
+  `CGO_ENABLED=0` and exits at startup on its SQLite config ("go-sqlite3
+  requires cgo to work. This is a stub"). The product record therefore stays
+  unwritten. Which MailSlurper executable the pin is, is the operator's to rule;
+  nothing here rules it.
+- **§5's id bound.** Adapters validate an id (at most 128 bytes, never only
+  dots, an alphabet widened only to what the wire corpus shows) before any
+  request. Mailpit's tool list is unchanged, so its frozen `tools_sha256`
+  holds; its schema keeps the older `maxLength` and the server is stricter.

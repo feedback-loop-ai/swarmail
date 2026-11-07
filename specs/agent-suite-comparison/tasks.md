@@ -39,7 +39,7 @@ untrusted and never committed (plan, technical context).
 
 ## T3 — MailSlurper provenance and lock v4 (AC6)
 
-- [ ] T3.a Verify and capture. In new directories under ignored scratch on
+- [x] T3.a Verify and capture. In new directories under ignored scratch on
   `/home`:
   - re-hash the zip (`48f2f9ba…55f6`) and the source tarball
     (`83f66f25…359f`) and compare each with the constant (spec, "What the
@@ -55,7 +55,7 @@ untrusted and never committed (plan, technical context).
   **Proof:** the extended
   `the_tag_chain_and_every_blob_are_rechecked_against_the_captures` passes
   over the captures, and `git ls-files .compare-bins` is empty.
-- [ ] T3.b Lock v4:
+- [x] T3.b Lock v4:
   - archive v3's bytes to
     `docs/evals/history/2026-11-07-sources.lock.v3.json`;
   - make the v4 reader the v3 reader given an expected-target list (v1–v3
@@ -92,7 +92,7 @@ untrusted and never committed (plan, technical context).
 - [x] T4.a `mailhog_mcp.rs` and the `mailhog-mcp` mode (`9783675`; ignored
   real-binary test `51c9f98`).
   **Proof:** the shim mechanics tests and the no-forbidden-tool test.
-- [ ] T4.b `benches/mail_compare/mailslurper_mcp.rs` and the
+- [x] T4.b `benches/mail_compare/mailslurper_mcp.rs` and the
   `mailslurper-mcp` mode (spec R5, rerun): list `GET /mail?pageNumber=`,
   search `to`/`from`/`message`, read `GET /mail/:id`, and the labelled poll
   wait. The search description states the `LIKE` substring semantics. No
@@ -124,7 +124,7 @@ untrusted and never committed (plan, technical context).
   - a test refuses an index whose executable digest differs from the lock.
 
   All of these run in CI.
-- [ ] T4.e Hostile arguments (spec R5, rerun) on the generic half and every
+- [x] T4.e Hostile arguments (spec R5, rerun) on the generic half and every
   backend. The charset is widened only to an id alphabet observed in the
   corpus, and cited.
   **Proof:** per adapter, an upstream request counter stays 0 for:
@@ -165,7 +165,7 @@ untrusted and never committed (plan, technical context).
   - a test that the adapter's stderr lands in the trial file.
 - [x] T5.d The fixture's `smtp_auth: none` path (`b4b980d`).
   **Proof:** `evals/tests/smtp_auth.rs`.
-- [ ] T5.e *(rerun)* Bridge additions: an in-flight bound of 16, with a
+- [x] T5.e *(rerun)* Bridge additions: an in-flight bound of 16, with a
   correlated busy error over it, and pretty-printed bodies forwarded as one
   line.
   **Proof:** `evals/tests/bridge.rs` gains:
@@ -185,7 +185,7 @@ untrusted and never committed (plan, technical context).
 - [x] T6.c The `MailSource` trait, with Swarmail, Mailpit and MailHog
   implementations and MailHog MIME decoding (`3c1d3e1`).
   **Proof:** `evals/tests/mailsource.rs`.
-- [ ] T6.d *(rerun)* The MailSlurper `MailSource`. It reads `body` according
+- [x] T6.d *(rerun)* The MailSlurper `MailSource`. It reads `body` according
   to `contentType`, reusing the existing MIME decoder for multipart. It uses
   the upstream `to` filter as a pre-filter only, then keeps an exact
   `toAddresses` match.
@@ -292,3 +292,28 @@ untrusted and never committed (plan, technical context).
   - `git diff c95386e -- src/ .github/ .brokkr/ Cargo.lock evals/Cargo.lock
     deny.toml` is empty;
   - `git ls-files .compare-bins` is empty.
+
+## Rerun outcome, 2026-11-07 (`rerun-of-339-operator-direction--305a5aec`)
+
+Ticked above and built this run: T3.a and T3.b (`841bfd2`), T4.b and T4.e
+(`6191a9d`, with `adapter_mode` set in the oracle commit), T5.e (the bridge
+commit) and T6.d (the oracle commit). Their proofs ran in T9's gate run.
+
+Partly done, and why the box stays open:
+
+- **T3.c (the AUTH probe) and T4.c (real-binary tests): Mailpit and MailHog
+  done, MailSlurper blocked.** The probe and the ignored MailSlurper test are
+  written and proved against a stand-in and scripted servers, but the pinned
+  linux executable was built with `CGO_ENABLED=0` and exits on its SQLite
+  config ("go-sqlite3 requires cgo to work. This is a stub"), so neither ran
+  against it. The real Mailpit and MailHog runs passed, with their transcripts
+  in `docs/evals/wire-corpus/real-runs/`.
+- **T4.d (the wire corpus): Mailpit and MailHog committed and decoded in CI;
+  MailSlurper has none** (nothing to capture from).
+
+Not started: T5.a (rest), T5.c, T7.b (blocked on T3.c and T4.c for
+MailSlurper), T7.c, T7.d, T8.a, T8.b. `scripts/compare-mail.sh` keeps its
+`comparison-integration` refusal, because the runner cannot yet serve a
+competitor. T8.c is done as a README block, which the T8.c box would otherwise
+leave open. T9.a ran every gate in the inventory except the brokkr bundle
+compile, which has no binary in this sandbox and runs in verify.
