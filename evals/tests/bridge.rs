@@ -336,3 +336,156 @@ async fn only_negotiation_metadata_is_kept_never_a_body() {
     );
     f.bridge.unwrap().stop().await;
 }
+
+/// A scripted adapter on in-memory pipes: it records every line the bridge
+/// forwards and answers each request only once released, so a test holds
+/// exactly as many requests in flight as it chooses and counts what reached
+/// the adapter.
+struct FakeAdapter {
+    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    release: std::sync::Arc<tokio::sync::Notify>,
+    bridge: Bridge,
+}
+
+impl FakeAdapter {
+    async fn start() -> FakeAdapter {
+        use tokio::io::AsyncWriteExt;
+        let (to_adapter, adapter_in) = tokio::io::duplex(1 << 20);
+        let (adapter_out, from_adapter) = tokio::io::duplex(1 << 20);
+        let bridge = Bridge::start(to_adapter, BufReader::new(from_adapter))
+            .await
+            .unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let (log, gate) = (seen.clone(), release.clone());
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(adapter_in).lines();
+            let mut out = adapter_out;
+            let mut held: Vec<Value> = Vec::new();
+            let mut open = false;
+            loop {
+                tokio::select! {
+                    line = lines.next_line() => {
+                        let Ok(Some(line)) = line else { break };
+                        log.lock().unwrap().push(line.clone());
+                        if let Ok(v) = serde_json::from_str::<Value>(&line) && let Some(id) = v.get("id") {
+                            let reply = json!({"jsonrpc": "2.0", "id": id, "result": {}});
+                            if open {
+                                let _ = out.write_all(format!("{reply}\n").as_bytes()).await;
+                            } else {
+                                held.push(reply);
+                            }
+                        }
+                    }
+                    _ = gate.notified() => {
+                        open = true;
+                        for r in held.drain(..) {
+                            let _ = out.write_all(format!("{r}\n").as_bytes()).await;
+                        }
+                    }
+                }
+            }
+        });
+        FakeAdapter {
+            seen,
+            release,
+            bridge,
+        }
+    }
+
+    fn forwarded(&self) -> usize {
+        self.seen.lock().unwrap().len()
+    }
+
+    async fn until_forwarded(&self, n: usize) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while self.forwarded() < n {
+            assert!(
+                std::time::Instant::now() < until,
+                "only {} of {n} lines reached the adapter",
+                self.forwarded()
+            );
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_seventeenth_request_in_flight_is_refused_busy_and_never_forwarded() {
+    let a = FakeAdapter::start().await;
+    let url = a.bridge.url();
+    assert_eq!(swarmail_evals::bridge::MAX_IN_FLIGHT, 16);
+    // Sixteen requests the adapter holds: all forwarded, none answered.
+    let held: Vec<_> = (100..116)
+        .map(|id| {
+            let url = url.clone();
+            tokio::spawn(async move {
+                post(&url, &json!({"jsonrpc": "2.0", "id": id, "method": "ping"})).await
+            })
+        })
+        .collect();
+    a.until_forwarded(16).await;
+    // The seventeenth meets sixteen in flight: refused here, correlated and
+    // at once, and nothing more reaches the adapter.
+    let (status, r) = post(&url, &json!({"jsonrpc": "2.0", "id": 17, "method": "ping"})).await;
+    assert_eq!((status, r["id"].clone()), (200, json!(17)), "{r}");
+    assert_eq!(r["error"]["code"], -32000, "{r}");
+    assert!(
+        r["error"]["message"].as_str().unwrap().starts_with("busy"),
+        "{r}"
+    );
+    // A batch over the bound is refused member by member, each correlated.
+    let batch = json!([{"jsonrpc": "2.0", "id": 18, "method": "ping"},
+        {"jsonrpc": "2.0", "id": 19, "method": "ping"}]);
+    let (_, r) = post(&url, &batch).await;
+    let ids: Vec<_> = r
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].clone())
+        .collect();
+    assert_eq!(ids, vec![json!(18), json!(19)], "{r}");
+    assert!(
+        r.as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["error"]["code"] == -32000),
+        "{r}"
+    );
+    assert_eq!(a.forwarded(), 16, "the adapter saw exactly sixteen");
+    // Released, the sixteen are all answered and the bound frees up.
+    a.release.notify_one();
+    for h in held {
+        let (status, r) = h.await.unwrap();
+        assert!(status == 200 && r["result"].is_object(), "{status} {r}");
+    }
+    let (_, again) = post(&url, &json!({"jsonrpc": "2.0", "id": 17, "method": "ping"})).await;
+    assert!(again["result"].is_object(), "{again}");
+    assert_eq!(a.forwarded(), 17);
+    a.bridge.stop().await;
+}
+
+#[tokio::test]
+async fn a_pretty_printed_body_reaches_the_adapter_as_one_line() {
+    let a = FakeAdapter::start().await;
+    a.release.notify_one();
+    let url = a.bridge.url();
+    // Embedded newlines and indentation: forwarded raw, a line-oriented
+    // adapter would read half an object. The bridge re-serialises it.
+    let pretty = "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 3,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-03-26\",\n    \"capabilities\": {},\n    \"clientInfo\": {\"name\": \"pretty\", \"version\": \"1\"}\n  }\n}\n";
+    let r = http()
+        .post(&url)
+        .header("content-type", "application/json")
+        .body(pretty.to_owned())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    a.until_forwarded(1).await;
+    let seen = a.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1, "one line, not one per source line: {seen:?}");
+    assert!(!seen[0].contains('\n'), "{:?}", seen[0]);
+    let parsed: Value = serde_json::from_str(&seen[0]).unwrap();
+    assert_eq!(parsed, serde_json::from_str::<Value>(pretty).unwrap());
+    a.bridge.stop().await;
+}

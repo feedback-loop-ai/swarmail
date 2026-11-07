@@ -43,6 +43,12 @@ use tokio::task::JoinHandle;
 pub const MAX_BODY: usize = 64 << 10;
 /// The batch cap every adapter and Swarmail's own endpoint hold.
 pub const MAX_BATCH: usize = 16;
+pub const MAX_IN_FLIGHT: usize = 16;
+/// The most request bodies in flight at once. An adapter admits eight tool
+/// calls at a time (a running one and a short queue) and refuses the rest
+/// with a busy error; this bound keeps a misbehaving client from queueing an
+/// unbounded number of bodies behind it. Over it, a request is answered here
+/// with a correlated busy error and nothing is forwarded.
 /// The longest the bridge holds a request for the adapter's reply: above an
 /// adapter's 30 s operation ceiling plus its queue.
 const REPLY_DEADLINE: Duration = Duration::from_secs(120);
@@ -218,6 +224,16 @@ async fn post_mcp(State(sh): State<Arc<Shared>>, headers: HeaderMap, body: Bytes
             k.dedup();
             k
         };
+        if inner.slots.len() >= MAX_IN_FLIGHT {
+            let busy =
+                |id: &Value| error_body(id.clone(), -32000, "busy: too many requests in flight");
+            return if batch {
+                let all: Vec<Value> = ids.iter().map(|i| busy(i)).collect();
+                json_response(StatusCode::OK, &Value::Array(all))
+            } else {
+                json_response(StatusCode::OK, &busy(ids[0]))
+            };
+        }
         if let Some(busy) = ids.iter().find(|i| inner.by_id.contains_key(&key_of(i))) {
             // An id already in flight: refuse, correlated, forward nothing.
             let refuse =
