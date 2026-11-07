@@ -1,0 +1,25 @@
+# compare-mail.sh measure --dry-run, 2026-11-07, every prerequisite genuine (no stub file)
+# uptime before:  20:13:19 up 14 days, 10:28,  0 users,  load average: 1.84, 3.19, 4.02
+# command: scripts/compare-mail.sh measure --dry-run --output <a new directory> --config <an inert agents file, never opened> --baseline docs/evals/baseline-2026-11-01.md --contracts docs/evals/agent-controls-2026-11-07/contracts --controls-dir docs/evals/agent-controls-2026-11-07 --receipts docs/evals/agent-controls-2026-11-07/receipts.json --cost docs/evals/agent-comparison-cost.json --identity docs/evals/agent-controls-2026-11-07/identity.json --product docs/evals/agent-comparison.json
+   Compiling swarmail-evals v0.1.0 (/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/evals)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.93s
+comparison-check dry run: every prerequisite holds for product agent-suite-comparison-2026-11-07 (120 control rows, 4 contracts)
+plan: 240 slots = 3 tasks x 4 targets x 4 agents x 5 trials, one slot at a time, in this order:
+  slots   1- 20: otp-backlog on swarmail for claude-opus, claude-sonnet, codex-sol, codex-luna, 5 trials each
+  slots  21- 40: otp-backlog on mailpit for claude-opus, claude-sonnet, codex-sol, codex-luna, 5 trials each
+  slots  41- 60: otp-backlog on mailhog for claude-opus, claude-sonnet, codex-sol, codex-luna, 5 trials each
+  slots  61- 80: otp-backlog on mailslurper for claude-opus, claude-sonnet, codex-sol, codex-luna, 5 trials each
+  slots  81-100: recipient-crowd on swarmail for claude-opus, claude-sonnet, codex-sol, codex-luna, 5 trials each
+  slots 101-120: recipient-crowd on mailpit for claude-opus, claude-sonnet, codex-sol, codex-luna, 5 trials each
+  slots 121-140: recipient-crowd on mailhog for claude-opus, claude-sonnet, codex-sol, codex-luna, 5 trials each
+  slots 141-160: recipient-crowd on mailslurper for claude-opus, claude-sonnet, codex-sol, codex-luna, 5 trials each
+  slots 161-180: digest-lookalike on swarmail for claude-opus, claude-sonnet, codex-sol, codex-luna, 5 trials each
+  slots 181-200: digest-lookalike on mailpit for claude-opus, claude-sonnet, codex-sol, codex-luna, 5 trials each
+  slots 201-220: digest-lookalike on mailhog for claude-opus, claude-sonnet, codex-sol, codex-luna, 5 trials each
+  slots 221-240: digest-lookalike on mailslurper for claude-opus, claude-sonnet, codex-sol, codex-luna, 5 trials each
+pending (operator): --authorized-product with the product id, and the operator's confirmation of the spend
+pending: ci: the required CI run has not been supplied (receipts.ci.status is pending)
+nothing was launched and no wrapper configuration was opened
+# elapsed 3.39 s
+# exit=0
+# uptime after:  20:13:23 up 14 days, 10:28,  0 users,  load average: 2.09, 3.22, 4.02
