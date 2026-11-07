@@ -1,0 +1,9 @@
+# mailhog: one worker, each command under timeout 600
+# uptime before:  18:37:18 up 14 days,  8:52,  0 users,  load average: 2.61, 3.52, 4.90
+# command: timeout 600 /usr/bin/time swarmail-evals comparison-contract --target mailhog --product docs/evals/agent-comparison.json --adapter /home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/release/deps/mail_compare-8961301c41490867 --target-bin /home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-scratch/bins-mailhog/MailHog_linux_amd64 --sources /home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/docs/evals/sources.lock.json
+# elapsed 0.13 s, max rss 19684 KB
+# command: timeout 600 /usr/bin/time swarmail-evals matrix --target mailhog --product docs/evals/agent-comparison.json --adapter /home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/release/deps/mail_compare-8961301c41490867 --target-bin /home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-scratch/bins-mailhog/MailHog_linux_amd64 --sources /home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/docs/evals/sources.lock.json --tier hard --agents <the builtin oracle and null> --trials 5
+swarmail-evals: seed=c9c52edbfe821579748147050a5780f56a6207ccdbcfc2e3d977ba33f2f62136 fixture_time=2026-11-07T18:35:14Z
+Command exited with non-zero status 1
+# elapsed 41.32 s, max rss 19976 KB
+# uptime after:  18:37:59 up 14 days,  8:53,  0 users,  load average: 2.86, 3.45, 4.81

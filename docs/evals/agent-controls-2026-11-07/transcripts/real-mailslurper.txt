@@ -1,0 +1,9 @@
+# mailslurper: every announced tool called once against the executable built from source (eb6cd97d…58ff)
+# command: MAIL_COMPARE_MAILSLURPER=<verified eb6cd97d…58ff> timeout 600 /usr/bin/time -v <the mail_compare test binary of `cargo test --locked --no-run --test mail_compare`> --ignored --test-threads=1 real_mailslurper   (one worker)
+# tools announced: mailslurper_list, mailslurper_search, mailslurper_read, mailslurper_wait; each is called once or more, read-only
+# uptime before:  17:09:28 up 14 days,  7:24,  0 users,  load average: 5.90, 6.36, 5.34
+test real_mailslurper_through_the_adapter_lists_searches_reads_and_waits ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; finished in 0.47s
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.47
+	Maximum resident set size (kbytes): 28960
+# uptime after:   17:09:28 up 14 days,  7:24,  0 users,  load average: 5.90, 6.36, 5.34
