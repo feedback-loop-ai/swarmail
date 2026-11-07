@@ -277,6 +277,7 @@ mod tests {
                         occurrence: None,
                     },
                     fix_hint: attack.into(),
+                    weight: 0,
                 },
                 Finding {
                     rule_id: "fixture".into(),
@@ -286,8 +287,10 @@ mod tests {
                         byte_offset: 19,
                     },
                     fix_hint: "https://attacker/".into(),
+                    weight: 0,
                 },
             ],
+            total: 0,
         };
         let html = report_section(Ok(&report));
         assert!(!html.contains("<img"));

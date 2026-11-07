@@ -1,4 +1,4 @@
-//! Offline DKIM verification (issue #254, proposed decision 0125).
+//! Offline DKIM verification (issue #254, decision 0125).
 //!
 //! Each `DKIM-Signature` field of the stored bytes is verified by `mail-auth`
 //! against keys that come from one place only: the declared DNS map, through
@@ -208,6 +208,7 @@ impl Rule {
             },
             severity: self.severity(),
             fix_hint: self.hint().into(),
+            weight: 0,
         }
     }
 }
@@ -3065,7 +3066,7 @@ pub(super) mod tests {
             .filter(|r| r.severity() == Severity::Warning);
         assert_eq!(warnings.count(), 1);
         for fact in [
-            "## DKIM verification (`swarmail-html/7`)",
+            "## DKIM verification (`swarmail-html/8`)",
             "**Time is the receipt time.**",
             "`dkim.expired_since_receipt.v1`",
             "**The clock residual (its full radius).**",
@@ -3120,6 +3121,7 @@ pub(super) mod tests {
                     location: Location::MimePart { path: vec![] },
                     severity: Severity::Info,
                     fix_hint: String::new(),
+                    weight: 0,
                 };
                 super::super::MAX_FINDINGS
             ])

@@ -1085,12 +1085,13 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
             "rule_id":{"type":"string","minLength":1,"pattern":"^[!-~]+$"},
             "severity":{"type":"string","enum":["info","warning","error"]},
             "location":location,
-            "fix_hint":{"type":"string","minLength":1}
+            "fix_hint":{"type":"string","minLength":1},
+            "weight":count
         }),
-        json!(["rule_id", "severity", "location", "fix_hint"]),
+        json!(["rule_id", "severity", "location", "fix_hint", "weight"]),
     );
     json!({
-        "swarmail_get_deliverability_report":output_object(json!({"rule_set_id":{"type":"string"},"findings":{"type":"array","maxItems":crate::deliverability::MAX_FINDINGS,"items":finding},"dns":dns}), json!(["rule_set_id","findings","dns"])),
+        "swarmail_get_deliverability_report":output_object(json!({"rule_set_id":{"type":"string"},"findings":{"type":"array","maxItems":crate::deliverability::MAX_FINDINGS,"items":finding},"dns":dns,"total":count}), json!(["rule_set_id","findings","dns","total"])),
         "swarmail_search_emails":output_object(json!({"inbox":{"type":"string"},"total":count,"emails":emails}), json!(["inbox","total","emails"])),
         "swarmail_get_email":email,
         "swarmail_get_latest_email":output_object(json!({"emails":nonempty}), json!(["emails"])),
@@ -1116,7 +1117,7 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
 });
 
 /// Modern-only report description; March keeps the historical TOOLS literal.
-const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-html/7) from the stored bytes, off the SMTP path: the bulk-sender checklist, the HTML client-compatibility heuristics, the per-link link.* rules (unsafe schemes, invalid URLs, plain http, URL shorteners, anchor-host mismatch; no link is fetched), the built-in spam signals, the dkim.* rules (each DKIM-Signature verified offline against keys declared in the DNS policy; one finding per field that does not verify, a body_length_partial warning on a field that verifies only a body prefix, or one message-level finding), the spf.* and dmarc.* rules (SPF for the observed SMTP envelope and DMARC for the root From against records declared in the DNS policy; a pass emits nothing) and the synthetic demo marker. Authentication evidence that cannot be determined yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. The dns member records the declared DNS policy (source default, server or inbox) and the lookups the evaluation made; a temp_fail lookup is never clean, so such a report qualifies at no threshold. At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
+const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-html/8) from the stored bytes, off the SMTP path: the bulk-sender checklist, the HTML client-compatibility heuristics, the per-link link.* rules (unsafe schemes, invalid URLs, plain http, URL shorteners, anchor-host mismatch; no link is fetched), the built-in spam signals, the dkim.* rules (each DKIM-Signature verified offline against keys declared in the DNS policy; one finding per field that does not verify, a body_length_partial warning on a field that verifies only a body prefix, or one message-level finding), the spf.* and dmarc.* rules (SPF for the observed SMTP envelope and DMARC for the root From against records declared in the DNS policy; a pass emits nothing) and the synthetic demo marker. Authentication evidence that cannot be determined yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. The dns member records the declared DNS policy (source default, server or inbox) and the lookups the evaluation made; a temp_fail lookup is never clean, so such a report qualifies at no threshold. Every finding ends with weight (info 1, warning 3, error 10; 0 for .not_evaluated. ids and demo.marker.v1) and the report ends with total, the sum of the weights after duplicates are removed (at most 2560); both are computed by the evaluator and no predicate reads either (decision 0122 section 2). At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
 
 /// MCP-compatible JSON input schemas. These are objects — the MCP spec
 /// requires an object, and a `&str` schema embedded in `json!` serialized as

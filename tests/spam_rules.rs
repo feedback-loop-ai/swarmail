@@ -47,8 +47,10 @@ fn others(report: &Value) -> Vec<Value> {
 /// objects written here independently of the code under test.
 fn fixtures() -> Vec<(&'static str, String, String, Value)> {
     let subject = |id: &str, severity: &str, hint: &str| {
+        let weight = if severity == "warning" { 3 } else { 1 };
         json!({"rule_id":id,"severity":severity,
-            "location":{"kind":"header","name":"subject","occurrence":0},"fix_hint":hint})
+            "location":{"kind":"header","name":"subject","occurrence":0},"fix_hint":hint,
+            "weight":weight})
     };
     let zw = "\u{200B}";
     vec![
@@ -88,7 +90,7 @@ fn fixtures() -> Vec<(&'static str, String, String, Value)> {
             message("\"Billing\" <billing@example.test>", SUBJECT, BODY),
             json!({"rule_id":"spam.from.display_name_address.v1","severity":"warning",
                 "location":{"kind":"header","name":"from","occurrence":0},
-                "fix_hint":"Do not put an email address in the From display name unless it is the sending address; a different address there looks like spoofing."}),
+                "fix_hint":"Do not put an email address in the From display name unless it is the sending address; a different address there looks like spoofing.","weight":3}),
         ),
         (
             "spam.body.phrases.v1",
@@ -96,7 +98,7 @@ fn fixtures() -> Vec<(&'static str, String, String, Value)> {
             message(FROM, SUBJECT, "Your order has shipped. Act soon."),
             json!({"rule_id":"spam.body.phrases.v1","severity":"warning",
                 "location":{"kind":"mime_part","path":[]},
-                "fix_hint":"Remove high-pressure sales wording from the text/plain body; see the guide's phrase list."}),
+                "fix_hint":"Remove high-pressure sales wording from the text/plain body; see the guide's phrase list.","weight":3}),
         ),
         (
             "spam.body.zero_width.v1",
@@ -108,7 +110,7 @@ fn fixtures() -> Vec<(&'static str, String, String, Value)> {
             message(FROM, SUBJECT, &format!("Your{zw} order{zw} has shipped.")),
             json!({"rule_id":"spam.body.zero_width.v1","severity":"info",
                 "location":{"kind":"mime_part","path":[]},
-                "fix_hint":"Remove zero-width characters from the text/plain body; they are used to hide words from filters."}),
+                "fix_hint":"Remove zero-width characters from the text/plain body; they are used to hide words from filters.","weight":1}),
         ),
     ]
 }
@@ -125,8 +127,14 @@ async fn every_rule_has_a_failing_and_passing_fixture() {
         assert_eq!(status, 200, "{rule}");
         let (status, pass) = report(&srv, &pass_id).await;
         assert_eq!(status, 200, "{rule}");
-        assert_eq!(spam(&fail), vec![expected], "{rule}");
+        assert_eq!(spam(&fail), vec![expected.clone()], "{rule}");
         assert_eq!(spam(&pass), Vec::<Value>::new(), "{rule}");
+        // The trigger adds exactly its own weight to the total (0122 §2.3).
+        assert_eq!(
+            fail["total"].as_u64().unwrap(),
+            pass["total"].as_u64().unwrap() + expected["weight"].as_u64().unwrap(),
+            "{rule}"
+        );
         assert_eq!(
             others(&fail),
             others(&pass),
@@ -177,17 +185,23 @@ async fn report_identity_and_shape() {
         let id = smtp_raw(srv.smtp_addr, "spam-identity", raw.as_bytes()).await;
         let (status, rest) = report(&srv, &id).await;
         assert_eq!(status, 200);
-        assert_eq!(rest["rule_set_id"], "swarmail-html/7");
-        // No weight or total: exactly the contract keys (decision 0085, with
-        // the `dns` member of proposed 0120).
+        assert_eq!(rest["rule_set_id"], "swarmail-html/8");
+        // Exactly the contract keys: decision 0085 with the `dns` member of
+        // decision 0120 and the `weight` and `total` of decision 0122 §2.
         let mut keys: Vec<_> = rest.as_object().unwrap().keys().cloned().collect();
         keys.sort();
-        assert_eq!(keys, ["dns", "findings", "rule_set_id"]);
+        assert_eq!(keys, ["dns", "findings", "rule_set_id", "total"]);
+        let mut sum = 0;
         for finding in rest["findings"].as_array().unwrap() {
             let mut keys: Vec<_> = finding.as_object().unwrap().keys().cloned().collect();
             keys.sort();
-            assert_eq!(keys, ["fix_hint", "location", "rule_id", "severity"]);
+            assert_eq!(
+                keys,
+                ["fix_hint", "location", "rule_id", "severity", "weight"]
+            );
+            sum += finding["weight"].as_u64().unwrap();
         }
+        assert_eq!(rest["total"].as_u64().unwrap(), sum);
         assert_eq!(spam(&rest).len(), 4, "{rest}");
         // The default (March) revision: JSON in one text block, no structuredContent.
         let march = mcp(&srv, None, &id).await;
@@ -203,7 +217,7 @@ async fn report_identity_and_shape() {
             assert_eq!(modern["result"]["structuredContent"], rest, "{version}");
             assert_eq!(
                 modern["result"]["structuredContent"]["rule_set_id"],
-                "swarmail-html/7"
+                "swarmail-html/8"
             );
         }
     }

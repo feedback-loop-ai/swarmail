@@ -134,6 +134,7 @@ fn collect_with(raw: &[u8], c: &Catalogue, out: &mut Collector) -> Result<(), An
                             path: part.path.clone(),
                         },
                         fix_hint: rule.fix_hint.clone(),
+                        weight: 0,
                     })?;
                 }
             }
@@ -810,9 +811,22 @@ mod tests {
         format!("Content-Type: text/html; charset=utf-8\r\n\r\n{body}").into_bytes()
     }
     fn report(body: &str) -> Report {
-        let mut r = evaluate(&raw(body), &Inputs::default()).unwrap();
+        only_html(evaluate(&raw(body), &Inputs::default()).unwrap())
+    }
+    /// The HTML findings only; the filter drops the other families' findings, so
+    /// the total follows it.
+    fn only_html(mut r: Report) -> Report {
         r.findings.retain(|f| f.rule_id.starts_with("html."));
+        r.total = r.findings.iter().map(|f| f.weight).sum();
         r
+    }
+    /// The 0122 §2.2 table, written out independently of `weight_of`.
+    fn table(severity: Severity) -> u64 {
+        match severity {
+            Severity::Info => 1,
+            Severity::Warning => 3,
+            Severity::Error => 10,
+        }
     }
     fn ids(body: &str) -> Vec<String> {
         report(body)
@@ -852,6 +866,7 @@ mod tests {
                         rule_set_id: super::super::RULE_SET_ID.into(),
                         findings: vec![],
                         dns: Default::default(),
+                        total: 0,
                     }
                 );
             }
@@ -870,6 +885,7 @@ mod tests {
                     rule_set_id: super::super::RULE_SET_ID.into(),
                     findings: vec![],
                     dns: Default::default(),
+                    total: 0,
                 })
             );
         }
@@ -897,13 +913,16 @@ mod tests {
                 location: Location::MimePart {
                     path: path.to_vec(),
                 },
+                weight: table(r.severity),
             })
             .collect();
         findings.sort();
+        let total = findings.iter().map(|f| f.weight).sum();
         Report {
             rule_set_id: super::super::RULE_SET_ID.into(),
             findings,
             dns: Default::default(),
+            total,
         }
     }
     #[test]
@@ -968,10 +987,7 @@ mod tests {
             "outer",
             "",
         );
-        let mut nested_report = evaluate(&nested, &Inputs::default()).unwrap();
-        nested_report
-            .findings
-            .retain(|f| f.rule_id.starts_with("html."));
+        let nested_report = only_html(evaluate(&nested, &Inputs::default()).unwrap());
         assert_eq!(nested_report, expected(&["html.css.position.v1"], &[1, 0]));
         for n in [32, 33] {
             let css = format!(
@@ -1205,7 +1221,7 @@ mod tests {
         );
         assert_eq!(
             fixture["catalogue_snapshot"]["rule_set_id"],
-            "swarmail-html/7"
+            "swarmail-html/8"
         );
         let c = catalogue(DATA).unwrap();
         assert_eq!(c.rules.len(), 7);
@@ -1228,6 +1244,7 @@ mod tests {
                         severity: rule.severity,
                         location: Location::MimePart { path: vec![] },
                         fix_hint: rule.fix_hint.clone(),
+                        weight: table(rule.severity),
                     }]
                 } else {
                     vec![]
