@@ -399,3 +399,273 @@ Docker is not used. The executable was never run.
 
 Collection stays refused: `mail_compare check` on the committed protocol and
 lock exits non-zero and lists each gap above.
+
+## 2026-11-07 addendum (operator rulings, pins and freeze)
+
+This addendum adds to the record above and edits none of it. The status stays
+*proposed*; only the operator accepts. It records what the operator ruled on
+2026-11-07 ("Pragmatic set", the second rerun's brief), the bytes the operator
+supplied under `.compare-bins/2026-11-07-supply/` (git-ignored, untrusted,
+never committed), what was built from both, and the freeze. Nothing was
+collected, no agent session ran and nothing paid ran. It supersedes, by
+addition, the rerun addendum's "protocol v3 stays a draft", its four pending
+rows and its six asks of the operator.
+
+### The rulings, quoted from the brief
+
+1. **MailSlurper.** "Publish as a result that the official release-1.15.0
+   linux executable does not start with its default SQLite storage. It was
+   built with CGO_ENABLED=0 and dies with 'Binary was compiled with
+   CGO_ENABLED=0, go-sqlite3 requires cgo to work. This is a stub'. It also
+   reports v1.14.1, because the release source hard-codes it. Also bench a
+   cgo build from the pinned release source, as a separate labelled row 'built
+   from source'. It may be pinned even though it reports v1.14.1 under tag
+   release-1.15.0; record that fact."
+2. **Alkemio's MailSlurper image row.** "A musl loader may be pinned as a
+   second runtime, taken from the image's own layer."
+3. **GreenMail** "is bound to its Maven Central artifact and checksums. Lock v4
+   may bind an official artifact that the GitHub release does not list, when
+   its registry publishes checksums."
+4. "**0130 §6's runtime licence list** is accepted: JRE GPLv2 with the
+   Classpath exception, musl MIT."
+
+Rulings 2 and 4 amend §2 and §6 of this record, by addition: the closed
+`RUNTIMES` table holds two runtimes, and `RUNTIME_LICENSES` holds
+`"GPL-2.0-only WITH Classpath-exception-2.0"` and `"MIT"`. `PERMISSIVE`,
+`deny.toml` and the dependency allowlist are unchanged (a test asserts
+`PERMISSIVE`'s exact five entries, and that `deny.toml` does not name the
+Classpath exception).
+
+### The supply, and its receipt
+
+`sha256sum -c SHA256SUMS` passed in every supply subdirectory and at the top
+level (143 files) before anything read a supplied file. The supply was never
+written to or extracted into; each archive was listed first (no absolute or
+`..` member), then extracted into its own new directory under
+`target/compare-dl/`, and read only with `python3 -I` from a script kept in
+`target/compare-tools/`. `git ls-files .compare-bins target` is empty at every
+commit.
+
+| Item | sha256 |
+|---|---|
+| MailSlurper official zip (member `mailslurper`) | `48f2f9ba090f5385301477406b4f6e08f7bfbba0619c635ee591d6e6af3e55f6` (`0cd9416b766deb26eed8aa01ad0873d06725a3464fdb9ac3cc82201e2c232627`) |
+| MailSlurper source tarball (pax comment `068acffdcd8960f248ea438c3b7ee51ead601bd2`) | `83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f` |
+| MailSlurper cgo build (go1.18.1, `-trimpath`, verified modules) | `eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff` |
+| smtp4dev zip (member `Rnwood.Smtp4dev`) | `3b9395b9ca6e6f5ac0b0a73d953949ed4780a1b794611a97df1a0c7baf909c46` |
+| Inbucket archive | `0d7d76ed7e66b0700c38aeef7ad1f086e4a159ce554abd92c95052d0838e0e24` |
+| GreenMail jar (Maven Central) and its `.sha256` | `91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1` |
+| Temurin 21.0.13+9 JRE archive | `a535a1df9c6284d9618872984e026ae0352d1f7e9e0605425c0e6114f47351dd` |
+| Alkemio OCI index / linux-amd64 manifest | `55029f542c19d0fe570450dc5a30f54dbdb24d9113a6e0e1bf96da000ebd0838` / `97dfa5567da8acf1c83c3f11b233078bd0dc831e317d58e97d56461d67ba4e86` |
+| Alkemio executable (layer `0dfdf228…`, 13th of 15) | `1c7556f3fd8da6fb6d2f5a66a1cff258c805407028aeb9eda0a2656f46db6379` |
+| musl loader `lib/ld-musl-x86_64.so.1` (layer `f350948e60ec3e45e17bc37d4f8a5d1c5c728d634bca374d9dc183fea996e87e`, musl 1.1.24-r10, apk `L:MIT`) | `0273b5344fc0b9f687b95ec987ecea9c2be7ef01bf8c111fb99117bc0e2e91a3` |
+| git trees (rebuilt to their ids by the validator): inbucket v3.2.0, smtp4dev 3.16.1, greenmail release-2.1.15 (tag object `5f09fccc…`), mailslurper release-1.15.0 | roots `ee202b29…`, `9622c9bb…`, `bd4125c4…`, `5f29f08a…` |
+
+The loader's layer is the topmost of the manifest's 15 layers that holds
+`lib/ld-musl-x86_64.so.1` (layers 0, 3 and 5 hold it; layer 5 is `f350948e…`;
+no `.wh.` entry or opaque-directory marker touches `lib/`), and the supplied
+`musl/ld-musl-x86_64.so.1` equals that layer's member byte for byte.
+
+### New constants and variants (`benches/mail_compare/protocol.rs`)
+
+| Name | What it is |
+|---|---|
+| `TargetKind::MailslurperSourceBuild` (`mailslurper-source-build`), `Provenance::SourceBuild`, `ProductScope::SourceBuild` | the ninth target: MailSlurper release-1.15.0 built from source (cgo, host glibc, unpinned runtime), never a relabelled official row, Alkemio's image or Swarmail's shim (decision 0118) |
+| `Protocol.does_not_start: [{target, cite}]` | version 3 only; `cite` is a document of that target's pin; the runner never launches a listed target, `plan()` yields it no coordinate, `declared_competitors` omits it, and the report prints "does not start (published result: …)" with every cell `blocked` and no number; the row keeps its pin, product, capabilities and rotation slot |
+| `REPORTED_VERSIONS` | closed `(target, tag, version)` list: both MailSlurper rows at `release-1.15.0` report `1.14.1`; data cannot excuse a version check, only this list can |
+| `RUNTIMES` | closed table `(target, entry program, checked members, image layer?)`: GreenMail `bin/java` with `bin/java` and `lib/server/libjvm.so`; Alkemio `lib/ld-musl-x86_64.so.1` with that loader, whose archive digest must be a layer of the pin's captured manifest |
+| `DigestBasis::RegistryChecksum`, `REGISTRY`, `DocKind::Checksum` | GreenMail's jar at `https://repo1.maven.org/maven2/com/icegreen/greenmail-standalone/2.1.15/…`, with the registry's `.sha256` as a supplied document whose trimmed bytes must equal `upstream_digest`; `release_agrees` skips only the asset-list check |
+| `DocKind::GitCommit` and `tree_object_id` | the supplied trees are root trees fetched by tree id: a commit object links the tagged commit to the tree, and the validator rebuilds git's tree object from the listing (`040000` written `40000`) and requires it to equal the tree's own id |
+| `Attribution::Member`, `Output`, `Supplied` and `SOURCE_ARCHIVES` | an archive member (the pin's artifact, its runtime or the MailSlurper source tarball bound to its commit), a program's own output, or operator-supplied evidence naming its supply path and carrying its sha256; proved by a real test that re-extracts or re-runs |
+| `ConfigFile.cwd` | the child's working directory is the directory its config is rendered in, for a program that reads a fixed relative name (the Alkemio fork reads `./config.json` and has no `-config` flag) |
+
+`Member` and `Output` are checked offline only for shape; their content is
+proved by `real_member_and_output_documents_match`, which this delivery ran and
+which must pass before any collection (the bench has no archive reader and
+none was added). The release-metadata documents are slices of a listing
+(byte-for-byte elements of the captured releases arrays); each is attributed
+`Api` to the object's own `url`, and `verify_files` checks that self-name.
+
+### The published result: the official MailSlurper release does not start
+
+`real_mailslurper_official_does_not_start` runs the pinned official
+executable (`0cd9416b…`, a statically linked, stripped Go binary) as its pin
+launches it, on the rendered config. It exits non-zero within the startup
+deadline with `Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires
+cgo to work. This is a stub`, at `CREATE TABLE mailitem`; no declared listener
+is ever bound; and the launcher's own path refuses it with cleanup proved. The
+cause is in the binary itself: its embedded build info (the supply's
+`official-release-run/embedded-buildinfo.txt`, read with `strings`) records
+go1.20.6, `CGO_ENABLED=0`, `-ldflags="-s -w"` and `vcs.modified=true` at
+commit `068acffd…`. It logs `Starting MailSlurper Server v1.14.1` because the
+release source hard-codes `SERVER_VERSION = "1.14.1"`. Both documents are
+retained under `sources/mailslurper/` as supplied evidence, and the protocol's
+`does_not_start` entry cites the failure output. Reading it as shrinkage of
+the denominator under 0091 §1 would be wrong: §1 ("preserve … unstarted work")
+and §3 ("full-product entries without fabricated trial results") govern, the
+row keeps its pin, product, capabilities, rotation slot and a full cell per
+profile, and a disagreement is the operator's to rule.
+
+### What the real runs showed (unmeasured, bounded)
+
+Every launched row passed a round trip, a hostile set and a 600-message cap
+test against its real pinned bytes, first as untimed exploratory probes before
+the freeze and again, recorded, against the frozen bytes. The probes corrected
+the draft before anything froze (decision 0091 §1: no collection had run):
+
+- **MailSlurper's listing count is `totalRecords`, not `totalMailItems`**
+  (`{"mailItems":[…],"totalPages":1,"totalRecords":1}`), and its ids are uuids.
+- **A path segment must keep `-._~`.** `wire::query_value` percent-encoded `-`
+  (`NON_ALPHANUMERIC`), so `/mail/feb8d58f%2D…` returned an empty item; the
+  encoding now keeps RFC 3986's unreserved characters, as its comment always
+  said. The same helper encodes query values, which every server decodes.
+- **smtp4dev pages with `page`, not `pageNumber`** (its API XML names the
+  parameter; the real server ignored the wrong one and returned page 1 for
+  every page). The decoder's echoed `currentPage` check caught it as
+  `Malformed`, never as a shorter success.
+- **MailSlurper keeps one decoded body and no raw message.** It stores the HTML
+  part when there is one, else the plain text with each newline turned into
+  `<br />` (`DataCommandExecutor.decodeBody` in the pinned source); a multipart
+  message's plain part is dropped; and it does not undo SMTP dot-stuffing
+  (`.leading dot` comes back `..leading dot`). Their body fidelity is therefore
+  not exact by construction, and a collection reports it per message through
+  `fidelity_ok`; the real tests assert subject, listing and the contract each
+  keeps (an HTML message's HTML as sent, a plain message's text with only
+  `<br />` added), and print the rest.
+- **MailSlurper acknowledges a mail before it stores it and loses some under
+  SQLite lock contention.** In a manual probe (not a measurement) 600 mails
+  sent in 0.23 s were all answered `250`, and the store settled at 573: its log
+  holds 27 `database is locked` errors from `StoreMail`. A 600-message burst in
+  the cap test listed 596. The cap proof therefore sends in batches of five and
+  waits for each to be listed, so only eviction could lower the count; the
+  burst loss is an observation about the tool, and a collection will show it as
+  accepted-but-missing mail in the cell. The Alkemio fork carries a
+  single-connection SQLite patch and was not probed for the same burst.
+- **Alkemio's binary runs on the pinned loader and serves plain SMTP on the
+  rendered config** (no certificate: S9 did not trigger), reading `./config.json`
+  from its working directory, hence `ConfigFile.cwd`.
+- **smtp4dev's `--db ""` selects an in-memory database** (its `--help`); the
+  pinned launch keeps the scratch file the draft chose, so the row is stored
+  as `scratch_file`. The row's version output is its own banner
+  `3.16.1+9fac83c1…`, a self-report, not build evidence.
+
+Two facts the issue states differ from the pinned bytes, flagged for the
+operator, not decided here. **GreenMail's REST API can read messages**: the
+pinned jar's `greenmail-openapi.yml` lists `GET
+/api/user/{emailOrId}/messages/{folderName}` returning `uid`, `subject`,
+`contentType` and `mimeMessage`, while the issue says it "cannot read
+messages". The driver still reads over POP3, as the issue orders, and the
+capability record says `raw_source` is supported, citing that document.
+**GreenMail's own license text is not in the supplied bytes**: the tagged tree
+lists `license.txt` (blob `680cd03b…`, 11385 bytes) but no bytes of it were
+supplied, the jar carries none (its `META-INF/NOTICE` is its dependencies'), and
+its poms state no license. The pin's `License` document is therefore the jar's
+`greenmail-openapi.yml` (`info.license: Apache 2.0` and the URL), a member of
+the digested jar retained twice under two paths (`greenmail-license-declaration.yml`
+and `greenmail-openapi.yml`), and the lock records `Apache-2.0`. That is a
+declaration, not the license text; replacing it with the blob when its bytes
+are supplied changes only the lock's License row.
+
+### The registry label
+
+GreenMail's pin is integrity against the registry's own checksum; authenticity
+is not verified. The `.asc` stays in the supply, no key is pinned and no gpg
+ran, so nothing authenticates the publisher: the registry serves both the jar
+and its `.sha256`, and the claim, the report's row label and the README say so.
+GreenMail's chain is annotated and observed: ref → tag object `5f09fccc…` →
+commit `3b8ea7df…`, with `tag_signature` the captured `verification.reason`
+(GitHub's field; no signature was verified here).
+
+### The nine targets and their labels
+
+| Row | Source | Runtime | Read path | Pin |
+|---|---|---|---|---|
+| swarmail | candidate | — | HTTP JSON | the checkout |
+| mailpit v1.32.0, mailhog v1.0.1 | official, annotated tag | — | HTTP JSON | unchanged bytes |
+| mailslurper release-1.15.0 | official, lightweight tag, **does not start** | — | — | zip `48f2f9ba…`, member `0cd9416b…` |
+| mailslurper-source-build | built from source (cgo; host glibc, unpinned), lightweight tag | host glibc, unpinned | HTTP JSON | executable `eb6cd97d…`, build record supplied |
+| smtp4dev 3.16.1 | official, lightweight tag | .NET bundle on host libraries | HTTP JSON (paged) | zip `3b9395b9…` |
+| inbucket v3.2.0 | official, lightweight tag | — | HTTP JSON (per mailbox) | archive `0d7d76ed…` |
+| greenmail release-2.1.15 | official jar, registry checksum, annotated tag | pinned JRE | POP3 (fresh session per scan) | jar `91d58798…` |
+| alkemio-mailslurper | third-party image, extracted binary | pinned musl loader | HTTP JSON | executable `1c7556f3…` |
+
+The cgo row's runtime is the host's glibc and the smtp4dev row's is the .NET
+bundle on host libraries: neither is a matched-runtime claim, and both are
+labelled in the claim, the report and the README.
+
+### One condition beyond the five ruled arms (for the operator)
+
+`collection_ready` no longer counts an image pin's `tagged_source` gap.
+`validate_image` forbids observing one ("an image pin has no tagged source to
+observe"), so with the old check no image pin could ever be ready, and the
+frozen protocol could not pass `mail_compare check` while it declares the
+Alkemio row. The image's identity is its index → manifest → layer digest chain.
+A test shows an official pin whose tagged source is unresolved is still
+refused. This is a sixth widened condition beyond `REPORTED_VERSIONS`,
+`RUNTIMES`, the `RegistryChecksum` asset-list skip (which the source-build row
+shares: its executable is no release asset), `MIT` on the runtime list and the
+`GitCommit` tree route; the operator may strike it, which leaves the Alkemio
+row unable to collect. `scripts/compare-mail.sh`'s preflight, which reads the
+protocol's target list as text, also omits a `does_not_start` target, or it
+would ask for a binary the driver refuses.
+
+### The freeze
+
+Order: pin, untimed exploratory real probes, freeze, then the recorded real
+proofs against the frozen bytes. `docs/evals/protocol.json` is `status:
+frozen`, `unresolved: []`, with nine targets, nine cyclic rotations, nine
+capability and product records and one `does_not_start` entry; its workloads
+and corpus equal v2's. Frozen by content hash, recorded here and in the test
+constants `FROZEN_PROTOCOL_V3_SHA` and `FROZEN_LOCK_V4_SHA`:
+
+- `docs/evals/protocol.json` sha256 `229babaac849ae832ecb1a9f8ec742c970d0f36edc9d26d4ff9bb9c3c0d7224e`
+- `docs/evals/sources.lock.json` sha256 `ed201599dd57441cbcf0c7e66e7c82a56dd217ef683b7bf4e72ae7ce9d3a04b1`
+
+`cargo bench --locked --bench mail_compare -- check --protocol
+docs/evals/protocol.json --sources docs/evals/sources.lock.json` exits 0 with
+"ready for collection". After the freeze the bytes never change (stop trigger
+S12: a frozen fact that proves wrong is a new protocol version or the
+operator's ruling, not an edit). The history bytes keep their sha256.
+
+### Recorded real proofs
+
+Each ran as `timeout 600 taskset -c 0-31 cargo test --locked --test
+mail_compare -- --ignored --exact eight_targets::<name> --test-threads=1`
+(`nproc` 128, so `nproc/4` is 32 CPUs), with `/proc/loadavg` read before and
+after; all exited 0, none is evidence, none wrote under `docs/evals/` and no v3
+run directory exists. Wall time and 1-minute load before and after:
+
+| Test | Wall | Load before → after |
+|---|---|---|
+| `real_smtp4dev_smtp_to_native_api_round_trip` | 4 s | 3.52 → 3.32 |
+| `real_smtp4dev_hostile_round_trip` | 4 s | 3.32 → 3.21 |
+| `real_caps_hold_smtp4dev` | 9 s | 3.21 → 3.68 |
+| `real_inbucket_smtp_to_native_api_round_trip` / `_hostile_round_trip` / `real_caps_hold_inbucket` | 1 s / 1 s / 0 s | 3.68 → 3.54 |
+| `real_greenmail_smtp_to_native_api_round_trip` / `_hostile_round_trip` | 4 s / 3 s | 3.54 → 3.82 |
+| `real_caps_hold_greenmail` | 27 s | 3.82 → 4.24 |
+| `real_mailslurper_source_build_smtp_to_native_api_round_trip` / `_hostile_round_trip` | 0 s / 1 s | 4.24 → 4.24 |
+| `real_caps_hold_mailslurper_source_build` | 10 s | 4.24 → 3.89 |
+| `real_alkemio_mailslurper_smtp_to_native_api_round_trip` / `_hostile_round_trip` | 1 s / 0 s | 3.89 → 3.89 |
+| `real_caps_hold_alkemio_mailslurper` | 7 s | 3.89 → 3.74 |
+| `real_mailslurper_official_does_not_start` | 0 s | 3.74 → 3.74 |
+| `real_member_and_output_documents_match` | 3 s | 3.74 → 4.00 |
+
+The labelled unpinned GreenMail driver proofs (`real_greenmail_driver_proof_*`)
+became the pinned ones, one for one: `…_pop3_round_trip` →
+`real_greenmail_smtp_to_native_api_round_trip`, `…_hostile_round_trip` →
+`real_greenmail_hostile_round_trip`, `…_caps_hold` → `real_caps_hold_greenmail`;
+`real_greenmail_pop3_under_pinned_jre` was renamed to that same function, so both removed names resolve to it. The official
+MailSlurper's three real tests became the cgo row's
+(`real_mailslurper_*` → `real_mailslurper_source_build_*`), beside the new
+`real_mailslurper_official_does_not_start`, `real_smtp4dev_hostile_round_trip`,
+`real_alkemio_mailslurper_hostile_round_trip` and
+`real_member_and_output_documents_match`.
+
+### What stays open
+
+Collection and the v3 matrix; the final MCP contracts, comparison controls,
+cost, identity and the full product (the wrapper's `controls`, `evidence` and
+`measure` prerequisites); #148/#201; a best wait for any row; build provenance
+for every executable but the cgo build's; GreenMail's license text (above); the
+operator's ruling on the sixth condition (above) and on the two issue premises
+(above). The PR is held for the operator: it changes `scripts/` and adds
+pointers to accepted records.
