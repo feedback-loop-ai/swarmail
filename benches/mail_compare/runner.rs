@@ -296,9 +296,10 @@ pub async fn run(cfg: Config, clock: Clock) -> (Verdict, Lifecycle, Option<PathB
     // replacement during the run would leave the record standing behind
     // a binary nobody measured.
     for launched in &life.launches {
-        let same = cfg.specs.get(&launched.target).is_some_and(|spec| {
-            crate::targets::unchanged(&spec.binary, &launched.executable_sha256)
-        });
+        let same = cfg
+            .specs
+            .get(&launched.target)
+            .is_some_and(|spec| crate::targets::spec_unchanged(spec, launched));
         if !same {
             return (
                 Verdict::Infrastructure(format!(
@@ -539,7 +540,7 @@ async fn throughput(
     v.start_ns = Some(window_start);
     v.ack_ns = Some(send_end);
     v.observed_ns = Some(verified_ns);
-    v.requests = Some(owned.http.requests());
+    v.requests = Some(owned.requests());
     emit(sink, &v)?;
     let visible = groups.keys().filter(|t| accepted.contains(*t)).count();
     let exact = reason.is_none()
@@ -776,7 +777,7 @@ async fn observe(
     clock: &Clock,
     r: &mut Row,
 ) {
-    let before = owned.http.requests();
+    let before = owned.requests();
     let judge = |tokens: &[String]| {
         if tokens.iter().any(|t| t != token) {
             Some("unrelated")
@@ -824,7 +825,7 @@ async fn observe(
         }
     };
     let at = clock.now_ns();
-    r.requests = Some(owned.http.requests() - before);
+    r.requests = Some(owned.requests() - before);
     match result {
         Ok(Some(o)) => {
             r.outcome = o.into();

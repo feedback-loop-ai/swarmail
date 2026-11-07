@@ -43,8 +43,14 @@ use std::time::{Duration, Instant};
 
 const SMOKE: &[u8] = include_bytes!("mail_compare/swarmail-smoke.json");
 const SMOKE_LOCK: &[u8] = include_bytes!("mail_compare/swarmail-only.lock.json");
-const PROTOCOL: &[u8] = include_bytes!("../docs/evals/protocol.json");
-const SOURCES: &[u8] = include_bytes!("../docs/evals/sources.lock.json");
+/// Protocol 2 and lock 3 as they were collected under on 2026-10-30; their
+/// bytes live under `docs/evals/history/` and the existing tests keep
+/// proving them (proposed decision 0130 keeps both readable and launchable).
+const PROTOCOL: &[u8] = include_bytes!("../docs/evals/history/2026-10-30-protocol.v2.json");
+const SOURCES: &[u8] = include_bytes!("../docs/evals/history/2026-10-30-sources.lock.v3.json");
+/// The current records: protocol 3 and lock 4.
+const PROTOCOL_V3: &[u8] = include_bytes!("../docs/evals/protocol.json");
+const SOURCES_V4: &[u8] = include_bytes!("../docs/evals/sources.lock.json");
 
 fn smoke() -> Protocol {
     Protocol::parse(SMOKE).expect("the smoke fixture parses")
@@ -71,12 +77,12 @@ fn limits() -> targets::Limits {
 }
 
 fn swarmail_spec(template: Vec<String>) -> targets::LaunchSpec {
-    targets::LaunchSpec {
-        kind: TargetKind::Swarmail,
-        binary: PathBuf::from(env!("CARGO_BIN_EXE_swarmail")),
-        expected_sha256: None,
+    targets::LaunchSpec::new(
+        TargetKind::Swarmail,
+        PathBuf::from(env!("CARGO_BIN_EXE_swarmail")),
+        None,
         template,
-    }
+    )
 }
 
 fn manifest(p: &Protocol, run_id: &str) -> Manifest {
@@ -388,7 +394,7 @@ fn the_committed_protocol_is_frozen_and_collects_only_its_declared_limited_claim
     for t in [TargetKind::Mailpit, TargetKind::Mailhog] {
         assert!(s.pin(t).unwrap().wait.best_wait.gap().is_some(), "{t}");
     }
-    assert_eq!(p.targets, TargetKind::ALL.to_vec());
+    assert_eq!(p.targets, TargetKind::V2.to_vec());
     assert_eq!(p.statistics.orders.len(), 6, "every target order once");
     assert!(
         p.throughput.iter().any(|t| t.sessions == 1000),
@@ -570,7 +576,7 @@ fn a_built_from_claim_or_a_draft_or_an_unlisted_enforcement_refuses_collection()
     let why = refusals(protocol::collection_ready(&draft, &s));
     for expected in [
         "protocol is a draft, not frozen",
-        "protocol version 1 is a historical draft; only version 2 collects",
+        "protocol version 1 is a historical draft; only versions 2 and 3 collect",
         "unresolved: binary build provenance",
         "mailpit: best wait unresolved: no route, producer",
         "mailpit does not store in memory",
@@ -693,10 +699,10 @@ fn the_provisioned_artifacts_match_the_pins_and_their_basis() {
             panic!("{t}: tagged source unresolved");
         };
         assert_eq!(
-            (ts.tag_object.as_str(), ts.commit.as_str()),
+            (ts.tag_object.as_deref().unwrap(), ts.commit.as_str()),
             (tag_object, commit)
         );
-        assert_eq!(ts.tag_signature, "unsigned");
+        assert_eq!(ts.tag_signature.as_deref(), Some("unsigned"));
         assert!(pin.binary_build_provenance.gap().is_some(), "{t}");
         assert!(pin.wait.best_wait.gap().is_some(), "{t}");
         assert_eq!(pin.wait.reviewed.len(), 2, "{t}");
@@ -1076,11 +1082,11 @@ fn the_source_lock_refuses_mutable_foreign_false_and_incomplete_pins() {
         "an unknown field never parses"
     );
     let mut v = json(SOURCES);
-    v["lock_version"] = 4.into();
+    v["lock_version"] = 5.into();
     v["checked_on"] = "today".into();
     let why = refusals(lock_from(v).unwrap().validate());
     assert!(
-        why.contains("lock_version 4 is not 3") && why.contains("checked_on"),
+        why.contains("lock_version 5 is not 3 or 4") && why.contains("checked_on"),
         "{why}"
     );
     // A complete pin alone does not admit a draft protocol.
@@ -1744,12 +1750,12 @@ async fn a_dropped_owner_leaves_its_worker_to_finish_and_prove_cleanup() {
 /// shell is an existing executable: a freshly written script could be
 /// "text file busy" while a parallel test forks.
 fn fake_spec(kind: TargetKind, body: &str) -> targets::LaunchSpec {
-    targets::LaunchSpec {
+    targets::LaunchSpec::new(
         kind,
-        binary: PathBuf::from("/bin/sh"),
-        expected_sha256: None,
-        template: vec!["-c".into(), body.into()],
-    }
+        PathBuf::from("/bin/sh"),
+        None,
+        vec!["-c".into(), body.into()],
+    )
 }
 
 fn short_limits() -> targets::Limits {
@@ -3710,12 +3716,12 @@ fn pinned(t: TargetKind) -> targets::LaunchSpec {
         .unwrap_or_else(|| panic!("{var} must name the pinned {t} executable"));
     let lock = SourceLock::parse(SOURCES).unwrap();
     let pin = lock.pin(t).unwrap();
-    targets::LaunchSpec {
-        kind: t,
-        binary: binary.into(),
-        expected_sha256: Some(pin.artifact.executable_sha256.clone()),
-        template: pin.launch.clone(),
-    }
+    targets::LaunchSpec::new(
+        t,
+        binary.into(),
+        Some(pin.artifact.executable_sha256.clone()),
+        pin.launch.clone(),
+    )
 }
 
 async fn launch_pinned(t: TargetKind, scratch: &Path) -> targets::Owned {
@@ -4241,14 +4247,14 @@ async fn a_real_three_target_smoke_run_reconciles_every_message_and_wait_and_sea
     assert_eq!(verdict, runner::Verdict::Clean, "{verdict:?}");
     assert!(life.cleanups.iter().all(targets::CleanupFacts::proved));
     let launched: std::collections::BTreeSet<_> = life.launches.iter().map(|l| l.target).collect();
-    assert_eq!(launched, TargetKind::ALL.into());
+    assert_eq!(launched, TargetKind::V2.into());
     let dir = sealed.expect("a clean run is sealed");
     records::admit(&dir).expect("the sealed run is admitted");
     report::admit_run(&dir, &serde_json::to_vec(&p).unwrap())
         .expect("it admits against the protocol that planned it");
     assert_cells_match_rows(&dir);
     let rows = rows(&dir);
-    for t in TargetKind::ALL {
+    for t in TargetKind::V2 {
         let mine = |phase: Phase| {
             rows.iter()
                 .filter(move |r| r.target == t && r.phase == phase)

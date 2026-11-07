@@ -1,6 +1,6 @@
 {
-  "lock_version": 3,
-  "checked_on": "2026-10-29",
+  "lock_version": 4,
+  "checked_on": "2026-11-07",
   "entries": [
     {
       "target": "swarmail",
@@ -24,6 +24,7 @@
         },
         "tagged_source": {
           "observed": {
+            "ref_kind": "annotated",
             "tag_object": "c00f93d0a78967e9f84c291eb34ab73386fdbe0c",
             "commit": "ce798cfd781ef07b321427fc5082b3eebdcae460",
             "tag_signature": "unsigned"
@@ -201,7 +202,11 @@
           "best_wait": {
             "unresolved": "no route, producer, registration-acknowledgement or gap-replay evidence and no real-binary observation exist, so a best-available wait cannot be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
           }
-        }
+        },
+        "listeners": [
+          "smtp",
+          "http"
+        ]
       }
     },
     {
@@ -221,6 +226,7 @@
         },
         "tagged_source": {
           "observed": {
+            "ref_kind": "annotated",
             "tag_object": "056259cd4133e22624340741776709bb46eb9ae9",
             "commit": "0441dd494b03c9255a9b8e90e3458ebb115eacff",
             "tag_signature": "unsigned"
@@ -380,7 +386,174 @@
           "best_wait": {
             "unresolved": "no route, producer, registration-acknowledgement or gap-replay evidence and no real-binary observation exist, so a best-available wait cannot be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
           }
-        }
+        },
+        "listeners": [
+          "smtp",
+          "http"
+        ]
+      }
+    },
+    {
+      "target": "mailslurper",
+      "role": "competitor",
+      "pin": null,
+      "pending": {
+        "release_tag": "release-1.15.0",
+        "image": null,
+        "listeners": [
+          "smtp",
+          "http",
+          "ui"
+        ],
+        "launch": [
+          "-config",
+          "{config_path}"
+        ],
+        "launch_env": [],
+        "config_file": {
+          "name": "config.json",
+          "lines": [
+            "{{",
+            "  \"wwwAddress\": \"127.0.0.1\", \"wwwPort\": {ui_port},",
+            "  \"serviceAddress\": \"127.0.0.1\", \"servicePort\": {http_port},",
+            "  \"smtpAddress\": \"127.0.0.1\", \"smtpPort\": {smtp_port},",
+            "  \"dbEngine\": \"SQLite\", \"dbDatabase\": \"{data_dir}/mailslurper.db\",",
+            "  \"maxWorkers\": 1000, \"autoStartBrowser\": false",
+            "}}"
+          ]
+        },
+        "reason": "The pinned executable's bytes and digest were not available to this delivery (swarmail-landing/compare-bins/2026-11-07* was not visible in the implement sandbox, stop trigger S6), so there is no pin, no captured document and no digest. The launch below is drafted from the tool's upstream documentation as recalled, not from its --help or captured setup document, and is unverified. It has no wait facility to cite, no cap flag is known and the SQLite settings are unobserved."
+      }
+    },
+    {
+      "target": "smtp4dev",
+      "role": "competitor",
+      "pin": null,
+      "pending": {
+        "release_tag": "3.16.1",
+        "image": null,
+        "listeners": [
+          "smtp",
+          "http",
+          "pop3",
+          "imap"
+        ],
+        "launch": [
+          "--urls",
+          "http://{http_addr}",
+          "--smtpport",
+          "{smtp_port}",
+          "--pop3port",
+          "{pop3_port}",
+          "--imapport",
+          "{imap_port}",
+          "--db",
+          "{data_dir}/smtp4dev.db",
+          "--messagestokeep",
+          "10000",
+          "--nousersettings"
+        ],
+        "launch_env": [],
+        "config_file": null,
+        "reason": "The pinned executable's bytes and digest were not available to this delivery (swarmail-landing/compare-bins/2026-11-07* was not visible in the implement sandbox, stop trigger S6), so there is no pin, no captured document and no digest. The launch below is drafted from the tool's upstream documentation as recalled, not from its --help or captured setup document, and is unverified. Its default retention must be read from the captured appsettings and is overridden by --messagestokeep; whether the release is a single file (its checked members) is unobserved."
+      }
+    },
+    {
+      "target": "inbucket",
+      "role": "competitor",
+      "pin": null,
+      "pending": {
+        "release_tag": "v3.2.0",
+        "image": null,
+        "listeners": [
+          "smtp",
+          "http",
+          "pop3"
+        ],
+        "launch": [],
+        "launch_env": [
+          [
+            "INBUCKET_SMTP_ADDR",
+            "{smtp_addr}"
+          ],
+          [
+            "INBUCKET_WEB_ADDR",
+            "{http_addr}"
+          ],
+          [
+            "INBUCKET_POP3_ADDR",
+            "{pop3_addr}"
+          ],
+          [
+            "INBUCKET_STORAGE_TYPE",
+            "memory"
+          ],
+          [
+            "INBUCKET_STORAGE_MAILBOXMSGCAP",
+            "10000"
+          ]
+        ],
+        "config_file": null,
+        "reason": "The pinned executable's bytes and digest were not available to this delivery (swarmail-landing/compare-bins/2026-11-07* was not visible in the implement sandbox, stop trigger S6), so there is no pin, no captured document and no digest. The launch below is drafted from the tool's upstream documentation as recalled, not from its --help or captured setup document, and is unverified. Its default per-mailbox cap must be read from the captured configuration document and is overridden through the environment."
+      }
+    },
+    {
+      "target": "greenmail",
+      "role": "competitor",
+      "pin": null,
+      "pending": {
+        "release_tag": "2.1.15",
+        "image": null,
+        "listeners": [
+          "smtp",
+          "pop3"
+        ],
+        "launch": [
+          "-Dgreenmail.setup.smtp",
+          "-Dgreenmail.setup.pop3",
+          "-Dgreenmail.smtp.hostname=127.0.0.1",
+          "-Dgreenmail.smtp.port={smtp_port}",
+          "-Dgreenmail.pop3.hostname=127.0.0.1",
+          "-Dgreenmail.pop3.port={pop3_port}",
+          "-Dgreenmail.auth.disabled",
+          "-jar",
+          "{artifact}"
+        ],
+        "launch_env": [],
+        "config_file": null,
+        "reason": "The pinned executable's bytes and digest were not available to this delivery (swarmail-landing/compare-bins/2026-11-07* was not visible in the implement sandbox, stop trigger S6), so there is no pin, no captured document and no digest. The launch below is drafted from the tool's upstream documentation as recalled, not from its --help or captured setup document, and is unverified. It also needs a pinned JRE (whose license awaits the operator's ruling on the runtime list, decision 0130 section 6), and its REST API listener must be moved or disabled before the declared set can be exact (stop trigger S4)."
+      }
+    },
+    {
+      "target": "alkemio-mailslurper",
+      "role": "competitor",
+      "pin": null,
+      "pending": {
+        "release_tag": null,
+        "image": "ghcr.io/alkem-io/test-suites/mailslurper:smtps-4c6aecc-p2",
+        "listeners": [
+          "smtp",
+          "http",
+          "ui"
+        ],
+        "launch": [
+          "-config",
+          "{config_path}"
+        ],
+        "launch_env": [],
+        "config_file": {
+          "name": "config.json",
+          "lines": [
+            "{{",
+            "  \"wwwAddress\": \"127.0.0.1\", \"wwwPort\": {ui_port},",
+            "  \"serviceAddress\": \"127.0.0.1\", \"servicePort\": {http_port},",
+            "  \"smtpAddress\": \"127.0.0.1\", \"smtpPort\": {smtp_port},",
+            "  \"dbEngine\": \"SQLite\", \"dbDatabase\": \"{data_dir}/mailslurper.db\",",
+            "  \"maxWorkers\": 1000, \"autoStartBrowser\": false",
+            "}}"
+          ]
+        },
+        "reason": "The pinned executable's bytes and digest were not available to this delivery (swarmail-landing/compare-bins/2026-11-07* was not visible in the implement sandbox, stop trigger S6), so there is no pin, no captured document and no digest. The launch below is drafted from the tool's upstream documentation as recalled, not from its --help or captured setup document, and is unverified. The index digest sha256:55029f54... is known only by prefix from the issue and is never completed by guess; its license terms, layer and member are uncaptured, and the config it reads is assumed to be MailSlurper's, which is unverified."
       }
     }
   ]

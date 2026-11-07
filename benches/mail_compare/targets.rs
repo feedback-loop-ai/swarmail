@@ -1,17 +1,18 @@
 //! Owned targets (spec R4): one owner launches each server in its own
 //! process group with a closed environment and private scratch, proves
-//! protocol readiness within a deadline and that both listeners belong to
-//! that group, and on every exit path signals, reaps and verifies that the
-//! group and its listeners are gone. One cleanup worker per launch owns the
+//! protocol readiness within a deadline and that every declared listener
+//! belongs to that group — and, for a launch that declares its listeners,
+//! that the group listens on exactly that set — and on every exit path
+//! signals, reaps and verifies that the group and its listeners are gone. One cleanup worker per launch owns the
 //! child from spawn to disposal and outlives a cancelled owner (proposed
 //! decision 0093 §7). It never touches a process or endpoint it did not
 //! create.
 
-use crate::protocol::TargetKind;
-use crate::wire::{Http, WireError};
+use crate::protocol::{ConfigFile, ListenerRole, TargetKind};
+use crate::wire::{Http, Pop3, WireError};
 use serde::Serialize;
 use std::net::{SocketAddr, TcpListener};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,11 +41,60 @@ pub struct Limits {
 #[derive(Debug, Clone)]
 pub struct LaunchSpec {
     pub kind: TargetKind,
+    /// The program that is exec'd: the executable itself, or a runtime's
+    /// launcher (`bin/java`) when `extra.artifact` names the jar.
     pub binary: PathBuf,
     /// The digest the bytes must have; `None` only for the candidate,
-    /// whose digest is recorded rather than pinned.
+    /// whose digest is recorded rather than pinned. It is the digest of
+    /// `extra.artifact` when that is set, else of `binary`.
     pub expected_sha256: Option<String>,
     pub template: Vec<String>,
+    pub extra: LaunchExtra,
+}
+
+/// What lock version 4 adds to a launch (proposed decision 0130 §2). The
+/// default is lock version 3's launch: two listeners, no environment, no
+/// config file and no further checked members.
+#[derive(Debug, Clone, Default)]
+pub struct LaunchExtra {
+    /// The declared listeners. Empty is lock 3's `[smtp, http]` with no
+    /// exact-set proof; non-empty also proves the group listens on exactly
+    /// these addresses.
+    pub listeners: Vec<ListenerRole>,
+    /// `[NAME, value]` environment entries; slots in values are substituted.
+    pub env: Vec<[String; 2]>,
+    /// Rendered into the owned scratch before spawn, removed with it.
+    pub config: Option<ConfigFile>,
+    /// The jar a runtime launch runs, substituted for `{artifact}`.
+    pub artifact: Option<PathBuf>,
+    /// Absolute path and sha256 of every further member that is checked at
+    /// launch and again at seal.
+    pub members: Vec<(PathBuf, String)>,
+}
+
+impl LaunchSpec {
+    pub fn new(
+        kind: TargetKind,
+        binary: PathBuf,
+        expected_sha256: Option<String>,
+        template: Vec<String>,
+    ) -> LaunchSpec {
+        LaunchSpec {
+            kind,
+            binary,
+            expected_sha256,
+            template,
+            extra: LaunchExtra::default(),
+        }
+    }
+
+    fn roles(&self) -> Vec<ListenerRole> {
+        if self.extra.listeners.is_empty() {
+            vec![ListenerRole::Smtp, ListenerRole::Http]
+        } else {
+            self.extra.listeners.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -55,6 +105,8 @@ pub struct LaunchFacts {
     /// scratch paths and ports, which stay out of public records.
     pub argv_template: Vec<String>,
     pub ready_ns: u64,
+    /// Every checked member's relative name and sha256 as launched.
+    pub members: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -63,8 +115,17 @@ pub struct CleanupFacts {
     pub forced_kill: bool,
     pub reaped: bool,
     pub group_gone: bool,
+    /// The conjunction of `listeners`; its serialized name is unchanged.
     pub listeners_closed: bool,
+    /// Each declared listener's own proof.
+    pub listeners: Vec<ListenerFact>,
     pub scratch_removed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ListenerFact {
+    pub role: ListenerRole,
+    pub closed: bool,
 }
 
 impl CleanupFacts {
@@ -81,6 +142,7 @@ impl CleanupFacts {
             reaped: false,
             group_gone: false,
             listeners_closed: false,
+            listeners: Vec::new(),
             scratch_removed: false,
         }
     }
@@ -142,8 +204,18 @@ pub enum Bind {
 pub enum LaunchError {
     Binary(&'static str),
     DigestMismatch,
+    /// A checked member (a runtime's `java` or `libjvm.so`, an unpacked
+    /// sibling) is not the bytes the lock pinned.
+    MemberDigestMismatch,
+    /// The launch template names a slot the declared listeners do not
+    /// provide, or omits a declared listener.
+    Template,
     Scratch,
     Spawn,
+    /// The ready group listens on an address no declaration names (a
+    /// tool's fixed default port); it was cleaned up, and the facts say
+    /// whether that cleanup is proved.
+    UndeclaredListener(CleanupFacts),
     /// Readiness failed; the partial start was still cleaned up, and the
     /// facts say whether that cleanup is proved.
     NotReady(&'static str, CleanupFacts),
@@ -154,7 +226,7 @@ pub enum LaunchError {
 /// cleans up, so a cancelled launch still disposes of both.
 #[derive(Default)]
 struct Shared {
-    addrs: Option<(SocketAddr, SocketAddr)>,
+    addrs: Vec<(ListenerRole, SocketAddr)>,
     drain: Option<JoinHandle<()>>,
     /// A test seam: awaited by the worker after it is told to stop and
     /// before it cleans, so a test can hold cleanup or fail it.
@@ -162,14 +234,14 @@ struct Shared {
     hook: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
 }
 
-/// Where a target's listing keeps a message's subject.
-type SubjectOf = fn(&serde_json::Value) -> Option<&str>;
-
 pub struct Owned {
     pub kind: TargetKind,
     pub smtp: SocketAddr,
+    /// The HTTP listener; port 0 for a target that is read over POP3.
     pub http_addr: SocketAddr,
     pub http: Http,
+    /// GreenMail's read path (proposed decision 0130 §4).
+    pub pop3: Option<Pop3>,
     pub facts: LaunchFacts,
     pgid: i32,
     limits: Limits,
@@ -184,17 +256,79 @@ pub struct Owned {
 
 pub use crate::protocol::sha256_hex;
 
-/// A loopback port the OS just handed out. The listener is dropped before
-/// the child binds it, so a foreign bind can win the gap; that loss shows
-/// up as a readiness failure, never as measuring someone else's server,
-/// because readiness also requires the owned child to be alive.
-fn reserve_port() -> Option<SocketAddr> {
-    TcpListener::bind("127.0.0.1:0").ok()?.local_addr().ok()
+/// Loopback ports the OS just handed out, all held until every one is
+/// reserved so no two launch roles can share one. The listeners are dropped
+/// before the child binds, so a foreign bind can win the gap; that loss
+/// shows up as a readiness failure, never as measuring someone else's
+/// server, because readiness also requires the owned child to be alive.
+fn reserve_ports(n: usize) -> Option<Vec<SocketAddr>> {
+    let held: Vec<TcpListener> = (0..n)
+        .map(|_| TcpListener::bind("127.0.0.1:0").ok())
+        .collect::<Option<_>>()?;
+    held.iter().map(|l| l.local_addr().ok()).collect()
 }
 
 fn private_dir(path: &Path) -> bool {
     std::fs::DirBuilder::new().mode(0o700).create(path).is_ok()
 }
+
+/// Substitute every slot of a lock 4 text: one address and one port per
+/// declared role, the owned data directory and scratch, the launched
+/// artifact and the rendered config file.
+pub fn substitute(
+    text: &str,
+    roles: &[(ListenerRole, String)],
+    dirs: (&Path, &Path),
+    artifact: Option<&Path>,
+    config_path: Option<&Path>,
+) -> String {
+    let mut out = text.to_owned();
+    for (escape, mark) in crate::protocol::BRACE_ESCAPES {
+        out = out.replace(escape, mark);
+    }
+    for (role, addr) in roles {
+        let port = addr.rsplit(':').next().unwrap_or_default();
+        out = out
+            .replace(&role.addr_slot(), addr)
+            .replace(&role.port_slot(), port);
+    }
+    out = out
+        .replace("{data_dir}", &dirs.0.to_string_lossy())
+        .replace("{scratch}", &dirs.1.to_string_lossy());
+    if let Some(a) = artifact {
+        out = out.replace("{artifact}", &a.to_string_lossy());
+    }
+    if let Some(c) = config_path {
+        out = out.replace("{config_path}", &c.to_string_lossy());
+    }
+    for (escape, mark) in crate::protocol::BRACE_ESCAPES {
+        out = out.replace(mark, &escape[..1]);
+    }
+    out
+}
+
+/// A launch member read and digested; unreadable is a refusal, not a pass.
+fn digest_of(path: &Path) -> Result<String, LaunchError> {
+    let bytes = std::fs::read(path).map_err(|_| LaunchError::Binary("unreadable"))?;
+    Ok(sha256_hex(&bytes))
+}
+
+macro_rules! bind_whys {
+    ($($role:literal),*) => {
+        fn bind_why(role: ListenerRole, bind: Bind) -> &'static str {
+            match (role.name(), bind) {
+                $(
+                    ($role, Bind::Foreign) => concat!($role, " bind is foreign"),
+                    ($role, Bind::Ambiguous) => concat!($role, " bind is ambiguous"),
+                    ($role, Bind::Absent) => concat!($role, " bind is absent"),
+                    ($role, Bind::Unknown) => concat!($role, " bind ownership unknown"),
+                )*
+                _ => "bind is not owned",
+            }
+        }
+    };
+}
+bind_whys!("smtp", "http", "pop3", "imap", "ui");
 
 impl Owned {
     /// Launch `spec` with scratch at `scratch` (which must not exist).
@@ -205,23 +339,53 @@ impl Owned {
         clock: &crate::wire::Clock,
         keepers: &Keepers,
     ) -> Result<Owned, LaunchError> {
+        let roles = spec.roles();
+        if !spec.extra.listeners.is_empty() {
+            // The declared listeners and the template must agree before a
+            // process starts: an undeclared slot or an unused listener
+            // would leave a port the driver does not own.
+            let mut why = Vec::new();
+            crate::protocol::launch_checks(
+                &mut why,
+                spec.kind,
+                &roles,
+                &spec.template,
+                &spec.extra.env,
+                spec.extra.config.as_ref(),
+            );
+            if !why.is_empty() {
+                return Err(LaunchError::Template);
+            }
+        }
         // Absolute paths only past this point: a relative program or scratch
         // path would resolve against the child's working directory.
         let binary =
             std::fs::canonicalize(&spec.binary).map_err(|_| LaunchError::Binary("unreadable"))?;
-        let bytes = std::fs::read(&binary).map_err(|_| LaunchError::Binary("unreadable"))?;
         let mode = std::fs::metadata(&binary).map_err(|_| LaunchError::Binary("unreadable"))?;
         if mode.permissions().mode() & 0o111 == 0 {
             return Err(LaunchError::Binary("not executable"));
         }
-        let digest = sha256_hex(&bytes);
-        drop(bytes);
+        let artifact = match &spec.extra.artifact {
+            Some(a) => {
+                Some(std::fs::canonicalize(a).map_err(|_| LaunchError::Binary("unreadable"))?)
+            }
+            None => None,
+        };
+        let digest = digest_of(artifact.as_ref().unwrap_or(&binary))?;
         if spec
             .expected_sha256
             .as_deref()
             .is_some_and(|want| want != digest)
         {
             return Err(LaunchError::DigestMismatch);
+        }
+        let mut members = Vec::new();
+        for (path, want) in &spec.extra.members {
+            let have = digest_of(path)?;
+            if have != *want {
+                return Err(LaunchError::MemberDigestMismatch);
+            }
+            members.push((path.to_string_lossy().into_owned(), have));
         }
         if !private_dir(scratch) {
             return Err(LaunchError::Scratch);
@@ -237,26 +401,72 @@ impl Owned {
                 return Err(LaunchError::Scratch);
             }
         }
-        let (smtp_slot, http_slot) = match spec.kind {
-            TargetKind::Swarmail => ("127.0.0.1:0".to_owned(), "127.0.0.1:0".to_owned()),
-            _ => match (reserve_port(), reserve_port()) {
-                (Some(s), Some(h)) => (s.to_string(), h.to_string()),
-                _ => {
+        // One reserved loopback port per declared role; Swarmail binds its
+        // own ports and reports them on stdout.
+        let slots: Vec<(ListenerRole, String)> = if spec.kind == TargetKind::Swarmail {
+            roles
+                .iter()
+                .map(|r| (*r, "127.0.0.1:0".to_owned()))
+                .collect()
+        } else {
+            match reserve_ports(roles.len()) {
+                Some(addrs) => roles
+                    .iter()
+                    .zip(addrs)
+                    .map(|(r, a)| (*r, a.to_string()))
+                    .collect(),
+                None => {
                     let _ = std::fs::remove_dir_all(scratch);
                     return Err(LaunchError::Spawn);
                 }
-            },
+            }
         };
         let data_dir = scratch.join("data");
-        let argv: Vec<String> = spec
-            .template
-            .iter()
-            .map(|a| {
-                a.replace("{smtp_addr}", &smtp_slot)
-                    .replace("{http_addr}", &http_slot)
-                    .replace("{data_dir}", &data_dir.to_string_lossy())
-            })
-            .collect();
+        let config_path = match &spec.extra.config {
+            Some(c) => {
+                let path = scratch.join("config").join(&c.name);
+                let text = c
+                    .lines
+                    .iter()
+                    .map(|l| {
+                        substitute(
+                            l,
+                            &slots,
+                            (&data_dir, scratch),
+                            artifact.as_deref(),
+                            Some(&path),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let written = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&path)
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        f.write_all(text.as_bytes())?;
+                        f.write_all(b"\n")
+                    });
+                if written.is_err() {
+                    let _ = std::fs::remove_dir_all(scratch);
+                    return Err(LaunchError::Scratch);
+                }
+                Some(path)
+            }
+            None => None,
+        };
+        let sub = |text: &str| {
+            substitute(
+                text,
+                &slots,
+                (&data_dir, scratch),
+                artifact.as_deref(),
+                config_path.as_deref(),
+            )
+        };
+        let argv: Vec<String> = spec.template.iter().map(|a| sub(a)).collect();
         let mut cmd = Command::new(&binary);
         cmd.args(&argv)
             .env_clear()
@@ -267,8 +477,11 @@ impl Owned {
             .env("XDG_CONFIG_HOME", scratch.join("config"))
             .env("XDG_CACHE_HOME", scratch.join("cache"))
             .env("XDG_DATA_HOME", scratch.join("data"))
-            .env("XDG_STATE_HOME", scratch.join("state"))
-            .current_dir(scratch)
+            .env("XDG_STATE_HOME", scratch.join("state"));
+        for [name, value] in &spec.extra.env {
+            cmd.env(name, sub(value));
+        }
+        cmd.current_dir(scratch)
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .stdout(if spec.kind == TargetKind::Swarmail {
@@ -335,11 +548,13 @@ impl Owned {
                 limits.request,
                 limits.max_response_bytes,
             ),
+            pop3: None,
             facts: LaunchFacts {
                 target: spec.kind,
                 executable_sha256: digest,
                 argv_template: spec.template.clone(),
                 ready_ns: 0,
+                members,
             },
             pgid,
             limits: limits.clone(),
@@ -350,57 +565,70 @@ impl Owned {
             settled: None,
         };
         let deadline = Instant::now() + limits.startup;
-        let addrs = match (spec.kind, stdout) {
+        let declared: Option<Vec<(ListenerRole, SocketAddr)>> = match (spec.kind, stdout) {
             (TargetKind::Swarmail, Some(out)) => {
                 let (addrs, drain) = read_startup(out, deadline).await;
                 owned.shared.lock().expect("shared lock").drain = drain;
-                addrs
+                addrs.map(|(s, h)| vec![(ListenerRole::Smtp, s), (ListenerRole::Http, h)])
             }
-            _ => smtp_slot.parse().ok().zip(http_slot.parse().ok()),
+            _ => slots
+                .iter()
+                .map(|(r, a)| a.parse().ok().map(|a| (*r, a)))
+                .collect(),
         };
-        let Some((smtp, http)) = addrs else {
+        let Some(declared) = declared else {
             let facts = owned.shutdown().await;
             return Err(LaunchError::NotReady("no listener addresses", facts));
         };
-        owned.shared.lock().expect("shared lock").addrs = Some((smtp, http));
+        owned.shared.lock().expect("shared lock").addrs = declared.clone();
+        let addr_of =
+            |role: ListenerRole| declared.iter().find(|(r, _)| *r == role).map(|(_, a)| *a);
+        let (Some(smtp), http) = (addr_of(ListenerRole::Smtp), addr_of(ListenerRole::Http)) else {
+            let facts = owned.shutdown().await;
+            return Err(LaunchError::NotReady("no listener addresses", facts));
+        };
         owned.smtp = smtp;
-        owned.http_addr = http;
-        owned.http = Http::new(http, limits.request, limits.max_response_bytes);
+        if let Some(http) = http {
+            owned.http_addr = http;
+            owned.http = Http::new(http, limits.request, limits.max_response_bytes);
+        }
+        if spec.kind == TargetKind::Greenmail {
+            let Some(pop3) = addr_of(ListenerRole::Pop3) else {
+                let facts = owned.shutdown().await;
+                return Err(LaunchError::NotReady("no listener addresses", facts));
+            };
+            owned.pop3 = Some(Pop3::new(pop3, limits.request, limits.max_response_bytes));
+        }
         if let Err(why) = owned.ready(deadline).await {
             let facts = owned.shutdown().await;
             return Err(LaunchError::NotReady(why, facts));
         }
         // Readiness answered, but a foreign listener that won the gap would
-        // answer too: both binds must be held by the owned group.
-        for (addr, whys) in [
-            (
-                smtp,
-                [
-                    "smtp bind is foreign",
-                    "smtp bind is ambiguous",
-                    "smtp bind is absent",
-                    "smtp bind ownership unknown",
-                ],
-            ),
-            (
-                http,
-                [
-                    "http bind is foreign",
-                    "http bind is ambiguous",
-                    "http bind is absent",
-                    "http bind ownership unknown",
-                ],
-            ),
-        ] {
-            let why = match binds(pgid, addr) {
-                Bind::Owned => continue,
-                Bind::Foreign => whys[0],
-                Bind::Ambiguous => whys[1],
-                Bind::Absent => whys[2],
-                Bind::Unknown => whys[3],
-            };
-            let facts = owned.shutdown().await;
-            return Err(LaunchError::NotReady(why, facts));
+        // answer too: every declared bind must be held by the owned group.
+        for (role, addr) in &declared {
+            let bind = binds(pgid, *addr);
+            if bind != Bind::Owned {
+                let facts = owned.shutdown().await;
+                return Err(LaunchError::NotReady(bind_why(*role, bind), facts));
+            }
+        }
+        // A launch that declares its listeners owns exactly those: a tool's
+        // fixed default port would otherwise stay bound, collide with a
+        // parallel run and still read as a closed cleanup.
+        if !spec.extra.listeners.is_empty() {
+            let want: std::collections::BTreeSet<SocketAddr> =
+                declared.iter().map(|(_, a)| *a).collect();
+            match group_listeners(pgid) {
+                Some(have) if have == want => {}
+                Some(_) => {
+                    let facts = owned.shutdown().await;
+                    return Err(LaunchError::UndeclaredListener(facts));
+                }
+                None => {
+                    let facts = owned.shutdown().await;
+                    return Err(LaunchError::NotReady("listener set unknown", facts));
+                }
+            }
         }
         owned.facts.ready_ns = clock.now_ns();
         Ok(owned)
@@ -439,15 +667,19 @@ impl Owned {
     }
 
     /// Protocol readiness: the owned child still runs, the SMTP banner is
-    /// `220` and the HTTP listing answers `200`, all before `deadline`.
+    /// `220` and the read path answers — the HTTP listing with `200`, or for
+    /// GreenMail the POP3 `+OK` greeting — all before `deadline`.
     async fn ready(&mut self, deadline: Instant) -> Result<(), &'static str> {
         loop {
             if self.exited.load(Ordering::SeqCst) {
                 return Err("exited before ready");
             }
             let banner = crate::wire::Smtp::open(self.smtp, self.limits.request).await;
-            let listing = self.http.get(&self.list_path(0, 1)).await;
-            if let (Ok(s), Ok((200, _))) = (banner, listing) {
+            let read_ok = match &self.pop3 {
+                Some(pop3) => pop3.greeting().await.is_ok(),
+                None => matches!(self.http.get(&self.list_path(0, 1)).await, Ok((200, _))),
+            };
+            if let (Ok(s), true) = (banner, read_ok) {
                 s.quit().await;
                 return Ok(());
             }
@@ -460,18 +692,41 @@ impl Owned {
         }
     }
 
+    /// Requests made on the read path so far: HTTP requests, or POP3
+    /// commands for GreenMail.
+    pub fn requests(&self) -> u64 {
+        self.http.requests() + self.pop3.as_ref().map_or(0, Pop3::requests)
+    }
+
     // The competitor mappings below follow the captured API documents in
     // docs/evals/sources/ where those agree with the pinned executables,
     // and the executables where they do not; every disagreement is listed
-    // in docs/evals/README.md and protocol.json's unresolved list.
+    // in docs/evals/README.md and protocol.json's unresolved list. The
+    // MailSlurper, smtp4dev, Inbucket and Alkemio shapes below are
+    // UNVERIFIED: they are authored from the upstream documentation as
+    // recalled, with no captured document or pinned executable behind them
+    // (those bytes were not available), so each of those rows stays
+    // pending until its real test passes. A wrong shape fails loudly
+    // (malformed or incomplete), never as a shorter success.
 
     fn list_path(&self, start: u32, limit: u32) -> String {
+        let page = start / limit.max(1) + 1;
         match self.kind {
             TargetKind::Swarmail => format!(
                 "/api/v1/inboxes/default/messages?subject=mail-compare&limit={limit}&offset={start}"
             ),
             TargetKind::Mailpit => format!("/api/v1/messages?start={start}&limit={limit}"),
             TargetKind::Mailhog => format!("/api/v2/messages?start={start}&limit={limit}"),
+            TargetKind::Mailslurper | TargetKind::AlkemioMailslurper => {
+                format!("/mail?pageNumber={page}")
+            }
+            TargetKind::Smtp4dev => {
+                format!("/api/messages?pageNumber={page}&pageSize={limit}")
+            }
+            TargetKind::Inbucket => format!("/api/v1/mailbox/{}", mailbox()),
+            // Read over POP3, never over HTTP; this path is the readiness
+            // probe's, which a POP3 target does not use.
+            TargetKind::Greenmail => String::new(),
         }
     }
 
@@ -485,41 +740,16 @@ impl Owned {
             TargetKind::Mailhog => {
                 format!("/api/v2/search?kind=containing&query={q}&start={start}&limit={limit}")
             }
+            // No verified server search: these are scanned completely and
+            // filtered on the client (see `find`).
+            _ => self.list_path(start, limit),
         }
     }
 
     /// One page: the count of everything the request matches (not the
-    /// mailbox size) and `[(server id, subject)]`. Mailpit's search keeps
-    /// the mailbox size in `total` and the matches in `messages_count`;
-    /// MailHog's `total` is the match count whatever its Swagger says.
-    /// Where the target echoes `start`, it must be the offset asked for.
+    /// mailbox size) and `[(server id, subject)]`. See [`decode_page`].
     fn page(&self, v: &serde_json::Value, start: u32) -> Option<(u64, Vec<(String, String)>)> {
-        let (items, id, matching, subject): (&str, &str, &str, SubjectOf) = match self.kind {
-            TargetKind::Swarmail => ("emails", "id", "total", |m| m.get("subject")?.as_str()),
-            TargetKind::Mailpit => ("messages", "ID", "messages_count", |m| {
-                m.get("Subject")?.as_str()
-            }),
-            TargetKind::Mailhog => ("items", "ID", "total", |m| {
-                m.get("Content")?
-                    .get("Headers")?
-                    .get("Subject")?
-                    .get(0)?
-                    .as_str()
-            }),
-        };
-        let total = v.get(matching)?.as_u64()?;
-        if self.kind != TargetKind::Swarmail && v.get("start")?.as_u64()? != u64::from(start) {
-            return None;
-        }
-        let list = v.get(items)?.as_array()?;
-        let mut out = Vec::with_capacity(list.len());
-        for m in list {
-            out.push((
-                m.get(id)?.as_str()?.to_owned(),
-                subject(m).unwrap_or_default().to_owned(),
-            ));
-        }
-        Some((total, out))
+        decode_page(self.kind, v, start)
     }
 
     /// Page `path(start, PAGE)` to completion: `[(server id, subject)]`.
@@ -534,14 +764,14 @@ impl Owned {
         path: impl Fn(u32, u32) -> String,
         max_pages: u32,
     ) -> Result<Vec<(String, String)>, WireError> {
-        const PAGE: u32 = 250;
+        let size = page_size(self.kind);
         let mut out: Vec<(String, String)> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut expected = None;
         for _ in 0..max_pages {
             // The next offset is what arrived, never a fixed stride.
             let start = u32::try_from(out.len()).map_err(|_| WireError::Oversized)?;
-            let (status, v) = self.http.get_json(&path(start, PAGE)).await?;
+            let (status, v) = self.http.get_json(&path(start, size)).await?;
             let (total, items) = (status == 200)
                 .then(|| self.page(&v, start))
                 .flatten()
@@ -559,7 +789,7 @@ impl Owned {
             match (out.len() as u64).cmp(&total) {
                 std::cmp::Ordering::Equal => return Ok(out),
                 std::cmp::Ordering::Greater => return Err(WireError::Incomplete),
-                std::cmp::Ordering::Less if got < PAGE as usize => {
+                std::cmp::Ordering::Less if got < size as usize => {
                     return Err(WireError::Incomplete);
                 }
                 std::cmp::Ordering::Less => {}
@@ -569,8 +799,16 @@ impl Owned {
     }
 
     /// Every message the server shows, paged to completion, as
-    /// `(token or "", server id)`.
+    /// `(token or "", server id)`. GreenMail is read over POP3 in a fresh
+    /// session; `max_pages` bounds HTTP paging only.
     pub async fn list_all(&self, max_pages: u32) -> Result<Vec<(String, String)>, WireError> {
+        if let Some(pop3) = &self.pop3 {
+            let mut out = Vec::new();
+            for (uid, head) in pop3.list().await? {
+                out.push((token_of(&subject_of_headers(&head)?), uid));
+            }
+            return Ok(out);
+        }
         let all = self.scan(|s, l| self.list_path(s, l), max_pages).await?;
         Ok(all
             .into_iter()
@@ -579,9 +817,22 @@ impl Owned {
     }
 
     /// One complete search for `token`: every hit, related or not, so a
-    /// target that answers with unrelated mail is recorded doing so.
+    /// target that answers with unrelated mail is recorded doing so. A
+    /// target without a verified server search is scanned completely and
+    /// filtered on the client by token (labelled per row), so only matching
+    /// mail is returned; completeness is the scan's.
     pub async fn find(&self, token: &str) -> Result<Vec<String>, WireError> {
         const FIND_MAX_PAGES: u32 = 4;
+        if !has_server_search(self.kind) {
+            let all = self
+                .list_all(crate::protocol::MAX_MESSAGES / page_size(self.kind) + 1)
+                .await?;
+            return Ok(all
+                .into_iter()
+                .filter(|(t, _)| t == token)
+                .map(|(t, _)| t)
+                .collect());
+        }
         let hits = self
             .scan(|s, l| self.find_path(token, s, l), FIND_MAX_PAGES)
             .await?;
@@ -670,6 +921,50 @@ impl Owned {
                     .and_then(|d| d.as_str())
                     .ok_or(WireError::Malformed)?;
                 parse_raw(raw.as_bytes())
+            }
+            TargetKind::Smtp4dev => {
+                let (status, raw) = self.http.get(&format!("/api/messages/{id_q}/raw")).await?;
+                if status != 200 {
+                    return Err(WireError::Malformed);
+                }
+                parse_raw(&raw)
+            }
+            TargetKind::Inbucket => {
+                let (status, raw) = self
+                    .http
+                    .get(&format!("/api/v1/mailbox/{}/{id_q}/source", mailbox()))
+                    .await?;
+                if status != 200 {
+                    return Err(WireError::Malformed);
+                }
+                parse_raw(&raw)
+            }
+            TargetKind::Mailslurper | TargetKind::AlkemioMailslurper => {
+                let (status, v) = self.http.get_json(&format!("/mail/{id_q}")).await?;
+                if status != 200 {
+                    return Err(WireError::Malformed);
+                }
+                // MailSlurper keeps the message's decoded fields, not its
+                // raw bytes: the stored subject, content type, boundary and
+                // body are re-wrapped and read by the same MIME parser.
+                let s = |k: &str| v.get(k).and_then(|x| x.as_str());
+                let subject = s("subject").ok_or(WireError::Malformed)?;
+                let body = s("body").ok_or(WireError::Malformed)?;
+                let content_type = s("contentType").unwrap_or("text/plain");
+                let boundary = s("boundary")
+                    .filter(|b| !b.is_empty())
+                    .map(|b| format!("; boundary=\"{b}\""))
+                    .unwrap_or_default();
+                parse_raw(
+                    format!(
+                        "Subject: {subject}\r\nMIME-Version: 1.0\r\nContent-Type: {content_type}{boundary}\r\n\r\n{body}"
+                    )
+                    .as_bytes(),
+                )
+            }
+            TargetKind::Greenmail => {
+                let pop3 = self.pop3.as_ref().ok_or(WireError::Malformed)?;
+                parse_raw(&pop3.retrieve(id).await?)
             }
         }
     }
@@ -763,7 +1058,7 @@ async fn cleanup(w: &Worker, mut child: Child, reaped_early: Option<bool>) -> Cl
     let until = start + w.limits.cleanup;
     let (addrs, drain) = {
         let mut shared = w.shared.lock().expect("shared lock");
-        (shared.addrs, shared.drain.take())
+        (shared.addrs.clone(), shared.drain.take())
     };
     let mut facts = CleanupFacts {
         target: w.kind,
@@ -771,6 +1066,7 @@ async fn cleanup(w: &Worker, mut child: Child, reaped_early: Option<bool>) -> Cl
         reaped: reaped_early.unwrap_or(false),
         group_gone: false,
         listeners_closed: false,
+        listeners: Vec::new(),
         scratch_removed: false,
     };
     if reaped_early.is_none() {
@@ -812,11 +1108,20 @@ async fn cleanup(w: &Worker, mut child: Child, reaped_early: Option<bool>) -> Cl
         };
         facts.reaped &= drained;
     }
-    facts.listeners_closed = match addrs {
-        Some((smtp, http)) => refused(smtp, until).await && refused(http, until).await,
+    // Every declared listener is probed on its own, so a single one left
+    // open is named and fails the conjunction.
+    for (role, addr) in &addrs {
+        facts.listeners.push(ListenerFact {
+            role: *role,
+            closed: refused(*addr, until).await,
+        });
+    }
+    facts.listeners_closed = if addrs.is_empty() {
         // No address was ever learned, so none can be probed; the group
         // being gone is what shows no listener of ours survives.
-        None => facts.group_gone,
+        facts.group_gone
+    } else {
+        facts.listeners.iter().all(|l| l.closed)
     };
     facts.scratch_removed = std::fs::remove_dir_all(&w.scratch).is_ok() || !w.scratch.exists();
     facts
@@ -829,6 +1134,113 @@ pub fn unchanged(binary: &Path, launched_sha256: &str) -> bool {
     std::fs::canonicalize(binary)
         .and_then(std::fs::read)
         .is_ok_and(|bytes| sha256_hex(&bytes) == launched_sha256)
+}
+
+/// Whether a launch's executable and every checked member still have the
+/// digests they had at launch: rechecked before a run is sealed.
+pub fn spec_unchanged(spec: &LaunchSpec, launched: &LaunchFacts) -> bool {
+    let measured = spec.extra.artifact.as_ref().unwrap_or(&spec.binary);
+    unchanged(measured, &launched.executable_sha256)
+        && spec.extra.members.iter().all(|(path, _)| {
+            let name = path.to_string_lossy();
+            launched
+                .members
+                .iter()
+                .find(|(n, _)| *n == name)
+                .is_some_and(|(_, sha)| unchanged(path, sha))
+        })
+        && launched.members.len() == spec.extra.members.len()
+}
+
+/// Every TCP address the group listens on (Linux: read from `/proc`): the
+/// listening sockets whose inode a group member holds. Wildcard and
+/// v4-mapped addresses are reported as they are, v4-mapped ones normalized
+/// to the v4 address, so a listener on all interfaces never equals a
+/// loopback declaration. `None` when the tables cannot be read.
+pub fn group_listeners(pgid: i32) -> Option<std::collections::BTreeSet<SocketAddr>> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_group_listeners(pgid)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pgid;
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_group_listeners(pgid: i32) -> Option<std::collections::BTreeSet<SocketAddr>> {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let mut sockets: BTreeMap<String, SocketAddr> = BTreeMap::new();
+    for (table, v6) in [("/proc/net/tcp", false), ("/proc/net/tcp6", true)] {
+        let Ok(text) = std::fs::read_to_string(table) else {
+            if v6 {
+                continue; // no IPv6 stack, so no v6 listener
+            }
+            return None;
+        };
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            let (Some(local), Some(state), Some(inode)) = (f.get(1), f.get(3), f.get(9)) else {
+                return None;
+            };
+            if *state != "0A" {
+                continue;
+            }
+            let (ip_hex, port_hex) = local.split_once(':')?;
+            let port = u16::from_str_radix(port_hex, 16).ok()?;
+            let mut bytes = Vec::with_capacity(16);
+            for at in (0..ip_hex.len()).step_by(8) {
+                let word = u32::from_str_radix(ip_hex.get(at..at + 8)?, 16).ok()?;
+                bytes.extend_from_slice(&word.to_ne_bytes());
+            }
+            let ip = match (v6, bytes.len()) {
+                (false, 4) => IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3])),
+                (true, 16) => {
+                    let b: [u8; 16] = bytes.try_into().ok()?;
+                    let v6 = Ipv6Addr::from(b);
+                    v6.to_ipv4_mapped()
+                        .map(IpAddr::V4)
+                        .unwrap_or(IpAddr::V6(v6))
+                }
+                _ => return None,
+            };
+            sockets.insert(format!("socket:[{inode}]"), SocketAddr::new(ip, port));
+        }
+    }
+    let mut out = BTreeSet::new();
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .filter(|n| n.bytes().all(|b| b.is_ascii_digit()))
+        else {
+            continue;
+        };
+        // A process that exits mid-walk has stopped being a member.
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        let pgrp = stat
+            .rsplit(')')
+            .next()
+            .and_then(|rest| rest.split_whitespace().nth(2))
+            .and_then(|g| g.parse::<i32>().ok());
+        if pgrp != Some(pgid) {
+            continue;
+        }
+        // A member whose descriptors cannot be read leaves the set unknown.
+        for fd in std::fs::read_dir(format!("/proc/{pid}/fd")).ok()?.flatten() {
+            if let Ok(link) = std::fs::read_link(fd.path())
+                && let Some(addr) = link.to_str().and_then(|l| sockets.get(l))
+            {
+                out.insert(*addr);
+            }
+        }
+    }
+    Some(out)
 }
 
 /// Who holds the listening sockets that accept at `addr` (Linux: read from
@@ -1007,6 +1419,131 @@ pub fn token_of(subject: &str) -> String {
         (Some("mail-compare"), Some(t)) if t.starts_with("mc-") => t.to_owned(),
         _ => String::new(),
     }
+}
+
+/// The mailbox the corpus's recipient reads from: the address's local part.
+fn mailbox() -> &'static str {
+    crate::wire::TO.split('@').next().unwrap_or_default()
+}
+
+/// Whether a target has a source-verified server search the driver uses.
+/// Every other target is scanned completely and filtered on the client.
+pub fn has_server_search(kind: TargetKind) -> bool {
+    matches!(
+        kind,
+        TargetKind::Swarmail | TargetKind::Mailpit | TargetKind::Mailhog
+    )
+}
+
+/// How many messages one listing page holds. A page that comes up short
+/// before the count is an incomplete scan, so a wrong figure fails loudly.
+pub fn page_size(kind: TargetKind) -> u32 {
+    match kind {
+        TargetKind::Mailslurper | TargetKind::AlkemioMailslurper => 50,
+        _ => 250,
+    }
+}
+
+/// A message id as the listing states it: a string or an integer.
+fn id_text(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// One listing page, decoded: the count of everything the request matches
+/// and `[(server id, subject)]`. Mailpit's search keeps the mailbox size in
+/// `total` and the matches in `messages_count`; MailHog's `total` is the
+/// match count whatever its Swagger says. Where the target echoes `start`
+/// (or its page number) it must be the position asked for. A body that is
+/// not exactly the documented shape, or whose items disagree with its own
+/// count, is `None`: never a shorter success.
+pub fn decode_page(
+    kind: TargetKind,
+    v: &serde_json::Value,
+    start: u32,
+) -> Option<(u64, Vec<(String, String)>)> {
+    let size = page_size(kind);
+    let page_number = u64::from(start / size) + 1;
+    // (items, total, subject) per object-shaped target.
+    let (list, total): (&Vec<serde_json::Value>, u64) = match kind {
+        TargetKind::Swarmail => (v.get("emails")?.as_array()?, v.get("total")?.as_u64()?),
+        TargetKind::Mailpit => {
+            if v.get("start")?.as_u64()? != u64::from(start) {
+                return None;
+            }
+            (
+                v.get("messages")?.as_array()?,
+                v.get("messages_count")?.as_u64()?,
+            )
+        }
+        TargetKind::Mailhog => {
+            if v.get("start")?.as_u64()? != u64::from(start) {
+                return None;
+            }
+            (v.get("items")?.as_array()?, v.get("total")?.as_u64()?)
+        }
+        TargetKind::Mailslurper | TargetKind::AlkemioMailslurper => {
+            if start % size != 0 {
+                return None;
+            }
+            (
+                v.get("mailItems")?.as_array()?,
+                v.get("totalMailItems")?.as_u64()?,
+            )
+        }
+        TargetKind::Smtp4dev => {
+            if start % size != 0 || v.get("currentPage")?.as_u64()? != page_number {
+                return None;
+            }
+            (v.get("results")?.as_array()?, v.get("rowCount")?.as_u64()?)
+        }
+        // A per-mailbox listing is one unpaged array: its length is its
+        // own count, and only offset 0 exists.
+        TargetKind::Inbucket => {
+            let list = v.as_array()?;
+            if start != 0 {
+                return None;
+            }
+            (list, list.len() as u64)
+        }
+        // POP3 has no JSON listing.
+        TargetKind::Greenmail => return None,
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for m in list {
+        let (id, subject) = match kind {
+            TargetKind::Swarmail => (m.get("id")?, m.get("subject")),
+            TargetKind::Mailpit => (m.get("ID")?, m.get("Subject")),
+            TargetKind::Mailhog => (
+                m.get("ID")?,
+                m.get("Content")
+                    .and_then(|c| c.get("Headers"))
+                    .and_then(|h| h.get("Subject"))
+                    .and_then(|s| s.get(0)),
+            ),
+            _ => (m.get("id")?, m.get("subject")),
+        };
+        out.push((
+            id_text(id)?,
+            subject
+                .and_then(|s| s.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+        ));
+    }
+    Some((total, out))
+}
+
+/// The subject of a header block (a POP3 `TOP n 0` answer), as the crate's
+/// own MIME parser reads it.
+pub fn subject_of_headers(head: &[u8]) -> Result<String, WireError> {
+    let parsed = mail_parser::MessageParser::default()
+        .parse(head)
+        .ok_or(WireError::Malformed)?;
+    Ok(parsed.subject().unwrap_or_default().to_owned())
 }
 
 /// Only parts that are text/plain or text/html as sent: the parser's

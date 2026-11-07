@@ -2,7 +2,9 @@
 //! recompute it from `samples.jsonl` and the protocol. Losses, timeouts,
 //! failures and unstarted work are counted beside every rate.
 
-use crate::protocol::{Claim, Protocol, ResourceProfile, StorageProfile, TargetKind};
+use crate::protocol::{
+    Backend, Claim, Protocol, Provenance, ResourceProfile, StorageProfile, TargetKind,
+};
 use crate::records::{Manifest, Phase, Row};
 use crate::runner::Lifecycle;
 use crate::stats::{Quantiles, Reconciliation, quantiles};
@@ -29,10 +31,76 @@ pub struct Report {
     pub storage_profile: Option<StorageProfile>,
     pub resource_profile: Option<ResourceProfile>,
     pub units: Units,
+    /// What each row is, stated beside its cells: source kind, read path,
+    /// search method and storage, so no cell is read without its label
+    /// (proposed decision 0130 §3).
+    pub labels: Vec<RowLabel>,
     pub throughput: Vec<ThroughputCell>,
     pub waits: Vec<WaitCell>,
     pub launches: Vec<crate::targets::LaunchFacts>,
     pub cleanups: Vec<crate::targets::CleanupFacts>,
+}
+
+/// One row's labels. `source` separates the candidate, an official release
+/// and a third-party image: the Alkemio row is never an official competitor.
+#[derive(Debug, Serialize)]
+pub struct RowLabel {
+    pub target: TargetKind,
+    pub source: &'static str,
+    /// `http-json`, or `pop3` for GreenMail (a fresh session per scan).
+    pub read_path: &'static str,
+    /// `server` search, or a complete scan `client-side-filter`ed by token.
+    pub search: &'static str,
+    pub storage_backend: Option<Backend>,
+    pub retention_cap: Option<u64>,
+}
+
+pub fn row_labels(p: &Protocol) -> Vec<RowLabel> {
+    p.targets
+        .iter()
+        .map(|t| {
+            let retention = p.storage.retention.iter().find(|r| r.target == *t);
+            RowLabel {
+                target: *t,
+                source: match t.provenance() {
+                    Provenance::Candidate => "candidate",
+                    Provenance::Official(_) => "official release",
+                    Provenance::ThirdPartyImage(_) => "third-party image (extracted binary)",
+                },
+                read_path: if *t == TargetKind::Greenmail {
+                    "pop3"
+                } else {
+                    "http-json"
+                },
+                search: if crate::targets::has_server_search(*t) {
+                    "server"
+                } else {
+                    "client-side-filter"
+                },
+                storage_backend: retention.and_then(|r| r.backend),
+                retention_cap: retention.and_then(|r| r.max_messages),
+            }
+        })
+        .collect()
+}
+
+/// A report is one run of one protocol. Version 2 and version 3 are
+/// separate runs with separate denominators (proposed decision 0130 §3), so
+/// manifests of different protocol ids are never read as one table or one
+/// statistic.
+#[allow(dead_code)] // the guard for any reader of several runs; tests drive it
+pub fn one_denominator(manifests: &[&Manifest]) -> Result<(), String> {
+    let mut ids: Vec<&str> = manifests.iter().map(|m| m.protocol_id.as_str()).collect();
+    ids.dedup();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.len() > 1 {
+        return Err(format!(
+            "runs of protocols {} are separate denominators; no report merges them",
+            ids.join(" and ")
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -145,6 +213,7 @@ pub fn report(p: &Protocol, m: &Manifest, rows: &[Row], life: &Lifecycle) -> Rep
             rates: "messages per second of the stated window",
             quantiles: "nearest-rank over successful samples; censored counted separately",
         },
+        labels: row_labels(p),
         throughput,
         waits,
         launches: life.launches.clone(),

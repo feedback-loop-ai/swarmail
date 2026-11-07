@@ -1,14 +1,17 @@
 //! Fair wire comparison driver (issue #163, proposed decision 0091): one
 //! executable that runs the frozen throughput and wait profiles against
-//! real Swarmail, Mailpit and MailHog servers it launches and owns. It is
+//! real Swarmail, Mailpit, MailHog, MailSlurper, smtp4dev, Inbucket,
+//! GreenMail and (separately labelled) Alkemio's patched MailSlurper
+//! servers it launches and owns (proposed decision 0130). It is
 //! experiment infrastructure, independent of the eval crate; the one entry
 //! point is `scripts/compare-mail.sh`, which builds it and passes the
 //! modes below. A plain `cargo bench` invocation measures nothing.
 //!
 //!   mail_compare check --protocol P --sources S
+//!   mail_compare targets --protocol P
 //!   mail_compare run --mode smoke|collect --protocol P --sources S
 //!       --output DIR --scratch DIR --run-id ID --bin TARGET=PATH...
-//!       [--commit SHA --dirty true|false]
+//!       [--runtime TARGET=DIR...] [--commit SHA --dirty true|false]
 //!   mail_compare admit DIR
 //!   mail_compare mailpit-mcp --endpoint http://127.0.0.1:PORT --sources S
 //!
@@ -41,7 +44,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str =
-    "usage: mail_compare check|run|admit|mailpit-mcp … (see scripts/compare-mail.sh)";
+    "usage: mail_compare check|targets|run|admit|mailpit-mcp … (see scripts/compare-mail.sh)";
 
 fn main() -> ExitCode {
     // cargo bench appends `--bench`; it selects nothing here.
@@ -55,6 +58,7 @@ fn main() -> ExitCode {
             0
         }
         Some("check") => check(&args[1..]),
+        Some("targets") => targets_mode(&args[1..]),
         Some("run") => run(&args[1..]),
         Some("admit") => admit(&args[1..]),
         Some("mailpit-mcp") => mailpit_mcp_mode(&args[1..]),
@@ -99,6 +103,9 @@ fn load(
     let sb = std::fs::read(one(f, "sources")?).map_err(|e| format!("sources: {e}"))?;
     let p = Protocol::parse(&pb).map_err(|r| r.to_string())?;
     let s = SourceLock::parse(&sb).map_err(|r| r.to_string())?;
+    // Version pairing is checked first: neither version reads the other's
+    // records (proposed decision 0130 §3).
+    protocol::pairing(&p, &s).map_err(|r| r.to_string())?;
     // The captured documents live beside the lock; their bytes are
     // rechecked every time the lock is used, not trusted from last time.
     let dir = Path::new(one(f, "sources")?)
@@ -112,6 +119,33 @@ fn load(
     })
     .map_err(|r| format!("source documents: {r}"))?;
     Ok((p, pb, s, sb))
+}
+
+/// `mail_compare targets --protocol P`: the competitors the protocol
+/// declares, one name per line, for the wrapper's required-binary list. The
+/// candidate is built by the wrapper itself and never listed.
+fn targets_mode(args: &[String]) -> i32 {
+    let res = flags(args).and_then(|f| {
+        if let Some(k) = f.keys().find(|k| k.as_str() != "protocol") {
+            return Err(format!("unknown flag --{k}"));
+        }
+        let bytes = std::fs::read(one(&f, "protocol")?).map_err(|e| format!("protocol: {e}"))?;
+        let p = Protocol::parse(&bytes).map_err(|r| r.to_string())?;
+        p.validate().map_err(|r| r.to_string())?;
+        Ok(p)
+    });
+    match res {
+        Ok(p) => {
+            for t in p.targets.iter().filter(|t| **t != TargetKind::Swarmail) {
+                println!("{t}");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("mail_compare targets: {e}");
+            2
+        }
+    }
 }
 
 fn check(args: &[String]) -> i32 {
@@ -255,7 +289,8 @@ fn run(args: &[String]) -> i32 {
 fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
     let f = flags(args)?;
     let known = [
-        "mode", "protocol", "sources", "output", "scratch", "run-id", "bin", "commit", "dirty",
+        "mode", "protocol", "sources", "output", "scratch", "run-id", "bin", "runtime", "commit",
+        "dirty",
     ];
     if let Some(k) = f.keys().find(|k| !known.contains(&k.as_str())) {
         return Err(format!("unknown flag --{k}"));
@@ -278,7 +313,12 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
                     None => false,
                 };
                 if !ok {
-                    return Err(format!("{t} has no source pin; it cannot be launched"));
+                    let why = s
+                        .entry(*t)
+                        .and_then(|e| e.pending.as_ref())
+                        .map(|p| format!(" (pending: {})", p.reason))
+                        .unwrap_or_default();
+                    return Err(format!("{t} has no source pin; it cannot be launched{why}"));
                 }
             }
         }
@@ -296,12 +336,20 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
             return Err(format!("--bin {t} given twice"));
         }
     }
+    let mut runtimes = BTreeMap::new();
+    for r in f.get("runtime").into_iter().flatten() {
+        let (name, dir) = r.split_once('=').ok_or("--runtime takes TARGET=DIR")?;
+        let t = TargetKind::parse(name).ok_or_else(|| format!("unknown target {name:?}"))?;
+        if runtimes.insert(t, PathBuf::from(dir)).is_some() {
+            return Err(format!("--runtime {t} given twice"));
+        }
+    }
     let mut specs = BTreeMap::new();
     for &t in &p.targets {
         let binary = bins
             .remove(&t)
             .ok_or_else(|| format!("--bin {t}=PATH is required"))?;
-        let (expected_sha256, template) = match t {
+        let spec = match t {
             TargetKind::Swarmail => {
                 let cap = p
                     .storage
@@ -309,29 +357,28 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
                     .iter()
                     .find(|r| r.target == t)
                     .and_then(|r| r.max_messages);
-                (None, targets::swarmail_template(cap.unwrap_or(0)))
+                targets::LaunchSpec::new(
+                    t,
+                    binary,
+                    None,
+                    targets::swarmail_template(cap.unwrap_or(0)),
+                )
             }
             _ => {
                 let pin = s.pin(t).ok_or_else(|| format!("{t}: no source pin"))?;
-                (
-                    Some(pin.artifact.executable_sha256.clone()),
-                    pin.launch.clone(),
-                )
+                launch_spec(t, binary, runtimes.remove(&t), pin)?
             }
         };
-        specs.insert(
-            t,
-            targets::LaunchSpec {
-                kind: t,
-                binary,
-                expected_sha256,
-                template,
-            },
-        );
+        specs.insert(t, spec);
     }
     if let Some(t) = bins.keys().next() {
         return Err(format!(
             "--bin {t} names a target the protocol does not declare"
+        ));
+    }
+    if let Some(t) = runtimes.keys().next() {
+        return Err(format!(
+            "--runtime {t} names a target that pins no runtime or is not declared"
         ));
     }
     let output = PathBuf::from(one(&f, "output")?);
@@ -380,6 +427,59 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
         keepers: targets::Keepers::default(),
     };
     Ok((cfg, scratch))
+}
+
+/// A competitor's launch from its pin, of either lock version. A lock 4 pin
+/// declares its listeners, environment and config file; a runtime pin
+/// launches the runtime's own program with the pinned jar as `{artifact}`,
+/// and every checked member is digested at launch and again at seal. A
+/// tree pin's checked members are relative to the executable's directory.
+fn launch_spec(
+    t: TargetKind,
+    binary: PathBuf,
+    runtime_dir: Option<PathBuf>,
+    pin: &protocol::Pin,
+) -> Result<targets::LaunchSpec, String> {
+    let mut spec = targets::LaunchSpec::new(
+        t,
+        binary.clone(),
+        Some(pin.artifact.executable_sha256.clone()),
+        pin.launch.clone(),
+    );
+    if let Some(roles) = &pin.listeners {
+        spec.extra.listeners = roles.clone();
+        spec.extra.env = pin.launch_env.clone().unwrap_or_default();
+        spec.extra.config = pin.config_file.clone();
+    }
+    match (&pin.runtime, runtime_dir) {
+        (Some(rt), Some(dir)) => {
+            spec.binary = dir.join("bin/java");
+            spec.extra.artifact = Some(binary);
+            spec.extra.members = rt
+                .checked_members
+                .iter()
+                .map(|m| (dir.join(&m.path), m.sha256.clone()))
+                .collect();
+        }
+        (Some(_), None) => {
+            return Err(format!(
+                "--runtime {t}=DIR is required: its pin needs a runtime"
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(format!("--runtime {t} is given but its pin has no runtime"));
+        }
+        (None, None) => {
+            if let Some(members) = &pin.artifact.checked_members {
+                let base = binary.parent().unwrap_or(Path::new("."));
+                spec.extra.members = members
+                    .iter()
+                    .map(|m| (base.join(&m.path), m.sha256.clone()))
+                    .collect();
+            }
+        }
+    }
+    Ok(spec)
 }
 
 fn execute(cfg: runner::Config, scratch: PathBuf) -> i32 {

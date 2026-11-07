@@ -12,6 +12,17 @@ use std::fmt;
 /// collect (proposed decision 0093 §3).
 pub const PROTOCOL_VERSION: u32 = 2;
 pub const DRAFT_PROTOCOL_VERSION: u32 = 1;
+/// The eight-target method (proposed decision 0130 §3). It starts a
+/// separate run: protocol 2's collection stays as recorded, and no table or
+/// statistic merges a version 2 cell with a version 3 one.
+pub const PROTOCOL_VERSION_3: u32 = 3;
+/// Every protocol id the method has used; a new protocol never reuses one.
+pub const HISTORICAL_IDS: [&str; 3] = [
+    "fair-mail-comparison-draft-2",
+    "fair-mail-comparison-draft-3",
+    "fair-mail-comparison-v2",
+];
+pub const PROTOCOL_V3_ID: &str = "fair-mail-comparison-v3";
 
 /// Upper bounds the validator holds every count and deadline to: a
 /// protocol is an input file, and an absurd value must refuse rather than
@@ -27,13 +38,48 @@ pub enum TargetKind {
     Swarmail,
     Mailpit,
     Mailhog,
+    Mailslurper,
+    Smtp4dev,
+    Inbucket,
+    Greenmail,
+    /// Alkemio's patched MailSlurper image, extracted and run natively. It
+    /// is its own target and never the upstream `mailslurper` row, nor
+    /// Swarmail's own MailSlurper shim (decision 0118).
+    #[serde(rename = "alkemio-mailslurper")]
+    AlkemioMailslurper,
 }
 
+/// Where a target's bytes come from (proposed decision 0130 §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provenance {
+    /// The candidate checkout itself.
+    Candidate,
+    /// An official upstream repository's release.
+    Official(&'static str),
+    /// A third party's OCI image reference: never an official artifact.
+    ThirdPartyImage(&'static str),
+}
+
+/// The Alkemio image the third-party row is extracted from.
+pub const ALKEMIO_IMAGE: &str = "ghcr.io/alkem-io/test-suites/mailslurper:smtps-4c6aecc-p2";
+
 impl TargetKind {
-    pub const ALL: [TargetKind; 3] = [
+    /// The three targets protocol 2 and lock 3 know, as they were recorded.
+    pub const V2: [TargetKind; 3] = [
         TargetKind::Swarmail,
         TargetKind::Mailpit,
         TargetKind::Mailhog,
+    ];
+    /// The eight targets protocol 3 and lock 4 require.
+    pub const ALL: [TargetKind; 8] = [
+        TargetKind::Swarmail,
+        TargetKind::Mailpit,
+        TargetKind::Mailhog,
+        TargetKind::Mailslurper,
+        TargetKind::Smtp4dev,
+        TargetKind::Inbucket,
+        TargetKind::Greenmail,
+        TargetKind::AlkemioMailslurper,
     ];
 
     pub fn name(self) -> &'static str {
@@ -41,6 +87,11 @@ impl TargetKind {
             TargetKind::Swarmail => "swarmail",
             TargetKind::Mailpit => "mailpit",
             TargetKind::Mailhog => "mailhog",
+            TargetKind::Mailslurper => "mailslurper",
+            TargetKind::Smtp4dev => "smtp4dev",
+            TargetKind::Inbucket => "inbucket",
+            TargetKind::Greenmail => "greenmail",
+            TargetKind::AlkemioMailslurper => "alkemio-mailslurper",
         }
     }
 
@@ -48,16 +99,33 @@ impl TargetKind {
         TargetKind::ALL.into_iter().find(|t| t.name() == name)
     }
 
-    /// The upstream home a competitor's official source must come from.
-    /// Third-party mirrors, recipes and images cannot stand in (spec R1).
-    /// Swarmail is the candidate itself and has no upstream. The captured
-    /// release metadata under `docs/evals/sources/` names these homes as
-    /// the releases' own; [`SourceLock::verify_files`] rechecks that.
-    pub fn official_repository(self) -> Option<&'static str> {
+    /// Where a competitor's bytes must come from. An official release must
+    /// come from the upstream home; a third-party image is never counted as
+    /// one (spec R1). Swarmail is the candidate itself and has no upstream.
+    /// The captured release metadata under `docs/evals/sources/` names the
+    /// homes as the releases' own; [`SourceLock::verify_files`] rechecks it.
+    pub fn provenance(self) -> Provenance {
         match self {
-            TargetKind::Swarmail => None,
-            TargetKind::Mailpit => Some("https://github.com/axllent/mailpit"),
-            TargetKind::Mailhog => Some("https://github.com/mailhog/MailHog"),
+            TargetKind::Swarmail => Provenance::Candidate,
+            TargetKind::Mailpit => Provenance::Official("https://github.com/axllent/mailpit"),
+            TargetKind::Mailhog => Provenance::Official("https://github.com/mailhog/MailHog"),
+            TargetKind::Mailslurper => {
+                Provenance::Official("https://github.com/mailslurper/mailslurper")
+            }
+            TargetKind::Smtp4dev => Provenance::Official("https://github.com/rnwood/smtp4dev"),
+            TargetKind::Inbucket => Provenance::Official("https://github.com/inbucket/inbucket"),
+            TargetKind::Greenmail => {
+                Provenance::Official("https://github.com/greenmail-mail-test/greenmail")
+            }
+            TargetKind::AlkemioMailslurper => Provenance::ThirdPartyImage(ALKEMIO_IMAGE),
+        }
+    }
+
+    /// The upstream repository of an official target, else `""`.
+    pub fn official_home(self) -> &'static str {
+        match self.provenance() {
+            Provenance::Official(home) => home,
+            _ => "",
         }
     }
 }
@@ -120,6 +188,10 @@ pub struct Protocol {
     /// Version 2: the immutable product each target is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub products: Option<Vec<Product>>,
+    /// Version 3: what each target's pin establishes about search, waits,
+    /// retention and raw reads, each with its citation or `not_inspected`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Vec<Capabilities>>,
     /// Every value the method still lacks, by name. Collection refuses
     /// while one remains; the list is how a draft says what it is missing
     /// instead of carrying a placeholder that looks like a value.
@@ -317,6 +389,57 @@ pub struct Product {
     /// A competitor's executable digest; the candidate's is recorded per
     /// run in the manifest.
     pub executable_sha256: Option<String>,
+    /// Version 3: what kind of product this is. It must agree with the
+    /// target's provenance and, once pinned, the lock's pin source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ProductScope>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductScope {
+    Candidate,
+    OfficialArtifact,
+    ThirdPartyImage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityStatus {
+    Supported,
+    NotSupported,
+    NotInspected,
+}
+
+/// One fact about a target. `supported` and `not_supported` cite a document
+/// or reviewed source of the target's pin; a fact nobody reviewed is
+/// `not_inspected` and carries no citation. Nothing is assumed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Capability {
+    pub status: CapabilityStatus,
+    pub cite: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Capabilities {
+    pub target: TargetKind,
+    pub server_search: Capability,
+    pub native_wait: Capability,
+    pub retention_cap: Capability,
+    pub raw_source: Capability,
+}
+
+impl Capabilities {
+    pub fn each(&self) -> [(&'static str, &Capability); 4] {
+        [
+            ("server_search", &self.server_search),
+            ("native_wait", &self.native_wait),
+            ("retention_cap", &self.retention_cap),
+            ("raw_source", &self.raw_source),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -355,6 +478,19 @@ pub fn is_release_tag(s: &str) -> bool {
     })
 }
 
+/// Lock version 4's closed tag shapes: `v1.2.3`, `release-1.2.3` or a bare
+/// `1.2.3`. A tag is evidence, not a pattern: `latest`, branch names,
+/// prereleases and a bare major are not versions.
+pub fn is_version_tag(s: &str) -> bool {
+    let n = s
+        .strip_prefix("release-")
+        .or_else(|| s.strip_prefix('v'))
+        .unwrap_or(s);
+    n.split('.').count() >= 2
+        && n.split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+}
+
 pub fn is_hex(s: &str, len: usize) -> bool {
     s.len() == len
         && s.bytes()
@@ -380,12 +516,32 @@ impl Protocol {
         let mut out = Vec::new();
         if !matches!(
             self.protocol_version,
-            DRAFT_PROTOCOL_VERSION | PROTOCOL_VERSION
+            DRAFT_PROTOCOL_VERSION | PROTOCOL_VERSION | PROTOCOL_VERSION_3
         ) {
             out.push(format!(
-                "protocol_version {} is neither {DRAFT_PROTOCOL_VERSION} nor {PROTOCOL_VERSION}",
+                "protocol_version {} is not {DRAFT_PROTOCOL_VERSION}, {PROTOCOL_VERSION} or {PROTOCOL_VERSION_3}",
                 self.protocol_version
             ));
+        }
+        // Target sets are scoped by version: protocol 2 and the drafts know
+        // the original three, protocol 3 requires all eight.
+        let v3 = self.protocol_version == PROTOCOL_VERSION_3;
+        for t in &self.targets {
+            if !v3 && !TargetKind::V2.contains(t) {
+                out.push(format!(
+                    "protocol_version {} refuses target {t}; only protocol_version {PROTOCOL_VERSION_3} declares it",
+                    self.protocol_version
+                ));
+            }
+        }
+        if v3 {
+            for t in TargetKind::ALL {
+                if !self.targets.contains(&t) {
+                    out.push(format!(
+                        "protocol_version {PROTOCOL_VERSION_3} needs target {t}"
+                    ));
+                }
+            }
         }
         if !is_name(&self.id) {
             out.push("id must be 1-64 [A-Za-z0-9._-]".into());
@@ -670,6 +826,12 @@ impl Protocol {
             }
         }
         self.validate_sections(&mut out);
+        if v3 && self.status == Status::Frozen && !self.unresolved.is_empty() {
+            out.push(format!(
+                "a frozen protocol has nothing unresolved, but {} entries remain",
+                self.unresolved.len()
+            ));
+        }
         if out.is_empty() {
             Ok(())
         } else {
@@ -692,6 +854,8 @@ impl Protocol {
                 .retention
                 .iter()
                 .any(|x| x.backend.is_some() || x.prune.is_some() || x.compression.is_some()),
+            self.capabilities.is_some(),
+            self.products.iter().flatten().any(|p| p.scope.is_some()),
         ];
         if self.protocol_version == DRAFT_PROTOCOL_VERSION {
             if has.iter().any(|h| *h) {
@@ -700,6 +864,11 @@ impl Protocol {
                 ));
             }
             return;
+        }
+        if self.protocol_version == PROTOCOL_VERSION && (has[6] || has[7]) {
+            out.push(format!(
+                "protocol_version {PROTOCOL_VERSION} carries version {PROTOCOL_VERSION_3} sections (capabilities, product scope)"
+            ));
         }
         let (Some(claim), Some(budgets), Some(products), Some(profile), Some(storage)) = (
             &self.claim,
@@ -726,6 +895,93 @@ impl Protocol {
         self.validate_retention(storage, out);
         self.validate_budgets(budgets, out);
         self.validate_products(products, out);
+        if self.protocol_version == PROTOCOL_VERSION_3 {
+            self.validate_v3(out);
+        }
+    }
+
+    /// Protocol 3's own rules (proposed decision 0130 §3): a new id that
+    /// supersedes protocol 2 and cites the record, the eight cyclic
+    /// rotations, one capability record per target and a product scope that
+    /// agrees with each target's provenance.
+    fn validate_v3(&self, out: &mut Vec<String>) {
+        if HISTORICAL_IDS.contains(&self.id.as_str()) {
+            out.push(format!("id {:?} reuses a historical protocol id", self.id));
+        }
+        if self.id != PROTOCOL_V3_ID {
+            out.push(format!(
+                "protocol 3's id is {PROTOCOL_V3_ID}, not {:?}",
+                self.id
+            ));
+        }
+        if self.supersedes.as_deref() != Some(HISTORICAL_IDS[2]) {
+            out.push(format!("protocol 3 supersedes {}", HISTORICAL_IDS[2]));
+        }
+        if !self
+            .change_reason
+            .as_deref()
+            .is_some_and(|r| r.contains("0130"))
+        {
+            out.push("protocol 3's change_reason must cite decision 0130".into());
+        }
+        let n = self.targets.len();
+        if self.statistics.orders.len() != n {
+            out.push(format!(
+                "protocol 3 has {} target orders, not the {n} cyclic rotations",
+                self.statistics.orders.len()
+            ));
+        }
+        for k in 0..n {
+            let rotation: Vec<TargetKind> = (0..n).map(|i| self.targets[(i + k) % n]).collect();
+            if !self.statistics.orders.contains(&rotation) {
+                out.push(format!("target order rotation {k} is missing"));
+            }
+        }
+        let caps = self.capabilities.as_deref().unwrap_or_default();
+        for t in &self.targets {
+            let mine: Vec<&Capabilities> = caps.iter().filter(|c| c.target == *t).collect();
+            let [c] = mine.as_slice() else {
+                out.push(format!("capabilities: {t} needs exactly one record"));
+                continue;
+            };
+            for (key, cap) in c.each() {
+                let cited = cap.cite.as_deref().is_some_and(|s| !s.trim().is_empty());
+                match (cap.status, cited) {
+                    (CapabilityStatus::NotInspected, false) => {}
+                    (CapabilityStatus::NotInspected, true) => out.push(format!(
+                        "capabilities: {t} {key} is not_inspected, so it cites nothing"
+                    )),
+                    (_, true) => {}
+                    (_, false) => out.push(format!(
+                        "capabilities: {t} {key} is {:?} without a citation",
+                        cap.status
+                    )),
+                }
+            }
+        }
+        for c in caps {
+            if !self.targets.contains(&c.target) {
+                out.push(format!(
+                    "capabilities: record for undeclared target {}",
+                    c.target
+                ));
+            }
+        }
+        for p in self.products.iter().flatten() {
+            let want = match p.target.provenance() {
+                Provenance::Candidate => ProductScope::Candidate,
+                Provenance::Official(_) => ProductScope::OfficialArtifact,
+                Provenance::ThirdPartyImage(_) => ProductScope::ThirdPartyImage,
+            };
+            match p.scope {
+                None => out.push(format!("products: {} states no scope", p.target)),
+                Some(s) if s != want => out.push(format!(
+                    "products: {} scope {s:?} is not its provenance's {want:?}",
+                    p.target
+                )),
+                Some(_) => {}
+            }
+        }
     }
 
     fn validate_retention(&self, profile: StorageProfile, out: &mut Vec<String>) {
@@ -835,23 +1091,42 @@ impl Protocol {
                 out.push(format!("products: {t} needs exactly one product entry"));
                 continue;
             };
-            match (t.official_repository(), &p.release_tag, &p.executable_sha256) {
-                (None, None, None) => {}
-                (None, ..) => out.push(format!(
+            let v3 = self.protocol_version == PROTOCOL_VERSION_3;
+            let tag_ok = |tag: &str| {
+                if v3 {
+                    is_version_tag(tag)
+                } else {
+                    is_release_tag(tag)
+                }
+            };
+            match (t.provenance(), &p.release_tag, &p.executable_sha256) {
+                (Provenance::Candidate, None, None) => {}
+                (Provenance::Candidate, ..) => out.push(format!(
                     "products: {t} is the candidate; its identity is recorded per run, not pinned here"
                 )),
-                (Some(_), Some(tag), Some(sha)) => {
-                    if !is_release_tag(tag) {
+                // Protocol 3 may name a product whose bytes are not
+                // available yet (a pending lock entry): its digest is then
+                // absent, and collection refuses the entry by name.
+                (Provenance::Official(_), Some(tag), sha) if sha.is_some() || v3 => {
+                    if !tag_ok(tag) {
                         out.push(format!(
                             "products: {t} release tag {tag:?} is not an immutable version tag"
                         ));
                     }
-                    if !is_hex(sha, 64) {
+                    if sha.as_deref().is_some_and(|s| !is_hex(s, 64)) {
                         out.push(format!("products: {t} executable digest is not 64 hex digits"));
                     }
                 }
-                (Some(_), ..) => out.push(format!(
+                (Provenance::Official(_), ..) => out.push(format!(
                     "products: {t} needs a release tag and an executable digest"
+                )),
+                (Provenance::ThirdPartyImage(_), None, sha) if v3 => {
+                    if sha.as_deref().is_some_and(|s| !is_hex(s, 64)) {
+                        out.push(format!("products: {t} executable digest is not 64 hex digits"));
+                    }
+                }
+                (Provenance::ThirdPartyImage(_), ..) => out.push(format!(
+                    "products: {t} is a third-party image: it has no release tag, and only protocol {PROTOCOL_VERSION_3} names one"
                 )),
             }
         }
@@ -876,6 +1151,8 @@ pub const LAUNCH_SLOTS: [&str; 3] = ["{smtp_addr}", "{http_addr}", "{data_dir}"]
 
 /// A launch template is short printable argv with every brace a known
 /// slot, and both listener slots present (the driver must own the ports).
+/// This is lock version 3's rule; lock version 4 states its listeners and
+/// is held by [`launch_checks`].
 pub fn launch_template_ok(argv: &[String]) -> bool {
     let has = |slot: &str| argv.iter().any(|a| a.contains(slot));
     argv.len() <= 32
@@ -892,10 +1169,219 @@ pub fn launch_template_ok(argv: &[String]) -> bool {
         })
 }
 
+/// The role a listener plays (proposed decision 0130 §2). A closed set:
+/// each role at most once per launch, every one a reserved loopback port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ListenerRole {
+    Smtp,
+    Http,
+    Pop3,
+    Imap,
+    Ui,
+}
+
+impl ListenerRole {
+    pub fn name(self) -> &'static str {
+        match self {
+            ListenerRole::Smtp => "smtp",
+            ListenerRole::Http => "http",
+            ListenerRole::Pop3 => "pop3",
+            ListenerRole::Imap => "imap",
+            ListenerRole::Ui => "ui",
+        }
+    }
+
+    pub fn addr_slot(self) -> String {
+        format!("{{{}_addr}}", self.name())
+    }
+
+    pub fn port_slot(self) -> String {
+        format!("{{{}_port}}", self.name())
+    }
+}
+
+/// Names the launcher owns in the child's closed environment.
+pub fn env_name_owned(n: &str) -> bool {
+    matches!(n, "PATH" | "HOME" | "TMPDIR" | "LANG") || n.starts_with("XDG_")
+}
+
+fn env_name_ok(n: &str) -> bool {
+    n.len() <= 64
+        && n.starts_with(|c: char| c.is_ascii_uppercase())
+        && n.bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// A rendered config file: a leaf name in the owned scratch and its lines.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigFile {
+    pub name: String,
+    pub lines: Vec<String>,
+}
+
+/// The slots a version 4 text may name: one address and one port per
+/// declared role, plus the owned data directory and scratch, the launched
+/// artifact and the rendered config file.
+pub fn slots_of(roles: &[ListenerRole]) -> Vec<String> {
+    let mut v: Vec<String> = roles
+        .iter()
+        .flat_map(|r| [r.addr_slot(), r.port_slot()])
+        .collect();
+    for s in ["{data_dir}", "{scratch}", "{artifact}", "{config_path}"] {
+        v.push(s.into());
+    }
+    v
+}
+
+/// A literal brace is written doubled (`{{` and `}}`), so a JSON config
+/// line is expressible. The escapes are removed before slots are looked for.
+pub const BRACE_ESCAPES: [(&str, &str); 2] = [("{{", "\u{e000}"), ("}}", "\u{e001}")];
+
+/// The texts (argv, env values, config lines) with every escape and known
+/// slot removed; any brace left is an undeclared slot.
+fn without_slots(text: &str, slots: &[String]) -> String {
+    let mut rest = text.to_owned();
+    for (escape, _) in BRACE_ESCAPES {
+        rest = rest.replace(escape, "");
+    }
+    for s in slots {
+        rest = rest.replace(s.as_str(), "");
+    }
+    rest
+}
+
+/// Version 4's launch rules, shared by a pin and a pending entry: the
+/// listener set, the template, the environment and the config file.
+pub fn launch_checks(
+    out: &mut Vec<String>,
+    t: TargetKind,
+    roles: &[ListenerRole],
+    launch: &[String],
+    env: &[[String; 2]],
+    config: Option<&ConfigFile>,
+) {
+    for (i, r) in roles.iter().enumerate() {
+        if roles[..i].contains(r) {
+            out.push(format!("{t}: listener role {} is listed twice", r.name()));
+        }
+    }
+    if !roles.contains(&ListenerRole::Smtp) {
+        out.push(format!("{t}: the listeners lack the smtp role"));
+    }
+    let read = if t == TargetKind::Greenmail {
+        ListenerRole::Pop3
+    } else {
+        ListenerRole::Http
+    };
+    if !roles.contains(&read) {
+        out.push(format!(
+            "{t}: the listeners lack the {} role its read path uses",
+            read.name()
+        ));
+    }
+    let slots = slots_of(roles);
+    let mut texts: Vec<(&str, &str)> = Vec::new();
+    if launch.len() > 32 {
+        out.push(format!("{t}: the launch has more than 32 arguments"));
+    }
+    for a in launch {
+        if a.len() > 256
+            || !without_slots(a, &slots)
+                .chars()
+                .all(|c| c.is_ascii_graphic())
+        {
+            out.push(format!(
+                "{t}: launch argument {a:?} is not short printable text"
+            ));
+        }
+        texts.push(("launch", a));
+    }
+    if env.len() > 16 {
+        out.push(format!(
+            "{t}: the launch environment has more than 16 entries"
+        ));
+    }
+    for (i, [name, value]) in env.iter().enumerate() {
+        if !env_name_ok(name) {
+            out.push(format!(
+                "{t}: environment name {name:?} is not upper snake case"
+            ));
+        }
+        if env_name_owned(name) {
+            out.push(format!(
+                "{t}: environment name {name} is owned by the launcher"
+            ));
+        }
+        if env[..i].iter().any(|[n, _]| n == name) {
+            out.push(format!("{t}: environment name {name} is listed twice"));
+        }
+        if value.len() > 256
+            || !without_slots(value, &slots)
+                .chars()
+                .all(|c| c.is_ascii_graphic())
+        {
+            out.push(format!(
+                "{t}: environment value of {name} is not short printable text"
+            ));
+        }
+        texts.push(("environment", value));
+    }
+    match config {
+        Some(c) => {
+            if !is_name(&c.name) || c.name.contains("..") || c.name.contains('/') {
+                out.push(format!(
+                    "{t}: config file name {:?} must be one plain leaf name",
+                    c.name
+                ));
+            }
+            if c.lines.is_empty() || c.lines.len() > 64 {
+                out.push(format!("{t}: a config file has 1 to 64 lines"));
+            }
+            for l in &c.lines {
+                if l.len() > 1024 || !l.chars().all(|ch| ch == ' ' || ch.is_ascii_graphic()) {
+                    out.push(format!("{t}: a config line is not short printable text"));
+                }
+                texts.push(("config", l));
+            }
+        }
+        None => {
+            if launch.iter().any(|a| a.contains("{config_path}")) {
+                out.push(format!(
+                    "{t}: the launch names {{config_path}} but states no config file"
+                ));
+            }
+        }
+    }
+    for (kind, text) in &texts {
+        if without_slots(text, &slots).contains(['{', '}']) {
+            out.push(format!(
+                "{t}: {kind} text {text:?} names a slot the declared listeners and the owned directory do not provide"
+            ));
+        }
+    }
+    for r in roles {
+        let (a, p) = (r.addr_slot(), r.port_slot());
+        if !texts.iter().any(|(_, x)| x.contains(&a) || x.contains(&p)) {
+            out.push(format!(
+                "{t}: the declared {} listener is never given to the launch",
+                r.name()
+            ));
+        }
+    }
+}
+
 /// The permissive licenses a pinned experiment input may carry: the
 /// subset of `deny.toml`'s allowlist a server release could use. The
 /// binary is not linked, but its terms still have to be checkable.
 const PERMISSIVE: [&str; 5] = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC"];
+
+/// The licenses a pinned *runtime* may carry (proposed decision 0130 §6): a
+/// separate closed list that holds exactly the JRE's expression. A runtime
+/// is neither linked nor measured, so [`PERMISSIVE`] is never widened for it
+/// and `deny.toml` does not change.
+const RUNTIME_LICENSES: [&str; 1] = ["GPL-2.0-only WITH Classpath-exception-2.0"];
 
 /// Source lock version 3 (proposed decision 0093 §1). It keeps version 2's
 /// separate artifact, digest-basis and document facts, and replaces v2's
@@ -905,6 +1391,11 @@ const PERMISSIVE: [&str; 5] = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Claus
 /// what the executable was built from, which only captured build evidence
 /// resolves. Tag identity is source identity, never executable identity.
 pub const LOCK_VERSION: u32 = 3;
+/// Lock version 4 (proposed decision 0130 §2) is version 3 plus fields only
+/// version 4 may carry: lightweight tag pins, third-party image pins, a
+/// pinned runtime, declared listeners, a launch environment, a config file
+/// and pending entries. Version 3 refuses each of them.
+pub const LOCK_VERSION_4: u32 = 4;
 
 /// A fact the lock either observed or names as missing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -946,14 +1437,44 @@ pub enum Role {
 pub struct SourceEntry {
     pub target: TargetKind,
     pub role: Role,
-    /// Required for a competitor, refused for the candidate.
+    /// A competitor has a pin or (version 4) a pending entry; the
+    /// candidate has neither.
     pub pin: Option<Pin>,
+    /// Version 4: a declared competitor whose bytes are not available. It
+    /// never launches, and collection refuses it by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<Pending>,
+}
+
+/// What can be stated without the bytes (proposed decision 0130 §2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Pending {
+    /// An official target's release tag, as the issue or release page
+    /// names it; absent for the third-party image.
+    pub release_tag: Option<String>,
+    /// The third-party image reference; absent for an official target.
+    pub image: Option<String>,
+    pub listeners: Vec<ListenerRole>,
+    /// The drafted launch. It is not verified against any executable.
+    pub launch: Vec<String>,
+    #[serde(default)]
+    pub launch_env: Vec<[String; 2]>,
+    pub config_file: Option<ConfigFile>,
+    /// Why the entry is pending and what it still lacks.
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pin {
-    pub release: Release,
+    /// An official release's metadata. Lock version 3 requires it; a
+    /// version 4 image pin has `image` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<Release>,
+    /// Version 4: a third-party OCI image the executable is extracted from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageSource>,
     pub acquisition: Acquisition,
     /// The commit the official tag names. Says nothing about the executable.
     pub tagged_source: Fact<TaggedSource>,
@@ -968,6 +1489,63 @@ pub struct Pin {
     pub launch: Vec<String>,
     pub storage: StorageFacts,
     pub wait: WaitFacts,
+    /// Version 4: the interpreter the target needs but that is not a target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<Runtime>,
+    /// Version 4: the listeners the launch declares. After readiness the
+    /// owned group must listen on exactly this set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listeners: Option<Vec<ListenerRole>>,
+    /// Version 4: `[NAME, value]` environment entries added to the closed
+    /// environment. Slots in values are substituted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_env: Option<Vec<[String; 2]>>,
+    /// Version 4: a config file rendered into the owned scratch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_file: Option<ConfigFile>,
+}
+
+/// A third-party image pin: the index, the platform manifest and the layer
+/// are bound by content digest, and the executable is a member of the layer
+/// extracted once into its own empty directory (decision 0130 §2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageSource {
+    pub reference: String,
+    /// `sha256:<64 hex>` of the captured index bytes.
+    pub index_digest: String,
+    /// The platform manifest the index names.
+    pub manifest_digest: String,
+    /// `os/arch`, as the index states it.
+    pub platform: String,
+    /// The layer the manifest names that holds the executable.
+    pub layer_digest: String,
+    /// The executable's path inside the layer.
+    pub member: String,
+}
+
+/// A checked member of an unpacked tree: its path relative to the tree's
+/// root and its sha256, rechecked at launch and again at seal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckedMember {
+    pub path: String,
+    pub sha256: String,
+}
+
+/// An interpreter pin (GreenMail's JRE). Only the code-bearing members it
+/// lists are digested; the rest of the tree is not rechecked, and the
+/// README labels it so.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Runtime {
+    pub name: String,
+    pub download: String,
+    pub sha256: String,
+    pub digest_basis: DigestBasis,
+    pub checked_members: Vec<CheckedMember>,
+    pub version_output: String,
+    pub license: License,
 }
 
 /// How the captured bytes reached this lock. Captures are bound by digest,
@@ -994,10 +1572,27 @@ pub enum AcquisitionBasis {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaggedSource {
-    pub tag_object: String,
+    /// Version 4: how the ref names the commit. Required at version 4,
+    /// refused at version 3 (whose tags are all annotated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_kind: Option<RefKind>,
+    /// The annotated tag object; absent for a lightweight tag, which has
+    /// none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag_object: Option<String>,
     pub commit: String,
     /// The tag's signature status as the captured tag object reports it.
-    pub tag_signature: String,
+    /// A lightweight tag's signature is absent, not "unsigned": there is no
+    /// object that could be signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag_signature: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefKind {
+    Annotated,
+    Lightweight,
 }
 
 /// Build evidence: the commit, and the `build_evidence` document saying so.
@@ -1057,6 +1652,10 @@ pub struct Artifact {
     pub arch: String,
     /// The executable's own version report, as observed.
     pub version_output: String,
+    /// Version 4: further code-bearing members of an unpacked tree that are
+    /// digested at launch and at seal (at most 8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_members: Option<Vec<CheckedMember>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1079,6 +1678,10 @@ pub enum DocKind {
     GitTag,
     GitTree,
     BuildEvidence,
+    /// Version 4: the captured OCI image index, whose sha256 is its digest.
+    ImageIndex,
+    /// Version 4: the captured platform manifest.
+    ImageManifest,
 }
 
 impl DocKind {
@@ -1114,6 +1717,8 @@ pub enum Attribution {
     },
     /// A GitHub REST object as it names itself at `url`.
     Api { url: String },
+    /// A document of the third-party image `reference`.
+    Image { reference: String },
 }
 
 /// What was read to characterise a server-side wait, and what it shows.
@@ -1199,20 +1804,48 @@ impl SourceLock {
     /// ([`SourceLock::verify_files`]) or collection ([`collection_ready`]).
     pub fn validate(&self) -> Result<(), Refusal> {
         let mut out = Vec::new();
-        if self.lock_version != LOCK_VERSION {
+        let v4 = self.lock_version == LOCK_VERSION_4;
+        if !matches!(self.lock_version, LOCK_VERSION | LOCK_VERSION_4) {
             out.push(format!(
-                "lock_version {} is not {LOCK_VERSION}",
+                "lock_version {} is not {LOCK_VERSION} or {LOCK_VERSION_4}",
                 self.lock_version
             ));
         }
         validate_entries(&mut out, &self.checked_on, &self.entries, |e| {
-            (e.target, e.role, e.pin.is_some())
+            (e.target, e.role, e.pin.is_some() || e.pending.is_some())
         });
         for e in &self.entries {
-            if let (Role::Competitor, Some(pin)) = (e.role, &e.pin)
-                && e.target != TargetKind::Swarmail
-            {
-                validate_pin(&mut out, e.target, pin);
+            let t = e.target;
+            if !v4 && !TargetKind::V2.contains(&t) {
+                out.push(format!(
+                    "lock_version {LOCK_VERSION} refuses target {t}; only lock_version {LOCK_VERSION_4} locks it"
+                ));
+            }
+            if !v4 && e.pending.is_some() {
+                out.push(format!("{t}: lock_version {LOCK_VERSION} refuses pending"));
+            }
+            if e.pin.is_some() && e.pending.is_some() {
+                out.push(format!("{t}: an entry is a pin or pending, never both"));
+            }
+        }
+        if v4 {
+            for t in TargetKind::ALL {
+                if self.entry(t).is_none() {
+                    out.push(format!(
+                        "lock_version {LOCK_VERSION_4} needs an entry for {t}"
+                    ));
+                }
+            }
+        }
+        for e in &self.entries {
+            if e.role != Role::Competitor || e.target == TargetKind::Swarmail {
+                continue;
+            }
+            if let Some(pin) = &e.pin {
+                validate_pin(&mut out, e.target, pin, v4);
+            }
+            if let Some(pending) = &e.pending {
+                validate_pending(&mut out, e.target, pending);
             }
         }
         refusal(out)
@@ -1220,10 +1853,12 @@ impl SourceLock {
 
     /// Recheck every captured document against its size and digest; the
     /// release metadata against the pin; each API capture against the URL
-    /// it names itself by; the ref → tag → commit chain; and every
-    /// commit-attributed document and reviewed source against its git
-    /// blob id in the captured tree. `dir` is the lock's own directory.
-    /// Local consistency only, not authentication.
+    /// it names itself by; the ref → (tag →) commit chain; an image pin's
+    /// index → manifest → layer chain; and every commit-attributed document
+    /// and reviewed source against its git blob id in the captured tree.
+    /// `dir` is the lock's own directory. Local consistency only, not
+    /// authentication. A pending entry has no bytes and is skipped; the
+    /// collection gate refuses it.
     pub fn verify_files(&self, dir: &std::path::Path) -> Result<(), Refusal> {
         let mut out = Vec::new();
         for e in &self.entries {
@@ -1248,6 +1883,9 @@ impl SourceLock {
                 if d.kind == DocKind::License {
                     license_text(&mut out, t, &pin.license, &d.path, &bytes);
                 }
+                if let Some(img) = &pin.image {
+                    image_document(&mut out, t, img, d.kind, &d.path, &bytes);
+                }
                 if !d.kind.is_api_object() {
                     continue;
                 }
@@ -1260,16 +1898,90 @@ impl SourceLock {
                 {
                     out.push(format!("{t}: {} does not name itself {url}", d.path));
                 }
-                if d.kind == DocKind::ReleaseMetadata {
-                    release_agrees(&mut out, t, &pin.release, &pin.artifact, &v);
+                if d.kind == DocKind::ReleaseMetadata
+                    && let Some(release) = &pin.release
+                {
+                    release_agrees(&mut out, t, release, &pin.artifact, &v);
                 }
                 json.insert(d.kind, v);
             }
-            if let Fact::Observed(ts) = &pin.tagged_source {
-                tag_chain(&mut out, t, pin, ts, &json);
+            if let (Fact::Observed(ts), Some(release)) = (&pin.tagged_source, &pin.release) {
+                tag_chain(&mut out, t, pin, &release.tag, ts, &json);
             }
         }
         refusal(out)
+    }
+}
+
+/// An image pin's content-addressed chain. The index's sha256 is its
+/// digest; it names the declared platform's manifest; the manifest's sha256
+/// is that digest and it names the layer the executable is extracted from.
+fn image_document(
+    out: &mut Vec<String>,
+    t: TargetKind,
+    img: &ImageSource,
+    kind: DocKind,
+    path: &str,
+    bytes: &[u8],
+) {
+    let hex = |d: &str| d.strip_prefix("sha256:").unwrap_or_default().to_owned();
+    let doc = || serde_json::from_slice::<serde_json::Value>(bytes).ok();
+    match kind {
+        DocKind::ImageIndex => {
+            if sha256_hex(bytes) != hex(&img.index_digest) {
+                out.push(format!("{t}: {path} is not the index {}", img.index_digest));
+            }
+            let named = doc().is_some_and(|v| {
+                v.get("manifests")
+                    .and_then(|m| m.as_array())
+                    .into_iter()
+                    .flatten()
+                    .any(|m| {
+                        let platform = format!(
+                            "{}/{}",
+                            m.pointer("/platform/os")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or_default(),
+                            m.pointer("/platform/architecture")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or_default()
+                        );
+                        m.get("digest").and_then(|d| d.as_str())
+                            == Some(img.manifest_digest.as_str())
+                            && platform == img.platform
+                    })
+            });
+            if !named {
+                out.push(format!(
+                    "{t}: the captured index does not name manifest {} for {}",
+                    img.manifest_digest, img.platform
+                ));
+            }
+        }
+        DocKind::ImageManifest => {
+            if sha256_hex(bytes) != hex(&img.manifest_digest) {
+                out.push(format!(
+                    "{t}: {path} is not the manifest {}",
+                    img.manifest_digest
+                ));
+            }
+            let names_layer = doc().is_some_and(|v| {
+                v.get("layers")
+                    .and_then(|l| l.as_array())
+                    .into_iter()
+                    .flatten()
+                    .any(|l| {
+                        l.get("digest").and_then(|d| d.as_str()) == Some(img.layer_digest.as_str())
+                    })
+            });
+            if !names_layer {
+                out.push(format!(
+                    "{t}: the captured manifest does not name layer {}",
+                    img.layer_digest
+                ));
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1345,15 +2057,18 @@ fn license_text(out: &mut Vec<String>, t: TargetKind, l: &License, path: &str, b
     }
 }
 
-/// The ref names the tag object; the tag object names the tag, the commit
-/// and its stated signature status; and the untruncated tree listing of
-/// that commit holds every commit-attributed document and reviewed source
-/// at its path with its git blob id and size. The tree capture is asked
-/// for by commit, so its root tree object id is not a captured fact.
+/// The ref names the commit: through the annotated tag object, which names
+/// the tag, the commit and its stated signature status, or (version 4,
+/// lightweight) directly, with no tag object at all. The untruncated tree
+/// listing of that commit holds every commit-attributed document and
+/// reviewed source at its path with its git blob id and size. The tree
+/// capture is asked for by commit, so its root tree object id is not a
+/// captured fact.
 fn tag_chain(
     out: &mut Vec<String>,
     t: TargetKind,
     pin: &Pin,
+    tag: &str,
     ts: &TaggedSource,
     json: &std::collections::HashMap<DocKind, serde_json::Value>,
 ) {
@@ -1363,30 +2078,45 @@ fn tag_chain(
             .unwrap_or_default()
             .to_owned()
     };
-    let tag = &pin.release.tag;
+    let kind = ts.ref_kind.unwrap_or(RefKind::Annotated);
+    let tag_object = ts.tag_object.clone().unwrap_or_default();
     let ref_ok = json.get(&DocKind::GitRef).is_some_and(|r| {
         s(r, "/ref") == format!("refs/tags/{tag}")
-            && s(r, "/object/type") == "tag"
-            && s(r, "/object/sha") == ts.tag_object
+            && match kind {
+                RefKind::Annotated => {
+                    s(r, "/object/type") == "tag" && s(r, "/object/sha") == tag_object
+                }
+                RefKind::Lightweight => {
+                    s(r, "/object/type") == "commit" && s(r, "/object/sha") == ts.commit
+                }
+            }
     });
     if !ref_ok {
-        out.push(format!(
-            "{t}: the captured ref does not name tag object {}",
-            ts.tag_object
-        ));
+        match kind {
+            RefKind::Annotated => out.push(format!(
+                "{t}: the captured ref does not name tag object {tag_object}"
+            )),
+            RefKind::Lightweight => out.push(format!(
+                "{t}: the captured ref does not name commit {} directly as refs/tags/{tag}",
+                ts.commit
+            )),
+        }
     }
-    let tag_ok = json.get(&DocKind::GitTag).is_some_and(|g| {
-        s(g, "/sha") == ts.tag_object
-            && s(g, "/tag") == *tag
-            && s(g, "/object/type") == "commit"
-            && s(g, "/object/sha") == ts.commit
-            && s(g, "/verification/reason") == ts.tag_signature
-    });
-    if !tag_ok {
-        out.push(format!(
-            "{t}: the captured tag object does not name {tag}, commit {} and signature {:?}",
-            ts.commit, ts.tag_signature
-        ));
+    if kind == RefKind::Annotated {
+        let signature = ts.tag_signature.clone().unwrap_or_default();
+        let tag_ok = json.get(&DocKind::GitTag).is_some_and(|g| {
+            s(g, "/sha") == tag_object
+                && s(g, "/tag") == *tag
+                && s(g, "/object/type") == "commit"
+                && s(g, "/object/sha") == ts.commit
+                && s(g, "/verification/reason") == signature
+        });
+        if !tag_ok {
+            out.push(format!(
+                "{t}: the captured tag object does not name {tag}, commit {} and signature {signature:?}",
+                ts.commit
+            ));
+        }
     }
     let tree = json
         .get(&DocKind::GitTree)
@@ -1566,16 +2296,25 @@ fn is_upstream_path(p: &str) -> bool {
         })
 }
 
-/// The pin facts lock versions 2 and 3 share: release, artifact and its
-/// digest basis, license, launch and storage.
+/// The version a release tag stands for: `release-1.2.3` and `v1.2.3` both
+/// report `1.2.3`.
+fn version_of(tag: &str) -> &str {
+    let n = tag.strip_prefix("release-").unwrap_or(tag);
+    n.strip_prefix('v').unwrap_or(n)
+}
+
+/// The pin facts lock versions 2, 3 and 4 share: release, artifact and its
+/// digest basis, license, launch and storage. `launch` is `Some` for the
+/// versions whose template is the fixed three-slot one; lock 4 checks its
+/// launch and cap itself.
 fn validate_common(
     out: &mut Vec<String>,
     t: TargetKind,
     (r, a, license): (&Release, &Artifact, &License),
-    launch: &[String],
+    launch: Option<&[String]>,
     st: &StorageFacts,
 ) {
-    let official = t.official_repository().unwrap_or_default();
+    let official = t.official_home();
     if r.repository != official {
         out.push(format!(
             "{t}: source {} is not the official {official}",
@@ -1635,7 +2374,7 @@ fn validate_common(
     if a.os.trim().is_empty() || a.arch.trim().is_empty() {
         out.push(format!("{t}: artifact platform is incomplete"));
     }
-    if !a.version_output.contains(r.tag.trim_start_matches('v')) {
+    if !a.version_output.contains(version_of(&r.tag)) {
         out.push(format!(
             "{t}: the observed version output does not name {}",
             r.tag
@@ -1650,15 +2389,38 @@ fn validate_common(
     if license.holder.trim().is_empty() {
         out.push(format!("{t}: license holder is not recorded"));
     }
-    if !launch_template_ok(launch) {
-        out.push(format!("{t}: launch template is missing or malformed"));
+    if let Some(launch) = launch {
+        if !launch_template_ok(launch) {
+            out.push(format!("{t}: launch template is missing or malformed"));
+        }
+        cap_check(out, t, st, launch, &[]);
     }
+    if st.basis.trim().is_empty() {
+        out.push(format!("{t}: storage facts state no basis"));
+    }
+}
+
+/// The retention cap and the flag that sets it go together, and the launch
+/// really sets it: an argv `FLAG N` pair or `FLAG=N`, or (`env:NAME`) an
+/// environment entry. A default the launch does not override never counts.
+fn cap_check(
+    out: &mut Vec<String>,
+    t: TargetKind,
+    st: &StorageFacts,
+    launch: &[String],
+    env: &[[String; 2]],
+) {
     match (st.max_messages, &st.cap_flag) {
         (Some(n), Some(flag)) => {
-            if !launch
-                .windows(2)
-                .any(|w| w[0] == *flag && w[1] == n.to_string())
-            {
+            let n = n.to_string();
+            let set = match flag.strip_prefix("env:") {
+                Some(name) => env.iter().any(|[k, v]| k == name && *v == n),
+                None => {
+                    launch.windows(2).any(|w| w[0] == *flag && w[1] == n)
+                        || launch.iter().any(|a| *a == format!("{flag}={n}"))
+                }
+            };
+            if !set {
                 out.push(format!("{t}: the launch does not set {flag} {n}"));
             }
         }
@@ -1666,9 +2428,6 @@ fn validate_common(
         _ => out.push(format!(
             "{t}: a retention cap and its launch flag go together"
         )),
-    }
-    if st.basis.trim().is_empty() {
-        out.push(format!("{t}: storage facts state no basis"));
     }
 }
 
@@ -1687,15 +2446,262 @@ fn document_path(out: &mut Vec<String>, t: TargetKind, earlier: &[&str], path: &
     }
 }
 
-fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
-    validate_common(
-        out,
-        t,
-        (&pin.release, &pin.artifact, &pin.license),
-        &pin.launch,
-        &pin.storage,
-    );
-    let official = t.official_repository().unwrap_or_default();
+/// `sha256:` and 64 lowercase hex digits.
+fn is_digest(s: &str) -> bool {
+    s.strip_prefix("sha256:").is_some_and(|h| is_hex(h, 64))
+}
+
+/// Checked members: at most 8, each a confined relative path with a digest,
+/// each listed once.
+fn checked_members(out: &mut Vec<String>, t: TargetKind, whose: &str, m: &[CheckedMember]) {
+    if m.len() > 8 {
+        out.push(format!("{t}: {whose} lists more than 8 checked members"));
+    }
+    for (i, c) in m.iter().enumerate() {
+        if !is_upstream_path(&c.path) || !is_hex(&c.sha256, 64) {
+            out.push(format!("{t}: {whose} member {:?} is malformed", c.path));
+        }
+        if m[..i].iter().any(|o| o.path == c.path) {
+            out.push(format!("{t}: {whose} member {} is listed twice", c.path));
+        }
+    }
+}
+
+fn validate_runtime(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
+    let Some(rt) = &pin.runtime else {
+        if t == TargetKind::Greenmail {
+            out.push(format!("{t}: greenmail needs a pinned runtime (a JRE)"));
+        }
+        return;
+    };
+    if t != TargetKind::Greenmail {
+        out.push(format!("{t}: only greenmail pins a runtime"));
+    }
+    if !is_name(&rt.name) || !rt.download.starts_with("https://") || !is_hex(&rt.sha256, 64) {
+        out.push(format!(
+            "{t}: the runtime needs a name, an https download and a sha256"
+        ));
+    }
+    checked_members(out, t, "runtime", &rt.checked_members);
+    for must in ["bin/java", "lib/server/libjvm.so"] {
+        if !rt.checked_members.iter().any(|m| m.path == must) {
+            out.push(format!("{t}: the runtime does not check {must}"));
+        }
+    }
+    if rt.version_output.trim().is_empty() {
+        out.push(format!("{t}: the runtime's version output is not recorded"));
+    }
+    if !RUNTIME_LICENSES.contains(&rt.license.spdx.as_str()) {
+        out.push(format!(
+            "{t}: runtime license {:?} is not on the runtime list",
+            rt.license.spdx
+        ));
+    }
+    if rt.license.holder.trim().is_empty() {
+        out.push(format!("{t}: the runtime license holder is not recorded"));
+    }
+    if !pin.launch.iter().any(|a| a.contains("{artifact}")) {
+        out.push(format!(
+            "{t}: a runtime launch names the jar as {{artifact}}"
+        ));
+    }
+}
+
+fn validate_image(out: &mut Vec<String>, t: TargetKind, pin: &Pin, img: &ImageSource, want: &str) {
+    if img.reference != want {
+        out.push(format!(
+            "{t}: image reference {:?} is not the labelled source {want}",
+            img.reference
+        ));
+    }
+    for (name, d) in [
+        ("index_digest", &img.index_digest),
+        ("manifest_digest", &img.manifest_digest),
+        ("layer_digest", &img.layer_digest),
+    ] {
+        if !is_digest(d) {
+            out.push(format!("{t}: image {name} {d:?} is not sha256:<64 hex>"));
+        }
+    }
+    if img.platform.split('/').count() != 2 || img.platform.split('/').any(str::is_empty) {
+        out.push(format!(
+            "{t}: image platform {:?} is not os/arch",
+            img.platform
+        ));
+    }
+    if !is_upstream_path(&img.member) {
+        out.push(format!(
+            "{t}: image member {:?} is not a confined path",
+            img.member
+        ));
+    }
+    let a = &pin.artifact;
+    let base = img.member.rsplit('/').next().unwrap_or_default();
+    if a.kind != ArtifactKind::Executable
+        || a.member.as_deref() != Some(img.member.as_str())
+        || a.file_name != base
+        || a.download != img.reference
+        || a.digest_basis != DigestBasis::LocallyComputed
+        || a.upstream_digest.is_some()
+        || a.sha256 != a.executable_sha256
+        || !is_hex(&a.sha256, 64)
+    {
+        out.push(format!(
+            "{t}: an image pin's artifact is the extracted member: an executable of that member, named by its leaf, locally digested once"
+        ));
+    }
+    if !is_name(&a.file_name) || a.os.trim().is_empty() || a.arch.trim().is_empty() {
+        out.push(format!("{t}: artifact name or platform is incomplete"));
+    }
+    if a.version_output.trim().is_empty() {
+        out.push(format!(
+            "{t}: the extracted executable's version output is not recorded"
+        ));
+    }
+    if !PERMISSIVE.contains(&pin.license.spdx.as_str()) {
+        out.push(format!(
+            "{t}: license {:?} is not on the permissive list",
+            pin.license.spdx
+        ));
+    }
+    if pin.license.holder.trim().is_empty() {
+        out.push(format!("{t}: license holder is not recorded"));
+    }
+    // An image has no tag and no build record: nothing may be claimed.
+    if matches!(pin.tagged_source, Fact::Observed(_)) {
+        out.push(format!("{t}: an image pin has no tagged source to observe"));
+    }
+    if matches!(pin.binary_build_provenance, Fact::Observed(_)) {
+        out.push(format!(
+            "{t}: an image pin has no binary build provenance to observe"
+        ));
+    }
+    if !pin.wait.reviewed.is_empty() {
+        out.push(format!(
+            "{t}: an image has no tagged tree to review sources in"
+        ));
+    }
+    for (kind, digest) in [
+        (DocKind::ImageIndex, &img.index_digest),
+        (DocKind::ImageManifest, &img.manifest_digest),
+    ] {
+        let want = digest.strip_prefix("sha256:").unwrap_or_default();
+        if !pin
+            .documents
+            .iter()
+            .any(|d| d.kind == kind && d.sha256 == want)
+        {
+            out.push(format!(
+                "{t}: no captured {kind:?} document with digest {digest}"
+            ));
+        }
+    }
+}
+
+fn validate_pending(out: &mut Vec<String>, t: TargetKind, p: &Pending) {
+    match (t.provenance(), &p.release_tag, &p.image) {
+        (Provenance::Official(_), Some(tag), None) => {
+            if !is_version_tag(tag) {
+                out.push(format!(
+                    "{t}: pending release tag {tag:?} is not a version tag"
+                ));
+            }
+        }
+        (Provenance::ThirdPartyImage(r), None, Some(img)) => {
+            if img != r {
+                out.push(format!(
+                    "{t}: pending image {img:?} is not the labelled {r}"
+                ));
+            }
+        }
+        _ => out.push(format!(
+            "{t}: pending names the wrong kind of source: an official target has a release tag, the third-party image an image reference"
+        )),
+    }
+    if p.reason.trim().is_empty() {
+        out.push(format!("{t}: a pending entry states no reason"));
+    }
+    if p.launch.is_empty() && p.launch_env.is_empty() && p.config_file.is_none() {
+        if !p.listeners.contains(&ListenerRole::Smtp) {
+            out.push(format!("{t}: pending listeners lack the smtp role"));
+        }
+    } else {
+        launch_checks(
+            out,
+            t,
+            &p.listeners,
+            &p.launch,
+            &p.launch_env,
+            p.config_file.as_ref(),
+        );
+    }
+}
+
+fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin, v4: bool) {
+    if !v4 {
+        for (field, present) in [
+            ("image", pin.image.is_some()),
+            ("runtime", pin.runtime.is_some()),
+            ("listeners", pin.listeners.is_some()),
+            ("launch_env", pin.launch_env.is_some()),
+            ("config_file", pin.config_file.is_some()),
+            ("checked_members", pin.artifact.checked_members.is_some()),
+            (
+                "ref_kind",
+                matches!(&pin.tagged_source, Fact::Observed(ts) if ts.ref_kind.is_some()),
+            ),
+        ] {
+            if present {
+                out.push(format!("{t}: lock_version {LOCK_VERSION} refuses {field}"));
+            }
+        }
+    }
+    match (&pin.release, &pin.image, t.provenance()) {
+        (Some(rel), None, Provenance::Official(_)) => {
+            validate_common(
+                out,
+                t,
+                (rel, &pin.artifact, &pin.license),
+                (!v4).then_some(&pin.launch[..]),
+                &pin.storage,
+            );
+            if v4 && !is_version_tag(&rel.tag) {
+                out.push(format!(
+                    "{t}: release tag {:?} is not a version tag (v1.2.3, release-1.2.3 or 1.2.3)",
+                    rel.tag
+                ));
+            }
+        }
+        (None, Some(img), Provenance::ThirdPartyImage(want)) if v4 => {
+            validate_image(out, t, pin, img, want);
+        }
+        (None, Some(_), _) if !v4 => out.push(format!("{t}: a lock 3 pin needs a release")),
+        (None, None, _) => out.push(format!(
+            "{t}: a pin needs a release (or, at lock_version {LOCK_VERSION_4}, an image)"
+        )),
+        (Some(_), Some(_), _) => out.push(format!("{t}: a pin is a release or an image, not both")),
+        (Some(_), None, _) => out.push(format!(
+            "{t}: its provenance is not an official release; a release cannot stand for it"
+        )),
+        (None, Some(_), _) => out.push(format!(
+            "{t}: its provenance is not a third-party image; an image cannot stand for it"
+        )),
+    }
+    if v4 {
+        let env = pin.launch_env.as_deref().unwrap_or_default();
+        match &pin.listeners {
+            Some(roles) => launch_checks(out, t, roles, &pin.launch, env, pin.config_file.as_ref()),
+            None => out.push(format!(
+                "{t}: lock_version {LOCK_VERSION_4} needs the declared listeners"
+            )),
+        }
+        cap_check(out, t, &pin.storage, &pin.launch, env);
+        validate_runtime(out, t, pin);
+        if let Some(m) = &pin.artifact.checked_members {
+            checked_members(out, t, "artifact", m);
+        }
+    }
+    let official = t.official_home();
     if !is_date(&pin.acquisition.captured_on) {
         out.push(format!(
             "{t}: captured_on {:?} is not YYYY-MM-DD",
@@ -1704,31 +2710,70 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
     }
     let has = |kind: DocKind| pin.documents.iter().any(|d| d.kind == kind);
     let commit = match &pin.tagged_source {
-        Fact::Observed(ts) => {
-            if !is_hex(&ts.tag_object, 40) || !is_hex(&ts.commit, 40) {
-                out.push(format!(
-                    "{t}: tagged source needs a full tag object and commit id (a tag name is mutable)"
-                ));
-            }
-            if ts.tag_signature.trim().is_empty() {
-                out.push(format!("{t}: the tag's signature status is not recorded"));
-            }
-            for kind in [DocKind::GitRef, DocKind::GitTag, DocKind::GitTree] {
-                if !has(kind) {
+        Fact::Observed(ts) if pin.image.is_none() => {
+            let kind = match (v4, ts.ref_kind) {
+                (true, None) => {
                     out.push(format!(
-                        "{t}: tagged source has no captured {kind:?} document"
+                        "{t}: lock_version {LOCK_VERSION_4} needs ref_kind on a tagged pin"
                     ));
+                    RefKind::Annotated
+                }
+                (true, Some(k)) => k,
+                (false, _) => RefKind::Annotated,
+            };
+            match kind {
+                RefKind::Annotated => {
+                    if !is_hex(&ts.commit, 40)
+                        || !ts.tag_object.as_deref().is_some_and(|o| is_hex(o, 40))
+                    {
+                        out.push(format!(
+                            "{t}: tagged source needs a full tag object and commit id (a tag name is mutable)"
+                        ));
+                    }
+                    if ts
+                        .tag_signature
+                        .as_deref()
+                        .is_none_or(|sig| sig.trim().is_empty())
+                    {
+                        out.push(format!("{t}: the tag's signature status is not recorded"));
+                    }
+                    for k in [DocKind::GitRef, DocKind::GitTag, DocKind::GitTree] {
+                        if !has(k) {
+                            out.push(format!("{t}: tagged source has no captured {k:?} document"));
+                        }
+                    }
+                }
+                RefKind::Lightweight => {
+                    if !is_hex(&ts.commit, 40) {
+                        out.push(format!(
+                            "{t}: tagged source needs a full commit id (a tag name is mutable)"
+                        ));
+                    }
+                    if ts.tag_object.is_some() || ts.tag_signature.is_some() {
+                        out.push(format!(
+                            "{t}: a lightweight tag has no tag object and no signature to record"
+                        ));
+                    }
+                    if has(DocKind::GitTag) {
+                        out.push(format!("{t}: a lightweight tag has no git_tag document"));
+                    }
+                    for k in [DocKind::GitRef, DocKind::GitTree] {
+                        if !has(k) {
+                            out.push(format!("{t}: tagged source has no captured {k:?} document"));
+                        }
+                    }
                 }
             }
             Some(ts.commit.as_str())
         }
+        Fact::Observed(_) => None,
         Fact::Unresolved(why) => {
             gap(out, t, "tagged_source", why);
             None
         }
     };
     match &pin.binary_build_provenance {
-        Fact::Observed(bp) => {
+        Fact::Observed(bp) if pin.image.is_none() => {
             if !is_hex(&bp.commit, 40) {
                 out.push(format!(
                     "{t}: build provenance {:?} is not a full commit id",
@@ -1745,6 +2790,7 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
                 ));
             }
         }
+        Fact::Observed(_) => {}
         Fact::Unresolved(why) => gap(out, t, "binary_build_provenance", why),
     }
     let api_home = format!(
@@ -1758,6 +2804,12 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
         if d.size == 0 || d.size > MAX_DOCUMENT_BYTES {
             out.push(format!("{t}: {} size {} is out of bounds", d.path, d.size));
         }
+        if matches!(d.kind, DocKind::ImageIndex | DocKind::ImageManifest) && pin.image.is_none() {
+            out.push(format!(
+                "{t}: {} is an image document on a pin with no image",
+                d.path
+            ));
+        }
         match &d.attribution {
             Fact::Observed(Attribution::Api { url }) => {
                 if !d.kind.is_api_object() {
@@ -1766,7 +2818,7 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
                         d.path
                     ));
                 }
-                if !url.starts_with(&api_home) {
+                if pin.image.is_some() || !url.starts_with(&api_home) {
                     out.push(format!(
                         "{t}: {} is not attributed to the official repository's API",
                         d.path
@@ -1802,11 +2854,24 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
                     )),
                 }
             }
+            Fact::Observed(Attribution::Image { reference }) => {
+                if pin.image.as_ref().map(|i| &i.reference) != Some(reference) {
+                    out.push(format!(
+                        "{t}: {} is attributed to an image the pin does not name",
+                        d.path
+                    ));
+                }
+            }
             Fact::Unresolved(why) => gap(out, t, &d.path, why),
         }
     }
-    for kind in [DocKind::ReleaseMetadata, DocKind::License, DocKind::Api] {
-        if !has(kind) {
+    let required: &[DocKind] = if pin.image.is_some() {
+        &[DocKind::License, DocKind::Api]
+    } else {
+        &[DocKind::ReleaseMetadata, DocKind::License, DocKind::Api]
+    };
+    for kind in required {
+        if !has(*kind) {
             out.push(format!("{t}: no captured {kind:?} document"));
         }
     }
@@ -1893,10 +2958,24 @@ pub fn products_match(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> {
         let Some(pin) = lock.pin(product.target) else {
             continue;
         };
-        if product.release_tag.as_deref() != Some(pin.release.tag.as_str()) {
+        let locked = pin.release.as_ref().map(|r| r.tag.as_str());
+        if product.release_tag.as_deref() != locked {
             out.push(format!(
                 "{}: protocol release {:?} is not the locked {}",
-                product.target, product.release_tag, pin.release.tag
+                product.target,
+                product.release_tag,
+                locked.unwrap_or("(no release: an image)")
+            ));
+        }
+        let kind = match (&pin.release, &pin.image) {
+            (Some(_), None) => Some(ProductScope::OfficialArtifact),
+            (None, Some(_)) => Some(ProductScope::ThirdPartyImage),
+            _ => None,
+        };
+        if product.scope.is_some() && product.scope != kind {
+            out.push(format!(
+                "{}: protocol scope {:?} is not what the lock's pin is",
+                product.target, product.scope
             ));
         }
         if product.executable_sha256.as_deref() != Some(pin.artifact.executable_sha256.as_str()) {
@@ -1925,6 +3004,79 @@ fn is_date(s: &str) -> bool {
         })
 }
 
+/// Protocol 2 (and the version 1 drafts) pair only with lock 3, protocol 3
+/// only with lock 4: neither reads the other's records (decision 0130 §3).
+pub fn pairing(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> {
+    let want = if p.protocol_version == PROTOCOL_VERSION_3 {
+        LOCK_VERSION_4
+    } else {
+        LOCK_VERSION
+    };
+    if lock.lock_version == want {
+        Ok(())
+    } else {
+        Err(Refusal(vec![format!(
+            "protocol_version {} pairs only with lock_version {want}, not {}",
+            p.protocol_version, lock.lock_version
+        )]))
+    }
+}
+
+/// Every capability citation names a document or reviewed source of that
+/// target's pin (the candidate's names a repository path with `repo:`), a
+/// pending target states nothing it cannot cite, and a stated retention cap
+/// agrees with the flag the launch sets.
+pub fn capabilities_match(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> {
+    let mut out = Vec::new();
+    for c in p.capabilities.iter().flatten() {
+        let t = c.target;
+        let entry = lock.entry(t);
+        for (key, cap) in c.each() {
+            let Some(cite) = cap.cite.as_deref() else {
+                continue;
+            };
+            match (t.provenance(), entry.and_then(|e| e.pin.as_ref())) {
+                (Provenance::Candidate, _) => {
+                    if !cite.starts_with("repo:") {
+                        out.push(format!(
+                            "capabilities: {t} {key} cites {cite:?}, not a repo: path"
+                        ));
+                    }
+                }
+                (_, Some(pin)) => {
+                    let known = pin.documents.iter().any(|d| d.path == cite)
+                        || pin.wait.reviewed.iter().any(|r| r.upstream_path == cite);
+                    if !known {
+                        out.push(format!(
+                            "capabilities: {t} {key} cites {cite:?}, which is no document or reviewed source of its pin"
+                        ));
+                    }
+                }
+                (_, None) => out.push(format!(
+                    "capabilities: {t} {key} cites {cite:?}, but {t} has no pin to cite"
+                )),
+            }
+        }
+        if let Some(pin) = entry.and_then(|e| e.pin.as_ref()) {
+            let capped = pin.storage.cap_flag.is_some();
+            match (c.retention_cap.status, capped) {
+                (CapabilityStatus::Supported, false) => out.push(format!(
+                    "capabilities: {t} retention_cap is supported but its launch sets no cap"
+                )),
+                (CapabilityStatus::NotSupported, true) => out.push(format!(
+                    "capabilities: {t} retention_cap is not_supported but its launch sets one"
+                )),
+                _ => {}
+            }
+        }
+    }
+    if out.is_empty() {
+        Ok(())
+    } else {
+        Err(Refusal(out))
+    }
+}
+
 /// The wait profile that claims each target's best available mechanism.
 /// It needs a resolved best wait per competitor; the common-client
 /// profile needs only the labelled poll (proposed decision 0093 §4).
@@ -1948,12 +3100,18 @@ pub fn collection_ready(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> 
     if let Err(Refusal(r)) = products_match(p, lock) {
         out.extend(r);
     }
+    if let Err(Refusal(r)) = pairing(p, lock) {
+        out.extend(r);
+    }
+    if let Err(Refusal(r)) = capabilities_match(p, lock) {
+        out.extend(r);
+    }
     if p.status != Status::Frozen {
         out.push("protocol is a draft, not frozen".into());
     }
-    if p.protocol_version != PROTOCOL_VERSION {
+    if !matches!(p.protocol_version, PROTOCOL_VERSION | PROTOCOL_VERSION_3) {
         out.push(format!(
-            "protocol version {} is a historical draft; only version {PROTOCOL_VERSION} collects",
+            "protocol version {} is a historical draft; only versions {PROTOCOL_VERSION} and {PROTOCOL_VERSION_3} collect",
             p.protocol_version
         ));
     }
@@ -1970,6 +3128,13 @@ pub fn collection_ready(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> 
             out.push(format!("{t} has no source lock entry"));
             continue;
         };
+        if let Some(pending) = &e.pending {
+            out.push(format!(
+                "{t}: pending, no verified pin; it cannot collect: {}",
+                pending.reason
+            ));
+            continue;
+        }
         let Some(pin) = &e.pin else { continue };
         if let Some(why) = pin.tagged_source.gap() {
             out.push(format!("{t}: tagged source unresolved: {why}"));
@@ -2158,7 +3323,7 @@ pub mod v1 {
             ));
             return;
         };
-        let official = t.official_repository().unwrap_or_default();
+        let official = t.official_home();
         if src.repository != official {
             out.push(format!(
                 "{t}: source {} is not the official {official}",
@@ -2355,10 +3520,10 @@ pub mod v2 {
             out,
             t,
             (&pin.release, &pin.artifact, &pin.license),
-            &pin.launch,
+            Some(&pin.launch),
             &pin.storage,
         );
-        let official = t.official_repository().unwrap_or_default();
+        let official = t.official_home();
         match &pin.source_revision {
             Fact::Observed(rev) if !is_hex(rev, 40) => out.push(format!(
                 "{t}: revision {rev:?} is not a full commit id (a tag or branch is mutable)"
