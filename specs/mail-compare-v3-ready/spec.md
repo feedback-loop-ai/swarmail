@@ -6,6 +6,18 @@ Run: `second-rerun-of-340-operator-dir-d2bccbd0` (operator direction
 continuing from `2c28b8b`. Base: `main` at `c95386e`. Recipe:
 `claude-careful`.
 
+Revised 2026-11-07 on review's return (decision 0102, addendum 2026-10-31).
+The review of `c5a784c` found the design itself defective. V8 required `check`
+to pass with the Alkemio image pin and the source-build row declared, while V10
+allowed only five widened arms. Both cannot hold. The revision:
+- re-derives V10 as an enumerated table (a)–(h);
+- states V8's scope;
+- adds V15–V17 for the review's ordinary findings.
+
+[plan.md § Review return](plan.md#review-return-2026-11-07) maps each finding
+to the change that answers it. The frozen `protocol.json` and
+`sources.lock.json` bytes do not change.
+
 Decision: 0130 — [Eight comparison targets: source lock v4 and protocol v3](../../docs/decisions/0130-eight-target-mail-comparison.md), proposed; only the operator accepts.
 
 Earlier designs, both still normative except where this spec overrides them by
@@ -73,8 +85,14 @@ It collects nothing.
 "Ready to collect" has one mechanical meaning in this driver: `mail_compare
 check` (that is, `collection_ready` together with `SourceLock::verify_files`)
 returns `Ok` on the committed protocol and lock. Each refusal it raises today
-has to be closed by an observation from the supplied bytes or by one of the
-operator's rulings, and never by relaxing a check the rulings do not name.
+has to be closed in one of three ways:
+- by an observation from the supplied bytes;
+- by one of the operator's rulings;
+- by a condition that a ruling or the issue's own direction entails, named in
+  V10's table with its derivation and the refusal it keeps.
+
+It is never closed by relaxing a check that neither names. A condition that
+only the implementation discloses is not a derivation.
 
 Under 0091 §1 a protocol is frozen before collection, and the frozen bytes
 must stay what they were. So the freeze is identified by content hash, and the
@@ -187,6 +205,33 @@ GreenMail's chain is annotated: ref → tag `5f09fccc…` → commit `3b8ea7df�
 - **Release metadata slices** are attributed `Api { url }` to the object's own
   `url` (the variant's documented meaning; `verify_files` checks the
   self-name). 0130 records that the bytes are a slice of a listing.
+- **An image pin has no tagged source to observe.** This condition is entailed,
+  not ruled.
+  - The issue orders source lock v4 to accept "image digests". It orders
+    Alkemio's image "reported as a separate labelled row: extract its binary,
+    digest it and run it natively". Ruling 2 pins a runtime for that row, which
+    presupposes that the row runs.
+  - 0130 §2 says an image has no tag, and `validate_image` refuses an observed
+    `tagged_source` on an image pin. So if `collection_ready` required an
+    observed one, the ordered row could never collect.
+  - The exemption is keyed on the target's closed provenance: a
+    `Provenance::has_tagged_source()` predicate that is false only for
+    `ThirdPartyImage`. It is not keyed on whether the lock data carries an
+    `image` field, so a future pin kind cannot inherit it by accident.
+  - The image's identity stays its fully checked index → manifest → layer
+    digest chain.
+- **A source build is not a release asset.** This condition is entailed by
+  ruling 1 ("bench a cgo build from the pinned release source … It may be
+  pinned"), because a supplied build cannot be listed by the GitHub release.
+  - For `Provenance::SourceBuild` only, `release_agrees` skips the asset-list
+    check. Tag, page, commitish and date are still checked.
+  - The release-asset download check is replaced by a stronger binding:
+    `{home}/tree/{tagged commit}`, plus Observed build provenance naming that
+    commit.
+- **`ConfigFile.cwd`** is a closed launch field (default false), observed in
+  the exploratory pass: the Alkemio fork reads `./config.json` and has no flag
+  for it. It loosens no refusal. The config `name` stays one leaf, with `/` and
+  `..` refused.
 
 ### The freeze
 
@@ -247,6 +292,13 @@ skips) when they are absent, and runs under V11's bounded form.
   - `plan()` yields no coordinate for a `does_not_start` target; the report
     row for it carries the label and no number; `declared_competitors` omits
     it.
+  - `does_not_start_matches` also refuses a cite whose attribution is not
+    `Supplied` or `Output`. The cite must be failure evidence: operator-supplied
+    output, or the pinned executable's own output. A README or licence must
+    never suppress a working row. The committed cite is `Supplied`, so the
+    frozen bytes still pass (S14 if not). The test is
+    `does_not_start_cite_must_be_failure_evidence`, run over a copy of the
+    committed lock whose cite names the row's `Commit`-attributed README.
 - **V5 Alkemio on its own loader.** The image pin chains index `55029f54…` →
   manifest `97dfa556…` → the executable's layer, executable `1c7556f3…`; the
   runtime pins loader `0273b534…` from layer `f350948e…`, licence `MIT`. Tests
@@ -272,6 +324,12 @@ skips) when they are absent, and runs under V11's bounded form.
   reads the source tarball's pax `comment` commit id and requires it to equal
   the tagged commit.
 - **V8 Protocol v3 frozen and ready.**
+  - Scope: the nine targets are the candidate checkout (`swarmail`, unpinned)
+    plus the eight locked competitors V2 names. `check`'s readiness is over
+    those eight pins. Seven of them are source pins, so V3's tagged-source
+    requirement applies to those seven. The eighth, Alkemio, is the image pin
+    under V10 (f). It must still refuse an observed `tagged_source`
+    (`validate_image`, unchanged).
   - `docs/evals/protocol.json`: `protocol_version` 3, `id
     fair-mail-comparison-v3`, `status: frozen`, `unresolved: []`; nine
     targets, nine cyclic rotations, nine capability and product records, the
@@ -304,20 +362,42 @@ skips) when they are absent, and runs under V11's bounded form.
     no declared listener is bound, and cleanup is proved.
   - The labelled unpinned GreenMail driver proofs become the pinned ones; any
     test function removed has a one-for-one successor named in the notes.
-- **V10 No refusal loosened.** `git diff 2c28b8b --
-  benches/mail_compare/protocol.rs` removes no refusal and widens no
-  condition except the five ruling-scoped arms (`REPORTED_VERSIONS`,
-  `RUNTIMES`, the `RegistryChecksum` asset-list skip, `MIT` on
-  `RUNTIME_LICENSES`, the `GitCommit` tree route), each with its refusal
-  tests above. `git diff 2c28b8b -- tests/` deletes no test function outside
-  V9's successor rule.
+  - **Receipts at the final head.** `c5a784c` changed the driver after the
+    recorded proofs, and this revision changes it again. So every V9 test and
+    `real_member_and_output_documents_match` reruns at the revision's final
+    commit, against the unchanged frozen bytes. Each receipt row names
+    `git rev-parse HEAD` and `HEAD^{tree}` beside its command, wall time, exit
+    status and loadavg.
+- **V10 No refusal loosened beyond the enumerated set.** `git diff 2c28b8b --
+  benches/mail_compare/` removes no refusal. It widens no condition except the
+  rows of this table. Each row names its authority and the refusal it must
+  keep, and each test listed must exist and pass.
+
+  | | Condition | Authority | Refusal kept (test) |
+  |---|---|---|---|
+  | (a) | `REPORTED_VERSIONS` | ruling 1 | another target or tag; output naming neither version (V4's tests) |
+  | (b) | `RUNTIMES` table, loader in the image's manifest | rulings 2, 4 | a third target; a missing member; a layer absent from the manifest (V5's tests) |
+  | (c) | `RegistryChecksum` asset-list skip | ruling 3 | the basis on another target; tag, page, commitish and date still checked (`skipped_asset_list_still_checks_tag_commitish_and_date`); checksum record naming `{download}.sha256` (V6's tests) |
+  | (d) | `MIT` on `RUNTIME_LICENSES` | ruling 4 | `PERMISSIVE` exactly five (`permissive_list_is_exactly_the_five`) |
+  | (e) | `GitCommit` tree route with rebuild | forced by V3 | edited entry, another tree, another commit, blob absent (V3's tests) |
+  | (f) | an image pin's `tagged_source` gap not counted by `collection_ready` | entailed: the issue's image-digest lock and Alkemio row; 0130 §2 | every source pin still refuses an unresolved gap, and an image pin still refuses an observed one (`official_pin_still_needs_an_observed_tagged_source_but_an_image_pin_does_not`; `image_pin_refuses_observed_tagged_source_or_build_provenance`) |
+  | (g) | `SourceBuild` skips the asset list; release download replaced by `{home}/tree/{commit}` | entailed by ruling 1 | V4's four `source_build_refuses_*` tests; `upstream_release_pin_with_unlisted_asset_is_still_refused` (the skip never reaches an `Official` pin); new `skipped_asset_list_still_checks_tag_commitish_and_date` (a registry pin and the source build, each with one edited field, both refused) |
+  | (h) | `ConfigFile.cwd` | observed launch fact (0130 addendum) | a config name with `/` or `..` refused (`config_file_name_confined`); `config_file_cwd_runs_where_rendered` |
+
+  Rows (f) and (g) keep their code but take the shapes named in "Forced by
+  ready to collect": the provenance predicate, and the `Provenance::SourceBuild`
+  arm. Where the panel found a test missing, the test is added under the name
+  above, or the notes name its existing equivalent. `git diff 2c28b8b --
+  tests/` deletes no test function outside V9's successor rule and V17's
+  rename.
 - **V11 Bounded load.** Every real proof, `--help`/version capture and smoke
   is a named `timeout 600 taskset -c 0-$(( $(nproc)/4 - 1 ))` command
   (`nproc` read at run time; 32 CPUs here), one test at a time
   (`--test-threads=1`), with `/proc/loadavg` recorded before and after. The
   notes report each command, its wall time, exit status and loadavg. Gate
   commands run under the same `taskset`; they are not measurements.
-- **V12 The record.** 0130 gains one dated addendum, "2026-11-07 (operator
+- **V12 The record.** (The revision adds a second addendum; see V12′
+  below.) 0130 gains one dated addendum, "2026-11-07 (operator
   rulings, pins and freeze)", additions only (`git diff 2c28b8b --
   docs/decisions/0130*` adds lines only): the four rulings quoted; the supply
   receipts; the new constants and variants; the `does_not_start` result and
@@ -342,6 +422,95 @@ skips) when they are absent, and runs under V11's bounded form.
   outputs, that collection was not run (not this story), and that the PR is
   held for the operator (the branch changes `scripts/` and adds pointers to
   accepted records).
+- **V12′ The review-return record.** 0130 gains a second dated addendum,
+  "2026-11-07 (review return)". It is additions only: `git diff c5a784c --
+  docs/decisions/0130*` has no `-` line, and the status stays `proposed`. It
+  states:
+  - **Nine, not eight.** The closed list in §1, §2 and §3 now reads nine:
+    ruling 1 added `mailslurper-source-build`. The nine are listed, and the
+    file name stays "eight-target".
+  - **Conditions (f), (g) and (h)** with their derivations and tests. The
+    earlier "one condition beyond the five ruled arms (for the operator)" and
+    "the operator's ruling on the sixth condition" are superseded by an added
+    sentence, not by deletion. The operator can still strike (f) or (g) when
+    ruling on 0130, and S12′ then applies.
+  - **GreenMail REST.** The pinned OpenAPI's `mimeMessage` reads messages, so
+    0130's Context, the frozen lock's `wait.finding` and the old `wire.rs`
+    comment are wrong to say it cannot. POP3 stays the read path because the
+    issue orders it (0093 §4). The frozen `wait.finding` stays as frozen, and
+    this addendum is its correction of record.
+  - **smtp4dev's runtime label.** It lives in the report (V15) and the README,
+    not in the frozen claim. This corrects the earlier sentence "labelled in
+    the claim, the report and the README".
+  - **Alkemio's cap basis**, from V17's probe: either "and holds under a
+    burst", or "in batches of five; a burst listed N".
+  - **`capabilities.server_search`** describes the product's API. The row
+    label's `search` describes the driver's chosen method. Both stand.
+  - **The musl `holder`** names the Alpine package maintainer. musl's
+    copyright holders are in musl's COPYRIGHT. The frozen lock is unchanged.
+  - **The receipt table at the final head** (V9).
+
+  Related edits outside 0130:
+  - `docs/decisions/0091`'s §4 pointer gains one appended dated pointer line
+    ("2026-11-07: nine targets; see 0130's review-return addendum"). Its
+    existing line is not edited.
+  - The 0130 row of `docs/decisions/README.md` adds "nine targets (2026-11-07
+    addenda)" to its notes.
+  - `wire.rs`'s comment says the driver reads over POP3 because the issue
+    orders it.
+  - The README's v3 section says nine and states the Alkemio cap basis as
+    observed.
+- **V15 Labels where the number is read, and under the seal.**
+  - `report::row_labels` gives smtp4dev the runtime label
+    `self-contained .NET on host libraries (unpinned)`.
+    `report_labels_name_every_unpinned_runtime` asserts it, together with the
+    source build's host-glibc label.
+  - `admit_run` re-derives `blocked` and `labels`, as well as `throughput` and
+    `waits`, from the protocol, but only for a protocol_version-3 report. v2
+    admission is unchanged, so the 2026-10-30 collection keeps its terms.
+  - `admit_run_refuses_a_v3_report_with_an_edited_blocked_row`: a sealed v3
+    report whose blocked row was dropped, or whose blocked cell carries a
+    number, is refused. An untampered one admits.
+- **V16 One launch owner, and the wrapper's flags under test.**
+  - `Protocol::launch_order(rep)` (the rotation minus `does_not_start`) is the
+    only filter. `plan()`, `runner::run` and `prepare` all use it, and no
+    other `does_not_start(` filter remains in `benches/` (a grep in the
+    notes).
+  - `plan_yields_no_coordinate_for_a_does_not_start_target` asserts the exact
+    count: `(|targets| − 1) ×` the per-target coordinates.
+  - `run_never_launches_a_does_not_start_target`: one `runner::run` over a
+    small v3 smoke protocol. The candidate is the only launched target, and a
+    competitor is listed in `does_not_start` with no launch spec. The test
+    requires a `Clean` verdict and a sealed report carrying that row as
+    blocked. Without the filter the verdict is `Infrastructure`.
+  - `flags` and a pure `launch_specs(p, s, bins, runtimes)` move, with
+    unchanged behaviour, from `benches/mail_compare.rs` into `runner.rs`.
+    `prepare` keeps its I/O and calls them. Tests over the committed v3
+    protocol and lock:
+    - `flags_repeat_bin_and_runtime_only`: two `--runtime` values are
+      admitted and `--protocol` twice is refused;
+    - `launch_specs_take_two_runtimes`: greenmail and alkemio-mailslurper;
+    - `launch_specs_refuse_a_bin_for_a_does_not_start_target`;
+    - `launch_specs_refuse_a_runtime_given_twice_for_one_target`.
+- **V17 The real tests assert what the record claims.**
+  - For the decoded-body rows (`mailslurper-source-build`,
+    `alkemio-mailslurper`), `real_hostile` and the multipart arm of
+    `real_round_trip` assert the contract 0130 records: dot-stuffing is not
+    undone (`..leading dot`), each newline becomes `<br />`, and the
+    multipart HTML equals `<p>html part</p>`. They no longer `eprintln!` it.
+  - `eight_target_smoke_fixture_is_a_valid_draft_that_cannot_launch_yet` is
+    renamed one-for-one to a true name, because it asserts that the fixture
+    launches.
+  - `real_mailslurper_official_does_not_start` drops its
+    `started.elapsed() < startup` wall-clock assertion, since the timeout
+    already bounds it (0020 §5). The bind-and-release port reservation stays,
+    because it fails closed.
+  - **Alkemio burst probe.** Run `real_caps_hold_alkemio_mailslurper` once
+    with Alkemio removed from `loses_under_burst`, bounded by V11.
+    - If 600/600 are listed, Alkemio leaves `loses_under_burst` and the lock's
+      basis is true as written.
+    - If mail is lost, the batching stays and V12′ records the observed count.
+    - Either way the notes quote the result.
 
 ## Stop triggers (stop that row or step and report; never decide)
 
@@ -357,6 +526,13 @@ The earlier specs' S1–S8 hold. Added:
 - **S12** A real proof fails after the freeze because a frozen fact is wrong.
   Never edit the frozen bytes; report the fact and output. The fix is a new
   protocol version or the operator's ruling.
+- **S14** A tightening in V4 or V15 would make the frozen bytes fail `check`
+  or a test pinned to them. Do not tighten past the frozen bytes and do not
+  edit them; report it as a protocol v4 item.
+- **S12′** If the operator strikes condition (f) or (g) when ruling on 0130,
+  v3 cannot collect as frozen. The remedy is a new protocol version or a
+  ruling, never an edit of the frozen bytes. Nothing has been collected that a
+  strike could invalidate.
 - **S13** Anyone reads `does_not_start` as denominator shrinkage under 0091
   §1. This spec reads 0091 §1 ("preserve … unstarted work") and §3
   ("full-product entries without fabricated trial results") as governing; a
@@ -370,3 +546,14 @@ runtime pin; IMAP; gpg or `.asc` verification; committing the Maven `.sha1`,
 `.sha512`, `.md5`, `.asc`, pom or metadata files; renaming the "eight-target"
 files; re-capturing Mailpit or MailHog; network fetches; accepting decisions;
 closing #163 or #340.
+
+Added by the revision:
+- any edit of `docs/evals/protocol.json` or `docs/evals/sources.lock.json`,
+  or a re-freeze;
+- a new `DocKind`;
+- a new operator ask for conditions (f) and (g); they are named for the
+  operator's ruling on 0130 instead;
+- moving `prepare`'s I/O or `main` into a module;
+- a driver identity field in the sealed report. The bench builds from the
+  checkout, and the manifest's `candidate_commit` and `candidate_dirty`
+  already name that checkout.
