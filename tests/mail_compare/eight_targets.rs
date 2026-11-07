@@ -3788,7 +3788,10 @@ fn does_not_start_cite_must_be_failure_evidence() {
         let mut p = committed.clone();
         p.does_not_start.as_mut().unwrap()[0].cite = cite.into();
         let why = refusals(protocol::does_not_start_matches(&p, &lock));
-        assert!(why.contains("which is not failure evidence"), "{cite}: {why}");
+        assert!(
+            why.contains("which is not failure evidence"),
+            "{cite}: {why}"
+        );
         assert!(
             refusals(protocol::collection_ready(&p, &lock)).contains("not failure evidence"),
             "{cite}"
@@ -5239,6 +5242,169 @@ fn eight_target_smoke_fixture_is_a_valid_draft_that_cannot_launch_yet() {
         protocol::declared_competitors(&p).len(),
         TargetKind::ALL.len() - 2
     );
+}
+
+/// The nine-target smoke fixture with every competitor published as not
+/// starting: the candidate is the only launched target, so a real run needs
+/// one launch spec and no competitor binary. The cites are never read (only
+/// `collection_ready` reads them, and this is a smoke).
+fn candidate_alone_v3() -> Protocol {
+    let mut v = json(include_bytes!("eight-target-smoke.json"));
+    let skipped: Vec<Value> = TargetKind::ALL
+        .into_iter()
+        .filter(|t| *t != TargetKind::Swarmail)
+        .map(|t| json!({"target": t.name(), "cite": format!("sources/{t}/failure.txt")}))
+        .collect();
+    v["does_not_start"] = Value::Array(skipped);
+    let p = protocol_from(v).unwrap();
+    p.validate().expect("a valid protocol 3 smoke");
+    assert!(protocol::declared_competitors(&p).is_empty());
+    p
+}
+
+#[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+async fn run_never_launches_a_does_not_start_target() {
+    let p = candidate_alone_v3();
+    // A competitor with no launch spec is Infrastructure the moment the run
+    // reaches it; a does_not_start target is never reached.
+    let root = tempfile::tempdir().unwrap();
+    let (verdict, life, sealed) = run(p.clone(), root.path(), "never-launches").await;
+    assert_eq!(verdict, runner::Verdict::Clean, "{verdict:?}");
+    assert!(!life.launches.is_empty());
+    assert!(
+        life.launches
+            .iter()
+            .all(|l| l.target == TargetKind::Swarmail),
+        "only the candidate launched"
+    );
+    assert!(life.cleanups.iter().all(targets::CleanupFacts::proved));
+    let dir = sealed.expect("a clean run is sealed");
+    let rows = rows(&dir);
+    assert!(rows.iter().all(|r| r.target == TargetKind::Swarmail));
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("report.json")).unwrap()).unwrap();
+    let blocked = report["blocked"].as_array().unwrap();
+    assert_eq!(blocked.len(), TargetKind::ALL.len() - 1);
+    for b in blocked {
+        assert!(
+            b["result"]
+                .as_str()
+                .unwrap()
+                .starts_with("does not start (published result: sources/"),
+            "{b}"
+        );
+        assert!(
+            b["cells"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|c| c["outcome"] == "blocked"),
+            "{b}"
+        );
+    }
+    report::admit_run(&dir, &serde_json::to_vec(&p).unwrap()).expect("it admits");
+}
+
+#[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+async fn admit_run_refuses_a_v3_report_with_an_edited_blocked_row() {
+    let p = candidate_alone_v3();
+    let bytes = serde_json::to_vec(&p).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let (verdict, _, sealed) = run(p.clone(), root.path(), "sealed-v3").await;
+    assert_eq!(verdict, runner::Verdict::Clean, "{verdict:?}");
+    let good = sealed.unwrap();
+    report::admit_run(&good, &bytes).expect("the untampered v3 report admits");
+    let m = records::read_manifest(&good).unwrap();
+    let all = rows(&good);
+    let on_disk: Value =
+        serde_json::from_slice(&std::fs::read(good.join("report.json")).unwrap()).unwrap();
+    // A sealed copy with an edited report: storage accepts it, so only the
+    // protocol can refuse.
+    let forge = |name: &str, report: &Value| {
+        let mut dir = records::RunDir::create(&root.path().join(name), &m).unwrap();
+        for r in &all {
+            dir.append(r).unwrap();
+        }
+        dir.write_artifact("report.json", &serde_json::to_vec(report).unwrap())
+            .unwrap();
+        let path = dir.finalize(true).expect("storage accepts it");
+        records::admit(&path).expect("and so does the directory-level admission");
+        path
+    };
+    let refused =
+        |name: &str, report: &Value| report::admit_run(&forge(name, report), &bytes).unwrap_err();
+    forge("same", &on_disk);
+    report::admit_run(&root.path().join("same"), &bytes).expect("an unedited copy admits");
+
+    // A dropped blocked row.
+    let mut dropped = on_disk.clone();
+    dropped["blocked"].as_array_mut().unwrap().pop();
+    let why = refused("dropped", &dropped);
+    assert!(
+        why.contains("disagrees with the rows") && why.contains("blocked"),
+        "{why}"
+    );
+    // A blocked cell given a number.
+    let mut numbered = on_disk.clone();
+    numbered["blocked"][0]["cells"][0]["rate"] = 12.5.into();
+    let why = refused("numbered", &numbered);
+    assert!(why.contains("blocked[0].cells[0]"), "{why}");
+    let mut outcome = on_disk.clone();
+    outcome["blocked"][0]["cells"][0]["outcome"] = "measured".into();
+    let why = refused("outcome", &outcome);
+    assert!(why.contains("blocked[0].cells[0].outcome"), "{why}");
+    // An edited label: a runtime claimed for a row that pins none.
+    let mut labelled = on_disk.clone();
+    let at = TargetKind::ALL
+        .iter()
+        .position(|t| *t == TargetKind::Inbucket)
+        .unwrap();
+    labelled["labels"][at]["runtime"] = "JRE (pinned)".into();
+    let why = refused("labelled", &labelled);
+    assert!(why.contains("labels[") && why.contains("runtime"), "{why}");
+    // A dropped label key set.
+    let mut unlabelled = on_disk.clone();
+    unlabelled.as_object_mut().unwrap().remove("labels");
+    let why = refused("unlabelled", &unlabelled);
+    assert!(why.contains("labels"), "{why}");
+}
+
+#[test]
+fn report_labels_name_every_unpinned_runtime() {
+    let p = Protocol::parse(PROTOCOL_V3).unwrap();
+    let labels = report::row_labels(&p);
+    let runtime = |t: TargetKind| labels.iter().find(|l| l.target == t).unwrap().runtime;
+    assert_eq!(
+        runtime(TargetKind::Smtp4dev),
+        Some("self-contained .NET on host libraries (unpinned)")
+    );
+    assert_eq!(
+        runtime(TargetKind::MailslurperSourceBuild),
+        Some("host glibc (unpinned)")
+    );
+    // The pinned runtimes keep their labels, and the rest carry none.
+    assert_eq!(runtime(TargetKind::Greenmail), Some("JRE (pinned)"));
+    assert_eq!(
+        runtime(TargetKind::AlkemioMailslurper),
+        Some("musl loader (pinned, from the image's own layer)")
+    );
+    for t in [
+        TargetKind::Swarmail,
+        TargetKind::Mailpit,
+        TargetKind::Mailhog,
+        TargetKind::Mailslurper,
+        TargetKind::Inbucket,
+    ] {
+        assert_eq!(runtime(t), None, "{t}");
+    }
 }
 
 #[test]

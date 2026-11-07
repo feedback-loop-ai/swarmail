@@ -150,6 +150,11 @@ pub fn row_labels(p: &Protocol) -> Vec<RowLabel> {
                     }
                     (Some(_), _) => Some("JRE (pinned)"),
                     (None, Provenance::SourceBuild(_)) => Some("host glibc (unpinned)"),
+                    // smtp4dev ships self-contained .NET but resolves its
+                    // native dependencies on the host: no runtime is pinned.
+                    (None, _) if *t == TargetKind::Smtp4dev => {
+                        Some("self-contained .NET on host libraries (unpinned)")
+                    }
                     (None, _) => None,
                 },
                 integrity: crate::protocol::REGISTRY
@@ -472,7 +477,17 @@ pub fn admit_run(
     };
     let fresh = serde_json::to_value(report(&p, m, &admitted.rows, &life))
         .map_err(|e| format!("report: {e}"))?;
-    for key in ["throughput", "waits"] {
+    // Protocol 3's report also carries the row labels and the blocked rows
+    // the reader sees beside every number; both are pure functions of the
+    // protocol, so a sealed report cannot drop a does-not-start row or edit a
+    // label. Protocol 2's admission keeps its terms (the 2026-10-30
+    // collection predates both keys).
+    let keys: &[&str] = if p.protocol_version == crate::protocol::PROTOCOL_VERSION_3 {
+        &["throughput", "waits", "blocked", "labels"]
+    } else {
+        &["throughput", "waits"]
+    };
+    for &key in keys {
         if let Some((at, report, rows)) = first_difference(key, &on_disk[key], &fresh[key]) {
             return Err(format!(
                 "the report disagrees with the rows it was derived from at {at}: report {report}, rows {rows}"
