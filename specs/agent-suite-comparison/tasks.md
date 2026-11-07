@@ -11,6 +11,17 @@ re-run in T9, and a box whose proof fails there is unticked and fixed. An
 unticked box is open. The pinned bytes are under `.compare-bins/`, which is
 untrusted and never committed (plan, technical context).
 
+**Second rerun, 2026-11-07** (`second-rerun-of-339-operator-dir-e9c4d893`,
+from `6e0098b`). The operator ruled that the comparison's MailSlurper is the
+cgo build in `.compare-bins/2026-11-07-supply/mailslurper-cgo/`, labelled
+"built from source" (spec, "The second 2026-11-07 rerun"). Do not redo the
+ticked boxes. Do the open ones in this order: T1.d, T3.d, T3.e, T3.c, T4.c,
+T4.d, T5.a (rest), T5.c, T7.b, T7.c, T7.d, T8.a, T8.b, T8.c, T9.a. The supply
+is untrusted: copy each file into a new directory under ignored scratch on
+`/home`, compare it with the supply's `SHA256SUMS` hex as a constant, run
+nothing from it except the verified `mailslurper` (`eb6cd97d…58ff`), and run
+any Python over it with `-I`. Nothing paid runs.
+
 ## T1 — Records (AC1)
 
 - [x] T1.a The 2026-11-07 dated addenda on 0091 and 0092 (`d5961bb`).
@@ -22,6 +33,36 @@ untrusted and never committed (plan, technical context).
   The final row update moves to T8.c.
   **Proof:** `grep -nE 'proposed \[009[123]\]' docs/evals/README.md` finds
   nothing.
+
+- [ ] T1.d *(rerun 2)* Record the operator's ruling:
+  - add a second section, "Addendum — 2026-11-07 (operator ruling: the
+    source-built MailSlurper)", to proposed 0129, and leave the first
+    addendum unedited. It quotes the ruling and states:
+    - the official binary's failure, with its zip and member digests and
+      exit status 1;
+    - the build: binary, source and builder-image digests, `CGO_ENABLED=1`,
+      `-trimpath`, and verified modules;
+    - that the build reports v1.14.1 under `release-1.15.0`;
+    - that "built from source" claims these bytes were built from the
+      pinned, tag-named source as recorded, and does not claim to
+      reproduce upstream's release;
+    - that it answers the first addendum's open question;
+    - the lock fields R11 adds (`built_from_source`, `build`,
+      `official_release`, `git_commit`) and the observed root tree;
+    - the glibc 2.31 floor.
+  - Add one pointer bullet to 0091's existing 2026-11-07 addendum: for
+    MailSlurper in this story, §1's official evidence is met by the official
+    source plus the labelled source-built artifact, under the operator's
+    2026-11-07 ruling recorded in 0129.
+
+  **Proof:**
+  - `git diff --numstat 6e0098b -- docs/decisions/0129-agent-suite-comparison.md
+    docs/decisions/0091-fair-mail-comparison.md` shows 0 deleted lines;
+  - `git diff --numstat c95386e -- docs/decisions/0091-fair-mail-comparison.md`
+    shows 0 deleted lines;
+  - `git diff 6e0098b -- docs/decisions/0092-official-mail-comparison.md
+    docs/decisions/0093-source-mail-comparison.md` is empty;
+  - `cargo test --locked --test store_contract_docs` passes.
 
 ## T2 — Generic adapter half and batches (AC4, AC5)
 
@@ -78,8 +119,44 @@ untrusted and never committed (plan, technical context).
   - `git diff c95386e -- docs/evals/protocol.json` is empty;
   - a MailSlurper launch test proves three owned binds and their release on
     cleanup, and that Mailpit and MailHog launches are unchanged.
+- [ ] T3.d *(rerun 2)* The source-built lock entry (spec R11):
+  - in `protocol.rs`, add `ArtifactKind::BuiltFromSource`, the optional
+    `Artifact.build` and `Artifact.official_release`, and
+    `DocKind::GitCommit`;
+  - let a lightweight tag's tree be observed only when the `git_commit` and
+    `git_tree` documents bind it;
+  - add the root-blob check;
+  - commit the build evidence under `docs/evals/sources/mailslurper/build/`
+    and the commit and tree JSON under `docs/evals/sources/mailslurper/git/`,
+    each verified first against the supply's `SHA256SUMS` constants;
+  - rewrite the MailSlurper entry of `docs/evals/sources.lock.json` in place
+    (still v4), and reword `version_note`.
+
+  Never commit the binary, the build logs, the supply's scripts or the image
+  index.
+  **Proof:**
+  - one negative test in `tests/mail_compare.rs` for each R11 refusal;
+  - the existing `archive` and `executable` tests and the v1–v3 reader tests
+    pass unchanged;
+  - a test rebuilds the tree object from the committed tree JSON with
+    `git hash-object -t tree --stdin` and gets `5f29f08a…0729`;
+  - `the_tag_chain_and_every_blob_are_rechecked_against_the_captures` covers
+    the build and git documents;
+  - `mail_compare check --protocol docs/evals/protocol.json --sources
+    docs/evals/sources.lock.json` exits 0;
+  - `git diff c95386e -- docs/evals/protocol.json` is empty;
+  - `git ls-files .compare-bins` is empty.
+- [ ] T3.e *(rerun 2)* Recompute the tarball against the tree, once. Verify
+  `83f66f25…359f`. Extract it into a new scratch directory on `/home`. Run
+  `git init`, `git add -A` and `git write-tree` there, and compare the
+  result with `5f29f08a…0729`. A mismatch stops the MailSlurper items, which
+  are reported blocked. Never edit the tree or the extraction to agree.
+  **Proof:** the named transcript (commands, digests, the tree id),
+  committed beside the controls.
 - [ ] T3.c The AUTH PLAIN probe, an unscored setup step, run against the
-  pinned binary through the launcher. The expected result is: EHLO
+  pinned binary through the launcher. *(rerun 2)* The pinned binary is the
+  source build `eb6cd97d…58ff` (T3.d). The transcript names that digest and
+  says that the published executable does not start and was not probed. The expected result is: EHLO
   advertises no AUTH, and `AUTH PLAIN …` draws `221 Bye` and a close, with
   no `235` and no `334`. Any other result blocks T7.b and the MailSlurper
   items, and is reported. Record the finding in the lock.
@@ -107,7 +184,10 @@ untrusted and never committed (plan, technical context).
   - the `evals/tests/target.rs` adapter-mode test.
 - [ ] T4.c Run the ignored real-binary tests against the verified pins,
   one at a time: `MAIL_COMPARE_MAILPIT`, `MAIL_COMPARE_MAILHOG` and
-  `MAIL_COMPARE_MAILSLURPER`. Each calls every announced tool once,
+  `MAIL_COMPARE_MAILSLURPER`. *(rerun 2: Mailpit and MailHog ran in the
+  first rerun, and their transcripts are in
+  `docs/evals/wire-corpus/real-runs/`. Run MailSlurper against `eb6cd97d…`
+  now, and re-run the other two only if their adapters changed.)* Each calls every announced tool once,
   read-only. Remove any failing tool from its adapter, never emulate it,
   and re-run.
   **Proof:** the named, timed transcripts with `uptime` before and after,
@@ -122,6 +202,11 @@ untrusted and never committed (plan, technical context).
   - an `evals/tests/mailsource.rs` test maps every read through the
     oracle's normalizer;
   - a test refuses an index whose executable digest differs from the lock.
+  - *(rerun 2)* The index binds each target's config template sha256, and a
+    test refuses a mismatch with the lock.
+  - *(rerun 2)* The MailSlurper corpus holds a body that `GetMail`
+    base64-decodes and one it does not. A normalizer test maps each. If a
+    branch cannot occur, the index records why.
 
   All of these run in CI.
 - [x] T4.e Hostile arguments (spec R5, rerun) on the generic half and every
@@ -142,9 +227,15 @@ untrusted and never committed (plan, technical context).
   **Proof:** `evals/tests/target.rs`.
 - [ ] T5.a (rest) `matrix --target/--adapter/--target-bin/--sources`, with
   the named refusals: an unknown value, `--brokkr`, a dsh profile, and a
-  task that is not applicable.
+  task that is not applicable. *(rerun 2)* Add the input bindings of spec
+  R2: regular-file and bounded reads of `--sources` and `--product`, and
+  `--target-bin` hashed against the product tuple, which must equal the
+  lock. All of this happens before anything is spawned.
   **Proof:**
   - unit tests per refusal, each asserting that nothing launched;
+  - *(rerun 2)* tests for a FIFO and a directory as `--sources`, an
+    over-bound `--product`, a wrong-digest `--target-bin` (with both
+    digests in the message), and a product that disagrees with the lock;
   - the existing matrix suite passes unchanged without `--target`.
 - [x] T5.b `evals/src/bridge.rs` under spec R3 (`345f847`).
   **Proof:** `evals/tests/bridge.rs` against the real `swarmail mcp`.
@@ -211,7 +302,10 @@ untrusted and never committed (plan, technical context).
     tasks × targets × agents × trials = 240;
   - a test refuses a product whose tuple's `tools_sha256` differs from the
     adapter's;
-  - the header digests equal T6.a's.
+  - the header digests equal T6.a's;
+  - *(rerun 2)* MailSlurper's tuple says `artifact_kind:
+    "built_from_source"`, `version_report: "v1.14.1"` and
+    `executable_sha256` `eb6cd97d…`, copied from the lock.
 - [ ] T7.c `evals/src/comparison.rs` and the `comparison-check` subcommand,
   with the dry-run, evidence and measure modes.
   **Proof:** one negative test per prerequisite in the fixed order, for
@@ -223,7 +317,10 @@ untrusted and never committed (plan, technical context).
   - *(rerun)* an ancestor diff touching `evals/`, `benches/`, `scripts/`,
     `src/`, the lock or the product;
   - *(rerun)* a missing control row;
-  - *(rerun)* a torn final line.
+  - *(rerun)* a torn final line;
+  - *(rerun 2)* a product tuple whose `artifact_kind` or `version_report`
+    differs from the lock;
+  - *(rerun 2)* a controls directory with no rows for one target.
 
   A positive test accepts an ancestor whose diff touches only the evidence
   paths.
@@ -231,10 +328,14 @@ untrusted and never committed (plan, technical context).
   - `controls` needs only `--product` and the executables;
   - `evidence` and `measure` run the stat chain, then the verifier;
   - `--authorized-product`;
-  - the `comparison-integration` refusal is removed.
+  - the `comparison-integration` refusal is removed;
+  - *(rerun 2)* `eval_prerequisite` runs `cargo build --locked --offline` in
+    `evals/` and names a failure `eval-build`, then runs the verifier.
 
   **Proof:**
   - wrapper tests per mode, each refusing by name;
+  - *(rerun 2)* a wrapper test in which the eval build fails, and the
+    refusal is `eval-build`;
   - `grep -c comparison-integration scripts/compare-mail.sh` gives 0;
   - a non-dry measure with an inert builtin-`null` config, on a synthetic
     one-trial product in scratch on `/home`, delegates;
@@ -250,7 +351,7 @@ untrusted and never committed (plan, technical context).
     `/usr/bin/time` and `uptime` before and after.
 
   Commit `docs/evals/agent-controls-2026-11-07/` (rows, index, contracts,
-  identity, receipts, the T3.c and T4.c transcripts).
+  identity, receipts, the T3.c, T3.e and T4.c transcripts).
   **Proof:**
   - every oracle trial passes, and every null trial fails with its idle
     class;
@@ -268,13 +369,20 @@ untrusted and never committed (plan, technical context).
   built, and why" block with the outcome. Write in it:
   - the AUTH asymmetry sentence of spec R8;
   - MailSlurper's declared accept-before-store and its substring filter;
-  - the unresolved tree;
+  - the unresolved tree; *(rerun 2: replace this with the observed root
+    tree and the T3.e recomputation)*
+  - *(rerun 2)* that the MailSlurper measured is "built from source"
+    (`eb6cd97d…`), how it was built, that it reports v1.14.1 under
+    `release-1.15.0`, that it links glibc 2.31 or newer, and that the
+    published linux executable does not start (`CGO_ENABLED=0` stub);
   - the unused shelf upstreams;
   - what only CI or the operator proves.
 
   Update the T7–T10 and AC rows.
   **Proof:** `tests/store_contract_docs.rs` link checks pass, and
   `grep -c 'Not built, and why' docs/evals/README.md` gives 0.
+  *(rerun 2)* `grep -c 'built from source' docs/evals/README.md` is at least
+  1, and the README no longer says the MailSlurper items are blocked.
 
 ## T9 — Gates (AC12)
 
@@ -292,6 +400,12 @@ untrusted and never committed (plan, technical context).
   - `git diff c95386e -- src/ .github/ .brokkr/ Cargo.lock evals/Cargo.lock
     deny.toml` is empty;
   - `git ls-files .compare-bins` is empty.
+  - *(rerun 2)* Each measurement is a named command, timed with
+    `/usr/bin/time` and run under `timeout 600` with at most 32 workers.
+    `uptime` is recorded before and after it, and the load is reported. The
+    PR notes say that the operator holds the PR, because
+    `scripts/compare-mail.sh` changes, and they flag the lock contention
+    with #340.
 
 ## Rerun outcome, 2026-11-07 (`rerun-of-339-operator-direction--305a5aec`)
 

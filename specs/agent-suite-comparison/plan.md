@@ -56,6 +56,22 @@ Spec: [spec.md](spec.md). Decision: proposed
   tasks, which are then reported **blocked**. The lock is never edited to fit
   the bytes.
 
+- **The supply (second rerun, 2026-11-07).** The cgo build and its evidence
+  are in `.compare-bins/2026-11-07-supply/mailslurper-cgo/`. The release's
+  commit and root tree are in `.compare-bins/2026-11-07-supply/git-trees/`
+  (spec, "What the supply establishes"). The same rules apply:
+  - copy each file into a new directory under ignored scratch on `/home`;
+  - compare its sha256 with the supply's `SHA256SUMS` hex, as constants;
+  - run only the verified `mailslurper` (`eb6cd97d…58ff`).
+
+  The supply's scripts (`build-in-container.sh`, `launch_probe.sh`,
+  `smtp_send_one.py`, `treehash.py`) are read and never run. The official
+  binary is never launched again.
+- **The build links glibc.** The binary is dynamically linked against glibc
+  2.31 or newer. This host runs it, as the supply's launch shows. The
+  adapter launches the backend outside the agent sandbox, and the trial
+  sandbox binds `/lib`, `/lib64` and `/usr` anyway (`evals/src/isolation.rs`).
+
 ## Constitution check
 
 | Rule | How this plan holds it |
@@ -64,6 +80,7 @@ Spec: [spec.md](spec.md). Decision: proposed
 | 0004 per-test inboxes | Swarmail keeps them. Competitors are isolated by a fresh instance and emulate no inbox. |
 | 0005 extraction at ingest | Not assumed upstream. MailHog's raw MIME passes through, and only the oracle (a control) decodes it. |
 | 0091 §1 frozen product | `agent-comparison.json` is committed before the controls run. A changed method needs a new id. |
+| 0091 §1 official evidence *(rerun 2)* | The MailSlurper source stays official and bound (tag commit, root tree, source archive). The artifact is the operator-ruled source build, labelled `built_from_source`. The official artifact's digests and failure stay in the lock as `official_release`. The ruling is the operator's. 0129's second addendum records it, and 0091's 2026-11-07 addendum points to it. |
 | 0091 §2 one fixture and scorer | One fixture plus `smtp_auth`. One scorer. Native v2 is untouched without `--target`. |
 | 0091 §3 / 0092 §3 thin adapters | Source-verified general operations only, bodies unchanged, nothing emulated. |
 | 0091 §5 controls first, no paid work | `controls` is free. `measure` needs `--authorized-product`, and delivery proves it with null agents only. |
@@ -88,6 +105,9 @@ docs/evals/agent-comparison-cost.json            new: cost basis "unavailable"
 docs/evals/sources.lock.json                     lock v4 (+ mailslurper entry)
 docs/evals/history/2026-11-07-sources.lock.v3.json  v3 bytes, byte-identical
 docs/evals/sources/mailslurper/                  new: ref/release metadata, licence, README, the cited source files (spec R8)
+docs/evals/sources/mailslurper/build/            new (rerun 2): PROVENANCE.md, go-version-m.txt, go.sum, go.mod, official-release-stderr.log
+docs/evals/sources/mailslurper/git/              new (rerun 2): the release commit and root tree JSON
+docs/decisions/0129-agent-suite-comparison.md    + second dated addendum 2026-11-07 (rerun 2; the first is not edited)
 docs/evals/wire-corpus/{mailpit,mailhog,mailslurper}/  new (rerun): captured upstream responses + index.json
 docs/evals/agent-controls-2026-11-07/            new: controls rows, index, contracts, identity, receipts, dry-run transcript
 benches/mail_compare.rs                          mailhog-mcp / mailslurper-mcp modes; --launch mode
@@ -95,7 +115,9 @@ benches/mail_compare/mcp.rs                      new: generic half + batches
 benches/mail_compare/mailpit_mcp.rs              Mailpit backend only
 benches/mail_compare/mailhog_mcp.rs              new
 benches/mail_compare/mailslurper_mcp.rs          new
-benches/mail_compare/protocol.rs                 TargetKind::Mailslurper appended; lock v4 reader; v3 reader kept
+benches/mail_compare/protocol.rs                 TargetKind::Mailslurper appended; lock v4 reader; v3 reader kept;
+                                                 (rerun 2) ArtifactKind::BuiltFromSource, Artifact.build/official_release,
+                                                 DocKind::GitCommit, the observed lightweight tree, the root-blob check
 benches/mail_compare/targets.rs                  optional launch config template; third reserved port {www_addr}/{www_port} (rerun)
 tests/mail_compare.rs                            #[path] includes; batch suite; shim mechanics; ignored upstream tests
 evals/src/target.rs                              new: Target enum + backend tuple
@@ -263,6 +285,47 @@ No acceptance criterion was weakened. The only text changed rather than
 added is AC10's scratch location (`/home`, not a temp dir). It follows the
 host's `/tmp` quota and is stricter.
 
+## Second rerun changes (2026-11-07), and which position each answers
+
+The run context carries no review return, so no review finding is open.
+These changes answer the operator's ruling of 2026-11-07 and the two
+positions of `second-rerun-of-339-operator-dir-e9c4d893`. They are ruled in
+the spec's "How the second rerun's positions were ruled".
+
+| Change | Owning artifact | Answers |
+|---|---|---|
+| The ruling is recorded: a second 0129 addendum, and a pointer bullet in 0091's 2026-11-07 addendum | spec R11, AC1; T1.d | The operator's ruling; simplicity §3 |
+| Fairness re-checked: no stop, because the operator ruled the conflict by name | spec "Fairness check, again" | Simplicity §1; robustness §0 |
+| Lock v4 edited in place; `ArtifactKind::BuiltFromSource` | spec R11, AC13; T3.d | Simplicity §2.1–§2.2 |
+| `build` record, with the source digest equal to the source archive's and the builder image pinned by digest | spec R11, AC13; T3.d | Robustness §2.1 |
+| `official_release` kept in the lock, never launched | spec R11, AC6, AC13; T3.d | Robustness §2.2 |
+| Build-evidence documents with an unresolved attribution and its reason; no new attribution variant | spec R11; T3.d | Simplicity §2.3 |
+| `DocKind::GitCommit`, the observed lightweight tree, the root-blob check, and the tree recomputed from JSON in a test | spec R11, AC13; T3.d | Simplicity §2.4; robustness §2.4 |
+| The tarball recomputed to the tree once, stopping on a mismatch | spec AC13; T3.e | Robustness §2.4 |
+| The version report in the lock, the product and the README, checked by the verifier | spec R9, R11, AC13; T7.b, T7.c | Robustness §2.3; simplicity §2.5 |
+| `--target-bin`, `--sources` and `--product` bound before any spawn | spec R2, AC2; T5.a | Robustness §2.5 |
+| `eval-build` named, and every target's control rows required | spec R9, AC8; T7.c, T7.d | Robustness §2.6 |
+| The corpus binds the config template and both base64 branches | spec AC4; T4.d | Robustness §2.7 |
+| The AUTH probe's subject is the source build | spec AC6; T3.c | Robustness §2.9 |
+
+**Criteria changed rather than added.** One. AC6's first-rerun binding list
+asked for "an unresolved tree, with its reason". The supply now holds the
+release's commit object and its non-truncated root tree, so the tree can be
+observed. The criterion now requires the observed tree and its
+recomputation. That asks for more, not less, and the evidence is the
+`git-trees/` capture. AC6's zip and member digests are not dropped. They
+move into `official_release`, which AC6 and AC13 still require. Every other
+criterion stands.
+
+**Rejected from the positions, with the cost.**
+- A lock v5 (no position asked for it).
+- A separate `origin` field: the artifact kind already carries it.
+- A `--list-targets` enumeration: the four targets' control rows are
+  stronger, executed evidence.
+- A `host_supplied_capture` attribution: the unresolved reason says it.
+- Copying the version into row settings: rows bind the product digest.
+- Reproducing the build in a gate.
+
 ## Risks
 
 | Risk | Mitigation |
@@ -287,4 +350,12 @@ host's `/tmp` quota and is stricter.
 | **The dry run is mistaken for a stub.** | Every prerequisite is produced for real. Pending items (CI receipt) are printed. Non-dry measure refuses them. The transcript is committed. |
 | **Model-CLI negotiation fails in the first paid session.** | It is logged by the bridge, and a failure is a visible `harness_error` row. The contract evidence states the limit. |
 | **A competitor's tool names collide with the claude allowlist format.** | The tool names come from the adapter's announced list, which is validated against `^[a-z][a-z0-9_]{0,63}$`. A test covers the generated configs. |
+| **The source build is read as upstream's release** *(rerun 2)*. | Its kind is `built_from_source`, the operator's label. Its digest basis is `locally_computed` and `upstream_digest` is null. The official zip, its member and its failure stay bound in `official_release`. The README, the product record and 0129's addendum say "built from source". The validator refuses a `built_from_source` artifact without `build` or `official_release`. |
+| **The binary is not tied to the tag** *(rerun 2)*. | `build.source_sha256` must equal the source archive's digest. The tarball is recomputed to the tag's root tree once, and a mismatch stops the run. The tree JSON is re-hashed in a CI test. |
+| **A rebuild gives different bytes** *(rerun 2)*. | Expected: the build is recorded as one build, not a reproducible one. A different binary is a new pin and a new product id, never a digest edited to match. |
+| **The v1.14.1 report is "fixed" by a later reader** *(rerun 2)*. | It is recorded in the lock note, the product tuple and the README, and the verifier refuses a product that disagrees with the lock. The official binary logs the same string, from the same hard-coded source constant. |
+| **The binary's glibc dependency fails on another host** *(rerun 2)*. | The failure is loud: the launcher's corroborated binds never appear, and the launch is refused. It cannot mis-measure. CI launches no MailSlurper binary; it decodes the committed corpus. The glibc floor (2.31) is stated in the 0129 addendum and the README. |
+| **A substituted `--target-bin`** *(rerun 2)*. | The runner hashes it against the product before spawning anything, and names both digests. The adapter's launch check is the second line. |
+| **Merge contention with #340 and 0130**, which use the same supply and may touch the lock's MailSlurper entry for the bench *(rerun 2)*. | This story changes only the v4 agent-comparison entry and leaves `protocol.json` alone. Whichever lands second rebases onto the other's lock. The PR notes tell the operator. Nothing is coordinated in code. |
+| **The comparison-integration refusal goes without a real replacement** *(rerun 2)*. | `eval-build` is built and named, and `comparison-check` requires every target's planned control rows. The `grep` for the string only guards against its return. |
 | **Upstream-backed tests are not in CI.** | The #287 precedent: ignored tests behind `MAIL_COMPARE_<T>`, the committed controls receipts, and CI mechanics against the Swarmail shims. *(rerun)* The committed wire corpus is also decoded in CI, so the adapter decoders and the oracle normalizers run on real upstream shapes on every run. The README names what only the receipts prove. |
