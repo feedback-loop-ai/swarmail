@@ -449,8 +449,10 @@ pub fn same_body(authored: Option<&str>, observed: Option<&str>) -> bool {
 pub const MAX_POP3_LINE: usize = 4096;
 
 /// The POP3 reader GreenMail is read through (proposed decision 0130 §4):
-/// GreenMail's REST API cannot read messages, so the driver logs in over
-/// POP3. It is a plain tokio client with no new crate. Every scan is a
+/// the driver logs in over POP3 because the issue orders it (0093 §4's
+/// native read path), although the pinned jar's OpenAPI also lists a REST
+/// route that returns a message (0130's review-return addendum corrects the
+/// issue's premise). It is a plain tokio client with no new crate. Every scan is a
 /// fresh session — no cache between scans, so a scan is as complete as the
 /// server's own snapshot — and it never sends `DELE`. Every exchange is
 /// bounded by `step`, every line by [`MAX_POP3_LINE`] and every multi-line
