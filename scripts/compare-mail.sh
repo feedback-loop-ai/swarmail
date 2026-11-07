@@ -205,7 +205,9 @@ controls_run() {
   build_evals
   local swarmail adapter
   resolve_binaries
-  local scratch="$output.scratch" product_id seed fixture_time head
+  local scratch product_id seed fixture_time head
+  # Absolute: the eval suite runs from evals/, and must find its log there too.
+  scratch=$(realpath -m "$output.scratch")
   mkdir -p "$scratch" || blocked prerequisites "cannot make $scratch"
   product_id=$(sed -n 's/^  "id": "\(.*\)",$/\1/p' "$product" | head -n1)
   [ -n "$product_id" ] || blocked prerequisites "--product has no id"
@@ -229,7 +231,7 @@ controls_run() {
       "$evals_bin" comparison-contract "${common[@]}" --output "$scratch/contract-$t.json" \
       2>>"$scratch/timing-$t.txt" \
       || blocked "contract-$t" "the $t contract probe failed (see $scratch/timing-$t.txt)"
-    echo "# command: timeout 600 /usr/bin/time swarmail-evals matrix ${common[*]} --tier hard --agents oracle,null --trials 5" >>"$scratch/timing-$t.txt"
+    echo "# command: timeout 600 /usr/bin/time swarmail-evals matrix ${common[*]} --tier hard --agents <the builtin oracle and null> --trials 5" >>"$scratch/timing-$t.txt"
     SWARMAIL_BIN="$swarmail" timeout 600 /usr/bin/time -f '# elapsed %e s, max rss %M KB' \
       "$evals_bin" matrix "${common[@]}" --tier hard --agents "$scratch/agents.json" --trials 5 \
       --seed "$seed" --fixture-time "$fixture_time" --artifacts-dir "$scratch/art-$t" \
