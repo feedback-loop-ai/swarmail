@@ -211,6 +211,153 @@ impl Drop for BuildWatchdog {
     }
 }
 
+/// Bounded-wait tiers (issue #331). They nest so the most specific deadline
+/// fires first and names itself: a seam handshake (5 s) inside a `block_on`
+/// phase (30 s) inside the serial-lock queue (120 s).
+const SEAM: Duration = Duration::from_secs(5);
+const PHASE: Duration = Duration::from_secs(30);
+const SERIAL: Duration = Duration::from_secs(120);
+const TEARDOWN: Duration = Duration::from_secs(5);
+
+/// A deadline that fails by name. The sleep inside `timeout` is a deadline,
+/// never synchronization.
+async fn within<T>(what: &str, limit: Duration, future: impl std::future::Future<Output = T>) -> T {
+    match tokio::time::timeout(limit, future).await {
+        Ok(value) => value,
+        Err(_) => panic!("timed out after {limit:?} waiting for {what}"),
+    }
+}
+
+/// A seam oneshot, bounded by `SEAM`; a dropped sender is a named failure too.
+async fn seam<T>(what: &str, receiver: tokio::sync::oneshot::Receiver<T>) -> T {
+    within(what, SEAM, receiver)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: its sender was dropped before it signalled"))
+}
+
+/// A spawned job, bounded by `SEAM`, joined for its outcome.
+async fn joined<T>(
+    what: &str,
+    job: tokio::task::JoinHandle<T>,
+) -> Result<T, tokio::task::JoinError> {
+    within(what, SEAM, job).await
+}
+
+type PreparationOutcome =
+    Result<Result<ca_executor::Charged, TargetPreparationError>, tokio::task::JoinError>;
+
+/// The outcome of a preparation job, by variant name only: decision 0078 §5
+/// forbids formatting payloads.
+fn describe_preparation(outcome: &PreparationOutcome) -> String {
+    match outcome {
+        Ok(Ok(_)) => "job returned Ok".into(),
+        Ok(Err(TargetPreparationError::Invalid(_))) => "job returned Err(Invalid)".into(),
+        Ok(Err(TargetPreparationError::Worker)) => "job returned Err(Worker)".into(),
+        Ok(Err(TargetPreparationError::Unavailable)) => "job returned Err(Unavailable)".into(),
+        Err(error) if error.is_cancelled() => "job was cancelled".into(),
+        Err(_) => "job panicked".into(),
+    }
+}
+
+/// Wait for a job's CA build to enter, racing three events: the entry, the
+/// job finishing first (decision 0078 §1 refuses a contended admission, and a
+/// refused job never reaches its build, so its `entered` would stay pending
+/// forever) and a deadline. The job's outcome comes back inside the `Err` when
+/// the job finished first, so the caller cannot also await it.
+async fn entered_or_refused<T>(
+    what: &str,
+    entered: &mut tokio::sync::oneshot::Receiver<std::thread::ThreadId>,
+    job: &mut tokio::task::JoinHandle<T>,
+    describe: fn(&Result<T, tokio::task::JoinError>) -> String,
+) -> Result<std::thread::ThreadId, String> {
+    tokio::select! {
+        entry = &mut *entered => entry.map_err(|_| {
+            format!("{what}: the entry sender was dropped before its CA build entered")
+        }),
+        outcome = &mut *job => Err(format!(
+            "{what}: admission refused before its CA build entered ({}; {} CA jobs busy)",
+            describe(&outcome),
+            ca_executor::jobs_for_test(),
+        )),
+        () = tokio::time::sleep(SEAM) => Err(format!(
+            "{what}: CA build not entered within {SEAM:?}"
+        )),
+    }
+}
+
+/// `entered_or_refused` that fails the test with its message.
+async fn entry<T>(
+    what: &str,
+    entered: &mut tokio::sync::oneshot::Receiver<std::thread::ThreadId>,
+    job: &mut tokio::task::JoinHandle<T>,
+    describe: fn(&Result<T, tokio::task::JoinError>) -> String,
+) -> std::thread::ThreadId {
+    entered_or_refused(what, entered, job, describe)
+        .await
+        .unwrap_or_else(|message| panic!("{message}"))
+}
+
+/// The CACHE_TESTS queue is fair FIFO, so a waiter legitimately waits for
+/// every predecessor; the limit only attributes a stuck one.
+async fn serial_within(limit: Duration) -> tokio::sync::MutexGuard<'static, ()> {
+    match tokio::time::timeout(limit, CACHE_TESTS.lock()).await {
+        Ok(guard) => guard,
+        Err(_) => panic!(
+            "CACHE_TESTS serial lock not acquired within {limit:?}: \
+             a predecessor CA test is stuck; its own named deadline should have fired first"
+        ),
+    }
+}
+async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
+    serial_within(SERIAL).await
+}
+
+/// Drop a runtime on its own thread and wait for it, at most `limit`:
+/// `Drop` waits for blocking tasks and no `tokio::time::timeout` can reach it.
+/// On expiry the still-pending completion receiver comes back with the message
+/// so a probe can release its task and observe the thread finish.
+fn try_teardown(
+    what: &str,
+    runtime: tokio::runtime::Runtime,
+    limit: Duration,
+) -> Result<(), (String, std::sync::mpsc::Receiver<()>)> {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(runtime);
+        let _ = done.send(());
+    });
+    finished.recv_timeout(limit).map_err(|error| {
+        (
+            format!(
+                "{what}: runtime teardown did not finish within {limit:?} ({error}); \
+                 a blocking task is still held"
+            ),
+            finished,
+        )
+    })
+}
+fn teardown(what: &str, runtime: tokio::runtime::Runtime) {
+    if let Err((message, _)) = try_teardown(what, runtime, TEARDOWN) {
+        panic!("{message}");
+    }
+}
+
+/// A job outcome without its payload (decision 0078 §5).
+fn describe_join<T>(outcome: &Result<T, tokio::task::JoinError>) -> String {
+    match outcome {
+        Ok(_) => "job finished".into(),
+        Err(error) if error.is_cancelled() => "job was cancelled".into(),
+        Err(_) => "job panicked".into(),
+    }
+}
+fn describe_get(outcome: &Result<reqwest::Response, tokio::task::JoinError>) -> String {
+    match outcome {
+        Ok(response) => format!("GET answered {}", response.status()),
+        Err(error) if error.is_cancelled() => "job was cancelled".into(),
+        Err(_) => "job panicked".into(),
+    }
+}
+
 /// Real SMTP exchange with AUTH selecting an isolated inbox. The final
 /// DATA 250 follows synchronous Store::insert.
 async fn smtp_send_for_inbox(addr: std::net::SocketAddr, inbox: &str) -> String {
@@ -732,29 +879,29 @@ async fn failed_delivery_build_exhausts_once_without_cache_work() {
 /// construction rather than live cache insertions.
 #[test]
 fn cancelled_delivery_build_counts_work_without_late_publication() {
-    tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(4)
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(async {
-            let _serial = CACHE_TESTS.lock().await;
+        .unwrap();
+    let _serial = runtime.block_on(serial());
+    runtime.block_on(within(
+        "cancelled_delivery_build_counts_work_without_late_publication phase",
+        PHASE,
+        async {
             let pem = ca_pem();
             let before = ca_cache_stats();
-            let (entered, release, finished) = install_ca_build_pause(&pem);
+            let (mut entered, release, finished) = install_ca_build_pause(&pem);
             let waiter_pem = pem.clone();
-            let waiter = tokio::spawn(async move { client_for(Some(&waiter_pem)).await });
-            tokio::time::timeout(Duration::from_secs(5), entered)
-                .await
-                .expect("delivery build entered")
-                .unwrap();
+            let mut waiter = tokio::spawn(async move { client_for(Some(&waiter_pem)).await });
+            entry("delivery build", &mut entered, &mut waiter, describe_join).await;
             waiter.abort();
-            assert!(matches!(waiter.await, Err(error) if error.is_cancelled()));
+            assert!(matches!(
+                joined("cancelled delivery waiter", waiter).await,
+                Err(error) if error.is_cancelled()
+            ));
             release.send(()).unwrap();
-            tokio::time::timeout(Duration::from_secs(5), finished)
-                .await
-                .expect("detached builder finishes")
-                .unwrap();
+            seam("detached builder to finish", finished).await;
             tokio::time::timeout(Duration::from_secs(5), async {
                 while ca_cache_stats().builds == before.builds {
                     tokio::task::yield_now().await;
@@ -769,7 +916,12 @@ fn cancelled_delivery_build_counts_work_without_late_publication() {
             }
             assert_cache_bijection();
             wait_ca_idle().await;
-        });
+        },
+    ));
+    teardown(
+        "cancelled_delivery_build_counts_work_without_late_publication",
+        runtime,
+    );
 }
 
 /// Shut down the real server while a delivery's uncached build is held.
@@ -1482,154 +1634,170 @@ fn cold_client_construction_leaves_the_async_worker_and_cache_mutex_free() {
 /// HTTP representation have completed. One Tokio blocking slot is sufficient.
 fn projection_capacity_case(cancel_waiter: bool) {
     use tokio::io::AsyncWriteExt;
-    tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(1)
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(async {
-            let _serial = CACHE_TESTS.lock().await;
-            let scratch = tempfile::tempdir().unwrap();
-            let path = scratch.path().join("smtp.db");
-            let config = crate::config::Config {
-                smtp_listen: "127.0.0.1:0".into(),
-                http_listen: "127.0.0.1:0".into(),
-                pop3_listen: "127.0.0.1:0".into(),
-                mailslurper_listen: None,
-                max_per_inbox: 0,
-                data_file: Some(path.clone()),
-                tls_cert: None,
-                tls_key: None,
-                smtp: Default::default(),
-                pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
-                dns_policy: None,
-                link_reachability: crate::deliverability::LinkReachability::Off,
-            };
-            let server = test_server_from_config(&config).await;
-            let pem = ca_pem();
-            server.webhooks.set(vec![WebhookTarget {
-                url: "http://user:password@127.0.0.1:9/unused".into(),
-                inbox: Some("not-the-measured-inbox".into()),
-                secret: Some("withheld".into()),
-                ca_pem: Some(pem.clone()),
-            }]);
-            let installed = serde_json::to_value(server.webhooks.current()).unwrap();
-            let cache = ca_cache_stats();
-            let client = reqwest::Client::new();
-            let mut releases = Vec::new();
-            let mut finishes = Vec::new();
-            let mut gets = Vec::new();
-            for index in 0..2 {
-                let cancellation = (cancel_waiter && index == 0)
-                    .then(|| crate::api::cancel_get_for(server.webhooks.clone()));
-                let (entered, release, finished) = install_ca_build_pause(&pem);
-                releases.push(release);
-                finishes.push(finished);
-                let http = client.clone();
-                let addr = server.http_addr;
-                let get = tokio::spawn(async move {
-                    http.get(format!("http://{addr}/api/v1/webhooks"))
-                        .send()
-                        .await
-                        .unwrap()
-                });
-                tokio::time::timeout(Duration::from_secs(5), entered)
-                    .await
-                    .expect("actual GET builder entered")
-                    .unwrap();
-                if let Some((abort, dropped)) = cancellation {
-                    abort.abort();
-                    dropped.await.unwrap();
-                    assert_eq!(
-                        get.await.unwrap().status(),
-                        reqwest::StatusCode::INTERNAL_SERVER_ERROR
-                    );
-                } else {
-                    gets.push(get);
-                }
-            }
-            let watchdog = BuildWatchdog::new(releases.clone());
-            for method in [reqwest::Method::GET, reqwest::Method::PUT] {
-                let mut request = client.request(
-                    method.clone(),
-                    format!("http://{}/api/v1/webhooks", server.http_addr),
-                );
-                if method == reqwest::Method::PUT {
-                    request = request
-                        .header("content-type", "application/json")
-                        .body("[]");
-                }
-                let response = request.send().await.unwrap();
-                assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
-                assert_eq!(
-                    response.text().await.unwrap(),
-                    r#"{"error":"webhook CA preparation unavailable"}"#
-                );
-            }
-            let queued = crate::smtp::observe_next_data_parse_submission_for_test();
-            let (mut reader, mut writer) =
-                smtp_send_data_waiting(server.smtp_addr, "projection-measured").await;
-            queued.await.unwrap();
-            let accepted =
-                tokio::time::timeout(Duration::from_secs(3), smtp_read_reply(&mut reader))
-                    .await
-                    .expect(
-                        "isolated CA execution leaves SMTP parse and persistent commit progressing",
-                    );
-            assert!(accepted[0].starts_with("250"));
-            let messages: serde_json::Value = serde_json::from_str(
-                &client
-                    .get(format!(
-                        "http://{}/api/v1/inboxes/projection-measured/messages",
-                        server.http_addr
-                    ))
+        .unwrap();
+    let _serial = runtime.block_on(serial());
+    runtime.block_on(within("projection_capacity_case phase", PHASE, async {
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("smtp.db");
+        let config = crate::config::Config {
+            smtp_listen: "127.0.0.1:0".into(),
+            http_listen: "127.0.0.1:0".into(),
+            pop3_listen: "127.0.0.1:0".into(),
+            mailslurper_listen: None,
+            max_per_inbox: 0,
+            data_file: Some(path.clone()),
+            tls_cert: None,
+            tls_key: None,
+            smtp: Default::default(),
+            pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
+            dns_policy: None,
+            link_reachability: crate::deliverability::LinkReachability::Off,
+        };
+        let server = test_server_from_config(&config).await;
+        let pem = ca_pem();
+        server.webhooks.set(vec![WebhookTarget {
+            url: "http://user:password@127.0.0.1:9/unused".into(),
+            inbox: Some("not-the-measured-inbox".into()),
+            secret: Some("withheld".into()),
+            ca_pem: Some(pem.clone()),
+        }]);
+        let installed = serde_json::to_value(server.webhooks.current()).unwrap();
+        let cache = ca_cache_stats();
+        let client = reqwest::Client::new();
+        let mut releases = Vec::new();
+        let mut finishes = Vec::new();
+        let mut gets = Vec::new();
+        for index in 0..2 {
+            let cancellation = (cancel_waiter && index == 0)
+                .then(|| crate::api::cancel_get_for(server.webhooks.clone()));
+            let (mut entered, release, finished) = install_ca_build_pause(&pem);
+            releases.push(release);
+            finishes.push(finished);
+            let http = client.clone();
+            let addr = server.http_addr;
+            let mut get = tokio::spawn(async move {
+                http.get(format!("http://{addr}/api/v1/webhooks"))
                     .send()
                     .await
                     .unwrap()
-                    .text()
-                    .await
-                    .unwrap(),
-            )
+            });
+            entry("actual GET builder", &mut entered, &mut get, describe_get).await;
+            if let Some((abort, dropped)) = cancellation {
+                abort.abort();
+                seam("cancelled GET handler to drop", dropped).await;
+                assert_eq!(
+                    joined("cancelled GET response", get)
+                        .await
+                        .unwrap()
+                        .status(),
+                    reqwest::StatusCode::INTERNAL_SERVER_ERROR
+                );
+            } else {
+                gets.push(get);
+            }
+        }
+        let watchdog = BuildWatchdog::new(releases.clone());
+        for method in [reqwest::Method::GET, reqwest::Method::PUT] {
+            let mut request = client.request(
+                method.clone(),
+                format!("http://{}/api/v1/webhooks", server.http_addr),
+            );
+            if method == reqwest::Method::PUT {
+                request = request
+                    .header("content-type", "application/json")
+                    .body("[]");
+            }
+            let response = request.send().await.unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(
+                response.text().await.unwrap(),
+                r#"{"error":"webhook CA preparation unavailable"}"#
+            );
+        }
+        let queued = crate::smtp::observe_next_data_parse_submission_for_test();
+        let (mut reader, mut writer) =
+            smtp_send_data_waiting(server.smtp_addr, "projection-measured").await;
+        seam("SMTP DATA parse submission", queued).await;
+        let accepted = tokio::time::timeout(Duration::from_secs(3), smtp_read_reply(&mut reader))
+            .await
+            .expect("isolated CA execution leaves SMTP parse and persistent commit progressing");
+        assert!(accepted[0].starts_with("250"));
+        let messages: serde_json::Value = serde_json::from_str(
+            &client
+                .get(format!(
+                    "http://{}/api/v1/inboxes/projection-measured/messages",
+                    server.http_addr
+                ))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(messages["emails"].as_array().unwrap().len(), 1);
+        assert_eq!(messages["emails"][0]["subject"], "saturated");
+        let id = messages["emails"][0]["id"].as_str().unwrap();
+        let raw = client
+            .get(format!(
+                "http://{}/api/v1/messages/{id}/raw",
+                server.http_addr
+            ))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
             .unwrap();
-            assert_eq!(messages["emails"].as_array().unwrap().len(), 1);
-            assert_eq!(messages["emails"][0]["subject"], "saturated");
-            let id = messages["emails"][0]["id"].as_str().unwrap();
-            let raw = client.get(format!("http://{}/api/v1/messages/{id}/raw", server.http_addr))
-                .send().await.unwrap().bytes().await.unwrap();
-            assert_eq!(raw.as_ref(), b"From: from@example.test\r\nTo: to@example.test\r\nSubject: saturated\r\n\r\nbody\r\n");
+        assert_eq!(
+            raw.as_ref(),
+            b"From: from@example.test\r\nTo: to@example.test\r\nSubject: saturated\r\n\r\nbody\r\n"
+        );
+        assert_eq!(
+            inbox_count(&client, server.http_addr, "projection-measured").await,
+            1
+        );
+        for finished in &mut finishes {
+            assert!(matches!(
+                finished.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+        }
+        watchdog.assert_unused();
+        assert_eq!(
+            serde_json::to_value(server.webhooks.current()).unwrap(),
+            installed
+        );
+        for (release, finished) in releases.into_iter().zip(finishes) {
+            release.send(()).unwrap();
+            seam("held GET builder to finish", finished).await;
+        }
+        for get in gets {
             assert_eq!(
-                inbox_count(&client, server.http_addr, "projection-measured").await,
-                1
+                joined("held GET response", get).await.unwrap().status(),
+                reqwest::StatusCode::OK
             );
-            for finished in &mut finishes {
-                assert!(matches!(
-                    finished.try_recv(),
-                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-                ));
-            }
-            watchdog.assert_unused();
-            assert_eq!(
-                serde_json::to_value(server.webhooks.current()).unwrap(),
-                installed
-            );
-            for (release, finished) in releases.into_iter().zip(finishes) {
-                release.send(()).unwrap();
-                finished.await.unwrap();
-            }
-            for get in gets {
-                assert_eq!(get.await.unwrap().status(), reqwest::StatusCode::OK);
-            }
-            writer.write_all(b"QUIT\r\n").await.unwrap();
-            assert!(smtp_read_reply(&mut reader).await[0].starts_with("221"));
-            assert_eq!(ca_cache_stats(), cache);
-            server.stop().await;
-            let reopened = crate::store::Store::open(0, &path).unwrap();
-            assert_eq!(
-                reopened.count("projection-measured", &crate::store::Filter::default()),
-                1
-            );
-            wait_ca_idle().await;
-        });
+        }
+        writer.write_all(b"QUIT\r\n").await.unwrap();
+        assert!(
+            within("SMTP QUIT reply", SEAM, smtp_read_reply(&mut reader)).await[0]
+                .starts_with("221")
+        );
+        assert_eq!(ca_cache_stats(), cache);
+        within("projection server stop", SEAM, server.stop()).await;
+        let reopened = crate::store::Store::open(0, &path).unwrap();
+        assert_eq!(
+            reopened.count("projection-measured", &crate::store::Filter::default()),
+            1
+        );
+        wait_ca_idle().await;
+    }));
+    teardown("projection_capacity_case", runtime);
 }
 async fn test_server_from_config(config: &crate::config::Config) -> crate::RunningServer {
     crate::run_on(config).await.unwrap()
@@ -1991,87 +2159,134 @@ async fn webhook_ca_overload_preserves_native_contract() {
 
 #[test]
 fn ca_workers_survive_runtime_replacement() {
-    let _serial = CACHE_TESTS.blocking_lock();
-    let pem = ca_pem();
-    let (entry_a, release_a, done_a) = install_ca_build_pause(&pem);
-    let (entry_b, release_b, done_b) = install_ca_build_pause(&pem);
-    let watchdog = BuildWatchdog::new(vec![release_a.clone(), release_b.clone()]);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    let (old_webhooks, threads) = runtime.block_on(async {
-        let server = test_server().await;
-        server
-            .webhooks
-            .set(vec![protocol_target(&pem, "127.0.0.1:9".parse().unwrap())]);
-        let hooks = server.webhooks.clone();
-        let a = hooks.clone();
-        let b = hooks.clone();
-        let first = tokio::spawn(async move { redacted_targets(&a).await });
-        let second = tokio::spawn(async move { redacted_targets(&b).await });
-        let threads = [entry_a.await.unwrap(), entry_b.await.unwrap()];
-        first.abort();
-        second.abort();
-        assert!(matches!(first.await, Err(e) if e.is_cancelled()));
-        assert!(matches!(second.await, Err(e) if e.is_cancelled()));
-        server.stop().await;
-        (hooks, threads)
-    });
-    drop(runtime);
+    // A tokio guard on a static is runtime independent: it outlives both.
+    let _serial = runtime.block_on(serial());
+    let pem = ca_pem();
+    let (mut entry_a, release_a, done_a) = install_ca_build_pause(&pem);
+    let (mut entry_b, release_b, done_b) = install_ca_build_pause(&pem);
+    let watchdog = BuildWatchdog::new(vec![release_a.clone(), release_b.clone()]);
+    let (old_webhooks, threads) = runtime.block_on(within(
+        "ca_workers_survive_runtime_replacement phase 1",
+        PHASE,
+        async {
+            let server = test_server().await;
+            server
+                .webhooks
+                .set(vec![protocol_target(&pem, "127.0.0.1:9".parse().unwrap())]);
+            let hooks = server.webhooks.clone();
+            // Admission is nonblocking (0078 §1): a job admitted while another
+            // worker still holds the scope is refused and its build never
+            // enters. Each job therefore enters before the next is admitted.
+            let a = hooks.clone();
+            let mut first = tokio::spawn(async move { redacted_targets(&a).await });
+            let thread_a = entry(
+                "phase 1 job A",
+                &mut entry_a,
+                &mut first,
+                describe_preparation,
+            )
+            .await;
+            let b = hooks.clone();
+            let mut second = tokio::spawn(async move { redacted_targets(&b).await });
+            let thread_b = entry(
+                "phase 1 job B",
+                &mut entry_b,
+                &mut second,
+                describe_preparation,
+            )
+            .await;
+            first.abort();
+            second.abort();
+            assert!(matches!(
+                joined("phase 1 cancelled job A", first).await,
+                Err(e) if e.is_cancelled()
+            ));
+            assert!(matches!(
+                joined("phase 1 cancelled job B", second).await,
+                Err(e) if e.is_cancelled()
+            ));
+            within("phase 1 server stop", SEAM, server.stop()).await;
+            (hooks, [thread_a, thread_b])
+        },
+    ));
+    teardown(
+        "ca_workers_survive_runtime_replacement first runtime",
+        runtime,
+    );
     assert_ne!(threads[0], threads[1]);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
-        let server = test_server().await;
-        assert_eq!(
-            api_json(&server, reqwest::Method::GET, None).await.0,
-            reqwest::StatusCode::SERVICE_UNAVAILABLE
-        );
-        assert!(old_webhooks.scope.live().is_none());
-        release_a.send(()).unwrap();
-        release_b.send(()).unwrap();
-        done_a.await.unwrap();
-        done_b.await.unwrap();
-        // Observe actual reclamation; never retry an admission to mask refusal.
-        wait_ca_idle().await;
-        server
-            .webhooks
-            .set(vec![protocol_target(&pem, "127.0.0.1:9".parse().unwrap())]);
-        let mut entries = Vec::new();
-        let mut releases = Vec::new();
-        let mut finishes = Vec::new();
-        let mut jobs = Vec::new();
-        for _ in 0..2 {
-            let (entry, release, done) = install_ca_build_pause(&pem);
-            let hooks = server.webhooks.clone();
-            jobs.push(tokio::spawn(async move { redacted_targets(&hooks).await }));
-            entries.push(entry);
-            releases.push(release);
-            finishes.push(done);
-        }
-        let cleanup = BuildWatchdog::new(releases.clone());
-        let mut reused = Vec::new();
-        for entry in entries {
-            reused.push(entry.await.unwrap());
-        }
-        assert_ne!(reused[0], reused[1]);
-        assert!(
-            reused.iter().all(|thread| threads.contains(thread)),
-            "the original worker pair survives"
-        );
-        for (release, done) in releases.into_iter().zip(finishes) {
-            release.send(()).unwrap();
-            done.await.unwrap();
-        }
-        for job in jobs {
-            drop(job.await.unwrap().unwrap());
-        }
-        cleanup.assert_unused();
-        server.stop().await;
-    });
+    runtime.block_on(within(
+        "ca_workers_survive_runtime_replacement phase 2",
+        PHASE,
+        async {
+            let server = test_server().await;
+            assert_eq!(
+                api_json(&server, reqwest::Method::GET, None).await.0,
+                reqwest::StatusCode::SERVICE_UNAVAILABLE
+            );
+            assert!(old_webhooks.scope.live().is_none());
+            release_a.send(()).unwrap();
+            release_b.send(()).unwrap();
+            seam("phase 1 build A to finish", done_a).await;
+            seam("phase 1 build B to finish", done_b).await;
+            // Observe actual reclamation; never retry an admission to mask refusal.
+            wait_ca_idle().await;
+            server
+                .webhooks
+                .set(vec![protocol_target(&pem, "127.0.0.1:9".parse().unwrap())]);
+            let mut entries = Vec::new();
+            let mut releases = Vec::new();
+            let mut finishes = Vec::new();
+            for _ in 0..2 {
+                let (entered, release, done) = install_ca_build_pause(&pem);
+                entries.push(entered);
+                releases.push(release);
+                finishes.push(done);
+            }
+            let cleanup = BuildWatchdog::new(releases.clone());
+            let mut jobs = Vec::new();
+            let mut reused = Vec::new();
+            for (index, entered) in entries.iter_mut().enumerate() {
+                let hooks = server.webhooks.clone();
+                let mut job = tokio::spawn(async move { redacted_targets(&hooks).await });
+                reused.push(
+                    entry(
+                        &format!("phase 2 job {index}"),
+                        entered,
+                        &mut job,
+                        describe_preparation,
+                    )
+                    .await,
+                );
+                jobs.push(job);
+            }
+            assert_ne!(reused[0], reused[1]);
+            assert!(
+                reused.iter().all(|thread| threads.contains(thread)),
+                "the original worker pair survives"
+            );
+            for (release, done) in releases.into_iter().zip(finishes) {
+                release.send(()).unwrap();
+                seam("phase 2 build to finish", done).await;
+            }
+            for job in jobs {
+                drop(joined("phase 2 job", job).await.unwrap().unwrap());
+            }
+            cleanup.assert_unused();
+            within("phase 2 server stop", SEAM, server.stop()).await;
+        },
+    ));
+    teardown(
+        "ca_workers_survive_runtime_replacement second runtime",
+        runtime,
+    );
     watchdog.assert_unused();
 }
 async fn wait_ca_idle() {
@@ -2236,4 +2451,158 @@ async fn closed_scope_discards_put_and_cache_results_and_refuses_sends() {
     );
     watchdog.assert_unused();
     Arc::try_unwrap(server).ok().unwrap().stop().await;
+}
+
+/// Issue #331: a contended admission is refused (0078 §1) and its build never
+/// enters, so a bare wait on `entered` hangs. The wait must fail by name at
+/// once. The scope is held at the pole, so the refusal is certain.
+#[test]
+fn refused_admission_fails_the_entry_wait_by_name() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _serial = runtime.block_on(serial());
+    runtime.block_on(within(
+        "refused_admission_fails_the_entry_wait_by_name phase",
+        PHASE,
+        async {
+            let server = test_server().await;
+            let pem = ca_pem();
+            server
+                .webhooks
+                .set(vec![protocol_target(&pem, "127.0.0.1:9".parse().unwrap())]);
+            let hooks = server.webhooks.clone();
+            // The guard lives on a std thread, never across an await here.
+            let scope = hooks.scope.clone();
+            let (held_tx, held) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let (exited_tx, exited) = tokio::sync::oneshot::channel();
+            let holder = std::thread::spawn(move || {
+                let guard = scope.live();
+                held_tx.send(guard.is_some()).unwrap();
+                let _ = release_rx.recv();
+                drop(guard);
+                let _ = exited_tx.send(());
+            });
+            assert!(seam("the scope guard to be held", held).await);
+            let (mut entered, _release, _finished) = install_ca_build_pause(&pem);
+            let refused = hooks.clone();
+            let mut job = tokio::spawn(async move { redacted_targets(&refused).await });
+            let message = entered_or_refused(
+                "refused probe",
+                &mut entered,
+                &mut job,
+                describe_preparation,
+            )
+            .await
+            .expect_err("a contended admission is refused, never entered");
+            assert!(
+                message.contains("admission refused before its CA build entered"),
+                "{message}"
+            );
+            assert!(
+                message.contains("job returned Err(Unavailable)"),
+                "{message}"
+            );
+            assert!(message.contains("0 CA jobs busy"), "{message}");
+            assert_eq!(ca_executor::jobs_for_test(), 0);
+            release_tx.send(()).unwrap();
+            seam("the scope guard to be released", exited).await;
+            holder.join().unwrap();
+
+            // The success arm, on a fresh PEM: the refused job's pause stays
+            // queued under the old one.
+            let pem = ca_pem();
+            server
+                .webhooks
+                .set(vec![protocol_target(&pem, "127.0.0.1:9".parse().unwrap())]);
+            let (mut entered, release, finished) = install_ca_build_pause(&pem);
+            let watchdog = BuildWatchdog::new(vec![release.clone()]);
+            let admitted = hooks.clone();
+            let mut job = tokio::spawn(async move { redacted_targets(&admitted).await });
+            entered_or_refused(
+                "admitted probe",
+                &mut entered,
+                &mut job,
+                describe_preparation,
+            )
+            .await
+            .expect("an uncontended admission enters its build");
+            assert_eq!(ca_executor::jobs_for_test(), 1);
+            release.send(()).unwrap();
+            seam("the held build to finish", finished).await;
+            drop(joined("the admitted job", job).await.unwrap().unwrap());
+            wait_ca_idle().await;
+            assert_eq!(ca_executor::jobs_for_test(), 0);
+            watchdog.assert_unused();
+            within("refusal probe server stop", SEAM, server.stop()).await;
+        },
+    ));
+    teardown("refused_admission_fails_the_entry_wait_by_name", runtime);
+}
+
+/// The serial lock is a bounded wait that names what is stuck.
+#[test]
+fn serial_lock_wait_names_the_stuck_predecessor() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _held = runtime.block_on(serial());
+    let message = runtime.block_on(within(
+        "serial_lock_wait_names_the_stuck_predecessor phase",
+        PHASE,
+        async {
+            // The lock is certainly held, so the probe's deadline is the event.
+            let probe = tokio::spawn(serial_within(Duration::from_millis(200)));
+            let error = joined("the serial probe", probe)
+                .await
+                .expect_err("the probe panics at its deadline");
+            *error
+                .into_panic()
+                .downcast::<String>()
+                .expect("the probe panics with a formatted message")
+        },
+    ));
+    assert!(message.contains("CACHE_TESTS"), "{message}");
+    assert!(
+        message.contains("a predecessor CA test is stuck"),
+        "{message}"
+    );
+    teardown("serial_lock_wait_names_the_stuck_predecessor", runtime);
+}
+
+/// Runtime teardown is a bounded wait that names the held blocking task.
+#[test]
+fn runtime_teardown_wait_names_the_held_blocking_task() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (started_tx, started) = std::sync::mpsc::channel();
+    let (release, parked) = std::sync::mpsc::channel::<()>();
+    runtime.block_on(async {
+        drop(tokio::task::spawn_blocking(move || {
+            started_tx.send(()).unwrap();
+            let _ = parked.recv();
+        }));
+    });
+    started
+        .recv_timeout(SEAM)
+        .expect("the parked blocking task started within the seam deadline");
+    let (message, finished) = try_teardown("probe", runtime, Duration::from_millis(200))
+        .expect_err("a held blocking task keeps the runtime from dropping");
+    assert!(
+        message.contains("probe: runtime teardown did not finish within 200ms"),
+        "{message}"
+    );
+    assert!(
+        message.contains("a blocking task is still held"),
+        "{message}"
+    );
+    release.send(()).unwrap();
+    finished
+        .recv_timeout(SEAM)
+        .expect("the released teardown thread finishes within the seam deadline");
 }
