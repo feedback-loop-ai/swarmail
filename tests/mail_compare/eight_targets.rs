@@ -4653,6 +4653,15 @@ async fn listed_all(owned: &targets::Owned, want: usize, max_pages: u32) -> Vec<
     }
 }
 
+/// Whether a burst of 600 mails loses some: the cgo MailSlurper builds
+/// acknowledge a mail before they store it and drop some under SQLite lock
+/// contention. Alkemio's fork does not: its cap proof was run unbatched seven
+/// times (2026-11-07, one at a time, bounded) and listed 600 of 600 each time,
+/// so the cap proof sends it in one burst like every other row.
+fn loses_under_burst(t: TargetKind) -> bool {
+    stores_decoded_body(t) && t != TargetKind::AlkemioMailslurper
+}
+
 /// MailSlurper (and the Alkemio fork) keep one decoded body per message and
 /// no raw message: the HTML part when there is one, else the plain text with
 /// each newline turned into `<br />` (`DataCommandExecutor.decodeBody` in the
@@ -4660,10 +4669,6 @@ async fn listed_all(owned: &targets::Owned, want: usize, max_pages: u32) -> Vec<
 /// part is dropped. So their body fidelity is not exact by construction, and
 /// a collection reports it per message through `fidelity_ok`; these proofs
 /// assert the contract they do keep.
-fn loses_under_burst(t: TargetKind) -> bool {
-    stores_decoded_body(t)
-}
-
 fn stores_decoded_body(t: TargetKind) -> bool {
     matches!(
         t,
@@ -4906,8 +4911,8 @@ async fn real_caps(t: TargetKind) {
     let mut owned = real_launch(t, root.path()).await;
     let msgs = corpus(600);
     if loses_under_burst(t) {
-        // MailSlurper acknowledges a mail before it stores it and loses
-        // some under SQLite lock contention ("database is locked", 27 of 600
+        // The cgo MailSlurper builds acknowledge a mail before they store it
+        // and lose some under SQLite lock contention ("database is locked", 27 of 600
         // in a probe sent in 0.23 s). That is an observation about the tool,
         // recorded in the delivery notes, not a retention cap: the cap proof
         // sends in small batches and waits for each to be listed, so only
