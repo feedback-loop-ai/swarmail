@@ -546,3 +546,734 @@ impl RowConverter {
         Ok(comparison)
     }
 }
+
+// ---- the controls' records ---------------------------------------------------
+
+/// One control row as the index records it: the comparison row's own hash,
+/// and what the row cannot carry (the failure class, and a digest of the
+/// fixture inputs the cell was generated from, which is what must be equal
+/// across targets).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexRow {
+    pub target: String,
+    pub task: String,
+    pub agent: String,
+    pub attempt: u32,
+    pub outcome: crate::tasks::Outcome,
+    pub failure_class: Option<crate::state::FailureClass>,
+    pub row_sha256: String,
+    pub fixture_sha256: String,
+}
+
+/// The controls directory's index, bound to the product it ran under.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlsIndex {
+    pub schema: u32,
+    pub product_id: String,
+    pub product_sha256: String,
+    pub master_seed: String,
+    pub fixture_time: String,
+    pub rows_sha256: String,
+    /// A digest of each target's retained matrix index: the matrix writes it
+    /// only when every slot's row was committed, which needs every slot's
+    /// cleanup to have been proved or refused by name.
+    pub cleanup_receipts_sha256: String,
+    pub rows: Vec<IndexRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityEntry {
+    pub role: String,
+    pub path: String,
+    pub sha256: String,
+}
+
+/// Every measured executable: the candidate, each competitor, the adapter
+/// driver and the harness. The verifier re-measures each at its path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Identity {
+    pub schema: u32,
+    pub product_sha256: String,
+    pub entries: Vec<IdentityEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvalSuite {
+    pub command: String,
+    pub head: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ci {
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Receipts {
+    pub schema: u32,
+    pub head: String,
+    pub controls_index_sha256: String,
+    pub cleanup_receipts_sha256: String,
+    pub eval_suite: EvalSuite,
+    pub ci: Ci,
+}
+
+/// Retained trial results by `(task, agent, attempt)`.
+type Retained = BTreeMap<(String, String, u32), Value>;
+
+/// The digest of the fixture inputs a retained result was generated from:
+/// the task's definition and the cell's seed and time. The fixture never
+/// sees the target, so for one (task, agent, attempt) it is the same on all.
+fn fixture_digest(result: &Value) -> String {
+    let p = &result["provenance"];
+    sha256(
+        &serde_json::to_vec(&json!({
+            "task_definition_sha256": p["task"]["definition_sha256"]["value"],
+            "fixture": p["fixture"],
+        }))
+        .expect("fixture digest input"),
+    )
+}
+
+/// Every retained trial result under `artifacts` (a `--artifacts-dir` root),
+/// as `(task, agent, attempt) -> result.json`, and the digest of the matrix
+/// index that proves the matrix finished.
+fn retained_results(artifacts: &Path) -> Result<(Retained, String), String> {
+    let matrix = std::fs::read_dir(artifacts)
+        .map_err(|e| format!("artifacts: {e}"))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.join("matrix.json").is_file())
+        .collect::<Vec<_>>();
+    let [matrix] = matrix.as_slice() else {
+        return Err(format!(
+            "{} holds {} finished matrices, not one",
+            artifacts.display(),
+            matrix.len()
+        ));
+    };
+    let index = read_regular(&matrix.join("matrix.json"), "matrix_index")?;
+    let mut results = BTreeMap::new();
+    for entry in std::fs::read_dir(matrix.join("trials")).map_err(|e| format!("trials: {e}"))? {
+        let path = entry.map_err(|e| e.to_string())?.path().join("result.json");
+        let bytes = read_regular(&path, "result")?;
+        let v: Value = serde_json::from_slice(&bytes).map_err(|e| format!("result: {e}"))?;
+        let key = (
+            v["task"].as_str().unwrap_or_default().to_owned(),
+            v["agent"].as_str().unwrap_or_default().to_owned(),
+            v["provenance"]["matrix"]["repetition_index"]
+                .as_u64()
+                .unwrap_or(u64::MAX) as u32
+                + 1,
+        );
+        if results.insert(key.clone(), v).is_some() {
+            return Err(format!("two retained results for {key:?}"));
+        }
+    }
+    Ok((results, sha256(&index)))
+}
+
+/// Build the controls index from each target's rows and retained artifacts.
+/// `rows` is the concatenation in product order; `per_target` gives each
+/// target's retained-artifacts root.
+pub fn build_index(
+    product: &Product,
+    product_sha256: &str,
+    rows_bytes: &[u8],
+    per_target: &[(String, PathBuf)],
+) -> Result<ControlsIndex, String> {
+    let rows: Vec<ComparisonRow> = std::str::from_utf8(rows_bytes)
+        .map_err(|_| "rows are not UTF-8")?
+        .lines()
+        .map(|l| serde_json::from_str(l).map_err(|e| format!("a row does not parse: {e}")))
+        .collect::<Result<_, _>>()?;
+    let mut retained = BTreeMap::new();
+    let mut receipts = Vec::new();
+    for (target, dir) in per_target {
+        let (results, matrix_digest) = retained_results(dir)?;
+        receipts.push(format!("{target}:{matrix_digest}"));
+        retained.insert(target.clone(), results);
+    }
+    let mut out = Vec::new();
+    let (mut seed, mut time) = (String::new(), String::new());
+    for row in &rows {
+        row.validate()?;
+        let target = target::ALL
+            .iter()
+            .find(|t| t.comparison_name() == row.target)
+            .ok_or("a row names an unknown target")?;
+        let key = (
+            row.coordinate.task.clone(),
+            row.coordinate.agent.clone(),
+            row.coordinate.attempt,
+        );
+        let result = retained
+            .get(target.name())
+            .and_then(|r| r.get(&key))
+            .ok_or_else(|| format!("no retained result for {} {key:?}", target.name()))?;
+        seed = result["provenance"]["matrix"]["master_seed"]
+            .as_str()
+            .unwrap_or_default()
+            .into();
+        time = result["provenance"]["fixture"]["fixture_time"]
+            .as_str()
+            .unwrap_or_default()
+            .into();
+        out.push(IndexRow {
+            target: target.name().into(),
+            task: key.0,
+            agent: key.1,
+            attempt: key.2,
+            outcome: row.outcome,
+            failure_class: serde_json::from_value(result["failure_class"].clone()).unwrap_or(None),
+            row_sha256: row.hash.clone(),
+            fixture_sha256: fixture_digest(result),
+        });
+    }
+    Ok(ControlsIndex {
+        schema: 1,
+        product_id: product.id.clone(),
+        product_sha256: product_sha256.into(),
+        master_seed: seed,
+        fixture_time: time,
+        rows_sha256: sha256(rows_bytes),
+        cleanup_receipts_sha256: sha256(receipts.join("\n").as_bytes()),
+        rows: out,
+    })
+}
+
+// ---- the verifier ---------------------------------------------------------------
+
+/// What `comparison-check` is asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Verify, print the plan and the pending items, launch nothing.
+    DryRun,
+    /// Verify for the evidence step: a pending CI run is allowed.
+    Evidence,
+    /// Verify for the paid start: a pending item is refused by name.
+    Measure,
+}
+
+/// The paths a check reads. Nothing here is a wrapper configuration.
+#[derive(Debug, Clone)]
+pub struct CheckInputs {
+    pub baseline: PathBuf,
+    pub contracts: PathBuf,
+    pub controls_dir: PathBuf,
+    pub receipts: PathBuf,
+    pub cost: PathBuf,
+    pub identity: PathBuf,
+    pub product: PathBuf,
+    pub sources: PathBuf,
+    /// The repository the receipts' head is checked in.
+    pub repo: PathBuf,
+}
+
+/// The paths a change may touch between the receipts' head and the
+/// candidate's: the evidence itself. Any code, lock, product or script change
+/// makes the receipts stale.
+const EVIDENCE_PATHS: [&str; 3] = [
+    "docs/evals/agent-controls-",
+    "docs/evals/README.md",
+    "specs/",
+];
+
+/// What a passing check found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verified {
+    pub product: Product,
+    pub controls_rows: usize,
+    pub pending: Vec<String>,
+}
+
+fn refuse<T>(name: &str, why: impl std::fmt::Display) -> Result<T, String> {
+    Err(format!("prerequisite-{name}: {why}"))
+}
+
+fn json_file(path: &Path, what: &str, name: &str) -> Result<(Value, Vec<u8>), String> {
+    let bytes = read_regular(path, what).or_else(|e| refuse(name, e))?;
+    let v = serde_json::from_slice(&bytes)
+        .or_else(|e| refuse(name, format!("{what} does not parse: {e}")))?;
+    Ok((v, bytes))
+}
+
+fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .map_err(|e| format!("git: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// Verify every prerequisite in the fixed order and name the first that does
+/// not hold as `prerequisite-<name>: <reason>`.
+pub fn check(inputs: &CheckInputs, mode: Mode) -> Result<Verified, String> {
+    let product_bytes =
+        read_regular(&inputs.product, "product").or_else(|e| refuse("full-product", e))?;
+    let product_sha = sha256(&product_bytes);
+    let product = Product::parse(&product_bytes).or_else(|e| refuse("full-product", e))?;
+    // 1. the baseline: the published #151 report.
+    let baseline = std::fs::metadata(&inputs.baseline).or_else(|e| refuse("baseline", e))?;
+    let baseline_ok = if baseline.is_dir() {
+        std::fs::read_dir(&inputs.baseline).is_ok_and(|mut d| d.next().is_some())
+    } else {
+        read_regular(&inputs.baseline, "baseline")
+            .is_ok_and(|b| String::from_utf8_lossy(&b).contains("#151"))
+    };
+    if !baseline_ok {
+        return refuse("baseline", "it is not the published #151 report");
+    }
+    check_contracts(inputs, &product)?;
+    let (index, rows) = check_controls(inputs, &product, &product_sha)?;
+    let pending = check_receipts(inputs, &index, mode)?;
+    check_cost(inputs)?;
+    check_identity(inputs, &product, &product_sha, &rows)?;
+    let (lock, _) = json_file(&inputs.sources, "sources", "full-product")?;
+    product
+        .validate(Some(&lock))
+        .or_else(|e| refuse("full-product", e))?;
+    Ok(Verified {
+        product,
+        controls_rows: rows.len(),
+        pending,
+    })
+}
+
+fn check_contracts(inputs: &CheckInputs, product: &Product) -> Result<(), String> {
+    const NAME: &str = "final-contracts";
+    for tuple in &product.targets {
+        let path = inputs.contracts.join(format!("{}.json", tuple.target));
+        let (c, _) = json_file(&path, "contract", NAME)?;
+        let want = |ok: bool, why: &str| {
+            if ok {
+                Ok(())
+            } else {
+                refuse(NAME, format!("{}: {why}", tuple.target))
+            }
+        };
+        want(
+            c["target"] == json!(tuple.target),
+            "the contract is for another target",
+        )?;
+        want(
+            c["tools_sha256"] == json!(tuple.tools_sha256),
+            "its tool list is not the product's",
+        )?;
+        want(
+            c["negotiation"]["protocol_version"] == json!(crate::mcp::PROTOCOL_VERSION),
+            "it did not negotiate the protocol version",
+        )?;
+        want(
+            c["batch"]["answered"] == json!(true) && c["batch"]["reply_is_array"] == json!(true),
+            "its batch probe was not answered",
+        )?;
+        want(
+            c["cleanup_receipt"] == json!(true),
+            "its probe left no cleanup receipt",
+        )?;
+        let strings = |key: &str, field: Option<&str>| -> Vec<String> {
+            c[key]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| match field {
+                            Some(f) => x[f].as_str(),
+                            None => x.as_str(),
+                        })
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let (names, called) = (strings("tool_names", None), strings("calls", Some("tool")));
+        want(
+            !names.is_empty() && names == called,
+            "it lists one outcome per announced tool",
+        )?;
+        let skipped = c["calls"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|x| x["outcome"] == "skipped_mutating"));
+        want(
+            !(tuple.target != "swarmail" && skipped),
+            "a competitor tool was skipped",
+        )?;
+    }
+    Ok(())
+}
+
+fn check_controls(
+    inputs: &CheckInputs,
+    product: &Product,
+    product_sha: &str,
+) -> Result<(ControlsIndex, Vec<ComparisonRow>), String> {
+    const NAME: &str = "controls";
+    let rows_bytes = read_regular(&inputs.controls_dir.join("rows.jsonl"), "rows")
+        .or_else(|e| refuse(NAME, e))?;
+    if rows_bytes.last() != Some(&b'\n') {
+        return refuse(NAME, "rows.jsonl ends in a torn line");
+    }
+    let (index_value, _) = json_file(&inputs.controls_dir.join("index.json"), "index", NAME)?;
+    let index: ControlsIndex =
+        serde_json::from_value(index_value).or_else(|e| refuse(NAME, format!("index: {e}")))?;
+    if index.product_sha256 != product_sha || index.product_id != product.id {
+        return refuse(NAME, "the controls are not bound to this product");
+    }
+    if index.rows_sha256 != sha256(&rows_bytes) {
+        return refuse(NAME, "rows.jsonl is not the file the index binds");
+    }
+    let rows: Vec<ComparisonRow> = std::str::from_utf8(&rows_bytes)
+        .or_else(|_| refuse(NAME, "rows are not UTF-8"))?
+        .lines()
+        .map(|l| {
+            serde_json::from_str(l).or_else(|e| refuse(NAME, format!("a row does not parse: {e}")))
+        })
+        .collect::<Result<_, _>>()?;
+    let per_target = (product.tasks.len() as u32 * 2 * product.controls.trials) as usize;
+    for tuple in &product.targets {
+        let t = Target::parse(&tuple.target)?;
+        let own: Vec<&ComparisonRow> = rows
+            .iter()
+            .filter(|r| r.target == t.comparison_name())
+            .collect();
+        if own.is_empty() {
+            return refuse(NAME, format!("the controls hold no rows for {}", t.name()));
+        }
+        if own.len() != per_target {
+            return refuse(
+                NAME,
+                format!(
+                    "{} has {} control rows, the product plans {per_target}",
+                    t.name(),
+                    own.len()
+                ),
+            );
+        }
+        for task in &product.tasks {
+            for agent in &product.controls.agents {
+                for attempt in 1..=product.controls.trials {
+                    let n = own
+                        .iter()
+                        .filter(|r| {
+                            r.coordinate.task == *task
+                                && r.coordinate.agent == *agent
+                                && r.coordinate.attempt == attempt
+                        })
+                        .count();
+                    if n != 1 {
+                        return refuse(
+                            NAME,
+                            format!(
+                                "{}: control row {task} {agent} {attempt} is missing or repeated",
+                                t.name()
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    if rows.len() != product.controls.cells as usize || rows.len() != index.rows.len() {
+        return refuse(NAME, "the control rows are not the product's planned cells");
+    }
+    for (row, entry) in rows.iter().zip(&index.rows) {
+        row.validate().or_else(|e| refuse(NAME, e))?;
+        let tuple = product
+            .targets
+            .iter()
+            .find(|t| t.comparison_name == row.target)
+            .ok_or_else(|| format!("prerequisite-{NAME}: a row names an unknown target"))?;
+        let bound = row.protocol_sha256 == product_sha
+            && row.settings.connection == tuple.connection
+            && row.settings.tools_sha256 == tuple.tools_sha256
+            && row.settings.smtp_auth == tuple.smtp_auth
+            && tuple
+                .executable_sha256
+                .as_ref()
+                .is_none_or(|e| *e == row.executable_sha256)
+            && entry.row_sha256 == row.hash
+            && entry.target == tuple.target
+            && (entry.task.as_str(), entry.agent.as_str(), entry.attempt)
+                == (
+                    row.coordinate.task.as_str(),
+                    row.coordinate.agent.as_str(),
+                    row.coordinate.attempt,
+                );
+        if !bound {
+            return refuse(
+                NAME,
+                format!(
+                    "{} {:?} is not bound to the product",
+                    row.target, row.coordinate
+                ),
+            );
+        }
+        let idle = crate::tasks::find(&row.coordinate.task).map(|t| t.idle_class);
+        let ok = match (row.coordinate.agent.as_str(), row.outcome) {
+            ("oracle", crate::tasks::Outcome::Pass) => entry.failure_class.is_none(),
+            ("null", crate::tasks::Outcome::Fail) => entry.failure_class == idle,
+            _ => false,
+        };
+        if !ok {
+            return refuse(
+                NAME,
+                format!(
+                    "{} {:?}: {:?} is not what the {} control must give",
+                    row.target, row.coordinate, row.outcome, row.coordinate.agent
+                ),
+            );
+        }
+    }
+    // The fixture never sees the target: one (task, agent, attempt) is the
+    // same fixture on every target.
+    let mut seen: BTreeMap<(&str, &str, u32), &str> = BTreeMap::new();
+    for e in &index.rows {
+        let want = *seen
+            .entry((&e.task, &e.agent, e.attempt))
+            .or_insert(&e.fixture_sha256);
+        if want != e.fixture_sha256 {
+            return refuse(
+                NAME,
+                format!(
+                    "{} {} {}: the fixture differs between targets",
+                    e.task, e.agent, e.attempt
+                ),
+            );
+        }
+    }
+    Ok((index, rows))
+}
+
+fn check_receipts(
+    inputs: &CheckInputs,
+    index: &ControlsIndex,
+    mode: Mode,
+) -> Result<Vec<String>, String> {
+    const NAME: &str = "coordination-receipts";
+    let (v, _) = json_file(&inputs.receipts, "receipts", NAME)?;
+    let r: Receipts =
+        serde_json::from_value(v).or_else(|e| refuse(NAME, format!("receipts: {e}")))?;
+    let index_bytes = read_regular(&inputs.controls_dir.join("index.json"), "index")
+        .or_else(|e| refuse(NAME, e))?;
+    if r.controls_index_sha256 != sha256(&index_bytes)
+        || r.cleanup_receipts_sha256 != index.cleanup_receipts_sha256
+    {
+        return refuse(NAME, "the receipts are not bound to this controls index");
+    }
+    if r.eval_suite.status != "pass"
+        || r.eval_suite.head != r.head
+        || !r.eval_suite.command.contains("--locked")
+    {
+        return refuse(
+            NAME,
+            "the locked eval suite did not pass at the receipts' head",
+        );
+    }
+    if r.head.len() < 7 || !r.head.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return refuse(NAME, "the receipts' head is not a commit");
+    }
+    let candidate = git(&inputs.repo, &["rev-parse", "HEAD"]).or_else(|e| refuse(NAME, e))?;
+    if git(
+        &inputs.repo,
+        &["merge-base", "--is-ancestor", &r.head, &candidate],
+    )
+    .is_err()
+    {
+        return refuse(
+            NAME,
+            format!(
+                "the receipts' head {} is not an ancestor of the candidate {candidate}",
+                r.head
+            ),
+        );
+    }
+    let changed = git(&inputs.repo, &["diff", "--name-only", &r.head, &candidate])
+        .or_else(|e| refuse(NAME, e))?;
+    let dirty = git(
+        &inputs.repo,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )
+    .or_else(|e| refuse(NAME, e))?;
+    let paths = changed
+        .lines()
+        .map(str::to_owned)
+        .chain(dirty.lines().map(|l| l.get(3..).unwrap_or(l).to_owned()));
+    for p in paths {
+        if !EVIDENCE_PATHS.iter().any(|ok| p.starts_with(ok)) {
+            return refuse(
+                NAME,
+                format!(
+                    "{p} changed since the receipts' head {}: the receipts are stale",
+                    r.head
+                ),
+            );
+        }
+    }
+    let mut pending = Vec::new();
+    match (r.ci.status.as_str(), &r.ci.run) {
+        ("pending", None) => pending.push(
+            "ci: the required CI run has not been supplied (receipts.ci.status is pending)"
+                .to_owned(),
+        ),
+        ("run", Some(run)) if !run.trim().is_empty() => {}
+        _ => return refuse(NAME, "receipts.ci is neither pending nor a run reference"),
+    }
+    if mode == Mode::Measure && !pending.is_empty() {
+        return refuse(NAME, pending.join("; "));
+    }
+    Ok(pending)
+}
+
+fn check_cost(inputs: &CheckInputs) -> Result<(), String> {
+    const NAME: &str = "cost-basis";
+    let (v, _) = json_file(&inputs.cost, "cost", NAME)?;
+    match v["basis"].as_str() {
+        Some("unavailable") if v["reason"].as_str().is_some_and(|r| !r.trim().is_empty()) => Ok(()),
+        Some("measured") if v["total_usd"].as_f64().is_some_and(|c| c > 0.0) => Ok(()),
+        Some("unavailable") => refuse(NAME, "an unavailable basis says why"),
+        Some("measured") => refuse(NAME, "a measured cost is never 0"),
+        _ => refuse(NAME, "the basis is neither unavailable nor measured"),
+    }
+}
+
+fn check_identity(
+    inputs: &CheckInputs,
+    product: &Product,
+    product_sha: &str,
+    rows: &[ComparisonRow],
+) -> Result<(), String> {
+    const NAME: &str = "identity";
+    let (v, _) = json_file(&inputs.identity, "identity", NAME)?;
+    let id: Identity =
+        serde_json::from_value(v).or_else(|e| refuse(NAME, format!("identity: {e}")))?;
+    if id.product_sha256 != product_sha {
+        return refuse(NAME, "the identity is not bound to this product");
+    }
+    for role in [
+        "swarmail",
+        "mailpit",
+        "mailhog",
+        "mailslurper",
+        "adapter",
+        "harness",
+    ] {
+        if id.entries.iter().filter(|e| e.role == role).count() != 1 {
+            return refuse(
+                NAME,
+                format!("the identity does not hold exactly one {role}"),
+            );
+        }
+    }
+    for e in &id.entries {
+        // Re-measure: the executable at the recorded path is the one measured.
+        let now = crate::identity::file_hash(Path::new(&e.path)).or_else(|_| {
+            refuse(
+                NAME,
+                format!("{} at {} cannot be re-measured", e.role, e.path),
+            )
+        })?;
+        if now != e.sha256 {
+            return refuse(
+                NAME,
+                format!(
+                    "{} at {} is {now} now, and was {} when measured",
+                    e.role, e.path, e.sha256
+                ),
+            );
+        }
+        if let Some(tuple) = product.targets.iter().find(|t| t.target == e.role)
+            && tuple
+                .executable_sha256
+                .as_ref()
+                .is_some_and(|want| *want != e.sha256)
+        {
+            return refuse(
+                NAME,
+                format!("{} is not the executable the product pins", e.role),
+            );
+        }
+    }
+    let candidate = id
+        .entries
+        .iter()
+        .find(|e| e.role == "swarmail")
+        .map(|e| e.sha256.as_str());
+    if rows
+        .iter()
+        .any(|r| r.target == "swarmail-mcp" && Some(r.executable_sha256.as_str()) != candidate)
+    {
+        return refuse(
+            NAME,
+            "the swarmail rows name another executable than the identity's",
+        );
+    }
+    Ok(())
+}
+
+impl Verified {
+    /// The dry run's transcript: what was verified, the plan, the pending.
+    pub fn dry_run_report(&self) -> String {
+        let p = &self.product;
+        let mut out = format!(
+            "comparison-check dry run: every prerequisite holds for product {} ({} control rows, {} contracts)\n",
+            p.id,
+            self.controls_rows,
+            p.targets.len()
+        );
+        out.push_str(&format!(
+            "plan: {} slots = {} tasks x {} targets x {} agents x {} trials, one slot at a time, in this order:\n",
+            p.planned_cells,
+            p.tasks.len(),
+            p.targets.len(),
+            p.agents.len(),
+            p.trials
+        ));
+        let block = p.agents.len() as u32 * p.trials;
+        let labels = p
+            .agents
+            .iter()
+            .map(|a| a.label.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut slot = 1;
+        for task in &p.tasks {
+            for t in &p.targets {
+                out.push_str(&format!(
+                    "  slots {:>3}-{:>3}: {task} on {} for {labels}, {} trials each\n",
+                    slot,
+                    slot + block - 1,
+                    t.target,
+                    p.trials
+                ));
+                slot += block;
+            }
+        }
+        out.push_str("pending (operator): --authorized-product with the product id, and the operator's confirmation of the spend\n");
+        for item in &self.pending {
+            out.push_str(&format!("pending: {item}\n"));
+        }
+        out.push_str("nothing was launched and no wrapper configuration was opened\n");
+        out
+    }
+}

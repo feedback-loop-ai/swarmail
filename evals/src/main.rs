@@ -212,6 +212,66 @@ enum Cmd {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Write the controls directory's index, identity and receipts from one
+    /// scratch directory of per-target rows and retained matrices (free).
+    ComparisonIndex {
+        /// Holds `rows-<target>.jsonl`, `art-<target>/` and
+        /// `contract-<target>.json` for every target.
+        #[arg(long)]
+        scratch: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        product: PathBuf,
+        #[arg(long)]
+        swarmail: PathBuf,
+        #[arg(long)]
+        mailpit: PathBuf,
+        #[arg(long)]
+        mailhog: PathBuf,
+        #[arg(long)]
+        mailslurper: PathBuf,
+        /// The `mail_compare` driver that served the adapters.
+        #[arg(long)]
+        adapter: PathBuf,
+        #[arg(long)]
+        head: String,
+        #[arg(long)]
+        eval_suite_command: String,
+        #[arg(long)]
+        eval_suite_status: String,
+    },
+    /// Verify the comparison's prerequisites in their fixed order, and name
+    /// the first that does not hold. Launches nothing and opens no wrapper
+    /// configuration.
+    ComparisonCheck {
+        #[arg(long, value_parser = ["dry-run", "evidence", "measure"])]
+        mode: String,
+        #[arg(long)]
+        baseline: PathBuf,
+        #[arg(long)]
+        contracts: PathBuf,
+        #[arg(long)]
+        controls_dir: PathBuf,
+        #[arg(long)]
+        receipts: PathBuf,
+        #[arg(long)]
+        cost: PathBuf,
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long)]
+        product: PathBuf,
+        #[arg(long)]
+        sources: PathBuf,
+        /// The repository the receipts' head is checked in.
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+    },
+    /// Cite comparison rows by (target, agent, task) with their denominators.
+    ComparisonCite {
+        #[arg(long)]
+        rows: PathBuf,
+    },
     /// Re-apply a task's check to a retained state.json.
     Check {
         #[arg(long)]
@@ -777,18 +837,6 @@ fn main() -> ExitCode {
                 Ok(v) => v,
                 Err(e) => return fail(e),
             };
-            if let Some(bin) = &brokkr
-                && let Err(category) = brokkr_mode_admissible(
-                    bin,
-                    std::path::Path::new("."),
-                    artifacts_dir.as_deref(),
-                    deadline_ms,
-                    &ids,
-                )
-            {
-                eprintln!("swarmail-evals: harness error: {category}");
-                return ExitCode::from(2);
-            }
             let comparison = match target.as_deref() {
                 None => None,
                 Some(name) => {
@@ -813,6 +861,18 @@ fn main() -> ExitCode {
                     Some(bound)
                 }
             };
+            if let Some(bin) = &brokkr
+                && let Err(category) = brokkr_mode_admissible(
+                    bin,
+                    std::path::Path::new("."),
+                    artifacts_dir.as_deref(),
+                    deadline_ms,
+                    &ids,
+                )
+            {
+                eprintln!("swarmail-evals: harness error: {category}");
+                return ExitCode::from(2);
+            }
             rt.block_on(matrix_with_target(
                 ids,
                 agents,
@@ -834,6 +894,98 @@ fn main() -> ExitCode {
         } => rt.block_on(run_comparison_contract(
             target, product, adapter, target_bin, sources, output,
         )),
+        Cmd::ComparisonIndex {
+            scratch,
+            output,
+            product,
+            swarmail,
+            mailpit,
+            mailhog,
+            mailslurper,
+            adapter,
+            head,
+            eval_suite_command,
+            eval_suite_status,
+        } => match write_controls(
+            &scratch,
+            &output,
+            &product,
+            [
+                ("swarmail", &swarmail),
+                ("mailpit", &mailpit),
+                ("mailhog", &mailhog),
+                ("mailslurper", &mailslurper),
+                ("adapter", &adapter),
+            ],
+            comparison::EvalSuite {
+                command: eval_suite_command,
+                head: head.clone(),
+                status: eval_suite_status,
+            },
+            head,
+        ) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => comparison_refusal(e),
+        },
+        Cmd::ComparisonCheck {
+            mode,
+            baseline,
+            contracts,
+            controls_dir,
+            receipts,
+            cost,
+            identity,
+            product,
+            sources,
+            repo,
+        } => {
+            let mode = match mode.as_str() {
+                "dry-run" => comparison::Mode::DryRun,
+                "evidence" => comparison::Mode::Evidence,
+                _ => comparison::Mode::Measure,
+            };
+            let inputs = comparison::CheckInputs {
+                baseline,
+                contracts,
+                controls_dir,
+                receipts,
+                cost,
+                identity,
+                product,
+                sources,
+                repo,
+            };
+            match comparison::check(&inputs, mode) {
+                Ok(verified) if mode == comparison::Mode::DryRun => {
+                    print!("{}", verified.dry_run_report());
+                    ExitCode::SUCCESS
+                }
+                Ok(verified) => {
+                    println!(
+                        "comparison-check: every prerequisite holds for product {} ({} control rows)",
+                        verified.product.id, verified.controls_rows
+                    );
+                    for item in &verified.pending {
+                        println!("pending: {item}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => comparison_refusal(e),
+            }
+        }
+        Cmd::ComparisonCite { rows } => {
+            let cited = comparison::read_regular(&rows, "rows")
+                .and_then(|b| String::from_utf8(b).map_err(|_| "rows_not_utf8".to_string()))
+                .and_then(|t| report::parse_comparison_rows(&t))
+                .and_then(|r| report::cite_comparison(&r));
+            match cited {
+                Ok(v) => {
+                    print_line(&v);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => comparison_refusal(format!("rows_uncitable: {e}")),
+            }
+        }
         Cmd::Check {
             task,
             state,
@@ -2428,6 +2580,118 @@ async fn resolve_matrix_bin(
     let target = before.associate(binary);
     target.recheck()?;
     Ok(Some((exe, target)))
+}
+
+/// `comparison-index`: gather one controls run's per-target rows and retained
+/// matrices into the controls directory, bound to the product and to every
+/// measured executable. The directory is created exclusively and written
+/// whole; a partial directory is removed.
+fn write_controls(
+    scratch: &std::path::Path,
+    output: &std::path::Path,
+    product: &std::path::Path,
+    bins: [(&str, &PathBuf); 5],
+    eval_suite: comparison::EvalSuite,
+    head: String,
+) -> Result<(), String> {
+    let product_bytes = comparison::read_regular(product, "product")?;
+    let parsed = comparison::Product::parse(&product_bytes)?;
+    let product_sha = provenance::sha256(&product_bytes);
+    let mut rows = Vec::new();
+    let mut per_target = Vec::new();
+    for tuple in &parsed.targets {
+        let part = comparison::read_regular(
+            &scratch.join(format!("rows-{}.jsonl", tuple.target)),
+            "rows",
+        )?;
+        if part.last() != Some(&b'\n') {
+            return Err(format!(
+                "rows_torn: rows-{}.jsonl ends in a torn line",
+                tuple.target
+            ));
+        }
+        rows.extend_from_slice(&part);
+        per_target.push((
+            tuple.target.clone(),
+            scratch.join(format!("art-{}", tuple.target)),
+        ));
+    }
+    let index = comparison::build_index(&parsed, &product_sha, &rows, &per_target)?;
+    let index_bytes = {
+        let mut b = serde_json::to_vec_pretty(&index).map_err(|e| e.to_string())?;
+        b.push(b'\n');
+        b
+    };
+    let mut entries = Vec::new();
+    for (role, path) in bins {
+        let path = std::fs::canonicalize(path).map_err(|e| format!("{role}: {e}"))?;
+        entries.push(comparison::IdentityEntry {
+            role: role.into(),
+            sha256: identity::file_hash(&path)?,
+            path: path.to_string_lossy().into_owned(),
+        });
+    }
+    let harness = std::env::current_exe().map_err(|e| e.to_string())?;
+    entries.push(comparison::IdentityEntry {
+        role: "harness".into(),
+        sha256: identity::file_hash(&harness)?,
+        path: harness.to_string_lossy().into_owned(),
+    });
+    let identity_doc = comparison::Identity {
+        schema: 1,
+        product_sha256: product_sha,
+        entries,
+    };
+    let receipts = comparison::Receipts {
+        schema: 1,
+        head,
+        controls_index_sha256: provenance::sha256(&index_bytes),
+        cleanup_receipts_sha256: index.cleanup_receipts_sha256.clone(),
+        eval_suite,
+        ci: comparison::Ci {
+            status: "pending".into(),
+            run: None,
+        },
+    };
+    let pretty = |v: &dyn ErasedSer| v.to_pretty();
+    std::fs::create_dir(output).map_err(|e| format!("output_unwritable: {e}"))?;
+    let written = (|| -> Result<(), String> {
+        let put = |name: &str, bytes: &[u8]| {
+            std::fs::write(output.join(name), bytes).map_err(|e| format!("{name}: {e}"))
+        };
+        std::fs::create_dir(output.join("contracts")).map_err(|e| e.to_string())?;
+        put("rows.jsonl", &rows)?;
+        put("index.json", &index_bytes)?;
+        for tuple in &parsed.targets {
+            let c = comparison::read_regular(
+                &scratch.join(format!("contract-{}.json", tuple.target)),
+                "contract",
+            )?;
+            put(&format!("contracts/{}.json", tuple.target), &c)?;
+            if let Ok(t) = std::fs::read(scratch.join(format!("timing-{}.txt", tuple.target))) {
+                std::fs::create_dir_all(output.join("timing")).map_err(|e| e.to_string())?;
+                put(&format!("timing/{}.txt", tuple.target), &t)?;
+            }
+        }
+        put("identity.json", &pretty(&identity_doc))?;
+        put("receipts.json", &pretty(&receipts))?;
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_dir_all(output);
+    }
+    written
+}
+
+trait ErasedSer {
+    fn to_pretty(&self) -> Vec<u8>;
+}
+impl<T: serde::Serialize> ErasedSer for T {
+    fn to_pretty(&self) -> Vec<u8> {
+        let mut b = serde_json::to_vec_pretty(self).expect("serializes");
+        b.push(b'\n');
+        b
+    }
 }
 
 /// `comparison-contract`: probe one target's MCP contract and write it. The
