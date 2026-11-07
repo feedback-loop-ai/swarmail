@@ -15,6 +15,7 @@ pub mod oracle;
 pub mod report;
 pub mod runner;
 pub mod state;
+pub mod target;
 pub mod tasks;
 
 pub mod artifacts;
