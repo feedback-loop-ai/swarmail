@@ -30,7 +30,7 @@
     {
       "role": "harness",
       "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/evals/target/debug/swarmail-evals",
-      "sha256": "911ba17f0176b445ae8cb09b29a04aabc86e29cff274b30b8535d0d8f8e96a12"
+      "sha256": "aac3789a368f5b6d188951514bf6a3a092f102f005d1c02a6b9463aaa428c425"
     }
   ]
 }
