@@ -688,3 +688,186 @@ preflight required an executable file for a jar, and the driver refused a second
 runs its file, which is then only read; `--runtime` repeats, once per target)
 and `wrapper_reads_a_runtime_run_file_without_exec` proves the first. A
 collection will exit 1 for the same fidelity reason.
+
+## 2026-11-07 addendum (review return)
+
+This addendum adds to the record above and edits none of it. The status stays
+*proposed*; only the operator accepts. Review of `c5a784c` returned the change
+to design and then to implementation (decision 0102); this records what that
+return corrected, derived or found. The frozen `docs/evals/protocol.json` and
+`docs/evals/sources.lock.json` are byte-unchanged (sha256 above, held by
+`frozen_v3_and_lock_v4_bytes_are_the_recorded_ones`); nothing was collected,
+no agent session ran and nothing paid ran.
+
+### Nine targets, not eight
+
+The closed list in §1, §2 and §3 reads eight. Ruling 1 added a ninth when it
+asked for a separate "built from source" MailSlurper row. The nine are
+`swarmail`, `mailpit`, `mailhog`, `mailslurper`, `mailslurper-source-build`,
+`smtp4dev`, `inbucket`, `greenmail` and `alkemio-mailslurper`: the candidate
+and eight competitors (`TargetKind::ALL` holds nine). The file name stays
+"eight-target". The sections above that say eight are read as nine by this
+sentence, not edited.
+
+### The conditions protocol v3's readiness rests on
+
+`mail_compare check` (that is, `collection_ready` and `verify_files`) passes on
+the frozen pair because of four rulings and three further conditions. The
+earlier addendum named one of the three as a "sixth widened condition" and left
+it "for the operator", and recorded "the operator's ruling on the sixth
+condition" as open. Those sentences are superseded, by this addition, with the
+derivations below: each condition is entailed by the issue or a ruling, not
+decided here, and each keeps a named refusal. The operator can still strike
+(f) or (g) when ruling on this record; v3 then cannot collect as frozen, and
+the remedy is a new protocol version or a ruling, never an edit of the frozen
+bytes (nothing has been collected that a strike could invalidate).
+
+| | Condition | Authority | Refusal kept (test) |
+|---|---|---|---|
+| (a) | `REPORTED_VERSIONS` | ruling 1 | another target or tag; output naming neither version |
+| (b) | `RUNTIMES` table, loader in the image's manifest | rulings 2, 4 | a third target; a missing member; a layer absent from the manifest |
+| (c) | `RegistryChecksum` skips the asset list | ruling 3 | the basis on another target; the checksum record naming `{download}.sha256`; tag, page, commitish and date still checked (`skipped_asset_list_still_checks_tag_commitish_and_date`) |
+| (d) | `MIT` on `RUNTIME_LICENSES` | ruling 4 | `PERMISSIVE` exactly five (`permissive_list_is_exactly_the_five`) |
+| (e) | `GitCommit` tree route with rebuild | forced by an observed tagged source | edited entry, another tree, another commit, blob absent |
+| (f) | an image pin's `tagged_source` gap is not counted by `collection_ready` | entailed: the issue's "image digests" lock and its labelled Alkemio row; §2 (an image has no tag) | every source pin still refuses an unresolved gap, and an image pin still refuses an observed one (`official_pin_still_needs_an_observed_tagged_source_but_an_image_pin_does_not`, `image_pin_refuses_observed_tagged_source_or_build_provenance`) |
+| (g) | `Provenance::SourceBuild` skips the asset list; its release download is replaced by `{home}/tree/{commit}` | entailed by ruling 1 ("bench a cgo build from the pinned release source … It may be pinned"): a supplied build is no release asset | `source_build_refuses_unresolved_build_provenance`, `…_provenance_on_another_commit`, `…_missing_build_evidence`, `…_other_download`; `upstream_release_pin_with_unlisted_asset_is_still_refused` (the skip never reaches an `Official` pin); `skipped_asset_list_still_checks_tag_commitish_and_date` (GreenMail and the source build, each with one edited field) |
+| (h) | `ConfigFile.cwd` | an observed launch fact: the Alkemio fork reads `./config.json` and has no flag for it | `config_file_name_confined` (a name with `/` or `..` is refused); `config_file_cwd_runs_where_rendered` |
+
+Condition (f) now has a closed shape. `collection_ready` skips the
+tagged-source gap only when `!Provenance::has_tagged_source()`, which is false
+only for `ThirdPartyImage`. Earlier it asked whether the lock data carried an
+`image` field, so a pin kind could have inherited the exemption by accident;
+`has_tagged_source_is_false_only_for_the_image_provenance` covers all nine
+targets and gives a source pin an `image` field to show it gains nothing. The
+image's identity stays its index → manifest → layer digest chain.
+
+### Tightenings the review return added
+
+None loosens a refusal, and the frozen bytes pass each of them:
+
+- **A does-not-start cite must be failure evidence.** `does_not_start_matches`
+  refuses a cite whose attribution is not `Supplied` or `Output`, so a README
+  or a licence can never suppress a working row. The committed cite
+  (`mailslurper-official-failure.txt`) is `Supplied`.
+  `does_not_start_cite_must_be_failure_evidence`.
+- **A sealed v3 report's blocked rows and labels are re-derived.** `admit_run`
+  compares `blocked` and `labels` as well as `throughput` and `waits` for a
+  protocol_version 3 report only; v2 admission keeps its terms, because the
+  2026-10-30 collection predates both keys.
+  `admit_run_refuses_a_v3_report_with_an_edited_blocked_row` (a dropped blocked
+  row, a blocked cell given a number, an edited outcome, an edited label and a
+  dropped `labels` key are refused; an untampered report admits). A label
+  change after a v3 collection therefore needs a new protocol version.
+- **One launch-order owner.** `Protocol::launch_order(rep)` (the rotation minus
+  the does-not-start rows, which keep their slot) is the only filter: `plan`,
+  `run`, the wrapper's launch specs and `declared_competitors` use it, and
+  `grep -n 'does_not_start(' benches/` shows only `does_not_start`'s own
+  definition, that one call and the validator's own name. `plan_yields_no_coordinate_for_a_does_not_start_target` now asserts the
+  exact count, and `run_never_launches_a_does_not_start_target` runs the
+  candidate alone against a protocol that lists every competitor as not
+  starting (it went red, with `Infrastructure("mailpit: no launch spec")`, when
+  `run` was made to bypass the filter).
+- **The wrapper's flag binding is under test.** `flags` and a pure
+  `launch_specs(p, s, bins, runtimes)` moved from `benches/mail_compare.rs` into
+  `runner.rs` with unchanged behaviour (`prepare` keeps its file and scratch
+  I/O): `flags_repeat_bin_and_runtime_only`, `launch_specs_take_two_runtimes`,
+  `launch_specs_refuse_a_bin_for_a_does_not_start_target`,
+  `launch_specs_refuse_a_runtime_given_twice_for_one_target`.
+  `report_labels_name_every_unpinned_runtime` asserts the smtp4dev and
+  source-build runtime labels.
+
+### Corrections of record
+
+- **GreenMail's REST API can read messages.** Context above says it cannot, the
+  frozen lock's `wait.finding` says so, and so did `wire.rs`'s comment. The
+  pinned OpenAPI's `mimeMessage` route returns a message, so all three are
+  wrong; this is their correction of record. The frozen `wait.finding` stays as
+  frozen. POP3 stays the read path because the issue orders it (0093 §4), and
+  the comment now says that.
+- **smtp4dev's runtime label.** The earlier addendum says the cgo and smtp4dev
+  runtimes are "labelled in the claim, the report and the README". smtp4dev's is
+  in the report (`self-contained .NET on host libraries (unpinned)`, added
+  here) and the README, not in the frozen claim.
+- **`capabilities.server_search` and the row label's `search`.** The first
+  describes the product's own API (what it offers). The second describes the
+  method the driver chose (a complete scan filtered on the client, where no
+  search is verified). Both stand.
+- **The musl `holder`** in the frozen lock names the Alpine package maintainer
+  (apk record, Timo Teras). musl's copyright holders are in musl's COPYRIGHT,
+  which was not supplied. The licence (MIT) is the apk record's; the frozen lock
+  is unchanged.
+- **Multipart bodies read back as the subject alone.** The design expected the
+  MailSlurper family's multipart HTML to read back as `<p>html part</p>`. On the
+  real binaries a multipart message comes back with no text and no HTML: the one
+  stored body is re-wrapped under the multipart content type without boundary
+  lines, so the driver's MIME reader finds no part. The proofs now assert what
+  was observed instead of printing it: dot-stuffing is not undone
+  (`..leading dot`), a `<br/>` follows each sent line, and a multipart message has
+  no readable body.
+- **The cgo build sometimes closes a fresh SMTP session before its banner.**
+  Found by the receipts below (2 of 9 runs of its cap proof, before the fix).
+  Nothing is sent when a session fails to open, so the cap proof opens the
+  session again (up to five attempts, no sleep) and still asserts every delivery
+  accepted and every token listed; 12 of 12 runs passed afterwards, and so did 10 of 10
+  runs each of the build's round-trip and hostile proofs and of Alkemio's
+  round trip. A collection counts
+  the behaviour as a send failure in the cell.
+
+### Alkemio's cap basis, observed
+
+The cap proof had sent Alkemio's mail in batches of five on the assumption that
+its fork loses mail under SQLite lock contention like the cgo build. The
+bounded probe (`timeout 600 taskset -c 0-31 cargo test --locked --test
+mail_compare -- --ignored --exact
+eight_targets::real_caps_hold_alkemio_mailslurper --test-threads=1`, load 2.12
+before and 2.35 after, 5 s wall) listed 600 of 600 in one burst, and six further
+runs (load 2.24 → 2.26, 3.4 s each) did too: seven of seven. Alkemio therefore
+left `loses_under_burst`, and the frozen lock's cap basis ("no cap is set … 600
+sent, 600 listed") is true as written, and holds under a burst. The cgo build
+loses mail in a burst and stays batched.
+
+### Renames and removals
+
+`eight_target_smoke_fixture_is_a_valid_draft_that_cannot_launch_yet` is renamed
+one for one to `eight_target_smoke_fixture_is_a_valid_draft_that_launches`: it
+asserts that the fixture's every declared row has a pin. The wall-clock
+assertion in `real_mailslurper_official_does_not_start` (`started.elapsed() <
+startup`) is deleted, because the `tokio::time::timeout` around the child
+already bounds it (0020 §5); its bind-and-release port reservation stays, since
+it fails closed. No other test function was deleted in this return.
+
+### Receipts at the final head
+
+Every real test reran after the last code change, one at a time, as `timeout 600
+taskset -c 0-31 cargo test --locked --test mail_compare -- --ignored --exact
+eight_targets::<name> --test-threads=1` (`nproc` 128, so `nproc/4` is 32 CPUs),
+against the unchanged frozen bytes. Head `c76a12c012af6d36554b77d2caa3adc6fb50ec44`, tree
+`d2abd518822ddb2a8ad0bb7613c25cda87548769` (the commits after it change only `docs/` and `specs/`). No file under
+`docs/evals/` was written, and no v3 run directory exists.
+
+| Test | Exit | Wall | Load (1, 5, 15 min) before → after |
+|---|---|---|---|
+| `real_smtp4dev_smtp_to_native_api_round_trip` | 0 | 8s | 3.45 3.52 3.58 → 3.90 3.62 3.61 |
+| `real_inbucket_smtp_to_native_api_round_trip` | 0 | 1s | 3.90 3.62 3.61 → 3.90 3.62 3.61 |
+| `real_greenmail_smtp_to_native_api_round_trip` | 0 | 4s | 3.90 3.62 3.61 → 3.67 3.58 3.60 |
+| `real_mailslurper_source_build_smtp_to_native_api_round_trip` | 0 | 1s | 3.67 3.58 3.60 → 3.67 3.58 3.60 |
+| `real_alkemio_mailslurper_smtp_to_native_api_round_trip` | 0 | 0s | 3.67 3.58 3.60 → 3.67 3.58 3.60 |
+| `real_smtp4dev_hostile_round_trip` | 0 | 4s | 3.67 3.58 3.60 → 3.78 3.60 3.60 |
+| `real_inbucket_hostile_round_trip` | 0 | 1s | 3.78 3.60 3.60 → 3.78 3.60 3.60 |
+| `real_greenmail_hostile_round_trip` | 0 | 2s | 3.78 3.60 3.60 → 3.78 3.60 3.60 |
+| `real_mailslurper_source_build_hostile_round_trip` | 0 | 1s | 3.78 3.60 3.60 → 3.78 3.60 3.60 |
+| `real_alkemio_mailslurper_hostile_round_trip` | 0 | 1s | 3.78 3.60 3.60 → 3.78 3.60 3.60 |
+| `real_caps_hold_smtp4dev` | 0 | 9s | 3.78 3.60 3.60 → 3.59 3.57 3.59 |
+| `real_caps_hold_inbucket` | 0 | 1s | 3.59 3.57 3.59 → 3.46 3.54 3.58 |
+| `real_caps_hold_greenmail` | 0 | 27s | 3.46 3.54 3.58 → 2.62 3.33 3.51 |
+| `real_caps_hold_mailslurper_source_build` | 0 | 10s | 2.62 3.33 3.51 → 2.61 3.31 3.50 |
+| `real_caps_hold_alkemio_mailslurper` | 0 | 4s | 2.61 3.31 3.50 → 2.64 3.30 3.50 |
+| `real_mailslurper_official_does_not_start` | 0 | 0s | 2.64 3.30 3.50 → 2.64 3.30 3.50 |
+| `real_member_and_output_documents_match` | 0 | 3s | 2.64 3.30 3.50 → 2.64 3.30 3.50 |
+
+The wrapper smoke ran once more on the call path that moved
+(`scripts/compare-mail.sh local`, the nine-target smoke fixture, every `--bin`
+and both `--runtime` flags, `timeout 600 taskset -c 0-31`): load 4.75 before and
+5.96 after, 75 s wall, exit 1 as recorded (the cgo build's and Alkemio's
+`smoke-c1-fresh` cells are "not an exact count"), every cleanup proved, the
+official MailSlurper not launched.

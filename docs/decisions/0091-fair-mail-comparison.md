@@ -140,3 +140,5 @@ server binaries" and its "fixed targets" to eight, by addition only: protocol
 v2 and its 2026-10-30 collection stay as recorded, and protocol v3 is a
 separate run with a separate denominator. This pointer changes nothing in
 §§1–6; 0130 is a proposal, and only the operator accepts it.
+
+2026-11-07: nine targets; see 0130's review-return addendum.

@@ -500,7 +500,7 @@ operator's ruling. Collection itself was not run; that is a separate story.
 | mailhog v1.0.1 | official, annotated tag | HTTP JSON | server | memory | — | pinned (bytes unchanged) |
 | mailslurper release-1.15.0 | official, **lightweight** tag (root tree rebuilt to its id) | — | — | SQLite (scratch file) | — | **does not start**: the release executable is a `CGO_ENABLED=0` stub (a published result; the row keeps its pin and a blocked cell per profile, no number) |
 | mailslurper-source-build | **built from source** (cgo), lightweight tag, build record supplied | HTTP JSON | client-side filter | SQLite (scratch file) | host glibc, **unpinned** | pinned; reports v1.14.1 under tag release-1.15.0 |
-| smtp4dev 3.16.1 | official, **lightweight** tag | HTTP JSON (paged by `page`) | client-side filter | scratch file, cap raised to 10000 | .NET bundle on host libraries | pinned |
+| smtp4dev 3.16.1 | official, **lightweight** tag | HTTP JSON (paged by `page`) | client-side filter | scratch file, cap raised to 10000 | self-contained .NET on host libraries (unpinned; the report's row label) | pinned |
 | inbucket v3.2.0 | official, **lightweight** tag | HTTP JSON (per mailbox, unpaged) | client-side filter | memory, per-mailbox cap raised to 10000 | — | pinned |
 | greenmail release-2.1.15 | official jar, annotated tag; **integrity against the Maven Central registry's own checksum, authenticity not verified** | **POP3** (fresh session per scan: login, `STAT`, `UIDL`, `TOP` per message; no `DELE`) | client-side filter | memory | Temurin 21.0.13+9 JRE, pinned | pinned |
 | alkemio-mailslurper | **third-party image**, extracted binary, never an official row | HTTP JSON | client-side filter | SQLite (scratch file) | musl loader, pinned from the image's own layer | pinned |
@@ -574,11 +574,30 @@ wait for any row; build provenance for every executable but the cgo build's;
 GreenMail's license text (its pin carries the jar's own Apache 2.0 declaration,
 not the license text, which was not supplied) and its REST API, which the
 pinned OpenAPI shows can read messages although the issue says it cannot (the
-driver reads over POP3 as ordered); the operator's ruling on the one condition
-beyond the ruled arms (an image pin's tagged-source gap is not counted by
-`collection_ready`); and the unprobed question of whether Alkemio's patched
-fork loses mail in a burst as upstream's cgo build did. Nothing here is a
-comparison claim.
+driver reads over POP3 as ordered); and the operator's ruling on decision 0130,
+which includes the three conditions that readiness rests on beyond the four
+rulings (named below). Nothing here is a comparison claim.
+
+**Alkemio's cap basis, observed.** Unbatched, Alkemio's fork listed all 600 of
+600 mails in a burst, seven bounded runs out of seven (2026-11-07, one at a
+time), so its cap proof sends one burst like every other row and its lock
+basis ("no cap is set; 600 sent, 600 listed") holds as written. The cgo
+MailSlurper build does lose mail in a burst, so its cap proof still sends in
+batches of five. The cgo build also sometimes closes a fresh SMTP session
+before its banner (2 of 9 runs of its cap proof): a collection will count that
+as a send failure in its cell.
+
+**Three conditions readiness rests on, named.** Beyond the operator's four
+rulings, `mail_compare check` passes the frozen pair only because of three
+conditions entailed by the issue and the rulings, each with the refusal it
+keeps (decision 0130's review-return addendum derives them): an image pin's
+tagged-source gap is not counted (the issue orders an image-digest lock and a
+labelled Alkemio row, and an image has no tag), the source build skips only the
+release asset-list check (a supplied build is no release asset; tag, page,
+commitish and date are still checked and the download must be the tagged
+commit's tree), and a config file may run in its own directory (`cwd`, the
+Alkemio fork reads `./config.json`). The operator may strike any of them when
+ruling on 0130; nothing was collected that a strike could invalidate.
 
 ## What closes the remaining rows
 
