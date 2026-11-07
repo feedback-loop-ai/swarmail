@@ -136,35 +136,35 @@
         "max_messages": null,
         "backend": "scratch_file",
         "prune": "no_cap_observed",
-        "compression": "not established: the executable and its documents were not available to this draft; SQLite storage inside the owned scratch is the drafted launch"
+        "compression": "not established: SQLite storage inside the owned scratch is the launch, and the supplied executable's SQLite storage is a CGO_ENABLED=0 stub that cannot start (the lock's pending reason)"
       },
       {
         "target": "smtp4dev",
         "max_messages": 10000,
         "backend": "scratch_file",
         "prune": "unestablished",
-        "compression": "not established: the drafted launch sets --messagestokeep above every profile's residency (its default retention is unread); database inside the owned scratch"
+        "compression": "not established: the launch sets --messagestokeep (per mailbox, default 100 in the captured appsettings.json) above every profile's residency, with the database inside the owned scratch; nothing of it was observed in a launch"
       },
       {
         "target": "inbucket",
         "max_messages": 10000,
         "backend": "memory",
         "prune": "unestablished",
-        "compression": "not established: the drafted launch sets the per-mailbox cap through the environment (its default is unread); one mailbox holds every message; memory store"
+        "compression": "not established: the launch sets INBUCKET_STORAGE_MAILBOXMSGCAP (default 500 per mailbox, from `inbucket -help`) above every profile's residency; one mailbox holds every message; memory store"
       },
       {
         "target": "greenmail",
         "max_messages": null,
         "backend": "memory",
         "prune": "no_cap_observed",
-        "compression": "not established: the standalone jar was not available to this draft; memory store"
+        "compression": "not established: memory store; the property names read from the jar's classes include no retention cap"
       },
       {
         "target": "alkemio-mailslurper",
         "max_messages": null,
         "backend": "scratch_file",
         "prune": "no_cap_observed",
-        "compression": "not established: the image's binary was not available to this draft; SQLite storage inside the owned scratch is the drafted launch"
+        "compression": "not established: nothing about its storage was observed: its executable cannot run from the supplied bytes"
       }
     ]
   },
@@ -310,12 +310,12 @@
     {
       "target": "inbucket",
       "release_tag": "v3.2.0",
-      "executable_sha256": null,
+      "executable_sha256": "7c56922d7c90258d92eb445886ca0e8ff89c277eac2bcfed382afdffb289909b",
       "scope": "official_artifact"
     },
     {
       "target": "greenmail",
-      "release_tag": "2.1.15",
+      "release_tag": "release-2.1.15",
       "executable_sha256": null,
       "scope": "official_artifact"
     },
@@ -327,14 +327,15 @@
     }
   ],
   "unresolved": [
-    "mailslurper: no verified pin (executable bytes and digest not available, stop trigger S6); launch, listeners, storage, cap and API shape are drafted and unverified",
-    "smtp4dev: no verified pin; its default retention is unread and --messagestokeep is drafted, not verified against the pinned executable",
-    "inbucket: no verified pin; its default per-mailbox cap is unread and its environment is drafted, not verified",
-    "greenmail: no verified pin and no pinned JRE; the JRE license awaits the operator's ruling on the runtime list (decision 0130 section 6); its REST listener must be moved or disabled (stop trigger S4)",
-    "alkemio-mailslurper: no verified pin; the full index digest is not recorded (only the prefix sha256:55029f54 is known), and its license terms, layer and executable are uncaptured",
-    "capabilities of the five new targets are not_inspected: no document or reviewed source of theirs exists in the lock",
+    "mailslurper: no verified pin: the release-1.15.0 Linux executable's SQLite storage is a CGO_ENABLED=0 stub that dies at startup (a real bounded launch on 2026-11-07), and no database server or cgo build was supplied; its tag is lightweight and the executable reports v1.14.1",
+    "smtp4dev: no verified pin: the release archive has no license document (49 members, none a license) and none was captured, so no license can be pinned; its default retention (100 per mailbox, from the captured appsettings.json) is overridden by the launch, which was corrected from its --help and never run as a server",
+    "inbucket: tagged_source is unresolved: the captured ref names the commit directly (a lightweight tag) and no git_tree of that commit was captured; the pin's member field holds only the leaf name inbucket of the archive member inbucket_3.2.0_linux_amd64/inbucket",
+    "inbucket: best_wait is unresolved: no source, route or real-binary observation of a wait exists, and its server_search and native_wait capabilities are not_inspected",
+    "greenmail: no verified pin: the captured release release-2.1.15 lists no assets and no document records where the jar was fetched, so it cannot be bound to an official release asset; its tag is annotated and no git_tag or git_tree was captured; its JRE runtime pin and the runtime-list ruling (decision 0130 section 6) wait on that",
+    "alkemio-mailslurper: no verified pin: its executable needs the musl loader /lib/ld-musl-x86_64.so.1, which no supplied bytes carry, and the full index digest sha256:55029f542c19d0fe570450dc5a30f54dbdb24d9113a6e0e1bf96da000ebd0838 is only the dispatcher's recorded line, with no index, manifest or layer bytes supplied",
+    "capabilities of mailslurper, smtp4dev, greenmail and alkemio-mailslurper are not_inspected: they have no pin to cite",
     "native waits of mailpit and mailhog stay not_inspected: the reviewed websocket sources establish no lossless wait, and best-wait is not declared",
-    "decoders for mailslurper, smtp4dev, inbucket, alkemio-mailslurper and the greenmail POP3 reader are proved only on authored fixtures: no real-binary round trip has run"
+    "decoders for mailslurper, smtp4dev and alkemio-mailslurper are proved only on authored fixtures: no real-binary round trip has run for them; the inbucket decoder and the greenmail POP3 reader were proved against the real executables in unmeasured tests only"
   ],
   "capabilities": [
     {
@@ -443,12 +444,12 @@
         "cite": null
       },
       "retention_cap": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "supported",
+        "cite": "sources/inbucket/inbucket-help.txt"
       },
       "raw_source": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "supported",
+        "cite": "sources/inbucket/inbucket-rest-apiv1.sh"
       }
     },
     {

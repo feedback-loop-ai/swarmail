@@ -13,6 +13,15 @@ use serde_json::{Value, json};
 const V2_PROTOCOL_SHA: &str = "735da43a0cbaaa85cd0fd6ab55765cbf3f71ba176d58702dd71bc4444a82231d";
 const V3_LOCK_SHA: &str = "6523abf4df890d7aca8ea7e5112ae3e32ab35f2260e2528b070eefa70007b03c";
 
+/// The rows with no verified pin in the committed lock: each stays pending
+/// with its byte-grounded reason.
+const PENDING: [TargetKind; 4] = [
+    TargetKind::Mailslurper,
+    TargetKind::Smtp4dev,
+    TargetKind::Greenmail,
+    TargetKind::AlkemioMailslurper,
+];
+
 const NEW_TARGETS: [TargetKind; 5] = [
     TargetKind::Mailslurper,
     TargetKind::Smtp4dev,
@@ -1085,7 +1094,7 @@ fn pending_entry_validates_but_refuses_collection_and_launch() {
         .expect("pending entries are valid structure");
     let p = Protocol::parse(PROTOCOL_V3).unwrap();
     p.validate().expect("the draft protocol is valid");
-    for t in NEW_TARGETS {
+    for t in PENDING {
         let e = lock.entry(t).unwrap();
         assert!(e.pin.is_none() && e.pending.is_some(), "{t}");
         assert!(lock.pin(t).is_none());
@@ -1099,7 +1108,7 @@ fn pending_entry_validates_but_refuses_collection_and_launch() {
     frozen.unresolved.clear();
     let why = refusals(protocol::collection_ready(&frozen, &lock));
     let launch = refusals(protocol::launchable(&p, &lock));
-    for t in NEW_TARGETS {
+    for t in PENDING {
         assert!(
             why.contains(&format!("{t}: pending, no verified pin")),
             "{t}: {why}"
@@ -1499,7 +1508,7 @@ fn frozen_only_when_nothing_unresolved_and_no_pending() {
         why.contains("unresolved: mailslurper: no verified pin"),
         "{why}"
     );
-    for t in NEW_TARGETS {
+    for t in PENDING {
         assert!(
             why.contains(&format!("{t}: pending, no verified pin")),
             "{t}: {why}"
@@ -1541,10 +1550,50 @@ fn current_lock_v4_validates_and_verifies() {
     protocol::retention_matches(&p, &lock).expect("retention is as launched where a pin exists");
     protocol::products_match(&p, &lock).expect("products are the locked executables");
     protocol::capabilities_match(&p, &lock).expect("citations resolve");
-    // The new capture directories do not exist for rows with no bytes, and
-    // no document of an official row moved.
-    for t in NEW_TARGETS {
+    // The pending rows have no capture directory, and no document of an
+    // official row moved.
+    for t in PENDING {
         assert!(!evals_dir().join("sources").join(t.name()).exists(), "{t}");
+    }
+    assert!(evals_dir().join("sources/inbucket").is_dir());
+    assert!(lock.pin(TargetKind::Inbucket).is_some());
+}
+
+/// What `mail_compare check` prints over the committed files: it refuses,
+/// and it names each open gap (the four pending rows, the Inbucket pin's
+/// unresolved facts, and every line of the protocol's own unresolved list).
+#[test]
+fn committed_check_lists_every_open_gap() {
+    let lock = lock4(v4());
+    let p = Protocol::parse(PROTOCOL_V3).unwrap();
+    let why = refusals(protocol::collection_ready(&p, &lock));
+    assert!(why.contains("protocol is a draft, not frozen"), "{why}");
+    for t in PENDING {
+        assert!(
+            why.contains(&format!("{t}: pending, no verified pin; it cannot collect")),
+            "{t}: {why}"
+        );
+    }
+    assert!(
+        why.contains("inbucket: tagged source unresolved"),
+        "the Inbucket pin's own gap is named: {why}"
+    );
+    assert!(
+        !why.contains("inbucket: pending"),
+        "Inbucket is pinned, not pending: {why}"
+    );
+    for gap in &p.unresolved {
+        assert!(why.contains(&format!("unresolved: {gap}")), "{gap}: {why}");
+    }
+    for gap in [
+        "inbucket: tagged_source is unresolved",
+        "inbucket: best_wait is unresolved",
+        "greenmail: no verified pin",
+        "alkemio-mailslurper: no verified pin",
+        "smtp4dev: no verified pin",
+        "mailslurper: no verified pin",
+    ] {
+        assert!(p.unresolved.iter().any(|u| u.starts_with(gap)), "{gap}");
     }
 }
 
@@ -3214,10 +3263,98 @@ fn wrapper_paid_modes_refuse_as_before() {
     }
 }
 
+/// GreenMail answers POP3 before its REST API listener binds (found by the
+/// real launch, which refused with "http bind is absent"). A declared bind
+/// that is absent is waited for until the startup deadline; a bind someone
+/// holds is answered at once, and an absent one stays absent at the deadline.
+#[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+async fn a_declared_bind_that_arrives_after_readiness_is_waited_for() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let loopback: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    // A socket bound but not yet listening, held by a child in its own
+    // group: nothing listens there until the parent calls listen().
+    let sock = tokio::net::TcpSocket::new_v4().unwrap();
+    sock.bind(loopback).unwrap();
+    let addr = sock.local_addr().unwrap();
+    let fd = sock.as_raw_fd();
+    let mut child = std::process::Command::new("sleep");
+    child.arg("60").process_group(0);
+    // SAFETY: dup2 and fcntl are async-signal-safe; the child gets the
+    // socket as fd 3 without close-on-exec.
+    unsafe {
+        child.pre_exec(move || {
+            let r = if fd == 3 {
+                libc::fcntl(3, libc::F_SETFD, 0)
+            } else {
+                libc::dup2(fd, 3)
+            };
+            if r < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = child.spawn().unwrap();
+    let group = child.id() as i32;
+    assert_eq!(targets::binds(group, addr), targets::Bind::Absent);
+    // The server is slow to bind; the wait is bounded by a real deadline.
+    let late = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        sock.listen(8).unwrap()
+    });
+    let seen = targets::bind_within(group, addr, Instant::now() + Duration::from_secs(20)).await;
+    assert_eq!(
+        seen,
+        targets::Bind::Owned,
+        "the late listener was waited for"
+    );
+    let _listener = late.await.unwrap();
+    // A port nothing ever listens on is still absent when the deadline passes.
+    let never = tokio::net::TcpSocket::new_v4().unwrap();
+    never.bind(loopback).unwrap();
+    let never_addr = never.local_addr().unwrap();
+    let seen = targets::bind_within(
+        group,
+        never_addr,
+        Instant::now() + Duration::from_millis(100),
+    )
+    .await;
+    assert_eq!(seen, targets::Bind::Absent);
+    // A foreign holder is reported at once, not waited out.
+    let foreign = std::net::TcpListener::bind(loopback).unwrap();
+    let t0 = Instant::now();
+    let seen = targets::bind_within(
+        group,
+        foreign.local_addr().unwrap(),
+        Instant::now() + Duration::from_secs(20),
+    )
+    .await;
+    assert_eq!(seen, targets::Bind::Foreign);
+    assert!(t0.elapsed() < Duration::from_secs(5));
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
 // ---- real executables (ignored; they fail without their bytes) -----------
 
 fn env_name(t: TargetKind) -> String {
     format!("MAIL_COMPARE_{}", t.name().to_uppercase().replace('-', "_"))
+}
+
+/// How a real test gets its launch. `Pinned` is the committed lock's pin: a
+/// pending row has none, and the test fails naming why. `Unpinned` exists for
+/// GreenMail alone: a labelled driver proof built from the pending entry's
+/// own launch facts, never a pin and never evidence (its jar is not bound to
+/// a release asset, which is why the row is pending).
+#[derive(Clone, Copy)]
+enum Basis {
+    Pinned,
+    Unpinned,
 }
 
 /// The launch of the pinned `t`, from the committed lock 4 and the bytes the
@@ -3244,10 +3381,60 @@ fn real_spec(t: TargetKind) -> LaunchSpec {
     LaunchSpec::from_pin(t, binary.into(), runtime, pin).expect("a launch from the pin")
 }
 
-async fn real_launch(t: TargetKind, root: &Path) -> targets::Owned {
+/// The sha256 the GreenMail jar had when the delivery checked it against the
+/// `.sha256` file that ships beside it (the receipt in the delivery notes).
+const GREENMAIL_JAR_SHA: &str = "91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1";
+
+/// GreenMail's launch from its *pending* entry, for the labelled driver
+/// proof: the jar is compared with the receipt digest, the JRE's `java` and
+/// `libjvm.so` are digested from the extracted root the environment names.
+fn unpinned_greenmail_spec() -> LaunchSpec {
+    let jar = std::path::PathBuf::from(
+        std::env::var_os(env_name(TargetKind::Greenmail))
+            .expect("MAIL_COMPARE_GREENMAIL must name the GreenMail jar"),
+    );
+    let jar_sha = sha(&std::fs::read(&jar).expect("the jar is readable"));
+    assert_eq!(
+        jar_sha, GREENMAIL_JAR_SHA,
+        "the jar is not the one the receipt names"
+    );
+    let jre = std::path::PathBuf::from(
+        std::env::var_os("MAIL_COMPARE_JRE").expect("MAIL_COMPARE_JRE must name the JRE root"),
+    );
+    let lock = lock4(v4());
+    let pending = lock
+        .entry(TargetKind::Greenmail)
+        .and_then(|e| e.pending.as_ref())
+        .expect("greenmail is pending in the committed lock");
+    let mut spec = LaunchSpec::new(
+        TargetKind::Greenmail,
+        jre.join("bin/java"),
+        Some(jar_sha),
+        pending.launch.clone(),
+    );
+    spec.extra.listeners = pending.listeners.clone();
+    spec.extra.env = pending.launch_env.clone();
+    spec.extra.config = pending.config_file.clone();
+    spec.extra.artifact = Some(jar);
+    spec.extra.members = ["bin/java", "lib/server/libjvm.so"]
+        .iter()
+        .map(|m| {
+            let path = jre.join(m);
+            let digest = sha(&std::fs::read(&path).expect("a JRE member is readable"));
+            (path, digest)
+        })
+        .collect();
+    spec
+}
+
+async fn real_launch_as(t: TargetKind, basis: Basis, root: &Path) -> targets::Owned {
+    let spec = match basis {
+        Basis::Pinned => real_spec(t),
+        Basis::Unpinned => unpinned_greenmail_spec(),
+    };
     let clock = wire::Clock(Instant::now());
     targets::Owned::launch(
-        &real_spec(t),
+        &spec,
         &root.join("leaf"),
         &limits(),
         &clock,
@@ -3290,9 +3477,19 @@ async fn listed_all(owned: &targets::Owned, want: usize, max_pages: u32) -> Vec<
     }
 }
 
-async fn real_round_trip(t: TargetKind) {
+async fn real_round_trip(t: TargetKind, basis: Basis) {
     let root = tempfile::tempdir().unwrap();
-    let mut owned = real_launch(t, root.path()).await;
+    let mut owned = real_launch_as(t, basis, root.path()).await;
+    if t == TargetKind::Greenmail {
+        // The recipient's POP3 login must work before anything is sent, and
+        // the store must read as empty: a rejected login on an empty store
+        // would otherwise look like a competitor that lost mail.
+        assert_eq!(
+            owned.list_all(1).await,
+            Ok(Vec::new()),
+            "greenmail: login as the workload recipient and STAT +OK 0 before any delivery"
+        );
+    }
     let msgs = corpus(6);
     send_all(&owned, &msgs).await;
     let listed = listed_all(&owned, msgs.len(), 20).await;
@@ -3331,53 +3528,229 @@ async fn real_round_trip(t: TargetKind) {
     assert!(facts.proved(), "{t}: {facts:?}");
 }
 
+/// The hostile set `hostile_bodies_round_trip` proves on authored fixtures,
+/// authored again as whole messages to send: dot-leading lines and a lone `.`
+/// line in a body that SMTP must stuff, an RFC 2047 (8-bit) subject, a header
+/// line of 998 octets, and a boundary string in the body, at a line start
+/// (content) and mid-line (a legal body that cuts the part for a MIME parser).
+/// Every subject carries the corpus token so a listing can name the message.
+fn hostile_messages() -> Vec<wire::Message> {
+    let long_header = format!("X-Long: {}", "a".repeat(998 - "X-Long: ".len()));
+    assert_eq!(long_header.len(), 998);
+    let message = |n: u32, kind, subject: &str, ct: &str, body: &str| {
+        let token = format!("mc-host-{n:06}");
+        let head = format!(
+            "From: <{}>\r\nTo: <{}>\r\nSubject: {subject}\r\nMessage-ID: <{token}@mail-compare.invalid>\r\nDate: Wed, 28 Oct 2026 00:00:00 +0000\r\nMIME-Version: 1.0\r\n{long_header}\r\nContent-Type: {ct}\r\n",
+            wire::FROM,
+            wire::TO
+        );
+        (token, kind, format!("{head}\r\n{body}").into_bytes())
+    };
+    let multipart = |n: u32, line: &str| {
+        let b = format!("b-mc-host-{n:06}");
+        message(
+            n,
+            protocol::MessageKind::Multipart,
+            &format!("mail-compare mc-host-{n:06} plain ascii"),
+            &format!("multipart/alternative; boundary=\"{b}\""),
+            &format!(
+                "--{b}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{line}\r\n--other is not a boundary\r\n.dotted\r\n--{b}\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>html part</p>\r\n--{b}--\r\n"
+            ),
+        )
+    };
+    let plain = message(
+        0,
+        protocol::MessageKind::Plain,
+        "mail-compare mc-host-000000 =?UTF-8?B?aMOpbGxv?=",
+        "text/plain; charset=utf-8",
+        ".leading dot\r\n..two dots\r\n.\r\nlast line\r\n",
+    );
+    let at_line_start = multipart(1, "see the boundary below");
+    let mid_line = multipart(2, "see --b-mc-host-000002 for details");
+    let expected = [
+        (
+            "mail-compare mc-host-000000 héllo".to_owned(),
+            ".leading dot\r\n..two dots\r\n.\r\nlast line\r\n".to_owned(),
+            None,
+        ),
+        (
+            "mail-compare mc-host-000001 plain ascii".to_owned(),
+            "see the boundary below\r\n--other is not a boundary\r\n.dotted".to_owned(),
+            Some("<p>html part</p>".to_owned()),
+        ),
+        (
+            "mail-compare mc-host-000002 plain ascii".to_owned(),
+            "see --b-mc-host-000002 for details\r\n--other is not a boundary\r\n.dotted".to_owned(),
+            Some("<p>html part</p>".to_owned()),
+        ),
+    ];
+    [plain, at_line_start, mid_line]
+        .into_iter()
+        .zip(expected)
+        .map(
+            |((token, kind, bytes), (subject, text, html))| wire::Message {
+                token,
+                kind,
+                subject,
+                text: Some(text),
+                html,
+                bytes,
+            },
+        )
+        .collect()
+}
+
+/// Send the hostile set to a real server and read each message back through
+/// its native read path: the subject, text and HTML must equal what was sent.
+/// The mid-line boundary message may be refused as malformed by the driver's
+/// own MIME reader (a cut part is not a success) and may never come back
+/// truncated.
+async fn real_hostile(t: TargetKind, basis: Basis) {
+    let root = tempfile::tempdir().unwrap();
+    let mut owned = real_launch_as(t, basis, root.path()).await;
+    let msgs = hostile_messages();
+    send_all(&owned, &msgs).await;
+    let listed = listed_all(&owned, msgs.len(), 20).await;
+    for m in &msgs {
+        let (_, id) = listed
+            .iter()
+            .find(|(tok, _)| *tok == m.token)
+            .unwrap_or_else(|| panic!("{t}: hostile {} is not listed: {listed:?}", m.token));
+        match owned.fetch(id).await {
+            Ok(got) => {
+                assert_eq!(got.subject.as_deref(), Some(m.subject.as_str()), "{t}");
+                assert!(
+                    wire::same_body(m.text.as_deref(), got.text.as_deref()),
+                    "{t} {}: text sent {:?} got {:?}",
+                    m.token,
+                    m.text,
+                    got.text
+                );
+                assert!(
+                    wire::same_body(m.html.as_deref(), got.html.as_deref()),
+                    "{t} {}: html sent {:?} got {:?}",
+                    m.token,
+                    m.html,
+                    got.html
+                );
+            }
+            Err(wire::WireError::Malformed) if m.token.ends_with("000002") => {}
+            Err(e) => panic!("{t}: fetch {}: {e:?}", m.token),
+        }
+    }
+    let facts = owned.shutdown().await;
+    assert!(facts.proved(), "{t}: {facts:?}");
+}
+
+/// Each tool's default retention (smtp4dev 100 per mailbox, Inbucket 500 per
+/// mailbox) is overridden at launch: 600 messages all stay.
+async fn real_caps(t: TargetKind, basis: Basis) {
+    let root = tempfile::tempdir().unwrap();
+    let mut owned = real_launch_as(t, basis, root.path()).await;
+    let msgs = corpus(600);
+    send_all(&owned, &msgs).await;
+    assert_eq!(
+        listed_all(&owned, 600, 100).await.len(),
+        600,
+        "{t}: nothing was evicted"
+    );
+    assert!(owned.shutdown().await.proved(), "{t}");
+}
+
 #[tokio::test]
 #[ignore = "needs MAIL_COMPARE_MAILSLURPER (the pinned MailSlurper executable)"]
 async fn real_mailslurper_smtp_to_native_api_round_trip() {
-    real_round_trip(TargetKind::Mailslurper).await;
+    real_round_trip(TargetKind::Mailslurper, Basis::Pinned).await;
 }
 
 #[tokio::test]
 #[ignore = "needs MAIL_COMPARE_SMTP4DEV (the pinned smtp4dev executable)"]
 async fn real_smtp4dev_smtp_to_native_api_round_trip() {
-    real_round_trip(TargetKind::Smtp4dev).await;
+    real_round_trip(TargetKind::Smtp4dev, Basis::Pinned).await;
 }
 
 #[tokio::test]
 #[ignore = "needs MAIL_COMPARE_INBUCKET (the pinned Inbucket executable)"]
 async fn real_inbucket_smtp_to_native_api_round_trip() {
-    real_round_trip(TargetKind::Inbucket).await;
+    real_round_trip(TargetKind::Inbucket, Basis::Pinned).await;
 }
 
 #[tokio::test]
 #[ignore = "needs MAIL_COMPARE_ALKEMIO_MAILSLURPER (the extracted, digested Alkemio binary)"]
 async fn real_alkemio_mailslurper_smtp_to_native_api_round_trip() {
-    real_round_trip(TargetKind::AlkemioMailslurper).await;
+    real_round_trip(TargetKind::AlkemioMailslurper, Basis::Pinned).await;
 }
 
 #[tokio::test]
-#[ignore = "needs MAIL_COMPARE_GREENMAIL (the pinned jar) and MAIL_COMPARE_JRE (the pinned JRE root)"]
+#[ignore = "needs a GreenMail pin, which the committed lock does not have; fails naming why"]
 async fn real_greenmail_pop3_under_pinned_jre() {
-    real_round_trip(TargetKind::Greenmail).await;
+    real_round_trip(TargetKind::Greenmail, Basis::Pinned).await;
 }
 
 #[tokio::test]
-#[ignore = "needs every new target's MAIL_COMPARE_* variable and MAIL_COMPARE_JRE"]
-async fn real_caps_hold_at_workload_count() {
-    // Each tool's default retention (smtp4dev 100, Inbucket's per-mailbox
-    // cap) is overridden at launch: 600 messages all stay.
-    for t in NEW_TARGETS {
-        let root = tempfile::tempdir().unwrap();
-        let mut owned = real_launch(t, root.path()).await;
-        let msgs = corpus(600);
-        send_all(&owned, &msgs).await;
-        assert_eq!(
-            listed_all(&owned, 600, 100).await.len(),
-            600,
-            "{t}: nothing was evicted"
-        );
-        assert!(owned.shutdown().await.proved(), "{t}");
-    }
+#[ignore = "labelled driver proof: needs MAIL_COMPARE_GREENMAIL (the jar) and MAIL_COMPARE_JRE (the JRE root)"]
+async fn real_greenmail_driver_proof_pop3_round_trip() {
+    real_round_trip(TargetKind::Greenmail, Basis::Unpinned).await;
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER (the pinned MailSlurper executable)"]
+async fn real_mailslurper_hostile_round_trip() {
+    real_hostile(TargetKind::Mailslurper, Basis::Pinned).await;
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_INBUCKET (the pinned Inbucket executable)"]
+async fn real_inbucket_hostile_round_trip() {
+    real_hostile(TargetKind::Inbucket, Basis::Pinned).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a GreenMail pin, which the committed lock does not have; fails naming why"]
+async fn real_greenmail_hostile_round_trip() {
+    real_hostile(TargetKind::Greenmail, Basis::Pinned).await;
+}
+
+#[tokio::test]
+#[ignore = "labelled driver proof: needs MAIL_COMPARE_GREENMAIL (the jar) and MAIL_COMPARE_JRE (the JRE root)"]
+async fn real_greenmail_driver_proof_hostile_round_trip() {
+    real_hostile(TargetKind::Greenmail, Basis::Unpinned).await;
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER (the pinned MailSlurper executable)"]
+async fn real_caps_hold_mailslurper() {
+    real_caps(TargetKind::Mailslurper, Basis::Pinned).await;
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_SMTP4DEV (the pinned smtp4dev executable)"]
+async fn real_caps_hold_smtp4dev() {
+    real_caps(TargetKind::Smtp4dev, Basis::Pinned).await;
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_INBUCKET (the pinned Inbucket executable)"]
+async fn real_caps_hold_inbucket() {
+    real_caps(TargetKind::Inbucket, Basis::Pinned).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a GreenMail pin, which the committed lock does not have; fails naming why"]
+async fn real_caps_hold_greenmail() {
+    real_caps(TargetKind::Greenmail, Basis::Pinned).await;
+}
+
+#[tokio::test]
+#[ignore = "labelled driver proof: needs MAIL_COMPARE_GREENMAIL (the jar) and MAIL_COMPARE_JRE (the JRE root)"]
+async fn real_greenmail_driver_proof_caps_hold() {
+    real_caps(TargetKind::Greenmail, Basis::Unpinned).await;
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_ALKEMIO_MAILSLURPER (the extracted, digested Alkemio binary)"]
+async fn real_caps_hold_alkemio_mailslurper() {
+    real_caps(TargetKind::AlkemioMailslurper, Basis::Pinned).await;
 }
 
 // ---- the labelled smoke fixture ------------------------------------------
@@ -3401,14 +3774,26 @@ fn eight_target_smoke_fixture_is_a_valid_draft_that_cannot_launch_yet() {
     let lock = lock4(v4());
     protocol::pairing(&p, &lock).unwrap();
     // It never collects, and its smoke run launches only where every
-    // declared row has a pin: today five rows are pending and it refuses.
+    // declared row has a pin: today four rows are pending and it refuses.
     assert!(protocol::collection_ready(&p, &lock).is_err());
     let why = refusals(protocol::launchable(&p, &lock));
-    for t in NEW_TARGETS {
+    for t in PENDING {
         assert!(
             why.contains(&format!(
                 "{t} has no source pin; it cannot be launched (pending:"
             )),
+            "{t}: {why}"
+        );
+    }
+    // The pinned rows are not refused: only the four pending ones are.
+    for t in [
+        TargetKind::Mailpit,
+        TargetKind::Mailhog,
+        TargetKind::Inbucket,
+    ] {
+        assert!(lock.pin(t).is_some(), "{t}");
+        assert!(
+            !why.contains(&format!("{t} has no source pin")),
             "{t}: {why}"
         );
     }

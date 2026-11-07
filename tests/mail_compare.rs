@@ -1109,7 +1109,8 @@ fn the_source_lock_refuses_mutable_foreign_false_and_incomplete_pins() {
 fn evals_copy(root: &Path) -> PathBuf {
     let dir = root.join("evals");
     std::fs::create_dir_all(dir.join("sources")).unwrap();
-    for t in ["mailpit", "mailhog"] {
+    // Every pinned row of the committed lock keeps its captured documents.
+    for t in ["mailpit", "mailhog", "inbucket"] {
         copy_dir(
             &evals_dir().join("sources").join(t),
             &dir.join("sources").join(t),

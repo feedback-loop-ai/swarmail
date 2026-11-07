@@ -422,7 +422,7 @@
             "}}"
           ]
         },
-        "reason": "The pinned executable's bytes and digest were not available to this delivery (swarmail-landing/compare-bins/2026-11-07* was not visible in the implement sandbox, stop trigger S6), so there is no pin, no captured document and no digest. The launch below is drafted from the tool's upstream documentation as recalled, not from its --help or captured setup document, and is unverified. It has no wait facility to cite, no cap flag is known and the SQLite settings are unobserved."
+        "reason": "Bytes verified on 2026-11-07, then the row stopped on a real launch. The release zip .compare-bins/2026-11-07-mailslurper/mailslurper-1.15.0-linux.zip (sha256 48f2f9ba090f5385301477406b4f6e08f7bfbba0619c635ee591d6e6af3e55f6; the captured release publishes no digest for it) holds a statically linked Go executable whose -h lists -config, -logformat and -loglevel; the config keys below are the json tags of the Configuration struct in the release-1.15.0 source tarball (.compare-bins/2026-11-07-mailslurper-src/, sha256 83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f). Started with that config in a fresh scratch directory on loopback, bounded to 6 s under taskset, it logged 'Starting MailSlurper Server v1.14.1' and died fatally with \"Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub\". The source offers SQLite, MySQL and MSSQL and no in-memory engine, so the supplied executable cannot store mail without a database server or a cgo build that nobody supplied. The captured ref refs/tags/release-1.15.0 names commit 068acffdcd8960f248ea438c3b7ee51ead601bd2 with object.type commit (a lightweight tag); no git_tree was captured. The executable reports v1.14.1 and has no version flag. The service and admin route registrations in the source tarball show no wait or push route."
       }
     },
     {
@@ -434,43 +434,154 @@
         "image": null,
         "listeners": [
           "smtp",
-          "http",
-          "pop3",
-          "imap"
+          "http"
         ],
         "launch": [
           "--urls",
           "http://{http_addr}",
           "--smtpport",
           "{smtp_port}",
-          "--pop3port",
-          "{pop3_port}",
-          "--imapport",
-          "{imap_port}",
+          "--bindaddress",
+          "127.0.0.1",
+          "--imapport=",
+          "--pop3port=",
           "--db",
-          "{data_dir}/smtp4dev.db",
+          "smtp4dev.db",
           "--messagestokeep",
           "10000",
           "--nousersettings"
         ],
         "launch_env": [],
         "config_file": null,
-        "reason": "The pinned executable's bytes and digest were not available to this delivery (swarmail-landing/compare-bins/2026-11-07* was not visible in the implement sandbox, stop trigger S6), so there is no pin, no captured document and no digest. The launch below is drafted from the tool's upstream documentation as recalled, not from its --help or captured setup document, and is unverified. Its default retention must be read from the captured appsettings and is overridden by --messagestokeep; whether the release is a single file (its checked members) is unobserved."
+        "reason": "The release archive .compare-bins/2026-11-07-smtp4dev/Rnwood.Smtp4dev-linux-x64-3.16.1.zip (sha256 3b9395b9ca6e6f5ac0b0a73d953949ed4780a1b794611a97df1a0c7baf909c46, equal to the digest the captured release metadata states for it) has 49 members and none is a license document (no LICENSE, NOTICE or COPYING), and none was captured, so no license can be pinned (decision 0091 section 2) and none is written from memory. The captured ref refs/tags/3.16.1 names commit 9fac83c10cb7cb58105bc0d9d891d36150b8605f with object.type commit (a lightweight tag); no git_tree was captured. The launch is corrected from the executable's own --help, captured on 2026-11-07 under timeout 60 and taskset with DOTNET_BUNDLE_EXTRACT_BASE_DIR set to a fresh directory (the single-file bundle extracts itself there) and quoted in decision 0130's rerun addendum: --urls, --smtpport, --bindaddress, --db (relative to XDG_CONFIG_HOME, which the launcher owns), --messagestokeep (per mailbox) and --nousersettings are listed; --imapport and --pop3port are documented as disabled by an empty value. The archive's appsettings.json (sha256 40518101f5a3e58273e24fa767e606717c2a1827f5ae2400f256724a80953478) sets NumberOfMessagesToKeep 100, Port 25, ImapPort 143, Pop3Port 110 and Urls http://localhost:5000; the launch moves or disables each and raises retention to 10000. The executable was run only for --help and --version, never as a server, so none of that is observed in a launch."
       }
     },
     {
       "target": "inbucket",
       "role": "competitor",
-      "pin": null,
-      "pending": {
-        "release_tag": "v3.2.0",
-        "image": null,
+      "pin": {
+        "release": {
+          "repository": "https://github.com/inbucket/inbucket",
+          "tag": "v3.2.0",
+          "html_url": "https://github.com/inbucket/inbucket/releases/tag/v3.2.0",
+          "target_commitish": "main",
+          "published_at": "2026-10-10T20:37:07Z"
+        },
+        "acquisition": {
+          "basis": "host_supplied_capture",
+          "captured_on": "2026-11-07"
+        },
+        "tagged_source": {
+          "unresolved": "the captured ref refs/tags/v3.2.0 names commit 742249691d2f8f40253411394a8bbb8e50561849 with object.type commit, which shows a lightweight tag; no git_tree of that commit was captured and the lightweight chain needs one, so neither ref_kind nor the commit is written as observed"
+        },
+        "binary_build_provenance": {
+          "unresolved": "no build attestation, reproducible build or published build record ties the executable to a commit; whether this executable was built from the tagged commit is unknown"
+        },
+        "artifact": {
+          "kind": "archive",
+          "file_name": "inbucket_3.2.0_linux_amd64.tar.gz",
+          "download": "https://github.com/inbucket/inbucket/releases/download/v3.2.0/inbucket_3.2.0_linux_amd64.tar.gz",
+          "size": 10603388,
+          "sha256": "0d7d76ed7e66b0700c38aeef7ad1f086e4a159ce554abd92c95052d0838e0e24",
+          "digest_basis": "upstream_release_metadata",
+          "upstream_digest": "0d7d76ed7e66b0700c38aeef7ad1f086e4a159ce554abd92c95052d0838e0e24",
+          "member": "inbucket",
+          "executable_sha256": "7c56922d7c90258d92eb445886ca0e8ff89c277eac2bcfed382afdffb289909b",
+          "os": "linux",
+          "arch": "amd64",
+          "version_output": "3.2.0"
+        },
+        "license": {
+          "spdx": "MIT",
+          "holder": "James Hillyerd"
+        },
+        "documents": [
+          {
+            "kind": "release_metadata",
+            "path": "sources/inbucket/inbucket-release.json",
+            "size": 34086,
+            "sha256": "c50f1e928a6f73e83da9400ad03d8bacce6b6980e3fd157ad323f0a7e80bad3c",
+            "attribution": {
+              "unresolved": "the first element of the captured releases listing .compare-bins/2026-11-07-meta/inbucket_inbucket-releases.json (sha256 0ca83f89c0a93269f56283952ffaba90d2a96eb110da4f7d0a4bbdea0d7365bc, 159138 bytes), copied byte for byte (bytes 1 to 34087, the element's own bytes without the list brackets or comma); the request that returned the listing was not recorded, so no API url is attributed"
+            }
+          },
+          {
+            "kind": "license",
+            "path": "sources/inbucket/inbucket-license.txt",
+            "size": 1102,
+            "sha256": "542446ad97bc2ce9c4417c5e85c0ef82a7123d8428a52deaec24483d737bddaa",
+            "attribution": {
+              "unresolved": "member inbucket_3.2.0_linux_amd64/LICENSE of inbucket_3.2.0_linux_amd64.tar.gz sha256 0d7d76ed7e66b0700c38aeef7ad1f086e4a159ce554abd92c95052d0838e0e24; the tagged commit is unresolved, so no commit attribution is written"
+            }
+          },
+          {
+            "kind": "api",
+            "path": "sources/inbucket/inbucket-rest-apiv1.sh",
+            "size": 2972,
+            "sha256": "69aaccab9fa5d4b57df0227b552f2f9399547a714ab49d2fcbd7bdb3311d6f52",
+            "attribution": {
+              "unresolved": "member inbucket_3.2.0_linux_amd64/etc/rest-apiv1.sh of inbucket_3.2.0_linux_amd64.tar.gz sha256 0d7d76ed7e66b0700c38aeef7ad1f086e4a159ce554abd92c95052d0838e0e24; the tagged commit is unresolved, so no commit attribution is written"
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/inbucket/inbucket-readme.md",
+            "size": 3517,
+            "sha256": "d509a002aee82a660c529d27ff8f9eda57a0ce685310e052c946ec1c1c027956",
+            "attribution": {
+              "unresolved": "member inbucket_3.2.0_linux_amd64/README.md of inbucket_3.2.0_linux_amd64.tar.gz sha256 0d7d76ed7e66b0700c38aeef7ad1f086e4a159ce554abd92c95052d0838e0e24; the tagged commit is unresolved, so no commit attribution is written"
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/inbucket/inbucket-service.txt",
+            "size": 884,
+            "sha256": "518a21a718304e16f82aee07e5dcd17855daa0b6cf23c996e9001e584cd14baf",
+            "attribution": {
+              "unresolved": "member inbucket_3.2.0_linux_amd64/etc/linux/inbucket.service of inbucket_3.2.0_linux_amd64.tar.gz sha256 0d7d76ed7e66b0700c38aeef7ad1f086e4a159ce554abd92c95052d0838e0e24; the tagged commit is unresolved, so no commit attribution is written"
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/inbucket/inbucket-help.txt",
+            "size": 3774,
+            "sha256": "cdbd8c436a2cd455a3722836d485ac5c882bccca1802c8da9893e0803687497e",
+            "attribution": {
+              "unresolved": "captured output of `inbucket -help` run on the pinned executable (member inbucket_3.2.0_linux_amd64/inbucket of the archive above) under timeout 60 and taskset on 2026-11-07; the tool's own output, not a file of the tagged commit"
+            }
+          },
+          {
+            "kind": "git_ref",
+            "path": "sources/inbucket/inbucket-ref.json",
+            "size": 339,
+            "sha256": "a340cc43bbae8c874c788897e13e969dfcde835533b7d732d423cb0bf7a41030",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/inbucket/inbucket/git/refs/tags/v3.2.0"
+              }
+            }
+          }
+        ],
+        "launch": [],
+        "storage": {
+          "backend": "memory",
+          "max_messages": 10000,
+          "cap_flag": "env:INBUCKET_STORAGE_MAILBOXMSGCAP",
+          "basis": "`inbucket -help` of the pinned executable lists INBUCKET_STORAGE_TYPE ('Storage impl: file or memory', default memory) and INBUCKET_STORAGE_MAILBOXMSGCAP ('Maximum messages per mailbox', default 500); the launch names the memory store and raises the per-mailbox cap to 10000, above every profile's residency, and the workload addresses one mailbox. INBUCKET_STORAGE_RETENTIONPERIOD keeps its 24h default. Pruning behavior at the cap is not established."
+        },
+        "wait": {
+          "reviewed": [],
+          "finding": "No Inbucket source body is captured: the release archive carries the executable, the built UI, the docs and the REST example, and no git_tree was captured to bind a source file. The help lists a UI monitor (INBUCKET_WEB_MONITORVISIBLE, INBUCKET_WEB_MONITORHISTORY), and no captured document shows its transport, its producer or any replay after a gap. No server-side wait is established.",
+          "best_wait": {
+            "unresolved": "no source, route or real-binary observation of a wait exists, so a best-available wait cannot be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+          }
+        },
         "listeners": [
           "smtp",
           "http",
           "pop3"
         ],
-        "launch": [],
         "launch_env": [
           [
             "INBUCKET_SMTP_ADDR",
@@ -492,9 +603,7 @@
             "INBUCKET_STORAGE_MAILBOXMSGCAP",
             "10000"
           ]
-        ],
-        "config_file": null,
-        "reason": "The pinned executable's bytes and digest were not available to this delivery (swarmail-landing/compare-bins/2026-11-07* was not visible in the implement sandbox, stop trigger S6), so there is no pin, no captured document and no digest. The launch below is drafted from the tool's upstream documentation as recalled, not from its --help or captured setup document, and is unverified. Its default per-mailbox cap must be read from the captured configuration document and is overridden through the environment."
+        ]
       }
     },
     {
@@ -502,26 +611,27 @@
       "role": "competitor",
       "pin": null,
       "pending": {
-        "release_tag": "2.1.15",
+        "release_tag": "release-2.1.15",
         "image": null,
         "listeners": [
           "smtp",
-          "pop3"
+          "pop3",
+          "http"
         ],
         "launch": [
-          "-Dgreenmail.setup.smtp",
-          "-Dgreenmail.setup.pop3",
           "-Dgreenmail.smtp.hostname=127.0.0.1",
           "-Dgreenmail.smtp.port={smtp_port}",
           "-Dgreenmail.pop3.hostname=127.0.0.1",
           "-Dgreenmail.pop3.port={pop3_port}",
+          "-Dgreenmail.api.hostname=127.0.0.1",
+          "-Dgreenmail.api.port={http_port}",
           "-Dgreenmail.auth.disabled",
           "-jar",
           "{artifact}"
         ],
         "launch_env": [],
         "config_file": null,
-        "reason": "The pinned executable's bytes and digest were not available to this delivery (swarmail-landing/compare-bins/2026-11-07* was not visible in the implement sandbox, stop trigger S6), so there is no pin, no captured document and no digest. The launch below is drafted from the tool's upstream documentation as recalled, not from its --help or captured setup document, and is unverified. It also needs a pinned JRE (whose license awaits the operator's ruling on the runtime list, decision 0130 section 6), and its REST API listener must be moved or disabled before the declared set can be exact (stop trigger S4)."
+        "reason": "The jar .compare-bins/2026-11-07-greenmail/greenmail-standalone-2.1.15.jar (sha256 91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1, equal to the .sha256 file beside it) cannot be bound to an official release asset, which lock version 4 requires of an official pin: the captured release release-2.1.15 lists no assets (assets is empty), and no supplied document records where the jar was fetched. The captured ref refs/tags/release-2.1.15 names tag object 5f09fccc06da96fdc7f4d9e1abafb43ceeae61db with object.type tag (an annotated tag, so the draft's release_tag 2.1.15 was wrong); no git_tag or git_tree was captured. The launch properties are the strings in the jar's own classes (the GreenMailStandaloneRunner usage text and example, PropertiesBasedServerSetupBuilder, GreenMailApiServerBuilder): greenmail.<protocol>.hostname and .port, greenmail.auth.disabled, and greenmail.api.hostname and .port, which start the REST API listener and make it a third declared listener. The drafted -Dgreenmail.setup.smtp and -Dgreenmail.setup.pop3 flags are removed: with the port properties the jar refuses to start (\"Server 'smtp' was found at least twice in setup config\"), observed in a bounded run, and the jar's own usage example sets the port properties alone. A bounded unpinned driver proof, which is not a pin, runs this launch under the Temurin 21.0.13+9 JRE (archive .compare-bins/2026-11-07-jre/OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz sha256 a535a1df9c6284d9618872984e026ae0352d1f7e9e0605425c0e6114f47351dd, equal to its SHA256SUMS); the JRE's legal/java.base/LICENSE is the GPL version 2 text with the Classpath exception, and its permission under decision 0130 section 6 still awaits the operator."
       }
     },
     {
@@ -536,24 +646,10 @@
           "http",
           "ui"
         ],
-        "launch": [
-          "-config",
-          "{config_path}"
-        ],
+        "launch": [],
         "launch_env": [],
-        "config_file": {
-          "name": "config.json",
-          "lines": [
-            "{{",
-            "  \"wwwAddress\": \"127.0.0.1\", \"wwwPort\": {ui_port},",
-            "  \"serviceAddress\": \"127.0.0.1\", \"servicePort\": {http_port},",
-            "  \"smtpAddress\": \"127.0.0.1\", \"smtpPort\": {smtp_port},",
-            "  \"dbEngine\": \"SQLite\", \"dbDatabase\": \"{data_dir}/mailslurper.db\",",
-            "  \"maxWorkers\": 1000, \"autoStartBrowser\": false",
-            "}}"
-          ]
-        },
-        "reason": "The pinned executable's bytes and digest were not available to this delivery (swarmail-landing/compare-bins/2026-11-07* was not visible in the implement sandbox, stop trigger S6), so there is no pin, no captured document and no digest. The launch below is drafted from the tool's upstream documentation as recalled, not from its --help or captured setup document, and is unverified. The index digest sha256:55029f54... is known only by prefix from the issue and is never completed by guess; its license terms, layer and member are uncaptured, and the config it reads is assumed to be MailSlurper's, which is unverified."
+        "config_file": null,
+        "reason": "The working-directory executable .compare-bins/2026-11-07-alkemio-mailslurper/root/mailslurper (sha256 1c7556f3fd8da6fb6d2f5a66a1cff258c805407028aeb9eda0a2656f46db6379, equal to the SHA256SUMS beside it) is a dynamically linked ELF whose interpreter is /lib/ld-musl-x86_64.so.1 and whose NEEDED entry is libc.musl-x86_64.so.1; neither the supplied directory nor this host has that loader, so it cannot run natively from the supplied bytes, and no musl runtime is borrowed, pinned, patched in or run through Docker. SHA256SUMS ends with the dispatcher's recorded line 'image ghcr.io/alkem-io/test-suites/mailslurper@sha256:55029f542c19d0fe570450dc5a30f54dbdb24d9113a6e0e1bf96da000ebd0838'; that digest is a recorded line, never verified here, and no index, manifest or layer bytes were supplied. The directory's version.json reads 1.14.1. Its config.json (sha256 3683c4b2b0920d50d0127fb32c7a3202bdcee0fbeae92806fd54230c7d0ce177) binds 0.0.0.0 ports 4436, 4437 and 1025 and names keyFile and certFile PEM files, so the drafted plain-text config is not confirmed and is removed; no launch template is written until the TLS question is ruled."
       }
     }
   ]

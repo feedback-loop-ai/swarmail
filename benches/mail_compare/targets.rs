@@ -670,7 +670,7 @@ impl Owned {
         // Readiness answered, but a foreign listener that won the gap would
         // answer too: every declared bind must be held by the owned group.
         for (role, addr) in &declared {
-            let bind = binds(pgid, *addr);
+            let bind = bind_within(pgid, *addr, deadline).await;
             if bind != Bind::Owned {
                 let facts = owned.shutdown().await;
                 return Err(LaunchError::NotReady(bind_why(*role, bind), facts));
@@ -799,12 +799,18 @@ impl Owned {
     // docs/evals/sources/ where those agree with the pinned executables,
     // and the executables where they do not; every disagreement is listed
     // in docs/evals/README.md and protocol.json's unresolved list. The
-    // MailSlurper, smtp4dev, Inbucket and Alkemio shapes below are
-    // UNVERIFIED: they are authored from the upstream documentation as
-    // recalled, with no captured document or pinned executable behind them
-    // (those bytes were not available), so each of those rows stays
-    // pending until its real test passes. A wrong shape fails loudly
-    // (malformed or incomplete), never as a shorter success.
+    // MailSlurper, smtp4dev, Inbucket and Alkemio shapes below were authored
+    // from the upstream documentation as recalled. Two are now checked
+    // against real bytes in unmeasured tests: the Inbucket shape, read back
+    // from the pinned executable by round-trip, hostile-body and cap tests,
+    // and the GreenMail POP3 reader, by a labelled driver proof against the
+    // real jar under a JRE. The MailSlurper, smtp4dev and Alkemio shapes are
+    // still UNVERIFIED, because no executable of theirs has stored and
+    // served a message (MailSlurper's supplied binary cannot start its SQLite
+    // storage, smtp4dev's archive has no license document and Alkemio's
+    // binary has no musl loader); those rows stay pending until their real
+    // tests pass. A wrong shape fails loudly (malformed or incomplete),
+    // never as a shorter success.
 
     fn list_path(&self, start: u32, limit: u32) -> String {
         let page = start / limit.max(1) + 1;
@@ -1338,6 +1344,21 @@ fn linux_group_listeners(pgid: i32) -> Option<std::collections::BTreeSet<SocketA
         }
     }
     Some(out)
+}
+
+/// [`binds`], waiting for a listener that is not there yet. A server may
+/// answer readiness on one listener before it binds another (GreenMail's REST
+/// API starts after its mail servers). Only [`Bind::Absent`] is waited out,
+/// until `deadline`; any holder, foreign or not, is reported at once.
+pub async fn bind_within(pgid: i32, addr: SocketAddr, deadline: Instant) -> Bind {
+    loop {
+        let bind = binds(pgid, addr);
+        if bind != Bind::Absent || Instant::now() >= deadline {
+            return bind;
+        }
+        // A bounded probe: the deadline above is what ends the wait.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Who holds the listening sockets that accept at `addr` (Linux: read from
