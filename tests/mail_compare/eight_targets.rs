@@ -4119,6 +4119,51 @@ fn upstream_release_pin_with_unlisted_asset_is_still_refused() {
 }
 
 #[test]
+fn skipped_asset_list_still_checks_tag_commitish_and_date() {
+    // Two pins skip the release asset list: GreenMail (registry basis) and
+    // the source build. Each must still refuse an edited release field.
+    for (t, field, edited, named) in [
+        ("greenmail", "tag", "release-9.9.9", "tag_name"),
+        ("greenmail", "target_commitish", "main", "target_commitish"),
+        (
+            "greenmail",
+            "published_at",
+            "2000-01-01T00:00:00Z",
+            "published_at",
+        ),
+        (
+            "mailslurper-source-build",
+            "tag",
+            "release-9.9.9",
+            "tag_name",
+        ),
+        (
+            "mailslurper-source-build",
+            "target_commitish",
+            "main",
+            "target_commitish",
+        ),
+        (
+            "mailslurper-source-build",
+            "published_at",
+            "2000-01-01T00:00:00Z",
+            "published_at",
+        ),
+    ] {
+        let lock = lock_edited(t, |p| p["release"][field] = edited.into());
+        let why = refusals(lock.verify_files(&evals_dir()));
+        assert!(
+            why.contains(&format!(
+                "{t}: release metadata {named} disagrees with the pin"
+            )),
+            "{t} {field}: {why}"
+        );
+    }
+    // The untouched committed lock still verifies, asset list skipped.
+    lock4(v4()).verify_files(&evals_dir()).unwrap();
+}
+
+#[test]
 fn tree_rebuild_matches_authored_git_mktree_fixture() {
     // Authored with `git mktree` (a blob, an executable, a symlink and a
     // subtree), committed as bytes; the id is git's own answer.
