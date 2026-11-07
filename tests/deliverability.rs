@@ -94,6 +94,33 @@ fn envelope_findings() -> Vec<Value> {
         json!({"rule_id":"spf.none.v1","severity":"error","location":{"kind":"header","name":"return-path","occurrence":null},"fix_hint":"Declare a v=spf1 TXT record for the domain of the envelope sender in the DNS policy; none is declared, or the domain is not a valid name (RFC 7208 section 2.6.1)."}),
     ]
 }
+/// The 0122 §2.2 table, restated here and not read from the crate: info 1,
+/// warning 3, error 10, and 0 for `.not_evaluated.` ids and the demo marker.
+fn weight_of(finding: &Value) -> u64 {
+    let id = finding["rule_id"].as_str().unwrap();
+    if id == "demo.marker.v1" || id.contains(".not_evaluated.") {
+        return 0;
+    }
+    match finding["severity"].as_str().unwrap() {
+        "info" => 1,
+        "warning" => 3,
+        "error" => 10,
+        other => panic!("severity {other}"),
+    }
+}
+/// The expected findings with their weights, from the table.
+fn weighed(mut findings: Vec<Value>) -> Vec<Value> {
+    for finding in &mut findings {
+        finding["weight"] = json!(weight_of(finding));
+    }
+    findings
+}
+/// The expected report: findings weighed, the total their sum (0122 §2.3).
+fn report_of(findings: Vec<Value>, dns: Value) -> Value {
+    let findings = weighed(findings);
+    let total: u64 = findings.iter().map(|f| f["weight"].as_u64().unwrap()).sum();
+    json!({"rule_set_id":"swarmail-html/8","findings":findings,"dns":dns,"total":total})
+}
 /// The `dns` member of such a report: the one name SPF asked for.
 fn x_io_dns() -> Value {
     json!({"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[{"name":"x.io","type":"txt","outcome":"no_records","values":[]}]})
@@ -116,7 +143,7 @@ async fn report_rest_schema_and_refusals() {
     assert_eq!(stored, raw);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-html/7");
+    assert_eq!(first["rule_set_id"], "swarmail-html/8");
     // Six checklist findings, the demo marker, and the two real evaluations of a
     // mail from sender@x.io with nothing declared: DMARC finds no policy and SPF
     // no record (decision 0126).
@@ -127,7 +154,7 @@ async fn report_rest_schema_and_refusals() {
         first["findings"][6],
         json!({"rule_id":"demo.marker.v1","severity":"warning",
         "location":{"kind":"header","name":"x-swarmail-demo","occurrence":0},
-        "fix_hint":"Remove the X-Swarmail-Demo header."})
+        "fix_hint":"Remove the X-Swarmail-Demo header.","weight":0})
     );
     assert_eq!(report(srv.http_addr, &id).await.1, first);
     assert_eq!(
@@ -159,7 +186,7 @@ async fn report_rest_schema_and_refusals() {
     );
     let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
     for text in [
-        "swarmail-html/7",
+        "swarmail-html/8",
         "warning",
         "demo.marker.v1",
         "x-swarmail-demo",
@@ -576,11 +603,29 @@ async fn report_served_docs_match_contract() {
     );
     assert_eq!(
         schemas["DeliverabilityReport"]["required"],
-        json!(["rule_set_id", "findings", "dns"])
+        json!(["rule_set_id", "findings", "dns", "total"])
     );
     assert_eq!(
         schemas["DeliverabilityFinding"]["required"],
-        json!(["rule_id", "severity", "location", "fix_hint"])
+        json!(["rule_id", "severity", "location", "fix_hint", "weight"])
+    );
+    // The two new keys: non-negative integers, no schema maximum
+    // (decision 0122 §2.1), and the old "no weight or total" sentence is gone.
+    for (schema, key) in [
+        ("DeliverabilityFinding", "weight"),
+        ("DeliverabilityReport", "total"),
+    ] {
+        let property = &schemas[schema]["properties"][key];
+        assert_eq!(property["type"], "integer", "{schema}");
+        assert_eq!(property["minimum"], 0, "{schema}");
+        assert!(property.get("maximum").is_none(), "{schema}");
+        assert_eq!(schemas[schema]["additionalProperties"], false);
+    }
+    assert!(
+        !route["description"]
+            .as_str()
+            .unwrap()
+            .contains("no weight or total")
     );
     for (index, (kind, fields)) in [
         ("header", vec!["kind", "name", "occurrence"]),
@@ -621,7 +666,16 @@ async fn report_served_docs_match_contract() {
         "structuredContent under a closed outputSchema",
         "historical",
         "JSON in one text block",
-        "swarmail-html/7",
+        "swarmail-html/8",
+        // Weight and total (decision 0122 §2): the table, the two zero cases, the
+        // predicate rule and the bound a client reads.
+        "### Weight and total",
+        "| info | 1 |",
+        "| warning | 3 |",
+        "| error | 10 |",
+        "`.not_evaluated.`",
+        "**Predicates ignore weight.**",
+        "2,560",
         "--link-reachability",
         "link.reachability.v1",
         "104448",
@@ -637,6 +691,10 @@ async fn report_served_docs_match_contract() {
         "512 bytes",
     ] {
         assert!(llms.contains(expected), "{expected}");
+    }
+    // The statements that the report carries no weight or total are gone.
+    for stale in ["not in the report", "Reports carry no weight"] {
+        assert!(!llms.contains(stale), "{stale}");
     }
     srv.stop().await;
 }
@@ -674,10 +732,7 @@ async fn html_findings_share_one_report_and_predicate_contract() {
     expected.push(json!({"rule_id":"demo.marker.v1","severity":"warning","location":{"kind":"header","name":"x-swarmail-demo","occurrence":0},"fix_hint":"Remove the X-Swarmail-Demo header."}));
     expected.sort_by_key(|r| r["rule_id"].as_str().unwrap().to_string());
     assert_eq!(expected.len(), 17);
-    assert_eq!(
-        first,
-        json!({"rule_set_id":"swarmail-html/7","findings":expected,"dns":x_io_dns()})
-    );
+    assert_eq!(first, report_of(expected, x_io_dns()));
     assert_eq!(report(srv.http_addr, &id).await.1, first);
     let reply = rpc(
         srv.http_addr,
@@ -910,8 +965,7 @@ async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
                 findings.push(json!({"rule_id":"html.css.position.v1","severity":"warning","fix_hint":rule["fix_hint"],"location":{"kind":"mime_part","path":[]}}));
             }
             findings.sort_by_key(|f| f["rule_id"].as_str().unwrap().to_string());
-            let expected =
-                json!({"rule_set_id":"swarmail-html/7","findings":findings,"dns":x_io_dns()});
+            let expected = report_of(findings, x_io_dns());
             for _ in 0..2 {
                 assert_eq!(report(srv.http_addr, &id).await, (200, expected.clone()));
             }
@@ -1021,22 +1075,60 @@ async fn default_dns_policy_exact_json() {
     let srv = start().await;
     let id = smtp_raw(srv.smtp_addr, "plain", MAIL).await;
     let text = report_text(&srv, &id).await;
+    let body: Value = serde_json::from_str(&text).unwrap();
+    // `total` is the report's last key, after `dns`, and `weight` each finding's
+    // last (decision 0122 §2.1). Raw bytes witness the order; `Value` sorts.
+    let total: u64 = body["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["weight"].as_u64().unwrap())
+        .sum();
     assert!(
-        text.starts_with(r#"{"rule_set_id":"swarmail-html/7","findings":["#),
+        text.starts_with(r#"{"rule_set_id":"swarmail-html/8","findings":["#),
         "{text}"
     );
     assert!(
         text.ends_with(&format!(
-            r#"],"dns":{{"source":"default","policy":{{"txt":[],"tempfail":[]}},{MAIL_LOOKUPS}}}}}"#
+            r#"],"dns":{{"source":"default","policy":{{"txt":[],"tempfail":[]}},{MAIL_LOOKUPS}}},"total":{total}}}"#
         )),
         "{text}"
     );
-    let body: Value = serde_json::from_str(&text).unwrap();
+    // Every finding's raw text ends `,"weight":N}` right after `fix_hint`, and the
+    // key prefix before it is the pre-#337 shape, byte for byte.
+    let parts: Vec<&str> = text.split(r#","weight":"#).collect();
+    let findings = body["findings"].as_array().unwrap();
+    assert_eq!(parts.len(), findings.len() + 1, "{text}");
+    for (i, finding) in findings.iter().enumerate() {
+        let tail = format!("{}}}", finding["weight"]);
+        assert!(parts[i + 1].starts_with(&tail), "{text}");
+        let hint = serde_json::to_string(&finding["fix_hint"]).unwrap();
+        assert!(
+            parts[i].ends_with(&format!(r#","fix_hint":{hint}"#)),
+            "weight follows fix_hint: {text}"
+        );
+        let prefix = format!(
+            r#"{{"rule_id":{},"location":{},"severity":{},"fix_hint":{hint}"#,
+            finding["rule_id"], finding["location"], finding["severity"]
+        );
+        assert!(parts[i].ends_with(&prefix), "{prefix}");
+    }
+    // The weights are the table's: the demo-free mail has errors and warnings only
+    // from real rules, `.not_evaluated.` ones at 0.
+    for finding in findings {
+        assert_eq!(finding["weight"], weight_of(finding), "{finding}");
+    }
+    assert!(total > 0 && total <= 2560);
     // The DKIM-Signature header is mail, not DNS: only SPF and DMARC asked.
     assert_eq!(body["dns"]["lookups"], mail_lookups());
     let mut keys: Vec<_> = body.as_object().unwrap().keys().cloned().collect();
     keys.sort();
-    assert_eq!(keys, ["dns", "findings", "rule_set_id"]);
+    assert_eq!(keys, ["dns", "findings", "rule_set_id", "total"]);
+    // A cache hit is byte-identical to the miss, and so is a fresh process of
+    // the same mail in another inbox (0122 §2.3).
+    assert_eq!(report_text(&srv, &id).await, text);
+    let other = smtp_raw(srv.smtp_addr, "plain-two", MAIL).await;
+    assert_eq!(report_text(&srv, &other).await, text);
     srv.stop().await;
 }
 
@@ -1605,9 +1697,10 @@ async fn link_rules_over_smtp_and_rest() {
             "location":{"kind":"link","part_path":[],"byte_offset":at(needle)}})
     })
     .collect();
+    let expected = weighed(expected);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-html/7");
+    assert_eq!(first["rule_set_id"], "swarmail-html/8");
     let links = |report: &Value| -> Vec<Value> {
         report["findings"]
             .as_array()
@@ -1725,7 +1818,7 @@ async fn dkim_signed_mail_verifies_over_the_wire() {
     .await;
     let (status, report_good) = report(srv.http_addr, &good).await;
     assert_eq!(status, 200);
-    assert_eq!(report_good["rule_set_id"], "swarmail-html/7");
+    assert_eq!(report_good["rule_set_id"], "swarmail-html/8");
     assert_eq!(dkim_findings(&report_good), Vec::<Value>::new());
     assert_eq!(
         key_lookups(&report_good),
@@ -1747,6 +1840,7 @@ async fn dkim_signed_mail_verifies_over_the_wire() {
             "severity": "error",
             "location": {"kind":"header","name":"dkim-signature","occurrence":0},
             "fix_hint": "The body differs from what was signed; sign the final body with the same c= (RFC 6376 section 3.7).",
+            "weight": 10,
         })]
     );
     // This pins the crate's measured ask order on the pinned mail-auth version (it
@@ -1769,6 +1863,7 @@ async fn dkim_signed_mail_verifies_over_the_wire() {
             "severity": "error",
             "location": {"kind":"header","name":"dkim-signature","occurrence":0},
             "fix_hint": "Declare a TXT record at <s>._domainkey.<d> in the DNS policy; none is declared (RFC 6376 section 3.6.2.1).",
+            "weight": 10,
         })]
     );
     assert_eq!(
@@ -1792,6 +1887,7 @@ async fn dkim_signed_mail_verifies_over_the_wire() {
             "severity": "error",
             "location": {"kind":"header","name":"dkim-signature","occurrence":0},
             "fix_hint": "The key lookup failed temporarily, so the signature was not evaluated; fix the DNS answer and retry (RFC 6376 section 6.1.2).",
+            "weight": 0,
         })]
     );
     assert_eq!(
@@ -2256,6 +2352,193 @@ async fn a_message_that_passes_everything_is_returned_by_an_await() {
     )
     .await;
     assert_eq!(result_text(&reply)["matched"], 0);
+    srv.stop().await;
+}
+
+/// The decision numbers a text calls "proposed": `proposed 0121`,
+/// `proposed decision 0121` and `proposed in 0121`.
+fn proposed_numbers(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for (at, _) in text.match_indices("proposed") {
+        let mut rest = text[at + "proposed".len()..].trim_start();
+        for word in ["decision", "in"] {
+            if let Some(after) = rest.strip_prefix(word) {
+                rest = after.trim_start();
+            }
+        }
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if digits.len() == 4 {
+            found.push(digits);
+        }
+    }
+    found
+}
+/// The mentions in `text` that call a decision "proposed" although its status
+/// line in `docs/decisions/` says it was accepted.
+fn accepted_called_proposed(text: &str) -> Vec<String> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/decisions");
+    let mut wrong = Vec::new();
+    for number in proposed_numbers(text) {
+        let file = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(&format!("{number}-"))
+            })
+            .unwrap_or_else(|| panic!("no decision {number}"));
+        let record = std::fs::read_to_string(file).unwrap();
+        let status = record
+            .lines()
+            .find_map(|l| l.strip_prefix("- **Status:** "))
+            .unwrap();
+        if status.starts_with("accepted") {
+            wrong.push(number);
+        }
+    }
+    wrong
+}
+
+/// Decisions 0119 to 0126 were accepted (on 2026-11-06 and 2026-11-07), so the
+/// served OpenAPI document and the MCP tool descriptions, which carry no dated
+/// history, must not call any accepted decision "proposed" (0122 follow-up #337).
+#[tokio::test]
+async fn served_text_names_no_accepted_decision_as_proposed() {
+    // The check has teeth: it flags an accepted decision called proposed, in each
+    // spelling, and leaves alone text that makes no such claim.
+    for flagged in [
+        "the dns member (proposed 0122)",
+        "rules of proposed decision 0121",
+        "weights proposed in 0122",
+    ] {
+        assert!(!accepted_called_proposed(flagged).is_empty(), "{flagged}");
+    }
+    assert!(accepted_called_proposed("the accepted decision 0122 and a proposal").is_empty());
+    let srv = start().await;
+    let (status, openapi) = http_get_text(srv.http_addr, "/openapi.json").await;
+    assert_eq!(status, 200);
+    assert_eq!(accepted_called_proposed(&openapi), Vec::<String>::new());
+    // Both the historical (March) and the modern descriptors.
+    for version in [None, Some("2025-06-18"), Some("2025-11-25")] {
+        let headers: Vec<(&str, &str)> = version
+            .map(|v| vec![("MCP-Protocol-Version", v)])
+            .unwrap_or_default();
+        let (status, raw) = http_send_text_with_headers(
+            srv.http_addr,
+            "POST",
+            "/mcp",
+            &headers,
+            Some(&json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}).to_string()),
+        )
+        .await;
+        assert_eq!(status, 200);
+        let list: Value = serde_json::from_str(&raw).unwrap();
+        let descriptions: Vec<&str> = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["description"].as_str().unwrap())
+            .collect();
+        assert!(descriptions.len() >= 13);
+        assert_eq!(
+            accepted_called_proposed(&descriptions.join("\n")),
+            Vec::<String>::new(),
+            "{version:?}"
+        );
+    }
+    srv.stop().await;
+}
+
+/// Weight and total never decide a predicate (decision 0122 §2.4): the passing
+/// gate message and the same message carrying `X-Swarmail-Demo: error` have the
+/// **same total** (the demo marker weighs 0), yet get different verdicts
+/// because the second holds an error-severity finding. A "total 0 is clean" or
+/// "total above N is dirty" shortcut would give both messages one verdict.
+#[tokio::test]
+async fn equal_totals_get_different_verdicts_by_severity() {
+    let srv = start().await;
+    for inbox in ["weigh-good", "weigh-demo"] {
+        assert_eq!(put_dns(&srv, inbox, &gate_policy()).await.0, 200);
+    }
+    let good = gate_mail("Hello Bob,\r\nsigned text.\r\n");
+    // An unsigned extra header leaves the DKIM signature valid, so the only
+    // difference between the two reports is the demo finding.
+    let demo = [b"X-Swarmail-Demo: error\r\n".as_slice(), &good].concat();
+    let good_id = smtp_as(
+        srv.smtp_addr,
+        "weigh-good",
+        "mx.example.com",
+        "alice@example.com",
+        &good,
+    )
+    .await;
+    let demo_id = smtp_as(
+        srv.smtp_addr,
+        "weigh-demo",
+        "mx.example.com",
+        "alice@example.com",
+        &demo,
+    )
+    .await;
+    let passing = report_both(&srv, &good_id).await;
+    let marked = report_both(&srv, &demo_id).await;
+    let marker: Vec<&Value> = marked["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"] == "demo.marker.v1")
+        .collect();
+    assert_eq!(marker.len(), 1, "{marked}");
+    assert_eq!(
+        (&marker[0]["severity"], &marker[0]["weight"]),
+        (&json!("error"), &json!(0))
+    );
+    // The authentication outcome did not change: the demo copy differs by that
+    // one finding alone, so the totals are equal.
+    assert_eq!(auth_ids(&marked), auth_ids(&passing), "{marked}");
+    assert_eq!(marked["total"], passing["total"], "{passing} {marked}");
+    assert_eq!(
+        marked["findings"].as_array().unwrap().len(),
+        passing["findings"].as_array().unwrap().len() + 1
+    );
+    for (inbox, id, qualifies) in [
+        ("weigh-good", &good_id, true),
+        ("weigh-demo", &demo_id, false),
+    ] {
+        let query = "count=1&timeout_ms=0&no_findings_at_or_above=error";
+        let (status, awaited) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/{inbox}/await?{query}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, if qualifies { 200 } else { 408 }, "{awaited}");
+        if qualifies {
+            assert_eq!(awaited["emails"][0]["id"], id.as_str());
+        }
+        let (status, asserted) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/{inbox}/assert?count=1&no_findings_at_or_above=error"),
+            None,
+        )
+        .await;
+        assert_eq!(status, if qualifies { 200 } else { 409 }, "{asserted}");
+        let reply = rpc(
+            srv.http_addr,
+            "tools/call",
+            json!({"name":"swarmail_wait_for_email","arguments":{"inbox":inbox,"count":1,"timeout_ms":0,"no_findings_at_or_above":"error"}}),
+        )
+        .await;
+        assert_eq!(
+            result_text(&reply)["matched"],
+            u64::from(qualifies),
+            "{reply}"
+        );
+    }
     srv.stop().await;
 }
 

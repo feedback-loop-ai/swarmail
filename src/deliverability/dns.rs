@@ -7,7 +7,7 @@
 //! the network, a clock, a global or a lock, so a report is a pure function of
 //! the stored bytes, the receipt time, and this configuration (decision 0085),
 //! except for the two reads of the pinned crate: DKIM's `x=` clock read (decision
-//! 0125 section 8) and SPF's monotonic lookup timer (proposed decision 0126
+//! 0125 section 8) and SPF's monotonic lookup timer (decision 0126
 //! section 8).
 
 use serde::de::{Deserializer, Error as _, MapAccess, Visitor};

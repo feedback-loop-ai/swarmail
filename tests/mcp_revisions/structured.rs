@@ -86,7 +86,7 @@ fn minimal() -> swarmail::model::Email {
     minimal
 }
 
-// The bulk checklist inside swarmail-html/7 restated from its published rule table, not
+// The bulk checklist inside swarmail-html/8 restated from its published rule table, not
 // from the formatter: every hint cites its RFC source and both provider pages.
 const GMAIL: &str = "https://support.google.com/mail/answer/81126";
 const YAHOO: &str = "https://senders.yahooinc.com/best-practices/";
@@ -207,9 +207,27 @@ fn lookups_of(case: Case) -> Value {
             .collect(),
     )
 }
+/// The 0122 §2.2 table, restated here and not read from the crate: info 1,
+/// warning 3, error 10, and 0 for `.not_evaluated.` ids and the demo marker.
+fn weight_of(finding: &Value) -> u64 {
+    let id = finding["rule_id"].as_str().unwrap();
+    if id == "demo.marker.v1" || id.contains(".not_evaluated.") {
+        return 0;
+    }
+    match finding["severity"].as_str().unwrap() {
+        "info" => 1,
+        "warning" => 3,
+        "error" => 10,
+        other => panic!("severity {other}"),
+    }
+}
 fn report_of(case: Case, mut findings: Vec<Value>) -> Value {
     findings.sort_by_key(|f| f["rule_id"].as_str().unwrap().to_string());
-    json!({"rule_set_id":"swarmail-html/7","findings":findings,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":lookups_of(case)}})
+    for finding in &mut findings {
+        finding["weight"] = json!(weight_of(finding));
+    }
+    let total: u64 = findings.iter().map(|f| f["weight"].as_u64().unwrap()).sum();
+    json!({"rule_set_id":"swarmail-html/8","findings":findings,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":lookups_of(case)},"total":total})
 }
 
 pub(super) enum Wire {
@@ -984,7 +1002,9 @@ async fn modern_all_tools_http_and_stdio() {
                     descriptor["description"] = original["description"].clone();
                 } else if i == 1 {
                     for clause in [
-                        "swarmail-html/7",
+                        "swarmail-html/8",
+                        "weight",
+                        "total",
                         "bulk-sender checklist",
                         "HTML client-compatibility heuristics",
                         "spam signals",
@@ -1127,7 +1147,7 @@ fn report_projection(c: &Value) -> Value {
             .as_object_mut()
             .unwrap()
             .remove("examples"),
-        Some(json!(["swarmail-html/7"]))
+        Some(json!(["swarmail-html/8"]))
     );
     let location = &mut report["properties"]["findings"]["items"]["properties"]["location"];
     // oneOf over exclusive const tags carries the whole dispatch.
@@ -1409,6 +1429,12 @@ async fn served_openapi_pins_and_negative_controls() {
     let served = served_report_schema(srv.http_addr, VERSIONS[2]).await;
     let finding = "/properties/findings/items";
     let location = "/properties/findings/items/properties/location";
+    // The served `required` list with exactly one key removed.
+    let without = |pointer: &str, key: &str| {
+        let list = report.pointer(pointer).unwrap().as_array().unwrap();
+        assert!(list.contains(&json!(key)), "{pointer} requires {key}");
+        Value::Array(list.iter().filter(|k| *k != key).cloned().collect())
+    };
     for (pointer, value) in [
         (
             format!("{finding}/properties/severity/enum"),
@@ -1442,6 +1468,15 @@ async fn served_openapi_pins_and_negative_controls() {
             format!("{finding}/required"),
             json!(["rule_id", "severity", "location"]),
         ),
+        // The new keys are load-bearing (0122 §2.1): dropping `weight` from the
+        // finding's `required`, or `total` from the report's, moves the pin.
+        (
+            format!("{finding}/required"),
+            without(&format!("{finding}/required"), "weight"),
+        ),
+        ("/required".into(), without("/required", "total")),
+        (format!("{finding}/properties/weight/minimum"), json!(-1)),
+        ("/properties/total/minimum".into(), json!(-1)),
         ("/properties/findings/maxItems".into(), json!(257)),
         ("/required".into(), json!(["rule_set_id"])),
         (format!("{location}/oneOf"), json!([])),
@@ -1591,12 +1626,14 @@ async fn report_schema_typed_forms_and_negatives() {
             location,
             severity: severities[i % 3],
             fix_hint: "雪".into(),
+            weight: [1, 3, 10][i % 3],
         };
         let value = serde_json::to_value(&finding).unwrap();
         let severity = ["info", "warning", "error"][i % 3];
+        let weight = [1, 3, 10][i % 3];
         assert_eq!(
             value,
-            json!({"rule_id":"typed.v1","location":wire,"severity":severity,"fix_hint":"雪"})
+            json!({"rule_id":"typed.v1","location":wire,"severity":severity,"fix_hint":"雪","weight":weight})
         );
         findings.push(finding);
     }
@@ -1604,24 +1641,28 @@ async fn report_schema_typed_forms_and_negatives() {
         rule_set_id: "swarmail-bulk/1".into(),
         findings: vec![],
         dns: Default::default(),
+        total: 0,
     })
     .unwrap();
     assert_eq!(
         empty,
-        json!({"rule_set_id":"swarmail-bulk/1","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
+        json!({"rule_set_id":"swarmail-bulk/1","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]},"total":0})
     );
     assert!(valid(&schema, &empty));
     // No invented minimum length or constant for the rule-set ID.
+    let total = findings.iter().map(|f| f.weight).sum();
     let full = serde_json::to_value(Report {
         rule_set_id: String::new(),
         findings,
         dns: Default::default(),
+        total,
     })
     .unwrap();
     assert!(valid(&schema, &full), "{full}");
     let base = full["findings"][0].clone();
     let dns = json!({"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]});
-    let at = |n: usize| json!({"rule_set_id":"r","findings":vec![base.clone(); n],"dns":dns});
+    let at =
+        |n: usize| json!({"rule_set_id":"r","findings":vec![base.clone(); n],"dns":dns,"total":0});
     assert!(valid(&schema, &at(256)));
     assert!(!valid(&schema, &at(257)));
 
@@ -1629,7 +1670,7 @@ async fn report_schema_typed_forms_and_negatives() {
     let with_location = |location: Value| {
         let mut finding = base.clone();
         finding["location"] = location;
-        json!({"rule_set_id":"r","findings":[finding],"dns":dns})
+        json!({"rule_set_id":"r","findings":[finding],"dns":dns,"total":0})
     };
     let with_finding = |key: &str, value: Option<Value>| {
         let mut finding = base.clone();
@@ -1639,26 +1680,29 @@ async fn report_schema_typed_forms_and_negatives() {
                 finding.as_object_mut().unwrap().remove(key).unwrap();
             }
         }
-        json!({"rule_set_id":"r","findings":[finding],"dns":dns})
+        json!({"rule_set_id":"r","findings":[finding],"dns":dns,"total":0})
     };
-    refuse(json!({"findings":[],"dns":dns}), "no rule_set_id");
-    refuse(json!({"rule_set_id":"r","dns":dns}), "no findings");
+    refuse(json!({"findings":[],"dns":dns,"total":0}), "no rule_set_id");
     refuse(
-        json!({"rule_set_id":"r","findings":[],"dns":dns,"extra":1}),
+        json!({"rule_set_id":"r","dns":dns,"total":0}),
+        "no findings",
+    );
+    refuse(
+        json!({"rule_set_id":"r","findings":[],"dns":dns,"total":0,"extra":1}),
         "report extra",
     );
     refuse(
-        json!({"rule_set_id":1,"findings":[],"dns":dns}),
+        json!({"rule_set_id":1,"findings":[],"dns":dns,"total":0}),
         "numeric rule set",
     );
     refuse(
-        json!({"rule_set_id":"r","findings":null,"dns":dns}),
+        json!({"rule_set_id":"r","findings":null,"dns":dns,"total":0}),
         "null findings",
     );
     // The `dns` member is required and closed (decision 0120 §5).
-    refuse(json!({"rule_set_id":"r","findings":[]}), "no dns");
+    refuse(json!({"rule_set_id":"r","findings":[],"total":0}), "no dns");
     let with_dns = |edit: &dyn Fn(&mut Value)| {
-        let mut value = json!({"rule_set_id":"r","findings":[],"dns":dns});
+        let mut value = json!({"rule_set_id":"r","findings":[],"dns":dns,"total":0});
         edit(&mut value["dns"]);
         value
     };
@@ -1743,9 +1787,29 @@ async fn report_schema_typed_forms_and_negatives() {
     ] {
         refuse(with_dns(&*edit), label);
     }
-    for key in ["rule_id", "severity", "location", "fix_hint"] {
+    for key in ["rule_id", "severity", "location", "fix_hint", "weight"] {
         refuse(with_finding(key, None), key);
     }
+    // `weight` and `total` are non-negative integers and nothing else (0122 §2.1).
+    for bad in [json!(-1), json!(1.5), json!("3"), Value::Null] {
+        refuse(
+            with_finding("weight", Some(bad.clone())),
+            &format!("weight {bad}"),
+        );
+        let mut report = json!({"rule_set_id":"r","findings":[],"dns":dns,"total":0});
+        report["total"] = bad.clone();
+        refuse(report, &format!("total {bad}"));
+    }
+    refuse(
+        json!({"rule_set_id":"r","findings":[],"dns":dns}),
+        "no total",
+    );
+    // No schema maximum: the values the code emits are not a second copy in the schema.
+    assert!(valid(&schema, &with_finding("weight", Some(json!(10)))));
+    assert!(valid(
+        &schema,
+        &json!({"rule_set_id":"r","findings":[],"dns":dns,"total":2560})
+    ));
     for (key, value) in [
         ("extra", json!(1)),
         ("rule_id", json!("")),
@@ -1801,6 +1865,39 @@ async fn report_schema_typed_forms_and_negatives() {
 /// Wire receipts for the production-reachable forms: real SMTP bytes, the
 /// demo marker at every severity, header occurrence 0 and null and the root
 /// MIME path, over HTTP and the real bridge on both modern revisions.
+/// The raw text block of a report puts `weight` last in every finding and
+/// `total` last in the report (0122 §2.1). MCP serializes through serde_json's
+/// sorted map, so "last" there is also the last in sorted order; `Value` cannot
+/// witness order, so this reads the bytes. The report is read before the new
+/// keys, byte for byte, as the sorted prefix it always had.
+fn assert_new_keys_last(raw: &str, expected: &Value) {
+    let total = expected["total"].as_u64().unwrap();
+    assert!(
+        raw.ends_with(&format!(
+            r#","rule_set_id":"swarmail-html/8","total":{total}}}"#
+        )),
+        "{raw}"
+    );
+    let findings = expected["findings"].as_array().unwrap();
+    let parts: Vec<&str> = raw.split(r#","weight":"#).collect();
+    assert_eq!(parts.len(), findings.len() + 1, "{raw}");
+    for (i, finding) in findings.iter().enumerate() {
+        let severity = finding["severity"].as_str().unwrap();
+        assert!(
+            parts[i].ends_with(&format!(r#","severity":"{severity}""#)),
+            "weight follows severity: {raw}"
+        );
+        let weight = finding["weight"].as_u64().unwrap();
+        let tail = format!("{weight}}}");
+        assert!(parts[i + 1].starts_with(&tail), "{raw}");
+        let after = &parts[i + 1][tail.len()..];
+        assert!(
+            after.starts_with(',') || after.starts_with(']'),
+            "weight closes its finding: {raw}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn report_stored_bytes_over_modern_wire() {
     let srv = start().await;
@@ -1862,6 +1959,17 @@ async fn report_stored_bytes_over_modern_wire() {
                 assert_eq!(&reply["result"]["structuredContent"], expected);
                 assert_eq!(&text(&reply), expected);
                 assert!(valid(&schema, expected));
+                let raw = reply["result"]["content"][0]["text"].as_str().unwrap();
+                assert_new_keys_last(raw, expected);
+                // A second call is byte-identical (a cache hit equals the miss).
+                let again = wire
+                    .request(&call(
+                        json!(5),
+                        "get_deliverability_report",
+                        json!({"id":id}),
+                    ))
+                    .await;
+                assert_eq!(again["result"]["content"][0]["text"], raw);
             }
             let missing = wire
                 .request(&call(
@@ -1888,6 +1996,10 @@ async fn report_stored_bytes_over_modern_wire() {
             .await;
         assert!(reply["result"].get("structuredContent").is_none());
         assert_eq!(&text(&reply), expected);
+        assert_new_keys_last(
+            reply["result"]["content"][0]["text"].as_str().unwrap(),
+            expected,
+        );
     }
     srv.stop().await;
 }

@@ -132,3 +132,23 @@ unchanged.
   `swarmail-spam/2` where the id is `swarmail-html/6` and the next one must
   be a fresh, never-used id (§1.4). The follow-up settles the key order and
   the id against those records; this note rules on neither.
+
+## Dated integration note — 2026-11-07 (the #337 follow-up)
+
+The 2026-11-06 note above left two points to the follow-up. The follow-up
+settles them as follows. This is a pointer, not a body edit, and it rules on
+nothing else.
+
+- **Key order.** `total` is the report's last key, after `dns`. A finding
+  serializes as `rule_id, location, severity, fix_hint, weight`, and the report
+  as `rule_set_id, findings, dns, total`. Accepted 0120 states the shape as
+  `{rule_set_id, findings, dns}`; §2.1 of this record appends `total` after it
+  and moves no existing key, so the two read together without conflict. REST
+  serializes the report in that struct order. MCP renders the same report
+  through serde_json's sorted map, where `weight` and `total` also sort last, so
+  no existing MCP byte moves.
+- **Rule-set id.** The follow-up integrates as `swarmail-html/8`. Main carries
+  `swarmail-html/7` from #255 (accepted 0126; `/6` is the id shipped in v0.4.0),
+  so the next never-shipped id after main's is `/8` under §1.4 and 0121 §5. The
+  `swarmail-spam/2` that §2.5 names does not apply, because the families share
+  one id.
