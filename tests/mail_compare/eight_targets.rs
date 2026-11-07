@@ -4693,7 +4693,15 @@ fn decoded_body_contract(t: TargetKind, m: &wire::Message, got: &targets::Fetche
             wire::same_body(m.html.as_deref(), got.html.as_deref()),
             "{t} html {got:?}"
         ),
-        _ => {}
+        // The one stored body is re-wrapped under the message's multipart
+        // content type with no boundary lines, so the driver's MIME reader
+        // finds no part: observed on the real binaries, a multipart message
+        // reads back as its subject alone.
+        protocol::MessageKind::Multipart => assert_eq!(
+            (got.text.as_deref(), got.html.as_deref()),
+            (None, None),
+            "{t} multipart {got:?}"
+        ),
     }
 }
 
@@ -4843,14 +4851,28 @@ async fn real_hostile(t: TargetKind) {
         match owned.fetch(id).await {
             Ok(got) if stores_decoded_body(t) => {
                 // The decoded-body targets keep one body and do not undo
-                // SMTP dot-stuffing (observed: ".leading dot" comes back as
-                // "..leading dot"), so only the subject is asserted; the
-                // observation is printed for the delivery notes.
+                // SMTP dot-stuffing: ".leading dot" comes back as
+                // "..leading dot" and each sent line gains a `<br/>` (0130's
+                // observation, asserted here, not printed). A multipart
+                // message with a cut part keeps no readable body at all.
                 assert_eq!(got.subject.as_deref(), Some(m.subject.as_str()), "{t}");
-                eprintln!(
-                    "OBSERVED {t} {}: text {:?} html {:?}",
-                    m.token, got.text, got.html
-                );
+                match m.kind {
+                    protocol::MessageKind::Plain => {
+                        assert_eq!(
+                            got.text.as_deref(),
+                            Some("..leading dot\n<br/>...two dots\n<br/>..\n<br/>last line\n<br/>"),
+                            "{t} {}: dot-stuffing is not undone, a <br/> follows each line",
+                            m.token
+                        );
+                        assert_eq!(got.html, None, "{t} {}", m.token);
+                    }
+                    _ => assert_eq!(
+                        (got.text.as_deref(), got.html.as_deref()),
+                        (None, None),
+                        "{t} {}: no readable body",
+                        m.token
+                    ),
+                }
             }
             Ok(got) => {
                 assert_eq!(got.subject.as_deref(), Some(m.subject.as_str()), "{t}");
@@ -5056,7 +5078,6 @@ async fn real_mailslurper_official_does_not_start() {
         .join("\n");
     let cfg_path = root.path().join(&cfg.name);
     std::fs::write(&cfg_path, text).unwrap();
-    let started = Instant::now();
     let out = tokio::process::Command::new(&exe)
         .args(["-config", cfg_path.to_str().unwrap()])
         .current_dir(root.path())
@@ -5070,7 +5091,6 @@ async fn real_mailslurper_official_does_not_start() {
         .await
         .expect("the executable exits within the startup deadline")
         .expect("it runs");
-    assert!(started.elapsed() < limits().startup);
     assert!(!out.status.success(), "it must not start: {:?}", out.status);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -5251,7 +5271,7 @@ fn real_member_and_output_documents_match() {
 // ---- the labelled smoke fixture ------------------------------------------
 
 #[test]
-fn eight_target_smoke_fixture_is_a_valid_draft_that_cannot_launch_yet() {
+fn eight_target_smoke_fixture_is_a_valid_draft_that_launches() {
     let smoke = include_bytes!("eight-target-smoke.json");
     let p = Protocol::parse(smoke).unwrap();
     p.validate()
