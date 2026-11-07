@@ -19,12 +19,13 @@
 //!   adapter neither narrows nor escapes a term: that is MailSlurper's real
 //!   filter, and the tool descriptions say so.
 //! - `GET /mail/{id}`: `ServiceController.go` `GetMail`. An unknown id is not
-//!   a 404: the source answers HTTP 500 for any lookup error.
+//!   a 404: the pinned executable answers HTTP 200 with an empty mail item,
+//!   whose `id` is the empty string, and the adapter reports that as not found.
 //!
-//! The pinned linux executable cannot start: it embeds `CGO_ENABLED=0` and
-//! exits on its SQLite config (the lock's storage basis says so). Until a
-//! working pin exists this adapter has run against Swarmail's MailSlurper
-//! shim (mechanics only) and never against MailSlurper itself.
+//! The pinned executable is the one built from source (the lock's
+//! `built_from_source` artifact); the published linux executable cannot start.
+//! The ignored real-executable test calls every tool once against it, and the
+//! committed wire corpus holds its responses, decoded in CI.
 
 use crate::mcp::{Backend, Budget, begin, complete_scan};
 use crate::wire::{Http, path_segment, query_value};
@@ -42,9 +43,9 @@ pub const PAGE_SIZE: u64 = 50;
 /// The adapter's own ceiling on `pageNumber`, equal to the other adapters'
 /// 100,000-message offset ceiling at 50 per page. It is not MailSlurper's.
 pub const MAX_PAGE: u64 = 2000;
-/// Characters beyond `[A-Za-z0-9._-]` MailSlurper's ids need: none (they are
-/// generated identifiers; the wire corpus, once a working pin exists, is the
-/// witness).
+/// Characters beyond `[A-Za-z0-9._-]` MailSlurper's ids need: none. The wire
+/// corpus is the witness: its ids are lowercase hex groups joined by `-`
+/// (`c2eefc7a-3bf7-4fa9-7116-28082e7e4f23`).
 pub const MAILSLURPER_ID_EXTRA: &[u8] = b"";
 
 /// The MailSlurper backend of the generic server.
@@ -346,10 +347,14 @@ pub async fn run_call(
         }
         Call::Read { id } => {
             let (_, v) = b.get(&format!("/mail/{}", path_segment(id))).await?;
-            if v.get("id").and_then(Value::as_str) != Some(id.as_str()) {
-                return Err(ToolError::Malformed);
+            match v.get("id").and_then(Value::as_str) {
+                Some(got) if got == id => Ok(v),
+                // The pinned executable answers an unknown id with HTTP 200
+                // and an empty mail item (`"id": ""`), not an error status
+                // (`docs/evals/wire-corpus/mailslurper/read-not-found.json`).
+                Some("") => Err(ToolError::NotFound),
+                _ => Err(ToolError::Malformed),
             }
-            Ok(v)
         }
         Call::Wait { filter, .. } => {
             b.deadline = frame.response;

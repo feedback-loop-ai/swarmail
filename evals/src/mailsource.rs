@@ -267,15 +267,27 @@ pub fn normalize_mailhog(m: &Value) -> Result<Value, String> {
     }))
 }
 
-/// A MailSlurper mail (`GET /mail/{id}`) in the solutions' shape. Its `body`
-/// is read according to the `contentType`, `boundary` and `transferEncoding`
-/// MailSlurper stores beside it: the three are put back in front of the body
-/// as the headers they were, and the one MIME decoder above reads the result,
-/// so a multipart body is decoded by the same code as MailHog's and there is
-/// no second decoder. `toAddresses` must be a list of address strings; any
-/// other element shape is an error until a real response shows it (never a
-/// guess), and the addresses are kept exactly, because MailSlurper's own `to`
-/// filter is a substring match and the solutions match the recipient exactly.
+/// A MailSlurper mail (`GET /mail/{id}`) in the solutions' shape, read from
+/// the shapes the pinned executable was observed to serve
+/// (`docs/evals/wire-corpus/mailslurper/`), not from what its source suggests.
+/// MailSlurper stores one `body` string per mail, and `boundary` and
+/// `transferEncoding` come back empty whatever the mail said, so the mail's
+/// MIME structure is not recoverable and none is read:
+///
+/// - `text/plain`: MailSlurper turned every line break into `\n<br/>` and its
+///   sanitiser HTML-escaped the text (`&` is `&amp;`). The mapping undoes
+///   exactly those two things, and a `<br` left over is an error, because the
+///   sanitiser would have escaped a literal one.
+/// - `text/html`: the body, as stored.
+/// - `multipart/*`: the body is the one part MailSlurper kept, the HTML part
+///   (its `GetMail` base64-decodes it when it can); a multipart's plain-text
+///   alternative is not stored. A body that is not markup is an error, never
+///   a guess at the part's transfer encoding.
+///
+/// `toAddresses` must be a list of address strings; any other element shape
+/// is an error until a real response shows it, and the addresses are kept
+/// exactly, because MailSlurper's own `to` filter is a substring match and the
+/// solutions match the recipient exactly.
 pub fn normalize_mailslurper(m: &Value) -> Result<Value, String> {
     let subject = m["subject"]
         .as_str()
@@ -295,18 +307,30 @@ pub fn normalize_mailslurper(m: &Value) -> Result<Value, String> {
         .filter(|c| !c.trim().is_empty())
         .ok_or("a MailSlurper mail has no contentType")?;
     let body = m["body"].as_str().ok_or("a MailSlurper mail has no body")?;
-    let mut head = format!("Content-Type: {ctype}");
-    if let Some(b) = m["boundary"].as_str().filter(|b| !b.is_empty()) {
-        head.push_str(&format!("; boundary=\"{b}\""));
-    }
-    if let Some(te) = m["transferEncoding"].as_str().filter(|t| !t.is_empty()) {
-        head.push_str(&format!("\r\nContent-Transfer-Encoding: {te}"));
-    }
-    let parts = decode_mime(&format!("{head}\r\n\r\n{body}"))?;
+    let (ty, _) = media_type(ctype);
+    let (text, html) = match ty.as_str() {
+        "text/plain" => {
+            let lines = body.replace("\n<br/>", "\n");
+            if lines.contains("<br") {
+                return Err(
+                    "a MailSlurper text body holds markup its sanitiser would have escaped".into(),
+                );
+            }
+            (crate::oracle::decode_entities(&lines), Value::Null)
+        }
+        "text/html" => (String::new(), json!(body)),
+        t if t.starts_with("multipart/") && body.trim_start().starts_with('<') => {
+            (String::new(), json!(body))
+        }
+        t if t.starts_with("multipart/") => {
+            return Err("a MailSlurper multipart body is not its HTML part".into());
+        }
+        other => return Err(format!("unknown MailSlurper content type {other:?}")),
+    };
     Ok(json!({
         "subject": subject,
-        "text": parts.text.unwrap_or_default(),
-        "html": parts.html,
+        "text": text,
+        "html": html,
         "to": to,
     }))
 }

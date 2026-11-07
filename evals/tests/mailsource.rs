@@ -404,7 +404,7 @@ fn slurper_message(id: &str, subject: &str, to: &str) -> Value {
 }
 
 #[test]
-fn the_mailslurper_normalizer_reads_the_body_by_its_content_type() {
+fn the_mailslurper_normalizer_reads_the_shapes_the_pinned_executable_serves() {
     let plain = slurper_message("m1", "Your verification code", "bob@fixture.eval");
     let n = normalize_mailslurper(&plain).unwrap();
     assert_eq!(
@@ -416,6 +416,10 @@ fn the_mailslurper_normalizer_reads_the_body_by_its_content_type() {
         )
     );
     assert_eq!(n["to"], json!([{"address": "bob@fixture.eval"}]));
+    // MailSlurper's line break is `\n<br/>` and its sanitiser escapes `&`.
+    let mut lines = plain.clone();
+    lines["body"] = "a\n<br/>b &amp; c\n<br/>".into();
+    assert_eq!(normalize_mailslurper(&lines).unwrap()["text"], "a\nb & c\n");
     let mut html = plain.clone();
     html["contentType"] = "text/html; charset=utf-8".into();
     html["body"] = "<p>only html</p>".into();
@@ -424,18 +428,15 @@ fn the_mailslurper_normalizer_reads_the_body_by_its_content_type() {
         (n["text"].clone(), n["html"].clone()),
         ("".into(), "<p>only html</p>".into())
     );
-    // A multipart body goes through the one decoder MailHog's raw bodies use.
+    // A multipart keeps one part, the HTML part, whatever its boundary says.
     let mut multi = plain.clone();
-    multi["contentType"] = "multipart/alternative".into();
-    multi["boundary"] = "b1".into();
-    multi["body"] = "--b1\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\ncode =3D 123456 caf=C3=A9\r\n--b1\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\nPHA+Y29kZSAxMjM0NTY8L3A+\r\n--b1--".into();
+    multi["contentType"] = "multipart/alternative; boundary=\"b1\"".into();
+    multi["body"] = "<p>code 123456</p>".into();
     let n = normalize_mailslurper(&multi).unwrap();
-    assert_eq!(n["text"].as_str().unwrap().trim_end(), "code = 123456 café");
-    assert_eq!(n["html"], "<p>code 123456</p>");
-    let mut b64 = plain.clone();
-    b64["transferEncoding"] = "base64".into();
-    b64["body"] = "Y29kZSAxMjM0NTY=".into();
-    assert_eq!(normalize_mailslurper(&b64).unwrap()["text"], "code 123456");
+    assert_eq!(
+        (n["text"].clone(), n["html"].clone()),
+        ("".into(), "<p>code 123456</p>".into())
+    );
     // Anything it does not know is an error, never a pass.
     for (field, value) in [
         ("subject", Value::Null),
@@ -445,19 +446,108 @@ fn the_mailslurper_normalizer_reads_the_body_by_its_content_type() {
         ("contentType", "".into()),
         ("contentType", "application/pdf".into()),
         ("body", Value::Null),
-        ("transferEncoding", "uuencode".into()),
     ] {
         let mut broken = plain.clone();
         broken[field] = value.clone();
         assert!(normalize_mailslurper(&broken).is_err(), "{field}={value}");
     }
-    let mut no_boundary = multi.clone();
-    no_boundary["boundary"] = "".into();
-    assert!(normalize_mailslurper(&no_boundary).is_err());
-    let mut bad_b64 = plain.clone();
-    bad_b64["transferEncoding"] = "base64".into();
-    bad_b64["body"] = "not base64!!".into();
-    assert!(normalize_mailslurper(&bad_b64).is_err());
+    // A multipart body that is not markup (a text part, or base64 GetMail did
+    // not decode), and markup in a text body the sanitiser would have escaped.
+    for body in ["PHA+Y29kZQ==", "code =3D 1"] {
+        let mut bad = multi.clone();
+        bad["body"] = body.into();
+        let why = normalize_mailslurper(&bad).unwrap_err();
+        assert!(why.contains("not its HTML part"), "{why}");
+    }
+    let mut bad = plain.clone();
+    bad["body"] = "x <br/> y".into();
+    let why = normalize_mailslurper(&bad).unwrap_err();
+    assert!(
+        why.contains("markup its sanitiser would have escaped"),
+        "{why}"
+    );
+}
+
+fn corpus_text(target: &str, file: &str) -> Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../docs/evals/wire-corpus")
+        .join(target)
+        .join(file);
+    serde_json::from_slice(&std::fs::read(&path).unwrap_or_else(|e| panic!("{path:?}: {e}")))
+        .unwrap()
+}
+
+#[test]
+fn the_mailslurper_normalizer_maps_every_real_response_in_its_wire_corpus() {
+    use swarmail_evals::oracle::labelled_url;
+    let read = |f: &str| normalize_mailslurper(&corpus_text("mailslurper", f)).unwrap();
+    // A body GetMail does not base64-decode: plain text, line breaks undone.
+    let n = read("read.json");
+    assert_eq!(n["text"], "code 111111\n");
+    assert_eq!(n["html"], Value::Null);
+    assert_eq!(n["to"], json!([{"address": "ann@corpus.invalid"}]));
+    // A body GetMail does decode: the multipart's base64 HTML part, which the
+    // listing still carries encoded.
+    let n = read("read-multipart.json");
+    assert_eq!(n["html"], "<p>code 123456</p>");
+    assert_eq!(n["text"], "");
+    let listed = corpus_text("mailslurper", "list.json");
+    let item = listed["mailItems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["subject"] == "corpus-multipart")
+        .unwrap();
+    assert_eq!(item["body"], "PHA+Y29kZSAxMjM0NTY8L3A+");
+    assert!(
+        normalize_mailslurper(item).is_err(),
+        "the list is not decoded"
+    );
+    // A top-level base64 text body, decoded by MailSlurper at ingest.
+    let n = read("read-base64.json");
+    assert_eq!(
+        n["text"],
+        "code 444444\nsecond line https://x.invalid/a?b=1&c=2\n"
+    );
+    // The fixture's text mails are read by their labelled URL: the entity and
+    // the line breaks are undone, so the URL is the one that was sent.
+    let n = read("read-lines.json");
+    assert_eq!(
+        labelled_url(n["text"].as_str().unwrap(), "Confirm your account:").as_deref(),
+        Some("http://x.invalid/a?b=1&c=2")
+    );
+    // Every plain mail the listing carries normalizes; each recipient is exact,
+    // so the substring filter's lookalike is a different address.
+    let found = corpus_text("mailslurper", "search-filtered.json");
+    assert_eq!(found["totalRecords"], 5, "the filter also returns joann@");
+    let mut to: Vec<String> = found["mailItems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["subject"] != "corpus-multipart")
+        .map(|m| {
+            normalize_mailslurper(m).unwrap()["to"][0]["address"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    to.sort();
+    assert_eq!(
+        to,
+        [
+            "ann@corpus.invalid",
+            "ann@corpus.invalid",
+            "ann@corpus.invalid",
+            "joann@corpus.invalid"
+        ]
+    );
+    let empty = corpus_text("mailslurper", "search-empty.json");
+    assert_eq!(
+        (empty["totalRecords"].clone(), empty["totalPages"].clone()),
+        (0.into(), 0.into())
+    );
+    assert_eq!(empty["mailItems"], json!([]));
 }
 
 #[tokio::test]

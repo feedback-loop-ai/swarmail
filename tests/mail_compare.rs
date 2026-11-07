@@ -6310,6 +6310,128 @@ async fn capture_wire_corpus() {
     }
 }
 
+const MAILSLURPER_CORPUS_FILES: [&str; 8] = [
+    "list.json",
+    "read.json",
+    "read-multipart.json",
+    "read-base64.json",
+    "read-lines.json",
+    "search-filtered.json",
+    "search-empty.json",
+    "read-not-found.json",
+];
+
+/// A multi-line plain body with a URL and a blank line: what MailSlurper does
+/// to line breaks decides how the oracle reads the fixture's text mails.
+fn slurper_lines_mail() -> (&'static str, &'static str, String) {
+    (
+        "ann@corpus.invalid",
+        "corpus-lines",
+        "From: sender@corpus.invalid\r\nTo: ann@corpus.invalid\r\nSubject: corpus-lines\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\nalpha\r\nConfirm your account: http://x.invalid/a?b=1&c=2\r\n\r\ngamma\r\n".to_owned(),
+    )
+}
+
+/// The mail MailSlurper's corpus adds to `corpus_mail()`: a plain body under a
+/// base64 transfer encoding, which MailSlurper decodes at ingest.
+fn slurper_base64_mail() -> (&'static str, &'static str, String) {
+    (
+        "ann@corpus.invalid",
+        "corpus-base64",
+        "From: sender@corpus.invalid\r\nTo: ann@corpus.invalid\r\nSubject: corpus-base64\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\nY29kZSA0NDQ0NDQNCnNlY29uZCBsaW5lIGh0dHBzOi8veC5pbnZhbGlkL2E/Yj0xJmM9Mg0K".to_owned(),
+    )
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER (the pinned executable built from source)"]
+async fn capture_wire_corpus_mailslurper() {
+    let t = TargetKind::Mailslurper;
+    let dir = corpus_dir(t);
+    assert!(
+        !dir.exists(),
+        "{dir:?} exists: remove it to recapture, a corpus is never overwritten"
+    );
+    let root = tempfile::tempdir().unwrap();
+    let mut owned = launch_pinned(t, &root.path().join("s")).await;
+    let mut mail = corpus_mail();
+    mail.push(slurper_base64_mail());
+    mail.push(slurper_lines_mail());
+    // MailSlurper has no AUTH: the fixture's dialogue leaves the step out.
+    for (rcpt, _, raw) in &mail {
+        send_raw(owned.smtp, false, rcpt, raw).await;
+    }
+    let list = "/mail?pageNumber=1".to_owned();
+    // Accept is not storage for MailSlurper: wait for all of them.
+    let until = Instant::now() + Duration::from_secs(10);
+    let listed = loop {
+        let (s, body) = owned.http.get(&list).await.unwrap();
+        let v = json(&body);
+        if s == 200 && v["totalRecords"] == mail.len() {
+            break (body, v);
+        }
+        assert!(Instant::now() < until, "{t} never listed all of them");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let id_of = |subject: &str| -> String {
+        listed.1["mailItems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["subject"] == subject)
+            .and_then(|m| m["id"].as_str())
+            .unwrap_or_else(|| panic!("{t}: no id for {subject}"))
+            .to_owned()
+    };
+    let to = |addr: &str| format!("/mail?pageNumber=1&to={}", wire::query_value(addr));
+    let mut out: Vec<(&str, String, u16, Vec<u8>)> =
+        vec![("list.json", list.clone(), 200, listed.0.clone())];
+    for (name, path) in [
+        ("read.json", format!("/mail/{}", id_of("corpus-ann"))),
+        (
+            "read-multipart.json",
+            format!("/mail/{}", id_of("corpus-multipart")),
+        ),
+        (
+            "read-base64.json",
+            format!("/mail/{}", id_of("corpus-base64")),
+        ),
+        (
+            "read-lines.json",
+            format!("/mail/{}", id_of("corpus-lines")),
+        ),
+        ("search-filtered.json", to("ann@corpus.invalid")),
+        ("search-empty.json", to("nobody@corpus.invalid")),
+        ("read-not-found.json", "/mail/not-an-id".to_owned()),
+    ] {
+        let (s, body) = owned.http.get(&path).await.unwrap();
+        out.push((name, path, s, body));
+    }
+    assert!(owned.shutdown().await.proved());
+    std::fs::create_dir_all(&dir).unwrap();
+    let lock = SourceLock::parse(SOURCES).unwrap();
+    let pin = lock.pin(t).unwrap();
+    let mut files = Vec::new();
+    for (name, request, status, body) in out {
+        assert_eq!(name, MAILSLURPER_CORPUS_FILES[files.len()]);
+        std::fs::write(dir.join(name), &body).unwrap();
+        files.push(
+            serde_json::json!({"name": name, "request": request, "status": status,
+            "size": body.len(), "sha256": targets::sha256_hex(&body)}),
+        );
+    }
+    let index = serde_json::json!({
+        "target": t.name(),
+        "executable_sha256": pin.artifact.executable_sha256,
+        "config_template_sha256": pin.config.as_ref().map(|c| targets::sha256_hex(c.template.as_bytes())),
+        "mail": mail.iter().map(|(r, s, _)| serde_json::json!({"to": r, "subject": s})).collect::<Vec<_>>(),
+        "files": files,
+    });
+    std::fs::write(
+        dir.join("index.json"),
+        serde_json::to_string_pretty(&index).unwrap() + "\n",
+    )
+    .unwrap();
+}
+
 /// Check one target's corpus against its index and the lock, and decode every
 /// file through the adapter's own decoders. The first failure names itself.
 fn check_corpus(t: TargetKind, dir: &Path, lock: &SourceLock) -> Result<(), String> {
@@ -6322,9 +6444,25 @@ fn check_corpus(t: TargetKind, dir: &Path, lock: &SourceLock) -> Result<(), Stri
             "{t}: the index's executable digest is not the lock's, recapture the corpus"
         ));
     }
+    // Every target's index binds its launch config template: MailSlurper's is
+    // the lock's, the other two have none and say `null`.
+    let template = lock
+        .pin(t)
+        .and_then(|p| p.config.as_ref())
+        .map(|c| targets::sha256_hex(c.template.as_bytes()));
+    if index.get("config_template_sha256") != Some(&serde_json::json!(template)) {
+        return Err(format!(
+            "{t}: the index's config template digest is not the lock's, recapture the corpus"
+        ));
+    }
+    let wanted: &[&str] = if t == TargetKind::Mailslurper {
+        &MAILSLURPER_CORPUS_FILES
+    } else {
+        &CORPUS_FILES
+    };
     let files = index["files"].as_array().ok_or("files")?;
     let names: Vec<&str> = files.iter().filter_map(|f| f["name"].as_str()).collect();
-    if names != CORPUS_FILES {
+    if names != wanted {
         return Err(format!("{t}: the index lists {names:?}"));
     }
     let mut body = std::collections::HashMap::new();
@@ -6339,6 +6477,9 @@ fn check_corpus(t: TargetKind, dir: &Path, lock: &SourceLock) -> Result<(), Stri
     let v = |n: &str| -> Result<serde_json::Value, String> {
         serde_json::from_slice(&body[n].1).map_err(|e| format!("{n}: {e}"))
     };
+    if t == TargetKind::Mailslurper {
+        return check_slurper_corpus(&body, &v);
+    }
     let decode = |n: &str| -> Result<(u64, Vec<String>), String> {
         let (total, ids): (u64, Vec<String>) = match t {
             TargetKind::Mailpit => {
@@ -6403,10 +6544,102 @@ fn check_corpus(t: TargetKind, dir: &Path, lock: &SourceLock) -> Result<(), Stri
     Ok(())
 }
 
+/// MailSlurper's corpus through the adapter's own decoder: every page and
+/// read in the one id alphabet; the two body branches `GetMail` has (a body it
+/// base64-decodes and one it leaves alone); the filter's lookalike; the empty
+/// search; and the unknown id's shape, an empty item at HTTP 200.
+fn check_slurper_corpus(
+    body: &std::collections::HashMap<&str, (u64, Vec<u8>)>,
+    v: &dyn Fn(&str) -> Result<serde_json::Value, String>,
+) -> Result<(), String> {
+    let t = TargetKind::Mailslurper;
+    let page = |n: &str| -> Result<(u64, Vec<String>), String> {
+        let (total, ids, _) = mailslurper_mcp::page(v(n)?).map_err(|e| format!("{n}: {e:?}"))?;
+        Ok((total, ids.into_iter().map(|(i, _)| i).collect()))
+    };
+    let (total, ids) = page("list.json")?;
+    if (total, ids.len()) != (5, 5)
+        || !ids
+            .iter()
+            .all(|i| mcp::valid_id(i, mailslurper_mcp::MAILSLURPER_ID_EXTRA))
+    {
+        return Err(format!("{t}: list.json is not five ids in the alphabet"));
+    }
+    let (found, hits) = page("search-filtered.json")?;
+    let raw = String::from_utf8_lossy(&body["search-filtered.json"].1).into_owned();
+    if found != 5 || hits.len() != 5 || !raw.contains("joann@corpus.invalid") {
+        return Err(format!(
+            "{t}: the filtered search is not the substring match the corpus records"
+        ));
+    }
+    let (found, hits) = page("search-empty.json")?;
+    if found != 0 || !hits.is_empty() {
+        return Err(format!("{t}: the empty search is not empty"));
+    }
+    let listed = v("list.json")?;
+    let listed_body = |subject: &str| -> String {
+        listed["mailItems"]
+            .as_array()
+            .and_then(|a| a.iter().find(|m| m["subject"] == subject))
+            .and_then(|m| m["body"].as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    for n in [
+        "read.json",
+        "read-multipart.json",
+        "read-base64.json",
+        "read-lines.json",
+    ] {
+        let id = v(n)?["id"].as_str().unwrap_or("").to_owned();
+        if body[n].0 != 200 || !mcp::valid_id(&id, mailslurper_mcp::MAILSLURPER_ID_EXTRA) {
+            return Err(format!("{t}: {n} is not a read of one stored message"));
+        }
+        if !ids.contains(&id) {
+            return Err(format!("{t}: {n} reads an id the listing does not carry"));
+        }
+    }
+    // The branch GetMail leaves alone: a plain body is the listing's body.
+    if v("read.json")?["body"].as_str() != Some(listed_body("corpus-ann").as_str()) {
+        return Err(format!("{t}: a plain body changed between list and read"));
+    }
+    // The branch GetMail decodes: the multipart's HTML part is base64 in the
+    // listing and markup on read.
+    let encoded = listed_body("corpus-multipart");
+    let decoded = v("read-multipart.json")?["body"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    use base64::Engine;
+    if base64::engine::general_purpose::STANDARD
+        .decode(&encoded)
+        .ok()
+        != Some(decoded.clone().into_bytes())
+        || !decoded.starts_with('<')
+    {
+        return Err(format!(
+            "{t}: GetMail's base64 branch is not what the corpus records"
+        ));
+    }
+    // An unknown id is an empty item at 200, which the adapter reports as not
+    // found (a real 404 never comes).
+    let unknown = v("read-not-found.json")?;
+    if body["read-not-found.json"].0 != 200 || unknown["id"] != "" || unknown["subject"] != "" {
+        return Err(format!(
+            "{t}: read-not-found.json is not the upstream's not-found shape"
+        ));
+    }
+    Ok(())
+}
+
 #[test]
 fn the_wire_corpus_decodes_through_the_adapter_decoders_and_binds_its_executable() {
     let lock = SourceLock::parse(SOURCES).unwrap();
-    for t in [TargetKind::Mailpit, TargetKind::Mailhog] {
+    for t in [
+        TargetKind::Mailpit,
+        TargetKind::Mailhog,
+        TargetKind::Mailslurper,
+    ] {
         check_corpus(t, &corpus_dir(t), &lock).unwrap_or_else(|e| panic!("{e}"));
     }
     // MailHog's real ids are why its alphabet is wider than Mailpit's.
@@ -6422,6 +6655,148 @@ fn the_wire_corpus_decodes_through_the_adapter_decoders_and_binds_its_executable
         let id = m["ID"].as_str().unwrap();
         assert!(id.bytes().all(|b| b.is_ascii_alphanumeric()), "{id}");
     }
+}
+
+#[tokio::test]
+async fn the_mailslurper_adapter_serves_the_corpus_and_maps_the_empty_item_to_not_found() {
+    let dir = corpus_dir(TargetKind::Mailslurper);
+    let file = |n: &str| String::from_utf8(std::fs::read(dir.join(n)).unwrap()).unwrap();
+    let index = json(&std::fs::read(dir.join("index.json")).unwrap());
+    let request = |name: &str| -> String {
+        index["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == name)
+            .unwrap()["request"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let routes: Vec<(String, String)> = [
+        "list.json",
+        "read.json",
+        "read-multipart.json",
+        "read-not-found.json",
+        "search-filtered.json",
+        "search-empty.json",
+    ]
+    .iter()
+    .map(|n| (request(n), file(n)))
+    .collect();
+    let addr = responder(Box::new(move |t: &str| {
+        routes
+            .iter()
+            .find(|(path, _)| path == t)
+            .map(|(_, body)| (200, body.clone()))
+    }))
+    .await;
+    let mut c = initialized_for::<mailslurper_mcp::Mailslurper>(addr).await;
+    let (e, v) = c.tool(1, "mailslurper_list", serde_json::json!({})).await;
+    assert!(!e && v["totalRecords"] == 5, "{v}");
+    let (e, v) = c
+        .tool(
+            2,
+            "mailslurper_search",
+            serde_json::json!({"to": "ann@corpus.invalid"}),
+        )
+        .await;
+    assert!(!e && v["totalRecords"] == 5, "{v}");
+    let (e, v) = c
+        .tool(
+            3,
+            "mailslurper_search",
+            serde_json::json!({"to": "nobody@corpus.invalid"}),
+        )
+        .await;
+    assert!(!e && v["totalRecords"] == 0, "{v}");
+    let id = |n: &str| json(file(n).as_bytes())["id"].as_str().unwrap().to_owned();
+    for (n, name) in [(4, "read.json"), (5, "read-multipart.json")] {
+        let (e, v) = c
+            .tool(n, "mailslurper_read", serde_json::json!({"id": id(name)}))
+            .await;
+        assert!(!e && v["id"] == id(name).as_str(), "{name}: {v}");
+    }
+    // The unknown id's request is `/mail/not-an-id`: an empty item at 200.
+    let (e, v) = c
+        .tool(
+            6,
+            "mailslurper_read",
+            serde_json::json!({"id": "not-an-id"}),
+        )
+        .await;
+    assert!(
+        e && v["error"].as_str().unwrap().starts_with("not_found"),
+        "{v}"
+    );
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+}
+
+#[test]
+fn a_mailslurper_corpus_that_drifts_from_its_pin_or_its_shapes_refuses() {
+    let lock = SourceLock::parse(SOURCES).unwrap();
+    let t = TargetKind::Mailslurper;
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("c");
+    copy_dir(&corpus_dir(t), &dir);
+    check_corpus(t, &dir, &lock).expect("the copy checks");
+    // A moved config template: the index's digest is not the lock's.
+    let mut other = lock.clone();
+    other.entries.iter_mut().for_each(|e| {
+        if let Some(c) = e
+            .pin
+            .as_mut()
+            .filter(|_| e.target == t)
+            .and_then(|p| p.config.as_mut())
+        {
+            c.template.push(' ');
+        }
+    });
+    let why = check_corpus(t, &dir, &other).expect_err("must refuse");
+    assert!(
+        why.contains("config template digest is not the lock's"),
+        "{why}"
+    );
+    // A moved executable.
+    let mut other = lock.clone();
+    other.entries.iter_mut().for_each(|e| {
+        if let Some(p) = e.pin.as_mut().filter(|_| e.target == t) {
+            p.artifact.executable_sha256 = "0".repeat(64);
+        }
+    });
+    let why = check_corpus(t, &dir, &other).expect_err("must refuse");
+    assert!(why.contains("executable digest is not the lock's"), "{why}");
+    // A changed file, and a corpus that no longer records GetMail's branches.
+    let rebind = |name: &str, edit: &dyn Fn(&mut serde_json::Value)| {
+        let path = dir.join(name);
+        let mut v = json(&std::fs::read(&path).unwrap());
+        edit(&mut v);
+        let bytes = serde_json::to_vec(&v).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let mut index = json(&std::fs::read(dir.join("index.json")).unwrap());
+        for f in index["files"].as_array_mut().unwrap() {
+            if f["name"] == name {
+                f["size"] = bytes.len().into();
+                f["sha256"] = targets::sha256_hex(&bytes).into();
+            }
+        }
+        std::fs::write(dir.join("index.json"), serde_json::to_vec(&index).unwrap()).unwrap();
+    };
+    rebind("read-multipart.json", &|v| {
+        v["body"] = "<p>other</p>".into()
+    });
+    let why = check_corpus(t, &dir, &lock).expect_err("must refuse");
+    assert!(why.contains("GetMail's base64 branch"), "{why}");
+    let file = dir.join("read.json");
+    let mut bytes = std::fs::read(&file).unwrap();
+    bytes[3] ^= 1;
+    std::fs::write(&file, bytes).unwrap();
+    let why = check_corpus(t, &dir, &lock).expect_err("must refuse");
+    assert!(
+        why.contains("read.json is not the file the index binds"),
+        "{why}"
+    );
 }
 
 #[test]
