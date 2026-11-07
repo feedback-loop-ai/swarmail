@@ -1547,3 +1547,65 @@ fn the_expert_tier_is_documented_in_both_directions() {
         "agent-eval-harness AC3 amendment"
     );
 }
+
+/// The deliverability tier is documented (proposed 0131): the task is named in
+/// the README and the run plan, the product line and the operator-owned paid
+/// run are there, the decision index has its row, and the harness spec's tier
+/// list carries the dated amendment.
+#[test]
+fn the_deliverability_tier_is_documented() {
+    use swarmail_evals::tasks::{self, Tier};
+    assert_eq!(
+        tasks::tier_ids(Tier::Deliverability),
+        ["newsletter-findings"]
+    );
+    let readme = std::fs::read_to_string(root().join("evals/README.md")).unwrap();
+    let run_plan = std::fs::read_to_string(root().join("evals/run-plan.md")).unwrap();
+    for (name, text) in [("README.md", &readme), ("run-plan.md", &run_plan)] {
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for phrase in [
+            "`newsletter-findings`",
+            "--tier deliverability",
+            "1 task, 2 controls",
+            "30 paid slots",
+            "paid deliverability-tier run is the operator's",
+        ] {
+            // The run plan words the product in its own style.
+            let phrase = if name == "run-plan.md" && phrase == "1 task, 2 controls" {
+                "1 task, 2 free controls"
+            } else if name == "run-plan.md" && phrase == "30 paid slots" {
+                "30 requested paid slots"
+            } else {
+                phrase
+            };
+            assert!(flat.contains(phrase), "{name}: missing {phrase:?}");
+        }
+    }
+    let flat = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "16 default-tier tasks plus 3 hard tasks plus 5 expert tasks plus 1 deliverability task, 25 in the catalogue",
+        "There is no named trap",
+        "Swarmail is the only rule owner",
+        "never clean and never a harness error",
+        "--swarmail-http",
+        "at most sixteen re-sends",
+    ] {
+        assert!(flat.contains(phrase), "README.md: missing {phrase:?}");
+    }
+    let index = std::fs::read_to_string(root().join("docs/decisions/README.md")).unwrap();
+    let rows: Vec<_> = index
+        .lines()
+        .filter(|l| l.starts_with("| [0131]"))
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].contains("| proposed |"), "{}", rows[0]);
+    let spec = std::fs::read_to_string(root().join("specs/agent-eval-harness/spec.md")).unwrap();
+    assert!(spec.contains("straight|traps|multi_step|hard|expert|deliverability"));
+    assert!(spec.contains("amended 2026-11-07"));
+    let flat_spec = spec.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat_spec.contains("25 catalogue rows in six tiers")
+            && flat_spec.contains("AC4 and AC5 controls run all 25"),
+        "agent-eval-harness AC3 amendment"
+    );
+}

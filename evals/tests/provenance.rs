@@ -727,21 +727,24 @@ fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
     })
     .unwrap();
     assert_eq!(encoded, include_bytes!("data/catalogue-v2.json"));
-    // The full catalogue gained the expert tier (proposed 0123), so its hash
-    // moved again; the pin below is regenerated from `tasks`, never
+    // The full catalogue gained the deliverability tier (proposed 0131), so
+    // its hash moved again; the pin below is regenerated from `tasks`, never
     // hand-edited.
     assert_eq!(
         p::catalogue_hash(),
-        "a05c85d3bd20606b91acf94fb957f73dda74900e921f5dbe41456debb606ffb6"
+        "732cad370363cf64cf7f8bd1a7415202e46da4ca393c19bee755188102c4f287"
     );
     // The first nineteen entries are the catalogue the hard run recorded as
-    // `5b312d98…`: the expert tier only appends, so the default-plus-hard
-    // subset still serializes to exactly those bytes.
+    // `5b312d98…`: the expert and deliverability tiers only append, so the
+    // default-plus-hard subset still serializes to exactly those bytes.
     let through_hard = serde_json::to_vec(&swarmail_evals::tasks::Catalogue {
         schema_version: 2,
         tasks: swarmail_evals::tasks::catalogue()
             .into_iter()
-            .filter(|t| t.tier != swarmail_evals::tasks::Tier::Expert)
+            .filter(|t| {
+                swarmail_evals::tasks::DEFAULT_TIERS.contains(&t.tier)
+                    || t.tier == swarmail_evals::tasks::Tier::Hard
+            })
             .collect(),
     })
     .unwrap();
@@ -753,9 +756,29 @@ fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
         swarmail_evals::tasks::catalogue()[..19],
         swarmail_evals::tasks::catalogue()
             .into_iter()
-            .filter(|t| t.tier != swarmail_evals::tasks::Tier::Expert)
+            .filter(|t| {
+                swarmail_evals::tasks::DEFAULT_TIERS.contains(&t.tier)
+                    || t.tier == swarmail_evals::tasks::Tier::Hard
+            })
             .collect::<Vec<_>>()[..],
-        "the expert tasks are appended after the nineteen"
+        "the expert and deliverability tasks are appended after the nineteen"
+    );
+    // The first twenty-four entries are the catalogue as the expert tier left
+    // it (its full-catalogue pin, `a05c85d3…`): the deliverability task only
+    // appends.
+    assert_eq!(
+        p::sha256(
+            &serde_json::to_vec(&swarmail_evals::tasks::Catalogue {
+                schema_version: 2,
+                tasks: swarmail_evals::tasks::catalogue()[..24].to_vec(),
+            })
+            .unwrap()
+        ),
+        "a05c85d3bd20606b91acf94fb957f73dda74900e921f5dbe41456debb606ffb6"
+    );
+    assert_eq!(
+        swarmail_evals::tasks::catalogue()[24].id,
+        "newsletter-findings"
     );
     // The sixteen default-tier tasks still serialize to exactly the bytes the
     // 2026-11-01 baseline recorded as `6068b687…`: no existing task, field or
@@ -807,6 +830,11 @@ fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
         (
             "confirm-injection",
             "afb90a22654d68ffce00d2beeea3d86979088989e58d228d8ff72a54c5f766fd",
+        ),
+        // The deliverability tier's definition (proposed 0131).
+        (
+            "newsletter-findings",
+            "3c680f6ef4bc593000f21dda3308b0a9ab493cf0143f6387752bcbae37f66bca",
         ),
     ] {
         assert_eq!(p::task_hash(id).unwrap(), hash, "{id}");

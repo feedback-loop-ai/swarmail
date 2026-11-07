@@ -58,12 +58,10 @@ pub(super) fn email(id: &str, inbox: &str, to: &str) -> Email {
     mail
 }
 pub(super) fn trusted(service: &Service) {
-    service.auth.set(passing()).unwrap();
+    service.auth.set(Some(passing())).unwrap();
 }
 pub(super) fn passing() -> AuthEvidence {
     AuthEvidence {
-        policy_id: "fixture:p=none".into(),
-        observation_id: "fixture:verified".into(),
         policy_present: Fact::True,
         valid_from: Fact::True,
         dkim_pass: Fact::True,
@@ -212,7 +210,7 @@ async fn report_wait_deadline_and_zero_timeout() {
         .pin(
             &email,
             &Inputs {
-                auth: passing(),
+                auth: Some(passing()),
                 ..Inputs::default()
             },
         )

@@ -514,6 +514,7 @@ async fn helper(mode: &str) -> i32 {
     let app = App::new(&env.app_url, &env.identity).unwrap();
     match mode {
         mode if mode.starts_with("naive_") => naive_recovery(mode, &env, &app).await,
+        mode if mode.starts_with("newsletter_") => newsletter_control(mode, &env, &app).await,
         "held_idle" => {
             let marker = marker().unwrap();
             std::fs::write(&marker, b"ready").unwrap();
@@ -1751,6 +1752,80 @@ async fn naive_recovery(mode: &str, env: &AgentEnv, app: &App) -> i32 {
     if mode.contains("deadline") {
         std::future::pending::<()>().await;
     }
+    0
+}
+
+/// The scripted `newsletter-findings` controls (proposed 0131): each reads
+/// the report like the oracle, then re-sends something that must not pass.
+/// None of them completes the goal, so each scores the idle class.
+async fn newsletter_control(mode: &str, env: &AgentEnv, app: &App) -> i32 {
+    let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();
+    let first = mcp.wait_emails(&env.inbox, None, 1).await.unwrap();
+    let report = mcp
+        .call(
+            "swarmail_get_deliverability_report",
+            json!({ "id": first[0]["id"] }),
+        )
+        .await
+        .unwrap();
+    let template = app.get("/newsletter").await.unwrap().1;
+    let subject = template["subject"].as_str().unwrap().to_string();
+    let html = template["html"].as_str().unwrap().to_string();
+    let (fixed_subject, fixed_html) =
+        oracle::repair_template(&report, first[0]["html"].as_str().unwrap(), &subject, &html)
+            .unwrap();
+    let url = oracle::located_http_url(
+        first[0]["html"].as_str().unwrap(),
+        report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["rule_id"] == "link.scheme.http.v1")
+            .unwrap()["location"]["byte_offset"]
+            .as_u64()
+            .unwrap(),
+    )
+    .unwrap()
+    .to_string();
+    let (send_subject, send_html, want_status) = match mode {
+        // Nothing fixed.
+        "newsletter_unchanged" | "newsletter_cleared" => (subject, html, 200),
+        // Two of the three findings fixed: the link stays http.
+        "newsletter_partial" => (
+            oracle::sentence_case(&subject),
+            oracle::add_img_alt(&html, "Autumn Lamp").unwrap(),
+            200,
+        ),
+        // All three fixed, and a new finding bought with a subject that
+        // shouts punctuation.
+        "newsletter_traded" => (format!("{fixed_subject}!!"), fixed_html, 200),
+        // Everything fixed but the offer anchor is dropped: refused, nothing
+        // sent.
+        "newsletter_offer_dropped" => {
+            let dropped = fixed_html.replace(
+                "<p><a href=\"https://shop.example/autumn\">Claim the Autumn Lamp offer</a></p>\n",
+                "",
+            );
+            assert_ne!(dropped, fixed_html);
+            assert!(!dropped.contains("shop.example/autumn"));
+            (fixed_subject, dropped, 400)
+        }
+        other => panic!("unknown newsletter control {other}"),
+    };
+    assert!(url.starts_with("http://"));
+    if mode == "newsletter_cleared" {
+        mcp.call("swarmail_clear_inbox", json!({ "inbox": env.inbox }))
+            .await
+            .unwrap();
+    }
+    let (status, body) = app
+        .post(
+            "/newsletter",
+            json!({ "subject": send_subject, "html": send_html }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status, want_status, "{body}");
     0
 }
 

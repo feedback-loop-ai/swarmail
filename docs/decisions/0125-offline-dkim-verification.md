@@ -699,3 +699,31 @@ The record's amendment of accepted 0085 §8 is the one the note above
 records, and 0085's dated pointer already names it. §3's moves of 0120
 §4/§5, §7 and §10 now stand between two accepted records, and 0120's own
 acceptance note names them.
+
+## Dated integration note — 2026-11-06 (proposed 0126, issue #255)
+
+[0126](0126-spf-dmarc-alignment.md) builds on this record and changes no
+status. This record is accepted (operator, 2026-11-06). DMARC's use of §6's
+verdicts and the `prepare`/`verify` split change no verdict, finding, bound or
+lookup; the clock read below is a proposed amendment held in 0126 §8.
+
+- **DMARC consumes §6's verdicts, not the crate's raw results.** The crate
+  outputs that reach DMARC's alignment are exactly those whose field's
+  verdict here is a pass, `dkim.body_length_partial.v1` (it verified) or
+  `dkim.not_evaluated.v1` (a declared temporary failure, which leaves the
+  alignment Unknown). Every other verdict drops its output, so a signature
+  this record refuses (an unsigned `From`, `rsa-sha1`, an expired or
+  mismatched signature) never aligns, and an unverified `d=` equal to the From
+  domain never aligns.
+- **The shape of `collect`.** The single entry point is split into `prepare`
+  (the strict parse and the boundary and bound guards, which still produce
+  their one finding and stop) and `verify` (the verdicts, unchanged), so the
+  parse and the crate's outputs can be handed to DMARC while the cache adapter
+  is alive. No verdict, finding, bound or lookup changed.
+- **§8, the clock.** SPF adds one more reachable ambient read, the monotonic
+  lookup timer of `check_host`, proposed as a further amendment of accepted
+  0085 §8 in 0126 §8 and held for the operator. The `x=` read is unchanged.
+- **The inherited await clause.** AC11's deferred clause is delivered by 0126
+  §10: over real SMTP a signed message that passes SPF, DKIM and DMARC and
+  satisfies the whole checklist is returned by an await with
+  `no_findings_at_or_above=warning`, and an altered copy is not.

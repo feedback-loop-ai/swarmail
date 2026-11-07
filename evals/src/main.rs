@@ -90,6 +90,10 @@ enum Cmd {
     Fixture {
         #[arg(long)]
         smtp: SocketAddr,
+        /// Swarmail's HTTP address, for the tasks that read deliverability
+        /// reports.
+        #[arg(long)]
+        swarmail_http: Option<SocketAddr>,
         #[arg(long)]
         task: String,
         #[arg(long)]
@@ -648,12 +652,14 @@ fn main() -> ExitCode {
         }
         Cmd::Fixture {
             smtp,
+            swarmail_http,
             task,
             trial_id,
             seed,
             fixture_time,
         } => match rt.block_on(fixture::run_cli_with_inputs(
             smtp,
+            swarmail_http,
             &task,
             &trial_id,
             match provenance::FixtureInputs::resolve(seed.as_deref(), fixture_time.as_deref()) {
@@ -3444,7 +3450,11 @@ if [ -n "${EVAL_TEST_MATRIX_LAUNCH_LOG:-}" ]; then printf '%s\n' "$task" >> "$EV
 mv "$tmp" "$ready"
 if [ "$EVAL_TEST_MATRIX_TRIAL_MODE" = holder ]; then
   sleep 1000 2>/dev/null &
-  printf '%s\n' "$!" > "$EVAL_TEST_MATRIX_HOLDER_PID"
+  holder_tmp="$EVAL_TEST_MATRIX_HOLDER_PID.tmp.$$"
+  printf '%s\n' "$!" > "$holder_tmp"
+  touch "$EVAL_TEST_MATRIX_HOLDER_PID.entered"
+  while [ ! -e "$EVAL_TEST_MATRIX_HOLDER_PID.release" ]; do :; done
+  mv "$holder_tmp" "$EVAL_TEST_MATRIX_HOLDER_PID"
   exit 0
 fi
 if [ "$EVAL_TEST_MATRIX_TRIAL_MODE" = cleanup-unproved ]; then
@@ -4280,6 +4290,77 @@ while :; do :; done
         assert!(drained.windows(1).any(|byte| byte[0] == b'\n'));
     }
 
+    /// The one complete PID line a published identity file may hold: ASCII
+    /// decimal digits and a single `\n`, with a value in `1..=i32::MAX`.
+    /// Total over its input; a truncated prefix such as `1` of `12345` is
+    /// refused, so a partial write can never become an owned identity.
+    #[cfg(target_os = "linux")]
+    fn complete_pid_line(bytes: &[u8]) -> Option<i32> {
+        let digits = bytes.strip_suffix(b"\n")?;
+        if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        std::str::from_utf8(digits)
+            .ok()?
+            .parse::<i32>()
+            .ok()
+            .filter(|pid| *pid > 0)
+    }
+
+    /// Reads `path` exactly once and requires a complete PID line. Never a
+    /// wait condition: a writer that stops being atomic fails loudly here.
+    #[cfg(target_os = "linux")]
+    fn published_pid(label: &str, path: &std::path::Path) -> i32 {
+        let bytes = std::fs::read(path)
+            .unwrap_or_else(|error| panic!("{label} at {} unreadable: {error}", path.display()));
+        complete_pid_line(&bytes).unwrap_or_else(|| {
+            panic!(
+                "{label} at {} is not one complete PID line; bytes read: {bytes:?}",
+                path.display()
+            )
+        })
+    }
+
+    /// The `holder.pid.tmp.*` staging entries in `dir`, sorted.
+    #[cfg(target_os = "linux")]
+    fn holder_temp_entries(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("holder.pid.tmp."))
+            })
+            .collect();
+        entries.sort();
+        entries
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn holder_pid_line_is_accepted_only_when_complete() {
+        let rejected: [&[u8]; 12] = [
+            b"",
+            b"1234",
+            b"\n",
+            b"1234\n5678\n",
+            b" 1234\n",
+            b"1234 \n",
+            b"12a4\n",
+            b"0\n",
+            b"-5\n",
+            b"+5\n",
+            b"2147483648\n",
+            b"99999999999999999999\n",
+        ];
+        for input in rejected {
+            assert_eq!(complete_pid_line(input), None, "{input:?}");
+        }
+        assert_eq!(complete_pid_line(b"1234\n"), Some(1234));
+        assert_eq!(complete_pid_line(b"2147483647\n"), Some(i32::MAX));
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn matrix_post_exit_inherited_pipe_is_bounded_and_holder_is_reaped_by_the_test() {
@@ -4299,14 +4380,45 @@ while :; do :; done
             },
         );
         let holder_file = dir.path().join("holder.pid");
-        eventually("inherited stdout descriptor holder", || {
-            holder_file.is_file()
-        });
-        let holder_pid = std::fs::read_to_string(&holder_file)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        let staged_marker = dir.path().join("holder.pid.entered");
+        eventually(
+            &format!(
+                "holder.pid staging marker {} or publication at {}",
+                staged_marker.display(),
+                holder_file.display()
+            ),
+            || staged_marker.is_file() || holder_file.exists(),
+        );
+        assert!(
+            !holder_file.exists(),
+            "holder.pid at {} was published without staging its complete PID first (no {})",
+            holder_file.display(),
+            staged_marker.display()
+        );
+        let staged_entries = holder_temp_entries(dir.path());
+        assert_eq!(
+            staged_entries.len(),
+            1,
+            "exactly one staged holder.pid.tmp.* entry while the gate holds: {staged_entries:?}"
+        );
+        let staged_pid = published_pid("staged holder.pid", &staged_entries[0]);
+        std::fs::write(dir.path().join("holder.pid.release"), b"release").unwrap();
+        eventually(
+            &format!("holder.pid published at {}", holder_file.display()),
+            || holder_file.is_file(),
+        );
+        let holder_pid = published_pid("holder.pid", &holder_file);
+        assert_eq!(
+            holder_pid,
+            staged_pid,
+            "holder.pid at {} must carry the staged PID",
+            holder_file.display()
+        );
+        assert_eq!(
+            holder_temp_entries(dir.path()),
+            Vec::<std::path::PathBuf>::new(),
+            "holder.pid was renamed into place, so no holder.pid.tmp.* remains"
+        );
         let holder = matrix_identity(holder_pid).expect("holder identity");
         probe.record_identity(holder.clone());
         probe.record_ready_identity(&dir.path().join("trial.pid"));

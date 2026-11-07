@@ -66,7 +66,7 @@ fallback build below). The same commands are the local reproduction, from
 cargo fmt --all -- --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked                  # everything; the proof alone:
-cargo test --locked --test proof     # oracle 24/24 pass, null 24/24 fail, hard and expert fixed seeds, sequential refusal control
+cargo test --locked --test proof     # oracle 25/25 pass, null 25/25 fail, hard and expert fixed seeds, the newsletter controls, sequential refusal control
 ```
 
 The tests locate the Swarmail under test through `SWARMAIL_BIN`; when it is
@@ -94,7 +94,7 @@ cargo build --offline --locked --manifest-path evals/Cargo.toml
 export SWARMAIL_BIN="$PWD/target/debug/swarmail"   # adjust for CARGO_TARGET_DIR
 E=evals/target/debug/swarmail-evals
 
-$E tasks                                            # the v2 catalogue, schema 2 (16 default-tier + 3 hard + 5 expert)
+$E tasks                                            # the v2 catalogue, schema 2 (16 default-tier + 3 hard + 5 expert + 1 deliverability)
 $E trial --task signup --agent oracle               # one JSON line; exit 0
 $E trial --task signup --agent null                 # fail/gave_up; exit 1
 $E trial --task signup --agent mine -- /abs/agent --mode email
@@ -109,6 +109,7 @@ EOF
 $E matrix --tasks signup,otp,stale-otp --agents agents.json --trials 5 > runs.jsonl
 $E matrix --tier hard --agents agents.json --trials 5 > hard.jsonl   # the hard tier only
 $E matrix --tier expert --agents agents.json --trials 5 > expert.jsonl   # the expert tier only
+$E matrix --tier deliverability --agents agents.json --trials 5 > deliverability.jsonl   # the deliverability tier only
 $E report --input runs.jsonl                        # or --input - for stdin
 ```
 
@@ -248,8 +249,8 @@ real status when no named trap disqualifies it; `null` exits zero and fails.
 `inbox-isolation` (three agents on one Swarmail behind one shared SMTP
 AUTH login, `fixture-app`; each agent's address is routed to its own inbox
 by the runner's `--route-domain swarmail.test`, decision 0112) are the 16
-default-tier tasks, followed by the 3 hard-tier tasks and the 5 expert-tier
-tasks described below. Each
+default-tier tasks, followed by the 3 hard-tier tasks, the 5 expert-tier
+tasks and the 1 deliverability-tier task described below. Each
 declares the `failure_class` it provokes and the `idle_class` (`gave_up` or
 `wait_timeout`) a do-nothing agent earns. The class set is closed:
 `wrong_message`, `stale_code`, `wrong_link`, `wait_timeout`, `gave_up`,
@@ -261,7 +262,7 @@ The catalogue in order — straight: `signup`, `otp`, `magic-login`; traps:
 `reset-login`, `reset-reuse`, `invite-time`, `support-reply`,
 `inbox-isolation`; hard: `otp-backlog`, `recipient-crowd`, `digest-lookalike`;
 expert: `otp-correction`, `digest-correction`, `otp-late`, `confirm-attachment`,
-`confirm-injection`.
+`confirm-injection`; deliverability: `newsletter-findings`.
 
 Scoring precedence: infrastructure failure → `harness_error`; an agent alive
 at its deadline → `fail/budget`; the earliest named trap → fail with its
@@ -514,6 +515,68 @@ scorer's fallback, not by the named trap, as in `otp-backlog`.
 
 **The paid expert-tier run is the operator's, after merge.** Delivery runs no
 paid or networked agent and no paid admission.
+
+## The deliverability tier (proposed 0131)
+
+Proposed [0131](../docs/decisions/0131-agent-deliverability.md) (spec
+[agent-deliverability](../specs/agent-deliverability/spec.md); issue #261)
+adds a `deliverability` tier: **16 default-tier tasks plus 3 hard tasks plus 5
+expert tasks plus 1 deliverability task, 25 in the catalogue.** The tier
+measures a capability the other tiers do not: acting on Swarmail's
+deliverability report. It is outside the default product and outside `hard`
+and `expert`, so the recorded pins stay: the default tier is still `6068b687…`
+and the default-plus-hard subset still `5b312d98…`; the first 24 catalogue
+entries are unchanged.
+
+| Task | Tier | Idle class | The task | Why the report suffices |
+|---|---|---|---|---|
+| `newsletter-findings` | deliverability | `gave_up` | The application mailed the agent a newsletter carrying three findings, one per location kind: `link.scheme.http.v1` (a link), `html.img.alt-missing.v1` (a MIME part) and `spam.subject.all_caps.v1` (a header). The agent reads the report over MCP, edits the template with `GET`/`POST /newsletter` (a POST stores the template and re-sends it as a new email) and re-sends. | Each finding names its rule, location and fix hint; the oracle repairs the mail from the report alone, by `rule_id`. |
+
+There is no named trap: 0071 §1's list is unchanged, and cheating (an
+unchanged or partly fixed re-send, a finding traded for another, a dropped
+offer link, a cleared inbox) leaves the fact false and scores the declared
+idle class, `gave_up`. The task reuses the marketing flow, check and fact:
+here `marketing_completed` means "a re-sent newsletter's report is clean".
+
+**The application owns delivery; Swarmail is the only rule owner.** The
+fixture serves the template at `GET /newsletter` and accepts `POST
+/newsletter` with a JSON body of the strings `subject` and `html`, only in
+this scenario (every other task's application, and `GET /`, are
+byte-identical). After the final DATA reply, `250 2.0.0 OK: stored as {id}`
+(decision 0001), the fixture reads that id's report from the trial's own
+Swarmail (`fixture --swarmail-http <addr>`, passed by the runner only for this
+scenario) and judges only the `link.`, `html.` and `spam.` families of
+`rule_id`; it re-implements no rule. A re-send whose report has none of them
+is accepted. A report that cannot be read (404, 503, a parse failure, a
+timeout) is never clean and never a harness error once the agent can act.
+Before the agent starts, prepare checks the baseline report carries exactly
+the three ids in those families; otherwise the trial is a harness error. The
+offer anchor (`href="http://shop.example/autumn"` or its `https` form) must
+stay in the HTML; the subject and HTML are bounded, control characters are
+refused, and at most sixteen re-sends are accepted per trial.
+
+Proof is free only: the oracle passes and the null agent fails `gave_up`
+through the real trial path, and five scripted controls (unchanged re-send,
+partial fix, traded finding, dropped offer, cleared inbox) fail `gave_up`. No
+paid trial runs. The eval reads the report through the text block of the
+harness client's 2025-03-26 revision; `structuredContent` on the later
+revisions is proven by the root suite. The published fixtures are
+[`tests/fixtures/deliverability-agent/`](../tests/fixtures/deliverability-agent/README.md).
+
+```bash
+$E tasks                                    # 25 tasks: the 16 default-tier, 3 hard, 5 expert, then the 1 deliverability
+$E matrix --tier deliverability --agents agents.json --trials 5 > deliverability.jsonl
+$E baseline --tier deliverability --config /private/wrappers.json --output /tmp/baseline-deliverability --dry-run
+```
+
+`baseline --tier deliverability` is a separate, operator-selected product of 1
+task, 2 controls and 30 paid slots (1 × 6 × 5), with the same declarations,
+deadline, concurrency and controls-first discipline. The default product is
+unchanged: 32 controls and 480 paid slots.
+
+**The paid deliverability-tier run is the operator's, after merge.** Delivery
+runs no paid or networked agent, and the tier's difficulty is unmeasured until
+the operator budgets a run.
 
 ## Active scoring revision — 2026-10-25 (accepted 0071)
 

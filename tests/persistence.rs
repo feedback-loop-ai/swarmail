@@ -2210,3 +2210,155 @@ async fn a_pruned_mail_leaves_no_attachment_row() {
     assert_eq!(ids, [second]);
     assert!(!ids.contains(&first));
 }
+
+/// The two observed-envelope columns of every stored row, by id
+/// (decision 0126 §2).
+fn observed(db: &std::path::Path) -> Vec<(String, Option<String>, Option<String>)> {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT id, smtp_client_ip, smtp_helo FROM emails ORDER BY seq")
+        .unwrap();
+    stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// Mail sent over real SMTP stores the peer and the greeting name in its row
+/// before the 250, and they are still there after restarts; a seeded mail
+/// has no session behind it and stores neither.
+#[tokio::test]
+async fn the_observed_envelope_is_stored_with_the_row_and_survives_restarts() {
+    let (_dir, db) = data_file("observed-envelope");
+    let srv = serve_data_file(&db).await;
+    let smtp_id = common::smtp_raw(srv.smtp_addr, "obs", b"Subject: a\r\n\r\nbody\r\n").await;
+    // The 250 has come back: the row is already on disk with both facts.
+    assert_eq!(
+        observed(&db),
+        [(
+            smtp_id.clone(),
+            Some("127.0.0.1".into()),
+            Some("report-test".into())
+        )]
+    );
+    let (status, _) = common::http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/obs/seed",
+        Some(r#"{"to":"fixture@x.io"}"#),
+    )
+    .await;
+    assert_eq!(status, 200);
+    srv.stop().await;
+    let srv = serve_data_file(&db).await;
+    let second = send(&srv, "obs", "after restart").await;
+    srv.stop().await;
+    let rows = observed(&db);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        rows[0],
+        (
+            smtp_id,
+            Some("127.0.0.1".into()),
+            Some("report-test".into())
+        )
+    );
+    assert_eq!(
+        (&rows[1].1, &rows[1].2),
+        (&None, &None),
+        "seeded: no session"
+    );
+    assert_eq!(
+        rows[2],
+        (
+            second,
+            Some("127.0.0.1".into()),
+            Some("swarmail-test".into())
+        )
+    );
+}
+
+/// A file from before the columns serves, keeps its row, and is never
+/// backfilled: the old row's facts stay NULL while fresh mail beside it
+/// carries them.
+#[tokio::test]
+async fn a_pre_observation_data_file_keeps_unknown_facts_and_is_never_backfilled() {
+    let (_dir, db) = data_file("pre-observation");
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(PRE_METADATA_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO emails (id, inbox, seq, from_json, to_json, cc_json, recipients_json, subject,
+                received_at, received_ms, size, text, html, links_json, codes_json, raw)
+             VALUES ('legacy-row', 'legacy', 0, 'null', '[]', '[]', '[]', 'Old',
+                't', 1000, 3, NULL, NULL, '[]', '[]', CAST('From: a@x.io\r\n\r\nold' AS BLOB))",
+            [],
+        )
+        .unwrap();
+    }
+    for restart in 0..2 {
+        let srv = serve_data_file(&db).await;
+        let (status, listed) = common::http_json(
+            srv.http_addr,
+            "GET",
+            "/api/v1/inboxes/legacy/messages",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(listed.to_string().contains("legacy-row"), "{listed}");
+        if restart == 0 {
+            send(&srv, "legacy", "fresh").await;
+        }
+        srv.stop().await;
+    }
+    let rows = observed(&db);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0], ("legacy-row".into(), None, None));
+    assert_eq!(rows[1].1.as_deref(), Some("127.0.0.1"));
+}
+
+/// A stored address that is not an address refuses to serve, naming the
+/// column; an unreadable observation never reads as "no observation".
+#[tokio::test]
+async fn a_corrupt_observed_address_refuses_to_serve() {
+    let (_dir, db) = data_file("corrupt-observed");
+    let srv = serve_data_file(&db).await;
+    let id = common::smtp_raw(srv.smtp_addr, "corrupt", b"Subject: a\r\n\r\nbody\r\n").await;
+    srv.stop().await;
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute(
+            "UPDATE emails SET smtp_client_ip = 'mail.example.org' WHERE id = ?1",
+            [&id],
+        )
+        .unwrap();
+    let cfg = swarmail::config::Config {
+        smtp_listen: "127.0.0.1:0".into(),
+        http_listen: "127.0.0.1:0".into(),
+        pop3_listen: "127.0.0.1:0".into(),
+        mailslurper_listen: None,
+        max_per_inbox: 0,
+        data_file: Some(db.clone()),
+        tls_cert: None,
+        tls_key: None,
+        smtp: Default::default(),
+        pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+        dns_policy: None,
+        link_reachability: swarmail::deliverability::LinkReachability::Off,
+    };
+    let err = match swarmail::run_on(&cfg).await {
+        Ok(_) => panic!("a corrupt observed address must refuse to serve"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains("Text at index: 22") && err.contains("smtp_client_ip"),
+        "{err}"
+    );
+    // Repaired, it serves again.
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute("UPDATE emails SET smtp_client_ip = '127.0.0.1'", [])
+        .unwrap();
+    serve_data_file(&db).await.stop().await;
+}

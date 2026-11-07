@@ -133,8 +133,14 @@ fn link_findings(report: &Value) -> Vec<Value> {
     found
 }
 fn finding(rule: &str, severity: &str, offset: u64, hint: &str) -> Value {
+    // The 0122 §2.2 weight of the severity, restated (none of these ids is zero-weight).
+    let weight = match severity {
+        "info" => 1,
+        "warning" => 3,
+        other => panic!("severity {other}"),
+    };
     json!({"rule_id":rule,"severity":severity,"fix_hint":hint,
-        "location":{"kind":"link","part_path":[],"byte_offset":offset}})
+        "location":{"kind":"link","part_path":[],"byte_offset":offset},"weight":weight})
 }
 async fn serve(mode: LinkReachability) -> swarmail::RunningServer {
     start_with(|mut cfg| {
@@ -260,6 +266,17 @@ async fn link_reachability_outcomes_on_loopback() {
     // The cache slot still holds only the deterministic report.
     let (_, plain) = reach(&srv, &id, "").await;
     assert!(link_findings(&plain).is_empty());
+    // The probed response weighs and totals the composed union (0122 §2.3): the
+    // deterministic report keeps its own total, and the probed total adds exactly
+    // the observed findings' weights (a count of warnings and an info).
+    let observed: u64 = expected.iter().map(|f| f["weight"].as_u64().unwrap()).sum();
+    assert!(observed > 0);
+    assert_eq!(
+        report["total"].as_u64().unwrap(),
+        plain["total"].as_u64().unwrap() + observed,
+        "{report}"
+    );
+    assert_ne!(report["total"], plain["total"]);
     let hints = serde_json::to_string(&report).unwrap();
     assert!(!hints.contains("secret"), "no query leaks into a hint");
     // One GET each for /ok, /gone (probed once though linked twice) and
