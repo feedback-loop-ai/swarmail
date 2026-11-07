@@ -10,6 +10,7 @@ pub mod bridge;
 pub mod fixture;
 pub mod isolation;
 pub mod mail;
+pub mod mailsource;
 pub mod mcp;
 pub mod oracle;
 pub mod report;

@@ -12,6 +12,7 @@
 //! The **null** agent does nothing and exits zero.
 
 use crate::fixture::IDENTITY_HEADER;
+use crate::mailsource::{Competitor, CompetitorSource, MailSource, SwarmailSource};
 use crate::mcp::McpClient;
 use crate::tasks;
 use serde_json::{Value, json};
@@ -426,6 +427,95 @@ pub async fn run_oracle_costed(env: &AgentEnv) -> Result<OracleCost, String> {
     })
 }
 
+/// As [`run_oracle_costed`] for a competitor target: the hard tier's
+/// solutions through that backend's own adapter tools, over the bridge. The
+/// application is reached the same way as for Swarmail. A task that is not
+/// in the hard tier has no competitor solution.
+pub async fn run_oracle_competitor(env: &AgentEnv, kind: Competitor) -> Result<OracleCost, String> {
+    if !matches!(
+        env.task.as_str(),
+        "recipient-crowd" | "otp-backlog" | "digest-lookalike"
+    ) {
+        return Err(format!("{} has no competitor solution", env.task));
+    }
+    let app = App::new(&env.app_url, &env.identity)?;
+    let mut mcp = McpClient::connect(&env.mcp_url).await?;
+    let mut source = CompetitorSource::new(&mut mcp, kind);
+    solve_hard(env, &app, &mut source).await?;
+    Ok(OracleCost {
+        mcp_tool_calls: source.tool_calls(),
+        app_requests: app.requests(),
+    })
+}
+
+/// The hard tier's scripted solutions, over whichever mail source the target
+/// has. Only what differs between targets is behind [`MailSource`]; the
+/// solutions' reading of a mail is the same for all of them.
+pub async fn solve_hard<S: MailSource>(
+    env: &AgentEnv,
+    app: &App,
+    source: &mut S,
+) -> Result<(), String> {
+    match env.task.as_str() {
+        "recipient-crowd" => {
+            let mails = source.wait_emails(Some("Confirm your account"), 5).await?;
+            if mails.len() != 5 {
+                return Err(format!("expected five confirmations, saw {}", mails.len()));
+            }
+            let mine = mails
+                .iter()
+                .find(|m| {
+                    m["to"]
+                        .as_array()
+                        .is_some_and(|to| to.iter().any(|a| a["address"] == json!(env.identity)))
+                })
+                .ok_or("no confirmation addressed to my exact identity")?;
+            confirm_from_text(app, mine).await
+        }
+        "otp-backlog" => {
+            let want = tasks::OTP_BACKLOG;
+            let mails = source
+                .wait_emails(Some("Your verification code"), want)
+                .await?;
+            if mails.len() != want {
+                return Err(format!("expected {want} code mails, saw {}", mails.len()));
+            }
+            let mut newest: Option<(u32, String)> = None;
+            for mail in &mails {
+                let text = text_of(mail);
+                let minutes = requested_minutes(&text).ok_or("a code mail has no request line")?;
+                let code = six_digit_code(&text).ok_or("no six-digit code in the mail")?;
+                if newest.as_ref().is_none_or(|(best, _)| minutes < *best) {
+                    newest = Some((minutes, code));
+                }
+            }
+            let (_, code) = newest.ok_or("no code mails")?;
+            ok(
+                "verify",
+                app.post("/otp/verify", json!({ "code": code })).await?,
+            )?;
+            Ok(())
+        }
+        "digest-lookalike" => {
+            let mail = source.wait_emails(Some("Your weekly digest"), 1).await?;
+            let html = mail[0]["html"].as_str().ok_or("no HTML body")?;
+            let mut right = html_anchors(html).into_iter().filter(|(href, text)| {
+                text == tasks::DIGEST_ITEM
+                    && wrapper_destination_host(href).as_deref() == Some(tasks::DIGEST_PUBLISHER)
+            });
+            let (link, _) = right
+                .next()
+                .ok_or("no exact-title anchor on the publisher")?;
+            if right.next().is_some() {
+                return Err("more than one exact-title anchor on the publisher".to_string());
+            }
+            ok("open article", app.get(&link).await?)?;
+            Ok(())
+        }
+        other => Err(format!("{other} is not a hard-tier task")),
+    }
+}
+
 async fn solve(env: &AgentEnv, app: &App, mcp: &mut McpClient) -> Result<(), String> {
     let inbox = env.inbox.as_str();
     match env.task.as_str() {
@@ -439,23 +529,6 @@ async fn solve(env: &AgentEnv, app: &App, mcp: &mut McpClient) -> Result<(), Str
             let mails = mcp
                 .wait_emails(inbox, Some("Confirm your account"), 2)
                 .await?;
-            let mine = mails
-                .iter()
-                .find(|m| {
-                    m["to"]
-                        .as_array()
-                        .is_some_and(|to| to.iter().any(|a| a["address"] == json!(env.identity)))
-                })
-                .ok_or("no confirmation addressed to my exact identity")?;
-            confirm_from_text(app, mine).await
-        }
-        "recipient-crowd" => {
-            let mails = mcp
-                .wait_emails(inbox, Some("Confirm your account"), 5)
-                .await?;
-            if mails.len() != 5 {
-                return Err(format!("expected five confirmations, saw {}", mails.len()));
-            }
             let mine = mails
                 .iter()
                 .find(|m| {
@@ -487,47 +560,9 @@ async fn solve(env: &AgentEnv, app: &App, mcp: &mut McpClient) -> Result<(), Str
                 .await?;
             confirm_from_text(app, &mail[0]).await
         }
-        "otp-backlog" => {
-            let want = tasks::OTP_BACKLOG;
-            let mails = mcp
-                .wait_emails(inbox, Some("Your verification code"), want)
-                .await?;
-            if mails.len() != want {
-                return Err(format!("expected {want} code mails, saw {}", mails.len()));
-            }
-            let mut newest: Option<(u32, String)> = None;
-            for mail in &mails {
-                let text = text_of(mail);
-                let minutes = requested_minutes(&text).ok_or("a code mail has no request line")?;
-                let code = six_digit_code(&text).ok_or("no six-digit code in the mail")?;
-                if newest.as_ref().is_none_or(|(best, _)| minutes < *best) {
-                    newest = Some((minutes, code));
-                }
-            }
-            let (_, code) = newest.ok_or("no code mails")?;
-            ok(
-                "verify",
-                app.post("/otp/verify", json!({ "code": code })).await?,
-            )?;
-            Ok(())
-        }
-        "digest-lookalike" => {
-            let mail = mcp
-                .wait_emails(inbox, Some("Your weekly digest"), 1)
-                .await?;
-            let html = mail[0]["html"].as_str().ok_or("no HTML body")?;
-            let mut right = html_anchors(html).into_iter().filter(|(href, text)| {
-                text == tasks::DIGEST_ITEM
-                    && wrapper_destination_host(href).as_deref() == Some(tasks::DIGEST_PUBLISHER)
-            });
-            let (link, _) = right
-                .next()
-                .ok_or("no exact-title anchor on the publisher")?;
-            if right.next().is_some() {
-                return Err("more than one exact-title anchor on the publisher".to_string());
-            }
-            ok("open article", app.get(&link).await?)?;
-            Ok(())
+        "recipient-crowd" | "otp-backlog" | "digest-lookalike" => {
+            let mut source = SwarmailSource { mcp, inbox };
+            solve_hard(env, app, &mut source).await
         }
         "otp" | "stale-otp" => {
             let want = if env.task == "otp" { 1 } else { 2 };
