@@ -24,8 +24,13 @@ fn the_target_set_is_closed_and_an_unknown_value_is_refused_by_name() {
     assert!(Target::parse("").is_err());
     assert!(!Target::Swarmail.is_competitor());
     assert!(Target::Mailpit.adapter_built() && Target::Mailhog.adapter_built());
-    // MailSlurper's adapter needs source bytes this checkout does not hold.
-    assert!(Target::Mailslurper.is_competitor() && !Target::Mailslurper.adapter_built());
+    // MailSlurper's adapter is built from the source bytes the lock binds.
+    assert!(Target::Mailslurper.is_competitor() && Target::Mailslurper.adapter_built());
+    assert_eq!(Target::Mailslurper.adapter_mode(), Some("mailslurper-mcp"));
+    for t in [Target::Mailpit, Target::Mailhog, Target::Mailslurper] {
+        assert_eq!(t.adapter_mode(), Some(format!("{}-mcp", t.name()).as_str()));
+    }
+    assert_eq!(Target::Swarmail.adapter_mode(), None);
 }
 
 #[test]

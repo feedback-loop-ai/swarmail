@@ -67,9 +67,7 @@ impl Target {
             Target::Swarmail => None,
             Target::Mailpit => Some("mailpit-mcp"),
             Target::Mailhog => Some("mailhog-mcp"),
-            // Its adapter must be written from the source bytes the lock
-            // binds (decision 0092 §3), and those are not in this checkout.
-            Target::Mailslurper => None,
+            Target::Mailslurper => Some("mailslurper-mcp"),
         }
     }
 

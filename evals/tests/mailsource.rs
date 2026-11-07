@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use swarmail_evals::mail::{self, Attachment, Body, Message};
 use swarmail_evals::mailsource::{
     Competitor, CompetitorSource, MailSource, decode_mime, normalize_mailhog, normalize_mailpit,
+    normalize_mailslurper,
 };
 use swarmail_evals::mcp::McpClient;
 
@@ -218,6 +219,42 @@ async fn stand_in(kind: Competitor, messages: Vec<Value>, appear_after: usize) -
                         .to_string();
                     log.lock().unwrap().push(name.clone());
                     let text = match name.as_str() {
+                        "mailslurper_list" => {
+                            let seen = lists.fetch_add(1, Ordering::SeqCst);
+                            let shown: Vec<Value> = if seen < appear_after {
+                                Vec::new()
+                            } else {
+                                messages.iter().cloned().collect()
+                            };
+                            let page =
+                                req["params"]["arguments"]["page"].as_u64().unwrap_or(1) as usize;
+                            let items: Vec<Value> = shown
+                                .iter()
+                                .skip((page - 1) * 50)
+                                .take(50)
+                                .cloned()
+                                .collect();
+                            // An empty page leaves `mailItems` out, as the
+                            // operator observed real MailSlurper do.
+                            if items.is_empty() {
+                                json!({"totalPages": 0, "totalRecords": shown.len()}).to_string()
+                            } else {
+                                json!({"mailItems": items, "totalPages": shown.len().div_ceil(50),
+                                    "totalRecords": shown.len()})
+                                .to_string()
+                            }
+                        }
+                        "mailslurper_read" => {
+                            let want = req["params"]["arguments"]["id"]
+                                .as_str()
+                                .unwrap_or_default();
+                            messages
+                                .iter()
+                                .find(|m| m["id"] == want)
+                                .cloned()
+                                .unwrap_or(Value::Null)
+                                .to_string()
+                        }
                         "mailpit_list" | "mailhog_list" => {
                             let seen = lists.fetch_add(1, Ordering::SeqCst);
                             let shown: Vec<Value> = if seen < appear_after {
@@ -357,4 +394,205 @@ async fn a_count_that_is_never_met_is_an_error_after_the_deadline() {
     let mut mcp = McpClient::connect(&stand.url).await.unwrap();
     let mut source = CompetitorSource::new(&mut mcp, Competitor::Mailhog);
     assert!(source.wait_emails(Some("S"), 1).await.is_err());
+}
+
+fn slurper_message(id: &str, subject: &str, to: &str) -> Value {
+    json!({"id": id, "dateSent": "2026-11-07 10:00:00", "fromAddress": "app@fixture.eval",
+        "toAddresses": [to], "subject": subject, "body": format!("text of {id}"),
+        "contentType": "text/plain; charset=utf-8", "boundary": "", "transferEncoding": "",
+        "attachments": []})
+}
+
+#[test]
+fn the_mailslurper_normalizer_reads_the_body_by_its_content_type() {
+    let plain = slurper_message("m1", "Your verification code", "bob@fixture.eval");
+    let n = normalize_mailslurper(&plain).unwrap();
+    assert_eq!(
+        (n["subject"].clone(), n["text"].clone(), n["html"].clone()),
+        (
+            "Your verification code".into(),
+            "text of m1".into(),
+            Value::Null
+        )
+    );
+    assert_eq!(n["to"], json!([{"address": "bob@fixture.eval"}]));
+    let mut html = plain.clone();
+    html["contentType"] = "text/html; charset=utf-8".into();
+    html["body"] = "<p>only html</p>".into();
+    let n = normalize_mailslurper(&html).unwrap();
+    assert_eq!(
+        (n["text"].clone(), n["html"].clone()),
+        ("".into(), "<p>only html</p>".into())
+    );
+    // A multipart body goes through the one decoder MailHog's raw bodies use.
+    let mut multi = plain.clone();
+    multi["contentType"] = "multipart/alternative".into();
+    multi["boundary"] = "b1".into();
+    multi["body"] = "--b1\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\ncode =3D 123456 caf=C3=A9\r\n--b1\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\nPHA+Y29kZSAxMjM0NTY8L3A+\r\n--b1--".into();
+    let n = normalize_mailslurper(&multi).unwrap();
+    assert_eq!(n["text"].as_str().unwrap().trim_end(), "code = 123456 café");
+    assert_eq!(n["html"], "<p>code 123456</p>");
+    let mut b64 = plain.clone();
+    b64["transferEncoding"] = "base64".into();
+    b64["body"] = "Y29kZSAxMjM0NTY=".into();
+    assert_eq!(normalize_mailslurper(&b64).unwrap()["text"], "code 123456");
+    // Anything it does not know is an error, never a pass.
+    for (field, value) in [
+        ("subject", Value::Null),
+        ("toAddresses", Value::Null),
+        ("toAddresses", json!([{"address": "x@y"}])),
+        ("contentType", Value::Null),
+        ("contentType", "".into()),
+        ("contentType", "application/pdf".into()),
+        ("body", Value::Null),
+        ("transferEncoding", "uuencode".into()),
+    ] {
+        let mut broken = plain.clone();
+        broken[field] = value.clone();
+        assert!(normalize_mailslurper(&broken).is_err(), "{field}={value}");
+    }
+    let mut no_boundary = multi.clone();
+    no_boundary["boundary"] = "".into();
+    assert!(normalize_mailslurper(&no_boundary).is_err());
+    let mut bad_b64 = plain.clone();
+    bad_b64["transferEncoding"] = "base64".into();
+    bad_b64["body"] = "not base64!!".into();
+    assert!(normalize_mailslurper(&bad_b64).is_err());
+}
+
+#[tokio::test]
+async fn a_lookalike_recipient_the_substring_filter_returns_is_excluded_by_the_exact_match() {
+    // MailSlurper's `to` filter is a SQL LIKE substring match: `ann@x` also
+    // returns `joann@x`. The source lists whatever the adapter returns and
+    // normalizes each mail's recipients exactly; the solutions then keep only
+    // the mail whose address equals their identity.
+    let msgs = vec![
+        slurper_message("a", "Confirm your account", "ann@fixture.eval"),
+        slurper_message("b", "Confirm your account", "joann@fixture.eval"),
+    ];
+    let stand = stand_in(Competitor::Mailslurper, msgs, 0).await;
+    let mut mcp = McpClient::connect(&stand.url).await.unwrap();
+    let mut source = CompetitorSource::new(&mut mcp, Competitor::Mailslurper);
+    let got = source
+        .wait_emails(Some("Confirm your account"), 2)
+        .await
+        .unwrap();
+    let mine: Vec<&Value> = got
+        .iter()
+        .filter(|m| {
+            m["to"]
+                .as_array()
+                .is_some_and(|to| to.iter().any(|a| a["address"] == json!("ann@fixture.eval")))
+        })
+        .collect();
+    assert_eq!(got.len(), 2, "the substring match returned the lookalike");
+    assert_eq!(mine.len(), 1, "the exact match excludes it");
+    assert_eq!(mine[0]["to"], json!([{"address": "ann@fixture.eval"}]));
+}
+
+#[tokio::test]
+async fn the_mailslurper_source_pages_by_fifty_polls_an_empty_page_and_uses_only_its_tools() {
+    let msgs: Vec<Value> = (0..51)
+        .map(|i| {
+            slurper_message(
+                &format!("m{i:02}"),
+                "Your verification code",
+                "u@fixture.eval",
+            )
+        })
+        .collect();
+    // The first listing is empty (and leaves `mailItems` out): accept is not
+    // presumed to be storage, so the source polls.
+    let stand = stand_in(Competitor::Mailslurper, msgs, 1).await;
+    let mut mcp = McpClient::connect(&stand.url).await.unwrap();
+    let mut source = CompetitorSource::new(&mut mcp, Competitor::Mailslurper);
+    let got = source
+        .wait_emails(Some("Your verification code"), 51)
+        .await
+        .unwrap();
+    assert_eq!(got.len(), 51);
+    assert_eq!(got[50]["text"], "text of m50");
+    let calls = stand.calls.lock().unwrap().clone();
+    assert_eq!(
+        calls.iter().filter(|c| *c == "mailslurper_read").count(),
+        51
+    );
+    assert_eq!(
+        calls.iter().filter(|c| *c == "mailslurper_list").count(),
+        3,
+        "one empty poll, then two pages: {calls:?}"
+    );
+    assert!(
+        calls.iter().all(|c| c.starts_with("mailslurper_")),
+        "{calls:?}"
+    );
+    assert_eq!(source.tool_calls() as usize, calls.len());
+}
+
+fn corpus(target: &str, file: &str) -> Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../docs/evals/wire-corpus")
+        .join(target)
+        .join(file);
+    serde_json::from_slice(&std::fs::read(&path).unwrap_or_else(|e| panic!("{path:?}: {e}")))
+        .unwrap()
+}
+
+#[test]
+fn the_normalizers_map_every_real_upstream_response_in_the_wire_corpus() {
+    // Real Mailpit and MailHog responses to synthetic fixture-shaped mail,
+    // captured from the pinned executables (docs/evals/wire-corpus).
+    for (file, text, html) in [
+        ("read.json", "code 111111", None),
+        (
+            "read-multipart.json",
+            "code = 123456 café",
+            Some("<p>code 123456</p>"),
+        ),
+    ] {
+        let pit = normalize_mailpit(&corpus("mailpit", file)).unwrap();
+        let hog = normalize_mailhog(&corpus("mailhog", file)).unwrap();
+        for (name, n) in [("mailpit", &pit), ("mailhog", &hog)] {
+            assert_eq!(
+                n["text"].as_str().unwrap().trim_end(),
+                text,
+                "{name} {file}"
+            );
+            assert_eq!(n["html"].as_str().map(str::trim_end), html, "{name} {file}");
+            assert_eq!(
+                n["to"],
+                json!([{"address": "ann@corpus.invalid"}]),
+                "{name} {file}"
+            );
+        }
+        assert_eq!(pit["subject"], hog["subject"], "{file}");
+    }
+    // Every item MailHog lists normalizes, and each recipient is exact: the
+    // lookalike is a different address, whatever the upstream filter returns.
+    let list = corpus("mailhog", "list.json");
+    let mut to: Vec<String> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            let n = normalize_mailhog(m).unwrap();
+            n["to"][0]["address"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    to.sort();
+    assert_eq!(
+        to,
+        [
+            "ann@corpus.invalid",
+            "ann@corpus.invalid",
+            "joann@corpus.invalid"
+        ]
+    );
+    // The filtered search returned all three: the upstream filter is a
+    // substring match on both, so the exact match is the oracle's.
+    assert_eq!(
+        corpus("mailpit", "search-filtered.json")["messages_count"],
+        3
+    );
+    assert_eq!(corpus("mailhog", "search-filtered.json")["total"], 3);
 }

@@ -28,6 +28,8 @@ const LIST_DEADLINE: Duration = Duration::from_secs(30);
 const LIST_POLL: Duration = Duration::from_millis(100);
 /// The adapters' page ceiling.
 const PAGE: u64 = 250;
+/// MailSlurper's fixed page size.
+const SLURPER_PAGE: u64 = 50;
 /// Messages one control will read: a bound, not a claim.
 const MAX_MESSAGES: u64 = 5_000;
 
@@ -70,6 +72,7 @@ impl MailSource for SwarmailSource<'_> {
 pub enum Competitor {
     Mailpit,
     Mailhog,
+    Mailslurper,
 }
 
 /// A competitor reached through its adapter's tools over the bridge.
@@ -100,29 +103,41 @@ impl CompetitorSource<'_> {
         match self.kind {
             Competitor::Mailpit => "mailpit_list",
             Competitor::Mailhog => "mailhog_list",
+            Competitor::Mailslurper => "mailslurper_list",
         }
     }
 
     /// Every stored message's summary (Mailpit) or full item (MailHog),
     /// paged to completion with the adapter's own `total`.
     async fn listing(&mut self) -> Result<Vec<Value>, String> {
-        let key = match self.kind {
-            Competitor::Mailpit => "messages",
-            Competitor::Mailhog => "items",
+        let (key, total_key) = match self.kind {
+            Competitor::Mailpit => ("messages", "total"),
+            Competitor::Mailhog => ("items", "total"),
+            Competitor::Mailslurper => ("mailItems", "totalRecords"),
         };
         let tool = self.list_tool();
         let mut out: Vec<Value> = Vec::new();
         loop {
-            let page = self
-                .mcp
-                .call(tool, json!({"start": out.len(), "limit": PAGE}))
-                .await?;
-            let total = page["total"]
+            // MailSlurper pages a fixed 50 by page number; the others take an
+            // offset and a size.
+            let args = match self.kind {
+                Competitor::Mailslurper => {
+                    json!({"page": out.len() as u64 / SLURPER_PAGE + 1})
+                }
+                _ => json!({"start": out.len(), "limit": PAGE}),
+            };
+            let page = self.mcp.call(tool, args).await?;
+            let total = page[total_key]
                 .as_u64()
-                .ok_or_else(|| format!("{tool}: no total"))?;
-            let items = page[key]
-                .as_array()
-                .ok_or_else(|| format!("{tool}: no {key}"))?;
+                .ok_or_else(|| format!("{tool}: no {total_key}"))?;
+            // MailSlurper may leave `mailItems` out of an empty page (decision
+            // 0118 §4); every other absence is an error.
+            let none = Vec::new();
+            let items = match (page[key].as_array(), self.kind) {
+                (Some(items), _) => items,
+                (None, Competitor::Mailslurper) if page.get(key).is_none() => &none,
+                (None, _) => return Err(format!("{tool}: no {key}")),
+            };
             // Mailpit's `total` is the whole mailbox; MailHog's is the same
             // for a plain listing.
             out.extend(items.iter().cloned());
@@ -174,6 +189,11 @@ impl MailSource for CompetitorSource<'_> {
                 }
                 // The item already carries the raw message.
                 Competitor::Mailhog => normalize_mailhog(m)?,
+                Competitor::Mailslurper => {
+                    let id = m["id"].as_str().ok_or("a MailSlurper item has no id")?;
+                    let full = self.mcp.call("mailslurper_read", json!({"id": id})).await?;
+                    normalize_mailslurper(&full)?
+                }
             });
         }
         Ok(out)
@@ -187,6 +207,7 @@ impl MailSource for CompetitorSource<'_> {
 fn subject_of(kind: Competitor, m: &Value) -> Option<&str> {
     match kind {
         Competitor::Mailpit => m.get("Subject")?.as_str(),
+        Competitor::Mailslurper => m.get("subject")?.as_str(),
         Competitor::Mailhog => m
             .get("Content")?
             .get("Headers")?
@@ -242,6 +263,50 @@ pub fn normalize_mailhog(m: &Value) -> Result<Value, String> {
         "subject": subject,
         "text": body.text.unwrap_or_default(),
         "html": body.html,
+        "to": to,
+    }))
+}
+
+/// A MailSlurper mail (`GET /mail/{id}`) in the solutions' shape. Its `body`
+/// is read according to the `contentType`, `boundary` and `transferEncoding`
+/// MailSlurper stores beside it: the three are put back in front of the body
+/// as the headers they were, and the one MIME decoder above reads the result,
+/// so a multipart body is decoded by the same code as MailHog's and there is
+/// no second decoder. `toAddresses` must be a list of address strings; any
+/// other element shape is an error until a real response shows it (never a
+/// guess), and the addresses are kept exactly, because MailSlurper's own `to`
+/// filter is a substring match and the solutions match the recipient exactly.
+pub fn normalize_mailslurper(m: &Value) -> Result<Value, String> {
+    let subject = m["subject"]
+        .as_str()
+        .ok_or("a MailSlurper mail has no subject")?;
+    let to: Vec<Value> = m["toAddresses"]
+        .as_array()
+        .ok_or("a MailSlurper mail has no toAddresses")?
+        .iter()
+        .map(|a| {
+            a.as_str()
+                .map(|addr| json!({"address": addr}))
+                .ok_or("a MailSlurper recipient is not an address string")
+        })
+        .collect::<Result<_, _>>()?;
+    let ctype = m["contentType"]
+        .as_str()
+        .filter(|c| !c.trim().is_empty())
+        .ok_or("a MailSlurper mail has no contentType")?;
+    let body = m["body"].as_str().ok_or("a MailSlurper mail has no body")?;
+    let mut head = format!("Content-Type: {ctype}");
+    if let Some(b) = m["boundary"].as_str().filter(|b| !b.is_empty()) {
+        head.push_str(&format!("; boundary=\"{b}\""));
+    }
+    if let Some(te) = m["transferEncoding"].as_str().filter(|t| !t.is_empty()) {
+        head.push_str(&format!("\r\nContent-Transfer-Encoding: {te}"));
+    }
+    let parts = decode_mime(&format!("{head}\r\n\r\n{body}"))?;
+    Ok(json!({
+        "subject": subject,
+        "text": parts.text.unwrap_or_default(),
+        "html": parts.html,
         "to": to,
     }))
 }
