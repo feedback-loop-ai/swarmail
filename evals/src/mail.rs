@@ -58,6 +58,12 @@ struct Session {
 
 /// Read one (possibly multiline) reply and return its code.
 async fn read_reply(reader: &mut BufReader<OwnedReadHalf>) -> Result<u16, String> {
+    read_reply_text(reader).await.map(|(code, _)| code)
+}
+
+/// As [`read_reply`], also returning the reply's final line (the text after
+/// the code and its separator).
+async fn read_reply_text(reader: &mut BufReader<OwnedReadHalf>) -> Result<(u16, String), String> {
     let mut lines = 0;
     loop {
         let mut line = Vec::new();
@@ -87,7 +93,7 @@ async fn read_reply(reader: &mut BufReader<OwnedReadHalf>) -> Result<u16, String
                     return Err("reply has too many lines".to_string());
                 }
             }
-            None | Some(b' ') => return Ok(code),
+            None | Some(b' ') => return Ok((code, text.get(4..).unwrap_or("").to_string())),
             Some(_) => return Err(format!("malformed reply {text:?}")),
         }
     }
@@ -130,6 +136,18 @@ pub fn dot_stuff(data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The id Swarmail stored a mail under, read from its final DATA reply
+/// (`250 2.0.0 OK: stored as {id}`; decision 0001). `None` for any other
+/// text, so a caller never keys on a guess.
+pub fn stored_id(reply_text: &str) -> Option<String> {
+    let id = reply_text.strip_prefix("2.0.0 OK: stored as ")?;
+    (!id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+    .then(|| id.to_string())
+}
+
 /// Deliver one message: AUTH PLAIN as `inbox`, one recipient, one DATA.
 pub async fn send(
     smtp: SocketAddr,
@@ -138,13 +156,25 @@ pub async fn send(
     to: &str,
     data: &[u8],
 ) -> SendResult {
+    send_stored(smtp, smtp_identity, from, to, data).await.0
+}
+
+/// As [`send`], also returning the stored id when the final DATA reply is
+/// `250 2.0.0 OK: stored as {id}`. The id is never part of an [`Attempt`].
+pub async fn send_stored(
+    smtp: SocketAddr,
+    smtp_identity: &str,
+    from: &str,
+    to: &str,
+    data: &[u8],
+) -> (SendResult, Option<String>) {
     let attempt = |stage: &str, code: u16| Attempt {
         stage: stage.to_string(),
         code,
     };
     let stream = match tokio::time::timeout(IO_TIMEOUT, TcpStream::connect(smtp)).await {
         Ok(Ok(s)) => s,
-        _ => return SendResult::Transport(attempt("connect", 0)),
+        _ => return (SendResult::Transport(attempt("connect", 0)), None),
     };
     let (r, w) = stream.into_split();
     let mut s = Session {
@@ -166,27 +196,27 @@ pub async fn send(
         };
         match reply {
             Ok(code) if code == want => {}
-            Ok(code) => return classify(stage, code),
-            Err(_) => return SendResult::Transport(attempt(stage, 0)),
+            Ok(code) => return (classify(stage, code), None),
+            Err(_) => return (SendResult::Transport(attempt(stage, 0)), None),
         }
     }
     match s.command("DATA").await {
         Ok(354) => {}
-        Ok(code) => return classify("data", code),
-        Err(_) => return SendResult::Transport(attempt("data", 0)),
+        Ok(code) => return (classify("data", code), None),
+        Err(_) => return (SendResult::Transport(attempt("data", 0)), None),
     }
     let mut body = dot_stuff(data);
     body.extend_from_slice(b".\r\n");
     if s.write(&body).await.is_err() {
-        return SendResult::Transport(attempt("dot", 0));
+        return (SendResult::Transport(attempt("dot", 0)), None);
     }
-    let result = match read_reply(&mut s.reader).await {
-        Ok(250) => SendResult::Delivered(attempt("dot", 250)),
-        Ok(code) => classify("dot", code),
-        Err(_) => SendResult::Transport(attempt("dot", 0)),
+    let (result, id) = match read_reply_text(&mut s.reader).await {
+        Ok((250, text)) => (SendResult::Delivered(attempt("dot", 250)), stored_id(&text)),
+        Ok((code, _)) => (classify("dot", code), None),
+        Err(_) => (SendResult::Transport(attempt("dot", 0)), None),
     };
     let _ = s.command("QUIT").await;
-    result
+    (result, id)
 }
 
 fn classify(stage: &str, code: u16) -> SendResult {
@@ -413,6 +443,24 @@ mod tests {
         assert_eq!(dot_stuff(b"a\n.b\r\n..c"), b"a\r\n..b\r\n...c\r\n".to_vec());
         assert_eq!(dot_stuff(b".\r\n"), b"..\r\n".to_vec());
         assert_eq!(dot_stuff(b"x.y\r\n"), b"x.y\r\n".to_vec());
+    }
+
+    #[test]
+    fn the_stored_id_is_read_only_from_the_exact_final_reply() {
+        assert_eq!(
+            stored_id("2.0.0 OK: stored as abc-123_X"),
+            Some("abc-123_X".to_string())
+        );
+        for bad in [
+            "",
+            "2.0.0 OK: stored as ",
+            "2.0.0 OK: stored as a b",
+            "2.0.0 OK: stored as a/b",
+            "2.0.0 OK: queued as abc",
+            "OK: stored as abc",
+        ] {
+            assert_eq!(stored_id(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

@@ -1272,6 +1272,28 @@ mod tests {
         }
     }
 
+    // The served modern description hand-writes the rule set id; a rule-set
+    // bump that leaves the text stale fails here (decision 0131 §1).
+    #[test]
+    fn modern_report_description_names_the_current_rule_set() {
+        assert!(MODERN_REPORT_DESCRIPTION.contains(crate::deliverability::RULE_SET_ID));
+        for revision in [Revision::June, Revision::November] {
+            let tools = tool_descriptors(revision);
+            let report = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "swarmail_get_deliverability_report")
+                .unwrap();
+            assert!(
+                report["description"]
+                    .as_str()
+                    .unwrap()
+                    .contains(crate::deliverability::RULE_SET_ID)
+            );
+        }
+    }
+
     #[test]
     fn tool_rate_uses_exact_monotonic_windows() {
         // Literal contract, deliberately not derived from the production

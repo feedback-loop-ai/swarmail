@@ -38,8 +38,8 @@ default-tier tasks (the whole catalogue when it was approved): 32 free controls
 (one oracle and one null per task), and 480 requested paid slots (16 × 6 × 5).
 Inbox-isolation has three simultaneous agents within its slot; slots are not
 agent session counts. The catalogue now holds 16 default-tier tasks plus 3 hard
-ones plus 5 expert ones; `baseline` without `--tier` still plans exactly the
-approved 16.
+ones plus 5 expert ones plus 1 deliverability one; `baseline` without `--tier`
+still plans exactly the approved 16.
 
 The catalogue's ids, in order, are `signup`, `otp`, `magic-login`, `stale-otp`,
 `confirm-decoys`, `sibling-addresses`, `entity-url`, `i18n-subject`,
@@ -47,7 +47,8 @@ The catalogue's ids, in order, are `signup`, `otp`, `magic-login`, `stale-otp`,
 `invite-time`, `support-reply`, `inbox-isolation` (the approved 16) and then
 `otp-backlog`, `recipient-crowd`, `digest-lookalike` (the hard tier) and then
 `otp-correction`, `digest-correction`, `otp-late`, `confirm-attachment`,
-`confirm-injection` (the expert tier).
+`confirm-injection` (the expert tier) and then `newsletter-findings` (the
+deliverability tier).
 
 ## The hard-tier run (proposed 0117)
 
@@ -91,6 +92,30 @@ Comparability: rows of the default product compare with the 2026-11-01
 baseline by task id and per-task `definition_sha256`, which are unchanged for
 the sixteen; the catalogue hash is the live catalogue's identity and is not the
 comparison key.
+
+## The deliverability-tier run (proposed 0131)
+
+Proposed [0131](../docs/decisions/0131-agent-deliverability.md) adds one
+`deliverability` task, `newsletter-findings`: the agent repairs a failing
+newsletter from Swarmail's deliverability report and re-sends it (see the
+[README](README.md#the-deliverability-tier-proposed-0131)). It is outside
+`hard` and `expert`, so their products and the recorded `5b312d98…` catalogue
+are untouched.
+
+`baseline --tier deliverability` is a separate product: 1 task, 2 free
+controls (one oracle and one null) and 30 requested paid slots (1 × 6 × 5),
+with the same six declarations, 600000 ms deadline, concurrency one and
+controls-first admission.
+
+```bash
+$E baseline --tier deliverability --config /private/wrappers.json --output /tmp/baseline-deliverability --dry-run
+# Only the operator executes without --dry-run, after the six-model authenticated smoke:
+$E baseline --tier deliverability --config /private/wrappers.json --output /tmp/baseline-deliverability
+```
+
+**The paid deliverability-tier run is the operator's, after merge.** Delivery
+proves the task with the oracle, the null agent and five scripted controls
+only.
 
 ## The expert-tier run (0123)
 
@@ -191,7 +216,8 @@ fabricated suffix is performed by the coordinator.
 
 1. Run the fresh free oracle/null matrix over every task of the selected
    product (the 16 default-tier tasks, the 3 hard ones with `--tier hard`, or the
-   5 expert ones with `--tier expert`), in
+   5 expert ones with `--tier expert`, or the deliverability one with
+   `--tier deliverability`), in
    task → agent → repetition order, retaining controls.jsonl and controls/.
 2. Require strict complete v2 rows bound to this invocation's prelaunch plan,
    unique cell/trial identities, catalogue/task definitions, declared builtins,

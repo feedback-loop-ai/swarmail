@@ -164,5 +164,73 @@ self-check, before answering.
 
 ## Implementation notes
 
-(Filled by the implementer: the R1.2 mutation run, gate outputs, and any
-deviation with its reason.)
+Filled by the implementer, 2026-11-07, on `eec703a` (from `main` `50095c8`).
+
+**R1.2 mutation (T1).** `mcp::tests::modern_report_description_names_the_current_rule_set`
+passes. With `MODERN_REPORT_DESCRIPTION`'s "rule set swarmail-html/7" edited to
+`swarmail-html/6` it fails (`assertion failed:
+MODERN_REPORT_DESCRIPTION.contains(crate::deliverability::RULE_SET_ID)`); the
+literal was restored and `git diff 50095c8 -- src/ ':!src/static/llms.txt'`
+has no removed line and only that test added. `RULE_SET_ID` is unchanged.
+
+**No production change (T2).** Root production lines changed: zero. The root
+changes are one inline `#[cfg(test)]` test in `src/mcp.rs`, the served
+`src/static/llms.txt` paragraph, `tests/deliverability.rs` (R1.3 witness,
+published-fixture test, guide and llms pins) and `tests/fixtures/deliverability-agent/`.
+
+**Gates, all run locked on the candidate.**
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all -- --check` | clean (root and `evals/`) |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | clean (root and `evals/`) |
+| `cargo test --workspace --locked` | every suite green (719 lib tests, 29 in `tests/deliverability.rs`) |
+| `cargo build --locked --bin swarmail` | built; its `target/debug/swarmail` is `SWARMAIL_BIN` below |
+| `cd evals && SWARMAIL_BIN=… cargo test --locked` | every suite green: lib 151, `proof` 15 (oracle 25/25 pass, null 25/25 fail, the five newsletter controls), `provenance` 29, `fixture` 27, `scoring` 31, `boundary` 23, `baseline` 9, `runner` 38, `report` 41, `wrappers` 22, `recipe` 15, `identity` 5, `trial_isolation` 15 |
+| `bash scripts/coverage-gate.sh` | pass, exact 100/100/100 (31260 lines, 2134 branches, 3126 functions) |
+| `bash scripts/coverage-gate.sh selftest` | pass |
+| `bash scripts/publish-guard-test.sh` | OK |
+| `bash scripts/seal-branch-test.sh` | 7 cases and 10 mutants passed |
+| `cargo deny check licenses` | licenses ok |
+| `brokkr compile --bundle` over `.brokkr/recipes/*/` | **not run: this seat has no `brokkr` binary.** The verify seat runs it. No file under `.brokkr/` changed. |
+
+No `Cargo.toml`, `Cargo.lock`, `evals/Cargo.lock`, `deny.toml`, `.github/`,
+`scripts/` or `.brokkr/` change; no dependency added; no paid trial run; no
+load proof was needed or run (trials are sequential per 0076).
+
+**Evidence for the pins.** The first 24 catalogue entries hash to `a05c85d3…`
+(the expert tier's full-catalogue pin) when re-serialized from `tasks`, and
+independently from the golden file with python; the default tier is still
+`6068b687…`, the default-plus-hard subset `5b312d98…`; the full 25-task
+catalogue is `732cad37…` and `newsletter-findings`' definition `3c680f6e…`
+(both computed from `tests/data/catalogue-v2.json` with python, not copied
+from the code under test). `GET /` of two other tasks was captured from the
+unmodified fixture of `eec703a` (built in a scratch tree) and equals the
+new fixture's bytes (the port aside); that capture is now the `MAIN_INDEX`
+constant, asserted for every other task.
+
+**Deviations and decisions the design left open.**
+
+1. *Goal wording (R2.4).* The prompt renderer treats every `{…}` as a
+   placeholder, so the goal cannot carry the literal body `{"subject",
+   "html"}`; it says "a JSON body of the two string members subject and html"
+   instead. Every other R2.4 phrase is present and a unit test pins them.
+2. *`mail::send_stored`.* Returns `(SendResult, Option<String>)`; `stored_id`
+   accepts only `2.0.0 OK: stored as {id}` with an id of `[A-Za-z0-9_-]+`.
+3. *Prepare refusal codes.* A missing `--swarmail-http` is 412 (nothing
+   enqueued or sent); an unreadable or wrong baseline report is 500, after the
+   mail was sent. Both are harness errors in the runner.
+4. *`runner::fixture_args`.* The fixture argv is built by one small function
+   so "no `--swarmail-http` for any other task" is a unit test over the whole
+   catalogue, not an inspection of a spawned process.
+5. *`entropy_proofs` exemption.* `production_construction_keeps_secrets_independent_of_public_seed`
+   asserted that every task mints secret material; `newsletter-findings` mints
+   none (its state is the public template), so it is asserted to mint none.
+6. *Harness spec amendment.* `specs/agent-eval-harness/spec.md` gained a dated
+   (2026-11-07, proposed 0131) tier-list and AC3 amendment, as 0117 and 0123
+   did; `evals/tests/boundary.rs` pins it. No accepted record's text changed.
+7. *Guide excerpt.* The "For agents" excerpt shows `"rule_set_id": "…"`, not a
+   literal id, so #337's bump leaves the guide untouched; the description guard
+   (T1) is the one place that fails if the constant moves without the served text.
+8. *Coverage.* `evals/` is outside the root denominator (0055); every new
+   root line is test code, so the exact gate is unchanged at 100%.

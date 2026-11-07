@@ -90,6 +90,10 @@ enum Cmd {
     Fixture {
         #[arg(long)]
         smtp: SocketAddr,
+        /// Swarmail's HTTP address, for the tasks that read deliverability
+        /// reports.
+        #[arg(long)]
+        swarmail_http: Option<SocketAddr>,
         #[arg(long)]
         task: String,
         #[arg(long)]
@@ -648,12 +652,14 @@ fn main() -> ExitCode {
         }
         Cmd::Fixture {
             smtp,
+            swarmail_http,
             task,
             trial_id,
             seed,
             fixture_time,
         } => match rt.block_on(fixture::run_cli_with_inputs(
             smtp,
+            swarmail_http,
             &task,
             &trial_id,
             match provenance::FixtureInputs::resolve(seed.as_deref(), fixture_time.as_deref()) {

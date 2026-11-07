@@ -631,6 +631,19 @@ unavailable. An incomplete scan at deadline is unavailable; a complete insuffici
 scan keeps the usual timeout with its exact count. Shutdown keeps its existing error.
 The option is refused on list/count; absent means existing behavior.
 
+For agents (decision 0131): read swarmail_get_deliverability_report for the id of the
+message you sent (the id in the 250 2.0.0 OK: stored as {id} reply, or from a wait
+or search). Fix each finding from its rule_id, location and fix_hint, then send a NEW
+message (stored mail is never edited, decision 0005) and read the new message's
+report. Filter by rule_id family (link., html., spam.): under the default DNS policy
+the bulk., spf., dkim. and dmarc. findings remain, so no_findings_at_or_above cannot
+say that content is clean. An isError, not-found or unavailable report is not a clean
+report, and empty findings do not imply deliverability. The report is bounded to 256
+findings and 65536 compact bytes and excess is an error, never truncation. rule_set_id
+moves when the report's bytes move: ignore unknown members and match rule ids, not whole
+bodies. Published fixtures: tests/fixtures/deliverability-agent/ (newsletter-failing.eml,
+newsletter-fixed.eml); the eval task newsletter-findings measures this loop.
+
 Cache: 128 Weak-identity slots per Store, exact immutable inputs and rule version,
 four admitted blocking jobs retained through cancellation. Up to 256 findings and
 65536 compact JSON bytes per cached report. Inclusive metadata limits are
