@@ -14,6 +14,9 @@
 #[path = "../benches/mail_compare/mailpit_mcp.rs"]
 mod mailpit_mcp;
 #[allow(dead_code)]
+#[path = "../benches/mail_compare/mcp.rs"]
+mod mcp;
+#[allow(dead_code)]
 #[path = "../benches/mail_compare/protocol.rs"]
 mod protocol;
 #[allow(dead_code)]
@@ -3018,7 +3021,11 @@ async fn the_adapter_speaks_closed_bounded_jsonrpc_and_refuses_safely() {
         (serde_json::Value::Null, (-32700).into())
     );
     c.raw(b"[]").await;
-    assert_eq!(c.recv().await["error"]["code"], -32600, "batches refuse");
+    assert_eq!(
+        c.recv().await["error"]["code"],
+        -32600,
+        "an empty batch refuses"
+    );
     c.raw(&[b'x'; 9000]).await;
     let r = c.recv().await;
     assert_eq!(r["error"]["code"], -32600, "an overlong line refuses: {r}");
@@ -3605,9 +3612,14 @@ fn the_wire_driver_builds_no_frame_of_its_own() {
         let text = std::fs::read_to_string(format!("benches/mail_compare/{src}")).unwrap();
         assert!(!text.contains("Frame {"), "{src} builds a frame by hand");
     }
-    let text = std::fs::read_to_string("benches/mail_compare/mailpit_mcp.rs").unwrap();
-    // The struct, its impl, the constructor's signature and its body.
+    // The struct, its impl, the constructor's signature and its body:
+    // all in the generic half, none in a backend.
+    let text = std::fs::read_to_string("benches/mail_compare/mcp.rs").unwrap();
     assert_eq!(text.matches("Frame {").count(), 4);
+    for src in ["mailpit_mcp.rs"] {
+        let text = std::fs::read_to_string(format!("benches/mail_compare/{src}")).unwrap();
+        assert!(!text.contains("Frame {"), "{src} builds a frame by hand");
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -4279,4 +4291,295 @@ async fn a_real_three_target_smoke_run_reconciles_every_message_and_wait_and_sea
             "{t}"
         );
     }
+}
+
+// ---- the generic adapter half: batches (proposed decision 0129 §6) ---------
+
+/// An upstream that counts every request it receives and answers each with
+/// an empty page; a target holding `hang` is never answered.
+async fn counting_upstream(
+    hang: &'static str,
+) -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = seen.clone();
+    let addr = responder(Box::new(move |t: &str| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if !hang.is_empty() && t.contains(hang) {
+            return None;
+        }
+        Some((200, page_json(0, 0, &[])))
+    }))
+    .await;
+    (addr, seen)
+}
+
+fn upstream_requests(seen: &std::sync::atomic::AtomicUsize) -> usize {
+    seen.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn list_member(id: i64) -> serde_json::Value {
+    serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": {"name": "mailpit_list", "arguments": {"limit": 1}}})
+}
+
+async fn initialized(addr: std::net::SocketAddr, bounds: mailpit_mcp::Bounds) -> Mcp {
+    let mut c = Mcp::start(addr, bounds, 1 << 20);
+    c.init().await;
+    c
+}
+
+#[tokio::test]
+async fn a_batch_of_one_and_of_sixteen_is_answered_with_one_ordered_array() {
+    let (addr, seen) = counting_upstream("").await;
+    let bounds = mailpit_mcp::Bounds {
+        max_line: 8192,
+        ..small_bounds()
+    };
+    let mut c = initialized(addr, bounds).await;
+    for n in [1usize, 16] {
+        let before = upstream_requests(&seen);
+        let batch: Vec<_> = (0..n as i64)
+            .map(|i| match i % 3 {
+                0 => list_member(100 + i),
+                1 => serde_json::json!({"jsonrpc": "2.0", "id": 100 + i, "method": "ping"}),
+                _ => serde_json::json!({"jsonrpc": "2.0", "id": format!("s{i}"),
+                    "method": "tools/list"}),
+            })
+            .collect();
+        c.send(serde_json::Value::Array(batch)).await;
+        let r = c.recv().await;
+        let replies = r.as_array().unwrap_or_else(|| panic!("one array, got {r}"));
+        assert_eq!(replies.len(), n, "{r}");
+        for (i, reply) in replies.iter().enumerate() {
+            let want = match i % 3 {
+                2 => serde_json::json!(format!("s{i}")),
+                _ => serde_json::json!(100 + i as i64),
+            };
+            assert_eq!(reply["id"], want, "member order is kept: {r}");
+        }
+        let calls = (0..n).filter(|i| i % 3 == 0).count();
+        assert_eq!(
+            upstream_requests(&seen) - before,
+            calls,
+            "one request per call"
+        );
+    }
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+}
+
+#[tokio::test]
+async fn an_empty_or_oversized_batch_is_one_null_id_error_and_runs_nothing() {
+    let (addr, seen) = counting_upstream("").await;
+    let mut c = initialized(addr, small_bounds()).await;
+    let seventeen: Vec<_> = (0..17).map(list_member).collect();
+    for batch in [serde_json::json!([]), serde_json::Value::Array(seventeen)] {
+        c.send(batch).await;
+        let r = c.recv().await;
+        assert!(r.is_object(), "one error object, not an array: {r}");
+        assert!(r["id"].is_null(), "{r}");
+        assert_eq!(r["error"]["code"], -32600, "{r}");
+    }
+    assert_eq!(upstream_requests(&seen), 0, "a refusal executes nothing");
+    // The cap is the one Swarmail's envelope holds.
+    assert_eq!(mcp::MAX_BATCH, swarmail::mcp::MCP_BATCH_CAP);
+    let r = c.request(7, "ping", serde_json::json!({})).await;
+    assert_eq!(r["result"], serde_json::json!({}));
+}
+
+#[tokio::test]
+async fn a_notifications_only_batch_writes_nothing() {
+    let (addr, seen) = counting_upstream("").await;
+    let mut c = initialized(addr, small_bounds()).await;
+    c.send(serde_json::json!([
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 5}}
+    ]))
+    .await;
+    // The very next message written is the ping's: nothing came before it.
+    let r = c.request(9, "ping", serde_json::json!({})).await;
+    assert_eq!(r["result"], serde_json::json!({}));
+    assert_eq!(upstream_requests(&seen), 0);
+}
+
+#[tokio::test]
+async fn initialize_inside_a_batch_is_refused_and_duplicate_ids_are_answered_as_sent() {
+    let (addr, seen) = counting_upstream("").await;
+    let mut c = Mcp::start(addr, small_bounds(), 1 << 20);
+    c.send(
+        serde_json::json!([{"jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-03-26"}}]),
+    )
+    .await;
+    let r = c.recv().await;
+    assert_eq!(r[0]["id"], 1, "{r}");
+    assert_eq!(r[0]["error"]["code"], -32600, "{r}");
+    // It did not initialize the session.
+    let r = c.request(2, "tools/list", serde_json::json!({})).await;
+    assert_eq!(r["error"]["code"], -32600, "{r}");
+    c.init().await;
+    c.send(serde_json::json!([list_member(5), list_member(5), 17, {"id": 6}]))
+        .await;
+    let r = c.recv().await;
+    let r = r.as_array().unwrap();
+    assert_eq!(r.len(), 4, "{r:?}");
+    assert_eq!((&r[0]["id"], &r[1]["id"]), (&5.into(), &5.into()));
+    assert!(r[0]["result"].is_object() && r[1]["result"].is_object());
+    // Invalid members are answered where they stood, with a null id.
+    assert_eq!(r[2]["error"]["code"], -32600);
+    assert!(r[2]["id"].is_null());
+    assert_eq!(r[3]["error"]["code"], -32600);
+    assert_eq!(upstream_requests(&seen), 2, "both duplicates ran");
+}
+
+#[tokio::test]
+async fn a_member_whose_reply_would_cross_the_reply_bound_gets_its_own_error() {
+    // Each page is about 100 bytes of JSON per message; the bound leaves
+    // room for one small reply and one large one is refused alone.
+    let big: Vec<String> = (0..40).map(|i| format!("id{i:04}")).collect();
+    let big_refs: Vec<&str> = big.iter().map(String::as_str).collect();
+    let big_page = page_json(40, 0, &big_refs);
+    let addr = responder(Box::new(move |t: &str| {
+        Some(if t.ends_with("limit=2") {
+            (200, big_page.clone())
+        } else {
+            (200, page_json(0, 0, &[]))
+        })
+    }))
+    .await;
+    let bounds = mailpit_mcp::Bounds {
+        max_reply: 2600,
+        ..small_bounds()
+    };
+    let mut c = initialized(addr, bounds).await;
+    let large = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "mailpit_list", "arguments": {"limit": 2}}});
+    c.send(serde_json::json!([list_member(1), large, list_member(3)]))
+        .await;
+    let r = c.recv().await;
+    let r = r.as_array().unwrap();
+    assert_eq!(r.len(), 3, "{r:?}");
+    let (e1, v1) = tool_result(&r[0]);
+    let (e2, v2) = tool_result(&r[1]);
+    assert!(!e1, "{v1}");
+    assert!(e2, "the over-bound member alone is refused: {v2}");
+    assert!(v2["error"].as_str().unwrap().starts_with("reply_too_large"));
+    assert_eq!(r[1]["id"], 2);
+    assert!(r[2]["result"].is_object(), "later members still run");
+}
+
+#[tokio::test]
+async fn a_full_queue_refuses_every_request_member_and_runs_nothing() {
+    let (addr, seen) = counting_upstream("start=0&limit=1").await;
+    let bounds = mailpit_mcp::Bounds {
+        max_pending: 1,
+        ..small_bounds()
+    };
+    let mut c = initialized(addr, bounds).await;
+    // One call holds the only slot: its upstream never answers.
+    c.send(list_member(1)).await;
+    let before = loop {
+        let n = upstream_requests(&seen);
+        if n > 0 {
+            break n;
+        }
+        tokio::task::yield_now().await;
+    };
+    c.send(
+        serde_json::json!([list_member(2), {"jsonrpc": "2.0", "id": 3, "method": "ping"},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"}]),
+    )
+    .await;
+    let r = c.recv().await;
+    let r = r.as_array().unwrap();
+    assert_eq!(r.len(), 2, "{r:?}");
+    for (reply, id) in r.iter().zip([2, 3]) {
+        assert_eq!(reply["id"], id, "{r:?}");
+        assert_eq!(reply["error"]["code"], -32000, "{r:?}");
+    }
+    assert_eq!(upstream_requests(&seen), before, "nothing ran");
+    // A single call over the cap is refused the same way.
+    c.send(list_member(4)).await;
+    assert_eq!(c.recv().await["error"]["code"], -32000);
+}
+
+#[tokio::test]
+async fn a_batch_line_over_the_line_bound_is_refused_and_the_next_line_still_works() {
+    let (addr, seen) = counting_upstream("").await;
+    // The default bound is 64 KiB.
+    let mut c = initialized(addr, mailpit_mcp::Bounds::default()).await;
+    let pad = " ".repeat(64 << 10);
+    c.raw(format!("[{pad}{}]", list_member(1)).as_bytes()).await;
+    let r = c.recv().await;
+    assert_eq!(r["error"]["code"], -32600, "{r}");
+    assert!(r["id"].is_null());
+    let r = c.request(2, "ping", serde_json::json!({})).await;
+    assert_eq!(r["result"], serde_json::json!({}));
+    assert_eq!(upstream_requests(&seen), 0);
+}
+
+#[tokio::test]
+async fn eof_in_the_middle_of_a_batch_ends_cleanly_without_a_reply() {
+    let (addr, seen) = counting_upstream("limit=1").await;
+    let mut c = initialized(addr, small_bounds()).await;
+    c.send(serde_json::json!([list_member(1), list_member(2)]))
+        .await;
+    while upstream_requests(&seen) == 0 {
+        tokio::task::yield_now().await;
+    }
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+    let mut rest = String::new();
+    use tokio::io::AsyncReadExt;
+    c.r.read_to_string(&mut rest).await.unwrap();
+    assert!(rest.is_empty(), "no partial array was written: {rest:?}");
+    assert_eq!(upstream_requests(&seen), 1, "the second member never ran");
+}
+
+#[tokio::test]
+async fn cancelling_one_batch_member_cancels_only_that_member() {
+    // Member 10's upstream request never answers; member 11's does.
+    let addr = responder(Box::new(|t: &str| {
+        if t.contains("start=7&") {
+            None
+        } else {
+            Some((200, page_json(0, 0, &[])))
+        }
+    }))
+    .await;
+    let mut c = initialized(addr, small_bounds()).await;
+    let held = serde_json::json!({"jsonrpc": "2.0", "id": 10, "method": "tools/call",
+        "params": {"name": "mailpit_list", "arguments": {"start": 7, "limit": 1}}});
+    c.send(serde_json::json!([held, list_member(11), list_member(12)]))
+        .await;
+    // A member waiting its turn can be cancelled too.
+    c.send(
+        serde_json::json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": {"requestId": 12}}),
+    )
+    .await;
+    c.send(
+        serde_json::json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": {"requestId": 10}}),
+    )
+    .await;
+    let r = c.recv().await;
+    let r = r.as_array().unwrap();
+    assert_eq!(r.len(), 1, "only the uncancelled member answers: {r:?}");
+    assert_eq!(r[0]["id"], 11);
+    assert!(r[0]["result"].is_object());
+}
+
+#[test]
+fn the_mailpit_tool_list_digest_is_the_one_protocol_v2_froze() {
+    let protocol: serde_json::Value =
+        serde_json::from_slice(&std::fs::read("docs/evals/protocol.json").unwrap()).unwrap();
+    let frozen = protocol["budgets"]["adapter"]["tools_sha256"]
+        .as_str()
+        .unwrap();
+    let built = mcp::tools_sha256::<mailpit_mcp::Mailpit>(&mailpit_mcp::Bounds::default());
+    assert_eq!(built, frozen, "the split changed Mailpit's tool list");
 }

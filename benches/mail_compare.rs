@@ -19,6 +19,8 @@
 
 #[path = "mail_compare/mailpit_mcp.rs"]
 mod mailpit_mcp;
+#[path = "mail_compare/mcp.rs"]
+mod mcp;
 #[path = "mail_compare/protocol.rs"]
 mod protocol;
 #[path = "mail_compare/records.rs"]
