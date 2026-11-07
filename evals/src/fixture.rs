@@ -1303,6 +1303,7 @@ fn flow_facts(flow: Flow, f: &Facts) -> Value {
 struct Shared {
     private: Mutex<Private>,
     smtp: SocketAddr,
+    smtp_auth: mail::SmtpAuth,
     admin_secret: String,
 }
 
@@ -1319,7 +1320,15 @@ impl Shared {
             let Some(out) = self.lock().outbound.get(&seq).cloned() else {
                 continue;
             };
-            let result = mail::send(self.smtp, &out.smtp_identity, FROM, &out.to, &out.data).await;
+            let result = mail::send_auth(
+                self.smtp,
+                self.smtp_auth,
+                &out.smtp_identity,
+                FROM,
+                &out.to,
+                &out.data,
+            )
+            .await;
             let mut p = self.lock();
             if !p.frozen {
                 p.record_attempt(seq, &result);
@@ -2062,6 +2071,9 @@ async fn admin_flow_state(
 /// How a fixture is started.
 pub struct FixtureConfig {
     pub smtp: SocketAddr,
+    /// The dialogue's AUTH step; `Plain` unless the target's frozen
+    /// `smtp_auth` fact is `none`.
+    pub smtp_auth: mail::SmtpAuth,
     pub task: Task,
     pub trial_id: String,
     pub admin_secret: String,
@@ -2102,6 +2114,7 @@ pub async fn start(cfg: FixtureConfig) -> std::io::Result<Running> {
             cfg.inputs,
         )),
         smtp: cfg.smtp,
+        smtp_auth: cfg.smtp_auth,
         admin_secret: cfg.admin_secret,
     });
     let public_router = Router::new()
@@ -2160,6 +2173,16 @@ pub async fn run_cli_with_inputs(
     trial_id: &str,
     inputs: crate::provenance::FixtureInputs,
 ) -> Result<(), String> {
+    run_cli_with_auth(smtp, mail::SmtpAuth::Plain, task_id, trial_id, inputs).await
+}
+/// As [`run_cli_with_inputs`], with the target's `smtp_auth` fact.
+pub async fn run_cli_with_auth(
+    smtp: SocketAddr,
+    smtp_auth: mail::SmtpAuth,
+    task_id: &str,
+    trial_id: &str,
+    inputs: crate::provenance::FixtureInputs,
+) -> Result<(), String> {
     inputs.validate()?;
     let task = tasks::find(task_id).ok_or_else(|| format!("unknown task {task_id}"))?;
     let admin_secret = std::env::var(ADMIN_SECRET_ENV)
@@ -2172,6 +2195,7 @@ pub async fn run_cli_with_inputs(
         .map_err(|e| e.to_string())?;
     let running = start(FixtureConfig {
         smtp,
+        smtp_auth,
         task,
         trial_id: trial_id.to_string(),
         admin_secret,
@@ -2515,6 +2539,7 @@ mod publication_proofs {
         let state = Arc::new(Shared {
             private: Mutex::new(private),
             smtp: "127.0.0.1:1".parse().unwrap(),
+            smtp_auth: mail::SmtpAuth::Plain,
             admin_secret: "test-bearer".into(),
         });
         let router = Router::new()
@@ -2877,6 +2902,7 @@ mod hard_layout_proofs {
         Arc::new(Shared {
             private: Mutex::new(p),
             smtp: "127.0.0.1:1".parse().unwrap(),
+            smtp_auth: mail::SmtpAuth::Plain,
             admin_secret: "secret".into(),
         })
     }

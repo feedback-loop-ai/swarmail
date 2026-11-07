@@ -92,6 +92,7 @@ impl Rig {
         let sw = start_swarmail();
         let running = fixture::start(FixtureConfig {
             smtp: sw.smtp,
+            smtp_auth: swarmail_evals::mail::SmtpAuth::Plain,
             task: tasks::find(task).unwrap(),
             trial_id: "wire".into(),
             admin_secret: SECRET.into(),

@@ -130,9 +130,50 @@ pub fn dot_stuff(data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Whether the SMTP dialogue authenticates (proposed decision 0129 §2): the
+/// one per-target fixture fact. `Plain` is the dialogue every target but
+/// one gets; `None` leaves out the AUTH step and nothing else, for a target
+/// that does not accept the fixture's AUTH PLAIN. It is recorded in the
+/// product record and the row settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SmtpAuth {
+    #[default]
+    Plain,
+    None,
+}
+
+impl SmtpAuth {
+    pub fn parse(value: &str) -> Option<SmtpAuth> {
+        match value {
+            "plain" => Some(SmtpAuth::Plain),
+            "none" => Some(SmtpAuth::None),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SmtpAuth::Plain => "plain",
+            SmtpAuth::None => "none",
+        }
+    }
+}
+
 /// Deliver one message: AUTH PLAIN as `inbox`, one recipient, one DATA.
 pub async fn send(
     smtp: SocketAddr,
+    smtp_identity: &str,
+    from: &str,
+    to: &str,
+    data: &[u8],
+) -> SendResult {
+    send_auth(smtp, SmtpAuth::Plain, smtp_identity, from, to, data).await
+}
+
+/// As [`send`], with the AUTH step left out when `auth` is `None`.
+pub async fn send_auth(
+    smtp: SocketAddr,
+    auth: SmtpAuth,
     smtp_identity: &str,
     from: &str,
     to: &str,
@@ -151,14 +192,17 @@ pub async fn send(
         reader: BufReader::new(r),
         writer: w,
     };
-    let auth = B64.encode(format!("\0{smtp_identity}\0eval"));
-    let steps: [(&str, Option<String>, u16); 5] = [
-        ("greeting", None, 220),
-        ("ehlo", Some("EHLO fixture.eval".to_string()), 250),
-        ("auth", Some(format!("AUTH PLAIN {auth}")), 235),
-        ("mail_from", Some(format!("MAIL FROM:<{from}>")), 250),
-        ("rcpt", Some(format!("RCPT TO:<{to}>")), 250),
-    ];
+    let token = B64.encode(format!("\0{smtp_identity}\0eval"));
+    let steps: Vec<(&str, Option<String>, u16)> = [
+        Some(("greeting", None, 220)),
+        Some(("ehlo", Some("EHLO fixture.eval".to_string()), 250)),
+        (auth == SmtpAuth::Plain).then(|| ("auth", Some(format!("AUTH PLAIN {token}")), 235)),
+        Some(("mail_from", Some(format!("MAIL FROM:<{from}>")), 250)),
+        Some(("rcpt", Some(format!("RCPT TO:<{to}>")), 250)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     for (stage, line, want) in steps {
         let reply = match line {
             None => read_reply(&mut s.reader).await,

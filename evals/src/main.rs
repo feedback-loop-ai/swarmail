@@ -90,6 +90,10 @@ enum Cmd {
     Fixture {
         #[arg(long)]
         smtp: SocketAddr,
+        /// `plain` (the default dialogue) or `none` (leave out the AUTH
+        /// step, for a target that does not accept AUTH PLAIN).
+        #[arg(long, default_value = "plain")]
+        smtp_auth: String,
         #[arg(long)]
         task: String,
         #[arg(long)]
@@ -648,12 +652,17 @@ fn main() -> ExitCode {
         }
         Cmd::Fixture {
             smtp,
+            smtp_auth,
             task,
             trial_id,
             seed,
             fixture_time,
-        } => match rt.block_on(fixture::run_cli_with_inputs(
+        } => match rt.block_on(fixture::run_cli_with_auth(
             smtp,
+            match swarmail_evals::mail::SmtpAuth::parse(&smtp_auth) {
+                Some(a) => a,
+                None => return fail("smtp_auth_invalid"),
+            },
             &task,
             &trial_id,
             match provenance::FixtureInputs::resolve(seed.as_deref(), fixture_time.as_deref()) {
