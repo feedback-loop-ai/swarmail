@@ -211,3 +211,86 @@ proposed status. It weakens no accepted ruling.
   dots, an alphabet widened only to what the wire corpus shows) before any
   request. Mailpit's tool list is unchanged, so its frozen `tools_sha256`
   holds; its schema keeps the older `maxLength` and the server is stricter.
+
+## Addendum — 2026-11-07 (operator ruling: the source-built MailSlurper)
+
+This addendum records the operator's ruling of 2026-11-07 on which MailSlurper
+the comparison measures, under the same proposed status. The first addendum
+above is not edited. It weakens no accepted ruling. The ruling, as the second
+rerun (`second-rerun-of-339-operator-dir-e9c4d893`) received it:
+
+> The official release-1.15.0 linux executable is published as a result: it
+> does not start with its default SQLite storage (CGO_ENABLED=0 stub). The
+> comparison's MailSlurper is a cgo build from the pinned release source,
+> labelled "built from source". It may be pinned even though it reports
+> v1.14.1 under tag release-1.15.0; record that. Record the ruling as a dated
+> addendum to 0129.
+
+Authority is that ruling, not this note.
+
+- **The published executable's failure.** The release asset
+  `mailslurper-1.15.0-linux.zip` (sha256
+  `48f2f9ba090f5385301477406b4f6e08f7bfbba0619c635ee591d6e6af3e55f6`,
+  member `mailslurper` sha256
+  `0cd9416b766deb26eed8aa01ad0873d06725a3464fdb9ac3cc82201e2c232627`) exits with
+  status 1 at startup on the shipped SQLite config: "Binary was compiled with
+  'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub". It never
+  opens a listener. That is the result, and it is kept in the lock as
+  `artifact.official_release` with its stderr, as bytes. No launcher reads it,
+  and it was not launched again.
+- **The build that is measured.** The executable is `mailslurper` with sha256
+  `eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff`
+  (19942072 bytes), built from the pinned source tarball (sha256
+  `83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f`) in
+  `docker.io/library/golang:1.18.1-bullseye@sha256:3b1a72af045ad0fff9fe8e00736baae76d70ff51325ac5bb814fe4754044b972`
+  (go1.18.1) with `CGO_ENABLED=1`, `go mod verify` ("all modules verified"),
+  `GOPROXY=off GOFLAGS=-mod=readonly` and `go build -trimpath`, no `-ldflags`
+  and no tags. `go generate` was skipped, and the committed `www.go` was used.
+  It is one build, not a reproducible one: a rebuild that differs is a new
+  pin and a new product id, never a digest to force. The lock binds the
+  inputs (`artifact.build`), and its evidence is committed under
+  `docs/evals/sources/mailslurper/build/`.
+- **The version report.** The build logs `Starting MailSlurper Server v1.14.1`
+  under tag `release-1.15.0`. The tagged source hard-codes
+  `SERVER_VERSION "1.14.1"` (`cmd/mailslurper/mailslurper.go:26`), and the
+  published executable logs the same line. The lock records it in
+  `version_output` and `version_note`, the product record's MailSlurper tuple
+  repeats it, and the verifier refuses a product that disagrees with the lock.
+- **What the label claims.** "Built from source" claims that these bytes were
+  built from the pinned, tag-named source as recorded. It does not claim to
+  reproduce upstream's release, and none of the lock, the product record, the
+  README or this addendum calls the build the release artifact. It differs
+  from upstream's release recipe (glibc and bullseye instead of musl and
+  alpine, no `-s -w`, `-trimpath`) without changing a route or a wire byte;
+  being able to store mail at all is the reason for the ruling.
+- **The first addendum's open question.** That addendum left "which MailSlurper
+  executable the pin is" to the operator. This ruling answers it. The AUTH
+  probe the first addendum required ran against this build, through the
+  launcher: EHLO advertises no AUTH, and the `AUTH PLAIN` line draws `221 Bye`
+  (twice, because the reviewed source says one goodbye per worker error) and a
+  close, with no `235` and no `334`. So `smtp_auth: none` rests on the source
+  and on the probe, and the published executable was not probed.
+- **The lock fields.** Lock v4's MailSlurper entry is edited in place, because
+  v4 exists only on this branch and nothing committed binds the changed
+  fields. The artifact kind `built_from_source` carries `sha256` equal to
+  `executable_sha256`, no member, a locally computed digest basis and no
+  upstream digest, with `download` the release page. It requires `build`
+  (`source_sha256` equal to the tagged archive's, a builder image pinned by
+  digest, toolchain, flags) and `official_release`, and the validator refuses
+  each on any other kind. `binary_build_provenance` is observed (the tag
+  commit and the build's `PROVENANCE.md`). The new document kind `git_commit`
+  and the existing `git_tree` bind a lightweight tag's tree: the release
+  commit `068acffdcd8960f248ea438c3b7ee51ead601bd2` names root tree
+  `5f29f08a747241992f5e8ffc25ca8fb35d550729`, whose captured listing rehashes
+  to that id, and each root-level capture is the blob that tree names. The
+  tarball was extracted into a new scratch directory and `git write-tree`
+  gave the same tree, so the build is from the pinned source. The tree was
+  unresolved before the supply held the commit and tree objects.
+- **The glibc floor.** The build links the host's glibc dynamically (the
+  builder image ships glibc 2.31), so it needs glibc 2.31 or newer. On a host
+  without it the launch fails loudly: the launcher's corroborated binds never
+  appear. It cannot mis-measure, and CI launches no MailSlurper binary.
+- **No change to 0092 or 0093.** Their digest and attribution rules are met by
+  the fields above. 0091 §1 asks for official evidence; for MailSlurper in this
+  story it is met by the official source plus this labelled source build,
+  under the ruling, and 0091's 2026-11-07 addendum points here.

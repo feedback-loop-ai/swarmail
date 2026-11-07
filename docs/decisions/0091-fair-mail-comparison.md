@@ -155,3 +155,9 @@ this note.
   [0129](0129-agent-suite-comparison.md). The ruling is recorded here; 0129
   records only what implements it. No paid session is authorized, and the
   planned 240 sessions are confirmed by the operator separately.
+- **MailSlurper's official evidence (§1).** For MailSlurper in this story, §1's
+  official evidence is met by the official source plus the labelled
+  source-built artifact, under the operator's 2026-11-07 ruling recorded in
+  [0129](0129-agent-suite-comparison.md)'s second addendum: the published
+  linux executable does not start, and the comparison's MailSlurper is a cgo
+  build of the pinned release source, labelled "built from source".
