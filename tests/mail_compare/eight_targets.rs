@@ -3820,12 +3820,38 @@ fn does_not_start_refused_on_v2() {
 fn plan_yields_no_coordinate_for_a_does_not_start_target() {
     let p = Protocol::parse(PROTOCOL_V3).unwrap();
     let plan = runner::plan(&p);
-    assert!(!plan.is_empty());
     assert!(plan.iter().all(|c| c.target != TargetKind::Mailslurper));
+    // The exact count, from the protocol's own profiles: every launched
+    // target gets three coordinates (send, visible, verified) per throughput
+    // profile and three (present, future, empty) per wait profile, for each
+    // repetition that profile runs. Nine targets, one of them not starting.
+    let per_target: usize = (0..6u32)
+        .map(|rep| {
+            3 * p.throughput.iter().filter(|t| t.repetitions > rep).count()
+                + 3 * p.waits.iter().filter(|w| w.repetitions > rep).count()
+        })
+        .sum();
+    assert!(per_target > 0);
+    assert_eq!(
+        p.throughput
+            .iter()
+            .map(|t| t.repetitions)
+            .chain(p.waits.iter().map(|w| w.repetitions))
+            .max(),
+        Some(6),
+        "the count above is over the protocol's six repetitions"
+    );
+    assert_eq!(p.targets.len(), 9);
+    assert_eq!(plan.len(), (p.targets.len() - 1) * per_target);
     for t in protocol::declared_competitors(&p) {
-        assert!(plan.iter().any(|c| c.target == t), "{t}");
+        assert_eq!(plan.iter().filter(|c| c.target == t).count(), per_target);
     }
-    assert!(plan.iter().any(|c| c.target == TargetKind::Swarmail));
+    assert_eq!(
+        plan.iter()
+            .filter(|c| c.target == TargetKind::Swarmail)
+            .count(),
+        per_target
+    );
     // The row keeps its slot in every rotation: the denominator is the suite.
     assert!(
         p.statistics
@@ -3833,6 +3859,17 @@ fn plan_yields_no_coordinate_for_a_does_not_start_target() {
             .iter()
             .all(|o| o.contains(&TargetKind::Mailslurper))
     );
+    // launch_order is the rotation minus the published row, in rotation order.
+    for rep in 0..p.statistics.orders.len() as u32 {
+        let want: Vec<_> = p
+            .order(rep)
+            .iter()
+            .copied()
+            .filter(|t| *t != TargetKind::Mailslurper)
+            .collect();
+        assert_eq!(p.launch_order(rep).collect::<Vec<_>>(), want);
+        assert_eq!(want.len(), 8);
+    }
 }
 
 #[test]
@@ -5242,6 +5279,186 @@ fn eight_target_smoke_fixture_is_a_valid_draft_that_cannot_launch_yet() {
         protocol::declared_competitors(&p).len(),
         TargetKind::ALL.len() - 2
     );
+}
+
+fn strings(a: &[&str]) -> Vec<String> {
+    a.iter().map(|s| (*s).to_owned()).collect()
+}
+
+/// `--bin` values for every launched target of the committed protocol 3.
+fn v3_bins(p: &Protocol) -> Vec<String> {
+    p.launch_order(0).map(|t| format!("{t}=/x/{t}")).collect()
+}
+
+#[test]
+fn flags_repeat_bin_and_runtime_only() {
+    let f = runner::flags(&strings(&[
+        "--runtime",
+        "greenmail=/jre",
+        "--runtime",
+        "alkemio-mailslurper=/musl",
+        "--bin",
+        "swarmail=/s",
+        "--bin",
+        "mailpit=/m",
+        "--mode",
+        "smoke",
+    ]))
+    .unwrap();
+    assert_eq!(
+        f["runtime"],
+        ["greenmail=/jre", "alkemio-mailslurper=/musl"]
+    );
+    assert_eq!(f["bin"], ["swarmail=/s", "mailpit=/m"]);
+    assert_eq!(f["mode"], ["smoke"]);
+    for twice in ["protocol", "sources", "output", "mode"] {
+        let why = runner::flags(&strings(&[
+            &format!("--{twice}"),
+            "a",
+            &format!("--{twice}"),
+            "b",
+        ]))
+        .unwrap_err();
+        assert_eq!(why, format!("--{twice} given twice"));
+    }
+    assert!(
+        runner::flags(&strings(&["stray"]))
+            .unwrap_err()
+            .contains("unexpected")
+    );
+    assert!(
+        runner::flags(&strings(&["--bin"]))
+            .unwrap_err()
+            .contains("needs a value")
+    );
+}
+
+#[test]
+fn launch_specs_take_two_runtimes() {
+    let p = Protocol::parse(PROTOCOL_V3).unwrap();
+    let lock = lock4(v4());
+    let specs = runner::launch_specs(
+        &p,
+        &lock,
+        &v3_bins(&p),
+        &strings(&["greenmail=/jre", "alkemio-mailslurper=/musl"]),
+    )
+    .unwrap();
+    // The official MailSlurper row is published as not starting: no spec.
+    assert_eq!(specs.len(), TargetKind::ALL.len() - 1);
+    assert!(!specs.contains_key(&TargetKind::Mailslurper));
+    // GreenMail execs its JRE with the jar as the artifact; the Alkemio row
+    // execs its musl loader with the extracted binary as the artifact.
+    let g = &specs[&TargetKind::Greenmail];
+    assert_eq!(g.binary, Path::new("/jre").join("bin/java"));
+    assert_eq!(g.extra.artifact.as_deref(), Some(Path::new("/x/greenmail")));
+    let a = &specs[&TargetKind::AlkemioMailslurper];
+    assert_eq!(a.binary, Path::new("/musl").join("lib/ld-musl-x86_64.so.1"));
+    assert_eq!(
+        a.extra.artifact.as_deref(),
+        Some(Path::new("/x/alkemio-mailslurper"))
+    );
+    // The others run their own binary directly.
+    assert_eq!(
+        specs[&TargetKind::Inbucket].binary,
+        Path::new("/x/inbucket")
+    );
+    assert!(specs[&TargetKind::Inbucket].extra.artifact.is_none());
+    assert_eq!(
+        specs[&TargetKind::Swarmail].binary,
+        Path::new("/x/swarmail")
+    );
+    // A pin that needs a runtime refuses without one, and one that has none
+    // refuses one, and a runtime for a row the protocol does not launch.
+    let why =
+        runner::launch_specs(&p, &lock, &v3_bins(&p), &strings(&["greenmail=/jre"])).unwrap_err();
+    assert!(
+        why.contains("--runtime alkemio-mailslurper=DIR is required"),
+        "{why}"
+    );
+    let why = runner::launch_specs(
+        &p,
+        &lock,
+        &v3_bins(&p),
+        &strings(&["greenmail=/jre", "alkemio-mailslurper=/m", "inbucket=/r"]),
+    )
+    .unwrap_err();
+    assert!(
+        why.contains("--runtime inbucket is given but its pin has no runtime"),
+        "{why}"
+    );
+    let why = runner::launch_specs(
+        &p,
+        &lock,
+        &v3_bins(&p),
+        &strings(&["greenmail=/jre", "alkemio-mailslurper=/m", "mailslurper=/r"]),
+    )
+    .unwrap_err();
+    assert!(
+        why.contains("--runtime mailslurper names a target"),
+        "{why}"
+    );
+}
+
+#[test]
+fn launch_specs_refuse_a_bin_for_a_does_not_start_target() {
+    let p = Protocol::parse(PROTOCOL_V3).unwrap();
+    let lock = lock4(v4());
+    let mut bins = v3_bins(&p);
+    bins.push("mailslurper=/x/mailslurper".into());
+    let why = runner::launch_specs(
+        &p,
+        &lock,
+        &bins,
+        &strings(&["greenmail=/jre", "alkemio-mailslurper=/musl"]),
+    )
+    .unwrap_err();
+    assert!(
+        why.contains("--bin mailslurper names a target the protocol does not declare or publishes as not starting"),
+        "{why}"
+    );
+    // A launched target without its --bin refuses by name.
+    let few: Vec<String> = v3_bins(&p)
+        .into_iter()
+        .filter(|b| !b.starts_with("inbucket="))
+        .collect();
+    let why = runner::launch_specs(
+        &p,
+        &lock,
+        &few,
+        &strings(&["greenmail=/jre", "alkemio-mailslurper=/musl"]),
+    )
+    .unwrap_err();
+    assert!(why.contains("--bin inbucket=PATH is required"), "{why}");
+    // Malformed values and unknown targets refuse.
+    let why = runner::launch_specs(&p, &lock, &strings(&["nopath"]), &[]).unwrap_err();
+    assert!(why.contains("--bin takes TARGET=PATH"), "{why}");
+    let why = runner::launch_specs(&p, &lock, &strings(&["nobody=/x"]), &[]).unwrap_err();
+    assert!(why.contains("unknown target"), "{why}");
+}
+
+#[test]
+fn launch_specs_refuse_a_runtime_given_twice_for_one_target() {
+    let p = Protocol::parse(PROTOCOL_V3).unwrap();
+    let lock = lock4(v4());
+    let why = runner::launch_specs(
+        &p,
+        &lock,
+        &v3_bins(&p),
+        &strings(&[
+            "greenmail=/jre",
+            "greenmail=/other",
+            "alkemio-mailslurper=/musl",
+        ]),
+    )
+    .unwrap_err();
+    assert_eq!(why, "--runtime greenmail given twice");
+    let mut bins = v3_bins(&p);
+    bins.push("swarmail=/again".into());
+    let why = runner::launch_specs(&p, &lock, &bins, &[]).unwrap_err();
+    assert_eq!(why, "--bin swarmail given twice");
+    let why = runner::launch_specs(&p, &lock, &v3_bins(&p), &strings(&["greenmail"])).unwrap_err();
+    assert!(why.contains("--runtime takes TARGET=DIR"), "{why}");
 }
 
 /// The nine-target smoke fixture with every competitor published as not

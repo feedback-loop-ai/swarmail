@@ -1225,6 +1225,18 @@ impl Protocol {
     pub fn order(&self, rep: u32) -> &[TargetKind] {
         &self.statistics.orders[rep as usize % self.statistics.orders.len()]
     }
+
+    /// The targets a run launches in repetition `rep`, in order: the
+    /// rotation minus every published does-not-start target, which keeps its
+    /// slot in the rotation (the denominator is the suite) but is never
+    /// planned, launched or given a spec. This is the one place that filter
+    /// lives: the plan, the run and the wrapper's launch specs all use it.
+    pub fn launch_order(&self, rep: u32) -> impl Iterator<Item = TargetKind> + '_ {
+        self.order(rep)
+            .iter()
+            .copied()
+            .filter(|t| !self.does_not_start(*t))
+    }
 }
 
 pub const LAUNCH_SLOTS: [&str; 3] = ["{smtp_addr}", "{http_addr}", "{data_dir}"];
@@ -3458,10 +3470,8 @@ fn is_date(s: &str) -> bool {
 /// target but the candidate, which the wrapper builds itself. The wrapper
 /// derives its required binaries from this, never from a fixed list.
 pub fn declared_competitors(p: &Protocol) -> Vec<TargetKind> {
-    p.targets
-        .iter()
-        .copied()
-        .filter(|t| *t != TargetKind::Swarmail && !p.does_not_start(*t))
+    p.launch_order(0)
+        .filter(|t| *t != TargetKind::Swarmail)
         .collect()
 }
 

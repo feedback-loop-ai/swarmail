@@ -38,6 +38,7 @@ mod targets;
 mod wire;
 
 use protocol::{Protocol, SourceLock, TargetKind};
+use runner::flags;
 use std::collections::BTreeMap;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -68,27 +69,6 @@ fn main() -> ExitCode {
         }
     };
     ExitCode::from(code as u8)
-}
-
-/// `--flag value` pairs; a repeated flag other than `--bin` and `--runtime`
-/// (one of each per target, so two targets may each need a runtime: GreenMail's
-/// JRE and the Alkemio row's musl loader), a flag without a value or a stray
-/// word refuses.
-fn flags(args: &[String]) -> Result<BTreeMap<String, Vec<String>>, String> {
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut it = args.iter();
-    while let Some(flag) = it.next() {
-        let name = flag
-            .strip_prefix("--")
-            .ok_or_else(|| format!("unexpected argument {flag:?}"))?;
-        let value = it.next().ok_or_else(|| format!("--{name} needs a value"))?;
-        let slot = out.entry(name.to_owned()).or_default();
-        if !slot.is_empty() && name != "bin" && name != "runtime" {
-            return Err(format!("--{name} given twice"));
-        }
-        slot.push(value.clone());
-    }
-    Ok(out)
 }
 
 fn one<'a>(f: &'a BTreeMap<String, Vec<String>>, name: &str) -> Result<&'a str, String> {
@@ -294,7 +274,7 @@ fn run(args: &[String]) -> i32 {
 /// Everything that can refuse before a single process starts: inputs,
 /// pins, binaries, output and scratch.
 fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
-    let f = flags(args)?;
+    let f = runner::flags(args)?;
     let known = [
         "mode",
         "protocol",
@@ -330,61 +310,13 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
     if !protocol::is_name(run_id) {
         return Err("--run-id must be 1-64 [A-Za-z0-9._-]".into());
     }
-    let mut bins = BTreeMap::new();
-    for b in f.get("bin").into_iter().flatten() {
-        let (name, path) = b.split_once('=').ok_or("--bin takes TARGET=PATH")?;
-        let t = TargetKind::parse(name).ok_or_else(|| format!("unknown target {name:?}"))?;
-        if bins.insert(t, PathBuf::from(path)).is_some() {
-            return Err(format!("--bin {t} given twice"));
-        }
-    }
-    let mut runtimes = BTreeMap::new();
-    for r in f.get("runtime").into_iter().flatten() {
-        let (name, dir) = r.split_once('=').ok_or("--runtime takes TARGET=DIR")?;
-        let t = TargetKind::parse(name).ok_or_else(|| format!("unknown target {name:?}"))?;
-        if runtimes.insert(t, PathBuf::from(dir)).is_some() {
-            return Err(format!("--runtime {t} given twice"));
-        }
-    }
-    let mut specs = BTreeMap::new();
-    // A published does-not-start target is never launched: it takes no
-    // --bin and has no spec (a --bin for it is refused below).
-    for &t in p.targets.iter().filter(|t| !p.does_not_start(**t)) {
-        let binary = bins
-            .remove(&t)
-            .ok_or_else(|| format!("--bin {t}=PATH is required"))?;
-        let spec = match t {
-            TargetKind::Swarmail => {
-                let cap = p
-                    .storage
-                    .retention
-                    .iter()
-                    .find(|r| r.target == t)
-                    .and_then(|r| r.max_messages);
-                targets::LaunchSpec::new(
-                    t,
-                    binary,
-                    None,
-                    targets::swarmail_template(cap.unwrap_or(0)),
-                )
-            }
-            _ => {
-                let pin = s.pin(t).ok_or_else(|| format!("{t}: no source pin"))?;
-                targets::LaunchSpec::from_pin(t, binary, runtimes.remove(&t), pin)?
-            }
-        };
-        specs.insert(t, spec);
-    }
-    if let Some(t) = bins.keys().next() {
-        return Err(format!(
-            "--bin {t} names a target the protocol does not declare or publishes as not starting"
-        ));
-    }
-    if let Some(t) = runtimes.keys().next() {
-        return Err(format!(
-            "--runtime {t} names a target that pins no runtime or is not declared"
-        ));
-    }
+    let none = Vec::new();
+    let specs = runner::launch_specs(
+        &p,
+        &s,
+        f.get("bin").unwrap_or(&none),
+        f.get("runtime").unwrap_or(&none),
+    )?;
     let output = PathBuf::from(one(&f, "output")?);
     if output.exists() {
         return Err("--output already exists; runs are never overwritten or resumed".into());
