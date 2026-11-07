@@ -11,6 +11,9 @@
 // The driver's own modules, compiled into this test crate. Some items serve
 // only the driver binary (its CLI), so dead-code analysis here is partial.
 #[allow(dead_code)]
+#[path = "../benches/mail_compare/mailhog_mcp.rs"]
+mod mailhog_mcp;
+#[allow(dead_code)]
 #[path = "../benches/mail_compare/mailpit_mcp.rs"]
 mod mailpit_mcp;
 #[allow(dead_code)]
@@ -2857,10 +2860,18 @@ struct Mcp {
 
 impl Mcp {
     fn start(addr: std::net::SocketAddr, bounds: mailpit_mcp::Bounds, out_buf: usize) -> Mcp {
+        Mcp::start_backend::<mailpit_mcp::Mailpit>(addr, bounds, out_buf)
+    }
+
+    fn start_backend<B: mcp::Backend>(
+        addr: std::net::SocketAddr,
+        bounds: mailpit_mcp::Bounds,
+        out_buf: usize,
+    ) -> Mcp {
         let (client_in, server_in) = tokio::io::duplex(1 << 20);
         let (server_out, client_out) = tokio::io::duplex(out_buf);
         let http = wire::Http::new(addr, bounds.request, bounds.max_body);
-        let served = tokio::spawn(mailpit_mcp::serve(server_in, server_out, http, bounds));
+        let served = tokio::spawn(mcp::serve::<B, _, _>(server_in, server_out, http, bounds));
         let (_, w) = tokio::io::split(client_in);
         let (r, _) = tokio::io::split(client_out);
         Mcp {
@@ -3608,6 +3619,8 @@ fn the_wire_driver_builds_no_frame_of_its_own() {
         "targets.rs",
         "wire.rs",
         "records.rs",
+        "mailpit_mcp.rs",
+        "mailhog_mcp.rs",
     ] {
         let text = std::fs::read_to_string(format!("benches/mail_compare/{src}")).unwrap();
         assert!(!text.contains("Frame {"), "{src} builds a frame by hand");
@@ -3616,10 +3629,6 @@ fn the_wire_driver_builds_no_frame_of_its_own() {
     // all in the generic half, none in a backend.
     let text = std::fs::read_to_string("benches/mail_compare/mcp.rs").unwrap();
     assert_eq!(text.matches("Frame {").count(), 4);
-    for src in ["mailpit_mcp.rs"] {
-        let text = std::fs::read_to_string(format!("benches/mail_compare/{src}")).unwrap();
-        assert!(!text.contains("Frame {"), "{src} builds a frame by hand");
-    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -4582,4 +4591,391 @@ fn the_mailpit_tool_list_digest_is_the_one_protocol_v2_froze() {
         .unwrap();
     let built = mcp::tools_sha256::<mailpit_mcp::Mailpit>(&mailpit_mcp::Bounds::default());
     assert_eq!(built, frozen, "the split changed Mailpit's tool list");
+}
+
+// ---- the MailHog adapter (proposed decision 0129 §5) -----------------------
+
+/// MailHog's v2 page shape, as the pinned executable sends it.
+fn hog_page(total: u64, start: u64, ids: &[&str]) -> String {
+    let items: Vec<_> = ids
+        .iter()
+        .map(|i| {
+            serde_json::json!({"ID": i, "Content": {"Headers": {"Subject": [format!("s {i}")]},
+                "Body": "raw body"}, "Raw": {"Data": "Subject: x\r\n\r\nraw body"}})
+        })
+        .collect();
+    serde_json::json!({"total": total, "count": ids.len(), "start": start, "items": items})
+        .to_string()
+}
+
+fn no_swarmail_only_capability(tools: &serde_json::Value, upstream: &str) {
+    for t in tools.as_array().unwrap() {
+        let name = t["name"].as_str().unwrap();
+        assert!(name.starts_with(upstream), "{name}");
+        let words = format!("{name} {}", t["description"].as_str().unwrap()).to_lowercase();
+        for banned in [
+            "inbox", "await", "extract", "delete", "admin", "release", "send", "hint",
+        ] {
+            assert!(!words.contains(banned), "{name} offers {banned}: {words}");
+        }
+    }
+}
+
+#[test]
+fn no_adapter_tool_offers_a_swarmail_only_capability() {
+    let b = mailpit_mcp::Bounds::default();
+    no_swarmail_only_capability(&mailpit_mcp::tools(&b), "mailpit_");
+    no_swarmail_only_capability(&mailhog_mcp::tools(&b), "mailhog_");
+    let names = |v: serde_json::Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().replace("mailhog", "mailpit"))
+            .collect()
+    };
+    assert_eq!(
+        names(mailhog_mcp::tools(&b)),
+        names(mailpit_mcp::tools(&b)),
+        "the same four operations: list, search, read, wait"
+    );
+}
+
+#[test]
+fn the_mailhog_adapter_validates_its_calls_closed() {
+    let b = mailpit_mcp::Bounds::default();
+    let call = |name: &str, args: serde_json::Value| {
+        mailhog_mcp::parse_call(&serde_json::json!({"name": name, "arguments": args}), &b)
+    };
+    assert_eq!(
+        call("mailhog_list", serde_json::json!({})),
+        Some(mailhog_mcp::Call::List {
+            start: 0,
+            limit: 50
+        })
+    );
+    assert!(call("mailhog_search", serde_json::json!({"query": "q"})).is_none());
+    assert!(
+        call(
+            "mailhog_search",
+            serde_json::json!({"kind": "all", "query": "q"})
+        )
+        .is_none()
+    );
+    assert!(
+        call(
+            "mailhog_search",
+            serde_json::json!({"kind": "to", "query": ""})
+        )
+        .is_none()
+    );
+    assert!(call("mailhog_list", serde_json::json!({"limit": 251})).is_none());
+    assert!(call("mailhog_list", serde_json::json!({"extra": 1})).is_none());
+    assert!(call("mailhog_read", serde_json::json!({"id": "a"})).is_some());
+    assert!(call("mailhog_delete", serde_json::json!({})).is_none());
+    assert!(
+        call(
+            "mailhog_wait",
+            serde_json::json!({"kind": "to", "query": "q"})
+        )
+        .is_none()
+    );
+    let too_long = b.max_wait_ms() + 1;
+    assert!(
+        call(
+            "mailhog_wait",
+            serde_json::json!({"kind": "to", "query": "q", "timeout_ms": too_long})
+        )
+        .is_none()
+    );
+    let wait = call(
+        "mailhog_wait",
+        serde_json::json!({"kind": "containing", "query": "q", "timeout_ms": 5}),
+    );
+    assert!(matches!(
+        wait,
+        Some(mailhog_mcp::Call::Wait { timeout_ms: 5, .. })
+    ));
+}
+
+#[tokio::test]
+async fn the_mailhog_adapter_reads_pages_and_refuses_wrong_shapes() {
+    let addr = responder(Box::new(|t: &str| {
+        Some(match t {
+            "/api/v2/messages?start=0&limit=2" => (200, hog_page(2, 0, &["a", "b"])),
+            "/api/v2/messages?start=0&limit=3" => (200, hog_page(2, 7, &["a"])),
+            "/api/v2/messages?start=0&limit=4" => {
+                (200, "{\"total\":0,\"start\":0,\"items\":null}".into())
+            }
+            "/api/v2/messages?start=0&limit=5" => {
+                (200, "{\"total\":1,\"start\":0,\"items\":[{}]}".into())
+            }
+            "/api/v2/messages?start=0&limit=6" => (500, "x".into()),
+            t if t.starts_with("/api/v2/search?kind=to&query=a%40b&") => {
+                (200, hog_page(1, 0, &["a"]))
+            }
+            "/api/v1/messages/a" => (
+                200,
+                serde_json::json!({"ID": "a", "Raw": {"Data": "r"}}).to_string(),
+            ),
+            "/api/v1/messages/other" => (200, serde_json::json!({"ID": "zzz"}).to_string()),
+            "/api/v1/messages/gone" => (200, "null".into()),
+            _ => (404, "{}".into()),
+        })
+    }))
+    .await;
+    let mut c = Mcp::start_backend::<mailhog_mcp::Mailhog>(addr, small_bounds(), 1 << 20);
+    c.init().await;
+    let (e, v) = c
+        .tool(1, "mailhog_list", serde_json::json!({"limit": 2}))
+        .await;
+    assert!(!e, "{v}");
+    assert_eq!(
+        (v["total"].clone(), v["count"].clone()),
+        (2.into(), 2.into())
+    );
+    assert_eq!(
+        v["items"][1]["Raw"]["Data"], "Subject: x\r\n\r\nraw body",
+        "bodies pass through"
+    );
+    for (limit, why) in [(3, "echoed start"), (5, "item without an ID")] {
+        let (e, v) = c
+            .tool(2, "mailhog_list", serde_json::json!({"limit": limit}))
+            .await;
+        assert!(
+            e && v["error"].as_str().unwrap().starts_with("malformed"),
+            "{why}: {v}"
+        );
+    }
+    let (e, v) = c
+        .tool(3, "mailhog_list", serde_json::json!({"limit": 4}))
+        .await;
+    assert!(
+        !e && v["items"] == serde_json::json!([]),
+        "a null item list is empty: {v}"
+    );
+    let (e, v) = c
+        .tool(4, "mailhog_list", serde_json::json!({"limit": 6}))
+        .await;
+    assert!(
+        e && v["error"].as_str().unwrap().starts_with("upstream_status"),
+        "{v}"
+    );
+    let (e, v) = c
+        .tool(
+            5,
+            "mailhog_search",
+            serde_json::json!({"kind": "to", "query": "a@b"}),
+        )
+        .await;
+    assert!(!e && v["total"] == 1, "{v}");
+    let (e, v) = c
+        .tool(6, "mailhog_read", serde_json::json!({"id": "a"}))
+        .await;
+    assert!(!e && v["Raw"]["Data"] == "r", "{v}");
+    let (e, v) = c
+        .tool(7, "mailhog_read", serde_json::json!({"id": "gone"}))
+        .await;
+    assert!(
+        e && v["error"].as_str().unwrap().starts_with("not_found"),
+        "{v}"
+    );
+    assert!(v["error"].as_str().unwrap().contains("MailHog"));
+    let (e, v) = c
+        .tool(8, "mailhog_read", serde_json::json!({"id": "other"}))
+        .await;
+    assert!(
+        e && v["error"].as_str().unwrap().starts_with("malformed"),
+        "{v}"
+    );
+    // The generic half answers a batch for this backend too.
+    c.send(serde_json::json!([
+        {"jsonrpc": "2.0", "id": 20, "method": "tools/call",
+            "params": {"name": "mailhog_read", "arguments": {"id": "a"}}},
+        {"jsonrpc": "2.0", "id": 21, "method": "tools/call",
+            "params": {"name": "mailhog_read", "arguments": {"id": "gone"}}}
+    ]))
+    .await;
+    let r = c.recv().await;
+    assert_eq!(r.as_array().unwrap().len(), 2, "{r}");
+    assert_eq!(
+        (r[0]["id"].clone(), r[1]["id"].clone()),
+        (20.into(), 21.into())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_mailhog_adapter_lists_searches_and_waits_over_real_smtp_into_swarmails_shim() {
+    // Mechanics only: Swarmail's own MailHog v2 shim is not MailHog, so
+    // this proves the adapter's paging, filters and poll, never MailHog's
+    // behaviour. The pinned executable's own test is ignored below.
+    let root = tempfile::tempdir().unwrap();
+    let clock = wire::Clock(Instant::now());
+    let keepers = targets::Keepers::default();
+    let mut owned = targets::Owned::launch(
+        &swarmail_spec(targets::swarmail_template(0)),
+        &root.path().join("s"),
+        &limits(),
+        &clock,
+        &keepers,
+    )
+    .await
+    .expect("swarmail launches");
+    for (i, subject) in ["hog-one", "hog-two", "hog-three"].iter().enumerate() {
+        send_as(owned.smtp, None, subject, &format!("body {i}")).await;
+    }
+    let mut c = Mcp::start_backend::<mailhog_mcp::Mailhog>(
+        owned.http_addr,
+        mailpit_mcp::Bounds::default(),
+        1 << 20,
+    );
+    c.init().await;
+    let (e, listed) = c
+        .tool(1, "mailhog_list", serde_json::json!({"limit": 2}))
+        .await;
+    assert!(!e, "{listed}");
+    assert_eq!(
+        (listed["total"].clone(), listed["count"].clone()),
+        (3.into(), 2.into())
+    );
+    let (e, found) = c
+        .tool(
+            2,
+            "mailhog_search",
+            serde_json::json!({"kind": "containing", "query": "hog-two"}),
+        )
+        .await;
+    assert!(!e && found["total"] == 1, "{found}");
+    let (e, all) = c
+        .tool(
+            3,
+            "mailhog_search",
+            serde_json::json!({"kind": "to", "query": "inbox@identity.invalid"}),
+        )
+        .await;
+    assert!(!e && all["total"] == 3, "{all}");
+    let (e, hit) = c
+        .tool(
+            4,
+            "mailhog_wait",
+            serde_json::json!({"kind": "containing", "query": "hog-one", "timeout_ms": 5000}),
+        )
+        .await;
+    assert!(!e, "{hit}");
+    assert_eq!(hit["status"], "found");
+    assert_eq!(hit["method"], mailhog_mcp::WAIT_METHOD);
+    assert_eq!(hit["messages_count"], 1);
+    let (e, miss) = c
+        .tool(
+            5,
+            "mailhog_wait",
+            serde_json::json!({"kind": "containing", "query": "never-sent", "timeout_ms": 300}),
+        )
+        .await;
+    assert!(
+        !e && miss["status"] == "timeout" && miss["messages_count"] == 0,
+        "{miss}"
+    );
+    assert!(miss["scans"].as_u64().unwrap() >= 2, "it polled: {miss}");
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+    assert!(owned.shutdown().await.proved());
+}
+
+// ---- launch mode: the adapter owns its backend (proposed 0129 §4) ----------
+
+async fn launched_swarmail(root: &Path) -> (targets::Owned, targets::Keepers) {
+    let keepers = targets::Keepers::default();
+    let owned = targets::Owned::launch(
+        &swarmail_spec(targets::swarmail_template(0)),
+        &root.join("s"),
+        &limits(),
+        &wire::Clock(Instant::now()),
+        &keepers,
+    )
+    .await
+    .expect("swarmail launches");
+    (owned, keepers)
+}
+
+/// Drive `serve_owned` over duplex pipes: the announcement line and the
+/// reply to one ping come back, then the input closes.
+async fn serve_launched(
+    owned: &mut targets::Owned,
+) -> (String, serde_json::Value, mcp::End, targets::CleanupFacts) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let (mut client_in, server_in) = tokio::io::duplex(1 << 16);
+    let (server_out, client_out) = tokio::io::duplex(1 << 16);
+    let serving = mcp::serve_owned::<mailpit_mcp::Mailpit, _, _>(
+        owned,
+        server_in,
+        server_out,
+        mailpit_mcp::Bounds::default(),
+    );
+    let client = async {
+        let mut r = tokio::io::BufReader::new(client_out);
+        let mut announce = String::new();
+        r.read_line(&mut announce).await.unwrap();
+        client_in
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n")
+            .await
+            .unwrap();
+        let mut reply = String::new();
+        r.read_line(&mut reply).await.unwrap();
+        drop(client_in);
+        (announce, serde_json::from_str(&reply).unwrap())
+    };
+    let ((end, facts), (announce, reply)) = tokio::join!(serving, client);
+    (announce, reply, end, facts)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn launch_mode_announces_serves_and_gives_a_receipt_only_after_full_cleanup() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut owned, keepers) = launched_swarmail(root.path()).await;
+    let smtp = owned.smtp;
+    let (announce, reply, end, facts) = serve_launched(&mut owned).await;
+    let want = format!(
+        "smtp={smtp} tools_sha256={}\n",
+        mcp::tools_sha256::<mailpit_mcp::Mailpit>(&mailpit_mcp::Bounds::default())
+    );
+    assert_eq!(announce, want, "one announcement line first");
+    assert_eq!(reply["result"], serde_json::json!({}));
+    assert_eq!(end, mcp::End::Eof);
+    assert!(facts.proved(), "{facts:?}");
+    assert!(mcp::receipt(end, &facts));
+    let settled = keepers.settle(Duration::from_secs(10)).await;
+    assert!(
+        settled.iter().all(targets::CleanupFacts::proved),
+        "{settled:?}"
+    );
+    assert!(!root.path().join("s").exists(), "the owned scratch is gone");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn launch_mode_is_not_a_receipt_when_cleanup_is_forced_to_fail() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut owned, keepers) = launched_swarmail(root.path()).await;
+    // The existing cleanup seam: the drain's join fails during cleanup.
+    owned.fail_drain().await;
+    let (_, _, end, facts) = serve_launched(&mut owned).await;
+    assert_eq!(end, mcp::End::Eof, "the serving itself ended in order");
+    assert!(!facts.proved(), "{facts:?}");
+    assert!(
+        !mcp::receipt(end, &facts),
+        "no receipt without full cleanup"
+    );
+    drop(keepers);
+}
+
+#[test]
+fn launch_mode_uses_the_deadlines_protocol_v2_froze() {
+    let protocol: serde_json::Value =
+        serde_json::from_slice(&std::fs::read("docs/evals/protocol.json").unwrap()).unwrap();
+    let r = &protocol["resources"];
+    let l = mcp::launch_limits();
+    assert_eq!(l.startup.as_millis() as u64, r["startup_deadline_ms"]);
+    assert_eq!(l.cleanup.as_millis() as u64, r["cleanup_deadline_ms"]);
+    assert_eq!(l.request.as_millis() as u64, r["request_deadline_ms"]);
+    assert_eq!(l.max_response_bytes, r["max_response_bytes"]);
+    assert_eq!(l.open_files, r["open_files"]);
 }

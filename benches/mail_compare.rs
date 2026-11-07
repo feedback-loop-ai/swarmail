@@ -10,13 +10,16 @@
 //!       --output DIR --scratch DIR --run-id ID --bin TARGET=PATH...
 //!       [--commit SHA --dirty true|false]
 //!   mail_compare admit DIR
-//!   mail_compare mailpit-mcp --endpoint http://127.0.0.1:PORT --sources S
+//!   mail_compare mailpit-mcp|mailhog-mcp --sources S
+//!       (--endpoint http://127.0.0.1:PORT | --launch BIN --scratch DIR)
 //!
 //! Exit 0: the mode completed its declared checks. Exit 1: a complete,
 //! sealed run whose workload failed somewhere (the report says where).
 //! Exit 2: prerequisite, operational, interrupt, cleanup or accounting
 //! failure — it dominates, and its output is never sealed.
 
+#[path = "mail_compare/mailhog_mcp.rs"]
+mod mailhog_mcp;
 #[path = "mail_compare/mailpit_mcp.rs"]
 mod mailpit_mcp;
 #[path = "mail_compare/mcp.rs"]
@@ -43,7 +46,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str =
-    "usage: mail_compare check|run|admit|mailpit-mcp … (see scripts/compare-mail.sh)";
+    "usage: mail_compare check|run|admit|mailpit-mcp|mailhog-mcp … (see scripts/compare-mail.sh)";
 
 fn main() -> ExitCode {
     // cargo bench appends `--bench`; it selects nothing here.
@@ -59,7 +62,12 @@ fn main() -> ExitCode {
         Some("check") => check(&args[1..]),
         Some("run") => run(&args[1..]),
         Some("admit") => admit(&args[1..]),
-        Some("mailpit-mcp") => mailpit_mcp_mode(&args[1..]),
+        Some("mailpit-mcp") => {
+            adapter_mode::<mailpit_mcp::Mailpit>("mailpit-mcp", TargetKind::Mailpit, &args[1..])
+        }
+        Some("mailhog-mcp") => {
+            adapter_mode::<mailhog_mcp::Mailhog>("mailhog-mcp", TargetKind::Mailhog, &args[1..])
+        }
         Some(_) => {
             eprintln!("{USAGE}");
             2
@@ -171,18 +179,26 @@ fn admit(args: &[String]) -> i32 {
     }
 }
 
-/// The MCP adapter over stdio. The caller owns the Mailpit server; the
-/// lock must pin one, and the endpoint must be a literal loopback socket.
-/// Stdout carries only the protocol; refusals go to stderr.
-fn mailpit_mcp_mode(args: &[String]) -> i32 {
+/// The MCP adapter over stdio for one backend. Two ways to reach it, never
+/// both: `--endpoint URL` (the caller owns the backend and hands its
+/// loopback address) or `--launch BIN --scratch DIR` (this process launches
+/// the pinned backend through `targets::Owned`, announces `smtp=ADDR
+/// tools_sha256=HEX` as its first output line, serves, and exits 0 only
+/// after stdin ends and its cleanup facts are all true). The lock must pin
+/// the backend either way. Stdout carries only the announcement and the
+/// protocol; refusals go to stderr.
+fn adapter_mode<B: mcp::Backend>(mode: &str, kind: TargetKind, args: &[String]) -> i32 {
+    enum Via {
+        Endpoint(std::net::SocketAddr),
+        Launch(targets::LaunchSpec, PathBuf),
+    }
     let ready = flags(args).and_then(|f| {
         if let Some(k) = f
             .keys()
-            .find(|k| !["endpoint", "sources"].contains(&k.as_str()))
+            .find(|k| !["endpoint", "sources", "launch", "scratch"].contains(&k.as_str()))
         {
             return Err(format!("unknown flag --{k}"));
         }
-        let addr = mailpit_mcp::parse_endpoint(one(&f, "endpoint")?)?;
         let path = one(&f, "sources")?;
         let s = SourceLock::parse(&std::fs::read(path).map_err(|e| format!("sources: {e}"))?)
             .map_err(|r| r.to_string())?;
@@ -192,14 +208,29 @@ fn mailpit_mcp_mode(args: &[String]) -> i32 {
             .filter(|d| !d.as_os_str().is_empty());
         s.verify_files(dir.unwrap_or(Path::new(".")))
             .map_err(|r| format!("source documents: {r}"))?;
-        s.pin(TargetKind::Mailpit)
-            .ok_or("the source lock pins no Mailpit")?;
-        Ok(addr)
+        let pin = s
+            .pin(kind)
+            .ok_or_else(|| format!("the source lock pins no {kind}"))?;
+        match (f.contains_key("endpoint"), f.contains_key("launch")) {
+            (true, false) if !f.contains_key("scratch") => {
+                Ok(Via::Endpoint(mcp::parse_endpoint(one(&f, "endpoint")?)?))
+            }
+            (false, true) => Ok(Via::Launch(
+                targets::LaunchSpec {
+                    kind,
+                    binary: PathBuf::from(one(&f, "launch")?),
+                    expected_sha256: Some(pin.artifact.executable_sha256.clone()),
+                    template: pin.launch.clone(),
+                },
+                PathBuf::from(one(&f, "scratch").map_err(|_| "--launch needs --scratch DIR")?),
+            )),
+            _ => Err("give --endpoint URL, or --launch BIN with --scratch DIR, not both".into()),
+        }
     });
-    let addr = match ready {
-        Ok(a) => a,
+    let via = match ready {
+        Ok(v) => v,
         Err(e) => {
-            eprintln!("mail_compare mailpit-mcp: refused: {e}");
+            eprintln!("mail_compare {mode}: refused: {e}");
             return 2;
         }
     };
@@ -209,20 +240,83 @@ fn mailpit_mcp_mode(args: &[String]) -> i32 {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("mail_compare mailpit-mcp: runtime: {e}");
+            eprintln!("mail_compare {mode}: runtime: {e}");
             return 2;
         }
     };
-    let bounds = mailpit_mcp::Bounds::default();
-    let end = rt.block_on(async {
-        let http = wire::Http::new(addr, bounds.request, bounds.max_body);
-        mailpit_mcp::serve(tokio::io::stdin(), tokio::io::stdout(), http, bounds).await
-    });
-    match end {
-        mailpit_mcp::End::Eof => 0,
-        other => {
-            eprintln!("mail_compare mailpit-mcp: ended: {other:?}");
-            2
+    let bounds = mcp::Bounds::default();
+    match via {
+        Via::Endpoint(addr) => {
+            let end = rt.block_on(async {
+                let http = wire::Http::new(addr, bounds.request, bounds.max_body);
+                mcp::serve::<B, _, _>(tokio::io::stdin(), tokio::io::stdout(), http, bounds).await
+            });
+            match end {
+                mcp::End::Eof => 0,
+                other => {
+                    eprintln!("mail_compare {mode}: ended: {other:?}");
+                    2
+                }
+            }
+        }
+        Via::Launch(spec, scratch) => {
+            let keepers = targets::Keepers::default();
+            let limits = mcp::launch_limits();
+            let outcome = rt.block_on(async {
+                let clock = wire::Clock(std::time::Instant::now());
+                let mut owned =
+                    match targets::Owned::launch(&spec, &scratch, &limits, &clock, &keepers).await
+                    {
+                        Ok(o) => o,
+                        Err(e) => return Err(format!("{kind} did not launch: {e:?}")),
+                    };
+                let mut term =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .ok();
+                let term = async {
+                    match term.as_mut() {
+                        Some(t) => t.recv().await,
+                        None => std::future::pending().await,
+                    }
+                };
+                tokio::select! {
+                    r = mcp::serve_owned::<B, _, _>(&mut owned, tokio::io::stdin(), tokio::io::stdout(), bounds) => Ok(Some(r)),
+                    // Terminated: the backend is still cleaned up, but the
+                    // exit is not a receipt.
+                    _ = term => {
+                        eprintln!("mail_compare {mode}: terminated; cleaning up");
+                        let facts = owned.shutdown().await;
+                        Ok(Some((mcp::End::OutputClosed, facts)))
+                    }
+                }
+            });
+            // Every worker is settled before exit, whatever happened.
+            let settled = rt.block_on(keepers.settle(limits.cleanup * 2));
+            match outcome {
+                Ok(Some((end, facts))) => {
+                    eprintln!(
+                        "mail_compare {mode}: cleanup reaped={} group_gone={} listeners_closed={} scratch_removed={} forced={}",
+                        facts.reaped,
+                        facts.group_gone,
+                        facts.listeners_closed,
+                        facts.scratch_removed,
+                        facts.forced_kill
+                    );
+                    if mcp::receipt(end, &facts)
+                        && settled.iter().all(targets::CleanupFacts::proved)
+                    {
+                        0
+                    } else {
+                        eprintln!("mail_compare {mode}: ended {end:?}; no cleanup receipt");
+                        2
+                    }
+                }
+                Ok(None) => 2,
+                Err(e) => {
+                    eprintln!("mail_compare {mode}: {e}");
+                    2
+                }
+            }
         }
     }
 }

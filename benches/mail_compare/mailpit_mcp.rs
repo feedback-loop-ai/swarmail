@@ -11,12 +11,13 @@
 //! (the eval owner) starts Mailpit and hands the adapter its loopback
 //! endpoint, or the adapter launches it.
 
-use crate::mcp::{Backend, Budget, begin};
+use crate::mcp::{Backend, Budget, begin, complete_scan};
 use crate::wire::{Http, query_value};
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 use tokio::time::Instant;
 
+#[allow(unused_imports)]
 pub use crate::mcp::{
     Bounds, DEFAULT_LIMIT, End, Frame, MAX_ID_BYTES, MAX_LIMIT, MAX_QUERY_BYTES, MAX_START,
     SCAN_PAGE, Scan, ToolError, parse_endpoint, poll_wait, text, uint,
@@ -47,15 +48,6 @@ impl Backend for Mailpit {
     ) -> Result<Value, ToolError> {
         run_call(http, bounds, call, admitted).await
     }
-}
-
-/// Serve the Mailpit adapter on `input`/`output`.
-pub async fn serve<R, W>(input: R, output: W, http: Http, bounds: Bounds) -> End
-where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    crate::mcp::serve::<Mailpit, R, W>(input, output, http, bounds).await
 }
 
 /// A validated tool call.
@@ -213,49 +205,27 @@ fn search_path(query: &str, start: u64, limit: u64) -> String {
     )
 }
 
-/// Every match of `query`, paged to completion: the scan ends exactly
-/// when the pages reach messages_count, with every ID distinct, every
-/// page before the last full and the count unchanged; anything else is
-/// incomplete, never a shorter answer. A complete walk is not a snapshot:
-/// equal-count churn between pages can pass these checks.
+/// Every match of `query`, paged to completion (see `mcp::complete_scan`).
 async fn complete_search(b: &mut Budget<'_>, query: &str) -> Result<(u64, Vec<Value>), ToolError> {
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    let mut expected = None;
-    for _ in 0..b.bounds.max_pages {
-        // The next offset is what was received, never a fixed stride, so a
-        // short page cannot silently skip the matches it left out.
-        let start = out.len() as u64;
-        let (_, v) = b.get(&search_path(query, start, SCAN_PAGE)).await?;
-        let mut page = summary_page(v, start)?;
-        let matching = page["messages_count"]
-            .as_u64()
-            .ok_or(ToolError::Malformed)?;
-        if *expected.get_or_insert(matching) != matching {
-            return Err(ToolError::Incomplete);
-        }
-        let Some(Value::Array(messages)) = page.remove("messages") else {
-            return Err(ToolError::Malformed);
-        };
-        let got = messages.len();
-        for m in messages {
-            let id = m["ID"].as_str().unwrap_or_default().to_owned();
-            if !seen.insert(id) {
-                return Err(ToolError::Incomplete);
-            }
-            out.push(m);
-        }
-        match (out.len() as u64).cmp(&matching) {
-            std::cmp::Ordering::Equal => return Ok((matching, out)),
-            std::cmp::Ordering::Greater => return Err(ToolError::Incomplete),
-            // A short page before the last is not progress either.
-            std::cmp::Ordering::Less if (got as u64) < SCAN_PAGE => {
-                return Err(ToolError::Incomplete);
-            }
-            std::cmp::Ordering::Less => {}
-        }
-    }
-    Err(ToolError::Budget("pages per scan"))
+    complete_scan(
+        b,
+        |start| search_path(query, start, SCAN_PAGE),
+        |v, start| {
+            let mut page = summary_page(v, start)?;
+            let matching = page["messages_count"]
+                .as_u64()
+                .ok_or(ToolError::Malformed)?;
+            let Some(Value::Array(messages)) = page.remove("messages") else {
+                return Err(ToolError::Malformed);
+            };
+            let ids = messages
+                .into_iter()
+                .map(|m| (m["ID"].as_str().unwrap_or_default().to_owned(), m))
+                .collect();
+            Ok((matching, ids))
+        },
+    )
+    .await
 }
 
 struct SearchScan<'a> {

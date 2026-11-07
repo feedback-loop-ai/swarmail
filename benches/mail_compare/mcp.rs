@@ -258,6 +258,54 @@ impl<'a> Budget<'a> {
     }
 }
 
+/// Every match of a search, paged to completion: `path(start)` names one
+/// page and `parse` reads it into `(matching count, [(id, message)])`,
+/// refusing a page of the wrong shape. The scan ends exactly when the pages
+/// reach the matching count, with every ID distinct, every page before the
+/// last full and the count unchanged; anything else is incomplete, never a
+/// shorter answer. A complete walk is not a snapshot: equal-count churn
+/// between pages can pass these checks.
+pub async fn complete_scan<P, R>(
+    b: &mut Budget<'_>,
+    path: P,
+    parse: R,
+) -> Result<(u64, Vec<Value>), ToolError>
+where
+    P: Fn(u64) -> String,
+    R: Fn(Value, u64) -> Result<(u64, Vec<(String, Value)>), ToolError>,
+{
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut expected = None;
+    for _ in 0..b.bounds.max_pages {
+        // The next offset is what was received, never a fixed stride, so a
+        // short page cannot silently skip the matches it left out.
+        let start = out.len() as u64;
+        let (_, v) = b.get(&path(start)).await?;
+        let (matching, items) = parse(v, start)?;
+        if *expected.get_or_insert(matching) != matching {
+            return Err(ToolError::Incomplete);
+        }
+        let got = items.len();
+        for (id, m) in items {
+            if !seen.insert(id) {
+                return Err(ToolError::Incomplete);
+            }
+            out.push(m);
+        }
+        match (out.len() as u64).cmp(&matching) {
+            std::cmp::Ordering::Equal => return Ok((matching, out)),
+            std::cmp::Ordering::Greater => return Err(ToolError::Incomplete),
+            // A short page before the last is not progress either.
+            std::cmp::Ordering::Less if (got as u64) < SCAN_PAGE => {
+                return Err(ToolError::Incomplete);
+            }
+            std::cmp::Ordering::Less => {}
+        }
+    }
+    Err(ToolError::Budget("pages per scan"))
+}
+
 /// One tool call's time frame, fixed at its admission (queue time
 /// included, spec C2): `ceiling` ends the whole operation and is never
 /// replaced; a wait's observations count only up to `cutoff`, and its
@@ -833,4 +881,59 @@ fn member<B: Backend>(
         }
         _ => reply(error(id, -32601, "method not found")),
     }
+}
+
+/// What launch mode needs from the launcher's limits: the frozen protocol
+/// v2 resource deadlines, which a test holds to `docs/evals/protocol.json`.
+pub fn launch_limits() -> crate::targets::Limits {
+    crate::targets::Limits {
+        startup: Duration::from_millis(30_000),
+        cleanup: Duration::from_millis(10_000),
+        request: Duration::from_millis(10_000),
+        max_response_bytes: 16 << 20,
+        open_files: 4096,
+    }
+}
+
+/// Launch mode's core (proposed decision 0129 §4): announce the owned
+/// backend's SMTP address and this adapter's tool-list digest as the first
+/// line of output, serve MCP until the input ends, then run the owner's full
+/// cleanup. The backend is never left running: whatever ended the serving,
+/// its cleanup is run and its facts returned. Only an orderly end with every
+/// cleanup fact true is a receipt (`receipt`).
+pub async fn serve_owned<B, R, W>(
+    owned: &mut crate::targets::Owned,
+    input: R,
+    mut output: W,
+    bounds: Bounds,
+) -> (End, crate::targets::CleanupFacts)
+where
+    B: Backend,
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin,
+{
+    let announce = format!(
+        "smtp={} tools_sha256={}\n",
+        owned.smtp,
+        tools_sha256::<B>(&bounds)
+    );
+    let written = async {
+        output.write_all(announce.as_bytes()).await?;
+        output.flush().await
+    };
+    let end = match tokio::time::timeout(bounds.cleanup, written).await {
+        Ok(Ok(())) => {
+            let http = Http::new(owned.http_addr, bounds.request, bounds.max_body);
+            serve::<B, _, _>(input, output, http, bounds).await
+        }
+        Ok(Err(_)) => End::OutputClosed,
+        Err(_) => End::OutputBlocked,
+    };
+    (end, owned.shutdown().await)
+}
+
+/// Whether an adapter's end is a cleanup receipt: it served to an orderly
+/// end of input and every cleanup fact is true.
+pub fn receipt(end: End, facts: &crate::targets::CleanupFacts) -> bool {
+    end == End::Eof && facts.proved()
 }
