@@ -2826,7 +2826,7 @@ async fn the_agent_contract_is_in_the_guide_and_the_served_llms_txt() {
     // The paragraph sits inside the existing deliverability section, whose
     // heading is untouched.
     let heading = llms
-        .find("\n## Deliverability report (proposed 0085; epic #251)\n")
+        .find("\n## Deliverability report (decision 0085; epic #251)\n")
         .expect("the section heading is unedited");
     let para = llms.find("For agents (decision 0131)").unwrap();
     let next = llms[heading + 5..]
