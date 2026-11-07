@@ -1375,7 +1375,7 @@ pub fn launch_checks(
 /// The permissive licenses a pinned experiment input may carry: the
 /// subset of `deny.toml`'s allowlist a server release could use. The
 /// binary is not linked, but its terms still have to be checkable.
-const PERMISSIVE: [&str; 5] = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC"];
+pub const PERMISSIVE: [&str; 5] = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC"];
 
 /// The licenses a pinned *runtime* may carry (proposed decision 0130 §6): a
 /// separate closed list that holds exactly the JRE's expression. A runtime
@@ -3002,6 +3002,44 @@ fn is_date(s: &str) -> bool {
                 c.is_ascii_digit()
             }
         })
+}
+
+/// The competitors a protocol declares, in its own order: every declared
+/// target but the candidate, which the wrapper builds itself. The wrapper
+/// derives its required binaries from this, never from a fixed list.
+pub fn declared_competitors(p: &Protocol) -> Vec<TargetKind> {
+    p.targets
+        .iter()
+        .copied()
+        .filter(|t| *t != TargetKind::Swarmail)
+        .collect()
+}
+
+/// Whether every declared target can launch: the candidate by its role, a
+/// competitor by a pin. A pending entry never launches, and the refusal
+/// names it and says why it is pending.
+pub fn launchable(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> {
+    let mut out = Vec::new();
+    for t in &p.targets {
+        let ok = match lock.entry(*t) {
+            Some(e) if *t == TargetKind::Swarmail => e.role == Role::Candidate,
+            Some(e) => e.pin.is_some(),
+            None => false,
+        };
+        if !ok {
+            let why = lock
+                .entry(*t)
+                .and_then(|e| e.pending.as_ref())
+                .map(|p| format!(" (pending: {})", p.reason))
+                .unwrap_or_default();
+            out.push(format!("{t} has no source pin; it cannot be launched{why}"));
+        }
+    }
+    if out.is_empty() {
+        Ok(())
+    } else {
+        Err(Refusal(out))
+    }
 }
 
 /// Protocol 2 (and the version 1 drafts) pair only with lock 3, protocol 3

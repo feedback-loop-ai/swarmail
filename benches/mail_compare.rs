@@ -37,7 +37,7 @@ mod targets;
 #[path = "mail_compare/wire.rs"]
 mod wire;
 
-use protocol::{Protocol, Role, SourceLock, TargetKind};
+use protocol::{Protocol, SourceLock, TargetKind};
 use std::collections::BTreeMap;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -136,7 +136,7 @@ fn targets_mode(args: &[String]) -> i32 {
     });
     match res {
         Ok(p) => {
-            for t in p.targets.iter().filter(|t| **t != TargetKind::Swarmail) {
+            for t in protocol::declared_competitors(&p) {
                 println!("{t}");
             }
             0
@@ -306,21 +306,7 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
         // retention the protocol did not state.
         "smoke" => {
             protocol::retention_matches(&p, &s).map_err(|r| r.to_string())?;
-            for t in &p.targets {
-                let ok = match s.entry(*t) {
-                    Some(e) if *t == TargetKind::Swarmail => e.role == Role::Candidate,
-                    Some(e) => e.pin.is_some(),
-                    None => false,
-                };
-                if !ok {
-                    let why = s
-                        .entry(*t)
-                        .and_then(|e| e.pending.as_ref())
-                        .map(|p| format!(" (pending: {})", p.reason))
-                        .unwrap_or_default();
-                    return Err(format!("{t} has no source pin; it cannot be launched{why}"));
-                }
-            }
+            protocol::launchable(&p, &s).map_err(|r| r.to_string())?;
         }
         other => return Err(format!("unknown mode {other:?}")),
     }

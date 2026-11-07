@@ -41,6 +41,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+#[path = "mail_compare/eight_targets.rs"]
+mod eight_targets;
+
 const SMOKE: &[u8] = include_bytes!("mail_compare/swarmail-smoke.json");
 const SMOKE_LOCK: &[u8] = include_bytes!("mail_compare/swarmail-only.lock.json");
 /// Protocol 2 and lock 3 as they were collected under on 2026-10-30; their
@@ -2678,7 +2681,7 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
         ),
         (
             vec!["collect", "--output", o],
-            "pass --mailpit and --mailhog with their pinned executables",
+            "pass --bin mailpit=PATH with its pinned executable",
         ),
         (vec!["evidence", "--output", o], "--final is required"),
         (
