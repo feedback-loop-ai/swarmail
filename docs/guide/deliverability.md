@@ -194,6 +194,82 @@ row's immutable SMTP envelope observation), the frozen policy snapshot (includin
 `spf_client_ip`) and the rule set; every authentication fact is a function of
 those, so two requests with equal keys get equal facts.
 
+## For agents
+
+Decision 0131 (issue #261). An agent that sends mail through an application and
+wants to know whether the mail is deliverable reads the report as data, fixes the
+mail and sends it again. This section is the contract for that loop; the rules
+themselves are documented below and are not repeated here.
+
+**The tool.** `swarmail_get_deliverability_report` takes one string argument,
+`id`, the id of a stored message: the id in the SMTP reply
+`250 2.0.0 OK: stored as {id}`, or the `id` of a mail a wait or search returned.
+It is the same report as `GET /api/v1/messages/{id}/deliverability`.
+
+**The output.** On MCP 2025-06-18 and 2025-11-25 the report is
+`structuredContent`, under a closed `outputSchema`, and the same JSON is also in
+one text block. On 2025-03-26 (and when no version is sent) the report is the
+text block alone, with no `outputSchema` and no `structuredContent`. Parse the
+text block on any revision; use `structuredContent` when it is there. A missing
+message and a failed or unavailable analysis are `isError: true` with no
+structured content.
+
+**The loop.**
+
+1. Read the report of the message you sent.
+2. Fix each finding from its `rule_id`, its `location` (a header name and
+   occurrence, a MIME part path, or a link's source-byte offset in its part) and
+   its `fix_hint`.
+3. Send a **new** message. A stored message is never edited: extraction and
+   analysis read the bytes ingested (decision 0005), so a repair is a new
+   delivery with a new id.
+4. Read the new message's report, not the old one.
+
+**Judge content by rule family, not by threshold.** Under the default DNS policy
+no authentication record is declared, so the `bulk.*`, `spf.*`, `dkim.*` and
+`dmarc.*` findings stay on every message however clean its content is, and
+`no_findings_at_or_above` cannot say "the content is clean". To judge the mail an
+agent controls, filter `findings` by the prefix of `rule_id`: `link.`, `html.`
+and `spam.` are the content families. Authentication and the bulk-sender
+checklist are properties of DNS and of the sending infrastructure; declare a DNS
+policy (above) to exercise them.
+
+**What a report does not say.**
+
+- A report that could not be read (an `isError` result, a not-found message, a
+  503 or "unavailable") is **not** a clean report. Retry it or treat it as
+  unknown; never read it as "no findings".
+- Empty findings do not imply deliverability. They mean no rule fired.
+- The report is bounded: at most 256 findings and 65536 compact JSON bytes. A
+  report over either bound is an error, never a truncated list.
+- `rule_set_id` changes whenever the report's bytes change. Ignore members you do
+  not know, match on `rule_id` and never on a whole report body.
+
+A trimmed excerpt (one finding of three; the other members elided):
+
+```json
+{
+  "rule_set_id": "…",
+  "findings": [
+    {
+      "rule_id": "link.scheme.http.v1",
+      "severity": "warning",
+      "location": {"kind": "link", "part_path": [], "byte_offset": 131},
+      "fix_hint": "Serve the link over https."
+    }
+  ],
+  "dns": {"source": "default", "…": "…"}
+}
+```
+
+**Fixtures and the eval.** `tests/fixtures/deliverability-agent/` ships a failing
+newsletter and its repaired twin (`newsletter-failing.eml` carries
+`link.scheme.http.v1`, `html.img.alt-missing.v1` and `spam.subject.all_caps.v1`;
+`newsletter-fixed.eml` carries none of the three families), proven over real SMTP
+by rule id. The `newsletter-findings` task in `evals/` measures this loop: an
+agent reads the report, edits a newsletter template and re-sends until a
+re-sent newsletter's report has no `link.`, `html.` or `spam.` finding.
+
 ## Link rules
 
 Decision 0121 (accepted; issue #258) added five per-link rules to the default

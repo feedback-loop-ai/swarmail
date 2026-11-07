@@ -2626,3 +2626,213 @@ async fn dmarc_passes_through_dkim_alone_for_an_old_row() {
         .unwrap();
     assert_eq!(observed, (None, None), "never backfilled");
 }
+
+// ---------- Deliverability for agents (decision 0131, #261) ----------
+
+const NEWSLETTER_FAILING: &[u8] =
+    include_bytes!("fixtures/deliverability-agent/newsletter-failing.eml");
+const NEWSLETTER_FIXED: &[u8] =
+    include_bytes!("fixtures/deliverability-agent/newsletter-fixed.eml");
+
+/// The rule ids of the three content families an agent repairs, sorted. The
+/// proof is by rule id and never by a full report body, so a weight, a total
+/// or a new `rule_set_id` leaves it untouched.
+fn content_ids(report: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule_id"].as_str().unwrap().to_string())
+        .filter(|id| {
+            ["link.", "html.", "spam."]
+                .iter()
+                .any(|p| id.starts_with(p))
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The report tool over MCP at one protocol revision (`None` is the default
+/// 2025-03-26), the raw JSON-RPC reply.
+async fn report_mcp_at(srv: &swarmail::RunningServer, version: Option<&str>, id: &str) -> Value {
+    let body = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+        "name":"swarmail_get_deliverability_report","arguments":{"id":id}}});
+    let headers: Vec<(&str, &str)> = version
+        .map(|v| vec![("MCP-Protocol-Version", v)])
+        .unwrap_or_default();
+    let (status, text) = http_send_text_with_headers(
+        srv.http_addr,
+        "POST",
+        "/mcp",
+        &headers,
+        Some(&body.to_string()),
+    )
+    .await;
+    assert_eq!(status, 200);
+    serde_json::from_str(&text).unwrap()
+}
+
+/// The published fixtures over real SMTP: the failing newsletter carries
+/// exactly one finding of each content family an agent is asked to repair,
+/// and its repaired twin carries none (R5.3, AC 8).
+#[tokio::test]
+async fn published_agent_fixtures_fail_and_pass_by_rule_id() {
+    let srv = start().await;
+    let failing = smtp_raw(srv.smtp_addr, "agent-fixture", NEWSLETTER_FAILING).await;
+    let fixed = smtp_raw(srv.smtp_addr, "agent-fixture", NEWSLETTER_FIXED).await;
+    let (status, bad) = report(srv.http_addr, &failing).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        content_ids(&bad),
+        [
+            "html.img.alt-missing.v1",
+            "link.scheme.http.v1",
+            "spam.subject.all_caps.v1"
+        ]
+    );
+    let (status, good) = report(srv.http_addr, &fixed).await;
+    assert_eq!(status, 200);
+    assert_eq!(content_ids(&good), Vec::<String>::new());
+    // The three findings sit at three kinds of location, which is what makes
+    // the report enough to repair the mail from.
+    let kinds: std::collections::BTreeSet<&str> = bad["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| !content_ids(&json!({"findings":[f]})).is_empty())
+        .map(|f| f["location"]["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["header", "link", "mime_part"].into());
+    srv.stop().await;
+}
+
+/// R1.3, AC 3: on a report whose `dns` member carries real lookups, the modern
+/// `structuredContent` is the parsed text block and the REST body; March has
+/// no `structuredContent` and its text is the REST body.
+#[tokio::test]
+async fn structured_report_equals_text_and_rest_with_populated_dns() {
+    let srv = start().await;
+    let policy = declare(&[
+        ("shop.example", OPEN_SPF),
+        ("_dmarc.shop.example", "v=DMARC1; p=none"),
+    ]);
+    assert_eq!(put_dns(&srv, "agent-dns", &policy).await.0, 200);
+    let id = smtp_as(
+        srv.smtp_addr,
+        "agent-dns",
+        "mailer.shop.example",
+        "bounce@shop.example",
+        NEWSLETTER_FAILING,
+    )
+    .await;
+    let (status, rest) = report(srv.http_addr, &id).await;
+    assert_eq!(status, 200);
+    assert_eq!(rest["dns"]["source"], "inbox");
+    assert!(
+        !rest["dns"]["lookups"].as_array().unwrap().is_empty(),
+        "{rest}"
+    );
+    let march = report_mcp_at(&srv, None, &id).await;
+    assert!(march["result"].get("structuredContent").is_none());
+    assert_eq!(result_text(&march), rest);
+    for version in ["2025-06-18", "2025-11-25"] {
+        let modern = report_mcp_at(&srv, Some(version), &id).await;
+        assert_eq!(modern["result"]["isError"], false, "{version}");
+        assert_eq!(modern["result"]["structuredContent"], rest, "{version}");
+        assert_eq!(modern["result"]["content"].as_array().unwrap().len(), 1);
+        let text: Value =
+            serde_json::from_str(modern["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text, rest, "{version}");
+    }
+    srv.stop().await;
+}
+
+/// R5.1/R5.2, AC 9: the guide's "For agents" section and the served llms.txt
+/// carry the agent contract, pinned by key strings. No rule table is copied:
+/// the section names the three content families and the published fixtures,
+/// never a full report body or a literal rule-set id.
+#[tokio::test]
+async fn the_agent_contract_is_in_the_guide_and_the_served_llms_txt() {
+    let guide = include_str!("../docs/guide/deliverability.md");
+    let from = guide
+        .find("\n## For agents\n")
+        .expect("a For agents section")
+        + 1;
+    let to = from
+        + guide[from + 4..]
+            .find("\n## ")
+            .expect("a following section");
+    let section = &guide[from..to];
+    let flat = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    for expected in [
+        "swarmail_get_deliverability_report",
+        "`id`",
+        "250 2.0.0 OK: stored as {id}",
+        "2025-06-18 and 2025-11-25",
+        "`structuredContent`",
+        "closed `outputSchema`",
+        "one text block",
+        "2025-03-26",
+        "no `outputSchema` and no `structuredContent`",
+        "`rule_id`",
+        "`fix_hint`",
+        "Send a **new** message",
+        "A stored message is never edited",
+        "decision 0005",
+        "`no_findings_at_or_above` cannot say \"the content is clean\"",
+        "`link.`, `html.` and `spam.`",
+        "is **not** a clean report",
+        "Empty findings do not imply deliverability",
+        "256 findings and 65536 compact JSON bytes",
+        "never a truncated list",
+        "`rule_set_id` changes whenever the report's bytes change",
+        "Ignore members you do not know",
+        "tests/fixtures/deliverability-agent/",
+        "newsletter-failing.eml",
+        "newsletter-fixed.eml",
+        "`newsletter-findings`",
+    ] {
+        assert!(flat.contains(expected), "guide: {expected}");
+    }
+    // The excerpt is trimmed: one finding, no literal id, no full body.
+    assert!(section.contains("\"rule_set_id\": \"…\""));
+    assert_eq!(section.matches("\"rule_id\"").count(), 1);
+    assert!(!section.contains("swarmail-html/"));
+    // The section is for agents; it copies no per-rule table.
+    assert!(!section.contains("| rule"));
+
+    let srv = start().await;
+    let (status, llms) = http_get_text(srv.http_addr, "/llms.txt").await;
+    assert_eq!(status, 200);
+    let flat = llms.split_whitespace().collect::<Vec<_>>().join(" ");
+    for expected in [
+        "For agents (decision 0131)",
+        "250 2.0.0 OK: stored as {id}",
+        "Fix each finding from its rule_id, location and fix_hint",
+        "send a NEW message (stored mail is never edited, decision 0005)",
+        "Filter by rule_id family (link., html., spam.)",
+        "no_findings_at_or_above cannot say that content is clean",
+        "An isError, not-found or unavailable report is not a clean report",
+        "empty findings do not imply deliverability",
+        "256 findings and 65536 compact bytes",
+        "excess is an error, never truncation",
+        "ignore unknown members and match rule ids, not whole bodies",
+        "tests/fixtures/deliverability-agent/",
+        "newsletter-findings",
+    ] {
+        assert!(flat.contains(expected), "llms.txt: {expected}");
+    }
+    // The paragraph sits inside the existing deliverability section, whose
+    // heading is untouched.
+    let heading = llms
+        .find("\n## Deliverability report (decision 0085; epic #251)\n")
+        .expect("the section heading is unedited");
+    let para = llms.find("For agents (decision 0131)").unwrap();
+    let next = llms[heading + 5..]
+        .find("\n## ")
+        .map(|i| i + heading + 5)
+        .unwrap();
+    assert!(heading < para && para < next);
+    srv.stop().await;
+}

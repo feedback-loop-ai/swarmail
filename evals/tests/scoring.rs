@@ -9,7 +9,7 @@ use swarmail_evals::tasks::{self, Check, Outcome, Scenario, Task, Tier, Verdict}
 fn the_catalogue_is_sixteen_default_tasks_then_three_hard_ones() {
     let cat = tasks::catalogue();
     tasks::validate_catalogue(&cat).unwrap();
-    assert_eq!(cat.len(), 24);
+    assert_eq!(cat.len(), 25);
     let ids: Vec<&str> = cat.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(
         ids,
@@ -37,7 +37,8 @@ fn the_catalogue_is_sixteen_default_tasks_then_three_hard_ones() {
             "digest-correction",
             "otp-late",
             "confirm-attachment",
-            "confirm-injection"
+            "confirm-injection",
+            "newsletter-findings"
         ]
     );
     for tier in [
@@ -46,6 +47,7 @@ fn the_catalogue_is_sixteen_default_tasks_then_three_hard_ones() {
         Tier::MultiStep,
         Tier::Hard,
         Tier::Expert,
+        Tier::Deliverability,
     ] {
         assert!(cat.iter().any(|t| t.tier == tier));
     }
@@ -57,7 +59,9 @@ fn the_catalogue_is_sixteen_default_tasks_then_three_hard_ones() {
             .all(|t| !matches!(t.tier, Tier::Hard | Tier::Expert))
     );
     assert!(cat[16..19].iter().all(|t| t.tier == Tier::Hard));
-    assert!(cat[19..].iter().all(|t| t.tier == Tier::Expert));
+    assert!(cat[19..24].iter().all(|t| t.tier == Tier::Expert));
+    // The deliverability tier (proposed 0131) is appended after them.
+    assert!(cat[24..].iter().all(|t| t.tier == Tier::Deliverability));
     assert_eq!(cat.iter().filter(|t| t.agent_count == 3).count(), 1);
     let expect = [
         ("signup", FailureClass::GaveUp, FailureClass::GaveUp),
@@ -1160,7 +1164,10 @@ fn the_expert_tier_is_five_disclosed_one_agent_tasks() {
     );
     let cat = tasks::catalogue();
     assert_eq!(
-        cat[19..].iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+        cat[19..24]
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect::<Vec<_>>(),
         expert
     );
     let expect = [
@@ -1455,4 +1462,129 @@ fn the_corrections_category_less_resend_event_is_inert() {
     let mut done = recovered(&task);
     done.events.insert(0, resend);
     assert_eq!(tasks::score(&task, &done), Ok(Verdict::pass()));
+}
+
+/// The deliverability tier (proposed 0131): one task, appended last, in a tier
+/// outside the default product, reusing the marketing flow, check and fact.
+#[test]
+fn the_deliverability_tier_is_one_report_repair_task() {
+    use std::str::FromStr;
+    assert_eq!(
+        tasks::tier_ids(Tier::Deliverability),
+        ["newsletter-findings"]
+    );
+    assert_eq!(
+        serde_json::to_value(Tier::Deliverability).unwrap(),
+        json!("deliverability")
+    );
+    assert_eq!(
+        Tier::from_str("deliverability").unwrap(),
+        Tier::Deliverability
+    );
+    assert_eq!(
+        serde_json::from_value::<Tier>(json!("deliverability")).unwrap(),
+        Tier::Deliverability
+    );
+    assert!(!tasks::DEFAULT_TIERS.contains(&Tier::Deliverability));
+    for bad in ["Deliverability", "deliverable", "deliverability "] {
+        let err = Tier::from_str(bad).unwrap_err();
+        for tier in [
+            "straight",
+            "traps",
+            "multi_step",
+            "hard",
+            "expert",
+            "deliverability",
+        ] {
+            assert!(err.contains(tier), "{bad:?}: {err}");
+        }
+    }
+    let cat = tasks::catalogue();
+    assert_eq!(cat.last().unwrap().id, "newsletter-findings");
+    let t = tasks::find("newsletter-findings").unwrap();
+    assert_eq!(t.tier, Tier::Deliverability);
+    assert_eq!(t.scenario, Scenario::NewsletterFindings);
+    assert_eq!(t.scenario.flow(), Flow::Marketing);
+    assert_eq!(t.check, Check::MarketingCompleted);
+    assert_eq!(t.failure_class, FailureClass::GaveUp);
+    assert_eq!(t.idle_class, FailureClass::GaveUp);
+    assert_eq!(t.agent_count, 1);
+    assert_eq!(t.deadline_ms, tasks::DEFAULT_DEADLINE_MS);
+    assert_eq!(t.goal_template, tasks::PROMPT_TEMPLATE);
+    assert!(!t.scenario.uses_chaos());
+    // Only this scenario reads reports.
+    for other in &cat {
+        assert_eq!(
+            other.scenario.reads_reports(),
+            other.id == "newsletter-findings",
+            "{}",
+            other.id
+        );
+    }
+    // The goal discloses the whole rule and names no rule id.
+    for phrase in [
+        "swarmail_get_deliverability_report",
+        "GET /newsletter",
+        "POST /newsletter",
+        "{identity}",
+        "link., html. or spam.",
+        "href=\"http://shop.example/autumn\"",
+        "https form",
+        "Nothing about this task disqualifies the trial",
+    ] {
+        assert!(t.goal.contains(phrase), "{phrase}");
+    }
+    for id in tasks::NEWSLETTER_FINDINGS {
+        assert!(!t.goal.contains(id), "{id}");
+    }
+    assert!(!t.goal.contains(".v1"));
+    assert_eq!(
+        tasks::select_ids(&cat, vec![], Some(Tier::Deliverability)).unwrap(),
+        ["newsletter-findings"]
+    );
+    // The constants the fixture, the oracle and the published fixture share.
+    assert_eq!(
+        tasks::NEWSLETTER_FINDINGS.to_vec(),
+        {
+            let mut sorted = tasks::NEWSLETTER_FINDINGS.to_vec();
+            sorted.sort();
+            sorted
+        },
+        "the three ids are kept sorted"
+    );
+    assert!(
+        tasks::NEWSLETTER_FINDINGS
+            .iter()
+            .all(|id| tasks::NEWSLETTER_FAMILIES.iter().any(|f| id.starts_with(f)))
+    );
+    assert!(tasks::NEWSLETTER_HTML.len() <= tasks::NEWSLETTER_MAX_HTML);
+    assert!(tasks::NEWSLETTER_SUBJECT.len() <= tasks::NEWSLETTER_MAX_SUBJECT);
+    assert!(
+        tasks::NEWSLETTER_OFFER_HREFS
+            .iter()
+            .any(|href| tasks::NEWSLETTER_HTML.contains(href))
+    );
+    assert!(!tasks::NEWSLETTER_HTML.contains('\r'));
+}
+
+/// The published fixture's decoded subject and HTML are the eval template's.
+#[test]
+fn the_failing_fixture_is_the_eval_template() {
+    let eml = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/deliverability-agent/newsletter-failing.eml"),
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    let (head, body) = eml.split_once("\n\n").unwrap();
+    assert!(
+        head.lines()
+            .any(|l| l == format!("Subject: {}", tasks::NEWSLETTER_SUBJECT))
+    );
+    assert!(
+        head.lines()
+            .any(|l| l == "Content-Type: text/html; charset=utf-8")
+    );
+    assert!(head.lines().any(|l| l == "Content-Transfer-Encoding: 7bit"));
+    assert_eq!(body, tasks::NEWSLETTER_HTML);
 }
