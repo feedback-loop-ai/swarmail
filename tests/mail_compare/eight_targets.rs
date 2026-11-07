@@ -3772,6 +3772,40 @@ fn does_not_start_refuses_cite_outside_pin() {
 }
 
 #[test]
+fn does_not_start_cite_must_be_failure_evidence() {
+    let lock = lock4(v4());
+    // The committed pair: the cite is the supplied failure output.
+    let committed = Protocol::parse(PROTOCOL_V3).unwrap();
+    protocol::does_not_start_matches(&committed, &lock).expect("the committed cite is evidence");
+    // A document of the pin that is not failure evidence (a Commit-attributed
+    // README, an Api object, a Member) is refused.
+    for cite in [
+        "sources/mailslurper/mailslurper-readme.md",
+        "sources/mailslurper/mailslurper-license.txt",
+        "sources/mailslurper/mailslurper-release.json",
+        "sources/mailslurper/mailslurper-config.json",
+    ] {
+        let mut p = committed.clone();
+        p.does_not_start.as_mut().unwrap()[0].cite = cite.into();
+        let why = refusals(protocol::does_not_start_matches(&p, &lock));
+        assert!(why.contains("which is not failure evidence"), "{cite}: {why}");
+        assert!(
+            refusals(protocol::collection_ready(&p, &lock)).contains("not failure evidence"),
+            "{cite}"
+        );
+    }
+    // The executable's own output is evidence too.
+    let mut l = v4();
+    let at = entry_of(&mut l, "mailslurper");
+    for d in l["entries"][at]["pin"]["documents"].as_array_mut().unwrap() {
+        if d["path"] == "sources/mailslurper/mailslurper-official-failure.txt" {
+            d["attribution"] = json!({"observed": {"from": "output", "argv": ["--version"]}});
+        }
+    }
+    protocol::does_not_start_matches(&committed, &lock4(l)).expect("an Output cite is evidence");
+}
+
+#[test]
 fn does_not_start_refused_on_v2() {
     let mut v = json(PROTOCOL);
     v["does_not_start"] = json!([{"target": "mailpit", "cite": "x"}]);

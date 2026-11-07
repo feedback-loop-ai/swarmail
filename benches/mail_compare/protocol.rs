@@ -3478,11 +3478,26 @@ pub fn does_not_start_matches(p: &Protocol, lock: &SourceLock) -> Result<(), Ref
                 "does_not_start: {t} has no pin, so there is no result to publish for it"
             )),
             Some(pin) => {
-                if !pin.documents.iter().any(|x| x.path == d.cite) {
-                    out.push(format!(
+                match pin.documents.iter().find(|x| x.path == d.cite) {
+                    None => out.push(format!(
                         "does_not_start: {t} cites {:?}, which is no document of its pin",
                         d.cite
-                    ));
+                    )),
+                    // The cite must be failure evidence: the operator's
+                    // supplied output or the pinned executable's own. A
+                    // README or licence must never suppress a working row.
+                    Some(doc)
+                        if !matches!(
+                            doc.attribution,
+                            Fact::Observed(Attribution::Supplied { .. } | Attribution::Output { .. })
+                        ) =>
+                    {
+                        out.push(format!(
+                            "does_not_start: {t} cites {:?}, which is not failure evidence (a supplied record or the executable's own output)",
+                            d.cite
+                        ))
+                    }
+                    Some(_) => {}
                 }
             }
         }
