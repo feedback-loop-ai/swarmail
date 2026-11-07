@@ -809,6 +809,12 @@ fn json_file(path: &Path, what: &str, name: &str) -> Result<(Value, Vec<u8>), St
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
+    git_raw(repo, args).map(|out| out.trim().to_owned())
+}
+
+/// `git`'s output exactly as written: `status --porcelain` starts a line
+/// with a space for an unstaged change, which trimming would eat.
+fn git_raw(repo: &Path, args: &[&str]) -> Result<String, String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -824,7 +830,7 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Verify every prerequisite in the fixed order and name the first that does
@@ -1110,7 +1116,7 @@ fn check_receipts(
     }
     let changed = git(&inputs.repo, &["diff", "--name-only", &r.head, &candidate])
         .or_else(|e| refuse(NAME, e))?;
-    let dirty = git(
+    let dirty = git_raw(
         &inputs.repo,
         &["status", "--porcelain", "--untracked-files=all"],
     )

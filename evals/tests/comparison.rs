@@ -857,6 +857,33 @@ fn receipts_are_refused_unless_their_head_is_an_ancestor_whose_diff_touches_only
     let set = build_set();
     std::fs::write(set.repo.join("evals.rs"), "dirty").unwrap();
     assert!(why(&set, Mode::DryRun).contains("evals.rs changed since"));
+    // An unstaged edit and a new file under the evidence paths are the
+    // evidence being written, whatever git's leading space looks like.
+    let set = build_set();
+    commit_file(
+        &set.repo,
+        "docs/evals/agent-controls-2026-11-07/gates.txt",
+        "first",
+    );
+    std::fs::write(
+        set.repo
+            .join("docs/evals/agent-controls-2026-11-07/gates.txt"),
+        "edited",
+    )
+    .unwrap();
+    std::fs::write(
+        set.repo
+            .join("docs/evals/agent-controls-2026-11-07/dry-run.txt"),
+        "new",
+    )
+    .unwrap();
+    comparison::check(&set.inputs, Mode::DryRun)
+        .expect("unstaged and untracked evidence is allowed");
+    // An unstaged edit elsewhere is named by its whole path.
+    commit_file(&set.repo, "evals/src/lib.rs", "x");
+    std::fs::write(set.repo.join("evals/src/lib.rs"), "y").unwrap();
+    let got = why(&set, Mode::DryRun);
+    assert!(got.contains(" evals/src/lib.rs changed since"), "{got}");
     let set = build_set();
     git(&set.repo, &["checkout", "-q", "--orphan", "other"]);
     commit_file(&set.repo, "other.txt", "elsewhere");

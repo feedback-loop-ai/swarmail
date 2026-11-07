@@ -13,9 +13,9 @@ cargo build --locked --bin swarmail                         ok
   uptime before:  17:56:48 up 14 days,  8:12,  0 users,  load average: 6.87, 8.98, 6.89
   uptime after:   18:16:13 up 14 days,  8:31,  0 users,  load average: 3.02, 4.60, 5.61
 bash scripts/coverage-gate.sh                                ok on the third run, 5m35s wall, exact 100/100/100
-  Two earlier runs refused on a flake in a test this story did not write and src/ did not change under:
-  run 1: one branch in src/store.rs's parse-gate test (target/coverage/.../lcov.info BRDA:2972,0,1,0);
-  run 2: tests/mail_compare.rs the_mailslurper_adapter_lists_and_reads_over_real_smtp_into_swarmails_shim,
+  Two earlier runs refused on a flake, with src/ unchanged on this branch:
+  run 1: one branch in the existing src/store.rs parse-gate test (target/coverage/.../lcov.info BRDA:2972,0,1,0);
+  run 2: this branch's own tests/mail_compare.rs (6191a9d) the_mailslurper_adapter_lists_and_reads_over_real_smtp_into_swarmails_shim,
          whose Swarmail launch answered NotReady("no listener addresses") under the instrumented build's load.
 bash scripts/coverage-gate.sh selftest                       ok
 bash scripts/publish-guard-test.sh                           ok
