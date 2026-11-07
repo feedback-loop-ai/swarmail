@@ -149,6 +149,25 @@ resolve_binaries() {
       | grep -o '"executable":"[^"]*mail_compare[^"]*"' | tail -n1 | cut -d'"' -f4)
   fi
   [ -n "$adapter" ] && [ -x "$adapter" ] || blocked build "the mail_compare driver does not build"
+  # Measure a frozen copy, named by its own digest: a later build of the same
+  # target path (a test run relinks target/debug/swarmail) can then never
+  # change the bytes the identity record names.
+  local dir=${COMPARE_MAIL_BIN_DIR:-target/compare-mail}
+  mkdir -p "$dir" || blocked prerequisites "cannot make $dir"
+  swarmail=$(freeze_binary "$swarmail" "$dir") || blocked build "cannot freeze the candidate binary"
+  adapter=$(freeze_binary "$adapter" "$dir") || blocked build "cannot freeze the adapter driver"
+}
+
+# Copy an executable to DIR/<name>-<16 hex of its sha256> (once) and print the
+# absolute path of the copy.
+freeze_binary() {
+  local src="$1" dir="$2" sum dest
+  sum=$(sha256sum "$src" | cut -c1-16) || return 1
+  dest="$dir/$(basename "$src")-$sum"
+  if [ ! -x "$dest" ]; then
+    cp "$src" "$dest.tmp" && chmod 755 "$dest.tmp" && mv "$dest.tmp" "$dest" || return 1
+  fi
+  realpath "$dest"
 }
 
 build_evals() {
