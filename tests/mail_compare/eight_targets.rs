@@ -4621,10 +4621,30 @@ async fn real_launch(t: TargetKind, root: &Path) -> targets::Owned {
 }
 
 async fn send_all(owned: &targets::Owned, msgs: &[wire::Message]) {
+    send_with_session_attempts(owned, msgs, 1).await;
+}
+
+/// `send_all`, but a fresh session the server closes before its banner is
+/// opened again, up to `attempts` times in all. Nothing has been sent when a
+/// session fails to open, so a retry can never hide a lost or duplicated
+/// mail: every delivery below is still asserted `Accepted`, and the listing
+/// check that follows still counts every token.
+async fn send_with_session_attempts(owned: &targets::Owned, msgs: &[wire::Message], attempts: u32) {
     let clock = wire::Clock(Instant::now());
-    let mut s = wire::Smtp::open(owned.smtp, Duration::from_secs(10))
-        .await
-        .expect("an SMTP session");
+    let mut tried = 0;
+    let mut s = loop {
+        tried += 1;
+        match wire::Smtp::open(owned.smtp, Duration::from_secs(10)).await {
+            Ok(s) => break s,
+            Err((0, wire::WireError::Closed)) if tried < attempts => {
+                tokio::task::yield_now().await;
+            }
+            Err(e) => panic!(
+                "{}: an SMTP session after {tried} attempt(s): {e:?}",
+                owned.kind
+            ),
+        }
+    };
     for m in msgs {
         let rec = s.send(m, &clock).await;
         assert!(
@@ -4918,7 +4938,12 @@ async fn real_caps(t: TargetKind) {
         // sends in small batches and waits for each to be listed, so only
         // eviction could lower the count.
         for (n, batch) in msgs.chunks(5).enumerate() {
-            send_all(&owned, batch).await;
+            // The cgo build sometimes closes a fresh session before its
+            // banner (2 of 9 runs of this proof, 2026-11-07, one at a time):
+            // an observation about the tool, which a collection counts as a
+            // send failure. It is not a retention cap, so the cap proof opens
+            // the session again and still requires every mail listed.
+            send_with_session_attempts(&owned, batch, 5).await;
             listed_all(&owned, (n + 1) * 5, 100).await;
         }
     } else {
