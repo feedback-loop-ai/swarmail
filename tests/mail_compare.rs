@@ -2618,6 +2618,12 @@ fn rows_prefix(dir: &Path) -> usize {
 /// Run `scripts/compare-mail.sh` with inert agent witnesses first on PATH:
 /// any of them executing leaves a mark. Returns (exit code, stderr+stdout).
 fn compare_mail(args: &[&str], witness: &Path) -> (i32, String) {
+    compare_mail_env(args, witness, &[])
+}
+
+/// As [`compare_mail`], with extra environment (the wrapper's prebuilt-binary
+/// overrides and a fake verifier's controls).
+fn compare_mail_env(args: &[&str], witness: &Path, env: &[(&str, &str)]) -> (i32, String) {
     let bin = witness.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     for agent in ["claude", "codex", "dsh", "gemini", "opencode", "brokkr"] {
@@ -2643,6 +2649,7 @@ fn compare_mail(args: &[&str], witness: &Path) -> (i32, String) {
                 std::env::var("PATH").unwrap_or_default()
             ),
         )
+        .envs(env.iter().copied())
         .output()
         .unwrap();
     let text = format!(
@@ -2670,10 +2677,6 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
         "no arguments prints usage: {text}"
     );
 
-    let eval_blocked = |text: &str| {
-        text.contains("blocked at phase \"eval-build\"")
-            || text.contains("blocked at phase \"comparison-integration\"")
-    };
     let cases: Vec<(Vec<&str>, &str)> = vec![
         (vec!["bogus", "--output", o], "\"arguments\""),
         (vec!["local"], "--output DIR is required"),
@@ -2722,7 +2725,6 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
     std::fs::write(&empty, b"").unwrap();
     let e = empty.to_str().unwrap();
     for mode_args in [
-        vec!["controls", "--output", o],
         vec!["evidence", "--output", o, "--final", i],
         vec!["measure", "--output", o, "--config", i],
     ] {
@@ -2748,61 +2750,39 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
         let (code, text) = compare_mail(&mode_args, &w);
         assert_eq!(code, 2);
         assert!(text.contains("\"prerequisite-baseline\""), "{text}");
-        // Everything present stat-wise reaches the eval owners' refusal,
-        // which stays unconditional until T8/T9 land.
-        let mut all = mode_args.clone();
-        for (_, flag) in prerequisites {
-            all.extend([flag, i]);
-        }
-        let (code, text) = compare_mail(&all, &w);
-        assert_eq!(code, 2, "{all:?}: {text}");
-        assert!(eval_blocked(&text), "{all:?}: {text}");
     }
-
-    // The dry run names the whole order and opens nothing: its wrapper
-    // configuration is unreadable and holds a canary that must never appear.
-    let config = root.path().join("config");
-    std::fs::write(&config, b"CANARY-credential-zzz").unwrap();
-    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let c = config.to_str().unwrap();
-    for args in [
-        vec!["measure", "--output", o, "--config", c, "--dry-run"],
-        vec![
-            "measure",
+    // `controls` needs only the product and the three executables.
+    let (code, text) = compare_mail(&["controls", "--output", o], &w);
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("--product is required in controls mode"),
+        "{text}"
+    );
+    let (code, text) = compare_mail(&["controls", "--output", o, "--product", i], &w);
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("\"competitor-binaries\"") && text.contains("--mailpit"),
+        "{text}"
+    );
+    let (code, text) = compare_mail(
+        &[
+            "controls",
             "--output",
             o,
-            "--config",
-            c,
-            "--baseline",
-            i,
-            "--contracts",
-            i,
-            "--controls-dir",
-            i,
-            "--receipts",
-            i,
-            "--cost",
-            i,
-            "--identity",
-            i,
             "--product",
             i,
-            "--dry-run",
+            "--mailpit",
+            i,
+            "--mailhog",
+            i,
+            "--mailslurper",
+            i,
         ],
-    ] {
-        let (code, text) = compare_mail(&args, &w);
-        assert_eq!(code, 2, "{args:?}: {text}");
-        assert!(
-            text.contains(
-                "prerequisite order: baseline final-contracts controls coordination-receipts cost-basis identity full-product"
-            ),
-            "{text}"
-        );
-        assert!(
-            !text.contains("CANARY") && !text.contains("Permission denied"),
-            "a dry run opened the wrapper configuration: {text}"
-        );
-    }
+        &w,
+    );
+    assert_eq!(code, 2);
+    assert!(text.contains("is not an executable file"), "{text}");
+
     std::fs::create_dir(&out).unwrap();
     let (code, text) = compare_mail(&["local", "--output", o], &w);
     assert_eq!(code, 2);
@@ -2814,6 +2794,340 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
     assert!(
         std::fs::read_dir(&out).unwrap().next().is_none(),
         "a refusal writes no output"
+    );
+}
+
+// ---- the wrapper's integrated modes (decision 0129 §9) ----------------------
+
+/// A scratch directory on /home (under the build directory), never the
+/// RAM-backed /tmp.
+fn home_scratch() -> tempfile::TempDir {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/wrapper-tests");
+    std::fs::create_dir_all(&root).unwrap();
+    tempfile::Builder::new()
+        .prefix("w-")
+        .tempdir_in(root)
+        .unwrap()
+}
+
+fn script(path: &Path, body: &str) -> String {
+    std::fs::write(path, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.display().to_string()
+}
+
+/// Everything a non-dry or dry measure needs, with a fake `swarmail-evals`
+/// that logs its arguments, refuses as `FAKE_REFUSE` says, and otherwise
+/// succeeds. The wrapper's own logic is what is proved here: the verifier's
+/// checks are proved on real bytes in the eval crate's tests.
+struct Rig {
+    dir: tempfile::TempDir,
+    evals: String,
+    swarmail: String,
+    adapter: String,
+    log: PathBuf,
+    flags: Vec<String>,
+}
+
+fn wrapper_rig(trials: u32) -> Rig {
+    let dir = home_scratch();
+    let p = dir.path();
+    let log = p.join("evals.log");
+    let evals = script(
+        &p.join("swarmail-evals"),
+        r#"echo "$@" >> "$FAKE_LOG"
+case "$1" in
+  comparison-check)
+    if [ -n "$FAKE_REFUSE" ]; then echo "swarmail-evals: comparison refused: $FAKE_REFUSE" >&2; exit 2; fi
+    echo "comparison-check: the fake verifier ran in mode $3"; exit 0 ;;
+  matrix) echo '{"fake":"row"}'; exit 0 ;;
+esac
+exit 0
+"#,
+    );
+    let swarmail = script(&p.join("swarmail"), "exit 0\n");
+    let adapter = script(&p.join("adapter"), "exit 0\n");
+    let product = p.join("product.json");
+    std::fs::write(
+        &product,
+        format!("{{\n  \"id\": \"synthetic-one-trial\",\n  \"trials\": {trials},\n  \"planned_cells\": 48\n}}\n"),
+    )
+    .unwrap();
+    let mut flags = vec![];
+    for (flag, name) in [
+        ("--baseline", "baseline"),
+        ("--contracts", "contracts"),
+        ("--controls-dir", "controls"),
+        ("--receipts", "receipts"),
+        ("--cost", "cost"),
+        ("--identity", "identity"),
+    ] {
+        let f = p.join(name);
+        std::fs::write(&f, b"x").unwrap();
+        flags.extend([flag.to_owned(), f.display().to_string()]);
+    }
+    flags.extend(["--product".into(), product.display().to_string()]);
+    for name in ["mailpit", "mailhog", "mailslurper"] {
+        flags.extend([format!("--{name}"), script(&p.join(name), "exit 0\n")]);
+    }
+    std::fs::write(p.join("config.json"), r#"[{"label":"null","argv":[]}]"#).unwrap();
+    Rig {
+        dir,
+        evals,
+        swarmail,
+        adapter,
+        log,
+        flags,
+    }
+}
+
+impl Rig {
+    fn run(&self, mode_args: &[&str], extra: &[&str], refuse: &str) -> (i32, String) {
+        let out = self.dir.path().join(format!(
+            "out-{}",
+            std::fs::read_dir(self.dir.path()).unwrap().count()
+        ));
+        let o = out.display().to_string();
+        let config = self.dir.path().join("config.json").display().to_string();
+        let mut args: Vec<&str> = mode_args.to_vec();
+        args.extend(["--output", &o]);
+        if mode_args[0] == "measure" {
+            args.extend(["--config", &config]);
+        }
+        args.extend(extra);
+        let flags: Vec<&str> = self.flags.iter().map(String::as_str).collect();
+        args.extend(&flags);
+        compare_mail_env(
+            &args,
+            self.dir.path(),
+            &[
+                ("COMPARE_MAIL_EVALS_BIN", &self.evals),
+                ("COMPARE_MAIL_SWARMAIL_BIN", &self.swarmail),
+                ("COMPARE_MAIL_ADAPTER_BIN", &self.adapter),
+                ("COMPARE_MAIL_EVAL_SUITE", &self.swarmail),
+                ("FAKE_LOG", &self.log.display().to_string()),
+                ("FAKE_REFUSE", refuse),
+            ],
+        )
+    }
+
+    fn log(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+}
+
+#[test]
+fn the_comparison_integration_refusal_is_gone_and_a_dry_run_runs_only_the_verifier() {
+    let script_text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/compare-mail.sh"),
+    )
+    .unwrap();
+    assert_eq!(script_text.matches("comparison-integration").count(), 0);
+    let rig = wrapper_rig(1);
+    // The configuration is unreadable and holds a canary that must never appear.
+    let config = rig.dir.path().join("config.json");
+    std::fs::write(&config, b"CANARY-credential-zzz").unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (code, text) = rig.run(&["measure", "--dry-run"], &[], "");
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("the fake verifier ran in mode dry-run"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("CANARY") && !text.contains("Permission denied"),
+        "{text}"
+    );
+    // The only process the wrapper started is the verifier: no matrix, no
+    // contract probe, no index, no agent.
+    let log = rig.log();
+    assert_eq!(log.lines().count(), 1, "{log}");
+    assert!(log.starts_with("comparison-check --mode dry-run "), "{log}");
+    assert!(!rig.dir.path().join("launched").exists());
+    // A refusal by the verifier is relayed by the prerequisite it names.
+    let (code, text) = rig.run(
+        &["measure", "--dry-run"],
+        &[],
+        "prerequisite-controls: the controls hold no rows for mailhog",
+    );
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("blocked at phase \"prerequisite-controls\"")
+            && text.contains("no rows for mailhog"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_eval_crate_that_does_not_build_is_refused_as_eval_build() {
+    let rig = wrapper_rig(1);
+    // A `cargo` that fails, first on PATH, and no prebuilt verifier named.
+    let bin = rig.dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    script(
+        &bin.join("cargo"),
+        "echo 'error: could not compile' >&2\nexit 101\n",
+    );
+    let out = rig.dir.path().join("out-build");
+    let o = out.display().to_string();
+    let config = rig.dir.path().join("config.json").display().to_string();
+    let flags: Vec<&str> = rig.flags.iter().map(String::as_str).collect();
+    let mut args = vec!["measure", "--dry-run", "--output", &o, "--config", &config];
+    args.extend(&flags);
+    let (code, text) = compare_mail_env(
+        &args,
+        rig.dir.path(),
+        &[("FAKE_LOG", &rig.log.display().to_string())],
+    );
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("blocked at phase \"eval-build\"") && text.contains("does not build"),
+        "{text}"
+    );
+    assert!(
+        rig.log().is_empty(),
+        "the verifier never ran on a crate that does not build"
+    );
+}
+
+#[test]
+fn a_paid_measure_needs_the_verified_prerequisites_and_the_authorized_product() {
+    let rig = wrapper_rig(1);
+    // Without --authorized-product, with a wrong one: refused by name, and no
+    // matrix, no agent.
+    let (code, text) = rig.run(&["measure"], &[], "");
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("blocked at phase \"authorization\"") && text.contains("synthetic-one-trial"),
+        "{text}"
+    );
+    let (code, text) = rig.run(
+        &["measure"],
+        &["--authorized-product", "another-product"],
+        "",
+    );
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("blocked at phase \"authorization\"") && text.contains("is not the product"),
+        "{text}"
+    );
+    // A pending item (the verifier refuses it in measure mode) is refused by name.
+    let (code, text) = rig.run(
+        &["measure"],
+        &["--authorized-product", "synthetic-one-trial"],
+        "prerequisite-coordination-receipts: ci: the required CI run has not been supplied",
+    );
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("\"prerequisite-coordination-receipts\""),
+        "{text}"
+    );
+    assert!(
+        !rig.log().contains("matrix "),
+        "no agent matrix was delegated: {}",
+        rig.log()
+    );
+    assert!(!rig.dir.path().join("launched").exists());
+    // All three hold: the delegation runs the four targets in product order,
+    // one matrix each, with the inert null config and the product's trials.
+    let (code, text) = rig.run(
+        &["measure"],
+        &["--authorized-product", "synthetic-one-trial"],
+        "",
+    );
+    assert_eq!(code, 0, "{text}");
+    let log = rig.log();
+    let matrices: Vec<&str> = log.lines().filter(|l| l.starts_with("matrix ")).collect();
+    assert_eq!(matrices.len(), 4, "{log}");
+    for (line, target) in matrices
+        .iter()
+        .zip(["swarmail", "mailpit", "mailhog", "mailslurper"])
+    {
+        assert!(
+            line.starts_with(&format!("matrix --target {target} --product ")),
+            "{line}"
+        );
+        assert!(
+            line.contains("--tier hard") && line.contains("--trials 1 "),
+            "{line}"
+        );
+        assert_eq!(line.contains("--adapter "), target != "swarmail", "{line}");
+        assert_eq!(
+            line.contains("--target-bin "),
+            target != "swarmail",
+            "{line}"
+        );
+    }
+    assert!(
+        log.lines()
+            .next()
+            .unwrap()
+            .starts_with("comparison-check --mode measure "),
+        "{log}"
+    );
+    assert!(
+        !rig.dir.path().join("launched").exists(),
+        "no agent CLI ran"
+    );
+}
+
+#[test]
+fn controls_run_each_target_as_a_named_timed_command_and_index_them() {
+    let rig = wrapper_rig(1);
+    let (code, text) = rig.run(&["controls"], &[], "");
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("120 rows, 4 targets"), "{text}");
+    let log = rig.log();
+    for t in ["swarmail", "mailpit", "mailhog", "mailslurper"] {
+        assert!(
+            log.contains(&format!("comparison-contract --target {t} ")),
+            "{t}: {log}"
+        );
+        assert!(log.contains(&format!("matrix --target {t} ")), "{t}: {log}");
+    }
+    for line in log.lines().filter(|l| l.starts_with("matrix ")) {
+        assert!(
+            line.contains("--tier hard") && line.contains("--trials 5 "),
+            "{line}"
+        );
+    }
+    // The index is written once, after every target, with the suite's status.
+    let index: Vec<&str> = log
+        .lines()
+        .filter(|l| l.starts_with("comparison-index "))
+        .collect();
+    assert_eq!(index.len(), 1, "{log}");
+    assert!(
+        index[0].contains("--eval-suite-status pass"),
+        "{}",
+        index[0]
+    );
+    assert!(!rig.dir.path().join("launched").exists());
+    // A suite that did not pass is recorded as failed, and controls refuse it.
+    let failing = script(&rig.dir.path().join("failing-suite"), "exit 1\n");
+    let out = rig.dir.path().join("out-failing");
+    let o = out.display().to_string();
+    let flags: Vec<&str> = rig.flags.iter().map(String::as_str).collect();
+    let mut args = vec!["controls", "--output", &o];
+    args.extend(&flags);
+    let (code, text) = compare_mail_env(
+        &args,
+        rig.dir.path(),
+        &[
+            ("COMPARE_MAIL_EVALS_BIN", &rig.evals),
+            ("COMPARE_MAIL_SWARMAIL_BIN", &rig.swarmail),
+            ("COMPARE_MAIL_ADAPTER_BIN", &rig.adapter),
+            ("COMPARE_MAIL_EVAL_SUITE", &failing),
+            ("FAKE_LOG", &rig.log.display().to_string()),
+            ("FAKE_REFUSE", ""),
+        ],
+    );
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("blocked at phase \"eval-suite\""), "{text}");
+    assert!(
+        rig.log().contains("--eval-suite-status fail"),
+        "{}",
+        rig.log()
     );
 }
 

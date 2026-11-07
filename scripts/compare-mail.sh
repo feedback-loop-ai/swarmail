@@ -130,6 +130,26 @@ prerequisite_chain() {
 # controls of all four targets, which only a runner that served every
 # competitor can have produced.
 evals_bin=${COMPARE_MAIL_EVALS_BIN:-evals/target/debug/swarmail-evals}
+# COMPARE_MAIL_EVALS_BIN, COMPARE_MAIL_SWARMAIL_BIN and COMPARE_MAIL_ADAPTER_BIN
+# name prebuilt executables instead of building them. They exist so that the
+# wrapper's own logic can be proved without a build; they change what is run,
+# never what is checked, and the verifier still reads the same bytes.
+
+# Resolve the candidate's swarmail and the adapter driver, building them
+# unless a prebuilt one was named.
+resolve_binaries() {
+  swarmail=${COMPARE_MAIL_SWARMAIL_BIN:-}
+  adapter=${COMPARE_MAIL_ADAPTER_BIN:-}
+  if [ -z "$swarmail" ]; then
+    cargo build --locked --offline --bin swarmail >&2 || blocked build "the candidate binary does not build"
+    swarmail=$PWD/target/debug/swarmail
+  fi
+  if [ -z "$adapter" ]; then
+    adapter=$(cargo bench --locked --offline --no-run --bench mail_compare --message-format=json 2>/dev/null \
+      | grep -o '"executable":"[^"]*mail_compare[^"]*"' | tail -n1 | cut -d'"' -f4)
+  fi
+  [ -n "$adapter" ] && [ -x "$adapter" ] || blocked build "the mail_compare driver does not build"
+}
 
 build_evals() {
   local conflicted
@@ -183,12 +203,8 @@ controls_run() {
     [ -x "$bin" ] || blocked competitor-binaries "--$t $bin is not an executable file"
   done
   build_evals
-  cargo build --locked --offline --bin swarmail >&2 || blocked build "the candidate binary does not build"
   local swarmail adapter
-  swarmail=$PWD/target/debug/swarmail
-  adapter=$(cargo bench --locked --offline --no-run --bench mail_compare --message-format=json 2>/dev/null \
-    | grep -o '"executable":"[^"]*mail_compare[^"]*"' | tail -n1 | cut -d'"' -f4)
-  [ -n "$adapter" ] && [ -x "$adapter" ] || blocked build "the mail_compare driver does not build"
+  resolve_binaries
   local scratch="$output.scratch" product_id seed fixture_time head
   mkdir -p "$scratch" || blocked prerequisites "cannot make $scratch"
   product_id=$(sed -n 's/^  "id": "\(.*\)",$/\1/p' "$product" | head -n1)
@@ -225,10 +241,16 @@ controls_run() {
     [ "$status" -le 1 ] || blocked "controls-$t" "the $t matrix ended with status $status (see $scratch/timing-$t.txt)"
   done
   head=$(git rev-parse HEAD 2>/dev/null) || blocked prerequisites "the candidate is not a git checkout"
-  local suite_cmd="cargo test --locked --offline (in evals/, SWARMAIL_BIN=target/debug/swarmail, RUST_TEST_THREADS=32)"
+  local suite_cmd="cargo test --locked --offline -j 32 (in evals/, SWARMAIL_BIN=$swarmail, RUST_TEST_THREADS=32, timeout 600)"
   local suite_status=pass
-  (cd evals && SWARMAIL_BIN="$swarmail" RUST_TEST_THREADS=32 timeout 600 cargo test --locked --offline -j 32 >"$scratch/eval-suite.log" 2>&1) \
-    || suite_status=fail
+  if [ -n "${COMPARE_MAIL_EVAL_SUITE:-}" ]; then
+    # A test seam: the wrapper's own logic is proved without the real suite.
+    suite_cmd="COMPARE_MAIL_EVAL_SUITE=$COMPARE_MAIL_EVAL_SUITE (a stand-in, never a receipt)"
+    "$COMPARE_MAIL_EVAL_SUITE" >"$scratch/eval-suite.log" 2>&1 || suite_status=fail
+  else
+    (cd evals && SWARMAIL_BIN="$swarmail" RUST_TEST_THREADS=32 timeout 600 cargo test --locked --offline -j 32 >"$scratch/eval-suite.log" 2>&1) \
+      || suite_status=fail
+  fi
   "$evals_bin" comparison-index --scratch "$scratch" --output "$output" --product "$product" \
     --swarmail "$swarmail" --mailpit "$mailpit" --mailhog "$mailhog" --mailslurper "$mailslurper" \
     --adapter "$adapter" --head "$head" --eval-suite-command "$suite_cmd" --eval-suite-status "$suite_status" \
@@ -324,11 +346,7 @@ case "$mode" in
       [ -n "$bin" ] && [ -x "$bin" ] || blocked competitor-binaries "measure runs all four targets; pass --$t with its pinned executable"
     done
     command -v cargo >/dev/null 2>&1 || blocked prerequisites "cargo is not installed"
-    cargo build --locked --offline --bin swarmail >&2 || blocked build "the candidate binary does not build"
-    swarmail=$PWD/target/debug/swarmail
-    adapter=$(cargo bench --locked --offline --no-run --bench mail_compare --message-format=json 2>/dev/null \
-      | grep -o '"executable":"[^"]*mail_compare[^"]*"' | tail -n1 | cut -d'"' -f4)
-    [ -n "$adapter" ] && [ -x "$adapter" ] || blocked build "the mail_compare driver does not build"
+    resolve_binaries
     trials=$(sed -n 's/^  "trials": \([0-9]*\),$/\1/p' "$product" | head -n1)
     [ -n "$trials" ] || blocked prerequisites "--product has no trials"
     seed=$(printf '%s' "$product_id" | sha256sum | cut -d' ' -f1)

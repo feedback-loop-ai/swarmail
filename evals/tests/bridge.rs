@@ -489,3 +489,73 @@ async fn a_pretty_printed_body_reaches_the_adapter_as_one_line() {
     assert_eq!(parsed, serde_json::from_str::<Value>(pretty).unwrap());
     a.bridge.stop().await;
 }
+
+/// A stdio server that, like every adapter, refuses a second `initialize`
+/// with "already initialized", and counts how many reached it.
+const ONE_SESSION_SERVER: &str = r#"
+import sys, json
+seen = 0
+for line in sys.stdin:
+    msg = json.loads(line)
+    if "id" not in msg: continue
+    if msg["method"] == "initialize":
+        seen += 1
+        if seen > 1:
+            print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32600, "message": "already initialized"}}), flush=True)
+            continue
+        r = {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}}, "serverInfo": {"name": "one-session", "version": "1"}}
+    elif msg["method"] == "ping":
+        r = {"initializes_seen": seen}
+    else:
+        r = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": r}), flush=True)
+"#;
+
+#[tokio::test]
+async fn several_clients_share_one_stdio_session_because_a_later_initialize_is_answered_from_the_first()
+ {
+    let python = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|d| d.join("python3"))
+        .find(|p| p.is_file())
+        .expect("python3 is on PATH");
+    let mut child = Command::new(python)
+        .args(["-I", "-c", ONE_SESSION_SERVER])
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let to: ChildStdin = child.stdin.take().unwrap();
+    let from: ChildStdout = child.stdout.take().unwrap();
+    let bridge = Bridge::start(to, BufReader::new(from)).await.unwrap();
+    let url = bridge.url();
+    // The runner's probe, the oracle and an agent CLI that reconnects each
+    // say initialize; the adapter would refuse all but the first.
+    for name in ["probe", "oracle", "agent", "agent again"] {
+        let mut body = init(1);
+        body["params"]["clientInfo"]["name"] = name.into();
+        let (status, reply) = post(&url, &body).await;
+        assert_eq!(status, 200);
+        assert_eq!(reply["id"], 1);
+        assert_eq!(
+            reply["result"]["serverInfo"]["name"], "one-session",
+            "{name}: {reply}"
+        );
+        assert_eq!(reply["result"]["protocolVersion"], "2025-03-26");
+    }
+    let (_, ping) = post(&url, &json!({"jsonrpc": "2.0", "id": 9, "method": "ping"})).await;
+    assert_eq!(
+        ping["result"]["initializes_seen"], 1,
+        "only the first reached the adapter: {ping}"
+    );
+    // Every client's negotiation is logged, never a body.
+    let names: Vec<_> = bridge
+        .sessions()
+        .iter()
+        .filter_map(|s| s.client_name.clone())
+        .collect();
+    assert_eq!(names, ["probe", "oracle", "agent", "agent again"]);
+    bridge.stop().await;
+}
