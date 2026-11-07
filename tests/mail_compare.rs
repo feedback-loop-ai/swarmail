@@ -2149,7 +2149,11 @@ fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir(to).unwrap();
     for e in std::fs::read_dir(from).unwrap() {
         let e = e.unwrap();
-        std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+        if e.file_type().unwrap().is_dir() {
+            copy_dir(&e.path(), &to.join(e.file_name()));
+        } else {
+            std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+        }
     }
 }
 
@@ -5098,24 +5102,47 @@ fn the_v3_lock_is_archived_byte_identical_and_its_reader_accepts_it() {
 }
 
 #[test]
-fn the_v4_lock_pins_mailslurper_as_observed_and_leaves_its_tree_unresolved() {
+fn the_v4_lock_pins_mailslurper_as_built_from_source_with_its_tree_observed() {
     let s = SourceLock::parse(SOURCES).unwrap();
     s.validate().expect("the committed v4 lock validates");
     s.verify_files(&evals_dir())
-        .expect("every capture, blob and the ref are rechecked");
+        .expect("every capture, blob, the ref, the commit and the tree are rechecked");
     let pin = s.pin(TargetKind::Mailslurper).expect("a MailSlurper pin");
     assert_eq!(pin.release.tag, "release-1.15.0");
+    let a = &pin.artifact;
+    assert_eq!(a.kind, protocol::ArtifactKind::BuiltFromSource);
     assert_eq!(
-        (pin.artifact.sha256.as_str(), pin.artifact.digest_basis),
+        (a.sha256.as_str(), a.digest_basis, a.member.as_deref()),
         (
-            "48f2f9ba090f5385301477406b4f6e08f7bfbba0619c635ee591d6e6af3e55f6",
-            protocol::DigestBasis::LocallyComputed
+            "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff",
+            protocol::DigestBasis::LocallyComputed,
+            None
         )
     );
-    assert_eq!(pin.artifact.upstream_digest, None);
+    assert_eq!(a.executable_sha256, a.sha256);
+    assert_eq!((a.upstream_digest.as_deref(), a.size), (None, 19942072));
+    assert_eq!(a.download, pin.release.html_url, "no binary URL exists");
+    // The build is bound to the tagged source archive and a pinned image.
+    let b = a.build.as_ref().expect("the build record");
     assert_eq!(
-        pin.artifact.executable_sha256,
-        "0cd9416b766deb26eed8aa01ad0873d06725a3464fdb9ac3cc82201e2c232627"
+        b.source_sha256,
+        "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f"
+    );
+    assert!(
+        b.builder_image
+            .contains("@sha256:3b1a72af045ad0fff9fe8e00736baae76d70ff51325ac5bb814fe4754044b972")
+    );
+    assert_eq!(b.toolchain, "go1.18.1");
+    assert_eq!(b.flags, ["CGO_ENABLED=1", "-trimpath"]);
+    // The official zip stays bound, never launchable, with its failure.
+    let o = a.official_release.as_ref().expect("the official release");
+    assert_eq!(
+        (o.sha256.as_str(), o.member_sha256.as_str(), o.exit_status),
+        (
+            "48f2f9ba090f5385301477406b4f6e08f7bfbba0619c635ee591d6e6af3e55f6",
+            "0cd9416b766deb26eed8aa01ad0873d06725a3464fdb9ac3cc82201e2c232627",
+            1
+        )
     );
     let protocol::Fact::Observed(ts) = &pin.tagged_source else {
         panic!("tagged source unresolved");
@@ -5125,45 +5152,198 @@ fn the_v4_lock_pins_mailslurper_as_observed_and_leaves_its_tree_unresolved() {
     assert_eq!(ts.commit, "068acffdcd8960f248ea438c3b7ee51ead601bd2");
     assert_eq!(
         ts.source_archive.as_ref().map(|a| a.sha256.as_str()),
-        Some("83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f")
+        Some(b.source_sha256.as_str())
     );
+    assert_eq!(
+        ts.tree,
+        Some(protocol::Fact::Observed(
+            "5f29f08a747241992f5e8ffc25ca8fb35d550729".into()
+        ))
+    );
+    assert!(matches!(
+        &pin.binary_build_provenance,
+        protocol::Fact::Observed(bp) if bp.evidence == "sources/mailslurper/build/PROVENANCE.md"
+    ));
+    // The executable's own report disagrees with the tag, and says so.
+    assert!(a.version_output.contains("v1.14.1"));
     assert!(
-        matches!(&ts.tree, Some(protocol::Fact::Unresolved(why)) if why.contains("does not prove its tree"))
+        a.version_note
+            .as_deref()
+            .is_some_and(|n| n.contains("2026-11-07 ruling"))
     );
-    assert!(pin.binary_build_provenance.gap().is_some());
-    // The AUTH answer is the source's, and the probe is named as not run.
+    // The AUTH answer is the source's and the probe's, both recorded.
     let auth = pin.smtp_auth.as_ref().expect("the AUTH finding");
     assert_eq!(auth.answer, protocol::SmtpAuth::None);
-    assert!(
-        auth.probe
-            .gap()
-            .is_some_and(|w| w.contains("CGO_ENABLED=0"))
-    );
-    // The executable's own report disagrees with the tag, and says so.
-    assert!(pin.artifact.version_note.is_some());
+    assert!(matches!(
+        &auth.probe,
+        protocol::Fact::Observed(p) if p.contains("eb6cd97d") && p.contains("does not start and was not probed")
+    ));
     // The wire bench still declares the three it always had.
     let p = Protocol::parse(PROTOCOL).unwrap();
     protocol::collection_ready(&p, &s).ok();
     assert!(!p.targets.contains(&TargetKind::Mailslurper));
 }
 
+/// The committed root tree's entries, as the captured listing gives them.
+fn mailslurper_tree_entries() -> Vec<serde_json::Value> {
+    let bytes = std::fs::read(evals_dir().join("sources/mailslurper/git/mailslurper-tree.json"))
+        .expect("the captured root tree");
+    json(&bytes)["tree"].as_array().unwrap().clone()
+}
+
 #[test]
-fn a_v4_lock_refuses_a_mailslurper_tree_that_was_synthesised_or_a_tag_that_lies() {
+fn the_root_tree_is_rebuilt_from_its_json_and_git_agrees_with_the_hash() {
+    use std::io::Write;
+    let entries = mailslurper_tree_entries();
+    // The tree object's body, built here from the entries by the format's
+    // own rules, and handed to git: the id is recomputed, not copied.
+    let mut body = Vec::new();
+    for e in &entries {
+        let mode = e["mode"].as_str().unwrap().trim_start_matches('0');
+        body.extend_from_slice(mode.as_bytes());
+        body.push(b' ');
+        body.extend_from_slice(e["path"].as_str().unwrap().as_bytes());
+        body.push(0);
+        let sha = e["sha"].as_str().unwrap();
+        for i in 0..20 {
+            body.push(u8::from_str_radix(&sha[2 * i..2 * i + 2], 16).unwrap());
+        }
+    }
+    let mut git = std::process::Command::new("git")
+        .args(["hash-object", "-t", "tree", "--stdin"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("git is on PATH");
+    git.stdin.take().unwrap().write_all(&body).unwrap();
+    let out = git.wait_with_output().unwrap();
+    let id = String::from_utf8(out.stdout).unwrap().trim().to_owned();
+    assert_eq!(id, "5f29f08a747241992f5e8ffc25ca8fb35d550729");
+    assert_eq!(protocol::git_tree_id(&entries), Some(id));
+    // An entry that is not a tree's entry has no id.
+    let bad = serde_json::json!({"mode": "100644", "path": "x", "sha": "zz"});
+    assert_eq!(protocol::git_tree_id(&[bad]), None);
+    // LICENSE and README.md are the root tree's blobs.
+    let committed = SourceLock::parse(SOURCES).unwrap();
+    let pin = committed.pin(TargetKind::Mailslurper).unwrap();
+    for (name, blob) in [
+        ("LICENSE", "c1f191e730ab715bfdac9ff5b86e3c7160165b47"),
+        ("README.md", "fa9d065c195db47e17574cb05258f052ee127cef"),
+    ] {
+        assert!(
+            entries
+                .iter()
+                .any(|e| e["path"] == name && e["sha"] == blob),
+            "{name}"
+        );
+        assert!(pin.documents.iter().any(|d| matches!(
+            &d.attribution,
+            protocol::Fact::Observed(protocol::Attribution::Archive { upstream_path, git_blob, .. })
+                if upstream_path == name && git_blob == blob
+        )));
+    }
+}
+
+#[test]
+fn a_v4_lock_refuses_each_source_build_and_tree_defect() {
     let lock = |e: serde_json::Value| lock_of(vec![e]);
     lock(committed_entry(TargetKind::Mailslurper))
         .validate()
         .expect("the committed entry validates");
     let other = "0123456789abcdef0123456789abcdef01234567";
+    let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let own = "has no member, one digest";
     let cases: Vec<(&str, serde_json::Value, &str)> = vec![
+        // R11: a built_from_source artifact needs both records.
+        (
+            "/pin/artifact/build",
+            serde_json::Value::Null,
+            "needs its build record and the official release",
+        ),
+        (
+            "/pin/artifact/official_release",
+            serde_json::Value::Null,
+            "needs its build record and the official release",
+        ),
+        // The build is tied to the archive, and its image is pinned.
+        (
+            "/pin/artifact/build/source_sha256",
+            digest.into(),
+            "source_sha256 is not the tagged source archive's digest",
+        ),
+        (
+            "/pin/artifact/build/builder_image",
+            "docker.io/library/golang:1.18.1-bullseye".into(),
+            "builder image is not pinned by an @sha256: digest",
+        ),
+        (
+            "/pin/artifact/build/builder_image",
+            "docker.io/library/golang@sha256:abc".into(),
+            "builder image is not pinned by an @sha256: digest",
+        ),
+        (
+            "/pin/artifact/build/flags",
+            serde_json::json!([]),
+            "records no toolchain or flags",
+        ),
+        // The artifact's own digests and member.
+        ("/pin/artifact/sha256", digest.into(), own),
+        ("/pin/artifact/member", "mailslurper".into(), own),
+        ("/pin/artifact/upstream_digest", digest.into(), own),
+        (
+            "/pin/artifact/digest_basis",
+            "upstream_release_metadata".into(),
+            own,
+        ),
+        // The official release is a failing record with captured evidence.
+        (
+            "/pin/artifact/official_release/exit_status",
+            0.into(),
+            "needs names, a size, two digests and a failing exit status",
+        ),
+        (
+            "/pin/artifact/official_release/evidence",
+            "sources/mailslurper/git/mailslurper-tree.json".into(),
+            "cites no captured build evidence",
+        ),
+        (
+            "/pin/artifact/official_release/evidence",
+            "sources/mailslurper/build/absent.log".into(),
+            "cites no captured build evidence",
+        ),
+        (
+            "/pin/artifact/official_release/download",
+            "https://example.com/mailslurper.zip".into(),
+            "official release download is not the official release asset",
+        ),
+        // Provenance: observed, and citing a build_evidence document.
+        (
+            "/pin/binary_build_provenance",
+            serde_json::json!({"unresolved": "no record"}),
+            "must be observed, not unresolved",
+        ),
+        (
+            "/pin/binary_build_provenance/observed/evidence",
+            "sources/mailslurper/git/mailslurper-tree.json".into(),
+            "build provenance cites no captured build evidence",
+        ),
+        // The tree: observed only with its documents, or unresolved.
         (
             "/pin/tagged_source/observed/tree",
-            serde_json::json!({"observed": other}),
-            "tree must stay unresolved with its reason",
+            serde_json::Value::Null,
+            "tree is observed with its git_commit and git_tree documents, or unresolved",
         ),
         (
             "/pin/tagged_source/observed/tree",
             serde_json::json!({"unresolved": " "}),
             "tree is unresolved without a reason",
+        ),
+        (
+            "/pin/tagged_source/observed/tree",
+            serde_json::json!({"observed": "xyz"}),
+            "observed tree is not a full tree id",
         ),
         (
             "/pin/tagged_source/observed/tag_object",
@@ -5195,19 +5375,70 @@ fn a_v4_lock_refuses_a_mailslurper_tree_that_was_synthesised_or_a_tag_that_lies(
             "{\"x\": \"{unknown_slot}\"}".into(),
             "launch template is missing or malformed",
         ),
+        // Document paths: one directory deep, and never a dot segment.
+        (
+            "/pin/documents/21/path",
+            "sources/mailslurper/build/../PROVENANCE.md".into(),
+            "is not under sources/mailslurper/",
+        ),
+        (
+            "/pin/documents/21/path",
+            "sources/mailslurper/build/x/PROVENANCE.md".into(),
+            "is not under sources/mailslurper/",
+        ),
+        (
+            "/pin/documents/21/path",
+            "sources/mailslurper/../PROVENANCE.md".into(),
+            "is not under sources/mailslurper/",
+        ),
+        // A tag object is never a lightweight tag's.
+        (
+            "/pin/documents/0/kind",
+            "git_tag".into(),
+            "cannot exist for a lightweight tag",
+        ),
     ];
     for (path, value, want) in cases {
         let mut e = committed_entry(TargetKind::Mailslurper);
-        *e.pointer_mut(path).unwrap() = value;
-        let why = refusals(lock(e).validate());
+        *e.pointer_mut(path).unwrap() = value.clone();
+        let r = lock(e).validate();
+        assert!(r.is_err(), "{path} = {value} must refuse");
+        let why = refusals(r);
         assert!(why.contains(want), "{path}: expected {want:?} in:\n{why}");
     }
-    // A GitTree document, or a commit attribution, is a tree by another
-    // name: refused for a lightweight tag.
+    // `build` and `official_release` belong to the source-built kind only.
     let mut e = committed_entry(TargetKind::Mailslurper);
-    e["pin"]["documents"][0]["kind"] = "git_tree".into();
+    e["pin"]["artifact"]["kind"] = "archive".into();
+    e["pin"]["artifact"]["member"] = "mailslurper".into();
     let why = refusals(lock(e).validate());
-    assert!(why.contains("cannot exist for a lightweight tag"), "{why}");
+    assert!(
+        why.contains("belong to a source-built executable only"),
+        "{why}"
+    );
+    // The tree documents without an observed tree are a tree by another name.
+    let mut e = committed_entry(TargetKind::Mailslurper);
+    e["pin"]["tagged_source"]["observed"]["tree"] = serde_json::json!({"unresolved": "none"});
+    let why = refusals(lock(e).validate());
+    assert!(
+        why.contains(
+            "mailslurper-tree.json cannot exist for a lightweight tag whose tree is unresolved"
+        ),
+        "{why}"
+    );
+    // An observed tree without both documents that bind it.
+    for kind in ["git_commit", "git_tree"] {
+        let mut e = committed_entry(TargetKind::Mailslurper);
+        e["pin"]["documents"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|d| d["kind"] != kind);
+        let why = refusals(lock(e).validate());
+        assert!(
+            why.contains("an observed tree needs the git_commit and git_tree documents"),
+            "{kind}: {why}"
+        );
+    }
+    // A commit attribution would claim a recursive listing never captured.
     let mut e = committed_entry(TargetKind::Mailslurper);
     e["pin"]["documents"][2]["attribution"] = serde_json::json!({"observed": {"from": "commit",
         "url": "https://github.com/mailslurper/mailslurper/blob/068acffdcd8960f248ea438c3b7ee51ead601bd2/LICENSE",
@@ -5216,8 +5447,17 @@ fn a_v4_lock_refuses_a_mailslurper_tree_that_was_synthesised_or_a_tag_that_lies(
     assert!(why.contains("cannot be attributed by commit"), "{why}");
 }
 
+fn at_of(entry: &serde_json::Value, kind: &str) -> usize {
+    entry["pin"]["documents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|d| d["kind"] == kind)
+        .unwrap()
+}
+
 #[test]
-fn mailslurper_captures_are_rechecked_by_size_digest_blob_and_ref() {
+fn mailslurper_captures_are_rechecked_by_size_digest_blob_ref_commit_and_tree() {
     let root = tempfile::tempdir().unwrap();
     let dir = evals_copy(root.path());
     let check = |entry: serde_json::Value| refusals(lock_of(vec![entry]).verify_files(&dir));
@@ -5248,9 +5488,36 @@ fn mailslurper_captures_are_rechecked_by_size_digest_blob_and_ref() {
             "mailslurper-ref.json does not name itself",
         ),
         (
-            "/pin/artifact/size",
+            "/pin/artifact/official_release/size",
             1.into(),
             "release asset URL or size disagrees with the pin",
+        ),
+        (
+            "/pin/artifact/official_release/file_name",
+            "mailslurper-9.9.9-linux.zip".into(),
+            "release metadata lists no asset mailslurper-9.9.9-linux.zip",
+        ),
+        // The commit names another tree, and the listing is not that tree.
+        (
+            "/pin/tagged_source/observed/tree",
+            serde_json::json!({"observed": other}),
+            "the captured commit object does not name commit 068acffdcd8960f248ea438c3b7ee51ead601bd2 and tree 0123456789abcdef0123456789abcdef01234567",
+        ),
+        (
+            "/pin/tagged_source/observed/tree",
+            serde_json::json!({"observed": other}),
+            "the captured tree is not the complete listing of tree 0123456789abcdef0123456789abcdef01234567",
+        ),
+        // A root-level capture whose blob the root tree does not name.
+        (
+            "/pin/documents/2/attribution/observed/git_blob",
+            other.into(),
+            "mailslurper-license.txt is not the blob the root tree names for LICENSE",
+        ),
+        (
+            "/pin/documents/3/attribution/observed/upstream_path",
+            "NOTICE".into(),
+            "is not the blob the root tree names for NOTICE",
         ),
     ];
     for (path, value, want) in cases {
@@ -5259,6 +5526,28 @@ fn mailslurper_captures_are_rechecked_by_size_digest_blob_and_ref() {
         let why = check(e);
         assert!(why.contains(want), "{path}: expected {want:?} in:\n{why}");
     }
+    // A listing that is complete and names itself, but whose entries do not
+    // hash to the tree, is refused: the JSON must be the tree.
+    let listing = dir.join("sources/mailslurper/git/mailslurper-tree.json");
+    let rewrite = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut v = json(&std::fs::read(&listing).unwrap());
+        edit(&mut v);
+        let bytes = serde_json::to_vec_pretty(&v).unwrap();
+        std::fs::write(&listing, &bytes).unwrap();
+        let mut e = committed_entry(TargetKind::Mailslurper);
+        let at = at_of(&e, "git_tree");
+        e["pin"]["documents"][at]["size"] = bytes.len().into();
+        e["pin"]["documents"][at]["sha256"] = targets::sha256_hex(&bytes).into();
+        check(e)
+    };
+    let why = rewrite(&|v| v["tree"][0]["sha"] = other.into());
+    assert!(why.contains("the captured listing hashes to tree"), "{why}");
+    // A listing with an entry that is not shaped like one has no id.
+    let why = rewrite(&|v| v["tree"][0] = serde_json::json!({"path": "x"}));
+    assert!(
+        why.contains("the captured listing is not a tree's entries"),
+        "{why}"
+    );
     // A changed capture refuses by digest.
     let lic = dir.join("sources/mailslurper/mailslurper-license.txt");
     let mut bytes = std::fs::read(&lic).unwrap();
@@ -6231,7 +6520,11 @@ async fn auth_plain_probe(smtp: std::net::SocketAddr) -> Result<String, String> 
     {
         return Err(format!("AUTH PLAIN was taken: {replies:?}"));
     }
-    if replies != ["221 Bye"] {
+    // The reviewed source says one goodbye per worker error: the unknown
+    // command's, and (the command goroutine's `break` only leaves its
+    // `select`, so it reads again) the read error on the connection the
+    // first goodbye closed. Either is `221 Bye`, and nothing else is.
+    if !(1..=2).contains(&replies.len()) || replies.iter().any(|l| l != "221 Bye") {
         return Err(format!("AUTH PLAIN did not draw only 221 Bye: {replies:?}"));
     }
     Ok(transcript)
@@ -6284,7 +6577,20 @@ async fn the_auth_probe_accepts_only_a_no_auth_221_close_and_names_every_other_a
         "{t}"
     );
     assert!(!t.contains("S: 235") && !t.contains("S: 334"), "{t}");
+    // The source's race: a second goodbye for the read error on the closed
+    // connection. Two lines of `221 Bye` are the same answer.
+    let two = scripted_smtp("220 Welcome", vec![ehlo, "221 Bye\r\n221 Bye"], true).await;
+    let t = auth_plain_probe(two).await.expect("two goodbyes");
+    assert_eq!(t.matches("S: 221 Bye").count(), 2, "{t}");
     for (replies, want) in [
+        (
+            vec![ehlo, "221 Bye\r\n221 Bye\r\n221 Bye"],
+            "did not draw only 221 Bye",
+        ),
+        (
+            vec![ehlo, "221 Bye\r\n221 later"],
+            "did not draw only 221 Bye",
+        ),
         (
             vec!["250-hi\r\n250 AUTH PLAIN", "235 ok"],
             "EHLO advertises AUTH",
@@ -6323,13 +6629,31 @@ async fn the_auth_probe_runs_through_the_launcher_against_the_stand_in() {
 }
 
 #[tokio::test]
-#[ignore = "needs a working pinned executable: MAIL_COMPARE_MAILSLURPER (the 1.15.0 linux release in hand cannot start)"]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER (the pinned executable built from source)"]
 async fn mailslurper_auth_plain_probe() {
     let root = tempfile::tempdir().unwrap();
     let mut owned = launch_pinned(TargetKind::Mailslurper, &root.path().join("s")).await;
     let outcome = auth_plain_probe(owned.smtp).await;
     assert!(owned.shutdown().await.proved());
     let transcript = outcome.unwrap_or_else(|e| panic!("the probe disagrees with the source: {e}"));
+    // The subject is the digest the launch just checked: the source build,
+    // never the published executable, which does not start.
+    let subject = SourceLock::parse(SOURCES)
+        .unwrap()
+        .pin(TargetKind::Mailslurper)
+        .unwrap()
+        .artifact
+        .executable_sha256
+        .clone();
+    assert_eq!(
+        subject,
+        "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff"
+    );
+    let transcript = format!(
+        "# subject: the executable built from source, sha256 {subject} (checked by the launcher)\n\
+         # the published linux executable (zip 48f2f9ba…55f6, member 0cd9416b…2627) does not start and was not probed\n\
+         {transcript}"
+    );
     if let Some(dir) = std::env::var_os("MAIL_COMPARE_TRANSCRIPTS") {
         std::fs::write(
             Path::new(&dir).join("mailslurper-auth-probe.txt"),
@@ -6340,7 +6664,7 @@ async fn mailslurper_auth_plain_probe() {
 }
 
 #[tokio::test]
-#[ignore = "needs a working pinned executable: MAIL_COMPARE_MAILSLURPER (the 1.15.0 linux release in hand cannot start)"]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER (the pinned executable built from source)"]
 async fn real_mailslurper_through_the_adapter_lists_searches_reads_and_waits() {
     let root = tempfile::tempdir().unwrap();
     let mut owned = launch_pinned(TargetKind::Mailslurper, &root.path().join("s")).await;

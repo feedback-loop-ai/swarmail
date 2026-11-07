@@ -1175,6 +1175,11 @@ pub struct Release {
 pub enum ArtifactKind {
     Archive,
     Executable,
+    /// An executable the operator had built from the pinned, tag-named
+    /// source (the 2026-11-07 ruling recorded in decision 0129): not the
+    /// publisher's release artifact, so it carries its `build` and the
+    /// `official_release` it stands in for.
+    BuiltFromSource,
 }
 
 /// Where the asset digest comes from. Only `upstream_release_metadata`
@@ -1212,6 +1217,44 @@ pub struct Artifact {
     /// (MailSlurper 1.15.0 logs v1.14.1), instead of fitting the report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_note: Option<String>,
+    /// How a `built_from_source` executable was made; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<Build>,
+    /// The publisher's own release artifact that a `built_from_source`
+    /// executable stands in for, and why it cannot be measured; absent
+    /// otherwise. No launcher reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub official_release: Option<OfficialRelease>,
+}
+
+/// The inputs of one build, as recorded. It is one build and not a
+/// reproducible one: a rebuild that differs is a new pin, never a digest to
+/// force.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Build {
+    /// The source archive built; equal to the tagged source archive's.
+    pub source_sha256: String,
+    /// The builder image, pinned by digest (`name@sha256:<64 hex>`).
+    pub builder_image: String,
+    pub toolchain: String,
+    pub flags: Vec<String>,
+}
+
+/// The publisher's release artifact that does not start, kept as bytes: its
+/// digests and the document holding its failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OfficialRelease {
+    pub file_name: String,
+    pub download: String,
+    pub size: u64,
+    pub sha256: String,
+    pub member: String,
+    pub member_sha256: String,
+    pub exit_status: i32,
+    /// The `build_evidence` document holding the failure's stderr.
+    pub evidence: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1233,6 +1276,8 @@ pub enum DocKind {
     GitRef,
     GitTag,
     GitTree,
+    /// A GitHub commit object: the link from a lightweight tag to its tree.
+    GitCommit,
     BuildEvidence,
 }
 
@@ -1241,7 +1286,11 @@ impl DocKind {
     fn is_api_object(self) -> bool {
         matches!(
             self,
-            DocKind::ReleaseMetadata | DocKind::GitRef | DocKind::GitTag | DocKind::GitTree
+            DocKind::ReleaseMetadata
+                | DocKind::GitRef
+                | DocKind::GitTag
+                | DocKind::GitTree
+                | DocKind::GitCommit
         )
     }
 }
@@ -1556,6 +1605,9 @@ fn tag_chain(
                 ts.commit
             ));
         }
+        if let Some(Fact::Observed(tree)) = &ts.tree {
+            lightweight_tree(out, t, pin, ts, tree, json);
+        }
         return;
     }
     let tag_object = ts.tag_object.clone().unwrap_or_default();
@@ -1627,6 +1679,102 @@ fn tag_chain(
             ));
         }
     }
+}
+
+/// A lightweight tag's observed root tree: the captured commit object names
+/// the commit and the tree, the captured listing is that tree and is
+/// complete, the tree object rebuilt from the listing's own entries has that
+/// id (so the listing is exact, not merely labelled), and every root-level
+/// capture has the blob the tree names for it.
+fn lightweight_tree(
+    out: &mut Vec<String>,
+    t: TargetKind,
+    pin: &Pin,
+    ts: &TaggedSource,
+    tree: &str,
+    json: &std::collections::HashMap<DocKind, serde_json::Value>,
+) {
+    let s = |v: &serde_json::Value, p: &str| {
+        v.pointer(p)
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let commit_ok = json
+        .get(&DocKind::GitCommit)
+        .is_some_and(|c| s(c, "/sha") == ts.commit && s(c, "/tree/sha") == tree);
+    if !commit_ok {
+        out.push(format!(
+            "{t}: the captured commit object does not name commit {} and tree {tree}",
+            ts.commit
+        ));
+    }
+    let listing = json
+        .get(&DocKind::GitTree)
+        .filter(|l| {
+            s(l, "/sha") == tree && l.get("truncated").and_then(|x| x.as_bool()) == Some(false)
+        })
+        .and_then(|l| l.get("tree").and_then(|x| x.as_array()));
+    let Some(listing) = listing else {
+        out.push(format!(
+            "{t}: the captured tree is not the complete listing of tree {tree}"
+        ));
+        return;
+    };
+    match git_tree_id(listing) {
+        Some(id) if id == tree => {}
+        Some(id) => out.push(format!(
+            "{t}: the captured listing hashes to tree {id}, not {tree}"
+        )),
+        None => out.push(format!("{t}: the captured listing is not a tree's entries")),
+    }
+    for d in &pin.documents {
+        if let Fact::Observed(Attribution::Archive {
+            upstream_path,
+            git_blob,
+            ..
+        }) = &d.attribution
+            && !upstream_path.contains('/')
+        {
+            let named = listing.iter().any(|e| {
+                s(e, "/path") == *upstream_path
+                    && s(e, "/type") == "blob"
+                    && s(e, "/sha") == *git_blob
+            });
+            if !named {
+                out.push(format!(
+                    "{t}: {} is not the blob the root tree names for {upstream_path}",
+                    d.path
+                ));
+            }
+        }
+    }
+}
+
+/// Git's tree object id from a GitHub tree listing's entries (in the order
+/// the listing gives them, which is git's): SHA-1 over
+/// `tree <len>\0` and, per entry, `<mode> <name>\0<20 raw bytes>`. `None`
+/// when an entry is not shaped like one.
+pub fn git_tree_id(entries: &[serde_json::Value]) -> Option<String> {
+    let mut body = Vec::new();
+    for e in entries {
+        let mode = e.get("mode")?.as_str()?.trim_start_matches('0');
+        let path = e.get("path")?.as_str()?;
+        let sha = e.get("sha")?.as_str()?;
+        if !is_hex(sha, 40) || mode.is_empty() || path.is_empty() {
+            return None;
+        }
+        body.extend_from_slice(mode.as_bytes());
+        body.push(b' ');
+        body.extend_from_slice(path.as_bytes());
+        body.push(0);
+        for i in 0..20 {
+            body.push(u8::from_str_radix(&sha[2 * i..2 * i + 2], 16).ok()?);
+        }
+    }
+    let mut m = format!("tree {}\0", body.len()).into_bytes();
+    m.extend_from_slice(&body);
+    Some(sha1(&m).iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// The captured documents are small text; a larger file is not one.
@@ -1718,21 +1866,24 @@ fn release_agrees(
             ));
         }
     }
+    // A source build has no published binary: the release lists the
+    // official asset it stands in for.
+    let (file_name, download, size) = match &a.official_release {
+        Some(o) if a.kind == ArtifactKind::BuiltFromSource => (&o.file_name, &o.download, o.size),
+        _ => (&a.file_name, &a.download, a.size),
+    };
     let asset = v
         .get("assets")
         .and_then(|x| x.as_array())
         .into_iter()
         .flatten()
-        .find(|x| x.get("name").and_then(|n| n.as_str()) == Some(a.file_name.as_str()));
+        .find(|x| x.get("name").and_then(|n| n.as_str()) == Some(file_name.as_str()));
     let Some(asset) = asset else {
-        out.push(format!(
-            "{t}: release metadata lists no asset {}",
-            a.file_name
-        ));
+        out.push(format!("{t}: release metadata lists no asset {file_name}"));
         return;
     };
-    if asset.get("browser_download_url").and_then(|x| x.as_str()) != Some(a.download.as_str())
-        || asset.get("size").and_then(|x| x.as_u64()) != Some(a.size)
+    if asset.get("browser_download_url").and_then(|x| x.as_str()) != Some(download.as_str())
+        || asset.get("size").and_then(|x| x.as_u64()) != Some(size)
     {
         out.push(format!(
             "{t}: release asset URL or size disagrees with the pin"
@@ -1795,7 +1946,12 @@ fn validate_common(
             r.published_at
         ));
     }
-    if a.download != format!("{official}/releases/download/{}/{}", r.tag, a.file_name) {
+    // A source build has no published binary: its download is the release page.
+    let official_download = match a.kind {
+        ArtifactKind::BuiltFromSource => r.html_url.clone(),
+        _ => format!("{official}/releases/download/{}/{}", r.tag, a.file_name),
+    };
+    if a.download != official_download {
         out.push(format!(
             "{t}: download {:?} is not the official release asset",
             a.download
@@ -1826,6 +1982,22 @@ fn validate_common(
         )),
         (ArtifactKind::Archive, Some(m)) if is_name(m) => {}
         (ArtifactKind::Archive, _) => out.push(format!("{t}: an archive pin names its member")),
+        (ArtifactKind::BuiltFromSource, None)
+            if a.executable_sha256 == a.sha256
+                && a.digest_basis == DigestBasis::LocallyComputed
+                && a.upstream_digest.is_none() => {}
+        (ArtifactKind::BuiltFromSource, _) => out.push(format!(
+            "{t}: a source-built executable has no member, one digest, a locally computed basis and no upstream digest"
+        )),
+    }
+    match (a.kind, &a.build, &a.official_release) {
+        (ArtifactKind::BuiltFromSource, Some(_), Some(_)) | (_, None, None) => {}
+        (ArtifactKind::BuiltFromSource, _, _) => out.push(format!(
+            "{t}: a source-built executable needs its build record and the official release it stands in for"
+        )),
+        _ => out.push(format!(
+            "{t}: a build record and an official release belong to a source-built executable only"
+        )),
     }
     if a.os.trim().is_empty() || a.arch.trim().is_empty() {
         out.push(format!("{t}: artifact platform is incomplete"));
@@ -1886,7 +2058,15 @@ fn validate_common(
 /// well-formed digest.
 fn document_path(out: &mut Vec<String>, t: TargetKind, earlier: &[&str], path: &str, sha: &str) {
     let prefix = format!("sources/{t}/");
-    if !path.strip_prefix(&prefix).is_some_and(is_name) {
+    // A flat name, or one directory (`build/`, `git/`) holding a flat name.
+    let confined = |rest: &str| {
+        let parts: Vec<&str> = rest.split('/').collect();
+        matches!(parts.len(), 1 | 2)
+            && parts
+                .iter()
+                .all(|p| is_name(p) && !p.bytes().all(|b| b == b'.'))
+    };
+    if !path.strip_prefix(&prefix).is_some_and(confined) {
         out.push(format!("{t}: document path {path:?} is not under {prefix}"));
     }
     if earlier.contains(&path) {
@@ -1984,8 +2164,14 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
                 ));
             }
         }
+        Fact::Unresolved(why) if pin.artifact.kind == ArtifactKind::BuiltFromSource => {
+            out.push(format!(
+                "{t}: a source-built executable's build provenance must be observed, not unresolved ({why})"
+            ))
+        }
         Fact::Unresolved(why) => gap(out, t, "binary_build_provenance", why),
     }
+    validate_source_build(out, t, pin);
     let api_home = format!(
         "https://api.github.com/repos/{}/",
         official.trim_start_matches("https://github.com/")
@@ -2114,6 +2300,73 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
     }
 }
 
+/// The source-built artifact's own records (decision 0129, 2026-11-07
+/// addendum): the build's inputs, tied to the tagged source archive, and the
+/// official release it stands in for, with its failure held as a captured
+/// document.
+fn validate_source_build(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
+    let a = &pin.artifact;
+    let evidence = |path: &str| {
+        pin.documents
+            .iter()
+            .any(|d| d.kind == DocKind::BuildEvidence && d.path == path)
+    };
+    if let Some(b) = &a.build {
+        let archive = match &pin.tagged_source {
+            Fact::Observed(ts) => ts.source_archive.as_ref(),
+            Fact::Unresolved(_) => None,
+        };
+        if !is_hex(&b.source_sha256, 64) || archive.is_none_or(|x| x.sha256 != b.source_sha256) {
+            out.push(format!(
+                "{t}: the build's source_sha256 is not the tagged source archive's digest"
+            ));
+        }
+        let pinned_image = b
+            .builder_image
+            .split_once("@sha256:")
+            .is_some_and(|(n, d)| {
+                !n.is_empty() && !n.contains(char::is_whitespace) && is_hex(d, 64)
+            });
+        if !pinned_image {
+            out.push(format!(
+                "{t}: the builder image is not pinned by an @sha256: digest"
+            ));
+        }
+        if b.toolchain.trim().is_empty() || b.flags.is_empty() {
+            out.push(format!("{t}: the build records no toolchain or flags"));
+        }
+    }
+    if let Some(o) = &a.official_release {
+        if !is_name(&o.file_name)
+            || !is_name(&o.member)
+            || o.size == 0
+            || !is_hex(&o.sha256, 64)
+            || !is_hex(&o.member_sha256, 64)
+            || o.exit_status == 0
+        {
+            out.push(format!(
+                "{t}: the official release record needs names, a size, two digests and a failing exit status"
+            ));
+        }
+        let official = t.official_repository().unwrap_or_default();
+        if o.download
+            != format!(
+                "{official}/releases/download/{}/{}",
+                pin.release.tag, o.file_name
+            )
+        {
+            out.push(format!(
+                "{t}: the official release download is not the official release asset"
+            ));
+        }
+        if !evidence(&o.evidence) {
+            out.push(format!(
+                "{t}: the official release's failure cites no captured build evidence"
+            ));
+        }
+    }
+}
+
 fn gap(out: &mut Vec<String>, t: TargetKind, what: &str, why: &str) {
     if why.trim().is_empty() {
         out.push(format!("{t}: {what} is unresolved without a reason"));
@@ -2135,10 +2388,25 @@ fn validate_lightweight(out: &mut Vec<String>, t: TargetKind, pin: &Pin, ts: &Ta
             "{t}: tagged source needs a full commit id (a tag name is mutable)"
         ));
     }
+    // The tree is observed only when a captured commit object names it and
+    // a captured, complete listing is it; otherwise it stays unresolved with
+    // its reason. It is never synthesised from a source archive.
+    let docs = |kind: DocKind| pin.documents.iter().any(|d| d.kind == kind);
+    let observed = matches!(&ts.tree, Some(Fact::Observed(_)));
     match &ts.tree {
         Some(Fact::Unresolved(why)) => gap(out, t, "tree", why),
-        _ => out.push(format!(
-            "{t}: a lightweight tag's tree must stay unresolved with its reason; no tree is synthesised from an archive"
+        Some(Fact::Observed(tree)) => {
+            if !is_hex(tree, 40) {
+                out.push(format!("{t}: the observed tree is not a full tree id"));
+            }
+            if !docs(DocKind::GitCommit) || !docs(DocKind::GitTree) {
+                out.push(format!(
+                    "{t}: an observed tree needs the git_commit and git_tree documents that bind it; no tree is synthesised from an archive"
+                ));
+            }
+        }
+        None => out.push(format!(
+            "{t}: a lightweight tag's tree is observed with its git_commit and git_tree documents, or unresolved with its reason"
         )),
     }
     match &ts.source_archive {
@@ -2156,12 +2424,15 @@ fn validate_lightweight(out: &mut Vec<String>, t: TargetKind, pin: &Pin, ts: &Ta
         None => out.push(format!("{t}: a lightweight tag needs its source archive")),
     }
     for d in &pin.documents {
-        if matches!(d.kind, DocKind::GitTag | DocKind::GitTree) {
+        let tree_doc = matches!(d.kind, DocKind::GitTree | DocKind::GitCommit);
+        if d.kind == DocKind::GitTag || (tree_doc && !observed) {
             out.push(format!(
                 "{t}: {} cannot exist for a lightweight tag whose tree is unresolved",
                 d.path
             ));
         }
+        // Files are read from the archive; a commit attribution would claim
+        // a recursive listing that was never captured.
         if matches!(d.attribution, Fact::Observed(Attribution::Commit { .. })) {
             out.push(format!(
                 "{t}: {} cannot be attributed by commit while the tree is unresolved",

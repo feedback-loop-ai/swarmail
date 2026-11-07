@@ -405,7 +405,7 @@
             "commit": "068acffdcd8960f248ea438c3b7ee51ead601bd2",
             "tag_signature": null,
             "tree": {
-              "unresolved": "no commit object or tree listing was captured; the archive's pax comment names the commit but does not prove its tree"
+              "observed": "5f29f08a747241992f5e8ffc25ca8fb35d550729"
             },
             "source_archive": {
               "file_name": "mailslurper-release-1.15.0-src.tar.gz",
@@ -416,22 +416,44 @@
           }
         },
         "binary_build_provenance": {
-          "unresolved": "no build attestation, reproducible build or published build record ties the executable to a commit; the tag's commit is source identity only, so whether this executable was built from it is unknown"
+          "observed": {
+            "commit": "068acffdcd8960f248ea438c3b7ee51ead601bd2",
+            "evidence": "sources/mailslurper/build/PROVENANCE.md"
+          }
         },
         "artifact": {
-          "kind": "archive",
-          "file_name": "mailslurper-1.15.0-linux.zip",
-          "download": "https://github.com/mailslurper/mailslurper/releases/download/release-1.15.0/mailslurper-1.15.0-linux.zip",
-          "size": 6574992,
-          "sha256": "48f2f9ba090f5385301477406b4f6e08f7bfbba0619c635ee591d6e6af3e55f6",
+          "kind": "built_from_source",
+          "file_name": "mailslurper",
+          "download": "https://github.com/mailslurper/mailslurper/releases/tag/release-1.15.0",
+          "size": 19942072,
+          "sha256": "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff",
           "digest_basis": "locally_computed",
           "upstream_digest": null,
-          "member": "mailslurper",
-          "executable_sha256": "0cd9416b766deb26eed8aa01ad0873d06725a3464fdb9ac3cc82201e2c232627",
+          "member": null,
+          "executable_sha256": "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff",
           "os": "linux",
           "arch": "amd64",
           "version_output": "Starting MailSlurper Server v1.14.1",
-          "version_note": "The executable has no version flag; its startup log line is the only report. It names v1.14.1 although the release tag is release-1.15.0, and the captured mailslurper.go at the tagged commit declares SERVER_VERSION \"1.14.1\". The disagreement is upstream's; the lock records it and does not fit the report to the tag."
+          "version_note": "The source-built executable logs v1.14.1 under tag release-1.15.0: the tagged source hard-codes SERVER_VERSION \"1.14.1\" (cmd/mailslurper/mailslurper.go:26), and the operator's 2026-11-07 ruling pins this build anyway. The published release executable logs the same line. The executable has no version flag; its startup log line is the only report. The lock records the disagreement and does not fit the report to the tag.",
+          "build": {
+            "source_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+            "builder_image": "docker.io/library/golang:1.18.1-bullseye@sha256:3b1a72af045ad0fff9fe8e00736baae76d70ff51325ac5bb814fe4754044b972",
+            "toolchain": "go1.18.1",
+            "flags": [
+              "CGO_ENABLED=1",
+              "-trimpath"
+            ]
+          },
+          "official_release": {
+            "file_name": "mailslurper-1.15.0-linux.zip",
+            "download": "https://github.com/mailslurper/mailslurper/releases/download/release-1.15.0/mailslurper-1.15.0-linux.zip",
+            "size": 6574992,
+            "sha256": "48f2f9ba090f5385301477406b4f6e08f7bfbba0619c635ee591d6e6af3e55f6",
+            "member": "mailslurper",
+            "member_sha256": "0cd9416b766deb26eed8aa01ad0873d06725a3464fdb9ac3cc82201e2c232627",
+            "exit_status": 1,
+            "evidence": "sources/mailslurper/build/official-release-stderr.log"
+          }
         },
         "license": {
           "spdx": "MIT",
@@ -699,6 +721,75 @@
                 "git_blob": "b12f24bb2f3ffa2771c99f8bc6f9d162fe769291"
               }
             }
+          },
+          {
+            "kind": "git_commit",
+            "path": "sources/mailslurper/git/mailslurper-commit.json",
+            "size": 2658,
+            "sha256": "772686e2da4e3ca251958112f90feaec84b36b276e46067a1744205504e8387f",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailslurper/mailslurper/git/commits/068acffdcd8960f248ea438c3b7ee51ead601bd2"
+              }
+            }
+          },
+          {
+            "kind": "git_tree",
+            "path": "sources/mailslurper/git/mailslurper-tree.json",
+            "size": 2786,
+            "sha256": "1ab4ed18a6fbb3b3b8f9c13c21640f63aa52d73c4edec34e65074f1d1abe0e52",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailslurper/mailslurper/git/trees/5f29f08a747241992f5e8ffc25ca8fb35d550729"
+              }
+            }
+          },
+          {
+            "kind": "build_evidence",
+            "path": "sources/mailslurper/build/PROVENANCE.md",
+            "size": 10199,
+            "sha256": "a73d49aac8041b8f5467d82125d56f203086eed8529a5f28c4db1b92b921fa5d",
+            "attribution": {
+              "unresolved": "a local build record from the operator's 2026-11-07 cgo build; no upstream object"
+            }
+          },
+          {
+            "kind": "build_evidence",
+            "path": "sources/mailslurper/build/go-version-m.txt",
+            "size": 2983,
+            "sha256": "de1ac6ec2e406e12e6911bb78a330f4b3f42dd7ffdadca2308fa7f32ae7bf53b",
+            "attribution": {
+              "unresolved": "a local build record from the operator's 2026-11-07 cgo build; no upstream object"
+            }
+          },
+          {
+            "kind": "build_evidence",
+            "path": "sources/mailslurper/build/go.sum",
+            "size": 20249,
+            "sha256": "ca08ec830cad16bd373f5d66178827462fd26db321f7ad3e1b040a66024d140d",
+            "attribution": {
+              "unresolved": "a local build record from the operator's 2026-11-07 cgo build; no upstream object"
+            }
+          },
+          {
+            "kind": "build_evidence",
+            "path": "sources/mailslurper/build/go.mod",
+            "size": 973,
+            "sha256": "2d59cd3c66115ad2c5e4f84f9776cad156b70dcf0cfe967f21e543f06e9321a2",
+            "attribution": {
+              "unresolved": "a local build record from the operator's 2026-11-07 cgo build; no upstream object"
+            }
+          },
+          {
+            "kind": "build_evidence",
+            "path": "sources/mailslurper/build/official-release-stderr.log",
+            "size": 905,
+            "sha256": "70adef75b54a209e150379a30435564a23268aa3668c24cacd881ae14b3d6685",
+            "attribution": {
+              "unresolved": "a local build record from the operator's 2026-11-07 cgo build; no upstream object"
+            }
           }
         ],
         "launch": [
@@ -713,14 +804,14 @@
           "answer": "none",
           "source_finding": "MailSlurper 1.15.0 has no SMTP AUTH command; the fixture omits the AUTH step for it; every other target receives AUTH PLAIN. SmtpCommands.go maps only helo, ehlo, rcpt to, mail from, send, rset, quit, data and noop; an unknown command goes to the worker error channel (SMTPWorker.go), which sends 221 Bye (SMTPWorkerResponses.go, Writer.go) and closes the connection; EHLO is answered by the single line 250 Hello. How very nice to meet you! (SMTPWorkerResponses.go), which advertises no extension.",
           "probe": {
-            "unresolved": "the probe could not run: the pinned executable exits at startup with \"Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub\" (observed 2026-11-07), so no SMTP listener ever answers; the source answer stands alone and the product record may not freeze on it"
+            "observed": "Probed 2026-11-07 against the executable built from source (sha256 eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff, checked by the launcher), three runs, each through the owned launcher: the banner was 220, EHLO was answered by the single line 250 Hello. How very nice to meet you! with no AUTH extension, and the AUTH PLAIN line drew 221 Bye, twice, and the server closed the connection, with no 235 and no 334. The second 221 Bye is the reviewed source's: the command goroutine's break only leaves its select, so it reads again and the read error on the connection the first goodbye closed draws another. The published linux executable (zip 48f2f9ba090f5385301477406b4f6e08f7bfbba0619c635ee591d6e6af3e55f6) does not start and was not probed. The transcript is committed under docs/evals/agent-controls-2026-11-07/."
           }
         },
         "storage": {
           "backend": "scratch_file",
           "max_messages": null,
           "cap_flag": null,
-          "basis": "The launch config template sets dbEngine SQLite with a dbDatabase file under the private data directory, and no retention cap exists in the captured config or in any captured source. The pinned executable cannot use that engine: it embeds CGO_ENABLED=0 three times and, started on this config, exits fatally with \"go-sqlite3 requires cgo to work. This is a stub\" (observed 2026-11-07, before any listener answered). MySQL and MSSQL, the other engines StorageType.go names, need a database server this lock does not name. So this pin, as supplied, cannot store mail."
+          "basis": "The launch config template sets dbEngine SQLite with a dbDatabase file under the private data directory, and no retention cap exists in the captured config or in any captured source. The executable built from source (CGO_ENABLED=1) opens that engine: it was launched on the shipped config on loopback, opened SQLite, accepted a mail and listed it (sources/mailslurper/build/PROVENANCE.md, 2026-11-07), and the real-executable tests repeat that through the launcher. The published linux executable cannot: it was built with CGO_ENABLED=0 and exits fatally with \"go-sqlite3 requires cgo to work. This is a stub\" before any listener answers (artifact.official_release; sources/mailslurper/build/official-release-stderr.log). MySQL and MSSQL, the other engines StorageType.go names, need a database server this lock does not name."
         },
         "wait": {
           "reviewed": [
