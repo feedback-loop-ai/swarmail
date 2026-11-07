@@ -1,6 +1,6 @@
 {
-  "lock_version": 3,
-  "checked_on": "2026-10-29",
+  "lock_version": 4,
+  "checked_on": "2026-11-07",
   "entries": [
     {
       "target": "swarmail",
@@ -379,6 +379,364 @@
           "finding": "Reviewed the vendored MailHog-Server websockets hub.go and connection.go at the tagged commit: the hub sends each broadcast to registered connections, each queuing 256 messages, and unregisters a connection whose queue is full; Broadcast blocks its caller until the hub loop takes the message; the upgrade response is written before the connection is registered, and nothing acknowledges registration; connections have a 10 s write deadline and a 60 s pong deadline. These bodies do not show the route that serves the hub, the producer of new-mail broadcasts, the EventSource stream the README advertises, or any replay after a gap. A dropped notification is not a lost stored message, and no lossless subscribe-before-scan wait is established.",
           "best_wait": {
             "unresolved": "no route, producer, registration-acknowledgement or gap-replay evidence and no real-binary observation exist, so a best-available wait cannot be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+          }
+        }
+      }
+    },
+    {
+      "target": "mailslurper",
+      "role": "competitor",
+      "pin": {
+        "release": {
+          "repository": "https://github.com/mailslurper/mailslurper",
+          "tag": "release-1.15.0",
+          "html_url": "https://github.com/mailslurper/mailslurper/releases/tag/release-1.15.0",
+          "target_commitish": "master",
+          "published_at": "2023-08-03T20:26:53Z"
+        },
+        "acquisition": {
+          "basis": "host_supplied_capture",
+          "captured_on": "2026-11-07"
+        },
+        "tagged_source": {
+          "observed": {
+            "tag_kind": "lightweight",
+            "tag_object": null,
+            "commit": "068acffdcd8960f248ea438c3b7ee51ead601bd2",
+            "tag_signature": null,
+            "tree": {
+              "unresolved": "no commit object or tree listing was captured; the archive's pax comment names the commit but does not prove its tree"
+            },
+            "source_archive": {
+              "file_name": "mailslurper-release-1.15.0-src.tar.gz",
+              "size": 2545135,
+              "sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+              "commit_comment": "068acffdcd8960f248ea438c3b7ee51ead601bd2"
+            }
+          }
+        },
+        "binary_build_provenance": {
+          "unresolved": "no build attestation, reproducible build or published build record ties the executable to a commit; the tag's commit is source identity only, so whether this executable was built from it is unknown"
+        },
+        "artifact": {
+          "kind": "archive",
+          "file_name": "mailslurper-1.15.0-linux.zip",
+          "download": "https://github.com/mailslurper/mailslurper/releases/download/release-1.15.0/mailslurper-1.15.0-linux.zip",
+          "size": 6574992,
+          "sha256": "48f2f9ba090f5385301477406b4f6e08f7bfbba0619c635ee591d6e6af3e55f6",
+          "digest_basis": "locally_computed",
+          "upstream_digest": null,
+          "member": "mailslurper",
+          "executable_sha256": "0cd9416b766deb26eed8aa01ad0873d06725a3464fdb9ac3cc82201e2c232627",
+          "os": "linux",
+          "arch": "amd64",
+          "version_output": "Starting MailSlurper Server v1.14.1",
+          "version_note": "The executable has no version flag; its startup log line is the only report. It names v1.14.1 although the release tag is release-1.15.0, and the captured mailslurper.go at the tagged commit declares SERVER_VERSION \"1.14.1\". The disagreement is upstream's; the lock records it and does not fit the report to the tag."
+        },
+        "license": {
+          "spdx": "MIT",
+          "holder": "Adam Presley"
+        },
+        "documents": [
+          {
+            "kind": "release_metadata",
+            "path": "sources/mailslurper/mailslurper-release.json",
+            "size": 8384,
+            "sha256": "804af75c03ee5f6a64e636ed5ae98f374f51a4ddace8df6b528c8c11664ee43b",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailslurper/mailslurper/releases/115030386"
+              }
+            }
+          },
+          {
+            "kind": "git_ref",
+            "path": "sources/mailslurper/mailslurper-ref.json",
+            "size": 379,
+            "sha256": "b9d0352b8a3fcfee12a8a0f969af4698034d331b15be78b3fdd6daaf2671137e",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailslurper/mailslurper/git/refs/tags/release-1.15.0"
+              }
+            }
+          },
+          {
+            "kind": "license",
+            "path": "sources/mailslurper/mailslurper-license.txt",
+            "size": 1082,
+            "sha256": "7cf5dbee03e6bb07660f1fa7cfda307f71a6e9d5388b5135f29d824eab6c9bb3",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "LICENSE",
+                "git_blob": "c1f191e730ab715bfdac9ff5b86e3c7160165b47"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/mailslurper/mailslurper-readme.md",
+            "size": 4785,
+            "sha256": "52cd17bcef0ea7c57c0408eb474be5dbb85b5d6508f1af570e59589c562cc06a",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "README.md",
+                "git_blob": "fa9d065c195db47e17574cb05258f052ee127cef"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/mailslurper/mailslurper-config.json",
+            "size": 561,
+            "sha256": "77d7f97cd996baa59ead06a9e0599a2adfe591895742103151bfb2681c12d50e",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "cmd/mailslurper/config.json",
+                "git_blob": "779d0ac9cad95ab74f1def1823eff80bddaba3b2"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/mailslurper.go",
+            "size": 2854,
+            "sha256": "8978fb4a7ec7786dd3e6da8a6e5cec596c5a6b347188895fbaef2ef0fa487482",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "cmd/mailslurper/mailslurper.go",
+                "git_blob": "3a98e4ce9c095cf24bcc72094e6ad48a456c0988"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/setupServicesListener.go",
+            "size": 2870,
+            "sha256": "2fe2bd130ce46c9d78cb2432ea38f8571cd977ade8a1b603a738e9f0ab7794b1",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "cmd/mailslurper/setupServicesListener.go",
+                "git_blob": "359bd892db830adaaaf3f252e57a3cd4aeb13990"
+              }
+            }
+          },
+          {
+            "kind": "api",
+            "path": "sources/mailslurper/ServiceController.go",
+            "size": 11355,
+            "sha256": "cb7dadd97d3ea8b8666cb204f6ba90776b364d92b869657f1bb84934b3091da8",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "cmd/mailslurper/controllers/ServiceController.go",
+                "git_blob": "b874a03cc0adbdeb81bf23f4953663da13d40378"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/SmtpCommands.go",
+            "size": 2088,
+            "sha256": "f1cff9896e72254a87facdf06bd6fc83903f0ec1e803b169937bc3ed168140b3",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "pkg/mailslurper/SmtpCommands.go",
+                "git_blob": "5fb1f76e42a10b545129e6712f4aab0135831c30"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/SMTPWorker.go",
+            "size": 7617,
+            "sha256": "1f4595b737e84c03d6fddf29f2bf3b85bd79c35ca4caec005e21739cfd8ff040",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "pkg/mailslurper/SMTPWorker.go",
+                "git_blob": "f4c51f61fe7a65df53ea9a839737ca9d4ea397ec"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/SMTPWorkerResponses.go",
+            "size": 726,
+            "sha256": "fb8252f9be5a2c8564f1c5c194bc4ab2b00b465bc6796278ce8a3f8ca1d79029",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "pkg/mailslurper/SMTPWorkerResponses.go",
+                "git_blob": "da76acee1333cee5dc014cf65e9b27e5c7e586df"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/Writer.go",
+            "size": 2100,
+            "sha256": "b856bf145795443fa47df467655d3e3641b7cb75fb35686de90a61597320f8ea",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "pkg/mailslurper/Writer.go",
+                "git_blob": "4aae15fb33d7a0cf817dc11200c5854342ef828a"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/HelloCommandExecutor.go",
+            "size": 1196,
+            "sha256": "dc28f653b2ee41c09aaa6bd9a8c3fa5d2c98de672921ef7e443f6f4aaf95957d",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "pkg/mailslurper/HelloCommandExecutor.go",
+                "git_blob": "5f2363e39099c02d27f78b70f46b1aafd5995001"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/DataCommandExecutor.go",
+            "size": 7175,
+            "sha256": "bc6a64b05f5c64e2fcbd1ffac787eb74fb176089b577e520077657044c367929",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "pkg/mailslurper/DataCommandExecutor.go",
+                "git_blob": "82cc62026446263c23df695cea20161d3886c8d6"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/DatabaseReceiver.go",
+            "size": 1018,
+            "sha256": "cc8e3a13abbbfec85c22ad80ff06800adc88f3269e4b541ba87fc63d8868f91f",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "pkg/mailslurper/DatabaseReceiver.go",
+                "git_blob": "02f7e03e9babdef149fd5e4084a8b3aa0293698b"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/CommonQueries.go",
+            "size": 4734,
+            "sha256": "090458bd89bb8767c755e140b22797ea8a7596b9e5a0770614cb285ec63d0db8",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "pkg/mailslurper/CommonQueries.go",
+                "git_blob": "0409a302f2271b28054d5458e5c0c34f93b488d7"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/MailSearch.go",
+            "size": 408,
+            "sha256": "9d99312158e5b84f254c1162f0fbd26a5c98e4a363db460d97f1ddcd7b7bdd66",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "pkg/mailslurper/MailSearch.go",
+                "git_blob": "7f2e2372d5bdda6ff3d35739d90afc3f03b792e1"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/MailItem.go",
+            "size": 2123,
+            "sha256": "ad1d0b1ce06a2f315d93281612a8f64433e9ce211e0663fcc77308fbc9040ae0",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "pkg/mailslurper/MailItem.go",
+                "git_blob": "1387a350a4c81076481bfbc5362b7e61d5635279"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/MailCollectionResponse.go",
+            "size": 447,
+            "sha256": "e9a110af272463ba22196a746ee3e0b1ade45abe1f79365ba01a4e9799613d83",
+            "attribution": {
+              "observed": {
+                "from": "archive",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "upstream_path": "pkg/mailslurper/MailCollectionResponse.go",
+                "git_blob": "b12f24bb2f3ffa2771c99f8bc6f9d162fe769291"
+              }
+            }
+          }
+        ],
+        "launch": [
+          "-config",
+          "{config_file}"
+        ],
+        "config": {
+          "file_name": "config.json",
+          "template": "{\n  \"wwwAddress\": \"{www_host}\",\n  \"wwwPort\": {www_port},\n  \"wwwPublicURL\": \"\",\n  \"serviceAddress\": \"{http_host}\",\n  \"servicePort\": {http_port},\n  \"servicePublicURL\": \"\",\n  \"smtpAddress\": \"{smtp_host}\",\n  \"smtpPort\": {smtp_port},\n  \"dbEngine\": \"SQLite\",\n  \"dbHost\": \"\",\n  \"dbPort\": 0,\n  \"dbDatabase\": \"{data_dir}/mailslurper.db\",\n  \"dbUserName\": \"\",\n  \"dbPassword\": \"\",\n  \"maxWorkers\": 1000,\n  \"autoStartBrowser\": false,\n  \"keyFile\": \"\",\n  \"certFile\": \"\",\n  \"adminKeyFile\": \"\",\n  \"adminCertFile\": \"\",\n  \"authenticationScheme\": \"\",\n  \"authSecret\": \"\",\n  \"authSalt\": \"\",\n  \"authTimeoutInMinutes\": 120,\n  \"credentials\": {}\n}\n"
+        },
+        "smtp_auth": {
+          "answer": "none",
+          "source_finding": "MailSlurper 1.15.0 has no SMTP AUTH command; the fixture omits the AUTH step for it; every other target receives AUTH PLAIN. SmtpCommands.go maps only helo, ehlo, rcpt to, mail from, send, rset, quit, data and noop; an unknown command goes to the worker error channel (SMTPWorker.go), which sends 221 Bye (SMTPWorkerResponses.go, Writer.go) and closes the connection; EHLO is answered by the single line 250 Hello. How very nice to meet you! (SMTPWorkerResponses.go), which advertises no extension.",
+          "probe": {
+            "unresolved": "the probe could not run: the pinned executable exits at startup with \"Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub\" (observed 2026-11-07), so no SMTP listener ever answers; the source answer stands alone and the product record may not freeze on it"
+          }
+        },
+        "storage": {
+          "backend": "scratch_file",
+          "max_messages": null,
+          "cap_flag": null,
+          "basis": "The launch config template sets dbEngine SQLite with a dbDatabase file under the private data directory, and no retention cap exists in the captured config or in any captured source. The pinned executable cannot use that engine: it embeds CGO_ENABLED=0 three times and, started on this config, exits fatally with \"go-sqlite3 requires cgo to work. This is a stub\" (observed 2026-11-07, before any listener answered). MySQL and MSSQL, the other engines StorageType.go names, need a database server this lock does not name. So this pin, as supplied, cannot store mail."
+        },
+        "wait": {
+          "reviewed": [
+            {
+              "upstream_path": "cmd/mailslurper/setupServicesListener.go",
+              "size": 2870,
+              "sha256": "2fe2bd130ce46c9d78cb2432ea38f8571cd977ade8a1b603a738e9f0ab7794b1",
+              "git_blob": "359bd892db830adaaaf3f252e57a3cd4aeb13990",
+              "retained_as": {
+                "observed": "sources/mailslurper/setupServicesListener.go"
+              }
+            }
+          ],
+          "finding": "Reviewed the service listener routes (setupServicesListener.go): GET /mail, /mail/:id, /mail/:id/message, /mail/:id/messageraw, /mailcount, the attachment route, /version and /pruneoptions, and DELETE /mail. None blocks, long-polls or streams, so the service API offers no wait; the only observation is the labelled common-client poll. The admin (www) listener routes were not captured and are not reviewed.",
+          "best_wait": {
+            "unresolved": "the service routes offer no wait or stream, and the admin listener was not captured, so a best-available wait cannot be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
           }
         }
       }

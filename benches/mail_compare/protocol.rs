@@ -27,13 +27,26 @@ pub enum TargetKind {
     Swarmail,
     Mailpit,
     Mailhog,
+    /// Added with lock version 4 (decision 0129 §7): an agent-comparison
+    /// target, never a wire-bench one.
+    Mailslurper,
 }
 
+/// The three targets lock versions 1 to 3 know. Each historical reader
+/// keeps this expectation, so adding a target to [`TargetKind::ALL`] never
+/// changes what an archived lock means (decision 0093 §1).
+pub const HISTORICAL_TARGETS: [TargetKind; 3] = [
+    TargetKind::Swarmail,
+    TargetKind::Mailpit,
+    TargetKind::Mailhog,
+];
+
 impl TargetKind {
-    pub const ALL: [TargetKind; 3] = [
+    pub const ALL: [TargetKind; 4] = [
         TargetKind::Swarmail,
         TargetKind::Mailpit,
         TargetKind::Mailhog,
+        TargetKind::Mailslurper,
     ];
 
     pub fn name(self) -> &'static str {
@@ -41,6 +54,7 @@ impl TargetKind {
             TargetKind::Swarmail => "swarmail",
             TargetKind::Mailpit => "mailpit",
             TargetKind::Mailhog => "mailhog",
+            TargetKind::Mailslurper => "mailslurper",
         }
     }
 
@@ -58,6 +72,7 @@ impl TargetKind {
             TargetKind::Swarmail => None,
             TargetKind::Mailpit => Some("https://github.com/axllent/mailpit"),
             TargetKind::Mailhog => Some("https://github.com/mailhog/MailHog"),
+            TargetKind::Mailslurper => Some("https://github.com/mailslurper/mailslurper"),
         }
     }
 }
@@ -874,6 +889,81 @@ impl Protocol {
 
 pub const LAUNCH_SLOTS: [&str; 3] = ["{smtp_addr}", "{http_addr}", "{data_dir}"];
 
+/// The slots a launch config template may name (lock version 4): each
+/// listener's `host:port`, host and port, plus the private data directory.
+/// `www` is the admin listener a target may start whether asked or not
+/// (MailSlurper); the launcher reserves its port only when a template names
+/// it, so that listener is owned and its release is part of the receipt.
+pub const CONFIG_SLOTS: [&str; 10] = [
+    "{smtp_addr}",
+    "{smtp_host}",
+    "{smtp_port}",
+    "{http_addr}",
+    "{http_host}",
+    "{http_port}",
+    "{www_addr}",
+    "{www_host}",
+    "{www_port}",
+    "{data_dir}",
+];
+
+/// The argv slot that stands for the config file the launcher writes.
+pub const CONFIG_FILE_SLOT: &str = "{config_file}";
+
+/// A target that reads its listeners from a file (decision 0129 §7): the
+/// template is written into the trial's private scratch with every slot
+/// filled, and the argv names the file through `{config_file}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchConfig {
+    pub file_name: String,
+    pub template: String,
+}
+
+/// A v4 launch is either the v3 argv template alone, or an argv that names
+/// `{config_file}` beside a config template that carries the listener slots.
+pub fn launch_ok(argv: &[String], config: Option<&LaunchConfig>) -> bool {
+    let Some(c) = config else {
+        return launch_template_ok(argv);
+    };
+    // A config template is JSON, so braces are expected; what is refused is
+    // a `{name}` that is not a known slot.
+    let clean = |s: &str| {
+        let mut rest = s;
+        while let Some(open) = rest.find('{') {
+            rest = &rest[open..];
+            let Some(close) = rest.find('}') else {
+                return true;
+            };
+            let word = &rest[1..close];
+            if !word.is_empty() && word.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+                if !CONFIG_SLOTS.contains(&&rest[..=close]) {
+                    return false;
+                }
+                rest = &rest[close + 1..];
+            } else {
+                rest = &rest[1..];
+            }
+        }
+        true
+    };
+    argv.len() <= 32
+        && argv.iter().any(|a| a.contains(CONFIG_FILE_SLOT))
+        && argv.iter().all(|a| {
+            let rest = a.replace(CONFIG_FILE_SLOT, "");
+            a.len() <= 256
+                && !rest.contains(['{', '}'])
+                && rest.chars().all(|c| c.is_ascii_graphic())
+        })
+        && is_name(&c.file_name)
+        && c.template.len() <= 4096
+        && clean(&c.template)
+        && ["{smtp_", "{http_", "{www_"]
+            .iter()
+            .all(|slot| c.template.contains(slot))
+        && c.template.contains("{data_dir}")
+}
+
 /// A launch template is short printable argv with every brace a known
 /// slot, and both listener slots present (the driver must own the ports).
 pub fn launch_template_ok(argv: &[String]) -> bool {
@@ -904,7 +994,7 @@ const PERMISSIVE: [&str; 5] = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Claus
 /// its captured ref → tag → commit chain, and `binary_build_provenance`,
 /// what the executable was built from, which only captured build evidence
 /// resolves. Tag identity is source identity, never executable identity.
-pub const LOCK_VERSION: u32 = 3;
+pub const LOCK_VERSION: u32 = 4;
 
 /// A fact the lock either observed or names as missing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -966,6 +1056,14 @@ pub struct Pin {
     /// The public, fixed launch argv. `{smtp_addr}`, `{http_addr}` and
     /// `{data_dir}` are the only substitutions; the driver owns them.
     pub launch: Vec<String>,
+    /// Lock version 4: the config file a target reads its listeners from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<LaunchConfig>,
+    /// Lock version 4: whether the target takes the eval fixture's SMTP
+    /// AUTH PLAIN, answered from its reviewed source and, separately, by a
+    /// probe against the pinned executable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_auth: Option<SmtpAuthFacts>,
     pub storage: StorageFacts,
     pub wait: WaitFacts,
 }
@@ -994,10 +1092,63 @@ pub enum AcquisitionBasis {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaggedSource {
-    pub tag_object: String,
+    /// Absent (v3 and before) means an annotated tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag_kind: Option<TagKind>,
+    /// The annotated tag object; `null` exactly for a lightweight tag,
+    /// which has none.
+    pub tag_object: Option<String>,
     pub commit: String,
-    /// The tag's signature status as the captured tag object reports it.
-    pub tag_signature: String,
+    /// The tag's signature status as the captured tag object reports it;
+    /// `null` for a lightweight tag.
+    pub tag_signature: Option<String>,
+    /// A lightweight tag's tree: no commit object or tree listing is
+    /// captured, so it stays unresolved with its reason and is never
+    /// synthesised from a source archive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree: Option<Fact<String>>,
+    /// The source archive the tagged files were read from, when no tree
+    /// listing attributes them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_archive: Option<SourceArchive>,
+}
+
+/// The answer to one question, from two independent readings (decision
+/// 0129 §2): the reviewed source, and a probe of the pinned executable. A
+/// probe that could not run is `Unresolved` with its reason, never assumed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SmtpAuthFacts {
+    pub answer: SmtpAuth,
+    pub source_finding: String,
+    pub probe: Fact<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmtpAuth {
+    /// The target accepts AUTH PLAIN.
+    Plain,
+    /// The target has no AUTH: the fixture leaves the step out.
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TagKind {
+    Annotated,
+    Lightweight,
+}
+
+/// A source archive as the host supplied it: locally hashed, and carrying
+/// the commit its pax comment names. The comment does not prove the tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceArchive {
+    pub file_name: String,
+    pub size: u64,
+    pub sha256: String,
+    pub commit_comment: String,
 }
 
 /// Build evidence: the commit, and the `build_evidence` document saying so.
@@ -1057,6 +1208,10 @@ pub struct Artifact {
     pub arch: String,
     /// The executable's own version report, as observed.
     pub version_output: String,
+    /// Said when the executable's own report does not name the release tag
+    /// (MailSlurper 1.15.0 logs v1.14.1), instead of fitting the report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1114,6 +1269,14 @@ pub enum Attribution {
     },
     /// A GitHub REST object as it names itself at `url`.
     Api { url: String },
+    /// `upstream_path` of the source archive whose digest is
+    /// `archive_sha256`; `git_blob` is computed locally from the bytes, so
+    /// it ties the capture to the archive and proves nothing about a tree.
+    Archive {
+        archive_sha256: String,
+        upstream_path: String,
+        git_blob: String,
+    },
 }
 
 /// What was read to characterise a server-side wait, and what it shows.
@@ -1198,14 +1361,23 @@ impl SourceLock {
     /// missing one carries a reason. Says nothing about the bytes on disk
     /// ([`SourceLock::verify_files`]) or collection ([`collection_ready`]).
     pub fn validate(&self) -> Result<(), Refusal> {
+        self.validate_as(LOCK_VERSION, &TargetKind::ALL)
+    }
+
+    /// The one reader of lock versions 3 and 4: the version it holds the
+    /// lock to and the targets that version knows. Version 4 is
+    /// [`LOCK_VERSION`] with every [`TargetKind`]; [`v3::validate`] is the
+    /// same reader with [`HISTORICAL_TARGETS`], so archived v3 bytes keep
+    /// their meaning.
+    pub fn validate_as(&self, version: u32, expected: &[TargetKind]) -> Result<(), Refusal> {
         let mut out = Vec::new();
-        if self.lock_version != LOCK_VERSION {
+        if self.lock_version != version {
             out.push(format!(
-                "lock_version {} is not {LOCK_VERSION}",
+                "lock_version {} is not {version}",
                 self.lock_version
             ));
         }
-        validate_entries(&mut out, &self.checked_on, &self.entries, |e| {
+        validate_entries(&mut out, &self.checked_on, &self.entries, expected, |e| {
             (e.target, e.role, e.pin.is_some())
         });
         for e in &self.entries {
@@ -1237,7 +1409,9 @@ impl SourceLock {
                 if bytes.len() as u64 != d.size {
                     out.push(format!("{t}: {} is not {} bytes", d.path, d.size));
                 }
-                if let Fact::Observed(Attribution::Commit { git_blob, .. }) = &d.attribution
+                if let Fact::Observed(
+                    Attribution::Commit { git_blob, .. } | Attribution::Archive { git_blob, .. },
+                ) = &d.attribution
                     && git_blob_id(&bytes) != *git_blob
                 {
                     out.push(format!(
@@ -1287,6 +1461,7 @@ fn validate_entries<E>(
     out: &mut Vec<String>,
     checked_on: &str,
     entries: &[E],
+    expected: &[TargetKind],
     view: impl Fn(&E) -> (TargetKind, Role, bool),
 ) {
     if !is_date(checked_on) {
@@ -1296,6 +1471,9 @@ fn validate_entries<E>(
         let n = entries.iter().filter(|e| view(e).0 == t).count();
         if n > 1 {
             out.push(format!("{t} has {n} lock entries"));
+        }
+        if n > 0 && !expected.contains(&t) {
+            out.push(format!("{t} is not a target of this lock version"));
         }
     }
     for e in entries {
@@ -1364,28 +1542,45 @@ fn tag_chain(
             .to_owned()
     };
     let tag = &pin.release.tag;
+    if ts.tag_kind == Some(TagKind::Lightweight) {
+        // A lightweight tag is a ref straight to a commit: there is no tag
+        // object to capture, and no tree listing was captured either.
+        let ref_ok = json.get(&DocKind::GitRef).is_some_and(|r| {
+            s(r, "/ref") == format!("refs/tags/{tag}")
+                && s(r, "/object/type") == "commit"
+                && s(r, "/object/sha") == ts.commit
+        });
+        if !ref_ok {
+            out.push(format!(
+                "{t}: the captured ref does not name commit {} for a lightweight tag",
+                ts.commit
+            ));
+        }
+        return;
+    }
+    let tag_object = ts.tag_object.clone().unwrap_or_default();
+    let tag_signature = ts.tag_signature.clone().unwrap_or_default();
     let ref_ok = json.get(&DocKind::GitRef).is_some_and(|r| {
         s(r, "/ref") == format!("refs/tags/{tag}")
             && s(r, "/object/type") == "tag"
-            && s(r, "/object/sha") == ts.tag_object
+            && s(r, "/object/sha") == tag_object
     });
     if !ref_ok {
         out.push(format!(
-            "{t}: the captured ref does not name tag object {}",
-            ts.tag_object
+            "{t}: the captured ref does not name tag object {tag_object}"
         ));
     }
     let tag_ok = json.get(&DocKind::GitTag).is_some_and(|g| {
-        s(g, "/sha") == ts.tag_object
+        s(g, "/sha") == tag_object
             && s(g, "/tag") == *tag
             && s(g, "/object/type") == "commit"
             && s(g, "/object/sha") == ts.commit
-            && s(g, "/verification/reason") == ts.tag_signature
+            && s(g, "/verification/reason") == tag_signature
     });
     if !tag_ok {
         out.push(format!(
             "{t}: the captured tag object does not name {tag}, commit {} and signature {:?}",
-            ts.commit, ts.tag_signature
+            ts.commit, tag_signature
         ));
     }
     let tree = json
@@ -1572,7 +1767,7 @@ fn validate_common(
     out: &mut Vec<String>,
     t: TargetKind,
     (r, a, license): (&Release, &Artifact, &License),
-    launch: &[String],
+    (launch, launch_ok): (&[String], bool),
     st: &StorageFacts,
 ) {
     let official = t.official_repository().unwrap_or_default();
@@ -1635,11 +1830,26 @@ fn validate_common(
     if a.os.trim().is_empty() || a.arch.trim().is_empty() {
         out.push(format!("{t}: artifact platform is incomplete"));
     }
-    if !a.version_output.contains(r.tag.trim_start_matches('v')) {
-        out.push(format!(
+    let named = a.version_output.contains(r.tag.trim_start_matches('v'));
+    match &a.version_note {
+        // The report disagrees with the tag, and the lock says so.
+        Some(note) if !named => {
+            if note.trim().is_empty() || a.version_output.trim().is_empty() {
+                out.push(format!(
+                    "{t}: a version report that does not name {} needs its note and the observed text",
+                    r.tag
+                ));
+            }
+        }
+        Some(_) => out.push(format!(
+            "{t}: a version note is for a report that does not name {}",
+            r.tag
+        )),
+        None if !named => out.push(format!(
             "{t}: the observed version output does not name {}",
             r.tag
-        ));
+        )),
+        None => {}
     }
     if !PERMISSIVE.contains(&license.spdx.as_str()) {
         out.push(format!(
@@ -1650,7 +1860,7 @@ fn validate_common(
     if license.holder.trim().is_empty() {
         out.push(format!("{t}: license holder is not recorded"));
     }
-    if !launch_template_ok(launch) {
+    if !launch_ok {
         out.push(format!("{t}: launch template is missing or malformed"));
     }
     match (st.max_messages, &st.cap_flag) {
@@ -1692,7 +1902,7 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
         out,
         t,
         (&pin.release, &pin.artifact, &pin.license),
-        &pin.launch,
+        (&pin.launch, launch_ok(&pin.launch, pin.config.as_ref())),
         &pin.storage,
     );
     let official = t.official_repository().unwrap_or_default();
@@ -1703,15 +1913,44 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
         ));
     }
     let has = |kind: DocKind| pin.documents.iter().any(|d| d.kind == kind);
+    if let Some(a) = &pin.smtp_auth {
+        if a.source_finding.trim().is_empty() {
+            out.push(format!("{t}: the SMTP AUTH answer cites no source finding"));
+        }
+        match &a.probe {
+            Fact::Observed(p) if p.trim().is_empty() => {
+                out.push(format!("{t}: the SMTP AUTH probe result is empty"))
+            }
+            Fact::Observed(_) => {}
+            Fact::Unresolved(why) => gap(out, t, "smtp_auth probe", why),
+        }
+    }
     let commit = match &pin.tagged_source {
+        Fact::Observed(ts) if ts.tag_kind == Some(TagKind::Lightweight) => {
+            validate_lightweight(out, t, pin, ts);
+            // No tree is captured, so no file can be attributed by commit.
+            None
+        }
         Fact::Observed(ts) => {
-            if !is_hex(&ts.tag_object, 40) || !is_hex(&ts.commit, 40) {
+            let object = ts.tag_object.as_deref().unwrap_or_default();
+            if !is_hex(object, 40) || !is_hex(&ts.commit, 40) {
                 out.push(format!(
                     "{t}: tagged source needs a full tag object and commit id (a tag name is mutable)"
                 ));
             }
-            if ts.tag_signature.trim().is_empty() {
+            if ts
+                .tag_signature
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
                 out.push(format!("{t}: the tag's signature status is not recorded"));
+            }
+            if ts.tree.is_some() || ts.source_archive.is_some() {
+                out.push(format!(
+                    "{t}: an annotated tag's tree is its captured listing, not an archive"
+                ));
             }
             for kind in [DocKind::GitRef, DocKind::GitTag, DocKind::GitTree] {
                 if !has(kind) {
@@ -1802,6 +2041,34 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
                     )),
                 }
             }
+            Fact::Observed(Attribution::Archive {
+                archive_sha256,
+                upstream_path,
+                git_blob,
+            }) => {
+                if d.kind.is_api_object() {
+                    out.push(format!(
+                        "{t}: {} is an API object, not a file of the source archive",
+                        d.path
+                    ));
+                }
+                if !is_upstream_path(upstream_path) || !is_hex(git_blob, 40) {
+                    out.push(format!(
+                        "{t}: {} attribution needs an archive path and a full git blob id",
+                        d.path
+                    ));
+                }
+                let archive = match &pin.tagged_source {
+                    Fact::Observed(ts) => ts.source_archive.as_ref(),
+                    Fact::Unresolved(_) => None,
+                };
+                if archive.is_none_or(|a| a.sha256 != *archive_sha256) {
+                    out.push(format!(
+                        "{t}: {} cites a source archive the lock does not carry",
+                        d.path
+                    ));
+                }
+            }
             Fact::Unresolved(why) => gap(out, t, &d.path, why),
         }
     }
@@ -1850,6 +2117,62 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin) {
 fn gap(out: &mut Vec<String>, t: TargetKind, what: &str, why: &str) {
     if why.trim().is_empty() {
         out.push(format!("{t}: {what} is unresolved without a reason"));
+    }
+}
+
+/// A lightweight tag read from a source archive (lock version 4): the ref
+/// names the commit directly, the archive is bound by digest, and the tree
+/// stays unresolved with its reason. A tree synthesised from the archive,
+/// a tag object or a captured tag/tree document for this shape is refused.
+fn validate_lightweight(out: &mut Vec<String>, t: TargetKind, pin: &Pin, ts: &TaggedSource) {
+    if ts.tag_object.is_some() || ts.tag_signature.is_some() {
+        out.push(format!(
+            "{t}: a lightweight tag has no tag object and no signature status"
+        ));
+    }
+    if !is_hex(&ts.commit, 40) {
+        out.push(format!(
+            "{t}: tagged source needs a full commit id (a tag name is mutable)"
+        ));
+    }
+    match &ts.tree {
+        Some(Fact::Unresolved(why)) => gap(out, t, "tree", why),
+        _ => out.push(format!(
+            "{t}: a lightweight tag's tree must stay unresolved with its reason; no tree is synthesised from an archive"
+        )),
+    }
+    match &ts.source_archive {
+        Some(a) => {
+            if !is_name(&a.file_name)
+                || !is_hex(&a.sha256, 64)
+                || a.size == 0
+                || a.commit_comment != ts.commit
+            {
+                out.push(format!(
+                    "{t}: the source archive needs a name, a size, a digest and the comment naming the tagged commit"
+                ));
+            }
+        }
+        None => out.push(format!("{t}: a lightweight tag needs its source archive")),
+    }
+    for d in &pin.documents {
+        if matches!(d.kind, DocKind::GitTag | DocKind::GitTree) {
+            out.push(format!(
+                "{t}: {} cannot exist for a lightweight tag whose tree is unresolved",
+                d.path
+            ));
+        }
+        if matches!(d.attribution, Fact::Observed(Attribution::Commit { .. })) {
+            out.push(format!(
+                "{t}: {} cannot be attributed by commit while the tree is unresolved",
+                d.path
+            ));
+        }
+    }
+    if !pin.documents.iter().any(|d| d.kind == DocKind::GitRef) {
+        out.push(format!(
+            "{t}: tagged source has no captured GitRef document"
+        ));
     }
 }
 
@@ -2101,7 +2424,7 @@ pub mod v1 {
                     self.lock_version
                 ));
             }
-            for t in TargetKind::ALL {
+            for t in super::HISTORICAL_TARGETS {
                 let n = self.entries.iter().filter(|e| e.target == t).count();
                 if n > 1 {
                     out.push(format!("{t} has {n} lock entries"));
@@ -2306,9 +2629,13 @@ pub mod v2 {
                     self.lock_version
                 ));
             }
-            validate_entries(&mut out, &self.checked_on, &self.entries, |e| {
-                (e.target, e.role, e.pin.is_some())
-            });
+            validate_entries(
+                &mut out,
+                &self.checked_on,
+                &self.entries,
+                &super::HISTORICAL_TARGETS,
+                |e| (e.target, e.role, e.pin.is_some()),
+            );
             for e in &self.entries {
                 if let (Role::Competitor, Some(pin)) = (e.role, &e.pin)
                     && e.target != TargetKind::Swarmail
@@ -2355,7 +2682,7 @@ pub mod v2 {
             out,
             t,
             (&pin.release, &pin.artifact, &pin.license),
-            &pin.launch,
+            (&pin.launch, super::launch_template_ok(&pin.launch)),
             &pin.storage,
         );
         let official = t.official_repository().unwrap_or_default();
@@ -2400,5 +2727,20 @@ pub mod v2 {
             Fact::Observed(_) => {}
             Fact::Unresolved(why) => gap(out, t, "wait", why),
         }
+    }
+}
+
+/// The historical reader of lock version 3 (candidate c95386e's
+/// `docs/evals/sources.lock.json`, archived byte-identical under
+/// `docs/evals/history/`). It is the current reader given the three targets
+/// version 3 knew: no reader code is copied, so the two cannot drift.
+#[allow(dead_code)]
+pub mod v3 {
+    use super::{HISTORICAL_TARGETS, Refusal, SourceLock};
+
+    pub const V3_LOCK_VERSION: u32 = 3;
+
+    pub fn validate(lock: &SourceLock) -> Result<(), Refusal> {
+        lock.validate_as(V3_LOCK_VERSION, &HISTORICAL_TARGETS)
     }
 }

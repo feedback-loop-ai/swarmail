@@ -221,6 +221,7 @@ fn adapter_mode<B: mcp::Backend>(mode: &str, kind: TargetKind, args: &[String]) 
                     binary: PathBuf::from(one(&f, "launch")?),
                     expected_sha256: Some(pin.artifact.executable_sha256.clone()),
                     template: pin.launch.clone(),
+                    config: pin.config.clone(),
                 },
                 PathBuf::from(one(&f, "scratch").map_err(|_| "--launch needs --scratch DIR")?),
             )),
@@ -397,7 +398,7 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
         let binary = bins
             .remove(&t)
             .ok_or_else(|| format!("--bin {t}=PATH is required"))?;
-        let (expected_sha256, template) = match t {
+        let (expected_sha256, template, config) = match t {
             TargetKind::Swarmail => {
                 let cap = p
                     .storage
@@ -405,13 +406,14 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
                     .iter()
                     .find(|r| r.target == t)
                     .and_then(|r| r.max_messages);
-                (None, targets::swarmail_template(cap.unwrap_or(0)))
+                (None, targets::swarmail_template(cap.unwrap_or(0)), None)
             }
             _ => {
                 let pin = s.pin(t).ok_or_else(|| format!("{t}: no source pin"))?;
                 (
                     Some(pin.artifact.executable_sha256.clone()),
                     pin.launch.clone(),
+                    pin.config.clone(),
                 )
             }
         };
@@ -422,6 +424,7 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
                 binary,
                 expected_sha256,
                 template,
+                config,
             },
         );
     }

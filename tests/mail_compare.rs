@@ -82,6 +82,7 @@ fn swarmail_spec(template: Vec<String>) -> targets::LaunchSpec {
         binary: PathBuf::from(env!("CARGO_BIN_EXE_swarmail")),
         expected_sha256: None,
         template,
+        config: None,
     }
 }
 
@@ -394,7 +395,8 @@ fn the_committed_protocol_is_frozen_and_collects_only_its_declared_limited_claim
     for t in [TargetKind::Mailpit, TargetKind::Mailhog] {
         assert!(s.pin(t).unwrap().wait.best_wait.gap().is_some(), "{t}");
     }
-    assert_eq!(p.targets, TargetKind::ALL.to_vec());
+    // The wire bench's three targets: MailSlurper is an agent-suite target.
+    assert_eq!(p.targets, protocol::HISTORICAL_TARGETS.to_vec());
     assert_eq!(p.statistics.orders.len(), 6, "every target order once");
     assert!(
         p.throughput.iter().any(|t| t.sessions == 1000),
@@ -699,10 +701,10 @@ fn the_provisioned_artifacts_match_the_pins_and_their_basis() {
             panic!("{t}: tagged source unresolved");
         };
         assert_eq!(
-            (ts.tag_object.as_str(), ts.commit.as_str()),
-            (tag_object, commit)
+            (ts.tag_object.as_deref(), ts.commit.as_str()),
+            (Some(tag_object), commit)
         );
-        assert_eq!(ts.tag_signature, "unsigned");
+        assert_eq!(ts.tag_signature.as_deref(), Some("unsigned"));
         assert!(pin.binary_build_provenance.gap().is_some(), "{t}");
         assert!(pin.wait.best_wait.gap().is_some(), "{t}");
         assert_eq!(pin.wait.reviewed.len(), 2, "{t}");
@@ -847,7 +849,7 @@ fn committed_entry(t: TargetKind) -> serde_json::Value {
 
 fn lock_of(entries: Vec<serde_json::Value>) -> SourceLock {
     lock_from(
-        serde_json::json!({"lock_version": 3, "checked_on": "2026-10-29", "entries": entries}),
+        serde_json::json!({"lock_version": 4, "checked_on": "2026-11-07", "entries": entries}),
     )
     .expect("parses")
 }
@@ -1082,11 +1084,11 @@ fn the_source_lock_refuses_mutable_foreign_false_and_incomplete_pins() {
         "an unknown field never parses"
     );
     let mut v = json(SOURCES);
-    v["lock_version"] = 4.into();
+    v["lock_version"] = 5.into();
     v["checked_on"] = "today".into();
     let why = refusals(lock_from(v).unwrap().validate());
     assert!(
-        why.contains("lock_version 4 is not 3") && why.contains("checked_on"),
+        why.contains("lock_version 5 is not 4") && why.contains("checked_on"),
         "{why}"
     );
     // A complete pin alone does not admit a draft protocol.
@@ -1106,7 +1108,7 @@ fn the_source_lock_refuses_mutable_foreign_false_and_incomplete_pins() {
 fn evals_copy(root: &Path) -> PathBuf {
     let dir = root.join("evals");
     std::fs::create_dir_all(dir.join("sources")).unwrap();
-    for t in ["mailpit", "mailhog"] {
+    for t in ["mailpit", "mailhog", "mailslurper"] {
         copy_dir(
             &evals_dir().join("sources").join(t),
             &dir.join("sources").join(t),
@@ -1755,6 +1757,7 @@ fn fake_spec(kind: TargetKind, body: &str) -> targets::LaunchSpec {
         binary: PathBuf::from("/bin/sh"),
         expected_sha256: None,
         template: vec!["-c".into(), body.into()],
+        config: None,
     }
 }
 
@@ -3736,6 +3739,7 @@ fn pinned(t: TargetKind) -> targets::LaunchSpec {
         binary: binary.into(),
         expected_sha256: Some(pin.artifact.executable_sha256.clone()),
         template: pin.launch.clone(),
+        config: pin.config.clone(),
     }
 }
 
@@ -5043,4 +5047,312 @@ async fn real_mailhog_through_the_adapter_lists_searches_reads_and_waits() {
     drop(c.w.take());
     assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
     assert!(owned.shutdown().await.proved());
+}
+
+// ---- MailSlurper: lock version 4, its captures and its launch (decision 0129 §7) ----
+
+const V3_LOCK: &[u8] = include_bytes!("../docs/evals/history/2026-11-07-sources.lock.v3.json");
+
+#[test]
+fn the_v3_lock_is_archived_byte_identical_and_its_reader_accepts_it() {
+    // `git show c95386e:docs/evals/sources.lock.json | sha256sum`
+    assert_eq!(
+        targets::sha256_hex(V3_LOCK),
+        "6523abf4df890d7aca8ea7e5112ae3e32ab35f2260e2528b070eefa70007b03c"
+    );
+    let old = SourceLock::parse(V3_LOCK).expect("v3 bytes still parse");
+    protocol::v3::validate(&old).expect("the v3 reader accepts the archived lock");
+    old.verify_files(&evals_dir())
+        .expect("its documents are still the committed bytes");
+    // One reader, two target lists: the current reader refuses v3 by
+    // version, and v3 refuses a MailSlurper entry by target.
+    let why = refusals(old.validate());
+    assert!(why.contains("lock_version 3 is not 4"), "{why}");
+    let mut v = json(V3_LOCK);
+    v["entries"]
+        .as_array_mut()
+        .unwrap()
+        .push(committed_entry(TargetKind::Mailslurper));
+    let why = refusals(protocol::v3::validate(&lock_from(v).unwrap()));
+    assert!(
+        why.contains("mailslurper is not a target of this lock version"),
+        "{why}"
+    );
+}
+
+#[test]
+fn the_v4_lock_pins_mailslurper_as_observed_and_leaves_its_tree_unresolved() {
+    let s = SourceLock::parse(SOURCES).unwrap();
+    s.validate().expect("the committed v4 lock validates");
+    s.verify_files(&evals_dir())
+        .expect("every capture, blob and the ref are rechecked");
+    let pin = s.pin(TargetKind::Mailslurper).expect("a MailSlurper pin");
+    assert_eq!(pin.release.tag, "release-1.15.0");
+    assert_eq!(
+        (pin.artifact.sha256.as_str(), pin.artifact.digest_basis),
+        (
+            "48f2f9ba090f5385301477406b4f6e08f7bfbba0619c635ee591d6e6af3e55f6",
+            protocol::DigestBasis::LocallyComputed
+        )
+    );
+    assert_eq!(pin.artifact.upstream_digest, None);
+    assert_eq!(
+        pin.artifact.executable_sha256,
+        "0cd9416b766deb26eed8aa01ad0873d06725a3464fdb9ac3cc82201e2c232627"
+    );
+    let protocol::Fact::Observed(ts) = &pin.tagged_source else {
+        panic!("tagged source unresolved");
+    };
+    assert_eq!(ts.tag_kind, Some(protocol::TagKind::Lightweight));
+    assert_eq!(ts.tag_object, None);
+    assert_eq!(ts.commit, "068acffdcd8960f248ea438c3b7ee51ead601bd2");
+    assert_eq!(
+        ts.source_archive.as_ref().map(|a| a.sha256.as_str()),
+        Some("83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f")
+    );
+    assert!(
+        matches!(&ts.tree, Some(protocol::Fact::Unresolved(why)) if why.contains("does not prove its tree"))
+    );
+    assert!(pin.binary_build_provenance.gap().is_some());
+    // The AUTH answer is the source's, and the probe is named as not run.
+    let auth = pin.smtp_auth.as_ref().expect("the AUTH finding");
+    assert_eq!(auth.answer, protocol::SmtpAuth::None);
+    assert!(
+        auth.probe
+            .gap()
+            .is_some_and(|w| w.contains("CGO_ENABLED=0"))
+    );
+    // The executable's own report disagrees with the tag, and says so.
+    assert!(pin.artifact.version_note.is_some());
+    // The wire bench still declares the three it always had.
+    let p = Protocol::parse(PROTOCOL).unwrap();
+    protocol::collection_ready(&p, &s).ok();
+    assert!(!p.targets.contains(&TargetKind::Mailslurper));
+}
+
+#[test]
+fn a_v4_lock_refuses_a_mailslurper_tree_that_was_synthesised_or_a_tag_that_lies() {
+    let lock = |e: serde_json::Value| lock_of(vec![e]);
+    lock(committed_entry(TargetKind::Mailslurper))
+        .validate()
+        .expect("the committed entry validates");
+    let other = "0123456789abcdef0123456789abcdef01234567";
+    let cases: Vec<(&str, serde_json::Value, &str)> = vec![
+        (
+            "/pin/tagged_source/observed/tree",
+            serde_json::json!({"observed": other}),
+            "tree must stay unresolved with its reason",
+        ),
+        (
+            "/pin/tagged_source/observed/tree",
+            serde_json::json!({"unresolved": " "}),
+            "tree is unresolved without a reason",
+        ),
+        (
+            "/pin/tagged_source/observed/tag_object",
+            other.into(),
+            "a lightweight tag has no tag object",
+        ),
+        (
+            "/pin/tagged_source/observed/source_archive",
+            serde_json::Value::Null,
+            "needs its source archive",
+        ),
+        (
+            "/pin/tagged_source/observed/source_archive/commit_comment",
+            other.into(),
+            "the comment naming the tagged commit",
+        ),
+        (
+            "/pin/documents/2/attribution/observed/archive_sha256",
+            other.into(),
+            "cites a source archive the lock does not carry",
+        ),
+        (
+            "/pin/artifact/version_note",
+            serde_json::Value::Null,
+            "the observed version output does not name release-1.15.0",
+        ),
+        (
+            "/pin/config/template",
+            "{\"x\": \"{unknown_slot}\"}".into(),
+            "launch template is missing or malformed",
+        ),
+    ];
+    for (path, value, want) in cases {
+        let mut e = committed_entry(TargetKind::Mailslurper);
+        *e.pointer_mut(path).unwrap() = value;
+        let why = refusals(lock(e).validate());
+        assert!(why.contains(want), "{path}: expected {want:?} in:\n{why}");
+    }
+    // A GitTree document, or a commit attribution, is a tree by another
+    // name: refused for a lightweight tag.
+    let mut e = committed_entry(TargetKind::Mailslurper);
+    e["pin"]["documents"][0]["kind"] = "git_tree".into();
+    let why = refusals(lock(e).validate());
+    assert!(why.contains("cannot exist for a lightweight tag"), "{why}");
+    let mut e = committed_entry(TargetKind::Mailslurper);
+    e["pin"]["documents"][2]["attribution"] = serde_json::json!({"observed": {"from": "commit",
+        "url": "https://github.com/mailslurper/mailslurper/blob/068acffdcd8960f248ea438c3b7ee51ead601bd2/LICENSE",
+        "upstream_path": "LICENSE", "git_blob": other}});
+    let why = refusals(lock(e).validate());
+    assert!(why.contains("cannot be attributed by commit"), "{why}");
+}
+
+#[test]
+fn mailslurper_captures_are_rechecked_by_size_digest_blob_and_ref() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = evals_copy(root.path());
+    let check = |entry: serde_json::Value| refusals(lock_of(vec![entry]).verify_files(&dir));
+    lock_of(vec![committed_entry(TargetKind::Mailslurper)])
+        .verify_files(&dir)
+        .expect("the copy verifies");
+    let other = "0123456789abcdef0123456789abcdef01234567";
+    let cases: Vec<(&str, serde_json::Value, &str)> = vec![
+        (
+            "/pin/documents/2/attribution/observed/git_blob",
+            other.into(),
+            "mailslurper-license.txt is not the git blob its attribution names",
+        ),
+        (
+            "/pin/documents/2/size",
+            7.into(),
+            "mailslurper-license.txt is not 7 bytes",
+        ),
+        (
+            "/pin/tagged_source/observed/commit",
+            other.into(),
+            "the captured ref does not name commit 0123456789abcdef0123456789abcdef01234567 for a lightweight tag",
+        ),
+        (
+            "/pin/documents/1/attribution/observed/url",
+            "https://api.github.com/repos/mailslurper/mailslurper/git/refs/tags/release-1.14.1"
+                .into(),
+            "mailslurper-ref.json does not name itself",
+        ),
+        (
+            "/pin/artifact/size",
+            1.into(),
+            "release asset URL or size disagrees with the pin",
+        ),
+    ];
+    for (path, value, want) in cases {
+        let mut e = committed_entry(TargetKind::Mailslurper);
+        *e.pointer_mut(path).unwrap() = value;
+        let why = check(e);
+        assert!(why.contains(want), "{path}: expected {want:?} in:\n{why}");
+    }
+    // A changed capture refuses by digest.
+    let lic = dir.join("sources/mailslurper/mailslurper-license.txt");
+    let mut bytes = std::fs::read(&lic).unwrap();
+    bytes[0] ^= 1;
+    std::fs::write(&lic, &bytes).unwrap();
+    let why = check(committed_entry(TargetKind::Mailslurper));
+    assert!(why.contains("does not match its digest"), "{why}");
+}
+
+/// The first `python3` on `PATH`, the way the launcher's own scratch cannot
+/// resolve it (its PATH is closed): its absolute path.
+fn python3() -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
+        .map(|d| d.join("python3"))
+        .find(|p| p.is_file())
+        .expect("python3 is on PATH")
+}
+
+fn fake_mailslurper(config: Option<protocol::LaunchConfig>) -> targets::LaunchSpec {
+    let pin = SourceLock::parse(SOURCES)
+        .unwrap()
+        .pin(TargetKind::Mailslurper)
+        .unwrap()
+        .clone();
+    targets::LaunchSpec {
+        kind: TargetKind::Mailslurper,
+        binary: python3(),
+        expected_sha256: None,
+        template: vec![
+            "-I".into(),
+            "-c".into(),
+            include_str!("mail_compare/fake_mailslurper.py").into(),
+            "{config_file}".into(),
+        ],
+        config: config.or(pin.config),
+    }
+}
+
+#[tokio::test]
+async fn a_mailslurper_launch_owns_three_binds_and_cleanup_releases_all_three() {
+    let root = tempfile::tempdir().unwrap();
+    let scratch = root.path().join("leaf");
+    let keepers = targets::Keepers::default();
+    let lim = limits();
+    let clock = wire::Clock(Instant::now());
+    let mut owned =
+        targets::Owned::launch(&fake_mailslurper(None), &scratch, &lim, &clock, &keepers)
+            .await
+            .unwrap_or_else(|e| panic!("the stand-in did not launch: {e:?}"));
+    let www = owned
+        .www_addr
+        .expect("the www listener is reserved and owned");
+    let addrs = [owned.smtp, owned.http_addr, www];
+    for (i, a) in addrs.iter().enumerate() {
+        assert!(!addrs[..i].contains(a), "three distinct listeners");
+        assert_eq!(targets::binds(owned.pid(), *a), targets::Bind::Owned, "{a}");
+    }
+    // The config the launcher wrote carries the three reserved ports, the
+    // data directory inside the scratch, and is private.
+    let cfg = scratch.join("config/config.json");
+    let written: serde_json::Value = json(&std::fs::read(&cfg).unwrap());
+    assert_eq!(written["smtpPort"], owned.smtp.port());
+    assert_eq!(written["servicePort"], owned.http_addr.port());
+    assert_eq!(written["wwwPort"], www.port());
+    assert_eq!(written["authenticationScheme"], "");
+    assert_eq!(written["autoStartBrowser"], false);
+    let db = PathBuf::from(written["dbDatabase"].as_str().unwrap());
+    assert!(
+        db.starts_with(scratch.canonicalize().unwrap().join("data")),
+        "{db:?}"
+    );
+    assert_eq!(
+        std::fs::metadata(&cfg).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let facts = owned.shutdown().await;
+    assert!(facts.proved() && !facts.forced_kill, "{facts:?}");
+    for a in addrs {
+        assert!(
+            tokio::net::TcpStream::connect(a).await.is_err(),
+            "{a} still listens after cleanup"
+        );
+    }
+    assert!(!scratch.exists());
+    assert!(keepers.settle(lim.cleanup).await.iter().all(|f| f.proved()));
+}
+
+#[tokio::test]
+async fn a_launch_without_a_www_slot_reserves_no_third_port() {
+    // Mailpit and MailHog templates name no www slot: their launches are
+    // unchanged. Swarmail's own launch is the real one that runs here.
+    let root = tempfile::tempdir().unwrap();
+    let scratch = root.path().join("leaf");
+    let keepers = targets::Keepers::default();
+    let lim = limits();
+    let clock = wire::Clock(Instant::now());
+    let mut owned = targets::Owned::launch(
+        &swarmail_spec(targets::swarmail_template(0)),
+        &scratch,
+        &lim,
+        &clock,
+        &keepers,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("swarmail did not launch: {e:?}"));
+    assert_eq!(owned.www_addr, None);
+    assert!(owned.shutdown().await.proved());
+    let pin = SourceLock::parse(SOURCES).unwrap();
+    for t in [TargetKind::Mailpit, TargetKind::Mailhog] {
+        let pin = pin.pin(t).unwrap();
+        assert!(pin.config.is_none(), "{t}");
+        assert!(pin.launch.iter().all(|a| !a.contains("{www_")), "{t}");
+    }
 }

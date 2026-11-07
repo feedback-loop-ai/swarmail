@@ -11,7 +11,7 @@ use crate::protocol::TargetKind;
 use crate::wire::{Http, WireError};
 use serde::Serialize;
 use std::net::{SocketAddr, TcpListener};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,6 +45,10 @@ pub struct LaunchSpec {
     /// whose digest is recorded rather than pinned.
     pub expected_sha256: Option<String>,
     pub template: Vec<String>,
+    /// A target that reads its listeners from a file (lock version 4): the
+    /// template is written into the private scratch and `{config_file}` in
+    /// the argv names it.
+    pub config: Option<crate::protocol::LaunchConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -155,11 +159,37 @@ pub enum LaunchError {
 #[derive(Default)]
 struct Shared {
     addrs: Option<(SocketAddr, SocketAddr)>,
+    /// Further listeners the target starts whether asked or not and the
+    /// launcher reserved: they are probed closed at cleanup like the others.
+    extra: Vec<SocketAddr>,
     drain: Option<JoinHandle<()>>,
     /// A test seam: awaited by the worker after it is told to stop and
     /// before it cleans, so a test can hold cleanup or fail it.
     #[cfg(test)]
     hook: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+}
+
+/// Fill a launch template's slots. `www` is `None` when the template names
+/// no admin listener, and a slot with no value is left as written (the
+/// lock's validator has already refused an unknown one).
+fn fill_slots(text: &str, smtp: &str, http: &str, www: Option<&str>, data_dir: &Path) -> String {
+    let split = |addr: &str| match addr.rsplit_once(':') {
+        Some((h, p)) => (h.to_owned(), p.to_owned()),
+        None => (addr.to_owned(), String::new()),
+    };
+    let mut out = text.to_owned();
+    let mut slots = vec![("smtp", smtp), ("http", http)];
+    if let Some(w) = www {
+        slots.push(("www", w));
+    }
+    for (name, addr) in slots {
+        let (host, port) = split(addr);
+        out = out
+            .replace(&format!("{{{name}_addr}}"), addr)
+            .replace(&format!("{{{name}_host}}"), &host)
+            .replace(&format!("{{{name}_port}}"), &port);
+    }
+    out.replace("{data_dir}", &data_dir.to_string_lossy())
 }
 
 /// Where a target's listing keeps a message's subject.
@@ -169,6 +199,9 @@ pub struct Owned {
     pub kind: TargetKind,
     pub smtp: SocketAddr,
     pub http_addr: SocketAddr,
+    /// The admin listener a target starts regardless (MailSlurper's www),
+    /// reserved and owned so its release is part of the receipt.
+    pub www_addr: Option<SocketAddr>,
     pub http: Http,
     pub facts: LaunchFacts,
     pgid: i32,
@@ -247,15 +280,49 @@ impl Owned {
                 }
             },
         };
+        // The third listener is reserved only when a template names it:
+        // the Mailpit and MailHog launches are unchanged.
+        let names_www = spec
+            .template
+            .iter()
+            .map(String::as_str)
+            .chain(spec.config.iter().map(|c| c.template.as_str()))
+            .any(|t| t.contains("{www_"));
+        let www_slot = if names_www {
+            match reserve_port() {
+                Some(w) => Some(w.to_string()),
+                None => {
+                    let _ = std::fs::remove_dir_all(scratch);
+                    return Err(LaunchError::Spawn);
+                }
+            }
+        } else {
+            None
+        };
         let data_dir = scratch.join("data");
+        let fill =
+            |text: &str| fill_slots(text, &smtp_slot, &http_slot, www_slot.as_deref(), &data_dir);
+        let config_path = scratch.join("config").join(
+            spec.config
+                .as_ref()
+                .map_or("config", |c| c.file_name.as_str()),
+        );
+        if let Some(c) = &spec.config {
+            let written = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&config_path)
+                .and_then(|mut f| std::io::Write::write_all(&mut f, fill(&c.template).as_bytes()));
+            if written.is_err() {
+                let _ = std::fs::remove_dir_all(scratch);
+                return Err(LaunchError::Scratch);
+            }
+        }
         let argv: Vec<String> = spec
             .template
             .iter()
-            .map(|a| {
-                a.replace("{smtp_addr}", &smtp_slot)
-                    .replace("{http_addr}", &http_slot)
-                    .replace("{data_dir}", &data_dir.to_string_lossy())
-            })
+            .map(|a| fill(a).replace("{config_file}", &config_path.to_string_lossy()))
             .collect();
         let mut cmd = Command::new(&binary);
         cmd.args(&argv)
@@ -330,6 +397,7 @@ impl Owned {
             kind: spec.kind,
             smtp: "127.0.0.1:0".parse().expect("literal"),
             http_addr: "127.0.0.1:0".parse().expect("literal"),
+            www_addr: None,
             http: Http::new(
                 "127.0.0.1:0".parse().expect("literal"),
                 limits.request,
@@ -362,7 +430,12 @@ impl Owned {
             let facts = owned.shutdown().await;
             return Err(LaunchError::NotReady("no listener addresses", facts));
         };
-        owned.shared.lock().expect("shared lock").addrs = Some((smtp, http));
+        owned.www_addr = www_slot.as_deref().and_then(|w| w.parse().ok());
+        {
+            let mut shared = owned.shared.lock().expect("shared lock");
+            shared.addrs = Some((smtp, http));
+            shared.extra = owned.www_addr.into_iter().collect();
+        }
         owned.smtp = smtp;
         owned.http_addr = http;
         owned.http = Http::new(http, limits.request, limits.max_response_bytes);
@@ -371,8 +444,9 @@ impl Owned {
             return Err(LaunchError::NotReady(why, facts));
         }
         // Readiness answered, but a foreign listener that won the gap would
-        // answer too: both binds must be held by the owned group.
-        for (addr, whys) in [
+        // answer too: every bind must be held by the owned group, the
+        // admin listener a target starts regardless included.
+        let mut checked = vec![
             (
                 smtp,
                 [
@@ -391,7 +465,19 @@ impl Owned {
                     "http bind ownership unknown",
                 ],
             ),
-        ] {
+        ];
+        if let Some(www) = owned.www_addr {
+            checked.push((
+                www,
+                [
+                    "www bind is foreign",
+                    "www bind is ambiguous",
+                    "www bind is absent",
+                    "www bind ownership unknown",
+                ],
+            ));
+        }
+        for (addr, whys) in checked {
             let why = match binds(pgid, addr) {
                 Bind::Owned => continue,
                 Bind::Foreign => whys[0],
@@ -472,6 +558,9 @@ impl Owned {
             ),
             TargetKind::Mailpit => format!("/api/v1/messages?start={start}&limit={limit}"),
             TargetKind::Mailhog => format!("/api/v2/messages?start={start}&limit={limit}"),
+            // MailSlurper pages a fixed 50 and is not a wire-bench target:
+            // this path is the launcher's readiness probe (first page).
+            TargetKind::Mailslurper => format!("/mail?pageNumber={}", start / 50 + 1),
         }
     }
 
@@ -484,6 +573,9 @@ impl Owned {
             TargetKind::Mailpit => format!("/api/v1/search?query={q}&start={start}&limit={limit}"),
             TargetKind::Mailhog => {
                 format!("/api/v2/search?kind=containing&query={q}&start={start}&limit={limit}")
+            }
+            TargetKind::Mailslurper => {
+                format!("/mail?pageNumber={}&message={q}", start / 50 + 1)
             }
         }
     }
@@ -506,9 +598,14 @@ impl Owned {
                     .get(0)?
                     .as_str()
             }),
+            TargetKind::Mailslurper => ("mailItems", "id", "totalRecords", |m| {
+                m.get("subject")?.as_str()
+            }),
         };
         let total = v.get(matching)?.as_u64()?;
-        if self.kind != TargetKind::Swarmail && v.get("start")?.as_u64()? != u64::from(start) {
+        if !matches!(self.kind, TargetKind::Swarmail | TargetKind::Mailslurper)
+            && v.get("start")?.as_u64()? != u64::from(start)
+        {
             return None;
         }
         let list = v.get(items)?.as_array()?;
@@ -671,6 +768,10 @@ impl Owned {
                     .ok_or(WireError::Malformed)?;
                 parse_raw(raw.as_bytes())
             }
+            // The fidelity read belongs to the wire bench, which never
+            // drives MailSlurper; its agent-suite reads go through the
+            // adapter and the oracle's own normalizer.
+            TargetKind::Mailslurper => Err(WireError::Malformed),
         }
     }
 
@@ -761,9 +862,9 @@ async fn cleanup(w: &Worker, mut child: Child, reaped_early: Option<bool>) -> Cl
     let start = tokio::time::Instant::now();
     let grace = start + w.limits.cleanup / 2;
     let until = start + w.limits.cleanup;
-    let (addrs, drain) = {
+    let (addrs, extra, drain) = {
         let mut shared = w.shared.lock().expect("shared lock");
-        (shared.addrs, shared.drain.take())
+        (shared.addrs, shared.extra.clone(), shared.drain.take())
     };
     let mut facts = CleanupFacts {
         target: w.kind,
@@ -813,7 +914,13 @@ async fn cleanup(w: &Worker, mut child: Child, reaped_early: Option<bool>) -> Cl
         facts.reaped &= drained;
     }
     facts.listeners_closed = match addrs {
-        Some((smtp, http)) => refused(smtp, until).await && refused(http, until).await,
+        Some((smtp, http)) => {
+            let mut closed = refused(smtp, until).await && refused(http, until).await;
+            for addr in extra {
+                closed &= refused(addr, until).await;
+            }
+            closed
+        }
         // No address was ever learned, so none can be probed; the group
         // being gone is what shows no listener of ours survives.
         None => facts.group_gone,
