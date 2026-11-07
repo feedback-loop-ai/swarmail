@@ -1,4 +1,4 @@
-# The house gates (2026-11-07). The block below ran at an earlier head; the final code head ad4526f is covered at the end.
+# The house gates (2026-11-07). The block below ran at an earlier head; the final code head 2cbc1a6 is covered at the end.
 # test runs use at most 32 workers (nproc is 128, so nproc/4). Elapsed times are wall-clock.
 
 cargo fmt --all -- --check                                  ok
@@ -23,20 +23,21 @@ bash scripts/seal-branch-test.sh                             ok
 cargo deny check licenses                                    ok
 brokkr compile (every recipe)                                not run: this sandbox has no brokkr binary; the verify seat runs it
 
-# At the final code head ad4526f (the controls' receipts head). Two defects the first dry runs found were fixed on the way,
-# each a code change that made the earlier controls stale by the verifier's own rule, so the controls were rerun twice:
+# At the final code head 2cbc1a6 (the controls' receipts head). Three defects the first dry runs found were fixed on the way,
+# each a code change that made the earlier controls stale by the verifier's own rule, so the controls were rerun three times:
 #   eac40bd  the verifier read `git status --porcelain` trimmed, so an edited evidence file looked like a code change;
-#   ad4526f  the wrapper now measures a frozen copy of the candidate (a later `cargo test --workspace` had relinked
-#            target/debug/swarmail, and the identity re-measure correctly refused the changed bytes).
+#   ad4526f  the wrapper now measures a frozen copy of the candidate and the adapter driver (a later `cargo test --workspace`
+#            had relinked target/debug/swarmail, and the identity re-measure correctly refused the changed bytes);
+#   2cbc1a6  the harness is frozen too (it embeds the commit it was built at, so each commit changed its digest).
 # Root fmt, clippy, workspace tests and the evals fmt/clippy/tests (the evals suite inside the controls) were green at eac40bd;
-# between eac40bd and ad4526f only scripts/compare-mail.sh changed, and its wrapper tests (mail_compare: every_delivery_mode,
-# comparison_integration, eval_crate, paid_measure, controls_run) were rerun green at ad4526f.
+# after eac40bd only scripts/compare-mail.sh changed, and its wrapper tests (mail_compare: every_delivery_mode,
+# comparison_integration, eval_crate, paid_measure, controls_run) were rerun green at 2cbc1a6.
 cargo fmt --all -- --check; (cd evals && cargo fmt --all -- --check)    ok
 cargo clippy --workspace --all-targets --locked -- -D warnings; (cd evals && cargo clippy --all-targets --locked -- -D warnings)   ok
 cargo test --workspace --locked -j 32 -- --test-threads=32       ok at eac40bd, 2m59s wall
   uptime before:  19:22:59 up 14 days,  9:38,  0 users,  load average: 2.52, 3.74, 3.87
   uptime after:   19:25:57 up 14 days,  9:41,  0 users,  load average: 3.12, 3.79, 3.89
-the locked evals suite                                           ok at ad4526f: the controls' receipts record it (eval_suite.status pass, head ad4526f),
-  run by compare-mail.sh controls itself: cargo test --locked --offline -j 32 in evals/, RUST_TEST_THREADS=32, 22m46s for the whole controls command
-  (uptime before 19:26:48 load 3.16; after 19:49:34 load 3.27)
+the locked evals suite                                           ok at 2cbc1a6: the controls' receipts record it (eval_suite.status pass, head 2cbc1a6),
+  run by compare-mail.sh controls itself: cargo test --locked --offline -j 32 in evals/, RUST_TEST_THREADS=32, 22m44s for the whole controls command
+  (uptime before 19:50:22 load 2.28; after 20:13:06 load 2.08)
 src/, .github/, .brokkr/, Cargo.lock, evals/Cargo.lock, deny.toml: unchanged since c95386e; git ls-files .compare-bins is empty.

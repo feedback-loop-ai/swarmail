@@ -1,9 +1,9 @@
 # mailpit: one worker, each command under timeout 600
-# uptime before:  19:28:02 up 14 days,  9:43,  0 users,  load average: 3.07, 3.52, 3.78
+# uptime before:  19:51:36 up 14 days, 10:07,  0 users,  load average: 4.90, 4.20, 4.41
 # command: timeout 600 /usr/bin/time swarmail-evals comparison-contract --target mailpit --product docs/evals/agent-comparison.json --adapter /home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-mail/mail_compare-8961301c41490867-582af475be6ab214 --target-bin /home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-scratch/bins-mailpit/mailpit --sources /home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/docs/evals/sources.lock.json
-# elapsed 0.47 s, max rss 33040 KB
+# elapsed 0.47 s, max rss 31804 KB
 # command: timeout 600 /usr/bin/time swarmail-evals matrix --target mailpit --product docs/evals/agent-comparison.json --adapter /home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-mail/mail_compare-8961301c41490867-582af475be6ab214 --target-bin /home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-scratch/bins-mailpit/mailpit --sources /home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/docs/evals/sources.lock.json --tier hard --agents <the builtin oracle and null> --trials 5
-swarmail-evals: seed=c9c52edbfe821579748147050a5780f56a6207ccdbcfc2e3d977ba33f2f62136 fixture_time=2026-11-07T19:26:53Z
+swarmail-evals: seed=c9c52edbfe821579748147050a5780f56a6207ccdbcfc2e3d977ba33f2f62136 fixture_time=2026-11-07T19:50:27Z
 Command exited with non-zero status 1
-# elapsed 51.36 s, max rss 33052 KB
-# uptime after:  19:28:54 up 14 days,  9:44,  0 users,  load average: 12.21, 5.99, 4.61
+# elapsed 50.74 s, max rss 33060 KB
+# uptime after:  19:52:28 up 14 days, 10:07,  0 users,  load average: 6.42, 4.64, 4.54
