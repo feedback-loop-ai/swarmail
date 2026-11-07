@@ -88,6 +88,60 @@ impl LaunchSpec {
         }
     }
 
+    /// A competitor's launch from its pin, of either lock version. A lock 4
+    /// pin declares its listeners, environment and config file; a runtime
+    /// pin launches the runtime's own program with the pinned jar as
+    /// `{artifact}`, and every checked member is digested at launch and again
+    /// at seal. A tree pin's checked members are relative to the executable's
+    /// directory, a runtime's to the runtime's root.
+    pub fn from_pin(
+        kind: TargetKind,
+        binary: PathBuf,
+        runtime_dir: Option<PathBuf>,
+        pin: &crate::protocol::Pin,
+    ) -> Result<LaunchSpec, String> {
+        let mut spec = LaunchSpec::new(
+            kind,
+            binary.clone(),
+            Some(pin.artifact.executable_sha256.clone()),
+            pin.launch.clone(),
+        );
+        if let Some(roles) = &pin.listeners {
+            spec.extra.listeners = roles.clone();
+            spec.extra.env = pin.launch_env.clone().unwrap_or_default();
+            spec.extra.config = pin.config_file.clone();
+        }
+        match (&pin.runtime, runtime_dir) {
+            (Some(rt), Some(dir)) => {
+                spec.binary = dir.join("bin/java");
+                spec.extra.artifact = Some(binary);
+                spec.extra.members = rt
+                    .checked_members
+                    .iter()
+                    .map(|m| (dir.join(&m.path), m.sha256.clone()))
+                    .collect();
+            }
+            (Some(_), None) => {
+                return Err(format!(
+                    "--runtime {kind}=DIR is required: its pin needs a runtime"
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(format!("--runtime {kind} is given but its pin has no runtime"));
+            }
+            (None, None) => {
+                if let Some(members) = &pin.artifact.checked_members {
+                    let base = binary.parent().unwrap_or(Path::new("."));
+                    spec.extra.members = members
+                        .iter()
+                        .map(|m| (base.join(&m.path), m.sha256.clone()))
+                        .collect();
+                }
+            }
+        }
+        Ok(spec)
+    }
+
     fn roles(&self) -> Vec<ListenerRole> {
         if self.extra.listeners.is_empty() {
             vec![ListenerRole::Smtp, ListenerRole::Http]
@@ -640,6 +694,39 @@ impl Owned {
         }
         owned.facts.ready_ns = clock.now_ns();
         Ok(owned)
+    }
+
+    /// A detached target for decoder tests: no child, no scratch, only the
+    /// read path pointed at a scripted responder. `shutdown` proves nothing.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub fn fixture(
+        kind: TargetKind,
+        http: SocketAddr,
+        pop3: Option<SocketAddr>,
+        limits: &Limits,
+    ) -> Owned {
+        Owned {
+            kind,
+            smtp: "127.0.0.1:0".parse().expect("literal"),
+            http_addr: http,
+            http: Http::new(http, limits.request, limits.max_response_bytes),
+            pop3: pop3.map(|a| Pop3::new(a, limits.request, limits.max_response_bytes)),
+            facts: LaunchFacts {
+                target: kind,
+                executable_sha256: String::new(),
+                argv_template: Vec::new(),
+                ready_ns: 0,
+                members: Vec::new(),
+            },
+            pgid: 0,
+            limits: limits.clone(),
+            shared: Arc::default(),
+            exited: Arc::default(),
+            stop: None,
+            done: None,
+            settled: None,
+        }
     }
 
     /// The leader's pid, which is also its process group id. Read by the
@@ -1434,6 +1521,10 @@ pub fn token_of(subject: &str) -> String {
     }
 }
 
+fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
 /// The mailbox the corpus's recipient reads from: the address's local part.
 fn mailbox() -> &'static str {
     crate::wire::TO.split('@').next().unwrap_or_default()
@@ -1562,9 +1653,30 @@ pub fn subject_of_headers(head: &[u8]) -> Result<String, WireError> {
 /// Only parts that are text/plain or text/html as sent: the parser's
 /// converted alternatives are not what was stored.
 fn parse_raw(raw: &[u8]) -> Result<Fetched, WireError> {
+    use mail_parser::MimeHeaders;
     let parsed = mail_parser::MessageParser::default()
         .parse(raw)
         .ok_or(WireError::Malformed)?;
+    // A part's body may legally contain its own boundary string mid-line;
+    // the MIME parser reads that as a delimiter and cuts the part short.
+    // A shorter body is never a success, so such a message is refused.
+    for part in &parsed.parts {
+        let Some(boundary) = part
+            .content_type()
+            .and_then(|c| c.attribute("boundary"))
+            .filter(|b| !b.is_empty())
+        else {
+            continue;
+        };
+        let needle = format!("--{boundary}");
+        let mut from = 0;
+        while let Some(at) = find_bytes(&raw[from..], needle.as_bytes()).map(|i| i + from) {
+            if at > 0 && raw[at - 1] != b'\n' {
+                return Err(WireError::Malformed);
+            }
+            from = at + needle.len();
+        }
+    }
     let part = |idx: &[u32], html: bool| {
         idx.iter()
             .filter_map(|i| parsed.parts.get(*i as usize))

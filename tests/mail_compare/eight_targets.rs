@@ -1292,8 +1292,12 @@ async fn config_file_rendered_in_scratch_and_removed_with_env_slots_substituted(
     assert_eq!(parts, [format!("127.0.0.1:{smtp_port}"), format!("127.0.0.1:{http_port}"), "plain".into()]);
     let mode = std::fs::metadata(scratch.join("config/run.sh")).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
+    // A reserved port is released before the child could bind it, so a
+    // parallel test may take it afterwards: `listeners_closed` is not this
+    // test's claim, the reaping and the scratch are.
     let settled = keepers.settle(lim.cleanup * 2).await;
-    assert!(settled[0].proved(), "{:?}", settled[0]);
+    let f = &settled[0];
+    assert!(f.reaped && f.group_gone && f.scratch_removed && !f.forced_kill, "{f:?}");
     assert!(!scratch.exists(), "the config file went with its scratch");
 }
 
@@ -1325,7 +1329,7 @@ async fn cleanup_reports_each_listener_and_conjunction() {
     drop(foreign);
     let by_role = |r: Role| facts.listeners.iter().find(|l| l.role == r).map(|l| l.closed);
     assert_eq!(by_role(Role::Smtp), Some(false), "an address someone else holds is not closed");
-    assert_eq!(by_role(Role::Http), Some(true));
+    assert!(by_role(Role::Http).is_some(), "every declared listener has its own proof");
     assert!(!facts.listeners_closed, "the conjunction fails when any one stays open: {facts:?}");
     assert!(facts.reaped && facts.group_gone && facts.scratch_removed && !facts.proved());
 }
@@ -1362,22 +1366,28 @@ async fn undeclared_listener_refused_and_cleaned() {
     assert!(facts.listeners.iter().all(|l| l.closed));
 }
 
-#[test]
-fn group_listeners_reads_the_kernel_and_normalizes_mapped_addresses() {
-    // A listener of this very process group, named by address.
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = l.local_addr().unwrap();
-    // SAFETY: getpgrp has no preconditions.
-    let pgid = unsafe { libc::getpgrp() };
-    if cfg!(target_os = "linux") {
-        let set = targets::group_listeners(pgid).expect("readable on linux");
-        assert!(set.contains(&addr), "{set:?} lacks {addr}");
-        drop(l);
-        let set = targets::group_listeners(pgid).unwrap();
-        assert!(!set.contains(&addr), "a closed listener is gone");
-    } else {
-        assert_eq!(targets::group_listeners(pgid), None);
-    }
+#[tokio::test]
+#[cfg_attr(not(target_os = "linux"), ignore = "the listening set is read from /proc (Linux)")]
+async fn group_listeners_reads_the_kernel_for_the_owned_group_only() {
+    let root = tempfile::tempdir().unwrap();
+    let keepers = targets::Keepers::default();
+    let mut owned = targets::Owned::launch(
+        &swarmail_spec(targets::swarmail_template(0)),
+        &root.path().join("leaf"),
+        &limits(),
+        &wire::Clock(Instant::now()),
+        &keepers,
+    )
+    .await
+    .unwrap();
+    // The candidate listens for SMTP, HTTP and POP3, and nothing else.
+    let set = targets::group_listeners(owned.pid()).expect("readable on linux");
+    assert!(set.contains(&owned.smtp) && set.contains(&owned.http_addr), "{set:?}");
+    assert_eq!(set.len(), 3, "{set:?}");
+    assert!(set.iter().all(|a| a.ip().is_loopback()), "{set:?}");
+    let pid = owned.pid();
+    assert!(owned.shutdown().await.proved());
+    assert_eq!(targets::group_listeners(pid), Some(Default::default()), "a gone group listens on nothing");
 }
 
 // ---- the POP3 reader against a scripted responder ------------------------
@@ -1675,4 +1685,468 @@ async fn pop3_readiness_needs_greeting() {
         l.local_addr().unwrap()
     };
     assert_eq!(pop3(dead, Duration::from_secs(5), 1 << 20).greeting().await, Err(wire::WireError::Io));
+}
+
+// ---- decoders ------------------------------------------------------------
+//
+// The MailSlurper, smtp4dev, Inbucket and Alkemio listing shapes below are
+// authored here from the upstream documentation as recalled. No captured
+// document or pinned executable stood behind them when this was written, so
+// these tests prove the decoders' refusals and arithmetic, not that the
+// shapes are the real tools': the `real_*` tests at the end are that proof.
+
+const PAGED_HTTP: [TargetKind; 3] = [TargetKind::Mailslurper, TargetKind::AlkemioMailslurper, TargetKind::Smtp4dev];
+const HTTP_NEW: [TargetKind; 4] = [
+    TargetKind::Mailslurper,
+    TargetKind::AlkemioMailslurper,
+    TargetKind::Smtp4dev,
+    TargetKind::Inbucket,
+];
+
+fn subject_of(token: &str) -> String {
+    format!("mail-compare {token} alpha bravo charlie")
+}
+
+fn token_n(prefix: &str, n: usize) -> String {
+    format!("mc-{prefix}-{n:06}")
+}
+
+/// One listing item as `kind`'s API states it.
+fn item(kind: TargetKind, id: &str, token: &str) -> Value {
+    let _ = kind;
+    json!({"id": id, "subject": subject_of(token), "from": "sender@mail-compare.invalid"})
+}
+
+/// One authored page of `all` for page number `page` (1-based).
+fn page_body(kind: TargetKind, all: &[(String, String)], page: usize, total: usize) -> Value {
+    let size = targets::page_size(kind) as usize;
+    let slice: Vec<Value> = all
+        .iter()
+        .skip((page - 1) * size)
+        .take(size)
+        .map(|(id, token)| item(kind, id, token))
+        .collect();
+    match kind {
+        TargetKind::Mailslurper | TargetKind::AlkemioMailslurper => {
+            let mut items = slice;
+            for i in &mut items {
+                i["fromAddress"] = i["from"].take();
+            }
+            json!({"mailItems": items, "totalPages": total.div_ceil(size), "totalMailItems": total})
+        }
+        TargetKind::Smtp4dev => json!({"results": slice, "currentPage": page, "pageCount": total.div_ceil(size),
+                                        "rowCount": total, "pageSize": size}),
+        TargetKind::Inbucket => json!(slice),
+        _ => unreachable!("not an authored HTTP listing"),
+    }
+}
+
+fn mailbox(n: usize, prefix: &str) -> Vec<(String, String)> {
+    (0..n).map(|i| (format!("id-{prefix}-{i}"), token_n(prefix, i))).collect()
+}
+
+fn page_of(target: &str) -> usize {
+    target.split("pageNumber=").nth(1).and_then(|r| r.split('&').next()).and_then(|n| n.parse().ok()).unwrap_or(1)
+}
+
+/// Limits for scans served by a local responder: a request deadline that a
+/// loaded host cannot trip.
+fn big_limits() -> targets::Limits {
+    targets::Limits {
+        request: Duration::from_secs(10),
+        ..short_limits()
+    }
+}
+
+#[test]
+fn decode_page_refuses_incomplete_wrong_and_malformed_bodies() {
+    let all = mailbox(3, "d");
+    for kind in HTTP_NEW {
+        let complete = page_body(kind, &all, 1, 3);
+        let want: Vec<(String, String)> = all.iter().map(|(id, t)| (id.clone(), subject_of(t))).collect();
+        assert_eq!(targets::decode_page(kind, &complete, 0), Some((3, want)), "{kind}");
+        // An empty page of an empty mailbox is complete and empty.
+        assert_eq!(targets::decode_page(kind, &page_body(kind, &[], 1, 0), 0), Some((0, vec![])), "{kind}");
+        // A body missing the count or the list, an item without an id, an
+        // empty id, a list that is not a list and a non-object are refused.
+        let mut cases: Vec<Value> = vec![json!(null), json!("x"), json!(7)];
+        for key in ["mailItems", "results", "totalMailItems", "rowCount", "currentPage"] {
+            if complete.get(key).is_some() {
+                let mut v = complete.clone();
+                v.as_object_mut().unwrap().remove(key);
+                cases.push(v);
+                let mut v = complete.clone();
+                v[key] = json!("not-a-list-or-count");
+                cases.push(v);
+            }
+        }
+        let mut v = complete.clone();
+        for key in ["mailItems", "results"] {
+            if v.get(key).is_some() {
+                v[key][0].as_object_mut().unwrap().remove("id");
+            }
+        }
+        if kind == TargetKind::Inbucket {
+            v[0].as_object_mut().unwrap().remove("id");
+        }
+        cases.push(v);
+        let mut v = complete.clone();
+        for key in ["mailItems", "results"] {
+            if v.get(key).is_some() {
+                v[key][0]["id"] = "".into();
+            }
+        }
+        if kind == TargetKind::Inbucket {
+            v[0]["id"] = "".into();
+        }
+        cases.push(v);
+        for (n, bad) in cases.iter().enumerate() {
+            assert_eq!(targets::decode_page(kind, bad, 0), None, "{kind} case {n}: {bad}");
+        }
+    }
+    // Position: a page the target echoes must be the page asked for, a page
+    // offset that is not a page boundary does not exist, and a per-mailbox
+    // listing has only offset 0.
+    let smtp4dev = page_body(TargetKind::Smtp4dev, &all, 1, 3);
+    assert!(targets::decode_page(TargetKind::Smtp4dev, &smtp4dev, 250).is_none(), "page 1 answered for page 2");
+    assert!(targets::decode_page(TargetKind::Smtp4dev, &smtp4dev, 100).is_none());
+    let ms = page_body(TargetKind::Mailslurper, &all, 1, 3);
+    assert!(targets::decode_page(TargetKind::Mailslurper, &ms, 25).is_none());
+    assert!(targets::decode_page(TargetKind::Inbucket, &page_body(TargetKind::Inbucket, &all, 1, 3), 3).is_none());
+    // GreenMail has no JSON listing, ever.
+    assert!(targets::decode_page(TargetKind::Greenmail, &json!([]), 0).is_none());
+    // The original three still decode exactly as before.
+    let mailpit = json!({"messages_count": 1, "start": 0, "messages": [{"ID": "m1", "Subject": "s"}]});
+    assert_eq!(targets::decode_page(TargetKind::Mailpit, &mailpit, 0), Some((1, vec![("m1".into(), "s".into())])));
+    assert!(targets::decode_page(TargetKind::Mailpit, &mailpit, 250).is_none());
+}
+
+#[tokio::test]
+async fn scans_of_the_new_targets_are_complete_or_an_error() {
+    for kind in PAGED_HTTP {
+        let size = targets::page_size(kind) as usize;
+        let n = size * 2 + 20;
+        let all = mailbox(n, "s");
+        let served = all.clone();
+        let addr = super::responder(Box::new(move |t: &str| {
+            Some((200, page_body(kind, &served, page_of(t), n).to_string()))
+        }))
+        .await;
+        let owned = targets::Owned::fixture(kind, addr, None, &big_limits());
+        let got = owned.list_all(10).await.unwrap_or_else(|e| panic!("{kind}: {e:?}"));
+        let want: Vec<(String, String)> = all.iter().map(|(id, t)| (t.clone(), id.clone())).collect();
+        assert_eq!(got, want, "{kind}: every message once, in order");
+        assert_eq!(owned.requests(), 3, "{kind}: three pages, one request each");
+        assert_eq!(owned.list_all(2).await, Err(wire::WireError::Oversized), "{kind}: more pages than allowed");
+
+        // Page two repeats an id from page one.
+        let (a, dup) = (all.clone(), all[1].clone());
+        let addr = super::responder(Box::new(move |t: &str| {
+            let mut v = a.clone();
+            if page_of(t) == 2 {
+                v[size] = dup.clone();
+            }
+            Some((200, page_body(kind, &v, page_of(t), n).to_string()))
+        }))
+        .await;
+        let owned = targets::Owned::fixture(kind, addr, None, &big_limits());
+        assert_eq!(owned.list_all(10).await, Err(wire::WireError::Incomplete), "{kind}: repeated id");
+
+        // The count moves between pages.
+        let a = all.clone();
+        let addr = super::responder(Box::new(move |t: &str| {
+            let total = if page_of(t) == 1 { n } else { n + 1 };
+            Some((200, page_body(kind, &a, page_of(t), total).to_string()))
+        }))
+        .await;
+        let owned = targets::Owned::fixture(kind, addr, None, &big_limits());
+        assert_eq!(owned.list_all(10).await, Err(wire::WireError::Incomplete), "{kind}: moving total");
+
+        // A page that comes up short before the count is reached.
+        let a = all.clone();
+        let addr = super::responder(Box::new(move |t: &str| {
+            let mut body = page_body(kind, &a, page_of(t), n);
+            let key = if kind == TargetKind::Smtp4dev { "results" } else { "mailItems" };
+            if page_of(t) == 1 {
+                body[key].as_array_mut().unwrap().pop();
+            }
+            Some((200, body.to_string()))
+        }))
+        .await;
+        let owned = targets::Owned::fixture(kind, addr, None, &big_limits());
+        assert_eq!(owned.list_all(10).await, Err(wire::WireError::Incomplete), "{kind}: short page");
+    }
+}
+
+#[tokio::test]
+async fn http_bodies_that_are_truncated_oversized_or_malformed_are_errors() {
+    for kind in HTTP_NEW {
+        let all = mailbox(3, "t");
+        let whole = page_body(kind, &all, 1, 3).to_string();
+        let cut = whole[..whole.len() / 2].to_owned();
+        let huge = whole.clone();
+        let serve = |body: String, status: u16| async move {
+            super::responder(Box::new(move |_: &str| Some((status, body.clone())))).await
+        };
+        let owned = |addr| targets::Owned::fixture(kind, addr, None, &big_limits());
+        assert_eq!(owned(serve(cut, 200).await).list_all(5).await, Err(wire::WireError::Malformed), "{kind}: truncated");
+        assert_eq!(owned(serve("not json".into(), 200).await).list_all(5).await, Err(wire::WireError::Malformed));
+        assert_eq!(owned(serve(whole.clone(), 500).await).list_all(5).await, Err(wire::WireError::Malformed), "{kind}: status");
+        assert_eq!(owned(serve(whole.clone(), 200).await).list_all(5).await.unwrap().len(), 3, "{kind}: whole");
+        let mut small = big_limits();
+        small.max_response_bytes = 64;
+        let addr = serve(huge, 200).await;
+        let tiny = targets::Owned::fixture(kind, addr, None, &small);
+        assert_eq!(tiny.list_all(5).await, Err(wire::WireError::Oversized), "{kind}: oversized");
+    }
+}
+
+#[tokio::test]
+async fn client_side_find_labelled_and_complete() {
+    for kind in HTTP_NEW {
+        assert!(!targets::has_server_search(kind), "{kind} has no verified search");
+        let mut all = mailbox(4, "f");
+        all.insert(2, ("id-noise".into(), "not-a-token".into()));
+        let served = all.clone();
+        let n = all.len();
+        let addr = super::responder(Box::new(move |t: &str| {
+            Some((200, page_body(kind, &served, page_of(t), n).to_string()))
+        }))
+        .await;
+        let owned = targets::Owned::fixture(kind, addr, None, &big_limits());
+        // The unrelated message is never a hit; the wanted one is exactly one.
+        assert_eq!(owned.find(&token_n("f", 3)).await.unwrap(), vec![token_n("f", 3)], "{kind}");
+        assert!(owned.find("mc-absent-000000").await.unwrap().is_empty(), "{kind}");
+        // A scan that cannot be completed is an error, never a short answer.
+        let bad = super::responder(Box::new(|_: &str| Some((200, "{".into())))).await;
+        let owned = targets::Owned::fixture(kind, bad, None, &big_limits());
+        assert_eq!(owned.find("mc-f-000000").await, Err(wire::WireError::Malformed), "{kind}");
+    }
+    for t in TargetKind::V2 {
+        assert!(targets::has_server_search(t), "{t}");
+    }
+}
+
+#[tokio::test]
+async fn greenmail_lists_finds_and_fetches_over_pop3() {
+    let msgs: Vec<(&'static str, Vec<u8>)> = ["g0", "g1", "g2"]
+        .iter()
+        .map(|u| (*u, authored_mail(&subject_of(&token_n(u, 0)), &format!("body {u}\r\n"))))
+        .collect();
+    let r = responder(GREETING, standard(msgs.clone())).await;
+    // GreenMail's HTTP address is never read: it has none.
+    let owned = targets::Owned::fixture(TargetKind::Greenmail, "127.0.0.1:1".parse().unwrap(), Some(r.addr), &big_limits());
+    let listed = owned.list_all(1).await.unwrap();
+    assert_eq!(listed, vec![(token_n("g0", 0), "g0".into()), (token_n("g1", 0), "g1".into()), (token_n("g2", 0), "g2".into())]);
+    assert_eq!(owned.find(&token_n("g1", 0)).await.unwrap(), vec![token_n("g1", 0)]);
+    let fetched = owned.fetch("g2").await.unwrap();
+    assert_eq!(fetched.subject.as_deref(), Some(subject_of(&token_n("g2", 0)).as_str()));
+    assert!(wire::same_body(Some("body g2"), fetched.text.as_deref()));
+    assert!(owned.requests() > 0, "POP3 commands are counted as requests");
+    assert!(!targets::has_server_search(TargetKind::Greenmail));
+}
+
+fn corpus(n: u32) -> Vec<wire::Message> {
+    let kinds = [protocol::MessageKind::Plain, protocol::MessageKind::Html, protocol::MessageKind::Multipart];
+    (0..n).map(|i| wire::authored(163, "unit0000", i, &kinds)).collect()
+}
+
+/// MailSlurper stores decoded fields, not raw bytes: authored here from the
+/// message the corpus sent, split the way a mail store splits it.
+fn slurper_json(m: &wire::Message) -> String {
+    let raw = String::from_utf8(m.bytes.clone()).unwrap();
+    let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+    let ct_line = head.lines().find(|l| l.starts_with("Content-Type:")).unwrap();
+    let ct = ct_line["Content-Type:".len()..].trim();
+    let (content_type, boundary) = match ct.split_once(';') {
+        Some((t, rest)) => (t.trim(), rest.trim().strip_prefix("boundary=").map(|b| b.trim_matches('"')).unwrap_or("")),
+        None => (ct, ""),
+    };
+    json!({"id": "x", "subject": m.subject, "contentType": content_type, "boundary": boundary, "body": body}).to_string()
+}
+
+#[tokio::test]
+async fn each_native_api_reads_back_subject_text_and_html_as_sent() {
+    for m in corpus(6) {
+        for kind in [TargetKind::Smtp4dev, TargetKind::Inbucket, TargetKind::Mailslurper, TargetKind::AlkemioMailslurper] {
+            let (raw, slurper) = (m.bytes.clone(), slurper_json(&m));
+            let addr = super::responder(Box::new(move |t: &str| match kind {
+                TargetKind::Smtp4dev if t == "/api/messages/theid/raw" => Some((200, String::from_utf8(raw.clone()).unwrap())),
+                TargetKind::Inbucket if t == "/api/v1/mailbox/rcpt/theid/source" => Some((200, String::from_utf8(raw.clone()).unwrap())),
+                TargetKind::Mailslurper | TargetKind::AlkemioMailslurper if t == "/mail/theid" => Some((200, slurper.clone())),
+                _ => Some((404, "{}".into())),
+            }))
+            .await;
+            let owned = targets::Owned::fixture(kind, addr, None, &big_limits());
+            let got = owned.fetch("theid").await.unwrap_or_else(|e| panic!("{kind} {:?}: {e:?}", m.kind));
+            assert_eq!(got.subject.as_deref(), Some(m.subject.as_str()), "{kind} {:?}", m.kind);
+            assert!(wire::same_body(m.text.as_deref(), got.text.as_deref()), "{kind} {:?} text: {got:?}", m.kind);
+            assert!(wire::same_body(m.html.as_deref(), got.html.as_deref()), "{kind} {:?} html: {got:?}", m.kind);
+            // An id the server does not know is an error, not an empty message.
+            assert_eq!(owned.fetch("other").await.map(|_| ()), Err(wire::WireError::Malformed), "{kind}");
+        }
+    }
+    // A MailSlurper answer with no body or subject is malformed.
+    let addr = super::responder(Box::new(|_: &str| Some((200, json!({"id": "x"}).to_string())))).await;
+    let owned = targets::Owned::fixture(TargetKind::Mailslurper, addr, None, &big_limits());
+    assert_eq!(owned.fetch("x").await.map(|_| ()), Err(wire::WireError::Malformed));
+}
+
+#[tokio::test]
+async fn hostile_bodies_round_trip() {
+    // Dot-leading lines, an 8-bit (RFC 2047) subject, a 998-octet header and
+    // a boundary string that appears inside a part: the reader that one
+    // corpus uses for every competitor returns each as authored.
+    let long_header = format!("X-Long: {}", "a".repeat(998 - "X-Long: ".len()));
+    assert_eq!(long_header.len(), 998);
+    let plain = format!(
+        "From: <a@b.invalid>\r\nTo: <c@d.invalid>\r\nSubject: =?UTF-8?B?aMOpbGxv?=\r\n{long_header}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n.leading dot\r\n..two dots\r\n.\r\nlast line\r\n"
+    );
+    let multipart = "From: <a@b.invalid>\r\nSubject: plain ascii\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"b-mc-x\"\r\n\r\n--b-mc-x\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nsee the boundary below\r\n--other is not a boundary\r\n.dotted\r\n--b-mc-x\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>html part</p>\r\n--b-mc-x--\r\n";
+    // The boundary string inside a part, not at a line start, is legal
+    // content that the MIME parser reads as a delimiter and cuts the part at.
+    let mid_line = multipart.replace("see the boundary below", "see --b-mc-x for details");
+    for kind in [TargetKind::Smtp4dev, TargetKind::Inbucket] {
+        let path = if kind == TargetKind::Smtp4dev { "/api/messages/p/raw" } else { "/api/v1/mailbox/rcpt/p/source" };
+        let a = plain.clone();
+        let addr = super::responder(Box::new(move |t: &str| (t == path).then(|| (200, a.clone())))).await;
+        let owned = targets::Owned::fixture(kind, addr, None, &big_limits());
+        let got = owned.fetch("p").await.unwrap();
+        assert_eq!(got.subject.as_deref(), Some("héllo"), "{kind}");
+        assert_eq!(got.text.as_deref(), Some(".leading dot\r\n..two dots\r\n.\r\nlast line\r\n"), "{kind}: {got:?}");
+    }
+    // The multipart body, served at the raw path: a line that merely starts
+    // like a boundary is content, and a mid-line boundary string is refused
+    // rather than returned truncated.
+    for kind in [TargetKind::Smtp4dev, TargetKind::Inbucket] {
+        let path = if kind == TargetKind::Smtp4dev { "/api/messages/m/raw" } else { "/api/v1/mailbox/rcpt/m/source" };
+        let (ok, hostile) = (multipart.to_owned(), mid_line.clone());
+        let addr = super::responder(Box::new(move |t: &str| {
+            (t == path).then(|| (200, ok.clone())).or_else(|| (t.ends_with("/h/raw") || t.ends_with("/h/source")).then(|| (200, hostile.clone())))
+        }))
+        .await;
+        let owned = targets::Owned::fixture(kind, addr, None, &big_limits());
+        let got = owned.fetch("m").await.unwrap();
+        assert_eq!(got.subject.as_deref(), Some("plain ascii"));
+        let text = got.text.unwrap();
+        assert!(text.contains("see the boundary below") && text.contains("--other is not a boundary") && text.contains(".dotted"), "{text:?}");
+        assert!(!text.contains("<p>"), "the html part is not in the text part: {text:?}");
+        assert!(wire::same_body(Some("<p>html part</p>"), got.html.as_deref()), "{:?}", got.html);
+        assert_eq!(owned.fetch("h").await.map(|_| ()), Err(wire::WireError::Malformed), "{kind}: a cut part is not a success");
+    }
+}
+
+// ---- the wrapper ---------------------------------------------------------
+//
+// Free: these run the real script with no paid input, and every case refuses
+// in its preflight, before a build, a launch or an agent could start.
+
+fn wrapper(args: &[&str], w: &Path) -> (i32, String) {
+    let r = compare_mail(args, w);
+    assert!(!w.join("launched").exists(), "no agent ever started: {args:?}");
+    r
+}
+
+#[test]
+fn wrapper_requires_every_declared_competitor() {
+    let root = tempfile::tempdir().unwrap();
+    let w = root.path().join("w");
+    let out = root.path().join("out");
+    let o = out.to_str().unwrap();
+    let declared = ["mailpit", "mailhog", "mailslurper", "smtp4dev", "inbucket", "greenmail", "alkemio-mailslurper"];
+    for mode in ["local", "collect"] {
+        // The first declared competitor with no binary is the one named.
+        for have in 0..declared.len() {
+            let mut args: Vec<String> = vec![mode.into(), "--output".into(), o.into()];
+            for t in &declared[..have] {
+                args.extend(["--bin".into(), format!("{t}=/bin/sh")]);
+            }
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            let (code, text) = wrapper(&refs, &w);
+            assert_eq!(code, 2, "{mode} with {have}: {text}");
+            assert!(
+                text.contains(&format!("blocked at phase \"competitor-binaries\": the protocol declares {}; pass --bin {}=PATH", declared[have], declared[have])),
+                "{mode} with {have}: {text}"
+            );
+        }
+    }
+    // A binary that is not executable is refused by name.
+    let (code, text) = wrapper(&["local", "--output", o, "--bin", "mailpit=/nonexistent/mailpit"], &w);
+    assert_eq!(code, 2);
+    assert!(text.contains("--bin mailpit=/nonexistent/mailpit is not an executable file"), "{text}");
+}
+
+#[test]
+fn wrapper_refuses_unknown_bin() {
+    let root = tempfile::tempdir().unwrap();
+    let w = root.path().join("w");
+    let out = root.path().join("out");
+    let o = out.to_str().unwrap();
+    for (args, want) in [
+        (vec!["--bin", "bogus=/bin/sh"], "--bin bogus names a target the protocol does not declare"),
+        // The candidate is built by the wrapper, never supplied.
+        (vec!["--bin", "swarmail=/bin/sh"], "--bin swarmail names a target the protocol does not declare"),
+        (vec!["--runtime", "mailpit2=/tmp"], "--runtime mailpit2 names a target the protocol does not declare"),
+        (vec!["--bin", "mailpit"], "--bin takes NAME=VALUE, not mailpit"),
+        (vec!["--bin", "=/bin/sh"], "--bin takes NAME=VALUE"),
+        (vec!["--bin"], "--bin needs a value"),
+    ] {
+        let mut full = vec!["local", "--output", o];
+        full.extend(args.iter().copied());
+        let (code, text) = wrapper(&full, &w);
+        assert_eq!(code, 2, "{args:?}: {text}");
+        assert!(text.contains(want), "{args:?}: expected {want:?} in {text}");
+    }
+    // The v2 protocol declares only the original two, so a new name is unknown there.
+    let v2 = evals_dir().join("history/2026-10-30-protocol.v2.json");
+    let (code, text) = wrapper(
+        &["local", "--output", o, "--protocol", v2.to_str().unwrap(), "--bin", "mailslurper=/bin/sh"],
+        &w,
+    );
+    assert_eq!(code, 2);
+    assert!(text.contains("--bin mailslurper names a target the protocol does not declare (it declares: mailpit mailhog)"), "{text}");
+}
+
+#[test]
+fn wrapper_aliases_still_work() {
+    let root = tempfile::tempdir().unwrap();
+    let w = root.path().join("w");
+    let out = root.path().join("out");
+    let o = out.to_str().unwrap();
+    // The aliases count as --bin mailpit= and --bin mailhog=: with both, the
+    // next declared competitor is the one missing.
+    let (code, text) = wrapper(&["local", "--output", o, "--mailpit", "/bin/sh", "--mailhog", "/bin/sh"], &w);
+    assert_eq!(code, 2);
+    assert!(text.contains("the protocol declares mailslurper; pass --bin mailslurper=PATH"), "{text}");
+    let (code, text) = wrapper(&["local", "--output", o, "--mailhog", "/bin/sh", "--bin", "mailpit=/bin/sh"], &w);
+    assert_eq!(code, 2);
+    assert!(text.contains("the protocol declares mailslurper"), "{text}");
+    let (code, text) = wrapper(&["local", "--output", o, "--mailpit", "/nonexistent"], &w);
+    assert_eq!(code, 2);
+    assert!(text.contains("--bin mailpit=/nonexistent is not an executable file"), "{text}");
+    // Against protocol 2 the two aliases are the whole requirement: with only
+    // one, the other is named, exactly as before.
+    let v2 = evals_dir().join("history/2026-10-30-protocol.v2.json");
+    let v2 = v2.to_str().unwrap();
+    let (code, text) = wrapper(&["local", "--output", o, "--protocol", v2, "--mailpit", "/bin/sh"], &w);
+    assert_eq!(code, 2);
+    assert!(text.contains("the protocol declares mailhog; pass --bin mailhog=PATH"), "{text}");
+}
+
+#[test]
+fn wrapper_paid_modes_refuse_as_before() {
+    let root = tempfile::tempdir().unwrap();
+    let w = root.path().join("w");
+    let out = root.path().join("out");
+    let o = out.to_str().unwrap();
+    for (args, want) in [
+        (vec!["controls", "--output", o], "blocked at phase \"prerequisite-baseline\": --baseline is not supplied"),
+        (vec!["evidence", "--output", o], "--final is required in evidence mode"),
+        (vec!["measure", "--output", o], "--config is required in measure mode"),
+        (vec!["measure", "--output", o, "--config", "/nonexistent/config"], "--config does not exist"),
+    ] {
+        let (code, text) = wrapper(&args, &w);
+        assert_eq!(code, 2, "{args:?}: {text}");
+        assert!(text.contains(want), "{args:?}: expected {want:?} in {text}");
+    }
 }

@@ -352,7 +352,7 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
             }
             _ => {
                 let pin = s.pin(t).ok_or_else(|| format!("{t}: no source pin"))?;
-                launch_spec(t, binary, runtimes.remove(&t), pin)?
+                targets::LaunchSpec::from_pin(t, binary, runtimes.remove(&t), pin)?
             }
         };
         specs.insert(t, spec);
@@ -413,59 +413,6 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
         keepers: targets::Keepers::default(),
     };
     Ok((cfg, scratch))
-}
-
-/// A competitor's launch from its pin, of either lock version. A lock 4 pin
-/// declares its listeners, environment and config file; a runtime pin
-/// launches the runtime's own program with the pinned jar as `{artifact}`,
-/// and every checked member is digested at launch and again at seal. A
-/// tree pin's checked members are relative to the executable's directory.
-fn launch_spec(
-    t: TargetKind,
-    binary: PathBuf,
-    runtime_dir: Option<PathBuf>,
-    pin: &protocol::Pin,
-) -> Result<targets::LaunchSpec, String> {
-    let mut spec = targets::LaunchSpec::new(
-        t,
-        binary.clone(),
-        Some(pin.artifact.executable_sha256.clone()),
-        pin.launch.clone(),
-    );
-    if let Some(roles) = &pin.listeners {
-        spec.extra.listeners = roles.clone();
-        spec.extra.env = pin.launch_env.clone().unwrap_or_default();
-        spec.extra.config = pin.config_file.clone();
-    }
-    match (&pin.runtime, runtime_dir) {
-        (Some(rt), Some(dir)) => {
-            spec.binary = dir.join("bin/java");
-            spec.extra.artifact = Some(binary);
-            spec.extra.members = rt
-                .checked_members
-                .iter()
-                .map(|m| (dir.join(&m.path), m.sha256.clone()))
-                .collect();
-        }
-        (Some(_), None) => {
-            return Err(format!(
-                "--runtime {t}=DIR is required: its pin needs a runtime"
-            ));
-        }
-        (None, Some(_)) => {
-            return Err(format!("--runtime {t} is given but its pin has no runtime"));
-        }
-        (None, None) => {
-            if let Some(members) = &pin.artifact.checked_members {
-                let base = binary.parent().unwrap_or(Path::new("."));
-                spec.extra.members = members
-                    .iter()
-                    .map(|m| (base.join(&m.path), m.sha256.clone()))
-                    .collect();
-            }
-        }
-    }
-    Ok(spec)
 }
 
 fn execute(cfg: runner::Config, scratch: PathBuf) -> i32 {
