@@ -127,7 +127,9 @@ impl LaunchSpec {
                 ));
             }
             (None, Some(_)) => {
-                return Err(format!("--runtime {kind} is given but its pin has no runtime"));
+                return Err(format!(
+                    "--runtime {kind} is given but its pin has no runtime"
+                ));
             }
             (None, None) => {
                 if let Some(members) = &pin.artifact.checked_members {
@@ -1590,7 +1592,7 @@ pub fn decode_page(
             (v.get("items")?.as_array()?, v.get("total")?.as_u64()?)
         }
         TargetKind::Mailslurper | TargetKind::AlkemioMailslurper => {
-            if start % size != 0 {
+            if !start.is_multiple_of(size) {
                 return None;
             }
             (
@@ -1599,7 +1601,7 @@ pub fn decode_page(
             )
         }
         TargetKind::Smtp4dev => {
-            if start % size != 0 || v.get("currentPage")?.as_u64()? != page_number {
+            if !start.is_multiple_of(size) || v.get("currentPage")?.as_u64()? != page_number {
                 return None;
             }
             (v.get("results")?.as_array()?, v.get("rowCount")?.as_u64()?)

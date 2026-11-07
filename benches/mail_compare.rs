@@ -7,10 +7,10 @@
 //! point is `scripts/compare-mail.sh`, which builds it and passes the
 //! modes below. A plain `cargo bench` invocation measures nothing.
 //!
-//!   mail_compare check --protocol P --sources S
+//!   mail_compare check --protocol P --sources S [--documents DIR]
 //!   mail_compare targets --protocol P
 //!   mail_compare run --mode smoke|collect --protocol P --sources S
-//!       --output DIR --scratch DIR --run-id ID --bin TARGET=PATH...
+//!       [--documents DIR] --output DIR --scratch DIR --run-id ID --bin TARGET=PATH...
 //!       [--runtime TARGET=DIR...] [--commit SHA --dirty true|false]
 //!   mail_compare admit DIR
 //!   mail_compare mailpit-mcp --endpoint http://127.0.0.1:PORT --sources S
@@ -106,11 +106,16 @@ fn load(
     // Version pairing is checked first: neither version reads the other's
     // records (proposed decision 0130 §3).
     protocol::pairing(&p, &s).map_err(|r| r.to_string())?;
-    // The captured documents live beside the lock; their bytes are
-    // rechecked every time the lock is used, not trusted from last time.
-    let dir = Path::new(one(f, "sources")?)
-        .parent()
-        .unwrap_or(Path::new("."));
+    // The captured documents live beside the lock, or where `--documents`
+    // says (a historical lock under `history/` is verified against the
+    // documents in `docs/evals`); their bytes are rechecked every time the
+    // lock is used, not trusted from last time.
+    let dir = match f.get("documents").and_then(|v| v.first()) {
+        Some(d) => Path::new(d),
+        None => Path::new(one(f, "sources")?)
+            .parent()
+            .unwrap_or(Path::new(".")),
+    };
     s.validate().map_err(|r| r.to_string())?;
     s.verify_files(if dir.as_os_str().is_empty() {
         Path::new(".")
@@ -289,7 +294,16 @@ fn run(args: &[String]) -> i32 {
 fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
     let f = flags(args)?;
     let known = [
-        "mode", "protocol", "sources", "output", "scratch", "run-id", "bin", "runtime", "commit",
+        "mode",
+        "protocol",
+        "sources",
+        "documents",
+        "output",
+        "scratch",
+        "run-id",
+        "bin",
+        "runtime",
+        "commit",
         "dirty",
     ];
     if let Some(k) = f.keys().find(|k| !known.contains(&k.as_str())) {

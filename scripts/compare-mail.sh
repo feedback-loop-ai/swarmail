@@ -5,7 +5,7 @@
 # mode here starts a paid agent.
 #
 #   compare-mail.sh local    --output DIR [--protocol P] [--sources S]
-#                            [--bin NAME=PATH]... [--runtime NAME=DIR]...
+#                            [--documents DIR] [--bin NAME=PATH]... [--runtime NAME=DIR]...
 #                            [--mailpit BIN] [--mailhog BIN]      (smoke, never evidence)
 #   compare-mail.sh collect  --output DIR --bin NAME=PATH... [--runtime NAME=DIR]...
 #                            [--protocol P] [--sources S]   (the frozen protocol, then admission)
@@ -14,7 +14,9 @@
 # required binaries are derived from the protocol, never from a fixed list.
 # --mailpit BIN and --mailhog BIN remain aliases of --bin mailpit=BIN and
 # --bin mailhog=BIN. A target whose lock pin needs a runtime (GreenMail's JRE)
-# also takes --runtime NAME=DIR; the swarmail candidate is built here.
+# also takes --runtime NAME=DIR; the swarmail candidate is built here. A
+# historical lock (docs/evals/history/) is verified against the captured
+# documents given by --documents (docs/evals), not the directory it sits in.
 #   compare-mail.sh controls --output DIR [PREREQUISITES]
 #   compare-mail.sh evidence --output DIR --final DIR [PREREQUISITES]
 #   compare-mail.sh measure  --output DIR --config FILE [PREREQUISITES] [--dry-run]
@@ -48,7 +50,7 @@ shift
 
 protocol=docs/evals/protocol.json
 sources=docs/evals/sources.lock.json
-output='' mailpit='' mailhog='' baseline='' final='' receipts='' config='' dry_run=0
+output='' documents='' mailpit='' mailhog='' baseline='' final='' receipts='' config='' dry_run=0
 contracts='' controls_dir='' cost='' identity='' product=''
 # --bin NAME=PATH and --runtime NAME=DIR repeat; they are kept as plain
 # "NAME=VALUE" words (no associative arrays: macOS ships bash 3.2).
@@ -64,7 +66,7 @@ while [ $# -gt 0 ]; do
       esac
       if [ "$1" = --bin ]; then bin_args+=("$2"); else runtime_args+=("$2"); fi
       shift 2 ;;
-    --protocol|--sources|--output|--mailpit|--mailhog|--baseline|--final|--receipts|--config|--contracts|--controls-dir|--cost|--identity|--product)
+    --protocol|--sources|--documents|--output|--mailpit|--mailhog|--baseline|--final|--receipts|--config|--contracts|--controls-dir|--cost|--identity|--product)
       [ $# -ge 2 ] || blocked arguments "$1 needs a value"
       flag="${1#--}"
       flag="${flag//-/_}"
@@ -183,6 +185,8 @@ case "$mode" in
       [ -n "$bin" ] || blocked competitor-binaries "the protocol declares $t; pass --bin $t=PATH with its pinned executable"
       [ -x "$bin" ] || blocked competitor-binaries "--bin $t=$bin is not an executable file"
     done
+    doc_args=()
+    [ -z "$documents" ] || doc_args=(--documents "$documents")
     command -v cargo >/dev/null 2>&1 || blocked prerequisites "cargo is not installed"
     cargo build --release --locked --offline --bin swarmail >&2 \
       || blocked build "the candidate binary does not build"
@@ -191,11 +195,11 @@ case "$mode" in
     [ -n "$bench" ] && [ -x "$bench" ] || blocked build "the mail_compare driver does not build"
     if [ "$mode" = collect ]; then
       # Collection never starts on a protocol the driver would refuse.
-      "$bench" check --protocol "$protocol" --sources "$sources" \
+      "$bench" check --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"} \
         || blocked collection-ready "the protocol and lock are not ready for collection (see above)"
       run_mode=collect
     else
-      "$bench" check --protocol "$protocol" --sources "$sources" || true
+      "$bench" check --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"} || true
       run_mode=smoke
     fi
     # The driver's own list is authoritative; the preflight must agree.
@@ -206,7 +210,7 @@ case "$mode" in
     commit=$(git rev-parse HEAD 2>/dev/null || true)
     dirty=false
     [ -z "$(git status --porcelain 2>/dev/null)" ] || dirty=true
-    args=(run --mode "$run_mode" --protocol "$protocol" --sources "$sources"
+    args=(run --mode "$run_mode" --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"}
       --output "$output" --scratch "$output.scratch"
       --run-id "$mode-$(date -u +%Y%m%dT%H%M%SZ)-$$"
       --bin "swarmail=target/release/swarmail")
