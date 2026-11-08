@@ -1,0 +1,130 @@
+{
+  "batch": {
+    "answered": true,
+    "reply_ids": [
+      101,
+      102
+    ],
+    "reply_is_array": true,
+    "request_ids": [
+      101,
+      102
+    ]
+  },
+  "calls": [
+    {
+      "outcome": "ok",
+      "tool": "swarmail_search_emails"
+    },
+    {
+      "detail": "message contract-probe-id not found",
+      "outcome": "tool_error",
+      "tool": "swarmail_get_deliverability_report"
+    },
+    {
+      "detail": "message contract-probe-id not found",
+      "outcome": "tool_error",
+      "tool": "swarmail_get_email"
+    },
+    {
+      "detail": "inbox default is empty",
+      "outcome": "tool_error",
+      "tool": "swarmail_get_latest_email"
+    },
+    {
+      "outcome": "skipped_mutating",
+      "tool": "swarmail_delete_email"
+    },
+    {
+      "outcome": "skipped_mutating",
+      "tool": "swarmail_clear_inbox"
+    },
+    {
+      "outcome": "skipped_mutating",
+      "tool": "swarmail_clear_all"
+    },
+    {
+      "outcome": "ok",
+      "tool": "swarmail_wait_for_email"
+    },
+    {
+      "detail": "message contract-probe-id not found",
+      "outcome": "tool_error",
+      "tool": "swarmail_extract_links"
+    },
+    {
+      "detail": "message contract-probe-id not found",
+      "outcome": "tool_error",
+      "tool": "swarmail_extract_codes"
+    },
+    {
+      "outcome": "skipped_mutating",
+      "tool": "swarmail_seed_email"
+    },
+    {
+      "outcome": "skipped_mutating",
+      "tool": "swarmail_set_chaos"
+    },
+    {
+      "outcome": "skipped_mutating",
+      "tool": "swarmail_clear_chaos"
+    },
+    {
+      "outcome": "ok",
+      "tool": "swarmail_wait_for_code"
+    },
+    {
+      "outcome": "ok",
+      "tool": "swarmail_wait_for_link"
+    },
+    {
+      "outcome": "skipped_mutating",
+      "tool": "swarmail_create_inbox"
+    },
+    {
+      "detail": "message contract-probe-id not found",
+      "outcome": "tool_error",
+      "tool": "swarmail_list_attachments"
+    },
+    {
+      "detail": "message contract-probe-id not found",
+      "outcome": "tool_error",
+      "tool": "swarmail_get_attachment"
+    }
+  ],
+  "cleanup_receipt": true,
+  "comparison_name": "swarmail-mcp",
+  "negotiation": {
+    "capabilities": {
+      "tools": {}
+    },
+    "protocol_version": "2025-03-26",
+    "server_info": {
+      "name": "swarmail",
+      "version": "0.4.0"
+    }
+  },
+  "scope": "server side, as swarmail-evals negotiates it; a model CLI's negotiation is logged by the bridge in a paid session and is not claimed here",
+  "target": "swarmail",
+  "tool_names": [
+    "swarmail_search_emails",
+    "swarmail_get_deliverability_report",
+    "swarmail_get_email",
+    "swarmail_get_latest_email",
+    "swarmail_delete_email",
+    "swarmail_clear_inbox",
+    "swarmail_clear_all",
+    "swarmail_wait_for_email",
+    "swarmail_extract_links",
+    "swarmail_extract_codes",
+    "swarmail_seed_email",
+    "swarmail_set_chaos",
+    "swarmail_clear_chaos",
+    "swarmail_wait_for_code",
+    "swarmail_wait_for_link",
+    "swarmail_create_inbox",
+    "swarmail_list_attachments",
+    "swarmail_get_attachment"
+  ],
+  "tools_sha256": "607089344c86f8093d677528a88e2962f561fdc0353cc63add939fa4dbeefe1c"
+}

@@ -419,7 +419,7 @@ Nothing paid runs.
 
 ## T10 — Merge `main` and restore the frozen bytes (AC14) *(rerun 3)*
 
-- [ ] T10.a Run `git merge origin/main` on `4d89de1`. Never rebase, squash
+- [x] T10.a (third rerun, 58f3617) Run `git merge origin/main` on `4d89de1`. Never rebase, squash
   or amend. Before resolving any other file, run
   `git checkout origin/main -- docs/evals/sources.lock.json
   docs/evals/protocol.json docs/evals/history/`. Restore each file main
@@ -435,14 +435,14 @@ Nothing paid runs.
   docs/evals/history/ docs/evals/sources/` is empty. Main's frozen-sha test
   passes: `cargo test --locked --test mail_compare -- frozen`. Check the
   filter against the test's name in `eight_targets.rs`.
-- [ ] T10.b Resolve every content conflict by the rules in R12.c–R12.k. No
+- [x] T10.b (third rerun, 58f3617) Resolve every content conflict by the rules in R12.c–R12.k. No
   marker may survive.
   **Proof:** `git grep -nE '^(<<<<<<<|>>>>>>>)( |$)'` is empty, and
   `git log --merges -1 --format=%P` names `55f211d`.
 
 ## T11 — The driver is main's; the adapters sit on it (AC15) *(rerun 3)*
 
-- [ ] T11.a `benches/mail_compare/protocol.rs` and `targets.rs` take
+- [x] T11.a (third rerun, 58f3617, 859c465) `benches/mail_compare/protocol.rs` and `targets.rs` take
   main's side whole. Re-add only what a compile error in the adapter modes
   demands, at most one read accessor (R12.c). Remove the branch's lock-v4
   layer as R12.c lists it.
@@ -451,7 +451,7 @@ Nothing paid runs.
   shows only the accessor (if any) and T14.a's constant.
   `cargo clippy --workspace --all-targets --locked -- -D warnings` is
   clean.
-- [ ] T11.b `benches/mail_compare.rs` keeps main's usage text and dispatch
+- [x] T11.b (third rerun, 859c465) `benches/mail_compare.rs` keeps main's usage text and dispatch
   and adds the adapter modes. `mailslurper-mcp` launches
   `TargetKind::MailslurperSourceBuild` through `LaunchSpec::from_pin`.
   Every added `TargetKind` match is exhaustive. An adapter entry point
@@ -464,7 +464,7 @@ Nothing paid runs.
   test asserts the target's name in the error and no spawn.
   `git diff origin/main -- benches tests evals | grep -nE '^\+.*\b_ =>'`
   shows no arm of a `TargetKind`/`Target` match.
-- [ ] T11.c In `tests/mail_compare.rs`, keep every wire and lock test from
+- [x] T11.c (third rerun, 58f3617) In `tests/mail_compare.rs`, keep every wire and lock test from
   main verbatim. Delete only the branch's tests of the removed layer (plan,
   step 3), and list their names in the commit body. Port the adapter
   mechanics tests and the ignored real-binary tests to main's types.
@@ -476,7 +476,7 @@ Nothing paid runs.
 
 ## T12 — The sources main does not bind (AC15) *(rerun 3)*
 
-- [ ] T12.a Hash every branch file under `docs/evals/sources/mailslurper/`
+- [x] T12.a (third rerun, 58f3617, 859c465) Hash every branch file under `docs/evals/sources/mailslurper/`
   against main's documents. `git rm` the sha256-equal ones. Move the twelve
   adapter-cited sources and `go.mod`/`go.sum` (and any non-equal file) to
   `docs/evals/agent-sources/mailslurper/`. Add the `(path, archive member,
@@ -491,11 +491,11 @@ Nothing paid runs.
 
 ## T13 — The eval crate, the product record and the wrapper (AC15) *(rerun 3)*
 
-- [ ] T13.a Resolve the evals conflicts by keeping both sides (R12.h). Fold
+- [x] T13.a (third rerun, 58f3617) Resolve the evals conflicts by keeping both sides (R12.h). Fold
   `send_auth` into main's `send_stored(…, SmtpAuth)`.
   **Proof:** `cd evals && cargo test --locked` (with `SWARMAIL_BIN`), and
   `grep -rn 'fn send_auth' evals/` finds nothing.
-- [ ] T13.b Add `Target::lock_entry()`, an exhaustive match. Repoint
+- [x] T13.b (third rerun, 859c465) Add `Target::lock_entry()`, an exhaustive match. Repoint
   `validate_tuple` and `tuple_agrees_with_lock` to it. Edit the MailSlurper
   tuple's `lock_entry` to `"mailslurper-source-build"` and its
   `artifact_kind` to `"executable"`, leaving every other field alone. If
@@ -508,7 +508,7 @@ Nothing paid runs.
 
   `git diff 4d89de1 -- docs/evals/agent-comparison.json` shows exactly two
   changed lines.
-- [ ] T13.c `scripts/compare-mail.sh` uses main's grammar (R12.i) and drops
+- [x] T13.c (third rerun, 859c465) `scripts/compare-mail.sh` uses main's grammar (R12.i) and drops
   `--mailslurper`. The agent modes require a `--bin` for each competitor
   `lock_entry` in the product record.
   **Proof:** the wrapper tests:
@@ -516,7 +516,7 @@ Nothing paid runs.
   - `controls` without `--bin mailslurper-source-build=…` refuses by that
     name;
   - main's wire-mode wrapper tests pass unchanged.
-- [ ] T13.d The wire corpus (R12.j). Compare the corpus index's MailSlurper
+- [x] T13.d (third rerun, 859c465) The wire corpus (R12.j). Compare the corpus index's MailSlurper
   template sha256 with main's `mailslurper-source-build` `config_file`. If
   they are equal, only the index's lookup key changes. Otherwise, recapture
   with the ignored capture test under `timeout 600 taskset -c 0-31`.
@@ -525,27 +525,27 @@ Nothing paid runs.
 
 ## T14 — The bounded launch-slot retry (AC16) *(rerun 3)*
 
-- [ ] T14.a Add `pub const NO_LISTENER_ADDRESSES: &str = "no listener
+- [x] T14.a (third rerun, 859c465) Add `pub const NO_LISTENER_ADDRESSES: &str = "no listener
   addresses"` to `targets.rs` and use it at every producer.
   **Proof:** `grep -rn '"no listener addresses"' benches tests` finds only
   the definition.
-- [ ] T14.b Move `4d89de1`'s loop into `launch_shim_with_fresh_slot(chooser)`,
+- [x] T14.b (third rerun, 859c465) Move `4d89de1`'s loop into `launch_shim_with_fresh_slot(chooser)`,
   with its semantics unchanged: fresh slot, at most 5 attempts,
   `facts.proved()` on each refusal, any other error panics at once. It
   returns `(slot, Owned, attempts)`. The MailSlurper adapter test uses it.
   **Proof:**
   `the_mailslurper_adapter_lists_and_reads_over_real_smtp_into_swarmails_shim`
   passes.
-- [ ] T14.c Add the forced-collision test: hold a real `TcpListener` on
+- [x] T14.c (third rerun, 859c465) Add the forced-collision test: hold a real `TcpListener` on
   the first candidate across the launch.
   **Proof:** the test asserts `attempts == 2`, proved cleanup on the
   refused attempt, and that the held listener still accepts a connection
   afterwards. It runs in the default suite.
-- [ ] T14.d Add the exhaustion test: hold five listeners and feed them as
+- [x] T14.d (third rerun, 859c465) Add the exhaustion test: hold five listeners and feed them as
   the five candidates.
   **Proof:** a `#[should_panic(expected = "swarmail launches")]` test, plus
   a counter in the chooser showing exactly five candidates were drawn.
-- [ ] T14.e After the merge, run
+- [x] T14.e (third rerun, 859c465) After the merge, run
   `grep -n 'bind("127.0.0.1:0")' tests/mail_compare.rs tests/mail_compare/*.rs`.
   Apply the helper to each hit that reserves, releases and passes a port to
   a child that is expected to bind it. Leave main's
@@ -556,14 +556,14 @@ Nothing paid runs.
 
 ## T15 — Records (AC17) *(rerun 3)*
 
-- [ ] T15.a Write the 0129 addendum "Addendum — 2026-11-08 (integration
+- [x] T15.a (third rerun, 022c9d2) Write the 0129 addendum "Addendum — 2026-11-08 (integration
   with accepted 0130)" with every point R12.k lists. The product sha and
   the controls directory are filled in after T16. Leave the status
   `proposed` and every earlier section unedited.
   **Proof:** `git diff 4d89de1 -- docs/decisions/0129-agent-suite-comparison.md`
   shows only added lines, and `grep -n 'Status:\*\* proposed'` still
   matches.
-- [ ] T15.b Add dated pointers: in 0091, main's text first and then the
+- [x] T15.b (third rerun, 022c9d2) Add dated pointers: in 0091, main's text first and then the
   branch's addenda; one 2026-11-08 line in 0130. In the decisions index,
   keep main's rows and 0129's row, and reword 0129's row as R12.k says. In
   `docs/evals/README.md`, put main's text first and then the branch's
@@ -576,7 +576,7 @@ Nothing paid runs.
 
 ## T16 — Controls on the final code head (AC18) *(rerun 3)*
 
-- [ ] T16.a When every code change is committed, rerun the oracle and null
+- [x] T16.a (third rerun, the controls commit) When every code change is committed, rerun the oracle and null
   controls for each target into `docs/evals/agent-controls-2026-11-08/`.
   Use one worker per target, each as its own named command under
   `timeout 600 taskset -c 0-31`, with `uptime` before and after.
@@ -591,7 +591,7 @@ Nothing paid runs.
 
 ## T17 — Gates (AC18) *(rerun 3)*
 
-- [ ] T17.a Run the whole house inventory `--locked` on the final tree:
+- [x] T17.a (third rerun, the controls commit) Run the whole house inventory `--locked` on the final tree:
   - root fmt, clippy, test and `build --bin swarmail`;
   - `evals` fmt, clippy and test against the candidate's own `swarmail`;
   - `scripts/coverage-gate.sh` and its selftest;
@@ -685,3 +685,53 @@ the verify seat runs it.** `git diff c95386e -- src/ .github/ .brokkr/ Cargo.loc
 evals/Cargo.lock deny.toml` is empty and `git ls-files .compare-bins` is empty.
 The operator holds the PR (`scripts/compare-mail.sh` changes), and it contends with
 #340 for the lock's MailSlurper entry.
+
+## Third rerun outcome, 2026-11-08 (`third-rerun-of-339-integrate-mai-60435935`)
+
+Every T10–T17 box above is built and proved in the commit named. Nothing paid
+ran.
+
+What differs from the plan, and why:
+
+- **No read accessor was needed.** `protocol.rs` is `main`'s file, byte for byte
+  (`git diff origin/main -- benches/mail_compare/protocol.rs` is empty), and
+  `targets.rs` differs from `main`'s only by `NO_LISTENER_ADDRESSES` and its three
+  uses. The adapter driver reads `Pin` through `main`'s own public fields.
+- **The adapter's target is a trait constant, not an argument.** `Backend::TARGET`
+  carries each backend's lock row (`MailslurperSourceBuild` for MailSlurper), and
+  `mcp::adapter_target` is the exhaustive refusal for every other target; a test
+  covers each refused target by name and the lock-without-the-row case.
+- **`wire::path_segment` is gone.** `main`'s `query_value` now keeps the unreserved
+  characters, which is what `path_segment` did, so `wire.rs` is `main`'s file too.
+- **Main's `pinned()` helper builds its spec with `LaunchSpec::from_pin`** and reads
+  the committed lock 4, so the source-built MailSlurper's three listeners and config
+  file launch as the wire run launches them. Its environment name follows
+  `eight_targets.rs`: `MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD`, so that
+  `MAIL_COMPARE_MAILSLURPER` stays the official release's.
+- **A bare `controls` keeps `main`'s refusal** (`wrapper_paid_modes_refuse_as_before`
+  is `main`'s test and stays verbatim): it names the first prerequisite of the
+  chain, with a stderr hint that `controls` needs `--product` and a `--bin` for
+  each competitor lock entry of it.
+- **The deliverability task is refused for a competitor by name**, in the runner
+  and in `check_tasks`. `main`'s `fixture_args` keeps its signature; the runner
+  passes the SMTP address where a competitor has no Swarmail HTTP plane, never
+  read because no task a competitor can take reads reports.
+- **The corpus needed a recapture.** 0130's `config_file` is a different template
+  from the old lock's, so the MailSlurper corpus was recaptured with the ignored
+  capture test under the verified pin.
+- **The controls ran twice.** The first run (head `cc1dbe8`) was valid until the
+  records were committed: the verifier calls any change outside the controls, the
+  README and `specs/` stale, and `docs/decisions/` is none of those. The records
+  were committed first and the controls rerun on that head (`022c9d2`); the first
+  run's directory was set aside and never committed.
+- **One flake outside this branch.** `a_term_resistant_child_is_killed_within_one_composed_cleanup_budget`
+  failed once in three full workspace runs (a launcher-reserved, released port was
+  answered by another test's listener); 30 of 30 alone, and unchanged by this
+  branch. Its output is in `agent-controls-2026-11-08/transcripts/gates.txt`.
+- **`brokkr compile` was not run**: this sandbox has no brokkr binary, so the verify
+  seat runs it.
+
+The `main`-side gates that this branch's tests share (`cargo test --locked --test
+mail_compare -- frozen`) pass. The operator still holds the PR (`scripts/compare-mail.sh`
+changes), accepts 0129, supplies the CI run for the receipts' `ci` item and confirms
+the 240 paid sessions.

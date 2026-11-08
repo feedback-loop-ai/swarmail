@@ -1,0 +1,56 @@
+{
+  "batch": {
+    "answered": true,
+    "reply_ids": [
+      101,
+      102
+    ],
+    "reply_is_array": true,
+    "request_ids": [
+      101,
+      102
+    ]
+  },
+  "calls": [
+    {
+      "outcome": "ok",
+      "tool": "mailhog_list"
+    },
+    {
+      "outcome": "ok",
+      "tool": "mailhog_search"
+    },
+    {
+      "detail": "{\"error\":\"not_found: MailHog has no message with that id\"}",
+      "outcome": "tool_error",
+      "tool": "mailhog_read"
+    },
+    {
+      "outcome": "ok",
+      "tool": "mailhog_wait"
+    }
+  ],
+  "cleanup_receipt": true,
+  "comparison_name": "mailhog-mcp",
+  "negotiation": {
+    "capabilities": {
+      "tools": {
+        "listChanged": false
+      }
+    },
+    "protocol_version": "2025-03-26",
+    "server_info": {
+      "name": "mail-compare-mailhog-mcp",
+      "version": "0.4.0"
+    }
+  },
+  "scope": "server side, as swarmail-evals negotiates it; a model CLI's negotiation is logged by the bridge in a paid session and is not claimed here",
+  "target": "mailhog",
+  "tool_names": [
+    "mailhog_list",
+    "mailhog_search",
+    "mailhog_read",
+    "mailhog_wait"
+  ],
+  "tools_sha256": "67f498714ed16475f1e103e369fafbb450c3d2c4ddc008ca89c382e44cb658e5"
+}
