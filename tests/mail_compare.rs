@@ -6244,22 +6244,39 @@ async fn the_mailslurper_adapter_lists_and_reads_over_real_smtp_into_swarmails_s
     // (and refuses MailSlurper's filters), so this proves list paging and
     // read over a real exchange, never MailSlurper's behaviour.
     let root = tempfile::tempdir().unwrap();
-    let slot = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
-    let mut template = targets::swarmail_template(0);
-    template.extend(["--mailslurper-listen".into(), slot.to_string()]);
+    // The MailSlurper slot is reserved and released before Swarmail binds
+    // it, so a test running in parallel can take it in between; Swarmail
+    // then exits at startup ("no listener addresses"). A fresh slot is tried
+    // a bounded number of times; any other launch failure fails at once.
     let keepers = targets::Keepers::default();
-    let mut owned = targets::Owned::launch(
-        &swarmail_spec(template),
-        &root.path().join("s"),
-        &limits(),
-        &wire::Clock(Instant::now()),
-        &keepers,
-    )
-    .await
-    .expect("swarmail launches");
+    let mut attempt = 0;
+    let (slot, mut owned) = loop {
+        attempt += 1;
+        let slot = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let mut template = targets::swarmail_template(0);
+        template.extend(["--mailslurper-listen".into(), slot.to_string()]);
+        match targets::Owned::launch(
+            &swarmail_spec(template),
+            &root.path().join(format!("s{attempt}")),
+            &limits(),
+            &wire::Clock(Instant::now()),
+            &keepers,
+        )
+        .await
+        {
+            Ok(owned) => break (slot, owned),
+            Err(targets::LaunchError::NotReady("no listener addresses", facts)) if attempt < 5 => {
+                assert!(
+                    facts.proved(),
+                    "a refused launch still cleans up: {facts:?}"
+                );
+            }
+            Err(e) => panic!("swarmail launches: {e:?}"),
+        }
+    };
     for (i, subject) in ["slurp-one", "slurp-two", "slurp-three"].iter().enumerate() {
         send_as(owned.smtp, None, subject, &format!("body {i}")).await;
     }
