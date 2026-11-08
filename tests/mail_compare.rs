@@ -1807,28 +1807,39 @@ async fn started(scratch: &Path) -> i32 {
 
 #[tokio::test]
 async fn a_launch_cancelled_during_readiness_is_still_cleaned_by_its_worker() {
+    // The fake server never binds its reserved slots, so a slot reads as
+    // closed only while no parallel test has taken it: a stranger's
+    // listener fails the proof by design (`refused`). An attempt whose only
+    // unproved fact is a listener is tried again, a bounded number of
+    // times; every other fact is asserted on every attempt.
     let root = tempfile::tempdir().unwrap();
     let body = "echo $$ > \"$HOME/pid.tmp\"; mv \"$HOME/pid.tmp\" \"$HOME/pid\"; exec sleep 600";
-    let scratch = root.path().join("leaf");
-    let keepers = targets::Keepers::default();
-    let mut lim = short_limits();
-    lim.startup = Duration::from_secs(60);
-    let clock = wire::Clock(Instant::now());
-    let spec = fake_spec(TargetKind::Mailpit, body);
-    let launch = targets::Owned::launch(&spec, &scratch, &lim, &clock, &keepers);
-    let pid = tokio::select! {
-        r = launch => panic!("a never-ready server became ready: {:?}", r.err()),
-        pid = started(&scratch) => pid,
-    };
-    let settled = keepers.settle(lim.cleanup * 2).await;
-    assert_eq!(settled.len(), 1);
-    assert!(
-        settled[0].proved() && !settled[0].forced_kill,
-        "{:?}",
-        settled[0]
-    );
-    assert!(stops_running(pid).await);
-    assert!(!scratch.exists());
+    for attempt in 1..=3 {
+        let scratch = root.path().join(format!("leaf{attempt}"));
+        let keepers = targets::Keepers::default();
+        let mut lim = short_limits();
+        lim.startup = Duration::from_secs(60);
+        let clock = wire::Clock(Instant::now());
+        let spec = fake_spec(TargetKind::Mailpit, body);
+        let launch = targets::Owned::launch(&spec, &scratch, &lim, &clock, &keepers);
+        let pid = tokio::select! {
+            r = launch => panic!("a never-ready server became ready: {:?}", r.err()),
+            pid = started(&scratch) => pid,
+        };
+        let settled = keepers.settle(lim.cleanup * 2).await;
+        assert_eq!(settled.len(), 1);
+        let f = &settled[0];
+        assert!(stops_running(pid).await);
+        assert!(!scratch.exists());
+        assert!(
+            f.reaped && f.group_gone && f.scratch_removed && !f.forced_kill,
+            "{f:?}"
+        );
+        if f.proved() {
+            return;
+        }
+        assert!(!f.listeners_closed && attempt < 3, "{f:?}");
+    }
 }
 
 #[tokio::test]
