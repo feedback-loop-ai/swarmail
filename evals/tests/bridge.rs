@@ -235,17 +235,19 @@ async fn a_request_id_already_in_flight_is_refused_with_a_correlated_error() {
     let f = Fixture::start().await;
     let url = f.url();
     assert_eq!(post(&url, &init(1)).await.0, 200);
-    // A held request: a wait that takes about two seconds.
+    // A held request: a wait that takes about five seconds.
     let held = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {
         "name": "swarmail_wait_for_email",
-        "arguments": {"inbox": "held", "count": 1, "timeout_ms": 2000}}});
+        "arguments": {"inbox": "held", "count": 1, "timeout_ms": 5000}}});
     let first = {
         let (url, held) = (url.clone(), held.clone());
         tokio::spawn(async move { post(&url, &held).await })
     };
-    // Retry until the duplicate meets the held one in flight.
+    // Retry until the duplicate meets the held one in flight. A fixed try
+    // count raced the hold on slow runners; try for as long as the held
+    // request is unanswered, so only a bridge that never refuses fails.
     let mut refused = None;
-    for _ in 0..200 {
+    while !first.is_finished() {
         let (status, r) = post(&url, &json!({"jsonrpc": "2.0", "id": 7, "method": "ping"})).await;
         if r["error"]["code"] == -32600 {
             refused = Some((status, r));
