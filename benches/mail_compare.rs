@@ -212,7 +212,7 @@ fn adapter_mode<B: mcp::Backend>(mode: &str, args: &[String]) -> i32 {
     let kind = B::TARGET;
     enum Via {
         Endpoint(std::net::SocketAddr),
-        Launch(targets::LaunchSpec, PathBuf),
+        Launch(Box<targets::LaunchSpec>, PathBuf),
     }
     let ready = mcp::adapter_target(kind)
         .and_then(|()| flags(args))
@@ -239,7 +239,11 @@ fn adapter_mode<B: mcp::Backend>(mode: &str, args: &[String]) -> i32 {
                     Ok(Via::Endpoint(mcp::parse_endpoint(one(&f, "endpoint")?)?))
                 }
                 (false, true) => Ok(Via::Launch(
-                    mcp::launch_spec_for(kind, PathBuf::from(one(&f, "launch")?), &s)?,
+                    Box::new(mcp::launch_spec_for(
+                        kind,
+                        PathBuf::from(one(&f, "launch")?),
+                        &s,
+                    )?),
                     PathBuf::from(one(&f, "scratch").map_err(|_| "--launch needs --scratch DIR")?),
                 )),
                 _ => {

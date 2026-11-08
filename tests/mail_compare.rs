@@ -6643,10 +6643,20 @@ fn check_corpus(t: TargetKind, dir: &Path, lock: &SourceLock) -> Result<(), Stri
                         .collect(),
                 )
             }
-            _ => {
+            TargetKind::Mailhog => {
                 let (total, ids, _) =
                     mailhog_mcp::page(v(n)?, 0).map_err(|e| format!("{n}: {e:?}"))?;
                 (total, ids.into_iter().map(|(i, _)| i).collect())
+            }
+            // MailSlurper's corpus returned above; no other target has one.
+            TargetKind::Mailslurper
+            | TargetKind::Swarmail
+            | TargetKind::MailslurperSourceBuild
+            | TargetKind::Smtp4dev
+            | TargetKind::Inbucket
+            | TargetKind::Greenmail
+            | TargetKind::AlkemioMailslurper => {
+                return Err(format!("{t} has no decoder for this corpus"));
             }
         };
         Ok((total, ids))
