@@ -304,8 +304,9 @@ controls_run() {
     || blocked eval-build "cannot freeze the eval executable"
   local scratch product_id seed fixture_time head
   # Absolute: the eval suite runs from evals/, and must find its log there too.
-  scratch=$(realpath -m "$output.scratch")
-  mkdir -p "$scratch" || blocked prerequisites "cannot make $scratch"
+  # Portable (BSD realpath has no -m): make the directory, then resolve it.
+  mkdir -p "$output.scratch" || blocked prerequisites "cannot make $output.scratch"
+  scratch=$(cd "$output.scratch" && pwd -P) || blocked prerequisites "cannot resolve $output.scratch"
   product_id=$(sed -n 's/^  "id": "\(.*\)",$/\1/p' "$product" | head -n1)
   [ -n "$product_id" ] || blocked prerequisites "--product has no id"
   # One master seed and one time for the whole run: a task and an attempt see

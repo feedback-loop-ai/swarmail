@@ -211,6 +211,8 @@ fn a_tool_list_the_product_did_not_freeze_refuses_every_trial_by_name() {
 }
 
 #[test]
+// The stand-in proves its stderr through /proc/self/fd/2, which only Linux has.
+#[cfg(target_os = "linux")]
 fn a_clean_exit_after_stdin_closes_is_the_cleanup_receipt_and_stderr_is_a_private_file() {
     let rig = rig("stderr-proof");
     let (rows, out) = matrix(&rig, "2");

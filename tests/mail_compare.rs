@@ -3157,6 +3157,8 @@ fn a_paid_measure_needs_the_verified_prerequisites_and_the_authorized_product() 
 }
 
 #[test]
+// GNU time's -f and the controls host are Linux; macOS CI has neither.
+#[cfg(target_os = "linux")]
 fn controls_run_each_target_as_a_named_timed_command_and_index_them() {
     let rig = wrapper_rig(1);
     let (code, text) = rig.run(&["controls"], &[], "");
@@ -5226,6 +5228,7 @@ async fn the_mailhog_adapter_reads_pages_and_refuses_wrong_shapes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(target_os = "linux")]
 async fn the_mailhog_adapter_lists_searches_and_waits_over_real_smtp_into_swarmails_shim() {
     // Mechanics only: Swarmail's own MailHog v2 shim is not MailHog, so
     // this proves the adapter's paging, filters and poll, never MailHog's
@@ -5351,6 +5354,7 @@ async fn serve_launched(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(target_os = "linux")]
 async fn launch_mode_announces_serves_and_gives_a_receipt_only_after_full_cleanup() {
     let root = tempfile::tempdir().unwrap();
     let (mut owned, keepers) = launched_swarmail(root.path()).await;
@@ -5374,6 +5378,7 @@ async fn launch_mode_announces_serves_and_gives_a_receipt_only_after_full_cleanu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(target_os = "linux")]
 async fn launch_mode_is_not_a_receipt_when_cleanup_is_forced_to_fail() {
     let root = tempfile::tempdir().unwrap();
     let (mut owned, keepers) = launched_swarmail(root.path()).await;
@@ -5941,6 +5946,7 @@ async fn launch_shim_with_fresh_slot(
 /// parallel test would hold it: the launch is refused with proved cleanup,
 /// a later, fresh slot launches, and the holder is untouched.
 #[tokio::test]
+#[cfg(target_os = "linux")]
 async fn a_slot_taken_by_another_listener_is_refused_cleanly_and_the_next_slot_launches() {
     let root = tempfile::tempdir().unwrap();
     let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -6001,6 +6007,7 @@ async fn five_taken_slots_exhaust_the_retry_and_fail_loudly() {
 }
 
 #[tokio::test]
+#[cfg(target_os = "linux")]
 async fn the_mailslurper_adapter_lists_and_reads_over_real_smtp_into_swarmails_shim() {
     // Mechanics only: Swarmail's own MailSlurper shim is not MailSlurper
     // (and refuses MailSlurper's filters), so this proves list paging and
