@@ -29,8 +29,8 @@
     },
     {
       "role": "harness",
-      "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-mail/swarmail-evals-cd5389e76db225b4",
-      "sha256": "cd5389e76db225b49cfe1f2dd8fdbfcea5f085a1d4b4176a642ccb1d98655722"
+      "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-mail/swarmail-evals-51993b882a343041",
+      "sha256": "51993b882a343041afd818067aeee74f2dfb3960eae241f77bd0111d210b4a27"
     }
   ]
 }

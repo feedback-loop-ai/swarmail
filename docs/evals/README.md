@@ -149,12 +149,13 @@ contents in the fixed order and names the first that does not hold.
 `compare-mail.sh controls` ran once, for real, on the final head (the
 receipts name it; it is after the merge of `main`'s accepted 0130) against the candidate's
 `swarmail` and the three pinned executables, each target as its own command under
-`timeout 600 taskset -c 0-31` with one worker and `uptime` before and after
-(`timing/`: each matrix took 39 to 51 s, and the host's one-minute load average
-was 2.0 to 2.9 around them, on a shared 128-CPU host). 120 rows: on every target
+`timeout 600` inside one `taskset -c 0-31` wrapper (32 CPUs, nproc/4 of this
+host), with one worker and `uptime` before and after
+(`timing/`: each matrix took 39 to 52 s, and the host's one-minute load average
+was 0.5 to 1.2 around them, on a shared 128-CPU host). 120 rows: on every target
 15 oracle passes and 15 null failures with the task's idle class (`gave_up`); one
 (task, agent, attempt) is the same fixture on all four targets; each target's
-contract lists one outcome for every announced tool (Swarmail's six
+contract lists one outcome for every announced tool (Swarmail's seven
 state-changing tools are listed `skipped_mutating`, and the others are called
 read-only); the locked evals suite passed at the receipts' head. The MailSlurper
 controls read `mailslurper-source-build`, the row 0130 pinned. The same run

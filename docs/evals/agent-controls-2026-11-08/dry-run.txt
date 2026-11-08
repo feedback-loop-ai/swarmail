@@ -1,8 +1,8 @@
 # compare-mail.sh measure --dry-run, 2026-11-08, every prerequisite genuine (no stub file)
-# uptime before:  10:20:29 up 15 days, 35 min,  0 users,  load average: 1.52, 2.74, 2.87
+# uptime before:   12:40:56 up 15 days,  2:56,  0 users,  load average: 0.58, 1.23, 1.21
 # command: scripts/compare-mail.sh measure --dry-run --output <a new directory> --config <an inert agents file, never opened> --baseline docs/evals/baseline-2026-11-01.md --contracts docs/evals/agent-controls-2026-11-08/contracts --controls-dir docs/evals/agent-controls-2026-11-08 --receipts docs/evals/agent-controls-2026-11-08/receipts.json --cost docs/evals/agent-comparison-cost.json --identity docs/evals/agent-controls-2026-11-08/identity.json --product docs/evals/agent-comparison.json
    Compiling swarmail-evals v0.1.0 (/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/evals)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.57s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.83s
 comparison-check dry run: every prerequisite holds for product agent-suite-comparison-2026-11-07 (120 control rows, 4 contracts)
 plan: 240 slots = 3 tasks x 4 targets x 4 agents x 5 trials, one slot at a time, in this order:
   slots   1- 20: otp-backlog on swarmail for claude-opus, claude-sonnet, codex-sol, codex-luna, 5 trials each
@@ -20,6 +20,6 @@ plan: 240 slots = 3 tasks x 4 targets x 4 agents x 5 trials, one slot at a time,
 pending (operator): --authorized-product with the product id, and the operator's confirmation of the spend
 pending: ci: the required CI run has not been supplied (receipts.ci.status is pending)
 nothing was launched and no wrapper configuration was opened
-# elapsed 3.00 s
+# elapsed ~3 s
 # exit=0
-# uptime after:  10:20:32 up 15 days, 36 min,  0 users,  load average: 1.64, 2.75, 2.87
+# uptime after:   12:41:04 up 15 days,  2:56,  0 users,  load average: 0.64, 1.23, 1.21

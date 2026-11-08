@@ -1,32 +1,29 @@
-# The house gates (2026-11-08, third rerun of #339), on the merged tree.
-# Every measurement ran with `taskset -c 0-31` (32 CPUs, nproc/4 of this 128-CPU host) and at most 32 test threads,
-# under a timeout, as its own command. Wall-clock times; the one-minute load average is from `uptime` around the command.
-# The code (src/, benches/, tests/, evals/, scripts/) is the same at cc1dbe8 and at the final head 022c9d2: the commits
-# between them touch only docs/decisions/ and docs/evals/README.md. The controls were rerun on 022c9d2 because the
-# verifier counts a change under docs/decisions/ as stale (its evidence paths are the controls, the README and specs/).
+# The house gates (2026-11-08, review return of the third rerun of #339), on the final code head 76de102.
+# Measurements ran with `taskset -c 0-31` (32 CPUs, nproc/4 of this 128-CPU host) and at most 32 test threads,
+# under a timeout, as their own commands; the one-minute load average is from `uptime` around the command. This
+# replaces the transcript of the earlier head 022c9d2: the review return changed tests/mail_compare.rs (the two
+# reserved-slot cleanup tests and the shim helper), so every gate and the controls were rerun on 76de102. Nothing
+# but docs/evals/ (the controls directory and this README) changes after 76de102; the receipts name it.
 
 cargo fmt --all -- --check                                                 ok
 cargo clippy --workspace --all-targets --locked -- -D warnings             ok
-cargo test --workspace --locked -j 32 -- --test-threads=32                 ok: 1674 passed, 0 failed, 33 ignored, 3m03s
-  uptime before:  10:23:12 up 15 days, 38 min,  load average: 3.22, 3.25, 3.05
-  uptime after:   10:26:15 up 15 days, 41 min,  load average: 2.62, 3.10, 3.03
-  An earlier run of the same command (10:20:38, 1m30s, load 1.59 before, 6.27 after) stopped on one failure, main's
-  a_term_resistant_child_is_killed_within_one_composed_cleanup_budget (tests/mail_compare.rs:1856): the forced kill was
-  proved but a listener fact read `Http closed: false`, i.e. a port the launcher had reserved and released was
-  answered by another test's listener. It passed 30 of 30 times alone (30 sequential runs under taskset, 1.4 s each) and in
-  the next full run, and this branch did not write it. The same race class (a reserved-then-released port taken by a
-  parallel test) is what R13's helper bounds for the one test this branch owns; the launcher-internal reserve_port
-  is out of scope and untouched.
+cargo test --workspace --locked -j 32 -- --test-threads=32                 ok: 1674 passed, 0 failed, 33 ignored, 3m02s
+  uptime before:  12:41:24 up 15 days,  2:56,  load average: 0.62, 1.18, 1.19
+  uptime after:   12:44:26 up 15 days,  2:59,  load average: 1.19, 1.47, 1.31
+  Also run on their own before the commit: `cargo test --locked --test mail_compare` 205 passed, 28 ignored, 11.6 s.
+  The earlier head's gates saw main's a_term_resistant_child_is_killed_within_one_composed_cleanup_budget fail once
+  on a listener fact (a launcher-reserved, released port answered by another test's listener); it now retries the
+  same way as the cancelled-readiness test, and passed in this run.
 cargo build --locked --bin swarmail                                        ok
 (cd evals && cargo fmt --all -- --check)                                   ok
 (cd evals && cargo clippy --all-targets --locked -- -D warnings)           ok
 (cd evals && SWARMAIL_BIN=<the frozen candidate> cargo test --locked -j 32)  ok, inside `compare-mail.sh controls`
-  (RUST_TEST_THREADS=32, timeout 3000; the receipts record eval_suite.status "pass" at head 022c9d2;
-   `controls` took 22m12s in all, 09:58:05 to 10:20:18, load 2.90 before and 1.43 after)
-bash scripts/coverage-gate.sh                                              ok, 5m37s, exact 100/100/100 (31558 lines, 2142 branches, 3156 functions)
-  uptime before:  09:25:21 up 14 days, 23:40,  load average: 1.76, 3.43, 3.21
-  uptime after:   09:30:59 up 14 days, 23:46,  load average: 4.56, 4.36, 3.71
-bash scripts/coverage-gate.sh selftest                                     ok, 19s
+  (RUST_TEST_THREADS=32, timeout 3000; the receipts record eval_suite.status "pass" at head 76de102;
+   `controls` took 22 minutes in all (12:18 to 12:40), inside `taskset -c 0-31`, load 0.5 before and 0.7 after)
+bash scripts/coverage-gate.sh                                              ok, 5m29s, exact 100/100/100
+  uptime before:  12:44:36 up 15 days,  3:00,  load average: 1.08, 1.44, 1.30
+  uptime after:   12:50:05 up 15 days,  3:05,  load average: 2.12, 2.64, 1.98
+bash scripts/coverage-gate.sh selftest                                     ok, 20s
 bash scripts/publish-guard-test.sh                                         ok, 6s
 bash scripts/seal-branch-test.sh                                           ok, 5s
 cargo deny check licenses                                                  ok, 1s
@@ -37,6 +34,9 @@ brokkr compile (every recipe)                                              not r
 # one worker, each under timeout 600: transcripts/real-mailpit.txt, real-mailhog.txt, real-mailslurper.txt,
 # mailslurper-auth-probe.txt (three runs), wire-real-competitors.txt (main's four real-binary wire tests, run against
 # the merged `pinned()`), agent-sources-archive.txt (the digest table's re-extraction), tarball-tree.txt (T3.e, carried over).
+# These ran on the earlier head cc1dbe8/022c9d2 and are carried over: the review return edited only the two
+# fake-server cleanup tests and the shim helper in tests/mail_compare.rs, none of which they execute, and no src/,
+# benches/ or evals/ byte changed (`git diff --stat 022c9d2 76de102 -- src benches evals scripts` is empty).
 
 git diff origin/main -- src/ Cargo.lock evals/Cargo.lock deny.toml .github .brokkr   empty
 git diff origin/main -- docs/evals/sources.lock.json docs/evals/protocol.json docs/evals/history docs/evals/sources   empty

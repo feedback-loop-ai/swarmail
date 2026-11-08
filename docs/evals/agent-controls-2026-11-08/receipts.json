@@ -1,11 +1,11 @@
 {
   "schema": 1,
-  "head": "022c9d2725567a7d4580ed7560afe080c84f4883",
-  "controls_index_sha256": "c6274efdc253d37ae63374c4b174676f2fce99a98c8084aba1028bf34e8c7f01",
-  "cleanup_receipts_sha256": "072c94873d15040d87e2df2695847d8fb61afa628b9a1314047b35c355945e74",
+  "head": "76de102d3e3e4f8ab2785c9fdb072a3b03a4d777",
+  "controls_index_sha256": "82d02a2748ae3fd432361e1edaf2e294cf995680fa91719be3222944e719d9bf",
+  "cleanup_receipts_sha256": "5192f525505e7817d16a855155124996d38d4aa2b1d66b19ff88a32d95882d59",
   "eval_suite": {
     "command": "cargo test --locked --offline -j 32 (in evals/, SWARMAIL_BIN=/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-mail/swarmail-fe17a057dbf8903c, RUST_TEST_THREADS=32, timeout 3000)",
-    "head": "022c9d2725567a7d4580ed7560afe080c84f4883",
+    "head": "76de102d3e3e4f8ab2785c9fdb072a3b03a4d777",
     "status": "pass"
   },
   "ci": {
