@@ -735,3 +735,19 @@ The `main`-side gates that this branch's tests share (`cargo test --locked --tes
 mail_compare -- frozen`) pass. The operator still holds the PR (`scripts/compare-mail.sh`
 changes), accepts 0129, supplies the CI run for the receipts' `ci` item and confirms
 the 240 paid sessions.
+
+**T14.e, the grep's hits, each classified** (`grep -n 'bind("127.0.0.1:0")'
+tests/mail_compare.rs tests/mail_compare/*.rs`, run after the merge):
+
+- `tests/mail_compare.rs`: the neighbour listener in the cleanup test, the 421
+  greeting peer, the `responder` and `counting_upstream` HTTP servers, the redirect
+  target and the corpus-capture helpers **hold** their listener for the whole test.
+  Nothing is released and re-passed to a child.
+- `tests/mail_compare.rs`, `reserve_and_release`: the one reserve-release-pass
+  site (Swarmail's `--mailslurper-listen`), now the default chooser of
+  `launch_shim_with_fresh_slot`.
+- `tests/mail_compare/eight_targets.rs` (`main`'s, unchanged but for three helpers'
+  visibility): a "dead" POP3 address that is only connected to and expected to
+  refuse, and `real_mailslurper_official_does_not_start`'s three ports for a
+  child that must **not** bind them. Neither passes a port to a child that is
+  expected to bind it; both stay byte-identical.
