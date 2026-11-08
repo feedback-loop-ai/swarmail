@@ -51,6 +51,9 @@ pub trait Backend: Send + Sync + 'static {
     const UPSTREAM: &'static str;
     /// The MCP `serverInfo.name`.
     const SERVER_NAME: &'static str;
+    /// The lock row whose executable this adapter serves (accepted 0130).
+    /// For MailSlurper that is the source build, never the official row.
+    const TARGET: crate::protocol::TargetKind;
 
     /// The tool list, as `tools/list` returns it.
     fn tools(bounds: &Bounds) -> Value;
@@ -64,6 +67,41 @@ pub trait Backend: Send + Sync + 'static {
         call: &Self::Call,
         admitted: Instant,
     ) -> impl Future<Output = Result<Value, ToolError>> + Send;
+}
+
+/// The lock entries an adapter serves, as one exhaustive lookup. An adapter
+/// entry point that receives any other target refuses it by name before a
+/// lock is read or a process spawned. `Mailslurper` is the official
+/// release, which does not start (accepted 0130), so the MailSlurper
+/// adapter serves `MailslurperSourceBuild` instead. No wildcard arm: a new
+/// target is a compile error here.
+pub fn adapter_target(kind: crate::protocol::TargetKind) -> Result<(), String> {
+    use crate::protocol::TargetKind as T;
+    match kind {
+        T::Mailpit | T::Mailhog | T::MailslurperSourceBuild => Ok(()),
+        T::Swarmail
+        | T::Mailslurper
+        | T::Smtp4dev
+        | T::Inbucket
+        | T::Greenmail
+        | T::AlkemioMailslurper => Err(format!("{kind} has no MCP adapter")),
+    }
+}
+
+/// The launch spec for `kind`'s adapter, from the lock's pin and the same
+/// builder the wire run uses (`LaunchSpec::from_pin`): the pin's listeners,
+/// environment and config file, and the executable digest checked at launch.
+/// A target without an adapter is refused by name before the lock is read.
+pub fn launch_spec_for(
+    kind: crate::protocol::TargetKind,
+    binary: std::path::PathBuf,
+    lock: &crate::protocol::SourceLock,
+) -> Result<crate::targets::LaunchSpec, String> {
+    adapter_target(kind)?;
+    let pin = lock
+        .pin(kind)
+        .ok_or_else(|| format!("the source lock pins no {kind}"))?;
+    crate::targets::LaunchSpec::from_pin(kind, binary, None, pin)
 }
 
 /// The SHA-256 of a backend's tool list as `tools/list` serves it: the

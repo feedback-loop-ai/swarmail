@@ -276,6 +276,7 @@ pub(super) fn collect(part: &Part<'_>, out: &mut Collector) -> Result<(), Analys
                 location: occurrence.location.clone(),
                 severity: rule.severity,
                 fix_hint: rule.hint.into(),
+                weight: 0,
             })?;
         }
         Ok(())
@@ -382,6 +383,7 @@ pub(super) fn observed(
                 location: occurrence.location.clone(),
                 severity,
                 fix_hint: hint,
+                weight: 0,
             })?;
         }
         Ok(())
@@ -552,7 +554,7 @@ mod tests {
             (SHORTENERS_VERSION, super::super::RULE_SET_ID, digest),
             (
                 "swarmail-shorteners/1",
-                "swarmail-html/6",
+                "swarmail-html/8",
                 0xd850a45b7e464f79
             )
         );
@@ -1057,6 +1059,26 @@ mod tests {
         assert_eq!(composed.findings.len(), base.findings.len() + 2);
         assert_eq!(composed.rule_set_id, base.rule_set_id);
         assert!(composed.findings.windows(2).all(|w| w[0] <= w[1]));
+        // The observed warnings carry their severity weight (decision 0122 §2.2),
+        // and the composed total is the cached total plus both, after dedup. The
+        // cached report keeps its own total (AC7).
+        let observed_weights: Vec<u64> = composed
+            .findings
+            .iter()
+            .filter(|f| f.rule_id == "link.reachability.v1")
+            .map(|f| f.weight)
+            .collect();
+        assert_eq!(observed_weights, [3, 3]);
+        assert_eq!(composed.total, base.total + 6);
+        assert_ne!(composed.total, base.total);
+        assert_eq!(
+            composed.total,
+            composed.findings.iter().map(|f| f.weight).sum::<u64>()
+        );
+        assert_eq!(
+            base.total,
+            base.findings.iter().map(|f| f.weight).sum::<u64>()
+        );
         // The probed response keeps the cached report's `dns` record (0120 §5).
         let mut declared = base.clone();
         declared.dns.source = super::super::dns::Source::Inbox;
@@ -1087,6 +1109,7 @@ mod tests {
                     },
                     severity: Severity::Warning,
                     fix_hint: "h".into(),
+                    weight: 0,
                 })
                 .collect()
         };

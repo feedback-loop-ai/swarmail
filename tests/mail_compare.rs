@@ -50,10 +50,19 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+#[path = "mail_compare/eight_targets.rs"]
+mod eight_targets;
+
 const SMOKE: &[u8] = include_bytes!("mail_compare/swarmail-smoke.json");
 const SMOKE_LOCK: &[u8] = include_bytes!("mail_compare/swarmail-only.lock.json");
-const PROTOCOL: &[u8] = include_bytes!("../docs/evals/protocol.json");
-const SOURCES: &[u8] = include_bytes!("../docs/evals/sources.lock.json");
+/// Protocol 2 and lock 3 as they were collected under on 2026-10-30; their
+/// bytes live under `docs/evals/history/` and the existing tests keep
+/// proving them (proposed decision 0130 keeps both readable and launchable).
+const PROTOCOL: &[u8] = include_bytes!("../docs/evals/history/2026-10-30-protocol.v2.json");
+const SOURCES: &[u8] = include_bytes!("../docs/evals/history/2026-10-30-sources.lock.v3.json");
+/// The current records: protocol 3 and lock 4.
+const PROTOCOL_V3: &[u8] = include_bytes!("../docs/evals/protocol.json");
+const SOURCES_V4: &[u8] = include_bytes!("../docs/evals/sources.lock.json");
 
 fn smoke() -> Protocol {
     Protocol::parse(SMOKE).expect("the smoke fixture parses")
@@ -80,13 +89,12 @@ fn limits() -> targets::Limits {
 }
 
 fn swarmail_spec(template: Vec<String>) -> targets::LaunchSpec {
-    targets::LaunchSpec {
-        kind: TargetKind::Swarmail,
-        binary: PathBuf::from(env!("CARGO_BIN_EXE_swarmail")),
-        expected_sha256: None,
+    targets::LaunchSpec::new(
+        TargetKind::Swarmail,
+        PathBuf::from(env!("CARGO_BIN_EXE_swarmail")),
+        None,
         template,
-        config: None,
-    }
+    )
 }
 
 fn manifest(p: &Protocol, run_id: &str) -> Manifest {
@@ -398,8 +406,7 @@ fn the_committed_protocol_is_frozen_and_collects_only_its_declared_limited_claim
     for t in [TargetKind::Mailpit, TargetKind::Mailhog] {
         assert!(s.pin(t).unwrap().wait.best_wait.gap().is_some(), "{t}");
     }
-    // The wire bench's three targets: MailSlurper is an agent-suite target.
-    assert_eq!(p.targets, protocol::HISTORICAL_TARGETS.to_vec());
+    assert_eq!(p.targets, TargetKind::V2.to_vec());
     assert_eq!(p.statistics.orders.len(), 6, "every target order once");
     assert!(
         p.throughput.iter().any(|t| t.sessions == 1000),
@@ -581,7 +588,7 @@ fn a_built_from_claim_or_a_draft_or_an_unlisted_enforcement_refuses_collection()
     let why = refusals(protocol::collection_ready(&draft, &s));
     for expected in [
         "protocol is a draft, not frozen",
-        "protocol version 1 is a historical draft; only version 2 collects",
+        "protocol version 1 is a historical draft; only versions 2 and 3 collect",
         "unresolved: binary build provenance",
         "mailpit: best wait unresolved: no route, producer",
         "mailpit does not store in memory",
@@ -704,8 +711,8 @@ fn the_provisioned_artifacts_match_the_pins_and_their_basis() {
             panic!("{t}: tagged source unresolved");
         };
         assert_eq!(
-            (ts.tag_object.as_deref(), ts.commit.as_str()),
-            (Some(tag_object), commit)
+            (ts.tag_object.as_deref().unwrap(), ts.commit.as_str()),
+            (tag_object, commit)
         );
         assert_eq!(ts.tag_signature.as_deref(), Some("unsigned"));
         assert!(pin.binary_build_provenance.gap().is_some(), "{t}");
@@ -852,7 +859,7 @@ fn committed_entry(t: TargetKind) -> serde_json::Value {
 
 fn lock_of(entries: Vec<serde_json::Value>) -> SourceLock {
     lock_from(
-        serde_json::json!({"lock_version": 4, "checked_on": "2026-11-07", "entries": entries}),
+        serde_json::json!({"lock_version": 3, "checked_on": "2026-10-29", "entries": entries}),
     )
     .expect("parses")
 }
@@ -1091,7 +1098,7 @@ fn the_source_lock_refuses_mutable_foreign_false_and_incomplete_pins() {
     v["checked_on"] = "today".into();
     let why = refusals(lock_from(v).unwrap().validate());
     assert!(
-        why.contains("lock_version 5 is not 4") && why.contains("checked_on"),
+        why.contains("lock_version 5 is not 3 or 4") && why.contains("checked_on"),
         "{why}"
     );
     // A complete pin alone does not admit a draft protocol.
@@ -1111,7 +1118,17 @@ fn the_source_lock_refuses_mutable_foreign_false_and_incomplete_pins() {
 fn evals_copy(root: &Path) -> PathBuf {
     let dir = root.join("evals");
     std::fs::create_dir_all(dir.join("sources")).unwrap();
-    for t in ["mailpit", "mailhog", "mailslurper"] {
+    // Every pinned row of the committed lock keeps its captured documents.
+    for t in [
+        "mailpit",
+        "mailhog",
+        "inbucket",
+        "mailslurper",
+        "mailslurper-source-build",
+        "smtp4dev",
+        "greenmail",
+        "alkemio-mailslurper",
+    ] {
         copy_dir(
             &evals_dir().join("sources").join(t),
             &dir.join("sources").join(t),
@@ -1755,13 +1772,12 @@ async fn a_dropped_owner_leaves_its_worker_to_finish_and_prove_cleanup() {
 /// shell is an existing executable: a freshly written script could be
 /// "text file busy" while a parallel test forks.
 fn fake_spec(kind: TargetKind, body: &str) -> targets::LaunchSpec {
-    targets::LaunchSpec {
+    targets::LaunchSpec::new(
         kind,
-        binary: PathBuf::from("/bin/sh"),
-        expected_sha256: None,
-        template: vec!["-c".into(), body.into()],
-        config: None,
-    }
+        PathBuf::from("/bin/sh"),
+        None,
+        vec!["-c".into(), body.into()],
+    )
 }
 
 fn short_limits() -> targets::Limits {
@@ -2149,11 +2165,7 @@ fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir(to).unwrap();
     for e in std::fs::read_dir(from).unwrap() {
         let e = e.unwrap();
-        if e.file_type().unwrap().is_dir() {
-            copy_dir(&e.path(), &to.join(e.file_name()));
-        } else {
-            std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
-        }
+        std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
     }
 }
 
@@ -2691,7 +2703,7 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
         ),
         (
             vec!["collect", "--output", o],
-            "pass --mailpit and --mailhog with their pinned executables",
+            "pass --bin mailpit=PATH with its pinned executable",
         ),
         (vec!["evidence", "--output", o], "--final is required"),
         (
@@ -2751,17 +2763,48 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
         assert_eq!(code, 2);
         assert!(text.contains("\"prerequisite-baseline\""), "{text}");
     }
-    // `controls` needs only the product and the three executables.
+    // `controls` needs only the product and the competitors' executables.
+    // With no product it has no input, and main's refusal stands (the first
+    // prerequisite of the chain), with a hint on what it does need.
     let (code, text) = compare_mail(&["controls", "--output", o], &w);
     assert_eq!(code, 2);
     assert!(
-        text.contains("--product is required in controls mode"),
+        text.contains("blocked at phase \"prerequisite-baseline\": --baseline is not supplied")
+            && text.contains("controls needs --product P"),
         "{text}"
     );
-    let (code, text) = compare_mail(&["controls", "--output", o, "--product", i], &w);
+    let product = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/evals/agent-comparison.json");
+    let p = product.to_str().unwrap();
+    let (code, text) = compare_mail(&["controls", "--output", o, "--product", p], &w);
     assert_eq!(code, 2);
     assert!(
-        text.contains("\"competitor-binaries\"") && text.contains("--mailpit"),
+        text.contains("\"competitor-binaries\"")
+            && text.contains("--bin mailpit=PATH with its pinned executable"),
+        "{text}"
+    );
+    // Only the lock entries of the product record are accepted, and the
+    // MailSlurper built from source is `mailslurper-source-build`.
+    let exe = script(&root.path().join("exe"), "exit 0\n");
+    let (code, text) = compare_mail(
+        &[
+            "controls",
+            "--output",
+            o,
+            "--product",
+            p,
+            "--bin",
+            &format!("mailpit={exe}"),
+            "--bin",
+            &format!("mailhog={exe}"),
+            "--bin",
+            &format!("mailslurper={exe}"),
+        ],
+        &w,
+    );
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("\"competitor-binaries\"")
+            && text.contains("--bin mailslurper-source-build=PATH"),
         "{text}"
     );
     let (code, text) = compare_mail(
@@ -2770,18 +2813,23 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
             "--output",
             o,
             "--product",
-            i,
+            p,
             "--mailpit",
-            i,
+            &exe,
             "--mailhog",
-            i,
-            "--mailslurper",
-            i,
+            &exe,
+            "--bin",
+            &format!("mailslurper-source-build={i}"),
         ],
         &w,
     );
     assert_eq!(code, 2);
     assert!(text.contains("is not an executable file"), "{text}");
+    // `--mailslurper` is main's grammar's unknown flag: the official row does
+    // not start, and no flag stands for the source build but its lock entry.
+    let (code, text) = compare_mail(&["controls", "--output", o, "--mailslurper", i], &w);
+    assert_eq!(code, 2);
+    assert!(text.contains("unknown argument: --mailslurper"), "{text}");
 
     std::fs::create_dir(&out).unwrap();
     let (code, text) = compare_mail(&["local", "--output", o], &w);
@@ -2850,7 +2898,9 @@ exit 0
     let product = p.join("product.json");
     std::fs::write(
         &product,
-        format!("{{\n  \"id\": \"synthetic-one-trial\",\n  \"trials\": {trials},\n  \"planned_cells\": 48\n}}\n"),
+        format!(
+            "{{\n  \"id\": \"synthetic-one-trial\",\n  \"trials\": {trials},\n  \"planned_cells\": 48,\n  \"targets\": [\n    {{\n      \"lock_entry\": null\n    }},\n    {{\n      \"lock_entry\": \"mailpit\"\n    }},\n    {{\n      \"lock_entry\": \"mailhog\"\n    }},\n    {{\n      \"lock_entry\": \"mailslurper-source-build\"\n    }}\n  ]\n}}\n"
+        ),
     )
     .unwrap();
     let mut flags = vec![];
@@ -2867,8 +2917,13 @@ exit 0
         flags.extend([flag.to_owned(), f.display().to_string()]);
     }
     flags.extend(["--product".into(), product.display().to_string()]);
-    for name in ["mailpit", "mailhog", "mailslurper"] {
-        flags.extend([format!("--{name}"), script(&p.join(name), "exit 0\n")]);
+    // main's grammar: one `--bin LOCK-ENTRY=PATH` per competitor lock entry of
+    // the product record (the MailSlurper built from source is its own row).
+    for name in ["mailpit", "mailhog", "mailslurper-source-build"] {
+        flags.extend([
+            "--bin".into(),
+            format!("{name}={}", script(&p.join(name), "exit 0\n")),
+        ]);
     }
     std::fs::write(p.join("config.json"), r#"[{"label":"null","argv":[]}]"#).unwrap();
     Rig {
@@ -4051,18 +4106,15 @@ const THREE: &[u8] = include_bytes!("mail_compare/three-target-smoke.json");
 /// The pinned executable named by `MAIL_COMPARE_<TARGET>`, launched with the
 /// committed lock's digest and argv.
 fn pinned(t: TargetKind) -> targets::LaunchSpec {
-    let var = format!("MAIL_COMPARE_{}", t.name().to_uppercase());
+    // The same name main's real-binary tests use: the source-built
+    // MailSlurper is `MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD`, and
+    // `MAIL_COMPARE_MAILSLURPER` stays the official release's.
+    let var = format!("MAIL_COMPARE_{}", t.name().to_uppercase().replace('-', "_"));
     let binary = std::env::var_os(&var)
         .unwrap_or_else(|| panic!("{var} must name the pinned {t} executable"));
-    let lock = SourceLock::parse(SOURCES).unwrap();
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
     let pin = lock.pin(t).unwrap();
-    targets::LaunchSpec {
-        kind: t,
-        binary: binary.into(),
-        expected_sha256: Some(pin.artifact.executable_sha256.clone()),
-        template: pin.launch.clone(),
-        config: pin.config.clone(),
-    }
+    targets::LaunchSpec::from_pin(t, binary.into(), None, pin).unwrap()
 }
 
 async fn launch_pinned(t: TargetKind, scratch: &Path) -> targets::Owned {
@@ -4588,14 +4640,14 @@ async fn a_real_three_target_smoke_run_reconciles_every_message_and_wait_and_sea
     assert_eq!(verdict, runner::Verdict::Clean, "{verdict:?}");
     assert!(life.cleanups.iter().all(targets::CleanupFacts::proved));
     let launched: std::collections::BTreeSet<_> = life.launches.iter().map(|l| l.target).collect();
-    assert_eq!(launched, TargetKind::ALL.into());
+    assert_eq!(launched, TargetKind::V2.into());
     let dir = sealed.expect("a clean run is sealed");
     records::admit(&dir).expect("the sealed run is admitted");
     report::admit_run(&dir, &serde_json::to_vec(&p).unwrap())
         .expect("it admits against the protocol that planned it");
     assert_cells_match_rows(&dir);
     let rows = rows(&dir);
-    for t in TargetKind::ALL {
+    for t in TargetKind::V2 {
         let mine = |phase: Phase| {
             rows.iter()
                 .filter(move |r| r.target == t && r.phase == phase)
@@ -5384,596 +5436,149 @@ async fn real_mailhog_through_the_adapter_lists_searches_reads_and_waits() {
     assert!(owned.shutdown().await.proved());
 }
 
-// ---- MailSlurper: lock version 4, its captures and its launch (decision 0129 §7) ----
+// ---- the adapter sources accepted 0130's lock does not bind (proposed 0129 §5) ----
 
-const V3_LOCK: &[u8] = include_bytes!("../docs/evals/history/2026-11-07-sources.lock.v3.json");
+/// The MailSlurper sources the adapter cites that accepted 0130's lock does
+/// not bind, plus `go.mod` and `go.sum`: the committed path under
+/// `docs/evals/agent-sources/mailslurper/`, the member of the release-1.15.0
+/// source archive (`83f66f25…359f`) they were read from, and the sha256 of
+/// both. `ServiceController.go` and `setupServicesListener.go` are main's
+/// documents (`sources/mailslurper-source-build/`), so they are not here.
+const AGENT_SOURCES: [(&str, &str, &str); 14] = [
+    (
+        "CommonQueries.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/CommonQueries.go",
+        "090458bd89bb8767c755e140b22797ea8a7596b9e5a0770614cb285ec63d0db8",
+    ),
+    (
+        "DataCommandExecutor.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/DataCommandExecutor.go",
+        "bc6a64b05f5c64e2fcbd1ffac787eb74fb176089b577e520077657044c367929",
+    ),
+    (
+        "DatabaseReceiver.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/DatabaseReceiver.go",
+        "cc8e3a13abbbfec85c22ad80ff06800adc88f3269e4b541ba87fc63d8868f91f",
+    ),
+    (
+        "HelloCommandExecutor.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/HelloCommandExecutor.go",
+        "dc28f653b2ee41c09aaa6bd9a8c3fa5d2c98de672921ef7e443f6f4aaf95957d",
+    ),
+    (
+        "MailCollectionResponse.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/MailCollectionResponse.go",
+        "e9a110af272463ba22196a746ee3e0b1ade45abe1f79365ba01a4e9799613d83",
+    ),
+    (
+        "MailItem.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/MailItem.go",
+        "ad1d0b1ce06a2f315d93281612a8f64433e9ce211e0663fcc77308fbc9040ae0",
+    ),
+    (
+        "MailSearch.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/MailSearch.go",
+        "9d99312158e5b84f254c1162f0fbd26a5c98e4a363db460d97f1ddcd7b7bdd66",
+    ),
+    (
+        "SMTPWorker.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/SMTPWorker.go",
+        "1f4595b737e84c03d6fddf29f2bf3b85bd79c35ca4caec005e21739cfd8ff040",
+    ),
+    (
+        "SMTPWorkerResponses.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/SMTPWorkerResponses.go",
+        "fb8252f9be5a2c8564f1c5c194bc4ab2b00b465bc6796278ce8a3f8ca1d79029",
+    ),
+    (
+        "SmtpCommands.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/SmtpCommands.go",
+        "f1cff9896e72254a87facdf06bd6fc83903f0ec1e803b169937bc3ed168140b3",
+    ),
+    (
+        "Writer.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/Writer.go",
+        "b856bf145795443fa47df467655d3e3641b7cb75fb35686de90a61597320f8ea",
+    ),
+    (
+        "go.mod",
+        "mailslurper-release-1.15.0/go.mod",
+        "2d59cd3c66115ad2c5e4f84f9776cad156b70dcf0cfe967f21e543f06e9321a2",
+    ),
+    (
+        "go.sum",
+        "mailslurper-release-1.15.0/go.sum",
+        "ca08ec830cad16bd373f5d66178827462fd26db321f7ad3e1b040a66024d140d",
+    ),
+    (
+        "mailslurper.go",
+        "mailslurper-release-1.15.0/cmd/mailslurper/mailslurper.go",
+        "8978fb4a7ec7786dd3e6da8a6e5cec596c5a6b347188895fbaef2ef0fa487482",
+    ),
+];
+
+/// The source archive the lock pins for both MailSlurper rows.
+const MAILSLURPER_SOURCE_ARCHIVE: &str =
+    "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f";
+
+fn agent_sources_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/evals/agent-sources/mailslurper")
+}
 
 #[test]
-fn the_v3_lock_is_archived_byte_identical_and_its_reader_accepts_it() {
-    // `git show c95386e:docs/evals/sources.lock.json | sha256sum`
-    assert_eq!(
-        targets::sha256_hex(V3_LOCK),
-        "6523abf4df890d7aca8ea7e5112ae3e32ab35f2260e2528b070eefa70007b03c"
-    );
-    let old = SourceLock::parse(V3_LOCK).expect("v3 bytes still parse");
-    protocol::v3::validate(&old).expect("the v3 reader accepts the archived lock");
-    old.verify_files(&evals_dir())
-        .expect("its documents are still the committed bytes");
-    // One reader, two target lists: the current reader refuses v3 by
-    // version, and v3 refuses a MailSlurper entry by target.
-    let why = refusals(old.validate());
-    assert!(why.contains("lock_version 3 is not 4"), "{why}");
-    let mut v = json(V3_LOCK);
-    v["entries"]
-        .as_array_mut()
+fn the_adapter_sources_main_does_not_bind_are_rehashed_against_the_table() {
+    let dir = agent_sources_dir();
+    // The directory holds exactly the table's files: nothing unbound sits
+    // beside them and none is missing.
+    let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()
-        .push(committed_entry(TargetKind::Mailslurper));
-    let why = refusals(protocol::v3::validate(&lock_from(v).unwrap()));
-    assert!(
-        why.contains("mailslurper is not a target of this lock version"),
-        "{why}"
-    );
-}
-
-#[test]
-fn the_v4_lock_pins_mailslurper_as_built_from_source_with_its_tree_observed() {
-    let s = SourceLock::parse(SOURCES).unwrap();
-    s.validate().expect("the committed v4 lock validates");
-    s.verify_files(&evals_dir())
-        .expect("every capture, blob, the ref, the commit and the tree are rechecked");
-    let pin = s.pin(TargetKind::Mailslurper).expect("a MailSlurper pin");
-    assert_eq!(pin.release.tag, "release-1.15.0");
-    let a = &pin.artifact;
-    assert_eq!(a.kind, protocol::ArtifactKind::BuiltFromSource);
-    assert_eq!(
-        (a.sha256.as_str(), a.digest_basis, a.member.as_deref()),
-        (
-            "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff",
-            protocol::DigestBasis::LocallyComputed,
-            None
-        )
-    );
-    assert_eq!(a.executable_sha256, a.sha256);
-    assert_eq!((a.upstream_digest.as_deref(), a.size), (None, 19942072));
-    assert_eq!(a.download, pin.release.html_url, "no binary URL exists");
-    // The build is bound to the tagged source archive and a pinned image.
-    let b = a.build.as_ref().expect("the build record");
-    assert_eq!(
-        b.source_sha256,
-        "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f"
-    );
-    assert!(
-        b.builder_image
-            .contains("@sha256:3b1a72af045ad0fff9fe8e00736baae76d70ff51325ac5bb814fe4754044b972")
-    );
-    assert_eq!(b.toolchain, "go1.18.1");
-    assert_eq!(b.flags, ["CGO_ENABLED=1", "-trimpath"]);
-    // The official zip stays bound, never launchable, with its failure.
-    let o = a.official_release.as_ref().expect("the official release");
-    assert_eq!(
-        (o.sha256.as_str(), o.member_sha256.as_str(), o.exit_status),
-        (
-            "48f2f9ba090f5385301477406b4f6e08f7bfbba0619c635ee591d6e6af3e55f6",
-            "0cd9416b766deb26eed8aa01ad0873d06725a3464fdb9ac3cc82201e2c232627",
-            1
-        )
-    );
-    let protocol::Fact::Observed(ts) = &pin.tagged_source else {
-        panic!("tagged source unresolved");
-    };
-    assert_eq!(ts.tag_kind, Some(protocol::TagKind::Lightweight));
-    assert_eq!(ts.tag_object, None);
-    assert_eq!(ts.commit, "068acffdcd8960f248ea438c3b7ee51ead601bd2");
-    assert_eq!(
-        ts.source_archive.as_ref().map(|a| a.sha256.as_str()),
-        Some(b.source_sha256.as_str())
-    );
-    assert_eq!(
-        ts.tree,
-        Some(protocol::Fact::Observed(
-            "5f29f08a747241992f5e8ffc25ca8fb35d550729".into()
-        ))
-    );
-    assert!(matches!(
-        &pin.binary_build_provenance,
-        protocol::Fact::Observed(bp) if bp.evidence == "sources/mailslurper/build/PROVENANCE.md"
-    ));
-    // The executable's own report disagrees with the tag, and says so.
-    assert!(a.version_output.contains("v1.14.1"));
-    assert!(
-        a.version_note
-            .as_deref()
-            .is_some_and(|n| n.contains("2026-11-07 ruling"))
-    );
-    // The AUTH answer is the source's and the probe's, both recorded.
-    let auth = pin.smtp_auth.as_ref().expect("the AUTH finding");
-    assert_eq!(auth.answer, protocol::SmtpAuth::None);
-    assert!(matches!(
-        &auth.probe,
-        protocol::Fact::Observed(p) if p.contains("eb6cd97d") && p.contains("does not start and was not probed")
-    ));
-    // The wire bench still declares the three it always had.
-    let p = Protocol::parse(PROTOCOL).unwrap();
-    protocol::collection_ready(&p, &s).ok();
-    assert!(!p.targets.contains(&TargetKind::Mailslurper));
-}
-
-/// The committed root tree's entries, as the captured listing gives them.
-fn mailslurper_tree_entries() -> Vec<serde_json::Value> {
-    let bytes = std::fs::read(evals_dir().join("sources/mailslurper/git/mailslurper-tree.json"))
-        .expect("the captured root tree");
-    json(&bytes)["tree"].as_array().unwrap().clone()
-}
-
-#[test]
-fn the_root_tree_is_rebuilt_from_its_json_and_git_agrees_with_the_hash() {
-    use std::io::Write;
-    let entries = mailslurper_tree_entries();
-    // The tree object's body, built here from the entries by the format's
-    // own rules, and handed to git: the id is recomputed, not copied.
-    let mut body = Vec::new();
-    for e in &entries {
-        let mode = e["mode"].as_str().unwrap().trim_start_matches('0');
-        body.extend_from_slice(mode.as_bytes());
-        body.push(b' ');
-        body.extend_from_slice(e["path"].as_str().unwrap().as_bytes());
-        body.push(0);
-        let sha = e["sha"].as_str().unwrap();
-        for i in 0..20 {
-            body.push(u8::from_str_radix(&sha[2 * i..2 * i + 2], 16).unwrap());
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    on_disk.sort();
+    let mut listed: Vec<String> = AGENT_SOURCES.iter().map(|r| r.0.to_owned()).collect();
+    listed.sort();
+    assert_eq!(on_disk, listed);
+    for (path, member, want) in AGENT_SOURCES {
+        let bytes = std::fs::read(dir.join(path)).unwrap();
+        assert_eq!(targets::sha256_hex(&bytes), want, "{path} ({member})");
+    }
+    // The table's archive is the one the lock binds for both MailSlurper
+    // rows, and none of its files is a document main already binds.
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
+    for t in [TargetKind::Mailslurper, TargetKind::MailslurperSourceBuild] {
+        let pin = lock.pin(t).unwrap();
+        assert!(
+            pin.documents.iter().any(|d| matches!(
+                &d.attribution,
+                protocol::Fact::Observed(protocol::Attribution::Member { archive_sha256, .. })
+                    if archive_sha256 == MAILSLURPER_SOURCE_ARCHIVE
+            )),
+            "{t} binds the source archive"
+        );
+        for (path, _, want) in AGENT_SOURCES {
+            assert!(
+                pin.documents.iter().all(|d| d.sha256 != want),
+                "{path} is already bound by {t}'s lock row: delete the copy"
+            );
         }
     }
-    let mut git = std::process::Command::new("git")
-        .args(["hash-object", "-t", "tree", "--stdin"])
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("git is on PATH");
-    git.stdin.take().unwrap().write_all(&body).unwrap();
-    let out = git.wait_with_output().unwrap();
-    let id = String::from_utf8(out.stdout).unwrap().trim().to_owned();
-    assert_eq!(id, "5f29f08a747241992f5e8ffc25ca8fb35d550729");
-    assert_eq!(protocol::git_tree_id(&entries), Some(id));
-    // An entry that is not a tree's entry has no id.
-    let bad = serde_json::json!({"mode": "100644", "path": "x", "sha": "zz"});
-    assert_eq!(protocol::git_tree_id(&[bad]), None);
-    // LICENSE and README.md are the root tree's blobs.
-    let committed = SourceLock::parse(SOURCES).unwrap();
-    let pin = committed.pin(TargetKind::Mailslurper).unwrap();
-    for (name, blob) in [
-        ("LICENSE", "c1f191e730ab715bfdac9ff5b86e3c7160165b47"),
-        ("README.md", "fa9d065c195db47e17574cb05258f052ee127cef"),
-    ] {
-        assert!(
-            entries
-                .iter()
-                .any(|e| e["path"] == name && e["sha"] == blob),
-            "{name}"
-        );
-        assert!(pin.documents.iter().any(|d| matches!(
-            &d.attribution,
-            protocol::Fact::Observed(protocol::Attribution::Archive { upstream_path, git_blob, .. })
-                if upstream_path == name && git_blob == blob
-        )));
-    }
 }
 
 #[test]
-fn a_v4_lock_refuses_each_source_build_and_tree_defect() {
-    let lock = |e: serde_json::Value| lock_of(vec![e]);
-    lock(committed_entry(TargetKind::Mailslurper))
-        .validate()
-        .expect("the committed entry validates");
-    let other = "0123456789abcdef0123456789abcdef01234567";
-    let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    let own = "has no member, one digest";
-    let cases: Vec<(&str, serde_json::Value, &str)> = vec![
-        // R11: a built_from_source artifact needs both records.
-        (
-            "/pin/artifact/build",
-            serde_json::Value::Null,
-            "needs its build record and the official release",
-        ),
-        (
-            "/pin/artifact/official_release",
-            serde_json::Value::Null,
-            "needs its build record and the official release",
-        ),
-        // The build is tied to the archive, and its image is pinned.
-        (
-            "/pin/artifact/build/source_sha256",
-            digest.into(),
-            "source_sha256 is not the tagged source archive's digest",
-        ),
-        (
-            "/pin/artifact/build/builder_image",
-            "docker.io/library/golang:1.18.1-bullseye".into(),
-            "builder image is not pinned by an @sha256: digest",
-        ),
-        (
-            "/pin/artifact/build/builder_image",
-            "docker.io/library/golang@sha256:abc".into(),
-            "builder image is not pinned by an @sha256: digest",
-        ),
-        (
-            "/pin/artifact/build/flags",
-            serde_json::json!([]),
-            "records no toolchain or flags",
-        ),
-        // The artifact's own digests and member.
-        ("/pin/artifact/sha256", digest.into(), own),
-        ("/pin/artifact/member", "mailslurper".into(), own),
-        ("/pin/artifact/upstream_digest", digest.into(), own),
-        (
-            "/pin/artifact/digest_basis",
-            "upstream_release_metadata".into(),
-            own,
-        ),
-        // The official release is a failing record with captured evidence.
-        (
-            "/pin/artifact/official_release/exit_status",
-            0.into(),
-            "needs names, a size, two digests and a failing exit status",
-        ),
-        (
-            "/pin/artifact/official_release/evidence",
-            "sources/mailslurper/git/mailslurper-tree.json".into(),
-            "cites no captured build evidence",
-        ),
-        (
-            "/pin/artifact/official_release/evidence",
-            "sources/mailslurper/build/absent.log".into(),
-            "cites no captured build evidence",
-        ),
-        (
-            "/pin/artifact/official_release/download",
-            "https://example.com/mailslurper.zip".into(),
-            "official release download is not the official release asset",
-        ),
-        // Provenance: observed, and citing a build_evidence document.
-        (
-            "/pin/binary_build_provenance",
-            serde_json::json!({"unresolved": "no record"}),
-            "must be observed, not unresolved",
-        ),
-        (
-            "/pin/binary_build_provenance/observed/evidence",
-            "sources/mailslurper/git/mailslurper-tree.json".into(),
-            "build provenance cites no captured build evidence",
-        ),
-        // The tree: observed only with its documents, or unresolved.
-        (
-            "/pin/tagged_source/observed/tree",
-            serde_json::Value::Null,
-            "tree is observed with its git_commit and git_tree documents, or unresolved",
-        ),
-        (
-            "/pin/tagged_source/observed/tree",
-            serde_json::json!({"unresolved": " "}),
-            "tree is unresolved without a reason",
-        ),
-        (
-            "/pin/tagged_source/observed/tree",
-            serde_json::json!({"observed": "xyz"}),
-            "observed tree is not a full tree id",
-        ),
-        (
-            "/pin/tagged_source/observed/tag_object",
-            other.into(),
-            "a lightweight tag has no tag object",
-        ),
-        (
-            "/pin/tagged_source/observed/source_archive",
-            serde_json::Value::Null,
-            "needs its source archive",
-        ),
-        (
-            "/pin/tagged_source/observed/source_archive/commit_comment",
-            other.into(),
-            "the comment naming the tagged commit",
-        ),
-        (
-            "/pin/documents/2/attribution/observed/archive_sha256",
-            other.into(),
-            "cites a source archive the lock does not carry",
-        ),
-        (
-            "/pin/artifact/version_note",
-            serde_json::Value::Null,
-            "the observed version output does not name release-1.15.0",
-        ),
-        (
-            "/pin/config/template",
-            "{\"x\": \"{unknown_slot}\"}".into(),
-            "launch template is missing or malformed",
-        ),
-        // Document paths: one directory deep, and never a dot segment.
-        (
-            "/pin/documents/21/path",
-            "sources/mailslurper/build/../PROVENANCE.md".into(),
-            "is not under sources/mailslurper/",
-        ),
-        (
-            "/pin/documents/21/path",
-            "sources/mailslurper/build/x/PROVENANCE.md".into(),
-            "is not under sources/mailslurper/",
-        ),
-        (
-            "/pin/documents/21/path",
-            "sources/mailslurper/../PROVENANCE.md".into(),
-            "is not under sources/mailslurper/",
-        ),
-        // A tag object is never a lightweight tag's.
-        (
-            "/pin/documents/0/kind",
-            "git_tag".into(),
-            "cannot exist for a lightweight tag",
-        ),
-    ];
-    for (path, value, want) in cases {
-        let mut e = committed_entry(TargetKind::Mailslurper);
-        *e.pointer_mut(path).unwrap() = value.clone();
-        let r = lock(e).validate();
-        assert!(r.is_err(), "{path} = {value} must refuse");
-        let why = refusals(r);
-        assert!(why.contains(want), "{path}: expected {want:?} in:\n{why}");
-    }
-    // `build` and `official_release` belong to the source-built kind only.
-    let mut e = committed_entry(TargetKind::Mailslurper);
-    e["pin"]["artifact"]["kind"] = "archive".into();
-    e["pin"]["artifact"]["member"] = "mailslurper".into();
-    let why = refusals(lock(e).validate());
-    assert!(
-        why.contains("belong to a source-built executable only"),
-        "{why}"
-    );
-    // The tree documents without an observed tree are a tree by another name.
-    let mut e = committed_entry(TargetKind::Mailslurper);
-    e["pin"]["tagged_source"]["observed"]["tree"] = serde_json::json!({"unresolved": "none"});
-    let why = refusals(lock(e).validate());
-    assert!(
-        why.contains(
-            "mailslurper-tree.json cannot exist for a lightweight tag whose tree is unresolved"
-        ),
-        "{why}"
-    );
-    // An observed tree without both documents that bind it.
-    for kind in ["git_commit", "git_tree"] {
-        let mut e = committed_entry(TargetKind::Mailslurper);
-        e["pin"]["documents"]
-            .as_array_mut()
-            .unwrap()
-            .retain(|d| d["kind"] != kind);
-        let why = refusals(lock(e).validate());
-        assert!(
-            why.contains("an observed tree needs the git_commit and git_tree documents"),
-            "{kind}: {why}"
+#[ignore = "needs MAIL_COMPARE_ARCHIVE_DIRS (a directory holding the pinned MailSlurper source archive)"]
+fn the_adapter_sources_main_does_not_bind_are_members_of_the_pinned_archive() {
+    // Main's own archive helpers: the archive is found by its digest, and
+    // each member is re-extracted with the system `tar` into a fresh directory.
+    let archive = eight_targets::archive_by_digest(MAILSLURPER_SOURCE_ARCHIVE);
+    let dir = eight_targets::fresh_dir("agent-sources");
+    for (path, member, want) in AGENT_SOURCES {
+        let got = eight_targets::extract_member(&archive, member, dir.path());
+        assert_eq!(targets::sha256_hex(&got), want, "{member} of {archive:?}");
+        assert_eq!(
+            std::fs::read(agent_sources_dir().join(path)).unwrap(),
+            got,
+            "{path} is the archive member's bytes"
         );
-    }
-    // A commit attribution would claim a recursive listing never captured.
-    let mut e = committed_entry(TargetKind::Mailslurper);
-    e["pin"]["documents"][2]["attribution"] = serde_json::json!({"observed": {"from": "commit",
-        "url": "https://github.com/mailslurper/mailslurper/blob/068acffdcd8960f248ea438c3b7ee51ead601bd2/LICENSE",
-        "upstream_path": "LICENSE", "git_blob": other}});
-    let why = refusals(lock(e).validate());
-    assert!(why.contains("cannot be attributed by commit"), "{why}");
-}
-
-fn at_of(entry: &serde_json::Value, kind: &str) -> usize {
-    entry["pin"]["documents"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .position(|d| d["kind"] == kind)
-        .unwrap()
-}
-
-#[test]
-fn mailslurper_captures_are_rechecked_by_size_digest_blob_ref_commit_and_tree() {
-    let root = tempfile::tempdir().unwrap();
-    let dir = evals_copy(root.path());
-    let check = |entry: serde_json::Value| refusals(lock_of(vec![entry]).verify_files(&dir));
-    lock_of(vec![committed_entry(TargetKind::Mailslurper)])
-        .verify_files(&dir)
-        .expect("the copy verifies");
-    let other = "0123456789abcdef0123456789abcdef01234567";
-    let cases: Vec<(&str, serde_json::Value, &str)> = vec![
-        (
-            "/pin/documents/2/attribution/observed/git_blob",
-            other.into(),
-            "mailslurper-license.txt is not the git blob its attribution names",
-        ),
-        (
-            "/pin/documents/2/size",
-            7.into(),
-            "mailslurper-license.txt is not 7 bytes",
-        ),
-        (
-            "/pin/tagged_source/observed/commit",
-            other.into(),
-            "the captured ref does not name commit 0123456789abcdef0123456789abcdef01234567 for a lightweight tag",
-        ),
-        (
-            "/pin/documents/1/attribution/observed/url",
-            "https://api.github.com/repos/mailslurper/mailslurper/git/refs/tags/release-1.14.1"
-                .into(),
-            "mailslurper-ref.json does not name itself",
-        ),
-        (
-            "/pin/artifact/official_release/size",
-            1.into(),
-            "release asset URL or size disagrees with the pin",
-        ),
-        (
-            "/pin/artifact/official_release/file_name",
-            "mailslurper-9.9.9-linux.zip".into(),
-            "release metadata lists no asset mailslurper-9.9.9-linux.zip",
-        ),
-        // The commit names another tree, and the listing is not that tree.
-        (
-            "/pin/tagged_source/observed/tree",
-            serde_json::json!({"observed": other}),
-            "the captured commit object does not name commit 068acffdcd8960f248ea438c3b7ee51ead601bd2 and tree 0123456789abcdef0123456789abcdef01234567",
-        ),
-        (
-            "/pin/tagged_source/observed/tree",
-            serde_json::json!({"observed": other}),
-            "the captured tree is not the complete listing of tree 0123456789abcdef0123456789abcdef01234567",
-        ),
-        // A root-level capture whose blob the root tree does not name.
-        (
-            "/pin/documents/2/attribution/observed/git_blob",
-            other.into(),
-            "mailslurper-license.txt is not the blob the root tree names for LICENSE",
-        ),
-        (
-            "/pin/documents/3/attribution/observed/upstream_path",
-            "NOTICE".into(),
-            "is not the blob the root tree names for NOTICE",
-        ),
-    ];
-    for (path, value, want) in cases {
-        let mut e = committed_entry(TargetKind::Mailslurper);
-        *e.pointer_mut(path).unwrap() = value;
-        let why = check(e);
-        assert!(why.contains(want), "{path}: expected {want:?} in:\n{why}");
-    }
-    // A listing that is complete and names itself, but whose entries do not
-    // hash to the tree, is refused: the JSON must be the tree.
-    let listing = dir.join("sources/mailslurper/git/mailslurper-tree.json");
-    let rewrite = |edit: &dyn Fn(&mut serde_json::Value)| {
-        let mut v = json(&std::fs::read(&listing).unwrap());
-        edit(&mut v);
-        let bytes = serde_json::to_vec_pretty(&v).unwrap();
-        std::fs::write(&listing, &bytes).unwrap();
-        let mut e = committed_entry(TargetKind::Mailslurper);
-        let at = at_of(&e, "git_tree");
-        e["pin"]["documents"][at]["size"] = bytes.len().into();
-        e["pin"]["documents"][at]["sha256"] = targets::sha256_hex(&bytes).into();
-        check(e)
-    };
-    let why = rewrite(&|v| v["tree"][0]["sha"] = other.into());
-    assert!(why.contains("the captured listing hashes to tree"), "{why}");
-    // A listing with an entry that is not shaped like one has no id.
-    let why = rewrite(&|v| v["tree"][0] = serde_json::json!({"path": "x"}));
-    assert!(
-        why.contains("the captured listing is not a tree's entries"),
-        "{why}"
-    );
-    // A changed capture refuses by digest.
-    let lic = dir.join("sources/mailslurper/mailslurper-license.txt");
-    let mut bytes = std::fs::read(&lic).unwrap();
-    bytes[0] ^= 1;
-    std::fs::write(&lic, &bytes).unwrap();
-    let why = check(committed_entry(TargetKind::Mailslurper));
-    assert!(why.contains("does not match its digest"), "{why}");
-}
-
-/// The first `python3` on `PATH`, the way the launcher's own scratch cannot
-/// resolve it (its PATH is closed): its absolute path.
-fn python3() -> PathBuf {
-    std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
-        .map(|d| d.join("python3"))
-        .find(|p| p.is_file())
-        .expect("python3 is on PATH")
-}
-
-fn fake_mailslurper(config: Option<protocol::LaunchConfig>) -> targets::LaunchSpec {
-    let pin = SourceLock::parse(SOURCES)
-        .unwrap()
-        .pin(TargetKind::Mailslurper)
-        .unwrap()
-        .clone();
-    targets::LaunchSpec {
-        kind: TargetKind::Mailslurper,
-        binary: python3(),
-        expected_sha256: None,
-        template: vec![
-            "-I".into(),
-            "-c".into(),
-            include_str!("mail_compare/fake_mailslurper.py").into(),
-            "{config_file}".into(),
-        ],
-        config: config.or(pin.config),
-    }
-}
-
-#[tokio::test]
-async fn a_mailslurper_launch_owns_three_binds_and_cleanup_releases_all_three() {
-    let root = tempfile::tempdir().unwrap();
-    let scratch = root.path().join("leaf");
-    let keepers = targets::Keepers::default();
-    let lim = limits();
-    let clock = wire::Clock(Instant::now());
-    let mut owned =
-        targets::Owned::launch(&fake_mailslurper(None), &scratch, &lim, &clock, &keepers)
-            .await
-            .unwrap_or_else(|e| panic!("the stand-in did not launch: {e:?}"));
-    let www = owned
-        .www_addr
-        .expect("the www listener is reserved and owned");
-    let addrs = [owned.smtp, owned.http_addr, www];
-    for (i, a) in addrs.iter().enumerate() {
-        assert!(!addrs[..i].contains(a), "three distinct listeners");
-        assert_eq!(targets::binds(owned.pid(), *a), targets::Bind::Owned, "{a}");
-    }
-    // The config the launcher wrote carries the three reserved ports, the
-    // data directory inside the scratch, and is private.
-    let cfg = scratch.join("config/config.json");
-    let written: serde_json::Value = json(&std::fs::read(&cfg).unwrap());
-    assert_eq!(written["smtpPort"], owned.smtp.port());
-    assert_eq!(written["servicePort"], owned.http_addr.port());
-    assert_eq!(written["wwwPort"], www.port());
-    assert_eq!(written["authenticationScheme"], "");
-    assert_eq!(written["autoStartBrowser"], false);
-    let db = PathBuf::from(written["dbDatabase"].as_str().unwrap());
-    assert!(
-        db.starts_with(scratch.canonicalize().unwrap().join("data")),
-        "{db:?}"
-    );
-    assert_eq!(
-        std::fs::metadata(&cfg).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    let facts = owned.shutdown().await;
-    assert!(facts.proved() && !facts.forced_kill, "{facts:?}");
-    for a in addrs {
-        assert!(
-            tokio::net::TcpStream::connect(a).await.is_err(),
-            "{a} still listens after cleanup"
-        );
-    }
-    assert!(!scratch.exists());
-    assert!(keepers.settle(lim.cleanup).await.iter().all(|f| f.proved()));
-}
-
-#[tokio::test]
-async fn a_launch_without_a_www_slot_reserves_no_third_port() {
-    // Mailpit and MailHog templates name no www slot: their launches are
-    // unchanged. Swarmail's own launch is the real one that runs here.
-    let root = tempfile::tempdir().unwrap();
-    let scratch = root.path().join("leaf");
-    let keepers = targets::Keepers::default();
-    let lim = limits();
-    let clock = wire::Clock(Instant::now());
-    let mut owned = targets::Owned::launch(
-        &swarmail_spec(targets::swarmail_template(0)),
-        &scratch,
-        &lim,
-        &clock,
-        &keepers,
-    )
-    .await
-    .unwrap_or_else(|e| panic!("swarmail did not launch: {e:?}"));
-    assert_eq!(owned.www_addr, None);
-    assert!(owned.shutdown().await.proved());
-    let pin = SourceLock::parse(SOURCES).unwrap();
-    for t in [TargetKind::Mailpit, TargetKind::Mailhog] {
-        let pin = pin.pin(t).unwrap();
-        assert!(pin.config.is_none(), "{t}");
-        assert!(pin.launch.iter().all(|a| !a.contains("{www_")), "{t}");
     }
 }
 
@@ -6220,8 +5825,8 @@ async fn a_mailslurper_scan_walks_every_page_of_a_filtered_search_before_it_answ
     let page_one = slurper_page(51, &first);
     let addr = responder(Box::new(move |t: &str| {
         Some(match t {
-            "/mail?pageNumber=1&to=ann%40x%2Einvalid" => (200, page_one.clone()),
-            "/mail?pageNumber=2&to=ann%40x%2Einvalid" => (200, slurper_page(51, &["s50"])),
+            "/mail?pageNumber=1&to=ann%40x.invalid" => (200, page_one.clone()),
+            "/mail?pageNumber=2&to=ann%40x.invalid" => (200, slurper_page(51, &["s50"])),
             _ => (404, "{}".into()),
         })
     }))
@@ -6238,37 +5843,50 @@ async fn a_mailslurper_scan_walks_every_page_of_a_filtered_search_before_it_answ
     assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
 }
 
-#[tokio::test]
-async fn the_mailslurper_adapter_lists_and_reads_over_real_smtp_into_swarmails_shim() {
-    // Mechanics only: Swarmail's own MailSlurper shim is not MailSlurper
-    // (and refuses MailSlurper's filters), so this proves list paging and
-    // read over a real exchange, never MailSlurper's behaviour.
-    let root = tempfile::tempdir().unwrap();
-    // The MailSlurper slot is reserved and released before Swarmail binds
-    // it, so a test running in parallel can take it in between; Swarmail
-    // then exits at startup ("no listener addresses"). A fresh slot is tried
-    // a bounded number of times; any other launch failure fails at once.
+/// A slot nobody holds: reserve a loopback port and release it at once. It
+/// is a candidate, not a promise; between the release and the child's bind a
+/// parallel test can take it.
+fn reserve_and_release() -> std::net::SocketAddr {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+}
+
+/// Launch Swarmail with its MailSlurper shim on a slot `choose` offers.
+///
+/// A slot that is reserved and released before the child binds it can be
+/// taken in between by a test running in parallel (the coverage gate's
+/// instrumented run did exactly that); Swarmail then exits at startup with
+/// `NotReady(NO_LISTENER_ADDRESSES)`. A fresh slot is tried at most five
+/// times, each refused launch must have proved its cleanup, and any other
+/// launch error fails at once. Returns the slot, the owned launch and the
+/// number of attempts it took. `scratch` holds one leaf per attempt.
+async fn launch_shim_with_fresh_slot(
+    scratch: &Path,
+    mut choose: impl FnMut() -> std::net::SocketAddr,
+) -> (std::net::SocketAddr, targets::Owned, u32) {
+    const ATTEMPTS: u32 = 5;
     let keepers = targets::Keepers::default();
     let mut attempt = 0;
-    let (slot, mut owned) = loop {
+    loop {
         attempt += 1;
-        let slot = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        let slot = choose();
         let mut template = targets::swarmail_template(0);
         template.extend(["--mailslurper-listen".into(), slot.to_string()]);
         match targets::Owned::launch(
             &swarmail_spec(template),
-            &root.path().join(format!("s{attempt}")),
+            &scratch.join(format!("a{attempt}")),
             &limits(),
             &wire::Clock(Instant::now()),
             &keepers,
         )
         .await
         {
-            Ok(owned) => break (slot, owned),
-            Err(targets::LaunchError::NotReady("no listener addresses", facts)) if attempt < 5 => {
+            Ok(owned) => return (slot, owned, attempt),
+            Err(targets::LaunchError::NotReady(targets::NO_LISTENER_ADDRESSES, facts))
+                if attempt < ATTEMPTS =>
+            {
                 assert!(
                     facts.proved(),
                     "a refused launch still cleans up: {facts:?}"
@@ -6276,7 +5894,77 @@ async fn the_mailslurper_adapter_lists_and_reads_over_real_smtp_into_swarmails_s
             }
             Err(e) => panic!("swarmail launches: {e:?}"),
         }
+    }
+}
+
+/// The first candidate is held by a live listener across the launch, as a
+/// parallel test would hold it: the launch is refused once with proved
+/// cleanup, the second, fresh slot launches, and the holder is untouched.
+#[tokio::test]
+async fn a_slot_taken_by_another_listener_is_refused_cleanly_and_the_next_slot_launches() {
+    let root = tempfile::tempdir().unwrap();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let taken = held.local_addr().unwrap();
+    let mut first = true;
+    let (slot, mut owned, attempts) = launch_shim_with_fresh_slot(root.path(), || {
+        if std::mem::take(&mut first) {
+            taken
+        } else {
+            reserve_and_release()
+        }
+    })
+    .await;
+    assert_eq!(attempts, 2, "one refusal, then the fresh slot");
+    assert_ne!(slot, taken);
+    // The refused attempt's scratch is gone and the winner's shim is up.
+    assert!(!root.path().join("a1").exists());
+    assert!(owned.shutdown().await.proved());
+    // The holder never lost its port to the refused child.
+    let (_peer, _) = {
+        let c = std::net::TcpStream::connect(taken).expect("the held listener still accepts");
+        let accepted = held.accept().expect("and it accepted");
+        (c, accepted)
     };
+}
+
+/// All five candidates held: five launches are refused, each with proved
+/// cleanup, and the helper then fails loudly instead of retrying forever.
+#[tokio::test]
+#[should_panic(expected = "swarmail launches")]
+async fn five_taken_slots_exhaust_the_retry_and_fail_loudly() {
+    let root = tempfile::tempdir().unwrap();
+    let held: Vec<std::net::TcpListener> = (0..5)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let drawn = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&drawn);
+    let scratch = root.path().to_owned();
+    let addrs: Vec<_> = held.iter().map(|l| l.local_addr().unwrap()).collect();
+    // The helper runs in its own task so its panic can be inspected after
+    // the count is read, then re-raised for `should_panic` to match.
+    let ended = tokio::spawn(async move {
+        launch_shim_with_fresh_slot(&scratch, || {
+            addrs[counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst)]
+        })
+        .await;
+    })
+    .await;
+    assert_eq!(
+        drawn.load(std::sync::atomic::Ordering::SeqCst),
+        5,
+        "exactly five candidates were offered"
+    );
+    std::panic::resume_unwind(ended.expect_err("the helper must not succeed").into_panic());
+}
+
+#[tokio::test]
+async fn the_mailslurper_adapter_lists_and_reads_over_real_smtp_into_swarmails_shim() {
+    // Mechanics only: Swarmail's own MailSlurper shim is not MailSlurper
+    // (and refuses MailSlurper's filters), so this proves list paging and
+    // read over a real exchange, never MailSlurper's behaviour.
+    let root = tempfile::tempdir().unwrap();
+    let (slot, mut owned, _attempts) =
+        launch_shim_with_fresh_slot(root.path(), reserve_and_release).await;
     for (i, subject) in ["slurp-one", "slurp-two", "slurp-three"].iter().enumerate() {
         send_as(owned.smtp, None, subject, &format!("body {i}")).await;
     }
@@ -6301,6 +5989,106 @@ async fn the_mailslurper_adapter_lists_and_reads_over_real_smtp_into_swarmails_s
     drop(c.w.take());
     assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
     assert!(owned.shutdown().await.proved());
+}
+
+/// The MailSlurper adapter drives main's `mailslurper-source-build` row: its
+/// launch comes from the lock's pin through the builder the wire run uses.
+#[test]
+fn the_mailslurper_adapter_launches_main_s_source_build_pin() {
+    assert_eq!(
+        <mailslurper_mcp::Mailslurper as mcp::Backend>::TARGET,
+        TargetKind::MailslurperSourceBuild
+    );
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
+    let spec = mcp::launch_spec_for(
+        <mailslurper_mcp::Mailslurper as mcp::Backend>::TARGET,
+        PathBuf::from("/never/launched/mailslurper"),
+        &lock,
+    )
+    .unwrap();
+    assert_eq!(spec.kind, TargetKind::MailslurperSourceBuild);
+    assert_eq!(
+        spec.expected_sha256.as_deref(),
+        Some("eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff")
+    );
+    assert_eq!(
+        spec.extra.listeners,
+        vec![
+            protocol::ListenerRole::Smtp,
+            protocol::ListenerRole::Http,
+            protocol::ListenerRole::Ui
+        ]
+    );
+    assert_eq!(spec.extra.config.as_ref().unwrap().name, "config.json");
+    // It is the spec the wire run builds for the same row.
+    let pin = lock.pin(TargetKind::MailslurperSourceBuild).unwrap();
+    let wire_run = targets::LaunchSpec::from_pin(
+        TargetKind::MailslurperSourceBuild,
+        PathBuf::from("/never/launched/mailslurper"),
+        None,
+        pin,
+    )
+    .unwrap();
+    assert_eq!(spec.template, wire_run.template);
+    assert_eq!(spec.extra.env, wire_run.extra.env);
+    // Mailpit and MailHog serve their own rows, unchanged.
+    for (t, row) in [
+        (
+            <mailpit_mcp::Mailpit as mcp::Backend>::TARGET,
+            TargetKind::Mailpit,
+        ),
+        (
+            <mailhog_mcp::Mailhog as mcp::Backend>::TARGET,
+            TargetKind::Mailhog,
+        ),
+    ] {
+        assert_eq!(t, row);
+        let spec = mcp::launch_spec_for(t, PathBuf::from("/never/launched"), &lock).unwrap();
+        assert_eq!(spec.kind, row);
+        assert!(spec.extra.config.is_none(), "{row}");
+    }
+}
+
+/// An adapter entry point refuses every target but its three, by name,
+/// before the lock is read: the official `mailslurper` row, which does not
+/// start, is among the refused.
+#[test]
+fn an_adapter_refuses_a_target_that_is_not_its_own_by_name_and_spawns_nothing() {
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
+    for t in [
+        TargetKind::Swarmail,
+        TargetKind::Mailslurper,
+        TargetKind::Smtp4dev,
+        TargetKind::Inbucket,
+        TargetKind::Greenmail,
+        TargetKind::AlkemioMailslurper,
+    ] {
+        let why = mcp::adapter_target(t).unwrap_err();
+        assert!(why.contains(t.name()), "{why}");
+        let why = mcp::launch_spec_for(t, PathBuf::from("/never/launched"), &lock).unwrap_err();
+        assert!(
+            why.contains(t.name()) && why.contains("no MCP adapter"),
+            "{why}"
+        );
+    }
+    for t in [
+        TargetKind::Mailpit,
+        TargetKind::Mailhog,
+        TargetKind::MailslurperSourceBuild,
+    ] {
+        mcp::adapter_target(t).unwrap();
+    }
+    // A lock that pins no row for an adapter's target refuses by name too.
+    let mut bare = lock.clone();
+    bare.entries
+        .retain(|e| e.target != TargetKind::MailslurperSourceBuild);
+    let why = mcp::launch_spec_for(
+        TargetKind::MailslurperSourceBuild,
+        PathBuf::from("/never/launched"),
+        &bare,
+    )
+    .unwrap_err();
+    assert!(why.contains("mailslurper-source-build"), "{why}");
 }
 
 /// Every hostile argument a tool refuses, per adapter: none makes a request.
@@ -6383,7 +6171,7 @@ async fn hostile_arguments_never_reach_an_upstream_on_any_adapter() {
 fn an_accepted_id_is_path_encoded_and_the_alphabet_is_the_observed_one() {
     for ok in ["abc", "a-b_c.d", "A1", &"a".repeat(128)] {
         assert!(mcp::valid_id(ok, b""), "{ok}");
-        assert_eq!(wire::path_segment(ok), ok, "unreserved characters stay");
+        assert_eq!(wire::query_value(ok), ok, "unreserved characters stay");
     }
     for bad in ["", "a/b", "a b", "a%2f", "é", &"a".repeat(129)] {
         assert!(!mcp::valid_id(bad, b""), "{bad}");
@@ -6391,7 +6179,7 @@ fn an_accepted_id_is_path_encoded_and_the_alphabet_is_the_observed_one() {
     // A backend whose observed ids carry more says so, and is encoded.
     assert!(mcp::valid_id("a@b.example", b"@"));
     assert!(!mcp::valid_id("a@b.example", b""));
-    assert_eq!(wire::path_segment("a@b/c d"), "a%40b%2Fc%20d");
+    assert_eq!(wire::query_value("a@b/c d"), "a%40b%2Fc%20d");
 }
 
 #[tokio::test]
@@ -6477,6 +6265,34 @@ const CORPUS_FILES: [&str; 6] = [
     "search-empty.json",
     "read-not-found.json",
 ];
+
+/// The lock row an agent-suite target's bytes come from. The agent target
+/// `mailslurper` names the service API the adapter drives; its executable is
+/// accepted 0130's `mailslurper-source-build` row, never the official
+/// `mailslurper` row, which does not start. Every other target is refused by
+/// name, so a new `TargetKind` is a compile error here.
+fn lock_row(t: TargetKind) -> TargetKind {
+    match t {
+        TargetKind::Mailpit => TargetKind::Mailpit,
+        TargetKind::Mailhog => TargetKind::Mailhog,
+        TargetKind::Mailslurper => TargetKind::MailslurperSourceBuild,
+        TargetKind::Swarmail
+        | TargetKind::MailslurperSourceBuild
+        | TargetKind::Smtp4dev
+        | TargetKind::Inbucket
+        | TargetKind::Greenmail
+        | TargetKind::AlkemioMailslurper => panic!("{t} is not an agent-suite wire-corpus target"),
+    }
+}
+
+/// The digest a corpus index binds for a pin's launch config: the text the
+/// launcher renders, before its slots are filled (`None` for a pin with no
+/// config file).
+fn config_template_sha256(pin: &protocol::Pin) -> Option<String> {
+    pin.config_file
+        .as_ref()
+        .map(|c| targets::sha256_hex(c.lines.join("\n").as_bytes()))
+}
 
 fn corpus_dir(t: TargetKind) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -6617,7 +6433,7 @@ async fn capture_wire_corpus() {
         }
         assert!(owned.shutdown().await.proved());
         std::fs::create_dir_all(&dir).unwrap();
-        let lock = SourceLock::parse(SOURCES).unwrap();
+        let lock = SourceLock::parse(SOURCES_V4).unwrap();
         let mut files = Vec::new();
         for (name, request, status, body) in out {
             assert_eq!(name, CORPUS_FILES[files.len()]);
@@ -6673,7 +6489,7 @@ fn slurper_base64_mail() -> (&'static str, &'static str, String) {
 }
 
 #[tokio::test]
-#[ignore = "needs MAIL_COMPARE_MAILSLURPER (the pinned executable built from source)"]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD (the pinned executable built from source)"]
 async fn capture_wire_corpus_mailslurper() {
     let t = TargetKind::Mailslurper;
     let dir = corpus_dir(t);
@@ -6682,7 +6498,7 @@ async fn capture_wire_corpus_mailslurper() {
         "{dir:?} exists: remove it to recapture, a corpus is never overwritten"
     );
     let root = tempfile::tempdir().unwrap();
-    let mut owned = launch_pinned(t, &root.path().join("s")).await;
+    let mut owned = launch_pinned(lock_row(t), &root.path().join("s")).await;
     let mut mail = corpus_mail();
     mail.push(slurper_base64_mail());
     mail.push(slurper_lines_mail());
@@ -6738,8 +6554,8 @@ async fn capture_wire_corpus_mailslurper() {
     }
     assert!(owned.shutdown().await.proved());
     std::fs::create_dir_all(&dir).unwrap();
-    let lock = SourceLock::parse(SOURCES).unwrap();
-    let pin = lock.pin(t).unwrap();
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
+    let pin = lock.pin(lock_row(t)).unwrap();
     let mut files = Vec::new();
     for (name, request, status, body) in out {
         assert_eq!(name, MAILSLURPER_CORPUS_FILES[files.len()]);
@@ -6752,7 +6568,7 @@ async fn capture_wire_corpus_mailslurper() {
     let index = serde_json::json!({
         "target": t.name(),
         "executable_sha256": pin.artifact.executable_sha256,
-        "config_template_sha256": pin.config.as_ref().map(|c| targets::sha256_hex(c.template.as_bytes())),
+        "config_template_sha256": config_template_sha256(pin),
         "mail": mail.iter().map(|(r, s, _)| serde_json::json!({"to": r, "subject": s})).collect::<Vec<_>>(),
         "files": files,
     });
@@ -6769,18 +6585,20 @@ fn check_corpus(t: TargetKind, dir: &Path, lock: &SourceLock) -> Result<(), Stri
     let index: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.join("index.json")).map_err(|e| e.to_string())?)
             .map_err(|e| format!("index: {e}"))?;
-    let want = &lock.pin(t).ok_or("no pin")?.artifact.executable_sha256;
+    let want = &lock
+        .pin(lock_row(t))
+        .ok_or("no pin")?
+        .artifact
+        .executable_sha256;
     if index["target"] != t.name() || index["executable_sha256"] != *want {
         return Err(format!(
             "{t}: the index's executable digest is not the lock's, recapture the corpus"
         ));
     }
     // Every target's index binds its launch config template: MailSlurper's is
-    // the lock's, the other two have none and say `null`.
-    let template = lock
-        .pin(t)
-        .and_then(|p| p.config.as_ref())
-        .map(|c| targets::sha256_hex(c.template.as_bytes()));
+    // the lock's `mailslurper-source-build` config file (accepted 0130), the
+    // other two have none and say `null`.
+    let template = lock.pin(lock_row(t)).and_then(config_template_sha256);
     if index.get("config_template_sha256") != Some(&serde_json::json!(template)) {
         return Err(format!(
             "{t}: the index's config template digest is not the lock's, recapture the corpus"
@@ -6965,7 +6783,7 @@ fn check_slurper_corpus(
 
 #[test]
 fn the_wire_corpus_decodes_through_the_adapter_decoders_and_binds_its_executable() {
-    let lock = SourceLock::parse(SOURCES).unwrap();
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
     for t in [
         TargetKind::Mailpit,
         TargetKind::Mailhog,
@@ -7066,7 +6884,7 @@ async fn the_mailslurper_adapter_serves_the_corpus_and_maps_the_empty_item_to_no
 
 #[test]
 fn a_mailslurper_corpus_that_drifts_from_its_pin_or_its_shapes_refuses() {
-    let lock = SourceLock::parse(SOURCES).unwrap();
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
     let t = TargetKind::Mailslurper;
     let root = tempfile::tempdir().unwrap();
     let dir = root.path().join("c");
@@ -7078,10 +6896,10 @@ fn a_mailslurper_corpus_that_drifts_from_its_pin_or_its_shapes_refuses() {
         if let Some(c) = e
             .pin
             .as_mut()
-            .filter(|_| e.target == t)
-            .and_then(|p| p.config.as_mut())
+            .filter(|_| e.target == lock_row(t))
+            .and_then(|p| p.config_file.as_mut())
         {
-            c.template.push(' ');
+            c.lines.push(" ".into());
         }
     });
     let why = check_corpus(t, &dir, &other).expect_err("must refuse");
@@ -7092,7 +6910,7 @@ fn a_mailslurper_corpus_that_drifts_from_its_pin_or_its_shapes_refuses() {
     // A moved executable.
     let mut other = lock.clone();
     other.entries.iter_mut().for_each(|e| {
-        if let Some(p) = e.pin.as_mut().filter(|_| e.target == t) {
+        if let Some(p) = e.pin.as_mut().filter(|_| e.target == lock_row(t)) {
             p.artifact.executable_sha256 = "0".repeat(64);
         }
     });
@@ -7132,7 +6950,7 @@ fn a_mailslurper_corpus_that_drifts_from_its_pin_or_its_shapes_refuses() {
 
 #[test]
 fn a_corpus_whose_index_disagrees_with_the_lock_or_its_files_refuses() {
-    let lock = SourceLock::parse(SOURCES).unwrap();
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
     let t = TargetKind::Mailhog;
     let root = tempfile::tempdir().unwrap();
     let dir = root.path().join("c");
@@ -7141,7 +6959,7 @@ fn a_corpus_whose_index_disagrees_with_the_lock_or_its_files_refuses() {
     // A moved pin: the index's executable digest is not the lock's.
     let mut other = lock.clone();
     other.entries.iter_mut().for_each(|e| {
-        if let Some(p) = e.pin.as_mut().filter(|_| e.target == t) {
+        if let Some(p) = e.pin.as_mut().filter(|_| e.target == lock_row(t)) {
             p.artifact.executable_sha256 = "0".repeat(64);
         }
     });
@@ -7316,37 +7134,18 @@ async fn the_auth_probe_accepts_only_a_no_auth_221_close_and_names_every_other_a
 }
 
 #[tokio::test]
-async fn the_auth_probe_runs_through_the_launcher_against_the_stand_in() {
-    let root = tempfile::tempdir().unwrap();
-    let mut owned = targets::Owned::launch(
-        &fake_mailslurper(None),
-        &root.path().join("leaf"),
-        &limits(),
-        &wire::Clock(Instant::now()),
-        &targets::Keepers::default(),
-    )
-    .await
-    .expect("the stand-in launches");
-    let t = auth_plain_probe(owned.smtp)
-        .await
-        .expect("the stand-in draws 221");
-    assert!(t.contains("S: 221 Bye"), "{t}");
-    assert!(owned.shutdown().await.proved());
-}
-
-#[tokio::test]
-#[ignore = "needs MAIL_COMPARE_MAILSLURPER (the pinned executable built from source)"]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD (the pinned executable built from source)"]
 async fn mailslurper_auth_plain_probe() {
     let root = tempfile::tempdir().unwrap();
-    let mut owned = launch_pinned(TargetKind::Mailslurper, &root.path().join("s")).await;
+    let mut owned = launch_pinned(TargetKind::MailslurperSourceBuild, &root.path().join("s")).await;
     let outcome = auth_plain_probe(owned.smtp).await;
     assert!(owned.shutdown().await.proved());
     let transcript = outcome.unwrap_or_else(|e| panic!("the probe disagrees with the source: {e}"));
     // The subject is the digest the launch just checked: the source build,
     // never the published executable, which does not start.
-    let subject = SourceLock::parse(SOURCES)
+    let subject = SourceLock::parse(SOURCES_V4)
         .unwrap()
-        .pin(TargetKind::Mailslurper)
+        .pin(TargetKind::MailslurperSourceBuild)
         .unwrap()
         .artifact
         .executable_sha256
@@ -7370,10 +7169,10 @@ async fn mailslurper_auth_plain_probe() {
 }
 
 #[tokio::test]
-#[ignore = "needs MAIL_COMPARE_MAILSLURPER (the pinned executable built from source)"]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD (the pinned executable built from source)"]
 async fn real_mailslurper_through_the_adapter_lists_searches_reads_and_waits() {
     let root = tempfile::tempdir().unwrap();
-    let mut owned = launch_pinned(TargetKind::Mailslurper, &root.path().join("s")).await;
+    let mut owned = launch_pinned(TargetKind::MailslurperSourceBuild, &root.path().join("s")).await;
     // MailSlurper has no AUTH: the fixture leaves the step out.
     for (i, subject) in ["slurptoken-one", "slurptoken-two", "other-three"]
         .iter()

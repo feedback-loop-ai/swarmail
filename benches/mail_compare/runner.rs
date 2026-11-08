@@ -5,10 +5,12 @@
 
 use crate::mailpit_mcp::{Bounds, Frame, Scan, ToolError, poll_wait};
 use crate::protocol::{
-    Connection, Observation, Protocol, TargetKind, ThroughputProfile, WaitProfile,
+    Connection, Observation, Protocol, SourceLock, TargetKind, ThroughputProfile, WaitProfile,
 };
 use crate::records::{Manifest, Phase, Planned, ROW_VERSION, Row, RunDir};
-use crate::targets::{CleanupFacts, Keepers, LaunchError, LaunchFacts, LaunchSpec, Limits, Owned};
+use crate::targets::{
+    CleanupFacts, Keepers, LaunchError, LaunchFacts, LaunchSpec, Limits, Owned, swarmail_template,
+};
 use crate::wire::{Clock, Disposition, Message, Smtp, WireError, authored, same_body};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -51,6 +53,93 @@ pub struct Lifecycle {
     pub cleanups: Vec<CleanupFacts>,
 }
 
+/// `--flag value` pairs; a repeated flag other than `--bin` and `--runtime`
+/// (one of each per target, so two targets may each need a runtime: GreenMail's
+/// JRE and the Alkemio row's musl loader), a flag without a value or a stray
+/// word refuses.
+pub fn flags(args: &[String]) -> Result<BTreeMap<String, Vec<String>>, String> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        let name = flag
+            .strip_prefix("--")
+            .ok_or_else(|| format!("unexpected argument {flag:?}"))?;
+        let value = it.next().ok_or_else(|| format!("--{name} needs a value"))?;
+        let slot = out.entry(name.to_owned()).or_default();
+        if !slot.is_empty() && name != "bin" && name != "runtime" {
+            return Err(format!("--{name} given twice"));
+        }
+        slot.push(value.clone());
+    }
+    Ok(out)
+}
+
+/// Bind the wrapper's `--bin TARGET=PATH` and `--runtime TARGET=DIR` values
+/// to launch specs, with no file or process I/O. A target is given at most
+/// one of each; a published does-not-start target takes neither and has no
+/// spec; every launched target needs its `--bin`; a runtime needs a pin that
+/// states one (and a pin that states one needs it).
+pub fn launch_specs(
+    p: &Protocol,
+    s: &SourceLock,
+    bins: &[String],
+    runtimes: &[String],
+) -> Result<BTreeMap<TargetKind, LaunchSpec>, String> {
+    let mut bin_of = BTreeMap::new();
+    for b in bins {
+        let (name, path) = b.split_once('=').ok_or("--bin takes TARGET=PATH")?;
+        let t = TargetKind::parse(name).ok_or_else(|| format!("unknown target {name:?}"))?;
+        if bin_of.insert(t, PathBuf::from(path)).is_some() {
+            return Err(format!("--bin {t} given twice"));
+        }
+    }
+    let mut runtime_of = BTreeMap::new();
+    for r in runtimes {
+        let (name, dir) = r.split_once('=').ok_or("--runtime takes TARGET=DIR")?;
+        let t = TargetKind::parse(name).ok_or_else(|| format!("unknown target {name:?}"))?;
+        if runtime_of.insert(t, PathBuf::from(dir)).is_some() {
+            return Err(format!("--runtime {t} given twice"));
+        }
+    }
+    let mut specs = BTreeMap::new();
+    // A published does-not-start target is never launched: it takes no
+    // --bin and has no spec (a --bin for it is refused below). The rotation
+    // is the same for every repetition's membership, so the first one's
+    // launch order is the launched set.
+    for t in p.launch_order(0) {
+        let binary = bin_of
+            .remove(&t)
+            .ok_or_else(|| format!("--bin {t}=PATH is required"))?;
+        let spec = match t {
+            TargetKind::Swarmail => {
+                let cap = p
+                    .storage
+                    .retention
+                    .iter()
+                    .find(|r| r.target == t)
+                    .and_then(|r| r.max_messages);
+                LaunchSpec::new(t, binary, None, swarmail_template(cap.unwrap_or(0)))
+            }
+            _ => {
+                let pin = s.pin(t).ok_or_else(|| format!("{t}: no source pin"))?;
+                LaunchSpec::from_pin(t, binary, runtime_of.remove(&t), pin)?
+            }
+        };
+        specs.insert(t, spec);
+    }
+    if let Some(t) = bin_of.keys().next() {
+        return Err(format!(
+            "--bin {t} names a target the protocol does not declare or publishes as not starting"
+        ));
+    }
+    if let Some(t) = runtime_of.keys().next() {
+        return Err(format!(
+            "--runtime {t} names a target that pins no runtime or is not declared"
+        ));
+    }
+    Ok(specs)
+}
+
 /// Every coordinate the run will produce, declared before launch.
 pub fn plan(p: &Protocol) -> Vec<Planned> {
     let mut out = Vec::new();
@@ -62,7 +151,9 @@ pub fn plan(p: &Protocol) -> Vec<Planned> {
         .max()
         .unwrap_or(0);
     for rep in 0..reps {
-        for &target in p.order(rep) {
+        // A published does-not-start target is never planned: it has no
+        // coordinate to produce (its report row is blocked, not measured).
+        for target in p.launch_order(rep) {
             for t in p.throughput.iter().filter(|t| t.repetitions > rep) {
                 let mk = |phase, rows| Planned {
                     target,
@@ -178,7 +269,7 @@ pub async fn run(cfg: Config, clock: Clock) -> (Verdict, Lifecycle, Option<PathB
         .unwrap_or(0);
     let mut leaf = 0u32;
     for rep in 0..reps {
-        for &target in p.order(rep) {
+        for target in p.launch_order(rep) {
             let Some(spec) = cfg.specs.get(&target) else {
                 return (
                     Verdict::Infrastructure(format!("{target}: no launch spec")),
@@ -296,9 +387,10 @@ pub async fn run(cfg: Config, clock: Clock) -> (Verdict, Lifecycle, Option<PathB
     // replacement during the run would leave the record standing behind
     // a binary nobody measured.
     for launched in &life.launches {
-        let same = cfg.specs.get(&launched.target).is_some_and(|spec| {
-            crate::targets::unchanged(&spec.binary, &launched.executable_sha256)
-        });
+        let same = cfg
+            .specs
+            .get(&launched.target)
+            .is_some_and(|spec| crate::targets::spec_unchanged(spec, launched));
         if !same {
             return (
                 Verdict::Infrastructure(format!(
@@ -539,7 +631,7 @@ async fn throughput(
     v.start_ns = Some(window_start);
     v.ack_ns = Some(send_end);
     v.observed_ns = Some(verified_ns);
-    v.requests = Some(owned.http.requests());
+    v.requests = Some(owned.requests());
     emit(sink, &v)?;
     let visible = groups.keys().filter(|t| accepted.contains(*t)).count();
     let exact = reason.is_none()
@@ -776,7 +868,7 @@ async fn observe(
     clock: &Clock,
     r: &mut Row,
 ) {
-    let before = owned.http.requests();
+    let before = owned.requests();
     let judge = |tokens: &[String]| {
         if tokens.iter().any(|t| t != token) {
             Some("unrelated")
@@ -824,7 +916,7 @@ async fn observe(
         }
     };
     let at = clock.now_ns();
-    r.requests = Some(owned.http.requests() - before);
+    r.requests = Some(owned.requests() - before);
     match result {
         Ok(Some(o)) => {
             r.outcome = o.into();

@@ -1,4 +1,4 @@
-//! Built-in deterministic spam signals (issue #260, proposed decision 0122).
+//! Built-in deterministic spam signals (issue #260, decision 0122).
 //!
 //! Six compile-time rules over the root Subject, the root From display name and
 //! the sender's `text/plain` bodies. No Store, clock, network, locale, knob or
@@ -122,6 +122,7 @@ impl Signal {
             location,
             severity: self.severity(),
             fix_hint: self.hint().into(),
+            weight: 0,
         }
     }
 }
@@ -668,7 +669,7 @@ mod tests {
             serde_json::to_vec(&first).unwrap(),
             serde_json::to_vec(&again).unwrap()
         );
-        assert_eq!(first.rule_set_id, "swarmail-html/6");
+        assert_eq!(first.rule_set_id, "swarmail-html/8");
         let spam = first
             .findings
             .iter()
@@ -689,7 +690,13 @@ mod tests {
             let severity = format!("**Severity:** {word}");
             assert!(section.contains(&severity), "{} {severity}", signal.id());
             assert!(section.contains(signal.hint()), "{}", signal.id());
-            assert!(section.contains("proposed in 0122 — not in the report"));
+            // The label is the weight the report emits (decision 0122 §2.2).
+            let weight = format!(
+                "**Weight:** {}.",
+                super::super::weight_of(signal.id(), signal.severity())
+            );
+            assert!(section.contains(&weight), "{} {weight}", signal.id());
+            assert!(!section.contains("not in the report"), "{}", signal.id());
             assert!(section.contains("**Passing:**"));
             assert!(section.contains("**Failing:**"));
         }
@@ -700,5 +707,21 @@ mod tests {
             assert!(guide.contains(bound), "{bound}");
         }
         assert!(guide.contains("## Spam signals (`swarmail-spam/1`)"));
+        // The old "no weight, no total" statements are gone, and the section
+        // that replaces them states the table, the exceptions and the bound.
+        assert!(!guide.contains("not in the report"));
+        assert!(!guide.contains("Reports carry no weight"));
+        for fact in [
+            "### Weight and total",
+            "| info | 1 |",
+            "| warning | 3 |",
+            "| error | 10 |",
+            "`.not_evaluated.`",
+            "`demo.marker.v1`",
+            "**Predicates ignore weight.**",
+            "2,560",
+        ] {
+            assert!(guide.contains(fact), "{fact}");
+        }
     }
 }

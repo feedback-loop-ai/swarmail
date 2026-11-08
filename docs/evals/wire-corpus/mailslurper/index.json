@@ -1,52 +1,52 @@
 {
-  "config_template_sha256": "48f56620a26945a26b75cc9dd960d3318d83f06d0cc5294e50b6feda5c80349c",
+  "config_template_sha256": "2b53b35efe69fca18068511760a39cc9a065520cb38eb22ca49f9cc044e37af2",
   "executable_sha256": "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff",
   "files": [
     {
       "name": "list.json",
       "request": "/mail?pageNumber=1",
-      "sha256": "47f252c2e668eb2b7d42da8418ef584ba0a845f8f7d58a662e7e0fa66245e9da",
+      "sha256": "059de73a9509b5bdd70923dd8e51f31c0850423f5a3cd01f4d969567ee417278",
       "size": 2301,
       "status": 200
     },
     {
       "name": "read.json",
-      "request": "/mail/4d16de6c-fdc7-4871-4557-7159ec187a72",
-      "sha256": "ea82d9773e4e8a360c0c8165eedbb7e71689ebbedce4c0c1a82142bea6038f4b",
+      "request": "/mail/90e72a9d-bfd3-433a-5933-81ac665bdbe0",
+      "sha256": "65cee3f3f4badf42101b3097a99d165b08d77bcc1c1d348fa5f8323c8a9dbfa5",
       "size": 408,
       "status": 200
     },
     {
       "name": "read-multipart.json",
-      "request": "/mail/578d7cb5-b756-4ad5-7af2-89bf7eb4bd0e",
-      "sha256": "6fbafdd3c75e718f3b15619c83006de4fad864abab6173fb2744b434b4fb7899",
+      "request": "/mail/8c8995a5-71a4-4a5c-6a93-77c9a715aded",
+      "sha256": "cc9d85e4846d9ef279163e02b3701d5f2cab5a3683c8a54d761e788c07e5acd0",
       "size": 475,
       "status": 200
     },
     {
       "name": "read-base64.json",
-      "request": "/mail/421e9c6e-c076-41ba-734d-b64079f0a94b",
-      "sha256": "f6b455fb25d599b1c33a8bfc40ec9cc419480309b5e3f72aad427b646b750917",
+      "request": "/mail/87ac5438-3653-43d9-5cb4-c38417185c80",
+      "sha256": "d04c8bb58bf8d29fbe00e7d844fd1893c0efb24a45b179f0e3c2d5d55593d6ce",
       "size": 476,
       "status": 200
     },
     {
       "name": "read-lines.json",
-      "request": "/mail/57f63505-0889-4551-5d6a-0a5a30bc0cf8",
-      "sha256": "2dd27ed2b1fea7d191dc6df281f914ca2ee4dbd4715927aa6137dce9901499a4",
+      "request": "/mail/c06df350-e6ef-4094-44bc-7d6e7d20c0b4",
+      "sha256": "1b0827487c18dc1f89b5f41bc0d5b7a16efbf2212c9023eda3a86eae47140a7e",
       "size": 534,
       "status": 200
     },
     {
       "name": "search-filtered.json",
-      "request": "/mail?pageNumber=1&to=ann%40corpus%2Einvalid",
-      "sha256": "47f252c2e668eb2b7d42da8418ef584ba0a845f8f7d58a662e7e0fa66245e9da",
+      "request": "/mail?pageNumber=1&to=ann%40corpus.invalid",
+      "sha256": "059de73a9509b5bdd70923dd8e51f31c0850423f5a3cd01f4d969567ee417278",
       "size": 2301,
       "status": 200
     },
     {
       "name": "search-empty.json",
-      "request": "/mail?pageNumber=1&to=nobody%40corpus%2Einvalid",
+      "request": "/mail?pageNumber=1&to=nobody%40corpus.invalid",
       "sha256": "6f0f0dea6b99fe62d96a703c94136bdc246e8038d2d1c74f6c911d9b157bc8f1",
       "size": 49,
       "status": 200

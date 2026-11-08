@@ -2238,6 +2238,37 @@ pub fn refused_row(req: &TrialRequest, trial_id: &str) -> TrialResult {
     }
 }
 
+/// The arguments the runner starts the fixture child with. Swarmail's HTTP
+/// address goes only to a scenario that reads deliverability reports, so every
+/// other task's fixture is started exactly as before.
+pub fn fixture_args(
+    task: &Task,
+    smtp: SocketAddr,
+    http: SocketAddr,
+    trial_id: &str,
+    inputs: &crate::provenance::FixtureInputs,
+) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "fixture",
+        "--smtp",
+        &smtp.to_string(),
+        "--task",
+        &task.id,
+        "--trial-id",
+        trial_id,
+        "--seed",
+        &inputs.seed,
+        "--fixture-time",
+        &inputs.fixture_time,
+    ]
+    .map(String::from)
+    .into();
+    if task.scenario.reads_reports() {
+        args.extend(["--swarmail-http".to_string(), http.to_string()]);
+    }
+    args
+}
+
 /// The body of one trial. Every error return is a harness error; the
 /// caller still owns cleanup through `trial`. `Ok(true)` means the agent
 /// deadline expired.
@@ -2616,7 +2647,9 @@ async fn run_body(
     exits: &mut Vec<AgentExit>,
     snapshot_out: &mut Option<Snapshot>,
 ) -> Result<bool, String> {
-    if competitor.is_some() && (task.scenario.uses_chaos() || task.agent_count != 1) {
+    if competitor.is_some()
+        && (task.scenario.uses_chaos() || task.agent_count != 1 || task.scenario.reads_reports())
+    {
         return Err("competitor_task_not_applicable".into());
     }
     let (smtp, http, mcp_url, surface): (
@@ -2647,19 +2680,15 @@ async fn run_body(
     recheck_digest(&exe, &provenance.harness.executable_sha256)?;
     let fixture_dirs = RuntimeDirs::create(scratch, "fixture")?;
     let mut cmd = Command::new(&exe);
-    cmd.args([
-        "fixture",
-        "--smtp",
-        &smtp.to_string(),
-        "--task",
-        &task.id,
-        "--trial-id",
+    // A competitor has no Swarmail HTTP plane; no task it can take reads
+    // Swarmail's reports (refused above), so the address is never passed on.
+    cmd.args(fixture_args(
+        task,
+        smtp,
+        http.unwrap_or(smtp),
         trial_id,
-        "--seed",
-        &inputs.seed,
-        "--fixture-time",
-        &inputs.fixture_time,
-    ]);
+        inputs,
+    ));
     if let Some(plan) = competitor {
         cmd.args(["--smtp-auth", plan.smtp_auth.name()]);
     }
@@ -5892,5 +5921,37 @@ mod identity_tests {
             );
         }
         assert_eq!(crate::runner::via_brokkr_refusal(&[], None), None);
+    }
+}
+
+#[cfg(test)]
+mod fixture_args_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_report_reading_scenario_is_told_swarmail_s_http_address() {
+        let inputs = crate::provenance::FixtureInputs::default();
+        let (smtp, http): (SocketAddr, SocketAddr) = (
+            "127.0.0.1:2525".parse().unwrap(),
+            "127.0.0.1:8080".parse().unwrap(),
+        );
+        for task in crate::tasks::catalogue() {
+            let args = fixture_args(&task, smtp, http, "t1", &inputs);
+            assert_eq!(
+                &args[..5],
+                ["fixture", "--smtp", "127.0.0.1:2525", "--task", &task.id]
+            );
+            let told = args.iter().any(|a| a == "--swarmail-http");
+            assert_eq!(told, task.id == "newsletter-findings", "{}", task.id);
+            if told {
+                assert_eq!(
+                    &args[args.len() - 2..],
+                    ["--swarmail-http", "127.0.0.1:8080"]
+                );
+            } else {
+                // Exactly the arguments every other task has always had.
+                assert_eq!(args.len(), 11, "{}", task.id);
+            }
+        }
     }
 }

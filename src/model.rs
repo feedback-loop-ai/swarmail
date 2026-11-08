@@ -336,6 +336,20 @@ pub struct Email {
     /// existing read, feed and webhook payload keeps its bytes.
     #[serde(skip)]
     pub attachments: Option<AttachmentList>,
+    /// The connecting address as the SMTP session saw it (decision 0126 §2):
+    /// the TCP peer at accept, IPv4-mapped IPv6 canonicalized, recorded
+    /// before the one synchronous insert and never read from a header.
+    /// `None` for mail that did not arrive over SMTP and for a row stored
+    /// before the field existed, never backfilled. Internal like
+    /// `link_metadata`: no Email serialization carries it.
+    #[serde(skip)]
+    pub smtp_client_ip: Option<std::net::IpAddr>,
+    /// The argument of the last `HELO`/`EHLO` of the session, trimmed
+    /// (decision 0126 §2); `None` when there was none, it was empty, a
+    /// `STARTTLS` cleared it, the mail did not arrive over SMTP, or the row
+    /// predates the field. Internal, like `smtp_client_ip`.
+    #[serde(skip)]
+    pub smtp_helo: Option<String>,
     #[serde(skip)]
     pub raw: Vec<u8>,
 }
@@ -345,6 +359,21 @@ mod tests {
     use super::*;
 
     const SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    /// Decision 0126 §2: the observed envelope is internal. An Email that
+    /// carries it serializes to exactly the bytes of one that does not, so
+    /// no REST, MCP, webhook or feed payload gains a member.
+    #[test]
+    fn the_observed_envelope_never_serializes() {
+        let mut email = crate::store::email("e", "box", "bob@x.io");
+        let bare = serde_json::to_string(&email).unwrap();
+        email.smtp_client_ip = Some("192.0.2.7".parse().unwrap());
+        email.smtp_helo = Some("mail.example.org".into());
+        let observed = serde_json::to_string(&email).unwrap();
+        assert_eq!(observed, bare);
+        assert!(!observed.contains("smtp"));
+        assert!(!observed.contains("192.0.2.7"));
+    }
 
     fn part_json(extra: &str) -> String {
         format!(

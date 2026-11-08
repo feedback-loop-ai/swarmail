@@ -12,7 +12,7 @@
 //! endpoint, or the adapter launches it.
 
 use crate::mcp::{Backend, Budget, begin, complete_scan};
-use crate::wire::{Http, path_segment, query_value};
+use crate::wire::{Http, query_value};
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -34,6 +34,7 @@ pub struct Mailpit;
 impl Backend for Mailpit {
     type Call = Call;
     const UPSTREAM: &'static str = "Mailpit";
+    const TARGET: crate::protocol::TargetKind = crate::protocol::TargetKind::Mailpit;
     const SERVER_NAME: &'static str = SERVER_NAME;
 
     fn tools(bounds: &Bounds) -> Value {
@@ -284,7 +285,7 @@ pub async fn run_call(
         }
         Call::Read { id } => {
             let (_, v) = b
-                .get(&format!("/api/v1/message/{}", path_segment(id)))
+                .get(&format!("/api/v1/message/{}", query_value(id)))
                 .await?;
             let got = v.get("ID").and_then(Value::as_str);
             if got.is_none_or(|g| g != id && id != "latest") {

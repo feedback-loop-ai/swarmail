@@ -88,7 +88,7 @@ async fn plain_is_the_dialogue_main_sends_and_none_drops_only_the_auth_step() {
         (SmtpAuth::None, common(None)),
     ] {
         let (addr, log) = recording_server().await;
-        let result = mail::send_auth(
+        let result = mail::send_stored(
             addr,
             auth,
             "alice",
@@ -96,7 +96,8 @@ async fn plain_is_the_dialogue_main_sends_and_none_drops_only_the_auth_step() {
             "alice@fixture.eval",
             data,
         )
-        .await;
+        .await
+        .0;
         assert!(
             matches!(result, SendResult::Delivered(_)),
             "{auth:?}: {result:?}"
@@ -168,7 +169,7 @@ async fn an_unauthenticated_dialogue_is_stored_by_a_real_swarmail() {
         subject: "No auth step".into(),
         body: mail::Body::Text("hello".into()),
     };
-    let result = mail::send_auth(
+    let result = mail::send_stored(
         smtp,
         SmtpAuth::None,
         "alice",
@@ -176,7 +177,8 @@ async fn an_unauthenticated_dialogue_is_stored_by_a_real_swarmail() {
         "alice@fixture.eval",
         &mail::render(&message),
     )
-    .await;
+    .await
+    .0;
     assert!(matches!(result, SendResult::Delivered(_)), "{result:?}");
     let mut client = McpClient::connect(&format!("http://{http}/mcp"))
         .await

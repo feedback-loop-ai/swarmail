@@ -11,7 +11,7 @@
 - SMTP: point any client (Ory Kratos, Nodemailer, curl) at `localhost:1025`. No
   auth required; if the client authenticates, the **username names the inbox**
   (per-test isolation). A server started with `--route-domain <domain>`
-  (SWARMAIL_ROUTE_DOMAIN; decision 0112, proposed) routes by recipient instead:
+  (SWARMAIL_ROUTE_DOMAIN; decision 0112) routes by recipient instead:
   `<local>@<label>.<domain>` is stored in inbox `<label>`, outranking the AUTH
   username, so parallel agents behind one sending identity stay apart. Mint a
   private address with the `swarmail_create_inbox` tool. A recipient under the
@@ -154,7 +154,7 @@ REST-backed schemas to served OpenAPI through explicit output projections,
 including omitted fields and nullable provenance; the focused waits and the
 attachment tools are MCP-only
 and their schemas are checked against independently stated expectations.
-Compact reads (decision 0108, proposed): on 2025-06-18 and 2025-11-25,
+Compact reads (decision 0108): on 2025-06-18 and 2025-11-25,
 swarmail_search_emails and swarmail_get_latest_email answer a compact view per
 email by default: id (the handle for swarmail_get_email), from, to, subject,
 received_ms, a snippet of at most 200 characters, codes, anchors (url,
@@ -188,7 +188,7 @@ error. Independent operational lines still run concurrently after initialization
 This delivery claims version negotiation; full revision conformance is not claimed.
 The operator chose to retain documented C1–C6 deviations on 2026-10-26; see the
 [per-revision deviation register](https://github.com/feedback-loop-ai/swarmail/blob/main/specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register),
-qualified by the proposed [dated candidate corrections](https://github.com/feedback-loop-ai/swarmail/blob/main/docs/decisions/0104-mcp-candidate-proof.md)
+qualified by the [dated candidate corrections](https://github.com/feedback-loop-ai/swarmail/blob/main/docs/decisions/0104-mcp-candidate-proof.md)
 for its thirteen tools, OPTIONS exception and shared-limiter witness.
 This bridge targets the paired stateless JSON server with identity HTTP parsing;
 it advertises JSON/SSE but has no general SSE/session client support.
@@ -206,11 +206,11 @@ The operator retains #151's merge hold.
 `swarmail_wait_for_email`, `swarmail_extract_links`, `swarmail_extract_codes`,
 `swarmail_seed_email`, `swarmail_set_chaos`, `swarmail_clear_chaos`,
 `swarmail_get_deliverability_report`, then `swarmail_wait_for_code` and
-`swarmail_wait_for_link` (decision 0094, proposed; read-only), then
-`swarmail_create_inbox` (decision 0112, proposed; no arguments; returns
+`swarmail_wait_for_link` (decision 0094; read-only), then
+`swarmail_create_inbox` (decision 0112; no arguments; returns
 {inbox, address}, or isError naming --route-domain when the server routes
 nothing), then `swarmail_list_attachments` and `swarmail_get_attachment`
-(decision 0110, proposed; read-only; described below). The focused waits
+(decision 0110; read-only; described below). The focused waits
 take the wait's inbox/to/from/subject/inclusive since_ms filters and timeout_ms
 (default 5000, 0-60000) and answer status selected|ambiguous|timed_out with
 matched (eligible emails). wait_for_code: one distinct code in the newest
@@ -227,7 +227,7 @@ provenance. Labels are lexical and recorded at ingest; unknown labels (text part
 historical rows, unattributable links) are null and never match anchor_text.
 Lists show <=250 entries after full-snapshot selection, with exact *_total and
 *_truncated. Email reads, feeds and webhooks carry no occurrence metadata.
-Near misses (decision 0111, proposed): a timed-out `swarmail_wait_for_email`,
+Near misses (decision 0111): a timed-out `swarmail_wait_for_email`,
 `swarmail_wait_for_code` or `swarmail_wait_for_link` over an inbox that holds mail
 also carries near_misses, read from the store at the timeout, no extra retention:
 arrivals (retained mail the wait did not answer with, newest first, <=10, exact
@@ -242,7 +242,7 @@ but had no code or no selected link. since_ms limits arrivals. nearest_subject i
 a hint, never a selection: the mail that missed the subject alone with the most
 shared character pairs; read its to. No near_misses key means the inbox holds
 nothing. Own inbox only; not access control (MCP is unauthenticated).
-Attachments (decision 0110, proposed): swarmail_list_attachments {id} answers
+Attachments (decision 0110): swarmail_list_attachments {id} answers
 {id,total,truncated,attachments}, <=250 entries in message order and <=3 MiB of JSON,
 so labels that escape heavily can list fewer (total is exact; a stored part cut from
 the answer stays fetchable by index),
@@ -432,7 +432,7 @@ Same store, the two shapes existing suites already speak:
 - **No sleep-polling**: `await` is long-poll backed by per-inbox broadcast
   watchers; agents block until arrival instead of guessing delays.
 
-## Deliverability report (proposed 0085; epic #251)
+## Deliverability report (decision 0085; epic #251)
 
 GET /api/v1/messages/{id}/deliverability takes only the optional query key reachability (see Opt-in link reachability below) and returns
 {rule_set_id, findings:[{rule_id,severity,location,fix_hint}], dns}. Severity is
@@ -440,16 +440,20 @@ info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/6):
+The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/8):
 one_click, message_id and date are errors; plain_text is warning-level presence
 advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
-are independent checks. Their error-level *.not_evaluated.v1 findings explicitly
-say "Not evaluated:" until trusted observations exist. Sender-written
-Authentication-Results and DKIM-Signature never supply evidence. #255 owns that
-verification and strict/relaxed alignment; #253/#255 own expiry and refresh.
-Production therefore excludes every message at every report predicate threshold;
-exact zero assertions count qualifying messages when every required analysis succeeds;
-an analysis failure aborts the assertion. Waits still require a qualifying message.
+are independent checks. They read six facts that the report evaluator computes
+from the stored bytes, the SMTP envelope observed at ingest, DKIM's verdicts and
+the declared DNS policy (SPF and DMARC, below). A fact that cannot be determined
+is Unknown, and its entry is an error-level *.not_evaluated.v1 finding that
+explicitly says "Not evaluated:". Sender-written Authentication-Results and
+DKIM-Signature never supply evidence. A message qualifies at a threshold only when
+every finding is below it, so a wait or an exact zero assertion matches mail whose
+SPF, DKIM and DMARC evidence passes and whose checklist is clean at that
+threshold; exact zero assertions count qualifying messages when every required
+analysis succeeds; an analysis failure aborts the assertion. Waits still require a
+qualifying message.
 
 Headers use original bytes and complete singleton values, with root lowercase
 names and occurrence null/0/1 for absent/invalid/duplicate. Message-ID and Date
@@ -467,9 +471,9 @@ equivalence nor an unconditional provider mandate. HTML is never converted here.
 Hints cite https://support.google.com/mail/answer/81126 and
 https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 2046
 or 7489 sections. These are fixed published references, not live verification or
-provider certification. The proposed rule record is decision 0089.
+provider certification. The rule record is decision 0089.
 
-`swarmail-html/6` retains the synthetic demo.marker.v1: the first root
+`swarmail-html/8` retains the synthetic demo.marker.v1: the first root
 X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
 and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
 html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
@@ -497,7 +501,7 @@ fresh client-version measurements; current empirical measurements were not
 supplied. Source URLs, client scopes, selectors, thresholds and fixed hints are
 tracked there. No runtime network access or new dependency is needed.
 
-Five per-link rules (proposed decision 0121, issue #258) read each visible a href
+Five per-link rules (decision 0121, issue #258) read each visible a href
 of the eligible HTML parts: link.scheme.unsafe.v1 (error: javascript, vbscript,
 data, file), link.url.invalid.v1 (warning: empty or not absolute; #fragment never
 fires), link.scheme.http.v1 (warning: plain http except localhost and loopback),
@@ -509,7 +513,7 @@ decoded text is not a prefix of its transfer-decoded bytes followed only by ASCI
 whitespace. The default report fetches no link; empty
 link findings do not mean the links are safe.
 
-Opt-in link reachability (proposed decision 0121). Off by default: start the server with
+Opt-in link reachability (decision 0121). Off by default: start the server with
 --link-reachability public|loopback (SWARMAIL_LINK_REACHABILITY), then ask with
 GET /api/v1/messages/{id}/deliverability?reachability=true. On an off server that is
 400 "link reachability is not enabled" and opens no connection; a missing message is
@@ -555,25 +559,29 @@ Nonempty parse failures still fail.
 Analysis is lazy from stored bytes, off SMTP; extraction stays at ingest.
 The existing message page renders the same report without polling.
 
-DNS policy (proposed 0120). Report checks that need DNS answers (DKIM keys, SPF,
+DNS policy (decision 0120). Report checks that need DNS answers (DKIM keys, SPF,
 DMARC; #254, #255, #256) read a declared, offline TXT map, never the network.
 Every report carries a required `dns` member
-{source:"default"|"server"|"inbox", policy:{txt:[{name,values}],tempfail:[name]},
+{source:"default"|"server"|"inbox", policy:{txt:[{name,values}],tempfail:[name],spf_client_ip?},
 lookups:[{name,type:"txt",outcome:"records"|"no_records"|"temp_fail",values}]}.
 `policy` is the complete canonical effective policy; `lookups` lists each name an
-evaluation resolved, once, sorted. DKIM verification (proposed 0125, below) records
+evaluation resolved, once, sorted. DKIM verification (decision 0125, below) records
 every key, ATPS and report name it asks for that lies inside decision 0120's name grammar (an out-of-grammar name fails closed and is not recorded); a message with no `DKIM-Signature`
-records none, and SPF and DMARC (#255) record theirs when they arrive. `temp_fail` is never a pass and never clean: a report with a
+records none, and SPF and DMARC (decision 0126, below) record the TXT names they ask for
+(the record, its `include:` and `redirect=` targets, an `exp=` name, and the `_dmarc` names of the tree walk). `temp_fail` is never a pass and never clean: a report with a
 `temp_fail` lookup qualifies at no no_findings_at_or_above threshold, so an assert
 does not match it and a wait rides to its deadline. `no_records` is a definite
 negative. The same message under the same configuration gives byte-identical
-report JSON; no path, time or generation appears (the one stated exception is the
+report JSON; no path, time or generation appears (the two stated exceptions are the
 DKIM wall-clock residual, `dkim.expired_since_receipt.v1`, whose radius is
-described below).
+described below, and SPF's 20-second monotonic lookup timer, below).
 Declare a server map with `serve --dns-policy FILE` (env SWARMAIL_DNS_POLICY): a
 JSON file of at most 8192 bytes, `{"txt":[{"name":"s1._domainkey.example.com",
 "values":["v=DKIM1; k=rsa; p=..."]}],"tempfail":["_dmarc.example.org"]}`; `{}` is
-an empty map and source "server". A bad file stops startup before any listener
+an empty map and source "server". The declaration also takes an optional
+`spf_client_ip`, an IPv4 or IPv6 address literal (stored canonical, present in
+`dns.policy` only when declared) that SPF evaluates instead of the connecting
+address the SMTP session saw; see SPF and DMARC below. A bad file stops startup before any listener
 binds; there is no fallback to an empty map. Declare an inbox map with
 PUT /api/v1/inboxes/{inbox}/dns (same body; 200 echoes the object
 {"inbox","source","policy"}; 400 for an invalid declaration or an inbox label over
@@ -610,7 +618,7 @@ stay producer rules).
 Missing mail and failed/unavailable analysis use isError=true without structured
 content; malformed arguments use -32602. The March descriptor keeps main's
 "with demo and bulk-sender checks" wording as its historical text, with its
-(2025-03-26) suffix; modern descriptors state the full current scope and the structured output (proposed 0105).
+(2025-03-26) suffix; modern descriptors state the full current scope and the structured output (decision 0105).
 
 REST assert/await and MCP wait_for_email admit optional no_findings_at_or_above
 (info|warning|error). It qualifies ordinary-filter candidates before paging;
@@ -622,6 +630,19 @@ Zero timeout uses completed cache entries only: cold/busy required reports retur
 unavailable. An incomplete scan at deadline is unavailable; a complete insufficient
 scan keeps the usual timeout with its exact count. Shutdown keeps its existing error.
 The option is refused on list/count; absent means existing behavior.
+
+For agents (decision 0131): read swarmail_get_deliverability_report for the id of the
+message you sent (the id in the 250 2.0.0 OK: stored as {id} reply, or from a wait
+or search). Fix each finding from its rule_id, location and fix_hint, then send a NEW
+message (stored mail is never edited, decision 0005) and read the new message's
+report. Filter by rule_id family (link., html., spam.): under the default DNS policy
+the bulk., spf., dkim. and dmarc. findings remain, so no_findings_at_or_above cannot
+say that content is clean. An isError, not-found or unavailable report is not a clean
+report, and empty findings do not imply deliverability. The report is bounded to 256
+findings and 65536 compact bytes and excess is an error, never truncation. rule_set_id
+moves when the report's bytes move: ignore unknown members and match rule ids, not whole
+bodies. Published fixtures: tests/fixtures/deliverability-agent/ (newsletter-failing.eml,
+newsletter-fixed.eml); the eval task newsletter-findings measures this loop.
 
 Cache: 128 Weak-identity slots per Store, exact immutable inputs and rule version,
 four admitted blocking jobs retained through cancellation. Up to 256 findings and
@@ -643,14 +664,17 @@ or deadline) / "deliverability analysis failed" (analysis/size), native JSON err
 Selected pre-removal reads may finish; fresh lookups cannot resurrect removed mail.
 Cache loss at restart costs recomputation. These are cache/job bounds, not total
 memory or latency promises. #253 owns DNS observation/policy/expiry/wakeup semantics;
-#253 shipped no verification: DKIM verification arrives with proposed 0125 on
-`mail-auth`, offline against the declared keys; SPF, DMARC and ARC are #255 and
-#256; no external spam scorer or service ships here. The cache key includes every effective authentication fact and the
-immutable policy/observation identity, alongside selected Weak mail identity.
+#253 shipped no verification: DKIM verification arrives with decision 0125 on
+`mail-auth`, offline against the declared keys; SPF and DMARC arrive with decision
+0126 on the same crate (below), and ARC is #256; no external spam scorer or service
+ships here. The cache key is the selected Weak mail identity (which carries the
+row's immutable SMTP envelope observation), the frozen policy snapshot (including
+`spf_client_ip`) and the rule set; every authentication fact is a function of
+those, so two requests with equal keys get equal facts.
 
-## DKIM verification (`swarmail-html/6`)
+## DKIM verification (`swarmail-html/8`)
 
-Proposed decision 0125 (issue #254): each `DKIM-Signature` field of a stored
+Decision 0125 (issue #254): each `DKIM-Signature` field of a stored
 message is verified lazily in the report, from the stored bytes, after the SMTP
 250. rsa-sha256 and ed25519-sha256, simple and relaxed canonicalization, the body
 and header hashes, `l=` and `x=`. A verified signature and an unsigned message
@@ -678,25 +702,68 @@ on a signature with `l=` is not evidence of tampering. At most 16 signature fiel
 and 128 `h=` names are judged; past either bound one `dkim.limits_exceeded.v1`
 finding stands alone.
 Rule ids, each at version 1: `dkim.malformed.v1`, `dkim.unsupported.v1`, `dkim.from_unsigned.v1`, `dkim.header_boundary_ambiguous.v1`, `dkim.limits_exceeded.v1`, `dkim.signature_expired.v1`, `dkim.expired_since_receipt.v1`, `dkim.selector_invalid.v1`, `dkim.key_missing.v1`, `dkim.key_invalid.v1`, `dkim.key_revoked.v1`, `dkim.not_evaluated.v1`, `dkim.body_hash_mismatch.v1`, `dkim.signature_mismatch.v1`, `dkim.auid_mismatch.v1`, `dkim.atps_unauthorized.v1`, `dkim.body_length_exceeds.v1`, `dkim.body_length_partial.v1`.
-The bulk checklist's `*.not_evaluated.v1` errors disqualify every report until
-#255, so assert on DKIM rule ids rather than on a threshold. See the deliverability
-guide for each rule's hint, passing and failing fixture.
+A report also needs its SPF and DMARC evidence and the rest of the checklist to be
+clean before it qualifies at a threshold; assert on DKIM rule ids to judge a signer
+alone. See the deliverability guide for each rule's hint, passing and failing fixture.
+
+## SPF and DMARC (`swarmail-html/8`)
+
+Decision 0126 (issue #255): SPF for the SMTP envelope and DMARC for the
+root From, lazily in the report on the stored bytes after the SMTP 250, on
+`mail-auth` with DNS only from the declared policy. A pass emits nothing. The
+SMTP session records the TCP peer (IPv4-mapped IPv6 as the IPv4) and the last
+HELO/EHLO name in the stored row before the insert, never from a header; REST-seeded
+mail and rows from before the columns hold none and are never backfilled. One
+`check_host` per message: the MAIL FROM domain, or the HELO name for the null
+sender, against the observed address, or against `spf_client_ip` when the policy
+declares one (an IP literal, canonical, for every peer; it never makes mail with no
+observed peer evaluable). A test over loopback declares `ip4:127.0.0.1` in its
+record. Of a name's values only one `v=spf1` counts and two are a permanent error;
+one `v=DMARC1` counts (the tag is case-exact, spaces may surround the `=`) and two at
+one name are no record there, so the walk goes on. A term that names no mechanism is
+an SPF permanent error. The
+policy is TXT-only, so `a`, `mx`, `ptr`, `exists` and `%{p}` are not evaluated:
+`spf.unsupported_mechanism.v1`, `spf_pass` Unknown, never a failure (a term after
+the first match is never reached). Ten DNS-querying terms are admitted and the
+eleventh is `spf.permerror.v1`; a target with no record is already a permanent
+error, so void lookups need no counter; at most twelve names per SPF evaluation
+and eight per DMARC tree walk. DMARC: exactly one root From with one domain (else
+`dmarc.from_invalid.v1`; `Email.from` is never read), the RFC 9989 tree walk over
+the declared `_dmarc` records, the organizational domain determined offline by
+those records alone (`psd=y` marks a public suffix; no list exists), the applied
+policy `p=`, `sp=` or `np=` (a name exists when it or a name below it is
+declared) stepped down by `t=y`, and `pct=` ignored. Relaxed and strict alignment
+(`adkim`, `aspf`) with DKIM signatures that DKIM's own verdicts accept and SPF's
+identity domain. Rule ids, each at version 1, severity error unless noted:
+`spf.fail.v1`, `spf.softfail.v1`, `spf.neutral.v1`, `spf.none.v1`,
+`spf.temperror.v1`, `spf.permerror.v1`, `spf.unsupported_mechanism.v1`,
+`spf.not_evaluated.v1` (info), `dmarc.from_invalid.v1`, `dmarc.none.v1`,
+`dmarc.temperror.v1`, `dmarc.permerror.v1`, `dmarc.fail.none.v1`,
+`dmarc.fail.quarantine.v1`, `dmarc.fail.reject.v1`, `dmarc.not_evaluated.v1`. They
+name results as Authentication-Results does (`spf=fail` is `spf.fail.v1`,
+`dmarc=fail` is `dmarc.fail.<policy>.v1`). SPF findings sit at header
+return-path (occurrence null: the envelope); DMARC findings at the root from.
+The one clock: SPF's evaluation starts a monotonic timer in the crate and refuses
+a DNS-querying term after 20 seconds, so only a process descheduled for 20 seconds
+inside one evaluation turns a verdict into `spf.permerror.v1` (fail-closed; a held
+amendment of the no-ambient-time rule, decision 0126 section 8). See the
+deliverability guide for each rule's hint, passing and failing fixture.
 
 ## Spam signals (`swarmail-spam/1`)
 
 Six built-in, offline, deterministic rules read only the captured message: the
 root Subject, the root From display name and the sender's `text/plain` bodies
-(decision 0122, proposed). There is no external scorer, network, clock, locale or
+(decision 0122, accepted). There is no external scorer, network, clock, locale or
 configuration; the same stored bytes always give the same findings. Each rule
 emits at most one finding per report, severity info or warning (error stays the
 bulk checklist's requirement level), so a large message can never flood the
-report. They arrived as `swarmail-spam/1`; with the link rules of proposed 0121,
-the `dns` member of proposed 0120 and the DKIM rules of proposed 0125 the report's
-`rule_set_id` is now `swarmail-html/6`, so the rule-set version
-is recorded in every report and in the cache key. Reports carry no weight and no
-total: the weights below are the proposal in decision 0122 and wait for the
-operator to accept it; they are labelled "proposed in 0122 — not in the report"
-because they are not emitted.
+report. They arrived as `swarmail-spam/1`; with the link rules of decision 0121,
+the `dns` member of decision 0120, the DKIM rules of decision 0125, the SPF and
+DMARC rules of decision 0126 and the weight and total of decision 0122 §2 the
+report's `rule_set_id` is now `swarmail-html/8`, so the rule-set version
+is recorded in every report and in the cache key. Every finding carries a
+`weight` and the report a `total` (see Weight and total below); the weights
+named in each rule are the weights the report emits.
 
 Subject means the first root Subject field in wire order, RFC 2047-decoded and
 unfolded; From means the first mailbox of the first root From field, display name
@@ -716,7 +783,7 @@ part in wire order (root `[]`, children by index).
 ### `spam.subject.all_caps.v1`
 
 - **Matches:** a Subject with at least 8 ASCII letters, none lowercase.
-- **Severity:** warning. **Weight:** 3 (proposed in 0122 — not in the report).
+- **Severity:** warning. **Weight:** 3.
 - **Location:** `header {name:"subject", occurrence:0}`.
 - **Why:** an all-capital subject reads as shouting and is a classic spam signal;
   the 8-letter floor keeps short acronyms such as `RSVP` or `OTP: 123456` clear.
@@ -727,7 +794,7 @@ part in wire order (root `[]`, children by index).
 ### `spam.subject.punctuation.v1`
 
 - **Matches:** a Subject containing `!!`, `??` or `$$`.
-- **Severity:** info. **Weight:** 1 (proposed in 0122 — not in the report).
+- **Severity:** info. **Weight:** 1.
 - **Location:** `header {name:"subject", occurrence:0}`.
 - **Why:** repeated emphasis punctuation is a weak but common sales-spam marker; a
   single `!`, `?` or `$` is ordinary.
@@ -738,7 +805,7 @@ part in wire order (root `[]`, children by index).
 ### `spam.subject.phrases.v1`
 
 - **Matches:** a Subject containing a phrase from the list below.
-- **Severity:** warning. **Weight:** 3 (proposed in 0122 — not in the report).
+- **Severity:** warning. **Weight:** 3.
 - **Location:** `header {name:"subject", occurrence:0}`.
 - **Why:** these are high-pressure sales claims that filters have long weighted.
 - **Fix hint:** `Remove high-pressure sales wording from the Subject; see the guide's phrase list.`
@@ -751,7 +818,7 @@ part in wire order (root `[]`, children by index).
   (`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+`) that is not, ASCII
   case-insensitively, the mailbox's own address. A group, an empty list or a
   mailbox without an address yields no finding.
-- **Severity:** warning. **Weight:** 3 (proposed in 0122 — not in the report).
+- **Severity:** warning. **Weight:** 3.
 - **Location:** `header {name:"from", occurrence:0}`.
 - **Why:** a different address in the display name is how mail clients are made to
   show a trusted-looking sender; the same address as the real one is harmless.
@@ -762,7 +829,7 @@ part in wire order (root `[]`, children by index).
 ### `spam.body.phrases.v1`
 
 - **Matches:** an eligible text part containing a phrase from the list below.
-- **Severity:** warning. **Weight:** 3 (proposed in 0122 — not in the report).
+- **Severity:** warning. **Weight:** 3.
 - **Location:** `mime_part {path}` of the first matching eligible part.
 - **Why:** the same claims as the Subject rule, in the body.
 - **Fix hint:** `Remove high-pressure sales wording from the text/plain body; see the guide's phrase list.`
@@ -774,7 +841,7 @@ part in wire order (root `[]`, children by index).
 - **Matches:** an eligible text part with at least 3 zero-width characters
   (U+200B, U+200C, U+2060, U+FEFF). U+200D (ZWJ) is excluded because emoji
   sequences use it legitimately.
-- **Severity:** info. **Weight:** 1 (proposed in 0122 — not in the report).
+- **Severity:** info. **Weight:** 1.
 - **Location:** `mime_part {path}` of the first matching eligible part.
 - **Why:** invisible characters inside words are used to hide them from filters; one
   or two are common in pasted text, so the floor is three.
@@ -818,11 +885,54 @@ bounded MIME parse. Cost of the bound: a message with more than 4 MiB of decoded
 The spam rules do not re-detect what other collectors report. A reader assessing
 spam risk should also count `bulk.plain_text.v1` (HTML-only mail),
 `bulk.one_click.v1` (no one-click unsubscribe), `bulk.message_id.v1`,
-`bulk.date.v1`, `html.image-only.v1` and `html.tracking-pixel.v1`. Decision 0122
-proposes that, once weights ship, every finding counts by its severity (info 1,
-warning 3, error 10), with `*.not_evaluated.*` findings and `demo.marker.v1` at
-zero. Link and URL signals are #258's link rules and DNS policy belongs to #253;
-the spam rules read no URL and resolve nothing.
+`bulk.date.v1`, `html.image-only.v1` and `html.tracking-pixel.v1`. Every one of
+them is already counted: the report's `total` weighs every finding by its
+severity (info 1, warning 3, error 10), with `*.not_evaluated.*` findings and
+`demo.marker.v1` at zero (Weight and total, below). Link and URL signals are #258's
+link rules and DNS policy belongs to #253; the spam rules read no URL and resolve
+nothing.
+
+### Weight and total
+
+Decision 0122 §2, accepted on 2026-11-06 and emitted from `swarmail-html/8`,
+gives every finding a `weight` and the report a `total`, so no reader has to
+invent a weighting and no edge (REST, MCP, the UI) computes a score. Both are
+non-negative integers, and each is the **last** key of its object: a finding is
+`rule_id`, `location`, `severity`, `fix_hint`, `weight`, and the report is
+`rule_set_id`, `findings`, `dns`, `total`. MCP serializes the same report with
+sorted keys, where `weight` and `total` also sort last, so no key that was
+already served moves.
+
+| severity | weight |
+|---|---|
+| info | 1 |
+| warning | 3 |
+| error | 10 |
+
+The weight depends on the severity alone, for every rule family: the demo
+marker, the bulk checklist, the HTML heuristics, the link rules, the spam
+signals, DKIM, SPF and DMARC. There is no per-id table. Two exceptions weigh 0:
+any rule id containing `.not_evaluated.` (a trusted fact that could not be
+determined is not evidence about the sender, and a fresh deployment must not
+score every message) and `demo.marker.v1` (synthetic).
+
+The `total` is the sum of the findings' weights after the findings are sorted
+and exact duplicates are removed, so a duplicate counts once. It is at most
+2,560 (256 findings of weight 10). The evaluator computes it inside the byte
+bound, so a report served from the cache and a freshly evaluated one are
+byte-identical, and a sum that would overflow fails the report and never wraps.
+
+**Predicates ignore weight.** `no_findings_at_or_above` on `assert`, `await`
+and `swarmail_wait_for_email` still decides on severity alone, plus the
+`temp_fail` rule of decision 0120. A report whose `total` is 0 is not "clean"
+(a sole `bulk.*.not_evaluated.v1` error weighs 0 and still refuses at `error`),
+and a large `total` is not "dirty" (256 info findings total 256 and still
+qualify at `warning`).
+
+**Cost.** The two keys are part of the report's 65,536-byte bound: about 11 to
+12 bytes per finding and up to 14 for the total. A message whose report was just
+under the bound before `swarmail-html/8` can now fail analysis, which is the
+bound doing its job (it counts what is served).
 
 ### Known false negatives and positives
 
@@ -844,5 +954,11 @@ checklist), `swarmail-html/2` and `swarmail-html/3` (HTML heuristics), then
 `swarmail-html/5` (the required `dns` report member of proposed 0120,
 integrated after `swarmail-html/4`; no rule changed meaning), then
 `swarmail-html/6` (the eighteen DKIM rules of proposed 0125, integrated after
-`swarmail-html/5`; no existing rule changed meaning). A change to
+`swarmail-html/5`; no existing rule changed meaning), then
+`swarmail-html/7` (the sixteen SPF and DMARC rules of proposed 0126, integrated
+after `swarmail-html/6`; the three authentication entries of the bulk checklist
+now read evaluated facts, so their findings changed), then
+`swarmail-html/8` (the per-finding `weight` and the report `total` of decision
+0122 §2, integrated after `swarmail-html/7`; no rule changed meaning, and every
+report gained the two keys). A change to
 any rule's meaning, hint, location or order requires a new id.

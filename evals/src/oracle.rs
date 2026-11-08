@@ -421,6 +421,125 @@ async fn confirm_from_text(app: &App, email: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// The findings of a deliverability report parsed strictly: an object with a
+/// `findings` array whose every element is an object with a string `rule_id`.
+/// Anything else is an error, so a malformed report can never read as clean.
+pub fn report_findings(report: &Value) -> Result<&Vec<Value>, String> {
+    let findings = report
+        .as_object()
+        .and_then(|r| r.get("findings"))
+        .and_then(Value::as_array)
+        .ok_or("the report has no findings array")?;
+    for finding in findings {
+        finding
+            .as_object()
+            .and_then(|f| f.get("rule_id"))
+            .and_then(Value::as_str)
+            .ok_or("a finding has no string rule_id")?;
+    }
+    Ok(findings)
+}
+
+/// The findings of the newsletter task's families, in report order.
+pub fn family_findings(report: &Value) -> Result<Vec<&Value>, String> {
+    Ok(report_findings(report)?
+        .iter()
+        .filter(|f| {
+            let id = f["rule_id"].as_str().unwrap_or_default();
+            tasks::NEWSLETTER_FAMILIES.iter().any(|p| id.starts_with(p))
+        })
+        .collect())
+}
+
+/// The `http://` URL a link finding's `byte_offset` points at in the mail's
+/// decoded HTML. The offset must land on the scheme; anything else is an
+/// error rather than a guess.
+pub fn located_http_url(html: &str, byte_offset: u64) -> Result<&str, String> {
+    let rest = usize::try_from(byte_offset)
+        .ok()
+        .and_then(|at| html.get(at..))
+        .ok_or("the link offset is outside the HTML")?;
+    if !rest.starts_with("http://") {
+        return Err("the link offset does not start an http:// URL".to_string());
+    }
+    let end = rest
+        .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>'))
+        .unwrap_or(rest.len());
+    Ok(&rest[..end])
+}
+
+/// `template` with the one occurrence of `url` served over https.
+pub fn upgrade_url(template: &str, url: &str) -> Result<String, String> {
+    let https = url
+        .strip_prefix("http://")
+        .map(|rest| format!("https://{rest}"))
+        .ok_or("not an http:// URL")?;
+    if template.matches(url).count() != 1 {
+        return Err(format!("the template does not hold {url} exactly once"));
+    }
+    Ok(template.replacen(url, &https, 1))
+}
+
+/// `html` with `alt` added to the first `<img>` tag that has none.
+pub fn add_img_alt(html: &str, alt: &str) -> Result<String, String> {
+    let mut from = 0;
+    while let Some(i) = html[from..].find("<img") {
+        let start = from + i;
+        let end = html[start..]
+            .find('>')
+            .map(|e| start + e)
+            .ok_or("an <img> tag is never closed")?;
+        if !html[start..end].contains("alt=") {
+            let mut out = String::with_capacity(html.len() + alt.len() + 8);
+            out.push_str(&html[..end]);
+            out.push_str(&format!(" alt=\"{alt}\""));
+            out.push_str(&html[end..]);
+            return Ok(out);
+        }
+        from = end;
+    }
+    Err("no <img> tag lacks alt".to_string())
+}
+
+/// Sentence case: the first character upper, the rest lower.
+pub fn sentence_case(subject: &str) -> String {
+    let mut chars = subject.chars();
+    match chars.next() {
+        Some(first) => first
+            .to_uppercase()
+            .chain(chars.flat_map(char::to_lowercase))
+            .collect(),
+        None => String::new(),
+    }
+}
+
+/// Apply the fix each family finding of `report` names to the template
+/// (`subject`, `html`), given the mail's own decoded HTML for locating a
+/// link. An unknown family finding is an error: the oracle fixes only what
+/// the task's three named findings ask.
+pub fn repair_template(
+    report: &Value,
+    mail_html: &str,
+    subject: &str,
+    html: &str,
+) -> Result<(String, String), String> {
+    let (mut subject, mut html) = (subject.to_string(), html.to_string());
+    for finding in family_findings(report)? {
+        match finding["rule_id"].as_str().unwrap_or_default() {
+            "link.scheme.http.v1" => {
+                let offset = finding["location"]["byte_offset"]
+                    .as_u64()
+                    .ok_or("the link finding has no byte_offset")?;
+                html = upgrade_url(&html, located_http_url(mail_html, offset)?)?;
+            }
+            "html.img.alt-missing.v1" => html = add_img_alt(&html, tasks::MARKETING_OFFER)?,
+            "spam.subject.all_caps.v1" => subject = sentence_case(&subject),
+            other => return Err(format!("the oracle has no fix for {other}")),
+        }
+    }
+    Ok((subject, html))
+}
+
 /// What the oracle spent solving one task: the unpaid difficulty proxy
 /// (proposed 0123 §6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -866,6 +985,54 @@ async fn solve(env: &AgentEnv, app: &App, mcp: &mut McpClient) -> Result<(), Str
             ok("confirm", app.get(&link).await?)?;
             Ok(())
         }
+        "newsletter-findings" => {
+            // Read the report over MCP, fix each family finding it names,
+            // re-send, find the new mail as the one not seen before (the POST
+            // returned after the final 250, decision 0001, so no wait is
+            // needed) and demand a clean report for it.
+            let first = mcp.wait_emails(inbox, None, 1).await?;
+            let first_id = first[0]["id"].as_str().ok_or("the newsletter has no id")?;
+            let report = mcp
+                .call(
+                    "swarmail_get_deliverability_report",
+                    json!({ "id": first_id }),
+                )
+                .await?;
+            let template = ok("read the template", app.get("/newsletter").await?)?;
+            let (subject, html) = repair_template(
+                &report,
+                first[0]["html"]
+                    .as_str()
+                    .ok_or("the newsletter has no HTML")?,
+                template["subject"]
+                    .as_str()
+                    .ok_or("the template has no subject")?,
+                template["html"]
+                    .as_str()
+                    .ok_or("the template has no html")?,
+            )?;
+            ok(
+                "re-send",
+                app.post("/newsletter", json!({ "subject": subject, "html": html }))
+                    .await?,
+            )?;
+            let all = mcp.wait_emails(inbox, None, 2).await?;
+            let fresh: Vec<&Value> = all.iter().filter(|m| m["id"] != json!(first_id)).collect();
+            let [fresh] = fresh[..] else {
+                return Err(format!("expected one new mail, saw {}", fresh.len()));
+            };
+            let again = mcp
+                .call(
+                    "swarmail_get_deliverability_report",
+                    json!({ "id": fresh["id"] }),
+                )
+                .await?;
+            let left = family_findings(&again)?;
+            if !left.is_empty() {
+                return Err(format!("{} family findings remain", left.len()));
+            }
+            Ok(())
+        }
         other => Err(format!("the oracle has no solution for task {other}")),
     }
 }
@@ -873,6 +1040,87 @@ async fn solve(env: &AgentEnv, app: &App, mcp: &mut McpClient) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn finding(id: &str, location: Value) -> Value {
+        json!({"rule_id": id, "severity": "warning", "location": location, "fix_hint": "x"})
+    }
+
+    #[test]
+    fn a_newsletter_report_is_repaired_by_rule_id() {
+        let mail = tasks::NEWSLETTER_HTML.replace('\n', "\r\n");
+        let at = mail.find("http://").unwrap();
+        let report = json!({"rule_set_id": "x", "dns": {}, "findings": [
+            finding("bulk.one_click.v1", json!({"kind":"header","name":"list-unsubscribe","occurrence":null})),
+            finding("html.img.alt-missing.v1", json!({"kind":"mime_part","path":[]})),
+            finding("link.scheme.http.v1", json!({"kind":"link","part_path":[],"byte_offset":at})),
+            finding("spam.subject.all_caps.v1", json!({"kind":"header","name":"subject","occurrence":0})),
+        ]});
+        let (subject, html) = repair_template(
+            &report,
+            &mail,
+            tasks::NEWSLETTER_SUBJECT,
+            tasks::NEWSLETTER_HTML,
+        )
+        .unwrap();
+        assert_eq!(subject, "Autumn lamp offer");
+        assert!(html.contains("<img src=\"https://shop.example/lamp.png\" alt=\"Autumn Lamp\">"));
+        assert!(html.contains("href=\"https://shop.example/autumn\""));
+        assert!(!html.contains("http://"));
+        // An unknown family finding is an error, never a silent skip.
+        let mut unknown = report.clone();
+        unknown["findings"].as_array_mut().unwrap().push(finding(
+            "spam.subject.punctuation.v1",
+            json!({"kind":"header","name":"subject","occurrence":0}),
+        ));
+        assert!(repair_template(&unknown, &mail, "S", tasks::NEWSLETTER_HTML).is_err());
+    }
+
+    #[test]
+    fn repair_helpers_refuse_what_they_cannot_locate() {
+        assert!(located_http_url("<a href=\"http://x/y\">", 9).is_ok());
+        assert_eq!(
+            located_http_url("<a href=\"http://x/y\">", 9).unwrap(),
+            "http://x/y"
+        );
+        assert!(located_http_url("<a href=\"http://x/y\">", 8).is_err());
+        assert!(located_http_url("abc", 99).is_err());
+        assert!(upgrade_url("a http://x b", "https://x").is_err());
+        assert!(upgrade_url("a b", "http://x").is_err());
+        assert!(upgrade_url("http://x http://x", "http://x").is_err());
+        assert_eq!(
+            upgrade_url("a http://x b", "http://x").unwrap(),
+            "a https://x b"
+        );
+        assert!(add_img_alt("<p>", "a").is_err());
+        assert!(add_img_alt("<img alt=\"z\">", "a").is_err());
+        assert!(add_img_alt("<img src=x", "a").is_err());
+        assert_eq!(
+            add_img_alt("<img alt=\"z\"><img src=\"y\">", "a").unwrap(),
+            "<img alt=\"z\"><img src=\"y\" alt=\"a\">"
+        );
+        assert_eq!(sentence_case("AUTUMN LAMP"), "Autumn lamp");
+        assert_eq!(sentence_case(""), "");
+    }
+
+    #[test]
+    fn a_malformed_report_never_reads_as_clean() {
+        for bad in [
+            json!([]),
+            json!({}),
+            json!({"findings": {}}),
+            json!({"findings": [1]}),
+            json!({"findings": [{"rule_id": 3}]}),
+            json!({"findings": [{"severity": "x"}]}),
+        ] {
+            assert!(family_findings(&bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            family_findings(&json!({"findings": [{"rule_id": "dkim.x.v1"}]}))
+                .unwrap()
+                .len(),
+            0
+        );
+    }
 
     #[test]
     fn entity_decoding_and_anchor_selection() {

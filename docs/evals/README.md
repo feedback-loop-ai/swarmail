@@ -43,29 +43,47 @@ the 240-slot plan. The planned paid run (the hard tier × 4 targets × 4 agents
 **The MailSlurper that is measured is "built from source".** The operator
 ruled on 2026-11-07 (0129's second addendum) that the published linux
 executable's failure is a result, and that the comparison's MailSlurper is a
-cgo build of the pinned release source:
+cgo build of the pinned release source. Accepted
+[0130](../decisions/0130-eight-target-mail-comparison.md) (2026-11-08) pinned
+that same executable in [`sources.lock.json`](sources.lock.json) as its own row,
+`mailslurper-source-build`, and kept the official release as the separate
+`mailslurper` row, which protocol v3 records as not starting. The agent suite's
+target `mailslurper` names the service API its adapter drives; its executable is
+the `mailslurper-source-build` row, and a product record bound to the official
+row is refused by name. The lock is main's, byte for byte; this section only
+reads it.
 
 - *The published executable does not start.* `mailslurper-1.15.0-linux.zip`
   (`48f2f9ba…55f6`, member `0cd9416b…2627`) was built with `CGO_ENABLED=0`; on
   its default SQLite storage it exits with status 1 ("go-sqlite3 requires cgo
-  to work. This is a stub"). The lock keeps it as `artifact.official_release`,
-  with its stderr, never launchable and never probed.
+  to work. This is a stub"). The lock keeps it as the official `mailslurper` row,
+  with its stderr
+  ([`sources/mailslurper/mailslurper-official-failure.txt`](sources/mailslurper/mailslurper-official-failure.txt)),
+  never launched by either driver.
 - *The build.* `mailslurper` (`eb6cd97d…58ff`, 19942072 bytes) was built from
   the pinned source archive (`83f66f25…359f`) in
   `golang:1.18.1-bullseye@sha256:3b1a72af…` with `CGO_ENABLED=1`, verified
-  modules and `go build -trimpath`. It links glibc 2.31 or newer. It is one
-  build and not a reproducible one: a rebuild that differs is a new pin. It
-  reports **v1.14.1 under tag `release-1.15.0`**, because the tagged source
-  hard-codes that string and the published executable logs the same; the lock,
-  the product record and this file say so. "Built from source" claims that
-  these bytes were built from the pinned, tag-named source as recorded. It does
-  not claim to reproduce upstream's release.
-- *The tree is observed and recomputed.* The release commit `068acffd…1bd2`
-  names root tree `5f29f08a…0729`; its captured listing rehashes to that id, and
-  the verified source tarball, extracted into a new directory and added to a
-  fresh git index, writes the same tree
-  ([`transcripts/tarball-tree.txt`](agent-controls-2026-11-07/transcripts/tarball-tree.txt)).
-  Each root-level capture is the blob that tree names.
+  modules and `go build -trimpath`
+  ([`sources/mailslurper-source-build/mailslurper-cgo-provenance.md`](sources/mailslurper-source-build/mailslurper-cgo-provenance.md)).
+  It links glibc 2.31 or newer. It is one build and not a reproducible one: a
+  rebuild that differs is a new pin. It reports **v1.14.1 under tag
+  `release-1.15.0`**, because the tagged source hard-codes that string and the
+  published executable logs the same; the lock, the product record and this file
+  say so. "Built from source" claims that these bytes were built from the
+  pinned, tag-named source as recorded. It does not claim to reproduce
+  upstream's release.
+- *The tree is observed.* The lock binds the release commit `068acffd…1bd2` and
+  its root tree listing (`5f29f08a…0729`). The verified source tarball,
+  extracted into a new directory and added to a fresh git index, writes the same
+  tree
+  ([`transcripts/tarball-tree.txt`](agent-controls-2026-11-08/transcripts/tarball-tree.txt)).
+- *The sources 0130 does not bind.* The lock binds the service controller, the
+  route registration, the licence, the README and the config. The other files
+  the adapter cites (SMTP and storage code, the query builder, `go.mod` and
+  `go.sum`) are committed under
+  [`agent-sources/mailslurper/`](agent-sources/mailslurper/), outside the
+  0130-governed `sources/` tree. A digest table in `tests/mail_compare.rs` binds
+  each file to its member of the source archive.
 
 What the first real runs of that build showed, and the oracle and adapter now
 read as they are (the captured corpus, [`wire-corpus/mailslurper/`](wire-corpus/mailslurper/),
@@ -106,9 +124,8 @@ is decoded in CI):
 half behind a small backend interface, JSON-RPC batches in every adapter under
 Swarmail's own bound, MailHog and MailSlurper adapters (source-verified general
 operations only, nothing Swarmail-only emulated, hostile arguments refused before
-any request), source-lock v4 (v3 archived byte-identical, `protocol.json`
-untouched), the launcher's third owned listener for MailSlurper, the wire corpus
-for all three competitors, the loopback bridge (16 in flight, one-line forwarding,
+any request), the wire corpus for all three competitors (MailSlurper's recaptured under
+0130's pin and config file), the loopback bridge (16 in flight, one-line forwarding,
 and a later `initialize` answered from the first because several clients reach one
 stdio session), `matrix --target` (inputs bound before anything is spawned, the
 adapter and its cleanup receipt, schema-3 rows only), the product and cost records
@@ -141,14 +158,15 @@ receipts' `ci` item (pending), acceptance of 0129, the operator's confirmation o
 the 240 paid sessions (#163), and the model CLIs' own negotiation with the bridge,
 which the bridge logs in the first paid session and the free controls do not
 claim. The PR is held for the operator, because `scripts/compare-mail.sh`
-changes, and it contends with #340 for the lock's MailSlurper entry.
+changes. #340's lock is integrated, not contended: this branch changes no frozen
+byte of it.
 
 ## What exists, and what does not
 
 | Deliverable (spec) | State |
 |---|---|
-| Source pins: [`sources.lock.json`](sources.lock.json) (lock v4: v3's two competitors and MailSlurper) | **Artifacts pinned and tagged sources bound; build provenance unknown.** Mailpit v1.32.0 and MailHog v1.0.1 are pinned by asset and executable digest. Each tag's captured ref → annotated tag → commit chain and the commit's untruncated tree listing are committed under [`sources/`](sources/). Every repository document (licence, API, setup README, reviewed source) is bound by size, SHA-256 and git blob id to its path in that tree, and rechecked whenever the lock is used. Nothing ties either executable to its tagged commit, so `binary_build_provenance` stays unresolved and the lock makes no built-from claim. |
-| Method: [`protocol.json`](protocol.json) | **Frozen as protocol v2** (`fair-mail-comparison-v2`, superseding draft-3; the draft-2 and draft-3 bytes are kept under [`history/`](history/) and still read as version 1). It declares the limited official-artifact claim (no built-from claim), per-target backend, cap, prune and compression facts under the explicitly **unmatched** storage profile, the **unenforced local** resource profile, the common 100 ms poll, the driver's 40 s wait operation bound and the adapter's derived bounds and schema digest. `wait-best` is not a declared profile: it stays blocked. One frozen collection is admitted as raw measurement (see *Collection (2026-10-30)* below); it is not evidence. The #151 baseline now exists ([`baseline-2026-11-01.md`](baseline-2026-11-01.md)); no comparison control or final contract does. |
+| Source pins: [`sources.lock.json`](sources.lock.json) is lock v4 since 2026-11-07 (see *Eight targets* below); the lock v3 the 2026-10-30 collection ran under is [`history/2026-10-30-sources.lock.v3.json`](history/2026-10-30-sources.lock.v3.json), byte-identical, and its Mailpit and MailHog rows below are unchanged | **Artifacts pinned and tagged sources bound; build provenance unknown.** Mailpit v1.32.0 and MailHog v1.0.1 are pinned by asset and executable digest. Each tag's captured ref → annotated tag → commit chain and the commit's untruncated tree listing are committed under [`sources/`](sources/). Every repository document (licence, API, setup README, reviewed source) is bound by size, SHA-256 and git blob id to its path in that tree, and rechecked whenever the lock is used. Nothing ties either executable to its tagged commit, so `binary_build_provenance` stays unresolved and the lock makes no built-from claim. |
+| Method: [`protocol.json`](protocol.json) is protocol v3, **frozen** on 2026-11-07 and not yet collected (*Eight targets* below); protocol v2 is [`history/2026-10-30-protocol.v2.json`](history/2026-10-30-protocol.v2.json), byte-identical | **Frozen as protocol v2** (`fair-mail-comparison-v2`, superseding draft-3; the draft-2 and draft-3 bytes are kept under [`history/`](history/) and still read as version 1). It declares the limited official-artifact claim (no built-from claim), per-target backend, cap, prune and compression facts under the explicitly **unmatched** storage profile, the **unenforced local** resource profile, the common 100 ms poll, the driver's 40 s wait operation bound and the adapter's derived bounds and schema digest. `wait-best` is not a declared profile: it stays blocked. One frozen collection is admitted as raw measurement (see *Collection (2026-10-30)* below); it is not evidence. The #151 baseline now exists ([`baseline-2026-11-01.md`](baseline-2026-11-01.md)); no comparison control or final contract does. |
 | Wire driver: `benches/mail_compare.rs` | Built. Its polls now use the adapter's tested wait rule, and its scans refuse short nonfinal pages. A three-target smoke run against real Swarmail, Mailpit and MailHog seals and admits (`tests/mail_compare.rs`, ignored tests below). This is a smoke run, not evidence. Owned-bind corroboration and a cleanup worker that survives cancellation (T3), including the failed-drain-join arm, are **built and proved locally on Linux** (see *Method, as built*). Admission now recomputes the plan from the protocol, requires a proved cleanup receipt per launch and refuses a report that is not the arithmetic of its rows. The launch-level refusal of a foreign bind is proved through the kernel reading it rests on, not by forcing the reservation race, which needs no seam and has none. |
 | Mailpit MCP adapter: `mail_compare mailpit-mcp` | **Built and proved locally.** It speaks MCP 2025-03-26 over stdio. Its tools are list, search, read and a labelled client-side poll, each a translation of the captured Mailpit API. It was tested against real Mailpit over real SMTP. Each call's time frame starts at admission (see below). Final client negotiation (#151/#152/#153) is not proved by these tests. JSON-RPC batches are now answered under Swarmail's bound (#339). |
 | One command: `scripts/compare-mail.sh` | Built. `local` runs the driver as a labelled smoke run; `collect` runs the frozen protocol after the driver's own readiness check and admits it against that protocol. `controls` needs only the product record and the executables and runs the free oracle and null rows; `evidence` and `measure` stat the prerequisites in their fixed order (baseline, final contracts, controls, coordination receipts, cost basis, identity, full product), build the eval crate (`eval-build`) and run the verifier, which names the first prerequisite whose contents do not hold. A paid `measure` also needs `--authorized-product` equal to the product id. The `comparison-integration` refusal is gone. No mode starts a paid agent. |
@@ -459,17 +477,22 @@ and scratch paths, not a RAM tmpfs.
 
 ```bash
 bash scripts/compare-mail.sh                       # usage; launches nothing
-# three real targets against the smoke fixture (smoke, never evidence):
+# three real targets against the smoke fixture (smoke, never evidence); the
+# protocol-2 era lock lives under history/, so name where its documents are:
 bash scripts/compare-mail.sh local --output target/mail-compare/smoke-3 \
   --protocol tests/mail_compare/three-target-smoke.json \
+  --sources docs/evals/history/2026-10-30-sources.lock.v3.json --documents docs/evals \
   --mailpit /path/to/pinned/mailpit --mailhog /path/to/pinned/MailHog
 # the real-binary proofs (ignored by default; they fail, not skip, without the variables):
 MAIL_COMPARE_MAILPIT=/path/to/pinned/mailpit MAIL_COMPARE_MAILHOG=/path/to/pinned/MailHog \
   cargo test --locked --test mail_compare -- --ignored
 ```
 
-Pointing `local` at the committed protocol launches the full frozen
-workload as a smoke run, which is still not evidence. The driver's `check`
+Pointing `local` at a full protocol launches its whole workload as a smoke
+run, which is still not evidence (the committed protocol is now the frozen v3,
+whose smoke over `tests/mail_compare/eight-target-smoke.json` launches every
+declared row; protocol v2 and lock v3 under `history/` still can, with
+`--documents docs/evals`). The driver's `check`
 reports whether the protocol and lock admit collection. `collect --output
 DIR --mailpit BIN --mailhog BIN` runs the frozen protocol once (never
 resumed or overwritten) and then admits it against that protocol; it takes
@@ -566,6 +589,151 @@ this pin by a re-run on these bytes. The verify seat's compile for `25c0854`
 used that same pinned binary. This change neither re-ran the proof nor claims
 a merge repairs the engine; it cites the committed record, and the other
 rows above stay open (#219 has since closed, #267).
+
+## Eight targets: protocol v3 and source lock v4 (2026-11-07, #340)
+
+This section makes no comparison claim. It records what was built for the
+widening the issue states as "#163 approved and widened" (the issue's
+paraphrase of the operator's 2026-11-07 direction), under **proposed**
+decision [0130](../decisions/0130-eight-target-mail-comparison.md), which only
+the operator accepts. Nothing was collected, no agent session started and
+nothing paid ran.
+
+**Records.** [`protocol.json`](protocol.json) is now protocol v3
+(`fair-mail-comparison-v3`, superseding v2) and [`sources.lock.json`](sources.lock.json)
+is lock v4. They are a separate run with a separate denominator: protocol v2,
+lock v3 and the 2026-10-30 collection above stay as recorded (their bytes are
+under [`history/`](history/), sha256 unchanged), and no table or statistic merges
+a v2 cell with a v3 cell. Protocol v2 pairs only with lock v3, and protocol v3
+only with lock v4. Protocol v3 copies v2's corpus, throughput and wait
+profiles, budgets, resources and statistics unchanged; it adds the targets
+(eight competitors beside the candidate, the MailSlurper source build among
+them), per-target facts, a `capabilities` record, a product `scope` and the one
+`does_not_start` result.
+
+Read `protocol.json` and `sources.lock.json` in the 2026-10-30 record above
+as the two `history/` files; for instance
+`mail_compare admit <dir> docs/evals/history/2026-10-30-protocol.v2.json`.
+
+**State: frozen, ready to collect, not collected.** Under the operator's
+2026-11-07 rulings (recorded in decision 0130's second 2026-11-07 addendum)
+every competitor row is pinned from the supplied bytes, every tagged source is
+an observation, and protocol v3 is frozen: `status: frozen`, `unresolved: []`,
+nine targets, nine cyclic rotations, nine capability and product records and
+one `does_not_start` entry. `mail_compare check` exits 0 with "ready for
+collection". The two files are identified by content hash (a test holds both):
+`protocol.json` sha256
+`229babaac849ae832ecb1a9f8ec742c970d0f36edc9d26d4ff9bb9c3c0d7224e`,
+`sources.lock.json` sha256
+`ed201599dd57441cbcf0c7e66e7c82a56dd217ef683b7bf4e72ae7ce9d3a04b1`. After the
+freeze neither changes: a wrong frozen fact is a new protocol version or the
+operator's ruling. Collection itself was not run; that is a separate story.
+
+| Row | Source strength | Read path | Search | Storage | Runtime | Result |
+|---|---|---|---|---|---|---|
+| swarmail | the candidate checkout | HTTP JSON | server | memory | — | — |
+| mailpit v1.32.0 | official, annotated tag | HTTP JSON | server | scratch file | — | pinned (bytes unchanged) |
+| mailhog v1.0.1 | official, annotated tag | HTTP JSON | server | memory | — | pinned (bytes unchanged) |
+| mailslurper release-1.15.0 | official, **lightweight** tag (root tree rebuilt to its id) | — | — | SQLite (scratch file) | — | **does not start**: the release executable is a `CGO_ENABLED=0` stub (a published result; the row keeps its pin and a blocked cell per profile, no number) |
+| mailslurper-source-build | **built from source** (cgo), lightweight tag, build record supplied | HTTP JSON | client-side filter | SQLite (scratch file) | host glibc, **unpinned** | pinned; reports v1.14.1 under tag release-1.15.0 |
+| smtp4dev 3.16.1 | official, **lightweight** tag | HTTP JSON (paged by `page`) | client-side filter | scratch file, cap raised to 10000 | self-contained .NET on host libraries (unpinned; the report's row label) | pinned |
+| inbucket v3.2.0 | official, **lightweight** tag | HTTP JSON (per mailbox, unpaged) | client-side filter | memory, per-mailbox cap raised to 10000 | — | pinned |
+| greenmail release-2.1.15 | official jar, annotated tag; **integrity against the Maven Central registry's own checksum, authenticity not verified** | **POP3** (fresh session per scan: login, `STAT`, `UIDL`, `TOP` per message; no `DELE`) | client-side filter | memory | Temurin 21.0.13+9 JRE, pinned | pinned |
+| alkemio-mailslurper | **third-party image**, extracted binary, never an official row | HTTP JSON | client-side filter | SQLite (scratch file) | musl loader, pinned from the image's own layer | pinned |
+
+Every row keeps its own storage, cap and wait method as launched: an
+explicitly **unmatched** storage profile and the **unenforced local** resource
+profile, stated in every report. A tool without a verified search is scanned
+completely and filtered by token on the client; the method is a label on the
+row, in `report.json`'s `labels` (source, runtime, version, integrity and
+does-not-start labels included). Waits are the common 100 ms poll for every new
+row; none has a source-verified server wait. A lightweight tag has no tag
+object and no signature to record (it is absent, not "unsigned"), so a
+lightweight pin carries weaker source evidence than an annotated one. The
+claim stays throughput and observed visibility within a deadline: no
+durability, no accept==stored and no equivalence.
+
+**What was proved against real bytes.** Each launched row (smtp4dev, Inbucket,
+GreenMail, the cgo build and Alkemio's binary) passed, in unmeasured and
+bounded `#[ignore]`d tests that fail without their bytes, a round trip through
+its native read path, a hostile set (dot-leading lines, a lone `.` line, an RFC
+2047 subject, a 998-octet line, a boundary string in the body), and a
+600-message cap test under the exact-listening-set and cleanup proofs; the
+official MailSlurper executable was shown not to start;
+`real_member_and_output_documents_match` re-extracted every archive member and
+re-ran every captured program output. Decision 0130's addendum lists each
+correction these runs made (MailSlurper's `totalRecords`, smtp4dev's `page`, an
+unescaped `-` in a path segment) and each observation about a tool. Two bear on
+how to read a table later: **MailSlurper keeps one decoded body, no raw message,
+and does not undo SMTP dot-stuffing** (its body fidelity is reported per
+message, not exact), and **it acknowledges a mail before it stores it and lost
+some under SQLite lock contention in a burst probe** (a collection will show
+accepted-but-missing mail in the cell). A collection therefore exits 1 (a sealed
+run whose workload failed somewhere): the MailSlurper-family cells are never
+"exact" because of the fidelity mismatches, and the report says where. A message whose part holds its own
+boundary string mid-line is refused rather than returned cut short; the
+measured corpus never contains one.
+
+**Bounded runs.** Every real run is unmeasured and bounded under `timeout 600`
+and `taskset` on at most `nproc/4` CPUs, one test at a time, with the load
+recorded before and after:
+
+```bash
+cap=$(( $(nproc) / 4 )); cpus="0-$(( cap - 1 ))"
+cat /proc/loadavg
+timeout 600 taskset -c "$cpus" env MAIL_COMPARE_INBUCKET=… cargo test --locked \
+  --test mail_compare -- --ignored --exact eight_targets::real_inbucket_smtp_to_native_api_round_trip --test-threads=1
+timeout 600 taskset -c "$cpus" env MAIL_COMPARE_ALKEMIO_MAILSLURPER=… MAIL_COMPARE_MUSL=… cargo test --locked \
+  --test mail_compare -- --ignored --exact eight_targets::real_alkemio_mailslurper_smtp_to_native_api_round_trip --test-threads=1
+cat /proc/loadavg
+```
+
+The local smoke over `tests/mail_compare/eight-target-smoke.json` launches
+every declared row (each has a pin) and is never evidence:
+
+```bash
+timeout 600 taskset -c "$cpus" scripts/compare-mail.sh local --output "$PWD/target/smoke-v3" \
+  --protocol tests/mail_compare/eight-target-smoke.json \
+  --bin mailpit=… --bin mailhog=… --bin mailslurper-source-build=… --bin smtp4dev=… --bin inbucket=… \
+  --bin greenmail=… --runtime greenmail=… --bin alkemio-mailslurper=… --runtime alkemio-mailslurper=…
+```
+
+The official MailSlurper row takes no `--bin`: the protocol publishes that it
+does not start, so the driver never launches it. Download each artifact into
+its own new directory, verify its sha256 before use, and read it only with
+`python3 -I` from a script kept elsewhere.
+
+**Still open after this record.** Collection and the v3 matrix; the final MCP
+contracts, the comparison controls, cost, identity and the full product (the
+`controls`, `evidence` and `measure` prerequisites above); #148/#201; a best
+wait for any row; build provenance for every executable but the cgo build's;
+GreenMail's license text (its pin carries the jar's own Apache 2.0 declaration,
+not the license text, which was not supplied) and its REST API, which the
+pinned OpenAPI shows can read messages although the issue says it cannot (the
+driver reads over POP3 as ordered); and the operator's ruling on decision 0130,
+which includes the three conditions that readiness rests on beyond the four
+rulings (named below). Nothing here is a comparison claim.
+
+**Alkemio's cap basis, observed.** Unbatched, Alkemio's fork listed all 600 of
+600 mails in a burst, seven bounded runs out of seven (2026-11-07, one at a
+time), so its cap proof sends one burst like every other row and its lock
+basis ("no cap is set; 600 sent, 600 listed") holds as written. The cgo
+MailSlurper build does lose mail in a burst, so its cap proof still sends in
+batches of five. The cgo build also sometimes closes a fresh SMTP session
+before its banner (2 of 9 runs of its cap proof): a collection will count that
+as a send failure in its cell.
+
+**Three conditions readiness rests on, named.** Beyond the operator's four
+rulings, `mail_compare check` passes the frozen pair only because of three
+conditions entailed by the issue and the rulings, each with the refusal it
+keeps (decision 0130's review-return addendum derives them): an image pin's
+tagged-source gap is not counted (the issue orders an image-digest lock and a
+labelled Alkemio row, and an image has no tag), the source build skips only the
+release asset-list check (a supplied build is no release asset; tag, page,
+commitish and date are still checked and the download must be the tagged
+commit's tree), and a config file may run in its own directory (`cwd`, the
+Alkemio fork reads `./config.json`). The operator may strike any of them when
+ruling on 0130; nothing was collected that a strike could invalidate.
 
 ## What closes the remaining rows
 

@@ -27,8 +27,13 @@ fn the_committed_product_validates_against_the_committed_lock() {
     assert_eq!(product.planned_cells, 240);
     assert_eq!(product.controls.cells, 120);
     let slurper = product.tuple(target::Target::Mailslurper).unwrap();
-    // The source build, as the lock names it, and the version it reports.
-    assert_eq!(slurper.artifact_kind.as_deref(), Some("built_from_source"));
+    // The source build, as accepted 0130's lock names it (its own row,
+    // `mailslurper-source-build`, an `executable`), and the version it reports.
+    assert_eq!(
+        slurper.lock_entry.as_deref(),
+        Some("mailslurper-source-build")
+    );
+    assert_eq!(slurper.artifact_kind.as_deref(), Some("executable"));
     assert_eq!(slurper.version_report.as_deref(), Some("v1.14.1"));
     assert_eq!(slurper.smtp_auth, "none");
     assert_eq!(slurper.delivery.accept_implies_queryable, "not-promised");
@@ -89,6 +94,68 @@ fn a_product_that_miscounts_its_cells_or_disagrees_with_the_lock_or_the_code_is_
     assert!(why.contains("operator's"), "{why}");
 }
 
+#[test]
+fn every_target_maps_to_one_lock_entry_and_a_tuple_bound_to_another_is_refused_by_name() {
+    use target::Target;
+    assert_eq!(Target::Swarmail.lock_entry(), None);
+    assert_eq!(Target::Mailpit.lock_entry(), Some("mailpit"));
+    assert_eq!(Target::Mailhog.lock_entry(), Some("mailhog"));
+    // The agent `mailslurper` runs main's source-built row, never the
+    // official `mailslurper` row, which does not start.
+    assert_eq!(
+        Target::Mailslurper.lock_entry(),
+        Some("mailslurper-source-build")
+    );
+    let lock: Value = serde_json::from_str(LOCK).unwrap();
+    // Every mapped entry exists in the committed lock.
+    for t in target::ALL.into_iter().filter(|t| t.is_competitor()) {
+        let row = t.lock_entry().unwrap();
+        assert!(
+            lock["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["target"] == row),
+            "{row}"
+        );
+    }
+    let refused = |edit: &dyn Fn(&mut Value)| {
+        let mut v = product_value();
+        edit(&mut v);
+        let p = comparison::Product::parse(v.to_string().as_bytes()).unwrap();
+        p.validate(Some(&lock)).expect_err("must refuse")
+    };
+    // The official row, by name.
+    let why = refused(&|v| v["targets"][3]["lock_entry"] = "mailslurper".into());
+    assert!(
+        why.contains("mailslurper: lock_entry Some(\"mailslurper\") is not the target's Some(\"mailslurper-source-build\")"),
+        "{why}"
+    );
+    // Any other entry, by name: MailHog's tuple bound to Mailpit's row, and
+    // the candidate bound to a row at all.
+    let why = refused(&|v| v["targets"][2]["lock_entry"] = "mailpit".into());
+    assert!(
+        why.contains("mailhog: lock_entry Some(\"mailpit\") is not the target's Some(\"mailhog\")"),
+        "{why}"
+    );
+    let why = refused(&|v| v["targets"][3]["lock_entry"] = serde_json::Value::Null);
+    assert!(
+        why.contains("mailslurper: lock_entry None is not the target's"),
+        "{why}"
+    );
+    // The lock-side check refuses the same binding before it compares a digest.
+    let mut v = product_value();
+    v["targets"][3]["lock_entry"] = "mailslurper".into();
+    let p = comparison::Product::parse(v.to_string().as_bytes()).unwrap();
+    let why =
+        comparison::tuple_agrees_with_lock(p.tuple(target::Target::Mailslurper).unwrap(), &lock)
+            .unwrap_err();
+    assert!(
+        why.contains("product_lock_mismatch") && why.contains("lock_entry"),
+        "{why}"
+    );
+}
+
 // ---- inputs `matrix --target` binds ----------------------------------------
 
 fn scratch() -> tempfile::TempDir {
@@ -128,12 +195,16 @@ fn synthetic() -> Synthetic {
     let mut product = product_value();
     let mut lock: Value = serde_json::from_str(LOCK).unwrap();
     let mut bins = Vec::new();
-    for (i, name) in [(1, "mailpit"), (2, "mailhog"), (3, "mailslurper")] {
+    for (i, name, row) in [
+        (1, "mailpit", "mailpit"),
+        (2, "mailhog", "mailhog"),
+        (3, "mailslurper", "mailslurper-source-build"),
+    ] {
         let bin = executable(dir.path(), name, format!("a stand-in {name}").as_bytes());
         let digest = sha256(&std::fs::read(&bin).unwrap());
         product["targets"][i]["executable_sha256"] = digest.clone().into();
         for e in lock["entries"].as_array_mut().unwrap() {
-            if e["target"] == name {
+            if e["target"] == row {
                 e["pin"]["artifact"]["executable_sha256"] = digest.clone().into();
             }
         }

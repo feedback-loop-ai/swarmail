@@ -55,6 +55,8 @@ pub(super) fn historical() -> swarmail::model::Email {
         html: Some("<b>untrusted</b>".into()),
         link_metadata: None,
         attachments: None,
+        smtp_client_ip: None,
+        smtp_helo: None,
         links: vec!["https://x.io/?q=雪".into()],
         codes: (0..65).map(|i| format!("{i:04}")).collect(),
         message_id: Some("message@x".into()),
@@ -84,7 +86,7 @@ fn minimal() -> swarmail::model::Email {
     minimal
 }
 
-// The bulk checklist inside swarmail-html/6 restated from its published rule table, not
+// The bulk checklist inside swarmail-html/8 restated from its published rule table, not
 // from the formatter: every hint cites its RFC source and both provider pages.
 const GMAIL: &str = "https://support.google.com/mail/answer/81126";
 const YAHOO: &str = "https://senders.yahooinc.com/best-practices/";
@@ -95,38 +97,46 @@ fn finding(rule_id: &str, severity: &str, location: Value, hint: &str, source: &
 fn header(name: &str, occurrence: Value) -> Value {
     json!({"kind":"header","name":name,"occurrence":occurrence})
 }
-/// Findings of a message with a From field and a text/plain body but no
-/// Date, Message-ID or one-click unsubscribe, and no trusted authentication.
-fn checklist(from: Value) -> Vec<Value> {
-    let rfc7489 = "https://www.rfc-editor.org/rfc/rfc7489";
-    vec![
-        finding(
-            "bulk.authenticated_sender.not_evaluated.v1",
-            "error",
-            header("from", from.clone()),
-            "Not evaluated: trusted From identity or passing-and-aligned DKIM/SPF evidence is incomplete.",
-            &format!("{rfc7489}#section-3.1"),
-        ),
+/// The three mails this suite reports on, by what the evaluation can know of
+/// them (decision 0126): the REST seed has a From and no SMTP session (SPF is
+/// not evaluated); mail sent over loopback from `MAIL FROM:<sender@x.io>` has
+/// a session, and a From (s@x.io) or none; nothing is declared for any domain.
+#[derive(Clone, Copy)]
+enum Case {
+    Seeded,
+    Sent,
+    SentWithoutFrom,
+}
+
+/// Findings of a message with a text/plain body but no Date, Message-ID or
+/// one-click unsubscribe, with the checklist's authentication entries and the
+/// SPF and DMARC findings its evidence produces.
+fn checklist(case: Case, from: Value) -> Vec<Value> {
+    // (rule, not evaluated) for the three authentication entries.
+    let auth = match case {
+        Case::Seeded => [
+            ("authenticated_sender", true),
+            ("dmarc_presence", false),
+            ("from_alignment", true),
+        ],
+        Case::Sent => [
+            ("authenticated_sender", false),
+            ("dmarc_presence", false),
+            ("from_alignment", true),
+        ],
+        Case::SentWithoutFrom => [
+            ("authenticated_sender", false),
+            ("dmarc_presence", true),
+            ("from_alignment", false),
+        ],
+    };
+    let mut findings = vec![
         finding(
             "bulk.date.v1",
             "error",
             header("date", Value::Null),
             "Provide exactly one calendar-valid Date using current RFC 5322 syntax and a numeric zone; obsolete-only forms are unsupported by this checklist.",
             "https://www.rfc-editor.org/rfc/rfc5322#section-3.6.1",
-        ),
-        finding(
-            "bulk.dmarc_presence.not_evaluated.v1",
-            "error",
-            header("from", from.clone()),
-            "Not evaluated: trusted applicable DMARC policy evidence is unavailable.",
-            &format!("{rfc7489}#section-6.1"),
-        ),
-        finding(
-            "bulk.from_alignment.not_evaluated.v1",
-            "error",
-            header("from", from),
-            "Not evaluated: trusted From identity or DKIM/SPF alignment evidence is incomplete.",
-            &format!("{rfc7489}#section-3.1"),
         ),
         finding(
             "bulk.message_id.v1",
@@ -142,10 +152,82 @@ fn checklist(from: Value) -> Vec<Value> {
             "Provide one HTTPS List-Unsubscribe list and one exact List-Unsubscribe-Post: List-Unsubscribe=One-Click value. This structural check does not verify DKIM header coverage or endpoint operation.",
             "https://www.rfc-editor.org/rfc/rfc8058#section-3",
         ),
-    ]
+    ];
+    for (rule, unknown) in auth {
+        let (hint, unknown_hint, section) = match rule {
+            "authenticated_sender" => (
+                "Supply a passing DKIM or SPF result aligned with RFC5322.From. This scoped check does not certify every provider authentication requirement.",
+                "Not evaluated: trusted From identity or passing-and-aligned DKIM/SPF evidence is incomplete.",
+                "7489#section-3.1",
+            ),
+            "dmarc_presence" => (
+                "Publish a valid applicable DMARC policy; p=none satisfies this presence check.",
+                "Not evaluated: trusted applicable DMARC policy evidence is unavailable.",
+                "7489#section-6.1",
+            ),
+            _ => (
+                "Align a DKIM d= or SPF MAIL FROM identity with an unambiguous RFC5322.From domain under the applicable DMARC policy.",
+                "Not evaluated: trusted From identity or DKIM/SPF alignment evidence is incomplete.",
+                "7489#section-3.1",
+            ),
+        };
+        findings.push(finding(
+            &format!(
+                "bulk.{rule}.{}v1",
+                if unknown { "not_evaluated." } else { "" }
+            ),
+            "error",
+            header("from", from.clone()),
+            if unknown { unknown_hint } else { hint },
+            &format!("https://www.rfc-editor.org/rfc/rfc{section}"),
+        ));
+    }
+    let spf = |id: &str, severity: &str, hint: &str| json!({"rule_id":id,"severity":severity,"location":header("return-path", Value::Null),"fix_hint":hint});
+    findings.push(match case {
+        Case::Seeded => spf("spf.not_evaluated.v1", "info", "SPF was not evaluated: the message has no observed SMTP connection address, no known envelope sender, or a null sender without a HELO name. Send it over SMTP with a HELO and a MAIL FROM (RFC 7208 section 2.2)."),
+        _ => spf("spf.none.v1", "error", "Declare a v=spf1 TXT record for the domain of the envelope sender in the DNS policy; none is declared, or the domain is not a valid name (RFC 7208 section 2.6.1)."),
+    });
+    findings.push(match case {
+        Case::SentWithoutFrom => json!({"rule_id":"dmarc.from_invalid.v1","severity":"error","location":header("from", Value::Null),"fix_hint":"Send exactly one From header field whose addresses share one domain (RFC 5322 section 3.6.2, RFC 9989 section 4.4)."}),
+        _ => json!({"rule_id":"dmarc.none.v1","severity":"error","location":header("from", json!(0)),"fix_hint":"Declare exactly one v=DMARC1 record with a p= policy at the _dmarc name of the From domain or of its organizational domain in the DNS policy; none applies, and two records at one name apply none (RFC 9989 section 4.10)."}),
+    });
+    findings
 }
-fn report_of(findings: Vec<Value>) -> Value {
-    json!({"rule_set_id":"swarmail-html/6","findings":findings,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
+/// The `dns` member those reports carry: the names the evaluation asked for.
+fn lookups_of(case: Case) -> Value {
+    let names: &[&str] = match case {
+        Case::Seeded => &["_dmarc.dev", "_dmarc.swarmail.dev"],
+        Case::Sent => &["_dmarc.io", "_dmarc.x.io", "x.io"],
+        Case::SentWithoutFrom => &["x.io"],
+    };
+    Value::Array(
+        names
+            .iter()
+            .map(|n| json!({"name":n,"type":"txt","outcome":"no_records","values":[]}))
+            .collect(),
+    )
+}
+/// The 0122 §2.2 table, restated here and not read from the crate: info 1,
+/// warning 3, error 10, and 0 for `.not_evaluated.` ids and the demo marker.
+fn weight_of(finding: &Value) -> u64 {
+    let id = finding["rule_id"].as_str().unwrap();
+    if id == "demo.marker.v1" || id.contains(".not_evaluated.") {
+        return 0;
+    }
+    match finding["severity"].as_str().unwrap() {
+        "info" => 1,
+        "warning" => 3,
+        "error" => 10,
+        other => panic!("severity {other}"),
+    }
+}
+fn report_of(case: Case, mut findings: Vec<Value>) -> Value {
+    findings.sort_by_key(|f| f["rule_id"].as_str().unwrap().to_string());
+    for finding in &mut findings {
+        finding["weight"] = json!(weight_of(finding));
+    }
+    let total: u64 = findings.iter().map(|f| f["weight"].as_u64().unwrap()).sum();
+    json!({"rule_set_id":"swarmail-html/8","findings":findings,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":lookups_of(case)},"total":total})
 }
 
 pub(super) enum Wire {
@@ -280,7 +362,10 @@ async fn workflow(version: Option<&'static str>, stdio: bool, modern: bool) -> R
                 if name == "get_deliverability_report" {
                     // Stated expectation and the served REST report, read
                     // while the seeded message is still stored.
-                    assert_eq!(payload, report_of(checklist(json!(0))));
+                    assert_eq!(
+                        payload,
+                        report_of(Case::Seeded, checklist(Case::Seeded, json!(0)))
+                    );
                     let path = format!(
                         "/api/v1/messages/{}/deliverability",
                         seeded.as_str().unwrap()
@@ -917,7 +1002,9 @@ async fn modern_all_tools_http_and_stdio() {
                     descriptor["description"] = original["description"].clone();
                 } else if i == 1 {
                     for clause in [
-                        "swarmail-html/6",
+                        "swarmail-html/8",
+                        "weight",
+                        "total",
                         "bulk-sender checklist",
                         "HTML client-compatibility heuristics",
                         "spam signals",
@@ -1060,7 +1147,7 @@ fn report_projection(c: &Value) -> Value {
             .as_object_mut()
             .unwrap()
             .remove("examples"),
-        Some(json!(["swarmail-html/6"]))
+        Some(json!(["swarmail-html/8"]))
     );
     let location = &mut report["properties"]["findings"]["items"]["properties"]["location"];
     // oneOf over exclusive const tags carries the whole dispatch.
@@ -1342,6 +1429,12 @@ async fn served_openapi_pins_and_negative_controls() {
     let served = served_report_schema(srv.http_addr, VERSIONS[2]).await;
     let finding = "/properties/findings/items";
     let location = "/properties/findings/items/properties/location";
+    // The served `required` list with exactly one key removed.
+    let without = |pointer: &str, key: &str| {
+        let list = report.pointer(pointer).unwrap().as_array().unwrap();
+        assert!(list.contains(&json!(key)), "{pointer} requires {key}");
+        Value::Array(list.iter().filter(|k| *k != key).cloned().collect())
+    };
     for (pointer, value) in [
         (
             format!("{finding}/properties/severity/enum"),
@@ -1375,6 +1468,15 @@ async fn served_openapi_pins_and_negative_controls() {
             format!("{finding}/required"),
             json!(["rule_id", "severity", "location"]),
         ),
+        // The new keys are load-bearing (0122 §2.1): dropping `weight` from the
+        // finding's `required`, or `total` from the report's, moves the pin.
+        (
+            format!("{finding}/required"),
+            without(&format!("{finding}/required"), "weight"),
+        ),
+        ("/required".into(), without("/required", "total")),
+        (format!("{finding}/properties/weight/minimum"), json!(-1)),
+        ("/properties/total/minimum".into(), json!(-1)),
         ("/properties/findings/maxItems".into(), json!(257)),
         ("/required".into(), json!(["rule_set_id"])),
         (format!("{location}/oneOf"), json!([])),
@@ -1524,12 +1626,14 @@ async fn report_schema_typed_forms_and_negatives() {
             location,
             severity: severities[i % 3],
             fix_hint: "雪".into(),
+            weight: [1, 3, 10][i % 3],
         };
         let value = serde_json::to_value(&finding).unwrap();
         let severity = ["info", "warning", "error"][i % 3];
+        let weight = [1, 3, 10][i % 3];
         assert_eq!(
             value,
-            json!({"rule_id":"typed.v1","location":wire,"severity":severity,"fix_hint":"雪"})
+            json!({"rule_id":"typed.v1","location":wire,"severity":severity,"fix_hint":"雪","weight":weight})
         );
         findings.push(finding);
     }
@@ -1537,24 +1641,28 @@ async fn report_schema_typed_forms_and_negatives() {
         rule_set_id: "swarmail-bulk/1".into(),
         findings: vec![],
         dns: Default::default(),
+        total: 0,
     })
     .unwrap();
     assert_eq!(
         empty,
-        json!({"rule_set_id":"swarmail-bulk/1","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]}})
+        json!({"rule_set_id":"swarmail-bulk/1","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]},"total":0})
     );
     assert!(valid(&schema, &empty));
     // No invented minimum length or constant for the rule-set ID.
+    let total = findings.iter().map(|f| f.weight).sum();
     let full = serde_json::to_value(Report {
         rule_set_id: String::new(),
         findings,
         dns: Default::default(),
+        total,
     })
     .unwrap();
     assert!(valid(&schema, &full), "{full}");
     let base = full["findings"][0].clone();
     let dns = json!({"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]});
-    let at = |n: usize| json!({"rule_set_id":"r","findings":vec![base.clone(); n],"dns":dns});
+    let at =
+        |n: usize| json!({"rule_set_id":"r","findings":vec![base.clone(); n],"dns":dns,"total":0});
     assert!(valid(&schema, &at(256)));
     assert!(!valid(&schema, &at(257)));
 
@@ -1562,7 +1670,7 @@ async fn report_schema_typed_forms_and_negatives() {
     let with_location = |location: Value| {
         let mut finding = base.clone();
         finding["location"] = location;
-        json!({"rule_set_id":"r","findings":[finding],"dns":dns})
+        json!({"rule_set_id":"r","findings":[finding],"dns":dns,"total":0})
     };
     let with_finding = |key: &str, value: Option<Value>| {
         let mut finding = base.clone();
@@ -1572,26 +1680,29 @@ async fn report_schema_typed_forms_and_negatives() {
                 finding.as_object_mut().unwrap().remove(key).unwrap();
             }
         }
-        json!({"rule_set_id":"r","findings":[finding],"dns":dns})
+        json!({"rule_set_id":"r","findings":[finding],"dns":dns,"total":0})
     };
-    refuse(json!({"findings":[],"dns":dns}), "no rule_set_id");
-    refuse(json!({"rule_set_id":"r","dns":dns}), "no findings");
+    refuse(json!({"findings":[],"dns":dns,"total":0}), "no rule_set_id");
     refuse(
-        json!({"rule_set_id":"r","findings":[],"dns":dns,"extra":1}),
+        json!({"rule_set_id":"r","dns":dns,"total":0}),
+        "no findings",
+    );
+    refuse(
+        json!({"rule_set_id":"r","findings":[],"dns":dns,"total":0,"extra":1}),
         "report extra",
     );
     refuse(
-        json!({"rule_set_id":1,"findings":[],"dns":dns}),
+        json!({"rule_set_id":1,"findings":[],"dns":dns,"total":0}),
         "numeric rule set",
     );
     refuse(
-        json!({"rule_set_id":"r","findings":null,"dns":dns}),
+        json!({"rule_set_id":"r","findings":null,"dns":dns,"total":0}),
         "null findings",
     );
     // The `dns` member is required and closed (decision 0120 §5).
-    refuse(json!({"rule_set_id":"r","findings":[]}), "no dns");
+    refuse(json!({"rule_set_id":"r","findings":[],"total":0}), "no dns");
     let with_dns = |edit: &dyn Fn(&mut Value)| {
-        let mut value = json!({"rule_set_id":"r","findings":[],"dns":dns});
+        let mut value = json!({"rule_set_id":"r","findings":[],"dns":dns,"total":0});
         edit(&mut value["dns"]);
         value
     };
@@ -1676,9 +1787,29 @@ async fn report_schema_typed_forms_and_negatives() {
     ] {
         refuse(with_dns(&*edit), label);
     }
-    for key in ["rule_id", "severity", "location", "fix_hint"] {
+    for key in ["rule_id", "severity", "location", "fix_hint", "weight"] {
         refuse(with_finding(key, None), key);
     }
+    // `weight` and `total` are non-negative integers and nothing else (0122 §2.1).
+    for bad in [json!(-1), json!(1.5), json!("3"), Value::Null] {
+        refuse(
+            with_finding("weight", Some(bad.clone())),
+            &format!("weight {bad}"),
+        );
+        let mut report = json!({"rule_set_id":"r","findings":[],"dns":dns,"total":0});
+        report["total"] = bad.clone();
+        refuse(report, &format!("total {bad}"));
+    }
+    refuse(
+        json!({"rule_set_id":"r","findings":[],"dns":dns}),
+        "no total",
+    );
+    // No schema maximum: the values the code emits are not a second copy in the schema.
+    assert!(valid(&schema, &with_finding("weight", Some(json!(10)))));
+    assert!(valid(
+        &schema,
+        &json!({"rule_set_id":"r","findings":[],"dns":dns,"total":2560})
+    ));
     for (key, value) in [
         ("extra", json!(1)),
         ("rule_id", json!("")),
@@ -1734,6 +1865,39 @@ async fn report_schema_typed_forms_and_negatives() {
 /// Wire receipts for the production-reachable forms: real SMTP bytes, the
 /// demo marker at every severity, header occurrence 0 and null and the root
 /// MIME path, over HTTP and the real bridge on both modern revisions.
+/// The raw text block of a report puts `weight` last in every finding and
+/// `total` last in the report (0122 §2.1). MCP serializes through serde_json's
+/// sorted map, so "last" there is also the last in sorted order; `Value` cannot
+/// witness order, so this reads the bytes. The report is read before the new
+/// keys, byte for byte, as the sorted prefix it always had.
+fn assert_new_keys_last(raw: &str, expected: &Value) {
+    let total = expected["total"].as_u64().unwrap();
+    assert!(
+        raw.ends_with(&format!(
+            r#","rule_set_id":"swarmail-html/8","total":{total}}}"#
+        )),
+        "{raw}"
+    );
+    let findings = expected["findings"].as_array().unwrap();
+    let parts: Vec<&str> = raw.split(r#","weight":"#).collect();
+    assert_eq!(parts.len(), findings.len() + 1, "{raw}");
+    for (i, finding) in findings.iter().enumerate() {
+        let severity = finding["severity"].as_str().unwrap();
+        assert!(
+            parts[i].ends_with(&format!(r#","severity":"{severity}""#)),
+            "weight follows severity: {raw}"
+        );
+        let weight = finding["weight"].as_u64().unwrap();
+        let tail = format!("{weight}}}");
+        assert!(parts[i + 1].starts_with(&tail), "{raw}");
+        let after = &parts[i + 1][tail.len()..];
+        assert!(
+            after.starts_with(',') || after.starts_with(']'),
+            "weight closes its finding: {raw}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn report_stored_bytes_over_modern_wire() {
     let srv = start().await;
@@ -1750,33 +1914,33 @@ async fn report_stored_bytes_over_modern_wire() {
             "fix_hint":"Remove the X-Swarmail-Demo header."})
     };
     let mut cases = Vec::new();
-    for (raw, findings) in [
+    for (raw, (case, findings)) in [
         (
             &b"From: s@x.io\r\nX-Swarmail-Demo: info\r\nContent-Type: text/html\r\n\r\n<p>x</p>\r\n"[..],
-            [checklist(json!(0)), vec![plain_text.clone(), demo("info")]].concat(),
+            (Case::Sent, [checklist(Case::Sent, json!(0)), vec![plain_text.clone(), demo("info")]].concat()),
         ),
         (
             b"From: s@x.io\r\nX-Swarmail-Demo: warning\r\n\r\nbody\r\n",
-            [checklist(json!(0)), vec![demo("warning")]].concat(),
+            (Case::Sent, [checklist(Case::Sent, json!(0)), vec![demo("warning")]].concat()),
         ),
         (
             b"X-Swarmail-Demo: error\r\n\r\nbody\r\n",
-            [checklist(Value::Null), vec![demo("error")]].concat(),
+            (Case::SentWithoutFrom, [checklist(Case::SentWithoutFrom, Value::Null), vec![demo("error")]].concat()),
         ),
         // The merge of #282 and #259 first met here: an HTML finding through
         // the modern schema and the March text block.
         (
             b"From: s@x.io\r\nContent-Type: text/html\r\n\r\n<p>x</p><video></video>\r\n",
-            [checklist(json!(0)), vec![plain_text, json!({
+            (Case::Sent, [checklist(Case::Sent, json!(0)), vec![plain_text, json!({
                 "rule_id":"html.element.video.v1","severity":"warning",
                 "location":{"kind":"mime_part","path":[]},
-                "fix_hint":"Video may be removed in Gmail and classic Outlook for Windows; provide a linked image and text fallback."})]].concat(),
+                "fix_hint":"Video may be removed in Gmail and classic Outlook for Windows; provide a linked image and text fallback."})]].concat()),
         ),
     ] {
         let id = common::smtp_raw(srv.smtp_addr, "report-wire", raw).await;
         let path = format!("/api/v1/messages/{id}/deliverability");
         let rest = common::http_json(srv.http_addr, "GET", &path, None).await;
-        assert_eq!(rest, (200, report_of(findings)));
+        assert_eq!(rest, (200, report_of(case, findings)));
         cases.push((id, rest.1));
     }
     for version in &VERSIONS[1..] {
@@ -1795,6 +1959,17 @@ async fn report_stored_bytes_over_modern_wire() {
                 assert_eq!(&reply["result"]["structuredContent"], expected);
                 assert_eq!(&text(&reply), expected);
                 assert!(valid(&schema, expected));
+                let raw = reply["result"]["content"][0]["text"].as_str().unwrap();
+                assert_new_keys_last(raw, expected);
+                // A second call is byte-identical (a cache hit equals the miss).
+                let again = wire
+                    .request(&call(
+                        json!(5),
+                        "get_deliverability_report",
+                        json!({"id":id}),
+                    ))
+                    .await;
+                assert_eq!(again["result"]["content"][0]["text"], raw);
             }
             let missing = wire
                 .request(&call(
@@ -1821,6 +1996,10 @@ async fn report_stored_bytes_over_modern_wire() {
             .await;
         assert!(reply["result"].get("structuredContent").is_none());
         assert_eq!(&text(&reply), expected);
+        assert_new_keys_last(
+            reply["result"]["content"][0]["text"].as_str().unwrap(),
+            expected,
+        );
     }
     srv.stop().await;
 }

@@ -128,6 +128,23 @@ nothing beyond the acceptance.
   [baseline](../evals/baseline-2026-11-01.md)), while `docs/evals/README.md`
   still says, under its 2026-10-30 status, that no baseline exists.
 
+## Dated pointer — 2026-11-07 (eight targets, proposed 0130)
+
+The text above is unchanged. Issue #340 states that on 2026-11-07 the operator
+asked to bench throughput and wait latency against MailSlurper, smtp4dev,
+Inbucket and GreenMail as well as Mailpit and MailHog, and records the ruling
+as "#163 approved and widened". That wording is the issue's paraphrase of the
+ruling, not a quotation of it. Proposed
+[0130](0130-eight-target-mail-comparison.md) would widen §4's "three actual
+server binaries" and its "fixed targets" to eight, by addition only: protocol
+v2 and its 2026-10-30 collection stay as recorded, and protocol v3 is a
+separate run with a separate denominator. This pointer changes nothing in
+§§1–6; 0130 is a proposal, and only the operator accepts it.
+
+2026-11-07: nine targets; see 0130's review-return addendum.
+
+2026-11-08: the operator accepted [0130](0130-eight-target-mail-comparison.md) ("Accept and merge"); §4's target count is amended by addition as 0130 states.
+
 ## Dated addendum — 2026-11-07 (the operator's widening, issue #339)
 
 This addendum only adds. The text above, and the 2026-11-02 addendum, are

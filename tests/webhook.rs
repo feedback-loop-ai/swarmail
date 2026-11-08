@@ -2742,6 +2742,8 @@ async fn the_final_sweep_survives_a_lagged_ring_and_accounts_the_backlog() {
             html: None,
             link_metadata: None,
             attachments: None,
+            smtp_client_ip: None,
+            smtp_helo: None,
             links: vec![],
             codes: vec![],
             message_id: None,

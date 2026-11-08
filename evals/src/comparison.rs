@@ -255,7 +255,17 @@ impl Product {
             out.push(format!("{n}: delivery semantics are not declared"));
         }
         if t.is_competitor() {
-            let bound = tuple.lock_entry.as_deref() == Some(n)
+            // The lock entry the target maps to (`Target::lock_entry`); a
+            // tuple that names any other entry, the official `mailslurper`
+            // row included, is refused by name.
+            if tuple.lock_entry.as_deref() != t.lock_entry() {
+                out.push(format!(
+                    "{n}: lock_entry {:?} is not the target's {:?}",
+                    tuple.lock_entry,
+                    t.lock_entry()
+                ));
+            }
+            let bound = tuple.lock_entry.as_deref() == t.lock_entry()
                 && tuple.executable_sha256.as_deref().is_some_and(is_hash)
                 && tuple.artifact_kind.is_some()
                 && tuple
@@ -283,13 +293,25 @@ impl Product {
 /// executable digest, the artifact kind and the version report. A product
 /// that disagrees with the lock names a binary the lock does not pin.
 pub fn tuple_agrees_with_lock(tuple: &TargetTuple, lock: &Value) -> Result<(), String> {
+    // The entry the target maps to, not the entry the tuple claims: a tuple
+    // bound to another row is refused before any digest is compared.
+    let want = Target::parse(&tuple.target)?.lock_entry();
+    if tuple.lock_entry.as_deref() != want {
+        return Err(format!(
+            "product_lock_mismatch: {} lock_entry is {:?}, the target's is {want:?}",
+            tuple.target, tuple.lock_entry
+        ));
+    }
     let entry = lock["entries"]
         .as_array()
-        .and_then(|e| e.iter().find(|e| e["target"] == json!(tuple.target)))
+        .and_then(|e| {
+            e.iter()
+                .find(|e| want.is_some_and(|w| e["target"] == json!(w)))
+        })
         .ok_or_else(|| {
             format!(
                 "product_lock_mismatch: the lock has no {} entry",
-                tuple.target
+                want.unwrap_or(&tuple.target)
             )
         })?;
     let artifact = &entry["pin"]["artifact"];
@@ -480,7 +502,9 @@ impl MatrixTarget {
         for id in ids {
             let task = crate::tasks::find(id).ok_or_else(|| format!("unknown task {id}"))?;
             let structural = self.target.is_competitor()
-                && (task.scenario.uses_chaos() || task.agent_count != 1);
+                && (task.scenario.uses_chaos()
+                    || task.agent_count != 1
+                    || task.scenario.reads_reports());
             if structural || !self.product.applicable(id, self.target) {
                 return Err(format!(
                     "task_not_applicable: {id} is not requested for {} by product {}",

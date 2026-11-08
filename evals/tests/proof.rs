@@ -50,7 +50,7 @@ fn every_task_passes_with_the_oracle() {
         let state = retained_state(dir.path(), &row);
         (row, stderr(&out), state)
     });
-    assert_eq!(results.len(), 24);
+    assert_eq!(results.len(), 25);
     let mut failures = Vec::new();
     for (id, (row, err, state)) in &results {
         if row.outcome != Outcome::Pass {
@@ -184,7 +184,7 @@ fn every_task_fails_with_null_and_its_declared_idle_class() {
         let state = retained_state(dir.path(), &row);
         (row, stderr(&out), state)
     });
-    assert_eq!(results.len(), 24);
+    assert_eq!(results.len(), 25);
     for (id, (row, err, state)) in &results {
         let task = tasks::find(id).unwrap();
         assert_eq!(row.outcome, Outcome::Fail, "{id}: {row:?}\n{err}");
@@ -1145,4 +1145,65 @@ fn a_part_submitted_alone_is_recoverable_and_no_trap() {
             .iter()
             .any(|e| e["action"] == "otp_verify" && e["accepted"] == true)
     );
+}
+
+/// Proposed 0131 §3: five scripted `newsletter-findings` controls through the
+/// real trial path. Each reads the report like the oracle and then re-sends
+/// something that must not pass; none completes the goal, so each scores the
+/// task's declared idle class, `gave_up`, with `marketing_completed` false in
+/// the retained state.
+#[test]
+fn newsletter_controls_that_do_not_repair_the_mail_fail_gave_up() {
+    let _trial_scope = trial_scope();
+    swarmail_bin();
+    for (mode, sends, accepted_events) in [
+        ("newsletter_unchanged", 2, 0),
+        ("newsletter_partial", 2, 0),
+        ("newsletter_traded", 2, 0),
+        ("newsletter_offer_dropped", 1, 0),
+        ("newsletter_cleared", 2, 0),
+    ] {
+        let dir = tempdir();
+        let (row, out) = helper_trial(
+            mode,
+            &[
+                "--task",
+                "newsletter-findings",
+                "--agent",
+                mode,
+                "--artifacts-dir",
+                dir.path().to_str().unwrap(),
+            ],
+            &[],
+        );
+        assert_eq!(row.outcome, Outcome::Fail, "{mode}: {}", stderr(&out));
+        assert_eq!(row.failure_class, Some(FailureClass::GaveUp), "{mode}");
+        assert!(
+            row.agent_exits.iter().all(|e| e.code == Some(0)),
+            "{mode}: the control exits zero"
+        );
+        let state = retained_state(dir.path(), &row);
+        assert!(no_goal_completed(&state), "{mode}: {state}");
+        // The prepared newsletter plus the accepted re-sends are the
+        // deliveries; a refused POST sends nothing.
+        assert_eq!(
+            state["deliveries"].as_array().unwrap().len(),
+            sends,
+            "{mode}: {state}"
+        );
+        let events = state["events"].as_array().unwrap();
+        assert_eq!(
+            events.iter().filter(|e| e["accepted"] == true).count(),
+            accepted_events,
+            "{mode}: {state}"
+        );
+        // Every recorded event is an unaccepted, category-less marketing one.
+        assert!(!events.is_empty(), "{mode}");
+        assert!(
+            events.iter().all(|e| e["action"] == "marketing"
+                && e["accepted"] == false
+                && e["category"].is_null()),
+            "{mode}: {state}"
+        );
+    }
 }

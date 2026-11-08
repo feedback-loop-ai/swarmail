@@ -61,6 +61,21 @@ impl Target {
         self != Target::Swarmail
     }
 
+    /// The source-lock entry whose executable this target runs (accepted
+    /// decision 0130). The agent target `mailslurper` names the service API
+    /// the adapter drives; its executable is the lock's
+    /// `mailslurper-source-build` row, "built from source", and never the
+    /// official `mailslurper` row, which does not start. Exhaustive: a new
+    /// target is a compile error here. The candidate has no entry.
+    pub fn lock_entry(self) -> Option<&'static str> {
+        match self {
+            Target::Swarmail => None,
+            Target::Mailpit => Some("mailpit"),
+            Target::Mailhog => Some("mailhog"),
+            Target::Mailslurper => Some("mailslurper-source-build"),
+        }
+    }
+
     /// The `mail_compare` mode that serves this target's adapter, if any.
     pub fn adapter_mode(self) -> Option<&'static str> {
         match self {

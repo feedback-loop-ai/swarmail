@@ -1,14 +1,17 @@
 //! Fair wire comparison driver (issue #163, proposed decision 0091): one
 //! executable that runs the frozen throughput and wait profiles against
-//! real Swarmail, Mailpit and MailHog servers it launches and owns. It is
+//! real Swarmail, Mailpit, MailHog, MailSlurper, smtp4dev, Inbucket,
+//! GreenMail and (separately labelled) Alkemio's patched MailSlurper
+//! servers it launches and owns (proposed decision 0130). It is
 //! experiment infrastructure, independent of the eval crate; the one entry
 //! point is `scripts/compare-mail.sh`, which builds it and passes the
 //! modes below. A plain `cargo bench` invocation measures nothing.
 //!
-//!   mail_compare check --protocol P --sources S
+//!   mail_compare check --protocol P --sources S [--documents DIR]
+//!   mail_compare targets --protocol P
 //!   mail_compare run --mode smoke|collect --protocol P --sources S
-//!       --output DIR --scratch DIR --run-id ID --bin TARGET=PATH...
-//!       [--commit SHA --dirty true|false]
+//!       [--documents DIR] --output DIR --scratch DIR --run-id ID --bin TARGET=PATH...
+//!       [--runtime TARGET=DIR...] [--commit SHA --dirty true|false]
 //!   mail_compare admit DIR
 //!   mail_compare mailpit-mcp|mailhog-mcp|mailslurper-mcp --sources S
 //!       (--endpoint http://127.0.0.1:PORT | --launch BIN --scratch DIR)
@@ -41,13 +44,14 @@ mod targets;
 #[path = "mail_compare/wire.rs"]
 mod wire;
 
-use protocol::{Protocol, Role, SourceLock, TargetKind};
+use protocol::{Protocol, SourceLock};
+use runner::flags;
 use std::collections::BTreeMap;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: mail_compare check|run|admit|mailpit-mcp|mailhog-mcp|mailslurper-mcp … (see scripts/compare-mail.sh)";
+const USAGE: &str = "usage: mail_compare check|targets|run|admit|mailpit-mcp|mailhog-mcp|mailslurper-mcp … (see scripts/compare-mail.sh)";
 
 fn main() -> ExitCode {
     // cargo bench appends `--bench`; it selects nothing here.
@@ -61,44 +65,20 @@ fn main() -> ExitCode {
             0
         }
         Some("check") => check(&args[1..]),
+        Some("targets") => targets_mode(&args[1..]),
         Some("run") => run(&args[1..]),
         Some("admit") => admit(&args[1..]),
-        Some("mailpit-mcp") => {
-            adapter_mode::<mailpit_mcp::Mailpit>("mailpit-mcp", TargetKind::Mailpit, &args[1..])
+        Some("mailpit-mcp") => adapter_mode::<mailpit_mcp::Mailpit>("mailpit-mcp", &args[1..]),
+        Some("mailhog-mcp") => adapter_mode::<mailhog_mcp::Mailhog>("mailhog-mcp", &args[1..]),
+        Some("mailslurper-mcp") => {
+            adapter_mode::<mailslurper_mcp::Mailslurper>("mailslurper-mcp", &args[1..])
         }
-        Some("mailhog-mcp") => {
-            adapter_mode::<mailhog_mcp::Mailhog>("mailhog-mcp", TargetKind::Mailhog, &args[1..])
-        }
-        Some("mailslurper-mcp") => adapter_mode::<mailslurper_mcp::Mailslurper>(
-            "mailslurper-mcp",
-            TargetKind::Mailslurper,
-            &args[1..],
-        ),
         Some(_) => {
             eprintln!("{USAGE}");
             2
         }
     };
     ExitCode::from(code as u8)
-}
-
-/// `--flag value` pairs; a repeated flag other than `--bin`, a flag without
-/// a value or a stray word refuses.
-fn flags(args: &[String]) -> Result<BTreeMap<String, Vec<String>>, String> {
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut it = args.iter();
-    while let Some(flag) = it.next() {
-        let name = flag
-            .strip_prefix("--")
-            .ok_or_else(|| format!("unexpected argument {flag:?}"))?;
-        let value = it.next().ok_or_else(|| format!("--{name} needs a value"))?;
-        let slot = out.entry(name.to_owned()).or_default();
-        if !slot.is_empty() && name != "bin" {
-            return Err(format!("--{name} given twice"));
-        }
-        slot.push(value.clone());
-    }
-    Ok(out)
 }
 
 fn one<'a>(f: &'a BTreeMap<String, Vec<String>>, name: &str) -> Result<&'a str, String> {
@@ -115,11 +95,19 @@ fn load(
     let sb = std::fs::read(one(f, "sources")?).map_err(|e| format!("sources: {e}"))?;
     let p = Protocol::parse(&pb).map_err(|r| r.to_string())?;
     let s = SourceLock::parse(&sb).map_err(|r| r.to_string())?;
-    // The captured documents live beside the lock; their bytes are
-    // rechecked every time the lock is used, not trusted from last time.
-    let dir = Path::new(one(f, "sources")?)
-        .parent()
-        .unwrap_or(Path::new("."));
+    // Version pairing is checked first: neither version reads the other's
+    // records (proposed decision 0130 §3).
+    protocol::pairing(&p, &s).map_err(|r| r.to_string())?;
+    // The captured documents live beside the lock, or where `--documents`
+    // says (a historical lock under `history/` is verified against the
+    // documents in `docs/evals`); their bytes are rechecked every time the
+    // lock is used, not trusted from last time.
+    let dir = match f.get("documents").and_then(|v| v.first()) {
+        Some(d) => Path::new(d),
+        None => Path::new(one(f, "sources")?)
+            .parent()
+            .unwrap_or(Path::new(".")),
+    };
     s.validate().map_err(|r| r.to_string())?;
     s.verify_files(if dir.as_os_str().is_empty() {
         Path::new(".")
@@ -128,6 +116,33 @@ fn load(
     })
     .map_err(|r| format!("source documents: {r}"))?;
     Ok((p, pb, s, sb))
+}
+
+/// `mail_compare targets --protocol P`: the competitors the protocol
+/// declares, one name per line, for the wrapper's required-binary list. The
+/// candidate is built by the wrapper itself and never listed.
+fn targets_mode(args: &[String]) -> i32 {
+    let res = flags(args).and_then(|f| {
+        if let Some(k) = f.keys().find(|k| k.as_str() != "protocol") {
+            return Err(format!("unknown flag --{k}"));
+        }
+        let bytes = std::fs::read(one(&f, "protocol")?).map_err(|e| format!("protocol: {e}"))?;
+        let p = Protocol::parse(&bytes).map_err(|r| r.to_string())?;
+        p.validate().map_err(|r| r.to_string())?;
+        Ok(p)
+    });
+    match res {
+        Ok(p) => {
+            for t in protocol::declared_competitors(&p) {
+                println!("{t}");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("mail_compare targets: {e}");
+            2
+        }
+    }
 }
 
 fn check(args: &[String]) -> i32 {
@@ -193,47 +208,45 @@ fn admit(args: &[String]) -> i32 {
 /// after stdin ends and its cleanup facts are all true). The lock must pin
 /// the backend either way. Stdout carries only the announcement and the
 /// protocol; refusals go to stderr.
-fn adapter_mode<B: mcp::Backend>(mode: &str, kind: TargetKind, args: &[String]) -> i32 {
+fn adapter_mode<B: mcp::Backend>(mode: &str, args: &[String]) -> i32 {
+    let kind = B::TARGET;
     enum Via {
         Endpoint(std::net::SocketAddr),
         Launch(targets::LaunchSpec, PathBuf),
     }
-    let ready = flags(args).and_then(|f| {
-        if let Some(k) = f
-            .keys()
-            .find(|k| !["endpoint", "sources", "launch", "scratch"].contains(&k.as_str()))
-        {
-            return Err(format!("unknown flag --{k}"));
-        }
-        let path = one(&f, "sources")?;
-        let s = SourceLock::parse(&std::fs::read(path).map_err(|e| format!("sources: {e}"))?)
-            .map_err(|r| r.to_string())?;
-        s.validate().map_err(|r| r.to_string())?;
-        let dir = Path::new(path)
-            .parent()
-            .filter(|d| !d.as_os_str().is_empty());
-        s.verify_files(dir.unwrap_or(Path::new(".")))
-            .map_err(|r| format!("source documents: {r}"))?;
-        let pin = s
-            .pin(kind)
-            .ok_or_else(|| format!("the source lock pins no {kind}"))?;
-        match (f.contains_key("endpoint"), f.contains_key("launch")) {
-            (true, false) if !f.contains_key("scratch") => {
-                Ok(Via::Endpoint(mcp::parse_endpoint(one(&f, "endpoint")?)?))
+    let ready = mcp::adapter_target(kind)
+        .and_then(|()| flags(args))
+        .and_then(|f| {
+            if let Some(k) = f
+                .keys()
+                .find(|k| !["endpoint", "sources", "launch", "scratch"].contains(&k.as_str()))
+            {
+                return Err(format!("unknown flag --{k}"));
             }
-            (false, true) => Ok(Via::Launch(
-                targets::LaunchSpec {
-                    kind,
-                    binary: PathBuf::from(one(&f, "launch")?),
-                    expected_sha256: Some(pin.artifact.executable_sha256.clone()),
-                    template: pin.launch.clone(),
-                    config: pin.config.clone(),
-                },
-                PathBuf::from(one(&f, "scratch").map_err(|_| "--launch needs --scratch DIR")?),
-            )),
-            _ => Err("give --endpoint URL, or --launch BIN with --scratch DIR, not both".into()),
-        }
-    });
+            let path = one(&f, "sources")?;
+            let s = SourceLock::parse(&std::fs::read(path).map_err(|e| format!("sources: {e}"))?)
+                .map_err(|r| r.to_string())?;
+            s.validate().map_err(|r| r.to_string())?;
+            let dir = Path::new(path)
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty());
+            s.verify_files(dir.unwrap_or(Path::new(".")))
+                .map_err(|r| format!("source documents: {r}"))?;
+            s.pin(kind)
+                .ok_or_else(|| format!("the source lock pins no {kind}"))?;
+            match (f.contains_key("endpoint"), f.contains_key("launch")) {
+                (true, false) if !f.contains_key("scratch") => {
+                    Ok(Via::Endpoint(mcp::parse_endpoint(one(&f, "endpoint")?)?))
+                }
+                (false, true) => Ok(Via::Launch(
+                    mcp::launch_spec_for(kind, PathBuf::from(one(&f, "launch")?), &s)?,
+                    PathBuf::from(one(&f, "scratch").map_err(|_| "--launch needs --scratch DIR")?),
+                )),
+                _ => {
+                    Err("give --endpoint URL, or --launch BIN with --scratch DIR, not both".into())
+                }
+            }
+        });
     let via = match ready {
         Ok(v) => v,
         Err(e) => {
@@ -356,9 +369,19 @@ fn run(args: &[String]) -> i32 {
 /// Everything that can refuse before a single process starts: inputs,
 /// pins, binaries, output and scratch.
 fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
-    let f = flags(args)?;
+    let f = runner::flags(args)?;
     let known = [
-        "mode", "protocol", "sources", "output", "scratch", "run-id", "bin", "commit", "dirty",
+        "mode",
+        "protocol",
+        "sources",
+        "documents",
+        "output",
+        "scratch",
+        "run-id",
+        "bin",
+        "runtime",
+        "commit",
+        "dirty",
     ];
     if let Some(k) = f.keys().find(|k| !known.contains(&k.as_str())) {
         return Err(format!("unknown flag --{k}"));
@@ -374,16 +397,7 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
         // retention the protocol did not state.
         "smoke" => {
             protocol::retention_matches(&p, &s).map_err(|r| r.to_string())?;
-            for t in &p.targets {
-                let ok = match s.entry(*t) {
-                    Some(e) if *t == TargetKind::Swarmail => e.role == Role::Candidate,
-                    Some(e) => e.pin.is_some(),
-                    None => false,
-                };
-                if !ok {
-                    return Err(format!("{t} has no source pin; it cannot be launched"));
-                }
-            }
+            protocol::launchable(&p, &s).map_err(|r| r.to_string())?;
         }
         other => return Err(format!("unknown mode {other:?}")),
     }
@@ -391,54 +405,13 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
     if !protocol::is_name(run_id) {
         return Err("--run-id must be 1-64 [A-Za-z0-9._-]".into());
     }
-    let mut bins = BTreeMap::new();
-    for b in f.get("bin").into_iter().flatten() {
-        let (name, path) = b.split_once('=').ok_or("--bin takes TARGET=PATH")?;
-        let t = TargetKind::parse(name).ok_or_else(|| format!("unknown target {name:?}"))?;
-        if bins.insert(t, PathBuf::from(path)).is_some() {
-            return Err(format!("--bin {t} given twice"));
-        }
-    }
-    let mut specs = BTreeMap::new();
-    for &t in &p.targets {
-        let binary = bins
-            .remove(&t)
-            .ok_or_else(|| format!("--bin {t}=PATH is required"))?;
-        let (expected_sha256, template, config) = match t {
-            TargetKind::Swarmail => {
-                let cap = p
-                    .storage
-                    .retention
-                    .iter()
-                    .find(|r| r.target == t)
-                    .and_then(|r| r.max_messages);
-                (None, targets::swarmail_template(cap.unwrap_or(0)), None)
-            }
-            _ => {
-                let pin = s.pin(t).ok_or_else(|| format!("{t}: no source pin"))?;
-                (
-                    Some(pin.artifact.executable_sha256.clone()),
-                    pin.launch.clone(),
-                    pin.config.clone(),
-                )
-            }
-        };
-        specs.insert(
-            t,
-            targets::LaunchSpec {
-                kind: t,
-                binary,
-                expected_sha256,
-                template,
-                config,
-            },
-        );
-    }
-    if let Some(t) = bins.keys().next() {
-        return Err(format!(
-            "--bin {t} names a target the protocol does not declare"
-        ));
-    }
+    let none = Vec::new();
+    let specs = runner::launch_specs(
+        &p,
+        &s,
+        f.get("bin").unwrap_or(&none),
+        f.get("runtime").unwrap_or(&none),
+    )?;
     let output = PathBuf::from(one(&f, "output")?);
     if output.exists() {
         return Err("--output already exists; runs are never overwritten or resumed".into());

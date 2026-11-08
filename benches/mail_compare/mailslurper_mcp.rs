@@ -7,9 +7,15 @@
 //! reachable. Results are MailSlurper's own JSON in text content blocks; the
 //! stored body passes through unchanged.
 //!
-//! Routes, and what binds each: the captured source files the source lock
-//! binds under `docs/evals/sources/mailslurper/` (read from the release-1.15.0
-//! source archive by digest; the tree is unresolved).
+//! Routes, and what binds each. `ServiceController.go` and
+//! `setupServicesListener.go` are the documents accepted decision 0130's lock
+//! binds for `mailslurper-source-build`
+//! (`docs/evals/sources/mailslurper-source-build/mailslurper-service-controller.go`
+//! and `…-setup-services-listener.go`). The other files this adapter cites
+//! are not in that lock: they are committed under
+//! `docs/evals/agent-sources/mailslurper/`, bound by the digest table in
+//! `tests/mail_compare.rs` to members of the release-1.15.0 source archive
+//! (`83f66f25…359f`).
 //! - `GET /mail?pageNumber=N` with the optional `to`, `from` and `message`
 //!   filters: `ServiceController.go` `GetMailCollection` (a page is a fixed 50
 //!   items, hard coded) and `setupServicesListener.go` (the route).
@@ -23,12 +29,13 @@
 //!   whose `id` is the empty string, and the adapter reports that as not found.
 //!
 //! The pinned executable is the one built from source (the lock's
-//! `built_from_source` artifact); the published linux executable cannot start.
+//! `mailslurper-source-build` row, `eb6cd97d…58ff`, labelled "built from
+//! source"); the published linux executable cannot start.
 //! The ignored real-executable test calls every tool once against it, and the
 //! committed wire corpus holds its responses, decoded in CI.
 
 use crate::mcp::{Backend, Budget, begin, complete_scan};
-use crate::wire::{Http, path_segment, query_value};
+use crate::wire::{Http, query_value};
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -54,6 +61,7 @@ pub struct Mailslurper;
 impl Backend for Mailslurper {
     type Call = Call;
     const UPSTREAM: &'static str = "MailSlurper";
+    const TARGET: crate::protocol::TargetKind = crate::protocol::TargetKind::MailslurperSourceBuild;
     const SERVER_NAME: &'static str = SERVER_NAME;
 
     fn tools(bounds: &Bounds) -> Value {
@@ -346,7 +354,7 @@ pub async fn run_call(
             Ok(Value::Object(page(v)?.2))
         }
         Call::Read { id } => {
-            let (_, v) = b.get(&format!("/mail/{}", path_segment(id))).await?;
+            let (_, v) = b.get(&format!("/mail/{}", query_value(id))).await?;
             match v.get("id").and_then(Value::as_str) {
                 Some(got) if got == id => Ok(v),
                 // The pinned executable answers an unknown id with HTTP 200

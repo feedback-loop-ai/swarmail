@@ -5,15 +5,30 @@
 # mode here starts a paid agent.
 #
 #   compare-mail.sh local    --output DIR [--protocol P] [--sources S]
+#                            [--documents DIR] [--bin NAME=PATH]... [--runtime NAME=DIR]...
 #                            [--mailpit BIN] [--mailhog BIN]      (smoke, never evidence)
-#   compare-mail.sh collect  --output DIR --mailpit BIN --mailhog BIN
+#   compare-mail.sh collect  --output DIR --bin NAME=PATH... [--runtime NAME=DIR]...
 #                            [--protocol P] [--sources S]   (the frozen protocol, then admission)
-#   compare-mail.sh controls --output DIR --product P --mailpit BIN --mailhog BIN
-#                            --mailslurper BIN                (free oracle and null rows)
+#
+# NAME is a competitor the protocol declares (proposed decision 0130): the
+# required binaries are derived from the protocol, never from a fixed list.
+# --mailpit BIN and --mailhog BIN remain aliases of --bin mailpit=BIN and
+# --bin mailhog=BIN. A target whose lock pin needs a runtime (GreenMail's JRE, the
+# Alkemio row's musl loader root)
+# also takes --runtime NAME=DIR; the swarmail candidate is built here. A
+# historical lock (docs/evals/history/) is verified against the captured
+# documents given by --documents (docs/evals), not the directory it sits in.
+#   compare-mail.sh controls --output DIR --product P --bin NAME=PATH...
+#                            (free oracle and null rows of the agent suite)
 #   compare-mail.sh evidence --output DIR --final DIR [PREREQUISITES]
 #   compare-mail.sh measure  --output DIR --config FILE [PREREQUISITES]
-#                            (--dry-run | --authorized-product ID
-#                             --mailpit BIN --mailhog BIN --mailslurper BIN)
+#                            (--dry-run | --authorized-product ID --bin NAME=PATH...)
+#
+# The agent modes (`controls`, `evidence`, `measure`) take main's grammar and
+# need a `--bin` for each competitor lock entry the product record names:
+# `mailpit`, `mailhog` and `mailslurper-source-build` (the MailSlurper built
+# from source, accepted decision 0130; the agent target `mailslurper` runs
+# that row, never the official release, which does not start).
 #
 # `controls` needs only the product record and the three executables: it
 # builds the candidate and the adapter driver, probes each target's MCP
@@ -54,12 +69,23 @@ shift
 
 protocol=docs/evals/protocol.json
 sources=docs/evals/sources.lock.json
-output='' mailpit='' mailhog='' mailslurper='' baseline='' final='' receipts='' config='' dry_run=0
+output='' documents='' mailpit='' mailhog='' baseline='' final='' receipts='' config='' dry_run=0
 contracts='' controls_dir='' cost='' identity='' product='' authorized_product=''
+# --bin NAME=PATH and --runtime NAME=DIR repeat; they are kept as plain
+# "NAME=VALUE" words (no associative arrays: macOS ships bash 3.2).
+bin_args=() runtime_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry_run=1; shift; continue ;;
-    --protocol|--sources|--output|--mailpit|--mailhog|--mailslurper|--authorized-product|--baseline|--final|--receipts|--config|--contracts|--controls-dir|--cost|--identity|--product)
+    --bin|--runtime)
+      [ $# -ge 2 ] || blocked arguments "$1 needs a value"
+      case "$2" in
+        [a-z0-9]*=?*) ;;
+        *) blocked arguments "$1 takes NAME=VALUE, not $2" ;;
+      esac
+      if [ "$1" = --bin ]; then bin_args+=("$2"); else runtime_args+=("$2"); fi
+      shift 2 ;;
+    --protocol|--sources|--documents|--output|--mailpit|--mailhog|--baseline|--final|--receipts|--config|--contracts|--controls-dir|--cost|--identity|--product|--authorized-product)
       [ $# -ge 2 ] || blocked arguments "$1 needs a value"
       flag="${1#--}"
       flag="${flag//-/_}"
@@ -68,6 +94,8 @@ while [ $# -gt 0 ]; do
     *) blocked arguments "unknown argument: $1" ;;
   esac
 done
+[ -z "$mailpit" ] || bin_args+=("mailpit=$mailpit")
+[ -z "$mailhog" ] || bin_args+=("mailhog=$mailhog")
 
 case "$mode" in
   local|collect|controls|evidence|measure) ;;
@@ -211,16 +239,62 @@ eval_prerequisite() {
   verify "$1"
 }
 
+# ---- the agent suite's binaries (proposed decision 0129, under accepted 0130) ----
+
+# The lock entry whose executable an agent-suite target runs. The agent target
+# `mailslurper` names the service API the adapter drives; its executable is
+# the lock's `mailslurper-source-build` row. The swarmail candidate has none.
+lock_entry_of() {
+  case "$1" in
+    mailpit) printf mailpit ;;
+    mailhog) printf mailhog ;;
+    mailslurper) printf mailslurper-source-build ;;
+  esac
+}
+
+# The path given by --bin for an agent-suite target's lock entry.
+agent_bin() {
+  bin_for "$(lock_entry_of "$1")"
+}
+
+# The competitor lock entries the product record names, one per line.
+product_entries() {
+  grep -o '"lock_entry": "[a-z0-9-]*"' "$product" | cut -d'"' -f4
+}
+
+# Every competitor lock entry of the product needs its own --bin NAME=PATH,
+# and a --bin for any other name is refused: the required set comes from the
+# product record, never from a fixed list here.
+agent_binaries() {
+  local entries e bin w name
+  entries=$(product_entries)
+  [ -n "$entries" ] || blocked prerequisites "--product $product names no competitor lock_entry"
+  for e in $entries; do
+    bin=$(bin_for "$e")
+    [ -n "$bin" ] || blocked competitor-binaries "the product record needs --bin $e=PATH with its pinned executable"
+    [ -x "$bin" ] || blocked competitor-binaries "--bin $e=$bin is not an executable file"
+  done
+  for w in ${bin_args[@]+"${bin_args[@]}"}; do
+    name="${w%%=*}"
+    case $'\n'"$entries"$'\n' in
+      *$'\n'"$name"$'\n'*) ;;
+      *) blocked competitor-binaries "--bin $name names a lock entry the product record does not use (it uses: $(printf '%s' "$entries" | tr '\n' ' '))" ;;
+    esac
+  done
+}
+
 # ---- controls: the free oracle and null rows (decision 0091 section 5) ----
 
 controls_run() {
-  [ -n "$product" ] || blocked arguments "--product is required in controls mode"
+  if [ -z "$product" ]; then
+    # No product record, no input: main's refusal stands (accepted 0130, the
+    # first prerequisite of the chain), with a hint on what this mode needs.
+    echo "compare-mail: controls needs --product P and a --bin for each competitor lock entry of it" >&2
+    prerequisite_chain
+    blocked arguments "--product is required in controls mode"
+  fi
   [ -s "$product" ] || blocked prerequisites "--product $product does not exist or is empty"
-  for t in mailpit mailhog mailslurper; do
-    bin="${!t}"
-    [ -n "$bin" ] || blocked competitor-binaries "controls measure all four targets; pass --$t with its pinned executable"
-    [ -x "$bin" ] || blocked competitor-binaries "--$t $bin is not an executable file"
-  done
+  agent_binaries
   build_evals
   local swarmail adapter
   resolve_binaries
@@ -243,7 +317,7 @@ controls_run() {
   for t in swarmail mailpit mailhog mailslurper; do
     common=(--target "$t" --product "$product")
     if [ "$t" != swarmail ]; then
-      common+=(--adapter "$adapter" --target-bin "$(realpath "${!t}")" --sources "$(realpath "$sources")")
+      common+=(--adapter "$adapter" --target-bin "$(realpath "$(agent_bin "$t")")" --sources "$(realpath "$sources")")
     fi
     {
       echo "# $t: one worker, each command under timeout 600"
@@ -280,7 +354,7 @@ controls_run() {
       || suite_status=fail
   fi
   "$evals_bin" comparison-index --scratch "$scratch" --output "$output" --product "$product" \
-    --swarmail "$swarmail" --mailpit "$mailpit" --mailhog "$mailhog" --mailslurper "$mailslurper" \
+    --swarmail "$swarmail" --mailpit "$(agent_bin mailpit)" --mailhog "$(agent_bin mailhog)" --mailslurper "$(agent_bin mailslurper)" \
     --adapter "$adapter" --head "$head" --eval-suite-command "$suite_cmd" --eval-suite-status "$suite_status" \
     || blocked controls-index "the controls index could not be written"
   rm -rf "$scratch"
@@ -288,19 +362,78 @@ controls_run() {
   echo "compare-mail controls: wrote $output (120 rows, 4 targets)"
 }
 
+# The competitors a protocol declares: its top-level targets list, without the
+# candidate (this script builds it) and without a target the protocol
+# publishes as not starting (its `does_not_start` list: the driver never
+# launches one, so no binary is asked for it). A preflight read of the file so
+# a missing binary refuses before any build; the driver's own `targets`
+# answer, taken after the build, must agree with it.
+declared_competitors() {
+  local skip
+  skip=$(sed -n '/^  "does_not_start": \[/,/^  \]/p' "$1" | grep -o '"target": "[a-z0-9-]*"' | cut -d'"' -f4)
+  sed -n '/^  "targets": \[/,/^  \]/p' "$1" | grep -o '"[a-z0-9-]*"' | tr -d '"' \
+    | grep -v -e '^targets$' -e '^swarmail$' \
+    | while IFS= read -r name; do
+        case $'\n'"$skip"$'\n' in
+          *$'\n'"$name"$'\n'*) ;;
+          *) printf '%s\n' "$name" ;;
+        esac
+      done
+}
+
+# The directory given for one target by --runtime (the last wins), or empty.
+runtime_for() {
+  local want="$1" w found=''
+  for w in ${runtime_args[@]+"${runtime_args[@]}"}; do
+    [ "${w%%=*}" != "$want" ] || found="${w#*=}"
+  done
+  printf '%s' "$found"
+}
+
+# The path given for one target by --bin (the last wins), or empty.
+bin_for() {
+  local want="$1" w found=''
+  for w in ${bin_args[@]+"${bin_args[@]}"}; do
+    [ "${w%%=*}" != "$want" ] || found="${w#*=}"
+  done
+  printf '%s' "$found"
+}
+
 case "$mode" in
   local|collect)
-    if [ "$mode" = collect ]; then
-      [ -n "$mailpit" ] && [ -n "$mailhog" ] \
-        || blocked competitor-binaries "collect measures all three declared targets; pass --mailpit and --mailhog with their pinned executables"
+    declared=$(declared_competitors "$protocol")
+    # A smoke of the candidate alone declares no competitor; collection
+    # measures competitors, so a protocol with none cannot collect.
+    if [ "$mode" = collect ] && [ -z "$declared" ]; then
+      blocked competitor-binaries "collect measures competitors, and the protocol $protocol declares none"
     fi
-    for t in mailpit mailhog; do
-      if grep -q "\"$t\"" "$protocol"; then
-        bin="${!t}"
-        [ -n "$bin" ] || blocked competitor-binaries "the protocol declares $t; pass --$t with its pinned executable"
-        [ -x "$bin" ] || blocked competitor-binaries "--$t $bin is not an executable file"
+    for w in ${bin_args[@]+"${bin_args[@]}"}; do
+      name="${w%%=*}"
+      case $'\n'"$declared"$'\n' in
+        *$'\n'"$name"$'\n'*) ;;
+        *) blocked competitor-binaries "--bin $name names a target the protocol does not declare (it declares: $(printf '%s' "$declared" | tr '\n' ' '))" ;;
+      esac
+    done
+    for w in ${runtime_args[@]+"${runtime_args[@]}"}; do
+      name="${w%%=*}"
+      case $'\n'"$declared"$'\n' in
+        *$'\n'"$name"$'\n'*) ;;
+        *) blocked competitor-binaries "--runtime $name names a target the protocol does not declare" ;;
+      esac
+    done
+    for t in $declared; do
+      bin=$(bin_for "$t")
+      [ -n "$bin" ] || blocked competitor-binaries "the protocol declares $t; pass --bin $t=PATH with its pinned executable"
+      if [ -n "$(runtime_for "$t")" ]; then
+        # A pinned runtime (GreenMail's JRE, the Alkemio row's musl loader)
+        # runs this file; it is read, never exec'd, so a jar is no executable.
+        [ -f "$bin" ] || blocked competitor-binaries "--bin $t=$bin is not a file"
+      else
+        [ -x "$bin" ] || blocked competitor-binaries "--bin $t=$bin is not an executable file"
       fi
     done
+    doc_args=()
+    [ -z "$documents" ] || doc_args=(--documents "$documents")
     command -v cargo >/dev/null 2>&1 || blocked prerequisites "cargo is not installed"
     cargo build --release --locked --offline --bin swarmail >&2 \
       || blocked build "the candidate binary does not build"
@@ -309,22 +442,27 @@ case "$mode" in
     [ -n "$bench" ] && [ -x "$bench" ] || blocked build "the mail_compare driver does not build"
     if [ "$mode" = collect ]; then
       # Collection never starts on a protocol the driver would refuse.
-      "$bench" check --protocol "$protocol" --sources "$sources" \
+      "$bench" check --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"} \
         || blocked collection-ready "the protocol and lock are not ready for collection (see above)"
       run_mode=collect
     else
-      "$bench" check --protocol "$protocol" --sources "$sources" || true
+      "$bench" check --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"} || true
       run_mode=smoke
     fi
+    # The driver's own list is authoritative; the preflight must agree.
+    from_driver=$("$bench" targets --protocol "$protocol") \
+      || blocked collection-ready "the driver refuses the protocol $protocol"
+    [ "$from_driver" = "$declared" ] \
+      || blocked competitor-binaries "the driver declares a different competitor list than the preflight read"
     commit=$(git rev-parse HEAD 2>/dev/null || true)
     dirty=false
     [ -z "$(git status --porcelain 2>/dev/null)" ] || dirty=true
-    args=(run --mode "$run_mode" --protocol "$protocol" --sources "$sources"
+    args=(run --mode "$run_mode" --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"}
       --output "$output" --scratch "$output.scratch"
       --run-id "$mode-$(date -u +%Y%m%dT%H%M%SZ)-$$"
       --bin "swarmail=target/release/swarmail")
-    [ -z "$mailpit" ] || args+=(--bin "mailpit=$mailpit")
-    [ -z "$mailhog" ] || args+=(--bin "mailhog=$mailhog")
+    for t in $declared; do args+=(--bin "$t=$(bin_for "$t")"); done
+    for w in ${runtime_args[@]+"${runtime_args[@]}"}; do args+=(--runtime "$w"); done
     [ -z "$commit" ] || args+=(--commit "$commit" --dirty "$dirty")
     "$bench" "${args[@]}"
     status=$?
@@ -369,10 +507,7 @@ case "$mode" in
       || blocked authorization "--authorized-product ID is required: the paid run needs the operator's confirmation of product $product_id"
     [ "$authorized_product" = "$product_id" ] \
       || blocked authorization "--authorized-product $authorized_product is not the product $product_id"
-    for t in mailpit mailhog mailslurper; do
-      bin="${!t}"
-      [ -n "$bin" ] && [ -x "$bin" ] || blocked competitor-binaries "measure runs all four targets; pass --$t with its pinned executable"
-    done
+    agent_binaries
     command -v cargo >/dev/null 2>&1 || blocked prerequisites "cargo is not installed"
     resolve_binaries
     trials=$(sed -n 's/^  "trials": \([0-9]*\),$/\1/p' "$product" | head -n1)
@@ -383,7 +518,7 @@ case "$mode" in
     for t in swarmail mailpit mailhog mailslurper; do
       common=(--target "$t" --product "$product")
       if [ "$t" != swarmail ]; then
-        common+=(--adapter "$adapter" --target-bin "$(realpath "${!t}")" --sources "$(realpath "$sources")")
+        common+=(--adapter "$adapter" --target-bin "$(realpath "$(agent_bin "$t")")" --sources "$(realpath "$sources")")
       fi
       mkdir -p "$output/$t"
       SWARMAIL_BIN="$swarmail" "$evals_bin" matrix "${common[@]}" --tier hard --agents "$config" \

@@ -1,0 +1,15 @@
+From: Shop <newsletter@shop.example>
+To: <reader@agent.test>
+Subject: Autumn lamp offer
+Date: Sat, 07 Nov 2026 12:00:00 +0000
+Message-ID: <fixed.1@shop.example>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+<html><body>
+<h1>Autumn sale</h1>
+<p>Our Autumn Lamp is back.</p>
+<p><img src="https://shop.example/lamp.png" alt="Autumn Lamp"></p>
+<p><a href="https://shop.example/autumn">Claim the Autumn Lamp offer</a></p>
+</body></html>

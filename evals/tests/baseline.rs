@@ -726,3 +726,59 @@ fn expert_tier_controls_run_for_real_before_any_paid_launch() {
         baseline::validate_controls(&rows, &matrix, &default_plan, 1, &harness, &target).is_err()
     );
 }
+
+/// Proposed 0131: `--tier deliverability` is its own product, 1 task, 2
+/// controls and 30 paid slots, sharing the approved deadline, concurrency,
+/// steps and files; the default, hard and expert products are untouched.
+#[test]
+fn the_deliverability_tier_is_a_separate_baseline_product_with_the_same_discipline() {
+    let (code, default, _) = dry_run(&[]);
+    let (hard_code, hard, _) = dry_run(&["--tier", "hard"]);
+    let (expert_code, expert, _) = dry_run(&["--tier", "expert"]);
+    let (del_code, del, _) = dry_run(&["--tier", "deliverability"]);
+    assert_eq!(
+        (code, hard_code, expert_code, del_code),
+        (Some(0), Some(0), Some(0), Some(0))
+    );
+    assert_eq!(del["tasks"], serde_json::json!(["newsletter-findings"]));
+    assert_eq!(del["control_rows"], 2);
+    assert_eq!(del["paid_rows"], 30);
+    assert_eq!(
+        (
+            default["control_rows"].clone(),
+            default["paid_rows"].clone()
+        ),
+        (32.into(), 480.into())
+    );
+    assert_eq!(default["tasks"].as_array().unwrap().len(), 16);
+    assert_eq!(
+        (hard["control_rows"].clone(), hard["paid_rows"].clone()),
+        (6.into(), 90.into())
+    );
+    assert_eq!(
+        (expert["control_rows"].clone(), expert["paid_rows"].clone()),
+        (10.into(), 150.into())
+    );
+    for key in [
+        "deadline_ms",
+        "concurrency",
+        "control_repetitions",
+        "paid_repetitions",
+        "steps",
+        "files",
+        "agents",
+        "control_agents",
+        "catalogue_schema",
+        "catalogue_sha256",
+        "wrapper_contracts",
+    ] {
+        assert_eq!(del[key], default[key], "{key}");
+    }
+    assert_eq!(del["catalogue_sha256"], p_hash());
+    for bad in ["Deliverability", "deliverable", "deliverability-tier"] {
+        let (code, plan, err) = dry_run(&["--tier", bad]);
+        assert_eq!(code, Some(2), "{bad:?}");
+        assert!(plan.is_null(), "{bad:?}: no plan on stdout");
+        assert!(err.contains("arguments_invalid"), "{bad:?}: {err}");
+    }
+}

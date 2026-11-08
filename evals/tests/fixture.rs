@@ -72,6 +72,20 @@ fn start_swarmail() -> Swarmail {
 
 const SECRET: &str = "test-admin-secret";
 
+/// What the fixture is told about Swarmail's HTTP address.
+#[derive(Clone, Copy)]
+enum ReportSource {
+    Swarmail,
+    Absent,
+    Closed,
+}
+
+/// A loopback address nothing listens on.
+fn closed_address() -> SocketAddr {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap()
+}
+
 struct Rig {
     _swarmail: Swarmail,
     fixture: Option<Running>,
@@ -89,10 +103,26 @@ impl Rig {
     }
 
     async fn with_inputs(task: &str, count: usize, inputs: FixtureInputs) -> Rig {
+        Rig::with_report_source(task, count, inputs, ReportSource::Swarmail).await
+    }
+
+    /// As [`Rig::with_inputs`], with the fixture told where (or whether) it can
+    /// read Swarmail's deliverability reports.
+    async fn with_report_source(
+        task: &str,
+        count: usize,
+        inputs: FixtureInputs,
+        report: ReportSource,
+    ) -> Rig {
         let sw = start_swarmail();
         let running = fixture::start(FixtureConfig {
             smtp: sw.smtp,
             smtp_auth: swarmail_evals::mail::SmtpAuth::Plain,
+            swarmail_http: match report {
+                ReportSource::Swarmail => Some(sw.http),
+                ReportSource::Absent => None,
+                ReportSource::Closed => Some(closed_address()),
+            },
             task: tasks::find(task).unwrap(),
             trial_id: "wire".into(),
             admin_secret: SECRET.into(),
@@ -1264,5 +1294,398 @@ async fn attachment_tools_read_the_invite_the_oracle_downloads() {
     let snapshot = rig.snapshot().await;
     let facts = &snapshot.identities[0].facts;
     assert!(facts.invite_accepted && facts.invite_time_matched);
+    rig.stop().await;
+}
+
+// ---------- newsletter-findings (proposed 0131) ----------
+
+/// The `GET /` body of every task but `newsletter-findings`, captured from the
+/// unmodified fixture of `main` `50095c8` (the base URL is the one varying
+/// value, shown as `{base}`).
+const MAIN_INDEX: &str = r#"{"app":"swarmail-evals fixture","base_url":"{base}","identity_header":"X-Eval-Identity","note":"Every request must carry the X-Eval-Identity header naming your identity. Bodies are JSON.","operations":[{"does":"follow a link from one of your emails","method":"GET","path":"/a/{token}"},{"body":{"code":"string"},"does":"submit a two-factor verification code","method":"POST","path":"/otp/verify"},{"body":{},"does":"email a new verification code; earlier codes stop working","method":"POST","path":"/otp/resend"},{"body":{"password":"string","token":"the token from your reset link"},"does":"set a new password with a single-use reset link","method":"POST","path":"/reset/complete"},{"body":{"password":"string"},"does":"sign in with your password","method":"POST","path":"/login"},{"does":"download the invitation's calendar file","method":"GET","path":"/invite/{token}/event.ics"},{"body":{"start":"the ICS DTSTART in UTC, e.g. 20261026T153000Z","token":"string","uid":"the ICS UID"},"does":"accept an invitation","method":"POST","path":"/invite/accept"},{"body":{"challenge":"string","reply":"string","ticket":"string"},"does":"reply to a support ticket","method":"POST","path":"/support/reply"},{"body":{},"does":"release mail the application is holding for you","method":"POST","path":"/deliveries/release"}]}"#;
+
+fn newsletter_report_ids(report: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule_id"].as_str().unwrap().to_string())
+        .filter(|id| {
+            tasks::NEWSLETTER_FAMILIES
+                .iter()
+                .any(|family| id.starts_with(family))
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The mail ids of one inbox, oldest first, through Swarmail's REST list.
+async fn inbox_ids(http: SocketAddr, inbox: &str) -> Vec<String> {
+    let resp = reqwest::get(format!("http://{http}/api/v1/inboxes/{inbox}/messages"))
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+    let mut mails: Vec<(i64, String)> = body["emails"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["received_ms"].as_i64().unwrap(),
+                e["id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    mails.sort();
+    mails.into_iter().map(|(_, id)| id).collect()
+}
+
+impl Rig {
+    /// The deliverability report of one stored mail, from Swarmail's REST.
+    async fn report(&self, id: &str) -> Value {
+        let body = reqwest::get(format!(
+            "http://{}/api/v1/messages/{id}/deliverability",
+            self.http
+        ))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+        serde_json::from_str(&body).unwrap()
+    }
+
+    /// Every mail id the agent's inbox holds, oldest first.
+    async fn mail_ids(&self) -> Vec<String> {
+        inbox_ids(self.http, self.inbox(0)).await
+    }
+
+    async fn post_raw(&self, who: &str, body: String) -> (u16, Value) {
+        let resp = reqwest::Client::new()
+            .post(format!("{}/newsletter", self.app_url))
+            .header(IDENTITY_HEADER, who)
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let bytes = resp.bytes().await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn post_newsletter(&self, subject: &str, html: &str) -> (u16, Value) {
+        let who = self.ids[0].0.clone();
+        self.post_raw(&who, json!({"subject": subject, "html": html}).to_string())
+            .await
+    }
+
+    /// The events recorded so far, as `(action, accepted, category)`.
+    async fn events(&self) -> Vec<(String, bool, Option<String>)> {
+        self.snapshot()
+            .await
+            .events
+            .iter()
+            .map(|e| {
+                (
+                    e.action.clone(),
+                    e.accepted,
+                    e.category.map(|c| {
+                        serde_json::to_value(c)
+                            .unwrap()
+                            .as_str()
+                            .unwrap()
+                            .to_string()
+                    }),
+                )
+            })
+            .collect()
+    }
+}
+
+#[tokio::test]
+async fn newsletter_prepare_carries_exactly_the_three_findings() {
+    let rig = Rig::new("newsletter-findings", 1).await;
+    let prepared = rig.prepare().await;
+    assert_eq!(prepared["deliveries"].as_array().unwrap().len(), 1);
+    let ids = rig.mail_ids().await;
+    assert_eq!(ids.len(), 1);
+    assert_eq!(
+        newsletter_report_ids(&rig.report(&ids[0]).await),
+        tasks::NEWSLETTER_FINDINGS
+    );
+    let snap = rig.snapshot().await;
+    assert_eq!(snap.deliveries.len(), 1);
+    assert_eq!(snap.deliveries[0].message, "newsletter");
+    assert_eq!(
+        serde_json::to_value(snap.deliveries[0].flow).unwrap(),
+        "marketing"
+    );
+    assert_eq!(
+        serde_json::to_value(snap.deliveries[0].status).unwrap(),
+        "delivered"
+    );
+    assert!(snap.events.is_empty(), "prepare records no event");
+    // GET /newsletter serves the template the mail was rendered from.
+    let (s, template) = rig.app(0).get("/newsletter").await.unwrap();
+    assert_eq!(s, 200);
+    assert_eq!(template["subject"], tasks::NEWSLETTER_SUBJECT);
+    assert_eq!(template["html"], tasks::NEWSLETTER_HTML);
+    rig.stop().await;
+}
+
+#[tokio::test]
+async fn newsletter_prepare_without_a_readable_report_is_not_200() {
+    // No address at all: nothing is sent.
+    let rig = Rig::with_report_source(
+        "newsletter-findings",
+        1,
+        Default::default(),
+        ReportSource::Absent,
+    )
+    .await;
+    let (s, body) = rig.admin_post("/admin/prepare", None).await;
+    assert_ne!(s, 200, "{body}");
+    assert!(rig.snapshot().await.deliveries.is_empty());
+    rig.stop().await;
+    // An address nothing listens on: the report cannot be read.
+    let rig = Rig::with_report_source(
+        "newsletter-findings",
+        1,
+        Default::default(),
+        ReportSource::Closed,
+    )
+    .await;
+    let (s, body) = rig.admin_post("/admin/prepare", None).await;
+    assert_ne!(s, 200, "{body}");
+    assert!(rig.snapshot().await.events.is_empty());
+    rig.stop().await;
+}
+
+#[tokio::test]
+async fn the_newsletter_routes_exist_only_in_the_newsletter_scenario() {
+    // Every other task's application is byte-identical to `main`'s.
+    for task in tasks::catalogue() {
+        let running = fixture::start(FixtureConfig {
+            smtp: "127.0.0.1:1".parse().unwrap(),
+            smtp_auth: swarmail_evals::mail::SmtpAuth::Plain,
+            swarmail_http: None,
+            task: task.clone(),
+            trial_id: "index".into(),
+            admin_secret: SECRET.into(),
+            clock: Arc::new(Instant::now),
+            inputs: Default::default(),
+        })
+        .await
+        .unwrap();
+        let base = format!("http://{}", running.public);
+        let client = reqwest::Client::new();
+        let index = client.get(format!("{base}/")).send().await.unwrap();
+        let index = index.text().await.unwrap();
+        let ours = task.id == "newsletter-findings";
+        let main = MAIN_INDEX.replace("{base}", &base);
+        if ours {
+            assert_ne!(index, main);
+            assert_eq!(index.matches(r#""path":"/newsletter""#).count(), 2);
+        } else {
+            assert_eq!(index, main, "{}", task.id);
+        }
+        for method in [reqwest::Method::GET, reqwest::Method::POST] {
+            let status = client
+                .request(method, format!("{base}/newsletter"))
+                .header(IDENTITY_HEADER, "nobody")
+                .send()
+                .await
+                .unwrap()
+                .status();
+            // Mounted: the identity claim answers (400 unknown identity).
+            assert_eq!(status == 404, !ours, "{}: {status}", task.id);
+        }
+        running.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn newsletter_refusals_send_nothing_and_record_one_unaccepted_event() {
+    let rig = Rig::new("newsletter-findings", 1).await;
+    rig.prepare().await;
+    let who = rig.ids[0].0.clone();
+    let ok_html = "<p>hi</p><a href=\"https://shop.example/autumn\">x</a>".to_string();
+    let raw = |v: Value| v.to_string();
+    let with_subject = |subject: &str| raw(json!({"subject": subject, "html": ok_html}));
+    let with_html = |html: String| raw(json!({"subject": "s", "html": html}));
+    let cases: Vec<(&str, String)> = vec![
+        ("not json", "not json".to_string()),
+        ("an array", "[]".to_string()),
+        ("a missing key", raw(json!({"subject": "s"}))),
+        (
+            "an unknown key",
+            raw(json!({"subject": "s", "html": ok_html, "extra": 1})),
+        ),
+        ("a non-string", raw(json!({"subject": 1, "html": ok_html}))),
+        ("a long subject", with_subject(&"s".repeat(201))),
+        ("a CRLF subject", with_subject("a\r\nBcc: x@y.test")),
+        ("an LF subject", with_subject("a\nb")),
+        ("a tab subject", with_subject("a\tb")),
+        ("a DEL subject", with_subject("a\u{7f}b")),
+        ("a NEL subject", with_subject("a\u{85}b")),
+        ("a line separator subject", with_subject("a\u{2028}b")),
+        ("a paragraph separator subject", with_subject("a\u{2029}b")),
+        (
+            "long html",
+            with_html(format!("{ok_html}{}", "x".repeat(16384))),
+        ),
+        ("html with NUL", with_html(format!("{ok_html}\u{0}"))),
+        ("html with CR", with_html(format!("{ok_html}\r\n"))),
+        ("html without the offer", with_html("<p>hi</p>".to_string())),
+        (
+            "html with a different anchor",
+            with_html("<a href=\"https://other.example/autumn\">x</a>".to_string()),
+        ),
+    ];
+    let mut expected_events = 0;
+    for (name, body) in cases {
+        let (status, reply) = rig.post_raw(&who, body).await;
+        assert_eq!(status, 400, "{name}: {reply}");
+        assert_eq!(reply["ok"], false, "{name}");
+        expected_events += 1;
+        let events = rig.events().await;
+        assert_eq!(events.len(), expected_events, "{name}");
+        assert_eq!(
+            events.last().unwrap(),
+            &("marketing".to_string(), false, None),
+            "{name}"
+        );
+        let snap = rig.snapshot().await;
+        assert_eq!(snap.deliveries.len(), 1, "{name}: nothing was enqueued");
+        assert_eq!(rig.mail_ids().await.len(), 1, "{name}: nothing was sent");
+    }
+    // The template is untouched by every refusal.
+    let (_, template) = rig.app(0).get("/newsletter").await.unwrap();
+    assert_eq!(template["html"], tasks::NEWSLETTER_HTML);
+    // A bound is a bound, not a refusal one byte early: 200 and 16384 pass.
+    let html = format!("{ok_html}{}", "x".repeat(16384 - ok_html.len()));
+    assert_eq!(html.len(), 16384);
+    let (status, _) = rig.post_newsletter(&"s".repeat(200), &html).await;
+    assert_eq!(status, 200);
+    assert_eq!(rig.mail_ids().await.len(), 2);
+    // An unknown identity never reaches the template or the wire.
+    let (status, _) = rig.post_raw("nobody", with_subject("s")).await;
+    assert_eq!(status, 400);
+    assert_eq!(rig.mail_ids().await.len(), 2);
+    rig.stop().await;
+}
+
+#[tokio::test]
+async fn the_seventeenth_resend_is_refused_and_the_prepared_mail_does_not_count() {
+    let rig = Rig::new("newsletter-findings", 1).await;
+    rig.prepare().await;
+    for n in 0..tasks::NEWSLETTER_MAX_SENDS {
+        let (status, body) = rig
+            .post_newsletter(tasks::NEWSLETTER_SUBJECT, tasks::NEWSLETTER_HTML)
+            .await;
+        assert_eq!(status, 200, "re-send {}: {body}", n + 1);
+    }
+    let (status, body) = rig
+        .post_newsletter(tasks::NEWSLETTER_SUBJECT, tasks::NEWSLETTER_HTML)
+        .await;
+    assert_eq!(status, 429, "{body}");
+    let snap = rig.snapshot().await;
+    assert_eq!(snap.deliveries.len(), 1 + tasks::NEWSLETTER_MAX_SENDS);
+    assert_eq!(rig.mail_ids().await.len(), 1 + tasks::NEWSLETTER_MAX_SENDS);
+    // Every unchanged re-send recorded an unaccepted event, and so did the
+    // refusal; the fact never turned.
+    let events = rig.events().await;
+    assert_eq!(events.len(), tasks::NEWSLETTER_MAX_SENDS + 1);
+    assert!(
+        events
+            .iter()
+            .all(|e| *e == ("marketing".to_string(), false, None))
+    );
+    assert!(!snap.identities[0].facts.marketing_completed);
+    rig.stop().await;
+}
+
+#[tokio::test]
+async fn a_repaired_resend_completes_and_the_fact_never_reverts() {
+    let rig = Rig::new("newsletter-findings", 1).await;
+    rig.prepare().await;
+    // Unchanged: the report still has the three findings.
+    let (status, body) = rig
+        .post_newsletter(tasks::NEWSLETTER_SUBJECT, tasks::NEWSLETTER_HTML)
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(!rig.snapshot().await.identities[0].facts.marketing_completed);
+    // The reply never carries a finding or a verdict.
+    assert_eq!(body, json!({"ok": true, "message": "newsletter sent"}));
+    // Repaired.
+    let html = tasks::NEWSLETTER_HTML
+        .replace("http://shop.example", "https://shop.example")
+        .replace(
+            "<img src=\"https://shop.example/lamp.png\">",
+            "<img src=\"https://shop.example/lamp.png\" alt=\"Autumn Lamp\">",
+        );
+    let (status, body) = rig.post_newsletter("Autumn lamp offer", &html).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body, json!({"ok": true, "message": "newsletter sent"}));
+    let snap = rig.snapshot().await;
+    assert!(snap.identities[0].facts.marketing_completed);
+    assert_eq!(snap.events.iter().filter(|e| e.accepted).count(), 1);
+    let ids = rig.mail_ids().await;
+    assert_eq!(ids.len(), 3);
+    assert!(newsletter_report_ids(&rig.report(&ids[2]).await).is_empty());
+    assert_eq!(
+        newsletter_report_ids(&rig.report(&ids[1]).await),
+        tasks::NEWSLETTER_FINDINGS
+    );
+    // A later unchanged re-send does not undo the completed fact.
+    let (status, _) = rig
+        .post_newsletter(tasks::NEWSLETTER_SUBJECT, tasks::NEWSLETTER_HTML)
+        .await;
+    assert_eq!(status, 200);
+    let snap = rig.snapshot().await;
+    assert!(snap.identities[0].facts.marketing_completed);
+    assert_eq!(snap.events.iter().filter(|e| e.accepted).count(), 1);
+    assert_eq!(snap.events.len(), 3);
+    rig.stop().await;
+}
+
+#[tokio::test]
+async fn a_cleared_inbox_cannot_make_a_resend_clean() {
+    let rig = Rig::new("newsletter-findings", 1).await;
+    rig.prepare().await;
+    rig.mcp()
+        .await
+        .call("swarmail_clear_inbox", json!({"inbox": rig.inbox(0)}))
+        .await
+        .unwrap();
+    assert!(rig.mail_ids().await.is_empty());
+    let (status, _) = rig
+        .post_newsletter(tasks::NEWSLETTER_SUBJECT, tasks::NEWSLETTER_HTML)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(rig.mail_ids().await.len(), 1);
+    assert!(!rig.snapshot().await.identities[0].facts.marketing_completed);
+    rig.stop().await;
+}
+
+#[tokio::test]
+async fn a_frozen_newsletter_trial_answers_409_and_records_nothing() {
+    let rig = Rig::new("newsletter-findings", 1).await;
+    rig.prepare().await;
+    let (s, _) = rig.admin_post("/admin/freeze", None).await;
+    assert_eq!(s, 200);
+    let (status, _) = rig
+        .post_newsletter(tasks::NEWSLETTER_SUBJECT, tasks::NEWSLETTER_HTML)
+        .await;
+    assert_eq!(status, 409);
+    let (status, _) = rig.app(0).get("/newsletter").await.unwrap();
+    assert_eq!(status, 409);
+    assert!(rig.snapshot().await.events.is_empty());
+    assert_eq!(rig.mail_ids().await.len(), 1);
     rig.stop().await;
 }

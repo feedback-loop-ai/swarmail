@@ -22,7 +22,7 @@
 //!   message's stored bytes, so the adapter offers it, labelled.
 
 use crate::mcp::{Backend, Budget, begin, complete_scan};
-use crate::wire::{Http, path_segment, query_value};
+use crate::wire::{Http, query_value};
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -46,6 +46,7 @@ pub struct Mailhog;
 impl Backend for Mailhog {
     type Call = Call;
     const UPSTREAM: &'static str = "MailHog";
+    const TARGET: crate::protocol::TargetKind = crate::protocol::TargetKind::Mailhog;
     const SERVER_NAME: &'static str = SERVER_NAME;
 
     fn tools(bounds: &Bounds) -> Value {
@@ -338,7 +339,7 @@ pub async fn run_call(
         }
         Call::Read { id } => {
             let (_, v) = b
-                .get(&format!("/api/v1/messages/{}", path_segment(id)))
+                .get(&format!("/api/v1/messages/{}", query_value(id)))
                 .await?;
             // MailHog answers an unknown id with `200 null`.
             if v.is_null() {
