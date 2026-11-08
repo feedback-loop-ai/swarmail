@@ -1844,36 +1844,50 @@ async fn a_launch_cancelled_during_readiness_is_still_cleaned_by_its_worker() {
 
 #[tokio::test]
 async fn a_term_resistant_child_is_killed_within_one_composed_cleanup_budget() {
+    // The fake server never binds its reserved slots, so a slot reads as
+    // closed only while no parallel test has taken it. An attempt whose only
+    // unproved fact is a listener is tried again, a bounded number of times;
+    // every other fact and the time bound are asserted on every attempt.
     let root = tempfile::tempdir().unwrap();
     // The ignored TERM is inherited by the sleeps, so only the group's
     // forced kill ends them.
     let body = "trap '' TERM; while :; do sleep 1; done";
     let lim = short_limits();
-    let clock = wire::Clock(Instant::now());
-    let scratch = root.path().join("leaf");
-    let begun = Instant::now();
-    let r = targets::Owned::launch(
-        &fake_spec(TargetKind::Mailhog, body),
-        &scratch,
-        &lim,
-        &clock,
-        &targets::Keepers::default(),
-    )
-    .await;
-    let took = begun.elapsed();
-    match r.err() {
-        Some(targets::LaunchError::NotReady(why, facts)) => {
-            assert_eq!(why, "readiness deadline");
-            assert!(facts.forced_kill && facts.proved(), "{facts:?}");
+    for attempt in 1..=3 {
+        let clock = wire::Clock(Instant::now());
+        let scratch = root.path().join(format!("leaf{attempt}"));
+        let begun = Instant::now();
+        let r = targets::Owned::launch(
+            &fake_spec(TargetKind::Mailhog, body),
+            &scratch,
+            &lim,
+            &clock,
+            &targets::Keepers::default(),
+        )
+        .await;
+        let took = begun.elapsed();
+        let facts = match r.err() {
+            Some(targets::LaunchError::NotReady(why, facts)) => {
+                assert_eq!(why, "readiness deadline");
+                facts
+            }
+            other => panic!("expected a readiness refusal, got {other:?}"),
+        };
+        // Startup, plus one readiness probe past it, plus one cleanup
+        // budget: the grace, the kill, the group, the drain and the listener
+        // probes share that budget rather than each taking their own.
+        let bound = lim.startup + lim.request * 2 + lim.cleanup;
+        assert!(took < bound + Duration::from_millis(500), "{took:?}");
+        assert!(!scratch.exists());
+        assert!(
+            facts.forced_kill && facts.reaped && facts.group_gone && facts.scratch_removed,
+            "{facts:?}"
+        );
+        if facts.proved() {
+            return;
         }
-        other => panic!("expected a readiness refusal, got {other:?}"),
+        assert!(!facts.listeners_closed && attempt < 3, "{facts:?}");
     }
-    // Startup, plus one readiness probe past it, plus one cleanup budget:
-    // the grace, the kill, the group, the drain and the listener probes
-    // share that budget rather than each taking their own.
-    let bound = lim.startup + lim.request * 2 + lim.cleanup;
-    assert!(took < bound + Duration::from_millis(500), "{took:?}");
-    assert!(!scratch.exists());
 }
 
 #[tokio::test]
@@ -5895,12 +5909,15 @@ async fn launch_shim_with_fresh_slot(
         .await
         {
             Ok(owned) => return (slot, owned, attempt),
-            Err(targets::LaunchError::NotReady(targets::NO_LISTENER_ADDRESSES, facts))
-                if attempt < ATTEMPTS =>
-            {
+            Err(targets::LaunchError::NotReady(targets::NO_LISTENER_ADDRESSES, facts)) => {
+                // Every refused launch proves its cleanup, the last one too.
                 assert!(
                     facts.proved(),
                     "a refused launch still cleans up: {facts:?}"
+                );
+                assert!(
+                    attempt < ATTEMPTS,
+                    "swarmail launches: {ATTEMPTS} slots refused in a row"
                 );
             }
             Err(e) => panic!("swarmail launches: {e:?}"),
@@ -5909,8 +5926,8 @@ async fn launch_shim_with_fresh_slot(
 }
 
 /// The first candidate is held by a live listener across the launch, as a
-/// parallel test would hold it: the launch is refused once with proved
-/// cleanup, the second, fresh slot launches, and the holder is untouched.
+/// parallel test would hold it: the launch is refused with proved cleanup,
+/// a later, fresh slot launches, and the holder is untouched.
 #[tokio::test]
 async fn a_slot_taken_by_another_listener_is_refused_cleanly_and_the_next_slot_launches() {
     let root = tempfile::tempdir().unwrap();
@@ -5925,7 +5942,10 @@ async fn a_slot_taken_by_another_listener_is_refused_cleanly_and_the_next_slot_l
         }
     })
     .await;
-    assert_eq!(attempts, 2, "one refusal, then the fresh slot");
+    // At least one refusal (the held slot) before a slot launched. The fresh
+    // candidate is itself reserved and released, so a parallel test may
+    // refuse it too: the count is a floor, never exact.
+    assert!(attempts >= 2, "the held slot is refused first: {attempts}");
     assert_ne!(slot, taken);
     // The refused attempt's scratch is gone and the winner's shim is up.
     assert!(!root.path().join("a1").exists());

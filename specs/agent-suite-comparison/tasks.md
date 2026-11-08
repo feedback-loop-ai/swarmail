@@ -751,3 +751,14 @@ tests/mail_compare.rs tests/mail_compare/*.rs`, run after the merge):
   refuse, and `real_mailslurper_official_does_not_start`'s three ports for a
   child that must **not** bind them. Neither passes a port to a child that is
   expected to bind it; both stay byte-identical.
+
+**T14.f (review return, 2026-11-08).** The review panel found the controls stale
+after the last test edit, and the same listener race in two of `main`'s tests.
+Done: `launch_shim_with_fresh_slot` asserts `proved()` on the fifth refusal too;
+the held-slot test asserts `attempts >= 2` (its fresh candidate is reserved and
+released, so an exact count could itself race); `a_launch_cancelled_during_readiness_…`
+and `a_term_resistant_child_…` retry up to three times only when `listeners_closed`
+alone is unproved, asserting every other fact and the time bound each time. The
+controls are rerun on the head after these edits, and nothing outside the
+evidence paths changes afterwards. README: Swarmail lists seven skipped
+state-changing tools, not six.

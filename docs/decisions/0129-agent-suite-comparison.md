@@ -391,11 +391,28 @@ resolve.
   addresses")`). A fresh slot is tried at most five times, each refused launch
   must have proved its cleanup, and any other launch error fails at once. The
   reason is one constant (`NO_LISTENER_ADDRESSES`), the loop is one helper, and
-  two tests drive it on every run: a held first candidate (two attempts, the
-  holder still accepting) and five held candidates (five draws, then a loud
-  failure). Probing the candidate after cleanup was rejected: a thief that had
+  two tests drive it on every run: a held first candidate (at least two
+  attempts, the holder still accepting; the count is a floor because the fresh
+  candidate is itself reserved and released) and five held candidates (five
+  draws, then a loud failure). The last refused launch proves its cleanup too,
+  not only the first four. Probing the candidate after cleanup was rejected: a thief that had
   released the port would read as "no collision". `real_mailslurper_official_does_not_start`
   is `main`'s accepted code and stays byte-identical.
+- **Two of `main`'s tests get the same bounded treatment (review, 2026-11-08).**
+  `a_launch_cancelled_during_readiness_is_still_cleaned_by_its_worker` and
+  `a_term_resistant_child_is_killed_within_one_composed_cleanup_budget` launch a
+  fake server on slots the launcher reserved and released; the fake never binds
+  them, so a parallel test's listener on one reads as an unclosed listener and
+  fails the cleanup proof by design. Each now tries again, at most three times,
+  only when the sole unproved fact is a listener; every other cleanup fact, the
+  time bound and the scratch removal are asserted on every attempt. These are
+  edits to `main`'s test code, not to the accepted rulings: no assertion was
+  removed, and the launcher (`Owned::launch`, its `reserve_port`) is untouched.
+  The `real_mailslurper_official_does_not_start` row stays byte-identical.
+- **The controls were rerun after the last test edit.** The verifier counts a
+  change under `tests/` as making the receipts stale (its evidence paths are the
+  controls directory, the evals README and `specs/`), so they are rerun and
+  committed after the final code and decision edit, not before.
 - **What stays with the operator.** Acceptance of this record; the CI run (the
   receipts' `ci` item is pending); the confirmation of the 240 paid sessions; the
   hold on the PR, because `scripts/compare-mail.sh` changes. No paid session ran.
