@@ -2775,7 +2775,8 @@ async fn matrix(
     .await
 }
 
-#[cfg(test)]
+// Only the Linux-only matrix probe and `matrix` above call it.
+#[cfg(all(test, target_os = "linux"))]
 async fn matrix_with_options(
     ids: Vec<String>,
     agents: PathBuf,
