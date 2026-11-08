@@ -33,7 +33,7 @@ untimed checks and labelled smoke runs, not collection.
 its free half has run. No paid session has, and nothing below is a comparison
 result.** The operator widened #163 ("compare with all that we have shims
 for"): Swarmail, Mailpit, MailHog and MailSlurper, on claude-opus,
-claude-sonnet, codex-sol and codex-luna, no GLM. Decision 0129 (proposed) holds
+claude-sonnet, codex-sol and codex-luna, no GLM. Decision 0129 (accepted) holds
 the contracts. The runner serves all four targets; `scripts/compare-mail.sh
 controls` ran the builtin oracle and null agents on the hard tier against each
 of them; and one `measure --dry-run` verified every prerequisite and printed
@@ -536,7 +536,7 @@ is not bounded to 10 minutes. `collect` exits 1 when the run is sealed and
 admitted but a workload failed somewhere (for example a competitor's refusal);
 only exit 2 means the run did not complete.
 `controls`, `evidence` and `measure` exit 2 naming the first missing
-prerequisite. The `comparison-integration` refusal is gone (proposed 0129 §9).
+prerequisite. The `comparison-integration` refusal is gone (accepted 0129 §9).
 `measure --dry-run` verifies the prerequisites, prints the plan, opens no
 wrapper configuration and launches nothing.
 

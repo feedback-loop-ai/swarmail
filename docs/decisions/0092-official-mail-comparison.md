@@ -150,3 +150,5 @@ ruling, not this note.
   [0129](0129-agent-suite-comparison.md) §6.
 - **Contracts** that implement the ruling are in proposed 0129; this
   addendum rules nothing beyond recording the operator's words.
+
+2026-11-08: the operator accepted [0129](0129-agent-suite-comparison.md) ("Approve + accept 0129"); the references above to proposed 0129 read as accepted.

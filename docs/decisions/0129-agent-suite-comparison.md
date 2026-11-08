@@ -1,6 +1,6 @@
 # 0129 — The agent-suite comparison across Swarmail, Mailpit, MailHog and MailSlurper
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-08 — "Approve + accept 0129"; see the dated acceptance note at the end)
 - **Date:** 2026-11-07
 - **Scope:** epic #164, issue #339 (prerequisite of #163's paid comparison).
   Run `issue-339-agent-suite-comparison-e4de0540`, from `main` `c95386e`, on
@@ -449,3 +449,15 @@ product record claims, and this records how they were settled.
 - **Controls rerun.** The product's sha256 and the adapters' digests changed, so
   the free oracle and null controls ran again into the same directory.
 
+## Dated acceptance note — 2026-11-08
+
+The operator ruled on 2026-11-08, in chat to the dispatcher, "Approve +
+accept 0129", on this record as put to them: the four agent targets, a fresh
+instance per trial, the one MCP transport, the adapters for Mailpit, MailHog
+and MailSlurper, the frozen product record and the wrapper's modes, as
+integrated with accepted 0130 in the 2026-11-08 addenda above. The operator
+also approved the PR's `scripts/compare-mail.sh` change, which lifts the
+0045 §8 hold. The body and addenda above are unchanged; where they say
+"proposed", they are read as accepted by this note. This note authorizes no
+paid session: #163's paid comparison waits for the operator's confirmation of
+its plan, and `measure` still refuses without `--authorized-product`.
