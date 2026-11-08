@@ -12,7 +12,10 @@ Decision: 0129 — [the agent-suite comparison](../../docs/decisions/0129-agent-
   `second-rerun-of-339-operator-dir-e9c4d893` from `6e0098b`, under the
   operator's 2026-11-07 ruling that the comparison's MailSlurper is a cgo
   build from the pinned source, labelled "built from source" (section "The
-  second 2026-11-07 rerun").
+  second 2026-11-07 rerun"). Continued a third time by
+  `third-rerun-of-339-integrate-mai-60435935` from `4d89de1`, which merges
+  `main` at `55f211d` under accepted 0130 (section "The 2026-11-08 third
+  rerun").
 - **Authority:** the operator's ruling of 2026-11-07, quoted in #339:
   "compare with all that we have shims for". It sets four targets
   (Swarmail, Mailpit, MailHog, MailSlurper) and four agents (claude-opus,
@@ -25,7 +28,10 @@ Decision: 0129 — [the agent-suite comparison](../../docs/decisions/0129-agent-
   [0093](../../docs/decisions/0093-source-mail-comparison.md), all accepted
   by the operator on 2026-11-02, plus
   [0076](../../docs/decisions/0076-sequential-eval-trials.md) and
-  [0117](../../docs/decisions/0117-hard-eval-tier.md).
+  [0117](../../docs/decisions/0117-hard-eval-tier.md). *(rerun 3)* Also
+  [0130](../../docs/decisions/0130-eight-target-mail-comparison.md),
+  accepted by the operator on 2026-11-08: its lock v4 and protocol v3
+  govern the wire driver and the MailSlurper pin this suite measures.
 
 ## Feature and rationale
 
@@ -338,6 +344,162 @@ The rulings:
 | Extra shelf upstreams, Alkemio's image | Not used (the first rerun's ruling stands). | Both | — |
 | Reproducing the build in a gate | Not done. It would need docker and network access to modules inside the gates. 0092 §1 already says "hashes prove local consistency". | Simplicity | A stranger checks the claim with the committed `go.sum` and `go-version-m.txt`, not in CI. |
 
+## The 2026-11-08 third rerun (integration with accepted 0130)
+
+Run `third-rerun-of-339-integrate-mai-60435935` continues from
+`repair/issue339-compare-agents` at `4d89de1`. The second rerun built every
+item above and stopped only in verify: under the coverage gate's
+instrumented, parallel run,
+`the_mailslurper_adapter_lists_and_reads_over_real_smtp_into_swarmails_shim`
+panicked with `swarmail launches: NotReady("no listener addresses", …)`. The
+test reserved a port, released it and passed it as `--mailslurper-listen`;
+a parallel test took the port first and Swarmail exited at startup. The
+dispatcher's `4d89de1` retries a fresh slot up to five times, requires
+proved cleanup on each refused launch and fails at once on any other error.
+That fix is kept (operator direction for this run).
+
+Meanwhile `main` moved to `55f211d` (#346, issue #340). The operator
+accepted [0130](../../docs/decisions/0130-eight-target-mail-comparison.md)
+on 2026-11-08 ("Accept and merge"), keeping its conditions (f) and (g).
+0130 grows the wire driver to nine fixed targets with source lock v4 and
+protocol v3, and it changes the same files this branch changes. This
+rerun merges `main` and passes the gates. It does not redo finished work.
+
+### What main's accepted bytes establish (read from `origin/main`, not assumed)
+
+- `docs/evals/sources.lock.json` on main has sha256
+  `ed201599dd57441cbcf0c7e66e7c82a56dd217ef683b7bf4e72ae7ce9d3a04b1` and
+  `docs/evals/protocol.json` has sha256
+  `229babaac849ae832ecb1a9f8ec742c970d0f36edc9d26d4ff9bb9c3c0d7224e`. Main's
+  `tests/mail_compare/eight_targets.rs` freezes both (`FROZEN_LOCK_V4_SHA`,
+  `FROZEN_PROTOCOL_V3_SHA`).
+- Main's lock v4 has two MailSlurper entries:
+  - `mailslurper`, the official release. Protocol v3 records that it does
+    not start (`does_not_start`), with its failure as the document
+    `sources/mailslurper/mailslurper-official-failure.txt`. That document is
+    byte-identical (sha256 `70adef75…6685`) to this branch's
+    `sources/mailslurper/build/official-release-stderr.log`.
+  - `mailslurper-source-build` (`TargetKind::MailslurperSourceBuild`,
+    `Provenance::SourceBuild`). Its artifact is `kind: "executable"`, sha256
+    and `executable_sha256` both `eb6cd97d…58ff`, size 19942072,
+    `digest_basis: "locally_computed"`, `upstream_digest: null`,
+    `version_output` `Starting MailSlurper Server v1.14.1`, download
+    `{home}/tree/068acffd…1bd2` (condition (g)). Its build provenance
+    document `mailslurper-cgo-provenance.md` is byte-identical (sha256
+    `a73d49aa…fa5d`) to this branch's `build/PROVENANCE.md`.
+
+  So main's accepted lock already pins **the same executable** this
+  branch's agent suite measures, under the provenance class the operator's
+  2026-11-07 ruling asked for ("built from source"). It has its own entry
+  and is never a relabelled official row.
+- Main's lock binds MailSlurper's licence, README, config, release, ref,
+  commit, tree, `ServiceController.go` and `setupServicesListener.go`. It
+  does **not** bind the other SMTP and storage sources this branch's
+  adapter cites (`mailslurper.go`, `SmtpCommands.go`, `SMTPWorker.go`,
+  `SMTPWorkerResponses.go`, `Writer.go`, `HelloCommandExecutor.go`,
+  `DataCommandExecutor.go`, `DatabaseReceiver.go`, `CommonQueries.go`,
+  `MailSearch.go`, `MailItem.go`, `MailCollectionResponse.go`). It does not
+  bind `go.mod` and `go.sum` from the build evidence either.
+- `git merge-tree` reports content conflicts in 13 files:
+  `benches/mail_compare.rs`, `benches/mail_compare/{protocol,targets}.rs`,
+  `tests/mail_compare.rs`, `scripts/compare-mail.sh`,
+  `evals/src/{fixture,mail,main,runner}.rs`, `evals/tests/fixture.rs`,
+  `docs/decisions/0091-fair-mail-comparison.md`, `docs/decisions/README.md`
+  and `docs/evals/README.md`.
+- **The silent trap.** `docs/evals/sources.lock.json` merges *without* a
+  conflict marker into a third blob (sha256 `ef8309cf…`) that is neither
+  side's bytes. A merge that looks clean there has edited a frozen file.
+
+### Contradiction check (the brief's stop-and-report clause)
+
+0129's 2026-11-07 addendum realised the operator's source-build ruling by
+repurposing the lock entry `mailslurper` (`built_from_source`,
+`official_release`). Accepted 0130 realised the same ruling as a separate
+entry, `mailslurper-source-build`, and forbids relabelling the official
+row. Both quote one ruling, and both pin the same executable bytes. They
+disagree only about where the record lives, and the accepted record
+decides that. The resolving reading is: 0129's measurement target is
+0130's `mailslurper-source-build` entry, and 0129's lock-schema work (§7 and
+its 2026-11-07 lock bullets) is superseded by 0130's lock v4. In the agent
+suite, the target name `mailslurper` names the service API the adapter
+drives, which is the same for any build. It is not a lock row. Every row,
+tuple, identity record and README line binds the lock entry
+`mailslurper-source-build` and says "built from source". No unresolvable
+contradiction remains, so this rerun proceeds. R12.l's stop conditions
+still apply to the bytes the implementer reads after the merge.
+
+### How the third rerun's positions were ruled
+
+- **Simplicity's integration by subtraction is adopted.** Take main's
+  frozen bytes and main's `protocol.rs`/`targets.rs` whole. Delete the
+  branch's lock-v4 layer, and point the agent suite at main's
+  `mailslurper-source-build` through one mapping. Keeping the branch's layer
+  would cost two lock vocabularies for one file, a second v3 reader, a
+  second launch-config mechanism, and tests asserting a lock the frozen
+  bytes no longer are. Main's lock already records everything in that layer
+  that the measurement needs.
+- **Robustness's separate digest-bound 0129 control file for MailSlurper
+  provenance is rejected.** Robustness made it conditional on main's v4
+  lacking the source-build class or recording it as an upstream artifact.
+  Main's v4 has the class, with a locally computed digest, a null upstream
+  digest, observed build provenance and the official entry's failure. The
+  condition is false. A second record would restate the accepted one and
+  could drift from it. What this ruling costs: the branch's
+  `official_release` sub-object (zip `48f2f9ba…55f6`, member
+  `0cd9416b…2627`) is no longer in a lock field this branch owns. It stays
+  in main's official `mailslurper` entry and in 0129's unedited 2026-11-07
+  addendum.
+- **The bytes main does not bind are kept, not dropped.** Both positions
+  agree that 0129 §5's source verification stands. The twelve adapter-cited
+  sources and `go.mod`/`go.sum` move to a branch-owned directory,
+  `docs/evals/agent-sources/mailslurper/`, outside main's 0130-governed
+  `docs/evals/sources/` tree. A constant digest table in the tests binds
+  them (R12.e). Any branch file whose sha256 equals a main-bound document
+  is deleted in favour of main's copy.
+- **Robustness's exhaustive-match and declared-subset rules are adopted.**
+  Code this branch adds or ports never matches `TargetKind` or `Target`
+  with a wildcard arm. The agent matrix's targets are the declared four. A
+  MailSlurper tuple bound to the official `mailslurper` entry, or to any
+  entry other than `mailslurper-source-build`, is refused by name.
+- **Robustness's "update, never delete" rule for frozen-method assertions
+  is adopted.** Main's frozen-sha tests stay verbatim. The branch's tests of
+  its own lock layer go, because the layer goes. Tests of the agent suite's
+  behaviour are ported to main's types, not deleted.
+- **The port retry: robustness is adopted in part.** Adopted:
+  - one shared constant for the refusal reason, so a reword is a compile
+    error at both sites;
+  - a forced-collision test, with a real listener holding the first
+    candidate, which drives the retry arm on every run;
+  - an exhaustion test, with all five candidates held.
+
+  Rejected: classifying a refusal by probing the candidate port after
+  cleanup. If the thief had already released the port, the probe would
+  report "no collision" and the flake would return; the operator also
+  directed that `4d89de1`'s semantics be kept. The cost is that a Swarmail
+  startup exit for some other reason takes up to five fast launches before
+  it fails. It fails loudly, with proved cleanup each time, and is never a
+  pass. Also rejected: replacing the retry with `--mailslurper-listen
+  127.0.0.1:0` read back from Swarmail's startup log. That would remove the
+  race, but it needs the startup reader in main's accepted `targets.rs`
+  extended, and it drops the fix the operator said to keep. It is recorded
+  as a follow-up in the plan's risks.
+- **Robustness's expect-refusal mode for main's
+  `real_mailslurper_official_does_not_start` is rejected.** The test is
+  `#[ignore]`d and is main's accepted code. It passes only if the child's
+  stderr carries go-sqlite3's cgo stub line, which a stolen port cannot
+  produce. A collision can only make its "no declared listener is bound"
+  check fail falsely, never pass falsely. The test is outside the brief's
+  scope ("a port the child binds") and stays byte-identical.
+- **The controls are rerun, not patched** (both positions). The committed
+  2026-11-07 controls bind the swarmail, adapter and harness digests and
+  the product sha, and the merge changes all of them. The verifier already
+  refuses stale receipts.
+- **The load bound.** Robustness asks for proof at the suite's real width.
+  The coverage gate's own instrumented run gives it: it is a house gate,
+  and it is the run that reproduced the failure. Any added repeat runs at
+  most `nproc/4` workers (`taskset -c 0-31` on this 128-CPU host) under
+  `timeout 600`, as a named, timed command.
+
 ## Requirements
 
 ### R1. Record the ruling
@@ -507,6 +669,10 @@ The rulings:
 
 ### R8. MailSlurper provenance and AUTH PLAIN
 
+*(rerun 3: the lock-schema parts of R8 are superseded by R12. Main's
+accepted lock v4 pins MailSlurper. The AUTH answer, the probe and the
+download discipline still hold, and the cited sources move under R12.e.)*
+
 - MailSlurper's latest official release is pinned in source-lock v4. The
   entry carries:
   - the asset digest (upstream if published, otherwise locally computed and
@@ -632,6 +798,11 @@ The rulings:
 
 ### R11. The source-built MailSlurper *(rerun 2)*
 
+*(rerun 3: superseded by R12. Main's accepted `mailslurper-source-build`
+entry pins the same executable `eb6cd97d…58ff`. This branch no longer
+edits the lock, and none of R11's lock fields or validator refusals are
+built. The "built from source" wording rule still holds.)*
+
 - Lock v4's MailSlurper entry is edited in place. Its `artifact` is:
   - `kind: "built_from_source"`, `file_name: "mailslurper"`, size 19942072;
   - `sha256` and `executable_sha256` both
@@ -675,6 +846,161 @@ The rulings:
   scratch working directory are unchanged.
 - The README, the product record and the 0129 addendum use the words
   "built from source". None of them calls the build the release artifact.
+
+### R12. Integrate `main` under accepted 0130 *(rerun 3)*
+
+- **R12.a — the merge.** Run `git merge origin/main` (`55f211d`) on top of
+  `4d89de1`. Never rebase, squash or amend. The merge commit has both
+  parents. Conflicts are resolved in the merge commit or in commits after
+  it, and no conflict marker survives.
+- **R12.b — frozen bytes are main's bytes.** After the merge, restore from
+  `origin/main`:
+  - `docs/evals/sources.lock.json` and `docs/evals/protocol.json`;
+  - `docs/evals/history/`;
+  - every file main tracks under `docs/evals/sources/`.
+
+  Each sha256 must equal main's: the lock is `ed201599…04b1` and the
+  protocol is `229babaa…224e`. Main's `FROZEN_LOCK_V4_SHA` and
+  `FROZEN_PROTOCOL_V3_SHA` test stays verbatim. No frozen protocol or lock
+  is edited, and no merge product of one is kept. Delete the branch's
+  `docs/evals/history/2026-11-07-sources.lock.v3.json`. It is
+  byte-identical to main's `2026-10-30-sources.lock.v3.json`, which main's
+  reader already reads.
+- **R12.c — the driver is main's.** `benches/mail_compare/protocol.rs` and
+  `targets.rs` are main's files. The only additions are what the branch's
+  adapter modes need to compile: at most one read accessor, and R13's
+  shared constant. The branch's lock-v4 layer is removed:
+  - in `protocol.rs`: `HISTORICAL_TARGETS`, the 4-entry `ALL`,
+    `LaunchConfig` and its slots, lock-level `SmtpAuth`, `TagKind`,
+    `ArtifactKind::BuiltFromSource`, `Build`, `OfficialRelease`,
+    `version_note`, the `git_commit`/`git_tree` documents and their
+    validators, and the branch's `v3` module;
+  - in `targets.rs`: `config`, `fill_slots`, `www_addr` and
+    `path_segment`.
+
+  The adapter's launch builds its spec with main's `LaunchSpec::from_pin`,
+  the same builder the wire run uses.
+- **R12.d — the adapter modes.** `benches/mail_compare.rs` keeps main's
+  usage text and dispatch, and the branch's adapter modes are added to
+  them. `mailslurper-mcp` launches `TargetKind::MailslurperSourceBuild`,
+  never `TargetKind::Mailslurper`. `mailpit-mcp` and `mailhog-mcp` do not
+  change. Every `TargetKind` match in code this branch adds or ports is
+  exhaustive, with no `_ =>` arm. Where an adapter entry point receives a
+  target, every target but its own is a typed refusal that names the
+  target, and nothing is spawned.
+- **R12.e — the sources main does not bind.** The twelve MailSlurper
+  sources the adapter cites, plus `go.mod` and `go.sum`, move to
+  `docs/evals/agent-sources/mailslurper/`. A constant table in
+  `tests/mail_compare.rs` holds `(path, archive member, sha256)` for all
+  fourteen files. Two tests use it:
+  - a default test rehashes the committed bytes against the table;
+  - an `#[ignore]` test re-extracts each member from the source archive
+    main pins (`83f66f25…359f`), using main's archive helpers, and compares
+    it.
+
+  The rest of the branch's `docs/evals/sources/mailslurper/` (`build/`,
+  `git/` and the unprefixed copies) is expected to be sha256-equal to
+  documents main binds, and is deleted. A file that is not equal moves to
+  `agent-sources/` with a table row. Nothing is dropped silently.
+- **R12.f — evals: one mapping.** `evals/src/target.rs` keeps its four
+  variants and gains `Target::lock_entry()`, an exhaustive match:
+  - Swarmail is `None`;
+  - Mailpit is `"mailpit"`;
+  - MailHog is `"mailhog"`;
+  - MailSlurper is `"mailslurper-source-build"`.
+
+  `validate_tuple` and `tuple_agrees_with_lock` compare a tuple's
+  `lock_entry` with this value and read the lock entry it names. The
+  agent-facing name `mailslurper` stays, so tool names, `tools_sha256`,
+  prompt-header digests and applicability keys do not change.
+- **R12.g — the product record.** In `docs/evals/agent-comparison.json`,
+  only two fields of the MailSlurper tuple change: `lock_entry` becomes
+  `"mailslurper-source-build"` and `artifact_kind` becomes `"executable"`
+  (main's word). The executable, adapter, tasks, agents, trials, order and
+  statistics are the same. This is a provenance pointer, not a change of
+  method (0129 §8), so the id stays. Every other tuple field must agree
+  with main's entry exactly as the verifier checks it. A disagreement is a
+  stop-and-report, never an edit to fit.
+- **R12.h — the eval crate.** Main's and the branch's additions to
+  `evals/src/{fixture,mail,main,runner}.rs` and `evals/tests/fixture.rs`
+  are both kept: the branch's `smtp_auth`, and main's `swarmail_http` and
+  reports. There is one SMTP send helper: main's `send_stored` takes the
+  `SmtpAuth` argument, and the branch's `send_auth` is deleted. Main's
+  deliverability task is not in the frozen product's `hard` tier, so it
+  adds no comparison cell.
+- **R12.i — the wrapper.** `scripts/compare-mail.sh` uses main's grammar:
+  `--bin NAME=PATH`, `--runtime NAME=DIR` and the `--mailpit`/`--mailhog`
+  aliases. The branch's `--mailslurper BIN` flag is removed. The agent
+  modes (`controls`, `evidence`, `measure`) need a `--bin` for each lock
+  entry among the product record's competitor tuples (`mailpit`,
+  `mailhog`, `mailslurper-source-build`). When one is missing, the mode
+  refuses by name.
+- **R12.j — the wire corpus.** `docs/evals/wire-corpus/` binds each
+  target's executable digest and launch-config-template sha256 against the
+  lock entry its target maps to. If main's `mailslurper-source-build`
+  `config_file` renders the same template bytes the corpus index records,
+  nothing changes. If not, the MailSlurper corpus is recaptured under
+  main's pin with the free, ignored real-binary capture. The index is never
+  edited to agree.
+- **R12.k — records.**
+  - Accepted records (0091, 0092, 0093 and 0130) take dated pointers only,
+    as added lines.
+  - In 0091, main's pointer text comes first and the branch's addenda
+    follow.
+  - 0130 gains one dated 2026-11-08 pointer line to 0129's new addendum.
+  - The decisions index keeps main's rows and 0129's row. In 0129's row,
+    "source-lock v4" becomes "on 0130's lock v4".
+  - `docs/evals/README.md` is main's text followed by the branch's
+    section. Its MailSlurper paragraph names `mailslurper-source-build`,
+    cites 0130 and says "built from source".
+  - 0129 gains a section headed "Addendum — 2026-11-08 (integration with
+    accepted 0130)". It records that:
+    - §7 and the 2026-11-07 lock bullets are superseded by 0130's lock v4;
+    - the agent `mailslurper` binds `mailslurper-source-build`;
+    - MailSlurper is now a wire-bench target under 0130, so "not a
+      wire-bench target" no longer holds;
+    - `smtp_auth` lives in the product record and its probe transcript,
+      not in the lock;
+    - the fourteen unbound sources are now in
+      `docs/evals/agent-sources/mailslurper/`;
+    - the controls were rerun, with the new directory and product sha.
+
+    0129 stays `proposed`, and its earlier sections and addenda are not
+    edited.
+- **R12.l — stop conditions.** The implementer stops and reports, and does
+  not decide, if:
+  - a frozen file cannot be made byte-identical to main's;
+  - main's `mailslurper-source-build` executable digest is not
+    `eb6cd97d…58ff` (at `55f211d` it is);
+  - a product tuple field other than R12.g's two disagrees with main's
+    entry;
+  - a merged test would need a `src/` change to pass;
+  - 0129 and 0130 contradict in a way no reading resolves.
+
+### R13. The bounded launch-slot retry *(rerun 3)*
+
+- `4d89de1`'s semantics stay: a fresh slot each attempt, at most five
+  attempts, `facts.proved()` asserted on each refused launch, and any other
+  `LaunchError` fails at once.
+- The refusal reason becomes one constant in `targets.rs`:
+  `pub const NO_LISTENER_ADDRESSES: &str = "no listener addresses"`. Every
+  producer of that `NotReady` reason uses it, at main's sites and any the
+  merge keeps, and the test's match arm uses it as its pattern. A reword is
+  then compile-checked at both ends.
+- The loop moves into one test helper, `launch_shim_with_fresh_slot`. It
+  takes a candidate chooser (by default, reserve and release
+  `127.0.0.1:0`) and returns the slot, the `Owned` and the attempt count.
+  The MailSlurper adapter test calls it with the default chooser.
+- After the merge, run
+  `grep -n 'bind("127.0.0.1:0")' tests/mail_compare.rs tests/mail_compare/*.rs`.
+  Any hit that reserves a port, releases it and passes it to a child that
+  is expected to bind it uses the same helper. At `55f211d`, no other
+  default-suite test does this.
+- Main's `#[ignore]`d `real_mailslurper_official_does_not_start` passes
+  ports to a child that must not bind them. It stays byte-identical (see
+  the ruling above).
+- The launcher-internal `reserve_port` is out of scope, and no retry is
+  added to `Owned::launch`.
 
 ## Acceptance Criteria
 
@@ -725,7 +1051,9 @@ The rulings:
     SMTP against Swarmail's own MailHog and MailSlurper compat shims, in
     CI. Their ignored tests pass against the pinned upstream executables
     (`MAIL_COMPARE_MAILHOG`, `MAIL_COMPARE_MAILSLURPER`).
-  - Each tool's upstream route is cited and bound in lock v4.
+  - Each tool's upstream route is cited and bound in lock v4. *(rerun 3:
+    bound either by a document of main's lock v4 or by R12.e's
+    `agent-sources` digest table.)*
   - No tool name or description offers inbox, await, extraction, delete or
     admin.
   - *(rerun)* Each ignored real-binary test calls every announced tool once
@@ -756,7 +1084,10 @@ The rulings:
   - a full queue gives busy errors for all members;
   - a 64 KiB line is refused;
   - EOF mid-batch ends cleanly.
-- **AC6 — MailSlurper.**
+- **AC6 — MailSlurper.** *(rerun 3: the lock and protocol bullets are
+  superseded by AC14, because main's accepted bytes govern. The AUTH
+  bullets and the three-bind launch bullet still hold, through main's
+  launcher.)*
   - Lock v4 validates, and `mail_compare check --protocol
     docs/evals/protocol.json --sources docs/evals/sources.lock.json` passes.
   - `docs/evals/protocol.json` is byte-identical to `c95386e`.
@@ -794,6 +1125,7 @@ The rulings:
     same on all four targets;
   - the index binds the product digest.
   The controls output is committed under `docs/evals/agent-controls-2026-11-07/`
+  (*rerun 3:* `docs/evals/agent-controls-2026-11-08/`, AC18)
   (rows, index, contracts, identity, receipts). Each per-target run is a
   named, timed command of at most 10 minutes with one worker, and the load
   before and after is reported.
@@ -830,7 +1162,10 @@ The rulings:
     - receipts whose HEAD is not an ancestor of the candidate;
     - receipts whose diff to the candidate touches a path outside the
       evidence allowance.
-- **AC12 — scope.**
+- **AC12 — scope.** *(rerun 3: once `main` is merged, the base for the
+  `src/`, lock, `deny.toml`, `.github/` and `.brokkr/` checks is
+  `origin/main`, not `c95386e` (AC18). The intent is unchanged: this
+  branch changes none of them.)*
   - `git diff c95386e -- src/` is empty.
   - `Cargo.lock`, `evals/Cargo.lock` and `deny.toml` are unchanged.
   - No file under `.github/` or `.brokkr/` changes.
@@ -842,7 +1177,12 @@ The rulings:
     licenses`. If the sandbox has no brokkr binary, the bundle-compile gate
     is reported as run by verify.
 
-- **AC13 — the source-built MailSlurper *(rerun 2)*.**
+- **AC13 — the source-built MailSlurper *(rerun 2)*.** *(rerun 3:
+  superseded by AC14, AC15 and R12.e. The executable `eb6cd97d…58ff`,
+  the provenance document `a73d49aa…fa5d` and the official failure log
+  `70adef75…6685` are now bound by main's lock. `go.mod` and `go.sum`
+  are bound by the `agent-sources` table. The "built from source" and
+  v1.14.1 wording bullets, and the `.compare-bins` bullet, still hold.)*
   - The lock validates with the R11 entry, and
     `mail_compare check --protocol docs/evals/protocol.json --sources
     docs/evals/sources.lock.json` exits 0.
@@ -863,12 +1203,102 @@ The rulings:
     v1.14.1 under `release-1.15.0`.
   - `git ls-files .compare-bins` is empty, and no executable is committed.
 
+- **AC14 — the merge and the frozen bytes *(rerun 3)*.**
+  - `git log --merges -1 --format=%P` names `origin/main` (`55f211d`) as
+    a parent. `git merge-base --is-ancestor 4d89de1 HEAD` holds, and no
+    commit before the merge is rewritten.
+  - `git grep -nE '^(<<<<<<<|>>>>>>>)( |$)'` is empty.
+  - `git diff origin/main -- docs/evals/sources.lock.json
+    docs/evals/protocol.json docs/evals/history/ docs/evals/sources/` is
+    empty. `sha256sum` gives `ed201599…04b1` for the lock and
+    `229babaa…224e` for the protocol. Main's frozen-sha test passes
+    unchanged.
+  - `mail_compare check --protocol docs/evals/protocol.json --sources
+    docs/evals/sources.lock.json` exits 0.
+- **AC15 — the agent suite on main's nine-target types *(rerun 3)*.**
+  - `git diff origin/main -- benches/mail_compare/protocol.rs` adds no
+    type, field, lock rule or protocol rule.
+    `git diff origin/main -- benches/mail_compare/targets.rs` adds at most
+    R12.c's accessor and R13's constant.
+  - A test launches the `mailslurper-mcp` adapter's backend from main's
+    `mailslurper-source-build` pin through `LaunchSpec::from_pin`, and
+    asserts that the spec's executable digest is `eb6cd97d…58ff`.
+  - The adapters' mechanics tests against Swarmail's shims pass. Their
+    ignored real-binary tests pass when the executables are present.
+  - An evals test refuses a MailSlurper tuple with `lock_entry:
+    "mailslurper"` (the official `does_not_start` entry). Another refuses
+    any `lock_entry` other than `mailslurper-source-build`.
+    `Target::lock_entry()` is tested for all four variants.
+  - `git diff origin/main -- benches tests evals | grep -nE '^\+.*\b_ =>'`
+    shows no arm of a `TargetKind` or `Target` match.
+  - The fourteen-row `agent-sources` digest test passes by default. Its
+    `#[ignore]` re-extraction test passes against the pinned source archive
+    when that archive is present.
+  - `compare-mail.sh` refuses `--mailslurper` as an unknown flag. Each
+    agent mode refuses by name when the `--bin` for `mailpit`, `mailhog`
+    or `mailslurper-source-build` is missing.
+  - The product record's MailSlurper tuple says `lock_entry:
+    "mailslurper-source-build"` and `artifact_kind: "executable"`, and
+    `comparison-check` validates it against main's lock.
+- **AC16 — the launch-slot retry *(rerun 3)*.**
+  - `the_mailslurper_adapter_lists_and_reads_over_real_smtp_into_swarmails_shim`
+    passes through `launch_shim_with_fresh_slot`.
+  - A forced-collision test runs in the default suite. It holds a real
+    `TcpListener` on the first candidate for the whole launch and asserts:
+    - the helper returns attempt count 2;
+    - the refused attempt's cleanup is proved;
+    - the held listener still owns the port.
+  - An exhaustion test holds all five candidates. The helper panics,
+    naming the launch error, after the fifth attempt and before any sixth.
+  - `grep -rn '"no listener addresses"' benches tests` finds only the
+    constant's definition.
+  - The coverage gate's instrumented run passes with this test in it.
+  - Any added repeat of `tests/mail_compare` runs as a named command under
+    `timeout 600 taskset -c 0-$(( $(nproc)/4 - 1 ))`, and the gates
+    transcript records uptime before and after it.
+- **AC17 — records *(rerun 3)*.**
+  - `git diff origin/main -- docs/decisions/0091-fair-mail-comparison.md
+    docs/decisions/0092-official-mail-comparison.md
+    docs/decisions/0093-source-mail-comparison.md
+    docs/decisions/0130-eight-target-mail-comparison.md` shows only added
+    lines. 0130's only addition is one dated 2026-11-08 pointer.
+  - 0129's status line still says `proposed`. The new section is headed
+    "Addendum — 2026-11-08 (integration with accepted 0130)", and
+    `git diff 4d89de1 -- docs/decisions/0129-agent-suite-comparison.md`
+    shows only added lines.
+  - The decision-index test (`tests/store_contract_docs.rs`) passes with
+    main's rows and 0129's row.
+- **AC18 — controls and gates on the final head *(rerun 3)*.**
+  - The oracle and null controls rerun on the final code head into
+    `docs/evals/agent-controls-2026-11-08/`. AC7's assertions hold there,
+    and `comparison-check` accepts the directory.
+  - `docs/evals/agent-controls-2026-11-07/` is removed with `git rm`
+    (history keeps it). The path constants in `evals/tests/comparison.rs`
+    and the README links name the new directory.
+  - The dry-run transcript (AC9) and the gates transcript are regenerated
+    beside the new controls.
+  - Each per-target controls command runs one worker under
+    `timeout 600 taskset -c 0-31` (at most `nproc/4`). It is named and
+    timed, with load recorded before and after.
+  - AC12 is read against the merged base:
+    `git diff origin/main -- src/ Cargo.lock evals/Cargo.lock deny.toml
+    .github .brokkr` is empty, and `git ls-files .compare-bins` is empty.
+  - The whole house gate inventory passes `--locked` on the final tree.
+    That includes the evals crate against the candidate's own `swarmail`,
+    the coverage gate and its selftest, the publish-guard and seal proofs,
+    and `cargo deny check licenses`. If this sandbox has no brokkr binary,
+    the report says that the bundle-compile gate runs in verify. Nothing
+    paid runs.
+
 ## Non-goals and deferrals
 
 - No paid session, no paid matrix and no comparison claim. #163 runs the 240
   sessions after the operator confirms them.
 - No wire bench for MailSlurper, no wire protocol v3, and no best-wait
-  stream client (0093 §4 keeps it blocked).
+  stream client (0093 §4 keeps it blocked). *(rerun 3: main's accepted 0130
+  now owns a wire bench with protocol v3 and a `mailslurper-source-build`
+  row. This branch adds no wire work, and the best-wait client stays
+  blocked.)*
 - No competitor cells outside the hard tier. No dsh/GLM support for
   competitors: spark is down, and the DashScope quota is out until
   2026-11-22.
@@ -877,7 +1307,8 @@ The rulings:
 - *(rerun 2)* The build is not reproduced in any gate: no docker, no Go
   toolchain and no module network in the gates. The official binary is not
   launched again; its 2026-11-07 failure is recorded as bytes.
-- *(rerun)* smtp4dev, Inbucket and GreenMail are not targets, even though
+- *(rerun; rerun 3: they are wire-bench targets under 0130, and they are
+  still not agent-suite targets)* smtp4dev, Inbucket and GreenMail are not targets, even though
   their bytes are on the shelf. Adding one is a new product record and the
   operator's call. MailSlurper runs from its own release zip, not from
   Alkemio's image, whose directory is absent from this worktree.

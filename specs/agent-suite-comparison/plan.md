@@ -326,6 +326,119 @@ criterion stands.
 - Copying the version into row settings: rows bind the product digest.
 - Reproducing the build in a gate.
 
+## Third rerun changes (2026-11-08), and which position each answers
+
+Run `third-rerun-of-339-integrate-mai-60435935`, from `4d89de1`, merges
+`main` at `55f211d` (accepted 0130). The spec section "The 2026-11-08
+third rerun" gives the rulings and R12/R13 the requirements. No review
+returned this run; the positions argued a fresh integration.
+
+### Technical context
+
+- **The base moved.** Main gained #340's nine-target wire driver (lock v4,
+  protocol v3, frozen by sha in `tests/mail_compare/eight_targets.rs`),
+  #345's deliverability work in `src/` and the evals crate, and #344. None
+  of it changes a frozen guarantee: 0001, 0002, 0003 and 0005 are untouched
+  by this branch, because it changes no file under `src/`. Any `src/` diff
+  against `origin/main` after the merge is a stop (R12.l).
+- **The constitution check still passes.** No dependency is added. No
+  `Cargo.lock`, `evals/Cargo.lock`, `deny.toml`, `.github/` or `.brokkr/`
+  change comes from this branch. Commits are unsigned and never pushed.
+  0129 stays proposed. Accepted records get dated pointers only. The PR is
+  still held for the operator, because `scripts/compare-mail.sh` changes.
+- **No brokkr binary in this sandbox** (`which brokkr` is empty). The
+  bundle-compile gate runs in verify, and the report says so.
+
+### Order of work
+
+The order is frozen bytes first, types second, behaviour third and
+evidence last. Each step answers a named point.
+
+1. **Merge, then restore the frozen bytes** (simplicity §1, robustness
+   §2.1/§2.6). Run `git merge origin/main`. Then run
+   `git checkout origin/main -- docs/evals/sources.lock.json
+   docs/evals/protocol.json docs/evals/history/` and restore each main
+   file under `docs/evals/sources/`. Check the two sha256s before resolving
+   anything else. This closes the silent `ef8309cf…` auto-merge trap.
+2. **Take main's `protocol.rs` and `targets.rs` whole**
+   (`git checkout --theirs`), then compile the branch's adapter modes
+   against them (simplicity §2.2–2.3, robustness §2.2). Re-add only what a
+   compile error demands. `mailslurper-mcp` maps to
+   `TargetKind::MailslurperSourceBuild`, and its spec comes from
+   `LaunchSpec::from_pin`.
+3. **Resolve `tests/mail_compare.rs`.** Use main's side for every wire and
+   lock test. Delete the branch's lock-layer tests: the
+   `the_v4_lock_pins_mailslurper_as_built_from_source…` block through the
+   tree and document refusals, the duplicate v3-archive tests, and the
+   fake-MailSlurper launch tests that only re-prove main's config-file
+   launch. Port the adapter tests and `4d89de1`'s retry to main's types.
+   Then add R13: the constant, `launch_shim_with_fresh_slot`, the
+   forced-collision test and the exhaustion test (robustness §2.3, in the
+   part adopted). Finally, run R13's grep.
+4. **Move the unbound sources** to `docs/evals/agent-sources/mailslurper/`
+   and add the fourteen-row table and its two tests (R12.e). First hash
+   every branch file under `docs/evals/sources/mailslurper/` against main's
+   documents, and delete only the sha256-equal ones.
+5. **The evals crate** (simplicity §2.4/§2.7). Resolve the conflicts by
+   keeping both sides. Fold `send_auth` into `send_stored`. Add
+   `Target::lock_entry()` and repoint `validate_tuple` and
+   `tuple_agrees_with_lock`. Edit the product record's two fields
+   (R12.g), and add the two refusal tests (AC15).
+6. **The wrapper** (simplicity §2.6). Use main's grammar, keep the
+   branch's agent modes, and have the required `--bin` set come from the
+   product record. Update the wrapper tests that used `--mailslurper`.
+7. **The wire corpus** (R12.j). Compare the template sha256. Recapture,
+   free and bounded, only if it differs.
+8. **Records** (R12.k): 0129's addendum, the pointers on 0091 and 0130,
+   the index row and the README.
+9. **Controls on the final code head** (simplicity §2.8, robustness
+   §4). Rerun the oracle and null controls for each target, one worker,
+   `timeout 600 taskset -c 0-31`, into
+   `docs/evals/agent-controls-2026-11-08/`. Regenerate the dry run. Then
+   `git rm` the 2026-11-07 directory and repoint the constants. The commits
+   that follow touch only evidence paths, which the receipt ancestry rule
+   allows.
+10. **Gates**: the whole inventory, `--locked`, recorded in the gates
+    transcript with times and load.
+
+### Files this rerun touches
+
+- `benches/mail_compare.rs`, `benches/mail_compare/protocol.rs`,
+  `benches/mail_compare/targets.rs` (main's, plus R12.c's additions).
+- `tests/mail_compare.rs` (merge, R12.e table, R13).
+- `evals/src/{target,comparison,fixture,mail,main,runner}.rs`,
+  `evals/tests/{fixture,comparison}.rs`, plus the wrapper tests wherever
+  they live.
+- `scripts/compare-mail.sh`.
+- `docs/evals/agent-comparison.json`, `docs/evals/README.md`,
+  `docs/evals/agent-sources/mailslurper/` (new),
+  `docs/evals/agent-controls-2026-11-08/` (new),
+  `docs/evals/agent-controls-2026-11-07/` (removed),
+  `docs/evals/history/2026-11-07-sources.lock.v3.json` (removed), and the
+  branch's `docs/evals/sources/mailslurper/` copies (removed, R12.e).
+- `docs/decisions/0129-agent-suite-comparison.md` (addendum),
+  `0091-fair-mail-comparison.md` and `0130-eight-target-mail-comparison.md`
+  (pointers), `docs/decisions/README.md` (rows).
+- `docs/evals/wire-corpus/`, only if R12.j finds the template differs.
+
+### Criteria this rerun reads differently, and why
+
+- **AC6's protocol and lock bullets, and AC13, are superseded, not
+  weakened.** They asserted bytes this branch wrote: protocol `c95386e`,
+  and lock v4 with `built_from_source`. Accepted 0130 now freezes different
+  bytes for the same files, and a criterion that conflicts with an accepted
+  decision moves toward the decision. What they protected is kept: the
+  executable digest, the provenance, the official failure and the
+  "built from source" label. Main's lock binds all of these, and AC14 and
+  AC15 assert them.
+- **AC12's base moves from `c95386e` to `origin/main`.** After the merge,
+  `git diff c95386e -- src/` is main's #345 work, not this branch's. The
+  criterion's meaning ("this branch changes no `src/`, lock, deny, CI or
+  brokkr file") is kept exactly, and AC18 restates it against the merged
+  base.
+- **AC7's directory moves to 2026-11-08,** because the receipts bind
+  digests that the merge changes. The assertions do not change.
+
 ## Risks
 
 | Risk | Mitigation |
@@ -356,6 +469,19 @@ criterion stands.
 | **The v1.14.1 report is "fixed" by a later reader** *(rerun 2)*. | It is recorded in the lock note, the product tuple and the README, and the verifier refuses a product that disagrees with the lock. The official binary logs the same string, from the same hard-coded source constant. |
 | **The binary's glibc dependency fails on another host** *(rerun 2)*. | The failure is loud: the launcher's corroborated binds never appear, and the launch is refused. It cannot mis-measure. CI launches no MailSlurper binary; it decodes the committed corpus. The glibc floor (2.31) is stated in the 0129 addendum and the README. |
 | **A substituted `--target-bin`** *(rerun 2)*. | The runner hashes it against the product before spawning anything, and names both digests. The adapter's launch check is the second line. |
-| **Merge contention with #340 and 0130**, which use the same supply and may touch the lock's MailSlurper entry for the bench *(rerun 2)*. | This story changes only the v4 agent-comparison entry and leaves `protocol.json` alone. Whichever lands second rebases onto the other's lock. The PR notes tell the operator. Nothing is coordinated in code. |
+| **Merge contention with #340 and 0130**, which use the same supply and may touch the lock's MailSlurper entry for the bench *(rerun 2; realised in rerun 3, when 0130 landed first and this branch merges it under R12)*. | This story changes only the v4 agent-comparison entry and leaves `protocol.json` alone. Whichever lands second rebases onto the other's lock. The PR notes tell the operator. Nothing is coordinated in code. |
 | **The comparison-integration refusal goes without a real replacement** *(rerun 2)*. | `eval-build` is built and named, and `comparison-check` requires every target's planned control rows. The `grep` for the string only guards against its return. |
 | **Upstream-backed tests are not in CI.** | The #287 precedent: ignored tests behind `MAIL_COMPARE_<T>`, the committed controls receipts, and CI mechanics against the Swarmail shims. *(rerun)* The committed wire corpus is also decoded in CI, so the adapter decoders and the oracle normalizers run on real upstream shapes on every run. The README names what only the receipts prove. |
+| **The merge silently rewrites the frozen lock** *(rerun 3)*. `sources.lock.json` auto-merges to `ef8309cf…` with no marker. | Step 1 restores main's bytes before anything else. AC14 asserts the sha256 and an empty `git diff origin/main` over every frozen path, and main's `FROZEN_LOCK_V4_SHA` test fails any later edit. |
+| **A conflict is "resolved" by deleting the assertion that fails** *(rerun 3)*. | Main's frozen-method and frozen-sha tests are kept verbatim. Only the branch's tests of its own removed lock layer are deleted, and each of them is listed in plan step 3. Agent-suite tests are ported, never deleted. Review compares the deleted test names with that list. |
+| **The agent suite binds the official, unstartable MailSlurper** *(rerun 3)*. | `mailslurper-mcp` maps to `MailslurperSourceBuild`. `Target::lock_entry()` is one exhaustive match. The verifier refuses a tuple with `lock_entry: "mailslurper"` or any other entry (AC15), and the adapter launch asserts the digest `eb6cd97d…58ff`. |
+| **A wildcard arm gives a new target another target's behaviour** *(rerun 3)*. | No `_ =>` on `TargetKind` or `Target` in added code, checked by AC15's grep. The agent matrix is the declared four. |
+| **The cited MailSlurper sources lose their binding** *(rerun 3)*. | R12.e moves them to `agent-sources/`, a branch-owned path outside 0130's tree. A digest table and a default test bind them, and an ignored test re-extracts them from the pinned archive. Only files sha256-equal to main's documents are deleted. |
+| **The port retry is disabled by a reword, or its arm never runs** *(rerun 3)*. | One shared constant is used at producer and consumer. The forced-collision and exhaustion tests drive the retry arm and the failure arm on every default run (AC16). |
+| **The retry hides a real startup failure** *(rerun 3)*. | It is bounded at five. Each refusal proves cleanup, and the fifth panics with the error. A non-collision startup exit still fails, at most four fast relaunches later. Follow-up (not this run): pass `--mailslurper-listen 127.0.0.1:0` and read the bound address from Swarmail's startup log (`src/main.rs` logs `mailslurper = …`). That deletes the race, but it needs main's startup reader extended. |
+| **`real_mailslurper_official_does_not_start` flakes on a stolen port** *(rerun 3)*. | It is ignored and opt-in, and it is main's accepted code. A theft can only make it fail falsely, because its pass needs the cgo stub line on stderr. It is left byte-identical, and a failure there is reported, not retried. |
+| **The coverage gate flakes again on a test outside this branch** *(rerun 3)*. The second rerun saw one in `src/store.rs`. | It is reported with its output. It is never patched in `src/` (R12.l), and never hidden by serialising the suite. A rerun of the gate is a named, timed command, and every run's verdict is recorded. |
+| **Load during the proofs** *(rerun 3)*. | Every added repeat and every controls command is at most `nproc/4` CPUs (`taskset -c 0-31`), under `timeout 600`, with uptime before and after. The coverage gate and the evals suite run as the house runs them, one at a time and never beside each other. |
+| **Stale controls receipts after the merge** *(rerun 3)*. | The controls rerun on the final code head. Later commits touch only evidence paths. `comparison-check` refuses anything else. |
+| **The product record id is read as a method change** *(rerun 3)*. | Only `lock_entry` and `artifact_kind` change. The bytes measured are the same, and the 0129 addendum states it. If review rules otherwise, the remedy is a new id string and nothing else. |
+| **A product-tuple field disagrees with main's entry** *(rerun 3)*. | Stop and report (R12.l). Neither the tuple nor the lock is edited to agree. |
