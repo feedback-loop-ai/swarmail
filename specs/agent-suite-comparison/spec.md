@@ -1245,11 +1245,15 @@ built. The "built from source" wording rule still holds.)*
     passes through `launch_shim_with_fresh_slot`.
   - A forced-collision test runs in the default suite. It holds a real
     `TcpListener` on the first candidate for the whole launch and asserts:
-    - the helper returns attempt count 2;
+    - the helper returns an attempt count of at least 2 (the fresh
+      candidate is itself reserved and released, so an exact count could
+      race; *review return 4* records why);
     - the refused attempt's cleanup is proved;
     - the held listener still owns the port.
-  - An exhaustion test holds all five candidates. The helper panics,
-    naming the launch error, after the fifth attempt and before any sixth.
+  - An exhaustion test holds all five candidates. The helper panics with
+    "slots refused in a row" (the test's `should_panic` matches that text, not
+    the any-other-error arm's), after the fifth attempt and before any sixth.
+    The message does not print the launch error.
   - `grep -rn '"no listener addresses"' benches tests` finds only the
     constant's definition.
   - The coverage gate's instrumented run passes with this test in it.
@@ -1324,3 +1328,23 @@ built. The "built from source" wording rule still holds.)*
   here. Intake flagged it too.
 - Acceptance of 0129 is the operator's. The PR is held regardless, because
   `scripts/compare-mail.sh` changes.
+
+- **AC19 — review return 4 (2026-11-08): what the product record claims.**
+  - The MailHog adapter offers `mailhog_list`, `mailhog_search` and
+    `mailhog_wait` only. `mailhog_read` is neither offered nor parsed
+    (`-32602`), because `GET /api/v1/messages/{id}` binds to no document the
+    lock holds and to no reviewed source (0092 §3, 0129 §5). A test holds the
+    offered names to those three, and the hostile-argument test sees no
+    upstream request for a MailHog `read`.
+  - The product record's `tools_sha256` for Mailpit, MailHog and MailSlurper
+    each equal the digest of the tool list the adapter serves; a default test
+    holds them. Mailpit's stays `77ee96eb…9eaa`.
+  - `mailslurper_read`'s description says what the pinned executable does:
+    an unknown id is HTTP 200 and an empty item, reported as `not_found`.
+  - The product record's `order` is "target, then task, then agent, then
+    attempt", the order `compare-mail.sh measure` runs (one matrix per
+    target), and `comparison-check`'s dry-run plan prints that order. A test
+    holds the plan lines (`slots 1-20 … on swarmail`, `21-40 recipient-crowd on
+    swarmail`, `61-80 otp-backlog on mailpit`, `221-240 … on mailslurper`).
+  - The competitors' `wait_method` states the 100 ms interval.
+  - The controls are rerun on the head after these edits.

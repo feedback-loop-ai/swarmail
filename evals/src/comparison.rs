@@ -1272,10 +1272,10 @@ impl Verified {
             p.targets.len()
         );
         out.push_str(&format!(
-            "plan: {} slots = {} tasks x {} targets x {} agents x {} trials, one slot at a time, in this order:\n",
+            "plan: {} slots = {} targets x {} tasks x {} agents x {} trials, one slot at a time, in this order (one matrix per target, as `compare-mail.sh measure` runs them):\n",
             p.planned_cells,
-            p.tasks.len(),
             p.targets.len(),
+            p.tasks.len(),
             p.agents.len(),
             p.trials
         ));
@@ -1287,8 +1287,8 @@ impl Verified {
             .collect::<Vec<_>>()
             .join(", ");
         let mut slot = 1;
-        for task in &p.tasks {
-            for t in &p.targets {
+        for t in &p.targets {
+            for task in &p.tasks {
                 out.push_str(&format!(
                     "  slots {:>3}-{:>3}: {task} on {} for {labels}, {} trials each\n",
                     slot,

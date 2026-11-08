@@ -64,6 +64,11 @@ const SOURCES: &[u8] = include_bytes!("../docs/evals/history/2026-10-30-sources.
 const PROTOCOL_V3: &[u8] = include_bytes!("../docs/evals/protocol.json");
 const SOURCES_V4: &[u8] = include_bytes!("../docs/evals/sources.lock.json");
 
+/// Characters beyond `[A-Za-z0-9._-]` that MailHog's own ids carry in the wire
+/// corpus: `=` and `@` (`<base64url, padded>@mailhog.example`). Only the
+/// corpus check uses it: the adapter offers no tool that takes an id.
+const MAILHOG_CORPUS_ID_EXTRA: &[u8] = b"=@";
+
 fn smoke() -> Protocol {
     Protocol::parse(SMOKE).expect("the smoke fixture parses")
 }
@@ -5037,10 +5042,14 @@ fn no_adapter_tool_offers_a_swarmail_only_capability() {
             .map(|t| t["name"].as_str().unwrap().replace("mailhog", "mailpit"))
             .collect()
     };
+    // MailHog's read-by-id route binds to no source the lock holds, so its
+    // adapter offers the other three; each of those matches Mailpit's.
+    let mut mailpit_names = names(mailpit_mcp::tools(&b));
+    mailpit_names.retain(|n| n != "mailpit_read");
     assert_eq!(
         names(mailhog_mcp::tools(&b)),
-        names(mailpit_mcp::tools(&b)),
-        "the same four operations: list, search, read, wait"
+        mailpit_names,
+        "the same operations as Mailpit's: list, search, wait (no read)"
     );
     let slurper: Vec<String> = mailslurper_mcp::tools(&b)
         .as_array()
@@ -5086,7 +5095,21 @@ fn the_mailhog_adapter_validates_its_calls_closed() {
     );
     assert!(call("mailhog_list", serde_json::json!({"limit": 251})).is_none());
     assert!(call("mailhog_list", serde_json::json!({"extra": 1})).is_none());
-    assert!(call("mailhog_read", serde_json::json!({"id": "a"})).is_some());
+    // No read-by-id tool: MailHog's `/api/v1/messages/{id}` binds to no source
+    // the lock holds (0092 §3), so the tool is neither offered nor parsed.
+    assert!(call("mailhog_read", serde_json::json!({"id": "a"})).is_none());
+    let tools = mailhog_mcp::tools(&b);
+    let offered: Vec<&str> = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        offered,
+        ["mailhog_list", "mailhog_search", "mailhog_wait"],
+        "only operations a bound document or reviewed source states"
+    );
     assert!(call("mailhog_delete", serde_json::json!({})).is_none());
     assert!(
         call(
@@ -5129,12 +5152,6 @@ async fn the_mailhog_adapter_reads_pages_and_refuses_wrong_shapes() {
             t if t.starts_with("/api/v2/search?kind=to&query=a%40b&") => {
                 (200, hog_page(1, 0, &["a"]))
             }
-            "/api/v1/messages/a" => (
-                200,
-                serde_json::json!({"ID": "a", "Raw": {"Data": "r"}}).to_string(),
-            ),
-            "/api/v1/messages/other" => (200, serde_json::json!({"ID": "zzz"}).to_string()),
-            "/api/v1/messages/gone" => (200, "null".into()),
             _ => (404, "{}".into()),
         })
     }))
@@ -5184,31 +5201,20 @@ async fn the_mailhog_adapter_reads_pages_and_refuses_wrong_shapes() {
         )
         .await;
     assert!(!e && v["total"] == 1, "{v}");
-    let (e, v) = c
-        .tool(6, "mailhog_read", serde_json::json!({"id": "a"}))
-        .await;
-    assert!(!e && v["Raw"]["Data"] == "r", "{v}");
-    let (e, v) = c
-        .tool(7, "mailhog_read", serde_json::json!({"id": "gone"}))
-        .await;
-    assert!(
-        e && v["error"].as_str().unwrap().starts_with("not_found"),
-        "{v}"
-    );
-    assert!(v["error"].as_str().unwrap().contains("MailHog"));
-    let (e, v) = c
-        .tool(8, "mailhog_read", serde_json::json!({"id": "other"}))
-        .await;
-    assert!(
-        e && v["error"].as_str().unwrap().starts_with("malformed"),
-        "{v}"
-    );
+    // The route that is not offered draws the generic unknown-tool refusal.
+    c.send(
+        serde_json::json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+        "params": {"name": "mailhog_read", "arguments": {"id": "a"}}}),
+    )
+    .await;
+    let r = c.recv().await;
+    assert_eq!(r["error"]["code"], -32602, "{r}");
     // The generic half answers a batch for this backend too.
     c.send(serde_json::json!([
         {"jsonrpc": "2.0", "id": 20, "method": "tools/call",
-            "params": {"name": "mailhog_read", "arguments": {"id": "a"}}},
+            "params": {"name": "mailhog_list", "arguments": {"limit": 2}}},
         {"jsonrpc": "2.0", "id": 21, "method": "tools/call",
-            "params": {"name": "mailhog_read", "arguments": {"id": "gone"}}}
+            "params": {"name": "mailhog_list", "arguments": {"limit": 6}}}
     ]))
     .await;
     let r = c.recv().await;
@@ -5398,7 +5404,7 @@ fn launch_mode_uses_the_deadlines_protocol_v2_froze() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs MAIL_COMPARE_MAILHOG (the pinned MailHog executable)"]
-async fn real_mailhog_through_the_adapter_lists_searches_reads_and_waits() {
+async fn real_mailhog_through_the_adapter_lists_searches_and_waits() {
     let root = tempfile::tempdir().unwrap();
     let mut owned = launch_pinned(TargetKind::Mailhog, &root.path().join("s")).await;
     for (i, subject) in ["hogtoken-one", "hogtoken-two", "other-three"]
@@ -5428,7 +5434,12 @@ async fn real_mailhog_through_the_adapter_lists_searches_reads_and_waits() {
     }
     let listed = call(&mut c, "mailhog_list", serde_json::json!({"limit": 10})).await;
     assert_eq!(listed["count"], 3, "{listed}");
-    let first = listed["items"][0]["ID"].as_str().unwrap().to_owned();
+    assert!(
+        listed["items"][0]["ID"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "{listed}"
+    );
     let hits = call(
         &mut c,
         "mailhog_search",
@@ -5436,11 +5447,12 @@ async fn real_mailhog_through_the_adapter_lists_searches_reads_and_waits() {
     )
     .await;
     assert_eq!(hits["total"], 2, "{hits}");
-    let read = call(&mut c, "mailhog_read", serde_json::json!({"id": first})).await;
-    assert_eq!(read["ID"], serde_json::json!(first));
     assert!(
-        read["Raw"]["Data"].as_str().unwrap().contains("Subject: "),
-        "raw MIME stays raw"
+        listed["items"][0]["Raw"]["Data"]
+            .as_str()
+            .unwrap()
+            .contains("Subject: "),
+        "raw MIME stays raw in a listed item"
     );
     let found = call(
         &mut c,
@@ -5961,7 +5973,7 @@ async fn a_slot_taken_by_another_listener_is_refused_cleanly_and_the_next_slot_l
 /// All five candidates held: five launches are refused, each with proved
 /// cleanup, and the helper then fails loudly instead of retrying forever.
 #[tokio::test]
-#[should_panic(expected = "swarmail launches")]
+#[should_panic(expected = "slots refused in a row")]
 async fn five_taken_slots_exhaust_the_retry_and_fail_loudly() {
     let root = tempfile::tempdir().unwrap();
     let held: Vec<std::net::TcpListener> = (0..5)
@@ -6187,12 +6199,18 @@ async fn hostile_arguments_never_reach_an_upstream_on_any_adapter() {
             assert_eq!(r["error"]["code"], -32602, "{adapter} {name} {args}: {r}");
         }
         assert_eq!(upstream_requests(&seen), 0, "{adapter} made a request");
-        // An accepted id reaches upstream once, as one path segment.
+        // An accepted id reaches upstream once, as one path segment. MailHog's
+        // adapter has no tool that takes an id: even a good id is refused.
         id += 1;
         let params = serde_json::json!({"name": format!("{adapter}_read"),
             "arguments": {"id": "ok-1_2.3"}});
-        let _ = c.request(id, "tools/call", params).await;
-        assert_eq!(upstream_requests(&seen), 1, "{adapter}");
+        let r = c.request(id, "tools/call", params).await;
+        if adapter == "mailhog" {
+            assert_eq!(r["error"]["code"], -32602, "{r}");
+            assert_eq!(upstream_requests(&seen), 0, "{adapter}");
+        } else {
+            assert_eq!(upstream_requests(&seen), 1, "{adapter}");
+        }
         drop(c.w.take());
         assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
     }
@@ -6693,7 +6711,7 @@ fn check_corpus(t: TargetKind, dir: &Path, lock: &SourceLock) -> Result<(), Stri
         Ok((total, ids))
     };
     let extra: &[u8] = if t == TargetKind::Mailhog {
-        mailhog_mcp::MAILHOG_ID_EXTRA
+        MAILHOG_CORPUS_ID_EXTRA
     } else {
         mailpit_mcp::MAILPIT_ID_EXTRA
     };
@@ -6836,7 +6854,7 @@ fn the_wire_corpus_decodes_through_the_adapter_decoders_and_binds_its_executable
     let list = json(&std::fs::read(corpus_dir(TargetKind::Mailhog).join("list.json")).unwrap());
     for m in list["items"].as_array().unwrap() {
         let id = m["ID"].as_str().unwrap();
-        assert!(mcp::valid_id(id, mailhog_mcp::MAILHOG_ID_EXTRA), "{id}");
+        assert!(mcp::valid_id(id, MAILHOG_CORPUS_ID_EXTRA), "{id}");
         assert!(!mcp::valid_id(id, b""), "{id} needs the widened alphabet");
         assert!(id.ends_with("@mailhog.example"), "{id}");
     }
@@ -7263,4 +7281,29 @@ async fn real_mailslurper_through_the_adapter_lists_searches_reads_and_waits() {
     drop(c.w.take());
     assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
     assert!(owned.shutdown().await.proved());
+}
+
+/// The frozen product record's `tools_sha256` for each adapter is the digest
+/// of the tool list the adapter serves, so a tool added or removed (or a
+/// description changed) cannot leave the record naming other tools.
+#[test]
+fn the_product_record_pins_the_tool_lists_the_adapters_serve() {
+    let product = json(include_bytes!("../docs/evals/agent-comparison.json"));
+    let b = mailpit_mcp::Bounds::default();
+    let built = [
+        ("mailpit", mcp::tools_sha256::<mailpit_mcp::Mailpit>(&b)),
+        ("mailhog", mcp::tools_sha256::<mailhog_mcp::Mailhog>(&b)),
+        (
+            "mailslurper",
+            mcp::tools_sha256::<mailslurper_mcp::Mailslurper>(&b),
+        ),
+    ];
+    let tuples = product["targets"].as_array().unwrap();
+    for (name, digest) in built {
+        let tuple = tuples
+            .iter()
+            .find(|t| t["target"] == name)
+            .unwrap_or_else(|| panic!("no tuple for {name}"));
+        assert_eq!(tuple["tools_sha256"], digest, "{name}");
+    }
 }

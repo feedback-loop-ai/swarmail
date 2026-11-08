@@ -762,3 +762,24 @@ alone is unproved, asserting every other fact and the time bound each time. The
 controls are rerun on the head after these edits, and nothing outside the
 evidence paths changes afterwards. README: Swarmail lists seven skipped
 state-changing tools, not six.
+
+**T14.g (review return 4, 2026-11-08).** The review panel found two medium
+defects in what the product record claims, and lows. Done:
+
+- `mailhog_read` is removed from the MailHog adapter (its route is bound by no
+  source the lock holds); the README, the adapter's header and the tests say so.
+  The ignored real-binary test is renamed `real_mailhog_through_the_adapter_lists_searches_and_waits`.
+- The record's `order` and the dry-run plan are target-major, as `measure` runs
+  them. Making `measure` task-major was rejected: it would need one matrix per
+  (task, target), which changes each cell's `task_index` and so its seed, and the
+  controls and the paired fixtures would no longer match.
+- `mailslurper_read`'s description no longer says HTTP 500; the competitors'
+  `wait_method` names the 100 ms interval; `tools_sha256` of MailHog and
+  MailSlurper change, and a default test pins all three to the adapters.
+- `five_taken_slots_exhaust_the_retry_and_fail_loudly` matches "slots refused in
+  a row". `spec.md` AC16 now says what the code asserts.
+- Left as tracked debt (info): the product record does not list every other
+  catalogue cell as not requested (the verifier takes the three hard-tier tasks);
+  the cleanup tests' retry arm is not forced by a test.
+- The controls and every gate are rerun on the head these edits produce.
+

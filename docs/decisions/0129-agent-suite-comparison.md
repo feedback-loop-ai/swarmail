@@ -416,3 +416,36 @@ resolve.
 - **What stays with the operator.** Acceptance of this record; the CI run (the
   receipts' `ci` item is pending); the confirmation of the 240 paid sessions; the
   hold on the PR, because `scripts/compare-mail.sh` changes. No paid session ran.
+
+## Addendum — 2026-11-08 (review return 4)
+
+This addendum only adds, under the same proposed status; it weakens no accepted
+ruling. The review panel of the third rerun found two medium defects in what the
+product record claims, and this records how they were settled.
+
+- **§5: MailHog's adapter has no read-by-id tool.** §5 and accepted 0092 §3
+  allow only source-verified operations. `GET /api/v1/messages/{id}` is in no
+  document the lock binds and in no reviewed source; the wire driver observed it
+  and protocol v3 lists its attribution as unresolved. The lock is frozen (0130),
+  so no source could be bound. The tool `mailhog_read` is removed, not labelled:
+  list and search items already carry each message's headers, body and raw MIME.
+  MailHog's `tools_sha256` changes (`eeae14f8…db96`). The wire driver's own
+  fidelity read is untouched.
+- **§8: the order is target-major.** The product record said "task, then target,
+  then agent, then attempt", and the dry run printed that, but `measure` runs one
+  matrix per target and each matrix runs its own tasks. The record and the plan now
+  say "target, then task, then agent, then attempt". The alternative, a task-major
+  `measure`, needs a matrix per (task, target), which changes a cell's task index
+  and so its seed, breaking the pairing with the controls. The id stays, because no
+  paid run has happened and this corrects a description of the method before any
+  run (§8). The cost is that a target's slots are consecutive in time, so host or
+  service drift is not spread across targets; the README says so.
+- **§5, truthfulness.** `mailslurper_read`'s description said an unknown id draws
+  HTTP 500; the pinned executable answers 200 and an empty item (the wire corpus),
+  and the adapter reports `not_found`. The description says that now
+  (`tools_sha256` `3c8e11ed…078a`). The competitors' `wait_method` also names the
+  frozen 100 ms interval (§3). A default test holds the record's three adapter
+  digests to the tool lists the adapters serve.
+- **Controls rerun.** The product's sha256 and the adapters' digests changed, so
+  the free oracle and null controls ran again into the same directory.
+

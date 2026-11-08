@@ -6,6 +6,12 @@
 //! release or delete operation is reachable. Results are MailHog's own JSON
 //! in text content blocks; a message's MIME stays raw.
 //!
+//! There is no read-by-id tool. MailHog's only route to one message,
+//! `GET /api/v1/messages/{id}`, is in no document the lock binds and no
+//! reviewed source states it, so it is not source-verified (0092 §3, 0129
+//! §5) and the adapter does not offer it. A list or search item already
+//! carries the message's headers, body and raw MIME.
+//!
 //! Routes, and what binds each:
 //! - `GET /api/v2/messages?start&limit` and
 //!   `GET /api/v2/search?kind=from|to|containing&query&start&limit`: the
@@ -15,11 +21,9 @@
 //!   `messages`; the adapter reads what the executable sends, the same
 //!   reading the wire driver makes (`targets.rs`), and the README lists the
 //!   disagreement.
-//! - `GET /api/v1/messages/{id}`: not in any captured document. The wire
-//!   driver observed it on the pinned executable and uses it for its
-//!   fidelity read; its attribution to MailHog's source is **open** (no
-//!   reviewed source file here states it). It is the only route to one
-//!   message's stored bytes, so the adapter offers it, labelled.
+//!
+//! The wire driver's fidelity read of `/api/v1/messages/{id}` is a separate
+//! matter: its attribution stays open and protocol v3 lists it unresolved.
 
 use crate::mcp::{Backend, Budget, begin, complete_scan};
 use crate::wire::{Http, query_value};
@@ -29,15 +33,11 @@ use tokio::time::Instant;
 
 use crate::mailpit_mcp::{
     Bounds, DEFAULT_LIMIT, MAX_LIMIT, MAX_QUERY_BYTES, MAX_START, SCAN_PAGE, Scan, ToolError,
-    id_arg, poll_wait, text, uint,
+    poll_wait, text, uint,
 };
 
 pub const SERVER_NAME: &str = "mail-compare-mailhog-mcp";
 
-/// Characters beyond `[A-Za-z0-9._-]` that MailHog's own ids carry: `=` and
-/// `@`. Every id in `docs/evals/wire-corpus/mailhog/list.json` has the form
-/// `<base64url, padded>@mailhog.example`; a test holds the alphabet to it.
-pub const MAILHOG_ID_EXTRA: &[u8] = b"=@";
 pub const WAIT_METHOD: &str = "client-side poll of /api/v2/search";
 
 /// The MailHog backend of the generic server.
@@ -107,9 +107,6 @@ pub enum Call {
         start: u64,
         limit: u64,
     },
-    Read {
-        id: String,
-    },
     Wait {
         kind: Kind,
         query: String,
@@ -145,16 +142,6 @@ pub fn tools(bounds: &Bounds) -> Value {
                 "properties": {"kind": kind, "query": query, "start": start, "limit": limit}}
         },
         {
-            "name": "mailhog_read",
-            "description": "One stored message by ID, from GET /api/v1/messages/{ID}, as MailHog returns \
-                it (headers, body and raw MIME). This route is observed on the pinned executable and \
-                is not in MailHog's captured API document.",
-            "inputSchema": {"type": "object", "additionalProperties": false, "required": ["id"],
-                "properties": {"id": {"type": "string", "minLength": 1,
-                    "maxLength": crate::mcp::MAX_ID_CHARS,
-                    "pattern": "^[A-Za-z0-9._=@-]+$"}}}
-        },
-        {
             "name": "mailhog_wait",
             "description": "Client-side polling, not a MailHog wait facility: a complete scan of \
                 GET /api/v2/search at once, then 100 ms after each completed scan, until a scan \
@@ -188,7 +175,6 @@ pub fn parse_call(params: &Value, bounds: &Bounds) -> Option<Call> {
     let allowed: &[&str] = match name {
         "mailhog_list" => &["start", "limit"],
         "mailhog_search" => &["kind", "query", "start", "limit"],
-        "mailhog_read" => &["id"],
         "mailhog_wait" => &["kind", "query", "timeout_ms"],
         _ => return None,
     };
@@ -208,9 +194,6 @@ pub fn parse_call(params: &Value, bounds: &Bounds) -> Option<Call> {
             query: text(args, "query", MAX_QUERY_BYTES)?,
             start: start()?,
             limit: limit()?,
-        },
-        "mailhog_read" => Call::Read {
-            id: id_arg(args, "id", MAILHOG_ID_EXTRA)?,
         },
         _ => Call::Wait {
             kind: kind()?,
@@ -336,19 +319,6 @@ pub async fn run_call(
         } => {
             let (_, v) = b.get(&search_path(*kind, query, *start, *limit)).await?;
             Ok(Value::Object(page(v, *start)?.2))
-        }
-        Call::Read { id } => {
-            let (_, v) = b
-                .get(&format!("/api/v1/messages/{}", query_value(id)))
-                .await?;
-            // MailHog answers an unknown id with `200 null`.
-            if v.is_null() {
-                return Err(ToolError::NotFound);
-            }
-            if v.get("ID").and_then(Value::as_str) != Some(id.as_str()) {
-                return Err(ToolError::Malformed);
-            }
-            Ok(v)
         }
         Call::Wait { kind, query, .. } => {
             b.deadline = frame.response;

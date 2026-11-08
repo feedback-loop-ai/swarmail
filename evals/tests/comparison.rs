@@ -595,11 +595,20 @@ fn a_genuine_set_passes_and_only_a_pending_ci_item_stops_the_paid_start() {
     assert_eq!(v.pending.len(), 1, "{:?}", v.pending);
     let report = v.dry_run_report();
     assert!(
-        report.contains("plan: 240 slots = 3 tasks x 4 targets x 4 agents x 5 trials"),
+        report.contains("plan: 240 slots = 4 targets x 3 tasks x 4 agents x 5 trials"),
         "{report}"
     );
     assert!(
         report.contains("slots   1- 20: otp-backlog on swarmail"),
+        "{report}"
+    );
+    // One matrix per target: a target's tasks are consecutive.
+    assert!(
+        report.contains("slots  21- 40: recipient-crowd on swarmail"),
+        "{report}"
+    );
+    assert!(
+        report.contains("slots  61- 80: otp-backlog on mailpit"),
         "{report}"
     );
     assert!(

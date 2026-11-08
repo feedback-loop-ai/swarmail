@@ -169,6 +169,24 @@ plan and names two pending items, the CI run and the operator's authorization
 this replaces bound the old head's `swarmail`, adapter and harness digests, which
 the merge changed, so they were rerun and removed, not patched.
 
+**The order of the paid run.** `measure` runs one matrix per target, in the
+record's target order, and each matrix runs its tasks, then agents, then
+attempts: the record's `order` is "target, then task, then agent, then attempt",
+and the dry run prints that plan. A task and attempt still see the same fixture
+on every target, because each cell's seed derives from (master seed, task index,
+task, agent, attempt) and every target's matrix is the whole hard tier. The cost
+of this order is that a target's slots are consecutive in time, so a slow drift
+of the host or of a vendor's service lands on one target rather than on every
+target alike; the report must say so with any difference it claims.
+
+**The MailHog adapter has no read-by-id tool.** MailHog's only route to one
+message, `GET /api/v1/messages/{id}`, is in no document the lock binds and no
+reviewed source states it (its primary attribution is open, as above), so it is
+not source-verified and the adapter does not offer it. The list and search tools
+already return each message's headers, body and raw MIME. The wire driver's own
+fidelity read of that route is unchanged and stays listed as unresolved in
+protocol v3.
+
 **What only CI or the operator proves:** the brokkr bundle-compile gate (this
 sandbox has no brokkr binary; it runs in verify), CI's required contexts, the
 receipts' `ci` item (pending), acceptance of 0129, the operator's confirmation of
@@ -518,9 +536,9 @@ is not bounded to 10 minutes. `collect` exits 1 when the run is sealed and
 admitted but a workload failed somewhere (for example a competitor's refusal);
 only exit 2 means the run did not complete.
 `controls`, `evidence` and `measure` exit 2 naming the first missing
-prerequisite, then at `comparison-integration` until tasks T8–T10 land.
-`measure --dry-run` prints the prerequisite order, opens no wrapper
-configuration and launches nothing.
+prerequisite. The `comparison-integration` refusal is gone (proposed 0129 §9).
+`measure --dry-run` verifies the prerequisites, prints the plan, opens no
+wrapper configuration and launches nothing.
 
 ### Collection attempt (2026-10-29)
 

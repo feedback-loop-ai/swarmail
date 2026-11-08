@@ -70,7 +70,7 @@
       "tools_sha256": "77ee96ebe04c77e9a79f6f4ba284fbba9fc4ea7acdd22edf4fb314250f819eaa",
       "smtp_auth": "plain",
       "isolation": "fresh-instance",
-      "wait_method": "mailpit_wait: a labelled client-side poll of the search route",
+      "wait_method": "mailpit_wait: a labelled client-side poll of the search route, a complete scan at once and then 100 ms after each completed scan (decision 0093 §4)",
       "delivery": {
         "accept_implies_queryable": "not-promised",
         "native_wait": "none"
@@ -87,10 +87,10 @@
       "artifact_kind": "executable",
       "version_report": "MailHog version: 1.0.1",
       "executable_sha256": "e2ed634ded49929f089b20045581955ed217672078fd86082dd7a6c67c5d09c7",
-      "tools_sha256": "67f498714ed16475f1e103e369fafbb450c3d2c4ddc008ca89c382e44cb658e5",
+      "tools_sha256": "eeae14f8ab846b707bcd76955831498445376ac0ed3d4ef8d48ba4503615db96",
       "smtp_auth": "plain",
       "isolation": "fresh-instance",
-      "wait_method": "mailhog_wait: a labelled client-side poll of the search route",
+      "wait_method": "mailhog_wait: a labelled client-side poll of the search route, a complete scan at once and then 100 ms after each completed scan (decision 0093 §4)",
       "delivery": {
         "accept_implies_queryable": "not-promised",
         "native_wait": "none"
@@ -107,10 +107,10 @@
       "artifact_kind": "executable",
       "version_report": "v1.14.1",
       "executable_sha256": "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff",
-      "tools_sha256": "34c62466c2446356dc997690c84f64eed6a829b53dd75f5ac7a5d359b1f772dd",
+      "tools_sha256": "3c8e11ed1f85398aa9488b473a162a516c0d0db2ace565b0b4398affd0d6078a",
       "smtp_auth": "none",
       "isolation": "fresh-instance",
-      "wait_method": "mailslurper_wait: a labelled client-side poll of the list route",
+      "wait_method": "mailslurper_wait: a labelled client-side poll of the list route, a complete scan at once and then 100 ms after each completed scan (decision 0093 §4)",
       "delivery": {
         "accept_implies_queryable": "not-promised",
         "native_wait": "none"
@@ -138,7 +138,7 @@
     }
   ],
   "trials": 5,
-  "order": "task, then target, then agent, then attempt; one slot at a time (decision 0076)",
+  "order": "target, then task, then agent, then attempt; one matrix per target, one slot at a time (decision 0076)",
   "seed_policy": "one master seed for the whole run; each cell derives its own from (master, task, agent, attempt), so a task and attempt see the same fixture on every target",
   "planned_cells": 240,
   "controls": {

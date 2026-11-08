@@ -159,8 +159,8 @@ pub fn tools(bounds: &Bounds) -> Value {
         {
             "name": "mailslurper_read",
             "description": "One stored mail by id, from MailSlurper's GET /mail/{id}, as \
-                MailSlurper returns it. MailSlurper answers a lookup that fails, an unknown id \
-                included, with HTTP 500, not 404.",
+                MailSlurper returns it. The pinned executable answers an unknown id with HTTP \
+                200 and an empty mail item, which this tool reports as not_found.",
             "inputSchema": {"type": "object", "additionalProperties": false, "required": ["id"],
                 "properties": {"id": {"type": "string", "minLength": 1,
                     "maxLength": crate::mcp::MAX_ID_CHARS,
