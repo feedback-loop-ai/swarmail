@@ -142,3 +142,5 @@ separate run with a separate denominator. This pointer changes nothing in
 §§1–6; 0130 is a proposal, and only the operator accepts it.
 
 2026-11-07: nine targets; see 0130's review-return addendum.
+
+2026-11-08: the operator accepted [0130](0130-eight-target-mail-comparison.md) ("Accept and merge"); §4's target count is amended by addition as 0130 states.

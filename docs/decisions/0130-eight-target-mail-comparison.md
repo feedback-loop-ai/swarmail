@@ -1,6 +1,6 @@
 # 0130 — Eight comparison targets: source lock v4 and protocol v3
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-08 — "Accept and merge"; see the dated acceptance note at the end)
 - **Date:** 2026-11-07
 - **Issue:** #340, part of #163 (Epic #164)
 - **Specification:** [Eight-target mail comparison](../../specs/mail-compare-eight-targets/spec.md)
@@ -871,3 +871,20 @@ and both `--runtime` flags, `timeout 600 taskset -c 0-31`): load 4.75 before and
 5.96 after, 75 s wall, exit 1 as recorded (the cgo build's and Alkemio's
 `smoke-c1-fresh` cells are "not an exact count"), every cleanup proved, the
 official MailSlurper not launched.
+
+## Dated acceptance note — 2026-11-08
+
+The operator ruled on 2026-11-08, in chat to the dispatcher, "Accept and
+merge", on this record as put to them: the nine fixed targets, source lock v4,
+protocol v3, the competitor claims limited to throughput and observed
+visibility within the deadline, and the conditions (f), the image pin's
+`tagged_source` gap not counted by `collection_ready`, and (g), the source
+build's tree route in place of a release download, kept and not struck. The
+operator also approved the PR's `scripts/compare-mail.sh` change, which lifts
+the 0045 §8 hold. The body above is unchanged; where it says "proposed", "if
+accepted" or "for the operator", it is read as accepted by this note. The two
+issue premises the pinned bytes contradict (GreenMail's REST API reads
+messages; GreenMail's license text is not in the supplied bytes) stand as
+recorded in the addenda above. Collection and every paid session are still not
+authorized by this note; #163's paid comparison waits for the operator's
+confirmation of its plan.

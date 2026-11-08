@@ -109,3 +109,5 @@ by addition: source lock v4 accepts lightweight tags, image digests and a
 pinned runtime, and lock v3 and every annotated pin keep their meaning. §§2–7
 are applied without change. 0130 is a proposal, and only the operator accepts
 it.
+
+2026-11-08: the operator accepted [0130](0130-eight-target-mail-comparison.md) ("Accept and merge"); §1's annotated-tag chain is amended by addition as 0130 states.
