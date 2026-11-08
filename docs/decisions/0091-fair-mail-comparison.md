@@ -178,3 +178,5 @@ this note.
   [0129](0129-agent-suite-comparison.md)'s second addendum: the published
   linux executable does not start, and the comparison's MailSlurper is a cgo
   build of the pinned release source, labelled "built from source".
+
+2026-11-08: accepted [0130](0130-eight-target-mail-comparison.md) pinned the source-built MailSlurper as its own lock row, `mailslurper-source-build`, in its source lock v4; the "source-lock v4" and the "labelled source-built artifact" in the 2026-11-07 addendum above are read as that row, and proposed [0129](0129-agent-suite-comparison.md)'s 2026-11-08 addendum records the integration. Nothing above changes.

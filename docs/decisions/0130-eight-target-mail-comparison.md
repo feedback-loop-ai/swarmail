@@ -888,3 +888,5 @@ messages; GreenMail's license text is not in the supplied bytes) stand as
 recorded in the addenda above. Collection and every paid session are still not
 authorized by this note; #163's paid comparison waits for the operator's
 confirmation of its plan.
+
+2026-11-08: proposed [0129](0129-agent-suite-comparison.md) (issue #339, the agent-suite comparison) integrates with this record by addition. Its agent target `mailslurper` runs this record's `mailslurper-source-build` row, and it adds no lock entry, field or version; see 0129's 2026-11-08 addendum. Nothing here changes.

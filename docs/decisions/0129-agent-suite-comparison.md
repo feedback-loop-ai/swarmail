@@ -294,3 +294,108 @@ Authority is that ruling, not this note.
   the fields above. 0091 §1 asks for official evidence; for MailSlurper in this
   story it is met by the official source plus this labelled source build,
   under the ruling, and 0091's 2026-11-07 addendum points here.
+
+## Addendum — 2026-11-08 (integration with accepted 0130)
+
+This addendum only adds. Every section above and both 2026-11-07 addenda are
+unchanged, and this record stays **proposed**; only the operator accepts it.
+It records how the agent-suite comparison integrates with accepted
+[0130](0130-eight-target-mail-comparison.md), which the operator accepted on
+2026-11-08 ("Accept and merge", keeping its conditions (f) and (g)) and which
+merged to `main` as `55f211d`. It was written after reading `main`'s bytes,
+not from this record's earlier assumptions.
+
+0130 grew the wire driver to nine fixed targets with source lock v4 and
+protocol v3, in the files this record's work also touches. Both records quote
+the operator's one ruling of 2026-11-07 (the source-built MailSlurper) and pin
+the same executable bytes. They differ only in where the record lives, and the
+accepted record decides that. No contradiction remains that a reading does not
+resolve.
+
+- **§7 and the 2026-11-07 lock bullets are superseded by 0130's lock v4.**
+  This record's lock-schema work (a lock v4 of its own, the `built_from_source`
+  artifact kind, `build`, `official_release`, `version_note`, the `git_commit`
+  document kind and the observed-tree rules, the config template and the third
+  owned listener) is withdrawn. `docs/evals/sources.lock.json`
+  (`ed201599…04b1`), `protocol.json` (`229babaa…224e`), `history/` and every
+  file under `sources/` are `main`'s bytes, and `main`'s frozen-sha tests stay
+  verbatim. This branch adds no lock version, entry, field or schema. The
+  `official_release` sub-object this record's first lock carried (zip
+  `48f2f9ba…55f6`, member `0cd9416b…2627`) now lives only where 0130 put it:
+  the official `mailslurper` row and its failure document, and the first
+  2026-11-07 addendum above.
+- **The agent `mailslurper` binds `mailslurper-source-build`.** The target name
+  `mailslurper` names the service API the adapter drives, which is the same for
+  any build. Its executable is 0130's `mailslurper-source-build` row (sha256
+  and executable digest `eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff`,
+  19942072 bytes, kind `executable`, version output `Starting MailSlurper
+  Server v1.14.1`), "built from source" as the operator ruled. It is never the
+  official `mailslurper` row. One exhaustive mapping carries this
+  (`Target::lock_entry()` in the eval crate; `Backend::TARGET` in the adapter
+  driver), with no wildcard arm; a product tuple bound to the official row, or
+  to any entry but its own, is refused by name. In the product record only two
+  fields of the MailSlurper tuple changed: `lock_entry` is
+  `mailslurper-source-build` and `artifact_kind` is `executable`. The id stays,
+  because this is a provenance pointer and not a change of method (§8). Every
+  other field agrees with `main`'s entry as the verifier checks it.
+- **MailSlurper is now a wire-bench target under 0130**, so this record's
+  statement that it is "not a wire-bench target" no longer holds. The agent
+  suite does not depend on that: it runs the same pinned executable through the
+  wire driver's own launcher (`LaunchSpec::from_pin`), with 0130's declared
+  listeners and config file.
+- **`smtp_auth` lives in the product record and its probe transcript, not in
+  the lock.** The probe against the source build is repeated in the new
+  controls directory: EHLO advertises no AUTH, and `AUTH PLAIN` draws `221 Bye`
+  (twice) and a close.
+- **The sources 0130 does not bind are kept.** 0130 binds MailSlurper's licence,
+  README, config, release, ref, commit, tree, `ServiceController.go` and
+  `setupServicesListener.go`. The twelve other files this record's adapter cites
+  (`mailslurper.go`, `SmtpCommands.go`, `SMTPWorker.go`,
+  `SMTPWorkerResponses.go`, `Writer.go`, `HelloCommandExecutor.go`,
+  `DataCommandExecutor.go`, `DatabaseReceiver.go`, `CommonQueries.go`,
+  `MailSearch.go`, `MailItem.go`, `MailCollectionResponse.go`) and `go.mod` and
+  `go.sum` are in `docs/evals/agent-sources/mailslurper/`, outside 0130's
+  `sources/` tree. A constant table in `tests/mail_compare.rs` binds each of the
+  fourteen to its member of the source archive (`83f66f25…359f`), with a default
+  rehash test and an ignored re-extraction test. Every other file this record
+  had committed under `sources/mailslurper/` was sha256-equal to a document 0130
+  binds and was deleted in favour of `main`'s copy.
+- **The wire corpus was recaptured.** The MailSlurper corpus index bound the old
+  lock's config template (`48f56620…349c`); 0130's `config_file` renders a
+  different one (`2b53b35e…7af2`), so the corpus was recaptured under 0130's pin
+  with the free, ignored capture test, not edited to agree.
+- **`scripts/compare-mail.sh` takes `main`'s grammar.** `--bin NAME=PATH` and
+  `--runtime NAME=DIR` repeat; `--mailpit` and `--mailhog` stay aliases;
+  `--mailslurper` is gone. The agent modes need a `--bin` for each competitor
+  lock entry the product record names (`mailpit`, `mailhog`,
+  `mailslurper-source-build`) and refuse by name when one is missing. A bare
+  `controls` keeps `main`'s refusal (the first prerequisite of the chain), with a
+  hint on what it does need.
+- **A task that reads Swarmail's deliverability reports is not applicable to a
+  competitor.** `main`'s `newsletter-findings` is outside the frozen `hard` tier
+  and adds no comparison cell; the runner and `check_tasks` refuse it for a
+  competitor by name, because a competitor has no Swarmail HTTP plane.
+- **The controls were rerun, and the earlier ones removed.** The 2026-11-07
+  controls bound the old head's `swarmail`, adapter and harness digests and the
+  old product sha, all of which the merge changed. The oracle and null controls
+  ran again on the merged head (named in the directory's `receipts.json`) into
+  `docs/evals/agent-controls-2026-11-08/` (120 rows, 4 targets, one worker per
+  target, each its own named command under `timeout 600 taskset -c 0-31`), for
+  product `agent-suite-comparison-2026-11-07` with sha256
+  `b9e9f606e2b54363e25b6d1f4def488da57092c845be379e695cb53f7508667d`. Every oracle
+  trial passes, every null trial fails with the idle class, and the projection
+  digests are equal across targets. The 2026-11-07 directory is removed.
+- **The bounded launch-slot retry stays.** The mechanics test that launches
+  Swarmail with a MailSlurper shim on a reserved slot lost the slot to a parallel
+  test in the coverage gate's instrumented run (`NotReady("no listener
+  addresses")`). A fresh slot is tried at most five times, each refused launch
+  must have proved its cleanup, and any other launch error fails at once. The
+  reason is one constant (`NO_LISTENER_ADDRESSES`), the loop is one helper, and
+  two tests drive it on every run: a held first candidate (two attempts, the
+  holder still accepting) and five held candidates (five draws, then a loud
+  failure). Probing the candidate after cleanup was rejected: a thief that had
+  released the port would read as "no collision". `real_mailslurper_official_does_not_start`
+  is `main`'s accepted code and stays byte-identical.
+- **What stays with the operator.** Acceptance of this record; the CI run (the
+  receipts' `ci` item is pending); the confirmation of the 240 paid sessions; the
+  hold on the PR, because `scripts/compare-mail.sh` changes. No paid session ran.
