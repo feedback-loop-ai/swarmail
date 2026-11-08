@@ -1,6 +1,6 @@
 {
-  "lock_version": 3,
-  "checked_on": "2026-10-29",
+  "lock_version": 4,
+  "checked_on": "2026-11-07",
   "entries": [
     {
       "target": "swarmail",
@@ -24,6 +24,7 @@
         },
         "tagged_source": {
           "observed": {
+            "ref_kind": "annotated",
             "tag_object": "c00f93d0a78967e9f84c291eb34ab73386fdbe0c",
             "commit": "ce798cfd781ef07b321427fc5082b3eebdcae460",
             "tag_signature": "unsigned"
@@ -201,7 +202,11 @@
           "best_wait": {
             "unresolved": "no route, producer, registration-acknowledgement or gap-replay evidence and no real-binary observation exist, so a best-available wait cannot be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
           }
-        }
+        },
+        "listeners": [
+          "smtp",
+          "http"
+        ]
       }
     },
     {
@@ -221,6 +226,7 @@
         },
         "tagged_source": {
           "observed": {
+            "ref_kind": "annotated",
             "tag_object": "056259cd4133e22624340741776709bb46eb9ae9",
             "commit": "0441dd494b03c9255a9b8e90e3458ebb115eacff",
             "tag_signature": "unsigned"
@@ -380,6 +386,1224 @@
           "best_wait": {
             "unresolved": "no route, producer, registration-acknowledgement or gap-replay evidence and no real-binary observation exist, so a best-available wait cannot be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
           }
+        },
+        "listeners": [
+          "smtp",
+          "http"
+        ]
+      }
+    },
+    {
+      "target": "mailslurper",
+      "role": "competitor",
+      "pin": {
+        "release": {
+          "repository": "https://github.com/mailslurper/mailslurper",
+          "tag": "release-1.15.0",
+          "html_url": "https://github.com/mailslurper/mailslurper/releases/tag/release-1.15.0",
+          "target_commitish": "master",
+          "published_at": "2023-08-03T20:26:53Z"
+        },
+        "acquisition": {
+          "basis": "host_supplied_capture",
+          "captured_on": "2026-11-07"
+        },
+        "tagged_source": {
+          "observed": {
+            "ref_kind": "lightweight",
+            "commit": "068acffdcd8960f248ea438c3b7ee51ead601bd2"
+          }
+        },
+        "binary_build_provenance": {
+          "unresolved": "no build attestation or reproducible build ties the executable to the tagged commit; its embedded build info records vcs.modified=true (a dirty tree at the release commit) and go1.20.6 with CGO_ENABLED=0"
+        },
+        "artifact": {
+          "kind": "archive",
+          "file_name": "mailslurper-1.15.0-linux.zip",
+          "download": "https://github.com/mailslurper/mailslurper/releases/download/release-1.15.0/mailslurper-1.15.0-linux.zip",
+          "size": 6574992,
+          "sha256": "48f2f9ba090f5385301477406b4f6e08f7bfbba0619c635ee591d6e6af3e55f6",
+          "digest_basis": "locally_computed",
+          "upstream_digest": null,
+          "member": "mailslurper",
+          "executable_sha256": "0cd9416b766deb26eed8aa01ad0873d06725a3464fdb9ac3cc82201e2c232627",
+          "os": "linux",
+          "arch": "amd64",
+          "version_output": "Starting MailSlurper Server v1.14.1"
+        },
+        "license": {
+          "spdx": "MIT",
+          "holder": "Adam Presley"
+        },
+        "documents": [
+          {
+            "kind": "release_metadata",
+            "path": "sources/mailslurper/mailslurper-release.json",
+            "size": 8384,
+            "sha256": "804af75c03ee5f6a64e636ed5ae98f374f51a4ddace8df6b528c8c11664ee43b",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailslurper/mailslurper/releases/115030386"
+              }
+            }
+          },
+          {
+            "kind": "license",
+            "path": "sources/mailslurper/mailslurper-license.txt",
+            "size": 1082,
+            "sha256": "7cf5dbee03e6bb07660f1fa7cfda307f71a6e9d5388b5135f29d824eab6c9bb3",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailslurper/mailslurper/blob/068acffdcd8960f248ea438c3b7ee51ead601bd2/LICENSE",
+                "upstream_path": "LICENSE",
+                "git_blob": "c1f191e730ab715bfdac9ff5b86e3c7160165b47"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/mailslurper/mailslurper-readme.md",
+            "size": 4785,
+            "sha256": "52cd17bcef0ea7c57c0408eb474be5dbb85b5d6508f1af570e59589c562cc06a",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailslurper/mailslurper/blob/068acffdcd8960f248ea438c3b7ee51ead601bd2/README.md",
+                "upstream_path": "README.md",
+                "git_blob": "fa9d065c195db47e17574cb05258f052ee127cef"
+              }
+            }
+          },
+          {
+            "kind": "api",
+            "path": "sources/mailslurper/mailslurper-setup-services-listener.go",
+            "size": 2870,
+            "sha256": "2fe2bd130ce46c9d78cb2432ea38f8571cd977ade8a1b603a738e9f0ab7794b1",
+            "attribution": {
+              "observed": {
+                "from": "member",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "member": "mailslurper-release-1.15.0/cmd/mailslurper/setupServicesListener.go"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper/mailslurper-service-controller.go",
+            "size": 11355,
+            "sha256": "cb7dadd97d3ea8b8666cb204f6ba90776b364d92b869657f1bb84934b3091da8",
+            "attribution": {
+              "observed": {
+                "from": "member",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "member": "mailslurper-release-1.15.0/cmd/mailslurper/controllers/ServiceController.go"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/mailslurper/mailslurper-config.json",
+            "size": 561,
+            "sha256": "77d7f97cd996baa59ead06a9e0599a2adfe591895742103151bfb2681c12d50e",
+            "attribution": {
+              "observed": {
+                "from": "member",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "member": "mailslurper-release-1.15.0/cmd/mailslurper/config.json"
+              }
+            }
+          },
+          {
+            "kind": "git_ref",
+            "path": "sources/mailslurper/mailslurper-ref.json",
+            "size": 379,
+            "sha256": "b9d0352b8a3fcfee12a8a0f969af4698034d331b15be78b3fdd6daaf2671137e",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailslurper/mailslurper/git/refs/tags/release-1.15.0"
+              }
+            }
+          },
+          {
+            "kind": "git_commit",
+            "path": "sources/mailslurper/mailslurper-commit.json",
+            "size": 2658,
+            "sha256": "772686e2da4e3ca251958112f90feaec84b36b276e46067a1744205504e8387f",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailslurper/mailslurper/git/commits/068acffdcd8960f248ea438c3b7ee51ead601bd2"
+              }
+            }
+          },
+          {
+            "kind": "git_tree",
+            "path": "sources/mailslurper/mailslurper-tree.json",
+            "size": 2786,
+            "sha256": "1ab4ed18a6fbb3b3b8f9c13c21640f63aa52d73c4edec34e65074f1d1abe0e52",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailslurper/mailslurper/git/trees/5f29f08a747241992f5e8ffc25ca8fb35d550729"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/mailslurper/mailslurper-official-failure.txt",
+            "size": 905,
+            "sha256": "70adef75b54a209e150379a30435564a23268aa3668c24cacd881ae14b3d6685",
+            "attribution": {
+              "observed": {
+                "from": "supplied",
+                "record": ".compare-bins/2026-11-07-supply/mailslurper-cgo/official-release-run/mailslurper.stderr.log sha256 70adef75b54a209e150379a30435564a23268aa3668c24cacd881ae14b3d6685"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/mailslurper/mailslurper-official-buildinfo.txt",
+            "size": 6028,
+            "sha256": "28c4afec3689a6e8bff9caf014d24c00e67d535d82446af5ca9fcac57f0f4f8b",
+            "attribution": {
+              "observed": {
+                "from": "supplied",
+                "record": ".compare-bins/2026-11-07-supply/mailslurper-cgo/official-release-run/embedded-buildinfo.txt sha256 28c4afec3689a6e8bff9caf014d24c00e67d535d82446af5ca9fcac57f0f4f8b"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/mailslurper/mailslurper-release-config.json",
+            "size": 561,
+            "sha256": "77d7f97cd996baa59ead06a9e0599a2adfe591895742103151bfb2681c12d50e",
+            "attribution": {
+              "observed": {
+                "from": "member",
+                "archive_sha256": "48f2f9ba090f5385301477406b4f6e08f7bfbba0619c635ee591d6e6af3e55f6",
+                "member": "config.json"
+              }
+            }
+          }
+        ],
+        "launch": [
+          "-config",
+          "{config_path}"
+        ],
+        "storage": {
+          "backend": "scratch_file",
+          "max_messages": null,
+          "cap_flag": null,
+          "basis": "The launch's config file selects dbEngine SQLite with the database inside the owned scratch (`{data_dir}/mailslurper.db`); the release-1.15.0 source offers SQLite, MySQL and MSSQL and no in-memory engine. The service routes the source registers (`GET /mail`, `GET /mail/:id`, `DELETE /mail`, `GET /mailcount`, `GET /pruneoptions`) include no retention-cap setting, and the config keys the launch writes include none: no cap is set, and a bounded real run is the only probe (600 sent, 600 listed). Pruning behavior is not established, and nothing about durability is claimed."
+        },
+        "wait": {
+          "reviewed": [],
+          "finding": "Reviewed the service route registrations in cmd/mailslurper/setupServicesListener.go at the tagged release (a member of the pinned source archive): the service registers GET /mail, /mail/:id, /mail/:id/message, /mail/:mailID/attachment/:attachmentID, /mailcount, /version and /pruneoptions, DELETE /mail, and login routes under an authentication scheme. None is a blocking wait, a long-poll or a push route, so MailSlurper has no server-side wait that the driver can use, and the labelled common-client poll is the only method. The nested source files are bound by their archive member, not by a git blob id, because the supplied git capture is the root tree only.",
+          "best_wait": {
+            "unresolved": "no wait or push route exists in the reviewed route registrations, so no best-available wait can be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+          }
+        },
+        "listeners": [
+          "smtp",
+          "http",
+          "ui"
+        ],
+        "launch_env": [],
+        "config_file": {
+          "name": "config.json",
+          "lines": [
+            "{{",
+            "  \"wwwAddress\": \"127.0.0.1\", \"wwwPort\": {ui_port},",
+            "  \"serviceAddress\": \"127.0.0.1\", \"servicePort\": {http_port},",
+            "  \"smtpAddress\": \"127.0.0.1\", \"smtpPort\": {smtp_port},",
+            "  \"dbEngine\": \"SQLite\", \"dbDatabase\": \"{data_dir}/mailslurper.db\",",
+            "  \"maxWorkers\": 1000, \"autoStartBrowser\": false",
+            "}}"
+          ]
+        }
+      }
+    },
+    {
+      "target": "mailslurper-source-build",
+      "role": "competitor",
+      "pin": {
+        "release": {
+          "repository": "https://github.com/mailslurper/mailslurper",
+          "tag": "release-1.15.0",
+          "html_url": "https://github.com/mailslurper/mailslurper/releases/tag/release-1.15.0",
+          "target_commitish": "master",
+          "published_at": "2023-08-03T20:26:53Z"
+        },
+        "acquisition": {
+          "basis": "host_supplied_capture",
+          "captured_on": "2026-11-07"
+        },
+        "tagged_source": {
+          "observed": {
+            "ref_kind": "lightweight",
+            "commit": "068acffdcd8960f248ea438c3b7ee51ead601bd2"
+          }
+        },
+        "binary_build_provenance": {
+          "observed": {
+            "commit": "068acffdcd8960f248ea438c3b7ee51ead601bd2",
+            "evidence": "sources/mailslurper-source-build/mailslurper-cgo-provenance.md"
+          }
+        },
+        "artifact": {
+          "kind": "executable",
+          "file_name": "mailslurper",
+          "download": "https://github.com/mailslurper/mailslurper/tree/068acffdcd8960f248ea438c3b7ee51ead601bd2",
+          "size": 19942072,
+          "sha256": "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff",
+          "digest_basis": "locally_computed",
+          "upstream_digest": null,
+          "member": null,
+          "executable_sha256": "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff",
+          "os": "linux",
+          "arch": "amd64",
+          "version_output": "Starting MailSlurper Server v1.14.1"
+        },
+        "license": {
+          "spdx": "MIT",
+          "holder": "Adam Presley"
+        },
+        "documents": [
+          {
+            "kind": "release_metadata",
+            "path": "sources/mailslurper-source-build/mailslurper-release.json",
+            "size": 8384,
+            "sha256": "804af75c03ee5f6a64e636ed5ae98f374f51a4ddace8df6b528c8c11664ee43b",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailslurper/mailslurper/releases/115030386"
+              }
+            }
+          },
+          {
+            "kind": "license",
+            "path": "sources/mailslurper-source-build/mailslurper-license.txt",
+            "size": 1082,
+            "sha256": "7cf5dbee03e6bb07660f1fa7cfda307f71a6e9d5388b5135f29d824eab6c9bb3",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailslurper/mailslurper/blob/068acffdcd8960f248ea438c3b7ee51ead601bd2/LICENSE",
+                "upstream_path": "LICENSE",
+                "git_blob": "c1f191e730ab715bfdac9ff5b86e3c7160165b47"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/mailslurper-source-build/mailslurper-readme.md",
+            "size": 4785,
+            "sha256": "52cd17bcef0ea7c57c0408eb474be5dbb85b5d6508f1af570e59589c562cc06a",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailslurper/mailslurper/blob/068acffdcd8960f248ea438c3b7ee51ead601bd2/README.md",
+                "upstream_path": "README.md",
+                "git_blob": "fa9d065c195db47e17574cb05258f052ee127cef"
+              }
+            }
+          },
+          {
+            "kind": "api",
+            "path": "sources/mailslurper-source-build/mailslurper-setup-services-listener.go",
+            "size": 2870,
+            "sha256": "2fe2bd130ce46c9d78cb2432ea38f8571cd977ade8a1b603a738e9f0ab7794b1",
+            "attribution": {
+              "observed": {
+                "from": "member",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "member": "mailslurper-release-1.15.0/cmd/mailslurper/setupServicesListener.go"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailslurper-source-build/mailslurper-service-controller.go",
+            "size": 11355,
+            "sha256": "cb7dadd97d3ea8b8666cb204f6ba90776b364d92b869657f1bb84934b3091da8",
+            "attribution": {
+              "observed": {
+                "from": "member",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "member": "mailslurper-release-1.15.0/cmd/mailslurper/controllers/ServiceController.go"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/mailslurper-source-build/mailslurper-config.json",
+            "size": 561,
+            "sha256": "77d7f97cd996baa59ead06a9e0599a2adfe591895742103151bfb2681c12d50e",
+            "attribution": {
+              "observed": {
+                "from": "member",
+                "archive_sha256": "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f",
+                "member": "mailslurper-release-1.15.0/cmd/mailslurper/config.json"
+              }
+            }
+          },
+          {
+            "kind": "git_ref",
+            "path": "sources/mailslurper-source-build/mailslurper-ref.json",
+            "size": 379,
+            "sha256": "b9d0352b8a3fcfee12a8a0f969af4698034d331b15be78b3fdd6daaf2671137e",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailslurper/mailslurper/git/refs/tags/release-1.15.0"
+              }
+            }
+          },
+          {
+            "kind": "git_commit",
+            "path": "sources/mailslurper-source-build/mailslurper-commit.json",
+            "size": 2658,
+            "sha256": "772686e2da4e3ca251958112f90feaec84b36b276e46067a1744205504e8387f",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailslurper/mailslurper/git/commits/068acffdcd8960f248ea438c3b7ee51ead601bd2"
+              }
+            }
+          },
+          {
+            "kind": "git_tree",
+            "path": "sources/mailslurper-source-build/mailslurper-tree.json",
+            "size": 2786,
+            "sha256": "1ab4ed18a6fbb3b3b8f9c13c21640f63aa52d73c4edec34e65074f1d1abe0e52",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailslurper/mailslurper/git/trees/5f29f08a747241992f5e8ffc25ca8fb35d550729"
+              }
+            }
+          },
+          {
+            "kind": "build_evidence",
+            "path": "sources/mailslurper-source-build/mailslurper-cgo-provenance.md",
+            "size": 10199,
+            "sha256": "a73d49aac8041b8f5467d82125d56f203086eed8529a5f28c4db1b92b921fa5d",
+            "attribution": {
+              "observed": {
+                "from": "supplied",
+                "record": ".compare-bins/2026-11-07-supply/mailslurper-cgo/PROVENANCE.md sha256 a73d49aac8041b8f5467d82125d56f203086eed8529a5f28c4db1b92b921fa5d"
+              }
+            }
+          },
+          {
+            "kind": "build_evidence",
+            "path": "sources/mailslurper-source-build/mailslurper-cgo-go-version-m.txt",
+            "size": 2983,
+            "sha256": "de1ac6ec2e406e12e6911bb78a330f4b3f42dd7ffdadca2308fa7f32ae7bf53b",
+            "attribution": {
+              "observed": {
+                "from": "supplied",
+                "record": ".compare-bins/2026-11-07-supply/mailslurper-cgo/build/go-version-m.txt sha256 de1ac6ec2e406e12e6911bb78a330f4b3f42dd7ffdadca2308fa7f32ae7bf53b"
+              }
+            }
+          }
+        ],
+        "launch": [
+          "-config",
+          "{config_path}"
+        ],
+        "storage": {
+          "backend": "scratch_file",
+          "max_messages": null,
+          "cap_flag": null,
+          "basis": "The launch's config file selects dbEngine SQLite with the database inside the owned scratch (`{data_dir}/mailslurper.db`); the release-1.15.0 source offers SQLite, MySQL and MSSQL and no in-memory engine. The service routes the source registers (`GET /mail`, `GET /mail/:id`, `DELETE /mail`, `GET /mailcount`, `GET /pruneoptions`) include no retention-cap setting, and the config keys the launch writes include none: no cap is set, and a bounded real run is the only probe (600 sent, 600 listed). Pruning behavior is not established, and nothing about durability is claimed."
+        },
+        "wait": {
+          "reviewed": [],
+          "finding": "Reviewed the service route registrations in cmd/mailslurper/setupServicesListener.go at the tagged release (a member of the pinned source archive): the service registers GET /mail, /mail/:id, /mail/:id/message, /mail/:mailID/attachment/:attachmentID, /mailcount, /version and /pruneoptions, DELETE /mail, and login routes under an authentication scheme. None is a blocking wait, a long-poll or a push route, so MailSlurper has no server-side wait that the driver can use, and the labelled common-client poll is the only method. The nested source files are bound by their archive member, not by a git blob id, because the supplied git capture is the root tree only.",
+          "best_wait": {
+            "unresolved": "no wait or push route exists in the reviewed route registrations, so no best-available wait can be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+          }
+        },
+        "listeners": [
+          "smtp",
+          "http",
+          "ui"
+        ],
+        "launch_env": [],
+        "config_file": {
+          "name": "config.json",
+          "lines": [
+            "{{",
+            "  \"wwwAddress\": \"127.0.0.1\", \"wwwPort\": {ui_port},",
+            "  \"serviceAddress\": \"127.0.0.1\", \"servicePort\": {http_port},",
+            "  \"smtpAddress\": \"127.0.0.1\", \"smtpPort\": {smtp_port},",
+            "  \"dbEngine\": \"SQLite\", \"dbDatabase\": \"{data_dir}/mailslurper.db\",",
+            "  \"maxWorkers\": 1000, \"autoStartBrowser\": false",
+            "}}"
+          ]
+        }
+      }
+    },
+    {
+      "target": "smtp4dev",
+      "role": "competitor",
+      "pin": {
+        "release": {
+          "repository": "https://github.com/rnwood/smtp4dev",
+          "tag": "3.16.1",
+          "html_url": "https://github.com/rnwood/smtp4dev/releases/tag/3.16.1",
+          "target_commitish": "9fac83c10cb7cb58105bc0d9d891d36150b8605f",
+          "published_at": "2026-11-06T07:58:19Z"
+        },
+        "acquisition": {
+          "basis": "host_supplied_capture",
+          "captured_on": "2026-11-07"
+        },
+        "tagged_source": {
+          "observed": {
+            "ref_kind": "lightweight",
+            "commit": "9fac83c10cb7cb58105bc0d9d891d36150b8605f"
+          }
+        },
+        "binary_build_provenance": {
+          "unresolved": "no build attestation, reproducible build or published build record ties the executable to a commit; its own version banner names commit 9fac83c1 (a self-report, not build evidence), so whether this executable was built from the tagged commit is unknown"
+        },
+        "artifact": {
+          "kind": "archive",
+          "file_name": "Rnwood.Smtp4dev-linux-x64-3.16.1.zip",
+          "download": "https://github.com/rnwood/smtp4dev/releases/download/3.16.1/Rnwood.Smtp4dev-linux-x64-3.16.1.zip",
+          "size": 76720353,
+          "sha256": "3b9395b9ca6e6f5ac0b0a73d953949ed4780a1b794611a97df1a0c7baf909c46",
+          "digest_basis": "upstream_release_metadata",
+          "upstream_digest": "3b9395b9ca6e6f5ac0b0a73d953949ed4780a1b794611a97df1a0c7baf909c46",
+          "member": "Rnwood.Smtp4dev",
+          "executable_sha256": "bc4f4c334f6bb20e93fdf3bbc2264a6f67b1119a3a4c4fe4dc10df47ad741788",
+          "os": "linux",
+          "arch": "amd64",
+          "version_output": "smtp4dev version 3.16.1+9fac83c10cb7cb58105bc0d9d891d36150b8605f"
+        },
+        "license": {
+          "spdx": "BSD-3-Clause",
+          "holder": "Rnwood"
+        },
+        "documents": [
+          {
+            "kind": "release_metadata",
+            "path": "sources/smtp4dev/smtp4dev-release.json",
+            "size": 15732,
+            "sha256": "72bf71763341200d8888b1c29c091fc40cde7a15061ded3bb936e3089fb648de",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/rnwood/smtp4dev/releases/436236901"
+              }
+            }
+          },
+          {
+            "kind": "license",
+            "path": "sources/smtp4dev/smtp4dev-license.md",
+            "size": 1500,
+            "sha256": "856721d84200072b82d148251de91c36d7b85f02f24c7565b72a00230fac5ad4",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/rnwood/smtp4dev/blob/9fac83c10cb7cb58105bc0d9d891d36150b8605f/LICENSE.md",
+                "upstream_path": "LICENSE.md",
+                "git_blob": "ac0f7a321f696907e8440ef1d908a0b12edbebee"
+              }
+            }
+          },
+          {
+            "kind": "api",
+            "path": "sources/smtp4dev/smtp4dev-api.xml",
+            "size": 63410,
+            "sha256": "f89c797f1bcc05e56f4a82e35aabb26667adbea552f146b6c86e020da9941e84",
+            "attribution": {
+              "observed": {
+                "from": "member",
+                "archive_sha256": "3b9395b9ca6e6f5ac0b0a73d953949ed4780a1b794611a97df1a0c7baf909c46",
+                "member": "Rnwood.Smtp4dev.xml"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/smtp4dev/smtp4dev-appsettings.json",
+            "size": 25010,
+            "sha256": "40518101f5a3e58273e24fa767e606717c2a1827f5ae2400f256724a80953478",
+            "attribution": {
+              "observed": {
+                "from": "member",
+                "archive_sha256": "3b9395b9ca6e6f5ac0b0a73d953949ed4780a1b794611a97df1a0c7baf909c46",
+                "member": "appsettings.json"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/smtp4dev/smtp4dev-help.txt",
+            "size": 12104,
+            "sha256": "50f97ab9b16e2a40e00d5ddd96cc261f367c33e2cbe70357b604920980f10a8e",
+            "attribution": {
+              "observed": {
+                "from": "output",
+                "argv": [
+                  "--help"
+                ]
+              }
+            }
+          },
+          {
+            "kind": "git_ref",
+            "path": "sources/smtp4dev/smtp4dev-ref.json",
+            "size": 335,
+            "sha256": "cfa22d52e539fb1899b1e9d622713f2b4d626534e11cff83bfadacca18bab9d8",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/rnwood/smtp4dev/git/refs/tags/3.16.1"
+              }
+            }
+          },
+          {
+            "kind": "git_commit",
+            "path": "sources/smtp4dev/smtp4dev-commit.json",
+            "size": 2462,
+            "sha256": "7c60e78f3bc56f32f0dcc60aff514b7d8b76330c3bad615823d6a7b8808ff23f",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/rnwood/smtp4dev/git/commits/9fac83c10cb7cb58105bc0d9d891d36150b8605f"
+              }
+            }
+          },
+          {
+            "kind": "git_tree",
+            "path": "sources/smtp4dev/smtp4dev-tree.json",
+            "size": 8412,
+            "sha256": "2f11062f5d939191022576489c99eb51f25317a5e1b696e887f78cbda7970dbb",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/rnwood/smtp4dev/git/trees/9622c9bb2d5044ee2ca08d94a2c8aaaa93428a7d"
+              }
+            }
+          }
+        ],
+        "launch": [
+          "--urls",
+          "http://{http_addr}",
+          "--smtpport",
+          "{smtp_port}",
+          "--bindaddress",
+          "127.0.0.1",
+          "--imapport=",
+          "--pop3port=",
+          "--db",
+          "smtp4dev.db",
+          "--messagestokeep",
+          "10000",
+          "--nousersettings"
+        ],
+        "storage": {
+          "backend": "scratch_file",
+          "max_messages": 10000,
+          "cap_flag": "--messagestokeep",
+          "basis": "The archive's appsettings.json sets NumberOfMessagesToKeep 100 (a default the launch must not keep); `--help` of the pinned executable lists --messagestokeep (per mailbox), --db (relative to XDG_CONFIG_HOME, which the launcher owns; an empty value selects an in-memory database, which this launch does not use) and --nousersettings. The launch raises the cap to 10000, above every profile's residency, and puts the database inside the owned scratch. Pruning behavior at the cap is not established, and nothing about durability is claimed."
+        },
+        "wait": {
+          "reviewed": [],
+          "finding": "The archive's own API documentation (Rnwood.Smtp4dev.xml, a member of the pinned archive) documents GetSummaries (paged, with search terms), GetNewSummaries (messages since a last-seen id, summaries only) and per-message source and part routes; it documents no blocking wait or long-poll. The UI is a client-side application and its transport was not inspected. The labelled common-client poll is the only method.",
+          "best_wait": {
+            "unresolved": "no wait or push route is documented in the pinned archive's API XML and the UI transport was not inspected, so no best-available wait can be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+          }
+        },
+        "listeners": [
+          "smtp",
+          "http"
+        ],
+        "launch_env": [
+          [
+            "DOTNET_BUNDLE_EXTRACT_BASE_DIR",
+            "{scratch}/dotnet"
+          ]
+        ]
+      }
+    },
+    {
+      "target": "inbucket",
+      "role": "competitor",
+      "pin": {
+        "release": {
+          "repository": "https://github.com/inbucket/inbucket",
+          "tag": "v3.2.0",
+          "html_url": "https://github.com/inbucket/inbucket/releases/tag/v3.2.0",
+          "target_commitish": "main",
+          "published_at": "2026-10-10T20:37:07Z"
+        },
+        "acquisition": {
+          "basis": "host_supplied_capture",
+          "captured_on": "2026-11-07"
+        },
+        "tagged_source": {
+          "observed": {
+            "ref_kind": "lightweight",
+            "commit": "742249691d2f8f40253411394a8bbb8e50561849"
+          }
+        },
+        "binary_build_provenance": {
+          "unresolved": "no build attestation, reproducible build or published build record ties the executable to a commit; whether this executable was built from the tagged commit is unknown"
+        },
+        "artifact": {
+          "kind": "archive",
+          "file_name": "inbucket_3.2.0_linux_amd64.tar.gz",
+          "download": "https://github.com/inbucket/inbucket/releases/download/v3.2.0/inbucket_3.2.0_linux_amd64.tar.gz",
+          "size": 10603388,
+          "sha256": "0d7d76ed7e66b0700c38aeef7ad1f086e4a159ce554abd92c95052d0838e0e24",
+          "digest_basis": "upstream_release_metadata",
+          "upstream_digest": "0d7d76ed7e66b0700c38aeef7ad1f086e4a159ce554abd92c95052d0838e0e24",
+          "member": "inbucket",
+          "executable_sha256": "7c56922d7c90258d92eb445886ca0e8ff89c277eac2bcfed382afdffb289909b",
+          "os": "linux",
+          "arch": "amd64",
+          "version_output": "3.2.0"
+        },
+        "license": {
+          "spdx": "MIT",
+          "holder": "James Hillyerd"
+        },
+        "documents": [
+          {
+            "kind": "release_metadata",
+            "path": "sources/inbucket/inbucket-release.json",
+            "size": 34086,
+            "sha256": "c50f1e928a6f73e83da9400ad03d8bacce6b6980e3fd157ad323f0a7e80bad3c",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/inbucket/inbucket/releases/409192210"
+              }
+            }
+          },
+          {
+            "kind": "license",
+            "path": "sources/inbucket/inbucket-license.txt",
+            "size": 1102,
+            "sha256": "542446ad97bc2ce9c4417c5e85c0ef82a7123d8428a52deaec24483d737bddaa",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/inbucket/inbucket/blob/742249691d2f8f40253411394a8bbb8e50561849/LICENSE",
+                "upstream_path": "LICENSE",
+                "git_blob": "01d5c176000639ba306be10630cf5eea3e05a7c4"
+              }
+            }
+          },
+          {
+            "kind": "api",
+            "path": "sources/inbucket/inbucket-rest-apiv1.sh",
+            "size": 2972,
+            "sha256": "69aaccab9fa5d4b57df0227b552f2f9399547a714ab49d2fcbd7bdb3311d6f52",
+            "attribution": {
+              "observed": {
+                "from": "member",
+                "archive_sha256": "0d7d76ed7e66b0700c38aeef7ad1f086e4a159ce554abd92c95052d0838e0e24",
+                "member": "inbucket_3.2.0_linux_amd64/etc/rest-apiv1.sh"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/inbucket/inbucket-readme.md",
+            "size": 3517,
+            "sha256": "d509a002aee82a660c529d27ff8f9eda57a0ce685310e052c946ec1c1c027956",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/inbucket/inbucket/blob/742249691d2f8f40253411394a8bbb8e50561849/README.md",
+                "upstream_path": "README.md",
+                "git_blob": "24a48ebfc179e97b53e9f53684bc1fabceb2c764"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/inbucket/inbucket-service.txt",
+            "size": 884,
+            "sha256": "518a21a718304e16f82aee07e5dcd17855daa0b6cf23c996e9001e584cd14baf",
+            "attribution": {
+              "observed": {
+                "from": "member",
+                "archive_sha256": "0d7d76ed7e66b0700c38aeef7ad1f086e4a159ce554abd92c95052d0838e0e24",
+                "member": "inbucket_3.2.0_linux_amd64/etc/linux/inbucket.service"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/inbucket/inbucket-help.txt",
+            "size": 3774,
+            "sha256": "cdbd8c436a2cd455a3722836d485ac5c882bccca1802c8da9893e0803687497e",
+            "attribution": {
+              "observed": {
+                "from": "output",
+                "argv": [
+                  "-help"
+                ]
+              }
+            }
+          },
+          {
+            "kind": "git_ref",
+            "path": "sources/inbucket/inbucket-ref.json",
+            "size": 339,
+            "sha256": "a340cc43bbae8c874c788897e13e969dfcde835533b7d732d423cb0bf7a41030",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/inbucket/inbucket/git/refs/tags/v3.2.0"
+              }
+            }
+          },
+          {
+            "kind": "git_commit",
+            "path": "sources/inbucket/inbucket-commit.json",
+            "size": 2874,
+            "sha256": "ae5bc30de2440fa624174e3c74b5eb058754d4e0e59ff08b3ca9f024a2e76041",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/inbucket/inbucket/git/commits/742249691d2f8f40253411394a8bbb8e50561849"
+              }
+            }
+          },
+          {
+            "kind": "git_tree",
+            "path": "sources/inbucket/inbucket-tree.json",
+            "size": 5320,
+            "sha256": "038288705abe47ab4aeef7f0df01d9db9403169db603c44ee2f596a8f71f9ac4",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/ee202b296ea6c94dfce4977561efa71017734eba"
+              }
+            }
+          }
+        ],
+        "launch": [],
+        "storage": {
+          "backend": "memory",
+          "max_messages": 10000,
+          "cap_flag": "env:INBUCKET_STORAGE_MAILBOXMSGCAP",
+          "basis": "`inbucket -help` of the pinned executable lists INBUCKET_STORAGE_TYPE ('Storage impl: file or memory', default memory) and INBUCKET_STORAGE_MAILBOXMSGCAP ('Maximum messages per mailbox', default 500); the launch names the memory store and raises the per-mailbox cap to 10000, above every profile's residency, and the workload addresses one mailbox. INBUCKET_STORAGE_RETENTIONPERIOD keeps its 24h default. Pruning behavior at the cap is not established."
+        },
+        "wait": {
+          "reviewed": [],
+          "finding": "No Inbucket source body is retained: the supplied git capture is the root tree only, and the release archive carries the executable, the built UI, the docs and the REST example, so no nested source file is bound to the tagged tree. The pinned help lists a UI monitor (INBUCKET_WEB_MONITORVISIBLE, INBUCKET_WEB_MONITORHISTORY), and no captured document shows its transport, its producer or any replay after a gap. No server-side wait is established.",
+          "best_wait": {
+            "unresolved": "no source, route or real-binary observation of a wait exists, so a best-available wait cannot be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+          }
+        },
+        "listeners": [
+          "smtp",
+          "http",
+          "pop3"
+        ],
+        "launch_env": [
+          [
+            "INBUCKET_SMTP_ADDR",
+            "{smtp_addr}"
+          ],
+          [
+            "INBUCKET_WEB_ADDR",
+            "{http_addr}"
+          ],
+          [
+            "INBUCKET_POP3_ADDR",
+            "{pop3_addr}"
+          ],
+          [
+            "INBUCKET_STORAGE_TYPE",
+            "memory"
+          ],
+          [
+            "INBUCKET_STORAGE_MAILBOXMSGCAP",
+            "10000"
+          ]
+        ]
+      }
+    },
+    {
+      "target": "greenmail",
+      "role": "competitor",
+      "pin": {
+        "release": {
+          "repository": "https://github.com/greenmail-mail-test/greenmail",
+          "tag": "release-2.1.15",
+          "html_url": "https://github.com/greenmail-mail-test/greenmail/releases/tag/release-2.1.15",
+          "target_commitish": "master",
+          "published_at": "2026-10-25T15:11:21Z"
+        },
+        "acquisition": {
+          "basis": "host_supplied_capture",
+          "captured_on": "2026-11-07"
+        },
+        "tagged_source": {
+          "observed": {
+            "ref_kind": "annotated",
+            "tag_object": "5f09fccc06da96fdc7f4d9e1abafb43ceeae61db",
+            "commit": "3b8ea7df70e48bb67052a333a6707c34b5790c30",
+            "tag_signature": "valid"
+          }
+        },
+        "binary_build_provenance": {
+          "unresolved": "no build attestation, reproducible build or published build record ties the Maven Central jar to a commit; the pom names the parent release and the tag names a commit, which is source identity only"
+        },
+        "artifact": {
+          "kind": "executable",
+          "file_name": "greenmail-standalone-2.1.15.jar",
+          "download": "https://repo1.maven.org/maven2/com/icegreen/greenmail-standalone/2.1.15/greenmail-standalone-2.1.15.jar",
+          "size": 10989118,
+          "sha256": "91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1",
+          "digest_basis": "registry_checksum",
+          "upstream_digest": "91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1",
+          "member": null,
+          "executable_sha256": "91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1",
+          "os": "linux",
+          "arch": "amd64",
+          "version_output": "Starting GreenMail standalone v2.1.15"
+        },
+        "license": {
+          "spdx": "Apache-2.0",
+          "holder": "GreenMail contributors"
+        },
+        "documents": [
+          {
+            "kind": "release_metadata",
+            "path": "sources/greenmail/greenmail-release.json",
+            "size": 4486,
+            "sha256": "0a5facc447f6a4e39e5492bef23fbca732c802294ec06b8eabdef3cb93f574d7",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/greenmail-mail-test/greenmail/releases/423476831"
+              }
+            }
+          },
+          {
+            "kind": "license",
+            "path": "sources/greenmail/greenmail-license-declaration.yml",
+            "size": 10752,
+            "sha256": "bc0cc09b3e1ecb8b07968d2c646a658380751a5bd38b6639b86fb7fb3ccbc5a1",
+            "attribution": {
+              "observed": {
+                "from": "member",
+                "archive_sha256": "91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1",
+                "member": "greenmail-openapi.yml"
+              }
+            }
+          },
+          {
+            "kind": "api",
+            "path": "sources/greenmail/greenmail-openapi.yml",
+            "size": 10752,
+            "sha256": "bc0cc09b3e1ecb8b07968d2c646a658380751a5bd38b6639b86fb7fb3ccbc5a1",
+            "attribution": {
+              "observed": {
+                "from": "member",
+                "archive_sha256": "91d58798698cac357f015365240383b936ced2f2a1a9f7db37d9e3e1a31391b1",
+                "member": "greenmail-openapi.yml"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/greenmail/greenmail-help.txt",
+            "size": 2447,
+            "sha256": "e7fbe27c45f4b0a63ebb52307da2669096c6f7e6d8ee024a6ca425f1ffb9bac9",
+            "attribution": {
+              "observed": {
+                "from": "output",
+                "argv": [
+                  "-jar",
+                  "{artifact}",
+                  "--help"
+                ]
+              }
+            }
+          },
+          {
+            "kind": "checksum",
+            "path": "sources/greenmail/greenmail-jar.sha256",
+            "size": 64,
+            "sha256": "4cf8fb204a9167a4ef443474aab82a7e113bcfd75ac323caddbdbe0caf32e7be",
+            "attribution": {
+              "observed": {
+                "from": "supplied",
+                "record": ".compare-bins/2026-11-07-supply/greenmail-maven/greenmail-standalone-2.1.15.jar.sha256 sha256 4cf8fb204a9167a4ef443474aab82a7e113bcfd75ac323caddbdbe0caf32e7be (Maven Central https://repo1.maven.org/maven2/com/icegreen/greenmail-standalone/2.1.15/greenmail-standalone-2.1.15.jar.sha256)"
+              }
+            }
+          },
+          {
+            "kind": "git_ref",
+            "path": "sources/greenmail/greenmail-ref.json",
+            "size": 385,
+            "sha256": "4d0fa7f88c34726d1da90994478727317a90f73f1b087208aade5c784bd20ab1",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/greenmail-mail-test/greenmail/git/refs/tags/release-2.1.15"
+              }
+            }
+          },
+          {
+            "kind": "git_tag",
+            "path": "sources/greenmail/greenmail-tag.json",
+            "size": 2716,
+            "sha256": "c36d4b898b3d5e297f9e09a1289ef998cece5eab5f98a47e7060ab11ce573310",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/greenmail-mail-test/greenmail/git/tags/5f09fccc06da96fdc7f4d9e1abafb43ceeae61db"
+              }
+            }
+          },
+          {
+            "kind": "git_commit",
+            "path": "sources/greenmail/greenmail-commit.json",
+            "size": 2370,
+            "sha256": "ca9e1dfb59d4396d272b55129eaf17be6cdd0e98f336ce76b9dfe7abb4d5fda3",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/greenmail-mail-test/greenmail/git/commits/3b8ea7df70e48bb67052a333a6707c34b5790c30"
+              }
+            }
+          },
+          {
+            "kind": "git_tree",
+            "path": "sources/greenmail/greenmail-tree.json",
+            "size": 4724,
+            "sha256": "d0973264d94da4ad1bef4537087d2640a85fa2bcc25744d77ddb85a69fe4aebe",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/greenmail-mail-test/greenmail/git/trees/bd4125c454c055c820d9432d97f2da35079417b0"
+              }
+            }
+          }
+        ],
+        "launch": [
+          "-Dgreenmail.smtp.hostname=127.0.0.1",
+          "-Dgreenmail.smtp.port={smtp_port}",
+          "-Dgreenmail.pop3.hostname=127.0.0.1",
+          "-Dgreenmail.pop3.port={pop3_port}",
+          "-Dgreenmail.api.hostname=127.0.0.1",
+          "-Dgreenmail.api.port={http_port}",
+          "-Dgreenmail.auth.disabled",
+          "-jar",
+          "{artifact}"
+        ],
+        "storage": {
+          "backend": "memory",
+          "max_messages": null,
+          "cap_flag": null,
+          "basis": "GreenMail's mail store is in memory. The usage text of the pinned jar (`--help`) lists -Dgreenmail.<protocol>.hostname and .port, .users, .auth.disabled, .attachments.discard, .verbose and .startup.timeout, and no retention-cap property; the jar's OpenAPI document lists no cap setting. No cap is set, and a bounded real run is the only probe (600 sent, 600 listed). Pruning behavior is not established."
+        },
+        "wait": {
+          "reviewed": [],
+          "finding": "GreenMail's REST API (the pinned jar's greenmail-openapi.yml) lists configuration, user, mail-by-address and purge operations and no wait or push route; its messages are read over POP3 (or IMAP), which has no blocking wait. The REST API cannot read message content, so the driver reads over POP3 with a fresh session per scan, and the labelled common-client poll is the only method.",
+          "best_wait": {
+            "unresolved": "no wait or push route exists in the pinned OpenAPI document and POP3 has none, so no best-available wait can be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+          }
+        },
+        "runtime": {
+          "name": "temurin-21.0.13_9-jre",
+          "download": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz",
+          "sha256": "a535a1df9c6284d9618872984e026ae0352d1f7e9e0605425c0e6114f47351dd",
+          "digest_basis": "locally_computed",
+          "checked_members": [
+            {
+              "path": "bin/java",
+              "sha256": "7afc28801f744050aeba646b20e7314265279f76f9d0273b21a2b66411e1bf6d"
+            },
+            {
+              "path": "lib/server/libjvm.so",
+              "sha256": "032ff9adc105a8a6f34c43ad4aab90746f8e1d55f6d7ebc9cc80007273b9992d"
+            }
+          ],
+          "version_output": "OpenJDK Runtime Environment Temurin-21.0.13+9 (build 21.0.13+9-LTS)",
+          "license": {
+            "spdx": "GPL-2.0-only WITH Classpath-exception-2.0",
+            "holder": "OpenJDK contributors (Temurin 21.0.13+9 by the Eclipse Adoptium project)"
+          }
+        },
+        "listeners": [
+          "smtp",
+          "pop3",
+          "http"
+        ],
+        "launch_env": []
+      }
+    },
+    {
+      "target": "alkemio-mailslurper",
+      "role": "competitor",
+      "pin": {
+        "image": {
+          "reference": "ghcr.io/alkem-io/test-suites/mailslurper:smtps-4c6aecc-p2",
+          "index_digest": "sha256:55029f542c19d0fe570450dc5a30f54dbdb24d9113a6e0e1bf96da000ebd0838",
+          "manifest_digest": "sha256:97dfa5567da8acf1c83c3f11b233078bd0dc831e317d58e97d56461d67ba4e86",
+          "platform": "linux/amd64",
+          "layer_digest": "sha256:0dfdf22841d63b1fb89eead3d9e30c32667b857edeaef336169908453a190ad9",
+          "member": "go/src/github.com/mailslurper/mailslurper/cmd/mailslurper/mailslurper"
+        },
+        "acquisition": {
+          "basis": "host_supplied_capture",
+          "captured_on": "2026-11-07"
+        },
+        "tagged_source": {
+          "unresolved": "a third-party image has no tag of an official repository to observe"
+        },
+        "binary_build_provenance": {
+          "unresolved": "the image's history names a git clone at a commit with two patches applied and a build, but no attestation ties this executable to them"
+        },
+        "artifact": {
+          "kind": "executable",
+          "file_name": "mailslurper",
+          "download": "ghcr.io/alkem-io/test-suites/mailslurper:smtps-4c6aecc-p2",
+          "size": 21658544,
+          "sha256": "1c7556f3fd8da6fb6d2f5a66a1cff258c805407028aeb9eda0a2656f46db6379",
+          "digest_basis": "locally_computed",
+          "upstream_digest": null,
+          "member": "go/src/github.com/mailslurper/mailslurper/cmd/mailslurper/mailslurper",
+          "executable_sha256": "1c7556f3fd8da6fb6d2f5a66a1cff258c805407028aeb9eda0a2656f46db6379",
+          "os": "linux",
+          "arch": "amd64",
+          "version_output": "Starting MailSlurper Server v1.14.1"
+        },
+        "license": {
+          "spdx": "MIT",
+          "holder": "Adam Presley"
+        },
+        "documents": [
+          {
+            "kind": "image_index",
+            "path": "sources/alkemio-mailslurper/alkemio-index.json",
+            "size": 856,
+            "sha256": "55029f542c19d0fe570450dc5a30f54dbdb24d9113a6e0e1bf96da000ebd0838",
+            "attribution": {
+              "observed": {
+                "from": "image",
+                "reference": "ghcr.io/alkem-io/test-suites/mailslurper:smtps-4c6aecc-p2"
+              }
+            }
+          },
+          {
+            "kind": "image_manifest",
+            "path": "sources/alkemio-mailslurper/alkemio-manifest.json",
+            "size": 3153,
+            "sha256": "97dfa5567da8acf1c83c3f11b233078bd0dc831e317d58e97d56461d67ba4e86",
+            "attribution": {
+              "observed": {
+                "from": "image",
+                "reference": "ghcr.io/alkem-io/test-suites/mailslurper:smtps-4c6aecc-p2"
+              }
+            }
+          },
+          {
+            "kind": "license",
+            "path": "sources/alkemio-mailslurper/alkemio-license.txt",
+            "size": 1082,
+            "sha256": "7cf5dbee03e6bb07660f1fa7cfda307f71a6e9d5388b5135f29d824eab6c9bb3",
+            "attribution": {
+              "observed": {
+                "from": "image",
+                "reference": "ghcr.io/alkem-io/test-suites/mailslurper:smtps-4c6aecc-p2"
+              }
+            }
+          },
+          {
+            "kind": "api",
+            "path": "sources/alkemio-mailslurper/alkemio-service-controller.go",
+            "size": 9883,
+            "sha256": "7c46bdedf842b667d7a701a568c99b7f386d9e9a50489994fa31e9625281e002",
+            "attribution": {
+              "observed": {
+                "from": "image",
+                "reference": "ghcr.io/alkem-io/test-suites/mailslurper:smtps-4c6aecc-p2"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/alkemio-mailslurper/alkemio-readme.md",
+            "size": 4369,
+            "sha256": "e7346295273e2b5bba508eec986ed81897cb2121c76b3844966ebfdf580b2575",
+            "attribution": {
+              "observed": {
+                "from": "image",
+                "reference": "ghcr.io/alkem-io/test-suites/mailslurper:smtps-4c6aecc-p2"
+              }
+            }
+          }
+        ],
+        "launch": [
+          "{artifact}"
+        ],
+        "storage": {
+          "backend": "scratch_file",
+          "max_messages": null,
+          "cap_flag": null,
+          "basis": "The rendered plain config selects dbEngine SQLite with the database inside the owned scratch, as the image's own config.json does (with TLS key files, which the driver does not render). The fork's source (a patched MailSlurper at 4c6aecc) registers the same service routes as upstream and no retention-cap setting; no cap is set, and a bounded real run is the only probe (600 sent, 600 listed). Pruning behavior is not established, and nothing about durability is claimed."
+        },
+        "wait": {
+          "reviewed": [],
+          "finding": "An image has no tagged tree to review sources in. The retained ServiceController.go (from the image's own source layer) shows no wait or push route for the service API. The labelled common-client poll is the only method.",
+          "best_wait": {
+            "unresolved": "no wait or push route is shown, so no best-available wait can be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+          }
+        },
+        "runtime": {
+          "name": "musl-1.1.24-r10-loader",
+          "download": "https://ghcr.io/v2/alkem-io/test-suites/mailslurper/blobs/sha256:f350948e60ec3e45e17bc37d4f8a5d1c5c728d634bca374d9dc183fea996e87e",
+          "sha256": "f350948e60ec3e45e17bc37d4f8a5d1c5c728d634bca374d9dc183fea996e87e",
+          "digest_basis": "locally_computed",
+          "checked_members": [
+            {
+              "path": "lib/ld-musl-x86_64.so.1",
+              "sha256": "0273b5344fc0b9f687b95ec987ecea9c2be7ef01bf8c111fb99117bc0e2e91a3"
+            }
+          ],
+          "version_output": "musl libc (x86_64) Version 1.1.24",
+          "license": {
+            "spdx": "MIT",
+            "holder": "musl 1.1.24-r10 (apk record L:MIT in layer f350948e, package maintainer Timo Teras)"
+          }
+        },
+        "listeners": [
+          "smtp",
+          "http",
+          "ui"
+        ],
+        "launch_env": [],
+        "config_file": {
+          "name": "config.json",
+          "lines": [
+            "{{",
+            "  \"wwwAddress\": \"127.0.0.1\", \"wwwPort\": {ui_port},",
+            "  \"serviceAddress\": \"127.0.0.1\", \"servicePort\": {http_port},",
+            "  \"smtpAddress\": \"127.0.0.1\", \"smtpPort\": {smtp_port},",
+            "  \"dbEngine\": \"SQLite\", \"dbDatabase\": \"{data_dir}/mailslurper.db\",",
+            "  \"maxWorkers\": 1000, \"autoStartBrowser\": false",
+            "}}"
+          ],
+          "cwd": true
         }
       }
     }

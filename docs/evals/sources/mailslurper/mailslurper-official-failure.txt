@@ -1,0 +1,5 @@
+time="2026-11-07T18:22:29+02:00" level=info msg="Starting MailSlurper Server v1.14.1" who=MailSlurper
+time="2026-11-07T18:22:29+02:00" level=info msg="Using configuration from config.json" who=MailSlurper
+time="2026-11-07T18:22:29+02:00" level=info msg="Connecting to database" who=MailSlurper
+time="2026-11-07T18:22:29+02:00" level=info msg="Creating database tables..." who=MailSlurper
+time="2026-11-07T18:22:29+02:00" level=fatal msg="Error connecting to storage type '1' with a connection string of ./mailslurper.db" error="Error executing query: \n\t\tCREATE TABLE mailitem (\n\t\t\tid TEXT PRIMARY KEY,\n\t\t\tdateSent TEXT,\n\t\t\tfromAddress TEXT,\n\t\t\ttoAddressList TEXT,\n\t\t\tsubject TEXT,\n\t\t\txmailer TEXT,\n\t\t\tbody TEXT,\n\t\t\tcontentType TEXT,\n\t\t\tboundary TEXT\n\t\t);: Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub" who=MailSlurper

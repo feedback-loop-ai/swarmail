@@ -140,6 +140,8 @@ pub enum WireError {
     /// A scan that could not establish completeness: a repeated id, a
     /// moving count or pages that stop short.
     Incomplete,
+    /// The server answered a command with an error status (POP3 `-ERR`).
+    Refused,
 }
 
 impl WireError {
@@ -151,6 +153,7 @@ impl WireError {
             WireError::Oversized => "oversized",
             WireError::Malformed => "malformed",
             WireError::Incomplete => "incomplete",
+            WireError::Refused => "refused",
         }
     }
 }
@@ -416,7 +419,16 @@ impl Http {
 
 /// Percent-encode a query value (RFC 3986 unreserved kept).
 pub fn query_value(s: &str) -> String {
-    percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+    // RFC 3986's unreserved characters (`-._~`) stay as they are: the same
+    // text is also a path segment (a message id), and a router that does not
+    // decode path parameters (MailSlurper's) would otherwise look up
+    // `feb8d58f%2D...` and answer an empty item for a uuid.
+    const KEEP: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~');
+    percent_encoding::utf8_percent_encode(s, KEEP).to_string()
 }
 
 /// Body comparison that ignores only the transport's line-ending and
@@ -428,5 +440,225 @@ pub fn same_body(authored: Option<&str>, observed: Option<&str>) -> bool {
         (Some(a), Some(o)) => norm(a) == norm(o),
         (None, Some(o)) => o.trim().is_empty(),
         (Some(_), None) => false,
+    }
+}
+
+/// A POP3 status or message line longer than this is a protocol violation
+/// for the client's purposes, not a reason to buffer more. RFC 5322's
+/// 998-octet line limit plus its CRLF fits with room to spare.
+pub const MAX_POP3_LINE: usize = 4096;
+
+/// The POP3 reader GreenMail is read through (proposed decision 0130 §4):
+/// the driver logs in over POP3 because the issue orders it (0093 §4's
+/// native read path), although the pinned jar's OpenAPI also lists a REST
+/// route that returns a message (0130's review-return addendum corrects the
+/// issue's premise). It is a plain tokio client with no new crate. Every scan is a
+/// fresh session — no cache between scans, so a scan is as complete as the
+/// server's own snapshot — and it never sends `DELE`. Every exchange is
+/// bounded by `step`, every line by [`MAX_POP3_LINE`] and every multi-line
+/// response by `max_message` bytes. Nothing is spawned: a dropped future
+/// closes its socket and leaves no task behind. IMAP is not implemented.
+pub struct Pop3 {
+    addr: SocketAddr,
+    step: Duration,
+    max_message: usize,
+    requests: std::sync::atomic::AtomicU64,
+}
+
+/// The mailbox login every POP3 session uses. GreenMail creates the
+/// recipient's account on first delivery, with the address as both login and
+/// password; this is checked by the real test, not assumed.
+pub const POP3_LOGIN: &str = TO;
+
+struct Pop3Session<'a> {
+    owner: &'a Pop3,
+    reader: BufReader<OwnedReadHalf>,
+    writer: OwnedWriteHalf,
+}
+
+impl Pop3 {
+    pub fn new(addr: SocketAddr, step: Duration, max_message: u64) -> Pop3 {
+        Pop3 {
+            addr,
+            step,
+            max_message: usize::try_from(max_message).unwrap_or(usize::MAX),
+            requests: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Commands sent so far, logins included: polling overhead is part of
+    /// the record.
+    pub fn requests(&self) -> u64 {
+        self.requests.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Readiness: the `+OK` greeting, then QUIT. Nothing is read or changed.
+    pub async fn greeting(&self) -> Result<(), WireError> {
+        let s = self.connect().await?;
+        s.quit().await;
+        Ok(())
+    }
+
+    /// Every message the server holds as `(unique id, header bytes)`. `STAT`
+    /// and `UIDL` must agree on the count, the numbers must run 1..=n and
+    /// the unique ids must be distinct, or the scan is [`WireError::Incomplete`].
+    pub async fn list(&self) -> Result<Vec<(String, Vec<u8>)>, WireError> {
+        let mut s = self.login().await?;
+        let ids = s.unique_ids().await?;
+        let mut out = Vec::with_capacity(ids.len());
+        for (n, uid) in ids.into_iter().enumerate() {
+            let head = s.multi(&format!("TOP {} 0", n + 1)).await?;
+            out.push((uid, head));
+        }
+        s.quit().await;
+        Ok(out)
+    }
+
+    /// The raw message `uid` names, in a fresh session.
+    pub async fn retrieve(&self, uid: &str) -> Result<Vec<u8>, WireError> {
+        let mut s = self.login().await?;
+        let ids = s.unique_ids().await?;
+        let n = ids
+            .iter()
+            .position(|u| u == uid)
+            .ok_or(WireError::Malformed)?;
+        let raw = s.multi(&format!("RETR {}", n + 1)).await?;
+        s.quit().await;
+        Ok(raw)
+    }
+
+    async fn connect(&self) -> Result<Pop3Session<'_>, WireError> {
+        let stream = tokio::time::timeout(self.step, TcpStream::connect(self.addr))
+            .await
+            .map_err(|_| WireError::Timeout)?
+            .map_err(|_| WireError::Io)?;
+        let (r, w) = stream.into_split();
+        let mut s = Pop3Session {
+            owner: self,
+            reader: BufReader::new(r),
+            writer: w,
+        };
+        let greeting = s.line().await?;
+        if !greeting.starts_with(b"+OK") {
+            return Err(WireError::Malformed);
+        }
+        Ok(s)
+    }
+
+    async fn login(&self) -> Result<Pop3Session<'_>, WireError> {
+        let mut s = self.connect().await?;
+        s.status(&format!("USER {POP3_LOGIN}")).await?;
+        s.status(&format!("PASS {POP3_LOGIN}")).await?;
+        Ok(s)
+    }
+}
+
+impl Pop3Session<'_> {
+    /// One CRLF- (or LF-) terminated line without its terminator, within
+    /// the exchange deadline and the line cap.
+    async fn line(&mut self) -> Result<Vec<u8>, WireError> {
+        let step = self.owner.step;
+        let mut line = tokio::time::timeout(step, read_line_max(&mut self.reader, MAX_POP3_LINE))
+            .await
+            .map_err(|_| WireError::Timeout)??;
+        while matches!(line.last(), Some(b'\n' | b'\r')) {
+            line.pop();
+        }
+        Ok(line)
+    }
+
+    async fn send(&mut self, command: &str) -> Result<(), WireError> {
+        self.owner
+            .requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let bytes = format!("{command}\r\n");
+        tokio::time::timeout(self.owner.step, self.writer.write_all(bytes.as_bytes()))
+            .await
+            .map_err(|_| WireError::Timeout)?
+            .map_err(|_| WireError::Io)
+    }
+
+    /// A single-line command. `-ERR` is [`WireError::Refused`].
+    async fn status(&mut self, command: &str) -> Result<String, WireError> {
+        self.send(command).await?;
+        let line = self.line().await?;
+        if line.starts_with(b"-ERR") {
+            return Err(WireError::Refused);
+        }
+        let rest = line.strip_prefix(b"+OK").ok_or(WireError::Malformed)?;
+        Ok(String::from_utf8_lossy(rest).trim().to_owned())
+    }
+
+    /// A multi-line command: `+OK`, then lines until a lone `.`, each
+    /// dot-stuffed line unstuffed (RFC 1939 §3). The body's bytes keep their
+    /// CRLF line ends; the total is capped at `max_message`.
+    async fn multi(&mut self, command: &str) -> Result<Vec<u8>, WireError> {
+        self.status(command).await?;
+        let mut body = Vec::new();
+        loop {
+            let line = self.line().await?;
+            if line == b"." {
+                return Ok(body);
+            }
+            let content = line.strip_prefix(b".").unwrap_or(&line);
+            if body.len() + content.len() + 2 > self.owner.max_message {
+                return Err(WireError::Oversized);
+            }
+            body.extend_from_slice(content);
+            body.extend_from_slice(b"\r\n");
+        }
+    }
+
+    /// `STAT` and `UIDL` as one complete, consistent listing of unique ids,
+    /// in message-number order.
+    async fn unique_ids(&mut self) -> Result<Vec<String>, WireError> {
+        let stat = self.status("STAT").await?;
+        let count: usize = stat
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse().ok())
+            .ok_or(WireError::Malformed)?;
+        let listing = self.multi("UIDL").await?;
+        let mut ids: Vec<String> = Vec::new();
+        for line in String::from_utf8_lossy(&listing).lines() {
+            let mut parts = line.split_whitespace();
+            let (Some(n), Some(uid), None) = (parts.next(), parts.next(), parts.next()) else {
+                return Err(WireError::Malformed);
+            };
+            if n.parse::<usize>() != Ok(ids.len() + 1) || ids.iter().any(|u| u == uid) {
+                return Err(WireError::Incomplete);
+            }
+            ids.push(uid.to_owned());
+        }
+        if ids.len() != count {
+            return Err(WireError::Incomplete);
+        }
+        Ok(ids)
+    }
+
+    /// QUIT and drop; a failed QUIT changes nothing recorded.
+    async fn quit(mut self) {
+        let _ = self.status("QUIT").await;
+    }
+}
+
+/// One line, bytes kept, at most `max` of them (terminator included).
+async fn read_line_max(r: &mut BufReader<OwnedReadHalf>, max: usize) -> Result<Vec<u8>, WireError> {
+    let mut line = Vec::with_capacity(64);
+    loop {
+        let byte = match r.read_u8().await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Err(WireError::Closed);
+            }
+            Err(_) => return Err(WireError::Io),
+        };
+        line.push(byte);
+        if byte == b'\n' {
+            return Ok(line);
+        }
+        if line.len() >= max {
+            return Err(WireError::Oversized);
+        }
     }
 }

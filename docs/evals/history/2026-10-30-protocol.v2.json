@@ -1,0 +1,237 @@
+{
+  "protocol_version": 2,
+  "id": "fair-mail-comparison-v2",
+  "status": "frozen",
+  "supersedes": "fair-mail-comparison-draft-3",
+  "change_reason": "Protocol v2 (proposed decision 0093 §2-3) freezes what draft-3 left open: the claim scope of an official-artifact measurement (digest-checked executables, tagged source context, no built-from claim), per-target storage, cap, prune and compression facts with the explicitly unmatched storage profile, the separately named unenforced local resource profile, the common 100 ms poll, the driver's wait operation bound and the adapter's derived bounds and schema identity. The wait-best profile is not declared: no lossless subscribe-before-scan wait is established for either competitor, so it stays blocked in the source lock and the README rather than being frozen as a profile. Draft-3 was never frozen or collected; its bytes are kept under docs/evals/history/.",
+  "targets": [
+    "swarmail",
+    "mailpit",
+    "mailhog"
+  ],
+  "corpus": {
+    "seed": 163,
+    "kinds": [
+      "plain",
+      "html",
+      "multipart"
+    ]
+  },
+  "throughput": [
+    {
+      "name": "throughput-c1-fresh",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 1,
+      "connection": "fresh",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    },
+    {
+      "name": "throughput-c10-fresh",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 10,
+      "connection": "fresh",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    },
+    {
+      "name": "throughput-c100-fresh",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 100,
+      "connection": "fresh",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    },
+    {
+      "name": "throughput-c1-reused",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 1,
+      "connection": "reused",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    },
+    {
+      "name": "throughput-c10-reused",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 10,
+      "connection": "reused",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    },
+    {
+      "name": "throughput-c100-reused",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 100,
+      "connection": "reused",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    },
+    {
+      "name": "stress-c1000-fresh",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 1000,
+      "connection": "fresh",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    }
+  ],
+  "waits": [
+    {
+      "name": "wait-common",
+      "repetitions": 6,
+      "present": 100,
+      "future": 100,
+      "empty": 20,
+      "deadline_ms": 30000,
+      "empty_deadline_ms": 1000,
+      "observation": [
+        {
+          "target": "swarmail",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "The common client path: the same search poll every target gets, at the interval frozen for the competitors."
+        },
+        {
+          "target": "mailpit",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v1/search): a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (proposed decision 0093 §4), not the best available: the reviewed websocket source (sources.lock.json) establishes no lossless wait."
+        },
+        {
+          "target": "mailhog",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v2/search?kind=containing): a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (proposed decision 0093 §4), not the best available: the reviewed websocket source (sources.lock.json) establishes no lossless wait."
+        }
+      ]
+    }
+  ],
+  "resources": {
+    "enforced": false,
+    "cpus": 2,
+    "memory_mib": 2048,
+    "open_files": 4096,
+    "startup_deadline_ms": 30000,
+    "cleanup_deadline_ms": 10000,
+    "request_deadline_ms": 10000,
+    "max_response_bytes": 16777216,
+    "profile": "unenforced_local"
+  },
+  "storage": {
+    "mode": "mixed",
+    "profile": "unmatched",
+    "retention": [
+      {
+        "target": "swarmail",
+        "max_messages": 100000,
+        "backend": "memory",
+        "prune": "oldest_only",
+        "compression": "none: the in-memory store keeps messages as received"
+      },
+      {
+        "target": "mailpit",
+        "max_messages": 10000,
+        "backend": "scratch_file",
+        "prune": "unestablished",
+        "compression": "raw messages at the default level 1 (`--compression` 0-3, not set by the launch)"
+      },
+      {
+        "target": "mailhog",
+        "max_messages": null,
+        "backend": "memory",
+        "prune": "no_cap_observed",
+        "compression": "not established: its help and captured README state none"
+      }
+    ]
+  },
+  "statistics": {
+    "quantile_method": "nearest-rank",
+    "quantiles": [
+      50,
+      95,
+      99
+    ],
+    "orders": [
+      [
+        "swarmail",
+        "mailpit",
+        "mailhog"
+      ],
+      [
+        "swarmail",
+        "mailhog",
+        "mailpit"
+      ],
+      [
+        "mailpit",
+        "swarmail",
+        "mailhog"
+      ],
+      [
+        "mailpit",
+        "mailhog",
+        "swarmail"
+      ],
+      [
+        "mailhog",
+        "swarmail",
+        "mailpit"
+      ],
+      [
+        "mailhog",
+        "mailpit",
+        "swarmail"
+      ]
+    ]
+  },
+  "claim": {
+    "scope": "official_artifact",
+    "statement": "Measures the digest-checked official release executables named in products, launched with the lock's fixed argv. Each tag's commit is attributed source context only: nothing ties either executable to it, so no built-from, equivalence or same-build claim is made. Mailpit's digest is the upstream archive digest; MailHog's is locally observed. MailHog's /api/v1/messages/{id} read is decoded from the executable's observed answers, since no captured document describes it. Storage is the unmatched profile and resources the unenforced local profile; both are stated in every report."
+  },
+  "budgets": {
+    "poll_interval_ms": 100,
+    "wait_operation_ms": 40000,
+    "adapter": {
+      "operation_ms": 30000,
+      "request_ms": 10000,
+      "max_wait_ms": 20000,
+      "max_pages": 100,
+      "max_requests": 1000,
+      "max_operation_bytes": 16777216,
+      "wait_method": "client-side poll of /api/v1/search",
+      "tools_sha256": "77ee96ebe04c77e9a79f6f4ba284fbba9fc4ea7acdd22edf4fb314250f819eaa"
+    }
+  },
+  "products": [
+    {
+      "target": "swarmail",
+      "release_tag": null,
+      "executable_sha256": null
+    },
+    {
+      "target": "mailpit",
+      "release_tag": "v1.32.0",
+      "executable_sha256": "262cfa28fae4554be198d1fea5ef83c0f8299317876d658623711c629a8edec8"
+    },
+    {
+      "target": "mailhog",
+      "release_tag": "v1.0.1",
+      "executable_sha256": "e2ed634ded49929f089b20045581955ed217672078fd86082dd7a6c67c5d09c7"
+    }
+  ],
+  "unresolved": []
+}

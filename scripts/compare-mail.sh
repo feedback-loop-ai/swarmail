@@ -5,9 +5,19 @@
 # mode here starts a paid agent.
 #
 #   compare-mail.sh local    --output DIR [--protocol P] [--sources S]
+#                            [--documents DIR] [--bin NAME=PATH]... [--runtime NAME=DIR]...
 #                            [--mailpit BIN] [--mailhog BIN]      (smoke, never evidence)
-#   compare-mail.sh collect  --output DIR --mailpit BIN --mailhog BIN
+#   compare-mail.sh collect  --output DIR --bin NAME=PATH... [--runtime NAME=DIR]...
 #                            [--protocol P] [--sources S]   (the frozen protocol, then admission)
+#
+# NAME is a competitor the protocol declares (proposed decision 0130): the
+# required binaries are derived from the protocol, never from a fixed list.
+# --mailpit BIN and --mailhog BIN remain aliases of --bin mailpit=BIN and
+# --bin mailhog=BIN. A target whose lock pin needs a runtime (GreenMail's JRE, the
+# Alkemio row's musl loader root)
+# also takes --runtime NAME=DIR; the swarmail candidate is built here. A
+# historical lock (docs/evals/history/) is verified against the captured
+# documents given by --documents (docs/evals), not the directory it sits in.
 #   compare-mail.sh controls --output DIR [PREREQUISITES]
 #   compare-mail.sh evidence --output DIR --final DIR [PREREQUISITES]
 #   compare-mail.sh measure  --output DIR --config FILE [PREREQUISITES] [--dry-run]
@@ -41,12 +51,23 @@ shift
 
 protocol=docs/evals/protocol.json
 sources=docs/evals/sources.lock.json
-output='' mailpit='' mailhog='' baseline='' final='' receipts='' config='' dry_run=0
+output='' documents='' mailpit='' mailhog='' baseline='' final='' receipts='' config='' dry_run=0
 contracts='' controls_dir='' cost='' identity='' product=''
+# --bin NAME=PATH and --runtime NAME=DIR repeat; they are kept as plain
+# "NAME=VALUE" words (no associative arrays: macOS ships bash 3.2).
+bin_args=() runtime_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry_run=1; shift; continue ;;
-    --protocol|--sources|--output|--mailpit|--mailhog|--baseline|--final|--receipts|--config|--contracts|--controls-dir|--cost|--identity|--product)
+    --bin|--runtime)
+      [ $# -ge 2 ] || blocked arguments "$1 needs a value"
+      case "$2" in
+        [a-z0-9]*=?*) ;;
+        *) blocked arguments "$1 takes NAME=VALUE, not $2" ;;
+      esac
+      if [ "$1" = --bin ]; then bin_args+=("$2"); else runtime_args+=("$2"); fi
+      shift 2 ;;
+    --protocol|--sources|--documents|--output|--mailpit|--mailhog|--baseline|--final|--receipts|--config|--contracts|--controls-dir|--cost|--identity|--product)
       [ $# -ge 2 ] || blocked arguments "$1 needs a value"
       flag="${1#--}"
       flag="${flag//-/_}"
@@ -55,6 +76,8 @@ while [ $# -gt 0 ]; do
     *) blocked arguments "unknown argument: $1" ;;
   esac
 done
+[ -z "$mailpit" ] || bin_args+=("mailpit=$mailpit")
+[ -z "$mailhog" ] || bin_args+=("mailhog=$mailhog")
 
 case "$mode" in
   local|collect|controls|evidence|measure) ;;
@@ -122,19 +145,78 @@ eval_prerequisite() {
   blocked comparison-integration "the eval crate has no Swarmail/Mailpit comparison target or envelope yet (tasks T7-T9)"
 }
 
+# The competitors a protocol declares: its top-level targets list, without the
+# candidate (this script builds it) and without a target the protocol
+# publishes as not starting (its `does_not_start` list: the driver never
+# launches one, so no binary is asked for it). A preflight read of the file so
+# a missing binary refuses before any build; the driver's own `targets`
+# answer, taken after the build, must agree with it.
+declared_competitors() {
+  local skip
+  skip=$(sed -n '/^  "does_not_start": \[/,/^  \]/p' "$1" | grep -o '"target": "[a-z0-9-]*"' | cut -d'"' -f4)
+  sed -n '/^  "targets": \[/,/^  \]/p' "$1" | grep -o '"[a-z0-9-]*"' | tr -d '"' \
+    | grep -v -e '^targets$' -e '^swarmail$' \
+    | while IFS= read -r name; do
+        case $'\n'"$skip"$'\n' in
+          *$'\n'"$name"$'\n'*) ;;
+          *) printf '%s\n' "$name" ;;
+        esac
+      done
+}
+
+# The directory given for one target by --runtime (the last wins), or empty.
+runtime_for() {
+  local want="$1" w found=''
+  for w in ${runtime_args[@]+"${runtime_args[@]}"}; do
+    [ "${w%%=*}" != "$want" ] || found="${w#*=}"
+  done
+  printf '%s' "$found"
+}
+
+# The path given for one target by --bin (the last wins), or empty.
+bin_for() {
+  local want="$1" w found=''
+  for w in ${bin_args[@]+"${bin_args[@]}"}; do
+    [ "${w%%=*}" != "$want" ] || found="${w#*=}"
+  done
+  printf '%s' "$found"
+}
+
 case "$mode" in
   local|collect)
-    if [ "$mode" = collect ]; then
-      [ -n "$mailpit" ] && [ -n "$mailhog" ] \
-        || blocked competitor-binaries "collect measures all three declared targets; pass --mailpit and --mailhog with their pinned executables"
+    declared=$(declared_competitors "$protocol")
+    # A smoke of the candidate alone declares no competitor; collection
+    # measures competitors, so a protocol with none cannot collect.
+    if [ "$mode" = collect ] && [ -z "$declared" ]; then
+      blocked competitor-binaries "collect measures competitors, and the protocol $protocol declares none"
     fi
-    for t in mailpit mailhog; do
-      if grep -q "\"$t\"" "$protocol"; then
-        bin="${!t}"
-        [ -n "$bin" ] || blocked competitor-binaries "the protocol declares $t; pass --$t with its pinned executable"
-        [ -x "$bin" ] || blocked competitor-binaries "--$t $bin is not an executable file"
+    for w in ${bin_args[@]+"${bin_args[@]}"}; do
+      name="${w%%=*}"
+      case $'\n'"$declared"$'\n' in
+        *$'\n'"$name"$'\n'*) ;;
+        *) blocked competitor-binaries "--bin $name names a target the protocol does not declare (it declares: $(printf '%s' "$declared" | tr '\n' ' '))" ;;
+      esac
+    done
+    for w in ${runtime_args[@]+"${runtime_args[@]}"}; do
+      name="${w%%=*}"
+      case $'\n'"$declared"$'\n' in
+        *$'\n'"$name"$'\n'*) ;;
+        *) blocked competitor-binaries "--runtime $name names a target the protocol does not declare" ;;
+      esac
+    done
+    for t in $declared; do
+      bin=$(bin_for "$t")
+      [ -n "$bin" ] || blocked competitor-binaries "the protocol declares $t; pass --bin $t=PATH with its pinned executable"
+      if [ -n "$(runtime_for "$t")" ]; then
+        # A pinned runtime (GreenMail's JRE, the Alkemio row's musl loader)
+        # runs this file; it is read, never exec'd, so a jar is no executable.
+        [ -f "$bin" ] || blocked competitor-binaries "--bin $t=$bin is not a file"
+      else
+        [ -x "$bin" ] || blocked competitor-binaries "--bin $t=$bin is not an executable file"
       fi
     done
+    doc_args=()
+    [ -z "$documents" ] || doc_args=(--documents "$documents")
     command -v cargo >/dev/null 2>&1 || blocked prerequisites "cargo is not installed"
     cargo build --release --locked --offline --bin swarmail >&2 \
       || blocked build "the candidate binary does not build"
@@ -143,22 +225,27 @@ case "$mode" in
     [ -n "$bench" ] && [ -x "$bench" ] || blocked build "the mail_compare driver does not build"
     if [ "$mode" = collect ]; then
       # Collection never starts on a protocol the driver would refuse.
-      "$bench" check --protocol "$protocol" --sources "$sources" \
+      "$bench" check --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"} \
         || blocked collection-ready "the protocol and lock are not ready for collection (see above)"
       run_mode=collect
     else
-      "$bench" check --protocol "$protocol" --sources "$sources" || true
+      "$bench" check --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"} || true
       run_mode=smoke
     fi
+    # The driver's own list is authoritative; the preflight must agree.
+    from_driver=$("$bench" targets --protocol "$protocol") \
+      || blocked collection-ready "the driver refuses the protocol $protocol"
+    [ "$from_driver" = "$declared" ] \
+      || blocked competitor-binaries "the driver declares a different competitor list than the preflight read"
     commit=$(git rev-parse HEAD 2>/dev/null || true)
     dirty=false
     [ -z "$(git status --porcelain 2>/dev/null)" ] || dirty=true
-    args=(run --mode "$run_mode" --protocol "$protocol" --sources "$sources"
+    args=(run --mode "$run_mode" --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"}
       --output "$output" --scratch "$output.scratch"
       --run-id "$mode-$(date -u +%Y%m%dT%H%M%SZ)-$$"
       --bin "swarmail=target/release/swarmail")
-    [ -z "$mailpit" ] || args+=(--bin "mailpit=$mailpit")
-    [ -z "$mailhog" ] || args+=(--bin "mailhog=$mailhog")
+    for t in $declared; do args+=(--bin "$t=$(bin_for "$t")"); done
+    for w in ${runtime_args[@]+"${runtime_args[@]}"}; do args+=(--runtime "$w"); done
     [ -z "$commit" ] || args+=(--commit "$commit" --dirty "$dirty")
     "$bench" "${args[@]}"
     status=$?

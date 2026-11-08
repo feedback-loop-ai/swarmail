@@ -94,3 +94,20 @@ its single proposed index row; inventory gates remain outstanding until then.
 Structural design validation is separate from candidate verification. Keep 0090–0092
 proposed and historical specs unchanged. Commit unsigned; never push, merge,
 publish, tag, close issues or accept decisions. The engine alone rules advancement.
+
+## Dated pointer — 2026-11-07 (lightweight, image and runtime pins, proposed 0130)
+
+The text above is unchanged. Issue #340 states that on 2026-11-07 the operator
+asked to bench MailSlurper, smtp4dev, Inbucket and GreenMail as well as Mailpit
+and MailHog, and records the ruling as "#163 approved and widened"; that
+wording is the issue's paraphrase of the ruling, not a quotation of it.
+MailSlurper, smtp4dev and Inbucket tag their releases lightweight, so §1's
+annotated ref → tag → commit chain cannot bind them; Alkemio's patched
+MailSlurper is an OCI image with no release, and GreenMail needs a Java
+runtime. Proposed [0130](0130-eight-target-mail-comparison.md) would extend §1
+by addition: source lock v4 accepts lightweight tags, image digests and a
+pinned runtime, and lock v3 and every annotated pin keep their meaning. §§2–7
+are applied without change. 0130 is a proposal, and only the operator accepts
+it.
+
+2026-11-08: the operator accepted [0130](0130-eight-target-mail-comparison.md) ("Accept and merge"); §1's annotated-tag chain is amended by addition as 0130 states.

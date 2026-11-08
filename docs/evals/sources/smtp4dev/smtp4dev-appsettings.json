@@ -1,0 +1,518 @@
+{
+  // Values specified here can be overriden in the following places (in order of processing - last wins)
+  // - {AppData}/smtp4dev/appsettings.json - Where {AppData} is value of --baseappdatapath command line option (default: APPDATA env var on Windows or XDG_CONFIG_HOME on non-Windows)
+  // - Environmment variables in format "ServerOptions:HostName" (Windows) or "ServerOptions__HostName" (Other platforms)
+  // - Command line arguments - Specify --help for documentation.
+
+  // Standard API available in all JavaScript expressions:
+  //
+  // Most standard JS Object, String, Number and Array instance and static members are available.
+  //
+  // delay(seconds: number) : boolean  
+  // Delays for `seconds` seconds and returns true. If seconds is -1, delay is almost infinite.
+  //
+  // random(minValue: number, maxValue) : number 
+  // Generates a random integer from minValue inclusive to maxValue exclusive and returns it.
+  //
+  // error(code: number, message: string)
+  // Returns a specific SMTP error and message.
+  //
+  // throttle(bps: number) : boolean
+  // Throttles connect speed to `bps` bits per second. Returns true.
+  //
+  // disconnect() 
+  // Disconnects the session immediately
+
+
+  "ServerOptions": {
+
+    // Locks settings from being changed by user via web interface
+    // Default value: false
+    "LockSettings": false,
+
+    // The URLs the web interface should listen on.
+    // For example, http://localhost:123. 
+    // Use `*` in place of hostname to listen for requests on any IP address or hostname using the specified port and protocol (for example, http://*:5000).
+    // Separate multiple values with ;
+    // Does not apply to Smtp4Dev Desktop - that always listens on localhost only and the port is chosen automatically.
+    "Urls": "http://localhost:5000",
+
+    // Specifies the virtual path from web server root where SMTP4DEV web interface will be hosted. e.g. "/" or "/smtp4dev"
+    // Default value: "/"
+    "BasePath": "/",
+
+    // Specifies the server hostname. Used in auto-generated TLS certificate for SMTP if enabled.
+    // Default value: <DNS name of machine>
+    //"HostName": "localhost",
+
+    // Set the port the SMTP server listens on. Specify 0 to assign automatically
+    // Default value: 25
+    "Port": 25,
+
+    // Specifies if remote connections will be allowed to the SMTP and IMAP servers
+    // Default value: true
+    "AllowRemoteConnections": true,
+
+    // Specifies the IP address to bind to for SMTP and IMAP servers.
+    // If not specified, the behavior is determined by AllowRemoteConnections:
+    // - When AllowRemoteConnections is true: binds to all interfaces (0.0.0.0 for IPv4, :: for IPv6)
+    // - When AllowRemoteConnections is false: binds to loopback only (127.0.0.1 for IPv4, ::1 for IPv6)
+    // When specified, both SMTP and IMAP servers will bind to this specific address.
+    // Examples: "192.168.1.100", "10.0.0.5", "127.0.0.1", "::1"
+    // Default value: null (uses AllowRemoteConnections behavior)
+    //"BindAddress": "192.168.1.100",
+
+    // If true, SMTP and IMAP servers will NOT listen using IPv6 Dual Stack (both IPv4 and IPV6)
+    // When using port 0 (automatic), different port numbers may be assigned for IPv4 and IPv6 loopback if allow remote connections option is off.
+    "DisableIPv6": false,
+
+    // Specifies the path where the database will be stored relative to APPDATA env var on Windows or XDG_CONFIG_HOME on non-Windows. Specify "" to use an in memory database.
+    // Default value: "database.db"
+    "Database": "database.db",
+
+    // Specifies the number of messages to keep per mailbox
+    // Default value: 100
+    "NumberOfMessagesToKeep": 100,
+
+    // Specifies the number of sessions to keep
+    // Default value: 100
+    "NumberOfSessionsToKeep": 100,
+
+    // Specifies the TLS mode to use for SMTP. Valid options are: None, StartTls or ImplicitTls.
+    // Default value: "None"
+    "TlsMode": "None",
+
+    // Specifies the SSL/TLS protocol version(s) that will be allowed.
+    //Separate multiple values with commas.
+    // See https://learn.microsoft.com/en-us/dotnet/api/system.security.authentication.sslprotocols?view=net-9.0
+    // Default value:
+    // Note that empty string singifies those decided by the OS.
+    "SslProtocols": "",
+
+    //Specifies the TLS cipher suites to be allowed. Not supported on Windows.
+    //Separate multiple values with commas.
+    //See https://learn.microsoft.com/en-us/dotnet/api/system.net.security.tlsciphersuite?view=net-9.0
+    //Default value:
+    //Empty string signifies to use the defaults.
+    "TlsCipherSuites": "",
+
+    // Specifies a thumbprint to load a certificate from the computer's store. Specify "" to not load from the store, and follow configuration from TlsCertificate
+    // Default value: ""
+    // This must be an X509 certificate. Note: the user needs to have read access, under "All Tasks > Manage Private Keys" in the certificate MMC snap-in. With IIS, the user will be "II USRS\<Application Pool Name>"
+    "TlsCertificateStoreThumbprint": "",
+
+    // Specifies the file containing TLS certificate to use for SMTP if TLS is enabled/requested. Specify "" to use an auto-generated self-signed certificate (then see console output on first startup)
+    // Default value: ""
+    // This must be an X509 certificate - generally a .CER, .CRT or .PFX file. If using .CER or .CRT, you must provide the private key separately using TlsCertificatePrivateKey.
+    "TlsCertificate": "",
+
+    //Specifies the corresponding private key file for the SMTP TLS certificate if the private key is not part of the TlsCertificate file.
+    //This must be in PEM format - generally a .KEY file.
+    "TlsCertificatePrivateKey": "",
+
+    //Specifies the password for the SMTP TLSCertificate/TlsCertificatePrivateKey. Specify "" if the certificate is not password-protected.
+    //Default value: ""
+    "TlsCertificatePassword": "",
+
+    // Specify location of the Certificate private .key file for SMTP.  Ignored if TlsCertificate is blank.
+    //"TlsCertificatePrivateKey":  "", 
+
+    // Specifies the port the IMAP server will listen on - allows standard email clients to view/retrieve messages
+    // Set to null to disable the IMAP server
+    // Default value: 143
+    "ImapPort": 143,
+
+    // Specifies the port the POP3 server will listen on - allows standard email clients to retrieve messages
+    // Set to null to disable the POP3 server
+    // Default value: 110
+    "Pop3Port": 110,
+
+    // Specifies the TLS mode to use for POP3. Valid options are: None, StartTls or ImplicitTls. This setting controls POP3 only and is independent of the global ServerOptions:TlsMode
+    "Pop3TlsMode": "None",
+
+    // True if the POP3 server will require a secure connection.
+    "Pop3SecureConnectionRequired": false,
+
+    //Disables message HTML sanitisation. Dangerous if your messages are not generated by you
+    //and not reflective of how messages might render in most email client.
+    //Default value: false
+    "DisableMessageSanitisation": false,
+
+    // True if SMTP and IMAP will require authentication
+    // The client will recieve an error if a message is attempted without authentication.
+    // See 'Users'
+    "AuthenticationRequired": false,
+
+
+    // True if the SMTP server will allow any credentials to be used without checking them again the 'Users'.
+    // If false credentials must match one of the users.
+    // 'AuthenticationRequired' must be on or the server will not enforce that authentication takes place.
+    "SmtpAllowAnyCredentials": true,
+
+    // Controls which auth mechanisms are allowed for SMTP when connection is not using SSL/TLS
+    // Note that real SMTP servers will likely allow zero auth mechanisms until the connection is upgraded using STARTTLS.
+    // Values are:
+    // ANONYMOUS
+    // PLAIN
+    // LOGIN
+    // XOAUTH2
+    "SmtpEnabledAuthTypesWhenNotSecureConnection": "PLAIN,LOGIN,CRAM-MD5,XOAUTH2",
+
+    // Controls which auth mechanisms are allowed for SMTP when connection is using SSL/TLS
+    "SmtpEnabledAuthTypesWhenSecureConnection": "PLAIN,LOGIN,CRAM-MD5,XOAUTH2",
+
+    // OAuth2/XOAUTH2 Identity Provider (IDP) Authority URL for token validation.
+    // Example: https://login.microsoftonline.com/common/v2.0 for Azure AD
+    // When SmtpAllowAnyCredentials is false and XOAUTH2 is enabled, tokens will be validated against this IDP.
+    // If not specified, OAuth2 token validation is disabled and any token is accepted (when SmtpAllowAnyCredentials is true).
+    // Default value: null
+    //"OAuth2Authority": "",
+
+    // OAuth2/XOAUTH2 Audience value for token validation.
+    // The token must be issued for this audience to be accepted.
+    // Required when OAuth2Authority is specified.
+    // Default value: null
+    //"OAuth2Audience": "",
+
+    // OAuth2/XOAUTH2 Issuer value for token validation.
+    // The token must be issued by this issuer to be accepted.
+    // If not specified, issuer validation is performed using the authority's discovery document.
+    // Default value: null
+    //"OAuth2Issuer": "",
+
+    // True if the SMTP session will require a secure connection.
+    // The client will recieve an error if a message is attempted without TLS - this must be enabled separately.
+    "SecureConnectionRequired": false,
+
+    // A JavaScript expression used to validate credentials
+    // The return value is a boolean value where true will accept the credentials.
+    // The variable `credentials` refers to the credentials that were presented. See:
+    // https://github.com/rnwood/smtpserver/tree/master/Rnwood.SmtpServer/Extensions/Auth
+    // A standard API is available. See the top of this file.
+    //
+    // Examples:
+    // credentials.Type == 'USERNAME_PASSWORD' && credentials.username == 'rob' && credentials.password == 'pass'
+    "CredentialsValidationExpression": "",
+
+    // A JavaScript expression used to validate recipients
+    // The return value is a boolean value where true will accept the recipient.
+    // The variable 'recipient' refers to the current recipient (one call per recipient)
+    // The variable `session` refers to the the current session:
+    // For available properties see https://github.com/rnwood/smtp4dev/blob/master/Rnwood.Smtp4dev/ApiModel/Session.cs
+    // A standard API is available. See the top of this file.
+    //
+    // Examples
+    // recipient == "foo@bar.com"
+    // - Accepts this recipient only
+    // recipient != "foo@bar.com"
+    // - Rejects this recipient only
+    "RecipientValidationExpression": "",
+
+    // A JavaScript expression used to validate message to determine if the server will accept it.
+    // The return value is a boolean value where true will accept the message.
+    //If the return value is a number it will be used as response code
+    //If the return value is a string, it will be used as an error response message
+    // The variable 'message' refers to the current message   
+    // For available properties see https://github.com/rnwood/smtp4dev/blob/master/Rnwood.Smtp4dev/ApiModel/Message.cs
+    // The variable `session` refers to the the current session:
+    // For available properties see https://github.com/rnwood/smtp4dev/blob/master/Rnwood.Smtp4dev/ApiModel/Session.cs
+    // A standard API is available. See the top of this file.
+    //
+    // Examples
+    // !message.subject.includes("19")
+    // - Rejects messages that include in the subject
+    // message.subject.includes("19") ? 441 : null
+    // - Rejects messages that include 19 with a 441, otherwise accepts
+    "MessageValidationExpression": "",
+
+    //A JavaScript expression used to validate commands and allowing you to change the response.
+    //The return value is a boolean value where true will accept the command.
+    //If the return value is a number it will be used as response code
+    //If the return value is a string, it will be used as an error response message
+    // The variable 'command' refers to the current command:
+    // For available properties, see https://github.com/rnwood/smtp4dev/blob/master/smtpserver/Rnwood.SmtpServer/SmtpCommand.cs
+    // The variable `session` refers to the the current session:
+    // For available properties see https://github.com/rnwood/smtp4dev/blob/master/Rnwood.Smtp4dev/ApiModel/Session.cs
+    // A standard API is available. See the top of this file.
+    //
+    // Examples
+    // command.Verb == "HELO" && command.ArgumentsText == "rob"
+    // - Rejects "HELO rob"
+    // command.Verb == "HELO" && command.ArgumentsText == "rob" ? error(123, "Rob is not welcome here") : null
+    // - Rejects "HELO rob" with a custom error
+    // 
+    "CommandValidationExpression": "",
+
+    //True if web interface and API will need BASIC auth.
+    //See 'Users'
+    "WebAuthenticationRequired": false,
+
+    //DEPRECATED: Use mailbox configuration with AuthenticatedUsers property instead for better flexibility.
+    //True if the mailbox recipient filter should be ignored for authenticated smtp sessions and messages should be
+    // delivered to the user's default mailbox instead
+    "DeliverMessagesToUsersDefaultMailbox": true,
+
+    //List of users for SMTP, IMAP and web interface
+    //DefaultMailbox is name of mailbox that user will get via IMAP
+    "Users": [
+      //{
+      //  "Username": "username",
+      //  "Password": "password",
+      //  "DefaultMailbox": "Sales"
+      //}
+    ],
+
+    //List of mailboxes
+    //Order is important. Each recipient is processed separately and first match gets the message for that recipient.
+    //The message will only be delivered once to each mailbox.
+    //A default mailbox is always included automatically as the last mailbox with Recipients="*" (catch-all).
+    //Mailboxes can appear multiple times in the list with different filter combinations, allowing flexible routing rules.
+    //
+    //Recipients: List of comma separated wildcards, or regexes surrounded with /
+    //Examples:
+    //    *@somecompany.com, *@*.mycorp.com, boss@bigco.com
+    //    /.*@(somecompany|bigco)\.com/, /user@.*\.com/
+    //
+    //AuthenticatedUsers (optional): Array of usernames (or a single username) to route messages from authenticated users.
+    //    When specified, only messages from these authenticated users are routed to this mailbox (matched against user's DefaultMailbox).
+    //    This filter is checked before source, header, and recipient filters.
+    //    The same mailbox name can appear multiple times with different AuthenticatedUsers values for complex routing.
+    //Examples:
+    //    "AuthenticatedUsers": ["user1", "user2"]  // Messages from user1 or user2
+    //    "AuthenticatedUsers": "user1"             // Messages from user1 only
+    //
+    //HeaderFilters (optional): Array of header-based filters that must ALL match for the message to be routed to this mailbox.
+    //    Header filters are checked after authenticated users and source filters but before recipient patterns.
+    //    Each filter has:
+    //      - Header: The header name to match (e.g., "X-Application", "X-Mailer")
+    //      - Pattern: The pattern to match against header value:
+    //          * Exact/wildcard match: "value" or "prefix*" (glob patterns)
+    //          * Regex: "/pattern/" (case-insensitive)
+    //          * Existence check: ".*" (header exists with any value)
+    //
+    //SourceFilters (optional): Array of source-based filters that must ALL match for the message to be routed to this mailbox.
+    //    Source filters are checked after authenticated users filters but before header filters and recipient patterns.
+    //    Matches against the client hostname (from EHLO/HELO) or IP address.
+    //    Each filter has:
+    //      - Pattern: The pattern to match against hostname or IP address:
+    //          * Exact match: "hostname.example.com" or "192.168.1.1"
+    //          * Wildcard: "*.example.com" or "192.168.*"
+    //          * Regex: "/pattern/" (case-insensitive)
+    //
+    //Filter evaluation order: AuthenticatedUsers → Source → Headers → Recipients. All filters must match for a mailbox to be selected.
+    //Due to "first match wins" logic, messages are delivered to the first matching mailbox only.
+    //Recipients that don't match any custom mailbox will go to the default mailbox.
+    //
+    //Example: Spam filtering
+    //    {
+    //      "Name": "Spam",  
+    //      "Recipients": "*spam*@*, *test*@*"
+    //    }
+    //Messages to spam-user@example.com go to "Spam" mailbox only, not default.
+    //
+    //Example: Header-based routing
+    //    {
+    //      "Name": "SRS",
+    //      "Recipients": "*",
+    //      "HeaderFilters": [
+    //        { "Header": "X-Application", "Pattern": "srs" }
+    //      ]
+    //    }
+    //Messages with header "X-Application: srs" go to "SRS" mailbox, others go to default.
+    //
+    //Example: Source-based routing (by hostname or IP)
+    //    {
+    //      "Name": "Legacy Stack",
+    //      "Recipients": "*",
+    //      "SourceFilters": [
+    //        { "Pattern": "legacy-stack.dev.example.org" }
+    //      ]
+    //    }
+    //Messages from client with hostname "legacy-stack.dev.example.org" go to "Legacy Stack" mailbox.
+    //
+    //Example: Multiple header filters (ALL must match)
+    //    {
+    //      "Name": "High-Priority-Sales",
+    //      "Recipients": "*@sales.com",
+    //      "HeaderFilters": [
+    //        { "Header": "X-Priority", "Pattern": "/^(high|urgent)$/" },
+    //        { "Header": "X-Department", "Pattern": "sales" }
+    //      ]
+    //    }
+    //Only messages to @sales.com with BOTH matching headers go to this mailbox.
+    //
+    //Example: Combined source, header, and recipient filters
+    //    {
+    //      "Name": "Critical-Legacy-Sales",
+    //      "Recipients": "*@sales.com",
+    //      "SourceFilters": [
+    //        { "Pattern": "*.legacy.example.org" }
+    //      ],
+    //      "HeaderFilters": [
+    //        { "Header": "X-Priority", "Pattern": "high" }
+    //      ]
+    //    }
+    //Only messages from *.legacy.example.org hosts to @sales.com with X-Priority: high header.
+    //
+    //Example: Authenticated user routing with header-based override
+    //    First define specific mailboxes for header-based routing, then add mailbox rules for authenticated users.
+    //    Order matters - header filters are checked first, then authenticated user rules.
+    //    {
+    //      "Name": "SRS",
+    //      "Recipients": "*",
+    //      "HeaderFilters": [
+    //        { "Header": "X-Application", "Pattern": "srs" }
+    //      ]
+    //    },
+    //    {
+    //      "Name": "USOSapi",
+    //      "Recipients": "*",
+    //      "AuthenticatedUsers": ["USOSapi"]
+    //    }
+    //With user USOSapi configured with DefaultMailbox="USOSapi":
+    //  - Messages WITH X-Application: srs header → SRS mailbox (even from authenticated user USOSapi)
+    //  - Messages from USOSapi WITHOUT that header → USOSapi mailbox
+    //  - Messages from non-authenticated users or other users → Default mailbox
+    //
+    //Example: Same mailbox with multiple authenticated user rules
+    //    Mailboxes can appear multiple times to create complex routing scenarios:
+    //    {
+    //      "Name": "TeamMailbox",
+    //      "Recipients": "*@team.com",
+    //      "AuthenticatedUsers": ["alice", "bob"]
+    //    },
+    //    {
+    //      "Name": "TeamMailbox",
+    //      "Recipients": "*",
+    //      "HeaderFilters": [
+    //        { "Header": "X-Team", "Pattern": "alpha" }
+    //      ]
+    //    }
+    //This routes messages to TeamMailbox from multiple sources while maintaining a single mailbox instance.
+    "Mailboxes": [
+      //{
+      //  "Name": "Default",
+      //  "Recipients": "*"
+      //}
+    ],
+
+    // Defines the config used for HTML validation
+    // See https://html-validate.org/usage/index.html#configuration
+    "HtmlValidateConfig": "{ \"$schema\": \"https://html-validate.org/schemas/config.json\", \"extends\": [ \"html-validate:recommended\" ]}",
+
+    // Disables HTML validation entirely when true. Useful for large HTML emails that generate many warnings and impact UI performance.
+    // Default value: false
+    "DisableHtmlValidation": false,
+
+    // Disables HTML compatibility checks entirely when true. Useful for large HTML emails that generate many warnings and impact UI performance.
+    // Default value: false
+    "DisableHtmlCompatibilityCheck": false,
+
+    // The MaxMessageSize option configures the SIZE header
+    // The SIZE extension is always enabled, this option merely configures an maximum message size (in bytes) that is accepted by the server.
+    // When the option is non-negative, the optional parameter is added to the SIZE header (i.e. SIZE=12345).
+    // Otherwise the optional parameter is omitted.
+    "MaxMessageSize": null
+  },
+
+    "RelayOptions": {
+
+      // Sets the name of the SMTP server that will be used to relay messages or \"\" if messages relay should not be allowed
+      // Default value: ""
+      "SmtpServer": "",
+
+      // Sets the port number for the SMTP server used to relay messages.
+      // Default value: 25
+      "SmtpPort": 25,
+
+      // Sets the TLS mode when connecting to relay SMTP server
+      // See: http://www.mimekit.net/docs/html/T_MailKit_Security_SecureSocketOptions.htm
+      // Default value: Auto
+      "TlsMode": "Auto",
+
+      // Specifies a list of recipient addresses for which messages will be relayed automatically. An empty list means that no messages are relayed.
+      // Default value: []
+      "AutomaticEmails": [],
+
+      // A JavaScript expression that determines if the message should be relayed automatically to the specified recipient.
+      // The return value should be a string or array of strings with the overriden recipients.
+      // As a shortcut, true can be returned and the original recpient will be used
+      // The variable 'recipient' refers to the current recipient (one call per recipient)
+      // The variable `message` refers to the the current messgage:
+      // For available properties see https://github.com/rnwood/smtp4dev/blob/master/Rnwood.Smtp4dev/ApiModel/Message.cs
+      // The variable `session` refers to the the current session:
+      // For available properties see https://github.com/rnwood/smtp4dev/blob/master/Rnwood.Smtp4dev/ApiModel/Session.cs
+      //
+      // Examples:
+      // message.subject.includes('QP')
+      // - If message includes QP in the subject then relay to original recipient
+      // recipient.replace(/@mailinator.com$/,'@smtp4dev.com')
+      // - Relay all messages to their original recipient except those to @mailinator.com, which are relayed instead to @smtp4dev.com
+      // message.subject.includes('QP') ? 'newrecip@test.com' : null
+      // - If message includes QP in the subject then relay to newrecip@test.com, otherwise don't relay
+      //  message.subject.includes('QP') ? 'newrecip@test.com' : recipient
+      // - If message includes QP in the subject then relay to newrecip@test.com, otherwise relay to original recpient
+      "AutomaticRelayExpression": "",
+
+      // Specifies the address used in MAIL FROM when relaying messages. (Sender address in message headers is left unmodified). The sender of each message is used if not specified.
+      // Default value: ""
+      "SenderAddress": "",
+
+      // The username for the SMTP server used to relay messages. If \"\" no authentication is attempted.
+      // Default value: ""
+      "Login": "",
+
+      // The password for the SMTP server used to relay messages
+      "Password": ""
+    },
+
+    //Settings used by Rnwood.Smtp4dev.Desktop only
+    "DesktopSettings": {
+      //True if app will minimise to notification icon.
+      "MinimiseToTrayIcon": true
+    },
+
+    "Serilog": {
+      "Using": [ 
+        "Serilog.Sinks.Console",
+        "Serilog.Enrichers.Environment",
+        "Serilog.Enrichers.Thread",
+        "Serilog.Enrichers.Process",
+        "Serilog.Expressions"
+      ],
+      "MinimumLevel": {
+        "Default": "Information",
+        "Override": {
+          // For detailed diagnostics set to Information
+          "Microsoft": "Warning",
+          "Microsoft.EntityFrameworkCore": "Warning",
+          "Microsoft.AspNetCore": "Warning"
+        }
+      },
+      "Enrich": [
+        "FromLogContext",
+        "WithMachineName",
+        "WithThreadId",
+        "WithProcessId",
+        "WithProcessName"
+      ],
+      "WriteTo": [
+      ],
+      "Properties": {
+        "ApplicationName": "Smtp4Dev"
+      }
+    },
+
+    //These are defaults only.
+    //Can be changed by user via web interface and persisted in their browser local storage.
+    "ClientOptions": {
+      // Specifies the number of items to display per page in the application.
+      "PageSize": 30,
+      // Determines whether new messages are automatically viewed upon arrival (true or false).
+      "AutoViewNewMessages": false,
+      // Controls the application's theme mode. Possible values: "follow" (uses system setting), "dark", or "light".
+      "DarkMode": "follow"
+    }
+
+
+  }
