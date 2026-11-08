@@ -901,7 +901,7 @@ fn receipts_are_refused_unless_their_head_is_an_ancestor_whose_diff_touches_only
     let set = build_set();
     commit_file(
         &set.repo,
-        "docs/evals/agent-controls-2026-11-07/rows.jsonl",
+        "docs/evals/agent-controls-2026-11-08/rows.jsonl",
         "evidence",
     );
     commit_file(&set.repo, "docs/evals/README.md", "the readme");
@@ -933,18 +933,18 @@ fn receipts_are_refused_unless_their_head_is_an_ancestor_whose_diff_touches_only
     let set = build_set();
     commit_file(
         &set.repo,
-        "docs/evals/agent-controls-2026-11-07/gates.txt",
+        "docs/evals/agent-controls-2026-11-08/gates.txt",
         "first",
     );
     std::fs::write(
         set.repo
-            .join("docs/evals/agent-controls-2026-11-07/gates.txt"),
+            .join("docs/evals/agent-controls-2026-11-08/gates.txt"),
         "edited",
     )
     .unwrap();
     std::fs::write(
         set.repo
-            .join("docs/evals/agent-controls-2026-11-07/dry-run.txt"),
+            .join("docs/evals/agent-controls-2026-11-08/dry-run.txt"),
         "new",
     )
     .unwrap();
