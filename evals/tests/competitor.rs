@@ -8,7 +8,7 @@
 mod common;
 
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use swarmail_evals::provenance::sha256;
 
 const PRODUCT: &str = include_str!("../../docs/evals/agent-comparison.json");
@@ -226,7 +226,7 @@ fn a_clean_exit_after_stdin_closes_is_the_cleanup_receipt_and_stderr_is_a_privat
     let copy = std::fs::read_to_string(rig.dir.path().join("mailpit.stderr-copy")).unwrap();
     assert!(copy.contains("adapter-stderr-marker"), "{copy:?}");
     assert!(
-        !Path::new(&path).exists(),
+        !std::path::Path::new(&path).exists(),
         "the trial's private scratch is gone with the trial"
     );
 }
