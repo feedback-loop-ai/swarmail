@@ -239,23 +239,40 @@ async fn a_request_id_already_in_flight_is_refused_with_a_correlated_error() {
     let held = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {
         "name": "swarmail_wait_for_email",
         "arguments": {"inbox": "held", "count": 1, "timeout_ms": 5000}}});
-    let first = {
-        let (url, held) = (url.clone(), held.clone());
-        tokio::spawn(async move { post(&url, &held).await })
-    };
-    // Retry until the duplicate meets the held one in flight. A fixed try
-    // count raced the hold on slow runners; try for as long as the held
-    // request is unanswered, so only a bridge that never refuses fails.
-    let mut refused = None;
-    while !first.is_finished() {
-        let (status, r) = post(&url, &json!({"jsonrpc": "2.0", "id": 7, "method": "ping"})).await;
-        if r["error"]["code"] == -32600 {
-            refused = Some((status, r));
+    let probe = json!({"jsonrpc": "2.0", "id": 7, "method": "ping"});
+    // The held request and the probe race to the bridge. When the probe
+    // wins, the held request is the duplicate and is refused at once (on
+    // slow macOS runners this was the common case), so the round proves
+    // nothing and is run again with a longer head start for the held one.
+    let mut outcome = None;
+    for round in 1..=5u64 {
+        let first = {
+            let (url, held) = (url.clone(), held.clone());
+            tokio::spawn(async move { post(&url, &held).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100 * round)).await;
+        // Probe for as long as the held request is unanswered.
+        let mut refused = None;
+        while !first.is_finished() {
+            let (status, r) = post(&url, &probe).await;
+            if r["error"]["code"] == -32600 {
+                refused = Some((status, r));
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        if let Some(refused) = refused {
+            outcome = Some((refused, first));
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let (_, answer) = first.await.unwrap();
+        assert_eq!(
+            answer["error"]["code"], -32600,
+            "the held request was answered and no duplicate was refused: {answer}"
+        );
     }
-    let (status, r) = refused.expect("the duplicate was refused while the first was in flight");
+    let ((status, r), first) =
+        outcome.expect("the duplicate was refused while the first was in flight");
     assert_eq!((status, r["id"].clone()), (200, json!(7)), "{r}");
     // The held request still gets its own answer, and the id is free again.
     let (status, first) = first.await.unwrap();
