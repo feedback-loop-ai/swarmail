@@ -21,11 +21,6 @@
       "tool": "mailhog_search"
     },
     {
-      "detail": "{\"error\":\"not_found: MailHog has no message with that id\"}",
-      "outcome": "tool_error",
-      "tool": "mailhog_read"
-    },
-    {
       "outcome": "ok",
       "tool": "mailhog_wait"
     }
@@ -49,8 +44,7 @@
   "tool_names": [
     "mailhog_list",
     "mailhog_search",
-    "mailhog_read",
     "mailhog_wait"
   ],
-  "tools_sha256": "67f498714ed16475f1e103e369fafbb450c3d2c4ddc008ca89c382e44cb658e5"
+  "tools_sha256": "eeae14f8ab846b707bcd76955831498445376ac0ed3d4ef8d48ba4503615db96"
 }

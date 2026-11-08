@@ -151,8 +151,8 @@ receipts name it; it is after the merge of `main`'s accepted 0130) against the c
 `swarmail` and the three pinned executables, each target as its own command under
 `timeout 600` inside one `taskset -c 0-31` wrapper (32 CPUs, nproc/4 of this
 host), with one worker and `uptime` before and after
-(`timing/`: each matrix took 39 to 52 s, and the host's one-minute load average
-was 0.5 to 1.2 around them, on a shared 128-CPU host). 120 rows: on every target
+(`timing/`: each matrix took 39 to 51 s, and the host's one-minute load average
+was 1.2 to 1.9 around them, on a shared 128-CPU host). 120 rows: on every target
 15 oracle passes and 15 null failures with the task's idle class (`gave_up`); one
 (task, agent, attempt) is the same fixture on all four targets; each target's
 contract lists one outcome for every announced tool (Swarmail's seven
