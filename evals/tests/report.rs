@@ -1473,13 +1473,15 @@ fn comparison_row(
             connection: if target == "swarmail-mcp" {
                 "native-mcp"
             } else {
-                "stdio-adapter"
+                "bridged-stdio-adapter"
             }
             .into(),
             tools_sha256: "c".repeat(64),
+            smtp_auth: "plain".into(),
         },
         coordinate: ComparisonCoordinate {
             task: task.into(),
+            agent: "claude-opus".into(),
             attempt,
         },
         outcome,
@@ -2576,4 +2578,32 @@ fn untyped_tool_calls_and_deadline_facts_refuse_the_whole_report() {
         assert!(out.stdout.is_empty(), "{field}");
         assert!(stderr(&out).contains("journal_invalid"), "{field}");
     }
+}
+
+#[test]
+fn comparison_citations_key_on_target_agent_and_task() {
+    use swarmail_evals::{report, tasks::Outcome::*};
+    let mut by_sol = comparison_row("mailhog-mcp", "otp-backlog", 1, Fail);
+    by_sol.coordinate.agent = "codex-sol".into();
+    let by_sol = by_sol.seal();
+    let by_opus = comparison_row("mailhog-mcp", "otp-backlog", 1, Pass);
+    // The same target, task and attempt for two agents is two cells, not a
+    // repeated coordinate.
+    let cited = report::cite_comparison(&[by_opus.clone(), by_sol.clone()]).unwrap();
+    let cells = cited["cells"].as_array().unwrap();
+    assert_eq!(cells.len(), 2);
+    assert_eq!(
+        (cells[0]["agent"].clone(), cells[0]["passes"].clone()),
+        ("claude-opus".into(), 1.into())
+    );
+    assert_eq!(
+        (cells[1]["agent"].clone(), cells[1]["passes"].clone()),
+        ("codex-sol".into(), 0.into())
+    );
+    // A repeat of one agent's attempt is still refused.
+    assert!(
+        report::cite_comparison(&[by_opus.clone(), by_opus])
+            .unwrap_err()
+            .contains("twice")
+    );
 }

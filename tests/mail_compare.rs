@@ -11,8 +11,17 @@
 // The driver's own modules, compiled into this test crate. Some items serve
 // only the driver binary (its CLI), so dead-code analysis here is partial.
 #[allow(dead_code)]
+#[path = "../benches/mail_compare/mailhog_mcp.rs"]
+mod mailhog_mcp;
+#[allow(dead_code)]
 #[path = "../benches/mail_compare/mailpit_mcp.rs"]
 mod mailpit_mcp;
+#[allow(dead_code)]
+#[path = "../benches/mail_compare/mailslurper_mcp.rs"]
+mod mailslurper_mcp;
+#[allow(dead_code)]
+#[path = "../benches/mail_compare/mcp.rs"]
+mod mcp;
 #[allow(dead_code)]
 #[path = "../benches/mail_compare/protocol.rs"]
 mod protocol;
@@ -54,6 +63,11 @@ const SOURCES: &[u8] = include_bytes!("../docs/evals/history/2026-10-30-sources.
 /// The current records: protocol 3 and lock 4.
 const PROTOCOL_V3: &[u8] = include_bytes!("../docs/evals/protocol.json");
 const SOURCES_V4: &[u8] = include_bytes!("../docs/evals/sources.lock.json");
+
+/// Characters beyond `[A-Za-z0-9._-]` that MailHog's own ids carry in the wire
+/// corpus: `=` and `@` (`<base64url, padded>@mailhog.example`). Only the
+/// corpus check uses it: the adapter offers no tool that takes an id.
+const MAILHOG_CORPUS_ID_EXTRA: &[u8] = b"=@";
 
 fn smoke() -> Protocol {
     Protocol::parse(SMOKE).expect("the smoke fixture parses")
@@ -1798,62 +1812,87 @@ async fn started(scratch: &Path) -> i32 {
 
 #[tokio::test]
 async fn a_launch_cancelled_during_readiness_is_still_cleaned_by_its_worker() {
+    // The fake server never binds its reserved slots, so a slot reads as
+    // closed only while no parallel test has taken it: a stranger's
+    // listener fails the proof by design (`refused`). An attempt whose only
+    // unproved fact is a listener is tried again, a bounded number of
+    // times; every other fact is asserted on every attempt.
     let root = tempfile::tempdir().unwrap();
     let body = "echo $$ > \"$HOME/pid.tmp\"; mv \"$HOME/pid.tmp\" \"$HOME/pid\"; exec sleep 600";
-    let scratch = root.path().join("leaf");
-    let keepers = targets::Keepers::default();
-    let mut lim = short_limits();
-    lim.startup = Duration::from_secs(60);
-    let clock = wire::Clock(Instant::now());
-    let spec = fake_spec(TargetKind::Mailpit, body);
-    let launch = targets::Owned::launch(&spec, &scratch, &lim, &clock, &keepers);
-    let pid = tokio::select! {
-        r = launch => panic!("a never-ready server became ready: {:?}", r.err()),
-        pid = started(&scratch) => pid,
-    };
-    let settled = keepers.settle(lim.cleanup * 2).await;
-    assert_eq!(settled.len(), 1);
-    assert!(
-        settled[0].proved() && !settled[0].forced_kill,
-        "{:?}",
-        settled[0]
-    );
-    assert!(stops_running(pid).await);
-    assert!(!scratch.exists());
+    for attempt in 1..=3 {
+        let scratch = root.path().join(format!("leaf{attempt}"));
+        let keepers = targets::Keepers::default();
+        let mut lim = short_limits();
+        lim.startup = Duration::from_secs(60);
+        let clock = wire::Clock(Instant::now());
+        let spec = fake_spec(TargetKind::Mailpit, body);
+        let launch = targets::Owned::launch(&spec, &scratch, &lim, &clock, &keepers);
+        let pid = tokio::select! {
+            r = launch => panic!("a never-ready server became ready: {:?}", r.err()),
+            pid = started(&scratch) => pid,
+        };
+        let settled = keepers.settle(lim.cleanup * 2).await;
+        assert_eq!(settled.len(), 1);
+        let f = &settled[0];
+        assert!(stops_running(pid).await);
+        assert!(!scratch.exists());
+        assert!(
+            f.reaped && f.group_gone && f.scratch_removed && !f.forced_kill,
+            "{f:?}"
+        );
+        if f.proved() {
+            return;
+        }
+        assert!(!f.listeners_closed && attempt < 3, "{f:?}");
+    }
 }
 
 #[tokio::test]
 async fn a_term_resistant_child_is_killed_within_one_composed_cleanup_budget() {
+    // The fake server never binds its reserved slots, so a slot reads as
+    // closed only while no parallel test has taken it. An attempt whose only
+    // unproved fact is a listener is tried again, a bounded number of times;
+    // every other fact and the time bound are asserted on every attempt.
     let root = tempfile::tempdir().unwrap();
     // The ignored TERM is inherited by the sleeps, so only the group's
     // forced kill ends them.
     let body = "trap '' TERM; while :; do sleep 1; done";
     let lim = short_limits();
-    let clock = wire::Clock(Instant::now());
-    let scratch = root.path().join("leaf");
-    let begun = Instant::now();
-    let r = targets::Owned::launch(
-        &fake_spec(TargetKind::Mailhog, body),
-        &scratch,
-        &lim,
-        &clock,
-        &targets::Keepers::default(),
-    )
-    .await;
-    let took = begun.elapsed();
-    match r.err() {
-        Some(targets::LaunchError::NotReady(why, facts)) => {
-            assert_eq!(why, "readiness deadline");
-            assert!(facts.forced_kill && facts.proved(), "{facts:?}");
+    for attempt in 1..=3 {
+        let clock = wire::Clock(Instant::now());
+        let scratch = root.path().join(format!("leaf{attempt}"));
+        let begun = Instant::now();
+        let r = targets::Owned::launch(
+            &fake_spec(TargetKind::Mailhog, body),
+            &scratch,
+            &lim,
+            &clock,
+            &targets::Keepers::default(),
+        )
+        .await;
+        let took = begun.elapsed();
+        let facts = match r.err() {
+            Some(targets::LaunchError::NotReady(why, facts)) => {
+                assert_eq!(why, "readiness deadline");
+                facts
+            }
+            other => panic!("expected a readiness refusal, got {other:?}"),
+        };
+        // Startup, plus one readiness probe past it, plus one cleanup
+        // budget: the grace, the kill, the group, the drain and the listener
+        // probes share that budget rather than each taking their own.
+        let bound = lim.startup + lim.request * 2 + lim.cleanup;
+        assert!(took < bound + Duration::from_millis(500), "{took:?}");
+        assert!(!scratch.exists());
+        assert!(
+            facts.forced_kill && facts.reaped && facts.group_gone && facts.scratch_removed,
+            "{facts:?}"
+        );
+        if facts.proved() {
+            return;
         }
-        other => panic!("expected a readiness refusal, got {other:?}"),
+        assert!(!facts.listeners_closed && attempt < 3, "{facts:?}");
     }
-    // Startup, plus one readiness probe past it, plus one cleanup budget:
-    // the grace, the kill, the group, the drain and the listener probes
-    // share that budget rather than each taking their own.
-    let bound = lim.startup + lim.request * 2 + lim.cleanup;
-    assert!(took < bound + Duration::from_millis(500), "{took:?}");
-    assert!(!scratch.exists());
 }
 
 #[tokio::test]
@@ -2621,6 +2660,12 @@ fn rows_prefix(dir: &Path) -> usize {
 /// Run `scripts/compare-mail.sh` with inert agent witnesses first on PATH:
 /// any of them executing leaves a mark. Returns (exit code, stderr+stdout).
 fn compare_mail(args: &[&str], witness: &Path) -> (i32, String) {
+    compare_mail_env(args, witness, &[])
+}
+
+/// As [`compare_mail`], with extra environment (the wrapper's prebuilt-binary
+/// overrides and a fake verifier's controls).
+fn compare_mail_env(args: &[&str], witness: &Path, env: &[(&str, &str)]) -> (i32, String) {
     let bin = witness.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     for agent in ["claude", "codex", "dsh", "gemini", "opencode", "brokkr"] {
@@ -2646,6 +2691,7 @@ fn compare_mail(args: &[&str], witness: &Path) -> (i32, String) {
                 std::env::var("PATH").unwrap_or_default()
             ),
         )
+        .envs(env.iter().copied())
         .output()
         .unwrap();
     let text = format!(
@@ -2673,10 +2719,6 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
         "no arguments prints usage: {text}"
     );
 
-    let eval_blocked = |text: &str| {
-        text.contains("blocked at phase \"eval-build\"")
-            || text.contains("blocked at phase \"comparison-integration\"")
-    };
     let cases: Vec<(Vec<&str>, &str)> = vec![
         (vec!["bogus", "--output", o], "\"arguments\""),
         (vec!["local"], "--output DIR is required"),
@@ -2725,7 +2767,6 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
     std::fs::write(&empty, b"").unwrap();
     let e = empty.to_str().unwrap();
     for mode_args in [
-        vec!["controls", "--output", o],
         vec!["evidence", "--output", o, "--final", i],
         vec!["measure", "--output", o, "--config", i],
     ] {
@@ -2751,61 +2792,75 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
         let (code, text) = compare_mail(&mode_args, &w);
         assert_eq!(code, 2);
         assert!(text.contains("\"prerequisite-baseline\""), "{text}");
-        // Everything present stat-wise reaches the eval owners' refusal,
-        // which stays unconditional until T8/T9 land.
-        let mut all = mode_args.clone();
-        for (_, flag) in prerequisites {
-            all.extend([flag, i]);
-        }
-        let (code, text) = compare_mail(&all, &w);
-        assert_eq!(code, 2, "{all:?}: {text}");
-        assert!(eval_blocked(&text), "{all:?}: {text}");
     }
-
-    // The dry run names the whole order and opens nothing: its wrapper
-    // configuration is unreadable and holds a canary that must never appear.
-    let config = root.path().join("config");
-    std::fs::write(&config, b"CANARY-credential-zzz").unwrap();
-    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let c = config.to_str().unwrap();
-    for args in [
-        vec!["measure", "--output", o, "--config", c, "--dry-run"],
-        vec![
-            "measure",
+    // `controls` needs only the product and the competitors' executables.
+    // With no product it has no input, and main's refusal stands (the first
+    // prerequisite of the chain), with a hint on what it does need.
+    let (code, text) = compare_mail(&["controls", "--output", o], &w);
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("blocked at phase \"prerequisite-baseline\": --baseline is not supplied")
+            && text.contains("controls needs --product P"),
+        "{text}"
+    );
+    let product = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/evals/agent-comparison.json");
+    let p = product.to_str().unwrap();
+    let (code, text) = compare_mail(&["controls", "--output", o, "--product", p], &w);
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("\"competitor-binaries\"")
+            && text.contains("--bin mailpit=PATH with its pinned executable"),
+        "{text}"
+    );
+    // Only the lock entries of the product record are accepted, and the
+    // MailSlurper built from source is `mailslurper-source-build`.
+    let exe = script(&root.path().join("exe"), "exit 0\n");
+    let (code, text) = compare_mail(
+        &[
+            "controls",
             "--output",
             o,
-            "--config",
-            c,
-            "--baseline",
-            i,
-            "--contracts",
-            i,
-            "--controls-dir",
-            i,
-            "--receipts",
-            i,
-            "--cost",
-            i,
-            "--identity",
-            i,
             "--product",
-            i,
-            "--dry-run",
+            p,
+            "--bin",
+            &format!("mailpit={exe}"),
+            "--bin",
+            &format!("mailhog={exe}"),
+            "--bin",
+            &format!("mailslurper={exe}"),
         ],
-    ] {
-        let (code, text) = compare_mail(&args, &w);
-        assert_eq!(code, 2, "{args:?}: {text}");
-        assert!(
-            text.contains(
-                "prerequisite order: baseline final-contracts controls coordination-receipts cost-basis identity full-product"
-            ),
-            "{text}"
-        );
-        assert!(
-            !text.contains("CANARY") && !text.contains("Permission denied"),
-            "a dry run opened the wrapper configuration: {text}"
-        );
-    }
+        &w,
+    );
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("\"competitor-binaries\"")
+            && text.contains("--bin mailslurper-source-build=PATH"),
+        "{text}"
+    );
+    let (code, text) = compare_mail(
+        &[
+            "controls",
+            "--output",
+            o,
+            "--product",
+            p,
+            "--mailpit",
+            &exe,
+            "--mailhog",
+            &exe,
+            "--bin",
+            &format!("mailslurper-source-build={i}"),
+        ],
+        &w,
+    );
+    assert_eq!(code, 2);
+    assert!(text.contains("is not an executable file"), "{text}");
+    // `--mailslurper` is main's grammar's unknown flag: the official row does
+    // not start, and no flag stands for the source build but its lock entry.
+    let (code, text) = compare_mail(&["controls", "--output", o, "--mailslurper", i], &w);
+    assert_eq!(code, 2);
+    assert!(text.contains("unknown argument: --mailslurper"), "{text}");
+
     std::fs::create_dir(&out).unwrap();
     let (code, text) = compare_mail(&["local", "--output", o], &w);
     assert_eq!(code, 2);
@@ -2817,6 +2872,349 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
     assert!(
         std::fs::read_dir(&out).unwrap().next().is_none(),
         "a refusal writes no output"
+    );
+}
+
+// ---- the wrapper's integrated modes (decision 0129 §9) ----------------------
+
+/// A scratch directory on /home (under the build directory), never the
+/// RAM-backed /tmp.
+fn home_scratch() -> tempfile::TempDir {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/wrapper-tests");
+    std::fs::create_dir_all(&root).unwrap();
+    tempfile::Builder::new()
+        .prefix("w-")
+        .tempdir_in(root)
+        .unwrap()
+}
+
+fn script(path: &Path, body: &str) -> String {
+    std::fs::write(path, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.display().to_string()
+}
+
+/// Everything a non-dry or dry measure needs, with a fake `swarmail-evals`
+/// that logs its arguments, refuses as `FAKE_REFUSE` says, and otherwise
+/// succeeds. The wrapper's own logic is what is proved here: the verifier's
+/// checks are proved on real bytes in the eval crate's tests.
+struct Rig {
+    dir: tempfile::TempDir,
+    evals: String,
+    swarmail: String,
+    adapter: String,
+    log: PathBuf,
+    flags: Vec<String>,
+}
+
+fn wrapper_rig(trials: u32) -> Rig {
+    let dir = home_scratch();
+    let p = dir.path();
+    let log = p.join("evals.log");
+    let evals = script(
+        &p.join("swarmail-evals"),
+        r#"echo "$@" >> "$FAKE_LOG"
+case "$1" in
+  comparison-check)
+    if [ -n "$FAKE_REFUSE" ]; then echo "swarmail-evals: comparison refused: $FAKE_REFUSE" >&2; exit 2; fi
+    echo "comparison-check: the fake verifier ran in mode $3"; exit 0 ;;
+  matrix) echo '{"fake":"row"}'; exit 0 ;;
+esac
+exit 0
+"#,
+    );
+    let swarmail = script(&p.join("swarmail"), "exit 0\n");
+    let adapter = script(&p.join("adapter"), "exit 0\n");
+    let product = p.join("product.json");
+    std::fs::write(
+        &product,
+        format!(
+            "{{\n  \"id\": \"synthetic-one-trial\",\n  \"trials\": {trials},\n  \"planned_cells\": 48,\n  \"targets\": [\n    {{\n      \"lock_entry\": null\n    }},\n    {{\n      \"lock_entry\": \"mailpit\"\n    }},\n    {{\n      \"lock_entry\": \"mailhog\"\n    }},\n    {{\n      \"lock_entry\": \"mailslurper-source-build\"\n    }}\n  ]\n}}\n"
+        ),
+    )
+    .unwrap();
+    let mut flags = vec![];
+    for (flag, name) in [
+        ("--baseline", "baseline"),
+        ("--contracts", "contracts"),
+        ("--controls-dir", "controls"),
+        ("--receipts", "receipts"),
+        ("--cost", "cost"),
+        ("--identity", "identity"),
+    ] {
+        let f = p.join(name);
+        std::fs::write(&f, b"x").unwrap();
+        flags.extend([flag.to_owned(), f.display().to_string()]);
+    }
+    flags.extend(["--product".into(), product.display().to_string()]);
+    // main's grammar: one `--bin LOCK-ENTRY=PATH` per competitor lock entry of
+    // the product record (the MailSlurper built from source is its own row).
+    for name in ["mailpit", "mailhog", "mailslurper-source-build"] {
+        flags.extend([
+            "--bin".into(),
+            format!("{name}={}", script(&p.join(name), "exit 0\n")),
+        ]);
+    }
+    std::fs::write(p.join("config.json"), r#"[{"label":"null","argv":[]}]"#).unwrap();
+    Rig {
+        dir,
+        evals,
+        swarmail,
+        adapter,
+        log,
+        flags,
+    }
+}
+
+impl Rig {
+    fn run(&self, mode_args: &[&str], extra: &[&str], refuse: &str) -> (i32, String) {
+        let out = self.dir.path().join(format!(
+            "out-{}",
+            std::fs::read_dir(self.dir.path()).unwrap().count()
+        ));
+        let o = out.display().to_string();
+        let config = self.dir.path().join("config.json").display().to_string();
+        let mut args: Vec<&str> = mode_args.to_vec();
+        args.extend(["--output", &o]);
+        if mode_args[0] == "measure" {
+            args.extend(["--config", &config]);
+        }
+        args.extend(extra);
+        let flags: Vec<&str> = self.flags.iter().map(String::as_str).collect();
+        args.extend(&flags);
+        compare_mail_env(
+            &args,
+            self.dir.path(),
+            &[
+                ("COMPARE_MAIL_EVALS_BIN", &self.evals),
+                ("COMPARE_MAIL_SWARMAIL_BIN", &self.swarmail),
+                ("COMPARE_MAIL_ADAPTER_BIN", &self.adapter),
+                ("COMPARE_MAIL_EVAL_SUITE", &self.swarmail),
+                ("FAKE_LOG", &self.log.display().to_string()),
+                ("FAKE_REFUSE", refuse),
+            ],
+        )
+    }
+
+    fn log(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+}
+
+#[test]
+fn the_comparison_integration_refusal_is_gone_and_a_dry_run_runs_only_the_verifier() {
+    let script_text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/compare-mail.sh"),
+    )
+    .unwrap();
+    assert_eq!(script_text.matches("comparison-integration").count(), 0);
+    let rig = wrapper_rig(1);
+    // The configuration is unreadable and holds a canary that must never appear.
+    let config = rig.dir.path().join("config.json");
+    std::fs::write(&config, b"CANARY-credential-zzz").unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (code, text) = rig.run(&["measure", "--dry-run"], &[], "");
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("the fake verifier ran in mode dry-run"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("CANARY") && !text.contains("Permission denied"),
+        "{text}"
+    );
+    // The only process the wrapper started is the verifier: no matrix, no
+    // contract probe, no index, no agent.
+    let log = rig.log();
+    assert_eq!(log.lines().count(), 1, "{log}");
+    assert!(log.starts_with("comparison-check --mode dry-run "), "{log}");
+    assert!(!rig.dir.path().join("launched").exists());
+    // A refusal by the verifier is relayed by the prerequisite it names.
+    let (code, text) = rig.run(
+        &["measure", "--dry-run"],
+        &[],
+        "prerequisite-controls: the controls hold no rows for mailhog",
+    );
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("blocked at phase \"prerequisite-controls\"")
+            && text.contains("no rows for mailhog"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_eval_crate_that_does_not_build_is_refused_as_eval_build() {
+    let rig = wrapper_rig(1);
+    // A `cargo` that fails, first on PATH, and no prebuilt verifier named.
+    let bin = rig.dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    script(
+        &bin.join("cargo"),
+        "echo 'error: could not compile' >&2\nexit 101\n",
+    );
+    let out = rig.dir.path().join("out-build");
+    let o = out.display().to_string();
+    let config = rig.dir.path().join("config.json").display().to_string();
+    let flags: Vec<&str> = rig.flags.iter().map(String::as_str).collect();
+    let mut args = vec!["measure", "--dry-run", "--output", &o, "--config", &config];
+    args.extend(&flags);
+    let (code, text) = compare_mail_env(
+        &args,
+        rig.dir.path(),
+        &[("FAKE_LOG", &rig.log.display().to_string())],
+    );
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("blocked at phase \"eval-build\"") && text.contains("does not build"),
+        "{text}"
+    );
+    assert!(
+        rig.log().is_empty(),
+        "the verifier never ran on a crate that does not build"
+    );
+}
+
+#[test]
+fn a_paid_measure_needs_the_verified_prerequisites_and_the_authorized_product() {
+    let rig = wrapper_rig(1);
+    // Without --authorized-product, with a wrong one: refused by name, and no
+    // matrix, no agent.
+    let (code, text) = rig.run(&["measure"], &[], "");
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("blocked at phase \"authorization\"") && text.contains("synthetic-one-trial"),
+        "{text}"
+    );
+    let (code, text) = rig.run(
+        &["measure"],
+        &["--authorized-product", "another-product"],
+        "",
+    );
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("blocked at phase \"authorization\"") && text.contains("is not the product"),
+        "{text}"
+    );
+    // A pending item (the verifier refuses it in measure mode) is refused by name.
+    let (code, text) = rig.run(
+        &["measure"],
+        &["--authorized-product", "synthetic-one-trial"],
+        "prerequisite-coordination-receipts: ci: the required CI run has not been supplied",
+    );
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("\"prerequisite-coordination-receipts\""),
+        "{text}"
+    );
+    assert!(
+        !rig.log().contains("matrix "),
+        "no agent matrix was delegated: {}",
+        rig.log()
+    );
+    assert!(!rig.dir.path().join("launched").exists());
+    // All three hold: the delegation runs the four targets in product order,
+    // one matrix each, with the inert null config and the product's trials.
+    let (code, text) = rig.run(
+        &["measure"],
+        &["--authorized-product", "synthetic-one-trial"],
+        "",
+    );
+    assert_eq!(code, 0, "{text}");
+    let log = rig.log();
+    let matrices: Vec<&str> = log.lines().filter(|l| l.starts_with("matrix ")).collect();
+    assert_eq!(matrices.len(), 4, "{log}");
+    for (line, target) in matrices
+        .iter()
+        .zip(["swarmail", "mailpit", "mailhog", "mailslurper"])
+    {
+        assert!(
+            line.starts_with(&format!("matrix --target {target} --product ")),
+            "{line}"
+        );
+        assert!(
+            line.contains("--tier hard") && line.contains("--trials 1 "),
+            "{line}"
+        );
+        assert_eq!(line.contains("--adapter "), target != "swarmail", "{line}");
+        assert_eq!(
+            line.contains("--target-bin "),
+            target != "swarmail",
+            "{line}"
+        );
+    }
+    assert!(
+        log.lines()
+            .next()
+            .unwrap()
+            .starts_with("comparison-check --mode measure "),
+        "{log}"
+    );
+    assert!(
+        !rig.dir.path().join("launched").exists(),
+        "no agent CLI ran"
+    );
+}
+
+#[test]
+// GNU time's -f and the controls host are Linux; macOS CI has neither.
+#[cfg(target_os = "linux")]
+fn controls_run_each_target_as_a_named_timed_command_and_index_them() {
+    let rig = wrapper_rig(1);
+    let (code, text) = rig.run(&["controls"], &[], "");
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("120 rows, 4 targets"), "{text}");
+    let log = rig.log();
+    for t in ["swarmail", "mailpit", "mailhog", "mailslurper"] {
+        assert!(
+            log.contains(&format!("comparison-contract --target {t} ")),
+            "{t}: {log}"
+        );
+        assert!(log.contains(&format!("matrix --target {t} ")), "{t}: {log}");
+    }
+    for line in log.lines().filter(|l| l.starts_with("matrix ")) {
+        assert!(
+            line.contains("--tier hard") && line.contains("--trials 5 "),
+            "{line}"
+        );
+    }
+    // The index is written once, after every target, with the suite's status.
+    let index: Vec<&str> = log
+        .lines()
+        .filter(|l| l.starts_with("comparison-index "))
+        .collect();
+    assert_eq!(index.len(), 1, "{log}");
+    assert!(
+        index[0].contains("--eval-suite-status pass"),
+        "{}",
+        index[0]
+    );
+    assert!(!rig.dir.path().join("launched").exists());
+    // A suite that did not pass is recorded as failed, and controls refuse it.
+    let failing = script(&rig.dir.path().join("failing-suite"), "exit 1\n");
+    let out = rig.dir.path().join("out-failing");
+    let o = out.display().to_string();
+    let flags: Vec<&str> = rig.flags.iter().map(String::as_str).collect();
+    let mut args = vec!["controls", "--output", &o];
+    args.extend(&flags);
+    let (code, text) = compare_mail_env(
+        &args,
+        rig.dir.path(),
+        &[
+            ("COMPARE_MAIL_EVALS_BIN", &rig.evals),
+            ("COMPARE_MAIL_SWARMAIL_BIN", &rig.swarmail),
+            ("COMPARE_MAIL_ADAPTER_BIN", &rig.adapter),
+            ("COMPARE_MAIL_EVAL_SUITE", &failing),
+            ("FAKE_LOG", &rig.log.display().to_string()),
+            ("FAKE_REFUSE", ""),
+        ],
+    );
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("blocked at phase \"eval-suite\""), "{text}");
+    assert!(
+        rig.log().contains("--eval-suite-status fail"),
+        "{}",
+        rig.log()
     );
 }
 
@@ -2873,10 +3271,18 @@ struct Mcp {
 
 impl Mcp {
     fn start(addr: std::net::SocketAddr, bounds: mailpit_mcp::Bounds, out_buf: usize) -> Mcp {
+        Mcp::start_backend::<mailpit_mcp::Mailpit>(addr, bounds, out_buf)
+    }
+
+    fn start_backend<B: mcp::Backend>(
+        addr: std::net::SocketAddr,
+        bounds: mailpit_mcp::Bounds,
+        out_buf: usize,
+    ) -> Mcp {
         let (client_in, server_in) = tokio::io::duplex(1 << 20);
         let (server_out, client_out) = tokio::io::duplex(out_buf);
         let http = wire::Http::new(addr, bounds.request, bounds.max_body);
-        let served = tokio::spawn(mailpit_mcp::serve(server_in, server_out, http, bounds));
+        let served = tokio::spawn(mcp::serve::<B, _, _>(server_in, server_out, http, bounds));
         let (_, w) = tokio::io::split(client_in);
         let (r, _) = tokio::io::split(client_out);
         Mcp {
@@ -3037,7 +3443,11 @@ async fn the_adapter_speaks_closed_bounded_jsonrpc_and_refuses_safely() {
         (serde_json::Value::Null, (-32700).into())
     );
     c.raw(b"[]").await;
-    assert_eq!(c.recv().await["error"]["code"], -32600, "batches refuse");
+    assert_eq!(
+        c.recv().await["error"]["code"],
+        -32600,
+        "an empty batch refuses"
+    );
     c.raw(&[b'x'; 9000]).await;
     let r = c.recv().await;
     assert_eq!(r["error"]["code"], -32600, "an overlong line refuses: {r}");
@@ -3620,12 +4030,16 @@ fn the_wire_driver_builds_no_frame_of_its_own() {
         "targets.rs",
         "wire.rs",
         "records.rs",
+        "mailpit_mcp.rs",
+        "mailhog_mcp.rs",
+        "mailslurper_mcp.rs",
     ] {
         let text = std::fs::read_to_string(format!("benches/mail_compare/{src}")).unwrap();
         assert!(!text.contains("Frame {"), "{src} builds a frame by hand");
     }
-    let text = std::fs::read_to_string("benches/mail_compare/mailpit_mcp.rs").unwrap();
-    // The struct, its impl, the constructor's signature and its body.
+    // The struct, its impl, the constructor's signature and its body:
+    // all in the generic half, none in a backend.
+    let text = std::fs::read_to_string("benches/mail_compare/mcp.rs").unwrap();
     assert_eq!(text.matches("Frame {").count(), 4);
 }
 
@@ -3724,17 +4138,15 @@ const THREE: &[u8] = include_bytes!("mail_compare/three-target-smoke.json");
 /// The pinned executable named by `MAIL_COMPARE_<TARGET>`, launched with the
 /// committed lock's digest and argv.
 fn pinned(t: TargetKind) -> targets::LaunchSpec {
-    let var = format!("MAIL_COMPARE_{}", t.name().to_uppercase());
+    // The same name main's real-binary tests use: the source-built
+    // MailSlurper is `MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD`, and
+    // `MAIL_COMPARE_MAILSLURPER` stays the official release's.
+    let var = format!("MAIL_COMPARE_{}", t.name().to_uppercase().replace('-', "_"));
     let binary = std::env::var_os(&var)
         .unwrap_or_else(|| panic!("{var} must name the pinned {t} executable"));
-    let lock = SourceLock::parse(SOURCES).unwrap();
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
     let pin = lock.pin(t).unwrap();
-    targets::LaunchSpec::new(
-        t,
-        binary.into(),
-        Some(pin.artifact.executable_sha256.clone()),
-        pin.launch.clone(),
-    )
+    targets::LaunchSpec::from_pin(t, binary.into(), None, pin).unwrap()
 }
 
 async fn launch_pinned(t: TargetKind, scratch: &Path) -> targets::Owned {
@@ -4297,5 +4709,2608 @@ async fn a_real_three_target_smoke_run_reconciles_every_message_and_wait_and_sea
             mine(Phase::Empty).all(|r| r.outcome == "timeout" && r.observed_ns.is_none()),
             "{t}"
         );
+    }
+}
+
+// ---- the generic adapter half: batches (proposed decision 0129 §6) ---------
+
+/// An upstream that counts every request it receives and answers each with
+/// an empty page; a target holding `hang` is never answered.
+async fn counting_upstream(
+    hang: &'static str,
+) -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = seen.clone();
+    let addr = responder(Box::new(move |t: &str| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if !hang.is_empty() && t.contains(hang) {
+            return None;
+        }
+        Some((200, page_json(0, 0, &[])))
+    }))
+    .await;
+    (addr, seen)
+}
+
+fn upstream_requests(seen: &std::sync::atomic::AtomicUsize) -> usize {
+    seen.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn list_member(id: i64) -> serde_json::Value {
+    serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": {"name": "mailpit_list", "arguments": {"limit": 1}}})
+}
+
+async fn initialized(addr: std::net::SocketAddr, bounds: mailpit_mcp::Bounds) -> Mcp {
+    let mut c = Mcp::start(addr, bounds, 1 << 20);
+    c.init().await;
+    c
+}
+
+#[tokio::test]
+async fn a_batch_of_one_and_of_sixteen_is_answered_with_one_ordered_array() {
+    let (addr, seen) = counting_upstream("").await;
+    let bounds = mailpit_mcp::Bounds {
+        max_line: 8192,
+        ..small_bounds()
+    };
+    let mut c = initialized(addr, bounds).await;
+    for n in [1usize, 16] {
+        let before = upstream_requests(&seen);
+        let batch: Vec<_> = (0..n as i64)
+            .map(|i| match i % 3 {
+                0 => list_member(100 + i),
+                1 => serde_json::json!({"jsonrpc": "2.0", "id": 100 + i, "method": "ping"}),
+                _ => serde_json::json!({"jsonrpc": "2.0", "id": format!("s{i}"),
+                    "method": "tools/list"}),
+            })
+            .collect();
+        c.send(serde_json::Value::Array(batch)).await;
+        let r = c.recv().await;
+        let replies = r.as_array().unwrap_or_else(|| panic!("one array, got {r}"));
+        assert_eq!(replies.len(), n, "{r}");
+        for (i, reply) in replies.iter().enumerate() {
+            let want = match i % 3 {
+                2 => serde_json::json!(format!("s{i}")),
+                _ => serde_json::json!(100 + i as i64),
+            };
+            assert_eq!(reply["id"], want, "member order is kept: {r}");
+        }
+        let calls = (0..n).filter(|i| i % 3 == 0).count();
+        assert_eq!(
+            upstream_requests(&seen) - before,
+            calls,
+            "one request per call"
+        );
+    }
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+}
+
+#[tokio::test]
+async fn an_empty_or_oversized_batch_is_one_null_id_error_and_runs_nothing() {
+    let (addr, seen) = counting_upstream("").await;
+    let mut c = initialized(addr, small_bounds()).await;
+    let seventeen: Vec<_> = (0..17).map(list_member).collect();
+    for batch in [serde_json::json!([]), serde_json::Value::Array(seventeen)] {
+        c.send(batch).await;
+        let r = c.recv().await;
+        assert!(r.is_object(), "one error object, not an array: {r}");
+        assert!(r["id"].is_null(), "{r}");
+        assert_eq!(r["error"]["code"], -32600, "{r}");
+    }
+    assert_eq!(upstream_requests(&seen), 0, "a refusal executes nothing");
+    // The cap is the one Swarmail's envelope holds.
+    assert_eq!(mcp::MAX_BATCH, swarmail::mcp::MCP_BATCH_CAP);
+    let r = c.request(7, "ping", serde_json::json!({})).await;
+    assert_eq!(r["result"], serde_json::json!({}));
+}
+
+#[tokio::test]
+async fn a_notifications_only_batch_writes_nothing() {
+    let (addr, seen) = counting_upstream("").await;
+    let mut c = initialized(addr, small_bounds()).await;
+    c.send(serde_json::json!([
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 5}}
+    ]))
+    .await;
+    // The very next message written is the ping's: nothing came before it.
+    let r = c.request(9, "ping", serde_json::json!({})).await;
+    assert_eq!(r["result"], serde_json::json!({}));
+    assert_eq!(upstream_requests(&seen), 0);
+}
+
+#[tokio::test]
+async fn initialize_inside_a_batch_is_refused_and_duplicate_ids_are_answered_as_sent() {
+    let (addr, seen) = counting_upstream("").await;
+    let mut c = Mcp::start(addr, small_bounds(), 1 << 20);
+    c.send(
+        serde_json::json!([{"jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-03-26"}}]),
+    )
+    .await;
+    let r = c.recv().await;
+    assert_eq!(r[0]["id"], 1, "{r}");
+    assert_eq!(r[0]["error"]["code"], -32600, "{r}");
+    // It did not initialize the session.
+    let r = c.request(2, "tools/list", serde_json::json!({})).await;
+    assert_eq!(r["error"]["code"], -32600, "{r}");
+    c.init().await;
+    c.send(serde_json::json!([list_member(5), list_member(5), 17, {"id": 6}]))
+        .await;
+    let r = c.recv().await;
+    let r = r.as_array().unwrap();
+    assert_eq!(r.len(), 4, "{r:?}");
+    assert_eq!((&r[0]["id"], &r[1]["id"]), (&5.into(), &5.into()));
+    assert!(r[0]["result"].is_object() && r[1]["result"].is_object());
+    // Invalid members are answered where they stood, with a null id.
+    assert_eq!(r[2]["error"]["code"], -32600);
+    assert!(r[2]["id"].is_null());
+    assert_eq!(r[3]["error"]["code"], -32600);
+    assert_eq!(upstream_requests(&seen), 2, "both duplicates ran");
+}
+
+#[tokio::test]
+async fn a_member_whose_reply_would_cross_the_reply_bound_gets_its_own_error() {
+    // Each page is about 100 bytes of JSON per message; the bound leaves
+    // room for one small reply and one large one is refused alone.
+    let big: Vec<String> = (0..40).map(|i| format!("id{i:04}")).collect();
+    let big_refs: Vec<&str> = big.iter().map(String::as_str).collect();
+    let big_page = page_json(40, 0, &big_refs);
+    let addr = responder(Box::new(move |t: &str| {
+        Some(if t.ends_with("limit=2") {
+            (200, big_page.clone())
+        } else {
+            (200, page_json(0, 0, &[]))
+        })
+    }))
+    .await;
+    let bounds = mailpit_mcp::Bounds {
+        max_reply: 2600,
+        ..small_bounds()
+    };
+    let mut c = initialized(addr, bounds).await;
+    let large = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "mailpit_list", "arguments": {"limit": 2}}});
+    c.send(serde_json::json!([list_member(1), large, list_member(3)]))
+        .await;
+    let r = c.recv().await;
+    let r = r.as_array().unwrap();
+    assert_eq!(r.len(), 3, "{r:?}");
+    let (e1, v1) = tool_result(&r[0]);
+    let (e2, v2) = tool_result(&r[1]);
+    assert!(!e1, "{v1}");
+    assert!(e2, "the over-bound member alone is refused: {v2}");
+    assert!(v2["error"].as_str().unwrap().starts_with("reply_too_large"));
+    assert_eq!(r[1]["id"], 2);
+    assert!(r[2]["result"].is_object(), "later members still run");
+}
+
+#[tokio::test]
+async fn a_full_queue_refuses_every_request_member_and_runs_nothing() {
+    let (addr, seen) = counting_upstream("start=0&limit=1").await;
+    let bounds = mailpit_mcp::Bounds {
+        max_pending: 1,
+        ..small_bounds()
+    };
+    let mut c = initialized(addr, bounds).await;
+    // One call holds the only slot: its upstream never answers.
+    c.send(list_member(1)).await;
+    let before = loop {
+        let n = upstream_requests(&seen);
+        if n > 0 {
+            break n;
+        }
+        tokio::task::yield_now().await;
+    };
+    c.send(
+        serde_json::json!([list_member(2), {"jsonrpc": "2.0", "id": 3, "method": "ping"},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"}]),
+    )
+    .await;
+    let r = c.recv().await;
+    let r = r.as_array().unwrap();
+    assert_eq!(r.len(), 2, "{r:?}");
+    for (reply, id) in r.iter().zip([2, 3]) {
+        assert_eq!(reply["id"], id, "{r:?}");
+        assert_eq!(reply["error"]["code"], -32000, "{r:?}");
+    }
+    assert_eq!(upstream_requests(&seen), before, "nothing ran");
+    // A single call over the cap is refused the same way.
+    c.send(list_member(4)).await;
+    assert_eq!(c.recv().await["error"]["code"], -32000);
+}
+
+#[tokio::test]
+async fn a_batch_line_over_the_line_bound_is_refused_and_the_next_line_still_works() {
+    let (addr, seen) = counting_upstream("").await;
+    // The default bound is 64 KiB.
+    let mut c = initialized(addr, mailpit_mcp::Bounds::default()).await;
+    let pad = " ".repeat(64 << 10);
+    c.raw(format!("[{pad}{}]", list_member(1)).as_bytes()).await;
+    let r = c.recv().await;
+    assert_eq!(r["error"]["code"], -32600, "{r}");
+    assert!(r["id"].is_null());
+    let r = c.request(2, "ping", serde_json::json!({})).await;
+    assert_eq!(r["result"], serde_json::json!({}));
+    assert_eq!(upstream_requests(&seen), 0);
+}
+
+#[tokio::test]
+async fn eof_in_the_middle_of_a_batch_ends_cleanly_without_a_reply() {
+    let (addr, seen) = counting_upstream("limit=1").await;
+    let mut c = initialized(addr, small_bounds()).await;
+    c.send(serde_json::json!([list_member(1), list_member(2)]))
+        .await;
+    while upstream_requests(&seen) == 0 {
+        tokio::task::yield_now().await;
+    }
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+    let mut rest = String::new();
+    use tokio::io::AsyncReadExt;
+    c.r.read_to_string(&mut rest).await.unwrap();
+    assert!(rest.is_empty(), "no partial array was written: {rest:?}");
+    assert_eq!(upstream_requests(&seen), 1, "the second member never ran");
+}
+
+#[tokio::test]
+async fn cancelling_one_batch_member_cancels_only_that_member() {
+    // Member 10's upstream request never answers; member 11's does.
+    let addr = responder(Box::new(|t: &str| {
+        if t.contains("start=7&") {
+            None
+        } else {
+            Some((200, page_json(0, 0, &[])))
+        }
+    }))
+    .await;
+    let mut c = initialized(addr, small_bounds()).await;
+    let held = serde_json::json!({"jsonrpc": "2.0", "id": 10, "method": "tools/call",
+        "params": {"name": "mailpit_list", "arguments": {"start": 7, "limit": 1}}});
+    c.send(serde_json::json!([held, list_member(11), list_member(12)]))
+        .await;
+    // A member waiting its turn can be cancelled too.
+    c.send(
+        serde_json::json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": {"requestId": 12}}),
+    )
+    .await;
+    c.send(
+        serde_json::json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": {"requestId": 10}}),
+    )
+    .await;
+    let r = c.recv().await;
+    let r = r.as_array().unwrap();
+    assert_eq!(r.len(), 1, "only the uncancelled member answers: {r:?}");
+    assert_eq!(r[0]["id"], 11);
+    assert!(r[0]["result"].is_object());
+}
+
+#[test]
+fn the_mailpit_tool_list_digest_is_the_one_protocol_v2_froze() {
+    let protocol: serde_json::Value =
+        serde_json::from_slice(&std::fs::read("docs/evals/protocol.json").unwrap()).unwrap();
+    let frozen = protocol["budgets"]["adapter"]["tools_sha256"]
+        .as_str()
+        .unwrap();
+    let built = mcp::tools_sha256::<mailpit_mcp::Mailpit>(&mailpit_mcp::Bounds::default());
+    assert_eq!(built, frozen, "the split changed Mailpit's tool list");
+}
+
+// ---- the MailHog adapter (proposed decision 0129 §5) -----------------------
+
+/// MailHog's v2 page shape, as the pinned executable sends it.
+fn hog_page(total: u64, start: u64, ids: &[&str]) -> String {
+    let items: Vec<_> = ids
+        .iter()
+        .map(|i| {
+            serde_json::json!({"ID": i, "Content": {"Headers": {"Subject": [format!("s {i}")]},
+                "Body": "raw body"}, "Raw": {"Data": "Subject: x\r\n\r\nraw body"}})
+        })
+        .collect();
+    serde_json::json!({"total": total, "count": ids.len(), "start": start, "items": items})
+        .to_string()
+}
+
+fn no_swarmail_only_capability(tools: &serde_json::Value, upstream: &str) {
+    for t in tools.as_array().unwrap() {
+        let name = t["name"].as_str().unwrap();
+        assert!(name.starts_with(upstream), "{name}");
+        let words = format!("{name} {}", t["description"].as_str().unwrap()).to_lowercase();
+        for banned in [
+            "inbox", "await", "extract", "delete", "admin", "release", "send", "hint",
+        ] {
+            assert!(!words.contains(banned), "{name} offers {banned}: {words}");
+        }
+    }
+}
+
+#[test]
+fn no_adapter_tool_offers_a_swarmail_only_capability() {
+    let b = mailpit_mcp::Bounds::default();
+    no_swarmail_only_capability(&mailpit_mcp::tools(&b), "mailpit_");
+    no_swarmail_only_capability(&mailhog_mcp::tools(&b), "mailhog_");
+    no_swarmail_only_capability(&mailslurper_mcp::tools(&b), "mailslurper_");
+    let names = |v: serde_json::Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().replace("mailhog", "mailpit"))
+            .collect()
+    };
+    // MailHog's read-by-id route binds to no source the lock holds, so its
+    // adapter offers the other three; each of those matches Mailpit's.
+    let mut mailpit_names = names(mailpit_mcp::tools(&b));
+    mailpit_names.retain(|n| n != "mailpit_read");
+    assert_eq!(
+        names(mailhog_mcp::tools(&b)),
+        mailpit_names,
+        "the same operations as Mailpit's: list, search, wait (no read)"
+    );
+    let slurper: Vec<String> = mailslurper_mcp::tools(&b)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            t["name"]
+                .as_str()
+                .unwrap()
+                .replace("mailslurper", "mailpit")
+        })
+        .collect();
+    assert_eq!(slurper, names(mailpit_mcp::tools(&b)));
+}
+
+#[test]
+fn the_mailhog_adapter_validates_its_calls_closed() {
+    let b = mailpit_mcp::Bounds::default();
+    let call = |name: &str, args: serde_json::Value| {
+        mailhog_mcp::parse_call(&serde_json::json!({"name": name, "arguments": args}), &b)
+    };
+    assert_eq!(
+        call("mailhog_list", serde_json::json!({})),
+        Some(mailhog_mcp::Call::List {
+            start: 0,
+            limit: 50
+        })
+    );
+    assert!(call("mailhog_search", serde_json::json!({"query": "q"})).is_none());
+    assert!(
+        call(
+            "mailhog_search",
+            serde_json::json!({"kind": "all", "query": "q"})
+        )
+        .is_none()
+    );
+    assert!(
+        call(
+            "mailhog_search",
+            serde_json::json!({"kind": "to", "query": ""})
+        )
+        .is_none()
+    );
+    assert!(call("mailhog_list", serde_json::json!({"limit": 251})).is_none());
+    assert!(call("mailhog_list", serde_json::json!({"extra": 1})).is_none());
+    // No read-by-id tool: MailHog's `/api/v1/messages/{id}` binds to no source
+    // the lock holds (0092 §3), so the tool is neither offered nor parsed.
+    assert!(call("mailhog_read", serde_json::json!({"id": "a"})).is_none());
+    let tools = mailhog_mcp::tools(&b);
+    let offered: Vec<&str> = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        offered,
+        ["mailhog_list", "mailhog_search", "mailhog_wait"],
+        "only operations a bound document or reviewed source states"
+    );
+    assert!(call("mailhog_delete", serde_json::json!({})).is_none());
+    assert!(
+        call(
+            "mailhog_wait",
+            serde_json::json!({"kind": "to", "query": "q"})
+        )
+        .is_none()
+    );
+    let too_long = b.max_wait_ms() + 1;
+    assert!(
+        call(
+            "mailhog_wait",
+            serde_json::json!({"kind": "to", "query": "q", "timeout_ms": too_long})
+        )
+        .is_none()
+    );
+    let wait = call(
+        "mailhog_wait",
+        serde_json::json!({"kind": "containing", "query": "q", "timeout_ms": 5}),
+    );
+    assert!(matches!(
+        wait,
+        Some(mailhog_mcp::Call::Wait { timeout_ms: 5, .. })
+    ));
+}
+
+#[tokio::test]
+async fn the_mailhog_adapter_reads_pages_and_refuses_wrong_shapes() {
+    let addr = responder(Box::new(|t: &str| {
+        Some(match t {
+            "/api/v2/messages?start=0&limit=2" => (200, hog_page(2, 0, &["a", "b"])),
+            "/api/v2/messages?start=0&limit=3" => (200, hog_page(2, 7, &["a"])),
+            "/api/v2/messages?start=0&limit=4" => {
+                (200, "{\"total\":0,\"start\":0,\"items\":null}".into())
+            }
+            "/api/v2/messages?start=0&limit=5" => {
+                (200, "{\"total\":1,\"start\":0,\"items\":[{}]}".into())
+            }
+            "/api/v2/messages?start=0&limit=6" => (500, "x".into()),
+            t if t.starts_with("/api/v2/search?kind=to&query=a%40b&") => {
+                (200, hog_page(1, 0, &["a"]))
+            }
+            _ => (404, "{}".into()),
+        })
+    }))
+    .await;
+    let mut c = Mcp::start_backend::<mailhog_mcp::Mailhog>(addr, small_bounds(), 1 << 20);
+    c.init().await;
+    let (e, v) = c
+        .tool(1, "mailhog_list", serde_json::json!({"limit": 2}))
+        .await;
+    assert!(!e, "{v}");
+    assert_eq!(
+        (v["total"].clone(), v["count"].clone()),
+        (2.into(), 2.into())
+    );
+    assert_eq!(
+        v["items"][1]["Raw"]["Data"], "Subject: x\r\n\r\nraw body",
+        "bodies pass through"
+    );
+    for (limit, why) in [(3, "echoed start"), (5, "item without an ID")] {
+        let (e, v) = c
+            .tool(2, "mailhog_list", serde_json::json!({"limit": limit}))
+            .await;
+        assert!(
+            e && v["error"].as_str().unwrap().starts_with("malformed"),
+            "{why}: {v}"
+        );
+    }
+    let (e, v) = c
+        .tool(3, "mailhog_list", serde_json::json!({"limit": 4}))
+        .await;
+    assert!(
+        !e && v["items"] == serde_json::json!([]),
+        "a null item list is empty: {v}"
+    );
+    let (e, v) = c
+        .tool(4, "mailhog_list", serde_json::json!({"limit": 6}))
+        .await;
+    assert!(
+        e && v["error"].as_str().unwrap().starts_with("upstream_status"),
+        "{v}"
+    );
+    let (e, v) = c
+        .tool(
+            5,
+            "mailhog_search",
+            serde_json::json!({"kind": "to", "query": "a@b"}),
+        )
+        .await;
+    assert!(!e && v["total"] == 1, "{v}");
+    // The route that is not offered draws the generic unknown-tool refusal.
+    c.send(
+        serde_json::json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+        "params": {"name": "mailhog_read", "arguments": {"id": "a"}}}),
+    )
+    .await;
+    let r = c.recv().await;
+    assert_eq!(r["error"]["code"], -32602, "{r}");
+    // The generic half answers a batch for this backend too.
+    c.send(serde_json::json!([
+        {"jsonrpc": "2.0", "id": 20, "method": "tools/call",
+            "params": {"name": "mailhog_list", "arguments": {"limit": 2}}},
+        {"jsonrpc": "2.0", "id": 21, "method": "tools/call",
+            "params": {"name": "mailhog_list", "arguments": {"limit": 6}}}
+    ]))
+    .await;
+    let r = c.recv().await;
+    assert_eq!(r.as_array().unwrap().len(), 2, "{r}");
+    assert_eq!(
+        (r[0]["id"].clone(), r[1]["id"].clone()),
+        (20.into(), 21.into())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(target_os = "linux")]
+async fn the_mailhog_adapter_lists_searches_and_waits_over_real_smtp_into_swarmails_shim() {
+    // Mechanics only: Swarmail's own MailHog v2 shim is not MailHog, so
+    // this proves the adapter's paging, filters and poll, never MailHog's
+    // behaviour. The pinned executable's own test is ignored below.
+    let root = tempfile::tempdir().unwrap();
+    let clock = wire::Clock(Instant::now());
+    let keepers = targets::Keepers::default();
+    let mut owned = targets::Owned::launch(
+        &swarmail_spec(targets::swarmail_template(0)),
+        &root.path().join("s"),
+        &limits(),
+        &clock,
+        &keepers,
+    )
+    .await
+    .expect("swarmail launches");
+    for (i, subject) in ["hog-one", "hog-two", "hog-three"].iter().enumerate() {
+        send_as(owned.smtp, None, subject, &format!("body {i}")).await;
+    }
+    let mut c = Mcp::start_backend::<mailhog_mcp::Mailhog>(
+        owned.http_addr,
+        mailpit_mcp::Bounds::default(),
+        1 << 20,
+    );
+    c.init().await;
+    let (e, listed) = c
+        .tool(1, "mailhog_list", serde_json::json!({"limit": 2}))
+        .await;
+    assert!(!e, "{listed}");
+    assert_eq!(
+        (listed["total"].clone(), listed["count"].clone()),
+        (3.into(), 2.into())
+    );
+    let (e, found) = c
+        .tool(
+            2,
+            "mailhog_search",
+            serde_json::json!({"kind": "containing", "query": "hog-two"}),
+        )
+        .await;
+    assert!(!e && found["total"] == 1, "{found}");
+    let (e, all) = c
+        .tool(
+            3,
+            "mailhog_search",
+            serde_json::json!({"kind": "to", "query": "inbox@identity.invalid"}),
+        )
+        .await;
+    assert!(!e && all["total"] == 3, "{all}");
+    let (e, hit) = c
+        .tool(
+            4,
+            "mailhog_wait",
+            serde_json::json!({"kind": "containing", "query": "hog-one", "timeout_ms": 5000}),
+        )
+        .await;
+    assert!(!e, "{hit}");
+    assert_eq!(hit["status"], "found");
+    assert_eq!(hit["method"], mailhog_mcp::WAIT_METHOD);
+    assert_eq!(hit["messages_count"], 1);
+    let (e, miss) = c
+        .tool(
+            5,
+            "mailhog_wait",
+            serde_json::json!({"kind": "containing", "query": "never-sent", "timeout_ms": 300}),
+        )
+        .await;
+    assert!(
+        !e && miss["status"] == "timeout" && miss["messages_count"] == 0,
+        "{miss}"
+    );
+    assert!(miss["scans"].as_u64().unwrap() >= 2, "it polled: {miss}");
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+    assert!(owned.shutdown().await.proved());
+}
+
+// ---- launch mode: the adapter owns its backend (proposed 0129 §4) ----------
+
+async fn launched_swarmail(root: &Path) -> (targets::Owned, targets::Keepers) {
+    let keepers = targets::Keepers::default();
+    let owned = targets::Owned::launch(
+        &swarmail_spec(targets::swarmail_template(0)),
+        &root.join("s"),
+        &limits(),
+        &wire::Clock(Instant::now()),
+        &keepers,
+    )
+    .await
+    .expect("swarmail launches");
+    (owned, keepers)
+}
+
+/// Drive `serve_owned` over duplex pipes: the announcement line and the
+/// reply to one ping come back, then the input closes.
+async fn serve_launched(
+    owned: &mut targets::Owned,
+) -> (String, serde_json::Value, mcp::End, targets::CleanupFacts) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let (mut client_in, server_in) = tokio::io::duplex(1 << 16);
+    let (server_out, client_out) = tokio::io::duplex(1 << 16);
+    let serving = mcp::serve_owned::<mailpit_mcp::Mailpit, _, _>(
+        owned,
+        server_in,
+        server_out,
+        mailpit_mcp::Bounds::default(),
+    );
+    let client = async {
+        let mut r = tokio::io::BufReader::new(client_out);
+        let mut announce = String::new();
+        r.read_line(&mut announce).await.unwrap();
+        client_in
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n")
+            .await
+            .unwrap();
+        let mut reply = String::new();
+        r.read_line(&mut reply).await.unwrap();
+        drop(client_in);
+        (announce, serde_json::from_str(&reply).unwrap())
+    };
+    let ((end, facts), (announce, reply)) = tokio::join!(serving, client);
+    (announce, reply, end, facts)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(target_os = "linux")]
+async fn launch_mode_announces_serves_and_gives_a_receipt_only_after_full_cleanup() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut owned, keepers) = launched_swarmail(root.path()).await;
+    let smtp = owned.smtp;
+    let (announce, reply, end, facts) = serve_launched(&mut owned).await;
+    let want = format!(
+        "smtp={smtp} tools_sha256={}\n",
+        mcp::tools_sha256::<mailpit_mcp::Mailpit>(&mailpit_mcp::Bounds::default())
+    );
+    assert_eq!(announce, want, "one announcement line first");
+    assert_eq!(reply["result"], serde_json::json!({}));
+    assert_eq!(end, mcp::End::Eof);
+    assert!(facts.proved(), "{facts:?}");
+    assert!(mcp::receipt(end, &facts));
+    let settled = keepers.settle(Duration::from_secs(10)).await;
+    assert!(
+        settled.iter().all(targets::CleanupFacts::proved),
+        "{settled:?}"
+    );
+    assert!(!root.path().join("s").exists(), "the owned scratch is gone");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(target_os = "linux")]
+async fn launch_mode_is_not_a_receipt_when_cleanup_is_forced_to_fail() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut owned, keepers) = launched_swarmail(root.path()).await;
+    // The existing cleanup seam: the drain's join fails during cleanup.
+    owned.fail_drain().await;
+    let (_, _, end, facts) = serve_launched(&mut owned).await;
+    assert_eq!(end, mcp::End::Eof, "the serving itself ended in order");
+    assert!(!facts.proved(), "{facts:?}");
+    assert!(
+        !mcp::receipt(end, &facts),
+        "no receipt without full cleanup"
+    );
+    drop(keepers);
+}
+
+#[test]
+fn launch_mode_uses_the_deadlines_protocol_v2_froze() {
+    let protocol: serde_json::Value =
+        serde_json::from_slice(&std::fs::read("docs/evals/protocol.json").unwrap()).unwrap();
+    let r = &protocol["resources"];
+    let l = mcp::launch_limits();
+    assert_eq!(l.startup.as_millis() as u64, r["startup_deadline_ms"]);
+    assert_eq!(l.cleanup.as_millis() as u64, r["cleanup_deadline_ms"]);
+    assert_eq!(l.request.as_millis() as u64, r["request_deadline_ms"]);
+    assert_eq!(l.max_response_bytes, r["max_response_bytes"]);
+    assert_eq!(l.open_files, r["open_files"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs MAIL_COMPARE_MAILHOG (the pinned MailHog executable)"]
+async fn real_mailhog_through_the_adapter_lists_searches_and_waits() {
+    let root = tempfile::tempdir().unwrap();
+    let mut owned = launch_pinned(TargetKind::Mailhog, &root.path().join("s")).await;
+    for (i, subject) in ["hogtoken-one", "hogtoken-two", "other-three"]
+        .iter()
+        .enumerate()
+    {
+        send_as(owned.smtp, None, subject, &format!("body {i}")).await;
+    }
+    let mut c = Mcp::start_backend::<mailhog_mcp::Mailhog>(
+        owned.http_addr,
+        mailpit_mcp::Bounds::default(),
+        1 << 20,
+    );
+    c.init().await;
+    let mut id = 100;
+    let mut call = async |c: &mut Mcp, name: &str, args: serde_json::Value| {
+        id += 1;
+        let (is_error, v) = c.tool(id, name, args.clone()).await;
+        assert!(!is_error, "{name} {args}: {v}");
+        v
+    };
+    // Accept is not presumed to be storage: wait for all three to be listed.
+    let until = Instant::now() + Duration::from_secs(10);
+    while call(&mut c, "mailhog_list", serde_json::json!({"limit": 1})).await["total"] != 3 {
+        assert!(Instant::now() < until, "MailHog never listed all three");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let listed = call(&mut c, "mailhog_list", serde_json::json!({"limit": 10})).await;
+    assert_eq!(listed["count"], 3, "{listed}");
+    assert!(
+        listed["items"][0]["ID"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "{listed}"
+    );
+    let hits = call(
+        &mut c,
+        "mailhog_search",
+        serde_json::json!({"kind": "containing", "query": "hogtoken"}),
+    )
+    .await;
+    assert_eq!(hits["total"], 2, "{hits}");
+    assert!(
+        listed["items"][0]["Raw"]["Data"]
+            .as_str()
+            .unwrap()
+            .contains("Subject: "),
+        "raw MIME stays raw in a listed item"
+    );
+    let found = call(
+        &mut c,
+        "mailhog_wait",
+        serde_json::json!({"kind": "containing", "query": "hogtoken-one", "timeout_ms": 5000}),
+    )
+    .await;
+    assert_eq!(found["status"], "found", "{found}");
+    let none = call(
+        &mut c,
+        "mailhog_wait",
+        serde_json::json!({"kind": "containing", "query": "never-sent", "timeout_ms": 300}),
+    )
+    .await;
+    assert_eq!(none["status"], "timeout", "{none}");
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+    assert!(owned.shutdown().await.proved());
+}
+
+// ---- the adapter sources accepted 0130's lock does not bind (proposed 0129 §5) ----
+
+/// The MailSlurper sources the adapter cites that accepted 0130's lock does
+/// not bind, plus `go.mod` and `go.sum`: the committed path under
+/// `docs/evals/agent-sources/mailslurper/`, the member of the release-1.15.0
+/// source archive (`83f66f25…359f`) they were read from, and the sha256 of
+/// both. `ServiceController.go` and `setupServicesListener.go` are main's
+/// documents (`sources/mailslurper-source-build/`), so they are not here.
+const AGENT_SOURCES: [(&str, &str, &str); 14] = [
+    (
+        "CommonQueries.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/CommonQueries.go",
+        "090458bd89bb8767c755e140b22797ea8a7596b9e5a0770614cb285ec63d0db8",
+    ),
+    (
+        "DataCommandExecutor.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/DataCommandExecutor.go",
+        "bc6a64b05f5c64e2fcbd1ffac787eb74fb176089b577e520077657044c367929",
+    ),
+    (
+        "DatabaseReceiver.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/DatabaseReceiver.go",
+        "cc8e3a13abbbfec85c22ad80ff06800adc88f3269e4b541ba87fc63d8868f91f",
+    ),
+    (
+        "HelloCommandExecutor.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/HelloCommandExecutor.go",
+        "dc28f653b2ee41c09aaa6bd9a8c3fa5d2c98de672921ef7e443f6f4aaf95957d",
+    ),
+    (
+        "MailCollectionResponse.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/MailCollectionResponse.go",
+        "e9a110af272463ba22196a746ee3e0b1ade45abe1f79365ba01a4e9799613d83",
+    ),
+    (
+        "MailItem.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/MailItem.go",
+        "ad1d0b1ce06a2f315d93281612a8f64433e9ce211e0663fcc77308fbc9040ae0",
+    ),
+    (
+        "MailSearch.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/MailSearch.go",
+        "9d99312158e5b84f254c1162f0fbd26a5c98e4a363db460d97f1ddcd7b7bdd66",
+    ),
+    (
+        "SMTPWorker.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/SMTPWorker.go",
+        "1f4595b737e84c03d6fddf29f2bf3b85bd79c35ca4caec005e21739cfd8ff040",
+    ),
+    (
+        "SMTPWorkerResponses.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/SMTPWorkerResponses.go",
+        "fb8252f9be5a2c8564f1c5c194bc4ab2b00b465bc6796278ce8a3f8ca1d79029",
+    ),
+    (
+        "SmtpCommands.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/SmtpCommands.go",
+        "f1cff9896e72254a87facdf06bd6fc83903f0ec1e803b169937bc3ed168140b3",
+    ),
+    (
+        "Writer.go",
+        "mailslurper-release-1.15.0/pkg/mailslurper/Writer.go",
+        "b856bf145795443fa47df467655d3e3641b7cb75fb35686de90a61597320f8ea",
+    ),
+    (
+        "go.mod",
+        "mailslurper-release-1.15.0/go.mod",
+        "2d59cd3c66115ad2c5e4f84f9776cad156b70dcf0cfe967f21e543f06e9321a2",
+    ),
+    (
+        "go.sum",
+        "mailslurper-release-1.15.0/go.sum",
+        "ca08ec830cad16bd373f5d66178827462fd26db321f7ad3e1b040a66024d140d",
+    ),
+    (
+        "mailslurper.go",
+        "mailslurper-release-1.15.0/cmd/mailslurper/mailslurper.go",
+        "8978fb4a7ec7786dd3e6da8a6e5cec596c5a6b347188895fbaef2ef0fa487482",
+    ),
+];
+
+/// The source archive the lock pins for both MailSlurper rows.
+const MAILSLURPER_SOURCE_ARCHIVE: &str =
+    "83f66f25ac000fc2f5680514719b7b75a29dafccb7e782597077325fb900359f";
+
+fn agent_sources_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/evals/agent-sources/mailslurper")
+}
+
+#[test]
+fn the_adapter_sources_main_does_not_bind_are_rehashed_against_the_table() {
+    let dir = agent_sources_dir();
+    // The directory holds exactly the table's files: nothing unbound sits
+    // beside them and none is missing.
+    let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    on_disk.sort();
+    let mut listed: Vec<String> = AGENT_SOURCES.iter().map(|r| r.0.to_owned()).collect();
+    listed.sort();
+    assert_eq!(on_disk, listed);
+    for (path, member, want) in AGENT_SOURCES {
+        let bytes = std::fs::read(dir.join(path)).unwrap();
+        assert_eq!(targets::sha256_hex(&bytes), want, "{path} ({member})");
+    }
+    // The table's archive is the one the lock binds for both MailSlurper
+    // rows, and none of its files is a document main already binds.
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
+    for t in [TargetKind::Mailslurper, TargetKind::MailslurperSourceBuild] {
+        let pin = lock.pin(t).unwrap();
+        assert!(
+            pin.documents.iter().any(|d| matches!(
+                &d.attribution,
+                protocol::Fact::Observed(protocol::Attribution::Member { archive_sha256, .. })
+                    if archive_sha256 == MAILSLURPER_SOURCE_ARCHIVE
+            )),
+            "{t} binds the source archive"
+        );
+        for (path, _, want) in AGENT_SOURCES {
+            assert!(
+                pin.documents.iter().all(|d| d.sha256 != want),
+                "{path} is already bound by {t}'s lock row: delete the copy"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs MAIL_COMPARE_ARCHIVE_DIRS (a directory holding the pinned MailSlurper source archive)"]
+fn the_adapter_sources_main_does_not_bind_are_members_of_the_pinned_archive() {
+    // Main's own archive helpers: the archive is found by its digest, and
+    // each member is re-extracted with the system `tar` into a fresh directory.
+    let archive = eight_targets::archive_by_digest(MAILSLURPER_SOURCE_ARCHIVE);
+    let dir = eight_targets::fresh_dir("agent-sources");
+    for (path, member, want) in AGENT_SOURCES {
+        let got = eight_targets::extract_member(&archive, member, dir.path());
+        assert_eq!(targets::sha256_hex(&got), want, "{member} of {archive:?}");
+        assert_eq!(
+            std::fs::read(agent_sources_dir().join(path)).unwrap(),
+            got,
+            "{path} is the archive member's bytes"
+        );
+    }
+}
+
+// ---- the MailSlurper adapter (proposed decisions 0092 §3, 0129 §5) --------
+
+fn slurper_item(id: &str, to: &str, subject: &str, body: &str) -> serde_json::Value {
+    serde_json::json!({"id": id, "dateSent": "2026-11-07 10:00:00", "fromAddress": "a@b.invalid",
+        "toAddresses": [to], "subject": subject, "xmailer": "", "mimeVersion": "1.0",
+        "body": body, "contentType": "text/plain", "boundary": "", "attachments": [],
+        "transferEncoding": ""})
+}
+
+fn slurper_page(total: u64, ids: &[&str]) -> String {
+    let items: Vec<_> = ids
+        .iter()
+        .map(|i| slurper_item(i, "inbox@identity.invalid", &format!("s {i}"), "b"))
+        .collect();
+    serde_json::json!({"mailItems": items, "totalPages": total.div_ceil(50), "totalRecords": total})
+        .to_string()
+}
+
+async fn initialized_for<B: mcp::Backend>(addr: std::net::SocketAddr) -> Mcp {
+    let mut c = Mcp::start_backend::<B>(addr, mailpit_mcp::Bounds::default(), 1 << 20);
+    c.init().await;
+    c
+}
+
+#[test]
+fn the_mailslurper_adapter_validates_its_calls_closed() {
+    let b = mailpit_mcp::Bounds::default();
+    let call = |name: &str, args: serde_json::Value| {
+        mailslurper_mcp::parse_call(&serde_json::json!({"name": name, "arguments": args}), &b)
+    };
+    assert_eq!(
+        call("mailslurper_list", serde_json::json!({})),
+        Some(mailslurper_mcp::Call::List { page: 1 })
+    );
+    assert_eq!(
+        call("mailslurper_list", serde_json::json!({"page": 3})),
+        Some(mailslurper_mcp::Call::List { page: 3 })
+    );
+    // Pages are 1-based and bounded; nothing is clamped.
+    assert!(call("mailslurper_list", serde_json::json!({"page": 0})).is_none());
+    assert!(call("mailslurper_list", serde_json::json!({"page": 2001})).is_none());
+    assert!(call("mailslurper_list", serde_json::json!({"limit": 10})).is_none());
+    // A search needs one filter, and a blank term would silently stop
+    // filtering upstream, so it refuses.
+    assert!(call("mailslurper_search", serde_json::json!({})).is_none());
+    assert!(call("mailslurper_search", serde_json::json!({"to": "  "})).is_none());
+    assert!(call("mailslurper_search", serde_json::json!({"to": 7})).is_none());
+    assert!(
+        call(
+            "mailslurper_search",
+            serde_json::json!({"kind": "to", "to": "a"})
+        )
+        .is_none()
+    );
+    let over = "x".repeat(4097);
+    assert!(call("mailslurper_search", serde_json::json!({"message": over})).is_none());
+    let both = call(
+        "mailslurper_search",
+        serde_json::json!({"to": "a@b", "message": "m", "page": 2}),
+    );
+    assert!(matches!(
+        both,
+        Some(mailslurper_mcp::Call::Search { page: 2, ref filter })
+            if filter.to.as_deref() == Some("a@b") && filter.from.is_none()
+    ));
+    assert!(call("mailslurper_read", serde_json::json!({"id": "a1-B_2.c"})).is_some());
+    assert!(call("mailslurper_read", serde_json::json!({})).is_none());
+    // What upstream serves that this adapter does not offer.
+    for gone in [
+        "mailslurper_delete",
+        "mailslurper_prune",
+        "mailslurper_attachment",
+        "mailslurper_login",
+        "mailslurper_version",
+    ] {
+        assert!(call(gone, serde_json::json!({})).is_none(), "{gone}");
+    }
+    assert!(call("mailslurper_wait", serde_json::json!({"to": "q"})).is_none());
+    let late = serde_json::json!({"to": "q", "timeout_ms": b.max_wait_ms() + 1});
+    assert!(call("mailslurper_wait", late).is_none());
+    assert!(matches!(
+        call(
+            "mailslurper_wait",
+            serde_json::json!({"message": "q", "timeout_ms": 5})
+        ),
+        Some(mailslurper_mcp::Call::Wait { timeout_ms: 5, .. })
+    ));
+}
+
+#[test]
+fn the_mailslurper_descriptions_state_the_like_substring_semantics_and_cite_their_routes() {
+    let tools = mailslurper_mcp::tools(&mailpit_mcp::Bounds::default());
+    let by = |n: &str| {
+        tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == n)
+            .unwrap_or_else(|| panic!("{n}"))
+            .clone()
+    };
+    let search = by("mailslurper_search");
+    let text = search["description"].as_str().unwrap();
+    for must in [
+        "SQL LIKE substring match",
+        "wraps the term in % on both sides",
+        "does not escape it",
+        "a longer address that contains the term also matches",
+        "wildcard",
+    ] {
+        assert!(text.contains(must), "{must}: {text}");
+    }
+    for filter in ["to", "from", "message"] {
+        let d = search["inputSchema"]["properties"][filter]["description"]
+            .as_str()
+            .unwrap();
+        assert!(d.contains("SQL LIKE substring match"), "{filter}: {d}");
+    }
+    for (name, route) in [
+        ("mailslurper_list", "GET /mail"),
+        ("mailslurper_search", "GET /mail"),
+        ("mailslurper_read", "GET /mail/{id}"),
+        ("mailslurper_wait", "GET /mail"),
+    ] {
+        let d = by(name)["description"].as_str().unwrap().to_owned();
+        assert!(d.contains(route), "{name} names its route: {d}");
+    }
+    let wait = by("mailslurper_wait")["description"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(wait.contains("not a MailSlurper wait facility"));
+}
+
+#[tokio::test]
+async fn the_mailslurper_adapter_reads_pages_and_refuses_wrong_shapes() {
+    let big: Vec<String> = (0..51).map(|i| format!("m{i:02}")).collect();
+    let first: Vec<&str> = big[..50].iter().map(String::as_str).collect();
+    let page_one = slurper_page(51, &first);
+    let addr = responder(Box::new(move |t: &str| {
+        Some(match t {
+            "/mail?pageNumber=1" => (200, page_one.clone()),
+            "/mail?pageNumber=3" => (200, "{\"totalPages\":0,\"totalRecords\":0}".into()),
+            "/mail?pageNumber=4" => (
+                200,
+                "{\"mailItems\":null,\"totalPages\":0,\"totalRecords\":0}".into(),
+            ),
+            "/mail?pageNumber=5" => (
+                200,
+                "{\"mailItems\":[{}],\"totalPages\":1,\"totalRecords\":1}".into(),
+            ),
+            "/mail?pageNumber=6" => (200, slurper_page(0, &["x"])),
+            "/mail?pageNumber=7" => (200, "[]".into()),
+            "/mail?pageNumber=8" => (500, "x".into()),
+            "/mail?pageNumber=9" => (
+                200,
+                "{\"mailItems\":\"no\",\"totalPages\":1,\"totalRecords\":1}".into(),
+            ),
+            "/mail?pageNumber=1&to=ann" => (200, slurper_page(2, &["a", "b"])),
+            "/mail?pageNumber=1&message=gone" => (200, slurper_page(0, &[])),
+            "/mail/a1" => (
+                200,
+                slurper_item("a1", "inbox@identity.invalid", "s", "raw body").to_string(),
+            ),
+            "/mail/b2" => (500, "Problem getting mail item".into()),
+            "/mail/c3" => (200, slurper_item("other", "x@y", "s", "b").to_string()),
+            _ => (404, "{}".into()),
+        })
+    }))
+    .await;
+    let mut c = initialized_for::<mailslurper_mcp::Mailslurper>(addr).await;
+    let (e, v) = c.tool(1, "mailslurper_list", serde_json::json!({})).await;
+    assert!(!e && v["totalRecords"] == 51 && v["mailItems"].as_array().unwrap().len() == 50);
+    for (id, page) in [(2, 3), (3, 4)] {
+        let (e, v) = c
+            .tool(id, "mailslurper_list", serde_json::json!({"page": page}))
+            .await;
+        assert!(!e && v["mailItems"] == serde_json::json!([]), "{page}: {v}");
+    }
+    // Wrong shapes are typed errors, never panics or shorter successes.
+    for (id, page) in [(4, 5), (5, 6), (6, 7), (7, 9)] {
+        let (e, v) = c
+            .tool(id, "mailslurper_list", serde_json::json!({"page": page}))
+            .await;
+        assert!(
+            e && v["error"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("malformed")),
+            "{page}: {v}"
+        );
+    }
+    let (e, v) = c
+        .tool(8, "mailslurper_list", serde_json::json!({"page": 8}))
+        .await;
+    assert!(
+        e && v["error"].as_str().unwrap().starts_with("upstream_status"),
+        "{v}"
+    );
+    let (e, v) = c
+        .tool(9, "mailslurper_search", serde_json::json!({"to": "ann"}))
+        .await;
+    assert!(!e && v["totalRecords"] == 2, "{v}");
+    let (e, v) = c
+        .tool(10, "mailslurper_read", serde_json::json!({"id": "a1"}))
+        .await;
+    assert!(
+        !e && v["body"] == "raw body",
+        "the body passes through: {v}"
+    );
+    let (e, v) = c
+        .tool(11, "mailslurper_read", serde_json::json!({"id": "b2"}))
+        .await;
+    assert!(
+        e && v["error"].as_str().unwrap().contains("HTTP 500"),
+        "{v}"
+    );
+    let (e, v) = c
+        .tool(12, "mailslurper_read", serde_json::json!({"id": "c3"}))
+        .await;
+    assert!(
+        e && v["error"].as_str().unwrap().starts_with("malformed"),
+        "{v}"
+    );
+    let (e, v) = c
+        .tool(
+            13,
+            "mailslurper_wait",
+            serde_json::json!({"message": "gone", "timeout_ms": 250}),
+        )
+        .await;
+    assert!(!e && v["status"] == "timeout", "{v}");
+    assert_eq!(v["method"], mailslurper_mcp::WAIT_METHOD);
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+}
+
+#[tokio::test]
+async fn a_mailslurper_scan_walks_every_page_of_a_filtered_search_before_it_answers() {
+    let ids: Vec<String> = (0..51).map(|i| format!("s{i:02}")).collect();
+    let first: Vec<&str> = ids[..50].iter().map(String::as_str).collect();
+    let page_one = slurper_page(51, &first);
+    let addr = responder(Box::new(move |t: &str| {
+        Some(match t {
+            "/mail?pageNumber=1&to=ann%40x.invalid" => (200, page_one.clone()),
+            "/mail?pageNumber=2&to=ann%40x.invalid" => (200, slurper_page(51, &["s50"])),
+            _ => (404, "{}".into()),
+        })
+    }))
+    .await;
+    let mut c = initialized_for::<mailslurper_mcp::Mailslurper>(addr).await;
+    let args = serde_json::json!({"to": "ann@x.invalid", "timeout_ms": 2000});
+    let (e, v) = c.tool(1, "mailslurper_wait", args).await;
+    assert!(!e, "{v}");
+    assert_eq!(v["status"], "found");
+    assert_eq!(v["messages_count"], 51);
+    assert_eq!(v["messages"].as_array().unwrap().len(), 51);
+    assert_eq!(v["requests"], 2, "one request per page: {v}");
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+}
+
+/// A slot nobody holds: reserve a loopback port and release it at once. It
+/// is a candidate, not a promise; between the release and the child's bind a
+/// parallel test can take it.
+fn reserve_and_release() -> std::net::SocketAddr {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+}
+
+/// Launch Swarmail with its MailSlurper shim on a slot `choose` offers.
+///
+/// A slot that is reserved and released before the child binds it can be
+/// taken in between by a test running in parallel (the coverage gate's
+/// instrumented run did exactly that); Swarmail then exits at startup with
+/// `NotReady(NO_LISTENER_ADDRESSES)`. A fresh slot is tried at most five
+/// times, each refused launch must have proved its cleanup, and any other
+/// launch error fails at once. Returns the slot, the owned launch and the
+/// number of attempts it took. `scratch` holds one leaf per attempt.
+async fn launch_shim_with_fresh_slot(
+    scratch: &Path,
+    mut choose: impl FnMut() -> std::net::SocketAddr,
+) -> (std::net::SocketAddr, targets::Owned, u32) {
+    const ATTEMPTS: u32 = 5;
+    let keepers = targets::Keepers::default();
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let slot = choose();
+        let mut template = targets::swarmail_template(0);
+        template.extend(["--mailslurper-listen".into(), slot.to_string()]);
+        match targets::Owned::launch(
+            &swarmail_spec(template),
+            &scratch.join(format!("a{attempt}")),
+            &limits(),
+            &wire::Clock(Instant::now()),
+            &keepers,
+        )
+        .await
+        {
+            Ok(owned) => return (slot, owned, attempt),
+            Err(targets::LaunchError::NotReady(targets::NO_LISTENER_ADDRESSES, facts)) => {
+                // Every refused launch proves its cleanup, the last one too.
+                assert!(
+                    facts.proved(),
+                    "a refused launch still cleans up: {facts:?}"
+                );
+                assert!(
+                    attempt < ATTEMPTS,
+                    "swarmail launches: {ATTEMPTS} slots refused in a row"
+                );
+            }
+            Err(e) => panic!("swarmail launches: {e:?}"),
+        }
+    }
+}
+
+/// The first candidate is held by a live listener across the launch, as a
+/// parallel test would hold it: the launch is refused with proved cleanup,
+/// a later, fresh slot launches, and the holder is untouched.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn a_slot_taken_by_another_listener_is_refused_cleanly_and_the_next_slot_launches() {
+    let root = tempfile::tempdir().unwrap();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let taken = held.local_addr().unwrap();
+    let mut first = true;
+    let (slot, mut owned, attempts) = launch_shim_with_fresh_slot(root.path(), || {
+        if std::mem::take(&mut first) {
+            taken
+        } else {
+            reserve_and_release()
+        }
+    })
+    .await;
+    // At least one refusal (the held slot) before a slot launched. The fresh
+    // candidate is itself reserved and released, so a parallel test may
+    // refuse it too: the count is a floor, never exact.
+    assert!(attempts >= 2, "the held slot is refused first: {attempts}");
+    assert_ne!(slot, taken);
+    // The refused attempt's scratch is gone and the winner's shim is up.
+    assert!(!root.path().join("a1").exists());
+    assert!(owned.shutdown().await.proved());
+    // The holder never lost its port to the refused child.
+    let (_peer, _) = {
+        let c = std::net::TcpStream::connect(taken).expect("the held listener still accepts");
+        let accepted = held.accept().expect("and it accepted");
+        (c, accepted)
+    };
+}
+
+/// All five candidates held: five launches are refused, each with proved
+/// cleanup, and the helper then fails loudly instead of retrying forever.
+#[tokio::test]
+#[should_panic(expected = "slots refused in a row")]
+async fn five_taken_slots_exhaust_the_retry_and_fail_loudly() {
+    let root = tempfile::tempdir().unwrap();
+    let held: Vec<std::net::TcpListener> = (0..5)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let drawn = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&drawn);
+    let scratch = root.path().to_owned();
+    let addrs: Vec<_> = held.iter().map(|l| l.local_addr().unwrap()).collect();
+    // The helper runs in its own task so its panic can be inspected after
+    // the count is read, then re-raised for `should_panic` to match.
+    let ended = tokio::spawn(async move {
+        launch_shim_with_fresh_slot(&scratch, || {
+            addrs[counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst)]
+        })
+        .await;
+    })
+    .await;
+    assert_eq!(
+        drawn.load(std::sync::atomic::Ordering::SeqCst),
+        5,
+        "exactly five candidates were offered"
+    );
+    std::panic::resume_unwind(ended.expect_err("the helper must not succeed").into_panic());
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn the_mailslurper_adapter_lists_and_reads_over_real_smtp_into_swarmails_shim() {
+    // Mechanics only: Swarmail's own MailSlurper shim is not MailSlurper
+    // (and refuses MailSlurper's filters), so this proves list paging and
+    // read over a real exchange, never MailSlurper's behaviour.
+    let root = tempfile::tempdir().unwrap();
+    let (slot, mut owned, _attempts) =
+        launch_shim_with_fresh_slot(root.path(), reserve_and_release).await;
+    for (i, subject) in ["slurp-one", "slurp-two", "slurp-three"].iter().enumerate() {
+        send_as(owned.smtp, None, subject, &format!("body {i}")).await;
+    }
+    let mut c = initialized_for::<mailslurper_mcp::Mailslurper>(slot).await;
+    let (e, listed) = c.tool(1, "mailslurper_list", serde_json::json!({})).await;
+    assert!(!e, "{listed}");
+    assert_eq!(listed["totalRecords"], 3, "{listed}");
+    let items = listed["mailItems"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    let id = items[0]["id"].as_str().unwrap().to_owned();
+    let (e, read) = c
+        .tool(2, "mailslurper_read", serde_json::json!({"id": id}))
+        .await;
+    assert!(!e && read["id"] == serde_json::json!(id), "{read}");
+    let to = read["toAddresses"].as_array().unwrap();
+    assert!(to.iter().any(|a| a == "inbox@identity.invalid"), "{read}");
+    let (e, empty) = c
+        .tool(3, "mailslurper_list", serde_json::json!({"page": 2}))
+        .await;
+    assert!(!e && empty["totalRecords"] == 3, "{empty}");
+    assert_eq!(empty["mailItems"], serde_json::json!([]), "{empty}");
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+    assert!(owned.shutdown().await.proved());
+}
+
+/// The MailSlurper adapter drives main's `mailslurper-source-build` row: its
+/// launch comes from the lock's pin through the builder the wire run uses.
+#[test]
+fn the_mailslurper_adapter_launches_main_s_source_build_pin() {
+    assert_eq!(
+        <mailslurper_mcp::Mailslurper as mcp::Backend>::TARGET,
+        TargetKind::MailslurperSourceBuild
+    );
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
+    let spec = mcp::launch_spec_for(
+        <mailslurper_mcp::Mailslurper as mcp::Backend>::TARGET,
+        PathBuf::from("/never/launched/mailslurper"),
+        &lock,
+    )
+    .unwrap();
+    assert_eq!(spec.kind, TargetKind::MailslurperSourceBuild);
+    assert_eq!(
+        spec.expected_sha256.as_deref(),
+        Some("eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff")
+    );
+    assert_eq!(
+        spec.extra.listeners,
+        vec![
+            protocol::ListenerRole::Smtp,
+            protocol::ListenerRole::Http,
+            protocol::ListenerRole::Ui
+        ]
+    );
+    assert_eq!(spec.extra.config.as_ref().unwrap().name, "config.json");
+    // It is the spec the wire run builds for the same row.
+    let pin = lock.pin(TargetKind::MailslurperSourceBuild).unwrap();
+    let wire_run = targets::LaunchSpec::from_pin(
+        TargetKind::MailslurperSourceBuild,
+        PathBuf::from("/never/launched/mailslurper"),
+        None,
+        pin,
+    )
+    .unwrap();
+    assert_eq!(spec.template, wire_run.template);
+    assert_eq!(spec.extra.env, wire_run.extra.env);
+    // Mailpit and MailHog serve their own rows, unchanged.
+    for (t, row) in [
+        (
+            <mailpit_mcp::Mailpit as mcp::Backend>::TARGET,
+            TargetKind::Mailpit,
+        ),
+        (
+            <mailhog_mcp::Mailhog as mcp::Backend>::TARGET,
+            TargetKind::Mailhog,
+        ),
+    ] {
+        assert_eq!(t, row);
+        let spec = mcp::launch_spec_for(t, PathBuf::from("/never/launched"), &lock).unwrap();
+        assert_eq!(spec.kind, row);
+        assert!(spec.extra.config.is_none(), "{row}");
+    }
+}
+
+/// An adapter entry point refuses every target but its three, by name,
+/// before the lock is read: the official `mailslurper` row, which does not
+/// start, is among the refused.
+#[test]
+fn an_adapter_refuses_a_target_that_is_not_its_own_by_name_and_spawns_nothing() {
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
+    for t in [
+        TargetKind::Swarmail,
+        TargetKind::Mailslurper,
+        TargetKind::Smtp4dev,
+        TargetKind::Inbucket,
+        TargetKind::Greenmail,
+        TargetKind::AlkemioMailslurper,
+    ] {
+        let why = mcp::adapter_target(t).unwrap_err();
+        assert!(why.contains(t.name()), "{why}");
+        let why = mcp::launch_spec_for(t, PathBuf::from("/never/launched"), &lock).unwrap_err();
+        assert!(
+            why.contains(t.name()) && why.contains("no MCP adapter"),
+            "{why}"
+        );
+    }
+    for t in [
+        TargetKind::Mailpit,
+        TargetKind::Mailhog,
+        TargetKind::MailslurperSourceBuild,
+    ] {
+        mcp::adapter_target(t).unwrap();
+    }
+    // A lock that pins no row for an adapter's target refuses by name too.
+    let mut bare = lock.clone();
+    bare.entries
+        .retain(|e| e.target != TargetKind::MailslurperSourceBuild);
+    let why = mcp::launch_spec_for(
+        TargetKind::MailslurperSourceBuild,
+        PathBuf::from("/never/launched"),
+        &bare,
+    )
+    .unwrap_err();
+    assert!(why.contains("mailslurper-source-build"), "{why}");
+}
+
+/// Every hostile argument a tool refuses, per adapter: none makes a request.
+#[tokio::test]
+async fn hostile_arguments_never_reach_an_upstream_on_any_adapter() {
+    let long_id = "a".repeat(129);
+    let bad_ids: Vec<String> = [
+        "a/b", "..", "a?x=1", "a%2e", "a b", "a\\b", "a\u{e9}", "a\nb", "",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .chain([long_id])
+    .collect();
+    let over = "x".repeat(4097);
+    type Calls = Vec<(&'static str, serde_json::Value)>;
+    let cases: Vec<(&str, Calls)> = vec![
+        (
+            "mailpit",
+            vec![
+                ("mailpit_list", serde_json::json!({"limit": 251})),
+                ("mailpit_list", serde_json::json!({"start": 100001})),
+                ("mailpit_search", serde_json::json!({"query": over})),
+            ],
+        ),
+        (
+            "mailhog",
+            vec![
+                ("mailhog_list", serde_json::json!({"limit": 251})),
+                ("mailhog_list", serde_json::json!({"start": 100001})),
+                (
+                    "mailhog_search",
+                    serde_json::json!({"kind": "to", "query": over}),
+                ),
+            ],
+        ),
+        (
+            "mailslurper",
+            vec![
+                ("mailslurper_list", serde_json::json!({"page": 2001})),
+                ("mailslurper_search", serde_json::json!({"to": over})),
+                (
+                    "mailslurper_wait",
+                    serde_json::json!({"to": "x", "timeout_ms": 10_000_000}),
+                ),
+            ],
+        ),
+    ];
+    for (adapter, over_cap) in cases {
+        let (addr, seen) = counting_upstream("").await;
+        let mut c = match adapter {
+            "mailpit" => initialized_for::<mailpit_mcp::Mailpit>(addr).await,
+            "mailhog" => initialized_for::<mailhog_mcp::Mailhog>(addr).await,
+            _ => initialized_for::<mailslurper_mcp::Mailslurper>(addr).await,
+        };
+        let mut id = 1;
+        let mut calls: Vec<(String, serde_json::Value)> = bad_ids
+            .iter()
+            .map(|b| (format!("{adapter}_read"), serde_json::json!({"id": b})))
+            .collect();
+        calls.extend(over_cap.into_iter().map(|(n, a)| (n.to_owned(), a)));
+        for (name, args) in calls {
+            id += 1;
+            let params = serde_json::json!({"name": name, "arguments": args});
+            let r = c.request(id, "tools/call", params).await;
+            assert_eq!(r["error"]["code"], -32602, "{adapter} {name} {args}: {r}");
+        }
+        assert_eq!(upstream_requests(&seen), 0, "{adapter} made a request");
+        // An accepted id reaches upstream once, as one path segment. MailHog's
+        // adapter has no tool that takes an id: even a good id is refused.
+        id += 1;
+        let params = serde_json::json!({"name": format!("{adapter}_read"),
+            "arguments": {"id": "ok-1_2.3"}});
+        let r = c.request(id, "tools/call", params).await;
+        if adapter == "mailhog" {
+            assert_eq!(r["error"]["code"], -32602, "{r}");
+            assert_eq!(upstream_requests(&seen), 0, "{adapter}");
+        } else {
+            assert_eq!(upstream_requests(&seen), 1, "{adapter}");
+        }
+        drop(c.w.take());
+        assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+    }
+}
+
+#[test]
+fn an_accepted_id_is_path_encoded_and_the_alphabet_is_the_observed_one() {
+    for ok in ["abc", "a-b_c.d", "A1", &"a".repeat(128)] {
+        assert!(mcp::valid_id(ok, b""), "{ok}");
+        assert_eq!(wire::query_value(ok), ok, "unreserved characters stay");
+    }
+    for bad in ["", "a/b", "a b", "a%2f", "é", &"a".repeat(129)] {
+        assert!(!mcp::valid_id(bad, b""), "{bad}");
+    }
+    // A backend whose observed ids carry more says so, and is encoded.
+    assert!(mcp::valid_id("a@b.example", b"@"));
+    assert!(!mcp::valid_id("a@b.example", b""));
+    assert_eq!(wire::query_value("a@b/c d"), "a%40b%2Fc%20d");
+}
+
+#[tokio::test]
+async fn no_adapter_follows_a_redirect_and_an_unknown_shape_is_a_typed_error() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // A loopback 302 to a second upstream that counts what reaches it.
+    let (target, seen) = counting_upstream("").await;
+    let redirect = format!("http://{target}/mail?pageNumber=1");
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            let redirect = redirect.clone();
+            tokio::spawn(async move {
+                let mut b = [0u8; 1024];
+                let _ = s.read(&mut b).await;
+                let resp = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {redirect}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = s.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+    let mut c = initialized_for::<mailpit_mcp::Mailpit>(addr).await;
+    let (e, v) = c.tool(1, "mailpit_list", serde_json::json!({})).await;
+    assert!(
+        e && v["error"].as_str().unwrap().contains("HTTP 302"),
+        "{v}"
+    );
+    let mut c = initialized_for::<mailhog_mcp::Mailhog>(addr).await;
+    let (e, v) = c.tool(1, "mailhog_list", serde_json::json!({})).await;
+    assert!(
+        e && v["error"].as_str().unwrap().contains("HTTP 302"),
+        "{v}"
+    );
+    let mut c = initialized_for::<mailslurper_mcp::Mailslurper>(addr).await;
+    let (e, v) = c.tool(1, "mailslurper_list", serde_json::json!({})).await;
+    assert!(
+        e && v["error"].as_str().unwrap().contains("HTTP 302"),
+        "{v}"
+    );
+    assert_eq!(upstream_requests(&seen), 0, "a redirect was followed");
+    // An unknown upstream shape is a typed error on each.
+    let addr = responder(Box::new(|_| Some((200, "{\"unexpected\":true}".into())))).await;
+    let mut c = initialized_for::<mailpit_mcp::Mailpit>(addr).await;
+    let r = c.tool(1, "mailpit_list", serde_json::json!({})).await;
+    assert!(r.0 && r.1["error"].as_str().unwrap().starts_with("malformed"));
+    let mut c = initialized_for::<mailhog_mcp::Mailhog>(addr).await;
+    let r = c.tool(1, "mailhog_list", serde_json::json!({})).await;
+    assert!(r.0 && r.1["error"].as_str().unwrap().starts_with("malformed"));
+    let mut c = initialized_for::<mailslurper_mcp::Mailslurper>(addr).await;
+    let r = c.tool(1, "mailslurper_list", serde_json::json!({})).await;
+    assert!(r.0 && r.1["error"].as_str().unwrap().starts_with("malformed"));
+    // An oversized one is a budget error, never a panic.
+    let huge = responder(Box::new(|_| Some((200, "x".repeat(5000))))).await;
+    let bounds = mailpit_mcp::Bounds {
+        max_body: 4096,
+        ..mailpit_mcp::Bounds::default()
+    };
+    let mut c = Mcp::start_backend::<mailslurper_mcp::Mailslurper>(huge, bounds, 1 << 20);
+    c.init().await;
+    let (e, v) = c.tool(1, "mailslurper_list", serde_json::json!({})).await;
+    assert!(
+        e && v["error"].as_str().unwrap().starts_with("budget_exhausted"),
+        "{v}"
+    );
+}
+
+// ---- the wire corpus: real upstream responses, decoded in CI (0129 §5) -----
+//
+// `capture_wire_corpus` is the only writer. It runs the pinned executable
+// (`MAIL_COMPARE_<TARGET>`), sends synthetic mail shaped like the eval
+// fixture's (a lookalike recipient pair and a multipart message with
+// quoted-printable and base64 parts: no agent body, 0075), and records each
+// response body the adapter's decoders and the oracle's normalizer read.
+// It never overwrites: a moved pin is recaptured by removing the directory.
+
+const CORPUS_FILES: [&str; 6] = [
+    "list.json",
+    "read.json",
+    "read-multipart.json",
+    "search-filtered.json",
+    "search-empty.json",
+    "read-not-found.json",
+];
+
+/// The lock row an agent-suite target's bytes come from. The agent target
+/// `mailslurper` names the service API the adapter drives; its executable is
+/// accepted 0130's `mailslurper-source-build` row, never the official
+/// `mailslurper` row, which does not start. Every other target is refused by
+/// name, so a new `TargetKind` is a compile error here.
+fn lock_row(t: TargetKind) -> TargetKind {
+    match t {
+        TargetKind::Mailpit => TargetKind::Mailpit,
+        TargetKind::Mailhog => TargetKind::Mailhog,
+        TargetKind::Mailslurper => TargetKind::MailslurperSourceBuild,
+        TargetKind::Swarmail
+        | TargetKind::MailslurperSourceBuild
+        | TargetKind::Smtp4dev
+        | TargetKind::Inbucket
+        | TargetKind::Greenmail
+        | TargetKind::AlkemioMailslurper => panic!("{t} is not an agent-suite wire-corpus target"),
+    }
+}
+
+/// The digest a corpus index binds for a pin's launch config: the text the
+/// launcher renders, before its slots are filled (`None` for a pin with no
+/// config file).
+fn config_template_sha256(pin: &protocol::Pin) -> Option<String> {
+    pin.config_file
+        .as_ref()
+        .map(|c| targets::sha256_hex(c.lines.join("\n").as_bytes()))
+}
+
+fn corpus_dir(t: TargetKind) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("docs/evals/wire-corpus")
+        .join(t.name())
+}
+
+/// One message over plain SMTP, as the fixture's dialogue sends it (EHLO,
+/// AUTH PLAIN when `auth`, MAIL, RCPT, DATA).
+async fn send_raw(smtp: std::net::SocketAddr, auth: bool, rcpt: &str, raw: &str) {
+    use base64::Engine;
+    use tokio::io::AsyncWriteExt;
+    let (r, mut w) = tokio::net::TcpStream::connect(smtp)
+        .await
+        .unwrap()
+        .into_split();
+    let mut r = tokio::io::BufReader::new(r);
+    assert_eq!(smtp_code(&mut r).await, 220);
+    let mut steps = vec!["EHLO identity.invalid\r\n".to_owned()];
+    if auth {
+        let token = base64::engine::general_purpose::STANDARD.encode("\0corpus\0pw");
+        steps.push(format!("AUTH PLAIN {token}\r\n"));
+    }
+    steps.extend([
+        "MAIL FROM:<sender@corpus.invalid>\r\n".to_owned(),
+        format!("RCPT TO:<{rcpt}>\r\n"),
+        "DATA\r\n".to_owned(),
+    ]);
+    for step in steps {
+        w.write_all(step.as_bytes()).await.unwrap();
+        let code = smtp_code(&mut r).await;
+        assert!((200..400).contains(&code), "{step:?} answered {code}");
+    }
+    w.write_all(format!("{raw}\r\n.\r\n").as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(smtp_code(&mut r).await, 250);
+    w.write_all(b"QUIT\r\n").await.unwrap();
+}
+
+/// The corpus mail: `(recipient, subject, raw message)`.
+fn corpus_mail() -> Vec<(&'static str, &'static str, String)> {
+    let plain = |to: &str, subject: &str, body: &str| {
+        format!(
+            "From: sender@corpus.invalid\r\nTo: {to}\r\nSubject: {subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}"
+        )
+    };
+    let multipart = "From: sender@corpus.invalid\r\nTo: ann@corpus.invalid\r\nSubject: corpus-multipart\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"b1\"\r\n\r\n--b1\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\ncode =3D 123456 caf=C3=A9\r\n--b1\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\nPHA+Y29kZSAxMjM0NTY8L3A+\r\n--b1--";
+    vec![
+        (
+            "ann@corpus.invalid",
+            "corpus-ann",
+            plain("ann@corpus.invalid", "corpus-ann", "code 111111"),
+        ),
+        (
+            "joann@corpus.invalid",
+            "corpus-joann",
+            plain("joann@corpus.invalid", "corpus-joann", "code 222222"),
+        ),
+        (
+            "ann@corpus.invalid",
+            "corpus-multipart",
+            multipart.to_owned(),
+        ),
+    ]
+}
+
+#[tokio::test]
+#[ignore = "needs the pinned executables: MAIL_COMPARE_MAILPIT and MAIL_COMPARE_MAILHOG"]
+async fn capture_wire_corpus() {
+    for t in [TargetKind::Mailpit, TargetKind::Mailhog] {
+        let dir = corpus_dir(t);
+        assert!(
+            !dir.exists(),
+            "{dir:?} exists: remove it to recapture, a corpus is never overwritten"
+        );
+        let root = tempfile::tempdir().unwrap();
+        let mut owned = launch_pinned(t, &root.path().join("s")).await;
+        for (rcpt, _, raw) in corpus_mail() {
+            send_raw(owned.smtp, true, rcpt, &raw).await;
+        }
+        let (list, listing, one, many, none, read): (String, &str, String, String, String, &str) =
+            match t {
+                TargetKind::Mailpit => (
+                    "/api/v1/messages?start=0&limit=50".into(),
+                    "messages",
+                    "/api/v1/search?query=to%3Aann%40corpus%2Einvalid&start=0&limit=50".into(),
+                    String::new(),
+                    "/api/v1/search?query=to%3Anobody%40corpus%2Einvalid&start=0&limit=50".into(),
+                    "/api/v1/message/",
+                ),
+                _ => (
+                    "/api/v2/messages?start=0&limit=50".into(),
+                    "items",
+                    "/api/v2/search?kind=to&query=ann%40corpus%2Einvalid&start=0&limit=50".into(),
+                    String::new(),
+                    "/api/v2/search?kind=to&query=nobody%40corpus%2Einvalid&start=0&limit=50"
+                        .into(),
+                    "/api/v1/messages/",
+                ),
+            };
+        let _ = many;
+        // Accept is not presumed to be storage: wait for all three.
+        let until = Instant::now() + Duration::from_secs(10);
+        let listed = loop {
+            let (s, body) = owned.http.get(&list).await.unwrap();
+            let v = json(&body);
+            if s == 200 && v[listing].as_array().is_some_and(|a| a.len() == 3) {
+                break (body, v);
+            }
+            assert!(Instant::now() < until, "{t} never listed all three");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let id_of = |subject: &str| -> String {
+            listed.1[listing]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m.to_string().contains(subject))
+                .and_then(|m| m["ID"].as_str())
+                .unwrap_or_else(|| panic!("{t}: no id for {subject}"))
+                .to_owned()
+        };
+        let mut out: Vec<(&str, String, u16, Vec<u8>)> =
+            vec![("list.json", list.clone(), 200, listed.0.clone())];
+        for (name, path) in [
+            ("read.json", format!("{read}{}", id_of("corpus-ann"))),
+            (
+                "read-multipart.json",
+                format!("{read}{}", id_of("corpus-multipart")),
+            ),
+            ("search-filtered.json", one),
+            ("search-empty.json", none),
+            ("read-not-found.json", format!("{read}not-an-id")),
+        ] {
+            let (s, body) = owned.http.get(&path).await.unwrap();
+            out.push((name, path, s, body));
+        }
+        assert!(owned.shutdown().await.proved());
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = SourceLock::parse(SOURCES_V4).unwrap();
+        let mut files = Vec::new();
+        for (name, request, status, body) in out {
+            assert_eq!(name, CORPUS_FILES[files.len()]);
+            std::fs::write(dir.join(name), &body).unwrap();
+            files.push(
+                serde_json::json!({"name": name, "request": request, "status": status,
+                "size": body.len(), "sha256": targets::sha256_hex(&body)}),
+            );
+        }
+        let index = serde_json::json!({
+            "target": t.name(),
+            "executable_sha256": lock.pin(t).unwrap().artifact.executable_sha256,
+            "mail": corpus_mail().iter().map(|(r, s, _)| serde_json::json!({"to": r, "subject": s})).collect::<Vec<_>>(),
+            "files": files,
+        });
+        std::fs::write(
+            dir.join("index.json"),
+            serde_json::to_string_pretty(&index).unwrap() + "\n",
+        )
+        .unwrap();
+    }
+}
+
+const MAILSLURPER_CORPUS_FILES: [&str; 8] = [
+    "list.json",
+    "read.json",
+    "read-multipart.json",
+    "read-base64.json",
+    "read-lines.json",
+    "search-filtered.json",
+    "search-empty.json",
+    "read-not-found.json",
+];
+
+/// A multi-line plain body with a URL and a blank line: what MailSlurper does
+/// to line breaks decides how the oracle reads the fixture's text mails.
+fn slurper_lines_mail() -> (&'static str, &'static str, String) {
+    (
+        "ann@corpus.invalid",
+        "corpus-lines",
+        "From: sender@corpus.invalid\r\nTo: ann@corpus.invalid\r\nSubject: corpus-lines\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\nalpha\r\nConfirm your account: http://x.invalid/a?b=1&c=2\r\n\r\ngamma\r\n".to_owned(),
+    )
+}
+
+/// The mail MailSlurper's corpus adds to `corpus_mail()`: a plain body under a
+/// base64 transfer encoding, which MailSlurper decodes at ingest.
+fn slurper_base64_mail() -> (&'static str, &'static str, String) {
+    (
+        "ann@corpus.invalid",
+        "corpus-base64",
+        "From: sender@corpus.invalid\r\nTo: ann@corpus.invalid\r\nSubject: corpus-base64\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\nY29kZSA0NDQ0NDQNCnNlY29uZCBsaW5lIGh0dHBzOi8veC5pbnZhbGlkL2E/Yj0xJmM9Mg0K".to_owned(),
+    )
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD (the pinned executable built from source)"]
+async fn capture_wire_corpus_mailslurper() {
+    let t = TargetKind::Mailslurper;
+    let dir = corpus_dir(t);
+    assert!(
+        !dir.exists(),
+        "{dir:?} exists: remove it to recapture, a corpus is never overwritten"
+    );
+    let root = tempfile::tempdir().unwrap();
+    let mut owned = launch_pinned(lock_row(t), &root.path().join("s")).await;
+    let mut mail = corpus_mail();
+    mail.push(slurper_base64_mail());
+    mail.push(slurper_lines_mail());
+    // MailSlurper has no AUTH: the fixture's dialogue leaves the step out.
+    for (rcpt, _, raw) in &mail {
+        send_raw(owned.smtp, false, rcpt, raw).await;
+    }
+    let list = "/mail?pageNumber=1".to_owned();
+    // Accept is not storage for MailSlurper: wait for all of them.
+    let until = Instant::now() + Duration::from_secs(10);
+    let listed = loop {
+        let (s, body) = owned.http.get(&list).await.unwrap();
+        let v = json(&body);
+        if s == 200 && v["totalRecords"] == mail.len() {
+            break (body, v);
+        }
+        assert!(Instant::now() < until, "{t} never listed all of them");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let id_of = |subject: &str| -> String {
+        listed.1["mailItems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["subject"] == subject)
+            .and_then(|m| m["id"].as_str())
+            .unwrap_or_else(|| panic!("{t}: no id for {subject}"))
+            .to_owned()
+    };
+    let to = |addr: &str| format!("/mail?pageNumber=1&to={}", wire::query_value(addr));
+    let mut out: Vec<(&str, String, u16, Vec<u8>)> =
+        vec![("list.json", list.clone(), 200, listed.0.clone())];
+    for (name, path) in [
+        ("read.json", format!("/mail/{}", id_of("corpus-ann"))),
+        (
+            "read-multipart.json",
+            format!("/mail/{}", id_of("corpus-multipart")),
+        ),
+        (
+            "read-base64.json",
+            format!("/mail/{}", id_of("corpus-base64")),
+        ),
+        (
+            "read-lines.json",
+            format!("/mail/{}", id_of("corpus-lines")),
+        ),
+        ("search-filtered.json", to("ann@corpus.invalid")),
+        ("search-empty.json", to("nobody@corpus.invalid")),
+        ("read-not-found.json", "/mail/not-an-id".to_owned()),
+    ] {
+        let (s, body) = owned.http.get(&path).await.unwrap();
+        out.push((name, path, s, body));
+    }
+    assert!(owned.shutdown().await.proved());
+    std::fs::create_dir_all(&dir).unwrap();
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
+    let pin = lock.pin(lock_row(t)).unwrap();
+    let mut files = Vec::new();
+    for (name, request, status, body) in out {
+        assert_eq!(name, MAILSLURPER_CORPUS_FILES[files.len()]);
+        std::fs::write(dir.join(name), &body).unwrap();
+        files.push(
+            serde_json::json!({"name": name, "request": request, "status": status,
+            "size": body.len(), "sha256": targets::sha256_hex(&body)}),
+        );
+    }
+    let index = serde_json::json!({
+        "target": t.name(),
+        "executable_sha256": pin.artifact.executable_sha256,
+        "config_template_sha256": config_template_sha256(pin),
+        "mail": mail.iter().map(|(r, s, _)| serde_json::json!({"to": r, "subject": s})).collect::<Vec<_>>(),
+        "files": files,
+    });
+    std::fs::write(
+        dir.join("index.json"),
+        serde_json::to_string_pretty(&index).unwrap() + "\n",
+    )
+    .unwrap();
+}
+
+/// Check one target's corpus against its index and the lock, and decode every
+/// file through the adapter's own decoders. The first failure names itself.
+fn check_corpus(t: TargetKind, dir: &Path, lock: &SourceLock) -> Result<(), String> {
+    let index: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("index.json")).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("index: {e}"))?;
+    let want = &lock
+        .pin(lock_row(t))
+        .ok_or("no pin")?
+        .artifact
+        .executable_sha256;
+    if index["target"] != t.name() || index["executable_sha256"] != *want {
+        return Err(format!(
+            "{t}: the index's executable digest is not the lock's, recapture the corpus"
+        ));
+    }
+    // Every target's index binds its launch config template: MailSlurper's is
+    // the lock's `mailslurper-source-build` config file (accepted 0130), the
+    // other two have none and say `null`.
+    let template = lock.pin(lock_row(t)).and_then(config_template_sha256);
+    if index.get("config_template_sha256") != Some(&serde_json::json!(template)) {
+        return Err(format!(
+            "{t}: the index's config template digest is not the lock's, recapture the corpus"
+        ));
+    }
+    let wanted: &[&str] = if t == TargetKind::Mailslurper {
+        &MAILSLURPER_CORPUS_FILES
+    } else {
+        &CORPUS_FILES
+    };
+    let files = index["files"].as_array().ok_or("files")?;
+    let names: Vec<&str> = files.iter().filter_map(|f| f["name"].as_str()).collect();
+    if names != wanted {
+        return Err(format!("{t}: the index lists {names:?}"));
+    }
+    let mut body = std::collections::HashMap::new();
+    for f in files {
+        let name = f["name"].as_str().unwrap();
+        let bytes = std::fs::read(dir.join(name)).map_err(|e| format!("{name}: {e}"))?;
+        if bytes.len() as u64 != f["size"] || targets::sha256_hex(&bytes) != f["sha256"] {
+            return Err(format!("{t}: {name} is not the file the index binds"));
+        }
+        body.insert(name, (f["status"].as_u64().unwrap_or(0), bytes));
+    }
+    let v = |n: &str| -> Result<serde_json::Value, String> {
+        serde_json::from_slice(&body[n].1).map_err(|e| format!("{n}: {e}"))
+    };
+    if t == TargetKind::Mailslurper {
+        return check_slurper_corpus(&body, &v);
+    }
+    let decode = |n: &str| -> Result<(u64, Vec<String>), String> {
+        let (total, ids): (u64, Vec<String>) = match t {
+            TargetKind::Mailpit => {
+                let p = mailpit_mcp::summary_page(v(n)?, 0).map_err(|e| format!("{n}: {e:?}"))?;
+                (
+                    p["messages_count"].as_u64().unwrap(),
+                    p["messages"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|m| m["ID"].as_str().unwrap().to_owned())
+                        .collect(),
+                )
+            }
+            TargetKind::Mailhog => {
+                let (total, ids, _) =
+                    mailhog_mcp::page(v(n)?, 0).map_err(|e| format!("{n}: {e:?}"))?;
+                (total, ids.into_iter().map(|(i, _)| i).collect())
+            }
+            // MailSlurper's corpus returned above; no other target has one.
+            TargetKind::Mailslurper
+            | TargetKind::Swarmail
+            | TargetKind::MailslurperSourceBuild
+            | TargetKind::Smtp4dev
+            | TargetKind::Inbucket
+            | TargetKind::Greenmail
+            | TargetKind::AlkemioMailslurper => {
+                return Err(format!("{t} has no decoder for this corpus"));
+            }
+        };
+        Ok((total, ids))
+    };
+    let extra: &[u8] = if t == TargetKind::Mailhog {
+        MAILHOG_CORPUS_ID_EXTRA
+    } else {
+        mailpit_mcp::MAILPIT_ID_EXTRA
+    };
+    let (total, ids) = decode("list.json")?;
+    if (total, ids.len()) != (3, 3) || !ids.iter().all(|i| mcp::valid_id(i, extra)) {
+        return Err(format!("{t}: list.json is not three ids in the alphabet"));
+    }
+    let (found, hits) = decode("search-filtered.json")?;
+    // `ann@corpus.invalid` is inside `joann@corpus.invalid`: upstream's own
+    // recipient filter returns the lookalike too (all three mails), which is
+    // why the oracle matches the recipient exactly after any pre-filter.
+    let raw = String::from_utf8_lossy(&body["search-filtered.json"].1).into_owned();
+    if found != 3 || hits.len() != 3 || !raw.contains("joann@corpus.invalid") {
+        return Err(format!(
+            "{t}: the filtered search is not the substring match the corpus records"
+        ));
+    }
+    let (found, hits) = decode("search-empty.json")?;
+    if found != 0 || !hits.is_empty() {
+        return Err(format!("{t}: the empty search is not empty"));
+    }
+    for n in ["read.json", "read-multipart.json"] {
+        if body[n].0 != 200 || !mcp::valid_id(v(n)?["ID"].as_str().unwrap_or(""), extra) {
+            return Err(format!("{t}: {n} is not a read of one stored message"));
+        }
+    }
+    // What an unknown id looks like is what the adapters map to not_found:
+    // Mailpit answers 404, MailHog `200 null`.
+    let unknown = &body["read-not-found.json"];
+    let expected = if t == TargetKind::Mailpit { 404 } else { 200 };
+    if unknown.0 != expected
+        || (t == TargetKind::Mailhog && v("read-not-found.json")? != serde_json::Value::Null)
+    {
+        return Err(format!(
+            "{t}: read-not-found.json is not the upstream's not-found shape"
+        ));
+    }
+    Ok(())
+}
+
+/// MailSlurper's corpus through the adapter's own decoder: every page and
+/// read in the one id alphabet; the two body branches `GetMail` has (a body it
+/// base64-decodes and one it leaves alone); the filter's lookalike; the empty
+/// search; and the unknown id's shape, an empty item at HTTP 200.
+fn check_slurper_corpus(
+    body: &std::collections::HashMap<&str, (u64, Vec<u8>)>,
+    v: &dyn Fn(&str) -> Result<serde_json::Value, String>,
+) -> Result<(), String> {
+    let t = TargetKind::Mailslurper;
+    let page = |n: &str| -> Result<(u64, Vec<String>), String> {
+        let (total, ids, _) = mailslurper_mcp::page(v(n)?).map_err(|e| format!("{n}: {e:?}"))?;
+        Ok((total, ids.into_iter().map(|(i, _)| i).collect()))
+    };
+    let (total, ids) = page("list.json")?;
+    if (total, ids.len()) != (5, 5)
+        || !ids
+            .iter()
+            .all(|i| mcp::valid_id(i, mailslurper_mcp::MAILSLURPER_ID_EXTRA))
+    {
+        return Err(format!("{t}: list.json is not five ids in the alphabet"));
+    }
+    let (found, hits) = page("search-filtered.json")?;
+    let raw = String::from_utf8_lossy(&body["search-filtered.json"].1).into_owned();
+    if found != 5 || hits.len() != 5 || !raw.contains("joann@corpus.invalid") {
+        return Err(format!(
+            "{t}: the filtered search is not the substring match the corpus records"
+        ));
+    }
+    let (found, hits) = page("search-empty.json")?;
+    if found != 0 || !hits.is_empty() {
+        return Err(format!("{t}: the empty search is not empty"));
+    }
+    let listed = v("list.json")?;
+    let listed_body = |subject: &str| -> String {
+        listed["mailItems"]
+            .as_array()
+            .and_then(|a| a.iter().find(|m| m["subject"] == subject))
+            .and_then(|m| m["body"].as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    for n in [
+        "read.json",
+        "read-multipart.json",
+        "read-base64.json",
+        "read-lines.json",
+    ] {
+        let id = v(n)?["id"].as_str().unwrap_or("").to_owned();
+        if body[n].0 != 200 || !mcp::valid_id(&id, mailslurper_mcp::MAILSLURPER_ID_EXTRA) {
+            return Err(format!("{t}: {n} is not a read of one stored message"));
+        }
+        if !ids.contains(&id) {
+            return Err(format!("{t}: {n} reads an id the listing does not carry"));
+        }
+    }
+    // The branch GetMail leaves alone: a plain body is the listing's body.
+    if v("read.json")?["body"].as_str() != Some(listed_body("corpus-ann").as_str()) {
+        return Err(format!("{t}: a plain body changed between list and read"));
+    }
+    // The branch GetMail decodes: the multipart's HTML part is base64 in the
+    // listing and markup on read.
+    let encoded = listed_body("corpus-multipart");
+    let decoded = v("read-multipart.json")?["body"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    use base64::Engine;
+    if base64::engine::general_purpose::STANDARD
+        .decode(&encoded)
+        .ok()
+        != Some(decoded.clone().into_bytes())
+        || !decoded.starts_with('<')
+    {
+        return Err(format!(
+            "{t}: GetMail's base64 branch is not what the corpus records"
+        ));
+    }
+    // An unknown id is an empty item at 200, which the adapter reports as not
+    // found (a real 404 never comes).
+    let unknown = v("read-not-found.json")?;
+    if body["read-not-found.json"].0 != 200 || unknown["id"] != "" || unknown["subject"] != "" {
+        return Err(format!(
+            "{t}: read-not-found.json is not the upstream's not-found shape"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn the_wire_corpus_decodes_through_the_adapter_decoders_and_binds_its_executable() {
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
+    for t in [
+        TargetKind::Mailpit,
+        TargetKind::Mailhog,
+        TargetKind::Mailslurper,
+    ] {
+        check_corpus(t, &corpus_dir(t), &lock).unwrap_or_else(|e| panic!("{e}"));
+    }
+    // MailHog's real ids are why its alphabet is wider than Mailpit's.
+    let list = json(&std::fs::read(corpus_dir(TargetKind::Mailhog).join("list.json")).unwrap());
+    for m in list["items"].as_array().unwrap() {
+        let id = m["ID"].as_str().unwrap();
+        assert!(mcp::valid_id(id, MAILHOG_CORPUS_ID_EXTRA), "{id}");
+        assert!(!mcp::valid_id(id, b""), "{id} needs the widened alphabet");
+        assert!(id.ends_with("@mailhog.example"), "{id}");
+    }
+    let list = json(&std::fs::read(corpus_dir(TargetKind::Mailpit).join("list.json")).unwrap());
+    for m in list["messages"].as_array().unwrap() {
+        let id = m["ID"].as_str().unwrap();
+        assert!(id.bytes().all(|b| b.is_ascii_alphanumeric()), "{id}");
+    }
+}
+
+#[tokio::test]
+async fn the_mailslurper_adapter_serves_the_corpus_and_maps_the_empty_item_to_not_found() {
+    let dir = corpus_dir(TargetKind::Mailslurper);
+    let file = |n: &str| String::from_utf8(std::fs::read(dir.join(n)).unwrap()).unwrap();
+    let index = json(&std::fs::read(dir.join("index.json")).unwrap());
+    let request = |name: &str| -> String {
+        index["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == name)
+            .unwrap()["request"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let routes: Vec<(String, String)> = [
+        "list.json",
+        "read.json",
+        "read-multipart.json",
+        "read-not-found.json",
+        "search-filtered.json",
+        "search-empty.json",
+    ]
+    .iter()
+    .map(|n| (request(n), file(n)))
+    .collect();
+    let addr = responder(Box::new(move |t: &str| {
+        routes
+            .iter()
+            .find(|(path, _)| path == t)
+            .map(|(_, body)| (200, body.clone()))
+    }))
+    .await;
+    let mut c = initialized_for::<mailslurper_mcp::Mailslurper>(addr).await;
+    let (e, v) = c.tool(1, "mailslurper_list", serde_json::json!({})).await;
+    assert!(!e && v["totalRecords"] == 5, "{v}");
+    let (e, v) = c
+        .tool(
+            2,
+            "mailslurper_search",
+            serde_json::json!({"to": "ann@corpus.invalid"}),
+        )
+        .await;
+    assert!(!e && v["totalRecords"] == 5, "{v}");
+    let (e, v) = c
+        .tool(
+            3,
+            "mailslurper_search",
+            serde_json::json!({"to": "nobody@corpus.invalid"}),
+        )
+        .await;
+    assert!(!e && v["totalRecords"] == 0, "{v}");
+    let id = |n: &str| json(file(n).as_bytes())["id"].as_str().unwrap().to_owned();
+    for (n, name) in [(4, "read.json"), (5, "read-multipart.json")] {
+        let (e, v) = c
+            .tool(n, "mailslurper_read", serde_json::json!({"id": id(name)}))
+            .await;
+        assert!(!e && v["id"] == id(name).as_str(), "{name}: {v}");
+    }
+    // The unknown id's request is `/mail/not-an-id`: an empty item at 200.
+    let (e, v) = c
+        .tool(
+            6,
+            "mailslurper_read",
+            serde_json::json!({"id": "not-an-id"}),
+        )
+        .await;
+    assert!(
+        e && v["error"].as_str().unwrap().starts_with("not_found"),
+        "{v}"
+    );
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+}
+
+#[test]
+fn a_mailslurper_corpus_that_drifts_from_its_pin_or_its_shapes_refuses() {
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
+    let t = TargetKind::Mailslurper;
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("c");
+    copy_dir(&corpus_dir(t), &dir);
+    check_corpus(t, &dir, &lock).expect("the copy checks");
+    // A moved config template: the index's digest is not the lock's.
+    let mut other = lock.clone();
+    other.entries.iter_mut().for_each(|e| {
+        if let Some(c) = e
+            .pin
+            .as_mut()
+            .filter(|_| e.target == lock_row(t))
+            .and_then(|p| p.config_file.as_mut())
+        {
+            c.lines.push(" ".into());
+        }
+    });
+    let why = check_corpus(t, &dir, &other).expect_err("must refuse");
+    assert!(
+        why.contains("config template digest is not the lock's"),
+        "{why}"
+    );
+    // A moved executable.
+    let mut other = lock.clone();
+    other.entries.iter_mut().for_each(|e| {
+        if let Some(p) = e.pin.as_mut().filter(|_| e.target == lock_row(t)) {
+            p.artifact.executable_sha256 = "0".repeat(64);
+        }
+    });
+    let why = check_corpus(t, &dir, &other).expect_err("must refuse");
+    assert!(why.contains("executable digest is not the lock's"), "{why}");
+    // A changed file, and a corpus that no longer records GetMail's branches.
+    let rebind = |name: &str, edit: &dyn Fn(&mut serde_json::Value)| {
+        let path = dir.join(name);
+        let mut v = json(&std::fs::read(&path).unwrap());
+        edit(&mut v);
+        let bytes = serde_json::to_vec(&v).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let mut index = json(&std::fs::read(dir.join("index.json")).unwrap());
+        for f in index["files"].as_array_mut().unwrap() {
+            if f["name"] == name {
+                f["size"] = bytes.len().into();
+                f["sha256"] = targets::sha256_hex(&bytes).into();
+            }
+        }
+        std::fs::write(dir.join("index.json"), serde_json::to_vec(&index).unwrap()).unwrap();
+    };
+    rebind("read-multipart.json", &|v| {
+        v["body"] = "<p>other</p>".into()
+    });
+    let why = check_corpus(t, &dir, &lock).expect_err("must refuse");
+    assert!(why.contains("GetMail's base64 branch"), "{why}");
+    let file = dir.join("read.json");
+    let mut bytes = std::fs::read(&file).unwrap();
+    bytes[3] ^= 1;
+    std::fs::write(&file, bytes).unwrap();
+    let why = check_corpus(t, &dir, &lock).expect_err("must refuse");
+    assert!(
+        why.contains("read.json is not the file the index binds"),
+        "{why}"
+    );
+}
+
+#[test]
+fn a_corpus_whose_index_disagrees_with_the_lock_or_its_files_refuses() {
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
+    let t = TargetKind::Mailhog;
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("c");
+    copy_dir(&corpus_dir(t), &dir);
+    check_corpus(t, &dir, &lock).expect("the copy checks");
+    // A moved pin: the index's executable digest is not the lock's.
+    let mut other = lock.clone();
+    other.entries.iter_mut().for_each(|e| {
+        if let Some(p) = e.pin.as_mut().filter(|_| e.target == lock_row(t)) {
+            p.artifact.executable_sha256 = "0".repeat(64);
+        }
+    });
+    let why = check_corpus(t, &dir, &other).expect_err("must refuse");
+    assert!(why.contains("executable digest is not the lock's"), "{why}");
+    // A changed file is not the file the index binds.
+    let file = dir.join("list.json");
+    let mut bytes = std::fs::read(&file).unwrap();
+    bytes[3] ^= 1;
+    std::fs::write(&file, bytes).unwrap();
+    let why = check_corpus(t, &dir, &lock).expect_err("must refuse");
+    assert!(
+        why.contains("list.json is not the file the index binds"),
+        "{why}"
+    );
+}
+
+// ---- the AUTH PLAIN probe (decision 0129 §2, spec R8) ----------------------
+
+/// The unscored setup probe: does the target take the fixture's AUTH PLAIN?
+/// MailSlurper's reviewed source says it has no AUTH: EHLO advertises no
+/// extension and an `AUTH PLAIN …` line draws `221 Bye` and a close. The probe
+/// reads that from the wire. `Ok` is the transcript of exactly that outcome;
+/// any other answer (an advertised AUTH, a `334`, a `235`, a reply that is not
+/// `221`, a connection that stays open) is an error naming it, so the product
+/// record cannot freeze on a guess.
+async fn auth_plain_probe(smtp: std::net::SocketAddr) -> Result<String, String> {
+    use base64::Engine;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let step = Duration::from_secs(10);
+    let (r, mut w) = tokio::time::timeout(step, tokio::net::TcpStream::connect(smtp))
+        .await
+        .map_err(|_| "connect timed out")?
+        .map_err(|e| format!("connect: {e}"))?
+        .into_split();
+    let mut r = tokio::io::BufReader::new(r);
+    let mut transcript = String::new();
+    let line = async |r: &mut tokio::io::BufReader<_>| -> Result<Option<String>, String> {
+        let mut s = String::new();
+        let n = tokio::time::timeout(step, r.read_line(&mut s))
+            .await
+            .map_err(|_| "a reply timed out".to_owned())?
+            .map_err(|e| format!("read: {e}"))?;
+        Ok((n > 0).then(|| s.trim_end().to_owned()))
+    };
+    let banner = line(&mut r).await?.ok_or("closed before the banner")?;
+    transcript.push_str(&format!("S: {banner}\n"));
+    w.write_all(b"EHLO identity.invalid\r\n")
+        .await
+        .map_err(|e| e.to_string())?;
+    transcript.push_str("C: EHLO identity.invalid\n");
+    loop {
+        let l = line(&mut r).await?.ok_or("closed during EHLO")?;
+        transcript.push_str(&format!("S: {l}\n"));
+        if l.to_ascii_uppercase().contains("AUTH") {
+            return Err(format!("EHLO advertises AUTH: {l}"));
+        }
+        if !l.starts_with("250") {
+            return Err(format!("EHLO was not answered 250: {l}"));
+        }
+        if l.as_bytes().get(3) != Some(&b'-') {
+            break;
+        }
+    }
+    let token = base64::engine::general_purpose::STANDARD.encode("\0probe\0pw");
+    w.write_all(format!("AUTH PLAIN {token}\r\n").as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    transcript.push_str("C: AUTH PLAIN <base64 of \\0probe\\0pw>\n");
+    let mut replies = Vec::new();
+    while let Some(l) = line(&mut r).await? {
+        transcript.push_str(&format!("S: {l}\n"));
+        replies.push(l);
+        if replies.len() > 8 {
+            return Err("more replies than a closing line".into());
+        }
+    }
+    transcript.push_str("(connection closed by the server)\n");
+    if replies
+        .iter()
+        .any(|l| l.starts_with("235") || l.starts_with("334"))
+    {
+        return Err(format!("AUTH PLAIN was taken: {replies:?}"));
+    }
+    // The reviewed source says one goodbye per worker error: the unknown
+    // command's, and (the command goroutine's `break` only leaves its
+    // `select`, so it reads again) the read error on the connection the
+    // first goodbye closed. Either is `221 Bye`, and nothing else is.
+    if !(1..=2).contains(&replies.len()) || replies.iter().any(|l| l != "221 Bye") {
+        return Err(format!("AUTH PLAIN did not draw only 221 Bye: {replies:?}"));
+    }
+    Ok(transcript)
+}
+
+/// A scripted SMTP server: each connection gets `banner`, then one reply
+/// block per client line from `replies`, closing after the last (or at once
+/// when `close` is set after the last reply).
+async fn scripted_smtp(
+    banner: &'static str,
+    replies: Vec<&'static str>,
+    close: bool,
+) -> std::net::SocketAddr {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((s, _)) = l.accept().await {
+            let replies = replies.clone();
+            tokio::spawn(async move {
+                let (r, mut w) = s.into_split();
+                let mut r = tokio::io::BufReader::new(r);
+                let _ = w.write_all(format!("{banner}\r\n").as_bytes()).await;
+                for reply in replies {
+                    let mut l = String::new();
+                    if r.read_line(&mut l).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let _ = w.write_all(format!("{reply}\r\n").as_bytes()).await;
+                }
+                if close {
+                    return;
+                }
+                std::future::pending::<()>().await;
+            });
+        }
+    });
+    addr
+}
+
+#[tokio::test]
+async fn the_auth_probe_accepts_only_a_no_auth_221_close_and_names_every_other_answer() {
+    let ehlo = "250 Hello. How very nice to meet you!";
+    let no_auth = scripted_smtp("220 Welcome", vec![ehlo, "221 Bye"], true).await;
+    let t = auth_plain_probe(no_auth)
+        .await
+        .expect("the expected outcome");
+    assert!(
+        t.contains("S: 221 Bye") && t.contains("connection closed"),
+        "{t}"
+    );
+    assert!(!t.contains("S: 235") && !t.contains("S: 334"), "{t}");
+    // The source's race: a second goodbye for the read error on the closed
+    // connection. Two lines of `221 Bye` are the same answer.
+    let two = scripted_smtp("220 Welcome", vec![ehlo, "221 Bye\r\n221 Bye"], true).await;
+    let t = auth_plain_probe(two).await.expect("two goodbyes");
+    assert_eq!(t.matches("S: 221 Bye").count(), 2, "{t}");
+    for (replies, want) in [
+        (
+            vec![ehlo, "221 Bye\r\n221 Bye\r\n221 Bye"],
+            "did not draw only 221 Bye",
+        ),
+        (
+            vec![ehlo, "221 Bye\r\n221 later"],
+            "did not draw only 221 Bye",
+        ),
+        (
+            vec!["250-hi\r\n250 AUTH PLAIN", "235 ok"],
+            "EHLO advertises AUTH",
+        ),
+        (
+            vec![ehlo, "235 Authentication successful"],
+            "AUTH PLAIN was taken",
+        ),
+        (vec![ehlo, "334 "], "AUTH PLAIN was taken"),
+        (vec![ehlo, "500 unknown"], "did not draw only 221 Bye"),
+        (vec!["421 down"], "EHLO was not answered 250"),
+    ] {
+        let addr = scripted_smtp("220 Welcome", replies, true).await;
+        let why = auth_plain_probe(addr).await.expect_err("must refuse");
+        assert!(why.contains(want), "{want}: {why}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD (the pinned executable built from source)"]
+async fn mailslurper_auth_plain_probe() {
+    let root = tempfile::tempdir().unwrap();
+    let mut owned = launch_pinned(TargetKind::MailslurperSourceBuild, &root.path().join("s")).await;
+    let outcome = auth_plain_probe(owned.smtp).await;
+    assert!(owned.shutdown().await.proved());
+    let transcript = outcome.unwrap_or_else(|e| panic!("the probe disagrees with the source: {e}"));
+    // The subject is the digest the launch just checked: the source build,
+    // never the published executable, which does not start.
+    let subject = SourceLock::parse(SOURCES_V4)
+        .unwrap()
+        .pin(TargetKind::MailslurperSourceBuild)
+        .unwrap()
+        .artifact
+        .executable_sha256
+        .clone();
+    assert_eq!(
+        subject,
+        "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff"
+    );
+    let transcript = format!(
+        "# subject: the executable built from source, sha256 {subject} (checked by the launcher)\n\
+         # the published linux executable (zip 48f2f9ba…55f6, member 0cd9416b…2627) does not start and was not probed\n\
+         {transcript}"
+    );
+    if let Some(dir) = std::env::var_os("MAIL_COMPARE_TRANSCRIPTS") {
+        std::fs::write(
+            Path::new(&dir).join("mailslurper-auth-probe.txt"),
+            transcript,
+        )
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD (the pinned executable built from source)"]
+async fn real_mailslurper_through_the_adapter_lists_searches_reads_and_waits() {
+    let root = tempfile::tempdir().unwrap();
+    let mut owned = launch_pinned(TargetKind::MailslurperSourceBuild, &root.path().join("s")).await;
+    // MailSlurper has no AUTH: the fixture leaves the step out.
+    for (i, subject) in ["slurptoken-one", "slurptoken-two", "other-three"]
+        .iter()
+        .enumerate()
+    {
+        send_as(owned.smtp, None, subject, &format!("body {i}")).await;
+    }
+    let mut c = initialized_for::<mailslurper_mcp::Mailslurper>(owned.http_addr).await;
+    let mut id = 100;
+    let mut call = async |c: &mut Mcp, name: &str, args: serde_json::Value| {
+        id += 1;
+        let (is_error, v) = c.tool(id, name, args.clone()).await;
+        assert!(!is_error, "{name} {args}: {v}");
+        v
+    };
+    // MailSlurper sends its 250 before it stores the mail: wait for all three.
+    let until = Instant::now() + Duration::from_secs(10);
+    while call(&mut c, "mailslurper_list", serde_json::json!({})).await["totalRecords"] != 3 {
+        assert!(Instant::now() < until, "MailSlurper never listed all three");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let listed = call(&mut c, "mailslurper_list", serde_json::json!({})).await;
+    let first = listed["mailItems"][0]["id"].as_str().unwrap().to_owned();
+    let hits = call(
+        &mut c,
+        "mailslurper_search",
+        serde_json::json!({"message": "slurptoken"}),
+    )
+    .await;
+    assert_eq!(hits["totalRecords"], 2, "{hits}");
+    let read = call(&mut c, "mailslurper_read", serde_json::json!({"id": first})).await;
+    assert_eq!(read["id"], serde_json::json!(first));
+    let found = call(
+        &mut c,
+        "mailslurper_wait",
+        serde_json::json!({"message": "slurptoken-one", "timeout_ms": 5000}),
+    )
+    .await;
+    assert_eq!(found["status"], "found", "{found}");
+    let none = call(
+        &mut c,
+        "mailslurper_wait",
+        serde_json::json!({"message": "never-sent", "timeout_ms": 300}),
+    )
+    .await;
+    assert_eq!(none["status"], "timeout", "{none}");
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+    assert!(owned.shutdown().await.proved());
+}
+
+/// The frozen product record's `tools_sha256` for each adapter is the digest
+/// of the tool list the adapter serves, so a tool added or removed (or a
+/// description changed) cannot leave the record naming other tools.
+#[test]
+fn the_product_record_pins_the_tool_lists_the_adapters_serve() {
+    let product = json(include_bytes!("../docs/evals/agent-comparison.json"));
+    let b = mailpit_mcp::Bounds::default();
+    let built = [
+        ("mailpit", mcp::tools_sha256::<mailpit_mcp::Mailpit>(&b)),
+        ("mailhog", mcp::tools_sha256::<mailhog_mcp::Mailhog>(&b)),
+        (
+            "mailslurper",
+            mcp::tools_sha256::<mailslurper_mcp::Mailslurper>(&b),
+        ),
+    ];
+    let tuples = product["targets"].as_array().unwrap();
+    for (name, digest) in built {
+        let tuple = tuples
+            .iter()
+            .find(|t| t["target"] == name)
+            .unwrap_or_else(|| panic!("no tuple for {name}"));
+        assert_eq!(tuple["tools_sha256"], digest, "{name}");
     }
 }

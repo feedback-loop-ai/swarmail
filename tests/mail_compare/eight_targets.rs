@@ -5165,7 +5165,7 @@ async fn real_mailslurper_official_does_not_start() {
 
 /// A real directory for a test's own files, under `target/` and never the
 /// RAM-backed temporary directory (the archives here are large).
-fn fresh_dir(label: &str) -> tempfile::TempDir {
+pub(super) fn fresh_dir(label: &str) -> tempfile::TempDir {
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/compare-dl");
     std::fs::create_dir_all(&base).unwrap();
     tempfile::Builder::new()
@@ -5176,7 +5176,7 @@ fn fresh_dir(label: &str) -> tempfile::TempDir {
 
 /// Every file (one directory level) of the colon-separated directories in
 /// `MAIL_COMPARE_ARCHIVE_DIRS` whose sha256 is `want`.
-fn archive_by_digest(want: &str) -> PathBuf {
+pub(super) fn archive_by_digest(want: &str) -> PathBuf {
     let dirs = std::env::var("MAIL_COMPARE_ARCHIVE_DIRS")
         .expect("MAIL_COMPARE_ARCHIVE_DIRS must list the directories holding the pinned archives");
     for d in dirs.split(':') {
@@ -5193,7 +5193,7 @@ fn archive_by_digest(want: &str) -> PathBuf {
     panic!("no archive with sha256 {want} in {dirs}");
 }
 
-fn extract_member(archive: &Path, member: &str, into: &Path) -> Vec<u8> {
+pub(super) fn extract_member(archive: &Path, member: &str, into: &Path) -> Vec<u8> {
     let name = archive.to_string_lossy();
     let status = if name.ends_with(".tar.gz") {
         std::process::Command::new("tar")

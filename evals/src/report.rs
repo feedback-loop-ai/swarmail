@@ -136,30 +136,37 @@ pub fn cite_comparison(rows: &[crate::identity::ComparisonRow]) -> Result<Value,
     let Some(first) = rows.first() else {
         return Err("no comparison rows to cite".into());
     };
-    let mut cells: BTreeMap<(&str, &str), Vec<&crate::identity::ComparisonRow>> = BTreeMap::new();
+    let mut cells: BTreeMap<(&str, &str, &str), Vec<&crate::identity::ComparisonRow>> =
+        BTreeMap::new();
     let mut seen = std::collections::BTreeSet::new();
     for row in rows {
         if row.protocol_sha256 != first.protocol_sha256 {
             return Err("rows come from different protocols".into());
         }
-        let coordinate = (&row.target, &row.coordinate.task, row.coordinate.attempt);
+        let coordinate = (
+            &row.target,
+            &row.coordinate.agent,
+            &row.coordinate.task,
+            row.coordinate.attempt,
+        );
         if !seen.insert(coordinate) {
             return Err("a coordinate appears twice".into());
         }
         cells
-            .entry((&row.target, &row.coordinate.task))
+            .entry((&row.target, &row.coordinate.agent, &row.coordinate.task))
             .or_default()
             .push(row);
     }
     let cells: Vec<Value> = cells
         .into_iter()
-        .map(|((target, task), rows)| {
+        .map(|((target, agent, task), rows)| {
             let count = |o: Outcome| rows.iter().filter(|r| r.outcome == o).count() as u64;
             let passes = count(Outcome::Pass);
             let mut attempts: Vec<u32> = rows.iter().map(|r| r.coordinate.attempt).collect();
             attempts.sort_unstable();
             json!({
                 "target": target,
+                "agent": agent,
                 "task": task,
                 "denominator": rows.len(),
                 "passes": passes,

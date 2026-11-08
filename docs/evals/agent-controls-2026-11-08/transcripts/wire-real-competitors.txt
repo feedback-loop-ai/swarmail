@@ -1,0 +1,37 @@
+# wire-real-competitors
+# command: MAIL_COMPARE_MAILPIT=<mailpit, verified> MAIL_COMPARE_MAILHOG=<mailhog, verified> timeout 600 taskset -c 0-31 /usr/bin/time -v <mail_compare test binary> --ignored --test-threads=1 real_competitors_decode real_competitor_caps a_real_three_target_smoke a_wrong_or_missing_competitor
+# uptime before:  09:32:11 up 14 days, 23:47,  0 users,  load average: 2.26, 3.72, 3.54
+
+running 4 tests
+test a_real_three_target_smoke_run_reconciles_every_message_and_wait_and_seals ... ok
+test a_wrong_or_missing_competitor_binary_refuses_before_spawn ... ok
+test real_competitor_caps_are_probed_against_the_declared_storage_facts ... ok
+test real_competitors_decode_complete_scans_searches_and_stored_bodies ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 229 filtered out; finished in 35.48s
+
+	Command being timed: "target/debug/deps/mail_compare-6f6cb0965f3e32d6 --ignored --test-threads=1 real_competitors_decode real_competitor_caps a_real_three_target_smoke a_wrong_or_missing_competitor"
+	User time (seconds): 5.58
+	System time (seconds): 4.56
+	Percent of CPU this job got: 28%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:35.48
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 292164
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 769969
+	Voluntary context switches: 113757
+	Involuntary context switches: 2166
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 8
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+# exit: 0
+# uptime after:  09:32:47 up 14 days, 23:48,  0 users,  load average: 2.29, 3.57, 3.50

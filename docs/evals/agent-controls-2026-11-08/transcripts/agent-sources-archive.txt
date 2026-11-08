@@ -1,0 +1,34 @@
+# agent-sources-archive
+# command: MAIL_COMPARE_ARCHIVE_DIRS=<a directory holding the digest-verified source archive> timeout 600 taskset -c 0-31 /usr/bin/time -v <mail_compare test binary> --ignored --test-threads=1 the_adapter_sources_main_does_not_bind_are_members
+# uptime before:  09:32:47 up 14 days, 23:48,  0 users,  load average: 2.29, 3.57, 3.50
+
+running 1 test
+test the_adapter_sources_main_does_not_bind_are_members_of_the_pinned_archive ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.33s
+
+	Command being timed: "target/debug/deps/mail_compare-6f6cb0965f3e32d6 --ignored --test-threads=1 the_adapter_sources_main_does_not_bind_are_members"
+	User time (seconds): 0.26
+	System time (seconds): 0.09
+	Percent of CPU this job got: 109%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.33
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 8520
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 5634
+	Voluntary context switches: 2678
+	Involuntary context switches: 20
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 168
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+# exit: 0
+# uptime after:  09:32:47 up 14 days, 23:48,  0 users,  load average: 2.29, 3.57, 3.50

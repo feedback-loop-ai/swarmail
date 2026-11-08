@@ -144,3 +144,39 @@ separate run with a separate denominator. This pointer changes nothing in
 2026-11-07: nine targets; see 0130's review-return addendum.
 
 2026-11-08: the operator accepted [0130](0130-eight-target-mail-comparison.md) ("Accept and merge"); §4's target count is amended by addition as 0130 states.
+
+## Dated addendum — 2026-11-07 (the operator's widening, issue #339)
+
+This addendum only adds. The text above, and the 2026-11-02 addendum, are
+unchanged and remain the record of what was proposed and accepted. It
+records the operator's ruling of 2026-11-07 on #163, quoted in issue #339:
+"compare with all that we have shims for". Authority is that ruling, not
+this note.
+
+- **Four targets, four agents, no GLM.** The agent-suite comparison covers
+  Swarmail, Mailpit, MailHog and MailSlurper, on claude-opus, claude-sonnet,
+  codex-sol and codex-luna. There is no GLM: spark is down and the
+  DashScope GLM quota is out until 2026-11-22.
+- **The "MailHog agent eval" rejection does not apply to this story.** The
+  synthesis above rejects a "MailHog agent eval". For the agent-suite
+  comparison of #339 and #163 the operator's ruling lifts that rejection,
+  and `evals/src/identity.rs`'s refusal of MailHog agent rows follows it.
+  Nothing else in the synthesis is lifted: one fixture and one scorer (§2),
+  a thin adapter that emulates no Swarmail-only capability (§3), controls
+  before any paid session (§5) and an honest cost basis (§7) all stand.
+- **MailSlurper joins unchanged under 0092 §3.** It is not named in this
+  record; it enters through 0092 §3's adapter contract with no new rule.
+- **Contracts.** The contracts that implement the ruling (a runner bridge
+  for adapters, batches, a source-lock v4, a frozen product record and the
+  wrapper's new scopes) are in proposed
+  [0129](0129-agent-suite-comparison.md). The ruling is recorded here; 0129
+  records only what implements it. No paid session is authorized, and the
+  planned 240 sessions are confirmed by the operator separately.
+- **MailSlurper's official evidence (§1).** For MailSlurper in this story, §1's
+  official evidence is met by the official source plus the labelled
+  source-built artifact, under the operator's 2026-11-07 ruling recorded in
+  [0129](0129-agent-suite-comparison.md)'s second addendum: the published
+  linux executable does not start, and the comparison's MailSlurper is a cgo
+  build of the pinned release source, labelled "built from source".
+
+2026-11-08: accepted [0130](0130-eight-target-mail-comparison.md) pinned the source-built MailSlurper as its own lock row, `mailslurper-source-build`, in its source lock v4; the "source-lock v4" and the "labelled source-built artifact" in the 2026-11-07 addendum above are read as that row, and proposed [0129](0129-agent-suite-comparison.md)'s 2026-11-08 addendum records the integration. Nothing above changes.

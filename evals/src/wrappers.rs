@@ -194,6 +194,80 @@ pub const SWARMAIL_TOOLS: &[&str] = &[
     "swarmail_get_attachment",
 ];
 
+/// The server key an agent's MCP config names Swarmail by.
+pub const SWARMAIL_SERVER: &str = "swarmail";
+/// The optional inputs that name a competitor target's MCP surface
+/// (proposed decision 0129 §6): the server key and the adapter's own
+/// announced tool names, comma-separated. Neither set means Swarmail's.
+pub const ENV_MCP_SERVER: &str = "EVAL_MCP_SERVER";
+pub const ENV_MCP_TOOLS: &str = "EVAL_MCP_TOOLS";
+
+/// The MCP surface an agent is configured with: a server key and the tool
+/// names its allowlist admits. Both inputs or neither; every name is
+/// validated, because each ends up in a CLI argument or a config key.
+pub fn mcp_surface(
+    server: Option<&str>,
+    tools: Option<&str>,
+) -> Result<(String, Vec<String>), String> {
+    match (server, tools) {
+        (None, None) => Ok((
+            SWARMAIL_SERVER.into(),
+            SWARMAIL_TOOLS.iter().map(|t| (*t).to_string()).collect(),
+        )),
+        (Some(server), Some(tools)) => {
+            // `fixture` is the wrapper's own stdio server's key.
+            if !crate::target::valid_server_key(server) || server == "fixture" {
+                return Err("eval_mcp_server_invalid".into());
+            }
+            let names: Vec<String> = tools.split(',').map(str::to_string).collect();
+            let unique: std::collections::BTreeSet<_> = names.iter().collect();
+            if names.len() > 64
+                || unique.len() != names.len()
+                || !names.iter().all(|n| crate::target::valid_tool_name(n))
+            {
+                return Err("eval_mcp_tools_invalid".into());
+            }
+            Ok((server.into(), names))
+        }
+        _ => Err("eval_mcp_surface_incomplete".into()),
+    }
+}
+
+/// No competitor cell runs on the dsh wrapper: spark is down and the
+/// DashScope GLM quota is out (spec non-goals), so a competitor surface
+/// there is refused by name before any credential is read.
+pub fn refuse_dsh_competitor(harness: &str, server: &str) -> Result<(), String> {
+    if harness == "dsh" && server != SWARMAIL_SERVER {
+        return Err("dsh_competitor_unsupported".into());
+    }
+    Ok(())
+}
+
+/// Claude's `--allowedTools` value: the fixture tool, then the server's.
+fn claude_allowed(server: &str, tools: &[String]) -> String {
+    std::iter::once("mcp__fixture__eval_http".to_string())
+        .chain(tools.iter().map(|n| format!("mcp__{server}__{n}")))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Codex's `-c` overrides for the target's MCP server.
+fn codex_server_overrides(server: &str, url: &str, headers: Value) -> Vec<(String, Value)> {
+    vec![
+        (format!("mcp_servers.{server}.url"), json!(url)),
+        (format!("mcp_servers.{server}.http_headers"), headers),
+        (
+            format!("mcp_servers.{server}.startup_timeout_sec"),
+            json!(20),
+        ),
+        (format!("mcp_servers.{server}.tool_timeout_sec"), json!(60)),
+        (
+            format!("mcp_servers.{server}.default_tools_approval_mode"),
+            json!("approve"),
+        ),
+    ]
+}
+
 // Secret-bearing inputs deliberately have neither Debug nor Serialize.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -621,6 +695,11 @@ pub fn run(
         .ok_or("wrapper_helper_executable_invalid")?;
     let env = helper_env(&inputs, &map);
     let headers = json!({"X-Eval-Identity":inputs.identity.to_str().expect("identity")});
+    let (server, tools) = mcp_surface(
+        std::env::var(ENV_MCP_SERVER).ok().as_deref(),
+        std::env::var(ENV_MCP_TOOLS).ok().as_deref(),
+    )?;
+    refuse_dsh_competitor(harness, &server)?;
     let mut cmd = Command::new(&selected.executable);
     cmd.env_clear()
         .envs(&map)
@@ -648,14 +727,11 @@ pub fn run(
                 &home_fd,
                 "mcp.json",
                 &json_bytes(json!({"mcpServers":{
-                    "swarmail":{"type":"http","url":inputs.mcp.as_str(),"headers":headers},
+                    server.as_str():{"type":"http","url":inputs.mcp.as_str(),"headers":headers},
                     "fixture":{"type":"stdio","command":executable,"args":["fixture-http-isolated"],"env":env}
                 }})),
             )?;
-            let allowed = std::iter::once("mcp__fixture__eval_http".to_string())
-                .chain(SWARMAIL_TOOLS.iter().map(|n| format!("mcp__swarmail__{n}")))
-                .collect::<Vec<_>>()
-                .join(",");
+            let allowed = claude_allowed(&server, &tools);
             cmd.args([
                 "-p",
                 "--output-format",
@@ -717,23 +793,19 @@ pub fn run(
                     "--sandbox",
                     "read-only",
                 ]);
-            let overrides = vec![
+            let mut overrides = vec![
                 ("web_search".to_string(), json!("disabled")),
                 (
                     format!("projects.{}.trust_level", toml(&json!(cwd))),
                     json!("untrusted"),
                 ),
-                (
-                    "mcp_servers.swarmail.url".into(),
-                    json!(inputs.mcp.as_str()),
-                ),
-                ("mcp_servers.swarmail.http_headers".into(), headers),
-                ("mcp_servers.swarmail.startup_timeout_sec".into(), json!(20)),
-                ("mcp_servers.swarmail.tool_timeout_sec".into(), json!(60)),
-                (
-                    "mcp_servers.swarmail.default_tools_approval_mode".into(),
-                    json!("approve"),
-                ),
+            ];
+            overrides.extend(codex_server_overrides(
+                &server,
+                inputs.mcp.as_str(),
+                headers,
+            ));
+            overrides.extend([
                 ("mcp_servers.fixture.command".into(), json!(executable)),
                 (
                     "mcp_servers.fixture.args".into(),
@@ -745,7 +817,7 @@ pub fn run(
                     "mcp_servers.fixture.default_tools_approval_mode".into(),
                     json!("approve"),
                 ),
-            ];
+            ]);
             for (k, v) in overrides {
                 cmd.arg("-c").arg(format!("{k}={}", toml(&v)));
             }
@@ -841,6 +913,96 @@ pub fn isolated_helper() -> Result<(), String> {
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn the_default_surface_is_swarmails_and_byte_identical_to_main() {
+        let (server, tools) = mcp_surface(None, None).unwrap();
+        assert_eq!(server, "swarmail");
+        assert_eq!(tools.len(), SWARMAIL_TOOLS.len());
+        // The expression the allowlist was built from before the surface
+        // became selectable.
+        let before = std::iter::once("mcp__fixture__eval_http".to_string())
+            .chain(SWARMAIL_TOOLS.iter().map(|n| format!("mcp__swarmail__{n}")))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(claude_allowed(&server, &tools), before);
+        let overrides = codex_server_overrides("swarmail", "http://127.0.0.1:1/mcp", json!({}));
+        let keys: Vec<_> = overrides.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "mcp_servers.swarmail.url",
+                "mcp_servers.swarmail.http_headers",
+                "mcp_servers.swarmail.startup_timeout_sec",
+                "mcp_servers.swarmail.tool_timeout_sec",
+                "mcp_servers.swarmail.default_tools_approval_mode",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_competitor_surface_is_its_own_server_key_and_announced_tools() {
+        let (server, tools) =
+            mcp_surface(Some("mail-target"), Some("mailhog_list,mailhog_wait")).unwrap();
+        assert_eq!((server.as_str(), tools.len()), ("mail-target", 2));
+        assert_eq!(
+            claude_allowed(&server, &tools),
+            "mcp__fixture__eval_http,mcp__mail-target__mailhog_list,mcp__mail-target__mailhog_wait"
+        );
+        assert!(!claude_allowed(&server, &tools).contains("swarmail"));
+        let overrides = codex_server_overrides(
+            &server,
+            "http://127.0.0.1:9/mcp",
+            json!({"X-Eval-Identity": "a"}),
+        );
+        assert_eq!(overrides[0].0, "mcp_servers.mail-target.url");
+        assert_eq!(overrides[0].1, json!("http://127.0.0.1:9/mcp"));
+        assert!(
+            overrides
+                .iter()
+                .all(|(k, _)| k.starts_with("mcp_servers.mail-target."))
+        );
+    }
+
+    #[test]
+    fn the_dsh_wrapper_refuses_a_competitor_surface_by_name() {
+        assert_eq!(
+            refuse_dsh_competitor("dsh", "mail-target"),
+            Err("dsh_competitor_unsupported".into())
+        );
+        assert_eq!(refuse_dsh_competitor("dsh", "swarmail"), Ok(()));
+        assert_eq!(refuse_dsh_competitor("claude", "mail-target"), Ok(()));
+        assert_eq!(refuse_dsh_competitor("codex", "mail-target"), Ok(()));
+    }
+
+    #[test]
+    fn a_surface_is_both_inputs_or_neither_and_every_name_is_validated() {
+        let refused = |s: Option<&str>, t: Option<&str>| mcp_surface(s, t).unwrap_err();
+        assert_eq!(refused(Some("mail"), None), "eval_mcp_surface_incomplete");
+        assert_eq!(
+            refused(None, Some("mailhog_list")),
+            "eval_mcp_surface_incomplete"
+        );
+        for server in ["", "Mail", "a_b", "fixture", "a b", &"a".repeat(33)] {
+            assert_eq!(
+                refused(Some(server), Some("t")),
+                "eval_mcp_server_invalid",
+                "{server}"
+            );
+        }
+        let many = (0..65)
+            .map(|i| format!("t{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        for tools in ["", "a,,b", "a,a", "A", "a-b", "a;b", "a b", &many] {
+            assert_eq!(
+                refused(Some("m"), Some(tools)),
+                "eval_mcp_tools_invalid",
+                "{tools}"
+            );
+        }
+    }
+
     #[test]
     fn managed_and_ambient_sources_fail_closed_without_a_production_override() {
         let root = crate::runner::private_tempdir("wrapper-proof-").unwrap();

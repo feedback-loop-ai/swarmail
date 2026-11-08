@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "product_sha256": "0dad0eff93e7c9055feeceedefdc3ac73d7267eb835ab5132fa3e58186c7c22a",
+  "entries": [
+    {
+      "role": "swarmail",
+      "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-mail/swarmail-fe17a057dbf8903c",
+      "sha256": "fe17a057dbf8903c0f4342cf55d4fd85c45ce1e790320541e21252ac1d634f13"
+    },
+    {
+      "role": "mailpit",
+      "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/controls-bins/mailpit",
+      "sha256": "262cfa28fae4554be198d1fea5ef83c0f8299317876d658623711c629a8edec8"
+    },
+    {
+      "role": "mailhog",
+      "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/controls-bins/mailhog",
+      "sha256": "e2ed634ded49929f089b20045581955ed217672078fd86082dd7a6c67c5d09c7"
+    },
+    {
+      "role": "mailslurper",
+      "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/controls-bins/mailslurper",
+      "sha256": "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff"
+    },
+    {
+      "role": "adapter",
+      "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-mail/mail_compare-8961301c41490867-3b93aa65348b09ea",
+      "sha256": "3b93aa65348b09eaf23bbe34056de03667dc6774663508727bec971438641bf5"
+    },
+    {
+      "role": "harness",
+      "path": "/home/valentin/source/feedback-loop-ai/swarmail-landing/issue339-compare-agents/target/compare-mail/swarmail-evals-14c9711dc9f32f18",
+      "sha256": "14c9711dc9f32f18c204657949a519cff4372233018acf7545745f97dfbfea3f"
+    }
+  ]
+}

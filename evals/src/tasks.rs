@@ -232,6 +232,31 @@ harness or admin files.
 Task: {goal}
 ";
 
+/// The prompt a competitor target's agent receives (proposed decision 0129
+/// §2, spec R6). The goal line, the application, the identity header and the
+/// scorer are the same as Swarmail's; only the header differs, because it
+/// must name the target truthfully: one mailbox for the whole task, and no
+/// per-inbox argument. A competitor has no inbox, so the Swarmail inbox line
+/// and the `"inbox"` argument instruction are dropped, never emulated.
+/// `{display}` is the target's name (see `target::Target::display`).
+pub const COMPETITOR_PROMPT_TEMPLATE: &str = "\
+You are an agent completing one task in a web application that sends email.
+
+Your identity: {identity}
+Mail target: {display}. It holds one shared mailbox for this whole task:
+every message the application sends arrives in it, whoever it is addressed to.
+{display} MCP endpoint (Streamable HTTP, JSON-RPC 2.0 over POST): {mcp_url}
+Application base URL: {app_url}
+
+Every request you send to the application must carry the header
+`X-Eval-Identity: {identity}`. `GET {app_url}/` lists the application's
+operations. Read mail through the MCP tools of {display}.
+Do not read mail meant for other identities, and do not read any
+harness or admin files.
+
+Task: {goal}
+";
+
 const GOAL_PLACEHOLDERS: [&str; 4] = ["app_url", "mcp_url", "identity", "inbox"];
 const TEMPLATE_PLACEHOLDERS: [&str; 5] = ["app_url", "mcp_url", "identity", "inbox", "goal"];
 
@@ -837,6 +862,41 @@ pub fn render_prompt(task: &Task, vars: &PromptVars<'_>) -> Result<String, Strin
     };
     let goal = substitute(&task.goal, base)?;
     substitute(&task.goal_template, |name| {
+        if name == "goal" {
+            Some(goal.clone())
+        } else {
+            base(name)
+        }
+    })
+}
+
+/// The header of a competitor prompt: everything above the goal line, with
+/// the placeholders left in. Its digest is frozen in the product record.
+pub fn competitor_header(display: &str) -> String {
+    let template = COMPETITOR_PROMPT_TEMPLATE.replace("{display}", display);
+    let at = template
+        .find("Task: {goal}")
+        .expect("the template names the goal");
+    template[..at].to_string()
+}
+
+/// Render `task`'s prompt for a competitor target named `display`: the same
+/// `{goal}` as [`render_prompt`] substitutes, under the competitor header.
+pub fn render_competitor_prompt(
+    task: &Task,
+    vars: &PromptVars<'_>,
+    display: &str,
+) -> Result<String, String> {
+    let base = |name: &str| match name {
+        "app_url" => Some(vars.app_url.to_string()),
+        "mcp_url" => Some(vars.mcp_url.to_string()),
+        "identity" => Some(vars.identity.to_string()),
+        "inbox" => Some(vars.inbox.to_string()),
+        _ => None,
+    };
+    let goal = substitute(&task.goal, base)?;
+    let template = COMPETITOR_PROMPT_TEMPLATE.replace("{display}", display);
+    substitute(&template, |name| {
         if name == "goal" {
             Some(goal.clone())
         } else {

@@ -1329,6 +1329,7 @@ fn flow_facts(flow: Flow, f: &Facts) -> Value {
 struct Shared {
     private: Mutex<Private>,
     smtp: SocketAddr,
+    smtp_auth: mail::SmtpAuth,
     /// Swarmail's HTTP address, for the scenarios that read its reports.
     swarmail_http: Option<SocketAddr>,
     reports: reqwest::Client,
@@ -1388,8 +1389,15 @@ impl Shared {
                 stored.push(None);
                 continue;
             };
-            let (result, id) =
-                mail::send_stored(self.smtp, &out.smtp_identity, FROM, &out.to, &out.data).await;
+            let (result, id) = mail::send_stored(
+                self.smtp,
+                self.smtp_auth,
+                &out.smtp_identity,
+                FROM,
+                &out.to,
+                &out.data,
+            )
+            .await;
             let mut p = self.lock();
             if !p.frozen {
                 p.record_attempt(seq, &result);
@@ -2358,6 +2366,9 @@ async fn admin_flow_state(
 /// How a fixture is started.
 pub struct FixtureConfig {
     pub smtp: SocketAddr,
+    /// The dialogue's AUTH step; `Plain` unless the target's frozen
+    /// `smtp_auth` fact is `none`.
+    pub smtp_auth: mail::SmtpAuth,
     /// Swarmail's HTTP address: only the scenarios that read its deliverability
     /// reports (`Scenario::reads_reports`) need it.
     pub swarmail_http: Option<SocketAddr>,
@@ -2407,6 +2418,7 @@ pub async fn start(cfg: FixtureConfig) -> std::io::Result<Running> {
             cfg.inputs,
         )),
         smtp: cfg.smtp,
+        smtp_auth: cfg.smtp_auth,
         swarmail_http: cfg.swarmail_http,
         reports,
         admin_secret: cfg.admin_secret,
@@ -2473,6 +2485,25 @@ pub async fn run_cli_with_inputs(
     trial_id: &str,
     inputs: crate::provenance::FixtureInputs,
 ) -> Result<(), String> {
+    run_cli_with_auth(
+        smtp,
+        mail::SmtpAuth::Plain,
+        swarmail_http,
+        task_id,
+        trial_id,
+        inputs,
+    )
+    .await
+}
+/// As [`run_cli_with_inputs`], with the target's `smtp_auth` fact.
+pub async fn run_cli_with_auth(
+    smtp: SocketAddr,
+    smtp_auth: mail::SmtpAuth,
+    swarmail_http: Option<SocketAddr>,
+    task_id: &str,
+    trial_id: &str,
+    inputs: crate::provenance::FixtureInputs,
+) -> Result<(), String> {
     inputs.validate()?;
     let task = tasks::find(task_id).ok_or_else(|| format!("unknown task {task_id}"))?;
     let admin_secret = std::env::var(ADMIN_SECRET_ENV)
@@ -2485,6 +2516,7 @@ pub async fn run_cli_with_inputs(
         .map_err(|e| e.to_string())?;
     let running = start(FixtureConfig {
         smtp,
+        smtp_auth,
         swarmail_http,
         task,
         trial_id: trial_id.to_string(),
@@ -2884,6 +2916,7 @@ mod newsletter_verdict_tests {
                 Arc::new(Instant::now),
             )),
             smtp: "127.0.0.1:1".parse().unwrap(),
+            smtp_auth: mail::SmtpAuth::Plain,
             swarmail_http: addr,
             reports: reqwest::Client::builder().no_proxy().build().unwrap(),
             admin_secret: "s".into(),
@@ -2985,6 +3018,7 @@ mod publication_proofs {
         let state = Arc::new(Shared {
             private: Mutex::new(private),
             smtp: "127.0.0.1:1".parse().unwrap(),
+            smtp_auth: mail::SmtpAuth::Plain,
             swarmail_http: None,
             reports: reqwest::Client::new(),
             admin_secret: "test-bearer".into(),
@@ -3349,6 +3383,7 @@ mod hard_layout_proofs {
         Arc::new(Shared {
             private: Mutex::new(p),
             smtp: "127.0.0.1:1".parse().unwrap(),
+            smtp_auth: mail::SmtpAuth::Plain,
             swarmail_http: None,
             reports: reqwest::Client::new(),
             admin_secret: "secret".into(),

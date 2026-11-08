@@ -1,0 +1,41 @@
+# The house gates (2026-11-08, review return 4 of the third rerun of #339), on the final code head 09f8b30.
+# Measurements ran with `taskset -c 0-31` (32 CPUs, nproc/4 of this 128-CPU host) and at most 32 test threads,
+# under a timeout, as their own commands; the one-minute load average is from `uptime` around the command. This
+# replaces the transcript of 76de102: the review return changed benches/mail_compare/mailhog_mcp.rs and
+# mailslurper_mcp.rs (tool lists), evals/src/comparison.rs (the dry-run plan), docs/evals/agent-comparison.json
+# (order, wait_method, two tools_sha256) and tests/mail_compare.rs, so every gate and the controls were rerun on
+# 09f8b30. Nothing but docs/evals/ (the controls directory and this README) changes after 09f8b30; the receipts name it.
+
+cargo fmt --all -- --check                                                 ok
+cargo clippy --workspace --all-targets --locked -- -D warnings             ok
+cargo test --workspace --locked -j 32 -- --test-threads=32                 ok: 1675 passed, 0 failed, 33 ignored, 3m04s
+  uptime before:  load average 0.82, 1.45, 1.62 (14:00)
+cargo build --locked --bin swarmail                                        ok
+(cd evals && cargo fmt --all -- --check)                                   ok
+(cd evals && cargo clippy --all-targets --locked -- -D warnings)           ok
+(cd evals && SWARMAIL_BIN=<the frozen candidate> cargo test --locked -j 32)  ok, inside `compare-mail.sh controls`
+  (RUST_TEST_THREADS=32, timeout 3000; the receipts record eval_suite.status "pass" at head 09f8b30;
+   `controls` took 22m50s in all (13:33 to 13:56), inside `taskset -c 0-31`, load 1.7 before and 1.1 after)
+bash scripts/coverage-gate.sh                                              ok, 5m29s, exact 100/100/100
+  uptime before:  14:03:29 up 15 days,  4:18,  0 users,  load average: 1.14, 1.71, 1.74
+  uptime after:   14:08:58 up 15 days,  4:24,  0 users,  load average: 2.28, 2.66, 2.23
+bash scripts/coverage-gate.sh selftest                                     ok, 20s
+bash scripts/publish-guard-test.sh                                         ok, 7s
+bash scripts/seal-branch-test.sh                                           ok, 5s
+cargo deny check licenses                                                  ok, 1s
+brokkr compile (every recipe)                                              not run: this sandbox has no brokkr binary (`which brokkr` is empty); the verify seat runs it
+
+# The ignored real-binary tests, against executables copied into a new directory (target/controls-bins) and compared
+# with the lock's digests (mailpit 262cfa28…, mailhog e2ed634d…, mailslurper-source-build eb6cd97d…58ff), one worker,
+# each under timeout 600. Re-run on 09f8b30: transcripts/real-mailhog.txt (the renamed
+# real_mailhog_through_the_adapter_lists_searches_and_waits) and real-mailslurper.txt (its description changed).
+# Carried over from the earlier head cc1dbe8/022c9d2 (no src/ or benches/ byte they execute changed since, apart from the
+# two adapters' tool lists above, which only the MailHog and MailSlurper runs exercise): real-mailpit.txt,
+# mailslurper-auth-probe.txt, wire-real-competitors.txt, agent-sources-archive.txt, tarball-tree.txt.
+
+git diff origin/main -- src/ Cargo.lock evals/Cargo.lock deny.toml .github .brokkr   empty
+git diff origin/main -- docs/evals/sources.lock.json docs/evals/protocol.json docs/evals/history docs/evals/sources   empty
+  sha256sum docs/evals/sources.lock.json docs/evals/protocol.json
+  ed201599dd57441cbcf0c7e66e7c82a56dd217ef683b7bf4e72ae7ce9d3a04b1  (FROZEN_LOCK_V4_SHA)
+  229babaac849ae832ecb1a9f8ec742c970d0f36edc9d26d4ff9bb9c3c0d7224e  (FROZEN_PROTOCOL_V3_SHA)
+git ls-files .compare-bins                                                 empty

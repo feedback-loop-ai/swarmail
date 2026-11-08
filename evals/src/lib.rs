@@ -6,14 +6,18 @@
 //! crate and its coverage denominator by the operator's 2026-10-18 ruling.
 
 mod admission;
+pub mod bridge;
+pub mod comparison;
 pub mod fixture;
 pub mod isolation;
 pub mod mail;
+pub mod mailsource;
 pub mod mcp;
 pub mod oracle;
 pub mod report;
 pub mod runner;
 pub mod state;
+pub mod target;
 pub mod tasks;
 
 pub mod artifacts;

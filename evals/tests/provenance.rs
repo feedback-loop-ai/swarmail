@@ -1923,11 +1923,13 @@ fn comparison_row() -> swarmail_evals::identity::ComparisonRow {
         target: "mailpit-mcp".into(),
         executable_sha256: "b".repeat(64),
         settings: ComparisonSettings {
-            connection: "stdio-adapter".into(),
+            connection: "bridged-stdio-adapter".into(),
             tools_sha256: "c".repeat(64),
+            smtp_auth: "plain".into(),
         },
         coordinate: ComparisonCoordinate {
             task: "signup".into(),
+            agent: "claude-opus".into(),
             attempt: 1,
         },
         outcome: Outcome::Pass,
@@ -1961,7 +1963,19 @@ fn comparison_rows_validate_identity_settings_coordinate_and_hash() {
     assert!(tampered(&|r| r.coordinate.attempt = 2, false).contains("hash"));
     assert!(tampered(&|r| r.outcome = Outcome::Fail, false).contains("hash"));
     // Resealed edits meet the identity, settings and coordinate checks.
-    assert!(tampered(&|r| r.target = "mailhog".into(), true).contains("unsupported"));
+    // The operator's 2026-11-07 ruling lifted the MailHog refusal: a sealed
+    // MailHog row validates, a bare backend name is still unknown.
+    let hog = |r: &mut swarmail_evals::identity::ComparisonRow| {
+        r.target = "mailhog-mcp".into();
+        r.settings.smtp_auth = "none".into();
+    };
+    let mut r = comparison_row();
+    hog(&mut r);
+    assert!(results::read_comparison(comparison_line(&r.seal()).as_bytes()).is_ok());
+    assert!(tampered(&|r| r.target = "mailhog".into(), true).contains("unknown"));
+    assert!(tampered(&|r| r.settings.smtp_auth = "digest".into(), true).contains("smtp_auth"));
+    assert!(tampered(&|r| r.coordinate.agent = "Claude Opus".into(), true).contains("agent"));
+    assert!(tampered(&|r| r.coordinate.agent = String::new(), true).contains("agent"));
     assert!(tampered(&|r| r.target = "other".into(), true).contains("unknown"));
     assert!(
         tampered(&|r| r.settings.connection = "native-mcp".into(), true).contains("connection")
@@ -1970,6 +1984,14 @@ fn comparison_rows_validate_identity_settings_coordinate_and_hash() {
     assert!(tampered(&|r| r.protocol_sha256 = "a".repeat(63), true).contains("SHA-256"));
     assert!(tampered(&|r| r.settings.tools_sha256 = String::new(), true).contains("SHA-256"));
     assert!(tampered(&|r| r.coordinate.attempt = 0, true).contains("coordinate"));
+    let mut swarmail = comparison_row();
+    swarmail.target = "swarmail-mcp".into();
+    assert!(
+        results::read_comparison(comparison_line(&swarmail.clone().seal()).as_bytes())
+            .unwrap_err()
+            .contains("connection"),
+        "a bridged connection is not Swarmail's"
+    );
     assert!(tampered(&|r| r.coordinate.task = String::new(), true).contains("coordinate"));
     assert!(tampered(&|r| r.kind = "native".into(), true).contains("comparison row"));
     assert!(tampered(&|r| r.schema_version = 2, true).contains("unsupported"));

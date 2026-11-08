@@ -117,6 +117,7 @@ impl Rig {
         let sw = start_swarmail();
         let running = fixture::start(FixtureConfig {
             smtp: sw.smtp,
+            smtp_auth: swarmail_evals::mail::SmtpAuth::Plain,
             swarmail_http: match report {
                 ReportSource::Swarmail => Some(sw.http),
                 ReportSource::Absent => None,
@@ -1471,6 +1472,7 @@ async fn the_newsletter_routes_exist_only_in_the_newsletter_scenario() {
     for task in tasks::catalogue() {
         let running = fixture::start(FixtureConfig {
             smtp: "127.0.0.1:1".parse().unwrap(),
+            smtp_auth: swarmail_evals::mail::SmtpAuth::Plain,
             swarmail_http: None,
             task: task.clone(),
             trial_id: "index".into(),

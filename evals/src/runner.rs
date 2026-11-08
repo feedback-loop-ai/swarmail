@@ -29,7 +29,7 @@ use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -432,6 +432,25 @@ pub struct TrialRequest {
     pub assigned_agent: Option<crate::provenance::AgentIdentity>,
     pub harness_identity: Option<crate::provenance::HarnessIdentity>,
     pub target_source_failure: Option<crate::provenance::Reason>,
+    /// A competitor target (proposed decision 0129 §4): the runner owns its
+    /// adapter instead of a Swarmail server. `None` is Swarmail, unchanged.
+    pub competitor: Option<CompetitorPlan>,
+}
+
+/// What a competitor trial needs beyond Swarmail's: the adapter and backend
+/// executables, the lock that binds them, and the two facts of the frozen
+/// product record the runner checks or acts on.
+#[derive(Debug, Clone)]
+pub struct CompetitorPlan {
+    pub target: crate::target::Target,
+    /// The `mail_compare` executable that serves the adapter.
+    pub adapter: PathBuf,
+    /// The backend executable the adapter launches (the lock's digest binds it).
+    pub target_bin: PathBuf,
+    pub sources: PathBuf,
+    /// The product record's tool-list digest; the adapter must announce it.
+    pub tools_sha256: String,
+    pub smtp_auth: crate::mail::SmtpAuth,
 }
 
 pub fn new_trial_id() -> String {
@@ -1536,6 +1555,9 @@ pub struct Proc {
     announcement: Option<oneshot::Receiver<Announcement>>,
     pub cargo_records: Option<oneshot::Receiver<Result<PathBuf, String>>>,
     captured: Option<oneshot::Receiver<Result<Vec<u8>, String>>>,
+    /// An adapter's pipes: its stdin and stdout belong to the bridge, and its
+    /// stderr went to a private file, so no pipe is left undrained.
+    adapter_io: Option<(tokio::process::ChildStdin, tokio::process::ChildStdout)>,
 }
 
 pub struct ProcessWait {
@@ -1593,6 +1615,64 @@ fn spawn(
     cargo: bool,
 ) -> std::io::Result<Proc> {
     spawn_extended(cmd, groups, role, runtime, cargo, false)
+}
+
+/// Spawn a competitor's adapter: an owned process group like any server, but
+/// with stdin and stdout kept for the bridge and stderr written to `stderr`,
+/// a private file of the trial (spec R4): never an undrained pipe.
+fn spawn_adapter(
+    mut cmd: Command,
+    groups: &Groups,
+    runtime: Arc<tempfile::TempDir>,
+    stderr: std::fs::File,
+) -> std::io::Result<Proc> {
+    cmd.process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(stderr))
+        .kill_on_drop(true);
+    let mut child = cmd.spawn()?;
+    let pid = child
+        .id()
+        .ok_or_else(|| std::io::Error::other("spawn_pid_missing"))? as i32;
+    let io = (
+        child.stdin.take().expect("stdin is piped"),
+        child.stdout.take().expect("stdout is piped"),
+    );
+    let identity = proc_identity(pid);
+    let (status_tx, status) = tokio::sync::watch::channel(None);
+    let group = Arc::new(OwnedGroup {
+        pid,
+        pgid: pid,
+        session: identity.map(|i| i.session),
+        start_time: identity.map(|i| i.start_time),
+        status,
+        cleanup: Mutex::new(None),
+        drains: Mutex::new(Vec::new()),
+        _runtime: Some(runtime.clone()),
+        _admission: groups.1.clone(),
+        #[cfg(all(test, target_os = "linux"))]
+        drain_probe: groups.2.clone(),
+    });
+    groups.add(group.clone());
+    let admission = groups.1.clone();
+    tokio::spawn(async move {
+        let _lifetime = (runtime, admission);
+        let result = child.wait().await.map_err(|_| "process_wait_failed".into());
+        status_tx.send_replace(Some(result));
+    });
+    Ok(Proc {
+        child: ProcessWait {
+            group: group.clone(),
+        },
+        pgid: pid,
+        pid,
+        group,
+        announcement: None,
+        cargo_records: None,
+        captured: None,
+        adapter_io: Some(io),
+    })
 }
 
 fn spawn_extended(
@@ -1729,6 +1809,7 @@ fn spawn_extended(
         announcement,
         cargo_records,
         captured,
+        adapter_io: None,
     })
 }
 
@@ -1937,14 +2018,35 @@ struct Trial {
     servers: Vec<Proc>,
     agents: Arc<Mutex<Vec<(String, i32)>>>,
     diagnostics: Vec<String>,
+    /// A competitor trial's bridge, kept until the orderly stop.
+    bridge: Option<crate::bridge::Bridge>,
 }
+
+/// How long a competitor adapter gets, after its stdin closes, to clean up
+/// its backend and exit. The adapter's own cleanup budget is 10 s.
+const ADAPTER_EXIT_DEADLINE: Duration = Duration::from_secs(30);
 
 impl Trial {
     async fn stop_servers(&mut self) -> Result<(), String> {
+        // A competitor's adapter is stopped by closing its stdin, which is its
+        // cue to clean up the backend it owns. Only an exit status of 0 after
+        // that is a cleanup receipt (0129 §4): a kill, a signal or any other
+        // status leaves the backend's cleanup unknown, which stops admission.
+        let mut receipt = Ok(());
+        if let Some(bridge) = self.bridge.take() {
+            bridge.stop().await;
+            if let Some(adapter) = self.servers.first_mut() {
+                receipt =
+                    match tokio::time::timeout(ADAPTER_EXIT_DEADLINE, adapter.child.wait()).await {
+                        Ok(Ok(status)) if status.code() == Some(0) => Ok(()),
+                        _ => Err("adapter_cleanup_unproved".to_string()),
+                    };
+            }
+        }
         let pids: Vec<_> = self.servers.iter().map(|p| p.pid).collect();
         self.groups.cleanup_pids(&pids).await?;
         self.servers.clear();
-        Ok(())
+        receipt
     }
 }
 
@@ -2171,19 +2273,100 @@ pub fn fixture_args(
 /// caller still owns cleanup through `trial`. `Ok(true)` means the agent
 /// deadline expired.
 #[allow(clippy::too_many_arguments)]
-async fn run_body(
-    task: &Task,
-    label: &str,
-    argv: &[OsString],
-    trial_id: &str,
-    target: &crate::identity::TargetBuild,
-    inputs: &crate::provenance::FixtureInputs,
-    provenance: &crate::provenance::Provenance,
+/// Start a competitor's adapter and the bridge in front of it (proposed
+/// decision 0129 §4, spec R3–R4). The adapter owns the backend; this owns the
+/// adapter. Returns the backend's SMTP address, the bridge URL the agents are
+/// given, and the MCP surface (server key, the adapter's own announced tool
+/// names) the wrappers are configured with.
+async fn start_competitor(
+    plan: &CompetitorPlan,
     scratch: &Path,
     trial: &mut Trial,
-    exits: &mut Vec<AgentExit>,
-    snapshot_out: &mut Option<Snapshot>,
-) -> Result<bool, String> {
+) -> Result<(SocketAddr, String, (String, String)), String> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+    let mode = plan.target.adapter_mode().ok_or("adapter_spawn")?;
+    let dirs = RuntimeDirs::create(scratch, "adapter")?;
+    let stderr = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(dirs.root.join("stderr.log"))
+        .map_err(|_| "private_file")?;
+    let mut cmd = Command::new(&plan.adapter);
+    cmd.arg(mode)
+        .arg("--launch")
+        .arg(&plan.target_bin)
+        .arg("--scratch")
+        .arg(dirs.root.join("backend"))
+        .arg("--sources")
+        .arg(&plan.sources);
+    dirs.apply(&mut cmd);
+    cmd.current_dir(&dirs.root);
+    let mut adapter = spawn_adapter(cmd, &trial.groups, trial.runtime.clone(), stderr)
+        .map_err(|_| "adapter_spawn")?;
+    let (stdin, stdout) = adapter.adapter_io.take().ok_or("adapter_spawn")?;
+    trial.servers.push(adapter);
+    let mut reader = tokio::io::BufReader::new(stdout);
+    let mut line = String::new();
+    let announced = {
+        let adapter = &mut trial.servers[0].child;
+        let mut bounded = (&mut reader).take(ANNOUNCEMENT_LINE_LIMIT as u64);
+        tokio::select! {
+            read = bounded.read_line(&mut line) => read.map(|n| n > 0).unwrap_or(false),
+            _ = tokio::time::sleep(STARTUP_DEADLINE) => return Err("startup_timeout".into()),
+            _ = adapter.wait() => return Err("startup_exit".into()),
+        }
+    };
+    let announcement = announced
+        .then(|| crate::target::parse_announcement(&line))
+        .flatten()
+        .ok_or("startup_protocol")?;
+    // The announced tool list must be the one the product record froze.
+    if announcement.tools_sha256 != plan.tools_sha256 {
+        return Err("adapter_tools_mismatch".into());
+    }
+    let bridge = crate::bridge::Bridge::start(stdin, reader)
+        .await
+        .map_err(|_| "adapter_protocol")?;
+    let url = bridge.url();
+    trial.bridge = Some(bridge);
+    // The tool names an agent is allowed come from the adapter itself, and its
+    // list must hash to what it announced.
+    let mut client = crate::mcp::McpClient::connect(&url)
+        .await
+        .map_err(|_| "adapter_protocol")?;
+    let listed = client
+        .rpc("tools/list", json!({}))
+        .await
+        .map_err(|_| "adapter_protocol")?;
+    let tools = listed["tools"].as_array().ok_or("adapter_protocol")?;
+    let digest =
+        crate::provenance::sha256(&serde_json::to_vec(&listed["tools"]).unwrap_or_default());
+    if digest != announcement.tools_sha256 {
+        return Err("adapter_tools_mismatch".into());
+    }
+    let names: Vec<String> = tools
+        .iter()
+        .map(|t| t["name"].as_str().map(str::to_owned))
+        .collect::<Option<_>>()
+        .ok_or("adapter_protocol")?;
+    if names.is_empty() || !names.iter().all(|n| crate::target::valid_tool_name(n)) {
+        return Err("adapter_protocol".into());
+    }
+    Ok((
+        announcement.smtp,
+        url,
+        (plan.target.name().to_owned(), names.join(",")),
+    ))
+}
+
+/// Start Swarmail's server as an owned process and wait until it is healthy
+/// and its SMTP port greets: the candidate's native target.
+async fn start_swarmail(
+    target: &crate::identity::TargetBuild,
+    scratch: &Path,
+    trial: &mut Trial,
+) -> Result<(SocketAddr, SocketAddr), String> {
     // Every role gets a closed runtime map and a private owner under /tmp.
     let swarmail_dirs = RuntimeDirs::create(scratch, "swarmail")?;
     target.recheck()?;
@@ -2230,7 +2413,258 @@ async fn run_body(
     mail::probe_greeting(smtp)
         .await
         .map_err(|_| "swarmail_smtp")?;
-    let mcp_url = format!("http://{http}/mcp");
+    Ok((smtp, http))
+}
+
+/// Tools the free contract probe never calls: they change Swarmail's state
+/// (spec R9: one read-only call per announced tool).
+const MUTATING_TOOLS: [&str; 7] = [
+    "swarmail_create_inbox",
+    "swarmail_delete_email",
+    "swarmail_clear_inbox",
+    "swarmail_clear_all",
+    "swarmail_seed_email",
+    "swarmail_set_chaos",
+    "swarmail_clear_chaos",
+];
+
+/// Sample arguments for a read-only probe call, from the tool's own input
+/// schema: the required properties, an enum's first value, the smallest
+/// integer allowed, and at least one filter where a tool needs one.
+fn probe_arguments(tool: &Value) -> Value {
+    let schema = &tool["inputSchema"];
+    let props = schema["properties"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let mut required: Vec<String> = schema["required"]
+        .as_array()
+        .map(|r| {
+            r.iter()
+                .filter_map(|n| n.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let name = tool["name"].as_str().unwrap_or_default();
+    // MailSlurper's search and wait take no required filter yet refuse a call
+    // with none: they get `message`, MailSlurper's own filter name.
+    if (name.ends_with("_search") || name.ends_with("_wait"))
+        && props.contains_key("message")
+        && !required
+            .iter()
+            .any(|r| ["to", "from", "message"].contains(&r.as_str()))
+    {
+        required.push("message".into());
+    }
+    let mut args = serde_json::Map::new();
+    for key in required {
+        let p = props.get(&key).cloned().unwrap_or(Value::Null);
+        let value = if let Some(first) = p["enum"].as_array().and_then(|e| e.first()) {
+            first.clone()
+        } else if p["type"] == "integer" {
+            json!(p["minimum"].as_u64().unwrap_or(1))
+        } else if p["type"] == "boolean" {
+            json!(false)
+        } else if key == "id" {
+            json!("contract-probe-id")
+        } else {
+            json!("contract-probe")
+        };
+        args.insert(key, value);
+    }
+    Value::Object(args)
+}
+
+/// One target's contract evidence (spec R9): negotiation, capabilities, the
+/// tool list and its digest, an array-in/array-out batch, and one read-only
+/// call per announced tool with its outcome. It is the server side as the
+/// harness's own client sees it; a model CLI's negotiation is logged by the
+/// bridge in the first paid session and is not claimed here. Every owned
+/// process is stopped afterwards, and `cleanup_receipt` says whether the
+/// stop was orderly.
+pub async fn probe_contract(
+    target: crate::target::Target,
+    swarmail: Option<&crate::identity::TargetBuild>,
+    plan: Option<&CompetitorPlan>,
+) -> Result<Value, String> {
+    let scratch = Arc::new(private_tempdir("swarmail-eval-contract-")?);
+    let mut trial = Trial {
+        groups: Groups::default(),
+        runtime: scratch.clone(),
+        servers: Vec::new(),
+        agents: Arc::new(Mutex::new(Vec::new())),
+        diagnostics: Vec::new(),
+        bridge: None,
+    };
+    let probed = probe_contract_body(target, swarmail, plan, scratch.path(), &mut trial).await;
+    let stopped = trial.stop_servers().await;
+    let cleanup = trial.groups.cleanup_all().await;
+    let mut contract = probed?;
+    contract["cleanup_receipt"] = json!(stopped.is_ok() && cleanup.is_ok());
+    if let Err(e) = stopped.and(cleanup) {
+        return Err(format!("contract probe cleanup unproved: {e}"));
+    }
+    Ok(contract)
+}
+
+async fn probe_contract_body(
+    target: crate::target::Target,
+    swarmail: Option<&crate::identity::TargetBuild>,
+    plan: Option<&CompetitorPlan>,
+    scratch: &Path,
+    trial: &mut Trial,
+) -> Result<Value, String> {
+    let url = match (plan, swarmail) {
+        (Some(plan), _) => start_competitor(plan, scratch, trial).await?.1,
+        (None, Some(build)) => {
+            let (_, http) = start_swarmail(build, scratch, trial).await?;
+            format!("http://{http}/mcp")
+        }
+        (None, None) => return Err("contract_target_missing".into()),
+    };
+    let http = http_client();
+    let post = |body: Value| {
+        let http = http.clone();
+        let url = url.clone();
+        async move {
+            let r = http
+                .post(&url)
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .body(body.to_string())
+                .send()
+                .await
+                .map_err(|e| format!("contract probe request: {e}"))?;
+            let status = r.status().as_u16();
+            let bytes = r.bytes().await.map_err(|e| e.to_string())?;
+            Ok::<_, String>((
+                status,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            ))
+        }
+    };
+    let (_, init) = post(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": crate::mcp::PROTOCOL_VERSION, "capabilities": {},
+                   "clientInfo": {"name": "swarmail-evals", "version": env!("CARGO_PKG_VERSION")}}}))
+    .await?;
+    let negotiated = init["result"].clone();
+    if negotiated["protocolVersion"] != json!(crate::mcp::PROTOCOL_VERSION) {
+        return Err(format!(
+            "{target:?} negotiated {}",
+            negotiated["protocolVersion"]
+        ));
+    }
+    let (status, _) =
+        post(json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).await?;
+    if status != 202 {
+        return Err(format!(
+            "the initialized notification was answered {status}"
+        ));
+    }
+    let (_, listed) = post(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).await?;
+    let tools = listed["result"]["tools"]
+        .as_array()
+        .cloned()
+        .ok_or("tools/list has no tools")?;
+    let tools_sha256 = crate::provenance::sha256(
+        &serde_json::to_vec(&listed["result"]["tools"]).unwrap_or_default(),
+    );
+    // A batch: an array in, an array out, every id answered.
+    let (batch_status, batch) = post(json!([
+        {"jsonrpc": "2.0", "id": 101, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 102, "method": "tools/list"}
+    ]))
+    .await?;
+    let batch_ids: Vec<Value> = batch
+        .as_array()
+        .map(|a| a.iter().map(|m| m["id"].clone()).collect())
+        .unwrap_or_default();
+    let batch_ok = batch_status == 200
+        && batch
+            .as_array()
+            .is_some_and(|a| a.len() == 2 && a.iter().all(|m| m["result"]["tools"].is_array()))
+        && batch_ids.contains(&json!(101))
+        && batch_ids.contains(&json!(102));
+    if !batch_ok {
+        return Err("the batch probe did not return an array answering both ids".into());
+    }
+    let mut calls = Vec::new();
+    for (i, tool) in tools.iter().enumerate() {
+        let name = tool["name"].as_str().ok_or("a tool has no name")?;
+        if MUTATING_TOOLS.contains(&name) {
+            calls.push(json!({"tool": name, "outcome": "skipped_mutating"}));
+            continue;
+        }
+        let (_, reply) = post(
+            json!({"jsonrpc": "2.0", "id": 200 + i, "method": "tools/call",
+            "params": {"name": name, "arguments": probe_arguments(tool)}}),
+        )
+        .await?;
+        if reply.get("error").is_some() || reply["result"]["isError"].is_null() {
+            return Err(format!("{name}: the probe call was refused: {reply}"));
+        }
+        let text = reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        // A tool-level error is an answer: the call was understood, as a read
+        // of an id that does not exist is. Its text is kept, short.
+        let detail: String = text.chars().take(120).collect();
+        if reply["result"]["isError"] == json!(false) {
+            calls.push(json!({"tool": name, "outcome": "ok"}));
+        } else {
+            calls.push(json!({"tool": name, "outcome": "tool_error", "detail": detail}));
+        }
+    }
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    Ok(json!({
+        "target": target.name(),
+        "comparison_name": target.comparison_name(),
+        "negotiation": {
+            "protocol_version": negotiated["protocolVersion"],
+            "capabilities": negotiated["capabilities"],
+            "server_info": negotiated["serverInfo"],
+        },
+        "tools_sha256": tools_sha256,
+        "tool_names": names,
+        "batch": {"request_ids": [101, 102], "reply_is_array": true, "reply_ids": batch_ids, "answered": true},
+        "calls": calls,
+        "scope": "server side, as swarmail-evals negotiates it; a model CLI's negotiation is logged by the bridge in a paid session and is not claimed here",
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_body(
+    task: &Task,
+    label: &str,
+    argv: &[OsString],
+    trial_id: &str,
+    target: &crate::identity::TargetBuild,
+    inputs: &crate::provenance::FixtureInputs,
+    provenance: &crate::provenance::Provenance,
+    scratch: &Path,
+    competitor: Option<&CompetitorPlan>,
+    trial: &mut Trial,
+    exits: &mut Vec<AgentExit>,
+    snapshot_out: &mut Option<Snapshot>,
+) -> Result<bool, String> {
+    if competitor.is_some()
+        && (task.scenario.uses_chaos() || task.agent_count != 1 || task.scenario.reads_reports())
+    {
+        return Err("competitor_task_not_applicable".into());
+    }
+    let (smtp, http, mcp_url, surface): (
+        SocketAddr,
+        Option<SocketAddr>,
+        String,
+        Option<(String, String)>,
+    ) = if let Some(plan) = competitor {
+        let (smtp, url, surface) = start_competitor(plan, scratch, trial).await?;
+        (smtp, None, url, Some(surface))
+    } else {
+        let (smtp, http) = start_swarmail(target, scratch, trial).await?;
+        (smtp, Some(http), format!("http://{http}/mcp"), None)
+    };
+    let client = http_client();
 
     // The fixture receives the generated admin secret in its environment alone.
     let secret: String = {
@@ -2246,7 +2680,18 @@ async fn run_body(
     recheck_digest(&exe, &provenance.harness.executable_sha256)?;
     let fixture_dirs = RuntimeDirs::create(scratch, "fixture")?;
     let mut cmd = Command::new(&exe);
-    cmd.args(fixture_args(task, smtp, http, trial_id, inputs));
+    // A competitor has no Swarmail HTTP plane; no task it can take reads
+    // Swarmail's reports (refused above), so the address is never passed on.
+    cmd.args(fixture_args(
+        task,
+        smtp,
+        http.unwrap_or(smtp),
+        trial_id,
+        inputs,
+    ));
+    if let Some(plan) = competitor {
+        cmd.args(["--smtp-auth", plan.smtp_auth.name()]);
+    }
     fixture_dirs.apply(&mut cmd);
     cmd.env(ADMIN_SECRET_ENV, &secret)
         .current_dir(&fixture_dirs.root);
@@ -2344,7 +2789,11 @@ async fn run_body(
             identity: &id.identity,
             inbox: &id.inbox,
         };
-        let prompt = tasks::render_prompt(task, &vars).map_err(|_| "prompt_render")?;
+        let prompt = match competitor {
+            Some(plan) => tasks::render_competitor_prompt(task, &vars, plan.target.display()),
+            None => tasks::render_prompt(task, &vars),
+        }
+        .map_err(|_| "prompt_render")?;
         let dirs = RuntimeDirs::create(scratch, &format!("agent-{index}"))?;
         let workdir = dirs.root.join("work");
         std::fs::create_dir(&workdir).map_err(|_| "private_directory")?;
@@ -2365,6 +2814,11 @@ async fn run_body(
             .env(ENV_PROMPT_FILE, &prompt_file)
             .env(ENV_DEADLINE_MS, task.deadline_ms.to_string())
             .env("PWD", &workdir);
+        if let (Some(plan), Some((server, tools))) = (competitor, &surface) {
+            cmd.env(crate::wrappers::ENV_MCP_SERVER, server)
+                .env(crate::wrappers::ENV_MCP_TOOLS, tools)
+                .env(crate::oracle::ENV_COMPETITOR, plan.target.name());
+        }
         match spawn(cmd, &trial.groups, None, Some(trial.runtime.clone()), false) {
             Ok(Proc {
                 mut child,
@@ -2472,20 +2926,24 @@ const SERVICE_EXIT_GRACE: Duration = Duration::from_secs(5);
 async fn services_survived(
     servers: &mut [Proc],
     client: &reqwest::Client,
-    swarmail_http: SocketAddr,
+    swarmail_http: Option<SocketAddr>,
     app_url: &str,
 ) -> Result<(), String> {
     let (swarmail_slot, fixture_slot) = servers.split_at_mut(1);
     let swarmail = &mut swarmail_slot[0].child;
     let fixture = &mut fixture_slot[0].child;
     let probe = async {
-        let health = client
-            .get(format!("http://{swarmail_http}/healthz"))
-            .send()
-            .await
-            .map_err(|_| "swarmail_health")?;
-        if !health.status().is_success() {
-            return Err("swarmail_health");
+        // A competitor's adapter has no health endpoint: its liveness is the
+        // exit watch below, and the bridge answers 503 once it has exited.
+        if let Some(swarmail_http) = swarmail_http {
+            let health = client
+                .get(format!("http://{swarmail_http}/healthz"))
+                .send()
+                .await
+                .map_err(|_| "swarmail_health")?;
+            if !health.status().is_success() {
+                return Err("swarmail_health");
+            }
         }
         let index = client
             .get(format!("{app_url}/"))
@@ -2622,6 +3080,10 @@ fn safe_trial_category(error: &str) -> &'static str {
         | "cargo_artifact_invalid"
         | "build_context_changed" => "swarmail_unavailable",
         "agent_spawn" => "agent_spawn_failed",
+        "adapter_cleanup_unproved" => "trial_cleanup_unproved",
+        "adapter_spawn" => "adapter_spawn_failed",
+        "adapter_tools_mismatch" => "adapter_tools_mismatch",
+        "adapter_protocol" => "adapter_protocol_invalid",
         "server_died" => "service_exited_during_trial",
         "snapshot_invalid" => "snapshot_invalid",
         "artifact_write" => "artifact_write_failed",
@@ -2788,6 +3250,7 @@ async fn execute_trial(
                 servers: Vec::new(),
                 agents,
                 diagnostics: Vec::new(),
+                bridge: None,
             };
             let mut exits = Vec::new();
             let mut snap = None;
@@ -2817,6 +3280,7 @@ async fn execute_trial(
                         &req_body.fixture,
                         &provenance,
                         scratch_owner.path(),
+                        req_body.competitor.as_ref(),
                         &mut trial,
                         &mut exits,
                         &mut snap,

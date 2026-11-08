@@ -2,12 +2,16 @@
 
 Issue [#163](https://github.com/feedback-loop-ai/swarmail/issues/163) (epic #164).
 Specification: [fair mail comparison](../../specs/fair-mail-comparison/spec.md).
-Decisions: proposed [0091](../decisions/0091-fair-mail-comparison.md),
-proposed [0092](../decisions/0092-official-mail-comparison.md)
+Decisions: accepted [0091](../decisions/0091-fair-mail-comparison.md),
+accepted [0092](../decisions/0092-official-mail-comparison.md)
 ([continuation spec](../../specs/official-mail-comparison/spec.md)) and
-proposed [0093](../decisions/0093-source-mail-comparison.md)
-([source-attributed continuation](../../specs/source-mail-comparison/spec.md));
-none is accepted.
+accepted [0093](../decisions/0093-source-mail-comparison.md)
+([source-attributed continuation](../../specs/source-mail-comparison/spec.md)),
+all by the operator on 2026-11-02. The operator's 2026-11-07 widening of #163
+("compare with all that we have shims for") is recorded as dated addenda on
+0091 and 0092; its contracts are in proposed
+[0129](../decisions/0129-agent-suite-comparison.md)
+([spec](../../specs/agent-suite-comparison/spec.md)).
 
 **Status, 2026-11-02: one baseline, no comparison result.** The #151 paid
 baseline exists: [`baseline-2026-11-01.md`](baseline-2026-11-01.md), 395 of
@@ -25,6 +29,173 @@ artifacts are pinned, and each tag's source chain is now bound to captured
 bytes. Every local proof below ran against the real executables. These are
 untimed checks and labelled smoke runs, not collection.
 
+**Status, 2026-11-07 (issue #339): the agent-suite comparison is built and
+its free half has run. No paid session has, and nothing below is a comparison
+result.** The operator widened #163 ("compare with all that we have shims
+for"): Swarmail, Mailpit, MailHog and MailSlurper, on claude-opus,
+claude-sonnet, codex-sol and codex-luna, no GLM. Decision 0129 (accepted) holds
+the contracts. The runner serves all four targets; `scripts/compare-mail.sh
+controls` ran the builtin oracle and null agents on the hard tier against each
+of them; and one `measure --dry-run` verified every prerequisite and printed
+the 240-slot plan. The planned paid run (the hard tier × 4 targets × 4 agents
+× 5 trials) is the operator's to confirm and is #163's to run.
+
+**Update, 2026-11-08: integrated with accepted 0130.** `main` took #340's
+nine-target wire driver (accepted
+[0130](../decisions/0130-eight-target-mail-comparison.md): source lock v4,
+protocol v3) while this story was in review. The lock, the protocol, `history/`
+and `sources/` here are `main`'s bytes, and the agent suite reads them: it adds
+no lock version, entry or schema of its own. The agent suite's MailSlurper is
+0130's `mailslurper-source-build` row, "built from source". The controls below
+were rerun on the merged head. What 0129 owns of the lock work is superseded by
+0130's lock v4, as 0129's 2026-11-08 addendum records.
+
+**The MailSlurper that is measured is "built from source".** The operator
+ruled on 2026-11-07 (0129's second addendum) that the published linux
+executable's failure is a result, and that the comparison's MailSlurper is a
+cgo build of the pinned release source. Accepted
+[0130](../decisions/0130-eight-target-mail-comparison.md) (2026-11-08) pinned
+that same executable in [`sources.lock.json`](sources.lock.json) as its own row,
+`mailslurper-source-build`, and kept the official release as the separate
+`mailslurper` row, which protocol v3 records as not starting. The agent suite's
+target `mailslurper` names the service API its adapter drives; its executable is
+the `mailslurper-source-build` row, and a product record bound to the official
+row is refused by name. The lock is main's, byte for byte; this section only
+reads it.
+
+- *The published executable does not start.* `mailslurper-1.15.0-linux.zip`
+  (`48f2f9ba…55f6`, member `0cd9416b…2627`) was built with `CGO_ENABLED=0`; on
+  its default SQLite storage it exits with status 1 ("go-sqlite3 requires cgo
+  to work. This is a stub"). The lock keeps it as the official `mailslurper` row,
+  with its stderr
+  ([`sources/mailslurper/mailslurper-official-failure.txt`](sources/mailslurper/mailslurper-official-failure.txt)),
+  never launched by either driver.
+- *The build.* `mailslurper` (`eb6cd97d…58ff`, 19942072 bytes) was built from
+  the pinned source archive (`83f66f25…359f`) in
+  `golang:1.18.1-bullseye@sha256:3b1a72af…` with `CGO_ENABLED=1`, verified
+  modules and `go build -trimpath`
+  ([`sources/mailslurper-source-build/mailslurper-cgo-provenance.md`](sources/mailslurper-source-build/mailslurper-cgo-provenance.md)).
+  It links glibc 2.31 or newer. It is one build and not a reproducible one: a
+  rebuild that differs is a new pin. It reports **v1.14.1 under tag
+  `release-1.15.0`**, because the tagged source hard-codes that string and the
+  published executable logs the same; the lock, the product record and this file
+  say so. "Built from source" claims that these bytes were built from the
+  pinned, tag-named source as recorded. It does not claim to reproduce
+  upstream's release.
+- *The tree is observed.* The lock binds the release commit `068acffd…1bd2` and
+  its root tree listing (`5f29f08a…0729`). The verified source tarball,
+  extracted into a new directory and added to a fresh git index, writes the same
+  tree
+  ([`transcripts/tarball-tree.txt`](agent-controls-2026-11-08/transcripts/tarball-tree.txt)).
+- *The sources 0130 does not bind.* The lock binds the service controller, the
+  route registration, the licence, the README and the config. The other files
+  the adapter cites (SMTP and storage code, the query builder, `go.mod` and
+  `go.sum`) are committed under
+  [`agent-sources/mailslurper/`](agent-sources/mailslurper/), outside the
+  0130-governed `sources/` tree. A digest table in `tests/mail_compare.rs` binds
+  each file to its member of the source archive.
+
+What the first real runs of that build showed, and the oracle and adapter now
+read as they are (the captured corpus, [`wire-corpus/mailslurper/`](wire-corpus/mailslurper/),
+is decoded in CI):
+
+- **The AUTH asymmetry.** MailSlurper 1.15.0 has no SMTP AUTH command; the
+  fixture omits the AUTH step for it; every other target receives AUTH PLAIN.
+  The reviewed source says so, and the probe against the built executable
+  (three runs, identical) confirms it: EHLO advertises no AUTH, and the `AUTH
+  PLAIN` line draws `221 Bye`, twice (the source sends one goodbye per worker
+  error, and the command goroutine's `break` only leaves its `select`), then a
+  close, with no `235` and no `334`
+  ([`transcripts/mailslurper-auth-probe.txt`](agent-controls-2026-11-08/transcripts/mailslurper-auth-probe.txt)).
+  The published executable was not probed. The first run of the probe asserted
+  exactly one `221 Bye`, and it failed on the second; the assertion now accepts
+  one or two and nothing else.
+- **Declared delivery semantics.** MailSlurper sends its `250` before it stores
+  the mail, so `accept_implies_queryable` is `not-promised`; the labelled poll
+  waits until the count is met. Its `to`, `from` and `message` filters are
+  unescaped SQL `LIKE` substring matches (`ann@` also returns `joann@`), so the
+  oracle uses the filter as a pre-filter and then keeps an exact `toAddresses`
+  match.
+- **What it stores.** One `body` string per mail; `boundary` and
+  `transferEncoding` come back empty whatever the mail said. A plain-text line
+  break is stored as `\n<br/>` and the text is HTML-escaped (`&` is `&amp;`). A
+  multipart mail keeps **one part, its HTML part**: the plain-text alternative is
+  not stored, and the listing still carries the part's base64 that `GET /mail/{id}`
+  decodes. An unknown id is an empty item at HTTP 200, not an error. This is the
+  backend variable being measured, stated and not hidden: an agent on MailSlurper
+  has no text alternative for `recipient-crowd`'s mail (the confirmation link is in
+  its HTML anchor), and the control reads that anchor only when a backend exposes
+  no text at all.
+- **The unused shelf upstreams.** smtp4dev, Inbucket and GreenMail (and the JRE)
+  are on the shelf; they are outside the four named targets and Swarmail has no
+  shim for them, so none is a target here.
+
+**What was built and proved** (tests named in the commits): the adapters' generic
+half behind a small backend interface, JSON-RPC batches in every adapter under
+Swarmail's own bound, MailHog and MailSlurper adapters (source-verified general
+operations only, nothing Swarmail-only emulated, hostile arguments refused before
+any request), the wire corpus for all three competitors (MailSlurper's recaptured under
+0130's pin and config file), the loopback bridge (16 in flight, one-line forwarding,
+and a later `initialize` answered from the first because several clients reach one
+stdio session), `matrix --target` (inputs bound before anything is spawned, the
+adapter and its cleanup receipt, schema-3 rows only), the product and cost records
+([`agent-comparison.json`](agent-comparison.json),
+[`agent-comparison-cost.json`](agent-comparison-cost.json): cost `unavailable`,
+never 0), and `swarmail-evals comparison-check`, which reads each prerequisite's
+contents in the fixed order and names the first that does not hold.
+`scripts/compare-mail.sh` no longer stops at `comparison-integration`.
+
+**The free controls** ([`agent-controls-2026-11-08/`](agent-controls-2026-11-08/)):
+`compare-mail.sh controls` ran once, for real, on the final head (the
+receipts name it; it is after the merge of `main`'s accepted 0130) against the candidate's
+`swarmail` and the three pinned executables, each target as its own command under
+`timeout 600` inside one `taskset -c 0-31` wrapper (32 CPUs, nproc/4 of this
+host), with one worker and `uptime` before and after
+(`timing/`: each matrix took 39 to 51 s, and the host's one-minute load average
+was 1.2 to 1.9 around them, on a shared 128-CPU host). 120 rows: on every target
+15 oracle passes and 15 null failures with the task's idle class (`gave_up`); one
+(task, agent, attempt) is the same fixture on all four targets; each target's
+contract lists one outcome for every announced tool (Swarmail's seven
+state-changing tools are listed `skipped_mutating`, and the others are called
+read-only); the locked evals suite passed at the receipts' head. The MailSlurper
+controls read `mailslurper-source-build`, the row 0130 pinned. The same run
+re-proved the AUTH probe, every announced tool of each adapter and the digest
+table of the adapter-cited sources against the verified pins and the source
+archive
+([`transcripts/`](agent-controls-2026-11-08/transcripts/)). `compare-mail.sh
+measure --dry-run` with every prerequisite genuine exits 0, prints the 240-slot
+plan and names two pending items, the CI run and the operator's authorization
+([`dry-run.txt`](agent-controls-2026-11-08/dry-run.txt)). The 2026-11-07 controls
+this replaces bound the old head's `swarmail`, adapter and harness digests, which
+the merge changed, so they were rerun and removed, not patched.
+
+**The order of the paid run.** `measure` runs one matrix per target, in the
+record's target order, and each matrix runs its tasks, then agents, then
+attempts: the record's `order` is "target, then task, then agent, then attempt",
+and the dry run prints that plan. A task and attempt still see the same fixture
+on every target, because each cell's seed derives from (master seed, task index,
+task, agent, attempt) and every target's matrix is the whole hard tier. The cost
+of this order is that a target's slots are consecutive in time, so a slow drift
+of the host or of a vendor's service lands on one target rather than on every
+target alike; the report must say so with any difference it claims.
+
+**The MailHog adapter has no read-by-id tool.** MailHog's only route to one
+message, `GET /api/v1/messages/{id}`, is in no document the lock binds and no
+reviewed source states it (its primary attribution is open, as above), so it is
+not source-verified and the adapter does not offer it. The list and search tools
+already return each message's headers, body and raw MIME. The wire driver's own
+fidelity read of that route is unchanged and stays listed as unresolved in
+protocol v3.
+
+**What only CI or the operator proves:** the brokkr bundle-compile gate (this
+sandbox has no brokkr binary; it runs in verify), CI's required contexts, the
+receipts' `ci` item (pending), acceptance of 0129, the operator's confirmation of
+the 240 paid sessions (#163), and the model CLIs' own negotiation with the bridge,
+which the bridge logs in the first paid session and the free controls do not
+claim. The PR is held for the operator, because `scripts/compare-mail.sh`
+changes. #340's lock is integrated, not contended: this branch changes no frozen
+byte of it.
+
 ## What exists, and what does not
 
 | Deliverable (spec) | State |
@@ -32,10 +203,10 @@ untimed checks and labelled smoke runs, not collection.
 | Source pins: [`sources.lock.json`](sources.lock.json) is lock v4 since 2026-11-07 (see *Eight targets* below); the lock v3 the 2026-10-30 collection ran under is [`history/2026-10-30-sources.lock.v3.json`](history/2026-10-30-sources.lock.v3.json), byte-identical, and its Mailpit and MailHog rows below are unchanged | **Artifacts pinned and tagged sources bound; build provenance unknown.** Mailpit v1.32.0 and MailHog v1.0.1 are pinned by asset and executable digest. Each tag's captured ref → annotated tag → commit chain and the commit's untruncated tree listing are committed under [`sources/`](sources/). Every repository document (licence, API, setup README, reviewed source) is bound by size, SHA-256 and git blob id to its path in that tree, and rechecked whenever the lock is used. Nothing ties either executable to its tagged commit, so `binary_build_provenance` stays unresolved and the lock makes no built-from claim. |
 | Method: [`protocol.json`](protocol.json) is protocol v3, **frozen** on 2026-11-07 and not yet collected (*Eight targets* below); protocol v2 is [`history/2026-10-30-protocol.v2.json`](history/2026-10-30-protocol.v2.json), byte-identical | **Frozen as protocol v2** (`fair-mail-comparison-v2`, superseding draft-3; the draft-2 and draft-3 bytes are kept under [`history/`](history/) and still read as version 1). It declares the limited official-artifact claim (no built-from claim), per-target backend, cap, prune and compression facts under the explicitly **unmatched** storage profile, the **unenforced local** resource profile, the common 100 ms poll, the driver's 40 s wait operation bound and the adapter's derived bounds and schema digest. `wait-best` is not a declared profile: it stays blocked. One frozen collection is admitted as raw measurement (see *Collection (2026-10-30)* below); it is not evidence. The #151 baseline now exists ([`baseline-2026-11-01.md`](baseline-2026-11-01.md)); no comparison control or final contract does. |
 | Wire driver: `benches/mail_compare.rs` | Built. Its polls now use the adapter's tested wait rule, and its scans refuse short nonfinal pages. A three-target smoke run against real Swarmail, Mailpit and MailHog seals and admits (`tests/mail_compare.rs`, ignored tests below). This is a smoke run, not evidence. Owned-bind corroboration and a cleanup worker that survives cancellation (T3), including the failed-drain-join arm, are **built and proved locally on Linux** (see *Method, as built*). Admission now recomputes the plan from the protocol, requires a proved cleanup receipt per launch and refuses a report that is not the arithmetic of its rows. The launch-level refusal of a foreign bind is proved through the kernel reading it rests on, not by forcing the reservation race, which needs no seam and has none. |
-| Mailpit MCP adapter: `mail_compare mailpit-mcp` | **Built and proved locally.** It speaks MCP 2025-03-26 over stdio. Its tools are list, search, read and a labelled client-side poll, each a translation of the captured Mailpit API. It was tested against real Mailpit over real SMTP. Each call's time frame starts at admission (see below). Final client negotiation (#151/#152/#153) is not proved by these tests. JSON-RPC batches are refused, which falls short of 2025-03-26 (receivers must accept batches); that stays open with the final contracts. |
-| One command: `scripts/compare-mail.sh` | Built. `local` runs the driver as a labelled smoke run; `collect` runs the frozen protocol after the driver's own readiness check and admits it against that protocol. `controls`, `evidence` and `measure` refuse by the name of the first missing prerequisite (baseline, final contracts, controls, coordination receipts, cost basis, identity, full product), and past those still at `comparison-integration`. No mode starts an agent. |
-| Eval integration: comparison target, envelope and controls (T7–T9) | **Row type built (T8.a); controls unstarted (T9.a).** One comparison variant (`schema_version` 3, `evals/src/identity.rs`, read by `results::read_comparison`) carries target, measured executable digest, settings, coordinate and a row hash; the native reader refuses it and the comparison reader refuses native, legacy and mixed rows; MailHog agent cells are refused as unsupported. The conflict syntax #269 committed is resolved to the accepted side. **T9.a is unstarted** because the runner's MCP client (`evals/src/mcp.rs`) speaks only Swarmail's HTTP `POST /mcp` and hands agents an HTTP URL, while the Mailpit adapter is stdio-only; driving it needs a stdio transport or an HTTP bridge in the runner, and a Mailpit-backed fixture for the oracle solutions, which call Swarmail tools. No oracle or null control ran on either agent target. Cross-checkout #148/#201 shared-admission and CI receipts are unproved. |
-| Evidence admission (T10) and the dossier (T11–T12) | **Reporting arithmetic built; no inputs exist.** `report::cite_comparison` cites protocol, attempts and the whole denominator for every cell and refuses mixed protocols and repeated coordinates; `report::dossier` refuses, naming the first of baseline, final contracts and cost basis that is missing. Both are proved on synthetic rows only, so they are arithmetic proofs and not data. The named prerequisite refusals are built and proved by stat alone; no verifier of a prerequisite's contents exists, so a supplied path is necessary and never sufficient. The #151 baseline now exists ([`baseline-2026-11-01.md`](baseline-2026-11-01.md)), but nothing admits it as a comparison input; there is no reconciled final MCP contract, no final comparison trial and no comparison cost record. No paid comparison trial is authorized. |
+| Mailpit MCP adapter: `mail_compare mailpit-mcp` | **Built and proved locally.** It speaks MCP 2025-03-26 over stdio. Its tools are list, search, read and a labelled client-side poll, each a translation of the captured Mailpit API. It was tested against real Mailpit over real SMTP. Each call's time frame starts at admission (see below). Final client negotiation (#151/#152/#153) is not proved by these tests. JSON-RPC batches are now answered under Swarmail's bound (#339). |
+| One command: `scripts/compare-mail.sh` | Built. `local` runs the driver as a labelled smoke run; `collect` runs the frozen protocol after the driver's own readiness check and admits it against that protocol. `controls` needs only the product record and the executables and runs the free oracle and null rows; `evidence` and `measure` stat the prerequisites in their fixed order (baseline, final contracts, controls, coordination receipts, cost basis, identity, full product), build the eval crate (`eval-build`) and run the verifier, which names the first prerequisite whose contents do not hold. A paid `measure` also needs `--authorized-product` equal to the product id. The `comparison-integration` refusal is gone. No mode starts a paid agent. |
+| Eval integration: comparison target, envelope and controls (T7–T9) | **Built; the free controls ran on all four targets.** `matrix --target` serves Swarmail natively and each competitor through its adapter behind the runner's bridge; the oracle solves each hard-tier task with that backend's own tools, and the null agent fails with the idle class. See the 2026-11-07 status above and [`agent-controls-2026-11-08/`](agent-controls-2026-11-08/). No paid trial ran. Cross-checkout #148/#201 shared-admission and CI receipts are unproved. |
+| Evidence admission (T10) and the dossier (T11–T12) | **Reporting arithmetic built; no inputs exist.** `report::cite_comparison` cites protocol, attempts and the whole denominator for every cell and refuses mixed protocols and repeated coordinates; `report::dossier` refuses, naming the first of baseline, final contracts and cost basis that is missing. Both are proved on synthetic rows only, so they are arithmetic proofs and not data. The prerequisites are now verified by content (`comparison-check`), in the fixed order, on real bytes in the eval crate's tests and on the committed controls. The #151 baseline now exists ([`baseline-2026-11-01.md`](baseline-2026-11-01.md)), but nothing admits it as a comparison input; there is no reconciled final MCP contract, no final comparison trial and no comparison cost record. No paid comparison trial is authorized. |
 
 These rows are open, not waived. The story is incomplete until genuine
 evidence is admitted (spec AC12–AC14). Passing local tests does not count
@@ -60,11 +231,11 @@ Every criterion is open. "Proof so far" names local tests in
 | AC1 method | protocol v2 frozen; one refusal test each for a changed method, schema, product, false parity and cumulative cap overflow; draft-2 and draft-3 archived byte-identical | the admitted 2026-10-30 collection exists as raw measurement only (the method is not yet used for any claim) | implementer / operator |
 | AC2 competitors | `the_tag_chain_and_every_blob_are_rechecked_against_the_captures`, real-binary tests | build provenance (upstream); finalization-time executable recheck | upstream / implementer |
 | AC3 adapter | wait-frame and poll proofs on a paused clock; real SMTP → Mailpit → MCP | final client contracts (#151/#152/#153), batches | #151 / implementer |
-| AC4 controls | none (T9.a unstarted: the runner's MCP client is HTTP-only and the Mailpit adapter is stdio-only) | a stdio transport or bridge in the runner, a Mailpit-backed fixture, external oracle/null controls | implementer |
+| AC4 controls | the runner serves every target through the bridge; oracle and null controls ran on all four ([`agent-controls-2026-11-08/`](agent-controls-2026-11-08/)) | the paid run (#163) | operator |
 | AC5–AC7 throughput, waits, limits | smoke runs; scan and censoring tests; accounting recomputed from raw rows; storage facts probed against the real binaries; one frozen collection interrupted on 2026-10-29, then one completed, sealed and admitted on 2026-10-30 as raw measurement with Mailpit's own 421 refusals recorded (*Collection (2026-10-30)*) | best wait; a collection of committed bytes (the admitted run is `candidate_dirty` true); a collection under a matched storage and enforced resource profile; any claim beyond raw measurement | operator |
 | AC8–AC9 lifecycle, privacy | launch/cleanup/privacy tests; T3 worker, hold, cancellation, forced-death, TERM-resistant, output-pressure and bind-ownership tests; real-competitor launches corroborated | CI (Linux and macOS) receipts; a forced reservation race | CI / implementer |
 | AC10 schema/replay | eval suites pass on the repaired sources; comparison variant validated and refused by native readers | retained replay of comparison rows | implementer |
-| AC11 one command | delivery modes refuse with their phase; one negative test per named prerequisite; an inert dry-run witness | working controls/evidence/measure delegation | implementer |
+| AC11 one command | delivery modes refuse with their phase; one negative test per prerequisite; a real `controls` run and a real `measure --dry-run`; the paid delegation proved only with a stand-in verifier and no agent | a paid `measure` (operator authorization) | operator |
 | AC12 eval readiness | standalone fmt, clippy and full default-threaded suite | #148/#201 cross-checkout coordination; CI receipts | #148/#201, CI |
 | AC13 dossier | none | genuine #151 baseline, finals and costs | operator (T11) |
 | AC14 honest claims | report censoring/denominator tests; citation arithmetic and dossier refusal on synthetic rows | admitted data | implementer after T11 |
@@ -365,9 +536,9 @@ is not bounded to 10 minutes. `collect` exits 1 when the run is sealed and
 admitted but a workload failed somewhere (for example a competitor's refusal);
 only exit 2 means the run did not complete.
 `controls`, `evidence` and `measure` exit 2 naming the first missing
-prerequisite, then at `comparison-integration` until tasks T8–T10 land.
-`measure --dry-run` prints the prerequisite order, opens no wrapper
-configuration and launches nothing.
+prerequisite. The `comparison-integration` refusal is gone (accepted 0129 §9).
+`measure --dry-run` verifies the prerequisites, prints the plan, opens no
+wrapper configuration and launches nothing.
 
 ### Collection attempt (2026-10-29)
 

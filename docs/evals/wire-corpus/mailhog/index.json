@@ -1,0 +1,63 @@
+{
+  "config_template_sha256": null,
+  "executable_sha256": "e2ed634ded49929f089b20045581955ed217672078fd86082dd7a6c67c5d09c7",
+  "files": [
+    {
+      "name": "list.json",
+      "request": "/api/v2/messages?start=0&limit=50",
+      "sha256": "7a223e3c4805fb752888fada4dc8b50aa1967460edb199cb54680681df7b6ab1",
+      "size": 4172,
+      "status": 200
+    },
+    {
+      "name": "read.json",
+      "request": "/api/v1/messages/gnH7YnMPiqE96yI4H8mRsdXHuq_-NFv8NpKlPYaJI1w=@mailhog.example",
+      "sha256": "6ef87512f9ea8dfdfd123a29cd55aad8f71046eca32ded40fcbd663ae2e778eb",
+      "size": 1071,
+      "status": 200
+    },
+    {
+      "name": "read-multipart.json",
+      "request": "/api/v1/messages/zGOlQ7PiJpQuiUmXthNibY83i9IwV5q0IAkKn_dO5ZY=@mailhog.example",
+      "sha256": "63c3831d37e88b28a414e9ff3553d242849d6eaa5b5009c09eb78af20b903c90",
+      "size": 1974,
+      "status": 200
+    },
+    {
+      "name": "search-filtered.json",
+      "request": "/api/v2/search?kind=to&query=ann%40corpus%2Einvalid&start=0&limit=50",
+      "sha256": "7a223e3c4805fb752888fada4dc8b50aa1967460edb199cb54680681df7b6ab1",
+      "size": 4172,
+      "status": 200
+    },
+    {
+      "name": "search-empty.json",
+      "request": "/api/v2/search?kind=to&query=nobody%40corpus%2Einvalid&start=0&limit=50",
+      "sha256": "9d1682044c90aa8a62ef13cb51ef0e4373fb2a6b321faa10eff8358e4c50c439",
+      "size": 42,
+      "status": 200
+    },
+    {
+      "name": "read-not-found.json",
+      "request": "/api/v1/messages/not-an-id",
+      "sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "size": 4,
+      "status": 200
+    }
+  ],
+  "mail": [
+    {
+      "subject": "corpus-ann",
+      "to": "ann@corpus.invalid"
+    },
+    {
+      "subject": "corpus-joann",
+      "to": "joann@corpus.invalid"
+    },
+    {
+      "subject": "corpus-multipart",
+      "to": "ann@corpus.invalid"
+    }
+  ],
+  "target": "mailhog"
+}

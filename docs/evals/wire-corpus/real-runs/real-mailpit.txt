@@ -1,0 +1,7 @@
+# mailpit: every announced tool called once against the pinned executable
+# command: MAIL_COMPARE_MAILPIT=… MAIL_COMPARE_MAILHOG=… timeout 600 cargo test --locked --test mail_compare -- --ignored --test-threads=1 real_mailpit
+# uptime before:  14:30:45 up 14 days,  4:46,  0 users,  load average: 3.09, 3.87, 3.70
+test real_mailpit_through_the_adapter_lists_searches_reads_and_waits_faithfully ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.87s
+# elapsed_s=4.51 max_rss_kb=1158988
+# uptime after:  14:30:50 up 14 days,  4:46,  0 users,  load average: 3.09, 3.87, 3.70

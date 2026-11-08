@@ -52,6 +52,11 @@ pub struct LaunchSpec {
     pub extra: LaunchExtra,
 }
 
+/// The `NotReady` reason of a launch whose child announced no listener
+/// address (it exited before binding). One constant, so a test that matches
+/// the reason and the sites that produce it cannot drift apart.
+pub const NO_LISTENER_ADDRESSES: &str = "no listener addresses";
+
 /// What lock version 4 adds to a launch (proposed decision 0130 §2). The
 /// default is lock version 3's launch: two listeners, no environment, no
 /// config file and no further checked members.
@@ -653,14 +658,14 @@ impl Owned {
         };
         let Some(declared) = declared else {
             let facts = owned.shutdown().await;
-            return Err(LaunchError::NotReady("no listener addresses", facts));
+            return Err(LaunchError::NotReady(NO_LISTENER_ADDRESSES, facts));
         };
         owned.shared.lock().expect("shared lock").addrs = declared.clone();
         let addr_of =
             |role: ListenerRole| declared.iter().find(|(r, _)| *r == role).map(|(_, a)| *a);
         let (Some(smtp), http) = (addr_of(ListenerRole::Smtp), addr_of(ListenerRole::Http)) else {
             let facts = owned.shutdown().await;
-            return Err(LaunchError::NotReady("no listener addresses", facts));
+            return Err(LaunchError::NotReady(NO_LISTENER_ADDRESSES, facts));
         };
         owned.smtp = smtp;
         if let Some(http) = http {
@@ -670,7 +675,7 @@ impl Owned {
         if spec.kind == TargetKind::Greenmail {
             let Some(pop3) = addr_of(ListenerRole::Pop3) else {
                 let facts = owned.shutdown().await;
-                return Err(LaunchError::NotReady("no listener addresses", facts));
+                return Err(LaunchError::NotReady(NO_LISTENER_ADDRESSES, facts));
             };
             owned.pop3 = Some(Pop3::new(pop3, limits.request, limits.max_response_bytes));
         }

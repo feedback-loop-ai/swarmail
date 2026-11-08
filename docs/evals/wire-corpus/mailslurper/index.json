@@ -1,0 +1,85 @@
+{
+  "config_template_sha256": "2b53b35efe69fca18068511760a39cc9a065520cb38eb22ca49f9cc044e37af2",
+  "executable_sha256": "eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff",
+  "files": [
+    {
+      "name": "list.json",
+      "request": "/mail?pageNumber=1",
+      "sha256": "059de73a9509b5bdd70923dd8e51f31c0850423f5a3cd01f4d969567ee417278",
+      "size": 2301,
+      "status": 200
+    },
+    {
+      "name": "read.json",
+      "request": "/mail/90e72a9d-bfd3-433a-5933-81ac665bdbe0",
+      "sha256": "65cee3f3f4badf42101b3097a99d165b08d77bcc1c1d348fa5f8323c8a9dbfa5",
+      "size": 408,
+      "status": 200
+    },
+    {
+      "name": "read-multipart.json",
+      "request": "/mail/8c8995a5-71a4-4a5c-6a93-77c9a715aded",
+      "sha256": "cc9d85e4846d9ef279163e02b3701d5f2cab5a3683c8a54d761e788c07e5acd0",
+      "size": 475,
+      "status": 200
+    },
+    {
+      "name": "read-base64.json",
+      "request": "/mail/87ac5438-3653-43d9-5cb4-c38417185c80",
+      "sha256": "d04c8bb58bf8d29fbe00e7d844fd1893c0efb24a45b179f0e3c2d5d55593d6ce",
+      "size": 476,
+      "status": 200
+    },
+    {
+      "name": "read-lines.json",
+      "request": "/mail/c06df350-e6ef-4094-44bc-7d6e7d20c0b4",
+      "sha256": "1b0827487c18dc1f89b5f41bc0d5b7a16efbf2212c9023eda3a86eae47140a7e",
+      "size": 534,
+      "status": 200
+    },
+    {
+      "name": "search-filtered.json",
+      "request": "/mail?pageNumber=1&to=ann%40corpus.invalid",
+      "sha256": "059de73a9509b5bdd70923dd8e51f31c0850423f5a3cd01f4d969567ee417278",
+      "size": 2301,
+      "status": 200
+    },
+    {
+      "name": "search-empty.json",
+      "request": "/mail?pageNumber=1&to=nobody%40corpus.invalid",
+      "sha256": "6f0f0dea6b99fe62d96a703c94136bdc246e8038d2d1c74f6c911d9b157bc8f1",
+      "size": 49,
+      "status": 200
+    },
+    {
+      "name": "read-not-found.json",
+      "request": "/mail/not-an-id",
+      "sha256": "2825951266250e1edf8884cd68342b052f026ebf8965b6ea063a63c582c48b34",
+      "size": 251,
+      "status": 200
+    }
+  ],
+  "mail": [
+    {
+      "subject": "corpus-ann",
+      "to": "ann@corpus.invalid"
+    },
+    {
+      "subject": "corpus-joann",
+      "to": "joann@corpus.invalid"
+    },
+    {
+      "subject": "corpus-multipart",
+      "to": "ann@corpus.invalid"
+    },
+    {
+      "subject": "corpus-base64",
+      "to": "ann@corpus.invalid"
+    },
+    {
+      "subject": "corpus-lines",
+      "to": "ann@corpus.invalid"
+    }
+  ],
+  "target": "mailslurper"
+}

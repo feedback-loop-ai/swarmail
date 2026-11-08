@@ -1,0 +1,118 @@
+# T3.c: mailslurper_auth_plain_probe, 2026-11-08, one worker, 3 sequential runs, each under timeout 600 taskset -c 0-31
+# subject: the executable built from source (lock row mailslurper-source-build, eb6cd97d…58ff), launched through the launcher with main's pin
+## run 1
+# auth-probe-1
+# command: MAIL_COMPARE_<TARGET>=<the executable, verified against the lock's digest> timeout 600 taskset -c 0-31 /usr/bin/time -v <mail_compare test binary> --ignored --test-threads=1 --exact mailslurper_auth_plain_probe
+# uptime before:  09:32:10 up 14 days, 23:47,  0 users,  load average: 2.26, 3.72, 3.54
+
+running 1 test
+test mailslurper_auth_plain_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.10s
+
+	Command being timed: "target/debug/deps/mail_compare-6f6cb0965f3e32d6 --ignored --test-threads=1 --exact mailslurper_auth_plain_probe"
+	User time (seconds): 0.04
+	System time (seconds): 0.06
+	Percent of CPU this job got: 105%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.10
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 31156
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 10292
+	Voluntary context switches: 386
+	Involuntary context switches: 2
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 8
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+# exit: 0
+# uptime after:  09:32:11 up 14 days, 23:47,  0 users,  load average: 2.26, 3.72, 3.54
+## run 2
+# auth-probe-2
+# command: MAIL_COMPARE_<TARGET>=<the executable, verified against the lock's digest> timeout 600 taskset -c 0-31 /usr/bin/time -v <mail_compare test binary> --ignored --test-threads=1 --exact mailslurper_auth_plain_probe
+# uptime before:  09:32:11 up 14 days, 23:47,  0 users,  load average: 2.26, 3.72, 3.54
+
+running 1 test
+test mailslurper_auth_plain_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.10s
+
+	Command being timed: "target/debug/deps/mail_compare-6f6cb0965f3e32d6 --ignored --test-threads=1 --exact mailslurper_auth_plain_probe"
+	User time (seconds): 0.04
+	System time (seconds): 0.06
+	Percent of CPU this job got: 101%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.10
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 30996
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 10070
+	Voluntary context switches: 365
+	Involuntary context switches: 5
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+# exit: 0
+# uptime after:  09:32:11 up 14 days, 23:47,  0 users,  load average: 2.26, 3.72, 3.54
+## run 3
+# auth-probe-3
+# command: MAIL_COMPARE_<TARGET>=<the executable, verified against the lock's digest> timeout 600 taskset -c 0-31 /usr/bin/time -v <mail_compare test binary> --ignored --test-threads=1 --exact mailslurper_auth_plain_probe
+# uptime before:  09:32:11 up 14 days, 23:47,  0 users,  load average: 2.26, 3.72, 3.54
+
+running 1 test
+test mailslurper_auth_plain_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.10s
+
+	Command being timed: "target/debug/deps/mail_compare-6f6cb0965f3e32d6 --ignored --test-threads=1 --exact mailslurper_auth_plain_probe"
+	User time (seconds): 0.04
+	System time (seconds): 0.06
+	Percent of CPU this job got: 101%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.10
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 32136
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 10152
+	Voluntary context switches: 371
+	Involuntary context switches: 4
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+# exit: 0
+# uptime after:  09:32:11 up 14 days, 23:47,  0 users,  load average: 2.26, 3.72, 3.54
+
+## the probe's own transcript (run 1's; runs 2 and 3 pass the same assertion)
+# subject: the executable built from source, sha256 eb6cd97d114f881e6a6f7170ddbe1fe914d8f52f025839631e441807f2a458ff (checked by the launcher)
+# the published linux executable (zip 48f2f9ba…55f6, member 0cd9416b…2627) does not start and was not probed
+S: 220 Welcome to MailSlurper!
+C: EHLO identity.invalid
+S: 250 Hello. How very nice to meet you!
+C: AUTH PLAIN <base64 of \0probe\0pw>
+S: 221 Bye
+S: 221 Bye
+(connection closed by the server)
