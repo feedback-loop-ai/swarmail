@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "head": "2e5c28928d7bc254f8a261027c952fcaad8eed8f",
+  "controls_index_sha256": "8a83acc27c07313d4a59102bedd315c52d3985dda90e0c1d8c7304b7d10ca74c",
+  "cleanup_receipts_sha256": "d276d3bd475df4be2b6f849add871a5c62413b050cd40f6e6d0243a091e95e1e",
+  "eval_suite": {
+    "command": "cargo test --locked --offline -j 32 (in evals/, SWARMAIL_BIN=/home/valentin/source/feedback-loop-ai/swarmail-landing/compare-163b/target/compare-mail/swarmail-8bf5cfe05b7e896c, RUST_TEST_THREADS=32, timeout 3000)",
+    "head": "2e5c28928d7bc254f8a261027c952fcaad8eed8f",
+    "status": "pass"
+  },
+  "ci": {
+    "status": "run",
+    "run": "https://github.com/feedback-loop-ai/swarmail/actions/runs/42527328769"
+  }
+}
