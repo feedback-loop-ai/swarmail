@@ -1,0 +1,9 @@
+# swarmail: one worker, each command under timeout 600
+# uptime before:  23:55:56 up 15 days, 12:11,  3 users,  load average: 3.14, 3.18, 2.71
+# command: timeout 600 /usr/bin/time swarmail-evals comparison-contract --target swarmail --product docs/evals/agent-comparison.json
+# elapsed 15.55 s, max rss 24116 KB
+# command: timeout 600 /usr/bin/time swarmail-evals matrix --target swarmail --product docs/evals/agent-comparison.json --tier hard --agents <the builtin oracle and null> --trials 5
+swarmail-evals: seed=c9c52edbfe821579748147050a5780f56a6207ccdbcfc2e3d977ba33f2f62136 fixture_time=2026-11-08T21:55:56Z
+Command exited with non-zero status 1
+# elapsed 54.39 s, max rss 29632 KB
+# uptime after:  23:57:06 up 15 days, 12:12,  3 users,  load average: 2.08, 2.82, 2.62
