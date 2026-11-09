@@ -13,7 +13,7 @@ all by the operator on 2026-11-02. The operator's 2026-11-07 widening of #163
 [0129](../decisions/0129-agent-suite-comparison.md)
 ([spec](../../specs/agent-suite-comparison/spec.md)).
 
-**Status, 2026-11-09: the paid agent-suite comparison ran.** [`agent-comparison-2026-11-09.md`](agent-comparison-2026-11-09.md): 240 sessions on main `2e5c289`, four targets × three hard-tier tasks × four models × five trials. 236 passed: Swarmail 60/60, MailHog 60/60, Mailpit 59/60 and MailSlurper 57/60, which no test separates. Swarmail's sessions were the slowest by median (16.9 s, against 13.2 s on MailSlurper). Cost is unavailable. The throughput comparison is tracked in #349, and the status below is kept as it was.
+**Status, 2026-11-09: the paid agent-suite comparison ran.** [`agent-comparison-2026-11-09.md`](agent-comparison-2026-11-09.md): 240 sessions on main `2e5c289`, four targets × three hard-tier tasks × four models × five trials. 236 passed: Swarmail 60/60, MailHog 60/60, Mailpit 59/60 and MailSlurper 57/60, which no test separates. Session wall time is reported there but measures the model and its context, not the server. Cost is unavailable. The throughput comparison is tracked in #349, and the status below is kept as it was.
 
 **Status, 2026-11-02: one baseline, no comparison result.** The #151 paid
 baseline exists: [`baseline-2026-11-01.md`](baseline-2026-11-01.md), 395 of

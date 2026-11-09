@@ -17,9 +17,10 @@ sessions passed:
 
 All four failures are one model (codex-luna) on one task
 (`digest-lookalike`). Swarmail against MailSlurper, the widest gap, is not
-significant (Fisher exact, two-sided, p = 0.24). **Swarmail's sessions were
-the slowest**: median 16.9 s, against 13.2 s on MailSlurper and 13.3 s on
-MailHog. The cost of these sessions is unavailable (see [Cost](#cost)).
+significant (Fisher exact, two-sided, p = 0.24). Session wall time is
+reported below, but it measures the model and its context, not the mail
+server (see [Wall time](#wall-time)). The cost of these sessions is
+unavailable (see [Cost](#cost)).
 
 ## What ran
 
@@ -75,7 +76,15 @@ adapter in this run, not as a property of MailSlurper.
 
 ## Wall time
 
-Wall time per trial, over each target's 60 trials:
+**This is not a server speed measure.** A trial's wall time is the whole
+agent session. It is dominated by the model's time to first token, the
+number of turns, and the context sent each turn, which includes the tool
+definitions the target offers. The mail server's own work, an SMTP accept
+or a query, is milliseconds inside a session of 13–17 s. The comparison
+does not record per-call server time. Server throughput and wait latency
+are measured by the separate mail comparison (#349).
+
+Wall time per trial, over each target's 60 trials, for the record:
 
 | Target | Median | p95 | Max | Sum |
 |---|---|---|---|---|
@@ -84,12 +93,16 @@ Wall time per trial, over each target's 60 trials:
 | Mailpit | 15.7 s | 23.3 s | 24.7 s | 15.9 min |
 | Swarmail | 16.9 s | 23.8 s | 36.2 s | 16.5 min |
 
-Swarmail is the slowest by median and has the longest single trial. This
-run does not say why: the rows record no turn or tool-call counts, and no
-usage. Swarmail offers its full native tool set of 18 tools. The adapters
-offer 4 (Mailpit), 3 (MailHog) and 4 (MailSlurper), per the contracts in
+Swarmail's sessions have the highest median. The rows record no turn or
+tool-call counts and no usage, so the run cannot split that between model
+variance and context. One input does differ by target, and Swarmail's MCP
+design owns it: the tool surface. Swarmail offers its full native set of 18
+tools. The adapters offer 4 (Mailpit), 3 (MailHog) and 4 (MailSlurper), per
+the contracts in
 [`agent-controls-2026-11-08-main/contracts/`](agent-controls-2026-11-08-main/contracts/).
-A larger tool list is one candidate cause. Nothing here measures it.
+More tool schemas mean more context on every turn. This is a question about
+the cost of the agent surface, not about server speed. Measuring it needs
+usage capture, which 0129 §10 rejected pending a privacy review.
 
 ## Cost
 
@@ -105,9 +118,11 @@ vendor output, so no usage was captured.
   every task on every server almost every time. This run cannot rank the
   servers on agent success, and it makes no parity or superiority claim
   either way.
-- **Swarmail lost on wall time.** This is the one consistent difference in
-  the run, and it went against Swarmail. It belongs next to any agent claim
-  in the README.
+- **Session time ranks nothing about the servers.** It is model latency and
+  context, and it is asymmetric to what a test suite spends waiting on mail.
+  The only server-attributable input is the size of the tool surface (18
+  tools against 3–4). That is worth measuring as agent-surface cost, and it
+  is not a speed claim either way.
 - **A comparison that discriminates needs a harder or longer task**, where
   waiting, volume or lookalike mail stresses the server rather than the
   model. Throughput, wait latency and the cost to operate are measured
