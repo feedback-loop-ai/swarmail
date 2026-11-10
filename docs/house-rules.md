@@ -191,9 +191,11 @@ executes; it runs the pinned copies against the candidate.
 
 `deny.toml` allowlists permissive licenses only, and only those the locked
 tree uses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Unicode-3.0,
-and CDLA-Permissive-2.0 for two data crates. (Zlib and CC-BY-4.0 were
-dropped as unused allowances, #142; restoring either is a reviewed widening
-like any other.) The CDLA-Permissive-2.0 entry covers
+Zlib for `foldhash`, and CDLA-Permissive-2.0 for two data crates. (Zlib and
+CC-BY-4.0 were dropped as unused allowances, #142. Restoring either is a
+reviewed widening like any other. The operator restored Zlib on 2026-11-10,
+because the RUSTSEC-2026-0459 fix, rusqlite 0.41, brings in the Zlib-only
+`foldhash` 0.2.0 through hashbrown 0.17.) The CDLA-Permissive-2.0 entry covers
 `webpki-roots` and `webpki-root-certs`, Mozilla's root CA bundle shipped as
 data (the second is pulled in by hickory's platform verifier, #254). It is the only
 license under which rustls distributes the offline trust store, and it
