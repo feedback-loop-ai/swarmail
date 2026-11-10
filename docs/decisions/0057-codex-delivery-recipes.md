@@ -178,3 +178,10 @@ shared design, the accepted 0058 review matrix and its sole fast-feature
 Qwen-to-Sonnet dispatch fallback, legacy `self` routes, triage classifications
 and bounded returns, protected review and all deterministic gates are unchanged.
 No other acceptance follows from this directive.
+
+## Addendum — 2026-11-10 (operator: Fable 5.2)
+
+The `fable` alias in `.brokkr/adapters/claude.json` now resolves to
+`claude-fable-5-2`. Operator, 2026-11-10: "swap fable 5.1 with 5.2 in all
+recipes". Every seat this record routes to Fable 5.1 (`claude-fable-5-1`) runs
+Fable 5.2. Nothing else in this record changes.

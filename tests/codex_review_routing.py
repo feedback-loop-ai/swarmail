@@ -307,7 +307,7 @@ MIXED_ROUTE = {
                      ('spark-glm', 'local'), None),
     'review:guarantees': ('codex-review-guarantees', 'dsh', 'flash', 'deepseek-flash',
                           ('deepseek-official', 'uncontracted'), 'high'),
-    'review:independent': ('codex-review-independent', 'claude', 'fable', 'claude-fable-5-1', None, 'high'),
+    'review:independent': ('codex-review-independent', 'claude', 'fable', 'claude-fable-5-2', None, 'high'),
 }
 
 
@@ -440,9 +440,9 @@ CLAUDE_CAREFUL_ROUTE = {
                                     'claude-opus-5-5', None, 'high', True),
     'design:positions:robustness': ('dsh-position-robustness', 'dsh', 'flash', 'deepseek-flash',
                                     ('deepseek-official', 'uncontracted'), 'high', False),
-    'design:chief': ('claude-chief-architect', 'claude', 'fable', 'claude-fable-5-1', None, 'high', True),
+    'design:chief': ('claude-chief-architect', 'claude', 'fable', 'claude-fable-5-2', None, 'high', True),
     'implement': ('claude-implementer', 'claude', 'sonnet', 'claude-sonnet-5-5', None, 'high', True),
-    'review:correctness': ('codex-review-correctness', 'claude', 'fable', 'claude-fable-5-1',
+    'review:correctness': ('codex-review-correctness', 'claude', 'fable', 'claude-fable-5-2',
                            None, 'high', False),
     'review:security': ('codex-review-security', 'dsh', 'flash', 'deepseek-flash',
                         ('deepseek-official', 'uncontracted'), 'high', False),

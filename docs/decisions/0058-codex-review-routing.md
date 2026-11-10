@@ -108,3 +108,10 @@ The operator accepted [0098](0098-review-panel-flash-and-deadline.md) in
 chat on 2026-10-29. The pointer above, written while 0098 was proposed, is
 kept as recorded; 0098 now amends this record's correctness and guarantees
 assignments and the review deadline as it states.
+
+## Addendum — 2026-11-10 (operator: Fable 5.2)
+
+The `fable` alias in `.brokkr/adapters/claude.json` now resolves to
+`claude-fable-5-2`. Operator, 2026-11-10: "swap fable 5.1 with 5.2 in all
+recipes". Every seat this record routes to Fable 5.1 (`claude-fable-5-1`) runs
+Fable 5.2. Nothing else in this record changes.

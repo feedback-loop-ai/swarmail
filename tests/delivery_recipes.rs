@@ -368,7 +368,7 @@ fn reviewers_keep_exact_models_charters_efforts_and_the_only_fallback() {
     }));
     let claude = read_json(".brokkr/adapters/claude.json");
     for (model, route) in [
-        ("fable", "claude-fable-5-1"),
+        ("fable", "claude-fable-5-2"),
         ("sonnet", "claude-sonnet-5-5"),
     ] {
         assert_eq!(claude["models"][model], route);
@@ -1215,7 +1215,7 @@ const CLAUDE_CAREFUL_ROUTE: [RouteRow; 10] = [
         "chief-architect",
         "claude",
         "fable",
-        "claude-fable-5-1",
+        "claude-fable-5-2",
         Some("high"),
         true,
     ),
@@ -1235,7 +1235,7 @@ const CLAUDE_CAREFUL_ROUTE: [RouteRow; 10] = [
         "review-correctness",
         "claude",
         "fable",
-        "claude-fable-5-1",
+        "claude-fable-5-2",
         Some("high"),
         false,
     ),

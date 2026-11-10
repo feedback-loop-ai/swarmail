@@ -190,3 +190,10 @@ Compilation and resolution prove structure, not provider access, model
 quality or a completed review. A live run must still obtain five real
 review results before the recipe is called delivered. No push, merge,
 tag, publication, run, provider probe or decision acceptance follows.
+
+## Addendum — 2026-11-10 (operator: Fable 5.2)
+
+The `fable` alias in `.brokkr/adapters/claude.json` now resolves to
+`claude-fable-5-2`. Operator, 2026-11-10: "swap fable 5.1 with 5.2 in all
+recipes". Every seat this record routes to Fable 5.1 (`claude-fable-5-1`) runs
+Fable 5.2. Nothing else in this record changes.
