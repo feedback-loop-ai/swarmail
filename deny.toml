@@ -6,7 +6,8 @@
 # names every entry, CDLA-Permissive-2.0 included. An allowance nothing in
 # the tree uses is dropped rather than kept "just in case": cargo-deny warns
 # on an unmatched allowance, and re-adding one later is an ordinary,
-# reviewed change (Zlib and CC-BY-4.0 were dropped for that reason, #142 —
+# reviewed change (Zlib and CC-BY-4.0 were dropped for that reason, #142, and Zlib was restored on
+# 2026-11-10 for foldhash, below —
 # Zlib only ever appeared as an alternative in an OR expression that MIT
 # already satisfies, and no dependency is CC-BY-4.0. The crate's own
 # CC-BY-4.0 data file, scripts/data/html-entities.json, is not a dependency
@@ -28,6 +29,11 @@ allow = [
   # genuinely needs. The house rules name this allowance and both crates, so it
   # is a tracked allowance, not a silent widening.
   "CDLA-Permissive-2.0",
+  # foldhash 0.2.0, the hasher of hashbrown 0.17 under rusqlite 0.41's hashlink.
+  # Restored 2026-11-10 by operator ruling ("Upgrade + allow Zlib") for the
+  # RUSTSEC-2026-0459 fix: Zlib is permissive (no copyleft, no field-of-use
+  # restriction) and foldhash is Zlib-only, with no OR alternative.
+  "Zlib",
 ]
 
 # A new dependency needs a permissive license and a reason a human can
