@@ -53,11 +53,11 @@ they are useful when the operator has already ruled that path necessary:
 | Design: check       | Offline exec gate     | Offline exec gate     |
 | Implement           | Sol / high            | Sol / xhigh           |
 | Verify              | Pinned offline gates  | Pinned offline gates  |
-| Review: correctness | Fable 5.1 / high      | Official Flash / high |
+| Review: correctness | Fable 5.2 / high      | Official Flash / high |
 | Review: security    | Official Flash / high | Official Flash / high |
 | Review: guarantees  | absent                | Official Flash / high |
 | Review: tests       | GLM Flash / N/A       | GLM Flash / N/A       |
-| Review: independent | absent                | Fable 5.1 / high      |
+| Review: independent | absent                | Fable 5.2 / high      |
 | Review: deadline    | 14400 s, 3 attempts   | 14400 s, 3 attempts   |
 | Ship                | Pinned exec gate      | Pinned exec gate      |
 +---------------------+-----------------------+-----------------------+
@@ -72,7 +72,7 @@ they are useful when the operator has already ruled that path necessary:
 | astra     | gpt-6-astra           | Codex CLI                  |
 | qwen-max  | dashscope/qwen3.8-max | DashScope through dsh      |
 | opus      | claude-opus-5-5       | Claude CLI                 |
-| fable     | claude-fable-5-1      | Claude CLI                 |
+| fable     | claude-fable-5-2      | Claude CLI                 |
 | sonnet    | claude-sonnet-5-5     | Claude CLI                 |
 | haiku55   | claude-haiku-5-5      | Claude CLI                 |
 | flash     | deepseek-flash        | Official DeepSeek platform |
@@ -133,11 +133,11 @@ composed route, and every chain is a single model:
 | Intake              | Haiku 5.5 / high (workspace hands)       |
 | Design: simplicity  | Opus 5.5 / high (workspace hands)        |
 | Design: robustness  | Official Flash / high (dsh, no hands)    |
-| Design: chief       | Fable 5.1 / high (workspace hands)       |
+| Design: chief       | Fable 5.2 / high (workspace hands)       |
 | Design: check       | Offline exec gate (self's validator)     |
 | Implement           | Sonnet 5.5 / high, 14400 s, 3 attempts   |
 | Verify              | Pinned offline gates                     |
-| Review: correctness | Fable 5.1 / high                         |
+| Review: correctness | Fable 5.2 / high                         |
 | Review: security    | Official Flash / high                    |
 | Review: guarantees  | Official Flash / high                    |
 | Review: tests       | GLM Flash / N/A                          |

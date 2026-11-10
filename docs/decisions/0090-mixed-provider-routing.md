@@ -128,3 +128,10 @@ nothing beyond the acceptance.
 - **One record for the route.** [0103](0103-mixed-work-seats.md) records the
   same route from another candidate branch; this record is the one that
   governs the `mixed-opus-terra` recipe.
+
+## Addendum — 2026-11-10 (operator: Fable 5.2)
+
+The `fable` alias in `.brokkr/adapters/claude.json` now resolves to
+`claude-fable-5-2`. Operator, 2026-11-10: "swap fable 5.1 with 5.2 in all
+recipes". Every seat this record routes to Fable 5.1 (`claude-fable-5-1`) runs
+Fable 5.2. Nothing else in this record changes.

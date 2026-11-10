@@ -267,7 +267,7 @@ security-hold is a hard stop. `verify` and `ship` are hermetic exec
 seats — a shell proves what a model claims. Decision
 [0057](decisions/0057-codex-delivery-recipes.md) and its accepted amendment
 [0058](decisions/0058-codex-review-routing.md) define the operator-directed
-Codex recipes. Standard uses Fable 5.1 correctness, official DeepSeek Flash
+Codex recipes. Standard uses Fable 5.2 correctness, official DeepSeek Flash
 security and GLM Flash tests. Careful and the fast design/engine lanes require
 five separate results: Flash correctness, Flash security, GLM Flash tests, Flash
 guarantees and independent Fable. `codex-fast` uses GPT-6 Luna at xhigh for
@@ -288,7 +288,7 @@ results stay separate) and gives the `codex`, `codex-careful` and `codex-fast`
 review seat a 14400 s deadline instead of 3600 s.
 Accepted [0099](decisions/0099-claude-careful-recipe.md) records the
 2026-10-28/29 direction for `claude-careful`, a zero-Codex careful lane:
-Haiku 5.5 intake, an Opus 5.5 / official Flash / Fable 5.1 design council,
+Haiku 5.5 intake, an Opus 5.5 / official Flash / Fable 5.2 design council,
 Sonnet 5.5 implementation, and Fable correctness, Flash security and
 guarantees, GLM tests and Opus independent review, with careful's gates.
 DeepSeek Pro is forbidden; other reviewers

@@ -1,6 +1,6 @@
 {
   "name": "claude-careful",
-  "description": "Zero-Codex careful lane: Claude Haiku 5.5 intake; design positions Opus 5.5 simplicity and official DeepSeek Flash robustness through dsh with a Fable 5.1 chief; Sonnet 5.5 implementation; five required reviewers: Fable 5.1 correctness, official Flash security and guarantees, GLM-5.3-Flash tests through dsh (effort not applicable) and independent Opus 5.5, under a 4-hour deadline. Inherits careful's protected shell gates; the design check runs a byte-identical copy of self's pinned validator.",
+  "description": "Zero-Codex careful lane: Claude Haiku 5.5 intake; design positions Opus 5.5 simplicity and official DeepSeek Flash robustness through dsh with a Fable 5.2 chief; Sonnet 5.5 implementation; five required reviewers: Fable 5.2 correctness, official Flash security and guarantees, GLM-5.3-Flash tests through dsh (effort not applicable) and independent Opus 5.5, under a 4-hour deadline. Inherits careful's protected shell gates; the design check runs a byte-identical copy of self's pinned validator.",
   "extends": "codex-careful",
   "override": {
     "bundle": [

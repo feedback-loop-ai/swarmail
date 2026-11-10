@@ -93,3 +93,10 @@ Codex recipes' independent reviewer mapping. The shared design council
 now uses Codex Sol/Astra. Hermetic exec verification/shipping, the four
 review lenses, worst-verdict aggregation and the hard security hold remain
 in force. The historical ruling above is not rewritten.
+
+## Addendum — 2026-11-10 (operator: Fable 5.2)
+
+The `fable` alias in `.brokkr/adapters/claude.json` now resolves to
+`claude-fable-5-2`. Operator, 2026-11-10: "swap fable 5.1 with 5.2 in all
+recipes". Every seat this record routes to Fable 5.1 (`claude-fable-5-1`) runs
+Fable 5.2. Nothing else in this record changes.
