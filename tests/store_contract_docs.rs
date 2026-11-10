@@ -1613,10 +1613,17 @@ fn the_license_allowlist_is_the_one_house_rules_names() {
         .map(|l| l.trim_end_matches(',').trim_matches('"'))
         .collect();
     assert!(allowed.contains(&"CDLA-Permissive-2.0"), "{allowed:?}");
-    for unused in ["Zlib", "CC-BY-4.0"] {
+    assert!(
+        !allowed.contains(&"CC-BY-4.0"),
+        "CC-BY-4.0 is an unused allowance (#142)"
+    );
+    // Zlib was dropped as unused in #142 and restored on 2026-11-10 for the
+    // Zlib-only foldhash (rusqlite 0.41, RUSTSEC-2026-0459). It stays only
+    // while that crate is locked.
+    if allowed.contains(&"Zlib") {
         assert!(
-            !allowed.contains(&unused),
-            "{unused} is an unused allowance (#142)"
+            raw("Cargo.lock").contains("name = \"foldhash\""),
+            "Zlib is allowed only while the Zlib-only foldhash is locked"
         );
     }
     let rules = raw("docs/house-rules.md");
