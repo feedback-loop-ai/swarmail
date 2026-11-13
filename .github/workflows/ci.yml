@@ -462,13 +462,36 @@ jobs:
   # see a skipped rate proof on main, so every other need must then name
   # `success` explicitly — a failed, cancelled or skipped gate never
   # publishes. A tag needs the rate proof green; main admits only its
-  # `skipped`. `packages: write` is held by this job only on those two push
-  # refs: the continuous `:main` is a publication too (decisions 0018/0019).
-  # The image also waits on the chart proof and the real-Docker smoke
-  # (issue #141): the chart publication that follows it on a tag needs
-  # this job's success, so neither artifact outruns the other's proof.
-  docker:
-    runs-on: ubuntu-latest
+  # `skipped`. `packages: write` is held by these two jobs only on those two
+  # push refs: the continuous `:main` is a publication too (decisions
+  # 0018/0019). The image also waits on the chart proof and the real-Docker
+  # smoke (issue #141): the chart publication that follows it on a tag needs
+  # the `docker` job's success, so neither artifact outruns the other's
+  # proof.
+  #
+  # The image is published for linux/amd64 and linux/arm64, each built on a
+  # native runner of its own architecture (no QEMU emulation of the release
+  # build). `docker-build` pushes each platform by digest only — an untagged
+  # digest names no version and is not a publication — and runs the
+  # real-Docker smoke against that exact pushed digest on its own
+  # architecture. `docker` then guards the release tag and writes the tags
+  # as one multi-platform index over both digests, and refuses unless the
+  # index it wrote names both platforms. A refused tag can leave the two
+  # untagged digests behind; nothing ever points at them.
+  docker-build:
+    name: docker build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
     needs: [quality, test, coverage, deny, dependency-audit, brokkr-compile, release-rate-5k, chart-verify, docker-smoke]
     if: >-
       !cancelled()
@@ -483,6 +506,50 @@ jobs:
       && needs.docker-smoke.result == 'success'
       && ((github.ref == 'refs/heads/main' && needs.release-rate-5k.result == 'skipped')
         || (startsWith(github.ref, 'refs/tags/v') && needs.release-rate-5k.result == 'success'))
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push this platform's image by digest (no tag)
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=ghcr.io/feedback-loop-ai/swarmail,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=docker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.arch }}
+      - name: Smoke the pushed digest on its own architecture
+        env:
+          DOCKER_SMOKE_IMAGE: ghcr.io/feedback-loop-ai/swarmail@${{ steps.build.outputs.digest }}
+          DOCKER_SMOKE_PLATFORM: ${{ matrix.platform }}
+        run: bash scripts/docker-smoke.sh
+      - name: Hand the digest to the docker job
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "REFUSAL: build digest '$DIGEST' is not a sha256 digest" >&2; exit 1; }
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    if: github.event_name == 'push' && needs.docker-build.result == 'success'
     permissions:
       contents: read
       packages: write
@@ -522,28 +589,41 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_USER: ${{ github.actor }}
         run: scripts/publish-guard.sh "v$VERSION" feedback-loop-ai/swarmail
-      - name: Push the continuous tags (main + the exact commit)
-        if: github.ref == 'refs/heads/main'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          context: .
-          push: true
-          tags: |
-            ghcr.io/feedback-loop-ai/swarmail:main
-            ghcr.io/feedback-loop-ai/swarmail:sha-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Push the release tags (v* refs only, both forms)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ghcr.io/feedback-loop-ai/swarmail:v${{ steps.ver.outputs.version }}
-            ghcr.io/feedback-loop-ai/swarmail:${{ steps.ver.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          path: ${{ runner.temp }}/digests
+          pattern: image-digest-*
+          merge-multiple: true
+      - name: Push the tags as one multi-platform index
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          repo=ghcr.io/feedback-loop-ai/swarmail
+          cd "$RUNNER_TEMP/digests"
+          digests=(*)
+          [ "${#digests[@]}" -eq 2 ] || { echo "REFUSAL: expected 2 platform digests, found ${#digests[@]}: ${digests[*]}" >&2; exit 1; }
+          sources=()
+          for d in "${digests[@]}"; do
+            [[ "$d" =~ ^[0-9a-f]{64}$ ]] || { echo "REFUSAL: '$d' is not a sha256 digest" >&2; exit 1; }
+            sources+=("$repo@sha256:$d")
+          done
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            tags=("$repo:main" "$repo:sha-$GITHUB_SHA")
+          elif [[ "$GITHUB_REF" = refs/tags/v* ]]; then
+            tags=("$repo:v$VERSION" "$repo:$VERSION")
+          else
+            echo "REFUSAL: $GITHUB_REF publishes no image" >&2; exit 1
+          fi
+          args=()
+          for t in "${tags[@]}"; do args+=(--tag "$t"); done
+          docker buildx imagetools create "${args[@]}" "${sources[@]}"
+          for t in "${tags[@]}"; do
+            platforms="$(docker buildx imagetools inspect --raw "$t" \
+              | python3 -c 'import json,sys; m=json.load(sys.stdin)["manifests"]; print(" ".join(sorted({p["platform"]["os"]+"/"+p["platform"]["architecture"] for p in m if p.get("platform",{}).get("os")!="unknown"})))')"
+            [ "$platforms" = "linux/amd64 linux/arm64" ] || { echo "REFUSAL: $t names '$platforms', not linux/amd64 linux/arm64" >&2; exit 1; }
+            echo "$t: $platforms"
+          done
 
   # The Helm chart: lint + render both profiles + assert the deployment
   # contract (scripts/chart-verify.sh, helm-only, no cluster) on every push

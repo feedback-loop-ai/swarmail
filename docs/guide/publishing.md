@@ -4,7 +4,10 @@
 
 The crate is **not published on crates.io** — no version has ever been
 uploaded, and nothing in CI uploads one. What ships is the container image
-(`ghcr.io/feedback-loop-ai/swarmail`) and the OCI Helm chart; from source,
+(`ghcr.io/feedback-loop-ai/swarmail`, one multi-platform image for
+`linux/amd64` and `linux/arm64`, so an Apple-silicon Mac or an arm64 node
+runs it natively; the `v0.4.0` and earlier tags are `linux/amd64` only)
+and the OCI Helm chart; from source,
 install with `cargo install --locked --path .` from a checkout. The
 package is prepared for a first upload should the operator choose to make
 one: the packaged file set is curated in `Cargo.toml` (`include`) — the
