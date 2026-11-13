@@ -3,7 +3,11 @@
 # CI-only (the `docker-smoke` job): the hermetic verify seat installs
 # nothing and does not run it; an operator can run it locally the same way.
 #
-#   1. Build the repository's image once, under a name unique to this run.
+#   1. Build the repository's image once, under a name unique to this run
+#      — or, with DOCKER_SMOKE_IMAGE set (the `docker-build` job), pull that
+#      image instead: the exact digest CI pushed, smoked on a runner of its
+#      own architecture. With DOCKER_SMOKE_PLATFORM set (e.g. linux/arm64),
+#      the image must report that platform. A given image is never removed.
 #   2. Persistence under the image's own uid: a fresh named volume, a mail
 #      accepted with 250 over real SMTP, read back over REST after a
 #      graceful `docker stop` and, separately, after a hard `docker kill`
@@ -28,16 +32,21 @@ command -v docker >/dev/null || { echo "docker-smoke: docker is required" >&2; e
 command -v python3 >/dev/null || { echo "docker-smoke: python3 is required" >&2; exit 1; }
 
 run="smoke-$$-$(date +%s)"
-image="swarmail-${run}:local"
 volume="swarmail-${run}-data"
 work="$(mktemp -d "${TMPDIR:-/tmp}/docker-smoke.XXXXXX")"
-containers=() volumes=("$volume") images=("$image")
+containers=() volumes=("$volume") images=()
+if [ -n "${DOCKER_SMOKE_IMAGE:-}" ]; then
+  image="$DOCKER_SMOKE_IMAGE"
+else
+  image="swarmail-${run}:local"
+  images=("$image")
+fi
 
 cleanup() {
   local c v i
   for c in "${containers[@]}"; do docker rm -f "$c" >/dev/null 2>&1 || true; done
   for v in "${volumes[@]}"; do docker volume rm -f "$v" >/dev/null 2>&1 || true; done
-  for i in "${images[@]}"; do docker image rm -f "$i" >/dev/null 2>&1 || true; done
+  for i in ${images[@]+"${images[@]}"}; do docker image rm -f "$i" >/dev/null 2>&1 || true; done
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -123,8 +132,26 @@ anon_volume() { # <container> — the anonymous volume mounted at /data
 
 gone() { ! docker container inspect "$1" >/dev/null 2>&1; }
 
-step "build the image ($image)"
-docker build -q -t "$image" . >/dev/null
+if [ -n "${DOCKER_SMOKE_IMAGE:-}" ]; then
+  step "pull the given image ($image)"
+  docker pull -q "$image" >/dev/null
+else
+  step "build the image ($image)"
+  docker build -q -t "$image" . >/dev/null
+fi
+
+if [ -n "${DOCKER_SMOKE_PLATFORM:-}" ]; then
+  step "the image is $DOCKER_SMOKE_PLATFORM"
+  platform="$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$image")"
+  [ "$platform" = "$DOCKER_SMOKE_PLATFORM" ] || fail "the image is '$platform', not $DOCKER_SMOKE_PLATFORM"
+  case "$DOCKER_SMOKE_PLATFORM" in
+    linux/amd64) native=x86_64 ;;
+    linux/arm64) native=aarch64 ;;
+    *) fail "no native host architecture is known for $DOCKER_SMOKE_PLATFORM" ;;
+  esac
+  [ "$(uname -m)" = "$native" ] \
+    || fail "this host is $(uname -m): $DOCKER_SMOKE_PLATFORM would run emulated, which proves nothing about the native image"
+fi
 
 step "the image runs as its own non-root uid"
 user="$(docker image inspect -f '{{.Config.User}}' "$image")"
