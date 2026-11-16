@@ -2123,6 +2123,8 @@ fn identities(trial_id: &str, count: u8) -> Vec<Identity> {
 /// `target/<profile>/build/<pkg>/<hash>/out/`. The final binary stays in
 /// `target/<profile>/` in both.
 #[cfg(test)]
+// Its callers are the Linux-only runner probes; macOS compiles it unused.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn built_evals_executable() -> PathBuf {
     let me = std::env::current_exe().unwrap();
     me.ancestors()

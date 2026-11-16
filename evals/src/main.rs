@@ -3503,6 +3503,8 @@ mod tests {
     /// binary that holds it. Cargo 1.100 moved unit-test binaries from
     /// `target/<profile>/deps/` to `target/<profile>/build/<pkg>/<hash>/out/`;
     /// the final binary stays in `target/<profile>/` (as `runner`'s helper).
+    // Its caller is the Linux-only matrix probe; macOS compiles it unused.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn built_evals_executable() -> std::path::PathBuf {
         let me = std::env::current_exe().unwrap();
         me.ancestors()
