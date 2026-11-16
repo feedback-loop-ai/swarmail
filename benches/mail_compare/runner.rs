@@ -2176,6 +2176,18 @@ pub struct HoldEndpoints {
     pub pop3: Option<String>,
 }
 
+/// The endpoints of a launched target, each the `host:port` it listens on:
+/// the POP3 listener's included, so a reader connects to what is printed.
+pub fn hold_endpoints(owned: &Owned) -> HoldEndpoints {
+    HoldEndpoints {
+        target: owned.kind,
+        leaf: owned.leaf.as_ref().map(|l| l.name().to_owned()),
+        smtp: owned.smtp.to_string(),
+        http: (owned.http_addr.port() != 0).then(|| owned.http_addr.to_string()),
+        pop3: owned.pop3.as_ref().map(|p| p.addr().to_string()),
+    }
+}
+
 /// What it printed when it was done.
 #[derive(Debug, serde::Serialize)]
 pub struct HoldReceipt {
@@ -2262,14 +2274,7 @@ where
             return Err(format!("{} did not launch: {e:?}", spec.kind));
         }
     };
-    let endpoints = HoldEndpoints {
-        target: spec.kind,
-        leaf: owned.leaf.as_ref().map(|l| l.name().to_owned()),
-        smtp: owned.smtp.to_string(),
-        http: (owned.http_addr.port() != 0).then(|| owned.http_addr.to_string()),
-        pop3: owned.pop3.as_ref().map(|_| "pop3".to_owned()),
-    };
-    let line = serde_json::to_string(&endpoints).expect("endpoints serialize");
+    let line = serde_json::to_string(&hold_endpoints(&owned)).expect("endpoints serialize");
     let announced = writeln!(out, "{line}").and_then(|()| out.flush());
     let mut bytes = 0u64;
     if announced.is_ok() {

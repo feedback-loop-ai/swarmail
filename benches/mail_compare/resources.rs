@@ -1204,12 +1204,28 @@ pub fn footprint(
                 }
             }
         }
-        entry.insert("installed_bytes".into(), installed.into());
-        entry.insert("installed_files".into(), files.into());
-        entry.insert(
-            "installed_basis".into(),
-            "the executable, its checked members and the whole pinned runtime tree".into(),
-        );
+        if pin.artifact.kind == crate::protocol::ArtifactKind::Archive {
+            // The installed tree is the extracted archive, which nothing
+            // here walks or pins (smtp4dev's .NET runtime is inside its
+            // archive): the size is owed, and the digest-checked
+            // executable's own size is published under its own name, never
+            // as an installed size (0132 §4.5 counts every pinned runtime
+            // tree).
+            entry.insert("installed_bytes".into(), serde_json::Value::Null);
+            entry.insert("installed_files".into(), serde_json::Value::Null);
+            entry.insert(
+                "installed_basis".into(),
+                "owed: the extracted archive is not walked".into(),
+            );
+            entry.insert("executable_bytes".into(), size(measured)?.into());
+        } else {
+            entry.insert("installed_bytes".into(), installed.into());
+            entry.insert("installed_files".into(), files.into());
+            entry.insert(
+                "installed_basis".into(),
+                "the executable, its checked members and the whole pinned runtime tree".into(),
+            );
+        }
         // What the row needs that nothing pins is labelled, never zero.
         let unpinned = match t {
             TargetKind::MailslurperSourceBuild => Some("host glibc"),

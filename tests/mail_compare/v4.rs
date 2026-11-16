@@ -3590,6 +3590,71 @@ fn footprint_installed_bytes_include_the_runtime_tree() {
     );
 }
 
+/// The targets whose lock artifact is an archive: Mailpit, smtp4dev and
+/// Inbucket among the launched ones.
+fn archive_targets() -> Vec<&'static str> {
+    let l = lock5();
+    l["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["pin"]["artifact"]["kind"] == "archive")
+        .map(|e| e["target"].as_str().unwrap())
+        .filter(|t| *t != "mailslurper")
+        .map(|t| &*Box::leak(t.to_owned().into_boxed_str()))
+        .collect()
+}
+
+#[test]
+fn footprint_owes_the_installed_size_of_an_archive_row() {
+    let f = footprints();
+    let v = run_footprint(&f).unwrap();
+    let archives = archive_targets();
+    assert_eq!(archives, ["mailpit", "smtp4dev", "inbucket"]);
+    for t in archives {
+        let e = entry(&v, t);
+        assert!(e["installed_bytes"].is_null(), "{t}: {e}");
+        assert!(e["installed_files"].is_null(), "{t}: {e}");
+        assert_eq!(
+            e["installed_basis"], "owed: the extracted archive is not walked",
+            "{t}"
+        );
+        let own = std::fs::metadata(&f.bins[&TargetKind::parse(t).unwrap()])
+            .unwrap()
+            .len();
+        assert_eq!(
+            e["executable_bytes"], own,
+            "{t}: the executable under its own name"
+        );
+        assert!(
+            e["download_bytes"].as_u64().unwrap() > 0,
+            "{t}: the download stands"
+        );
+    }
+}
+
+#[test]
+fn footprint_never_publishes_an_executable_alone_as_installed() {
+    let f = footprints();
+    let v = run_footprint(&f).unwrap();
+    let archives = archive_targets();
+    for e in v["targets"].as_array().unwrap() {
+        let t = e["target"].as_str().unwrap();
+        let exe = std::fs::metadata(&f.bins[&TargetKind::parse(t).unwrap()])
+            .unwrap()
+            .len();
+        if archives.contains(&t) {
+            // Whatever the document says, it is not the executable's size.
+            assert_ne!(e["installed_bytes"].as_u64(), Some(exe), "{t}");
+            assert!(e.get("executable_bytes").is_some(), "{t}");
+        } else {
+            // A row whose artifact is the executable keeps its sum.
+            assert!(e["installed_bytes"].as_u64().is_some(), "{t}: {e}");
+            assert!(e.get("executable_bytes").is_none(), "{t}");
+        }
+    }
+}
+
 #[test]
 fn footprint_labels_an_unpinned_runtime_and_never_counts_it_as_zero() {
     let f = footprints();
@@ -3610,7 +3675,13 @@ fn footprint_labels_an_unpinned_runtime_and_never_counts_it_as_zero() {
             e.get("runtime_bytes").is_none(),
             "{t}: an unpinned runtime has no byte count"
         );
-        assert!(e["installed_bytes"].as_u64().unwrap() > 0);
+        // smtp4dev's .NET runtime is inside its archive, which is not walked:
+        // its installed size is owed, and the label above stands beside it.
+        if t == "smtp4dev" {
+            assert!(e["installed_bytes"].is_null(), "{e}");
+        } else {
+            assert!(e["installed_bytes"].as_u64().unwrap() > 0);
+        }
     }
     // A target whose runtime is pinned or absent carries no such label.
     for t in ["mailpit", "greenmail", "swarmail"] {
@@ -3824,6 +3895,139 @@ async fn hold_refuses_bytes_on_stdin_by_name() {
     .await
     .unwrap_err();
     assert!(w.contains("--samples"), "{w}");
+}
+
+/// A writer the test can read while `hold` still holds the other end.
+#[derive(Clone, Default)]
+struct HeldOut(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for HeldOut {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl HeldOut {
+    /// The first `n` complete lines, once they have been printed.
+    async fn lines(&self, n: usize) -> Vec<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let text = String::from_utf8(self.0.lock().unwrap().clone()).unwrap();
+            let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+            if lines.len() >= n && text.ends_with('\n') {
+                return lines;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no line {n}: {text:?}"
+            );
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn hold_prints_each_endpoint_as_the_address_it_listens_on() {
+    // A launch without a leaf, held open by a pipe whose far end stays up.
+    let spec = swarmail_spec(targets::swarmail_template(0));
+    let root = tempfile::tempdir().unwrap();
+    let (keep, reader) = tokio::io::duplex(8);
+    let out = HeldOut::default();
+    let (o, r) = (out.clone(), root.path().to_owned());
+    let held = tokio::spawn(async move {
+        let mut o = o;
+        runner::hold(
+            &spec,
+            (&r.join("hold"), &r.join("samples.jsonl")),
+            &limits(),
+            &wire::Clock(Instant::now()),
+            Duration::from_millis(100),
+            reader,
+            &mut o,
+            std::future::pending(),
+        )
+        .await
+    });
+    let first: Value = serde_json::from_str(&out.lines(1).await[0]).unwrap();
+    for key in ["smtp", "http"] {
+        let addr: std::net::SocketAddr = first[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("{key} is an address: {first}"))
+            .parse()
+            .unwrap_or_else(|e| panic!("{key} is host:port: {e}: {first}"));
+        tokio::net::TcpStream::connect(addr)
+            .await
+            .unwrap_or_else(|e| panic!("{key} {addr} accepts a connect: {e}"));
+    }
+    drop(keep);
+    let receipt = held.await.unwrap().expect("EOF ends the hold");
+    runner::hold_verdict(&receipt).unwrap();
+    // A POP3 listener prints its address, not a word.
+    let pop3: std::net::SocketAddr = "127.0.0.1:2110".parse().unwrap();
+    let http: std::net::SocketAddr = "127.0.0.1:8025".parse().unwrap();
+    let owned = targets::Owned::fixture(TargetKind::Greenmail, http, Some(pop3), &limits());
+    let e = runner::hold_endpoints(&owned);
+    assert_eq!(e.pop3.as_deref(), Some("127.0.0.1:2110"));
+    assert_eq!(e.http.as_deref(), Some("127.0.0.1:8025"));
+    let line = serde_json::to_value(&e).unwrap();
+    assert_eq!(line["pop3"], "127.0.0.1:2110");
+    // And a target with no POP3 listener prints none.
+    let owned = targets::Owned::fixture(TargetKind::Mailpit, http, None, &limits());
+    assert!(runner::hold_endpoints(&owned).pop3.is_none());
+}
+
+#[tokio::test]
+async fn a_hold_ended_by_its_interrupt_tears_down_and_prints_a_proved_receipt() {
+    let spec = swarmail_spec(targets::swarmail_template(0));
+    let root = tempfile::tempdir().unwrap();
+    // The pipe stays open and silent: only the interrupt can end it, and it
+    // fires after the endpoints line has been printed.
+    let (_keep, reader) = tokio::io::duplex(8);
+    let (fire, interrupt) = tokio::sync::oneshot::channel::<()>();
+    let out = HeldOut::default();
+    let (o, r) = (out.clone(), root.path().to_owned());
+    let held = tokio::spawn(async move {
+        let mut o = o;
+        runner::hold(
+            &spec,
+            (&r.join("hold"), &r.join("samples.jsonl")),
+            &limits(),
+            &wire::Clock(Instant::now()),
+            Duration::from_millis(100),
+            reader,
+            &mut o,
+            async {
+                let _ = interrupt.await;
+            },
+        )
+        .await
+    });
+    let lines = out.lines(1).await;
+    assert_eq!(
+        lines.len(),
+        1,
+        "the receipt is not printed before the interrupt"
+    );
+    assert!(!held.is_finished(), "it holds until it is interrupted");
+    fire.send(()).unwrap();
+    let receipt = held.await.unwrap().expect("the interrupt ends the hold");
+    assert!(receipt.cleanup.proved(), "{:?}", receipt.cleanup);
+    assert_eq!(receipt.stdin_bytes, 0);
+    runner::hold_verdict(&receipt).expect("an interrupt is a clean end");
+    let lines = out.lines(2).await;
+    let done: Value = serde_json::from_str(&lines[1]).unwrap();
+    assert_eq!(done["cleanup"]["reaped"], true);
+    assert_eq!(done["cleanup"]["scratch_removed"], true);
+    assert!(
+        done["cleanup"].get("cgroup_removed").is_none(),
+        "no leaf, so no leaf receipt: {done}"
+    );
 }
 
 // ---- T5.3 ------------------------------------------------------------------
