@@ -1,0 +1,18 @@
+{
+  "index_version": 1,
+  "run_id": "collect-20261107T112319Z-3344019",
+  "artifacts": {
+    "manifest.json": [
+      "cac66c377ab5081bd9ae77fb0ae00b497e122bf43380116003c256aa1b386363",
+      63902
+    ],
+    "report.json": [
+      "fbd134e321fc5ce3e142922237ab3714759024aaa9686b5233f3839e5c93dd94",
+      345116
+    ],
+    "samples.jsonl": [
+      "70d0c4f83f6b4c1cd0c23eab2b8526512277b7935885aac675679f9a68219780",
+      284097067
+    ]
+  }
+}

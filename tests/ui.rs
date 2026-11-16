@@ -977,7 +977,7 @@ async fn smtp_thread_headers_extract_ids_at_ingest() {
     assert_eq!(refs, vec!["ancestor@x.io", "root@x.io"], "{mail}");
 }
 
-// ---------- the run console (issue #355, proposed decision 0134) ----------
+// ---------- the run console (issue #355, decision 0134) ----------
 //
 // No JavaScript engine runs in any gate, so the script is asserted on the
 // bytes the server hands out; what only a browser can show is listed in

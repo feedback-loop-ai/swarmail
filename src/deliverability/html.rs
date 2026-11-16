@@ -864,6 +864,7 @@ mod tests {
                         rule_set_id: super::super::RULE_SET_ID.into(),
                         findings: vec![],
                         dns: Default::default(),
+                        arc: Default::default(),
                         total: 0,
                     }
                 );
@@ -883,6 +884,7 @@ mod tests {
                     rule_set_id: super::super::RULE_SET_ID.into(),
                     findings: vec![],
                     dns: Default::default(),
+                    arc: Default::default(),
                     total: 0,
                 })
             );
@@ -920,6 +922,7 @@ mod tests {
             rule_set_id: super::super::RULE_SET_ID.into(),
             findings,
             dns: Default::default(),
+            arc: Default::default(),
             total,
         }
     }
@@ -1219,7 +1222,7 @@ mod tests {
         );
         assert_eq!(
             fixture["catalogue_snapshot"]["rule_set_id"],
-            "swarmail-html/8"
+            "swarmail-html/9"
         );
         let c = catalogue(DATA).unwrap();
         assert_eq!(c.rules.len(), 7);

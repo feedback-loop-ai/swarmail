@@ -1251,7 +1251,7 @@ impl<'a> From<&'a Email> for CompactEmail<'a> {
     }
 }
 
-// ---------- the UI projection (proposed decision 0134) ----------
+// ---------- the UI projection (decision 0134) ----------
 //
 // Dedicated borrowed structs, never `LinkMetadata`, `Attachment` or
 // `IcsEvent`: their derives would publish `rel`, `sha256`, `stored` and

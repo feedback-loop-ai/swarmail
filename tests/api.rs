@@ -5805,7 +5805,7 @@ async fn the_documents_describe_the_compact_view_and_fields() {
     srv.stop().await;
 }
 
-// ---------- the run console's read-only additions (proposed decision 0134) ----------
+// ---------- the run console's read-only additions (decision 0134) ----------
 
 /// Deliver `raw` into `inbox` over real SMTP, saying `helo` at the greeting,
 /// and return the accepted mail's id (the id the `250` carries).
