@@ -370,7 +370,7 @@ naming the target and the cause), and a shutdown's undelivered backlog in
   is built on these: `/ui/inbox/{inbox}` and `/ui/inbox/{inbox}/thread/{key}`
   update live, no manual refresh.
 - `GET /api/v1/messages/{id}/projection` — a read-only projection for the web
-  UI's run console (proposed decision 0132): `{id, smtp_client_ip, smtp_helo,
+  UI's run console (proposed decision 0134): `{id, smtp_client_ip, smtp_helo,
   links, attachments}`, always those five members. `links` is `null` when the
   stored occurrences are unknown, else `{total, items}` with each item
   `{url, anchor_text, source}`; `attachments` likewise, each item

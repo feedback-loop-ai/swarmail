@@ -982,7 +982,7 @@ impl Store {
         out
     }
 
-    /// `(inbox, count, last_received_ms)` sorted by name (decision 0132 §7).
+    /// `(inbox, count, last_received_ms)` sorted by name (decision 0134 §7).
     /// The stamp is the `received_ms` of the mail most recently stored, the
     /// back of the deque: inserts push back and pruning pops the front, so
     /// it is one O(1) read per inbox under the same shard lock `inboxes`
@@ -1304,7 +1304,7 @@ mod tests {
     }
 
     /// The inbox summary carries the stamp of the mail most recently
-    /// stored (decision 0132 §7): after two inserts the second's, under a
+    /// stored (decision 0134 §7): after two inserts the second's, under a
     /// cap of 1 the survivor's, and after a clear the inbox is absent.
     #[test]
     fn inbox_summaries_carry_the_newest_retained_stamp() {

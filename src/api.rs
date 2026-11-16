@@ -1103,7 +1103,7 @@ impl InboxPageQuery {
 }
 
 /// One page of the sorted inbox names with their counts and the stamp of
-/// the mail most recently stored in each (decision 0132 §7).
+/// the mail most recently stored in each (decision 0134 §7).
 pub(crate) fn inbox_page(store: &Store, limit: usize, offset: usize) -> Vec<InboxSummary> {
     store
         .inbox_summaries()
@@ -1131,7 +1131,7 @@ pub struct InboxSummary {
     pub name: String,
     pub count: usize,
     /// The server's ingest stamp of the mail most recently stored in the
-    /// inbox (decision 0132 §7), `null` if it holds none at the read. Always
+    /// inbox (decision 0134 §7), `null` if it holds none at the read. Always
     /// serialized; read from the store on each request, never persisted.
     pub last_received_ms: Option<i64>,
 }
@@ -1251,7 +1251,7 @@ impl<'a> From<&'a Email> for CompactEmail<'a> {
     }
 }
 
-// ---------- the UI projection (proposed decision 0132) ----------
+// ---------- the UI projection (proposed decision 0134) ----------
 //
 // Dedicated borrowed structs, never `LinkMetadata`, `Attachment` or
 // `IcsEvent`: their derives would publish `rel`, `sha256`, `stored` and
@@ -1677,7 +1677,7 @@ mod compact_view {
         }
     }
 
-    /// Decision 0132 §2, §5: the projection caps each list at 250 with its
+    /// Decision 0134 §2, §5: the projection caps each list at 250 with its
     /// exact stored total, reads only stored fields (the mail has an empty
     /// `raw`), serializes an unknown list as `null`, and writes none of the
     /// members the ruling withholds.
@@ -2413,7 +2413,7 @@ async fn get_message(
     compat::render_by_id(&state, id, |e| Json(e).into_response()).await
 }
 
-/// `GET /api/v1/messages/{id}/projection` (decision 0132 §1–§5): the stored
+/// `GET /api/v1/messages/{id}/projection` (decision 0134 §1–§5): the stored
 /// fields the console shows and no `Email` serialization carries. It reads
 /// one stored mail and serializes fields `build_email` wrote — never `raw`,
 /// no extraction, no deliverability report — and has no other method.
@@ -3460,7 +3460,7 @@ mod tests {
         }
     }
 
-    /// Decision 0132 §6: the degraded body carries both store counters
+    /// Decision 0134 §6: the degraded body carries both store counters
     /// beside `status` and `degraded`, and they are the store's own.
     #[tokio::test]
     async fn a_degraded_healthz_still_carries_the_counters() {
@@ -3747,7 +3747,7 @@ mod tests {
         }
         let (code, body) = http_probe(http_addr, "/healthz").await;
         assert_eq!(code, 503, "{body}");
-        // Decision 0132 §6 (addendum to 0027 §2): the degraded body carries
+        // Decision 0134 §6 (addendum to 0027 §2): the degraded body carries
         // the store's two lifetime counters beside `status` and `degraded`.
         assert_eq!(
             body,

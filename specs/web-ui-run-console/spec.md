@@ -1,12 +1,12 @@
 # Web UI run console (issue #355)
 
-Decision: 0132 — [a read-only UI projection route and two read-only fields](../../docs/decisions/0132-ui-projection-route.md) (proposed; acceptance is the operator's)
+Decision: 0134 — [a read-only UI projection route and two read-only fields](../../docs/decisions/0134-ui-projection-route.md) (proposed; acceptance is the operator's)
 
 - **Run:** `issue-355-rework-the-web-ui-as-a-c69a5333`, design phase, chief seat, 2026-11-16.
 - **Reference design:** [prototype.html](prototype.html), accepted by the operator on 2026-11-16 (sample data, invented mail).
 - **Operator ruling:** [operator-ruling.md](operator-ruling.md), 2026-11-16, "Amend for a UI projection".
 - **Plan and tasks:** [plan.md](plan.md), [tasks.md](tasks.md).
-- **Hold:** the delivery builds the whole design against proposed 0132, as the operator ruled. The pull request is not merged on green: it waits for the operator's acceptance of 0132.
+- **Hold:** the delivery builds the whole design against proposed 0134, as the operator ruled. The pull request is not merged on green: it waits for the operator's acceptance of 0134.
 
 ## What and why
 
@@ -33,7 +33,7 @@ Accepted decisions this design relies on and does not change:
 - [0108](../../docs/decisions/0108-compact-email-view.md): the presentation cap of 250 entries with an exact total beside a longer list. The projection reuses that cap.
 - Issue #56: mail text reaches the DOM through `textContent` only, previews are sandboxed, one CSP string serves every UI route.
 
-Accepted decisions that proposed 0132 amends by dated addendum, on the operator's ruling:
+Accepted decisions that proposed 0134 amends by dated addendum, on the operator's ruling:
 
 - [0110](../../docs/decisions/0110-attachments-and-ics.md) §7 ("No REST route"): attachment labels and ICS fields gain one REST read. Bytes stay MCP-only.
 - [0094](../../docs/decisions/0094-focused-mail-waits.md) §2: link occurrences gain one REST read. Every existing `Email` serialization still skips them.
@@ -132,7 +132,7 @@ The intake's seventeen criteria stand except where the code or the operator's ru
 6. The reader header links to `/ui/message/{id}` ("Open standalone") and, at narrow widths, shows a back control to the stream.
 7. States: "Details unavailable — retrying" when the projection read fails; "Deliverability unavailable — retrying" when the report read fails; "Message not found (pruned or cleared)." when either answers `404` or the selected mail leaves the view. A failed report is never shown as "no findings".
 
-### R6. The projection route (proposed 0132 §1–§5)
+### R6. The projection route (proposed 0134 §1–§5)
 
 1. One new route: `GET /api/v1/messages/{id}/projection`. It has no other method.
 2. The body is one object whose five members are always present:
@@ -165,7 +165,7 @@ The intake's seventeen criteria stand except where the code or the operator's ru
 9. No existing response changes: `GET /api/v1/messages/{id}`, the lists, the compact view, the thread view, the feed frames, webhook payloads, MCP results and the compat shims keep their bytes.
 10. The route, its response schema and its `400`, `403` and `404` answers are documented in `src/static/openapi.json`, and `src/static/llms.txt` names the route.
 
-### R7. Two read-only fields (proposed 0132 §6–§7)
+### R7. Two read-only fields (proposed 0134 §6–§7)
 
 1. `GET /healthz`: the `200 ok` and `503 degraded` bodies gain `emails_inserted_total` and `emails_dropped_total`, the two store counters `/metrics` already exposes as `swarmail_emails_inserted_total` and `swarmail_emails_dropped_total`. The `503 stopping` body stays exactly `{"status":"stopping"}`.
 2. `GET /api/v1/inboxes`: every item gains `last_received_ms`, the `received_ms` of the mail most recently stored in that inbox (the newest retained position), an integer, or `null` if the inbox holds no mail at the read. The member is always serialized. It is read from the store on every request and is never persisted or mirrored. It is the server's ingest stamp, never the mail's `Date` header.
@@ -210,7 +210,7 @@ The intake's seventeen criteria stand except where the code or the operator's ru
 
 ### R11. Scope
 
-Changed: `src/ui.rs`, `src/static/ui.js`, `src/static/ui.css` (new), `src/api.rs`, `src/pop3.rs` and `tests/smtp_edges.rs` (test-only: pinned bodies follow the additive 0132 members), `src/store.rs` (one read-only method), `src/static/openapi.json`, `src/static/llms.txt`, `tests/ui.rs`, `tests/api.rs`, `docs/guide/rest-api.md`, `docs/guide/focused-waits.md`, `docs/guide/attachments.md`, `docs/decisions/0132-ui-projection-route.md` and its row in `docs/decisions/README.md`, one appended dated pointer in each of the 0110, 0094, 0126 and 0027 records, and this directory. Untouched: `Cargo.toml`, `Cargo.lock`, `deny.toml`, `evals/`, `scripts/`, `.brokkr/`, `.github/`, `src/smtp.rs`, `src/extract.rs`, `src/feed.rs`, `src/model.rs`.
+Changed: `src/ui.rs`, `src/static/ui.js`, `src/static/ui.css` (new), `src/api.rs`, `src/pop3.rs` and `tests/smtp_edges.rs` (test-only: pinned bodies follow the additive 0134 members), `src/store.rs` (one read-only method), `src/static/openapi.json`, `src/static/llms.txt`, `tests/ui.rs`, `tests/api.rs`, `docs/guide/rest-api.md`, `docs/guide/focused-waits.md`, `docs/guide/attachments.md`, `docs/decisions/0134-ui-projection-route.md` and its row in `docs/decisions/README.md`, one appended dated pointer in each of the 0110, 0094, 0126 and 0027 records, and this directory. Untouched: `Cargo.toml`, `Cargo.lock`, `deny.toml`, `evals/`, `scripts/`, `.brokkr/`, `.github/`, `src/smtp.rs`, `src/extract.rs`, `src/feed.rs`, `src/model.rs`.
 
 ## Deviations from the prototype
 
@@ -288,7 +288,7 @@ Every criterion names where it is proven. "Served page" means the bytes of a rea
 
 - **AC30.** Every gate in `docs/house-rules.md` § Gates is clean, the coverage gate at 100% of lines, branches and functions with its selftest, with no coverage exclusion attribute.
 - **AC31.** `git diff main --stat` shows no change to `Cargo.toml`, `Cargo.lock`, `deny.toml`, `evals/`, `scripts/`, `.brokkr/` or `.github/`.
-- **AC32.** `docs/decisions/0132-ui-projection-route.md` has status `proposed` and one row in `docs/decisions/README.md`; the 0110, 0094, 0126 and 0027 records differ from `main` only by lines appended after their last line (`tests/store_contract_docs.rs` passes).
+- **AC32.** `docs/decisions/0134-ui-projection-route.md` has status `proposed` and one row in `docs/decisions/README.md`; the 0110, 0094, 0126 and 0027 records differ from `main` only by lines appended after their last line (`tests/store_contract_docs.rs` passes).
 - **AC33.** The delivery's report lists the items under "Not gate-provable" as manual review and does not report them as passed gates.
 
 ## Not gate-provable

@@ -1,6 +1,6 @@
 # Plan — web UI run console (issue #355)
 
-Spec: [spec.md](spec.md) · Tasks: [tasks.md](tasks.md) · Decision: [0132](../../docs/decisions/0132-ui-projection-route.md) (proposed) · Reference: [prototype.html](prototype.html)
+Spec: [spec.md](spec.md) · Tasks: [tasks.md](tasks.md) · Decision: [0134](../../docs/decisions/0134-ui-projection-route.md) (proposed) · Reference: [prototype.html](prototype.html)
 
 ## Technical context
 
@@ -21,8 +21,8 @@ Spec: [spec.md](spec.md) · Tasks: [tasks.md](tasks.md) · Decision: [0132](../.
 | Issue #56 | One CSP constant, unchanged; `textContent` only; bare `sandbox`; no mail-controlled `href`. |
 | Dependencies | None added. `Cargo.toml`, both lockfiles and `deny.toml` are untouched. |
 | Coverage | New Rust is a handful of straight-line functions, each reached by a wire test or an inline unit test. |
-| Code under a proposed decision (0045 §8) | The projection contradicts 0110 §7, 0094 §2 and 0126 §2 until 0132 is accepted. The operator ruled on 2026-11-16 that the delivery builds against the proposed record and that acceptance precedes merge. The pull request is held. |
-| Decision discipline | Accepted bodies are not edited. 0132 carries the amendment text; each amended record gets one appended dated pointer. |
+| Code under a proposed decision (0045 §8) | The projection contradicts 0110 §7, 0094 §2 and 0126 §2 until 0134 is accepted. The operator ruled on 2026-11-16 that the delivery builds against the proposed record and that acceptance precedes merge. The pull request is held. |
+| Decision discipline | Accepted bodies are not edited. 0134 carries the amendment text; each amended record gets one appended dated pointer. |
 
 ## Project structure
 
@@ -37,8 +37,8 @@ Spec: [spec.md](spec.md) · Tasks: [tasks.md](tasks.md) · Decision: [0132](../.
 | `src/static/llms.txt` | One short paragraph naming the projection route, what it carries and that it serves no bytes; the two fields. |
 | `tests/api.rs` | AC5, AC8, AC18–AC21, AC23, AC24. |
 | `tests/ui.rs` | AC1, AC4, AC7, AC9–AC17, AC25–AC29. Existing tests untouched. |
-| `docs/decisions/README.md` | One row for 0132. |
-| `docs/decisions/0110-…`, `0094-…`, `0126-…`, `0027-…` | One appended `## Dated pointer — 2026-11-16 (proposed 0132)` section each. Nothing above it changes. |
+| `docs/decisions/README.md` | One row for 0134. |
+| `docs/decisions/0110-…`, `0094-…`, `0126-…`, `0027-…` | One appended `## Dated pointer — 2026-11-16 (proposed 0134)` section each. Nothing above it changes. |
 
 ## Approach
 
@@ -101,12 +101,12 @@ The prototype's rules, with these edits: the `:root[data-theme="dark"]` block an
 
 ### 6. Records
 
-Add the 0132 row to the index. Append to each of the four amended records one section, after its last line:
+Add the 0134 row to the index. Append to each of the four amended records one section, after its last line:
 
 ```markdown
-## Dated pointer — 2026-11-16 (proposed 0132)
+## Dated pointer — 2026-11-16 (proposed 0134)
 
-Proposed [0132](0132-ui-projection-route.md) §… amends §… of this record: …one sentence… . It is a proposal until the operator accepts it; this record's ruling stands as written until then.
+Proposed [0134](0134-ui-projection-route.md) §… amends §… of this record: …one sentence… . It is a proposal until the operator accepts it; this record's ruling stands as written until then.
 ```
 
 ### 7. Tests
@@ -151,8 +151,8 @@ The script and the stylesheet are now part of every console page, so assertions 
 |---|---|
 | **Script behaviour has no gate.** A logic error in the dot, the queue or the reader passes every test. | Static assertions pin the wiring and the forbidden constructs (AC4–AC17, AC25). The design removes the hardest client state: inbox switching is navigation, enrichment is one serial chain, and every frame repaints from a full snapshot. The delivery lists the manual checks under spec § Not gate-provable and reports them as manual, never as passed gates (AC33). |
 | **A page-wide `contains` assertion trips on new text.** | The table above lists every such assertion. Run `cargo test --locked --test ui` after each script or stylesheet edit. |
-| **The projection contradicts three accepted rulings until 0132 is accepted.** | The operator's dated ruling directs the build; the pull request is held for acceptance; the accepted bodies are not edited, only pointed at. If the operator declines, the route, its types, its tests and the reader's client, anchor, source and attachment rows are removed, and the rest of the console stands. |
-| **The number 0132 is taken twice elsewhere.** Branches `feat/arc-chains-256` and `feat/compare-v4-resources-359` each carry a different proposed 0132. | 0132 is the next free number on this branch, which is all a seat can see. The record says so in an integration note; the operator renumbers at integration, as with earlier dispatcher-assigned numbers. |
+| **The projection contradicts three accepted rulings until 0134 is accepted.** | The operator's dated ruling directs the build; the pull request is held for acceptance; the accepted bodies are not edited, only pointed at. If the operator declines, the route, its types, its tests and the reader's client, anchor, source and attachment rows are removed, and the rest of the console stands. |
+| **The number 0134 is taken twice elsewhere.** Branches `feat/arc-chains-256` and `feat/compare-v4-resources-359` each carry a different proposed 0134. | 0134 is the next free number on this branch, which is all a seat can see. The record says so in an integration note; the operator renumbers at integration, as with earlier dispatcher-assigned numbers. |
 | **Coverage falls below 100%.** | New Rust is straight-line. The only data-dependent arms (unknown lists, the cap, the open-inbox marker, the empty sentence) each have a named test. No defensive branch is written that a test cannot reach. |
 | **The console loads the server it watches.** A 200-row view asks for up to 400 enrichment reads, and the deliverability service has four analysis slots. | One request in flight (ruling 6), so the console holds at most one slot; cached reports cost no slot; nothing is fetched while the tab is hidden beyond the queue already running. The poll is three small reads every 2 seconds. |
 | **A missed new-mail dot.** `received_ms` is stamped before the insert, so two mails stored out of stamp order can leave `last_received_ms` lower than a value already seen. | Accepted and stated: the dot is a hint, the count and the stream are the truth. Scanning each inbox for its maximum stamp would hold the map's shard lock for O(mails) on every poll, on the map the accept path writes. |

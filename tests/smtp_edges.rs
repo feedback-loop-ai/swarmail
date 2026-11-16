@@ -2354,7 +2354,7 @@ async fn auth_control_names_refuse_without_identity_change() {
     deliver(&mut c, "f@x.io", "r@x.io").await;
 
     let (_, mut inboxes) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
-    // Decision 0132 §7: every item also carries the server's ingest stamp,
+    // Decision 0134 §7: every item also carries the server's ingest stamp,
     // which this test is not about: read it as a number and set it aside.
     for item in inboxes.as_array_mut().unwrap() {
         assert!(item["last_received_ms"].is_i64(), "{item}");

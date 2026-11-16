@@ -1,12 +1,12 @@
 # Tasks — web UI run console (issue #355)
 
-Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Decision: [0132](../../docs/decisions/0132-ui-projection-route.md) (proposed).
+Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Decision: [0134](../../docs/decisions/0134-ui-projection-route.md) (proposed).
 Ordered. Each task names the test that proves it. Write the test first and see it fail where that is possible. Existing tests in `tests/ui.rs` and `src/ui.rs` are not edited (AC2).
 
 ## Phase 1 — Records
 
-- [x] T1. Add the 0132 row to `docs/decisions/README.md` (status `proposed`, citing issue #355 and the operator's 2026-11-16 ruling). **Proof:** `cargo test --locked --test store_contract_docs` (`every_decision_file_has_exactly_one_resolving_index_row`), AC32.
-- [x] T2. Append one `## Dated pointer — 2026-11-16 (proposed 0132)` section after the last line of each of the 0110, 0094, 0126 and 0027 records, as plan § 6 words it. Change nothing above it. **Proof:** `git diff main -- docs/decisions/0110-attachments-and-ics.md docs/decisions/0094-focused-mail-waits.md docs/decisions/0126-spf-dmarc-alignment.md docs/decisions/0027-living-listeners-bounded-sessions.md` shows only added trailing lines; `cargo test --locked --test store_contract_docs` and `--test deliverability` (the accepted-called-proposed check) pass. AC32.
+- [x] T1. Add the 0134 row to `docs/decisions/README.md` (status `proposed`, citing issue #355 and the operator's 2026-11-16 ruling). **Proof:** `cargo test --locked --test store_contract_docs` (`every_decision_file_has_exactly_one_resolving_index_row`), AC32.
+- [x] T2. Append one `## Dated pointer — 2026-11-16 (proposed 0134)` section after the last line of each of the 0110, 0094, 0126 and 0027 records, as plan § 6 words it. Change nothing above it. **Proof:** `git diff main -- docs/decisions/0110-attachments-and-ics.md docs/decisions/0094-focused-mail-waits.md docs/decisions/0126-spf-dmarc-alignment.md docs/decisions/0027-living-listeners-bounded-sessions.md` shows only added trailing lines; `cargo test --locked --test store_contract_docs` and `--test deliverability` (the accepted-called-proposed check) pass. AC32.
 
 ## Phase 2 — Read-only fields
 
@@ -47,4 +47,4 @@ Ordered. Each task names the test that proves it. Write the test first and see i
 
 - [x] T23. Run the whole inventory of `docs/house-rules.md` § Gates on the final tree, `--locked`, including the coverage gate, its selftest, the publish-guard proof, the seal-branch proof, `cargo deny check licenses`, the recipe compile loop and the `evals/` gates against the candidate's own binary. **Proof:** each command's exit status, recorded in the delivery (AC30); `git diff main --stat` for AC31.
 - [ ] T24. Walk plan § Manual review in a browser and record the result of each step as manual review, with the browser used. Do not report any of it as a passed gate. **Proof:** the delivery's report (AC33).
-- [ ] T25. State in the delivery that the pull request is held for the operator's acceptance of 0132, and that two other branches also carry a proposed 0132 for the operator to renumber. **Proof:** the delivery's report; spec § header "Hold".
+- [ ] T25. State in the delivery that the pull request is held for the operator's acceptance of 0134, and that two other branches also carry a proposed 0134 for the operator to renumber. **Proof:** the delivery's report; spec § header "Hold".

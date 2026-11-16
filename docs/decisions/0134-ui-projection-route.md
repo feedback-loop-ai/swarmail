@@ -1,6 +1,7 @@
-# 0132 — A read-only UI projection of ingest-stored fields, and two read-only fields for the run console
+# 0134 — A read-only UI projection of ingest-stored fields, and two read-only fields for the run console
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-16: "approved"; see the dated
+  acceptance note at the end)
 - **Date:** 2026-11-16
 - **Scope:** Issue #355 (rework the web UI as a run console). Run
   `issue-355-rework-the-web-ui-as-a-c69a5333`, branch `feat/web-ui-console-355`
@@ -27,11 +28,11 @@
 - **Holds:** the pull request that carries this record is not merged on
   green. The operator ruled that the delivery builds against the proposed
   record and that acceptance comes before merge.
-- **Integration note:** 0132 is the next free number on this branch. Two
-  other open branches each carry a different proposed 0132 (ARC chain
-  reports, #256; mail comparison protocol v4, #359). The operator assigns the
-  final numbers at integration; this record's file name, its index row and the
-  links in its specification move together.
+- **Integration note:** drafted as 0132, the next free number on its
+  branch. At integration the dispatcher assigned 0134: 0132 is the mail
+  comparison protocol v4 (#358) and 0133 the ARC chain reports (#364). The
+  file name, its index row and the links in its specification moved
+  together.
 
 ## Context
 
@@ -202,3 +203,11 @@ specification: the counters over the wire and in the degraded body; the stamp
 across inserts and a clear; the projection's values over real SMTP, its exact
 member sets, its refusals, its cap and its independence from `raw`; the
 unchanged bytes of every other surface; and the OpenAPI document.
+
+## Acceptance — 2026-11-16 (operator)
+
+The operator approved this record on 2026-11-16 ("approved"), after the run
+console's delivery PR (#365) was ready. The read-only projection route, the
+two read-only fields and the amendments of 0110 §7, 0094 §2, 0126 §2 and
+0027 §2 take effect as written. Attachment bytes stay MCP-only. The dated
+pointers on those four records stand, each with an acceptance line.

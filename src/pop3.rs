@@ -1177,7 +1177,7 @@ mod tests {
             entered.wait_for(|pending| *pending).await.unwrap();
             let (status, body) = health(http_addr).await;
             assert_eq!(status, "HTTP/1.1 503 Service Unavailable");
-            // Decision 0132 §6: the counters ride beside the degraded names.
+            // Decision 0134 §6: the counters ride beside the degraded names.
             assert_eq!(
                 body,
                 serde_json::json!({

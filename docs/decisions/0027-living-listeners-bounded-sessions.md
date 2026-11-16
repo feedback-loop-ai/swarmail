@@ -299,6 +299,8 @@ nothing above is rewritten by it.
   write instead of by one deadline over the whole reply. The pointer's
   "proposed" is historical: 0046 is accepted.)*
 
-## Dated pointer — 2026-11-16 (proposed 0132)
+## Dated pointer — 2026-11-16 (proposed 0134)
 
-Proposed [0132](0132-ui-projection-route.md) §6 amends §2 of this record: the `200 ok` and `503 degraded` `/healthz` bodies gain `emails_inserted_total` and `emails_dropped_total`, the store's lifetime counters; status codes, `status` values, the degraded names and the `{"status":"stopping"}` body are unchanged. It is a proposal until the operator accepts it; this record's ruling stands as written until then.
+Proposed [0134](0134-ui-projection-route.md) §6 amends §2 of this record: the `200 ok` and `503 degraded` `/healthz` bodies gain `emails_inserted_total` and `emails_dropped_total`, the store's lifetime counters; status codes, `status` values, the degraded names and the `{"status":"stopping"}` body are unchanged. It is a proposal until the operator accepts it; this record's ruling stands as written until then.
+
+Accepted by the operator on 2026-11-16 ([0134](0134-ui-projection-route.md), acceptance note).

@@ -8,7 +8,7 @@ from what ingest recorded once, at `250`, the way links and codes are: nothing
 re-parses the raw message at query time. Both are read-only, MCP-only apart from one
 read-only REST projection that serves attachment labels and ICS fields to the
 web UI (`GET /api/v1/messages/{id}/projection`, proposed decision
-[0132](../decisions/0132-ui-projection-route.md)); no change to any Email,
+[0134](../decisions/0134-ui-projection-route.md)); no change to any Email,
 feed, webhook or compat payload, and refuse a
 malformed argument by name (`-32602`) before the store is read.
 

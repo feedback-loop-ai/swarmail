@@ -3852,7 +3852,7 @@ async fn a_blank_path_inbox_refuses_on_every_native_route() {
     assert_eq!(inboxes, serde_json::json!([]), "nothing blank was stored");
     seed(srv.http_addr, "%20pad%20", "a@x.io").await;
     let (_, inboxes) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
-    // Decision 0132 §7: each item also carries the server's stamp.
+    // Decision 0134 §7: each item also carries the server's stamp.
     assert_eq!(inboxes[0]["name"], " pad ");
     assert_eq!(inboxes[0]["count"], 1);
     assert!(inboxes[0]["last_received_ms"].is_i64(), "{inboxes}");
@@ -3932,7 +3932,7 @@ async fn the_inbox_listing_pages_past_the_cap() {
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
     assert_eq!(st, 200);
     assert_eq!(names(&body).len(), 100);
-    // Decision 0132 §7: the stamp joins the name and the count.
+    // Decision 0134 §7: the stamp joins the name and the count.
     assert_eq!(body[0]["name"], "page-000");
     assert_eq!(body[0]["count"], 1);
     assert!(body[0]["last_received_ms"].is_i64(), "{}", body[0]);
@@ -5805,7 +5805,7 @@ async fn the_documents_describe_the_compact_view_and_fields() {
     srv.stop().await;
 }
 
-// ---------- the run console's read-only additions (proposed decision 0132) ----------
+// ---------- the run console's read-only additions (proposed decision 0134) ----------
 
 /// Deliver `raw` into `inbox` over real SMTP, saying `helo` at the greeting,
 /// and return the accepted mail's id (the id the `250` carries).
