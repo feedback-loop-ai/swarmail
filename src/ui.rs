@@ -173,6 +173,26 @@ async fn message_view(State(state): State<AppState>, Path(id): Path<String>) -> 
     crate::store::Store::offload(move || render_message(&email, report.as_deref())).await
 }
 
+/// The ARC chain line (decision 0132 section 2): the evaluator's own member,
+/// escaped like every other provider field, never derived from the findings.
+fn arc_line(arc: &crate::deliverability::ArcChain) -> String {
+    let state = serde_json::to_value(arc.state).unwrap();
+    let instance = arc
+        .failing_instance
+        .map(|instance| format!(" · instance {instance}"))
+        .unwrap_or_default();
+    let reason = arc
+        .reason
+        .as_deref()
+        .map(|reason| format!(" · {}", esc(reason)))
+        .unwrap_or_default();
+    format!(
+        "<div class=\"mono\">arc · {} · {} sets{instance}{reason}</div>",
+        esc(state.as_str().unwrap()),
+        arc.sets
+    )
+}
+
 fn report_section(
     report: Result<&crate::deliverability::Report, &crate::deliverability::AnalysisError>,
 ) -> String {
@@ -180,6 +200,7 @@ fn report_section(
         Err(error) => esc(error.message()),
         Ok(report) => {
             let mut body = format!("<div class=\"mono\">{}</div>", esc(&report.rule_set_id));
+            body.push_str(&arc_line(&report.arc));
             if report.findings.is_empty() {
                 body.push_str("<div>No findings from this rule set.</div>");
             }
@@ -198,7 +219,7 @@ fn report_section(
         }
     };
     format!(
-        "<h2>deliverability</h2><section>{body}<div class=\"muted\">Demo and bulk-sender checks only. Empty findings do not imply deliverability.</div></section>"
+        "<h2>deliverability</h2><section>{body}<div class=\"muted\">Built-in rules only. Empty findings do not imply deliverability.</div></section>"
     )
 }
 
@@ -267,6 +288,7 @@ mod tests {
         let attack = "<img src=\"https://attacker/\">&'";
         let report = Report {
             dns: Default::default(),
+            arc: Default::default(),
             rule_set_id: attack.into(),
             findings: vec![
                 Finding {
@@ -302,6 +324,46 @@ mod tests {
             report_section(Err(&crate::deliverability::AnalysisError::Unavailable))
                 .contains("deliverability analysis unavailable")
         );
+    }
+
+    #[test]
+    fn the_message_page_shows_the_arc_member_for_every_state() {
+        use crate::deliverability::{ArcChain, ArcState, Report};
+        let line = |arc: ArcChain| {
+            let report = Report {
+                rule_set_id: "r".into(),
+                findings: vec![],
+                dns: Default::default(),
+                arc,
+                total: 0,
+            };
+            report_section(Ok(&report))
+        };
+        let none = line(ArcChain::default());
+        assert!(none.contains(r#"<div class="mono">arc · none · 0 sets</div>"#));
+        let pass = line(ArcChain {
+            state: ArcState::Pass,
+            sets: 2,
+            ..ArcChain::default()
+        });
+        assert!(pass.contains(r#"<div class="mono">arc · pass · 2 sets</div>"#));
+        let fail = line(ArcChain {
+            state: ArcState::Fail,
+            sets: 2,
+            failing_instance: Some(1),
+            reason: Some("arc.signature_mismatch.v1".into()),
+        });
+        assert!(fail.contains(
+            r#"<div class="mono">arc · fail · 2 sets · instance 1 · arc.signature_mismatch.v1</div>"#
+        ));
+        let declined = line(ArcChain {
+            state: ArcState::NotEvaluated,
+            sets: 1,
+            failing_instance: None,
+            reason: Some("<b>".into()),
+        });
+        assert!(declined.contains(r#"arc · not_evaluated · 1 sets · &lt;b&gt;</div>"#));
+        assert!(!declined.contains("<b>"));
     }
 
     /// Every navigation arm (decision 0044 §3): no links on a lone page,

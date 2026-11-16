@@ -1,8 +1,8 @@
 //! Lazy analysis of immutable stored bytes. This is separate from ingest extraction.
 //! No network, clock, persistence or Store guard enters the evaluator (0085), with
 //! two stated exceptions, both reads inside the pinned `mail-auth` crate (its
-//! report sampling reads the clock too, but is never reached). Swarmail itself
-//! reads no clock.
+//! report sampling reads the clock too, but is never reached), and one read that
+//! is executed and never compared. Swarmail itself reads no clock.
 //! - The DKIM verifier compares a signature's `x=` with the wall clock. Swarmail
 //!   judges `x=` at the message's receipt second; the crate's read is the clock
 //!   residual: once the host clock reaches an `x=` that is after the receipt
@@ -14,6 +14,12 @@
 //!   stalled that long inside one evaluation yields `spf.permerror.v1`. It is
 //!   fail-closed and not one-way (decision 0126 section 8, an amendment accepted
 //!   on 2026-11-07).
+//! - The ARC verifier reads the wall clock once, after its count checks, and
+//!   compares it with the newest signature's `x=` only. Swarmail decides every
+//!   chain whose newest signature carries an `x=` itself, at the receipt second,
+//!   and calls the verifier only when that field has none, so the value is never
+//!   compared and no verdict, lookup or byte can depend on it (decision 0132
+//!   section 5, held for the operator).
 
 use crate::{model::Email, store::Store};
 use serde::{Deserialize, Serialize};
@@ -21,6 +27,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
+mod arc;
 mod auth;
 mod dkim;
 pub mod dns;
@@ -29,10 +36,11 @@ mod links;
 mod reach;
 mod spam;
 
+pub use arc::{ArcChain, ArcState};
 use dns::{DeclarationsFull, DnsRecord, Effective, Lookups, Policy, Source};
 pub use reach::Mode as LinkReachability;
 
-pub const RULE_SET_ID: &str = "swarmail-html/8";
+pub const RULE_SET_ID: &str = "swarmail-html/9";
 pub const MAX_FINDINGS: usize = 256;
 pub const MAX_REPORT_BYTES: usize = 65_536;
 const MAX_HEADER_BYTES: usize = 65_536;
@@ -88,8 +96,11 @@ pub struct Report {
     pub findings: Vec<Finding>,
     /// Which DNS policy and which records this evaluation used (decision 0120).
     pub dns: DnsRecord,
+    /// The ARC chain validation state (decision 0132 §2), computed once by the
+    /// evaluator: `none` when the message carries no ARC field.
+    pub arc: ArcChain,
     /// The sum of the findings' weights, computed in `Collector::finish_with`
-    /// (decision 0122 §2.3). It is the last key, after `dns`.
+    /// (decision 0122 §2.3). It is the last key, after `arc`.
     pub total: u64,
 }
 
@@ -201,14 +212,21 @@ impl Collector {
         Ok(())
     }
 
+    /// The collectors' tests judge findings alone: no chain.
+    #[cfg(test)]
     fn finish(self, inputs: &Inputs, lookups: Lookups) -> Result<Report, AnalysisError> {
-        self.finish_with(inputs, lookups.finish())
+        self.finish_with(inputs, lookups.finish(), ArcChain::default())
     }
 
-    /// Canonicalize under an already-recorded `dns` member: the probed
-    /// response (0121 §6) keeps the cached report's policy and lookups, and
-    /// the byte bound counts them.
-    fn finish_with(mut self, inputs: &Inputs, dns: DnsRecord) -> Result<Report, AnalysisError> {
+    /// Canonicalize under an already-recorded `dns` member and chain: the probed
+    /// response (0121 §6) keeps the cached report's policy, lookups and chain,
+    /// and the byte bound counts them.
+    fn finish_with(
+        mut self,
+        inputs: &Inputs,
+        dns: DnsRecord,
+        arc: ArcChain,
+    ) -> Result<Report, AnalysisError> {
         self.0.sort();
         self.0.dedup();
         // The sum runs after deduplication, so a duplicate counts once, and it
@@ -222,6 +240,7 @@ impl Collector {
             rule_set_id: inputs.rule_set_id.into(),
             findings: self.0,
             dns,
+            arc,
             total,
         };
         // Report contains only infallibly serializable strings, enums and integers.
@@ -946,7 +965,7 @@ fn collect(
     inputs: &Inputs,
     out: &mut Collector,
     lookups: &mut Lookups,
-) -> Result<(), AnalysisError> {
+) -> Result<ArcChain, AnalysisError> {
     if raw.len() > MAX_RAW_BYTES {
         return Err(AnalysisError::Failed);
     }
@@ -977,8 +996,8 @@ fn collect(
     let overridden = inputs.auth.clone();
     #[cfg(not(test))]
     let overridden: Option<AuthEvidence> = None;
-    let facts = match overridden {
-        Some(facts) => facts,
+    let (facts, chain) = match overridden {
+        Some(facts) => (facts, ArcChain::default()),
         None => auth::collect(raw, &fields, size, receipt, envelope, lookups, out)?,
     };
     bulk(raw, &fields, size, &facts, out)?;
@@ -992,7 +1011,7 @@ fn collect(
     for name in &inputs.lookups {
         lookups.resolve_txt(name);
     }
-    Ok(())
+    Ok(chain)
 }
 
 /// `receipt` is the stored message's receipt second: the time its DKIM
@@ -1007,8 +1026,8 @@ fn evaluate_at(
 ) -> Result<Report, AnalysisError> {
     let mut out = Collector(Vec::new());
     let mut lookups = Lookups::new(inputs.dns.clone());
-    collect(raw, receipt, envelope, inputs, &mut out, &mut lookups)?;
-    out.finish(inputs, lookups)
+    let chain = collect(raw, receipt, envelope, inputs, &mut out, &mut lookups)?;
+    out.finish_with(inputs, lookups.finish(), chain)
 }
 
 /// The tests that predate DKIM judge unsigned bytes, so their receipt is moot.
@@ -1376,7 +1395,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             serde_json::to_value(&empty).unwrap(),
-            json!({"rule_set_id":"swarmail-html/8","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]},"total":0})
+            json!({"rule_set_id":"swarmail-html/9","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]},"arc":{"state":"none","sets":0,"failing_instance":null,"reason":null},"total":0})
+        );
+        // `arc` sits between `dns` and `total`, which stays the last key (0122 §2).
+        let text = serde_json::to_string(&empty).unwrap();
+        assert!(
+            text.ends_with(r#""lookups":[]},"arc":{"state":"none","sets":0,"failing_instance":null,"reason":null},"total":0}"#),
+            "{text}"
         );
         assert!(empty.qualifies(Severity::Info));
         // `dns` is required and closed (decision 0120 §5): no serde default.
@@ -1391,6 +1416,16 @@ mod tests {
         let mut extra = wire.clone();
         extra["dns"]["ttl"] = json!(1);
         assert!(serde_json::from_value::<Report>(extra).is_err());
+        // `arc` is required and closed in the same way (decision 0132 §2).
+        let mut no_arc = wire.clone();
+        no_arc.as_object_mut().unwrap().remove("arc");
+        assert!(serde_json::from_value::<Report>(no_arc).is_err());
+        let mut arc_extra = wire.clone();
+        arc_extra["arc"]["note"] = json!(1);
+        assert!(serde_json::from_value::<Report>(arc_extra).is_err());
+        let mut arc_state = wire.clone();
+        arc_state["arc"]["state"] = json!("maybe");
+        assert!(serde_json::from_value::<Report>(arc_state).is_err());
         let mut source = wire;
         source["dns"]["source"] = json!("real");
         assert!(serde_json::from_value::<Report>(source).is_err());

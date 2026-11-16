@@ -225,3 +225,66 @@ acceptance criteria. Every house gate runs `--locked`, including the evals
 crate, the exact coverage gate and its selftest, the publish-guard and seal
 proofs, and `cargo deny`. This record stays proposed; only the operator
 accepts it.
+
+## Implementation record — 2026-11-16 (task T0, status unchanged)
+
+The implement seat re-read `mail-auth-0.14.0` (`arc/verify.rs`, `arc/parse.rs`,
+`arc/seal.rs`, `arc/output.rs`, `message.rs`, `headers/parse.rs`,
+`dns/lookup.rs`, `dkim/output.rs`) before writing code. This record changes no
+ruling and no status; the operator's two holds stand.
+
+**Every ambient read on the ARC path.** Two, and neither reaches a verdict:
+
+1. `SystemTime::now()` at `arc/verify.rs` line 90, once per `verify_arc` call
+   that passes the count checks. Its only use is `signature.x == 0 ||
+   (signature.x > signature.t && signature.x > now)` on the newest
+   `ARC-Message-Signature`. Swarmail calls the verifier only when that field has
+   no `x=` tag, so `x` is 0 and the value is never compared (hold 2).
+2. `Instant::now()` in `dns/query.rs` and `dns/doh.rs`, reached only when the
+   TXT cache misses and the resolver is asked. `txt_lookup` calls the cache's
+   `get` once (`dns/lookup.rs`, line 65) and returns what it answers; the
+   adapter always answers and the authenticator has no name servers.
+
+`verify_dkim`'s own read (`dkim/verify.rs`, line 84) is not on this path:
+the key check the verifier shares with DKIM (`DomainKey::verify`) reads no
+clock. No lookup can miss the adapter.
+
+**Research items 1 to 10 of the plan.**
+
+1. `arc = []`: confirmed. `Cargo.lock`, `evals/Cargo.lock` and `deny.toml` are
+   byte-identical to `f05f2ee`; `cargo build --locked` and `cargo deny check
+   licenses` pass.
+2. `verify_arc` order: confirmed, including that a rejected ARC field gives
+   `Neutral` with its own error before any count is read.
+3. The clock: confirmed (above).
+4. One cache call per lookup, in the order newest signature, then each seal from
+   the newest down: confirmed, and pinned by fixtures for `i=1` of 2 and `i=2` of
+   3 and by a test that counts the adapter's asks (3 for a two-hop chain).
+5. Sorting: confirmed. The lists are sorted only when a seal parsed and no ARC
+   field was rejected, with `sort_unstable_by_key`; steps 3 to 5 of the
+   specification establish both conditions and distinct instances first.
+6. Rejected fields land in `errors()` under the header name: confirmed, and
+   extended. The crate takes a name for an `ARC-Seal` by its first eight
+   characters once folded (`ARC-Sealed:` is a seal to the crate and no ARC field
+   to Swarmail's scan), so such a name is a count mismatch in step 1 and is
+   reported as `arc.header_boundary_ambiguous.v1`; a fixture pins it. Rejected
+   fields are matched to a family by their folded name, and only fields the crate
+   itself classified as authentication fields are ever asked about, so the match
+   is exact on those.
+7. Silent defaults: confirmed (`a=` defaults to rsa-sha256, `number()` reads
+   garbage as 0, a repeated tag overwrites, `i=` is cast `as u32`, an
+   `ARC-Message-Signature` without `i=` parses with instance 0, an
+   `ARC-Authentication-Results` takes the first `i` tag it finds).
+8. `l=`: confirmed (strict mode rejects a non-zero `l=` unhashed; `l=0` and an
+   unreadable `l=` hash the whole body).
+9. Result mapping: confirmed. A lookup error is `TempError` for
+   `Dns(Resolver(_))` and `PermError` otherwise; a declared `tempfail` is the
+   former and an undeclared name the latter with `RecordNotFound`.
+10. Sealing for fixtures: confirmed. `ArcSealer::seal` writes `cv=pass` only from
+    a passing output, takes `t=` from the wall clock and writes `x=` only when
+    an expiration is configured; the kit never configures one, so the kit's
+    fixtures carry no `x=`.
+
+**One decision of form.** `ArcChain.failing_instance` is dropped to `null` for
+every `not_evaluated` rule at the point the finding is pushed, so the member's
+fifth invariant holds by construction rather than by each call site.

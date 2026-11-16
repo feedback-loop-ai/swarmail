@@ -86,7 +86,7 @@ fn minimal() -> swarmail::model::Email {
     minimal
 }
 
-// The bulk checklist inside swarmail-html/8 restated from its published rule table, not
+// The bulk checklist inside swarmail-html/9 restated from its published rule table, not
 // from the formatter: every hint cites its RFC source and both provider pages.
 const GMAIL: &str = "https://support.google.com/mail/answer/81126";
 const YAHOO: &str = "https://senders.yahooinc.com/best-practices/";
@@ -227,7 +227,7 @@ fn report_of(case: Case, mut findings: Vec<Value>) -> Value {
         finding["weight"] = json!(weight_of(finding));
     }
     let total: u64 = findings.iter().map(|f| f["weight"].as_u64().unwrap()).sum();
-    json!({"rule_set_id":"swarmail-html/8","findings":findings,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":lookups_of(case)},"total":total})
+    json!({"rule_set_id":"swarmail-html/9","findings":findings,"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":lookups_of(case)},"arc":arc_none(),"total":total})
 }
 
 pub(super) enum Wire {
@@ -507,6 +507,10 @@ fn compare(v: &Value, bound: i128) -> Option<std::cmp::Ordering> {
         Equal if x < whole => Less,
         other => other,
     })
+}
+/// The `arc` member of a report whose message carries no ARC field (0132 §2).
+fn arc_none() -> Value {
+    json!({"state":"none","sets":0,"failing_instance":null,"reason":null})
 }
 pub(super) fn schema_ok(s: &Value) -> bool {
     let Some(o) = s.as_object() else {
@@ -1002,7 +1006,7 @@ async fn modern_all_tools_http_and_stdio() {
                     descriptor["description"] = original["description"].clone();
                 } else if i == 1 {
                     for clause in [
-                        "swarmail-html/8",
+                        "swarmail-html/9",
                         "weight",
                         "total",
                         "bulk-sender checklist",
@@ -1147,7 +1151,7 @@ fn report_projection(c: &Value) -> Value {
             .as_object_mut()
             .unwrap()
             .remove("examples"),
-        Some(json!(["swarmail-html/8"]))
+        Some(json!(["swarmail-html/9"]))
     );
     let location = &mut report["properties"]["findings"]["items"]["properties"]["location"];
     // oneOf over exclusive const tags carries the whole dispatch.
@@ -1641,12 +1645,13 @@ async fn report_schema_typed_forms_and_negatives() {
         rule_set_id: "swarmail-bulk/1".into(),
         findings: vec![],
         dns: Default::default(),
+        arc: Default::default(),
         total: 0,
     })
     .unwrap();
     assert_eq!(
         empty,
-        json!({"rule_set_id":"swarmail-bulk/1","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]},"total":0})
+        json!({"rule_set_id":"swarmail-bulk/1","findings":[],"dns":{"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]},"arc":arc_none(),"total":0})
     );
     assert!(valid(&schema, &empty));
     // No invented minimum length or constant for the rule-set ID.
@@ -1655,14 +1660,14 @@ async fn report_schema_typed_forms_and_negatives() {
         rule_set_id: String::new(),
         findings,
         dns: Default::default(),
+        arc: Default::default(),
         total,
     })
     .unwrap();
     assert!(valid(&schema, &full), "{full}");
     let base = full["findings"][0].clone();
     let dns = json!({"source":"default","policy":{"txt":[],"tempfail":[]},"lookups":[]});
-    let at =
-        |n: usize| json!({"rule_set_id":"r","findings":vec![base.clone(); n],"dns":dns,"total":0});
+    let at = |n: usize| json!({"rule_set_id":"r","findings":vec![base.clone(); n],"dns":dns,"arc":arc_none(),"total":0});
     assert!(valid(&schema, &at(256)));
     assert!(!valid(&schema, &at(257)));
 
@@ -1670,7 +1675,7 @@ async fn report_schema_typed_forms_and_negatives() {
     let with_location = |location: Value| {
         let mut finding = base.clone();
         finding["location"] = location;
-        json!({"rule_set_id":"r","findings":[finding],"dns":dns,"total":0})
+        json!({"rule_set_id":"r","findings":[finding],"dns":dns,"arc":arc_none(),"total":0})
     };
     let with_finding = |key: &str, value: Option<Value>| {
         let mut finding = base.clone();
@@ -1680,29 +1685,129 @@ async fn report_schema_typed_forms_and_negatives() {
                 finding.as_object_mut().unwrap().remove(key).unwrap();
             }
         }
-        json!({"rule_set_id":"r","findings":[finding],"dns":dns,"total":0})
+        json!({"rule_set_id":"r","findings":[finding],"dns":dns,"arc":arc_none(),"total":0})
     };
-    refuse(json!({"findings":[],"dns":dns,"total":0}), "no rule_set_id");
     refuse(
-        json!({"rule_set_id":"r","dns":dns,"total":0}),
+        json!({"findings":[],"dns":dns,"arc":arc_none(),"total":0}),
+        "no rule_set_id",
+    );
+    refuse(
+        json!({"rule_set_id":"r","dns":dns,"arc":arc_none(),"total":0}),
         "no findings",
     );
     refuse(
-        json!({"rule_set_id":"r","findings":[],"dns":dns,"total":0,"extra":1}),
+        json!({"rule_set_id":"r","findings":[],"dns":dns,"arc":arc_none(),"total":0,"extra":1}),
         "report extra",
     );
     refuse(
-        json!({"rule_set_id":1,"findings":[],"dns":dns,"total":0}),
+        json!({"rule_set_id":1,"findings":[],"dns":dns,"arc":arc_none(),"total":0}),
         "numeric rule set",
     );
     refuse(
-        json!({"rule_set_id":"r","findings":null,"dns":dns,"total":0}),
+        json!({"rule_set_id":"r","findings":null,"dns":dns,"arc":arc_none(),"total":0}),
         "null findings",
     );
     // The `dns` member is required and closed (decision 0120 §5).
-    refuse(json!({"rule_set_id":"r","findings":[],"total":0}), "no dns");
+    refuse(
+        json!({"rule_set_id":"r","findings":[],"arc":arc_none(),"total":0}),
+        "no dns",
+    );
+    // The `arc` member is required and closed (decision 0132 §2): four states,
+    // an instance from 1 to 50 or null, a rule id or null.
+    refuse(
+        json!({"rule_set_id":"r","findings":[],"dns":dns,"total":0}),
+        "no arc",
+    );
+    let with_arc = |edit: &dyn Fn(&mut Value)| {
+        let mut value =
+            json!({"rule_set_id":"r","findings":[],"dns":dns,"arc":arc_none(),"total":0});
+        edit(&mut value["arc"]);
+        value
+    };
+    for state in ["none", "pass", "fail", "not_evaluated"] {
+        assert!(
+            valid(&schema, &with_arc(&|a| a["state"] = json!(state))),
+            "{state}"
+        );
+    }
+    assert!(valid(
+        &schema,
+        &with_arc(
+            &|a| *a = json!({"state":"fail","sets":2,"failing_instance":50,"reason":"arc.key_missing.v1"})
+        )
+    ));
+    assert!(valid(
+        &schema,
+        &with_arc(&|a| a["failing_instance"] = json!(1))
+    ));
+    for (label, edit) in [
+        (
+            "arc null",
+            Box::new(|a: &mut Value| *a = Value::Null) as Box<dyn Fn(&mut Value)>,
+        ),
+        (
+            "unknown state",
+            Box::new(|a: &mut Value| a["state"] = json!("maybe")),
+        ),
+        (
+            "no state",
+            Box::new(|a: &mut Value| {
+                a.as_object_mut().unwrap().remove("state");
+            }),
+        ),
+        (
+            "no sets",
+            Box::new(|a: &mut Value| {
+                a.as_object_mut().unwrap().remove("sets");
+            }),
+        ),
+        (
+            "negative sets",
+            Box::new(|a: &mut Value| a["sets"] = json!(-1)),
+        ),
+        (
+            "fractional sets",
+            Box::new(|a: &mut Value| a["sets"] = json!(1.5)),
+        ),
+        (
+            "instance 0",
+            Box::new(|a: &mut Value| a["failing_instance"] = json!(0)),
+        ),
+        (
+            "instance 51",
+            Box::new(|a: &mut Value| a["failing_instance"] = json!(51)),
+        ),
+        (
+            "instance string",
+            Box::new(|a: &mut Value| a["failing_instance"] = json!("1")),
+        ),
+        (
+            "no instance",
+            Box::new(|a: &mut Value| {
+                a.as_object_mut().unwrap().remove("failing_instance");
+            }),
+        ),
+        (
+            "empty reason",
+            Box::new(|a: &mut Value| a["reason"] = json!("")),
+        ),
+        (
+            "numeric reason",
+            Box::new(|a: &mut Value| a["reason"] = json!(1)),
+        ),
+        (
+            "no reason",
+            Box::new(|a: &mut Value| {
+                a.as_object_mut().unwrap().remove("reason");
+            }),
+        ),
+        ("extra key", Box::new(|a: &mut Value| a["note"] = json!(1))),
+    ] {
+        refuse(with_arc(&*edit), label);
+    }
     let with_dns = |edit: &dyn Fn(&mut Value)| {
-        let mut value = json!({"rule_set_id":"r","findings":[],"dns":dns,"total":0});
+        let mut value =
+            json!({"rule_set_id":"r","findings":[],"dns":dns,"arc":arc_none(),"total":0});
         edit(&mut value["dns"]);
         value
     };
@@ -1796,19 +1901,20 @@ async fn report_schema_typed_forms_and_negatives() {
             with_finding("weight", Some(bad.clone())),
             &format!("weight {bad}"),
         );
-        let mut report = json!({"rule_set_id":"r","findings":[],"dns":dns,"total":0});
+        let mut report =
+            json!({"rule_set_id":"r","findings":[],"dns":dns,"arc":arc_none(),"total":0});
         report["total"] = bad.clone();
         refuse(report, &format!("total {bad}"));
     }
     refuse(
-        json!({"rule_set_id":"r","findings":[],"dns":dns}),
+        json!({"rule_set_id":"r","findings":[],"dns":dns,"arc":arc_none()}),
         "no total",
     );
     // No schema maximum: the values the code emits are not a second copy in the schema.
     assert!(valid(&schema, &with_finding("weight", Some(json!(10)))));
     assert!(valid(
         &schema,
-        &json!({"rule_set_id":"r","findings":[],"dns":dns,"total":2560})
+        &json!({"rule_set_id":"r","findings":[],"dns":dns,"arc":arc_none(),"total":2560})
     ));
     for (key, value) in [
         ("extra", json!(1)),
@@ -1874,7 +1980,7 @@ fn assert_new_keys_last(raw: &str, expected: &Value) {
     let total = expected["total"].as_u64().unwrap();
     assert!(
         raw.ends_with(&format!(
-            r#","rule_set_id":"swarmail-html/8","total":{total}}}"#
+            r#","rule_set_id":"swarmail-html/9","total":{total}}}"#
         )),
         "{raw}"
     );

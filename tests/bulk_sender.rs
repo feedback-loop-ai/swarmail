@@ -364,7 +364,7 @@ async fn bulk_untrusted_auth_headers_never_supply_evidence() {
         );
         let (_, status, value) = report(&srv, raw.as_bytes()).await;
         assert_eq!(status, 200);
-        assert_eq!(value["rule_set_id"], "swarmail-html/8");
+        assert_eq!(value["rule_set_id"], "swarmail-html/9");
         let occurrence = match from {
             "" => Value::Null,
             "From: sender@example.test\r\n" => json!(0),

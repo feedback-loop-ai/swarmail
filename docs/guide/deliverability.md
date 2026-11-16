@@ -3,12 +3,12 @@
 [← README](../../README.md) · [Guide index](README.md)
 
 GET /api/v1/messages/{id}/deliverability takes only the optional query key `reachability` (see Opt-in reachability below) and returns
-{rule_set_id, findings:[{rule_id,severity,location,fix_hint}], dns}. Severity is
+{rule_set_id, findings:[{rule_id,severity,location,fix_hint,weight}], dns, arc:{state,sets,failing_instance,reason}, total}. Severity is
 info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/8):
+The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/9):
 one_click, message_id and date are errors; plain_text is warning-level presence
 advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
 are independent checks. They read six facts that the report evaluator computes
@@ -41,7 +41,7 @@ https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 204
 or 7489 sections. These are fixed published references, not live verification or
 provider certification. The rule record is decision 0089.
 
-`swarmail-html/8` retains the synthetic demo.marker.v1: the first root
+`swarmail-html/9` retains the synthetic demo.marker.v1: the first root
 X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
 and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
 html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
@@ -234,6 +234,16 @@ and `spam.` are the content families. Authentication and the bulk-sender
 checklist are properties of DNS and of the sending infrastructure; declare a DNS
 policy (above) to exercise them.
 
+**Forwarded mail: read the `arc` member.** Every report carries `arc`, the ARC
+chain (RFC 8617) state of the message: `none` (no ARC field), `pass`, `fail` or
+`not_evaluated`, with the number of `sets`, the `failing_instance` that broke the
+chain and the `reason`, the id of the one `arc.*` finding. A message whose chain
+validates and a message with no chain both have no `arc.*` finding, so assert
+that `arc.state` is `pass` and do not infer it from empty findings. The `arc.*`
+findings are authentication findings like `dkim.*`, not a content family, and
+`arc=pass` does not say the sender is authentic. Declare each sealer's key in the
+DNS policy to exercise it.
+
 **What a report does not say.**
 
 - A report that could not be read (an `isError` result, a not-found message, a
@@ -274,7 +284,7 @@ re-sent newsletter's report has no `link.`, `html.` or `spam.` finding.
 
 Decision 0121 (accepted; issue #258) added five per-link rules to the default
 report. They arrived in rule set `swarmail-html/4` and are part of the current
-rule set (`swarmail-html/8`). They read the same eligible outer
+rule set (`swarmail-html/9`). They read the same eligible outer
 `text/html` parts as the HTML heuristics above (attachments and attached
 messages excluded, same budgets) and look at every visible `<a>` start tag
 that has an `href`, in source order. "Visible" and the link label follow the
@@ -452,7 +462,7 @@ the configuration and the network's answers at that moment, and it is never
 cached or stored: two probes at different times can differ. Empty findings
 mean "nothing found", not "the links are safe".
 
-## DKIM verification (`swarmail-html/8`)
+## DKIM verification (`swarmail-html/9`)
 
 Decision 0125 (accepted; issue #254) verifies every `DKIM-Signature` field of a
 stored message and reports each way a signature fails to verify as a named
@@ -620,13 +630,13 @@ check above guarantees the verifier lists the same fields).
 
 ### `dkim.limits_exceeded.v1`
 
-**Severity:** error. More than 16 `DKIM-Signature` fields, or more than 128 names in one `h=`. The finding sits on the first field past a bound, nothing else is judged and nothing is looked up.
+**Severity:** error. More than 16 `DKIM-Signature` fields, or more than 128 names in one `h=`, or a `DKIM-Signature` with `l=` beside so many `ARC-Message-Signature` fields with `l=` that the two kinds together number more than 16 (the one re-parse an `l=` signature needs would hash them all; decision 0132 section 6). The finding sits on the first field past a bound (the first `DKIM-Signature` with `l=` for the last), nothing else is judged and nothing is looked up.
 
-**Hint:** Send at most 16 DKIM-Signature fields, each with at most 128 header names in h=.
+**Hint:** Send at most 16 DKIM-Signature fields, each with at most 128 header names in h=, and no more than 16 fields with an l= tag in all, ARC-Message-Signature fields included.
 
-**Passing:** 16 valid fields; 128 `h=` names.
+**Passing:** 16 valid fields; 128 `h=` names; one `l=` signature beside 15 ARC `l=` fields.
 
-**Failing:** 17 fields; 129 `h=` names.
+**Failing:** 17 fields; 129 `h=` names; one `l=` signature beside 16 ARC `l=` fields.
 
 ### `dkim.signature_expired.v1`
 
@@ -758,7 +768,7 @@ check above guarantees the verifier lists the same fields).
 
 **Failing:** `l=` short and text appended after it.
 
-## SPF and DMARC (`swarmail-html/8`)
+## SPF and DMARC (`swarmail-html/9`)
 
 Decision 0126 (issue #255) evaluates SPF for the SMTP envelope and
 DMARC for the root `From`, with relaxed and strict alignment of SPF and of the
@@ -1049,6 +1059,238 @@ field, `null` when absent, `1` when duplicated, else `0`.
 
 **Failing:** `From: a@example.com` followed by a colon-less line; an SPF record `v=spf1 a -all` with no signature.
 
+## ARC (`swarmail-html/9`)
+
+Proposed decision 0132 (issue #256, the last story of epic #251) validates the
+ARC chain (RFC 8617) of a stored message and reports it. A forwarder that changes
+a message breaks its DKIM signature; ARC lets each forwarder record what it saw
+and seal that record, so the next receiver can check the chain of custody. A test
+that sends mail through a forwarder or a mailing list into Swarmail can now say
+whether the chain it produced validates, and which instance broke it. It runs
+lazily, inside the report evaluator, on the stored bytes after the SMTP `250`;
+nothing runs at ingest or on the accept path.
+
+**The `arc` member.** Every report carries one more required member, after `dns`
+and before `total` (which stays the last key):
+
+```json
+"arc": {"state": "pass", "sets": 2, "failing_instance": null, "reason": null}
+```
+
+`state` is `none`, `pass`, `fail` or `not_evaluated`. The first three are the
+states RFC 8617 section 5.2 gives a chain, and the token `Authentication-Results`
+carries. `not_evaluated` is Swarmail's: it declined to judge (a declared
+temporary DNS failure, an ambiguous header boundary, a bound, or an expiry only
+the wall clock could judge), and calling that `fail` would report a chain nobody
+saw broken. `sets` is the largest number of fields any one ARC family holds.
+`failing_instance` is the `i=` that broke the chain, only with `fail`. `reason` is
+the rule id of the report's one `arc.*` finding. A pass and a message with no ARC
+field both emit no finding, so only this member tells them apart: **a test that
+asserts "my forwarder's chain validates" should read `arc.state == "pass"`**, not
+the absence of `arc.*` findings, which a message with no chain also has.
+
+**What is verified.** The three field families, `ARC-Seal`,
+`ARC-Message-Signature` and `ARC-Authentication-Results`, with their instances
+`i=` from 1 to 50; the structure (complete sets, instances 1, 2, 3 and so on,
+`cv=none` on the first seal and `cv=pass` on every later one); the body hash and
+signature of the newest `ARC-Message-Signature`; and every seal, newest first.
+`rsa-sha256` and `ed25519-sha256`, as for DKIM. The cryptography, parsing and
+canonicalization are the `mail-auth` crate's; what decides a verdict around it is
+Swarmail's. The contents of an `ARC-Authentication-Results` field are never read,
+and **no fact, no DMARC result and no other finding changes with the chain**:
+`arc=pass` says the chain validated, not that the sender is authentic.
+
+**Keys come from the declared DNS map only.** Declare each sealer's key like any
+other record, at `<s>._domainkey.<d>` of that hop's `s=` and `d=` (see the DNS
+policy above). Every name asked inside the DNS policy's grammar is recorded in
+`dns.lookups`; a name outside it is not asked and answers "no record". A chain asks
+at most 51 times: once for the newest signature, once per seal.
+
+**Evaluation order.** The first step that applies decides, and a report holds at
+most one `arc.*` finding: (0) no ARC field in the root list or the verifier's:
+`none`; (1) one body and one field list, on every path (mail with no
+`DKIM-Signature` too); (2) at most 128 `h=` names; (3) each field in wire order,
+for what the verifier would read silently as a default; (4) the three families
+hold the same number of fields; (5) no two fields of one family share an
+instance; (6) expiry at the receipt second; (7) the verifier, which checks the
+instance sequence, `cv=`, the body hash and every signature and seal.
+
+**Which seal failed.** The verifier asks for the newest signature's key first and
+then each seal's key from the newest down, and stops at the first failure. The
+number of keys it asked for names the field, exactly, for any chain length. The
+instance named is the **newest** seal that does not verify: each seal covers every
+older set, so bytes altered in an older set after a newer hop sealed are reported
+at the newest seal that covers them, which is where RFC 8617 validation stops
+too. An older seal is named when the newer ones verify: a hop that sealed over an
+already broken seal, or a declared key for that seal's selector that is not the
+one it was sealed with. A finding's `occurrence` is the field's place among the
+fields of its name in the message, never its instance, so a chain written
+oldest-first names the right field.
+
+**Time is the receipt time.** Swarmail reads no clock. The newest
+`ARC-Message-Signature`'s `x=` at or before the receipt second, or at or before
+its own `t=`, is `arc.signature_expired.v1`. Any other `x=` on that field is
+`arc.not_evaluated.v1`: **a chain whose newest signature carries an `x=` after
+the receipt second is not verified**, and reports an error, never a clean pass.
+The verifier reads the wall clock once and compares it with that `x=` only; the
+chain is handed to it only when that field has no `x=`, so the value it read is
+never compared. This is held for the operator (decision 0132 section 5). An `x=`
+on an older signature is nobody's expiry. A chain whose newest signature has an
+`x=` is decided at that step even if its instances or `cv=` values are also wrong.
+
+**Bound and `l=`.** ARC always reads the strict parse of the message, so its
+verdict does not depend on an unrelated `DKIM-Signature` that carries `l=`. DKIM's
+non-strict re-parse for an `l=` signature would also hash every
+`ARC-Message-Signature` with `l=`, so the `l=` fields of both kinds share one bound
+of 16: a message with a DKIM `l=` field and more than 15 ARC `l=` fields gets
+`dkim.limits_exceeded.v1` at its first DKIM `l=` field and no other DKIM verdict.
+
+**Authentication-Results correspondence.** `arc=none`: `state` is `none`.
+`arc=pass`: `state` is `pass`. `arc=fail`: `state` is `fail`, and `reason` and the
+one `arc.*` finding say why. No `arc=` clause: `state` is `not_evaluated`.
+
+**Assert and await.** Every `arc.*` finding is an error, so `no_findings_at_or_above`
+at `error` does not count a message whose chain failed or was not evaluated, and
+a passing chain or no chain adds nothing. A rule's weight is 10, and 0 for
+`arc.not_evaluated.v1`, as for every rule (Weight and total, below).
+
+### `arc.header_boundary_ambiguous.v1`
+
+**Severity:** error. The state is `not_evaluated`. The verifier and Swarmail's header scan disagree about where the headers end or which fields are ARC fields (a colon-less line, a whitespace-only first line, a name with a space before the colon, or a name that begins with `ARC-Seal`), so they would not judge the same fields. Located at the first root ARC field in wire order, or `arc-seal` with occurrence `null` when the root list holds none.
+
+**Hint:** A line in the header block that is not a header field (no colon, or only whitespace at the very top), or an ARC field name that not every parser accepts (such as a space before the colon), ends or splits the headers differently at different receivers, so the chain was not evaluated; remove it, fold it into the previous field, or write the name as ARC-Seal:, ARC-Message-Signature: or ARC-Authentication-Results: (RFC 5322 sections 2.2 and 2.2.3, RFC 8617 section 4.1).
+
+**Passing:** a valid chain with the header block in order.
+
+**Failing:** a colon-less line before or after the ARC fields; a whitespace-only first line; `ARC-Seal :` beside a valid chain.
+
+### `arc.limits_exceeded.v1`
+
+**Severity:** error. The state is `not_evaluated`. An `ARC-Message-Signature` lists more than 128 names in `h=`; located at the first one in wire order.
+
+**Hint:** Sign at most 128 header names in the h= tag of each ARC-Message-Signature; the chain was not evaluated (RFC 8617 section 4.1.2).
+
+**Passing:** an `h=` of 128 names.
+
+**Failing:** an `h=` of 129 names.
+
+### `arc.malformed.v1`
+
+**Severity:** error. The state is `fail`. A field the verifier rejects, or that it would read through a silent default: a repeated tag, no `a=`, a `t=` or `x=` that is not a plain number, an `i=` that is missing, not 1 to 50 or not the instance the verifier read (it keeps the low 32 bits of a longer one), an `ARC-Authentication-Results` whose `i=` is not first, a seal with `h=` or no `cv=`. `failing_instance` is the field's own `i=` when it is 1 to 50.
+
+**Hint:** Fix the ARC field: each tag once; a= present; t= and x= plain decimal numbers; an i= instance from 1 to 50, written first in an ARC-Authentication-Results; valid base64, cv=, d=, s= and b= as RFC 8617 requires, and no h= in an ARC-Seal (RFC 8617 sections 4.1.1 to 4.1.3).
+
+**Passing:** the sealer's own output.
+
+**Failing:** `i=0`; `i=51`; `i=4294967297`; no `a=`; `x=abc`.
+
+### `arc.unsupported.v1`
+
+**Severity:** error. The state is `fail`. An `ARC-Message-Signature` with an `l=` tag, whatever its value (a body length limit lets text be appended unsigned), or `a=rsa-sha1` on a signature or a seal.
+
+**Hint:** Use a= rsa-sha256 or ed25519-sha256 and no l= tag in an ARC-Message-Signature: a body length limit lets text be appended unsigned (RFC 8617 section 4.1.2, RFC 8301 section 3.1, RFC 6376 section 8.2).
+
+**Passing:** `a=rsa-sha256` or `ed25519-sha256` and no `l=`.
+
+**Failing:** `l=5`; `l=0`; `a=rsa-sha1`.
+
+### `arc.set_incomplete.v1`
+
+**Severity:** error. The state is `fail`. The three families hold different numbers of fields. It includes ARC fields with no `ARC-Message-Signature` at all, which is a broken chain and never `none`. Located at the family with the fewest fields (ties in the order results, signature, seal) with occurrence `null`; `failing_instance` is the lowest instance the families disagree on.
+
+**Hint:** Every instance needs exactly one ARC-Seal, one ARC-Message-Signature and one ARC-Authentication-Results; the three families hold different numbers of fields (RFC 8617 section 4.2).
+
+**Passing:** a seal, a signature and a results field for every instance.
+
+**Failing:** no `ARC-Authentication-Results` for instance 2; ARC fields and no `ARC-Message-Signature`.
+
+### `arc.signature_expired.v1`
+
+**Severity:** error. The state is `fail`. The newest `ARC-Message-Signature` has an `x=` at or before the receipt second, or at or before its own `t=` (a literal `x=0` included). Located at that field.
+
+**Hint:** The newest ARC-Message-Signature has expired: its x= is at or before the time the message was received, or at or before its t=; seal again with a later x= or none (RFC 8617 section 4.1.2, RFC 6376 section 3.5).
+
+**Passing:** no `x=`.
+
+**Failing:** `x=1000` for a message received at second 1000.
+
+### `arc.instance_invalid.v1`
+
+**Severity:** error. The state is `fail`. Two fields of one family share an instance (located at the second field in wire order that carries the lowest duplicated instance, of the first family that duplicates it), or the instances are not 1, 2, 3 and so on in the verifier's sorted order (located at the first of seal, signature and results whose `i=` is not its position).
+
+**Hint:** The i= instances must be distinct and run 1, 2, 3 and so on, up to 50, in all three families (RFC 8617 sections 4.2.1 and 5.2).
+
+**Passing:** sets 1, 2 and 3.
+
+**Failing:** sets 1 and 3; sets 2 and 3; two sets that both say `i=1`; 51 sets.
+
+### `arc.cv_invalid.v1`
+
+**Severity:** error. The state is `fail`. A seal's `cv=` is not `none` at instance 1 or not `pass` later. Located at the first seal, by instance, that is wrong.
+
+**Hint:** The ARC-Seal of instance 1 needs cv=none and every later seal needs cv=pass; a seal with cv=fail or any other value ends the chain (RFC 8617 sections 4.1.3 and 5.2).
+
+**Passing:** `cv=none` at instance 1 and `cv=pass` after it.
+
+**Failing:** `cv=pass` at instance 1; `cv=none` or `cv=fail` at instance 2.
+
+### `arc.body_hash_mismatch.v1`
+
+**Severity:** error. The state is `fail`. The body is not the one the newest `ARC-Message-Signature` signed: a hop changed it after sealing. Located at that field.
+
+**Hint:** The body differs from what the newest ARC-Message-Signature signed, so a hop changed it after sealing; seal after the last change, with the same c= (RFC 8617 section 5.2, RFC 6376 section 3.7).
+
+**Passing:** the body as sealed.
+
+**Failing:** a body edited after the last hop sealed.
+
+### `arc.key_missing.v1`
+
+**Severity:** error. The state is `fail`. No record is declared at the `<s>._domainkey.<d>` name of the field whose key was asked for, or the name is outside the DNS grammar. Under decision 0120 the declared map is the world, so an undeclared key is a definite absence, as for DKIM. Located at that field.
+
+**Hint:** Declare a TXT record at the selector._domainkey.domain name of the field named in the finding in the DNS policy; none is declared, or the name is not a valid DNS name (RFC 8617 section 5.2, RFC 6376 section 3.6.2.1).
+
+**Passing:** every sealer's key is declared.
+
+**Failing:** a key not declared for a forwarder.
+
+### `arc.key_invalid.v1`
+
+**Severity:** error. The state is `fail`. A record is declared and is not a usable key: not a key record, revoked (an empty `p=`), or of the other type than the field's `a=`. Located at the field whose key was asked for.
+
+**Hint:** Publish a v=DKIM1 key record with a valid, non-empty p= and a k= that matches the a= of the field named in the finding (RFC 6376 section 3.6.1, RFC 8463).
+
+**Passing:** a `v=DKIM1` key record of the right type.
+
+**Failing:** `v=spf1 -all`; `p=` empty; an RSA key for an ed25519 seal.
+
+### `arc.signature_mismatch.v1`
+
+**Severity:** error. The state is `fail`. A signature or seal does not verify against its declared key: a wrong key of the right type, a sealed header or older set that changed after sealing, key bytes that are no key. Located at the newest field that fails (see Which seal failed).
+
+**Hint:** The field named in the finding is the newest signature or seal that does not verify against its declared key: a sealed header or an older ARC set changed after sealing, b= was made with another key, or p= is not the right public key (RFC 8617 section 5.2).
+
+**Passing:** every seal verifies against its declared key.
+
+**Failing:** another key declared for a hop; the oldest seal's `b=` altered after the second hop sealed.
+
+### `arc.not_evaluated.v1`
+
+**Severity:** error, weight 0. The state is `not_evaluated`. A key lookup failed temporarily (a declared `tempfail`), located at the field whose key was asked for; or the newest `ARC-Message-Signature` has an `x=` after the receipt second, located at that field. A declared temporary failure also keeps the report from qualifying at any threshold (decision 0120).
+
+**Hint:** The chain was not evaluated: a key lookup failed temporarily, or the newest ARC-Message-Signature carries an x= later than the receipt time, which Swarmail does not verify; fix the DNS answer or seal without x=, and retry (RFC 8617 section 5.2).
+
+**Passing:** a key answered, and no `x=` on the newest signature.
+
+**Failing:** a declared `tempfail` on a sealer's key; `x=` later than the receipt second.
+
+**Known limits.** The newest-failing-seal rule above; a chain whose newest
+signature carries an `x=` after the receipt second is reported `not_evaluated`
+and not verified; real sealers' use of `x=` on that field was not measured here.
+The verifier checks signatures only: an `ARC-Authentication-Results` field is
+sealed text written by an intermediary, and nothing trusts it. Trusted-sealer
+lists, sealing and real DNS are not part of this change.
+
 ## Spam signals (`swarmail-spam/1`)
 
 Six built-in, offline, deterministic rules read only the captured message: the
@@ -1059,8 +1301,9 @@ emits at most one finding per report, severity info or warning (error stays the
 bulk checklist's requirement level), so a large message can never flood the
 report. They arrived as `swarmail-spam/1`; with the link rules of decision 0121,
 the `dns` member of decision 0120, the DKIM rules of decision 0125, the SPF and
-DMARC rules of decision 0126 and the weight and total of decision 0122 §2 the
-report's `rule_set_id` is now `swarmail-html/8`, so the rule-set version
+DMARC rules of decision 0126, the weight and total of decision 0122 §2 and the
+ARC chain of proposed decision 0132 the report's `rule_set_id` is now
+`swarmail-html/9`, so the rule-set version
 is recorded in every report and in the cache key. Every finding carries a
 `weight` and the report a `total` (see Weight and total below); the weights
 named in each rule are the weights the report emits.
@@ -1199,9 +1442,9 @@ gives every finding a `weight` and the report a `total`, so no reader has to
 invent a weighting and no edge (REST, MCP, the UI) computes a score. Both are
 non-negative integers, and each is the **last** key of its object: a finding is
 `rule_id`, `location`, `severity`, `fix_hint`, `weight`, and the report is
-`rule_set_id`, `findings`, `dns`, `total`. MCP serializes the same report with
-sorted keys, where `weight` and `total` also sort last, so no key that was
-already served moves.
+`rule_set_id`, `findings`, `dns`, `arc`, `total`. MCP serializes the same report with
+sorted keys, where `weight` and `total` also sort last and the new `arc`
+sorts first, so no key that was already served moves.
 
 | severity | weight |
 |---|---|
@@ -1260,5 +1503,8 @@ after `swarmail-html/6`; the three authentication entries of the bulk checklist
 now read evaluated facts, so their findings changed), then
 `swarmail-html/8` (the per-finding `weight` and the report `total` of decision
 0122 §2, integrated after `swarmail-html/7`; no rule changed meaning, and every
-report gained the two keys). A change to
+report gained the two keys), then
+`swarmail-html/9` (the thirteen ARC rules and the required `arc` report member of
+proposed 0132, integrated after `swarmail-html/8`; no existing rule changed
+meaning, and every report gained the member). A change to
 any rule's meaning, hint, location or order requires a new id.
