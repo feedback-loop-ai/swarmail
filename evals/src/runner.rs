@@ -4673,10 +4673,14 @@ wait "$child"
             );
             probe.control = Some(CleanupControl::new(listener.accept().unwrap().0));
         }
-        eventually("the runner's agent readiness", || {
+        // Bounded like `eventually`, but a timeout reports what the probe
+        // printed: without it a runner that never launches the agent (a CI
+        // image change) fails with no cause.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
             probe.record_owned_from_tree();
             if pids.is_file() {
-                return true;
+                break;
             }
             if let Some(status) = probe.child.as_mut().unwrap().try_wait().unwrap() {
                 panic!(
@@ -4685,8 +4689,15 @@ wait "$child"
                     std::fs::read_to_string(dir.join("probe.stderr")).unwrap_or_default()
                 );
             }
-            false
-        });
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for the runner's agent readiness; stdout={}; stderr={}; runtime-env present={}",
+                std::fs::read_to_string(dir.join("probe.stdout")).unwrap_or_default(),
+                std::fs::read_to_string(dir.join("probe.stderr")).unwrap_or_default(),
+                dir.join("runtime-env").exists()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let ids: Vec<i32> = std::fs::read_to_string(&pids)
             .unwrap()
             .split_whitespace()
