@@ -210,7 +210,7 @@ The intake's seventeen criteria stand except where the code or the operator's ru
 
 ### R11. Scope
 
-Changed: `src/ui.rs`, `src/static/ui.js`, `src/static/ui.css` (new), `src/api.rs`, `src/store.rs` (one read-only method), `src/static/openapi.json`, `src/static/llms.txt`, `tests/ui.rs`, `tests/api.rs`, `docs/decisions/0132-ui-projection-route.md` and its row in `docs/decisions/README.md`, one appended dated pointer in each of the 0110, 0094, 0126 and 0027 records, and this directory. Untouched: `Cargo.toml`, `Cargo.lock`, `deny.toml`, `evals/`, `scripts/`, `.brokkr/`, `.github/`, `src/smtp.rs`, `src/extract.rs`, `src/feed.rs`, `src/model.rs`.
+Changed: `src/ui.rs`, `src/static/ui.js`, `src/static/ui.css` (new), `src/api.rs`, `src/pop3.rs` and `tests/smtp_edges.rs` (test-only: pinned bodies follow the additive 0132 members), `src/store.rs` (one read-only method), `src/static/openapi.json`, `src/static/llms.txt`, `tests/ui.rs`, `tests/api.rs`, `docs/decisions/0132-ui-projection-route.md` and its row in `docs/decisions/README.md`, one appended dated pointer in each of the 0110, 0094, 0126 and 0027 records, and this directory. Untouched: `Cargo.toml`, `Cargo.lock`, `deny.toml`, `evals/`, `scripts/`, `.brokkr/`, `.github/`, `src/smtp.rs`, `src/extract.rs`, `src/feed.rs`, `src/model.rs`.
 
 ## Deviations from the prototype
 

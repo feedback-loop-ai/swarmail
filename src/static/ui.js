@@ -12,6 +12,7 @@ const panes = document.getElementById('panes');
 const TICK_MS = 2000;
 const CACHE_MAX = 512;
 const SEEN_MAX = 512;
+const LIST_CAP = 250;
 const SEEN_KEY = 'swarmail.console.seen';
 const SEVERITY_RANK = new Map([['clean', 0], ['info', 1], ['warning', 2], ['error', 3]]);
 const SEVERITY_CLASS = new Map([['clean', 'clean'], ['info', 'info'], ['warning', 'warning'], ['error', 'error']]);
@@ -360,6 +361,7 @@ const cache = new Map();
 const queue = [];
 const queued = new Set();
 let pumping = false;
+let fetching = null;
 
 function settled(state) {
   return Boolean(state) && (state.state === 'ok' || state.state === 'gone');
@@ -379,6 +381,8 @@ function enrich(id, first) {
   const record = cache.get(id);
   if (record && settled(record.projection) && settled(record.report)) return;
   if (record && record.retryAt > tickCount) return;
+  // A fetch in flight settles or sets its own retry: never queue it twice.
+  if (id === fetching) return;
   if (queued.has(id)) {
     if (first) {
       queue.splice(queue.indexOf(id), 1);
@@ -430,7 +434,14 @@ async function pump() {
       const id = queue.shift();
       queued.delete(id);
       // Rows that left the view are not worth a request.
-      if (rowSlots.has(id) || id === selectedId) await fetchOne(id);
+      if (rowSlots.has(id) || id === selectedId) {
+        fetching = id;
+        try {
+          await fetchOne(id);
+        } finally {
+          fetching = null;
+        }
+      }
     }
   } finally {
     pumping = false;
@@ -764,11 +775,14 @@ function extractedPanel(email, projection) {
 
   const list = el('ul', 'links');
   const links = ready ? ready.links : null;
+  const bare = Array.isArray(email.links) ? email.links : [];
+  const bareShown = Math.min(bare.length, LIST_CAP);
   if (links) {
     for (const item of links.items) list.appendChild(linkLine(item.anchor_text || '(no anchor text)', item.url, item.source));
-  } else {
-    // Occurrences unknown, or not read yet: the bare URLs the mail carried.
-    for (const url of email.links || []) list.appendChild(linkLine('(anchor text unknown)', url, null));
+  } else if (ready) {
+    // The projection is settled and its occurrences are unknown: the bare
+    // URLs the mail carried, capped like every list on this page.
+    for (let i = 0; i < bareShown; i++) list.appendChild(linkLine('(anchor text unknown)', bare[i], null));
   }
   if (list.childNodes.length) body.appendChild(list);
   if (links && links.total > links.items.length) {
@@ -776,6 +790,10 @@ function extractedPanel(email, projection) {
   }
   if (ready && !links && list.childNodes.length) {
     body.appendChild(el('div', 'note', 'Anchor text is unknown for this mail: its link occurrences were not stored.'));
+    if (bare.length > bareShown) body.appendChild(el('div', 'note', 'Links: showing ' + bareShown + ' of ' + bare.length));
+  }
+  if (!ready && bare.length) {
+    body.appendChild(el('div', 'note', failed(projection) ? 'Links unavailable — retrying' : 'Links loading…'));
   }
 
   const attachments = ready ? ready.attachments : null;

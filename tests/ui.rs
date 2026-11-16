@@ -1523,6 +1523,11 @@ async fn the_stylesheet_shows_one_pane_at_phone_width_and_has_both_themes() {
     let css = style_element(&page);
     assert!(css.contains("@media (prefers-color-scheme: dark)"));
     assert!(css.contains("@media (prefers-reduced-motion: reduce)"));
+    // The reduced-motion rule must name the selector that animates the ring
+    // (a weaker selector loses the cascade whatever its order).
+    let calm = squeezed(block_after(css, "@media (prefers-reduced-motion: reduce)"));
+    assert!(calm.contains(".live-on.pulse::after"), "{calm}");
+    assert!(calm.contains("animation:none"), "{calm}");
     assert_eq!(css.matches("@media (max-width: 680px)").count(), 1);
     let phone = squeezed(block_after(css, "@media (max-width: 680px)"));
     assert!(phone.contains("#panes>.pane{display:none}"), "{phone}");
@@ -1542,4 +1547,82 @@ async fn the_stylesheet_shows_one_pane_at_phone_width_and_has_both_themes() {
         !squeezed(&outside).contains("color-scheme:dark"),
         "only the dark block may ask for the dark scheme"
     );
+}
+
+/// R2.2: the counters say what they count, in the bar the server renders.
+#[tokio::test]
+async fn the_status_bar_labels_its_counters_as_lifetime_and_cap_eviction() {
+    let srv = start().await;
+    let (_, page) = http_get_text(srv.http_addr, "/").await;
+    assert!(
+        page.contains(r#"<b id="count-accepted">–</b> accepted (lifetime)"#),
+        "{page}"
+    );
+    assert!(
+        page.contains(r#"<b id="count-dropped">–</b> dropped (evicted by cap, lifetime)"#),
+        "{page}"
+    );
+    assert!(
+        page.contains(r#"title="Mail evicted by the per-inbox cap since the server started""#),
+        "{page}"
+    );
+}
+
+/// An inbox name is client-controlled (the SMTP AUTH user) and the rail
+/// shows it to every visitor: the server-rendered rail label, `<title>` and
+/// stream title must carry it as escaped text, never as markup.
+#[tokio::test]
+async fn a_markup_named_inbox_is_escaped_in_the_rail_title_and_stream_title() {
+    const NAME: &str = "<img src=x onerror=alert(1)>";
+    const ENCODED: &str = "%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E";
+    let srv = start().await;
+    send_headers(srv.smtp_addr, NAME, &[], "hello").await;
+    let (_, names) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert!(names.to_string().contains("onerror"), "seeded: {names}");
+
+    for path in ["/".to_string(), format!("/ui/inbox/{ENCODED}")] {
+        let (st, page) = http_get_text(srv.http_addr, &path).await;
+        assert_eq!(st, 200, "{path}");
+        assert!(!page.contains("<img src=x"), "{path}: raw markup in {page}");
+        assert!(
+            page.contains("&lt;img src=x onerror=alert(1)&gt;"),
+            "{path}: the name is shown as escaped text"
+        );
+    }
+    let (_, page) = http_get_text(srv.http_addr, &format!("/ui/inbox/{ENCODED}")).await;
+    assert!(
+        page.contains("<title>&lt;img src=x onerror=alert(1)&gt; · Swarmail</title>")
+            || page.contains("&lt;img src=x onerror=alert(1)&gt; · Swarmail</title>"),
+        "{page}"
+    );
+    assert!(
+        page.contains(r#"id="stream-title">&lt;img src=x onerror=alert(1)&gt;</span>"#),
+        "{page}"
+    );
+}
+
+/// The legacy link list is a fallback for a settled projection that stored no
+/// occurrences: capped like every list on the page, never painted while the
+/// projection is loading or failed (one mail may carry millions of URLs).
+#[tokio::test]
+async fn the_bare_link_fallback_is_capped_and_waits_for_a_settled_projection() {
+    let srv = start().await;
+    let script = served_script(srv.http_addr).await;
+    assert!(script.contains("const LIST_CAP = 250;"), "{script}");
+    assert!(
+        script.contains("Math.min(bare.length, LIST_CAP)"),
+        "the fallback is bounded"
+    );
+    assert!(
+        script.contains("} else if (ready) {\n    // The projection is settled"),
+        "the fallback runs only for a settled projection"
+    );
+    assert!(
+        !script.contains("for (const url of email.links"),
+        "unbounded loop"
+    );
+    assert!(script.contains("'Links loading…'"));
+    assert!(script.contains("'Links unavailable — retrying'"));
+    // An in-flight fetch is never queued a second time.
+    assert!(script.contains("if (id === fetching) return;"));
 }

@@ -57,10 +57,10 @@
   seed build, the REST list/await pages and SSE thread-view serialization
   stay inline (none is on the ingest path).
 - Strict native input: existing closed list/count/await/assert/thread/feed
-  query shapes accept only their documented keys. Ten further methods take
+  query shapes accept only their documented keys. Eleven further methods take
   no query keys: `DELETE /api/v1/inboxes/{inbox}/messages`,
   `DELETE /api/v1/delete-all`, `GET /api/v1/messages/{id}`,
-  `DELETE /api/v1/messages/{id}`, `GET /api/v1/messages/{id}/raw`,
+  `DELETE /api/v1/messages/{id}`, `GET /api/v1/messages/{id}/raw`, `GET /api/v1/messages/{id}/projection`,
   `GET /api/v1/chaos`, `DELETE /api/v1/chaos`, `GET /api/v1/webhooks`,
   `DELETE /api/v1/webhooks`, and `POST /api/v1/inboxes/{inbox}/seed`. Each
   unknown, bare or empty-valued key is a native JSON 400 naming method,

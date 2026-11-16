@@ -204,5 +204,5 @@ pre.text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-famil
   .bar { gap: 8px 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .pulse::after, .msg.arrive { animation: none; }
+  .live-on .pulse::after, .msg.arrive { animation: none; }
 }
