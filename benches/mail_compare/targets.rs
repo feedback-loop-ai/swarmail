@@ -75,6 +75,10 @@ pub struct LaunchExtra {
     /// Absolute path and sha256 of every further member that is checked at
     /// launch and again at seal.
     pub members: Vec<(PathBuf, String)>,
+    /// Protocol 4's enforced budget: when set, every launch runs in its own
+    /// cgroup leaf of this scope. `None` is protocols 2 and 3, which never
+    /// touch cgroupfs.
+    pub scope: Option<Arc<crate::resources::Scope>>,
 }
 
 impl LaunchSpec {
@@ -99,21 +103,37 @@ impl LaunchSpec {
     /// `{artifact}`, and every checked member is digested at launch and again
     /// at seal. A tree pin's checked members are relative to the executable's
     /// directory, a runtime's to the runtime's root.
+    ///
+    /// `cap` resolves lock 5's `{max_messages}` placeholder, once, here: the
+    /// wire run passes the protocol's cap for the target and the adapters'
+    /// launch mode the pin's own stated cap. A lock 4 pin has no placeholder,
+    /// so the argument changes nothing there; a placeholder left unresolved
+    /// (`None`) is refused before any process starts.
     pub fn from_pin(
         kind: TargetKind,
         binary: PathBuf,
         runtime_dir: Option<PathBuf>,
         pin: &crate::protocol::Pin,
+        cap: Option<u64>,
     ) -> Result<LaunchSpec, String> {
+        let resolve = |text: &String| match cap {
+            Some(n) => text.replace(crate::protocol::CAP_PLACEHOLDER, &n.to_string()),
+            None => text.clone(),
+        };
         let mut spec = LaunchSpec::new(
             kind,
             binary.clone(),
             Some(pin.artifact.executable_sha256.clone()),
-            pin.launch.clone(),
+            pin.launch.iter().map(resolve).collect(),
         );
         if let Some(roles) = &pin.listeners {
             spec.extra.listeners = roles.clone();
-            spec.extra.env = pin.launch_env.clone().unwrap_or_default();
+            spec.extra.env = pin
+                .launch_env
+                .iter()
+                .flatten()
+                .map(|[name, value]| [name.clone(), resolve(value)])
+                .collect();
             spec.extra.config = pin.config_file.clone();
         }
         match (&pin.runtime, runtime_dir) {
@@ -173,6 +193,20 @@ pub struct LaunchFacts {
     pub ready_ns: u64,
     /// Every checked member's relative name and sha256 as launched.
     pub members: Vec<(String, String)>,
+    /// Protocol 4 only, absent from the bytes of every other receipt: the
+    /// leaf's name (not its path, which carries the uid and the unit), the
+    /// five limits as read back, the CPU layout, the cgroup and affinity
+    /// read from `/proc` after the spawn, and the environment template.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leaf: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limits: Option<crate::resources::LimitsRead>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_layout: Option<crate::resources::Layout>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub joined: Option<crate::resources::Joined>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_template: Option<Vec<[String; 2]>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -186,6 +220,19 @@ pub struct CleanupFacts {
     /// Each declared listener's own proof.
     pub listeners: Vec<ListenerFact>,
     pub scratch_removed: bool,
+    /// Protocol 4 only: the leaf was empty after `cgroup.kill` and was
+    /// removed. A process that left the process group with `setsid` is
+    /// still in the leaf, so only this proves that none escaped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cgroup_removed: Option<bool>,
+    /// The leaf's lifetime `memory.peak`, read before it was removed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_peak_bytes: Option<u64>,
+    /// Whether this launch had a leaf. It decides what `proved` requires,
+    /// and is not itself a receipt field: a leaf launch is the one whose
+    /// receipt carries `cgroup_removed`.
+    #[serde(skip)]
+    pub leaf: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -196,7 +243,13 @@ pub struct ListenerFact {
 
 impl CleanupFacts {
     pub fn proved(&self) -> bool {
-        self.reaped && self.group_gone && self.listeners_closed && self.scratch_removed
+        self.reaped
+            && self.group_gone
+            && self.listeners_closed
+            && self.scratch_removed
+            // A leaf launch is proved only with `cgroup_removed: true`; a
+            // missing value is not true.
+            && (!self.leaf || self.cgroup_removed == Some(true))
     }
 
     /// What a worker that failed, panicked or never finished establishes:
@@ -210,6 +263,9 @@ impl CleanupFacts {
             listeners_closed: false,
             listeners: Vec::new(),
             scratch_removed: false,
+            cgroup_removed: None,
+            memory_peak_bytes: None,
+            leaf: false,
         }
     }
 }
@@ -278,6 +334,10 @@ pub enum LaunchError {
     Template,
     Scratch,
     Spawn,
+    /// Protocol 4's leaf could not be made, limited, joined or proved. When
+    /// a process had already started, it was cleaned up and the facts say
+    /// whether that cleanup is proved.
+    Leaf(String, Option<CleanupFacts>),
     /// The ready group listens on an address no declaration names (a
     /// tool's fixed default port); it was cleaned up, and the facts say
     /// whether that cleanup is proved.
@@ -309,6 +369,9 @@ pub struct Owned {
     /// GreenMail's read path (proposed decision 0130 §4).
     pub pop3: Option<Pop3>,
     pub facts: LaunchFacts,
+    /// Protocol 4's cgroup leaf, for the sampler and the windows.
+    #[allow(dead_code)] // read by the cost chunk (the next group)
+    pub leaf: Option<crate::resources::Leaf>,
     pgid: i32,
     limits: Limits,
     shared: Arc<Mutex<Shared>>,
@@ -395,6 +458,46 @@ macro_rules! bind_whys {
     };
 }
 bind_whys!("smtp", "http", "pop3", "imap", "ui");
+
+/// What a leaf launch holds from before the fork until after the spawn: the
+/// leaf with its limits applied and read back, the `cgroup.procs` the child
+/// will write `0` to (opened here, so the child only writes), and the CPU
+/// layout whose target pair is the child's affinity.
+struct Joining {
+    leaf: crate::resources::Leaf,
+    limits: crate::resources::LimitsRead,
+    procs: std::fs::File,
+    affinity: crate::resources::Affinity,
+    layout: crate::resources::Layout,
+}
+
+fn joining(scope: &crate::resources::Scope) -> Result<Joining, String> {
+    let (leaf, limits) = scope.leaf()?;
+    let procs = match std::fs::OpenOptions::new()
+        .write(true)
+        .open(leaf.procs_path())
+    {
+        Ok(f) => f,
+        Err(e) => {
+            leaf.discard();
+            return Err(format!("resources: open {} cgroup.procs: {e}", leaf.name()));
+        }
+    };
+    let affinity = match crate::resources::Affinity::of(&scope.layout.target_cpus) {
+        Ok(a) => a,
+        Err(e) => {
+            leaf.discard();
+            return Err(e);
+        }
+    };
+    Ok(Joining {
+        leaf,
+        limits,
+        procs,
+        affinity,
+        layout: scope.layout.clone(),
+    })
+}
 
 impl Owned {
     /// Launch `spec` with scratch at `scratch` (which must not exist).
@@ -533,6 +636,18 @@ impl Owned {
             )
         };
         let argv: Vec<String> = spec.template.iter().map(|a| sub(a)).collect();
+        // Protocol 4: the leaf exists, limited and read back, before the
+        // fork. A launch without a scope builds nothing of the kind.
+        let joining = match &spec.extra.scope {
+            Some(scope) => match joining(scope) {
+                Ok(j) => Some(j),
+                Err(why) => {
+                    let _ = std::fs::remove_dir_all(scratch);
+                    return Err(LaunchError::Leaf(why, None));
+                }
+            },
+            None => None,
+        };
         let mut cmd = Command::new(&binary);
         cmd.args(&argv)
             .env_clear()
@@ -564,10 +679,22 @@ impl Owned {
             .process_group(0)
             .kill_on_drop(true);
         let nofile = limits.open_files;
-        // SAFETY: setrlimit is async-signal-safe and touches only the
-        // child's own limits between fork and exec.
+        let join = joining.as_ref().map(|j| {
+            use std::os::fd::AsRawFd;
+            (j.procs.as_raw_fd(), j.affinity)
+        });
+        // SAFETY: between fork and exec the child only calls
+        // async-signal-safe functions: write(2) of `0` to the leaf's
+        // `cgroup.procs` through the descriptor the driver opened,
+        // sched_setaffinity(2) with a mask built before the fork, and
+        // setrlimit(2) on its own limits. Nothing allocates, formats or
+        // builds a path, and every return value is checked: a failure fails
+        // the spawn.
         unsafe {
             cmd.pre_exec(move || {
+                if let Some((fd, affinity)) = &join {
+                    crate::resources::join_in_child(*fd, affinity)?;
+                }
                 let lim = libc::rlimit {
                     rlim_cur: nofile as libc::rlim_t,
                     rlim_max: nofile as libc::rlim_t,
@@ -582,6 +709,9 @@ impl Owned {
             Ok(c) => c,
             Err(_) => {
                 let _ = std::fs::remove_dir_all(scratch);
+                if let Some(j) = &joining {
+                    j.leaf.discard();
+                }
                 return Err(LaunchError::Spawn);
             }
         };
@@ -601,6 +731,7 @@ impl Owned {
                 limits: limits.clone(),
                 shared: shared.clone(),
                 exited: exited.clone(),
+                leaf: joining.as_ref().map(|j| j.leaf.clone()),
             },
             child,
             stop_rx,
@@ -627,7 +758,13 @@ impl Owned {
                 argv_template: spec.template.clone(),
                 ready_ns: 0,
                 members,
+                leaf: joining.as_ref().map(|j| j.leaf.name().to_owned()),
+                limits: joining.as_ref().map(|j| j.limits.clone()),
+                cpu_layout: joining.as_ref().map(|j| j.layout.clone()),
+                joined: None,
+                env_template: joining.as_ref().map(|_| spec.extra.env.clone()),
             },
+            leaf: joining.as_ref().map(|j| j.leaf.clone()),
             pgid,
             limits: limits.clone(),
             shared,
@@ -636,6 +773,29 @@ impl Owned {
             done: Some(done_rx),
             settled: None,
         };
+        // The copy of `cgroup.procs` the child wrote through is closed, and
+        // the join is proved from `/proc`: a receipt therefore means the
+        // target was in its leaf on exactly the two target CPUs, not only
+        // that the leaf had limits.
+        if let Some(j) = joining {
+            let Joining {
+                leaf,
+                layout,
+                procs,
+                ..
+            } = j;
+            drop(procs);
+            let proof = crate::resources::read_join(Path::new("/proc"), pgid).and_then(|read| {
+                crate::resources::check_join(&read, leaf.name(), &layout.target_cpus).map(|()| read)
+            });
+            match proof {
+                Ok(read) => owned.facts.joined = Some(read),
+                Err(why) => {
+                    let facts = owned.shutdown().await;
+                    return Err(LaunchError::Leaf(why, Some(facts)));
+                }
+            }
+        }
         let deadline = Instant::now() + limits.startup;
         let declared: Option<Vec<(ListenerRole, SocketAddr)>> = match (spec.kind, stdout) {
             (TargetKind::Swarmail, Some(out)) => {
@@ -736,7 +896,13 @@ impl Owned {
                 argv_template: Vec::new(),
                 ready_ns: 0,
                 members: Vec::new(),
+                leaf: None,
+                limits: None,
+                cpu_layout: None,
+                joined: None,
+                env_template: None,
             },
+            leaf: None,
             pgid: 0,
             limits: limits.clone(),
             shared: Arc::default(),
@@ -1120,16 +1286,22 @@ struct Worker {
     limits: Limits,
     shared: Arc<Mutex<Shared>>,
     exited: Arc<AtomicBool>,
+    /// Protocol 4's leaf: killed and removed after the group's own cleanup.
+    leaf: Option<crate::resources::Leaf>,
 }
 
 /// Kills the group if the worker itself is dropped before it finishes —
 /// the runtime shutting down under it. That is forced death: nothing is
 /// reaped or proved, and the scratch stays for the operator.
-struct GroupGuard(i32);
+struct GroupGuard(i32, Option<crate::resources::Leaf>);
 
 impl Drop for GroupGuard {
     fn drop(&mut self) {
         signal_group(self.0, libc::SIGKILL);
+        // Forced death reaches a process that left the group, too.
+        if let Some(leaf) = &self.1 {
+            let _ = leaf.kill();
+        }
     }
 }
 
@@ -1143,7 +1315,7 @@ async fn keep(
     mut stop: oneshot::Receiver<()>,
     done: oneshot::Sender<CleanupFacts>,
 ) -> CleanupFacts {
-    let mut guard = GroupGuard(w.pgid);
+    let mut guard = GroupGuard(w.pgid, w.leaf.clone());
     let mut reaped = None;
     tokio::select! {
         _ = &mut stop => {}
@@ -1164,6 +1336,7 @@ async fn keep(
     // The group was killed and awaited above; a later kill could only
     // reach a reused id.
     guard.0 = 0;
+    guard.1 = None;
     let _ = done.send(facts.clone());
     facts
 }
@@ -1188,6 +1361,9 @@ async fn cleanup(w: &Worker, mut child: Child, reaped_early: Option<bool>) -> Cl
         listeners_closed: false,
         listeners: Vec::new(),
         scratch_removed: false,
+        cgroup_removed: None,
+        memory_peak_bytes: None,
+        leaf: w.leaf.is_some(),
     };
     if reaped_early.is_none() {
         signal_group(w.pgid, libc::SIGTERM);
@@ -1244,6 +1420,15 @@ async fn cleanup(w: &Worker, mut child: Child, reaped_early: Option<bool>) -> Cl
         facts.listeners.iter().all(|l| l.closed)
     };
     facts.scratch_removed = std::fs::remove_dir_all(&w.scratch).is_ok() || !w.scratch.exists();
+    // Protocol 4: the sequence above is unchanged and ran first. Now the
+    // leaf is killed, which ends a process that called `setsid`, must be
+    // empty and is removed, all inside the same composed budget (read at
+    // least once after the kill, whatever the earlier steps used).
+    if let Some(leaf) = &w.leaf {
+        let t = leaf.teardown(until).await;
+        facts.cgroup_removed = Some(t.removed);
+        facts.memory_peak_bytes = t.memory_peak_bytes;
+    }
     facts
 }
 

@@ -733,6 +733,12 @@ impl Leaf {
         &self.dir
     }
 
+    /// Remove a leaf that never held a process (a launch that failed before
+    /// the fork). Whatever held one goes through [`Leaf::teardown`].
+    pub fn discard(&self) {
+        let _ = self.fs.rmdir(&self.dir);
+    }
+
     pub fn procs_path(&self) -> PathBuf {
         self.dir.join("cgroup.procs")
     }
@@ -811,6 +817,12 @@ pub struct Scope {
     dir: PathBuf,
     pub layout: Layout,
     next: std::sync::atomic::AtomicU32,
+}
+
+impl std::fmt::Debug for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Scope({})", self.dir.display())
+    }
 }
 
 impl Scope {

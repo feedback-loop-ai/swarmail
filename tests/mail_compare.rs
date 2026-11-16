@@ -4156,7 +4156,7 @@ fn pinned(t: TargetKind) -> targets::LaunchSpec {
         .unwrap_or_else(|| panic!("{var} must name the pinned {t} executable"));
     let lock = SourceLock::parse(SOURCES_V4).unwrap();
     let pin = lock.pin(t).unwrap();
-    targets::LaunchSpec::from_pin(t, binary.into(), None, pin).unwrap()
+    targets::LaunchSpec::from_pin(t, binary.into(), None, pin, None).unwrap()
 }
 
 async fn launch_pinned(t: TargetKind, scratch: &Path) -> targets::Owned {
@@ -6091,6 +6091,7 @@ fn the_mailslurper_adapter_launches_main_s_source_build_pin() {
         PathBuf::from("/never/launched/mailslurper"),
         None,
         pin,
+        None,
     )
     .unwrap();
     assert_eq!(spec.template, wire_run.template);

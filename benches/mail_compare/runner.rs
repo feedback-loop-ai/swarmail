@@ -122,7 +122,15 @@ pub fn launch_specs(
             }
             _ => {
                 let pin = s.pin(t).ok_or_else(|| format!("{t}: no source pin"))?;
-                LaunchSpec::from_pin(t, binary, runtime_of.remove(&t), pin)?
+                // The protocol's cap is what lock 5's placeholder resolves
+                // to; `retention_matches` holds it equal to the pin's own.
+                let cap = p
+                    .storage
+                    .retention
+                    .iter()
+                    .find(|r| r.target == t)
+                    .and_then(|r| r.max_messages);
+                LaunchSpec::from_pin(t, binary, runtime_of.remove(&t), pin, cap)?
             }
         };
         specs.insert(t, spec);

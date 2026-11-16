@@ -1350,3 +1350,299 @@ fn affinity_held_reads_every_task_of_every_process() {
     put(&proc_root.path().join("11/task/11"), "status", "garbage\n");
     assert!(!resources::affinity_held(proc_root.path(), &[11], &[0, 1]));
 }
+
+// ============================================================================
+// T3: the launcher join, teardown and receipts
+// ============================================================================
+
+fn draft_specs() -> std::collections::BTreeMap<TargetKind, targets::LaunchSpec> {
+    let (p, l) = (p4(draft()), lock_from(lock5()).unwrap());
+    let bins: Vec<String> = p
+        .launch_order(0)
+        .map(|t| format!("{t}=/never/launched/{t}"))
+        .collect();
+    let runtimes = vec![
+        "greenmail=/never/launched/jre".to_owned(),
+        "alkemio-mailslurper=/never/launched/musl".to_owned(),
+    ];
+    runner::launch_specs(&p, &l, &bins, &runtimes).expect("the draft builds its specs")
+}
+
+// ---- T3.1 ------------------------------------------------------------------
+
+#[test]
+fn the_v4_spec_carries_150000_at_each_cap_flag() {
+    let specs = draft_specs();
+    let pair = |t: TargetKind, flag: &str| {
+        let a = &specs[&t].template;
+        let at = a
+            .iter()
+            .position(|x| x == flag)
+            .unwrap_or_else(|| panic!("{t}: no {flag}"));
+        a[at + 1].clone()
+    };
+    assert_eq!(pair(TargetKind::Mailpit, "--max"), "150000");
+    assert_eq!(pair(TargetKind::Smtp4dev, "--messagestokeep"), "150000");
+    assert_eq!(pair(TargetKind::Swarmail, "--max-per-inbox"), "150000");
+    let inbucket = &specs[&TargetKind::Inbucket].extra.env;
+    assert!(inbucket.contains(&["INBUCKET_STORAGE_MAILBOXMSGCAP".into(), "150000".into()]));
+    // No placeholder survives anywhere, and an uncapped target has none.
+    for (t, spec) in &specs {
+        let all = spec.template.iter().chain(spec.extra.env.iter().flatten());
+        for text in all {
+            assert!(!text.contains("{max_messages}"), "{t}: {text}");
+        }
+    }
+    assert!(
+        !specs[&TargetKind::Mailhog]
+            .template
+            .iter()
+            .any(|a| a == "150000")
+    );
+}
+
+#[tokio::test]
+async fn an_unresolved_placeholder_refuses_before_spawn() {
+    let lock = lock_from(lock5()).unwrap();
+    let pin = lock.pin(TargetKind::Mailpit).unwrap();
+    let spec = targets::LaunchSpec::from_pin(
+        TargetKind::Mailpit,
+        PathBuf::from("/bin/true"),
+        None,
+        pin,
+        None,
+    )
+    .unwrap();
+    assert!(spec.template.iter().any(|a| a == "{max_messages}"));
+    let root = tempfile::tempdir().unwrap();
+    let leaf = root.path().join("leaf");
+    let r = targets::Owned::launch(
+        &spec,
+        &leaf,
+        &limits(),
+        &wire::Clock(Instant::now()),
+        &targets::Keepers::default(),
+    )
+    .await;
+    assert_eq!(r.err(), Some(targets::LaunchError::Template));
+    assert!(!leaf.exists(), "no scratch, so no process, was made");
+}
+
+#[test]
+fn a_lock_v4_spec_is_unchanged_by_the_cap_argument() {
+    let lock = SourceLock::parse(SOURCES_V4).unwrap();
+    for t in [
+        TargetKind::Mailpit,
+        TargetKind::Smtp4dev,
+        TargetKind::Inbucket,
+        TargetKind::Mailhog,
+    ] {
+        let pin = lock.pin(t).unwrap();
+        let make =
+            |cap| targets::LaunchSpec::from_pin(t, PathBuf::from("/x"), None, pin, cap).unwrap();
+        let (none, some) = (make(None), make(Some(777)));
+        assert_eq!(none.template, some.template, "{t}");
+        assert_eq!(none.extra.env, some.extra.env, "{t}");
+        assert_eq!(none.template, pin.launch, "{t}: the lock's own launch");
+    }
+    let pin = lock.pin(TargetKind::Mailpit).unwrap();
+    assert!(
+        pin.launch.contains(&"10000".to_owned()),
+        "lock 4 keeps its literal cap"
+    );
+}
+
+// ---- T3.2 ------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_launch_without_a_leaf_never_builds_a_resources_context() {
+    let spec = swarmail_spec(targets::swarmail_template(0));
+    assert!(
+        spec.extra.scope.is_none(),
+        "protocols 2 and 3 carry no scope"
+    );
+    let root = tempfile::tempdir().unwrap();
+    let keepers = targets::Keepers::default();
+    let mut owned = targets::Owned::launch(
+        &spec,
+        &root.path().join("leaf"),
+        &limits(),
+        &wire::Clock(Instant::now()),
+        &keepers,
+    )
+    .await
+    .expect("a real Swarmail launches");
+    assert!(owned.leaf.is_none());
+    let f = &owned.facts;
+    assert!(f.leaf.is_none() && f.limits.is_none() && f.cpu_layout.is_none());
+    assert!(f.joined.is_none() && f.env_template.is_none());
+    let cleanup = owned.shutdown().await;
+    assert!(cleanup.proved(), "{cleanup:?}");
+    assert_eq!(cleanup.cgroup_removed, None);
+    assert_eq!(cleanup.memory_peak_bytes, None);
+    let text = serde_json::to_string(&cleanup).unwrap();
+    assert!(
+        !text.contains("cgroup_removed") && !text.contains("memory_peak"),
+        "{text}"
+    );
+}
+
+// ---- T3.3 ------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn a_leaf_that_never_empties_ends_at_the_budget_unproved_and_in_place() {
+    let scope = fixture();
+    let dir = leaf_fixture(scope.path(), "target-0001");
+    put(&dir, "cgroup.procs", "4242\n");
+    let (leaf, _) =
+        resources::Leaf::prepare(resources::host(), dir.clone(), "target-0001").unwrap();
+    let start = tokio::time::Instant::now();
+    let t = leaf.teardown(start + Duration::from_millis(200)).await;
+    assert!(t.killed, "the kill is always written");
+    assert!(!t.removed, "a leaf that is not empty is never removed");
+    assert_eq!(t.memory_peak_bytes, Some(1_048_576));
+    assert!(dir.exists(), "the leaf stays in place for the operator");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("cgroup.kill")).unwrap(),
+        "1"
+    );
+    assert!(
+        start.elapsed() >= Duration::from_millis(200),
+        "it waited the budget out"
+    );
+    assert!(start.elapsed() < Duration::from_secs(5), "and no longer");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_kill_is_written_and_procs_read_once_even_past_the_budget() {
+    let scope = fixture();
+    let dir = leaf_fixture(scope.path(), "target-0001");
+    put(&dir, "cgroup.procs", "4242\n");
+    let spy = Spy::new(None);
+    let (leaf, _) = resources::Leaf::prepare(spy.clone(), dir.clone(), "target-0001").unwrap();
+    let before = spy.ops().len();
+    // A budget that ended before teardown began.
+    let spent = tokio::time::Instant::now();
+    tokio::time::advance(Duration::from_secs(5)).await;
+    let t = leaf.teardown(spent).await;
+    assert_eq!(
+        spy.ops()[before..],
+        [
+            "write[1] cgroup.kill",
+            "read cgroup.procs",
+            "read memory.peak"
+        ],
+        "one kill, one read of the procs, nothing more"
+    );
+    assert!(t.killed && !t.removed);
+    // The same leaf once the kernel has emptied it: one read, then removal.
+    put(&dir, "cgroup.procs", "");
+    let before = spy.ops().len();
+    let t = leaf.teardown(spent).await;
+    assert!(t.removed);
+    assert_eq!(
+        spy.ops()[before..],
+        [
+            "write[1] cgroup.kill",
+            "read cgroup.procs",
+            "read memory.peak",
+            "rmdir target-0001"
+        ]
+    );
+}
+
+#[test]
+fn a_leaf_launch_without_cgroup_removed_is_not_proved() {
+    let mut f = targets::CleanupFacts::unproved(TargetKind::Mailpit);
+    f.reaped = true;
+    f.group_gone = true;
+    f.listeners_closed = true;
+    f.scratch_removed = true;
+    assert!(
+        f.proved(),
+        "a launch without a leaf is proved as it always was"
+    );
+    f.leaf = true;
+    assert!(
+        !f.proved(),
+        "a leaf launch with no cgroup_removed is not proved"
+    );
+    f.cgroup_removed = Some(false);
+    assert!(!f.proved());
+    f.cgroup_removed = Some(true);
+    assert!(f.proved());
+    f.reaped = false;
+    assert!(!f.proved(), "the older proofs still all hold");
+}
+
+// ---- T3.4 ------------------------------------------------------------------
+
+#[test]
+fn v3_launch_and_cleanup_receipts_serialize_byte_for_byte() {
+    // Literal JSON as the serializers wrote it before protocol 4 existed.
+    let launch = targets::LaunchFacts {
+        target: TargetKind::Mailpit,
+        executable_sha256: "ab".repeat(32),
+        argv_template: vec!["--smtp".into(), "{smtp_addr}".into()],
+        ready_ns: 42,
+        members: vec![("member".into(), "cd".repeat(32))],
+        leaf: None,
+        limits: None,
+        cpu_layout: None,
+        joined: None,
+        env_template: None,
+    };
+    assert_eq!(
+        serde_json::to_string(&launch).unwrap(),
+        format!(
+            "{{\"target\":\"mailpit\",\"executable_sha256\":\"{}\",\"argv_template\":[\"--smtp\",\"{{smtp_addr}}\"],\"ready_ns\":42,\"members\":[[\"member\",\"{}\"]]}}",
+            "ab".repeat(32),
+            "cd".repeat(32)
+        )
+    );
+    let mut cleanup = targets::CleanupFacts::unproved(TargetKind::Greenmail);
+    cleanup.forced_kill = true;
+    cleanup.reaped = true;
+    cleanup.group_gone = true;
+    cleanup.listeners_closed = true;
+    cleanup.scratch_removed = true;
+    cleanup.listeners = vec![targets::ListenerFact {
+        role: protocol::ListenerRole::Smtp,
+        closed: true,
+    }];
+    assert_eq!(
+        serde_json::to_string(&cleanup).unwrap(),
+        "{\"target\":\"greenmail\",\"forced_kill\":true,\"reaped\":true,\"group_gone\":true,\"listeners_closed\":true,\"listeners\":[{\"role\":\"smtp\",\"closed\":true}],\"scratch_removed\":true}"
+    );
+}
+
+#[tokio::test]
+async fn a_v4_launch_receipt_shows_the_cap_and_keeps_ports_and_paths_as_slots() {
+    // The receipt's template is the spec's, with the cap resolved when the
+    // spec was built; ports and private paths stay slots (0093's privacy rule).
+    let spec = swarmail_spec(targets::swarmail_template(protocol::V4_CAP));
+    let root = tempfile::tempdir().unwrap();
+    let mut owned = targets::Owned::launch(
+        &spec,
+        &root.path().join("leaf"),
+        &limits(),
+        &wire::Clock(Instant::now()),
+        &targets::Keepers::default(),
+    )
+    .await
+    .unwrap();
+    let t = owned.facts.argv_template.clone();
+    assert!(owned.shutdown().await.proved());
+    assert_eq!(t, targets::swarmail_template(150_000));
+    assert!(t.windows(2).any(|w| w == ["--max-per-inbox", "150000"]));
+    assert!(t.contains(&"{smtp_addr}".to_owned()) && t.contains(&"{http_addr}".to_owned()));
+    let text = t.join(" ");
+    assert!(!text.contains(root.path().to_str().unwrap()), "{text}");
+    // And a competitor's, from the draft lock.
+    let specs = draft_specs();
+    let m = specs[&TargetKind::Mailpit].template.join(" ");
+    assert!(
+        m.contains("--max 150000") && m.contains("{data_dir}/mailpit.db"),
+        "{m}"
+    );
+}

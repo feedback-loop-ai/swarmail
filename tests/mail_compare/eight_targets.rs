@@ -1920,6 +1920,11 @@ async fn checked_member_or_jar_mismatch_refuses_launch() {
         argv_template: vec![],
         ready_ns: 0,
         members: vec![(member.to_string_lossy().into_owned(), good_member.clone())],
+        leaf: None,
+        limits: None,
+        cpu_layout: None,
+        joined: None,
+        env_template: None,
     };
     let spec = mk(&good_member, &good_jar);
     assert!(targets::spec_unchanged(&spec, &launched));
@@ -4062,6 +4067,7 @@ fn loader_launch_execs_the_pinned_loader_with_the_binary_as_artifact() {
         exe.clone(),
         Some(root.clone()),
         pin,
+        None,
     )
     .unwrap();
     assert_eq!(spec.binary, root.join("lib/ld-musl-x86_64.so.1"));
@@ -4094,11 +4100,18 @@ fn loader_launch_execs_the_pinned_loader_with_the_binary_as_artifact() {
         PathBuf::from("/j.jar"),
         Some(root.clone()),
         g,
+        None,
     )
     .unwrap();
     assert_eq!(gs.binary, root.join("bin/java"));
     let s4 = lock.pin(TargetKind::Smtp4dev).unwrap();
-    let err = LaunchSpec::from_pin(TargetKind::Smtp4dev, PathBuf::from("/x"), Some(root), s4);
+    let err = LaunchSpec::from_pin(
+        TargetKind::Smtp4dev,
+        PathBuf::from("/x"),
+        Some(root),
+        s4,
+        None,
+    );
     assert!(err.unwrap_err().contains("its pin has no runtime"));
 }
 
@@ -4607,7 +4620,7 @@ fn real_spec(t: TargetKind) -> LaunchSpec {
                 .unwrap_or_else(|| panic!("{var} must name the pinned runtime's root directory")),
         )
     });
-    LaunchSpec::from_pin(t, binary.into(), runtime, pin).expect("a launch from the pin")
+    LaunchSpec::from_pin(t, binary.into(), runtime, pin, None).expect("a launch from the pin")
 }
 
 async fn real_launch(t: TargetKind, root: &Path) -> targets::Owned {
