@@ -302,6 +302,18 @@ pub async fn until<F: std::future::Future>(end: Option<Instant>, work: F) -> Opt
     }
 }
 
+/// How a send session ends (0132 §10, V16): with `QUIT` before the chunk's
+/// instant. At or after it no `QUIT` is begun and the session is dropped, and
+/// a `QUIT` in flight is cut at it, so a server that never answers one costs
+/// nothing past the instant. Protocols 1 to 3 pass no instant and end a
+/// session as they always did.
+async fn end_session(s: Smtp, chunk_end: Option<Instant>) {
+    if past(chunk_end) {
+        return;
+    }
+    let _ = until(chunk_end, s.quit()).await;
+}
+
 /// Why a profile was not measured, written in one vocabulary whatever the
 /// cause (0132 §11.3): the chunk's deadline came, or the target was killed
 /// for memory or exited on its own before it could be measured.
@@ -750,12 +762,12 @@ pub async fn throughput(
                 if (connection == Connection::Fresh || !ok)
                     && let Some(s) = session.take()
                 {
-                    s.quit().await;
+                    end_session(s, chunk_end).await;
                 }
                 emit(&sink, &r)?;
             }
             if let Some(s) = session.take() {
-                s.quit().await;
+                end_session(s, chunk_end).await;
             }
             Ok::<(), String>(())
         }));
@@ -1390,6 +1402,20 @@ pub fn window_outcome(
     }
 }
 
+/// The outcome of a window that was never opened, in V13's order: an OOM kill
+/// the instance's leaf shows, then the leader having exited, then the cause
+/// in hand. An OOM is a kernel fact and is never relabelled, whether or not
+/// the window was opened (V13).
+pub fn never_opened_outcome(leaf: &Leaf, exited: bool, cause: WindowOutcome) -> WindowOutcome {
+    if leaf.mem_events().is_ok_and(|e| e.oom_kill >= 1) {
+        WindowOutcome::OomKilled
+    } else if exited {
+        WindowOutcome::TargetExited
+    } else {
+        cause
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Mark {
     Start,
@@ -2005,11 +2031,8 @@ pub async fn measured_instance(
         (_, _, Some(e)) => Err(format!("{target}: window bounds: {e}")),
         (None, None, None) if marks.cut => {
             // The instant came before the window could open.
-            let outcome = if owned.has_exited() {
-                WindowOutcome::TargetExited
-            } else {
-                WindowOutcome::ChunkDeadline
-            };
+            let outcome =
+                never_opened_outcome(&leaf, owned.has_exited(), WindowOutcome::ChunkDeadline);
             note(WindowKind::Measure, outcome);
             emit_window(
                 sink,

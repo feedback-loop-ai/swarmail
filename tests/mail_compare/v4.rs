@@ -1452,12 +1452,14 @@ fn a_join_read_back_mismatch_refuses_the_launch() {
     std::fs::create_dir(&pid_dir).unwrap();
     put(&pid_dir, "cgroup", "0::/a/b/scope/target-0002\n");
     put(&pid_dir, "status", "Name:\tx\nCpus_allowed_list:\t4,6\n");
-    let j = resources::read_join(proc_root.path(), 4321).unwrap();
+    let j = resources::read_join_whole(proc_root.path(), 4321)
+        .unwrap()
+        .joined;
     assert_eq!(j.cgroup, "target-0002");
     assert_eq!(j.cpus_allowed, vec![4, 6]);
     resources::check_join(&j, "target-0002", &[4, 6]).unwrap();
     assert!(resources::check_join(&j, "target-0001", &[4, 6]).is_err());
-    assert!(resources::read_join(proc_root.path(), 1).is_err());
+    assert!(resources::read_join_whole(proc_root.path(), 1).is_err());
 }
 
 // ---- T2.4 ------------------------------------------------------------------
@@ -7469,6 +7471,280 @@ mod chunk {
             life.cleanups
                 .iter()
                 .all(|c| c.proved() && c.cgroup_removed == Some(true))
+        );
+    }
+
+    // ---- S4.1: no QUIT after the chunk's instant ------------------------------
+
+    /// What a test-owned SMTP listener has received, line by line, with
+    /// `<eof>` where a connection ended.
+    pub type Heard = Arc<Mutex<Vec<String>>>;
+
+    /// A server that accepts every message and records every line it is
+    /// sent. With `hang_quit` it never answers `QUIT`. With `hold_until`, the
+    /// first time it has answered a message's terminator it blocks its
+    /// (single) runtime thread until that instant: the client cannot run in
+    /// between, so the instant falls after the acceptance and before the
+    /// client's next step, whatever the scheduler does.
+    pub async fn smtp_recording(
+        hang_quit: bool,
+        hold_until: Option<Instant>,
+    ) -> (std::net::SocketAddr, Heard) {
+        let heard: Heard = Arc::default();
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let (log, held) = (
+            heard.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        tokio::spawn(async move {
+            while let Ok((s, _)) = l.accept().await {
+                let (log, held) = (log.clone(), held.clone());
+                tokio::spawn(async move {
+                    let (r, mut w) = s.into_split();
+                    let mut r = tokio::io::BufReader::new(r);
+                    let _ = w.write_all(b"220 stub\r\n").await;
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        if r.read_line(&mut line).await.unwrap_or(0) == 0 {
+                            log.lock().unwrap().push("<eof>".into());
+                            return;
+                        }
+                        log.lock().unwrap().push(line.trim_end().to_owned());
+                        let up = line.to_ascii_uppercase();
+                        if up.starts_with("QUIT") && hang_quit {
+                            std::future::pending::<()>().await;
+                        }
+                        let reply: &[u8] = if up.starts_with("DATA") {
+                            let _ = w.write_all(b"354 go\r\n").await;
+                            loop {
+                                line.clear();
+                                if r.read_line(&mut line).await.unwrap_or(0) == 0 {
+                                    return;
+                                }
+                                if line == ".\r\n" {
+                                    break;
+                                }
+                            }
+                            b"250 queued\r\n"
+                        } else if up.starts_with("QUIT") {
+                            b"221 bye\r\n"
+                        } else {
+                            b"250 ok\r\n"
+                        };
+                        let _ = w.write_all(reply).await;
+                        if let Some(t) = hold_until
+                            && reply == b"250 queued\r\n"
+                            && !held.swap(true, std::sync::atomic::Ordering::SeqCst)
+                        {
+                            while Instant::now() < t {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        (addr, heard)
+    }
+
+    /// Wait until the listener has seen `n` connections end.
+    pub async fn ended(heard: &Heard, n: usize) -> Vec<String> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let lines = heard.lock().unwrap().clone();
+            if lines.iter().filter(|l| *l == "<eof>").count() >= n {
+                return lines;
+            }
+            assert!(Instant::now() < deadline, "no end of connection: {lines:?}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    fn quits(lines: &[String]) -> usize {
+        lines.iter().filter(|l| l.starts_with("QUIT")).count()
+    }
+
+    /// One send of a profile against `smtp`, with the chunk's instant `end`,
+    /// returning the rows and how long it took.
+    async fn one_send(
+        connection: &str,
+        smtp: std::net::SocketAddr,
+        end: Option<Instant>,
+        run: &str,
+    ) -> (Vec<Row>, Duration) {
+        let mut pr = profile("cost-a", 0, 1, 1);
+        pr["connection"] = json!(connection);
+        pr["verify_deadline_ms"] = json!(200);
+        let p = protocol(vec![pr], 480_000);
+        let owned = detached(smtp, mailpit_http(vec![], false).await, &p);
+        let m = rows_only(&p, run);
+        let dir = fixture();
+        let out = dir.path().join("run");
+        let sink = sink_for(&m, &out);
+        let clock = wire::Clock(Instant::now());
+        let started = Instant::now();
+        runner::throughput(
+            &owned,
+            &p,
+            &p.throughput[0],
+            "quittest",
+            0,
+            run,
+            &sink,
+            &clock,
+            (None, end),
+        )
+        .await
+        .unwrap();
+        let took = started.elapsed();
+        (read_rows(&out, &m, sink), took)
+    }
+
+    #[tokio::test]
+    async fn a_reused_session_past_chunk_end_is_dropped_without_quit() {
+        // The acceptance comes before the instant; the instant is here by the
+        // time the worker would end its session.
+        let end = Instant::now() + Duration::from_millis(400);
+        let (smtp, heard) = smtp_recording(false, Some(end + Duration::from_millis(100))).await;
+        let (rows, _) = one_send("reused", smtp, Some(end), "run-q1").await;
+        assert_eq!(sends(&rows)[0].outcome, "accepted");
+        let lines = ended(&heard, 1).await;
+        assert_eq!(quits(&lines), 0, "{lines:?}");
+    }
+
+    #[tokio::test]
+    async fn a_fresh_session_past_chunk_end_sends_no_quit_and_keeps_its_accepted_row() {
+        let end = Instant::now() + Duration::from_millis(400);
+        let (smtp, heard) = smtp_recording(false, Some(end + Duration::from_millis(100))).await;
+        let (rows, _) = one_send("fresh", smtp, Some(end), "run-q2").await;
+        let s = sends(&rows);
+        assert_eq!(s.len(), 1);
+        assert_eq!(
+            (s[0].outcome.as_str(), s[0].reason.as_deref()),
+            ("accepted", None),
+            "the row keeps what the server said"
+        );
+        let lines = ended(&heard, 1).await;
+        assert_eq!(quits(&lines), 0, "{lines:?}");
+    }
+
+    #[tokio::test]
+    async fn a_quit_in_flight_is_cut_at_chunk_end() {
+        let (smtp, heard) = smtp_recording(true, None).await;
+        let end = Instant::now() + Duration::from_millis(600);
+        let (rows, took) = one_send("reused", smtp, Some(end), "run-q3").await;
+        assert_eq!(sends(&rows)[0].outcome, "accepted");
+        // The listener never answers QUIT: the call returned at the instant,
+        // not one request deadline (10 s) later.
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        let lines = heard.lock().unwrap().clone();
+        assert_eq!(
+            quits(&lines),
+            1,
+            "it was begun before the instant: {lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn before_chunk_end_a_session_still_ends_with_quit() {
+        let (smtp, heard) = smtp_recording(false, None).await;
+        let end = Instant::now() + Duration::from_secs(60);
+        let (rows, _) = one_send("reused", smtp, Some(end), "run-q4").await;
+        assert_eq!(sends(&rows)[0].outcome, "accepted");
+        let lines = ended(&heard, 1).await;
+        assert_eq!(quits(&lines), 1, "{lines:?}");
+    }
+
+    #[tokio::test]
+    async fn a_protocol_3_session_still_ends_with_quit() {
+        // No instant: protocols 1 to 3 end a session as they always did.
+        for connection in ["reused", "fresh"] {
+            let (smtp, heard) = smtp_recording(false, None).await;
+            let (rows, _) = one_send(connection, smtp, None, "run-q5").await;
+            assert_eq!(sends(&rows)[0].outcome, "accepted", "{connection}");
+            let lines = ended(&heard, 1).await;
+            assert_eq!(quits(&lines), 1, "{connection}: {lines:?}");
+        }
+    }
+
+    // ---- S4.2, S4.3 ------------------------------------------------------------
+
+    #[test]
+    fn a_never_opened_window_keeps_the_order_of_outcomes() {
+        for (oom_kill, exited, want) in [
+            (1, false, WindowOutcome::OomKilled),
+            (1, true, WindowOutcome::OomKilled),
+            (0, true, WindowOutcome::TargetExited),
+            (0, false, WindowOutcome::ChunkDeadline),
+        ] {
+            let rig = Rig::new(oom_kill, true);
+            let (leaf, _) = rig.scope.leaf().unwrap();
+            assert_eq!(
+                runner::never_opened_outcome(&leaf, exited, WindowOutcome::ChunkDeadline),
+                want,
+                "oom_kill {oom_kill}, exited {exited}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_join_under_another_parent_with_the_leafs_name_is_a_mismatch() {
+        let rig = Rig::new(0, true);
+        let (leaf, _) = rig.scope.leaf().unwrap();
+        let proc_root = fixture();
+        let pid = proc_root.path().join("77");
+        std::fs::create_dir(&pid).unwrap();
+        std::fs::write(pid.join("status"), "Cpus_allowed_list:\t2,3\n").unwrap();
+        // The same last component, under another parent.
+        std::fs::write(
+            pid.join("cgroup"),
+            format!("0::/user.slice/another.scope/{}\n", leaf.name()),
+        )
+        .unwrap();
+        let read = resources::read_join_whole(proc_root.path(), 77).unwrap();
+        assert_eq!(read.joined.cgroup, leaf.name(), "the name alone would pass");
+        let w = resources::check_join_whole(&read, (leaf.name(), &leaf.cgroup_path()), &[2, 3])
+            .unwrap_err();
+        assert!(
+            w.contains("not its leaf") && w.contains("another.scope"),
+            "{w}"
+        );
+    }
+
+    #[test]
+    fn a_join_at_the_leafs_own_path_passes_and_the_receipt_keeps_the_name() {
+        let rig = Rig::new(0, true);
+        let (leaf, _) = rig.scope.leaf().unwrap();
+        let proc_root = fixture();
+        let pid = proc_root.path().join("78");
+        std::fs::create_dir(&pid).unwrap();
+        std::fs::write(pid.join("status"), "Cpus_allowed_list:\t2,3\n").unwrap();
+        std::fs::write(pid.join("cgroup"), format!("0::{}\n", leaf.cgroup_path())).unwrap();
+        let read = resources::read_join_whole(proc_root.path(), 78).unwrap();
+        resources::check_join_whole(&read, (leaf.name(), &leaf.cgroup_path()), &[2, 3]).unwrap();
+        // The receipt carries the leaf's name and nothing of the path.
+        assert_eq!(read.joined.cgroup, "target-0001");
+        let receipt = serde_json::to_value(&read.joined).unwrap();
+        assert_eq!(
+            receipt,
+            json!({"cgroup": "target-0001", "cpus_allowed": [2, 3]})
+        );
+        // The path as /proc writes it: below the cgroup mount, from a slash.
+        assert_eq!(
+            resources::cgroup_path_of(
+                Path::new("/sys/fs/cgroup/user.slice/mail-compare-x.scope/target-0001"),
+                Path::new("/sys/fs/cgroup")
+            ),
+            "/user.slice/mail-compare-x.scope/target-0001"
+        );
+        assert_eq!(
+            resources::cgroup_path_of(
+                Path::new("/tmp/fixture/target-0001"),
+                Path::new("/sys/fs/cgroup")
+            ),
+            "/tmp/fixture/target-0001"
         );
     }
 

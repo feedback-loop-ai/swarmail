@@ -569,7 +569,16 @@ pub struct Joined {
     pub cpus_allowed: Vec<u32>,
 }
 
-pub fn read_join(proc_root: &Path, pid: i32) -> Result<Joined, String> {
+/// What `/proc/<pid>` says of the join: the whole cgroup path of its `0::`
+/// line, which is what the comparison needs, and the receipt's view of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinRead {
+    pub path: String,
+    pub joined: Joined,
+}
+
+/// Read the join back from `/proc`, keeping the whole cgroup path (V10).
+pub fn read_join_whole(proc_root: &Path, pid: i32) -> Result<JoinRead, String> {
     let dir = proc_root.join(pid.to_string());
     let path = std::fs::read_to_string(dir.join("cgroup"))
         .map_err(|e| format!("resources: /proc/{pid}/cgroup: {e}"))
@@ -577,10 +586,32 @@ pub fn read_join(proc_root: &Path, pid: i32) -> Result<Joined, String> {
     let cpus = std::fs::read_to_string(dir.join("status"))
         .map_err(|e| format!("resources: /proc/{pid}/status: {e}"))
         .and_then(|t| parse_cpus_allowed(&t))?;
-    Ok(Joined {
-        cgroup: path.rsplit('/').next().unwrap_or_default().to_owned(),
-        cpus_allowed: cpus.into_iter().collect(),
+    Ok(JoinRead {
+        joined: Joined {
+            cgroup: path.rsplit('/').next().unwrap_or_default().to_owned(),
+            cpus_allowed: cpus.into_iter().collect(),
+        },
+        path,
     })
+}
+
+/// The join is proved when the target is in the leaf the driver made, by its
+/// whole cgroup path and not by its last component (another parent may hold
+/// a cgroup of the same name), and may run on exactly the two target CPUs.
+/// The receipt keeps the leaf's name.
+pub fn check_join_whole(
+    read: &JoinRead,
+    leaf: (&str, &str),
+    target_cpus: &[u32],
+) -> Result<(), String> {
+    let (name, path) = leaf;
+    if read.path != path {
+        return Err(format!(
+            "resources: the target is in cgroup {:?}, not its leaf {path:?}",
+            read.path
+        ));
+    }
+    check_join(&read.joined, name, target_cpus)
 }
 
 /// The join is proved when the target is in its own leaf and may run on
@@ -644,6 +675,16 @@ pub struct LimitsRead {
     pub memory_oom_group: String,
     pub cpu_max: String,
     pub pids_max: String,
+}
+
+/// `dir` as `/proc/<pid>/cgroup` writes a cgroup: its path below the cgroup
+/// mount `root`, with a leading slash. A directory outside the mount (a
+/// fixture tree) is its own path.
+pub fn cgroup_path_of(dir: &Path, root: &Path) -> String {
+    match dir.strip_prefix(root) {
+        Ok(rel) => format!("/{}", rel.display()),
+        Err(_) => dir.display().to_string(),
+    }
 }
 
 /// One launch's cgroup: `<scope>/target-<launch-id>`.
@@ -741,6 +782,12 @@ impl Leaf {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The leaf's cgroup path as `/proc/<pid>/cgroup` writes it: its
+    /// directory below the cgroup mount, with a leading slash.
+    pub fn cgroup_path(&self) -> String {
+        cgroup_path_of(&self.dir, Path::new(CGROUP_ROOT))
     }
 
     /// Remove a leaf that never held a process (a launch that failed before

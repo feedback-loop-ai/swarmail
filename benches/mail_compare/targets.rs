@@ -761,7 +761,7 @@ impl Owned {
         // never races an instant exit.
         let join_read = joining
             .as_ref()
-            .map(|_| crate::resources::read_join(Path::new("/proc"), pgid));
+            .map(|_| crate::resources::read_join_whole(Path::new("/proc"), pgid));
         // From here the worker owns the child: every later exit of this
         // function, its cancellation included, ends in the worker's cleanup.
         let shared = Arc::new(Mutex::new(Shared::default()));
@@ -842,15 +842,22 @@ impl Owned {
                 .and_then(|read| {
                     #[cfg(test)]
                     let read = if trust_cgroup {
-                        crate::resources::Joined {
-                            cgroup: leaf.name().to_owned(),
-                            ..read
+                        crate::resources::JoinRead {
+                            path: leaf.cgroup_path(),
+                            joined: crate::resources::Joined {
+                                cgroup: leaf.name().to_owned(),
+                                ..read.joined
+                            },
                         }
                     } else {
                         read
                     };
-                    crate::resources::check_join(&read, leaf.name(), &layout.target_cpus)
-                        .map(|()| read)
+                    crate::resources::check_join_whole(
+                        &read,
+                        (leaf.name(), &leaf.cgroup_path()),
+                        &layout.target_cpus,
+                    )
+                    .map(|()| read.joined)
                 });
             match proof {
                 Ok(read) => owned.facts.joined = Some(read),
