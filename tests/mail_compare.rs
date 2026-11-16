@@ -3705,9 +3705,13 @@ async fn the_adapter_refuses_incomplete_malformed_and_overbudget_upstream_answer
     drop(c.w.take());
     assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
 
-    // Aggregate request and byte budgets end a long wait with an error.
+    // Aggregate request and byte budgets end a long wait with an error. The
+    // wait is far longer than either budget lasts, so the budget always ends
+    // it first: at 5 s an instrumented coverage build on a loaded host
+    // scanned only five times and timed out under the 600-byte budget.
     let tight = mailpit_mcp::Bounds {
         max_requests: 3,
+        operation: Duration::from_secs(65),
         ..small_bounds()
     };
     let mut c = Mcp::start(addr, tight, 1 << 20);
@@ -3716,7 +3720,7 @@ async fn the_adapter_refuses_incomplete_malformed_and_overbudget_upstream_answer
         .tool(
             1,
             "mailpit_wait",
-            serde_json::json!({"query": "neverq7", "timeout_ms": 5000}),
+            serde_json::json!({"query": "neverq7", "timeout_ms": 60000}),
         )
         .await;
     assert!(
@@ -3725,6 +3729,7 @@ async fn the_adapter_refuses_incomplete_malformed_and_overbudget_upstream_answer
     );
     let bytes = mailpit_mcp::Bounds {
         max_operation_bytes: 600,
+        operation: Duration::from_secs(65),
         ..small_bounds()
     };
     let mut c = Mcp::start(addr, bytes, 1 << 20);
@@ -3733,7 +3738,7 @@ async fn the_adapter_refuses_incomplete_malformed_and_overbudget_upstream_answer
         .tool(
             1,
             "mailpit_wait",
-            serde_json::json!({"query": "neverq7", "timeout_ms": 5000}),
+            serde_json::json!({"query": "neverq7", "timeout_ms": 60000}),
         )
         .await;
     assert!(
