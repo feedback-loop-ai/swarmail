@@ -549,7 +549,15 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     needs: [docker-build]
-    if: github.event_name == 'push' && needs.docker-build.result == 'success'
+    # `!cancelled()` replaces the implicit success(), which also requires
+    # every upstream job of docker-build to succeed: on main the tag-only
+    # rate proof is skipped, so without it this job was skipped too and
+    # :main was never re-tagged. docker-build's own admission already
+    # names each prerequisite's required result.
+    if: >-
+      !cancelled()
+      && github.event_name == 'push'
+      && needs.docker-build.result == 'success'
     permissions:
       contents: read
       packages: write
