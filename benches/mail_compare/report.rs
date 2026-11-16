@@ -559,37 +559,42 @@ pub struct CostSection {
     pub cells: Vec<CostCell>,
 }
 
-/// One repetition of one cost profile of one target.
+/// One repetition of one cost profile of one target. A figure that the
+/// repetition has no observation for is `null`, never zero: a window that was
+/// never opened has no counters, and nothing is derived from it.
 #[derive(Debug, Clone, Serialize)]
 pub struct CostRep {
     pub target: TargetKind,
     pub profile: String,
     pub repetition: u32,
     /// The v2 reconciliation is exact: requested = accepted = visible,
-    /// seen once, fidelity intact.
+    /// seen once, and every visible message's fidelity was read and intact.
     pub exact: bool,
-    /// Distinct accepted messages observed on the server.
-    pub visible: u64,
+    /// Distinct accepted messages observed on the server; `null` when the
+    /// `measure` window was never opened.
+    pub visible: Option<u64>,
     pub window_outcome: WindowOutcome,
-    pub cpu_user_usec: u64,
-    pub cpu_system_usec: u64,
-    pub cpu_total_usec: u64,
-    pub peak_memory_bytes: u64,
-    pub mean_memory_bytes: f64,
-    pub peak_anon_bytes: u64,
-    pub mean_anon_bytes: f64,
-    pub oom_kills: u64,
-    pub nr_throttled: u64,
-    pub throttled_usec: u64,
-    pub affinity_held: bool,
+    pub cpu_user_usec: Option<u64>,
+    pub cpu_system_usec: Option<u64>,
+    pub cpu_total_usec: Option<u64>,
+    pub peak_memory_bytes: Option<u64>,
+    pub mean_memory_bytes: Option<f64>,
+    pub peak_anon_bytes: Option<u64>,
+    pub mean_anon_bytes: Option<f64>,
+    pub oom_kills: Option<u64>,
+    pub nr_throttled: Option<u64>,
+    pub throttled_usec: Option<u64>,
+    /// `null` when no task could be read at the window's end.
+    pub affinity_held: Option<bool>,
     pub visible_per_cpu_second: Option<f64>,
     pub cpu_ms_per_1k_visible: Option<f64>,
     pub shortfalls: Vec<&'static str>,
 }
 
 /// One target and cost profile over its repetitions: the median with the
-/// minimum and maximum beside it. A cell that is not at equal results keeps
-/// its figures, is not ranked, and names its shortfalls.
+/// minimum and maximum beside it, over the repetitions that have a value
+/// (`n` says how many). A cell that is not at equal results keeps its
+/// figures, is not ranked, and names its shortfalls.
 #[derive(Debug, Clone, Serialize)]
 pub struct CostCell {
     pub target: TargetKind,
@@ -609,9 +614,11 @@ pub struct IdleRep {
     pub target: TargetKind,
     pub profile: String,
     pub repetition: u32,
-    pub memory_mib: f64,
-    pub anon_mib: f64,
+    pub memory_mib: Option<f64>,
+    pub anon_mib: Option<f64>,
     pub scratch_bytes: Option<u64>,
+    /// Why this repetition has no value, from the window's outcome.
+    pub shortfall: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -619,6 +626,9 @@ pub struct IdleCell {
     pub target: TargetKind,
     pub profile: String,
     pub repetitions: u32,
+    /// True only when every repetition has a value.
+    pub ranked: bool,
+    pub shortfalls: Vec<&'static str>,
     pub memory_mib: Option<Spread>,
     pub anon_mib: Option<Spread>,
     pub scratch_bytes: Option<Spread>,
@@ -629,8 +639,9 @@ pub struct StartupRep {
     pub target: TargetKind,
     pub profile: String,
     pub repetition: u32,
-    pub ready_ms: f64,
-    pub cpu_ms_to_ready: f64,
+    pub ready_ms: Option<f64>,
+    pub cpu_ms_to_ready: Option<f64>,
+    pub shortfall: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -638,6 +649,8 @@ pub struct StartupCell {
     pub target: TargetKind,
     pub profile: String,
     pub repetitions: u32,
+    pub ranked: bool,
+    pub shortfalls: Vec<&'static str>,
     pub ready_ms: Option<Spread>,
     pub cpu_ms_to_ready: Option<Spread>,
 }
@@ -663,14 +676,70 @@ pub struct Figures {
     pub startup: Vec<StartupRep>,
 }
 
-fn mean(values: impl Iterator<Item = u64>) -> f64 {
+/// The mean of the values, or `None` when there are none: no sample, no
+/// mean.
+fn mean(values: impl Iterator<Item = u64>) -> Option<f64> {
     let (sum, n) = values.fold((0u128, 0u64), |(s, n), v| (s + u128::from(v), n + 1));
-    if n == 0 { 0.0 } else { sum as f64 / n as f64 }
+    (n > 0).then(|| sum as f64 / n as f64)
+}
+
+/// Why a window that was not `measured` gives no figure, in the closed
+/// shortfall vocabulary.
+fn outcome_shortfall(o: WindowOutcome) -> Option<&'static str> {
+    match o {
+        WindowOutcome::Measured => None,
+        WindowOutcome::OomKilled => Some("oom"),
+        WindowOutcome::TargetExited => Some("target_exited"),
+        WindowOutcome::ChunkDeadline => Some("timeout"),
+    }
+}
+
+/// What one cell's message rows say beyond the reconciliation: the cuts the
+/// chunk deadline made, and the fidelity reads that were not made.
+#[derive(Default)]
+struct RowFacts {
+    /// A send row ended at a deadline (the profile's or the chunk's).
+    deadline_rows: bool,
+    /// The verification was ended by the chunk deadline: what was not looked
+    /// for was not lost.
+    verification_cut: bool,
+    /// Visible rows whose fidelity was never read.
+    unread: u64,
+}
+
+impl RowFacts {
+    fn of<'a>(rows: impl Iterator<Item = &'a Row>) -> RowFacts {
+        let mut f = RowFacts::default();
+        for r in rows {
+            let reason = r.reason.as_deref();
+            match r.phase {
+                Phase::Send => {
+                    f.deadline_rows |= reason
+                        .is_some_and(|x| x == "send deadline" || x.contains("chunk deadline"));
+                }
+                Phase::Verified => {
+                    f.verification_cut |= reason == Some("chunk deadline");
+                }
+                Phase::Visible => {
+                    f.unread += u64::from(r.token.is_some() && r.fidelity_ok.is_none());
+                }
+                _ => {}
+            }
+        }
+        f
+    }
 }
 
 /// Derive one chunk's figures. Samples are matched to a window by launch name
 /// and bounds, so one chunk's rows are never read against another's clock.
-pub fn figures(cells: &[ThroughputCell], res: &[ResourceRow]) -> Figures {
+///
+/// No observation, no number: a window that was never opened has no counters
+/// and gives `null`; the cost figures come from a `measure` window with
+/// counters whatever its outcome (0132 §5.2 keeps them for an unranked cell),
+/// idle memory and the scratch footprint from an `idle_ready` window that was
+/// `measured`, and the startup figures from a `ready` window that was
+/// `measured`.
+pub fn figures(cells: &[ThroughputCell], rows: &[Row], res: &[ResourceRow]) -> Figures {
     let windows: Vec<&WindowRow> = res
         .iter()
         .filter_map(|r| match r {
@@ -703,93 +772,113 @@ pub fn figures(cells: &[ThroughputCell], res: &[ResourceRow]) -> Figures {
     };
     let mut out = Figures::default();
     for c in cells {
+        let facts = RowFacts::of(rows.iter().filter(|r| {
+            r.target == c.target && r.profile == c.profile && r.repetition == c.repetition
+        }));
         if let Some(w) = window(c, WindowKind::Measure) {
-            let s = within(w, w.start_ns);
-            let user = w.cpu_end.user_usec.saturating_sub(w.cpu_start.user_usec);
-            let system = w
-                .cpu_end
-                .system_usec
-                .saturating_sub(w.cpu_start.system_usec);
-            let total = user + system;
-            let visible = c.reconciliation.visible_unique;
-            let r = &c.reconciliation;
-            let mut shortfalls = Vec::new();
-            for (name, hit) in [
-                ("refused", c.refused > 0),
-                ("lost", r.missing_accepted > 0),
-                ("fidelity", r.fidelity_mismatches > 0),
-                ("oom", w.outcome == WindowOutcome::OomKilled),
-                (
-                    "timeout",
-                    w.outcome == WindowOutcome::ChunkDeadline || c.unstarted > 0,
-                ),
-                ("target_exited", w.outcome == WindowOutcome::TargetExited),
-                ("duplicate", r.duplicates > 0),
-                ("unexpected", r.unexpected_visible > 0),
-                ("ambiguous", r.ambiguous > 0),
-            ] {
-                if hit {
-                    shortfalls.push(name);
-                }
-            }
-            out.cost.push(CostRep {
-                target: c.target,
-                profile: c.profile.clone(),
-                repetition: c.repetition,
-                exact: c.exact,
-                visible,
-                window_outcome: w.outcome,
-                cpu_user_usec: user,
-                cpu_system_usec: system,
-                cpu_total_usec: total,
-                peak_memory_bytes: s.iter().map(|x| x.memory_current).max().unwrap_or(0),
-                mean_memory_bytes: mean(s.iter().map(|x| x.memory_current)),
-                peak_anon_bytes: s.iter().map(|x| x.anon).max().unwrap_or(0),
-                mean_anon_bytes: mean(s.iter().map(|x| x.anon)),
-                oom_kills: w
-                    .events_end
-                    .oom_kill
-                    .saturating_sub(w.events_start.oom_kill),
-                nr_throttled: w
-                    .cpu_end
-                    .nr_throttled
-                    .saturating_sub(w.cpu_start.nr_throttled),
-                throttled_usec: w
-                    .cpu_end
-                    .throttled_usec
-                    .saturating_sub(w.cpu_start.throttled_usec),
-                affinity_held: w.affinity_held,
-                // A zero divisor is null, never zero or infinite.
-                visible_per_cpu_second: (total > 0).then(|| visible as f64 / (total as f64 / 1e6)),
-                cpu_ms_per_1k_visible: (visible > 0)
-                    .then(|| (total as f64 / 1e3) / (visible as f64 / 1e3)),
-                shortfalls,
-            });
+            out.cost
+                .push(cost_rep(c, w, &within(w, w.start_ns), &facts));
         }
         if let Some(w) = window(c, WindowKind::IdleReady) {
+            let measured = w.outcome == WindowOutcome::Measured;
             let tail = w.end_ns.saturating_sub(crate::runner::IDLE_TAIL_NS);
             let s = within(w, tail);
             out.idle.push(IdleRep {
                 target: c.target,
                 profile: c.profile.clone(),
                 repetition: c.repetition,
-                memory_mib: mean(s.iter().map(|x| x.memory_current)) / MIB,
-                anon_mib: mean(s.iter().map(|x| x.anon)) / MIB,
-                scratch_bytes: w.scratch_bytes,
+                memory_mib: mean(s.iter().map(|x| x.memory_current))
+                    .filter(|_| measured)
+                    .map(|m| m / MIB),
+                anon_mib: mean(s.iter().map(|x| x.anon))
+                    .filter(|_| measured)
+                    .map(|m| m / MIB),
+                scratch_bytes: w.scratch_bytes.filter(|_| measured),
+                shortfall: outcome_shortfall(w.outcome),
             });
         }
         if let Some(w) = window(c, WindowKind::Ready) {
-            let cpu = w.cpu_end.usage_usec.saturating_sub(w.cpu_start.usage_usec);
+            let measured = w.outcome == WindowOutcome::Measured;
+            let cpu = w
+                .counters()
+                .filter(|_| measured)
+                .map(|(a, b, ..)| b.usage_usec.saturating_sub(a.usage_usec));
             out.startup.push(StartupRep {
                 target: c.target,
                 profile: c.profile.clone(),
                 repetition: c.repetition,
-                ready_ms: w.end_ns.saturating_sub(w.start_ns) as f64 / 1e6,
-                cpu_ms_to_ready: cpu as f64 / 1e3,
+                ready_ms: measured.then(|| w.end_ns.saturating_sub(w.start_ns) as f64 / 1e6),
+                cpu_ms_to_ready: cpu.map(|c| c as f64 / 1e3),
+                shortfall: outcome_shortfall(w.outcome),
             });
         }
     }
     out
+}
+
+/// One repetition's cost figures from its `measure` window and the samples
+/// inside it. Each is `None` when the window carries no counters (never
+/// opened) or no sample fell inside it.
+fn cost_rep(c: &ThroughputCell, w: &WindowRow, s: &[&SampleRow], facts: &RowFacts) -> CostRep {
+    let counters = w.counters();
+    let user = counters.map(|(a, b, ..)| b.user_usec.saturating_sub(a.user_usec));
+    let system = counters.map(|(a, b, ..)| b.system_usec.saturating_sub(a.system_usec));
+    let total = user.zip(system).map(|(u, y)| u + y);
+    let visible = counters.map(|_| c.reconciliation.visible_unique);
+    let r = &c.reconciliation;
+    let mut shortfalls = Vec::new();
+    for (name, hit) in [
+        ("refused", c.refused > 0),
+        ("lost", r.missing_accepted > 0 && !facts.verification_cut),
+        ("fidelity", r.fidelity_mismatches > 0),
+        ("oom", w.outcome == WindowOutcome::OomKilled),
+        (
+            "timeout",
+            w.outcome == WindowOutcome::ChunkDeadline
+                || facts.deadline_rows
+                || facts.verification_cut,
+        ),
+        ("target_exited", w.outcome == WindowOutcome::TargetExited),
+        ("duplicate", r.duplicates > 0),
+        ("unexpected", r.unexpected_visible > 0),
+        ("ambiguous", r.ambiguous > 0),
+    ] {
+        if hit {
+            shortfalls.push(name);
+        }
+    }
+    let seen = |f: fn(&&SampleRow) -> u64| counters.and(s.iter().map(f).max());
+    let average = |f: fn(&&SampleRow) -> u64| counters.and(mean(s.iter().map(f)));
+    CostRep {
+        target: c.target,
+        profile: c.profile.clone(),
+        repetition: c.repetition,
+        exact: c.exact && facts.unread == 0,
+        visible,
+        window_outcome: w.outcome,
+        cpu_user_usec: user,
+        cpu_system_usec: system,
+        cpu_total_usec: total,
+        peak_memory_bytes: seen(|x| x.memory_current),
+        mean_memory_bytes: average(|x| x.memory_current),
+        peak_anon_bytes: seen(|x| x.anon),
+        mean_anon_bytes: average(|x| x.anon),
+        oom_kills: counters.map(|(_, _, a, b)| b.oom_kill.saturating_sub(a.oom_kill)),
+        nr_throttled: counters.map(|(a, b, ..)| b.nr_throttled.saturating_sub(a.nr_throttled)),
+        throttled_usec: counters
+            .map(|(a, b, ..)| b.throttled_usec.saturating_sub(a.throttled_usec)),
+        affinity_held: w.affinity_held,
+        // A zero divisor is null, never zero or infinite.
+        visible_per_cpu_second: total
+            .zip(visible)
+            .filter(|(total, _)| *total > 0)
+            .map(|(total, visible)| visible as f64 / (total as f64 / 1e6)),
+        cpu_ms_per_1k_visible: total
+            .zip(visible)
+            .filter(|(_, visible)| *visible > 0)
+            .map(|(total, visible)| (total as f64 / 1e3) / (visible as f64 / 1e3)),
+        shortfalls,
+    }
 }
 
 /// Group `items` by (target, profile), in the order of first appearance.
@@ -806,6 +895,18 @@ fn grouped<T>(
         }
     }
     out
+}
+
+/// The shortfall names the idle and startup cells may carry, in order.
+const WINDOW_SHORTFALLS: [&str; 3] = ["oom", "timeout", "target_exited"];
+
+fn named(shortfalls: impl Iterator<Item = Option<&'static str>>) -> Vec<&'static str> {
+    let have: Vec<&'static str> = shortfalls.flatten().collect();
+    WINDOW_SHORTFALLS
+        .iter()
+        .copied()
+        .filter(|n| have.contains(n))
+        .collect()
 }
 
 /// The cells over repetitions, ranked only at equal results (0132 §5.2).
@@ -841,15 +942,15 @@ pub fn cost_cells(reps: &[CostRep]) -> Vec<CostCell> {
                 repetitions: rs.len() as u32,
                 ranked,
                 shortfalls,
-                labels: if rs.iter().any(|r| !r.affinity_held) {
+                labels: if rs.iter().any(|r| r.affinity_held == Some(false)) {
                     vec!["affinity_widened"]
                 } else {
                     Vec::new()
                 },
                 visible_per_cpu_second: pick(&|r| r.visible_per_cpu_second),
                 cpu_ms_per_1k_visible: pick(&|r| r.cpu_ms_per_1k_visible),
-                peak_memory_mib: pick(&|r| Some(r.peak_memory_bytes as f64 / MIB)),
-                peak_anon_mib: pick(&|r| Some(r.peak_anon_bytes as f64 / MIB)),
+                peak_memory_mib: pick(&|r| r.peak_memory_bytes.map(|b| b as f64 / MIB)),
+                peak_anon_mib: pick(&|r| r.peak_anon_bytes.map(|b| b as f64 / MIB)),
             }
         })
         .collect()
@@ -862,8 +963,12 @@ pub fn idle_cells(reps: &[IdleRep]) -> Vec<IdleCell> {
             target,
             profile,
             repetitions: rs.len() as u32,
-            memory_mib: spread(&rs.iter().map(|r| r.memory_mib).collect::<Vec<_>>()),
-            anon_mib: spread(&rs.iter().map(|r| r.anon_mib).collect::<Vec<_>>()),
+            ranked: rs
+                .iter()
+                .all(|r| r.memory_mib.is_some() && r.anon_mib.is_some()),
+            shortfalls: named(rs.iter().map(|r| r.shortfall)),
+            memory_mib: spread(&rs.iter().filter_map(|r| r.memory_mib).collect::<Vec<_>>()),
+            anon_mib: spread(&rs.iter().filter_map(|r| r.anon_mib).collect::<Vec<_>>()),
             scratch_bytes: spread(
                 &rs.iter()
                     .filter_map(|r| r.scratch_bytes.map(|b| b as f64))
@@ -880,8 +985,16 @@ pub fn startup_cells(reps: &[StartupRep]) -> Vec<StartupCell> {
             target,
             profile,
             repetitions: rs.len() as u32,
-            ready_ms: spread(&rs.iter().map(|r| r.ready_ms).collect::<Vec<_>>()),
-            cpu_ms_to_ready: spread(&rs.iter().map(|r| r.cpu_ms_to_ready).collect::<Vec<_>>()),
+            ranked: rs
+                .iter()
+                .all(|r| r.ready_ms.is_some() && r.cpu_ms_to_ready.is_some()),
+            shortfalls: named(rs.iter().map(|r| r.shortfall)),
+            ready_ms: spread(&rs.iter().filter_map(|r| r.ready_ms).collect::<Vec<_>>()),
+            cpu_ms_to_ready: spread(
+                &rs.iter()
+                    .filter_map(|r| r.cpu_ms_to_ready)
+                    .collect::<Vec<_>>(),
+            ),
         })
         .collect()
 }
@@ -900,7 +1013,7 @@ pub fn report_v4(
     r.report_version = REPORT_VERSION_V4;
     let mut all = Figures::default();
     for g in groups {
-        let mut f = figures(&r.throughput, g);
+        let mut f = figures(&r.throughput, rows, g);
         all.cost.append(&mut f.cost);
         all.idle.append(&mut f.idle);
         all.startup.append(&mut f.startup);

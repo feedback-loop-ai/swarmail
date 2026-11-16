@@ -242,6 +242,14 @@ pub struct CleanupFacts {
     /// The leaf's lifetime `memory.peak`, read before it was removed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_peak_bytes: Option<u64>,
+    /// Protocol 4 only: the leaf's lifetime `oom_kill` count from
+    /// `memory.events`, read before the leaf was removed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oom_kills: Option<u64>,
+    /// Protocol 4 only: whether the target's leader had already exited when
+    /// the driver began the teardown, before any signal of its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exited_early: Option<bool>,
     /// Whether this launch had a leaf. It decides what `proved` requires,
     /// and is not itself a receipt field: a leaf launch is the one whose
     /// receipt carries `cgroup_removed`.
@@ -279,6 +287,8 @@ impl CleanupFacts {
             scratch_removed: false,
             cgroup_removed: None,
             memory_peak_bytes: None,
+            oom_kills: None,
+            exited_early: None,
             leaf: false,
         }
     }
@@ -357,8 +367,11 @@ pub enum LaunchError {
     /// whether that cleanup is proved.
     UndeclaredListener(CleanupFacts),
     /// Readiness failed; the partial start was still cleaned up, and the
-    /// facts say whether that cleanup is proved.
-    NotReady(&'static str, CleanupFacts),
+    /// facts say whether that cleanup is proved. A leaf launch also keeps
+    /// its launch receipt (the leaf, the limits and the join as read back),
+    /// so a startup failure under the budget is evidenced as one; it is
+    /// `None` for a launch without a leaf.
+    NotReady(&'static str, CleanupFacts, Option<Box<LaunchFacts>>),
 }
 
 /// What the owner and its worker share. The drain handle and the
@@ -836,14 +849,14 @@ impl Owned {
         };
         let Some(declared) = declared else {
             let facts = owned.shutdown().await;
-            return Err(LaunchError::NotReady(NO_LISTENER_ADDRESSES, facts));
+            return Err(owned.not_ready(NO_LISTENER_ADDRESSES, facts));
         };
         owned.shared.lock().expect("shared lock").addrs = declared.clone();
         let addr_of =
             |role: ListenerRole| declared.iter().find(|(r, _)| *r == role).map(|(_, a)| *a);
         let (Some(smtp), http) = (addr_of(ListenerRole::Smtp), addr_of(ListenerRole::Http)) else {
             let facts = owned.shutdown().await;
-            return Err(LaunchError::NotReady(NO_LISTENER_ADDRESSES, facts));
+            return Err(owned.not_ready(NO_LISTENER_ADDRESSES, facts));
         };
         owned.smtp = smtp;
         if let Some(http) = http {
@@ -853,13 +866,13 @@ impl Owned {
         if spec.kind == TargetKind::Greenmail {
             let Some(pop3) = addr_of(ListenerRole::Pop3) else {
                 let facts = owned.shutdown().await;
-                return Err(LaunchError::NotReady(NO_LISTENER_ADDRESSES, facts));
+                return Err(owned.not_ready(NO_LISTENER_ADDRESSES, facts));
             };
             owned.pop3 = Some(Pop3::new(pop3, limits.request, limits.max_response_bytes));
         }
         if let Err(why) = owned.ready(deadline).await {
             let facts = owned.shutdown().await;
-            return Err(LaunchError::NotReady(why, facts));
+            return Err(owned.not_ready(why, facts));
         }
         // Readiness answered, but a foreign listener that won the gap would
         // answer too: every declared bind must be held by the owned group.
@@ -867,7 +880,7 @@ impl Owned {
             let bind = bind_within(pgid, *addr, deadline).await;
             if bind != Bind::Owned {
                 let facts = owned.shutdown().await;
-                return Err(LaunchError::NotReady(bind_why(*role, bind), facts));
+                return Err(owned.not_ready(bind_why(*role, bind), facts));
             }
         }
         // A launch that declares its listeners owns exactly those: a tool's
@@ -884,7 +897,7 @@ impl Owned {
                 }
                 None => {
                     let facts = owned.shutdown().await;
-                    return Err(LaunchError::NotReady("listener set unknown", facts));
+                    return Err(owned.not_ready("listener set unknown", facts));
                 }
             }
         }
@@ -929,6 +942,16 @@ impl Owned {
             done: None,
             settled: None,
         }
+    }
+
+    /// A readiness failure, with this launch's receipt kept when it had a
+    /// leaf: the facts the cleanup is classified against.
+    fn not_ready(&self, why: &'static str, facts: CleanupFacts) -> LaunchError {
+        LaunchError::NotReady(
+            why,
+            facts,
+            self.leaf.as_ref().map(|_| Box::new(self.facts.clone())),
+        )
     }
 
     /// The leader's pid, which is also its process group id. Read by the
@@ -1341,13 +1364,16 @@ async fn keep(
 ) -> CleanupFacts {
     let mut guard = GroupGuard(w.pgid, w.leaf.clone());
     let mut reaped = None;
+    // Biased: a leader that exited on its own before the stop arrived is an
+    // early exit, whichever branch a random pick would have taken.
     tokio::select! {
-        _ = &mut stop => {}
+        biased;
         status = child.wait() => {
             w.exited.store(true, Ordering::SeqCst);
             reaped = Some(status.is_ok());
             let _ = stop.await;
         }
+        _ = &mut stop => {}
     }
     #[cfg(test)]
     {
@@ -1387,6 +1413,8 @@ async fn cleanup(w: &Worker, mut child: Child, reaped_early: Option<bool>) -> Cl
         scratch_removed: false,
         cgroup_removed: None,
         memory_peak_bytes: None,
+        oom_kills: None,
+        exited_early: w.leaf.is_some().then_some(reaped_early.is_some()),
         leaf: w.leaf.is_some(),
     };
     if reaped_early.is_none() {
@@ -1452,6 +1480,7 @@ async fn cleanup(w: &Worker, mut child: Child, reaped_early: Option<bool>) -> Cl
         let t = leaf.teardown(until).await;
         facts.cgroup_removed = Some(t.removed);
         facts.memory_peak_bytes = t.memory_peak_bytes;
+        facts.oom_kills = t.oom_kills;
     }
     facts
 }

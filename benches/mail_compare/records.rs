@@ -193,11 +193,19 @@ pub struct SampleRow {
 /// whether every task in the leaf still had exactly the two target CPUs at
 /// the end. Peak and mean memory are not stored: the report derives them
 /// from the `sample` rows inside the bounds, so there is one source.
+///
+/// A window that was never opened (the chunk deadline, an OOM or an exit
+/// before it began) has no counters at all: the four of them, the affinity
+/// and the scratch bytes are `null`, never zero, and the figures derived
+/// from it are `null` too. `affinity_held` is `null` also for an opened
+/// window whose leaf held no task when it ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowRow {
     pub row_version: u32,
     pub run_id: String,
+    /// The leaf of the instance the window belongs to, or `none` for a
+    /// window of a profile no instance was launched for.
     pub launch: String,
     pub target: TargetKind,
     pub profile: String,
@@ -205,15 +213,67 @@ pub struct WindowRow {
     pub window: WindowKind,
     pub start_ns: u64,
     pub end_ns: u64,
-    pub cpu_start: crate::resources::CpuStat,
-    pub cpu_end: crate::resources::CpuStat,
-    pub events_start: crate::resources::MemEvents,
-    pub events_end: crate::resources::MemEvents,
-    pub affinity_held: bool,
+    pub cpu_start: Option<crate::resources::CpuStat>,
+    pub cpu_end: Option<crate::resources::CpuStat>,
+    pub events_start: Option<crate::resources::MemEvents>,
+    pub events_end: Option<crate::resources::MemEvents>,
+    pub affinity_held: Option<bool>,
     /// The scratch tree's allocated bytes (`st_blocks × 512`), at the end of
     /// an `idle_ready` window.
     pub scratch_bytes: Option<u64>,
     pub outcome: WindowOutcome,
+}
+
+impl WindowRow {
+    /// Whether the window carries its counters, all four or none.
+    pub fn counters(
+        &self,
+    ) -> Option<(
+        &crate::resources::CpuStat,
+        &crate::resources::CpuStat,
+        &crate::resources::MemEvents,
+        &crate::resources::MemEvents,
+    )> {
+        match (
+            &self.cpu_start,
+            &self.cpu_end,
+            &self.events_start,
+            &self.events_end,
+        ) {
+            (Some(a), Some(b), Some(c), Some(d)) => Some((a, b, c, d)),
+            _ => None,
+        }
+    }
+
+    /// The reader's three refusals: a `measured` window without counters, a
+    /// window with some counters and not others, and (with `launch`
+    /// `none`'s sample twin, checked by the caller) nothing else.
+    fn check(&self) -> Result<(), String> {
+        let have = [
+            self.cpu_start.is_some(),
+            self.cpu_end.is_some(),
+            self.events_start.is_some(),
+            self.events_end.is_some(),
+        ];
+        let name = format!(
+            "{} {} rep {} {:?}",
+            self.target, self.profile, self.repetition, self.window
+        );
+        if have.iter().any(|h| *h) && !have.iter().all(|h| *h) {
+            return Err(format!("window {name} has some counters and not others"));
+        }
+        if !have[0] {
+            if self.outcome == WindowOutcome::Measured {
+                return Err(format!("window {name} is measured but has no counters"));
+            }
+            if self.affinity_held.is_some() || self.scratch_bytes.is_some() {
+                return Err(format!(
+                    "window {name} was never opened but carries an affinity or a scratch size"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The second row family of a protocol 4 `samples.jsonl`, told apart from a
@@ -403,6 +463,15 @@ pub fn read_run(dir: &Path, m: &Manifest) -> Result<(Vec<Row>, Vec<ResourceRow>)
             }
             if *run != m.run_id {
                 return Err(format!("samples: row {n} belongs to another run"));
+            }
+            match &row {
+                ResourceRow::Sample(s) if s.launch == "none" => {
+                    return Err(format!("samples: row {n} is a sample of launch none"));
+                }
+                ResourceRow::Window(w) => {
+                    w.check().map_err(|e| format!("samples: row {n}: {e}"))?
+                }
+                ResourceRow::Sample(_) => {}
             }
             resources.push(row);
             continue;

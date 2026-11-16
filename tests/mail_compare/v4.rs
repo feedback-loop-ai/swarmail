@@ -187,7 +187,76 @@ fn v4_resources_block_refuses_each_absent_or_different_value() {
     }
     let mut v = draft();
     v["resources"]["chunk_deadline_ms"] = json!(0);
-    assert!(why(v).contains("chunk_deadline_ms Some(0) is outside 1..=540000"));
+    assert!(why(v).contains("chunk_deadline_ms Some(0) is outside 1..=520000"));
+}
+
+// ---- R1.1 ------------------------------------------------------------------
+
+fn with_deadline(ms: u64, startup: u64, cleanup: u64) -> Value {
+    let mut v = draft();
+    v["resources"]["chunk_deadline_ms"] = json!(ms);
+    v["resources"]["startup_deadline_ms"] = json!(startup);
+    v["resources"]["cleanup_deadline_ms"] = json!(cleanup);
+    v
+}
+
+#[test]
+fn v4_chunk_deadline_at_its_ceiling_passes_and_one_above_refuses() {
+    // The draft's budgets: 600000 - 30000 - 30000 - 2 x 10000 = 520000.
+    let ceiling = protocol::CHUNK_KILL_MS - protocol::CHUNK_MARGIN_MS - 30_000 - 2 * 10_000;
+    assert_eq!(ceiling, 520_000);
+    p4(with_deadline(ceiling, 30_000, 10_000))
+        .validate()
+        .expect("a deadline exactly at the ceiling passes");
+    let w = why(with_deadline(ceiling + 1, 30_000, 10_000));
+    assert!(w.contains("chunk_deadline_ms Some(520001)"), "{w}");
+    let w = why(with_deadline(0, 30_000, 10_000));
+    assert!(w.contains("chunk_deadline_ms Some(0)"), "{w}");
+}
+
+#[test]
+fn v4_chunk_deadline_ceiling_moves_with_the_startup_and_cleanup_budgets() {
+    // The draft's 480000 passes under the draft's budgets and refuses once a
+    // larger startup or cleanup budget lowers the ceiling beneath it.
+    p4(with_deadline(480_000, 30_000, 10_000))
+        .validate()
+        .unwrap();
+    // startup 90 s: ceiling 600000 - 30000 - 90000 - 20000 = 460000.
+    let w = why(with_deadline(480_000, 90_000, 10_000));
+    assert!(w.contains("is outside 1..=460000"), "{w}");
+    p4(with_deadline(460_000, 90_000, 10_000))
+        .validate()
+        .unwrap();
+    // cleanup 30 s: ceiling 600000 - 30000 - 30000 - 60000 = 480000.
+    p4(with_deadline(480_000, 30_000, 30_000))
+        .validate()
+        .unwrap();
+    let w = why(with_deadline(480_001, 30_000, 30_000));
+    assert!(w.contains("is outside 1..=480000"), "{w}");
+    // A shorter startup budget raises it.
+    p4(with_deadline(540_000, 10_000, 10_000))
+        .validate()
+        .unwrap();
+}
+
+#[test]
+fn v4_chunk_deadline_refusal_names_the_ceiling() {
+    let w = why(with_deadline(600_000, 30_000, 10_000));
+    assert!(w.contains("1..=520000"), "{w}");
+    for part in [
+        "CHUNK_KILL_MS 600000",
+        "CHUNK_MARGIN_MS 30000",
+        "startup_deadline_ms 30000",
+        "cleanup_deadline_ms 10000",
+    ] {
+        assert!(w.contains(part), "{part}: {w}");
+    }
+}
+
+#[test]
+fn the_v4_draft_states_a_chunk_deadline_of_480000() {
+    assert_eq!(draft()["resources"]["chunk_deadline_ms"], json!(480_000));
+    assert_eq!(p4(draft()).resources.chunk_deadline_ms, Some(480_000));
 }
 
 #[test]
@@ -199,7 +268,7 @@ fn earlier_protocols_refuse_each_v4_resources_field() {
             ("swap_mib", json!(0)),
             ("tasks", json!(4096)),
             ("sample_interval_ms", json!(100)),
-            ("chunk_deadline_ms", json!(540_000)),
+            ("chunk_deadline_ms", json!(480_000)),
         ] {
             let mut v = json(base);
             v["resources"][field] = value;
@@ -1314,6 +1383,11 @@ fn allocated_bytes_sums_blocks_of_a_tree() {
     std::fs::remove_dir_all(&base).unwrap();
 }
 
+/// The old boolean reading: a task that cannot be read is not a widening.
+fn held(root: &Path, pids: &[i32], cpus: &[u32]) -> bool {
+    resources::affinity_read(root, pids, cpus).unwrap_or(true)
+}
+
 #[test]
 fn affinity_held_reads_every_task_of_every_process() {
     let proc_root = fixture();
@@ -1329,26 +1403,14 @@ fn affinity_held_reads_every_task_of_every_process() {
     mk(10, 10, "0-1");
     mk(10, 11, "0-1");
     mk(11, 11, "0-1");
-    assert!(resources::affinity_held(
-        proc_root.path(),
-        &[10, 11],
-        &[0, 1]
-    ));
+    assert!(held(proc_root.path(), &[10, 11], &[0, 1]));
     // One widened thread makes it false.
     mk(10, 12, "0-3");
-    assert!(!resources::affinity_held(
-        proc_root.path(),
-        &[10, 11],
-        &[0, 1]
-    ));
+    assert!(!held(proc_root.path(), &[10, 11], &[0, 1]));
     // A process that vanished is skipped; a status that cannot be parsed is not.
-    assert!(resources::affinity_held(
-        proc_root.path(),
-        &[11, 99],
-        &[0, 1]
-    ));
+    assert!(held(proc_root.path(), &[11, 99], &[0, 1]));
     put(&proc_root.path().join("11/task/11"), "status", "garbage\n");
-    assert!(!resources::affinity_held(proc_root.path(), &[11], &[0, 1]));
+    assert!(!held(proc_root.path(), &[11], &[0, 1]));
 }
 
 // ============================================================================
@@ -1530,9 +1592,10 @@ async fn the_kill_is_written_and_procs_read_once_even_past_the_budget() {
         [
             "write[1] cgroup.kill",
             "read cgroup.procs",
-            "read memory.peak"
+            "read memory.peak",
+            "read memory.events"
         ],
-        "one kill, one read of the procs, nothing more"
+        "one kill, one read of the procs, then the two receipt readings"
     );
     assert!(t.killed && !t.removed);
     // The same leaf once the kernel has emptied it: one read, then removal.
@@ -1546,6 +1609,7 @@ async fn the_kill_is_written_and_procs_read_once_even_past_the_budget() {
             "write[1] cgroup.kill",
             "read cgroup.procs",
             "read memory.peak",
+            "read memory.events",
             "rmdir target-0001"
         ]
     );
@@ -1700,7 +1764,7 @@ fn win(
         (TargetKind::Mailpit, profile, rep),
         kind,
         (&zero_snap(start_ns), &zero_snap(end_ns)),
-        true,
+        Some(true),
         None,
         outcome,
     )
@@ -1883,29 +1947,43 @@ fn a_window_outcome_is_oom_killed_only_when_oom_kill_rose() {
     use records::WindowOutcome::*;
     // `max` alone is pressure, not an OOM.
     assert_eq!(
-        runner::window_outcome(&at(0, 0, 0), &at(900, 0, 0), false),
+        runner::window_outcome(&at(0, 0, 0), &at(900, 0, 0), false, false),
         Measured
     );
     assert_eq!(
-        runner::window_outcome(&at(0, 0, 0), &at(900, 1, 0), false),
+        runner::window_outcome(&at(0, 0, 0), &at(900, 1, 0), false, false),
         Measured
     );
     assert_eq!(
-        runner::window_outcome(&at(0, 0, 0), &at(900, 1, 1), false),
+        runner::window_outcome(&at(0, 0, 0), &at(900, 1, 1), false, false),
         OomKilled
     );
     // It is the rise over the window, not the total.
     assert_eq!(
-        runner::window_outcome(&at(0, 1, 2), &at(0, 1, 2), false),
+        runner::window_outcome(&at(0, 1, 2), &at(0, 1, 2), false, false),
         Measured
     );
     assert_eq!(
-        runner::window_outcome(&at(0, 1, 2), &at(0, 2, 3), true),
+        runner::window_outcome(&at(0, 1, 2), &at(0, 2, 3), true, false),
         OomKilled
     );
     // A target that exited without an OOM is its own outcome.
     assert_eq!(
-        runner::window_outcome(&at(0, 0, 0), &at(0, 0, 0), true),
+        runner::window_outcome(&at(0, 0, 0), &at(0, 0, 0), true, false),
+        TargetExited
+    );
+    // The chunk deadline is the last of the three: an OOM and an exit are
+    // kernel and process facts and are never relabelled as a deadline.
+    assert_eq!(
+        runner::window_outcome(&at(0, 0, 0), &at(0, 0, 0), false, true),
+        ChunkDeadline
+    );
+    assert_eq!(
+        runner::window_outcome(&at(0, 0, 0), &at(0, 1, 1), false, true),
+        OomKilled
+    );
+    assert_eq!(
+        runner::window_outcome(&at(0, 0, 0), &at(0, 0, 0), true, true),
         TargetExited
     );
 }
@@ -1918,17 +1996,13 @@ fn affinity_held_is_false_when_any_task_differs() {
         std::fs::create_dir_all(&d).unwrap();
         put(&d, "status", &format!("Cpus_allowed_list:\t{list}\n"));
     }
-    assert!(resources::affinity_held(proc_root.path(), &[5, 6], &[2, 3]));
+    assert!(held(proc_root.path(), &[5, 6], &[2, 3]));
     put(
         &proc_root.path().join("6/task/6"),
         "status",
         "Cpus_allowed_list:\t2-4\n",
     );
-    assert!(!resources::affinity_held(
-        proc_root.path(),
-        &[5, 6],
-        &[2, 3]
-    ));
+    assert!(!held(proc_root.path(), &[5, 6], &[2, 3]));
 }
 
 #[tokio::test(start_paused = true)]
@@ -2101,41 +2175,70 @@ fn a_v4_collect_refuses_a_missing_or_dirty_commit() {
 // ---- T4.4 ------------------------------------------------------------------
 
 #[test]
-fn a_profile_past_the_chunk_deadline_is_unstarted_rows_and_a_chunk_deadline_window() {
-    let p = tiny4();
-    let m = tiny_manifest(&p, "run-f", &mailpit_chunk(0));
-    let dir = fixture();
-    let out = dir.path().join("run");
-    let sink: runner::Sink = Arc::new(Mutex::new(records::RunDir::create(&out, &m).unwrap()));
-    let clock = wire::Clock(Instant::now());
-    runner::skip_profile(
-        "run-f",
-        &p.throughput[0],
-        (TargetKind::Mailpit, 0),
-        &sink,
-        &clock,
-    )
-    .expect("rows are written");
-    drop(sink);
-    let (rows, res) =
-        records::read_run(&out, &m).expect("the planned rows and windows are all there");
-    let sends: Vec<&Row> = rows.iter().filter(|r| r.phase == Phase::Send).collect();
-    assert_eq!(sends.len(), 4);
-    let why = Some("chunk deadline");
-    assert!(
-        sends
-            .iter()
-            .all(|r| r.outcome == "unstarted" && r.reason.as_deref() == why)
-    );
-    let verified = rows.iter().find(|r| r.phase == Phase::Verified).unwrap();
-    assert_eq!(verified.outcome, "incomplete");
-    assert_eq!(res.len(), 3);
-    for r in &res {
-        let records::ResourceRow::Window(w) = r else {
-            panic!("only windows are written")
-        };
-        assert_eq!(w.outcome, records::WindowOutcome::ChunkDeadline);
-        assert_eq!(w.cpu_start, w.cpu_end, "nothing was measured");
+fn a_not_measured_profile_writes_its_rows_for_each_cause() {
+    // One path for the three causes: its sends are `unstarted`, its
+    // verification `incomplete`, each with the cause as reason, and its three
+    // windows were never opened (no counters), with the matching outcome.
+    use runner::Cause;
+    for (cause, reason, outcome, launch) in [
+        (
+            Cause::ChunkDeadline,
+            "chunk deadline",
+            records::WindowOutcome::ChunkDeadline,
+            "none",
+        ),
+        (
+            Cause::OomKilled,
+            "oom killed",
+            records::WindowOutcome::OomKilled,
+            "target-0003",
+        ),
+        (
+            Cause::TargetExited,
+            "target exited",
+            records::WindowOutcome::TargetExited,
+            "target-0004",
+        ),
+    ] {
+        let p = tiny4();
+        let m = tiny_manifest(&p, "run-f", &mailpit_chunk(0));
+        let dir = fixture();
+        let out = dir.path().join("run");
+        let sink: runner::Sink = Arc::new(Mutex::new(records::RunDir::create(&out, &m).unwrap()));
+        let clock = wire::Clock(Instant::now());
+        runner::skip_profile(
+            "run-f",
+            &p.throughput[0],
+            (TargetKind::Mailpit, 0),
+            (cause, launch),
+            &sink,
+            &clock,
+        )
+        .expect("rows are written");
+        drop(sink);
+        let (rows, res) =
+            records::read_run(&out, &m).expect("the planned rows and windows are all there");
+        let sends: Vec<&Row> = rows.iter().filter(|r| r.phase == Phase::Send).collect();
+        assert_eq!(sends.len(), 4);
+        assert!(
+            sends
+                .iter()
+                .all(|r| r.outcome == "unstarted" && r.reason.as_deref() == Some(reason)),
+            "{reason}"
+        );
+        let verified = rows.iter().find(|r| r.phase == Phase::Verified).unwrap();
+        assert_eq!(verified.outcome, "incomplete");
+        assert_eq!(verified.reason.as_deref(), Some(reason));
+        assert_eq!(res.len(), 3);
+        for r in &res {
+            let records::ResourceRow::Window(w) = r else {
+                panic!("only windows are written")
+            };
+            assert_eq!(w.outcome, outcome);
+            assert_eq!(w.launch, launch);
+            assert!(w.counters().is_none(), "nothing was measured");
+            assert_eq!((w.affinity_held, w.scratch_bytes), (None, None));
+        }
     }
 }
 
@@ -2153,16 +2256,19 @@ fn a_chunk_with_any_unmeasured_window_exits_one() {
 fn median_min_max_over_one_two_and_three_values() {
     assert_eq!(stats::spread(&[]), None);
     let one = stats::spread(&[7.5]).unwrap();
-    assert_eq!((one.median, one.min, one.max), (7.5, 7.5, 7.5));
+    assert_eq!((one.median, one.min, one.max, one.n), (7.5, 7.5, 7.5, 1));
     // Nearest rank: ceil(50 * 2 / 100) = 1, the lower of two.
     let two = stats::spread(&[9.0, 3.0]).unwrap();
-    assert_eq!((two.median, two.min, two.max), (3.0, 3.0, 9.0));
+    assert_eq!((two.median, two.min, two.max, two.n), (3.0, 3.0, 9.0, 2));
     // ceil(50 * 3 / 100) = 2, the middle of three, whatever the order given.
     let three = stats::spread(&[4.0, 1.0, 2.0]).unwrap();
-    assert_eq!((three.median, three.min, three.max), (2.0, 1.0, 4.0));
+    assert_eq!(
+        (three.median, three.min, three.max, three.n),
+        (2.0, 1.0, 4.0, 3)
+    );
     // A value that is not a number is not a figure.
     let nan = stats::spread(&[f64::NAN, 5.0, f64::INFINITY]).unwrap();
-    assert_eq!((nan.median, nan.min, nan.max), (5.0, 5.0, 5.0));
+    assert_eq!((nan.median, nan.min, nan.max, nan.n), (5.0, 5.0, 5.0, 1));
     assert_eq!(stats::spread(&[f64::NAN]), None);
 }
 
@@ -2229,7 +2335,7 @@ fn res_rows(run: &str, r: &Rep) -> Vec<records::ResourceRow> {
     let launch = format!("target-{:04}", r.rep + 1);
     let key = (r.target, r.profile, r.rep);
     let mut out = Vec::new();
-    let w = |kind, (a, b): (resources::Snap, resources::Snap), held, scratch, o| {
+    let w = |kind, (a, b): (resources::Snap, resources::Snap), held: Option<bool>, scratch, o| {
         records::ResourceRow::Window(runner::window_row(
             run,
             &launch,
@@ -2248,7 +2354,7 @@ fn res_rows(run: &str, r: &Rep) -> Vec<records::ResourceRow> {
             snap(0, cpu(0, 0, 0), 0),
             snap(SEC, cpu(100_000, 150_000, 0), 0),
         ),
-        true,
+        Some(true),
         None,
         m,
     ));
@@ -2258,7 +2364,7 @@ fn res_rows(run: &str, r: &Rep) -> Vec<records::ResourceRow> {
             snap(2 * SEC, cpu(0, 0, 0), 0),
             snap(7 * SEC, cpu(0, 0, 0), 0),
         ),
-        true,
+        Some(true),
         Some(4096),
         m,
     ));
@@ -2268,7 +2374,7 @@ fn res_rows(run: &str, r: &Rep) -> Vec<records::ResourceRow> {
             snap(8 * SEC, cpu(0, 0, 0), 0),
             snap(20 * SEC, cpu(r.cpu.0, r.cpu.1, 7), r.oom_kill),
         ),
-        r.held,
+        Some(r.held),
         None,
         r.outcome,
     ));
@@ -2400,12 +2506,15 @@ fn cost_figures_equal_independent_arithmetic() {
             first.cpu_system_usec,
             first.cpu_total_usec
         ),
-        (1_500_000, 500_000, 2_000_000)
+        (Some(1_500_000), Some(500_000), Some(2_000_000))
     );
-    assert_eq!(first.visible, 4);
+    assert_eq!(first.visible, Some(4));
     near(first.visible_per_cpu_second.unwrap(), 2.0); // 4 mails / 2 s
     near(first.cpu_ms_per_1k_visible.unwrap(), 500_000.0); // 2000 ms / 0.004 k
-    assert_eq!((first.nr_throttled, first.throttled_usec), (7, 7000));
+    assert_eq!(
+        (first.nr_throttled, first.throttled_usec),
+        (Some(7), Some(7000))
+    );
     let [cell] = cost.cells.as_slice() else {
         panic!("one cell")
     };
@@ -2442,7 +2551,7 @@ fn a_zero_divisor_is_null_never_zero_or_infinite() {
     let gone: &dyn Fn(&mut Vec<Row>) = &|rows| rows.retain(|r| r.phase != Phase::Visible);
     let r = v4_report(&[(Rep::new(0, (1_000_000, 0), 300), Some(gone))]);
     let rep = &r.v4.as_ref().unwrap().cost.repetitions[0];
-    assert_eq!(rep.visible, 0);
+    assert_eq!(rep.visible, Some(0));
     assert_eq!(rep.cpu_ms_per_1k_visible, None);
     near(rep.visible_per_cpu_second.unwrap(), 0.0);
     // Both zero: neither is a number, and the serialized report says null.
@@ -2602,7 +2711,10 @@ fn affinity_widened_is_a_label_and_does_not_change_ranking() {
     assert_eq!(cell.labels, vec!["affinity_widened"]);
     assert!(cell.ranked, "it is a label: ranking stays 0132 §5.2's");
     assert!(cell.shortfalls.is_empty());
-    assert!(!r.v4.as_ref().unwrap().cost.repetitions[0].affinity_held);
+    assert_eq!(
+        r.v4.as_ref().unwrap().cost.repetitions[0].affinity_held,
+        Some(false)
+    );
 }
 
 #[test]
@@ -2611,14 +2723,14 @@ fn peak_and_mean_come_from_the_samples_inside_the_window() {
     let rep = &r.v4.as_ref().unwrap().cost.repetitions[0];
     // Inside [8 s, 20 s]: 100, 300 and 100 MiB (anon 50, 150, 50). The
     // samples just outside, at 999 and 998 MiB, are not read.
-    assert_eq!(rep.peak_memory_bytes, 300 * MIB);
-    assert_eq!(rep.peak_anon_bytes, 150 * MIB);
+    assert_eq!(rep.peak_memory_bytes, Some(300 * MIB));
+    assert_eq!(rep.peak_anon_bytes, Some(150 * MIB));
     near(
-        rep.mean_memory_bytes,
+        rep.mean_memory_bytes.unwrap(),
         (100.0 + 300.0 + 100.0) / 3.0 * MIB as f64,
     );
     near(
-        rep.mean_anon_bytes,
+        rep.mean_anon_bytes.unwrap(),
         (50.0 + 150.0 + 50.0) / 3.0 * MIB as f64,
     );
     // A second launch's samples on the same clock are not mixed in.
@@ -2639,7 +2751,7 @@ fn peak_and_mean_come_from_the_samples_inside_the_window() {
     let r = report::report_v4(&p, &m, &rows, &[&both[..]], &life());
     assert_eq!(
         r.v4.as_ref().unwrap().cost.repetitions[0].peak_memory_bytes,
-        300 * MIB
+        Some(300 * MIB)
     );
 }
 
@@ -4544,7 +4656,7 @@ fn v4_real_oom_at_two_gib() {
     // The cell's outcome is `oom_killed`, and nothing is retried: there is
     // exactly one process, and it is gone.
     assert_eq!(
-        runner::window_outcome(&before, &after, true),
+        runner::window_outcome(&before, &after, true, false),
         records::WindowOutcome::OomKilled
     );
     let peak = leaf.mem_peak().unwrap();
@@ -4583,7 +4695,7 @@ fn v4_real_cpu_held_within_two() {
             .collect();
         let held = |leaf: &resources::Leaf| {
             let pids = leaf.read_procs().unwrap();
-            resources::affinity_held(Path::new("/proc"), &pids, &scope.layout.target_cpus)
+            held(Path::new("/proc"), &pids, &scope.layout.target_cpus)
         };
         if widen {
             // The spinners widen their own affinity; wait for all four to.
@@ -4883,7 +4995,8 @@ fn v4_real_cost_chunk_seals_and_admits() {
     assert!(
         windows
             .iter()
-            .all(|w| w.outcome == records::WindowOutcome::Measured && w.affinity_held)
+            .all(|w| w.outcome == records::WindowOutcome::Measured
+                && w.affinity_held == Some(true))
     );
     let idle = windows
         .iter()
@@ -4899,7 +5012,7 @@ fn v4_real_cost_chunk_seals_and_admits() {
         .find(|w| w.window == records::WindowKind::Measure)
         .unwrap();
     assert!(
-        measure.cpu_end.usage_usec > measure.cpu_start.usage_usec,
+        measure.cpu_end.unwrap().usage_usec > measure.cpu_start.unwrap().usage_usec,
         "the target used CPU"
     );
     assert!(

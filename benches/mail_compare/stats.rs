@@ -100,6 +100,9 @@ pub struct Spread {
     pub median: f64,
     pub min: f64,
     pub max: f64,
+    /// How many repetitions the figure is over: a median of two is not a
+    /// median of three.
+    pub n: usize,
 }
 
 pub fn spread(values: &[f64]) -> Option<Spread> {
@@ -114,5 +117,6 @@ pub fn spread(values: &[f64]) -> Option<Spread> {
         median: v[rank - 1],
         min: v[0],
         max: v[v.len() - 1],
+        n: v.len(),
     })
 }

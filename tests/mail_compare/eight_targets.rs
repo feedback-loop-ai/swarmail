@@ -2047,7 +2047,7 @@ async fn cleanup_reports_each_listener_and_conjunction() {
         .unwrap();
     // A foreign listener takes one declared address; the other stays free.
     let foreign = std::net::TcpListener::bind(smtp).expect("the reserved port was released");
-    let Some(LaunchError::NotReady(_, facts)) = task.await.unwrap() else {
+    let Some(LaunchError::NotReady(_, facts, _)) = task.await.unwrap() else {
         panic!("not ready expected")
     };
     drop(foreign);
@@ -5172,7 +5172,7 @@ async fn real_mailslurper_official_does_not_start() {
     )
     .await
     {
-        Err(LaunchError::NotReady(_, facts)) => assert!(facts.proved(), "{facts:?}"),
+        Err(LaunchError::NotReady(_, facts, _)) => assert!(facts.proved(), "{facts:?}"),
         other => panic!(
             "the official executable must not launch: {:?}",
             other.map(|_| ())

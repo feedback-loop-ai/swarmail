@@ -31,6 +31,14 @@ pub const PROTOCOL_V4_ID: &str = "fair-mail-comparison-v4";
 /// The one cap protocol 4 launches every capped target with (0132 §2.4): at
 /// least the largest fill plus every measured message.
 pub const V4_CAP: u64 = 150_000;
+/// The wrapper's `timeout` on one chunk (`collect-v4`, 600 s). The driver's
+/// chunk deadline plus everything that may still run after it must end
+/// before this.
+pub const CHUNK_KILL_MS: u64 = 600_000;
+/// What the chunk clock does not see: the scope's and the driver's start
+/// before it, and the sample stop, the read-back of the rows, the report and
+/// the seal after it.
+pub const CHUNK_MARGIN_MS: u64 = 30_000;
 /// The operator's bound on sessions, clients and workers (0132).
 pub const V4_MAX_SESSIONS: u32 = 32;
 /// The sections of 0132 §11 this driver does not implement yet. A frozen
@@ -1112,10 +1120,19 @@ impl Protocol {
                 ));
             }
         }
+        // What may still run after the chunk deadline is one launch already
+        // in flight (the startup budget) and two teardowns (the cleanup
+        // budget twice); the margin covers the rest. The ceiling moves with
+        // the budgets.
+        let ceiling = CHUNK_KILL_MS
+            .saturating_sub(CHUNK_MARGIN_MS)
+            .saturating_sub(r.startup_deadline_ms)
+            .saturating_sub(r.cleanup_deadline_ms.saturating_mul(2));
         match r.chunk_deadline_ms {
-            Some(ms) if (1..=540_000).contains(&ms) => {}
+            Some(ms) if (1..=ceiling).contains(&ms) => {}
             other => out.push(format!(
-                "resources: chunk_deadline_ms {other:?} is outside 1..=540000"
+                "resources: chunk_deadline_ms {other:?} is outside 1..={ceiling} (CHUNK_KILL_MS {CHUNK_KILL_MS} - CHUNK_MARGIN_MS {CHUNK_MARGIN_MS} - startup_deadline_ms {} - 2 x cleanup_deadline_ms {})",
+                r.startup_deadline_ms, r.cleanup_deadline_ms
             )),
         }
         for e in &self.storage.retention {

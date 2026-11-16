@@ -602,24 +602,35 @@ pub fn check_join(j: &Joined, leaf: &str, target_cpus: &[u32]) -> Result<(), Str
     Ok(())
 }
 
-/// Whether every task of every process in the leaf still has exactly the two
-/// target CPUs. A process or thread that vanished between the listing and
-/// the read is skipped: it cannot have widened anything.
-pub fn affinity_held(proc_root: &Path, pids: &[i32], target_cpus: &[u32]) -> bool {
+/// What the end of a window reads: `Some(true)` when every task still has
+/// exactly the two target CPUs, `Some(false)` when any task has another set,
+/// `None` when no task could be read at all (the leaf is empty, the target
+/// is gone): no observation is not a pass. A task that vanished between the
+/// listing and the read is skipped.
+pub fn affinity_read(proc_root: &Path, pids: &[i32], target_cpus: &[u32]) -> Option<bool> {
     let want: BTreeSet<u32> = target_cpus.iter().copied().collect();
-    pids.iter().all(|pid| {
+    let mut seen = false;
+    let mut held = true;
+    for pid in pids {
         let tasks = proc_root.join(pid.to_string()).join("task");
         let Ok(dir) = std::fs::read_dir(tasks) else {
-            return true;
+            continue;
         };
-        dir.flatten().all(|t| {
+        for t in dir.flatten() {
             match std::fs::read_to_string(t.path().join("status")).map(|s| parse_cpus_allowed(&s)) {
-                Ok(Ok(have)) => have == want,
-                Ok(Err(_)) => false,
-                Err(_) => true,
+                Ok(Ok(have)) => {
+                    seen = true;
+                    held &= have == want;
+                }
+                Ok(Err(_)) => {
+                    seen = true;
+                    held = false;
+                }
+                Err(_) => {}
             }
-        })
-    })
+        }
+    }
+    seen.then_some(held)
 }
 
 // ---- the leaf --------------------------------------------------------------
@@ -653,6 +664,9 @@ pub struct Teardown {
     pub removed: bool,
     /// The leaf's lifetime `memory.peak`, read before removal.
     pub memory_peak_bytes: Option<u64>,
+    /// The leaf's lifetime `oom_kill` count from `memory.events`, read
+    /// before removal; `None` when the file could not be read.
+    pub oom_kills: Option<u64>,
 }
 
 impl Leaf {
@@ -786,6 +800,7 @@ impl Leaf {
     pub async fn teardown(&self, until: tokio::time::Instant) -> Teardown {
         let killed = self.kill().is_ok();
         let mut peak = None;
+        let mut oom_kills = None;
         let mut removed = false;
         loop {
             // Empty first; then the peak while the leaf still exists; then
@@ -795,6 +810,9 @@ impl Leaf {
             if matches!(self.read_procs(), Ok(p) if p.is_empty()) {
                 if peak.is_none() {
                     peak = self.mem_peak().ok();
+                }
+                if oom_kills.is_none() {
+                    oom_kills = self.mem_events().ok().map(|e| e.oom_kill);
                 }
                 if self.fs.rmdir(&self.dir).is_ok() {
                     removed = true;
@@ -807,10 +825,12 @@ impl Leaf {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let memory_peak_bytes = peak.or_else(|| self.mem_peak().ok());
+        let oom_kills = oom_kills.or_else(|| self.mem_events().ok().map(|e| e.oom_kill));
         Teardown {
             killed,
             removed,
             memory_peak_bytes,
+            oom_kills,
         }
     }
 }

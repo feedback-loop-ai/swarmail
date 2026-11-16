@@ -1734,7 +1734,7 @@ async fn launch_refusals_happen_before_spawn_and_partial_starts_are_cleaned() {
     .await
     .err()
     {
-        Some(targets::LaunchError::NotReady(_, facts)) => assert!(facts.proved(), "{facts:?}"),
+        Some(targets::LaunchError::NotReady(_, facts, _)) => assert!(facts.proved(), "{facts:?}"),
         other => panic!("expected a readiness refusal, got {other:?}"),
     }
     assert!(!leaf.exists());
@@ -1885,7 +1885,7 @@ async fn a_term_resistant_child_is_killed_within_one_composed_cleanup_budget() {
         .await;
         let took = begun.elapsed();
         let facts = match r.err() {
-            Some(targets::LaunchError::NotReady(why, facts)) => {
+            Some(targets::LaunchError::NotReady(why, facts, _)) => {
                 assert_eq!(why, "readiness deadline");
                 facts
             }
@@ -1924,7 +1924,7 @@ async fn output_pressure_never_stalls_the_child_or_its_cleanup() {
     )
     .await;
     match r.err() {
-        Some(targets::LaunchError::NotReady(why, facts)) => {
+        Some(targets::LaunchError::NotReady(why, facts, _)) => {
             assert_eq!(why, "readiness deadline");
             assert!(facts.proved() && !facts.forced_kill, "{facts:?}");
         }
@@ -2170,7 +2170,7 @@ async fn without_proc_bind_ownership_is_unknown_and_the_launch_refuses_after_cle
     )
     .await;
     match r.err() {
-        Some(targets::LaunchError::NotReady(why, facts)) => {
+        Some(targets::LaunchError::NotReady(why, facts, _)) => {
             assert_eq!(why, "smtp bind ownership unknown");
             assert!(facts.proved(), "{facts:?}");
         }
@@ -5943,7 +5943,7 @@ async fn launch_shim_with_fresh_slot(
         .await
         {
             Ok(owned) => return (slot, owned, attempt),
-            Err(targets::LaunchError::NotReady(targets::NO_LISTENER_ADDRESSES, facts)) => {
+            Err(targets::LaunchError::NotReady(targets::NO_LISTENER_ADDRESSES, facts, _)) => {
                 // Every refused launch proves its cleanup, the last one too.
                 assert!(
                     facts.proved(),

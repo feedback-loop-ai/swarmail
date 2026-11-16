@@ -51,7 +51,7 @@
     "swap_mib": 0,
     "tasks": 4096,
     "sample_interval_ms": 100,
-    "chunk_deadline_ms": 540000
+    "chunk_deadline_ms": 480000
   },
   "storage": {
     "mode": "mixed",
