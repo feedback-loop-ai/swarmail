@@ -8526,9 +8526,17 @@ fn the_v4_readme_states_the_revised_sentences() {
         "siblings_outside_set",
         // A figure that was not observed is null, never zero.
         "`null`, never zero",
-        // An archive row's installed size is owed, not an executable's size.
-        "owed: the extracted archive is not walked",
-        "`executable_bytes`",
+        // Every row has an installed size, identified by a listing digest.
+        "Every row has an installed size",
+        "`installed_trees`",
+        "`sha256sum`",
+        "identified by its digest and not pinned",
+        // The ten minutes hold as a sum, and a scope is read from systemd.
+        "`timeout --kill-after=30 560 taskset",
+        "= 597 s",
+        "= 596 s",
+        "merge-base --is-ancestor",
+        "`inactive` or `failed`",
         // A startup that is alive but not ready stops the run.
         "alive but not ready",
         // It is a frozen v4 that the driver refuses; a draft run is labelled.
@@ -8550,6 +8558,17 @@ fn the_v4_readme_states_the_revised_sentences() {
         !section.contains("can never be admitted"),
         "admit-v4 does admit a draft run, and labels it"
     );
+    for gone in [
+        "owed: the extracted archive",
+        "--kill-after=30 600",
+        "wrapper's 600 s kill",
+        "`executable_bytes`",
+    ] {
+        assert!(
+            !section.contains(gone),
+            "the v4 section still says {gone:?}"
+        );
+    }
     assert!(
         !section.contains("**Owed.**"),
         "the owed paragraph is replaced by the merge gate"

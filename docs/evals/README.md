@@ -813,11 +813,38 @@ levels (story B) and is published as owed, never as a number. The official
 MailSlurper row is blocked in every cell. `mail_compare footprint` computes the
 fixed facts (download bytes, installed bytes including every pinned runtime
 tree, and a label, never a zero, for a runtime nothing pins) from the pinned
-bytes with no measurement window. For the three archive rows (Mailpit,
-smtp4dev, Inbucket) the installed tree is the extracted archive, which nothing
-walks or pins, so `installed_bytes` is `null` with the basis `owed: the
-extracted archive is not walked`, and the digest-checked executable's size is
-published beside it as `executable_bytes`, never as an installed size.
+bytes with no measurement window. Every row has an installed size, and the run
+headline carries each launched target's, copied from the run's
+`footprint.json`; where a size cannot be established `footprint` refuses and
+prints no document, and never publishes a `null`.
+
+**Installed size, and how to extract an archive.** The candidate's installed
+size is its release binary alone. For a row whose artifact is the executable
+(MailHog, the MailSlurper source build, GreenMail's jar, the Alkemio binary) it
+is the executable, its checked members and the whole runtime tree given with
+`--runtime`. For the three archive rows (Mailpit, smtp4dev, Inbucket) it is
+every regular file of the extracted archive: the *extraction root* is
+`--bin`'s path with the pin's `member` path removed from its end (a `--bin`
+that does not end with the member refuses by name), so extract each pinned
+archive into a new, empty directory of its own, one per archive, and pass the
+extracted member as `--bin`. Two targets that share a tree (one target's tree
+holding another's executable or tree, the candidate included, after the paths
+are resolved) refuse by name. A symbolic link and a directory count for
+nothing. Every tree `footprint` walked is listed beside its row in
+`installed_trees` with its `kind` (`runtime` or `archive`), `files`, `bytes` and
+`sha256`, the digest of the tree's listing, which is what
+
+```
+(cd ROOT && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum)
+```
+
+prints, so it can be checked by hand; a file name that is not UTF-8, or holds
+a newline or a backslash, refuses because `sha256sum` would escape it. What
+this does not prove, in plain words: the lock digests the archive and the
+executable, not every file of an extracted tree, so the installed tree is
+identified by its digest and not pinned. A second extraction of the same
+pinned archive can be compared with the one that was measured, and nothing
+more is claimed.
 
 **A figure that was not observed is `null`, never zero.** A window that was never
 opened (the chunk deadline came first, or the target was killed for memory or
@@ -837,8 +864,8 @@ the chunk's work on the target: after it nothing new starts, and a connect, a
 send, a listing, a fidelity read or the idle wait still in flight is cancelled,
 not awaited. Only a launch already begun and the teardown are never cut, and
 `chunk_deadline_ms` is bounded so that those and a margin fit inside the
-wrapper's 600 s kill. A slow target is therefore a measured `timeout` row and
-exit 1, not a killed driver. A target that exits or is OOM-killed before it is
+wrapper's `timeout`, which sends SIGTERM at 560 s. A slow target is therefore a
+measured `timeout` row and exit 1, not a killed driver. A target that exits or is OOM-killed before it is
 ready is a measured outcome too (`target_exited`, `oom`) and the chunk goes on
 to its next profile; one that is alive but not ready at the startup deadline
 cannot be told from a broken launch, and stops the run with exit 2, so hold each
@@ -916,16 +943,34 @@ cat /proc/loadavg
 `systemd-run`, `systemctl`, `taskset` or `timeout`, an existing `--output`, a
 protocol that is not version 4 (the message names this draft route), fewer than
 3 CPUs in `min(nproc/4, 32)`, a shell whose `nproc` differs from `nproc --all`
-(the chunks are pinned to CPUs `0-<n-1>`), and a dirty or uncommitted
-candidate. Every process it starts after that (the two `cargo` builds,
-`check`, `footprint`, each chunk and both admissions) runs under `timeout
---kill-after=30 600 taskset -c 0-<n-1>`, and each chunk is one driver in its
-own scope: `timeout --kill-after=30 600 taskset -c 0-<n-1> systemd-run --user
---scope -p Delegate=yes --unit=… -- <driver> run …`. After a chunk it waits up
-to ten seconds for the scope to go inactive before it judges it. A SIGINT,
-SIGTERM or SIGHUP during a chunk goes to that chunk's `timeout`, the chunk is
-judged and written to the ledger with exit 2, and no later chunk starts.
-`reproduce.txt` is written only after the last chunk. Exit 1 is a measured
+(the chunks are pinned to CPUs `0-<n-1>`), and, for a real run, a candidate
+that is uncommitted, dirty or not on `main`. On `main` means that `HEAD` is an
+ancestor of, or equal to, `refs/heads/main`, and of `refs/remotes/origin/main`
+where that ref exists (`git merge-base --is-ancestor`), so a pull-request
+branch is refused whether or not it has `main` merged in, an earlier commit of
+`main` is accepted (a published run must stay repeatable after `main` moves
+on), neither ref is a refusal, and nothing is fetched. Every process it starts
+after that (the two `cargo` builds, `targets`, `check`, `footprint`, each chunk
+and both admissions) runs under `timeout --kill-after=30 560 taskset -c
+0-<n-1>`: 560 s is the driver's `CHUNK_KILL_MS`, SIGTERM at 560 s and SIGKILL
+30 s later. Every `systemctl` call has its own `timeout` (1 s to ask, 3 s to
+kill, 3 s to stop), so the ten minutes of 0132 §11.1 hold as three sums: a
+build, `targets`, `check`, `footprint` or an admission takes at most 560 + 30 =
+590 s; a chunk that failed, and the targets it left in its scope, at most 560 +
+30 + 1 + 3 + 3 = 597 s; a chunk that sealed at most 560 + 20 × (1 + 0.5) + 3 +
+3 = 596 s. Each chunk is one driver in its own scope: `timeout --kill-after=30
+560 taskset -c 0-<n-1> systemd-run --user --scope -p Delegate=yes --unit=… --
+<driver> run …`. A scope is judged from the word `systemctl --user is-active`
+prints, and it is clean only when that word is `inactive` or `failed`; no
+output, a failed or slow query or any other word is not known to be gone. After
+a chunk that sealed it asks up to twenty times, half a second apart, and the
+scope is clean at the first of the two words; after a chunk that failed it asks
+once and does not wait. A scope that is not gone is killed and stopped and the
+chunk counts as 2. A SIGINT, SIGTERM or SIGHUP goes at once to the step that
+is running, a build, `check`, `footprint` or an admission included, and ends
+the mode with exit 2; a chunk is judged as a failed one and written to the
+ledger with exit 2, even when the signal came during its scope's judgement, and
+no later chunk starts. `reproduce.txt` is written only after the last chunk. Exit 1 is a measured
 outcome of a target; exit 2 stops the run as incomplete, and nothing is resumed
 or overwritten. `mail_compare hold` launches one target
 under the budget for the story that follows; `mail_compare admit-v4 [--seal]`
