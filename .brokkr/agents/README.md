@@ -68,7 +68,8 @@ keeps its charter: `claude-intake` (Haiku 5.5), `claude-position-simplicity`
 (Opus 5.5), `dsh-position-robustness` (official DeepSeek Flash through dsh,
 without hands), `claude-chief-architect` (Fable 5.2), `claude-implementer`
 (Sonnet 5.5) and `claude-review-independent` (Opus 5.5, of the correctness
-base), all at high effort with single-model chains. Claude work offices take
+base), with single-model chains: Haiku and Sonnet at high effort, Opus and
+Fable at medium (operator, 2026-11-16). Claude work offices take
 careful intake's boxed workspace hands; the recipe reuses the Fable
 correctness, Flash security and guarantees, and GLM tests offices unchanged.
 
