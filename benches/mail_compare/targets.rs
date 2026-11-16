@@ -79,6 +79,20 @@ pub struct LaunchExtra {
     /// cgroup leaf of this scope. `None` is protocols 2 and 3, which never
     /// touch cgroupfs.
     pub scope: Option<Arc<crate::resources::Scope>>,
+    /// Called once, right after the leaf is created and limited and before
+    /// the fork: the sampler starts here, so it covers the launch from the
+    /// leaf's creation (0132 §4.1).
+    pub on_leaf: Option<LeafHook>,
+}
+
+/// A callback that sees each new leaf.
+#[derive(Clone)]
+pub struct LeafHook(pub Arc<dyn Fn(&crate::resources::Leaf) + Send + Sync>);
+
+impl std::fmt::Debug for LeafHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LeafHook")
+    }
 }
 
 impl LaunchSpec {
@@ -370,7 +384,6 @@ pub struct Owned {
     pub pop3: Option<Pop3>,
     pub facts: LaunchFacts,
     /// Protocol 4's cgroup leaf, for the sampler and the windows.
-    #[allow(dead_code)] // read by the cost chunk (the next group)
     pub leaf: Option<crate::resources::Leaf>,
     pgid: i32,
     limits: Limits,
@@ -640,7 +653,12 @@ impl Owned {
         // fork. A launch without a scope builds nothing of the kind.
         let joining = match &spec.extra.scope {
             Some(scope) => match joining(scope) {
-                Ok(j) => Some(j),
+                Ok(j) => {
+                    if let Some(hook) = &spec.extra.on_leaf {
+                        (hook.0)(&j.leaf);
+                    }
+                    Some(j)
+                }
                 Err(why) => {
                     let _ = std::fs::remove_dir_all(scratch);
                     return Err(LaunchError::Leaf(why, None));
@@ -918,6 +936,12 @@ impl Owned {
     #[allow(dead_code)]
     pub fn pid(&self) -> i32 {
         self.pgid
+    }
+
+    /// Whether the leader has exited on its own: an OOM kill, a crash. The
+    /// cleanup worker notices it as it happens.
+    pub fn has_exited(&self) -> bool {
+        self.exited.load(Ordering::SeqCst)
     }
 
     /// Install the worker's test hook: it runs after the worker is told to

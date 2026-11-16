@@ -885,3 +885,135 @@ pub fn allocated_bytes(root: &Path) -> std::io::Result<u64> {
     }
     Ok(total)
 }
+
+// ---- snapshots and the sampler ---------------------------------------------
+
+/// `cpu.stat` and `memory.events` at one instant of the run's clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Snap {
+    pub t_ns: u64,
+    pub cpu: CpuStat,
+    pub events: MemEvents,
+}
+
+impl Leaf {
+    pub fn snap(&self, clock: &crate::wire::Clock) -> Result<Snap, String> {
+        Ok(Snap {
+            t_ns: clock.now_ns(),
+            cpu: self.cpu_stat()?,
+            events: self.mem_events()?,
+        })
+    }
+
+    /// One `sample` row: memory and tasks now.
+    pub fn sample(
+        &self,
+        run_id: &str,
+        target: crate::protocol::TargetKind,
+        clock: &crate::wire::Clock,
+    ) -> Result<crate::records::SampleRow, String> {
+        let t_ns = clock.now_ns();
+        let stat = self.mem_stat()?;
+        Ok(crate::records::SampleRow {
+            row_version: crate::records::RESOURCE_ROW_VERSION,
+            run_id: run_id.to_owned(),
+            launch: self.name.clone(),
+            target,
+            t_ns,
+            memory_current: self.mem_current()?,
+            anon: stat.anon,
+            file: stat.file,
+            kernel: stat.kernel,
+            pids: self.pids_current()?,
+        })
+    }
+}
+
+/// Where sample rows go. A write that fails is the run's operational
+/// failure, and the sampler stops on it.
+pub type Emit = Arc<dyn Fn(crate::records::SampleRow) -> Result<(), String> + Send + Sync>;
+
+/// A task in the driver, on the client CPUs, that reads one leaf every
+/// interval until it is stopped. Its own CPU is the driver's, never the
+/// target's, because the driver is pinned away from the target cores.
+pub struct Sampler {
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    task: tokio::task::JoinHandle<Result<u64, String>>,
+}
+
+impl Sampler {
+    pub fn spawn(
+        leaf: Leaf,
+        run_id: String,
+        target: crate::protocol::TargetKind,
+        clock: crate::wire::Clock,
+        interval: Duration,
+        emit: Emit,
+    ) -> Sampler {
+        let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut rows = 0u64;
+            loop {
+                tokio::select! {
+                    _ = &mut stopped => return Ok(rows),
+                    _ = tick.tick() => {
+                        let row = leaf.sample(&run_id, target, &clock)?;
+                        emit(row)?;
+                        rows += 1;
+                    }
+                }
+            }
+        });
+        Sampler {
+            stop: Some(stop),
+            task,
+        }
+    }
+
+    /// Stop the sampler and return how many rows it wrote, or the first
+    /// thing that went wrong.
+    pub async fn stop(mut self) -> Result<u64, String> {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        self.task
+            .await
+            .map_err(|e| format!("resources: the sampler task failed: {e}"))?
+    }
+}
+
+/// The machine a chunk ran on (0132 §12, `host.json`).
+pub fn host_facts(kernel: &str, systemd: &str, layout: &Layout) -> crate::records::HostFacts {
+    let model = std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .find_map(|l| l.strip_prefix("model name"))
+                .and_then(|l| l.split_once(':'))
+                .map(|(_, v)| v.trim().to_owned())
+        })
+        .unwrap_or_else(|| "unavailable".into());
+    let first = layout.target_cpus.first().copied().unwrap_or(0);
+    let governor = std::fs::read_to_string(format!(
+        "/sys/devices/system/cpu/cpu{first}/cpufreq/scaling_governor"
+    ))
+    .map(|g| g.trim().to_owned())
+    .unwrap_or_else(|_| "unavailable".into());
+    // SAFETY: sysconf takes a constant and returns a number.
+    let online = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
+    crate::records::HostFacts {
+        kernel: kernel.to_owned(),
+        systemd: systemd.to_owned(),
+        cpu_model: model,
+        nproc: online.max(0) as u32,
+        siblings: layout
+            .target_cpus
+            .iter()
+            .map(|c| read_siblings(Path::new("/sys"), *c).into_iter().collect())
+            .collect(),
+        cpu_layout: layout.clone(),
+        governor,
+    }
+}

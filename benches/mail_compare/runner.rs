@@ -7,7 +7,11 @@ use crate::mailpit_mcp::{Bounds, Frame, Scan, ToolError, poll_wait};
 use crate::protocol::{
     Connection, Observation, Protocol, SourceLock, TargetKind, ThroughputProfile, WaitProfile,
 };
-use crate::records::{Manifest, Phase, Planned, ROW_VERSION, Row, RunDir};
+use crate::records::{
+    Manifest, Phase, Planned, PlannedWindow, ROW_VERSION, ResourceRow, Row, RunDir, WindowKind,
+    WindowOutcome, WindowRow,
+};
+use crate::resources::{Leaf, MemEvents, Sampler, Snap};
 use crate::targets::{
     CleanupFacts, Keepers, LaunchError, LaunchFacts, LaunchSpec, Limits, Owned, swarmail_template,
 };
@@ -85,6 +89,18 @@ pub fn launch_specs(
     bins: &[String],
     runtimes: &[String],
 ) -> Result<BTreeMap<TargetKind, LaunchSpec>, String> {
+    launch_specs_of(p, s, bins, runtimes, &p.launch_order(0).collect::<Vec<_>>())
+}
+
+/// [`launch_specs`] for an explicit set of targets: a protocol 4 chunk runs
+/// one target and so needs only that target's `--bin` (and `--runtime`).
+pub fn launch_specs_of(
+    p: &Protocol,
+    s: &SourceLock,
+    bins: &[String],
+    runtimes: &[String],
+    wanted: &[TargetKind],
+) -> Result<BTreeMap<TargetKind, LaunchSpec>, String> {
     let mut bin_of = BTreeMap::new();
     for b in bins {
         let (name, path) = b.split_once('=').ok_or("--bin takes TARGET=PATH")?;
@@ -106,7 +122,7 @@ pub fn launch_specs(
     // --bin and has no spec (a --bin for it is refused below). The rotation
     // is the same for every repetition's membership, so the first one's
     // launch order is the launched set.
-    for t in p.launch_order(0) {
+    for t in wanted.iter().copied() {
         let binary = bin_of
             .remove(&t)
             .ok_or_else(|| format!("--bin {t}=PATH is required"))?;
@@ -233,7 +249,7 @@ pub fn row(
     }
 }
 
-type Sink = Arc<Mutex<RunDir>>;
+pub type Sink = Arc<Mutex<RunDir>>;
 
 fn emit(sink: &Sink, r: &Row) -> Result<(), String> {
     sink.lock()
@@ -342,6 +358,7 @@ pub async fn run(cfg: Config, clock: Clock) -> (Verdict, Lifecycle, Option<PathB
                             &run_id,
                             &sink,
                             &clock,
+                            None,
                         )
                         .await
                     }
@@ -487,12 +504,16 @@ async fn throughput(
     run: &str,
     sink: &Sink,
     clock: &Clock,
+    probe: Option<&Probe>,
 ) -> Result<Vec<String>, String> {
     let next = Arc::new(AtomicU32::new(0));
     let accepted = Arc::new(Mutex::new(BTreeSet::new()));
     let send_deadline = Instant::now() + Duration::from_millis(t.send_deadline_ms);
     let step = Duration::from_millis(p.resources.request_deadline_ms);
     let window_start = clock.now_ns();
+    if let Some(probe) = probe {
+        probe.mark(Mark::Start);
+    }
     let mut workers = Vec::new();
     for _ in 0..t.sessions {
         let (next, accepted, sink, clock) = (next.clone(), accepted.clone(), sink.clone(), *clock);
@@ -579,15 +600,29 @@ async fn throughput(
             }
             Err(_) => false,
         };
-        if done || Instant::now() >= verify_deadline {
+        // A target that has exited (an OOM kill, a crash) will not list
+        // again: protocol 4 records the outcome instead of spinning to the
+        // deadline. Earlier protocols keep their loop as it was.
+        let gone = probe.is_some() && owned.has_exited();
+        if done || gone || Instant::now() >= verify_deadline {
             break match attempt {
-                Ok(l) => (l, (!done).then_some("verify deadline")),
+                Ok(l) => (
+                    l,
+                    (!done).then_some(if gone {
+                        "target exited"
+                    } else {
+                        "verify deadline"
+                    }),
+                ),
                 Err(e) => (Vec::new(), Some(e.reason())),
             };
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
     let verified_ns = clock.now_ns();
+    if let Some(probe) = probe {
+        probe.mark(Mark::End);
+    }
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (tok, id) in listing {
         groups.entry(tok).or_default().push(id);
@@ -958,4 +993,628 @@ impl Scan for FindScan<'_> {
     fn requests(&self) -> u32 {
         0
     }
+}
+
+// ============================================================================
+// Protocol 4: the cost chunk (accepted decision 0132 §4, §11)
+// ============================================================================
+
+/// Five seconds without traffic after readiness (0132 §4.3).
+pub const IDLE_READY: Duration = Duration::from_secs(5);
+/// The figure of an idle point is the mean over the last two seconds of it.
+pub const IDLE_TAIL_NS: u64 = 2_000_000_000;
+
+/// One bounded unit of a v4 collection: one driver process for one
+/// coordinate. Story A builds the cost section's; later stories add the
+/// others' to the same enum and the same plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Chunk {
+    /// All of one target's cost profiles of one repetition (0-based, as the
+    /// rows number them).
+    Cost { target: TargetKind, repetition: u32 },
+}
+
+impl Chunk {
+    /// `cost.<target>.r<repetition>`.
+    pub fn name(&self) -> String {
+        match self {
+            Chunk::Cost { target, repetition } => format!("cost.{target}.r{repetition}"),
+        }
+    }
+
+    /// Parse a coordinate against the protocol: an unknown section, a target
+    /// the protocol does not launch or a repetition it does not have is
+    /// refused by name.
+    pub fn parse(text: &str, p: &Protocol) -> Result<Chunk, String> {
+        let parts: Vec<&str> = text.split('.').collect();
+        let [section, target, rep] = parts.as_slice() else {
+            return Err(format!("{text:?} is not a chunk coordinate"));
+        };
+        if *section != "cost" {
+            return Err(format!(
+                "chunk {text:?}: section {section:?} is not implemented (only cost)"
+            ));
+        }
+        let target = TargetKind::parse(target)
+            .ok_or_else(|| format!("chunk {text:?}: unknown target {target:?}"))?;
+        let repetition: u32 = rep
+            .strip_prefix('r')
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(|| format!("chunk {text:?}: {rep:?} is not r<repetition>"))?;
+        let chunk = Chunk::Cost { target, repetition };
+        if !plan_v4(p).contains(&chunk) {
+            return Err(format!("chunk {text:?} is not in the protocol's plan"));
+        }
+        Ok(chunk)
+    }
+
+    pub fn target(&self) -> TargetKind {
+        match self {
+            Chunk::Cost { target, .. } => *target,
+        }
+    }
+
+    pub fn repetition(&self) -> u32 {
+        match self {
+            Chunk::Cost { repetition, .. } => *repetition,
+        }
+    }
+}
+
+/// The chunk plan, derived from the protocol and never computed by the
+/// wrapper: for each repetition, for each launched target in that
+/// repetition's rotation, one cost chunk.
+pub fn plan_v4(p: &Protocol) -> Vec<Chunk> {
+    let reps = p
+        .throughput
+        .iter()
+        .map(|t| t.repetitions)
+        .max()
+        .unwrap_or(0);
+    let mut out = Vec::new();
+    for repetition in 0..reps {
+        for target in p.launch_order(repetition) {
+            out.push(Chunk::Cost { target, repetition });
+        }
+    }
+    out
+}
+
+/// What one chunk will produce: the message rows of its target's profiles
+/// of its repetition, and the three windows of each.
+pub fn plan_chunk(p: &Protocol, chunk: &Chunk) -> (Vec<Planned>, Vec<PlannedWindow>) {
+    let (target, rep) = (chunk.target(), chunk.repetition());
+    let mut planned = Vec::new();
+    let mut windows = Vec::new();
+    for t in p.throughput.iter().filter(|t| t.repetitions > rep) {
+        let mk = |phase, rows| Planned {
+            target,
+            profile: t.name.clone(),
+            repetition: rep,
+            phase,
+            rows,
+        };
+        planned.push(mk(Phase::Send, Some(t.messages)));
+        planned.push(mk(Phase::Visible, None));
+        planned.push(mk(Phase::Verified, Some(1)));
+        for window in [
+            WindowKind::Ready,
+            WindowKind::IdleReady,
+            WindowKind::Measure,
+        ] {
+            windows.push(PlannedWindow {
+                target,
+                profile: t.name.clone(),
+                repetition: rep,
+                window,
+            });
+        }
+    }
+    (planned, windows)
+}
+
+/// What `run` checks about protocol 4's chunk and candidate before anything
+/// launches. Protocols 1 to 3 have no chunks and refuse `--chunk`; protocol 4
+/// needs one, and a v4 collection refuses a candidate with no stated commit or
+/// a dirty tree, by name (0132 §2.3: the 2026-10-30 v2 collection was admitted
+/// as raw measurement only because its tree was dirty; v4 makes that a
+/// refusal).
+pub fn v4_preflight(
+    p: &Protocol,
+    mode: &str,
+    chunk: Option<&str>,
+    commit: Option<&str>,
+    dirty: Option<bool>,
+) -> Result<Option<Chunk>, String> {
+    if p.protocol_version != crate::protocol::PROTOCOL_VERSION_4 {
+        return match chunk {
+            Some(c) => Err(format!(
+                "protocol {} has no chunks: --chunk {c} is for protocol 4",
+                p.protocol_version
+            )),
+            None => Ok(None),
+        };
+    }
+    let Some(text) = chunk else {
+        return Err("protocol 4 needs --chunk cost.<target>.r<repetition>".into());
+    };
+    let chunk = Chunk::parse(text, p)?;
+    if mode == "collect" {
+        if commit.is_none() {
+            return Err("a v4 collection needs the candidate's commit: --commit SHA".into());
+        }
+        if dirty != Some(false) {
+            return Err(
+                "a v4 collection refuses a candidate tree that is dirty or not stated clean: --dirty false"
+                    .into(),
+            );
+        }
+    }
+    Ok(Some(chunk))
+}
+
+/// How a window ended, from the leaf's `memory.events` at its bounds and
+/// whether the target exited meanwhile. Only a rise of `oom_kill` is an OOM;
+/// `max` alone is pressure at the limit.
+pub fn window_outcome(start: &MemEvents, end: &MemEvents, exited: bool) -> WindowOutcome {
+    if end.oom_kill > start.oom_kill {
+        WindowOutcome::OomKilled
+    } else if exited {
+        WindowOutcome::TargetExited
+    } else {
+        WindowOutcome::Measured
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Mark {
+    Start,
+    End,
+}
+
+/// The readings taken at the bounds of one window, and what went wrong
+/// taking them.
+#[derive(Default)]
+struct Marks {
+    start: Option<Snap>,
+    end: Option<Snap>,
+    affinity_held: Option<bool>,
+    error: Option<String>,
+}
+
+/// Takes the leaf's counters at the bounds of the profile's send-and-verify
+/// window, from inside `throughput`, so the end bound is the instant
+/// verification completed and the untimed fidelity reads fall outside it.
+struct Probe {
+    leaf: Leaf,
+    run: String,
+    target: TargetKind,
+    clock: Clock,
+    sink: Sink,
+    target_cpus: Vec<u32>,
+    marks: Mutex<Marks>,
+}
+
+impl Probe {
+    fn mark(&self, which: Mark) {
+        let taken = bound(&self.leaf, &self.run, self.target, &self.clock, &self.sink);
+        let held = match which {
+            Mark::End => self.leaf.read_procs().map(|pids| {
+                crate::resources::affinity_held(
+                    std::path::Path::new("/proc"),
+                    &pids,
+                    &self.target_cpus,
+                )
+            }),
+            Mark::Start => Ok(true),
+        };
+        let mut m = self.marks.lock().expect("marks lock");
+        match (taken, held) {
+            (Ok(snap), Ok(held)) => match which {
+                Mark::Start => m.start = Some(snap),
+                Mark::End => {
+                    m.end = Some(snap);
+                    m.affinity_held = Some(held);
+                }
+            },
+            (Err(e), _) | (_, Err(e)) => {
+                m.error.get_or_insert(e);
+            }
+        }
+    }
+}
+
+/// One bound of a window: the counters, then a `sample` row, so that the
+/// sample's time is the bound and no window is empty of samples. The
+/// returned snapshot carries the sample's time.
+fn bound(
+    leaf: &Leaf,
+    run: &str,
+    target: TargetKind,
+    clock: &Clock,
+    sink: &Sink,
+) -> Result<Snap, String> {
+    let mut snap = leaf.snap(clock)?;
+    let row = leaf.sample(run, target, clock)?;
+    snap.t_ns = row.t_ns;
+    sink.lock()
+        .expect("sink lock")
+        .append_resource(&ResourceRow::Sample(row))
+        .map_err(|e| format!("sample write failed: {e}"))?;
+    Ok(snap)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn window_row(
+    run: &str,
+    launch: &str,
+    (target, profile, rep): (TargetKind, &str, u32),
+    window: WindowKind,
+    (a, b): (&Snap, &Snap),
+    affinity_held: bool,
+    scratch_bytes: Option<u64>,
+    outcome: WindowOutcome,
+) -> WindowRow {
+    WindowRow {
+        row_version: crate::records::RESOURCE_ROW_VERSION,
+        run_id: run.to_owned(),
+        launch: launch.to_owned(),
+        target,
+        profile: profile.to_owned(),
+        repetition: rep,
+        window,
+        start_ns: a.t_ns,
+        end_ns: b.t_ns,
+        cpu_start: a.cpu,
+        cpu_end: b.cpu,
+        events_start: a.events,
+        events_end: b.events,
+        affinity_held,
+        scratch_bytes,
+        outcome,
+    }
+}
+
+fn emit_window(sink: &Sink, w: WindowRow) -> Result<(), String> {
+    sink.lock()
+        .expect("sink lock")
+        .append_resource(&ResourceRow::Window(w))
+        .map_err(|e| format!("sample write failed: {e}"))
+}
+
+/// A profile the chunk deadline stopped before it began: every send is an
+/// `unstarted` row, the verification row says why, and each window is
+/// `chunk_deadline` with nothing measured. Nothing was launched.
+pub fn skip_profile(
+    run: &str,
+    t: &ThroughputProfile,
+    (target, rep): (TargetKind, u32),
+    sink: &Sink,
+    clock: &Clock,
+) -> Result<(), String> {
+    for i in 0..t.messages {
+        let mut r = row(run, target, &t.name, rep, Phase::Send, i, "unstarted");
+        r.reason = Some("chunk deadline".into());
+        emit(sink, &r)?;
+    }
+    let now = clock.now_ns();
+    let mut v = row(run, target, &t.name, rep, Phase::Verified, 0, "incomplete");
+    v.reason = Some("chunk deadline".into());
+    v.start_ns = Some(now);
+    v.ack_ns = Some(now);
+    v.observed_ns = Some(now);
+    v.requests = Some(0);
+    emit(sink, &v)?;
+    let none = Snap {
+        t_ns: now,
+        cpu: Default::default(),
+        events: Default::default(),
+    };
+    for kind in [
+        WindowKind::Ready,
+        WindowKind::IdleReady,
+        WindowKind::Measure,
+    ] {
+        emit_window(
+            sink,
+            window_row(
+                run,
+                "none",
+                (target, &t.name, rep),
+                kind,
+                (&none, &none),
+                true,
+                None,
+                WindowOutcome::ChunkDeadline,
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// Run one cost chunk: that target's cost profiles of that repetition, in
+/// order, each as protocol 3 does it (a warmup instance, then a fresh measured
+/// one), both in leaves. A target that exits in a window is a measured outcome
+/// and the chunk goes on; the chunk deadline stops profiles that have not
+/// begun. The directory is sealed on every outcome but an infrastructure
+/// failure.
+pub async fn run_chunk(
+    cfg: Config,
+    chunk: Chunk,
+    clock: Clock,
+) -> (Verdict, Lifecycle, Option<PathBuf>) {
+    let mut life = Lifecycle {
+        launches: Vec::new(),
+        cleanups: Vec::new(),
+    };
+    let infra = |e: String, life: Lifecycle| (Verdict::Infrastructure(e), life, None);
+    let dir = match RunDir::create(&cfg.output, &cfg.manifest) {
+        Ok(d) => d,
+        Err(e) => return infra(format!("output: {e}"), life),
+    };
+    let sink: Sink = Arc::new(Mutex::new(dir));
+    let limits = limits(&cfg.protocol);
+    let p = &cfg.protocol;
+    let (target, rep) = (chunk.target(), chunk.repetition());
+    let Some(spec) = cfg.specs.get(&target) else {
+        return infra(format!("{target}: no launch spec"), life);
+    };
+    let Some(scope) = spec.extra.scope.clone() else {
+        return infra(format!("{target}: a protocol 4 launch has no scope"), life);
+    };
+    let deadline = Duration::from_millis(p.resources.chunk_deadline_ms.unwrap_or(540_000));
+    let started = Instant::now();
+    let mut failures = Vec::new();
+    let mut leaf_no = 0u32;
+    for (i, t) in p
+        .throughput
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.repetitions > rep)
+    {
+        if started.elapsed() >= deadline {
+            if let Err(e) = skip_profile(&cfg.manifest.run_id, t, (target, rep), &sink, &clock) {
+                return infra(e, life);
+            }
+            failures.push(format!("{target} {} rep {rep}: chunk deadline", t.name));
+            continue;
+        }
+        if t.warmup_messages > 0 {
+            leaf_no += 1;
+            if let Err(e) = warmup(spec, &cfg, &limits, &clock, t, leaf_no, &mut life).await {
+                return infra(e, life);
+            }
+        }
+        leaf_no += 1;
+        match measured_instance(
+            (spec, &scope.layout.target_cpus),
+            &cfg,
+            &limits,
+            &clock,
+            (i, t, rep),
+            leaf_no,
+            &sink,
+            &mut life,
+        )
+        .await
+        {
+            Ok(mut f) => failures.append(&mut f),
+            Err(e) => return infra(e, life),
+        }
+    }
+    let dir = Arc::try_unwrap(sink)
+        .ok()
+        .expect("no sink clone outlives the chunk")
+        .into_inner()
+        .expect("sink lock");
+    let (rows, resources) = match crate::records::read_run(dir.path(), &cfg.manifest) {
+        Ok(r) => r,
+        Err(e) => return infra(format!("accounting: {e}"), life),
+    };
+    for launched in &life.launches {
+        let same = cfg
+            .specs
+            .get(&launched.target)
+            .is_some_and(|spec| crate::targets::spec_unchanged(spec, launched));
+        if !same {
+            return infra(
+                format!("{}: executable changed during the run", launched.target),
+                life,
+            );
+        }
+    }
+    let report = crate::report::report_v4(p, &cfg.manifest, &rows, &[&resources[..]], &life);
+    if let Err(e) = dir.write_artifact(
+        "report.json",
+        &serde_json::to_vec_pretty(&report).expect("report serializes"),
+    ) {
+        return infra(format!("report: {e}"), life);
+    }
+    match dir.finalize(life.cleanups.iter().all(CleanupFacts::proved)) {
+        Ok(path) if failures.is_empty() => (Verdict::Clean, life, Some(path)),
+        Ok(path) => (Verdict::WorkloadFailures(failures), life, Some(path)),
+        Err(e) => infra(e, life),
+    }
+}
+
+/// One fresh, sampled instance of a target: ready, idle, measure, then its
+/// whole cleanup, which must be proved. Returns the workload failures it
+/// saw; an error is an infrastructure failure.
+#[allow(clippy::too_many_arguments)]
+async fn measured_instance(
+    (spec, target_cpus): (&LaunchSpec, &[u32]),
+    cfg: &Config,
+    limits: &Limits,
+    clock: &Clock,
+    (i, t, rep): (usize, &ThroughputProfile, u32),
+    leaf_no: u32,
+    sink: &Sink,
+    life: &mut Lifecycle,
+) -> Result<Vec<String>, String> {
+    let p = &cfg.protocol;
+    let run = cfg.manifest.run_id.clone();
+    let target = spec.kind;
+    let scratch = cfg.scratch.join(format!("leaf-{leaf_no:04}"));
+    let interval = Duration::from_millis(p.resources.sample_interval_ms.unwrap_or(100));
+    // The sampler starts when the leaf is created, from inside the launch.
+    let sampler: Arc<Mutex<Option<Sampler>>> = Arc::default();
+    let created: Arc<Mutex<Option<u64>>> = Arc::default();
+    let hook = {
+        let (sampler, created, sink, run, clock) = (
+            sampler.clone(),
+            created.clone(),
+            sink.clone(),
+            run.clone(),
+            *clock,
+        );
+        crate::targets::LeafHook(Arc::new(move |leaf: &Leaf| {
+            *created.lock().expect("created lock") = Some(clock.now_ns());
+            let emit: crate::resources::Emit = {
+                let sink = sink.clone();
+                Arc::new(move |row| {
+                    sink.lock()
+                        .expect("sink lock")
+                        .append_resource(&ResourceRow::Sample(row))
+                        .map_err(|e| format!("sample write failed: {e}"))
+                })
+            };
+            let s = Sampler::spawn(leaf.clone(), run.clone(), target, clock, interval, emit);
+            *sampler.lock().expect("sampler lock") = Some(s);
+        }))
+    };
+    let mut spec = spec.clone();
+    spec.extra.on_leaf = Some(hook);
+    let stop_sampler = || async {
+        let s = sampler.lock().expect("sampler lock").take();
+        match s {
+            Some(s) => s.stop().await.map(|_| ()),
+            None => Ok(()),
+        }
+    };
+    let mut owned = match Owned::launch(&spec, &scratch, limits, clock, &cfg.keepers).await {
+        Ok(o) => o,
+        Err(e) => {
+            let _ = stop_sampler().await;
+            return Err(match e {
+                LaunchError::NotReady(why, facts) => {
+                    life.cleanups.push(facts);
+                    format!("{target}: not ready ({why})")
+                }
+                LaunchError::Leaf(why, facts) => {
+                    life.cleanups.extend(facts);
+                    format!("{target}: {why}")
+                }
+                other => format!("{target}: launch refused ({other:?})"),
+            });
+        }
+    };
+    life.launches.push(owned.facts.clone());
+    let leaf = owned.leaf.clone().ok_or("a leaf launch has no leaf")?;
+    let launch = leaf.name().to_owned();
+    let created_ns = created
+        .lock()
+        .expect("created lock")
+        .unwrap_or_else(|| clock.now_ns());
+    let key = (target, t.name.as_str(), rep);
+    let mut failures = Vec::new();
+    let mut note = |label: WindowKind, outcome: WindowOutcome| {
+        if outcome != WindowOutcome::Measured {
+            failures.push(format!(
+                "{target} {} rep {rep}: {label:?} {outcome:?}",
+                t.name
+            ));
+        }
+    };
+    // ready: leaf creation to readiness. A new leaf's counters start at zero.
+    let ready = bound(&leaf, &run, target, clock, sink)?;
+    let zero = Snap {
+        t_ns: created_ns,
+        cpu: Default::default(),
+        events: Default::default(),
+    };
+    let outcome = window_outcome(&zero.events, &ready.events, owned.has_exited());
+    note(WindowKind::Ready, outcome);
+    let row = window_row(
+        &run,
+        &launch,
+        key,
+        WindowKind::Ready,
+        (&zero, &ready),
+        true,
+        None,
+        outcome,
+    );
+    emit_window(sink, row)?;
+    // idle_ready: five seconds without traffic.
+    let idle_a = bound(&leaf, &run, target, clock, sink)?;
+    tokio::time::sleep(IDLE_READY).await;
+    let idle_b = bound(&leaf, &run, target, clock, sink)?;
+    let scratch_bytes = crate::resources::allocated_bytes(&scratch).ok();
+    let outcome = window_outcome(&idle_a.events, &idle_b.events, owned.has_exited());
+    note(WindowKind::IdleReady, outcome);
+    let row = window_row(
+        &run,
+        &launch,
+        key,
+        WindowKind::IdleReady,
+        (&idle_a, &idle_b),
+        true,
+        scratch_bytes,
+        outcome,
+    );
+    emit_window(sink, row)?;
+    // measure: the profile's send-and-verify window.
+    let probe = Probe {
+        leaf: leaf.clone(),
+        run: run.clone(),
+        target,
+        clock: *clock,
+        sink: sink.clone(),
+        target_cpus: target_cpus.to_vec(),
+        marks: Mutex::new(Marks::default()),
+    };
+    let result = throughput(
+        &owned,
+        p,
+        t,
+        &tag(&run, target, i, rep),
+        rep,
+        &run,
+        sink,
+        clock,
+        Some(&probe),
+    )
+    .await;
+    let marks = probe.marks.into_inner().expect("marks lock");
+    let measured = match (marks.start, marks.end, marks.error) {
+        (Some(a), Some(b), None) => {
+            let outcome = window_outcome(&a.events, &b.events, owned.has_exited());
+            note(WindowKind::Measure, outcome);
+            let row = window_row(
+                &run,
+                &launch,
+                key,
+                WindowKind::Measure,
+                (&a, &b),
+                marks.affinity_held.unwrap_or(false),
+                None,
+                outcome,
+            );
+            emit_window(sink, row)
+        }
+        (_, _, Some(e)) => Err(format!("{target}: window bounds: {e}")),
+        _ => Err(format!("{target}: the measurement window never closed")),
+    };
+    let sampled = stop_sampler().await;
+    let facts = owned.shutdown().await;
+    let proved = facts.proved();
+    life.cleanups.push(facts);
+    if !proved {
+        return Err(format!("{target}: cleanup not proved"));
+    }
+    sampled?;
+    measured?;
+    let mut workload = result?;
+    failures.append(&mut workload);
+    Ok(failures)
 }

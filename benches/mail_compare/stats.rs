@@ -91,3 +91,28 @@ impl Reconciliation {
 fn per_second(count: u64, window_ns: u64) -> Option<f64> {
     (window_ns > 0).then(|| count as f64 * 1e9 / window_ns as f64)
 }
+
+/// Nearest-rank median with the extremes beside it, over repetitions of one
+/// figure (0132 §5.3). Values that are not finite are never passed: a figure
+/// that has no value is absent from the list, never zero.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Spread {
+    pub median: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+pub fn spread(values: &[f64]) -> Option<Spread> {
+    let mut v: Vec<f64> = values.iter().copied().filter(|x| x.is_finite()).collect();
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(f64::total_cmp);
+    // Rank ceil(50·n/100), 1-based: the lower middle of an even count.
+    let rank = (50 * v.len()).div_ceil(100).max(1);
+    Some(Spread {
+        median: v[rank - 1],
+        min: v[0],
+        max: v[v.len() - 1],
+    })
+}

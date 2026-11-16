@@ -128,6 +128,9 @@ fn manifest(p: &Protocol, run_id: &str) -> Manifest {
         cpus: 1,
         prelaunch_utc: "2026-10-28T00:00:00Z".into(),
         planned: runner::plan(p),
+        chunk: None,
+        host: None,
+        planned_windows: None,
     }
 }
 

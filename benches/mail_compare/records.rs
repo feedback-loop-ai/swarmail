@@ -15,6 +15,8 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 pub const ROW_VERSION: u32 = 1;
+/// The resource rows of protocol 4 (`sample` and `window`).
+pub const RESOURCE_ROW_VERSION: u32 = 1;
 pub const MANIFEST_VERSION: u32 = 1;
 pub const INDEX_VERSION: u32 = 1;
 /// A sample row longer than this is malformed on read.
@@ -106,6 +108,121 @@ pub struct Manifest {
     pub cpus: u32,
     pub prelaunch_utc: String,
     pub planned: Vec<Planned>,
+    /// Protocol 4 only (absent from every earlier manifest's bytes): the
+    /// chunk's coordinate, `cost.<target>.r<repetition>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk: Option<String>,
+    /// Protocol 4 only: the host the chunk ran on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<HostFacts>,
+    /// Protocol 4 only: every window the chunk will produce. Its presence is
+    /// what makes a run directory a resource run: only then are resource
+    /// rows read, and a protocol 1 to 3 directory refuses them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_windows: Option<Vec<PlannedWindow>>,
+}
+
+/// What the run records about its host (0132 §12, `host.json`): enough to
+/// see that every chunk ran on the same machine and the same CPUs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostFacts {
+    pub kernel: String,
+    /// `systemctl --version`'s first line, as the wrapper passed it.
+    pub systemd: String,
+    pub cpu_model: String,
+    pub nproc: u32,
+    /// The thread siblings of each target core, as the kernel lists them.
+    pub siblings: Vec<Vec<u32>>,
+    pub cpu_layout: crate::resources::Layout,
+    pub governor: String,
+}
+
+/// What a window measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowKind {
+    /// Leaf creation to readiness: the CPU time to ready.
+    Ready,
+    /// Five seconds without traffic after readiness.
+    IdleReady,
+    /// The profile's send-and-verify window.
+    Measure,
+}
+
+/// How a window ended. `OomKilled` is a rise of `oom_kill` over the window
+/// (`max` alone is pressure, not an OOM); both it and `TargetExited` are
+/// measured outcomes of the cell, never retried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowOutcome {
+    Measured,
+    OomKilled,
+    TargetExited,
+    ChunkDeadline,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlannedWindow {
+    pub target: TargetKind,
+    pub profile: String,
+    pub repetition: u32,
+    pub window: WindowKind,
+}
+
+/// One reading of a leaf: `memory.current`, the `memory.stat` split and
+/// `pids.current`, at `t_ns` on the run's clock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SampleRow {
+    pub row_version: u32,
+    pub run_id: String,
+    /// The leaf's name: one per launch.
+    pub launch: String,
+    pub target: TargetKind,
+    pub t_ns: u64,
+    pub memory_current: u64,
+    pub anon: u64,
+    pub file: u64,
+    pub kernel: u64,
+    pub pids: u64,
+}
+
+/// One measurement window: `cpu.stat` and `memory.events` at both bounds, and
+/// whether every task in the leaf still had exactly the two target CPUs at
+/// the end. Peak and mean memory are not stored: the report derives them
+/// from the `sample` rows inside the bounds, so there is one source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowRow {
+    pub row_version: u32,
+    pub run_id: String,
+    pub launch: String,
+    pub target: TargetKind,
+    pub profile: String,
+    pub repetition: u32,
+    pub window: WindowKind,
+    pub start_ns: u64,
+    pub end_ns: u64,
+    pub cpu_start: crate::resources::CpuStat,
+    pub cpu_end: crate::resources::CpuStat,
+    pub events_start: crate::resources::MemEvents,
+    pub events_end: crate::resources::MemEvents,
+    pub affinity_held: bool,
+    /// The scratch tree's allocated bytes (`st_blocks × 512`), at the end of
+    /// an `idle_ready` window.
+    pub scratch_bytes: Option<u64>,
+    pub outcome: WindowOutcome,
+}
+
+/// The second row family of a protocol 4 `samples.jsonl`, told apart from a
+/// message row by its `kind` key, which no message row has.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResourceRow {
+    Sample(SampleRow),
+    Window(WindowRow),
 }
 
 pub struct RunDir {
@@ -145,6 +262,14 @@ impl RunDir {
     /// Stream one row; a write failure is an operational failure the
     /// caller must stop on.
     pub fn append(&mut self, row: &Row) -> std::io::Result<()> {
+        let mut line = serde_json::to_vec(row).expect("row serializes");
+        line.push(b'\n');
+        self.samples.write_all(&line)?;
+        Ok(())
+    }
+
+    /// Stream one resource row (protocol 4).
+    pub fn append_resource(&mut self, row: &ResourceRow) -> std::io::Result<()> {
         let mut line = serde_json::to_vec(row).expect("row serializes");
         line.push(b'\n');
         self.samples.write_all(&line)?;
@@ -219,6 +344,9 @@ fn artifact_listing(dir: &Path) -> Result<BTreeMap<String, (String, u64)>, Strin
 pub struct Admitted {
     pub manifest: Manifest,
     pub rows: Vec<Row>,
+    /// Protocol 4's `sample` and `window` rows; empty for every earlier run.
+    #[allow(dead_code)] // read by admit-v4, which the next group adds
+    pub resources: Vec<ResourceRow>,
 }
 
 pub fn read_manifest(dir: &Path) -> Result<Manifest, String> {
@@ -239,12 +367,22 @@ pub fn read_manifest(dir: &Path) -> Result<Manifest, String> {
 /// Strictly read every row of `samples.jsonl` against its manifest:
 /// truncated, oversized, malformed, foreign-run, duplicate, unplanned and
 /// missing rows all refuse. Used before sealing and again on admission.
+/// A directory whose manifest plans no windows carries message rows only,
+/// and a resource row in it refuses.
 pub fn read_rows(dir: &Path, m: &Manifest) -> Result<Vec<Row>, String> {
+    read_run(dir, m).map(|(rows, _)| rows)
+}
+
+/// [`read_rows`], and the resource rows of a protocol 4 directory: the
+/// `sample` rows of its leaves and the `window` rows it planned, each
+/// planned window exactly once.
+pub fn read_run(dir: &Path, m: &Manifest) -> Result<(Vec<Row>, Vec<ResourceRow>), String> {
     let bytes = std::fs::read(dir.join("samples.jsonl")).map_err(|e| format!("samples: {e}"))?;
     if !bytes.is_empty() && bytes.last() != Some(&b'\n') {
         return Err("samples: truncated final row".into());
     }
     let mut rows = Vec::new();
+    let mut resources = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for (n, line) in bytes
         .split(|b| *b == b'\n')
@@ -253,6 +391,22 @@ pub fn read_rows(dir: &Path, m: &Manifest) -> Result<Vec<Row>, String> {
     {
         if line.len() > MAX_ROW_BYTES {
             return Err(format!("samples: row {n} exceeds {MAX_ROW_BYTES} bytes"));
+        }
+        if m.planned_windows.is_some() && has_kind(line) {
+            let row: ResourceRow =
+                serde_json::from_slice(line).map_err(|e| format!("samples: row {n}: {e}"))?;
+            let (version, run) = match &row {
+                ResourceRow::Sample(s) => (s.row_version, &s.run_id),
+                ResourceRow::Window(w) => (w.row_version, &w.run_id),
+            };
+            if version != RESOURCE_ROW_VERSION {
+                return Err(format!("samples: row {n} has version {version}"));
+            }
+            if *run != m.run_id {
+                return Err(format!("samples: row {n} belongs to another run"));
+            }
+            resources.push(row);
+            continue;
         }
         let row: Row =
             serde_json::from_slice(line).map_err(|e| format!("samples: row {n}: {e}"))?;
@@ -301,7 +455,62 @@ pub fn read_rows(dir: &Path, m: &Manifest) -> Result<Vec<Row>, String> {
             ));
         }
     }
-    Ok(rows)
+    if let Some(planned) = &m.planned_windows {
+        check_windows(planned, &resources)?;
+    }
+    Ok((rows, resources))
+}
+
+/// Whether a row line carries the `kind` key of a resource row.
+fn has_kind(line: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(line)
+        .map(|v| v.get("kind").is_some())
+        .unwrap_or(false)
+}
+
+/// Each planned window exactly once, and none that was not planned.
+fn check_windows(planned: &[PlannedWindow], rows: &[ResourceRow]) -> Result<(), String> {
+    let mut got: BTreeMap<(TargetKind, String, u32, WindowKind), u32> = BTreeMap::new();
+    for r in rows {
+        if let ResourceRow::Window(w) = r {
+            let known = planned.iter().any(|p| {
+                p.target == w.target
+                    && p.profile == w.profile
+                    && p.repetition == w.repetition
+                    && p.window == w.window
+            });
+            if !known {
+                return Err(format!(
+                    "samples: unplanned window {} {} rep {} {:?}",
+                    w.target, w.profile, w.repetition, w.window
+                ));
+            }
+            *got.entry((w.target, w.profile.clone(), w.repetition, w.window))
+                .or_default() += 1;
+        }
+    }
+    for p in planned {
+        match got
+            .get(&(p.target, p.profile.clone(), p.repetition, p.window))
+            .copied()
+            .unwrap_or(0)
+        {
+            1 => {}
+            0 => {
+                return Err(format!(
+                    "samples: window {} {} rep {} {:?} is missing",
+                    p.target, p.profile, p.repetition, p.window
+                ));
+            }
+            n => {
+                return Err(format!(
+                    "samples: window {} {} rep {} {:?} appears {n} times",
+                    p.target, p.profile, p.repetition, p.window
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_contents(dir: &Path, index: &Index) -> Result<(), String> {
@@ -314,7 +523,7 @@ fn validate_contents(dir: &Path, index: &Index) -> Result<(), String> {
     if m.run_id != index.run_id {
         return Err("index and manifest name different runs".into());
     }
-    read_rows(dir, &m).map(|_| ())
+    read_run(dir, &m).map(|_| ())
 }
 
 /// Admit a sealed run: the index must exist, list exactly the files
@@ -335,6 +544,10 @@ pub fn admit(dir: &Path) -> Result<Admitted, String> {
     }
     validate_contents(dir, &index)?;
     let manifest = read_manifest(dir)?;
-    let rows = read_rows(dir, &manifest)?;
-    Ok(Admitted { manifest, rows })
+    let (rows, resources) = read_run(dir, &manifest)?;
+    Ok(Admitted {
+        manifest,
+        rows,
+        resources,
+    })
 }

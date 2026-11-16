@@ -5,13 +5,18 @@
 use crate::protocol::{
     Backend, Claim, Protocol, Provenance, ResourceProfile, StorageProfile, TargetKind,
 };
-use crate::records::{Manifest, Phase, Row};
+use crate::records::{
+    Manifest, Phase, ResourceRow, Row, SampleRow, WindowKind, WindowOutcome, WindowRow,
+};
 use crate::runner::Lifecycle;
-use crate::stats::{Quantiles, Reconciliation, quantiles};
+use crate::stats::{Quantiles, Reconciliation, Spread, quantiles, spread};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
 pub const REPORT_VERSION: u32 = 2;
+/// Protocol 4's report: protocols 2 and 3 keep version 2 and their own
+/// admission terms, so no collection already admitted stops admitting.
+pub const REPORT_VERSION_V4: u32 = 3;
 
 #[derive(Debug, Serialize)]
 pub struct Report {
@@ -42,6 +47,9 @@ pub struct Report {
     pub waits: Vec<WaitCell>,
     pub launches: Vec<crate::targets::LaunchFacts>,
     pub cleanups: Vec<crate::targets::CleanupFacts>,
+    /// Protocol 4 only: the cost section's figures (0132 §5).
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub v4: Option<V4Report>,
 }
 
 /// One row's labels. `source` separates the candidate, an official release
@@ -309,6 +317,7 @@ pub fn report(p: &Protocol, m: &Manifest, rows: &[Row], life: &Lifecycle) -> Rep
         waits,
         launches: life.launches.clone(),
         cleanups: life.cleanups.clone(),
+        v4: None,
     }
 }
 
@@ -515,4 +524,415 @@ fn first_difference(
             .find_map(|(k, x)| first_difference(&format!("{at}.{k}"), x, &y[k])),
         _ => (a != b).then(|| (at.to_owned(), a.clone(), b.clone())),
     }
+}
+
+// ============================================================================
+// Protocol 4: resources per visible mail, at equal results (0132 §5)
+// ============================================================================
+
+/// The figures protocol 4 adds to the report. Every one is derived from
+/// message rows and resource rows, so anyone can recompute it.
+#[derive(Debug, Serialize)]
+pub struct V4Report {
+    pub cost: CostSection,
+    pub idle: Vec<IdleCell>,
+    pub startup: Vec<StartupCell>,
+    pub headline: Headline,
+    /// Needs the API section's fill levels (story B): owed, never a number.
+    pub mib_per_1k_retained: Owed,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Owed {
+    pub status: &'static str,
+    pub owed_by: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CostSection {
+    pub repetitions: Vec<CostRep>,
+    pub cells: Vec<CostCell>,
+}
+
+/// One repetition of one cost profile of one target.
+#[derive(Debug, Clone, Serialize)]
+pub struct CostRep {
+    pub target: TargetKind,
+    pub profile: String,
+    pub repetition: u32,
+    /// The v2 reconciliation is exact: requested = accepted = visible,
+    /// seen once, fidelity intact.
+    pub exact: bool,
+    /// Distinct accepted messages observed on the server.
+    pub visible: u64,
+    pub window_outcome: WindowOutcome,
+    pub cpu_user_usec: u64,
+    pub cpu_system_usec: u64,
+    pub cpu_total_usec: u64,
+    pub peak_memory_bytes: u64,
+    pub mean_memory_bytes: f64,
+    pub peak_anon_bytes: u64,
+    pub mean_anon_bytes: f64,
+    pub oom_kills: u64,
+    pub nr_throttled: u64,
+    pub throttled_usec: u64,
+    pub affinity_held: bool,
+    pub visible_per_cpu_second: Option<f64>,
+    pub cpu_ms_per_1k_visible: Option<f64>,
+    pub shortfalls: Vec<&'static str>,
+}
+
+/// One target and cost profile over its repetitions: the median with the
+/// minimum and maximum beside it. A cell that is not at equal results keeps
+/// its figures, is not ranked, and names its shortfalls.
+#[derive(Debug, Clone, Serialize)]
+pub struct CostCell {
+    pub target: TargetKind,
+    pub profile: String,
+    pub repetitions: u32,
+    pub ranked: bool,
+    pub shortfalls: Vec<&'static str>,
+    pub labels: Vec<&'static str>,
+    pub visible_per_cpu_second: Option<Spread>,
+    pub cpu_ms_per_1k_visible: Option<Spread>,
+    pub peak_memory_mib: Option<Spread>,
+    pub peak_anon_mib: Option<Spread>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IdleRep {
+    pub target: TargetKind,
+    pub profile: String,
+    pub repetition: u32,
+    pub memory_mib: f64,
+    pub anon_mib: f64,
+    pub scratch_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IdleCell {
+    pub target: TargetKind,
+    pub profile: String,
+    pub repetitions: u32,
+    pub memory_mib: Option<Spread>,
+    pub anon_mib: Option<Spread>,
+    pub scratch_bytes: Option<Spread>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StartupRep {
+    pub target: TargetKind,
+    pub profile: String,
+    pub repetition: u32,
+    pub ready_ms: f64,
+    pub cpu_ms_to_ready: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StartupCell {
+    pub target: TargetKind,
+    pub profile: String,
+    pub repetitions: u32,
+    pub ready_ms: Option<Spread>,
+    pub cpu_ms_to_ready: Option<Spread>,
+}
+
+/// The headline row: the cells of the protocol's headline profile, with the
+/// idle and startup figures of the same profile.
+#[derive(Debug, Serialize)]
+pub struct Headline {
+    pub profile: String,
+    pub cost: Vec<CostCell>,
+    pub idle: Vec<IdleCell>,
+    pub startup: Vec<StartupCell>,
+}
+
+const MIB: f64 = 1_048_576.0;
+
+/// What a chunk's resource rows say about each of its cells, before the
+/// cells over repetitions are formed.
+#[derive(Debug, Default)]
+pub struct Figures {
+    pub cost: Vec<CostRep>,
+    pub idle: Vec<IdleRep>,
+    pub startup: Vec<StartupRep>,
+}
+
+fn mean(values: impl Iterator<Item = u64>) -> f64 {
+    let (sum, n) = values.fold((0u128, 0u64), |(s, n), v| (s + u128::from(v), n + 1));
+    if n == 0 { 0.0 } else { sum as f64 / n as f64 }
+}
+
+/// Derive one chunk's figures. Samples are matched to a window by launch name
+/// and bounds, so one chunk's rows are never read against another's clock.
+pub fn figures(cells: &[ThroughputCell], res: &[ResourceRow]) -> Figures {
+    let windows: Vec<&WindowRow> = res
+        .iter()
+        .filter_map(|r| match r {
+            ResourceRow::Window(w) => Some(w),
+            ResourceRow::Sample(_) => None,
+        })
+        .collect();
+    let samples: Vec<&SampleRow> = res
+        .iter()
+        .filter_map(|r| match r {
+            ResourceRow::Sample(s) => Some(s),
+            ResourceRow::Window(_) => None,
+        })
+        .collect();
+    let window = |c: &ThroughputCell, kind: WindowKind| {
+        windows.iter().copied().find(|w| {
+            w.target == c.target
+                && w.profile == c.profile
+                && w.repetition == c.repetition
+                && w.window == kind
+        })
+    };
+    let within = |w: &WindowRow, from: u64| -> Vec<&SampleRow> {
+        samples
+            .iter()
+            .copied()
+            .filter(|s| s.launch == w.launch && s.target == w.target)
+            .filter(|s| s.t_ns >= from && s.t_ns <= w.end_ns)
+            .collect()
+    };
+    let mut out = Figures::default();
+    for c in cells {
+        if let Some(w) = window(c, WindowKind::Measure) {
+            let s = within(w, w.start_ns);
+            let user = w.cpu_end.user_usec.saturating_sub(w.cpu_start.user_usec);
+            let system = w
+                .cpu_end
+                .system_usec
+                .saturating_sub(w.cpu_start.system_usec);
+            let total = user + system;
+            let visible = c.reconciliation.visible_unique;
+            let r = &c.reconciliation;
+            let mut shortfalls = Vec::new();
+            for (name, hit) in [
+                ("refused", c.refused > 0),
+                ("lost", r.missing_accepted > 0),
+                ("fidelity", r.fidelity_mismatches > 0),
+                ("oom", w.outcome == WindowOutcome::OomKilled),
+                (
+                    "timeout",
+                    w.outcome == WindowOutcome::ChunkDeadline || c.unstarted > 0,
+                ),
+                ("target_exited", w.outcome == WindowOutcome::TargetExited),
+                ("duplicate", r.duplicates > 0),
+                ("unexpected", r.unexpected_visible > 0),
+                ("ambiguous", r.ambiguous > 0),
+            ] {
+                if hit {
+                    shortfalls.push(name);
+                }
+            }
+            out.cost.push(CostRep {
+                target: c.target,
+                profile: c.profile.clone(),
+                repetition: c.repetition,
+                exact: c.exact,
+                visible,
+                window_outcome: w.outcome,
+                cpu_user_usec: user,
+                cpu_system_usec: system,
+                cpu_total_usec: total,
+                peak_memory_bytes: s.iter().map(|x| x.memory_current).max().unwrap_or(0),
+                mean_memory_bytes: mean(s.iter().map(|x| x.memory_current)),
+                peak_anon_bytes: s.iter().map(|x| x.anon).max().unwrap_or(0),
+                mean_anon_bytes: mean(s.iter().map(|x| x.anon)),
+                oom_kills: w
+                    .events_end
+                    .oom_kill
+                    .saturating_sub(w.events_start.oom_kill),
+                nr_throttled: w
+                    .cpu_end
+                    .nr_throttled
+                    .saturating_sub(w.cpu_start.nr_throttled),
+                throttled_usec: w
+                    .cpu_end
+                    .throttled_usec
+                    .saturating_sub(w.cpu_start.throttled_usec),
+                affinity_held: w.affinity_held,
+                // A zero divisor is null, never zero or infinite.
+                visible_per_cpu_second: (total > 0).then(|| visible as f64 / (total as f64 / 1e6)),
+                cpu_ms_per_1k_visible: (visible > 0)
+                    .then(|| (total as f64 / 1e3) / (visible as f64 / 1e3)),
+                shortfalls,
+            });
+        }
+        if let Some(w) = window(c, WindowKind::IdleReady) {
+            let tail = w.end_ns.saturating_sub(crate::runner::IDLE_TAIL_NS);
+            let s = within(w, tail);
+            out.idle.push(IdleRep {
+                target: c.target,
+                profile: c.profile.clone(),
+                repetition: c.repetition,
+                memory_mib: mean(s.iter().map(|x| x.memory_current)) / MIB,
+                anon_mib: mean(s.iter().map(|x| x.anon)) / MIB,
+                scratch_bytes: w.scratch_bytes,
+            });
+        }
+        if let Some(w) = window(c, WindowKind::Ready) {
+            let cpu = w.cpu_end.usage_usec.saturating_sub(w.cpu_start.usage_usec);
+            out.startup.push(StartupRep {
+                target: c.target,
+                profile: c.profile.clone(),
+                repetition: c.repetition,
+                ready_ms: w.end_ns.saturating_sub(w.start_ns) as f64 / 1e6,
+                cpu_ms_to_ready: cpu as f64 / 1e3,
+            });
+        }
+    }
+    out
+}
+
+/// Group `items` by (target, profile), in the order of first appearance.
+fn grouped<T>(
+    items: &[T],
+    key: impl Fn(&T) -> (TargetKind, String),
+) -> Vec<((TargetKind, String), Vec<&T>)> {
+    let mut out: Vec<((TargetKind, String), Vec<&T>)> = Vec::new();
+    for it in items {
+        let k = key(it);
+        match out.iter_mut().find(|(g, _)| *g == k) {
+            Some((_, v)) => v.push(it),
+            None => out.push((k, vec![it])),
+        }
+    }
+    out
+}
+
+/// The cells over repetitions, ranked only at equal results (0132 §5.2).
+pub fn cost_cells(reps: &[CostRep]) -> Vec<CostCell> {
+    let order = [
+        "refused",
+        "lost",
+        "fidelity",
+        "oom",
+        "timeout",
+        "target_exited",
+        "duplicate",
+        "unexpected",
+        "ambiguous",
+    ];
+    grouped(reps, |r| (r.target, r.profile.clone()))
+        .into_iter()
+        .map(|((target, profile), rs)| {
+            let pick = |f: &dyn Fn(&CostRep) -> Option<f64>| {
+                spread(&rs.iter().filter_map(|r| f(r)).collect::<Vec<_>>())
+            };
+            let shortfalls: Vec<&'static str> = order
+                .iter()
+                .copied()
+                .filter(|n| rs.iter().any(|r| r.shortfalls.contains(n)))
+                .collect();
+            let ranked = rs
+                .iter()
+                .all(|r| r.exact && r.window_outcome == WindowOutcome::Measured);
+            CostCell {
+                target,
+                profile,
+                repetitions: rs.len() as u32,
+                ranked,
+                shortfalls,
+                labels: if rs.iter().any(|r| !r.affinity_held) {
+                    vec!["affinity_widened"]
+                } else {
+                    Vec::new()
+                },
+                visible_per_cpu_second: pick(&|r| r.visible_per_cpu_second),
+                cpu_ms_per_1k_visible: pick(&|r| r.cpu_ms_per_1k_visible),
+                peak_memory_mib: pick(&|r| Some(r.peak_memory_bytes as f64 / MIB)),
+                peak_anon_mib: pick(&|r| Some(r.peak_anon_bytes as f64 / MIB)),
+            }
+        })
+        .collect()
+}
+
+pub fn idle_cells(reps: &[IdleRep]) -> Vec<IdleCell> {
+    grouped(reps, |r| (r.target, r.profile.clone()))
+        .into_iter()
+        .map(|((target, profile), rs)| IdleCell {
+            target,
+            profile,
+            repetitions: rs.len() as u32,
+            memory_mib: spread(&rs.iter().map(|r| r.memory_mib).collect::<Vec<_>>()),
+            anon_mib: spread(&rs.iter().map(|r| r.anon_mib).collect::<Vec<_>>()),
+            scratch_bytes: spread(
+                &rs.iter()
+                    .filter_map(|r| r.scratch_bytes.map(|b| b as f64))
+                    .collect::<Vec<_>>(),
+            ),
+        })
+        .collect()
+}
+
+pub fn startup_cells(reps: &[StartupRep]) -> Vec<StartupCell> {
+    grouped(reps, |r| (r.target, r.profile.clone()))
+        .into_iter()
+        .map(|((target, profile), rs)| StartupCell {
+            target,
+            profile,
+            repetitions: rs.len() as u32,
+            ready_ms: spread(&rs.iter().map(|r| r.ready_ms).collect::<Vec<_>>()),
+            cpu_ms_to_ready: spread(&rs.iter().map(|r| r.cpu_ms_to_ready).collect::<Vec<_>>()),
+        })
+        .collect()
+}
+
+/// Protocol 4's report: protocol 3's cells, and the cost section's figures
+/// derived from each chunk's own resource rows (`groups`: one slice per
+/// chunk, because each chunk's leaves and clock are its own).
+pub fn report_v4(
+    p: &Protocol,
+    m: &Manifest,
+    rows: &[Row],
+    groups: &[&[ResourceRow]],
+    life: &Lifecycle,
+) -> Report {
+    let mut r = report(p, m, rows, life);
+    r.report_version = REPORT_VERSION_V4;
+    let mut all = Figures::default();
+    for g in groups {
+        let mut f = figures(&r.throughput, g);
+        all.cost.append(&mut f.cost);
+        all.idle.append(&mut f.idle);
+        all.startup.append(&mut f.startup);
+    }
+    let cells = cost_cells(&all.cost);
+    let idle = idle_cells(&all.idle);
+    let startup = startup_cells(&all.startup);
+    let lead = p
+        .headline
+        .as_ref()
+        .map(|h| h.profile.clone())
+        .unwrap_or_default();
+    r.v4 = Some(V4Report {
+        headline: Headline {
+            cost: cells
+                .iter()
+                .filter(|c| c.profile == lead)
+                .cloned()
+                .collect(),
+            idle: idle.iter().filter(|c| c.profile == lead).cloned().collect(),
+            startup: startup
+                .iter()
+                .filter(|c| c.profile == lead)
+                .cloned()
+                .collect(),
+            profile: lead,
+        },
+        cost: CostSection {
+            repetitions: all.cost,
+            cells,
+        },
+        idle,
+        startup,
+        mib_per_1k_retained: Owed {
+            status: "owed",
+            owed_by: "story B: the API section's fill levels (0132 §6.4)",
+        },
+    });
+    r
 }

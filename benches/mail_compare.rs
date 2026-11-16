@@ -12,6 +12,8 @@
 //!   mail_compare run --mode smoke|collect --protocol P --sources S
 //!       [--documents DIR] --output DIR --scratch DIR --run-id ID --bin TARGET=PATH...
 //!       [--runtime TARGET=DIR...] [--commit SHA --dirty true|false]
+//!       [--chunk cost.TARGET.rN --systemd VERSION]     (protocol 4)
+//!   mail_compare targets --protocol P --plan v4
 //!   mail_compare admit DIR
 //!   mail_compare mailpit-mcp|mailhog-mcp|mailslurper-mcp --sources S
 //!       (--endpoint http://127.0.0.1:PORT | --launch BIN --scratch DIR)
@@ -125,11 +127,23 @@ fn load(
 
 /// `mail_compare targets --protocol P`: the competitors the protocol
 /// declares, one name per line, for the wrapper's required-binary list. The
-/// candidate is built by the wrapper itself and never listed.
+/// candidate is built by the wrapper itself and never listed. With
+/// `--plan v4` it prints the protocol's chunk plan instead, one coordinate
+/// per line: the wrapper never computes the plan.
 fn targets_mode(args: &[String]) -> i32 {
+    let mut plan = false;
     let res = flags(args).and_then(|f| {
-        if let Some(k) = f.keys().find(|k| k.as_str() != "protocol") {
+        if let Some(k) = f
+            .keys()
+            .find(|k| !["protocol", "plan"].contains(&k.as_str()))
+        {
             return Err(format!("unknown flag --{k}"));
+        }
+        if let Some(v) = f.get("plan") {
+            if v.first().map(String::as_str) != Some("v4") {
+                return Err("--plan takes v4".into());
+            }
+            plan = true;
         }
         let bytes = std::fs::read(one(&f, "protocol")?).map_err(|e| format!("protocol: {e}"))?;
         let p = Protocol::parse(&bytes).map_err(|r| r.to_string())?;
@@ -137,6 +151,20 @@ fn targets_mode(args: &[String]) -> i32 {
         Ok(p)
     });
     match res {
+        Ok(p) if plan => {
+            if p.protocol_version != protocol::PROTOCOL_VERSION_4 {
+                eprintln!(
+                    "mail_compare targets: --plan v4 needs protocol_version {}, not {}",
+                    protocol::PROTOCOL_VERSION_4,
+                    p.protocol_version
+                );
+                return 2;
+            }
+            for c in runner::plan_v4(&p) {
+                println!("{}", c.name());
+            }
+            0
+        }
         Ok(p) => {
             for t in protocol::declared_competitors(&p) {
                 println!("{t}");
@@ -367,7 +395,7 @@ fn kernel() -> String {
 
 fn run(args: &[String]) -> i32 {
     match prepare(args) {
-        Ok((cfg, scratch)) => execute(cfg, scratch),
+        Ok((cfg, scratch, chunk)) => execute(cfg, scratch, chunk),
         Err(e) => {
             eprintln!("mail_compare run: refused before launch: {e}");
             2
@@ -377,7 +405,7 @@ fn run(args: &[String]) -> i32 {
 
 /// Everything that can refuse before a single process starts: inputs,
 /// pins, binaries, output and scratch.
-fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
+fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf, Option<runner::Chunk>), String> {
     let f = runner::flags(args)?;
     let known = [
         "mode",
@@ -391,6 +419,8 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
         "runtime",
         "commit",
         "dirty",
+        "chunk",
+        "systemd",
     ];
     if let Some(k) = f.keys().find(|k| !known.contains(&k.as_str())) {
         return Err(format!("unknown flag --{k}"));
@@ -398,6 +428,23 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
     let (p, pb, s, sb) = load(&f)?;
     let mode = one(&f, "mode")?;
     p.validate().map_err(|r| r.to_string())?;
+    let commit = f.get("commit").and_then(|v| v.first()).cloned();
+    if commit.as_deref().is_some_and(|c| !protocol::is_hex(c, 40)) {
+        return Err("--commit must be a full commit id".into());
+    }
+    let dirty = match f.get("dirty").and_then(|v| v.first()).map(String::as_str) {
+        None => None,
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        Some(_) => return Err("--dirty takes true or false".into()),
+    };
+    let chunk = runner::v4_preflight(
+        &p,
+        mode,
+        f.get("chunk").and_then(|v| v.first()).map(String::as_str),
+        commit.as_deref(),
+        dirty,
+    )?;
     match mode {
         "collect" => protocol::collection_ready(&p, &s)
             .map_err(|r| format!("not ready for collection: {r}"))?,
@@ -415,31 +462,56 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
         return Err("--run-id must be 1-64 [A-Za-z0-9._-]".into());
     }
     let none = Vec::new();
-    let specs = runner::launch_specs(
-        &p,
-        &s,
+    let (bins, runtimes) = (
         f.get("bin").unwrap_or(&none),
         f.get("runtime").unwrap_or(&none),
-    )?;
+    );
+    let mut specs = match &chunk {
+        Some(c) => runner::launch_specs_of(&p, &s, bins, runtimes, &[c.target()])?,
+        None => runner::launch_specs(&p, &s, bins, runtimes)?,
+    };
     let output = PathBuf::from(one(&f, "output")?);
     if output.exists() {
         return Err("--output already exists; runs are never overwritten or resumed".into());
     }
     let scratch = PathBuf::from(one(&f, "scratch")?);
+    // Protocol 4: delegation, the scratch's backing and the CPU layout are
+    // checked, the driver pinned to the client CPUs and the scope adopted,
+    // all before the runtime exists and before anything is created. There is
+    // no unenforced fallback, in collect or in smoke.
+    let scope = match &chunk {
+        Some(_) => {
+            let parent = scratch
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            Some(std::sync::Arc::new(resources::prepare_host(parent)?))
+        }
+        None => None,
+    };
+    if let Some(scope) = &scope {
+        for spec in specs.values_mut() {
+            spec.extra.scope = Some(scope.clone());
+        }
+    }
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(&scratch)
         .map_err(|e| format!("--scratch must be a new directory: {e}"))?;
-    let commit = f.get("commit").and_then(|v| v.first()).cloned();
-    if commit.as_deref().is_some_and(|c| !protocol::is_hex(c, 40)) {
-        return Err("--commit must be a full commit id".into());
-    }
-    let dirty = match f.get("dirty").and_then(|v| v.first()).map(String::as_str) {
-        None => None,
-        Some("true") => Some(true),
-        Some("false") => Some(false),
-        Some(_) => return Err("--dirty takes true or false".into()),
+    let (planned, planned_windows) = match &chunk {
+        Some(c) => {
+            let (planned, windows) = runner::plan_chunk(&p, c);
+            (planned, Some(windows))
+        }
+        None => (runner::plan(&p), None),
     };
+    let host = scope.as_ref().map(|sc| {
+        let systemd = f
+            .get("systemd")
+            .and_then(|v| v.first())
+            .map_or("not stated", String::as_str);
+        resources::host_facts(&kernel(), systemd, &sc.layout)
+    });
     let manifest = records::Manifest {
         manifest_version: records::MANIFEST_VERSION,
         run_id: run_id.to_owned(),
@@ -456,7 +528,10 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
             .map(|n| n.get() as u32)
             .unwrap_or(0),
         prelaunch_utc: chrono::Utc::now().to_rfc3339(),
-        planned: runner::plan(&p),
+        planned,
+        chunk: chunk.as_ref().map(runner::Chunk::name),
+        host,
+        planned_windows,
     };
     let cfg = runner::Config {
         protocol: p,
@@ -466,10 +541,10 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
         scratch: scratch.clone(),
         keepers: targets::Keepers::default(),
     };
-    Ok((cfg, scratch))
+    Ok((cfg, scratch, chunk))
 }
 
-fn execute(cfg: runner::Config, scratch: PathBuf) -> i32 {
+fn execute(cfg: runner::Config, scratch: PathBuf, chunk: Option<runner::Chunk>) -> i32 {
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -494,7 +569,12 @@ fn execute(cfg: runner::Config, scratch: PathBuf) -> i32 {
             }
         };
         tokio::select! {
-            r = runner::run(cfg, clock) => Some(r),
+            r = async {
+                match chunk {
+                    Some(c) => runner::run_chunk(cfg, c, clock).await,
+                    None => runner::run(cfg, clock).await,
+                }
+            } => Some(r),
             // Interrupted: dropping the run tells every owner's cleanup
             // worker to finish on its own; they are awaited below. The
             // output stays unsealed whatever they prove.

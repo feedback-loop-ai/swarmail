@@ -1646,3 +1646,1108 @@ async fn a_v4_launch_receipt_shows_the_cap_and_keeps_ports_and_paths_as_slots() 
         "{m}"
     );
 }
+
+// ============================================================================
+// T4: rows, the cost chunk and the figures
+// ============================================================================
+
+/// A protocol 4 draft cut down to one small cost profile, for hand-built rows.
+fn tiny4() -> Protocol {
+    let mut v = draft();
+    let mut prof = v["throughput"][1].clone();
+    prof["messages"] = json!(4);
+    prof["warmup_messages"] = json!(0);
+    prof["sessions"] = json!(2);
+    v["throughput"] = json!([prof]);
+    p4(v)
+}
+
+fn tiny_manifest(p: &Protocol, run: &str, chunk: &runner::Chunk) -> Manifest {
+    let (planned, windows) = runner::plan_chunk(p, chunk);
+    let mut m = manifest(p, run);
+    m.planned = planned;
+    m.chunk = Some(chunk.name());
+    m.planned_windows = Some(windows);
+    m
+}
+
+fn mailpit_chunk(rep: u32) -> runner::Chunk {
+    runner::Chunk::Cost {
+        target: TargetKind::Mailpit,
+        repetition: rep,
+    }
+}
+
+fn zero_snap(t_ns: u64) -> resources::Snap {
+    resources::Snap {
+        t_ns,
+        cpu: Default::default(),
+        events: Default::default(),
+    }
+}
+
+fn win(
+    run: &str,
+    launch: &str,
+    (profile, rep): (&str, u32),
+    kind: records::WindowKind,
+    (start_ns, end_ns): (u64, u64),
+    outcome: records::WindowOutcome,
+) -> records::WindowRow {
+    runner::window_row(
+        run,
+        launch,
+        (TargetKind::Mailpit, profile, rep),
+        kind,
+        (&zero_snap(start_ns), &zero_snap(end_ns)),
+        true,
+        None,
+        outcome,
+    )
+}
+
+fn sample_at(run: &str, launch: &str, t_ns: u64, memory: u64, anon: u64) -> records::SampleRow {
+    records::SampleRow {
+        row_version: records::RESOURCE_ROW_VERSION,
+        run_id: run.into(),
+        launch: launch.into(),
+        target: TargetKind::Mailpit,
+        t_ns,
+        memory_current: memory,
+        anon,
+        file: memory - anon.min(memory),
+        kernel: 0,
+        pids: 3,
+    }
+}
+
+fn write_samples(dir: &Path, rows: &[String]) {
+    let mut text = rows.join("\n");
+    text.push('\n');
+    std::fs::write(dir.join("samples.jsonl"), text).unwrap();
+}
+
+fn all_windows(run: &str, rep: u32) -> Vec<records::WindowRow> {
+    use records::WindowKind::*;
+    let o = records::WindowOutcome::Measured;
+    [(Ready, 0, 1), (IdleReady, 2, 7), (Measure, 8, 20)]
+        .into_iter()
+        .map(|(k, a, b)| {
+            let at = (a * 1_000_000_000, b * 1_000_000_000);
+            win(run, "target-0001", ("cost-c8-reused", rep), k, at, o)
+        })
+        .collect()
+}
+
+fn message_lines(run: &str, rep: u32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (phase, n, outcome) in [
+        (Phase::Send, 4, "accepted"),
+        (Phase::Visible, 4, "visible"),
+        (Phase::Verified, 1, "verified"),
+    ] {
+        for i in 0..n {
+            let mut r = runner::row(
+                run,
+                TargetKind::Mailpit,
+                "cost-c8-reused",
+                rep,
+                phase,
+                i,
+                outcome,
+            );
+            r.token = Some(format!("t{i}"));
+            lines.push(serde_json::to_string(&r).unwrap());
+        }
+    }
+    lines
+}
+
+fn window_line(w: &records::WindowRow) -> String {
+    serde_json::to_string(&records::ResourceRow::Window(w.clone())).unwrap()
+}
+
+// ---- T4.1 ------------------------------------------------------------------
+
+#[test]
+fn a_v4_run_directory_reads_both_row_families() {
+    let p = tiny4();
+    let m = tiny_manifest(&p, "run-a", &mailpit_chunk(0));
+    let dir = fixture();
+    let mut lines = message_lines("run-a", 0);
+    let sample = sample_at("run-a", "target-0001", 5, 10, 4);
+    lines.push(serde_json::to_string(&records::ResourceRow::Sample(sample)).unwrap());
+    lines.extend(all_windows("run-a", 0).iter().map(window_line));
+    write_samples(dir.path(), &lines);
+    let (rows, res) = records::read_run(dir.path(), &m).expect("both families read");
+    assert_eq!((rows.len(), res.len()), (9, 4));
+    assert!(lines[9].contains("\"kind\":\"sample\""), "{}", lines[9]);
+    assert!(lines[10].contains("\"kind\":\"window\""));
+    // `read_rows` is the message rows alone.
+    assert_eq!(records::read_rows(dir.path(), &m).unwrap().len(), 9);
+    // A resource row of another run refuses.
+    let mut foreign = lines.clone();
+    let other = sample_at("other", "t", 5, 10, 4);
+    foreign[9] = serde_json::to_string(&records::ResourceRow::Sample(other)).unwrap();
+    write_samples(dir.path(), &foreign);
+    assert!(
+        records::read_run(dir.path(), &m)
+            .unwrap_err()
+            .contains("another run")
+    );
+    // An unknown key in a resource row refuses (the type is closed).
+    let mut extra = lines.clone();
+    extra[9] = extra[9].replace("\"pids\":3", "\"pids\":3,\"secret\":1");
+    write_samples(dir.path(), &extra);
+    assert!(records::read_run(dir.path(), &m).is_err());
+}
+
+#[test]
+fn a_resource_row_in_a_v3_run_directory_refuses() {
+    let p = smoke();
+    let m = manifest(&p, "run-b");
+    assert!(m.planned_windows.is_none());
+    let dir = fixture();
+    let sample = records::ResourceRow::Sample(sample_at("run-b", "target-0001", 5, 10, 4));
+    write_samples(dir.path(), &[serde_json::to_string(&sample).unwrap()]);
+    let w = records::read_rows(dir.path(), &m).unwrap_err();
+    assert!(w.contains("row 0"), "{w}");
+    assert!(records::read_run(dir.path(), &m).is_err());
+}
+
+#[test]
+fn a_duplicate_an_unplanned_and_a_missing_window_each_refuse() {
+    let p = tiny4();
+    let m = tiny_manifest(&p, "run-c", &mailpit_chunk(0));
+    let dir = fixture();
+    let ws = all_windows("run-c", 0);
+    // The complete set reads.
+    let mut ok = message_lines("run-c", 0);
+    ok.extend(ws.iter().map(window_line));
+    write_samples(dir.path(), &ok);
+    records::read_run(dir.path(), &m).expect("a complete chunk reads");
+    // A duplicate.
+    let mut dup = ok.clone();
+    dup.push(window_line(&ws[2]));
+    write_samples(dir.path(), &dup);
+    let w = records::read_run(dir.path(), &m).unwrap_err();
+    assert!(
+        w.contains("Measure") && w.contains("appears 2 times"),
+        "{w}"
+    );
+    // An unplanned one: another repetition, and another profile.
+    for (profile, rep) in [("cost-c8-reused", 1), ("cost-c1-reused", 0)] {
+        let mut extra = ok.clone();
+        let kind = records::WindowKind::Measure;
+        let o = records::WindowOutcome::Measured;
+        extra.push(window_line(&win(
+            "run-c",
+            "target-0001",
+            (profile, rep),
+            kind,
+            (0, 1),
+            o,
+        )));
+        write_samples(dir.path(), &extra);
+        let w = records::read_run(dir.path(), &m).unwrap_err();
+        assert!(w.contains("unplanned window"), "{w}");
+    }
+    // A missing one.
+    let mut gone = message_lines("run-c", 0);
+    gone.extend(ws[..2].iter().map(window_line));
+    write_samples(dir.path(), &gone);
+    let w = records::read_run(dir.path(), &m).unwrap_err();
+    assert!(w.contains("Measure is missing"), "{w}");
+}
+
+#[test]
+fn a_v3_manifest_serializes_byte_for_byte() {
+    // The manifest as it was written before protocol 4 existed: none of the
+    // three new keys appears.
+    let p = smoke();
+    let m = manifest(&p, "run-d");
+    let text = serde_json::to_string(&m).unwrap();
+    for key in ["chunk", "host", "planned_windows"] {
+        assert!(!text.contains(key), "{key} in {text}");
+    }
+    let back: Manifest = serde_json::from_str(&text).expect("old bytes parse");
+    assert_eq!(back, m);
+    assert!(back.chunk.is_none() && back.host.is_none() && back.planned_windows.is_none());
+}
+
+// ---- T4.2 ------------------------------------------------------------------
+
+#[test]
+fn a_window_outcome_is_oom_killed_only_when_oom_kill_rose() {
+    let at = |max, oom, oom_kill| resources::MemEvents { max, oom, oom_kill };
+    use records::WindowOutcome::*;
+    // `max` alone is pressure, not an OOM.
+    assert_eq!(
+        runner::window_outcome(&at(0, 0, 0), &at(900, 0, 0), false),
+        Measured
+    );
+    assert_eq!(
+        runner::window_outcome(&at(0, 0, 0), &at(900, 1, 0), false),
+        Measured
+    );
+    assert_eq!(
+        runner::window_outcome(&at(0, 0, 0), &at(900, 1, 1), false),
+        OomKilled
+    );
+    // It is the rise over the window, not the total.
+    assert_eq!(
+        runner::window_outcome(&at(0, 1, 2), &at(0, 1, 2), false),
+        Measured
+    );
+    assert_eq!(
+        runner::window_outcome(&at(0, 1, 2), &at(0, 2, 3), true),
+        OomKilled
+    );
+    // A target that exited without an OOM is its own outcome.
+    assert_eq!(
+        runner::window_outcome(&at(0, 0, 0), &at(0, 0, 0), true),
+        TargetExited
+    );
+}
+
+#[test]
+fn affinity_held_is_false_when_any_task_differs() {
+    let proc_root = fixture();
+    for (pid, tid, list) in [(5, 5, "2-3"), (5, 6, "2-3"), (6, 6, "2-3")] {
+        let d = proc_root.path().join(format!("{pid}/task/{tid}"));
+        std::fs::create_dir_all(&d).unwrap();
+        put(&d, "status", &format!("Cpus_allowed_list:\t{list}\n"));
+    }
+    assert!(resources::affinity_held(proc_root.path(), &[5, 6], &[2, 3]));
+    put(
+        &proc_root.path().join("6/task/6"),
+        "status",
+        "Cpus_allowed_list:\t2-4\n",
+    );
+    assert!(!resources::affinity_held(
+        proc_root.path(),
+        &[5, 6],
+        &[2, 3]
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_sampler_writes_a_row_per_tick_and_one_at_each_bound() {
+    let scope = fixture();
+    let dir = leaf_fixture(scope.path(), "target-0001");
+    put(&dir, "memory.current", "8192\n");
+    put(&dir, "memory.stat", MEM_STAT);
+    let (leaf, _) = resources::Leaf::prepare(resources::host(), dir, "target-0001").unwrap();
+    let clock = wire::Clock(Instant::now());
+    let rows: Arc<Mutex<Vec<records::SampleRow>>> = Arc::default();
+    let sink = rows.clone();
+    let emit: resources::Emit = Arc::new(move |r| {
+        sink.lock().unwrap().push(r);
+        Ok(())
+    });
+    let sampler = resources::Sampler::spawn(
+        leaf.clone(),
+        "run-e".into(),
+        TargetKind::Mailpit,
+        clock,
+        Duration::from_millis(100),
+        emit,
+    );
+    // The paused clock advances by hand: no sleep stands in for a sync.
+    for _ in 0..3 {
+        tokio::time::advance(Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+    }
+    let n = sampler.stop().await.expect("the sampler ends cleanly");
+    let got = rows.lock().unwrap().clone();
+    assert_eq!(n as usize, got.len());
+    assert!(
+        got.len() >= 3,
+        "a row at the start and one per tick: {}",
+        got.len()
+    );
+    assert!(
+        got.windows(2).all(|w| w[1].t_ns >= w[0].t_ns),
+        "time moves forward"
+    );
+    let first = &got[0];
+    assert_eq!(first.memory_current, 8192);
+    assert_eq!(
+        (first.anon, first.file, first.kernel, first.pids),
+        (104_857_600, 52_428_800, 3_145_728, 1)
+    );
+    assert_eq!(first.launch, "target-0001");
+    // A bound is one sample of the same kind, taken on demand.
+    let at_bound = leaf.sample("run-e", TargetKind::Mailpit, &clock).unwrap();
+    assert!(at_bound.t_ns >= got[got.len() - 1].t_ns);
+    let snap = leaf.snap(&clock).unwrap();
+    assert_eq!(snap.cpu.usage_usec, 8_123_456);
+    // A reading that fails stops the sampler with the reason, not silently.
+    std::fs::write(leaf.dir().join("memory.current"), "max\n").unwrap();
+    let broken = resources::Sampler::spawn(
+        leaf,
+        "run-e".into(),
+        TargetKind::Mailpit,
+        clock,
+        Duration::from_millis(100),
+        Arc::new(|_| Ok(())),
+    );
+    tokio::time::advance(Duration::from_millis(100)).await;
+    tokio::task::yield_now().await;
+    let w = broken.stop().await.unwrap_err();
+    assert!(w.contains("memory.current"), "{w}");
+}
+
+// ---- T4.3 ------------------------------------------------------------------
+
+#[test]
+fn the_draft_plans_24_cost_chunks_in_rotation_order() {
+    let p = p4(draft());
+    let plan = runner::plan_v4(&p);
+    assert_eq!(plan.len(), 24);
+    let mut want = Vec::new();
+    for rep in 0..3u32 {
+        for t in p.order(rep) {
+            if *t != TargetKind::Mailslurper {
+                want.push(runner::Chunk::Cost {
+                    target: *t,
+                    repetition: rep,
+                });
+            }
+        }
+    }
+    assert_eq!(plan, want);
+    assert!(!plan.iter().any(|c| c.target() == TargetKind::Mailslurper));
+    assert_eq!(plan[0].name(), "cost.swarmail.r0");
+    assert_eq!(plan[8].name(), "cost.mailpit.r1");
+    assert_eq!(plan[16].name(), "cost.mailhog.r2");
+    assert_eq!(plan[23].name(), "cost.mailpit.r2");
+    for rep in 0..3 {
+        assert_eq!(plan.iter().filter(|c| c.repetition() == rep).count(), 8);
+    }
+    // Each chunk plans its profiles' rows and three windows apiece.
+    let (planned, windows) = runner::plan_chunk(&p, &plan[0]);
+    assert_eq!(
+        planned.len(),
+        12,
+        "three row families for each of four profiles"
+    );
+    assert_eq!(windows.len(), 12);
+    assert!(
+        planned
+            .iter()
+            .all(|x| x.target == TargetKind::Swarmail && x.repetition == 0)
+    );
+}
+
+#[test]
+fn chunk_names_round_trip_and_unknown_ones_refuse() {
+    let p = p4(draft());
+    for c in runner::plan_v4(&p) {
+        assert_eq!(runner::Chunk::parse(&c.name(), &p).unwrap(), c);
+    }
+    for (text, expect) in [
+        ("cost.mailslurper.r0", "not in the protocol's plan"),
+        ("cost.mailpit.r3", "not in the protocol's plan"),
+        ("cost.nobody.r0", "unknown target"),
+        ("api.mailpit.r0", "is not implemented"),
+        ("cost.mailpit", "not a chunk coordinate"),
+        ("cost.mailpit.0", "not r<repetition>"),
+        ("", "not a chunk coordinate"),
+        ("cost.mailpit.r0.x", "not a chunk coordinate"),
+    ] {
+        let w = runner::Chunk::parse(text, &p).unwrap_err();
+        assert!(w.contains(expect), "{text:?}: {w}");
+    }
+}
+
+#[test]
+fn protocol_4_needs_a_chunk_and_protocol_3_refuses_one() {
+    let p = p4(draft());
+    let w = runner::v4_preflight(&p, "smoke", None, None, None).unwrap_err();
+    assert!(w.contains("protocol 4 needs --chunk"), "{w}");
+    let ok = runner::v4_preflight(&p, "smoke", Some("cost.mailpit.r1"), None, None).unwrap();
+    assert_eq!(ok, Some(mailpit_chunk(1)));
+    let p3 = Protocol::parse(PROTOCOL_V3).unwrap();
+    let w = runner::v4_preflight(&p3, "collect", Some("cost.mailpit.r1"), None, None).unwrap_err();
+    assert!(w.contains("protocol 3 has no chunks"), "{w}");
+    assert_eq!(
+        runner::v4_preflight(&p3, "collect", None, None, None),
+        Ok(None)
+    );
+    let p2 = Protocol::parse(PROTOCOL).unwrap();
+    assert!(runner::v4_preflight(&p2, "smoke", Some("cost.mailpit.r0"), None, None).is_err());
+    assert!(runner::v4_preflight(&p, "smoke", Some("bogus"), None, None).is_err());
+}
+
+#[test]
+fn a_v4_collect_refuses_a_missing_or_dirty_commit() {
+    let p = p4(draft());
+    let chunk = Some("cost.mailpit.r0");
+    let sha = "a".repeat(40);
+    let w = runner::v4_preflight(&p, "collect", chunk, None, Some(false)).unwrap_err();
+    assert!(w.contains("needs the candidate's commit"), "{w}");
+    let w = runner::v4_preflight(&p, "collect", chunk, Some(&sha), Some(true)).unwrap_err();
+    assert!(w.contains("dirty or not stated clean"), "{w}");
+    let w = runner::v4_preflight(&p, "collect", chunk, Some(&sha), None).unwrap_err();
+    assert!(w.contains("dirty or not stated clean"), "{w}");
+    runner::v4_preflight(&p, "collect", chunk, Some(&sha), Some(false))
+        .expect("a clean commit passes");
+    // A smoke run is labelled and never evidence: it needs neither.
+    runner::v4_preflight(&p, "smoke", chunk, None, None).unwrap();
+}
+
+// ---- T4.4 ------------------------------------------------------------------
+
+#[test]
+fn a_profile_past_the_chunk_deadline_is_unstarted_rows_and_a_chunk_deadline_window() {
+    let p = tiny4();
+    let m = tiny_manifest(&p, "run-f", &mailpit_chunk(0));
+    let dir = fixture();
+    let out = dir.path().join("run");
+    let sink: runner::Sink = Arc::new(Mutex::new(records::RunDir::create(&out, &m).unwrap()));
+    let clock = wire::Clock(Instant::now());
+    runner::skip_profile(
+        "run-f",
+        &p.throughput[0],
+        (TargetKind::Mailpit, 0),
+        &sink,
+        &clock,
+    )
+    .expect("rows are written");
+    drop(sink);
+    let (rows, res) =
+        records::read_run(&out, &m).expect("the planned rows and windows are all there");
+    let sends: Vec<&Row> = rows.iter().filter(|r| r.phase == Phase::Send).collect();
+    assert_eq!(sends.len(), 4);
+    let why = Some("chunk deadline");
+    assert!(
+        sends
+            .iter()
+            .all(|r| r.outcome == "unstarted" && r.reason.as_deref() == why)
+    );
+    let verified = rows.iter().find(|r| r.phase == Phase::Verified).unwrap();
+    assert_eq!(verified.outcome, "incomplete");
+    assert_eq!(res.len(), 3);
+    for r in &res {
+        let records::ResourceRow::Window(w) = r else {
+            panic!("only windows are written")
+        };
+        assert_eq!(w.outcome, records::WindowOutcome::ChunkDeadline);
+        assert_eq!(w.cpu_start, w.cpu_end, "nothing was measured");
+    }
+}
+
+#[test]
+fn a_chunk_with_any_unmeasured_window_exits_one() {
+    use runner::Verdict;
+    assert_eq!(Verdict::Clean.exit_code(), 0);
+    assert_eq!(Verdict::WorkloadFailures(vec!["oom".into()]).exit_code(), 1);
+    assert_eq!(Verdict::Infrastructure("x".into()).exit_code(), 2);
+}
+
+// ---- T4.5 ------------------------------------------------------------------
+
+#[test]
+fn median_min_max_over_one_two_and_three_values() {
+    assert_eq!(stats::spread(&[]), None);
+    let one = stats::spread(&[7.5]).unwrap();
+    assert_eq!((one.median, one.min, one.max), (7.5, 7.5, 7.5));
+    // Nearest rank: ceil(50 * 2 / 100) = 1, the lower of two.
+    let two = stats::spread(&[9.0, 3.0]).unwrap();
+    assert_eq!((two.median, two.min, two.max), (3.0, 3.0, 9.0));
+    // ceil(50 * 3 / 100) = 2, the middle of three, whatever the order given.
+    let three = stats::spread(&[4.0, 1.0, 2.0]).unwrap();
+    assert_eq!((three.median, three.min, three.max), (2.0, 1.0, 4.0));
+    // A value that is not a number is not a figure.
+    let nan = stats::spread(&[f64::NAN, 5.0, f64::INFINITY]).unwrap();
+    assert_eq!((nan.median, nan.min, nan.max), (5.0, 5.0, 5.0));
+    assert_eq!(stats::spread(&[f64::NAN]), None);
+}
+
+// ---- T4.6 ------------------------------------------------------------------
+
+const MIB: u64 = 1 << 20;
+const SEC: u64 = 1_000_000_000;
+
+/// One repetition's measurements, all hand-chosen so the expected figures
+/// below are worked out on paper, not read back from the code.
+struct Rep {
+    rep: u32,
+    profile: &'static str,
+    /// `cpu.stat` user and system µs over the measure window.
+    cpu: (u64, u64),
+    /// The memory (MiB) sampled mid-window; the bounds sample 100 MiB.
+    peak_mib: u64,
+    outcome: records::WindowOutcome,
+    held: bool,
+    oom_kill: u64,
+}
+
+impl Rep {
+    fn new(rep: u32, cpu: (u64, u64), peak_mib: u64) -> Rep {
+        Rep {
+            rep,
+            profile: "cost-c8-reused",
+            cpu,
+            peak_mib,
+            outcome: records::WindowOutcome::Measured,
+            held: true,
+            oom_kill: 0,
+        }
+    }
+}
+
+fn snap(t: u64, cpu: resources::CpuStat, oom_kill: u64) -> resources::Snap {
+    resources::Snap {
+        t_ns: t,
+        cpu,
+        events: resources::MemEvents {
+            max: 0,
+            oom: oom_kill,
+            oom_kill,
+        },
+    }
+}
+
+fn cpu(user: u64, system: u64, throttled: u64) -> resources::CpuStat {
+    resources::CpuStat {
+        usage_usec: user + system,
+        user_usec: user,
+        system_usec: system,
+        nr_throttled: throttled,
+        throttled_usec: throttled * 1000,
+    }
+}
+
+/// The resource rows of one repetition on a fresh clock of its own.
+fn res_rows(run: &str, r: &Rep) -> Vec<records::ResourceRow> {
+    use records::WindowKind::*;
+    let launch = format!("target-{:04}", r.rep + 1);
+    let key = (TargetKind::Mailpit, r.profile, r.rep);
+    let mut out = Vec::new();
+    let w = |kind, (a, b): (resources::Snap, resources::Snap), held, scratch, o| {
+        records::ResourceRow::Window(runner::window_row(
+            run,
+            &launch,
+            key,
+            kind,
+            (&a, &b),
+            held,
+            scratch,
+            o,
+        ))
+    };
+    let m = records::WindowOutcome::Measured;
+    out.push(w(
+        Ready,
+        (
+            snap(0, cpu(0, 0, 0), 0),
+            snap(SEC, cpu(100_000, 150_000, 0), 0),
+        ),
+        true,
+        None,
+        m,
+    ));
+    out.push(w(
+        IdleReady,
+        (
+            snap(2 * SEC, cpu(0, 0, 0), 0),
+            snap(7 * SEC, cpu(0, 0, 0), 0),
+        ),
+        true,
+        Some(4096),
+        m,
+    ));
+    out.push(w(
+        Measure,
+        (
+            snap(8 * SEC, cpu(0, 0, 0), 0),
+            snap(20 * SEC, cpu(r.cpu.0, r.cpu.1, 7), r.oom_kill),
+        ),
+        r.held,
+        None,
+        r.outcome,
+    ));
+    let mut s = |t: u64, mib: u64, anon_mib: u64| {
+        out.push(records::ResourceRow::Sample(sample_at(
+            run,
+            &launch,
+            t,
+            mib * MIB,
+            anon_mib * MIB,
+        )));
+    };
+    // The idle window: only the last two seconds (5 s to 7 s) count.
+    for (t, mib) in [
+        (2 * SEC, 900),
+        (4 * SEC, 900),
+        (5 * SEC + SEC / 2, 100),
+        (6 * SEC, 200),
+        (7 * SEC, 300),
+    ] {
+        s(t, mib, mib / 2);
+    }
+    // The measure window, with samples outside it that must not count.
+    s(8 * SEC - 1, 999, 999);
+    s(8 * SEC, 100, 50);
+    s(14 * SEC, r.peak_mib, r.peak_mib / 2);
+    s(20 * SEC, 100, 50);
+    s(20 * SEC + 1, 998, 998);
+    out
+}
+
+/// Message rows of one exact repetition: four accepted, four visible once,
+/// fidelity intact, one verification.
+fn msg_rows(run: &str, r: &Rep) -> Vec<Row> {
+    let mut rows = Vec::new();
+    for i in 0..4 {
+        let mut s = runner::row(
+            run,
+            TargetKind::Mailpit,
+            r.profile,
+            r.rep,
+            Phase::Send,
+            i,
+            "accepted",
+        );
+        s.token = Some(format!("t{i}"));
+        s.invoked_ns = Some(8 * SEC + u64::from(i));
+        s.start_ns = Some(8 * SEC + u64::from(i) + 1);
+        s.ack_ns = Some(8 * SEC + u64::from(i) + 1_000_001);
+        rows.push(s);
+        let mut v = runner::row(
+            run,
+            TargetKind::Mailpit,
+            r.profile,
+            r.rep,
+            Phase::Visible,
+            i,
+            "visible",
+        );
+        v.token = Some(format!("t{i}"));
+        v.occurrences = Some(1);
+        v.fidelity_ok = Some(true);
+        rows.push(v);
+    }
+    let mut v = runner::row(
+        run,
+        TargetKind::Mailpit,
+        r.profile,
+        r.rep,
+        Phase::Verified,
+        0,
+        "verified",
+    );
+    v.start_ns = Some(8 * SEC);
+    v.ack_ns = Some(9 * SEC);
+    v.observed_ns = Some(10 * SEC);
+    rows.push(v);
+    rows
+}
+
+fn life() -> runner::Lifecycle {
+    runner::Lifecycle {
+        launches: vec![],
+        cleanups: vec![],
+    }
+}
+
+type Editor<'a> = Option<&'a dyn Fn(&mut Vec<Row>)>;
+
+fn v4_report(reps: &[(Rep, Editor)]) -> report::Report {
+    let mut names: Vec<&str> = reps.iter().map(|(r, _)| r.profile).collect();
+    names.dedup();
+    let mut v = draft();
+    let proto = v["throughput"][1].clone();
+    v["throughput"] = json!(
+        names
+            .iter()
+            .map(|n| {
+                let mut t = proto.clone();
+                t["name"] = json!(n);
+                t["messages"] = json!(4);
+                t["warmup_messages"] = json!(0);
+                t["sessions"] = json!(2);
+                t
+            })
+            .collect::<Vec<_>>()
+    );
+    let p = p4(v);
+    let m = tiny_manifest(&p, "run-g", &mailpit_chunk(0));
+    let (mut rows, mut groups) = (Vec::new(), Vec::new());
+    for (r, edit) in reps {
+        let mut mine = msg_rows("run-g", r);
+        if let Some(edit) = edit {
+            edit(&mut mine);
+        }
+        rows.append(&mut mine);
+        groups.push(res_rows("run-g", r));
+    }
+    let g: Vec<&[records::ResourceRow]> = groups.iter().map(Vec::as_slice).collect();
+    report::report_v4(&p, &m, &rows, &g, &life())
+}
+
+fn near(a: f64, b: f64) {
+    assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0), "{a} is not {b}");
+}
+
+#[test]
+fn cost_figures_equal_independent_arithmetic() {
+    // CPU totals 2 s, 4 s and 1 s over 4 visible mails each.
+    let r = v4_report(&[
+        (Rep::new(0, (1_500_000, 500_000), 300), None),
+        (Rep::new(1, (3_000_000, 1_000_000), 400), None),
+        (Rep::new(2, (600_000, 400_000), 200), None),
+    ]);
+    let cost = &r.v4.as_ref().unwrap().cost;
+    assert_eq!(cost.repetitions.len(), 3);
+    let first = &cost.repetitions[0];
+    assert_eq!(
+        (
+            first.cpu_user_usec,
+            first.cpu_system_usec,
+            first.cpu_total_usec
+        ),
+        (1_500_000, 500_000, 2_000_000)
+    );
+    assert_eq!(first.visible, 4);
+    near(first.visible_per_cpu_second.unwrap(), 2.0); // 4 mails / 2 s
+    near(first.cpu_ms_per_1k_visible.unwrap(), 500_000.0); // 2000 ms / 0.004 k
+    assert_eq!((first.nr_throttled, first.throttled_usec), (7, 7000));
+    let [cell] = cost.cells.as_slice() else {
+        panic!("one cell")
+    };
+    assert_eq!(
+        (cell.target, cell.profile.as_str(), cell.repetitions),
+        (TargetKind::Mailpit, "cost-c8-reused", 3)
+    );
+    // Per second: 2, 1 and 4 mails; the median is the middle one.
+    let s = cell.visible_per_cpu_second.unwrap();
+    assert_eq!((s.median, s.min, s.max), (2.0, 1.0, 4.0));
+    // Per 1k: 500,000, 1,000,000 and 250,000 ms.
+    let s = cell.cpu_ms_per_1k_visible.unwrap();
+    assert_eq!(
+        (s.median, s.min, s.max),
+        (500_000.0, 250_000.0, 1_000_000.0)
+    );
+    // Peak memory 300, 400 and 200 MiB; anon half of each.
+    let s = cell.peak_memory_mib.unwrap();
+    assert_eq!((s.median, s.min, s.max), (300.0, 200.0, 400.0));
+    let s = cell.peak_anon_mib.unwrap();
+    assert_eq!((s.median, s.min, s.max), (150.0, 100.0, 200.0));
+    assert!(cell.ranked && cell.shortfalls.is_empty() && cell.labels.is_empty());
+}
+
+#[test]
+fn a_zero_divisor_is_null_never_zero_or_infinite() {
+    // No CPU time at all: a per-second figure has no divisor.
+    let r = v4_report(&[(Rep::new(0, (0, 0), 300), None)]);
+    let rep = &r.v4.as_ref().unwrap().cost.repetitions[0];
+    assert_eq!(rep.visible_per_cpu_second, None);
+    // Its divisor is the visible count, which is 4: no CPU is zero ms.
+    assert_eq!(rep.cpu_ms_per_1k_visible, Some(0.0));
+    // Nothing visible: a per-1k figure has no divisor, though CPU was spent.
+    let gone: &dyn Fn(&mut Vec<Row>) = &|rows| rows.retain(|r| r.phase != Phase::Visible);
+    let r = v4_report(&[(Rep::new(0, (1_000_000, 0), 300), Some(gone))]);
+    let rep = &r.v4.as_ref().unwrap().cost.repetitions[0];
+    assert_eq!(rep.visible, 0);
+    assert_eq!(rep.cpu_ms_per_1k_visible, None);
+    near(rep.visible_per_cpu_second.unwrap(), 0.0);
+    // Both zero: neither is a number, and the serialized report says null.
+    let r = v4_report(&[(Rep::new(0, (0, 0), 300), Some(gone))]);
+    let rep = &r.v4.as_ref().unwrap().cost.repetitions[0];
+    assert_eq!(
+        (rep.visible_per_cpu_second, rep.cpu_ms_per_1k_visible),
+        (None, None)
+    );
+    let text = serde_json::to_string(&r).unwrap();
+    assert!(!text.contains("inf") && !text.contains("NaN"), "{text}");
+    let cell = &r.v4.as_ref().unwrap().cost.cells[0];
+    assert!(cell.visible_per_cpu_second.is_none() && cell.cpu_ms_per_1k_visible.is_none());
+}
+
+fn only_cell(r: &report::Report) -> &report::CostCell {
+    let cells = &r.v4.as_ref().unwrap().cost.cells;
+    assert_eq!(cells.len(), 1);
+    &cells[0]
+}
+
+#[test]
+fn an_inexact_repetition_unranks_the_cell_with_its_shortfall() {
+    use records::WindowOutcome as O;
+    type Edit = Box<dyn Fn(&mut Vec<Row>)>;
+    fn drop_visible(rows: &mut Vec<Row>, token: &str) {
+        rows.retain(|r| !(r.phase == Phase::Visible && r.token.as_deref() == Some(token)));
+    }
+    fn set_send(rows: &mut [Row], outcome: &str) {
+        let r = rows
+            .iter_mut()
+            .find(|r| r.phase == Phase::Send && r.sample == 3)
+            .unwrap();
+        r.outcome = outcome.into();
+    }
+    let cases: Vec<(&str, Edit, O)> = vec![
+        (
+            "refused",
+            Box::new(|rows| {
+                set_send(rows, "rejected");
+                drop_visible(rows, "t3");
+            }),
+            O::Measured,
+        ),
+        (
+            "lost",
+            Box::new(|rows| drop_visible(rows, "t3")),
+            O::Measured,
+        ),
+        (
+            "fidelity",
+            Box::new(|rows| {
+                rows.iter_mut()
+                    .find(|r| r.phase == Phase::Visible)
+                    .unwrap()
+                    .fidelity_ok = Some(false);
+            }),
+            O::Measured,
+        ),
+        ("oom", Box::new(|_| {}), O::OomKilled),
+        ("timeout", Box::new(|_| {}), O::ChunkDeadline),
+        ("target_exited", Box::new(|_| {}), O::TargetExited),
+        (
+            "duplicate",
+            Box::new(|rows| {
+                rows.iter_mut()
+                    .find(|r| r.phase == Phase::Visible)
+                    .unwrap()
+                    .occurrences = Some(2);
+            }),
+            O::Measured,
+        ),
+        (
+            "unexpected",
+            Box::new(|rows| {
+                let mut extra = runner::row(
+                    "run-g",
+                    TargetKind::Mailpit,
+                    "cost-c8-reused",
+                    0,
+                    Phase::Visible,
+                    9,
+                    "unexpected",
+                );
+                extra.token = Some("stranger".into());
+                extra.occurrences = Some(1);
+                rows.push(extra);
+            }),
+            O::Measured,
+        ),
+        (
+            "ambiguous",
+            Box::new(|rows| {
+                set_send(rows, "ambiguous");
+                drop_visible(rows, "t3");
+            }),
+            O::Measured,
+        ),
+    ];
+    for (name, edit, outcome) in &cases {
+        let mut rep = Rep::new(0, (1_000_000, 0), 300);
+        rep.outcome = *outcome;
+        let r = v4_report(&[(rep, Some(&**edit))]);
+        let cell = only_cell(&r);
+        assert!(!cell.ranked, "{name} must not be ranked");
+        assert_eq!(cell.shortfalls, vec![*name], "{name}");
+        // Its figures are published all the same.
+        assert!(
+            cell.peak_memory_mib.is_some(),
+            "{name}: a shortfall keeps its figures"
+        );
+        assert!(cell.visible_per_cpu_second.is_some(), "{name}");
+    }
+    // One inexact repetition among exact ones unranks the whole cell, and
+    // the other two keep their own figures.
+    let bad: &dyn Fn(&mut Vec<Row>) = &*cases[1].1;
+    let r = v4_report(&[
+        (Rep::new(0, (1_000_000, 0), 300), None),
+        (Rep::new(1, (1_000_000, 0), 300), Some(bad)),
+        (Rep::new(2, (1_000_000, 0), 300), None),
+    ]);
+    let cell = only_cell(&r);
+    assert!(!cell.ranked);
+    assert_eq!(cell.shortfalls, vec!["lost"]);
+    assert_eq!(cell.repetitions, 3);
+    let reps = &r.v4.as_ref().unwrap().cost.repetitions;
+    assert!(reps[0].exact && !reps[1].exact && reps[2].exact);
+    assert!(reps[0].shortfalls.is_empty());
+}
+
+#[test]
+fn an_unmeasured_window_unranks_the_cell() {
+    // Every message exact, but the window was not measured.
+    for outcome in [
+        records::WindowOutcome::OomKilled,
+        records::WindowOutcome::TargetExited,
+        records::WindowOutcome::ChunkDeadline,
+    ] {
+        let mut rep = Rep::new(0, (1_000_000, 0), 300);
+        rep.outcome = outcome;
+        let r = v4_report(&[(rep, None)]);
+        let reps = &r.v4.as_ref().unwrap().cost.repetitions;
+        assert!(reps[0].exact, "the rows themselves are exact");
+        assert_eq!(reps[0].window_outcome, outcome);
+        assert!(!only_cell(&r).ranked, "{outcome:?}");
+    }
+    let r = v4_report(&[(Rep::new(0, (1_000_000, 0), 300), None)]);
+    assert!(only_cell(&r).ranked);
+}
+
+#[test]
+fn affinity_widened_is_a_label_and_does_not_change_ranking() {
+    let mut rep = Rep::new(0, (1_000_000, 0), 300);
+    rep.held = false;
+    let r = v4_report(&[(rep, None)]);
+    let cell = only_cell(&r);
+    assert_eq!(cell.labels, vec!["affinity_widened"]);
+    assert!(cell.ranked, "it is a label: ranking stays 0132 §5.2's");
+    assert!(cell.shortfalls.is_empty());
+    assert!(!r.v4.as_ref().unwrap().cost.repetitions[0].affinity_held);
+}
+
+#[test]
+fn peak_and_mean_come_from_the_samples_inside_the_window() {
+    let r = v4_report(&[(Rep::new(0, (1_000_000, 0), 300), None)]);
+    let rep = &r.v4.as_ref().unwrap().cost.repetitions[0];
+    // Inside [8 s, 20 s]: 100, 300 and 100 MiB (anon 50, 150, 50). The
+    // samples just outside, at 999 and 998 MiB, are not read.
+    assert_eq!(rep.peak_memory_bytes, 300 * MIB);
+    assert_eq!(rep.peak_anon_bytes, 150 * MIB);
+    near(
+        rep.mean_memory_bytes,
+        (100.0 + 300.0 + 100.0) / 3.0 * MIB as f64,
+    );
+    near(
+        rep.mean_anon_bytes,
+        (50.0 + 150.0 + 50.0) / 3.0 * MIB as f64,
+    );
+    // A second launch's samples on the same clock are not mixed in.
+    let mut both = res_rows("run-g", &Rep::new(0, (1_000_000, 0), 300));
+    let mut other = Rep::new(1, (1_000_000, 0), 900);
+    other.profile = "cost-c8-reused";
+    let mut noise = res_rows("run-g", &other);
+    noise.retain(|r| matches!(r, records::ResourceRow::Sample(_)));
+    for r in &mut noise {
+        if let records::ResourceRow::Sample(s) = r {
+            s.launch = "target-0099".into();
+        }
+    }
+    both.extend(noise);
+    let p = tiny4();
+    let m = tiny_manifest(&p, "run-g", &mailpit_chunk(0));
+    let rows = msg_rows("run-g", &Rep::new(0, (1_000_000, 0), 300));
+    let r = report::report_v4(&p, &m, &rows, &[&both[..]], &life());
+    assert_eq!(
+        r.v4.as_ref().unwrap().cost.repetitions[0].peak_memory_bytes,
+        300 * MIB
+    );
+}
+
+#[test]
+fn idle_ready_is_the_mean_of_its_last_two_seconds() {
+    let r = v4_report(&[(Rep::new(0, (1_000_000, 0), 300), None)]);
+    let v4 = r.v4.as_ref().unwrap();
+    // Samples at 5.5 s, 6 s and 7 s (100, 200, 300 MiB) are in the last two
+    // seconds of a window that ends at 7 s; the 900 MiB ones are not.
+    let cell = &v4.idle[0];
+    assert_eq!(
+        (cell.target, cell.profile.as_str(), cell.repetitions),
+        (TargetKind::Mailpit, "cost-c8-reused", 1)
+    );
+    near(cell.memory_mib.unwrap().median, 200.0);
+    near(cell.anon_mib.unwrap().median, 100.0);
+    assert_eq!(cell.scratch_bytes.unwrap().median, 4096.0);
+    // Startup: ready at 1 s, with 100 ms of user and 150 ms of system CPU.
+    let up = &v4.startup[0];
+    assert_eq!(up.ready_ms.unwrap().median, 1000.0);
+    assert_eq!(up.cpu_ms_to_ready.unwrap().median, 250.0);
+}
+
+#[test]
+fn the_headline_is_the_cells_of_cost_c8_and_owes_mib_per_1k_retained() {
+    let mut other = Rep::new(0, (4_000_000, 0), 500);
+    other.profile = "cost-c1-reused";
+    let r = v4_report(&[(other, None), (Rep::new(0, (1_000_000, 0), 300), None)]);
+    let v4 = r.v4.as_ref().unwrap();
+    assert_eq!(v4.cost.cells.len(), 2);
+    assert_eq!(v4.headline.profile, "cost-c8-reused");
+    assert_eq!(v4.headline.cost.len(), 1);
+    assert_eq!(v4.headline.cost[0].profile, "cost-c8-reused");
+    assert!(
+        v4.headline
+            .idle
+            .iter()
+            .chain(&[])
+            .all(|c| c.profile == "cost-c8-reused")
+    );
+    assert_eq!(v4.headline.idle.len(), 1);
+    assert_eq!(v4.headline.startup.len(), 1);
+    // Fill levels belong to story B: owed, and no number appears.
+    let j = serde_json::to_value(&r).unwrap();
+    assert_eq!(j["mib_per_1k_retained"]["status"], "owed");
+    assert!(
+        j["mib_per_1k_retained"]["owed_by"]
+            .as_str()
+            .unwrap()
+            .contains("story B")
+    );
+    for key in ["cost", "idle", "startup", "headline", "mib_per_1k_retained"] {
+        assert!(j.get(key).is_some(), "{key} is a key of the report");
+    }
+}
+
+#[test]
+fn the_blocked_row_has_no_number() {
+    let p = p4(draft());
+    let m = tiny_manifest(&p, "run-h", &mailpit_chunk(0));
+    let r = report::report_v4(&p, &m, &[], &[], &life());
+    assert_eq!(r.blocked.len(), 1);
+    let b = &r.blocked[0];
+    assert_eq!(b.target, TargetKind::Mailslurper);
+    assert!(b.result.contains("does not start"));
+    assert_eq!(b.cells.len(), 4, "every cost profile is blocked");
+    assert!(b.cells.iter().all(|c| c.outcome == "blocked"));
+    let v4 = r.v4.as_ref().unwrap();
+    assert!(
+        !v4.cost
+            .cells
+            .iter()
+            .any(|c| c.target == TargetKind::Mailslurper)
+    );
+    assert!(v4.cost.repetitions.is_empty() && v4.idle.is_empty() && v4.startup.is_empty());
+    // The label row says so too.
+    let label = r
+        .labels
+        .iter()
+        .find(|l| l.target == TargetKind::Mailslurper)
+        .unwrap();
+    assert!(label.does_not_start.is_some());
+}
+
+#[test]
+fn a_v4_report_is_version_3_and_a_v3_report_is_still_version_2() {
+    let r = v4_report(&[(Rep::new(0, (1_000_000, 0), 300), None)]);
+    assert_eq!(r.report_version, 3);
+    assert_eq!(report::REPORT_VERSION_V4, 3);
+    let p3 = Protocol::parse(PROTOCOL_V3).unwrap();
+    let m3 = manifest(&p3, "run-i");
+    let r3 = report::report(&p3, &m3, &[], &life());
+    assert_eq!(r3.report_version, 2);
+    assert_eq!(report::REPORT_VERSION, 2);
+    let j = serde_json::to_value(&r3).unwrap();
+    for key in ["cost", "idle", "startup", "headline", "mib_per_1k_retained"] {
+        assert!(
+            j.get(key).is_none(),
+            "{key} must not appear in a version 2 report"
+        );
+    }
+}
