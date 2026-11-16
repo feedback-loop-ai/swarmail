@@ -3694,3 +3694,719 @@ fn admit_run_still_refuses_a_protocol_4_directory() {
             .contains("needs protocol_version 4")
     );
 }
+
+// ============================================================================
+// T6: collect-v4, with a fake driver and fake systemd-run, systemctl,
+// taskset and timeout on PATH. The script runs from a copy in a scratch git
+// repository, so the candidate's tree is the test's to make clean or dirty.
+// ============================================================================
+
+const FAKE_UNAME: &str = "#!/bin/sh\nif [ \"$1\" = -s ]; then echo \"${FAKE_UNAME:-Linux}\"; else echo \"${FAKE_UNAME:-Linux}\"; fi\n";
+const FAKE_NPROC: &str = "#!/bin/sh\necho \"${FAKE_NPROC:-32}\"\n";
+const FAKE_TASKSET: &str =
+    "#!/bin/bash\necho \"taskset $*\" >> \"$FAKE_LOG\"\nshift 2\nexec \"$@\"\n";
+const FAKE_SYSTEMD_RUN: &str = "#!/bin/bash\necho \"systemd-run $*\" >> \"$FAKE_LOG\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n";
+const FAKE_TIMEOUT: &str = r#"#!/bin/bash
+echo "timeout $*" >> "$FAKE_LOG"
+shift 2
+if [ -s "${FAKE_TIMEOUTS:-/dev/null}" ]; then
+  while read -r coord; do
+    case "$*" in *"--chunk $coord "*|*"--chunk $coord") exit 124 ;; esac
+  done < "$FAKE_TIMEOUTS"
+fi
+exec "$@"
+"#;
+const FAKE_SYSTEMCTL: &str = r#"#!/bin/bash
+echo "systemctl $*" >> "$FAKE_LOG"
+case "$*" in
+  --version) echo "systemd 259 (fake)"; exit 0 ;;
+  *is-active*)
+    unit="${@: -1}"
+    if [ -s "${FAKE_ACTIVE:-/dev/null}" ]; then
+      while read -r coord; do
+        case "$unit" in *"$coord"*) exit 0 ;; esac
+      done < "$FAKE_ACTIVE"
+    fi
+    exit 3 ;;
+esac
+exit 0
+"#;
+const FAKE_DRIVER: &str = r#"#!/bin/bash
+echo "driver $*" >> "$FAKE_LOG"
+case "$1" in
+  check) echo "mail_compare check: ready"; exit 0 ;;
+  targets)
+    case " $* " in *" --plan "*) cat "$FAKE_PLAN" ;; *) cat "$FAKE_TARGETS" ;; esac
+    exit 0 ;;
+  footprint) echo '{"footprint_version":1}'; exit 0 ;;
+  admit-v4) exit "${FAKE_ADMIT_EXIT:-0}" ;;
+  run)
+    out='' chunk=''
+    while [ $# -gt 0 ]; do
+      case "$1" in --output) out="$2" ;; --chunk) chunk="$2" ;; esac
+      shift
+    done
+    how=$(grep "^$chunk " "${FAKE_BEHAVE:-/dev/null}" 2>/dev/null | cut -d' ' -f2)
+    mkdir -p "$out"
+    [ "$how" = noindex ] || echo '{}' > "$out/index.json"
+    case "$how" in noindex|'') exit 0 ;; *) exit "$how" ;; esac ;;
+esac
+exit 2
+"#;
+
+struct V4Rig {
+    root: tempfile::TempDir,
+    plan: Vec<String>,
+}
+
+impl V4Rig {
+    fn repo(&self) -> PathBuf {
+        self.root.path().join("repo")
+    }
+
+    fn out(&self) -> PathBuf {
+        self.root.path().join("out")
+    }
+
+    fn file(&self, name: &str) -> PathBuf {
+        self.root.path().join(name)
+    }
+
+    fn log(&self) -> Vec<String> {
+        std::fs::read_to_string(self.file("log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The competitors the draft declares, as the driver would list them.
+    fn competitors() -> Vec<String> {
+        let p = p4(draft());
+        protocol::declared_competitors(&p)
+            .iter()
+            .map(|t| t.name().to_owned())
+            .collect()
+    }
+
+    /// `collect-v4` with the draft route, every competitor given, and the
+    /// extra environment. Returns (exit code, output).
+    fn run(&self, extra: &[&str], env: &[(&str, &str)]) -> (i32, String) {
+        let mut args: Vec<String> = ["collect-v4", "--output"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        args.push(self.out().display().to_string());
+        for t in Self::competitors() {
+            args.extend(["--bin".to_owned(), format!("{t}=/bin/sh")]);
+        }
+        args.extend(
+            [
+                "--runtime",
+                "greenmail=/never/jre",
+                "--runtime",
+                "alkemio-mailslurper=/never/musl",
+            ]
+            .map(str::to_owned),
+        );
+        args.extend(extra.iter().map(|s| (*s).to_owned()));
+        self.exec(&args, env)
+    }
+
+    fn exec(&self, args: &[String], env: &[(&str, &str)]) -> (i32, String) {
+        let path = format!(
+            "{}:{}",
+            self.file("fake").display(),
+            self.file("tools").display()
+        );
+        let out = std::process::Command::new("bash")
+            .arg(self.repo().join("scripts/compare-mail.sh"))
+            .args(args)
+            .env_clear()
+            .env("PATH", path)
+            .env("HOME", self.root.path())
+            .env("FAKE_LOG", self.file("log"))
+            .env("FAKE_PLAN", self.file("plan"))
+            .env("FAKE_TARGETS", self.file("targets"))
+            .env("COMPARE_MAIL_DRIVER_BIN", self.file("fake/driver"))
+            .env("COMPARE_MAIL_SWARMAIL_BIN", self.file("fake/candidate"))
+            .env("COMPARE_MAIL_BIN_DIR", self.file("frozen"))
+            .envs(env.iter().copied())
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.code().unwrap_or(-1), text)
+    }
+
+    /// The ledger entries that exist, in plan order.
+    fn ledger(&self) -> Vec<Value> {
+        self.plan
+            .iter()
+            .filter_map(|c| std::fs::read(self.out().join("ledger").join(format!("{c}.json"))).ok())
+            .map(|b| json(&b))
+            .collect()
+    }
+}
+
+fn v4_rig() -> V4Rig {
+    let root = fixture();
+    let r = root.path();
+    let plan: Vec<String> = runner::plan_v4(&p4(draft()))
+        .iter()
+        .map(runner::Chunk::name)
+        .collect();
+    for d in ["repo/scripts", "repo/docs/evals/draft", "fake", "tools"] {
+        std::fs::create_dir_all(r.join(d)).unwrap();
+    }
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    std::fs::copy(
+        here.join("scripts/compare-mail.sh"),
+        r.join("repo/scripts/compare-mail.sh"),
+    )
+    .unwrap();
+    for (from, to) in [
+        ("docs/evals/protocol.json", "docs/evals/protocol.json"),
+        (
+            "docs/evals/sources.lock.json",
+            "docs/evals/sources.lock.json",
+        ),
+        (
+            "docs/evals/draft/protocol.v4.json",
+            "docs/evals/draft/protocol.v4.json",
+        ),
+        (
+            "docs/evals/draft/sources.lock.v5.json",
+            "docs/evals/draft/sources.lock.v5.json",
+        ),
+    ] {
+        std::fs::copy(here.join(from), r.join("repo").join(to)).unwrap();
+    }
+    std::fs::write(r.join("plan"), plan.join("\n") + "\n").unwrap();
+    std::fs::write(r.join("targets"), V4Rig::competitors().join("\n") + "\n").unwrap();
+    for (name, body) in [
+        ("uname", FAKE_UNAME),
+        ("nproc", FAKE_NPROC),
+        ("taskset", FAKE_TASKSET),
+        ("systemd-run", FAKE_SYSTEMD_RUN),
+        ("timeout", FAKE_TIMEOUT),
+        ("systemctl", FAKE_SYSTEMCTL),
+        ("driver", FAKE_DRIVER),
+        ("candidate", "#!/bin/sh\nexit 0\n"),
+    ] {
+        let p = r.join("fake").join(name);
+        std::fs::write(&p, body).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    // The real tools the script itself needs, and nothing else: a tool the
+    // test leaves out is genuinely missing.
+    for tool in [
+        "bash",
+        "sh",
+        "sed",
+        "grep",
+        "tr",
+        "cut",
+        "git",
+        "date",
+        "cat",
+        "head",
+        "wc",
+        "mkdir",
+        "rmdir",
+        "dirname",
+        "basename",
+        "realpath",
+        "sha256sum",
+        "cp",
+        "chmod",
+        "mv",
+        "rm",
+        "awk",
+        "sort",
+        "env",
+    ] {
+        if let Some(found) = std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+            .map(|d| d.join(tool))
+            .find(|p| p.exists())
+        {
+            let _ = std::os::unix::fs::symlink(found, r.join("tools").join(tool));
+        }
+    }
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .current_dir(r.join("repo"))
+            .args([
+                "-c",
+                "user.email=t@example.invalid",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "fixture"]);
+    V4Rig { root, plan }
+}
+
+#[test]
+fn collect_v4_dry_run_prints_24_commands_in_plan_order_and_starts_nothing() {
+    let rig = v4_rig();
+    let draft_route = [
+        "--protocol",
+        "docs/evals/draft/protocol.v4.json",
+        "--sources",
+        "docs/evals/draft/sources.lock.v5.json",
+        "--documents",
+        "docs/evals",
+    ];
+    let mut extra = draft_route.to_vec();
+    extra.push("--dry-run");
+    let (code, text) = rig.run(&extra, &[]);
+    assert_eq!(code, 0, "{text}");
+    let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("cost.")).collect();
+    assert_eq!(lines.len(), 24, "{text}");
+    for (line, coord) in lines.iter().zip(&rig.plan) {
+        assert!(
+            line.starts_with(&format!("{coord}\t")),
+            "{line} should be {coord}"
+        );
+        assert!(line.contains("timeout --kill-after=30 600 taskset -c 0-7 systemd-run --user --scope -p Delegate=yes"), "{line}");
+        assert!(line.contains(&format!("--chunk {coord} ")), "{line}");
+    }
+    // Nothing was launched, written or built.
+    assert!(!rig.out().exists());
+    let log = rig.log();
+    let reads = |l: &String| l.starts_with("driver targets") || l == "systemctl --version";
+    assert!(
+        log.iter().all(reads),
+        "only the plan and the version were read: {log:?}"
+    );
+    // Not even the clean tree is demanded of a dry run.
+    std::fs::write(rig.repo().join("scratch.txt"), "dirty").unwrap();
+    let (code, text) = rig.run(&extra, &[]);
+    assert_eq!(code, 0, "{text}");
+}
+
+#[test]
+fn collect_v4_refuses_the_default_protocol_and_names_the_draft_route() {
+    let rig = v4_rig();
+    let (code, text) = rig.run(&[], &[]);
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("blocked at phase \"protocol\""), "{text}");
+    assert!(
+        text.contains("collect-v4 needs a protocol_version 4 protocol"),
+        "{text}"
+    );
+    assert!(text.contains("--protocol docs/evals/draft/protocol.v4.json --sources docs/evals/draft/sources.lock.v5.json --documents docs/evals"), "{text}");
+    assert!(rig.log().is_empty() && !rig.out().exists());
+}
+
+#[test]
+fn collect_v4_names_each_preflight_refusal() {
+    let route = [
+        "--protocol",
+        "docs/evals/draft/protocol.v4.json",
+        "--sources",
+        "docs/evals/draft/sources.lock.v5.json",
+        "--documents",
+        "docs/evals",
+    ];
+    // A tool that is not on PATH.
+    for tool in ["systemd-run", "systemctl", "taskset", "timeout"] {
+        let rig = v4_rig();
+        std::fs::remove_file(rig.file("fake").join(tool)).unwrap();
+        let (code, text) = rig.run(&route, &[]);
+        assert_eq!(code, 2, "{tool}: {text}");
+        assert!(
+            text.contains(&format!("collect-v4 needs {tool} on PATH")),
+            "{text}"
+        );
+        assert!(rig.log().is_empty(), "nothing ran: {tool}");
+    }
+    // An existing --output.
+    let rig = v4_rig();
+    std::fs::create_dir(rig.out()).unwrap();
+    let (code, text) = rig.run(&route, &[]);
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("--output exists; runs are never overwritten or resumed"),
+        "{text}"
+    );
+    // Too few CPUs in min(nproc/4, 32): 8 gives 2.
+    let rig = v4_rig();
+    let (code, text) = rig.run(&route, &[("FAKE_NPROC", "8")]);
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("at least 3 CPUs in min(nproc/4, 32), and nproc 8 gives 2"),
+        "{text}"
+    );
+    // 12 is the least that is enough; 4096 is capped at 32 CPUs.
+    let rig = v4_rig();
+    let mut dry = route.to_vec();
+    dry.push("--dry-run");
+    let (code, text) = rig.run(&dry, &[("FAKE_NPROC", "12")]);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("taskset -c 0-2 "), "{text}");
+    let (_, text) = rig.run(&dry, &[("FAKE_NPROC", "4096")]);
+    assert!(
+        text.contains("taskset -c 0-31 ") && !text.contains("0-32"),
+        "{text}"
+    );
+    // A dirty candidate, in a real run only.
+    let rig = v4_rig();
+    std::fs::write(rig.repo().join("untracked.txt"), "x").unwrap();
+    let (code, text) = rig.run(&route, &[]);
+    assert_eq!(code, 2);
+    assert!(text.contains("the candidate tree is dirty"), "{text}");
+    assert!(
+        !rig.out().exists() && rig.log().is_empty(),
+        "{:?}",
+        rig.log()
+    );
+    // An uncommitted candidate.
+    let rig = v4_rig();
+    std::fs::remove_dir_all(rig.repo().join(".git")).unwrap();
+    let (code, text) = rig.run(&route, &[]);
+    assert_eq!(code, 2);
+    assert!(text.contains("not a committed git checkout"), "{text}");
+    // A competitor with no --bin is the existing refusal, by name.
+    let rig = v4_rig();
+    let args: Vec<String> = ["collect-v4", "--output", rig.out().to_str().unwrap()]
+        .iter()
+        .chain(route.iter())
+        .map(|s| (*s).to_owned())
+        .collect();
+    let (code, text) = rig.exec(&args, &[]);
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("the protocol declares mailpit; pass --bin mailpit=PATH"),
+        "{text}"
+    );
+    // Not Linux: the one mode that refuses by platform.
+    let rig = v4_rig();
+    let (code, text) = rig.run(&route, &[("FAKE_UNAME", "Darwin")]);
+    assert_eq!(code, 2);
+    assert!(
+        text.contains("collect-v4 runs on Linux with delegated cgroup v2 only"),
+        "{text}"
+    );
+}
+
+const DRAFT_ROUTE: [&str; 6] = [
+    "--protocol",
+    "docs/evals/draft/protocol.v4.json",
+    "--sources",
+    "docs/evals/draft/sources.lock.v5.json",
+    "--documents",
+    "docs/evals",
+];
+
+fn chunk_lines(log: &[String], prefix: &str) -> Vec<String> {
+    log.iter()
+        .filter(|l| l.starts_with(prefix))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn collect_v4_nests_timeout_taskset_then_the_scope() {
+    let rig = v4_rig();
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 0, "{text}");
+    let log = rig.log();
+    // The first chunk's four commands, in nesting order.
+    let first = log
+        .iter()
+        .position(|l| l.starts_with("timeout ") && l.contains("--chunk cost.swarmail.r0"))
+        .unwrap();
+    let kinds: Vec<&str> = log[first..first + 4]
+        .iter()
+        .map(|l| l.split(' ').next().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["timeout", "taskset", "systemd-run", "driver"],
+        "{:?}",
+        &log[first..first + 4]
+    );
+    assert!(log[first].starts_with("timeout --kill-after=30 600 taskset -c 0-7 systemd-run --user --scope -p Delegate=yes --unit=mail-compare-"), "{}", log[first]);
+    assert!(
+        log[first + 1].starts_with("taskset -c 0-7 systemd-run --user --scope"),
+        "{}",
+        log[first + 1]
+    );
+    assert!(
+        log[first + 2]
+            .starts_with("systemd-run --user --scope -p Delegate=yes --unit=mail-compare-"),
+        "{}",
+        log[first + 2]
+    );
+    let run = &log[first + 3];
+    assert!(
+        run.starts_with("driver run --mode collect --protocol docs/evals/draft/protocol.v4.json"),
+        "{run}"
+    );
+    assert!(
+        run.contains("--run-id collect-v4-")
+            && run.contains("--commit ")
+            && run.contains("--dirty false"),
+        "{run}"
+    );
+    assert!(run.contains("--systemd systemd 259 (fake)"), "{run}");
+    // A chunk is given its own target's bytes and no other's.
+    assert!(
+        run.contains("--bin swarmail=") && !run.contains("--bin mailpit="),
+        "{run}"
+    );
+    let mailpit = log
+        .iter()
+        .find(|l| l.starts_with("driver run") && l.contains("--chunk cost.mailpit.r0"))
+        .unwrap();
+    assert!(
+        mailpit.contains("--bin mailpit=/bin/sh") && !mailpit.contains("--bin swarmail="),
+        "{mailpit}"
+    );
+    let jre = log
+        .iter()
+        .find(|l| l.starts_with("driver run") && l.contains("--chunk cost.greenmail.r0"))
+        .unwrap();
+    assert!(jre.contains("--runtime greenmail=/never/jre"), "{jre}");
+    // Every chunk is bounded the same way, in its own scope.
+    let units: std::collections::BTreeSet<&str> = log
+        .iter()
+        .filter(|l| l.starts_with("systemd-run "))
+        .map(|l| l.split(' ').find(|w| w.starts_with("--unit=")).unwrap())
+        .collect();
+    assert_eq!(units.len(), 24, "one scope per chunk");
+    assert!(chunk_lines(&log, "timeout --kill-after=30 600").len() >= 24);
+}
+
+#[test]
+fn collect_v4_stops_on_a_chunk_exit_two() {
+    let rig = v4_rig();
+    std::fs::write(rig.file("behave"), "cost.mailhog.r0 2\n").unwrap();
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[("FAKE_BEHAVE", rig.file("behave").to_str().unwrap())],
+    );
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("blocked at phase \"chunk-cost.mailhog.r0\""),
+        "{text}"
+    );
+    assert!(
+        text.contains("is incomplete and is never resumed"),
+        "{text}"
+    );
+    let ledger = rig.ledger();
+    assert_eq!(
+        ledger.len(),
+        3,
+        "swarmail, mailpit and the chunk that failed"
+    );
+    assert_eq!(ledger[2]["coordinate"], "cost.mailhog.r0");
+    assert_eq!(ledger[2]["exit"], 2);
+    let log = rig.log();
+    assert!(
+        chunk_lines(&log, "driver run").len() == 3,
+        "no later chunk started: {log:?}"
+    );
+    assert!(
+        chunk_lines(&log, "driver admit-v4").is_empty(),
+        "an incomplete run is never admitted"
+    );
+    // Nothing was removed: the sealed chunks stay where they are.
+    assert!(
+        rig.out()
+            .join("chunks/cost.swarmail.r0/index.json")
+            .is_file()
+    );
+}
+
+#[test]
+fn collect_v4_counts_a_timeout_as_two() {
+    let rig = v4_rig();
+    std::fs::write(rig.file("timeouts"), "cost.mailpit.r0\n").unwrap();
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[("FAKE_TIMEOUTS", rig.file("timeouts").to_str().unwrap())],
+    );
+    assert_eq!(code, 2, "{text}");
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 2);
+    assert_eq!(
+        (ledger[1]["coordinate"].as_str(), ledger[1]["exit"].as_i64()),
+        (Some("cost.mailpit.r0"), Some(2))
+    );
+    assert!(
+        chunk_lines(&rig.log(), "driver run").len() == 1,
+        "the timed-out chunk never ran its driver"
+    );
+}
+
+#[test]
+fn collect_v4_counts_a_sealless_exit_zero_as_two() {
+    let rig = v4_rig();
+    std::fs::write(rig.file("behave"), "cost.swarmail.r0 noindex\n").unwrap();
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[("FAKE_BEHAVE", rig.file("behave").to_str().unwrap())],
+    );
+    assert_eq!(code, 2, "{text}");
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(
+        ledger[0]["exit"], 2,
+        "an exit 0 with no completion index was never sealed"
+    );
+    assert_eq!(ledger[0]["scope_clean"], true);
+}
+
+#[test]
+fn collect_v4_stops_a_scope_that_outlives_its_chunk_and_counts_two() {
+    let rig = v4_rig();
+    std::fs::write(rig.file("active"), "cost.mailpit.r0\n").unwrap();
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[("FAKE_ACTIVE", rig.file("active").to_str().unwrap())],
+    );
+    assert_eq!(code, 2, "{text}");
+    let log = rig.log();
+    let kill = log
+        .iter()
+        .position(|l| {
+            l.starts_with("systemctl --user kill mail-compare-") && l.contains("cost.mailpit.r0")
+        })
+        .expect("the scope was killed");
+    assert!(
+        log[kill + 1].starts_with("systemctl --user stop mail-compare-"),
+        "then stopped: {log:?}"
+    );
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 2);
+    assert_eq!(
+        (
+            ledger[1]["exit"].as_i64(),
+            ledger[1]["scope_clean"].as_bool()
+        ),
+        (Some(2), Some(false))
+    );
+    assert_eq!(chunk_lines(&log, "driver run").len(), 2, "no later chunk");
+}
+
+#[test]
+fn collect_v4_full_fake_run_writes_24_ledgers_seals_and_verifies() {
+    let rig = v4_rig();
+    std::fs::write(rig.file("behave"), "cost.smtp4dev.r1 1\n").unwrap();
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[("FAKE_BEHAVE", rig.file("behave").to_str().unwrap())],
+    );
+    assert_eq!(
+        code, 1,
+        "a chunk that exited 1 makes the run exit 1: {text}"
+    );
+    assert!(
+        text.contains("wrote") && text.contains("(24 chunks)"),
+        "{text}"
+    );
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 24);
+    let coords: std::collections::BTreeSet<&str> = ledger
+        .iter()
+        .map(|e| e["coordinate"].as_str().unwrap())
+        .collect();
+    assert_eq!(coords, rig.plan.iter().map(String::as_str).collect());
+    for e in &ledger {
+        assert!(
+            matches!(e["exit"].as_i64(), Some(0 | 1)) && e["scope_clean"] == true,
+            "{e}"
+        );
+        assert!(
+            e["command"].as_str().unwrap().contains("systemd-run"),
+            "{e}"
+        );
+        assert!(
+            e["load_before"].is_string() && e["load_after"].is_string() && e["wall_ms"].is_u64()
+        );
+    }
+    assert_eq!(ledger.iter().filter(|e| e["exit"] == 1).count(), 1);
+    // The plan's order is the order they ran in.
+    let ran: Vec<String> = chunk_lines(&rig.log(), "driver run")
+        .iter()
+        .map(|l| {
+            l.split("--chunk ")
+                .nth(1)
+                .unwrap()
+                .split(' ')
+                .next()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(ran, rig.plan);
+    let repro = std::fs::read_to_string(rig.out().join("reproduce.txt")).unwrap();
+    assert!(
+        repro.starts_with("scripts/compare-mail.sh collect-v4 --output "),
+        "{repro}"
+    );
+    assert!(
+        repro.contains("--protocol docs/evals/draft/protocol.v4.json"),
+        "{repro}"
+    );
+    assert!(rig.out().join("footprint.json").is_file());
+    // Sealed, then verified, in that order and after every chunk.
+    let log = rig.log();
+    let admits = chunk_lines(&log, "driver admit-v4");
+    assert_eq!(admits.len(), 2, "{admits:?}");
+    assert!(
+        admits[0].starts_with("driver admit-v4 --seal ") && !admits[1].contains("--seal"),
+        "{admits:?}"
+    );
+    let last_run = log
+        .iter()
+        .rposition(|l| l.starts_with("driver run"))
+        .unwrap();
+    let first_admit = log
+        .iter()
+        .position(|l| l.starts_with("driver admit-v4"))
+        .unwrap();
+    assert!(last_run < first_admit);
+    assert!(
+        admits[0].contains("--bin swarmail=") && admits[0].contains("--bin mailpit=/bin/sh"),
+        "{admits:?}"
+    );
+    // The scratch root is gone.
+    assert!(!rig.file("out.scratch").exists());
+    // All chunks exiting 0 is exit 0; an admission that refuses is exit 2.
+    let rig = v4_rig();
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 0, "{text}");
+    let rig = v4_rig();
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[("FAKE_ADMIT_EXIT", "2")]);
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("blocked at phase \"admission\""), "{text}");
+}
+
+#[test]
+fn collect_v4_usage_names_the_mode() {
+    let root = fixture();
+    let (code, text) = compare_mail(&[], &root.path().join("w"));
+    assert_eq!(code, 2);
+    assert!(text.contains("compare-mail.sh collect-v4"), "{text}");
+    assert!(text.contains("Linux only"), "{text}");
+}
