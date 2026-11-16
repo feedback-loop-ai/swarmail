@@ -52,6 +52,8 @@ use std::time::{Duration, Instant};
 
 #[path = "mail_compare/eight_targets.rs"]
 mod eight_targets;
+#[path = "mail_compare/v4.rs"]
+mod v4;
 
 const SMOKE: &[u8] = include_bytes!("mail_compare/swarmail-smoke.json");
 const SMOKE_LOCK: &[u8] = include_bytes!("mail_compare/swarmail-only.lock.json");
@@ -60,9 +62,14 @@ const SMOKE_LOCK: &[u8] = include_bytes!("mail_compare/swarmail-only.lock.json")
 /// proving them (proposed decision 0130 keeps both readable and launchable).
 const PROTOCOL: &[u8] = include_bytes!("../docs/evals/history/2026-10-30-protocol.v2.json");
 const SOURCES: &[u8] = include_bytes!("../docs/evals/history/2026-10-30-sources.lock.v3.json");
-/// The current records: protocol 3 and lock 4.
-const PROTOCOL_V3: &[u8] = include_bytes!("../docs/evals/protocol.json");
-const SOURCES_V4: &[u8] = include_bytes!("../docs/evals/sources.lock.json");
+/// Protocol 3 and lock 4, from their history copies (accepted decision 0132
+/// §1.4): they are byte-identical to the active files until the v4 freeze
+/// swaps those, and every test that means "v3" or "lock 4" reads the copy.
+const PROTOCOL_V3: &[u8] = include_bytes!("../docs/evals/history/2026-11-07-protocol.v3.json");
+const SOURCES_V4: &[u8] = include_bytes!("../docs/evals/history/2026-11-07-sources.lock.v4.json");
+/// The active records, which are still protocol 3 and lock 4.
+const ACTIVE_PROTOCOL: &[u8] = include_bytes!("../docs/evals/protocol.json");
+const ACTIVE_SOURCES: &[u8] = include_bytes!("../docs/evals/sources.lock.json");
 
 /// Characters beyond `[A-Za-z0-9._-]` that MailHog's own ids carry in the wire
 /// corpus: `=` and `@` (`<base64url, padded>@mailhog.example`). Only the
@@ -593,7 +600,7 @@ fn a_built_from_claim_or_a_draft_or_an_unlisted_enforcement_refuses_collection()
     let why = refusals(protocol::collection_ready(&draft, &s));
     for expected in [
         "protocol is a draft, not frozen",
-        "protocol version 1 is a historical draft; only versions 2 and 3 collect",
+        "protocol version 1 is a historical draft; only versions 2, 3 and 4 collect",
         "unresolved: binary build provenance",
         "mailpit: best wait unresolved: no route, producer",
         "mailpit does not store in memory",
@@ -1099,11 +1106,11 @@ fn the_source_lock_refuses_mutable_foreign_false_and_incomplete_pins() {
         "an unknown field never parses"
     );
     let mut v = json(SOURCES);
-    v["lock_version"] = 5.into();
+    v["lock_version"] = 6.into();
     v["checked_on"] = "today".into();
     let why = refusals(lock_from(v).unwrap().validate());
     assert!(
-        why.contains("lock_version 5 is not 3 or 4") && why.contains("checked_on"),
+        why.contains("lock_version 6 is not 3, 4 or 5") && why.contains("checked_on"),
         "{why}"
     );
     // A complete pin alone does not admit a draft protocol.
@@ -4994,8 +5001,10 @@ async fn cancelling_one_batch_member_cancels_only_that_member() {
 
 #[test]
 fn the_mailpit_tool_list_digest_is_the_one_protocol_v2_froze() {
-    let protocol: serde_json::Value =
-        serde_json::from_slice(&std::fs::read("docs/evals/protocol.json").unwrap()).unwrap();
+    let protocol: serde_json::Value = serde_json::from_slice(
+        &std::fs::read("docs/evals/history/2026-11-07-protocol.v3.json").unwrap(),
+    )
+    .unwrap();
     let frozen = protocol["budgets"]["adapter"]["tools_sha256"]
         .as_str()
         .unwrap();
@@ -5396,8 +5405,10 @@ async fn launch_mode_is_not_a_receipt_when_cleanup_is_forced_to_fail() {
 
 #[test]
 fn launch_mode_uses_the_deadlines_protocol_v2_froze() {
-    let protocol: serde_json::Value =
-        serde_json::from_slice(&std::fs::read("docs/evals/protocol.json").unwrap()).unwrap();
+    let protocol: serde_json::Value = serde_json::from_slice(
+        &std::fs::read("docs/evals/history/2026-11-07-protocol.v3.json").unwrap(),
+    )
+    .unwrap();
     let r = &protocol["resources"];
     let l = mcp::launch_limits();
     assert_eq!(l.startup.as_millis() as u64, r["startup_deadline_ms"]);

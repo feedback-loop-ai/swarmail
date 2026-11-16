@@ -4565,6 +4565,10 @@ fn frozen_v3_and_lock_v4_bytes_are_the_recorded_ones() {
     // a change is a new protocol version, never an edit.
     assert_eq!(sha(PROTOCOL_V3), FROZEN_PROTOCOL_V3_SHA);
     assert_eq!(sha(SOURCES_V4), FROZEN_LOCK_V4_SHA);
+    // The history copies are the frozen bytes, and so are the active files
+    // until the v4 freeze swaps them (decision 0132 §1.4).
+    assert_eq!(sha(ACTIVE_PROTOCOL), FROZEN_PROTOCOL_V3_SHA);
+    assert_eq!(sha(ACTIVE_SOURCES), FROZEN_LOCK_V4_SHA);
     // The history bytes keep their digests.
     assert_eq!(sha(PROTOCOL), V2_PROTOCOL_SHA);
     assert_eq!(sha(SOURCES), V3_LOCK_SHA);
