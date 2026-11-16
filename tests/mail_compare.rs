@@ -4449,10 +4449,12 @@ async fn real_mailpit_through_the_adapter_lists_searches_reads_and_waits_faithfu
     );
 
     // Waits: present, future and empty, each answered after complete scans.
+    // A present mail ends the wait on its first scan; the timeout only has to
+    // outlast a loaded host (verify runs beside other gates).
     let v = call(
         &mut c,
         "mailpit_wait",
-        serde_json::json!({"query": corpus[2].token, "timeout_ms": 5000}),
+        serde_json::json!({"query": corpus[2].token, "timeout_ms": 15000}),
     )
     .await;
     assert_eq!(
@@ -5306,7 +5308,7 @@ async fn the_mailhog_adapter_lists_searches_and_waits_over_real_smtp_into_swarma
         .tool(
             4,
             "mailhog_wait",
-            serde_json::json!({"kind": "containing", "query": "hog-one", "timeout_ms": 5000}),
+            serde_json::json!({"kind": "containing", "query": "hog-one", "timeout_ms": 15000}),
         )
         .await;
     assert!(!e, "{hit}");
@@ -5317,7 +5319,8 @@ async fn the_mailhog_adapter_lists_searches_and_waits_over_real_smtp_into_swarma
         .tool(
             5,
             "mailhog_wait",
-            serde_json::json!({"kind": "containing", "query": "never-sent", "timeout_ms": 300}),
+            // Long enough for two scans even on a loaded host.
+            serde_json::json!({"kind": "containing", "query": "never-sent", "timeout_ms": 2000}),
         )
         .await;
     assert!(
@@ -5488,7 +5491,7 @@ async fn real_mailhog_through_the_adapter_lists_searches_and_waits() {
     let found = call(
         &mut c,
         "mailhog_wait",
-        serde_json::json!({"kind": "containing", "query": "hogtoken-one", "timeout_ms": 5000}),
+        serde_json::json!({"kind": "containing", "query": "hogtoken-one", "timeout_ms": 15000}),
     )
     .await;
     assert_eq!(found["status"], "found", "{found}");
@@ -7302,7 +7305,7 @@ async fn real_mailslurper_through_the_adapter_lists_searches_reads_and_waits() {
     let found = call(
         &mut c,
         "mailslurper_wait",
-        serde_json::json!({"message": "slurptoken-one", "timeout_ms": 5000}),
+        serde_json::json!({"message": "slurptoken-one", "timeout_ms": 15000}),
     )
     .await;
     assert_eq!(found["status"], "found", "{found}");
