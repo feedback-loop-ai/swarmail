@@ -982,6 +982,29 @@ impl Store {
         out
     }
 
+    /// `(inbox, count, last_received_ms)` sorted by name (decision 0132 §7).
+    /// The stamp is the `received_ms` of the mail most recently stored, the
+    /// back of the deque: inserts push back and pruning pops the front, so
+    /// it is one O(1) read per inbox under the same shard lock `inboxes`
+    /// takes. `None` only if the inbox is empty at the read. It is the
+    /// server's ingest stamp, never a header date, and is never persisted.
+    pub fn inbox_summaries(&self) -> Vec<(String, usize, Option<i64>)> {
+        let mut out: Vec<(String, usize, Option<i64>)> = self
+            .inboxes
+            .iter()
+            .map(|e| {
+                let mails = e.value();
+                (
+                    e.key().clone(),
+                    mails.len(),
+                    mails.back().map(|mail| mail.received_ms),
+                )
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
     /// Whether `name` is a live inbox — one map lookup (issue #86). POP3's
     /// `USER` and `PASS` ask exactly this; enumerating and sorting every
     /// name through [`Store::inboxes`] to answer it scaled with the inbox
@@ -1278,6 +1301,42 @@ mod tests {
         assert!(!store.has_inbox("other"));
         assert!(store.delete("1").unwrap());
         assert!(!store.has_inbox("pop"));
+    }
+
+    /// The inbox summary carries the stamp of the mail most recently
+    /// stored (decision 0132 §7): after two inserts the second's, under a
+    /// cap of 1 the survivor's, and after a clear the inbox is absent.
+    #[test]
+    fn inbox_summaries_carry_the_newest_retained_stamp() {
+        let store = Store::new(1);
+        assert!(store.inbox_summaries().is_empty());
+        let mut first = email("1", "box", "a@x.io");
+        first.received_ms = 100;
+        let _ = store.insert(first);
+        assert_eq!(
+            store.inbox_summaries(),
+            vec![("box".to_string(), 1, Some(100))]
+        );
+        let mut second = email("2", "box", "a@x.io");
+        second.received_ms = 200;
+        let _ = store.insert(second);
+        assert_eq!(
+            store.inbox_summaries(),
+            vec![("box".to_string(), 1, Some(200))],
+            "the cap evicted the oldest; the survivor's stamp is served"
+        );
+        let mut other = email("3", "aaa", "a@x.io");
+        other.received_ms = 50;
+        let _ = store.insert(other);
+        let names: Vec<_> = store
+            .inbox_summaries()
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect();
+        assert_eq!(names, ["aaa", "box"], "sorted by name");
+        store.clear("box").unwrap();
+        store.clear("aaa").unwrap();
+        assert!(store.inbox_summaries().is_empty());
     }
 
     /// Pruning follows acceptance order, never the timestamp (decision

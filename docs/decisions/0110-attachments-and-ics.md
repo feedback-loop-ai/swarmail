@@ -282,3 +282,7 @@ nothing beyond the acceptance.
   0108 §5, which the reconciliation left "the operator's to amend".
 - **`ring` is left unruled.** The optional ruling §5 offers, making `ring` a
   direct dependency of the root crate, is not part of this acceptance.
+
+## Dated pointer — 2026-11-16 (proposed 0132)
+
+Proposed [0132](0132-ui-projection-route.md) §1 amends §7 of this record: "No REST route" becomes one REST route, `GET /api/v1/messages/{id}/projection`, that serves the attachment list's filenames, content types, sizes and calendar summary and times. It serves no bytes and no hash, and `Email.attachments` stays `#[serde(skip)]`. It is a proposal until the operator accepts it; this record's ruling stands as written until then.

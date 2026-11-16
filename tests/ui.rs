@@ -976,3 +976,570 @@ async fn smtp_thread_headers_extract_ids_at_ingest() {
         .collect();
     assert_eq!(refs, vec!["ancestor@x.io", "root@x.io"], "{mail}");
 }
+
+// ---------- the run console (issue #355, proposed decision 0132) ----------
+//
+// No JavaScript engine runs in any gate, so the script is asserted on the
+// bytes the server hands out; what only a browser can show is listed in
+// `specs/web-ui-run-console/spec.md` under "Not gate-provable".
+
+const POLICY: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:";
+
+/// The three console routes for `inbox`, as `(path, served page)`. The
+/// thread route needs a real key, so the inbox must hold a mail.
+async fn console_pages(
+    addr: std::net::SocketAddr,
+    inbox: &str,
+    key: &str,
+) -> Vec<(String, String)> {
+    let mut pages = Vec::new();
+    for path in [
+        "/".to_string(),
+        format!("/ui/inbox/{inbox}"),
+        format!("/ui/inbox/{inbox}/thread/{key}"),
+    ] {
+        let (st, page) = http_get_text(addr, &path).await;
+        assert_eq!(st, 200, "{path}");
+        pages.push((path, page));
+    }
+    pages
+}
+
+/// Seed one mail and return the key of the thread it opened.
+async fn seeded_thread_key(addr: std::net::SocketAddr, inbox: &str) -> String {
+    seed(addr, inbox, r#"{"to": "u@x.io", "subject": "console"}"#).await;
+    let path = format!("/api/v1/inboxes/{inbox}/threads");
+    let (_, threads) = http_json(addr, "GET", &path, None).await;
+    threads[0]["key"].as_str().unwrap().to_string()
+}
+
+/// The served script of a console page.
+async fn served_script(addr: std::net::SocketAddr) -> String {
+    let (_, page) = http_get_text(addr, "/ui/inbox/script").await;
+    the_executable_script(&page).to_string()
+}
+
+/// The inner text of the page's one `<style>` element.
+fn style_element(page: &str) -> &str {
+    let open = page.find("<style>").expect("a style element") + "<style>".len();
+    let end = page[open..].find("</style>").expect("the style ends");
+    &page[open..open + end]
+}
+
+/// `css` from the `{` after `head` to its matching `}`, braces balanced.
+fn block_after<'a>(css: &'a str, head: &str) -> &'a str {
+    let start = css
+        .find(head)
+        .unwrap_or_else(|| panic!("no {head} in the style"));
+    let open = start + css[start..].find('{').unwrap();
+    let mut depth = 0usize;
+    for (i, c) in css[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &css[open + 1..open + i];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("{head} never closes");
+}
+
+fn squeezed(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// AC1, AC4 (ids): `/`, an inbox and a thread all serve one page: a status
+/// bar over three panes, one script element, and the pane the server picks.
+#[tokio::test]
+async fn every_console_route_serves_the_three_panes_under_one_status_bar() {
+    let srv = start().await;
+    let key = seeded_thread_key(srv.http_addr, "panes").await;
+    for (path, page) in console_pages(srv.http_addr, "panes", &key).await {
+        for id in [
+            "id=\"status\"",
+            "id=\"panes\"",
+            "id=\"inboxes\"",
+            "id=\"stream\"",
+            "id=\"reader\"",
+            "id=\"view\"",
+            "id=\"listener-smtp\"",
+            "id=\"listener-pop3\"",
+            "id=\"listener-http\"",
+            "id=\"count-accepted\"",
+            "id=\"count-dropped\"",
+            "id=\"chaos\"",
+            "id=\"live\"",
+        ] {
+            assert!(page.contains(id), "{path} lacks {id}");
+        }
+        assert_eq!(script_elements(&page).len(), 1, "{path}");
+        let pane = if path == "/" { "inboxes" } else { "stream" };
+        assert!(
+            page.contains(&format!("<main id=\"panes\" data-pane=\"{pane}\">")),
+            "{path}: {pane}"
+        );
+    }
+    // `#view` keeps its two data attributes; on `/` the inbox is empty.
+    let (_, root) = http_get_text(srv.http_addr, "/").await;
+    assert!(root.contains(r#"data-inbox="""#), "{root}");
+    let (_, page) = http_get_text(srv.http_addr, &format!("/ui/inbox/panes/thread/{key}")).await;
+    assert!(
+        page.contains(r#"data-inbox="panes" data-thread=""#),
+        "{page}"
+    );
+}
+
+/// AC9 (attributes): the rail names the page the server validated, marks the
+/// open inbox and only that one.
+#[tokio::test]
+async fn the_rail_carries_its_page_and_marks_the_open_inbox() {
+    let srv = start().await;
+    for inbox in ["pg-a", "pg-b", "pg-c"] {
+        seed(srv.http_addr, inbox, r#"{"to": "u@x.io"}"#).await;
+    }
+    let (_, page) = http_get_text(srv.http_addr, "/?limit=1&offset=1").await;
+    assert_eq!(attr(&page, "data-limit"), "1");
+    assert_eq!(attr(&page, "data-offset"), "1");
+    let (_, page) = http_get_text(srv.http_addr, "/ui/inbox/pg-b").await;
+    assert_eq!(attr(&page, "data-limit"), "100");
+    assert_eq!(attr(&page, "data-offset"), "0");
+    assert!(
+        page.contains(r#"<a class="inbox" href="/ui/inbox/pg%2Db" aria-current="true">"#),
+        "the open inbox is marked: {page}"
+    );
+    for other in ["pg%2Da", "pg%2Dc"] {
+        assert!(
+            page.contains(&format!(r#"<a class="inbox" href="/ui/inbox/{other}">"#)),
+            "{other} is a plain link: {page}"
+        );
+    }
+    assert_eq!(page.matches("aria-current=\"true\">").count(), 1, "{page}");
+}
+
+/// AC10: the server chooses the empty sentence; the script only toggles it.
+#[tokio::test]
+async fn the_no_inboxes_sentence_is_chosen_by_the_server() {
+    let srv = start().await;
+    for (path, page) in console_pages(srv.http_addr, "nothing", "k").await {
+        assert!(page.contains("No inboxes yet"), "{path}");
+        assert!(
+            page.contains(r#"id="inbox-empty">"#),
+            "{path}: shown, not hidden"
+        );
+    }
+    let key = seeded_thread_key(srv.http_addr, "something").await;
+    for (path, page) in console_pages(srv.http_addr, "something", &key).await {
+        assert!(!page.contains("No inboxes yet"), "{path}");
+        assert!(
+            page.contains(r#"id="inbox-empty" hidden>"#),
+            "{path}: hidden"
+        );
+    }
+    let script = served_script(srv.http_addr).await;
+    assert!(script.contains("No inbox matches."));
+    assert!(script.contains("Inboxes unavailable — retrying"));
+    assert!(
+        !script.contains("No inboxes"),
+        "the script holds neither sentence"
+    );
+}
+
+/// AC7: the demo-only controls of the prototype are not here.
+#[tokio::test]
+async fn the_console_ships_no_demo_controls() {
+    let srv = start().await;
+    let key = seeded_thread_key(srv.http_addr, "demo").await;
+    for (path, page) in console_pages(srv.http_addr, "demo", &key).await {
+        for demo in ["Send sample mail", "Sample data", "aria-pressed"] {
+            assert!(!page.contains(demo), "{path} ships {demo}");
+        }
+        assert!(
+            page.contains(r#"<span class="chip chaos-unknown" id="chaos">"#),
+            "{path}: the chaos state is a read-only span"
+        );
+        assert!(!page.contains("<button class=\"chip"), "{path}");
+    }
+}
+
+/// AC4 (script): the status bar reads the health body before the code, the
+/// chaos state read-only, and the live indicator follows the feed.
+#[tokio::test]
+async fn the_status_bar_is_wired_to_healthz_chaos_and_the_feed() {
+    let srv = start().await;
+    let script = served_script(srv.http_addr).await;
+    for needle in [
+        "'/healthz'",
+        "degraded",
+        "stopping",
+        "emails_inserted_total",
+        "emails_dropped_total",
+        "'/api/v1/chaos'",
+        "Chaos unknown",
+        "Reconnecting",
+        "Offline",
+        "Idle",
+    ] {
+        assert!(script.contains(needle), "the script lacks {needle}");
+    }
+}
+
+/// AC9 (script): the rail polls its own page, never reads the query string,
+/// and the whole page opens one feed.
+#[tokio::test]
+async fn the_rail_polls_its_own_page_and_opens_one_feed() {
+    let srv = start().await;
+    let script = served_script(srv.http_addr).await;
+    assert!(script.contains("'/api/v1/inboxes?limit='"));
+    assert!(script.contains("dataset.limit") && script.contains("dataset.offset"));
+    assert!(!script.contains("location.search"));
+    assert_eq!(script.matches("new EventSource(").count(), 1);
+    assert!(script.contains("sessionStorage"));
+}
+
+/// AC11, AC12: each enrichment route is named once, never with the opt-in
+/// link probe, and the existing wiring assertions still hold.
+#[tokio::test]
+async fn enrichment_names_each_route_once_and_never_probes() {
+    let srv = start().await;
+    let script = served_script(srv.http_addr).await;
+    for needle in [
+        "api('threads')",
+        "'threads/' + encodeURIComponent(threadKey)",
+        "api('feed')",
+        "paintSeq++",
+        "seen !== paintSeq",
+    ] {
+        assert!(script.contains(needle), "the script lacks {needle}");
+    }
+    assert_eq!(script.matches("'/projection'").count(), 1);
+    assert_eq!(script.matches("'/deliverability'").count(), 1);
+    assert!(!script.contains("reachability"));
+}
+
+/// AC13: every stream state is its own sentence, none of them the shell's
+/// forbidden "is empty", and a failed read is never the empty state.
+#[tokio::test]
+async fn the_stream_states_are_distinct_strings() {
+    let srv = start().await;
+    let script = served_script(srv.http_addr).await;
+    for needle in [
+        "Pick an inbox to watch its mail.",
+        "Empty and live.",
+        "Stream unavailable — retrying",
+        "newest ",
+        "no findings",
+    ] {
+        assert!(script.contains(needle), "the script lacks {needle}");
+    }
+    let key = seeded_thread_key(srv.http_addr, "states").await;
+    for (path, page) in console_pages(srv.http_addr, "states", &key).await {
+        assert!(!page.contains("is empty"), "{path}");
+    }
+}
+
+/// AC14: the console's only write is the confirmed clear, built on the
+/// inbox's own messages path, and it never names another mutating route.
+#[tokio::test]
+async fn the_only_write_is_the_confirmed_clear() {
+    let srv = start().await;
+    let script = served_script(srv.http_addr).await;
+    assert_eq!(script.matches("method: 'DELETE'").count(), 1);
+    assert!(script.contains("fetch(api('messages'), { method: 'DELETE' })"));
+    assert_eq!(script.matches("/api/v1/chaos").count(), 1, "named to read");
+    for needle in ["Clear inbox", "Keep", "Clear failed"] {
+        assert!(script.contains(needle), "the script lacks {needle}");
+    }
+    for forbidden in [
+        "'PUT'",
+        "'POST'",
+        "'PATCH'",
+        "/seed",
+        "/webhooks",
+        "/dns",
+        "/raw",
+        "/attachments",
+    ] {
+        assert!(!script.contains(forbidden), "the script names {forbidden}");
+    }
+}
+
+/// AC15: ingest-time data and the query-time report are labelled apart, no
+/// chip claims a positive result, and every reader state has its sentence.
+#[tokio::test]
+async fn the_reader_labels_ingest_and_query_time_data_apart() {
+    let srv = start().await;
+    let script = served_script(srv.http_addr).await;
+    for needle in [
+        "'tab-preview'",
+        "'tab-text'",
+        "'tab-deliverability'",
+        "'tab-tests'",
+        "Extracted at ingest",
+        "Authentication (query-time report)",
+        "no finding",
+        "not evaluated",
+        "Pick a mail to read it.",
+        "Details unavailable — retrying",
+        "Deliverability unavailable — retrying",
+        "Message not found (pruned or cleared).",
+        "No HTML part.",
+        "No text part.",
+        "No findings does not mean the mail will be delivered.",
+    ] {
+        assert!(script.contains(needle), "the script lacks {needle}");
+    }
+    for positive in ["'pass'", "\"pass\"", "=pass"] {
+        assert!(!script.contains(positive), "the script claims {positive}");
+    }
+}
+
+/// AC16: the preview frame is bare-sandboxed before it has content, and no
+/// console page grants a token.
+#[tokio::test]
+async fn the_preview_frame_is_sandboxed_without_tokens() {
+    let srv = start().await;
+    let script = served_script(srv.http_addr).await;
+    let sandbox = script
+        .find("setAttribute('sandbox', '')")
+        .expect("a bare sandbox");
+    let srcdoc = script.find(".srcdoc =").expect("the srcdoc assignment");
+    assert!(sandbox < srcdoc, "the sandbox is set before the content");
+    let key = seeded_thread_key(srv.http_addr, "sand").await;
+    for (path, page) in console_pages(srv.http_addr, "sand", &key).await {
+        for token in [
+            "allow-scripts",
+            "allow-same-origin",
+            "allow-top-navigation",
+            "allow-popups",
+            "allow-forms",
+        ] {
+            assert!(!page.contains(token), "{path} grants {token}");
+        }
+    }
+}
+
+/// AC17: the snippets use the page's own origin, build the MCP call with
+/// `JSON.stringify`, and name only tools this server lists.
+#[tokio::test]
+async fn the_snippets_name_real_tools_and_quote_safely() {
+    let srv = start().await;
+    let script = served_script(srv.http_addr).await;
+    assert!(script.contains("location.origin"));
+    assert!(script.contains("JSON.stringify("));
+    assert!(script.contains("shellSegment"));
+    let (st, listed) = http_json(
+        srv.http_addr,
+        "POST",
+        "/mcp",
+        Some(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let tools: Vec<&str> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    let mut named = Vec::new();
+    let mut rest = script.as_str();
+    while let Some(at) = rest.find("swarmail_") {
+        let tail = &rest[at..];
+        let end = tail
+            .find(|c: char| !(c.is_ascii_lowercase() || c == '_'))
+            .unwrap_or(tail.len());
+        named.push(&tail[..end]);
+        rest = &tail[end..];
+    }
+    assert!(!named.is_empty(), "the snippets name a tool");
+    for name in named {
+        assert!(
+            tools.contains(&name),
+            "{name} is not in tools/list: {tools:?}"
+        );
+    }
+}
+
+/// AC25: no markup sink, no style write, no mail-built link or navigation.
+#[tokio::test]
+async fn the_script_has_no_markup_sink_no_style_write_and_no_mail_href() {
+    let srv = start().await;
+    let script = served_script(srv.http_addr).await;
+    for sink in [
+        "innerHTML",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+        "eval(",
+        "Function(",
+        ".style",
+        "window.open",
+        "location.assign",
+        "location.replace",
+        "location.href =",
+        "setAttribute('href'",
+    ] {
+        assert!(!script.contains(sink), "the script contains {sink}");
+    }
+    let mut seen = 0;
+    for (at, _) in script.match_indices(".href =") {
+        seen += 1;
+        assert!(
+            script[at + ".href =".len()..]
+                .trim_start()
+                .starts_with("'/ui/"),
+            "a href not built from a console path: {}",
+            &script[at..at + 60]
+        );
+    }
+    assert!(seen > 0, "the script builds its links");
+}
+
+/// AC26: markup in every mail- and client-controlled field never reaches the
+/// shell as markup, while the JSON the script paints from carries each one
+/// as an equal string; a hostile inbox name is escaped in `data-inbox`.
+#[tokio::test]
+async fn hostile_mail_never_reaches_the_shell_as_markup() {
+    const IMG: &str = "<img src=x onerror=alert(1)>";
+    const SCRIPT_TAG: &str = "\"><script>alert(1)</script>";
+    let srv = start().await;
+    let mut conn = SmtpConn::connect(srv.smtp_addr).await;
+    conn.send(&format!("EHLO {SCRIPT_TAG}")).await;
+    conn.reply_multi().await;
+    let auth = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "\0hostile\0x");
+    conn.send(&format!("AUTH PLAIN {auth}")).await;
+    assert!(conn.reply().await.starts_with("235"));
+    for line in ["MAIL FROM:<s@x.io>", "RCPT TO:<r@x.io>"] {
+        conn.send(line).await;
+        assert!(conn.reply().await.starts_with("250"));
+    }
+    let raw = format!(
+        "From: \"{IMG}\" <s@x.io>\r\nTo: r@x.io\r\nSubject: {IMG}\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=b\r\n\r\n\
+         --b\r\nContent-Type: text/plain\r\n\r\nYour code is 424242 {IMG}\r\n\
+         --b\r\nContent-Type: text/html\r\n\r\n<p><a href=\"https://a.example/p\">&lt;img src=x onerror=alert(1)&gt;</a></p>\r\n\
+         --b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"{IMG}\"\r\n\r\npdf\r\n\
+         --b\r\nContent-Type: text/calendar\r\n\r\nBEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:{IMG}\r\nDTSTART:20261118T090000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n\
+         --b--"
+    );
+    let accepted = conn.data(&raw).await;
+    assert!(accepted.starts_with("250"), "{accepted}");
+    let id = accepted.split_whitespace().last().unwrap().to_string();
+
+    let (_, threads) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/hostile/threads",
+        None,
+    )
+    .await;
+    let key = threads[0]["key"].as_str().unwrap().to_string();
+    let email = &threads[0]["emails"][0];
+    assert_eq!(email["subject"], IMG);
+    assert_eq!(email["from"]["name"], IMG);
+    assert!(email["text"].as_str().unwrap().contains(IMG), "{email}");
+    let (_, projection) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}/projection"),
+        None,
+    )
+    .await;
+    assert_eq!(projection["smtp_helo"], SCRIPT_TAG, "{projection}");
+    assert_eq!(
+        projection["links"]["items"][0]["anchor_text"], IMG,
+        "{projection}"
+    );
+    assert_eq!(projection["attachments"]["items"][0]["filename"], IMG);
+    assert_eq!(projection["attachments"]["items"][1]["ics"]["summary"], IMG);
+
+    for (path, page) in console_pages(srv.http_addr, "hostile", &key).await {
+        assert!(!page.contains("<img src=x"), "{path}");
+        assert!(!page.contains("<script>alert"), "{path}");
+        assert_eq!(script_elements(&page).len(), 1, "{path}");
+    }
+    // The standalone permalink escapes the same payloads.
+    let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
+    assert!(!page.contains("<img src=x"), "{page}");
+    assert!(!page.contains("<script>alert"), "{page}");
+
+    let (st, page) = http_get_text(srv.http_addr, "/ui/inbox/a%22%3E%3Cb").await;
+    assert_eq!(st, 200);
+    assert!(page.contains(r#"data-inbox="a&quot;&gt;&lt;b""#), "{page}");
+    assert!(!page.contains(r#"data-inbox="a">"#), "{page}");
+}
+
+/// AC27: one policy string, byte for byte, on every UI route.
+#[tokio::test]
+async fn every_ui_route_ships_the_one_policy_byte_for_byte() {
+    let srv = start().await;
+    let key = seeded_thread_key(srv.http_addr, "policy").await;
+    let (_, list) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/policy/messages",
+        None,
+    )
+    .await;
+    let id = list["emails"][0]["id"].as_str().unwrap().to_string();
+    let mut pages = console_pages(srv.http_addr, "policy", &key).await;
+    let (_, message) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
+    pages.push(("message".into(), message));
+    let meta = format!(r#"<meta http-equiv="Content-Security-Policy" content="{POLICY}">"#);
+    for (path, page) in pages {
+        assert!(page.contains(&meta), "{path}");
+    }
+}
+
+/// AC28: the console loads nothing from outside.
+#[tokio::test]
+async fn the_console_loads_nothing_from_outside() {
+    let srv = start().await;
+    for (path, page) in console_pages(srv.http_addr, "benign", "k").await {
+        for external in [
+            "http://",
+            "https://",
+            "<link",
+            "@import",
+            "url(",
+            "@font-face",
+            "src=\"//",
+            "href=\"//",
+        ] {
+            assert!(!page.contains(external), "{path} contains {external}");
+        }
+    }
+}
+
+/// AC29: both themes, reduced motion, and exactly one pane at phone width.
+#[tokio::test]
+async fn the_stylesheet_shows_one_pane_at_phone_width_and_has_both_themes() {
+    let srv = start().await;
+    let (_, page) = http_get_text(srv.http_addr, "/").await;
+    let css = style_element(&page);
+    assert!(css.contains("@media (prefers-color-scheme: dark)"));
+    assert!(css.contains("@media (prefers-reduced-motion: reduce)"));
+    assert_eq!(css.matches("@media (max-width: 680px)").count(), 1);
+    let phone = squeezed(block_after(css, "@media (max-width: 680px)"));
+    assert!(phone.contains("#panes>.pane{display:none}"), "{phone}");
+    assert!(
+        phone.contains(
+            r##"#panes[data-pane="inboxes"]>#inboxes,#panes[data-pane="stream"]>#stream,#panes[data-pane="reader"]>#reader{display:block}"##
+        ),
+        "{phone}"
+    );
+    let dark = block_after(css, "@media (prefers-color-scheme: dark)");
+    assert!(squeezed(dark).contains("color-scheme:dark"));
+    // The media query's own name ends in `color-scheme: dark` too.
+    let outside = css
+        .replace(dark, "")
+        .replace("@media (prefers-color-scheme: dark)", "");
+    assert!(
+        !squeezed(&outside).contains("color-scheme:dark"),
+        "only the dark block may ask for the dark scheme"
+    );
+}

@@ -868,6 +868,7 @@ pub fn router(state: AppState) -> Router {
             get(get_message).delete(delete_message),
         )
         .route("/api/v1/messages/{id}/raw", get(get_raw))
+        .route("/api/v1/messages/{id}/projection", get(get_projection))
         .route(
             "/api/v1/messages/{id}/deliverability",
             get(get_deliverability),
@@ -1101,13 +1102,19 @@ impl InboxPageQuery {
     }
 }
 
-/// One page of the sorted inbox names with their counts.
-pub(crate) fn inbox_page(store: &Store, limit: usize, offset: usize) -> Vec<(String, usize)> {
+/// One page of the sorted inbox names with their counts and the stamp of
+/// the mail most recently stored in each (decision 0132 §7).
+pub(crate) fn inbox_page(store: &Store, limit: usize, offset: usize) -> Vec<InboxSummary> {
     store
-        .inboxes()
+        .inbox_summaries()
         .into_iter()
         .skip(offset)
         .take(limit)
+        .map(|(name, count, last_received_ms)| InboxSummary {
+            name,
+            count,
+            last_received_ms,
+        })
         .collect()
 }
 
@@ -1123,6 +1130,10 @@ fn admit(inbox: &str) -> ApiResult<()> {
 pub struct InboxSummary {
     pub name: String,
     pub count: usize,
+    /// The server's ingest stamp of the mail most recently stored in the
+    /// inbox (decision 0132 §7), `null` if it holds none at the read. Always
+    /// serialized; read from the store on each request, never persisted.
+    pub last_received_ms: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1236,6 +1247,101 @@ impl<'a> From<&'a Email> for CompactEmail<'a> {
             snippet: compat::snippet(email),
             subject: email.subject.as_deref(),
             to: &email.to,
+        }
+    }
+}
+
+// ---------- the UI projection (proposed decision 0132) ----------
+//
+// Dedicated borrowed structs, never `LinkMetadata`, `Attachment` or
+// `IcsEvent`: their derives would publish `rel`, `sha256`, `stored` and
+// `uid`, and the operator's ruling lists none of them. No member is
+// skipped when empty or null — one shape — and nothing here reads `raw`.
+
+/// A list bounded to the presentation cap with its exact stored total.
+#[derive(Debug, Serialize)]
+struct Bounded<T> {
+    total: u64,
+    items: Vec<T>,
+}
+
+/// One link occurrence: where it goes, what it says, which body it came from.
+#[derive(Debug, Serialize)]
+struct ProjectedLink<'a> {
+    url: &'a str,
+    anchor_text: Option<&'a str>,
+    source: crate::model::LinkSource,
+}
+
+/// A calendar part's fields exactly as ingest stored them (no timezone
+/// resolution, decision 0110 §4).
+#[derive(Debug, Serialize)]
+struct ProjectedIcs<'a> {
+    summary: Option<&'a str>,
+    dtstart: Option<&'a str>,
+    dtstart_tzid: Option<&'a str>,
+    dtend: Option<&'a str>,
+    dtend_tzid: Option<&'a str>,
+}
+
+/// One attachment label: no bytes, no hash.
+#[derive(Debug, Serialize)]
+struct ProjectedAttachment<'a> {
+    filename: Option<&'a str>,
+    content_type: Option<&'a str>,
+    size: u64,
+    ics: Option<ProjectedIcs<'a>>,
+}
+
+/// The five members the run console reads for the mail it has open. A
+/// `null` list is unknown (a row from before the column), never empty.
+#[derive(Debug, Serialize)]
+struct MessageProjection<'a> {
+    id: &'a str,
+    smtp_client_ip: Option<std::net::IpAddr>,
+    smtp_helo: Option<&'a str>,
+    links: Option<Bounded<ProjectedLink<'a>>>,
+    attachments: Option<Bounded<ProjectedAttachment<'a>>>,
+}
+
+impl<'a> From<&'a Email> for MessageProjection<'a> {
+    fn from(email: &'a Email) -> Self {
+        MessageProjection {
+            id: &email.id,
+            smtp_client_ip: email.smtp_client_ip,
+            smtp_helo: email.smtp_helo.as_deref(),
+            links: email.link_metadata.as_ref().map(|list| Bounded {
+                total: list.len() as u64,
+                items: list
+                    .iter()
+                    .take(PRESENTATION_CAP)
+                    .map(|link| ProjectedLink {
+                        url: &link.url,
+                        anchor_text: link.anchor_text.as_deref(),
+                        source: link.source,
+                    })
+                    .collect(),
+            }),
+            attachments: email.attachments.as_ref().map(|list| Bounded {
+                total: list.total,
+                items: list
+                    .parts
+                    .iter()
+                    .take(PRESENTATION_CAP)
+                    .map(|part| ProjectedAttachment {
+                        filename: part.filename.as_deref(),
+                        content_type: part.content_type.as_deref(),
+                        size: part.size,
+                        ics: part.ics.as_ref().map(|event| ProjectedIcs {
+                            summary: event.summary.as_deref(),
+                            dtstart: event.dtstart.as_deref(),
+                            dtstart_tzid: event.dtstart_tzid.as_deref(),
+                            dtend: event.dtend.as_deref(),
+                            dtend_tzid: event.dtend_tzid.as_deref(),
+                        }),
+                    })
+                    .collect(),
+            }),
         }
     }
 }
@@ -1571,6 +1677,86 @@ mod compact_view {
         }
     }
 
+    /// Decision 0132 §2, §5: the projection caps each list at 250 with its
+    /// exact stored total, reads only stored fields (the mail has an empty
+    /// `raw`), serializes an unknown list as `null`, and writes none of the
+    /// members the ruling withholds.
+    #[test]
+    fn the_projection_is_capped_and_reads_only_stored_fields() {
+        let mut email = text_mail("p", "x");
+        assert!(email.raw.is_empty(), "nothing can come from the source");
+        email.smtp_client_ip = Some("192.0.2.7".parse().unwrap());
+        email.smtp_helo = Some("mailer.example.org".into());
+        email.link_metadata = Some(occurrences(251));
+        let mut list = files(250);
+        list.total = 300;
+        list.parts[1].ics = Some(crate::model::IcsEvent {
+            dtstart: Some("20261118T090000".into()),
+            dtstart_tzid: Some("Europe/Sofia".into()),
+            dtend: None,
+            dtend_tzid: None,
+            summary: Some("Window".into()),
+            uid: Some("secret-uid".into()),
+        });
+        list.parts[1].sha256 = "secret-hash".into();
+        email.attachments = Some(list);
+
+        let value = serde_json::to_value(MessageProjection::from(&email)).unwrap();
+        assert_eq!(value["id"], "p");
+        assert_eq!(value["smtp_client_ip"], "192.0.2.7");
+        assert_eq!(value["smtp_helo"], "mailer.example.org");
+        assert_eq!(value["links"]["total"], 251);
+        assert_eq!(value["links"]["items"].as_array().unwrap().len(), 250);
+        assert_eq!(
+            value["links"]["items"][0],
+            serde_json::json!({"url": "https://x.io/0", "anchor_text": "a0", "source": "html"})
+        );
+        assert_eq!(
+            value["links"]["items"][1]["anchor_text"],
+            serde_json::Value::Null
+        );
+        assert_eq!(value["attachments"]["total"], 300);
+        let parts = value["attachments"]["items"].as_array().unwrap();
+        assert_eq!(parts.len(), 250);
+        assert_eq!(parts[0]["ics"], serde_json::Value::Null);
+        assert_eq!(
+            parts[1]["ics"],
+            serde_json::json!({
+                "summary": "Window",
+                "dtstart": "20261118T090000",
+                "dtstart_tzid": "Europe/Sofia",
+                "dtend": null,
+                "dtend_tzid": null
+            })
+        );
+        let body = value.to_string();
+        for withheld in [
+            "secret-uid",
+            "secret-hash",
+            "\"rel\"",
+            "sha256",
+            "stored",
+            "content\"",
+        ] {
+            assert!(!body.contains(withheld), "{withheld} leaked: {body}");
+        }
+
+        // Unknown lists (a row from before the columns) are `null`, as are
+        // the SMTP observations of mail that did not arrive over SMTP.
+        let unknown = text_mail("u", "x");
+        let value = serde_json::to_value(MessageProjection::from(&unknown)).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "id": "u",
+                "smtp_client_ip": null,
+                "smtp_helo": null,
+                "links": null,
+                "attachments": null
+            })
+        );
+    }
+
     /// The `fields` table is the 18 `Email` members and the 3 derived
     /// members: 21 distinct names, `raw` none of them, every `Email` member
     /// a serialized one.
@@ -1789,12 +1975,19 @@ async fn healthz(State(mut state): State<AppState>) -> (StatusCode, Json<serde_j
             Json(serde_json::json!({
                 "status": "ok",
                 "uptime_seconds": state.started.elapsed().as_secs(),
+                "emails_inserted_total": state.store.emails_inserted(),
+                "emails_dropped_total": state.store.emails_dropped(),
             })),
         );
     }
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        Json(serde_json::json!({ "status": "degraded", "degraded": degraded })),
+        Json(serde_json::json!({
+            "status": "degraded",
+            "degraded": degraded,
+            "emails_inserted_total": state.store.emails_inserted(),
+            "emails_dropped_total": state.store.emails_dropped(),
+        })),
     )
 }
 
@@ -1917,12 +2110,7 @@ async fn list_inboxes(
 ) -> ApiResult<Json<Vec<InboxSummary>>> {
     let q: InboxPageQuery = parse_query(raw.0.as_deref().unwrap_or(""), "inboxes")?;
     let (limit, offset) = q.page().map_err(bad_request)?;
-    Ok(Json(
-        inbox_page(&state.store, limit, offset)
-            .into_iter()
-            .map(|(name, count)| InboxSummary { name, count })
-            .collect(),
-    ))
+    Ok(Json(inbox_page(&state.store, limit, offset)))
 }
 
 pub(crate) fn parse_query<T: DeserializeOwned>(raw: &str, what: &str) -> ApiResult<T> {
@@ -2223,6 +2411,28 @@ async fn get_message(
     // a 30 MiB body serialized by Axum after the handler returned would
     // occupy the async worker the SMTP greeting needs.
     compat::render_by_id(&state, id, |e| Json(e).into_response()).await
+}
+
+/// `GET /api/v1/messages/{id}/projection` (decision 0132 §1–§5): the stored
+/// fields the console shows and no `Email` serialization carries. It reads
+/// one stored mail and serializes fields `build_email` wrote — never `raw`,
+/// no extraction, no deliverability report — and has no other method.
+async fn get_projection(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    raw: RawQuery,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ViewQuery {} = parse_query(
+        raw.0.as_deref().unwrap_or(""),
+        "GET /api/v1/messages/{id}/projection",
+    )?;
+    let email = state
+        .store
+        .get(&id)
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "message not found".into()))?;
+    Ok(Json(
+        serde_json::to_value(MessageProjection::from(&*email)).unwrap(),
+    ))
 }
 
 async fn delete_message(
@@ -3250,6 +3460,23 @@ mod tests {
         }
     }
 
+    /// Decision 0132 §6: the degraded body carries both store counters
+    /// beside `status` and `degraded`, and they are the store's own.
+    #[tokio::test]
+    async fn a_degraded_healthz_still_carries_the_counters() {
+        let (_, rx) = tokio::sync::watch::channel(false);
+        let state = gauge_state(rx, true, false);
+        let _ = state
+            .store
+            .insert(crate::store::email("1", "box", "a@x.io"));
+        let (code, Json(value)) = healthz(State(state)).await;
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(value["status"], "degraded");
+        assert_eq!(value["degraded"], serde_json::json!(["smtp"]));
+        assert_eq!(value["emails_inserted_total"], 1);
+        assert_eq!(value["emails_dropped_total"], 0);
+    }
+
     /// Every listener accepting is `200 ok` with the uptime the old probe
     /// pinned (tests/api.rs asserts the same over the wire).
     #[tokio::test]
@@ -3520,9 +3747,17 @@ mod tests {
         }
         let (code, body) = http_probe(http_addr, "/healthz").await;
         assert_eq!(code, 503, "{body}");
+        // Decision 0132 §6 (addendum to 0027 §2): the degraded body carries
+        // the store's two lifetime counters beside `status` and `degraded`.
         assert_eq!(
             body,
-            serde_json::json!({"status": "degraded", "degraded": ["smtp"]}).to_string()
+            serde_json::json!({
+                "status": "degraded",
+                "degraded": ["smtp"],
+                "emails_inserted_total": 0,
+                "emails_dropped_total": 0
+            })
+            .to_string()
         );
         // The published contract carries both observed answers (issue #142,
         // D23): the healthy 200 and this degraded 503 are each in the

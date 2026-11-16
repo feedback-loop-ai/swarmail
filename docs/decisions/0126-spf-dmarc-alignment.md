@@ -544,3 +544,7 @@ radius:
 
 The ruling lifts the 0045 §8 holds on #255. The rest of the record, compatible
 work that held nothing, is accepted with it.
+
+## Dated pointer — 2026-11-16 (proposed 0132)
+
+Proposed [0132](0132-ui-projection-route.md) §1 amends §2 of this record: the observed client address and HELO name stay out of every `Email` serialization, and gain one read, `GET /api/v1/messages/{id}/projection`. It is a proposal until the operator accepts it; this record's ruling stands as written until then.
