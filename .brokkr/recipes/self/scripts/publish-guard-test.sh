@@ -520,7 +520,7 @@ def normalized(s):
     return re.sub(r"\s+", "", s or "")
 tag = "startsWith(github.ref, 'refs/tags/v')"
 build_if = "!cancelled() && github.event_name == 'push' " + " ".join("&& needs."+n+".result == 'success'" for n in ("quality", "test", "coverage", "deny", "dependency-audit", "brokkr-compile", "chart-verify", "docker-smoke")) + " && ((github.ref == 'refs/heads/main' && needs.release-rate-5k.result == 'skipped') || ("+tag+" && needs.release-rate-5k.result == 'success'))"
-docker_if = "github.event_name == 'push' && needs.docker-build.result == 'success'"
+docker_if = "!cancelled() && github.event_name == 'push' && needs.docker-build.result == 'success'"
 chart_if = "github.event_name == 'push' && "+tag+" && needs.docker.result == 'success'"
 image_guard = 'scripts/publish-guard.sh "v$VERSION" feedback-loop-ai/swarmail'
 preflight = 'scripts/publish-guard.sh "v$APP_VERSION" feedback-loop-ai/swarmail bare require-present'
@@ -669,6 +669,7 @@ mutant("ignored helm failure", lambda w: step(w,"chart-publish",helm_push).updat
 mutant("helm publish softened", lambda w: step(w,"chart-publish",helm_push).update({"continue-on-error":True}))
 mutant("helm publish condition bypass", lambda w: step(w,"chart-publish",helm_push).update({"if":"always()"}))
 mutant("dropped tag version input", lambda w: step(w,"docker",tag_push)["env"].pop("VERSION"))
+mutant("docker admission without !cancelled()", lambda w: w["jobs"]["docker"].update({"if": docker_if.replace("!cancelled() && ", "")}))
 mutant("tag push accepts one platform", lambda w: step(w,"docker",tag_push).update(run=tag_push.replace('"linux/amd64 linux/arm64" ]', '"linux/amd64" ]')))
 mutant("arm64 leg dropped", lambda w: w["jobs"]["docker-build"]["strategy"]["matrix"]["include"].pop())
 mutant("arm64 leg emulated", lambda w: w["jobs"]["docker-build"]["strategy"]["matrix"]["include"][1].update(runner="ubuntu-latest"))
