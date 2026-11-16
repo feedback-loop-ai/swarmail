@@ -78,6 +78,22 @@ pub fn flags(args: &[String]) -> Result<BTreeMap<String, Vec<String>>, String> {
     Ok(out)
 }
 
+/// `--bin TARGET=PATH` or `--runtime TARGET=DIR` values as a map, each target
+/// at most once.
+pub fn pairs(values: &[String], flag: &str) -> Result<BTreeMap<TargetKind, PathBuf>, String> {
+    let mut out = BTreeMap::new();
+    for v in values {
+        let (name, path) = v
+            .split_once('=')
+            .ok_or_else(|| format!("--{flag} takes TARGET=PATH"))?;
+        let t = TargetKind::parse(name).ok_or_else(|| format!("unknown target {name:?}"))?;
+        if out.insert(t, PathBuf::from(path)).is_some() {
+            return Err(format!("--{flag} {t} given twice"));
+        }
+    }
+    Ok(out)
+}
+
 /// Bind the wrapper's `--bin TARGET=PATH` and `--runtime TARGET=DIR` values
 /// to launch specs, with no file or process I/O. A target is given at most
 /// one of each; a published does-not-start target takes neither and has no
@@ -1459,29 +1475,20 @@ async fn measured_instance(
     // The sampler starts when the leaf is created, from inside the launch.
     let sampler: Arc<Mutex<Option<Sampler>>> = Arc::default();
     let created: Arc<Mutex<Option<u64>>> = Arc::default();
-    let hook = {
-        let (sampler, created, sink, run, clock) = (
-            sampler.clone(),
-            created.clone(),
-            sink.clone(),
-            run.clone(),
-            *clock,
-        );
-        crate::targets::LeafHook(Arc::new(move |leaf: &Leaf| {
-            *created.lock().expect("created lock") = Some(clock.now_ns());
-            let emit: crate::resources::Emit = {
-                let sink = sink.clone();
-                Arc::new(move |row| {
-                    sink.lock()
-                        .expect("sink lock")
-                        .append_resource(&ResourceRow::Sample(row))
-                        .map_err(|e| format!("sample write failed: {e}"))
-                })
-            };
-            let s = Sampler::spawn(leaf.clone(), run.clone(), target, clock, interval, emit);
-            *sampler.lock().expect("sampler lock") = Some(s);
-        }))
+    let emit: crate::resources::Emit = {
+        let sink = sink.clone();
+        Arc::new(move |row| {
+            sink.lock()
+                .expect("sink lock")
+                .append_resource(&ResourceRow::Sample(row))
+                .map_err(|e| format!("sample write failed: {e}"))
+        })
     };
+    let hook = sampler_hook(
+        (sampler.clone(), created.clone()),
+        emit,
+        (run.clone(), target, *clock, interval),
+    );
     let mut spec = spec.clone();
     spec.extra.on_leaf = Some(hook);
     let stop_sampler = || async {
@@ -1617,4 +1624,238 @@ async fn measured_instance(
     let mut workload = result?;
     failures.append(&mut workload);
     Ok(failures)
+}
+
+/// Where a sampler is parked, and when its leaf was made.
+pub type SamplerSlot = (Arc<Mutex<Option<Sampler>>>, Arc<Mutex<Option<u64>>>);
+
+/// A leaf hook that starts a sampler on each new leaf, parks it in `slot` and
+/// notes when the leaf was made. Used by the measured instance and by `hold`.
+pub fn sampler_hook(
+    (slot, created): SamplerSlot,
+    emit: crate::resources::Emit,
+    (run, target, clock, interval): (String, TargetKind, Clock, Duration),
+) -> crate::targets::LeafHook {
+    crate::targets::LeafHook(Arc::new(move |leaf: &Leaf| {
+        *created.lock().expect("created lock") = Some(clock.now_ns());
+        let s = Sampler::spawn(
+            leaf.clone(),
+            run.clone(),
+            target,
+            clock,
+            interval,
+            emit.clone(),
+        );
+        *slot.lock().expect("sampler lock") = Some(s);
+    }))
+}
+
+// ---- hold (0132 §11, story A: V19) -------------------------------------------
+
+/// What `hold` was asked: one target, its bytes and where to put its samples.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoldArgs {
+    pub protocol: PathBuf,
+    pub sources: PathBuf,
+    pub documents: Option<PathBuf>,
+    pub target: TargetKind,
+    pub bin: PathBuf,
+    pub runtime: Option<PathBuf>,
+    pub scratch: PathBuf,
+    pub samples: PathBuf,
+}
+
+/// `hold`'s flags: a missing one, an unknown one or a second target refuses
+/// by name.
+pub fn hold_args(args: &[String]) -> Result<HoldArgs, String> {
+    let f = flags(args)?;
+    let known = [
+        "protocol",
+        "sources",
+        "documents",
+        "bin",
+        "runtime",
+        "scratch",
+        "samples",
+    ];
+    if let Some(k) = f.keys().find(|k| !known.contains(&k.as_str())) {
+        return Err(format!("unknown flag --{k}"));
+    }
+    let one = |name: &str| -> Result<PathBuf, String> {
+        f.get(name)
+            .and_then(|v| v.first())
+            .map(PathBuf::from)
+            .ok_or_else(|| format!("--{name} is required"))
+    };
+    let bins = pairs(f.get("bin").map_or(&[][..], Vec::as_slice), "bin")?;
+    let runtimes = pairs(f.get("runtime").map_or(&[][..], Vec::as_slice), "runtime")?;
+    let mut it = bins.into_iter();
+    let (Some((target, bin)), None) = (it.next(), it.next()) else {
+        return Err("hold takes exactly one --bin TARGET=PATH".into());
+    };
+    if runtimes.keys().any(|t| *t != target) {
+        return Err(format!("--runtime must name {target}, the one target held"));
+    }
+    Ok(HoldArgs {
+        protocol: one("protocol")?,
+        sources: one("sources")?,
+        documents: f
+            .get("documents")
+            .and_then(|v| v.first())
+            .map(PathBuf::from),
+        target,
+        bin,
+        runtime: runtimes.get(&target).cloned(),
+        scratch: one("scratch")?,
+        samples: one("samples")?,
+    })
+}
+
+/// `hold` runs the enforced budget: protocols 2 and 3 have none.
+pub fn hold_protocol(p: &Protocol) -> Result<(), String> {
+    if p.protocol_version != crate::protocol::PROTOCOL_VERSION_4 {
+        return Err(format!(
+            "hold needs protocol {}: protocol {} has no enforced budget to hold a target under",
+            crate::protocol::PROTOCOL_VERSION_4,
+            p.protocol_version
+        ));
+    }
+    Ok(())
+}
+
+/// What a held target printed when it was ready.
+#[derive(Debug, serde::Serialize)]
+pub struct HoldEndpoints {
+    pub target: TargetKind,
+    pub leaf: Option<String>,
+    pub smtp: String,
+    pub http: Option<String>,
+    pub pop3: Option<String>,
+}
+
+/// What it printed when it was done.
+#[derive(Debug, serde::Serialize)]
+pub struct HoldReceipt {
+    pub launch: LaunchFacts,
+    pub cleanup: CleanupFacts,
+    /// Bytes read from the input before it ended. Silence is what `hold`
+    /// listens for, so any byte is refused, after teardown.
+    pub stdin_bytes: u64,
+}
+
+/// A held run's verdict: it exits 0 only when cleanup is proved and the input
+/// said nothing.
+pub fn hold_verdict(r: &HoldReceipt) -> Result<(), String> {
+    if !r.cleanup.proved() {
+        return Err("cleanup is not proved".into());
+    }
+    if r.stdin_bytes > 0 {
+        return Err(format!(
+            "stdin carried {} byte(s) before EOF: hold reads nothing from it, so a later story can add a line protocol without changing what silence means",
+            r.stdin_bytes
+        ));
+    }
+    Ok(())
+}
+
+/// Launch one target (under its leaf when the spec has a scope), print its
+/// endpoints as one JSON line, sample it, and wait for the input to end or
+/// `interrupt` to fire. Then run the whole teardown and print the launch and
+/// cleanup receipts as one JSON line.
+#[allow(clippy::too_many_arguments)]
+pub async fn hold<R, W>(
+    spec: &LaunchSpec,
+    (scratch, samples): (&std::path::Path, &std::path::Path),
+    limits: &Limits,
+    clock: &Clock,
+    interval: Duration,
+    mut input: R,
+    out: &mut W,
+    interrupt: impl std::future::Future<Output = ()>,
+) -> Result<HoldReceipt, String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: std::io::Write,
+{
+    use std::os::unix::fs::OpenOptionsExt;
+    use tokio::io::AsyncReadExt;
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(samples)
+        .map_err(|e| format!("--samples {}: {e}", samples.display()))?;
+    let file = Arc::new(Mutex::new(file));
+    let emit: crate::resources::Emit = Arc::new(move |row| {
+        use std::io::Write;
+        let mut line = serde_json::to_vec(&ResourceRow::Sample(row)).expect("row serializes");
+        line.push(b'\n');
+        file.lock()
+            .expect("samples lock")
+            .write_all(&line)
+            .map_err(|e| format!("sample write failed: {e}"))
+    });
+    let sampler: Arc<Mutex<Option<Sampler>>> = Arc::default();
+    let created: Arc<Mutex<Option<u64>>> = Arc::default();
+    let mut spec = spec.clone();
+    spec.extra.on_leaf = Some(sampler_hook(
+        (sampler.clone(), created),
+        emit,
+        ("hold".to_owned(), spec.kind, *clock, interval),
+    ));
+    let keepers = Keepers::default();
+    let stop_sampler = || async {
+        let s = sampler.lock().expect("sampler lock").take();
+        match s {
+            Some(s) => s.stop().await.map(|_| ()),
+            None => Ok(()),
+        }
+    };
+    let mut owned = match Owned::launch(&spec, scratch, limits, clock, &keepers).await {
+        Ok(o) => o,
+        Err(e) => {
+            let _ = stop_sampler().await;
+            keepers.settle(limits.cleanup * 2).await;
+            return Err(format!("{} did not launch: {e:?}", spec.kind));
+        }
+    };
+    let endpoints = HoldEndpoints {
+        target: spec.kind,
+        leaf: owned.leaf.as_ref().map(|l| l.name().to_owned()),
+        smtp: owned.smtp.to_string(),
+        http: (owned.http_addr.port() != 0).then(|| owned.http_addr.to_string()),
+        pop3: owned.pop3.as_ref().map(|_| "pop3".to_owned()),
+    };
+    let line = serde_json::to_string(&endpoints).expect("endpoints serialize");
+    let announced = writeln!(out, "{line}").and_then(|()| out.flush());
+    let mut bytes = 0u64;
+    if announced.is_ok() {
+        let mut buf = [0u8; 4096];
+        tokio::pin!(interrupt);
+        loop {
+            tokio::select! {
+                n = input.read(&mut buf) => match n {
+                    Ok(0) | Err(_) => break,
+                    Ok(k) => bytes += k as u64,
+                },
+                _ = &mut interrupt => break,
+            }
+        }
+    }
+    let sampled = stop_sampler().await;
+    let facts = owned.shutdown().await;
+    let launch = owned.facts.clone();
+    keepers.settle(limits.cleanup * 2).await;
+    let receipt = HoldReceipt {
+        launch,
+        cleanup: facts,
+        stdin_bytes: bytes,
+    };
+    let line = serde_json::to_string(&receipt).expect("receipt serializes");
+    writeln!(out, "{line}")
+        .and_then(|()| out.flush())
+        .map_err(|e| format!("could not print the receipt: {e}"))?;
+    announced.map_err(|e| format!("could not print the endpoints: {e}"))?;
+    sampled?;
+    Ok(receipt)
 }

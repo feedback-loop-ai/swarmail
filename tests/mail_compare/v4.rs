@@ -1937,6 +1937,7 @@ async fn the_sampler_writes_a_row_per_tick_and_one_at_each_bound() {
     let dir = leaf_fixture(scope.path(), "target-0001");
     put(&dir, "memory.current", "8192\n");
     put(&dir, "memory.stat", MEM_STAT);
+    let current = dir.join("memory.current");
     let (leaf, _) = resources::Leaf::prepare(resources::host(), dir, "target-0001").unwrap();
     let clock = wire::Clock(Instant::now());
     let rows: Arc<Mutex<Vec<records::SampleRow>>> = Arc::default();
@@ -1983,7 +1984,7 @@ async fn the_sampler_writes_a_row_per_tick_and_one_at_each_bound() {
     let snap = leaf.snap(&clock).unwrap();
     assert_eq!(snap.cpu.usage_usec, 8_123_456);
     // A reading that fails stops the sampler with the reason, not silently.
-    std::fs::write(leaf.dir().join("memory.current"), "max\n").unwrap();
+    std::fs::write(&current, "max\n").unwrap();
     let broken = resources::Sampler::spawn(
         leaf,
         "run-e".into(),
@@ -2173,6 +2174,7 @@ const SEC: u64 = 1_000_000_000;
 /// One repetition's measurements, all hand-chosen so the expected figures
 /// below are worked out on paper, not read back from the code.
 struct Rep {
+    target: TargetKind,
     rep: u32,
     profile: &'static str,
     /// `cpu.stat` user and system µs over the measure window.
@@ -2187,6 +2189,7 @@ struct Rep {
 impl Rep {
     fn new(rep: u32, cpu: (u64, u64), peak_mib: u64) -> Rep {
         Rep {
+            target: TargetKind::Mailpit,
             rep,
             profile: "cost-c8-reused",
             cpu,
@@ -2224,7 +2227,7 @@ fn cpu(user: u64, system: u64, throttled: u64) -> resources::CpuStat {
 fn res_rows(run: &str, r: &Rep) -> Vec<records::ResourceRow> {
     use records::WindowKind::*;
     let launch = format!("target-{:04}", r.rep + 1);
-    let key = (TargetKind::Mailpit, r.profile, r.rep);
+    let key = (r.target, r.profile, r.rep);
     let mut out = Vec::new();
     let w = |kind, (a, b): (resources::Snap, resources::Snap), held, scratch, o| {
         records::ResourceRow::Window(runner::window_row(
@@ -2270,13 +2273,9 @@ fn res_rows(run: &str, r: &Rep) -> Vec<records::ResourceRow> {
         r.outcome,
     ));
     let mut s = |t: u64, mib: u64, anon_mib: u64| {
-        out.push(records::ResourceRow::Sample(sample_at(
-            run,
-            &launch,
-            t,
-            mib * MIB,
-            anon_mib * MIB,
-        )));
+        let mut row = sample_at(run, &launch, t, mib * MIB, anon_mib * MIB);
+        row.target = r.target;
+        out.push(records::ResourceRow::Sample(row));
     };
     // The idle window: only the last two seconds (5 s to 7 s) count.
     for (t, mib) in [
@@ -2302,15 +2301,7 @@ fn res_rows(run: &str, r: &Rep) -> Vec<records::ResourceRow> {
 fn msg_rows(run: &str, r: &Rep) -> Vec<Row> {
     let mut rows = Vec::new();
     for i in 0..4 {
-        let mut s = runner::row(
-            run,
-            TargetKind::Mailpit,
-            r.profile,
-            r.rep,
-            Phase::Send,
-            i,
-            "accepted",
-        );
+        let mut s = runner::row(run, r.target, r.profile, r.rep, Phase::Send, i, "accepted");
         s.token = Some(format!("t{i}"));
         s.invoked_ns = Some(8 * SEC + u64::from(i));
         s.start_ns = Some(8 * SEC + u64::from(i) + 1);
@@ -2318,7 +2309,7 @@ fn msg_rows(run: &str, r: &Rep) -> Vec<Row> {
         rows.push(s);
         let mut v = runner::row(
             run,
-            TargetKind::Mailpit,
+            r.target,
             r.profile,
             r.rep,
             Phase::Visible,
@@ -2332,7 +2323,7 @@ fn msg_rows(run: &str, r: &Rep) -> Vec<Row> {
     }
     let mut v = runner::row(
         run,
-        TargetKind::Mailpit,
+        r.target,
         r.profile,
         r.rep,
         Phase::Verified,
@@ -2750,4 +2741,956 @@ fn a_v4_report_is_version_3_and_a_v3_report_is_still_version_2() {
             "{key} must not appear in a version 2 report"
         );
     }
+}
+
+// ============================================================================
+// T5: footprint, hold and admit-v4
+// ============================================================================
+
+/// Files for every launched target, and a lock whose digests are theirs:
+/// authored from what the footprint reads, never from its own output.
+struct Footprints {
+    _root: tempfile::TempDir,
+    lock: SourceLock,
+    bins: std::collections::BTreeMap<TargetKind, PathBuf>,
+    runtimes: std::collections::BTreeMap<TargetKind, PathBuf>,
+    /// Bytes written under each runtime tree.
+    tree: std::collections::BTreeMap<TargetKind, u64>,
+    /// Bytes of each checked member beside a tree pin's executable.
+    members: std::collections::BTreeMap<TargetKind, u64>,
+}
+
+fn footprints() -> Footprints {
+    let root = fixture();
+    let p = p4(draft());
+    let mut l = lock5();
+    let mut out = Footprints {
+        lock: lock_from(l.clone()).unwrap(),
+        _root: fixture(),
+        bins: Default::default(),
+        runtimes: Default::default(),
+        tree: Default::default(),
+        members: Default::default(),
+    };
+    for t in p.launch_order(0) {
+        let dir = root.path().join(t.name());
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("executable");
+        let content = format!("executable of {t}");
+        std::fs::write(&bin, &content).unwrap();
+        out.bins.insert(t, bin);
+        if t == TargetKind::Swarmail {
+            continue;
+        }
+        let pin = pin_of(&mut l, t.name());
+        pin["artifact"]["executable_sha256"] = json!(targets::sha256_hex(content.as_bytes()));
+        let mut member_bytes = 0;
+        if let Some(ms) = pin["artifact"]["checked_members"].as_array_mut() {
+            for m in ms {
+                let path = dir.join(m["path"].as_str().unwrap());
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                let body = format!("member {}", m["path"]);
+                std::fs::write(&path, &body).unwrap();
+                m["sha256"] = json!(targets::sha256_hex(body.as_bytes()));
+                member_bytes += body.len() as u64;
+            }
+            out.members.insert(t, member_bytes);
+        }
+        if pin["runtime"].is_object() {
+            let rt = root.path().join(format!("runtime-{t}"));
+            let mut written = 0;
+            for m in pin["runtime"]["checked_members"].as_array_mut().unwrap() {
+                let path = rt.join(m["path"].as_str().unwrap());
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                let body = format!("runtime member {}", m["path"]);
+                std::fs::write(&path, &body).unwrap();
+                m["sha256"] = json!(targets::sha256_hex(body.as_bytes()));
+                written += body.len() as u64;
+            }
+            // Files the lock does not name still count toward the tree.
+            std::fs::create_dir_all(rt.join("lib/extra")).unwrap();
+            std::fs::write(rt.join("lib/extra/data.bin"), vec![1u8; 1000]).unwrap();
+            std::os::unix::fs::symlink("/etc/hostname", rt.join("link")).unwrap();
+            out.tree.insert(t, written + 1000);
+            out.runtimes.insert(t, rt);
+        }
+    }
+    out.lock = lock_from(l).unwrap();
+    out._root = root;
+    out
+}
+
+fn run_footprint(f: &Footprints) -> Result<Value, String> {
+    resources::footprint(
+        &p4(draft()),
+        &f.lock,
+        Path::new("docs/evals"),
+        &f.bins,
+        &f.runtimes,
+    )
+}
+
+fn entry<'a>(v: &'a Value, t: &str) -> &'a Value {
+    v["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["target"] == t)
+        .unwrap_or_else(|| panic!("no footprint for {t}"))
+}
+
+#[test]
+fn footprint_reads_archive_layer_and_candidate_sizes() {
+    let f = footprints();
+    let v = run_footprint(&f).expect("a complete fixture");
+    assert_eq!(
+        v["targets"].as_array().unwrap().len(),
+        8,
+        "the eight launched targets"
+    );
+    // The candidate: the release binary itself.
+    let own = std::fs::metadata(&f.bins[&TargetKind::Swarmail])
+        .unwrap()
+        .len();
+    assert_eq!(entry(&v, "swarmail")["download_bytes"], own);
+    assert_eq!(entry(&v, "swarmail")["installed_bytes"], own);
+    // An archive: the lock's own pinned size, read from the committed JSON.
+    let committed = lock5();
+    let size = |t: &str| {
+        committed["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["target"] == t)
+            .unwrap()["pin"]["artifact"]["size"]
+            .as_u64()
+            .unwrap()
+    };
+    assert_eq!(entry(&v, "mailpit")["download_bytes"], size("mailpit"));
+    assert_eq!(entry(&v, "greenmail")["download_bytes"], size("greenmail"));
+    // The image row: the sum of the compressed layers of the captured
+    // manifest, summed here from the document itself.
+    let manifest: Value = json(
+        &std::fs::read("docs/evals/sources/alkemio-mailslurper/alkemio-manifest.json").unwrap(),
+    );
+    let layers = manifest["layers"].as_array().unwrap();
+    let sum: u64 = layers.iter().map(|l| l["size"].as_u64().unwrap()).sum();
+    assert!(layers.len() > 1 && sum > 0);
+    assert_eq!(entry(&v, "alkemio-mailslurper")["download_bytes"], sum);
+}
+
+#[test]
+fn footprint_installed_bytes_include_the_runtime_tree() {
+    let f = footprints();
+    let v = run_footprint(&f).unwrap();
+    let exe = |t: TargetKind| std::fs::metadata(&f.bins[&t]).unwrap().len();
+    for t in [TargetKind::Greenmail, TargetKind::AlkemioMailslurper] {
+        let e = entry(&v, t.name());
+        assert_eq!(
+            e["installed_bytes"],
+            exe(t) + f.tree[&t],
+            "{t}: executable plus runtime tree"
+        );
+        // The files are counted too: the executable, the named members and
+        // the one extra file; a symlink is not followed.
+        assert!(e["installed_files"].as_u64().unwrap() >= 3, "{e}");
+    }
+    // A tree pin's checked members beside its executable count too.
+    for (t, bytes) in &f.members {
+        let e = entry(&v, t.name());
+        assert_eq!(e["installed_bytes"], exe(*t) + bytes, "{t}");
+    }
+    // A plain executable is itself.
+    assert_eq!(
+        entry(&v, "mailhog")["installed_bytes"],
+        exe(TargetKind::Mailhog)
+    );
+}
+
+#[test]
+fn footprint_labels_an_unpinned_runtime_and_never_counts_it_as_zero() {
+    let f = footprints();
+    let v = run_footprint(&f).unwrap();
+    for (t, what) in [
+        ("mailslurper-source-build", "host glibc"),
+        ("smtp4dev", "host libraries"),
+    ] {
+        let e = entry(&v, t);
+        let label = e["unpinned_runtime"]
+            .as_str()
+            .expect("a label, not a number");
+        assert!(
+            label.starts_with("unpinned, not counted") && label.contains(what),
+            "{label}"
+        );
+        assert!(
+            e.get("runtime_bytes").is_none(),
+            "{t}: an unpinned runtime has no byte count"
+        );
+        assert!(e["installed_bytes"].as_u64().unwrap() > 0);
+    }
+    // A target whose runtime is pinned or absent carries no such label.
+    for t in ["mailpit", "greenmail", "swarmail"] {
+        assert!(entry(&v, t).get("unpinned_runtime").is_none(), "{t}");
+    }
+}
+
+#[test]
+fn footprint_blocks_the_does_not_start_row() {
+    let f = footprints();
+    let v = run_footprint(&f).unwrap();
+    assert!(
+        v["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["target"] != "mailslurper")
+    );
+    let [b] = v["blocked"].as_array().unwrap().as_slice() else {
+        panic!("one blocked row")
+    };
+    assert_eq!(b["target"], "mailslurper");
+    assert!(b["result"].as_str().unwrap().starts_with("does not start"));
+    assert!(
+        b.as_object()
+            .unwrap()
+            .keys()
+            .all(|k| k == "target" || k == "result"),
+        "no number: {b}"
+    );
+}
+
+#[test]
+fn footprint_refuses_a_changed_executable() {
+    let f = footprints();
+    std::fs::write(&f.bins[&TargetKind::Mailpit], "replaced bytes").unwrap();
+    let w = run_footprint(&f).unwrap_err();
+    assert!(
+        w.contains("mailpit") && w.contains("not the pinned bytes"),
+        "{w}"
+    );
+    // A changed runtime member refuses too, and a missing --bin is named.
+    let f = footprints();
+    let java = f.runtimes[&TargetKind::Greenmail].join("bin/java");
+    std::fs::write(java, "tampered").unwrap();
+    assert!(run_footprint(&f).unwrap_err().contains("checked member"));
+    let mut f = footprints();
+    f.bins.remove(&TargetKind::Inbucket);
+    assert!(
+        run_footprint(&f)
+            .unwrap_err()
+            .contains("--bin inbucket=PATH is required")
+    );
+}
+
+// ---- T5.2 ------------------------------------------------------------------
+
+#[test]
+fn hold_refuses_missing_flags_and_protocol_3() {
+    let args = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+    let full = args(&[
+        "--protocol",
+        "p.json",
+        "--sources",
+        "s.json",
+        "--bin",
+        "mailpit=/x/mailpit",
+        "--scratch",
+        "/s",
+        "--samples",
+        "/f",
+    ]);
+    let ok = runner::hold_args(&full).unwrap();
+    assert_eq!(
+        (ok.target, ok.runtime.is_none()),
+        (TargetKind::Mailpit, true)
+    );
+    assert_eq!(ok.samples, PathBuf::from("/f"));
+    for (drop, expect) in [
+        ("--protocol", "--protocol is required"),
+        ("--sources", "--sources is required"),
+        ("--scratch", "--scratch is required"),
+        ("--samples", "--samples is required"),
+        ("--bin", "exactly one --bin"),
+    ] {
+        let mut a = full.clone();
+        let at = a.iter().position(|x| x == drop).unwrap();
+        a.drain(at..at + 2);
+        let w = runner::hold_args(&a).unwrap_err();
+        assert!(w.contains(expect), "{drop}: {w}");
+    }
+    let mut two = full.clone();
+    two.extend(args(&["--bin", "mailhog=/x/mailhog"]));
+    assert!(
+        runner::hold_args(&two)
+            .unwrap_err()
+            .contains("exactly one --bin")
+    );
+    let mut other = full.clone();
+    other.extend(args(&["--runtime", "greenmail=/jre"]));
+    assert!(
+        runner::hold_args(&other)
+            .unwrap_err()
+            .contains("must name mailpit")
+    );
+    let mut unknown = full.clone();
+    unknown.extend(args(&["--wat", "1"]));
+    assert!(
+        runner::hold_args(&unknown)
+            .unwrap_err()
+            .contains("unknown flag --wat")
+    );
+    // Protocol 3 has no budget to hold a target under.
+    let p3 = Protocol::parse(PROTOCOL_V3).unwrap();
+    let w = runner::hold_protocol(&p3).unwrap_err();
+    assert!(
+        w.contains("hold needs protocol 4") && w.contains("protocol 3"),
+        "{w}"
+    );
+    runner::hold_protocol(&p4(draft())).unwrap();
+}
+
+#[tokio::test]
+async fn hold_refuses_bytes_on_stdin_by_name() {
+    // Without a scope the launch has no leaf, so this proves the teardown, the
+    // receipts and the refusal on any host; the budget is real proof 4.
+    let spec = swarmail_spec(targets::swarmail_template(0));
+    let root = tempfile::tempdir().unwrap();
+    let clock = wire::Clock(Instant::now());
+    let mut printed = Vec::new();
+    let receipt = runner::hold(
+        &spec,
+        (
+            &root.path().join("hold"),
+            &root.path().join("samples.jsonl"),
+        ),
+        &limits(),
+        &clock,
+        Duration::from_millis(100),
+        &b"hello"[..],
+        &mut printed,
+        std::future::pending(),
+    )
+    .await
+    .expect("it launches and tears down");
+    assert_eq!(receipt.stdin_bytes, 5);
+    assert!(receipt.cleanup.proved(), "teardown ran before the refusal");
+    let w = runner::hold_verdict(&receipt).unwrap_err();
+    assert!(w.contains("stdin carried 5 byte(s) before EOF"), "{w}");
+    // Two lines: the endpoints, then the receipts.
+    let text = String::from_utf8(printed).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    let up: Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(up["target"], "swarmail");
+    assert!(up["smtp"].as_str().unwrap().starts_with("127.0.0.1:"));
+    let done: Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(done["stdin_bytes"], 5);
+    assert_eq!(done["cleanup"]["reaped"], true);
+    // Silence, then EOF, is the clean end.
+    let mut printed = Vec::new();
+    let receipt = runner::hold(
+        &spec,
+        (
+            &root.path().join("hold2"),
+            &root.path().join("samples2.jsonl"),
+        ),
+        &limits(),
+        &clock,
+        Duration::from_millis(100),
+        &b""[..],
+        &mut printed,
+        std::future::pending(),
+    )
+    .await
+    .unwrap();
+    runner::hold_verdict(&receipt).expect("EOF with no byte exits cleanly");
+    // An interrupt ends it too, with the same teardown.
+    let (_keep, reader) = tokio::io::duplex(8);
+    let mut printed = Vec::new();
+    let receipt = runner::hold(
+        &spec,
+        (
+            &root.path().join("hold3"),
+            &root.path().join("samples3.jsonl"),
+        ),
+        &limits(),
+        &clock,
+        Duration::from_millis(100),
+        reader,
+        &mut printed,
+        async {},
+    )
+    .await
+    .unwrap();
+    assert!(receipt.cleanup.proved());
+    // An existing samples file is never overwritten.
+    let w = runner::hold(
+        &spec,
+        (
+            &root.path().join("hold4"),
+            &root.path().join("samples.jsonl"),
+        ),
+        &limits(),
+        &clock,
+        Duration::from_millis(100),
+        &b""[..],
+        &mut Vec::new(),
+        std::future::pending(),
+    )
+    .await
+    .unwrap_err();
+    assert!(w.contains("--samples"), "{w}");
+}
+
+// ---- T5.3 ------------------------------------------------------------------
+
+/// A protocol whose plan is eight small chunks: one repetition of one tiny
+/// cost profile, so a whole run is cheap to author and to admit.
+fn adm_protocol() -> (Protocol, Vec<u8>) {
+    let mut v = draft();
+    let mut prof = v["throughput"][1].clone();
+    prof["repetitions"] = json!(1);
+    prof["messages"] = json!(4);
+    prof["warmup_messages"] = json!(0);
+    prof["sessions"] = json!(2);
+    v["throughput"] = json!([prof]);
+    let bytes = serde_json::to_vec(&v).unwrap();
+    (p4(v), bytes)
+}
+
+fn adm_host(nproc: u32) -> records::HostFacts {
+    records::HostFacts {
+        kernel: "Linux 7.0.0".into(),
+        systemd: "systemd 259".into(),
+        cpu_model: "Test CPU".into(),
+        nproc,
+        siblings: vec![vec![2, 66], vec![3, 67]],
+        cpu_layout: resources::Layout {
+            target_cpus: vec![2, 3],
+            idle_siblings: vec![66, 67],
+            client_cpus: vec![4, 5, 6, 7],
+            siblings_outside_set: vec![],
+        },
+        governor: "performance".into(),
+    }
+}
+
+type Edit = fn(&mut Value);
+type LedgerEdit = fn(&mut report::LedgerEntry);
+
+#[derive(Default)]
+struct Build {
+    skip: Option<&'static str>,
+    extra_chunk: bool,
+    unsealed: Option<&'static str>,
+    other_run: Option<&'static str>,
+    other_host: Option<&'static str>,
+    dirty: bool,
+    no_footprint: bool,
+    edit: Option<(&'static str, Edit)>,
+    ledger: Option<(&'static str, LedgerEdit)>,
+}
+
+struct Fixture {
+    root: tempfile::TempDir,
+    p: Protocol,
+    pbytes: Vec<u8>,
+    lock: SourceLock,
+    sbytes: Vec<u8>,
+}
+
+impl Fixture {
+    fn dir(&self) -> PathBuf {
+        self.root.path().join("run")
+    }
+
+    fn admit(&self, seal: bool) -> Result<report::RunAdmitted, String> {
+        let bins = Default::default();
+        let a = report::Admission {
+            protocol: &self.p,
+            protocol_bytes: &self.pbytes,
+            lock: &self.lock,
+            lock_bytes: &self.sbytes,
+            bins: &bins,
+        };
+        report::admit_v4(&self.dir(), &a, seal)
+    }
+}
+
+fn build_run(b: Build) -> Fixture {
+    let root = fixture();
+    let (p, pbytes) = adm_protocol();
+    let sbytes = serde_json::to_vec(&lock5()).unwrap();
+    let lock = SourceLock::parse(&sbytes).unwrap();
+    let bins: Vec<String> = p
+        .launch_order(0)
+        .map(|t| format!("{t}=/never/{t}"))
+        .collect();
+    let runtimes = vec![
+        "greenmail=/never/jre".to_owned(),
+        "alkemio-mailslurper=/never/musl".to_owned(),
+    ];
+    let specs = runner::launch_specs(&p, &lock, &bins, &runtimes).unwrap();
+    let run = root.path().join("run");
+    std::fs::create_dir_all(run.join("chunks")).unwrap();
+    std::fs::create_dir_all(run.join("ledger")).unwrap();
+    if !b.no_footprint {
+        std::fs::write(run.join("footprint.json"), b"{\"footprint_version\":1}\n").unwrap();
+    }
+    for c in runner::plan_v4(&p) {
+        let name = c.name();
+        let is = |x: Option<&str>| x == Some(name.as_str());
+        let run_id = if is(b.other_run) {
+            "run-other"
+        } else {
+            "run-adm"
+        };
+        let spec = &specs[&c.target()];
+        let layout = adm_host(128).cpu_layout;
+        let launch = targets::LaunchFacts {
+            target: c.target(),
+            executable_sha256: spec
+                .expected_sha256
+                .clone()
+                .unwrap_or_else(|| "ab".repeat(32)),
+            argv_template: spec.template.clone(),
+            ready_ns: 1,
+            members: spec
+                .extra
+                .members
+                .iter()
+                .map(|(p, s)| (p.to_string_lossy().into_owned(), s.clone()))
+                .collect(),
+            leaf: Some("target-0001".into()),
+            limits: Some(resources::LimitsRead {
+                memory_max: "2147483648".into(),
+                memory_swap_max: "0".into(),
+                memory_oom_group: "1".into(),
+                cpu_max: "200000 100000".into(),
+                pids_max: "4096".into(),
+            }),
+            cpu_layout: Some(layout.clone()),
+            joined: Some(resources::Joined {
+                cgroup: "target-0001".into(),
+                cpus_allowed: layout.target_cpus.clone(),
+            }),
+            env_template: Some(spec.extra.env.clone()),
+        };
+        let mut cleanup = targets::CleanupFacts::unproved(c.target());
+        (
+            cleanup.reaped,
+            cleanup.group_gone,
+            cleanup.listeners_closed,
+            cleanup.scratch_removed,
+        ) = (true, true, true, true);
+        (cleanup.cgroup_removed, cleanup.leaf) = (Some(true), true);
+        let life = runner::Lifecycle {
+            launches: vec![launch],
+            cleanups: vec![cleanup],
+        };
+        let mut m = manifest(&p, run_id);
+        m.mode = "collect".into();
+        m.protocol_sha256 = targets::sha256_hex(&pbytes);
+        m.sources_sha256 = targets::sha256_hex(&sbytes);
+        m.candidate_commit = Some("a".repeat(40));
+        m.candidate_dirty = Some(b.dirty);
+        let (planned, windows) = runner::plan_chunk(&p, &c);
+        (m.planned, m.planned_windows, m.chunk) = (planned, Some(windows), Some(name.clone()));
+        m.host = Some(adm_host(if is(b.other_host) { 64 } else { 128 }));
+        let skipped = is(b.skip);
+        if !skipped {
+            let dir = run.join("chunks").join(&name);
+            let mut rd = records::RunDir::create(&dir, &m).unwrap();
+            let mut rep = Rep::new(0, (1_000_000, 500_000), 300);
+            rep.target = c.target();
+            let rows = msg_rows(run_id, &rep);
+            for r in &rows {
+                rd.append(r).unwrap();
+            }
+            let res = res_rows(run_id, &rep);
+            for r in &res {
+                rd.append_resource(r).unwrap();
+            }
+            let mut report =
+                serde_json::to_value(report::report_v4(&p, &m, &rows, &[&res[..]], &life)).unwrap();
+            if let Some((who, edit)) = b.edit
+                && who == name
+            {
+                edit(&mut report);
+            }
+            rd.write_artifact("report.json", &serde_json::to_vec_pretty(&report).unwrap())
+                .unwrap();
+            if !is(b.unsealed) {
+                rd.finalize(true).unwrap();
+            }
+        }
+        let mut entry = report::LedgerEntry {
+            coordinate: name.clone(),
+            command: format!("timeout --kill-after=30 600 taskset -c 0-7 systemd-run … {name}"),
+            exit: 0,
+            wall_ms: 1234,
+            load_before: "0.10 0.20 0.30 1/200 99".into(),
+            load_after: "0.15 0.20 0.30 1/200 99".into(),
+            scope_clean: true,
+            driver: "/driver/mail_compare".into(),
+        };
+        if let Some((who, edit)) = b.ledger
+            && who == name
+        {
+            edit(&mut entry);
+        }
+        std::fs::write(
+            run.join("ledger").join(format!("{name}.json")),
+            serde_json::to_vec(&entry).unwrap(),
+        )
+        .unwrap();
+    }
+    if b.extra_chunk {
+        std::fs::create_dir(run.join("chunks/cost.extra.r0")).unwrap();
+    }
+    Fixture {
+        root,
+        p,
+        pbytes,
+        lock,
+        sbytes,
+    }
+}
+
+/// Rewrite a run-level file the way a tamperer who also fixes the index would.
+fn rewrite_and_reindex(dir: &Path, file: &str, edit: impl Fn(&mut Value)) {
+    let mut v: Value = json(&std::fs::read(dir.join(file)).unwrap());
+    edit(&mut v);
+    std::fs::write(dir.join(file), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    let mut artifacts = std::collections::BTreeMap::new();
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let name = e.file_name().into_string().unwrap();
+        if name != "index.json" && e.path().is_file() {
+            let bytes = std::fs::read(e.path()).unwrap();
+            artifacts.insert(name, (targets::sha256_hex(&bytes), bytes.len() as u64));
+        }
+    }
+    let old: Value = json(&std::fs::read(dir.join("index.json")).unwrap());
+    let index = records::Index {
+        index_version: records::INDEX_VERSION,
+        run_id: old["run_id"].as_str().unwrap().into(),
+        artifacts,
+    };
+    std::fs::write(
+        dir.join("index.json"),
+        serde_json::to_vec_pretty(&index).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_complete_fixture_run_seals_and_then_verifies() {
+    let f = build_run(Build::default());
+    let sealed = f.admit(true).expect("a complete run seals");
+    assert_eq!((sealed.run_id.as_str(), sealed.chunks), ("run-adm", 8));
+    for name in [
+        "manifest.json",
+        "host.json",
+        "chunks.json",
+        "launches.json",
+        "report.json",
+        "report-cost.json",
+        "index.json",
+    ] {
+        assert!(f.dir().join(name).is_file(), "{name}");
+    }
+    let verified = f.admit(false).expect("a sealed run verifies");
+    assert_eq!(verified.files.keys().len(), 6);
+    let manifest = &verified.files["manifest.json"];
+    assert_eq!(manifest["chunks"].as_array().unwrap().len(), 8);
+    assert_eq!(manifest["candidate_dirty"], false);
+    assert_eq!(verified.files["chunks.json"].as_array().unwrap().len(), 8);
+    assert_eq!(
+        verified.files["launches.json"][0]["chunk"],
+        "cost.swarmail.r0"
+    );
+    assert_eq!(verified.files["report.json"]["report_version"], 3);
+    assert!(verified.files["report-cost.json"]["headline"]["profile"] == "cost-c8-reused");
+    assert_eq!(
+        verified.files["report.json"]["cost"]["cells"]
+            .as_array()
+            .unwrap()
+            .len(),
+        8
+    );
+    // Verifying before sealing says to seal first.
+    let fresh = build_run(Build::default());
+    assert!(
+        fresh
+            .admit(false)
+            .unwrap_err()
+            .contains("run admit-v4 --seal first")
+    );
+}
+
+fn refuses(b: Build, expect: &str) {
+    let f = build_run(b);
+    let w = f.admit(true).expect_err("must refuse");
+    assert!(w.contains(expect), "wanted {expect:?} in {w}");
+}
+
+#[test]
+fn admit_v4_refuses_a_missing_chunk() {
+    refuses(
+        Build {
+            skip: Some("cost.inbucket.r0"),
+            ..Default::default()
+        },
+        "chunk cost.inbucket.r0 is missing",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_an_extra_chunk() {
+    refuses(
+        Build {
+            extra_chunk: true,
+            ..Default::default()
+        },
+        "chunk cost.extra.r0 is not in the protocol's plan",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_an_unsealed_chunk() {
+    refuses(
+        Build {
+            unsealed: Some("cost.mailhog.r0"),
+            ..Default::default()
+        },
+        "chunk cost.mailhog.r0: no completion index",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_two_run_ids() {
+    refuses(
+        Build {
+            other_run: Some("cost.smtp4dev.r0"),
+            ..Default::default()
+        },
+        "the run id differs from the first chunk's",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_a_dirty_candidate() {
+    refuses(
+        Build {
+            dirty: true,
+            ..Default::default()
+        },
+        "its tree was dirty",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_differing_host_facts() {
+    refuses(
+        Build {
+            other_host: Some("cost.greenmail.r0"),
+            ..Default::default()
+        },
+        "the host facts (kernel, CPUs and layout) differs",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_a_wrong_limit() {
+    refuses(
+        Build {
+            edit: Some(("cost.mailpit.r0", |v| {
+                v["launches"][0]["limits"]["memory_max"] = json!("1073741824")
+            })),
+            ..Default::default()
+        },
+        "chunk cost.mailpit.r0: launch 0: the limits read back are",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_a_missing_join_read_back() {
+    refuses(
+        Build {
+            edit: Some(("cost.mailhog.r0", |v| {
+                v["launches"][0].as_object_mut().unwrap().remove("joined");
+            })),
+            ..Default::default()
+        },
+        "the join read-back is missing",
+    );
+    // A leaf that is not the one the receipt names refuses too.
+    refuses(
+        Build {
+            edit: Some(("cost.mailhog.r0", |v| {
+                v["launches"][0]["joined"]["cgroup"] = json!("target-0099")
+            })),
+            ..Default::default()
+        },
+        "the join read-back is missing or is not the leaf",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_a_wrong_cap() {
+    refuses(
+        Build {
+            edit: Some(("cost.mailpit.r0", |v| {
+                for a in v["launches"][0]["argv_template"].as_array_mut().unwrap() {
+                    if a == "150000" {
+                        *a = json!("10000");
+                    }
+                }
+            })),
+            ..Default::default()
+        },
+        "a cap other than the protocol's",
+    );
+    // The candidate's own cap is the protocol's too.
+    refuses(
+        Build {
+            edit: Some(("cost.swarmail.r0", |v| {
+                for a in v["launches"][0]["argv_template"].as_array_mut().unwrap() {
+                    if a == "150000" {
+                        *a = json!("100000");
+                    }
+                }
+            })),
+            ..Default::default()
+        },
+        "a cap other than the protocol's",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_cgroup_removed_false_or_absent() {
+    refuses(
+        Build {
+            edit: Some(("cost.inbucket.r0", |v| {
+                v["cleanups"][0]["cgroup_removed"] = json!(false)
+            })),
+            ..Default::default()
+        },
+        "cgroup_removed is false, not true",
+    );
+    refuses(
+        Build {
+            edit: Some(("cost.inbucket.r0", |v| {
+                v["cleanups"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("cgroup_removed");
+            })),
+            ..Default::default()
+        },
+        "cgroup_removed is null, not true",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_a_ledger_exit_two() {
+    refuses(
+        Build {
+            ledger: Some(("cost.mailpit.r0", |e| e.exit = 2)),
+            ..Default::default()
+        },
+        "ledger exit 2: the run is incomplete",
+    );
+    // Exit 1 is a measured outcome: the run still admits.
+    let f = build_run(Build {
+        ledger: Some(("cost.mailpit.r0", |e| e.exit = 1)),
+        ..Default::default()
+    });
+    f.admit(true).expect("a chunk that exited 1 is admitted");
+}
+
+#[test]
+fn admit_v4_refuses_an_unclean_scope() {
+    refuses(
+        Build {
+            ledger: Some(("cost.greenmail.r0", |e| e.scope_clean = false)),
+            ..Default::default()
+        },
+        "its scope was not clean",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_a_second_seal() {
+    let f = build_run(Build::default());
+    f.admit(true).unwrap();
+    let w = f.admit(true).unwrap_err();
+    assert!(
+        w.contains("already exists") && w.contains("never overwrites"),
+        "{w}"
+    );
+    // The first seal is untouched and still verifies.
+    f.admit(false).unwrap();
+}
+
+#[test]
+fn admit_v4_names_the_path_of_an_edited_figure() {
+    let f = build_run(Build::default());
+    f.admit(true).unwrap();
+    rewrite_and_reindex(&f.dir(), "report.json", |v| {
+        v["cost"]["cells"][0]["visible_per_cpu_second"]["median"] = json!(99_999.0);
+    });
+    let w = f.admit(false).unwrap_err();
+    assert!(
+        w.contains("report.json.cost.cells[0].visible_per_cpu_second.median"),
+        "the first differing path is named: {w}"
+    );
+    // An altered file with no new index is the index's refusal.
+    let g = build_run(Build::default());
+    g.admit(true).unwrap();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(g.dir().join("host.json"))
+        .unwrap();
+    std::fs::write(g.dir().join("reproduce.txt"), "extra").unwrap();
+    assert!(
+        g.admit(false)
+            .unwrap_err()
+            .contains("index does not match the files present")
+    );
+    // And a missing footprint is named before anything is derived.
+    let h = build_run(Build {
+        no_footprint: true,
+        ..Default::default()
+    });
+    assert!(
+        h.admit(true)
+            .unwrap_err()
+            .contains("footprint.json is missing")
+    );
+}
+
+#[test]
+fn admit_run_still_refuses_a_protocol_4_directory() {
+    let f = build_run(Build::default());
+    let chunk = f.dir().join("chunks/cost.mailpit.r0");
+    let w = report::admit_run(&chunk, &f.pbytes).unwrap_err();
+    assert!(w.contains("admit-v4"), "{w}");
+    // The v3 admission is not reachable from admit_v4 either.
+    let p3 = Protocol::parse(PROTOCOL_V3).unwrap();
+    let l4 = SourceLock::parse(SOURCES_V4).unwrap();
+    let bins = Default::default();
+    let a = report::Admission {
+        protocol: &p3,
+        protocol_bytes: PROTOCOL_V3,
+        lock: &l4,
+        lock_bytes: SOURCES_V4,
+        bins: &bins,
+    };
+    assert!(
+        report::admit_v4(&f.dir(), &a, false)
+            .unwrap_err()
+            .contains("needs protocol_version 4")
+    );
 }

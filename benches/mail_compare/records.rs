@@ -345,7 +345,6 @@ pub struct Admitted {
     pub manifest: Manifest,
     pub rows: Vec<Row>,
     /// Protocol 4's `sample` and `window` rows; empty for every earlier run.
-    #[allow(dead_code)] // read by admit-v4, which the next group adds
     pub resources: Vec<ResourceRow>,
 }
 

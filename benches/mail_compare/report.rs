@@ -443,6 +443,11 @@ pub fn admit_run(
 ) -> Result<crate::records::Admitted, String> {
     let p = Protocol::parse(protocol_bytes).map_err(|r| r.to_string())?;
     p.validate().map_err(|r| r.to_string())?;
+    if p.protocol_version == crate::protocol::PROTOCOL_VERSION_4 {
+        return Err(
+            "a protocol 4 run is admitted by admit-v4, chunk by chunk and as one run".into(),
+        );
+    }
     let admitted = crate::records::admit(dir)?;
     let m = &admitted.manifest;
     if m.protocol_sha256 != crate::targets::sha256_hex(protocol_bytes) {
@@ -935,4 +940,559 @@ pub fn report_v4(
         },
     });
     r
+}
+
+// ============================================================================
+// Protocol 4: admission of a whole run (0132 §11.4)
+// ============================================================================
+
+/// The files `admit-v4 --seal` writes at the top of a run directory, each a
+/// pure function of the chunks, so verifying is recomputing and comparing.
+pub const SEALED_FILES: [&str; 6] = [
+    "manifest.json",
+    "host.json",
+    "chunks.json",
+    "launches.json",
+    "report.json",
+    "report-cost.json",
+];
+pub const ADMISSION_VERSION: u32 = 1;
+
+/// One line of the wrapper's ledger: what it ran for one chunk and how that
+/// ended. `exit` is the driver's own (0 or 1; 2 stops the run), after the
+/// wrapper mapped a timeout or a kill to 2.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerEntry {
+    pub coordinate: String,
+    pub command: String,
+    pub exit: i32,
+    pub wall_ms: u64,
+    pub load_before: String,
+    pub load_after: String,
+    /// The chunk's scope held nothing when the chunk ended.
+    pub scope_clean: bool,
+    pub driver: String,
+}
+
+/// What admission checks a run against.
+pub struct Admission<'a> {
+    pub protocol: &'a Protocol,
+    pub protocol_bytes: &'a [u8],
+    pub lock: &'a crate::protocol::SourceLock,
+    pub lock_bytes: &'a [u8],
+    /// Executables to recheck by digest from their files, when given.
+    pub bins: &'a std::collections::BTreeMap<TargetKind, std::path::PathBuf>,
+}
+
+/// One chunk directory, admitted.
+pub struct ChunkAdmitted {
+    pub name: String,
+    pub manifest: Manifest,
+    pub rows: Vec<Row>,
+    pub resources: Vec<ResourceRow>,
+    pub report: serde_json::Value,
+}
+
+fn expected_limits() -> serde_json::Value {
+    serde_json::json!({
+        "memory_max": crate::resources::MEMORY_MAX,
+        "memory_swap_max": crate::resources::MEMORY_SWAP_MAX,
+        "memory_oom_group": crate::resources::MEMORY_OOM_GROUP,
+        "cpu_max": crate::resources::CPU_MAX,
+        "pids_max": crate::resources::PIDS_MAX,
+    })
+}
+
+/// The launch the protocol and lock say a target is run with: its template
+/// with the protocol's cap resolved, its environment, its checked-member
+/// digests and its pinned executable digest.
+type Expected = (Vec<String>, Vec<[String; 2]>, Vec<String>, Option<String>);
+
+fn expected_launch(a: &Admission, t: TargetKind) -> Result<Expected, String> {
+    let cap = a
+        .protocol
+        .storage
+        .retention
+        .iter()
+        .find(|r| r.target == t)
+        .and_then(|r| r.max_messages);
+    if t == TargetKind::Swarmail {
+        let template = crate::targets::swarmail_template(cap.unwrap_or(0));
+        return Ok((template, Vec::new(), Vec::new(), None));
+    }
+    let pin = a
+        .lock
+        .pin(t)
+        .ok_or_else(|| format!("{t}: the source lock pins no executable"))?;
+    let runtime = pin
+        .runtime
+        .as_ref()
+        .map(|_| std::path::PathBuf::from("/runtime"));
+    let spec = crate::targets::LaunchSpec::from_pin(
+        t,
+        std::path::PathBuf::from("/executable"),
+        runtime,
+        pin,
+        cap,
+    )?;
+    let mut members: Vec<String> = spec.extra.members.iter().map(|(_, s)| s.clone()).collect();
+    members.sort();
+    Ok((spec.template, spec.extra.env, members, spec.expected_sha256))
+}
+
+/// Each launch of a chunk, against the lock, the protocol and its own
+/// cleanup receipt (0132 §11.4).
+fn check_launch(
+    a: &Admission,
+    chunk: &str,
+    (l, c): (&serde_json::Value, &serde_json::Value),
+    n: usize,
+    target_cpus: &[u32],
+) -> Result<(), String> {
+    let at = |what: &str| format!("chunk {chunk}: launch {n}: {what}");
+    let target = l["target"]
+        .as_str()
+        .and_then(TargetKind::parse)
+        .ok_or_else(|| at("names no known target"))?;
+    if c["target"] != l["target"] {
+        return Err(at("its cleanup receipt is for another target"));
+    }
+    if l["limits"] != expected_limits() {
+        return Err(at(&format!(
+            "the limits read back are {}, not the budget's {}",
+            l["limits"],
+            expected_limits()
+        )));
+    }
+    let leaf = l["leaf"].as_str().unwrap_or_default();
+    let joined = &l["joined"];
+    if leaf.is_empty()
+        || joined["cgroup"].as_str() != Some(leaf)
+        || joined["cpus_allowed"] != serde_json::json!(target_cpus)
+    {
+        return Err(at(&format!(
+            "the join read-back is missing or is not the leaf {leaf:?} on CPUs {target_cpus:?}: {joined}"
+        )));
+    }
+    if l["cpu_layout"]["target_cpus"] != serde_json::json!(target_cpus) {
+        return Err(at("its target CPUs are not the run's pair"));
+    }
+    let (template, env, members, pinned) = expected_launch(a, target)?;
+    let same = l["argv_template"] == serde_json::json!(template)
+        && l["env_template"] == serde_json::json!(env);
+    if !same {
+        return Err(at(
+            "the launch template is not the protocol's (a cap other than the protocol's, or another argument)",
+        ));
+    }
+    let digest = l["executable_sha256"].as_str().unwrap_or_default();
+    if pinned.as_deref().is_some_and(|want| digest != want) {
+        return Err(at("its executable digest is not the lock's"));
+    }
+    if let Some(path) = a.bins.get(&target) {
+        let have = std::fs::read(path)
+            .map(|b| crate::targets::sha256_hex(&b))
+            .map_err(|e| at(&format!("{}: {e}", path.display())))?;
+        if have != digest {
+            return Err(at(&format!(
+                "the executable at {} is not the bytes that ran",
+                path.display()
+            )));
+        }
+    }
+    let mut ran: Vec<String> = l["members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m[1].as_str().map(str::to_owned))
+        .collect();
+    ran.sort();
+    if ran != members {
+        return Err(at("its checked members are not the lock's"));
+    }
+    for k in [
+        "reaped",
+        "group_gone",
+        "listeners_closed",
+        "scratch_removed",
+    ] {
+        if c[k] != true {
+            return Err(at(&format!("cleanup {k} is not proved")));
+        }
+    }
+    if c["cgroup_removed"] != true {
+        return Err(at(&format!(
+            "cgroup_removed is {}, not true: the leaf was not proved empty and removed",
+            c["cgroup_removed"]
+        )));
+    }
+    Ok(())
+}
+
+/// The keys of a chunk or run report that are recomputed from rows.
+const DERIVED: [&str; 9] = [
+    "throughput",
+    "waits",
+    "blocked",
+    "labels",
+    "cost",
+    "idle",
+    "startup",
+    "headline",
+    "mib_per_1k_retained",
+];
+
+fn no_life() -> Lifecycle {
+    Lifecycle {
+        launches: Vec::new(),
+        cleanups: Vec::new(),
+    }
+}
+
+/// Admit one sealed chunk directory: its rows, its plan, its receipts and its
+/// figures. The run-level checks (one run id, one host, a clean commit) are
+/// [`admit_v4`]'s.
+pub fn admit_chunk(
+    dir: &std::path::Path,
+    chunk: &crate::runner::Chunk,
+    a: &Admission,
+) -> Result<ChunkAdmitted, String> {
+    let name = chunk.name();
+    let admitted = crate::records::admit(dir).map_err(|e| format!("chunk {name}: {e}"))?;
+    let m = &admitted.manifest;
+    let refuse = |why: &str| Err(format!("chunk {name}: {why}"));
+    if m.chunk.as_deref() != Some(name.as_str()) {
+        return refuse("its manifest names another chunk");
+    }
+    if m.protocol_sha256 != crate::targets::sha256_hex(a.protocol_bytes) {
+        return refuse("its manifest names a different protocol");
+    }
+    if m.sources_sha256 != crate::targets::sha256_hex(a.lock_bytes) {
+        return refuse("its manifest names a different source lock");
+    }
+    let (planned, windows) = crate::runner::plan_chunk(a.protocol, chunk);
+    if m.planned != planned || m.planned_windows.as_ref() != Some(&windows) {
+        return refuse(
+            "its plan is not the protocol's plan for this chunk: a smaller denominator never admits",
+        );
+    }
+    let Some(host) = &m.host else {
+        return refuse("its manifest states no host");
+    };
+    let bytes =
+        std::fs::read(dir.join("report.json")).map_err(|e| format!("chunk {name}: report: {e}"))?;
+    let on_disk: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("chunk {name}: report: {e}"))?;
+    if on_disk["report_version"] != REPORT_VERSION_V4 {
+        return refuse(&format!(
+            "its report is version {}, this driver admits version {REPORT_VERSION_V4}",
+            on_disk["report_version"]
+        ));
+    }
+    let listed = |key: &str| on_disk[key].as_array().cloned().unwrap_or_default();
+    let (launches, cleanups) = (listed("launches"), listed("cleanups"));
+    if launches.is_empty() || launches.len() != cleanups.len() {
+        return refuse("every launch needs a cleanup receipt before the chunk can be admitted");
+    }
+    for (n, pair) in launches.iter().zip(&cleanups).enumerate() {
+        if pair.0["target"].as_str() != Some(chunk.target().name()) {
+            return refuse(&format!("launch {n} is not of the chunk's target"));
+        }
+        check_launch(a, &name, pair, n, &host.cpu_layout.target_cpus)?;
+    }
+    let groups = [&admitted.resources[..]];
+    let fresh = serde_json::to_value(report_v4(
+        a.protocol,
+        m,
+        &admitted.rows,
+        &groups,
+        &no_life(),
+    ))
+    .map_err(|e| format!("chunk {name}: report: {e}"))?;
+    for key in DERIVED {
+        if let Some((at, rep, rows)) = first_difference(key, &on_disk[key], &fresh[key]) {
+            return Err(format!(
+                "chunk {name}: the report disagrees with the rows it was derived from at {at}: report {rep}, rows {rows}"
+            ));
+        }
+    }
+    Ok(ChunkAdmitted {
+        name,
+        manifest: admitted.manifest,
+        rows: admitted.rows,
+        resources: admitted.resources,
+        report: on_disk,
+    })
+}
+
+type Artifacts = std::collections::BTreeMap<String, (String, u64)>;
+
+fn top_files(dir: &std::path::Path) -> Result<Artifacts, String> {
+    let mut out = Artifacts::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("read run dir: {e}"))? {
+        let entry = entry.map_err(|e| format!("read run dir: {e}"))?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "non-UTF-8 name in the run directory".to_owned())?;
+        let meta = std::fs::symlink_metadata(entry.path()).map_err(|e| format!("{name}: {e}"))?;
+        if name == "index.json" || !meta.is_file() {
+            continue;
+        }
+        let bytes = std::fs::read(entry.path()).map_err(|e| format!("{name}: {e}"))?;
+        out.insert(
+            name,
+            (crate::targets::sha256_hex(&bytes), bytes.len() as u64),
+        );
+    }
+    Ok(out)
+}
+
+/// The result of admitting a run.
+#[derive(Debug)]
+pub struct RunAdmitted {
+    pub run_id: String,
+    pub chunks: usize,
+    /// The run-level files, as recomputed from the chunks.
+    pub files: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+fn names_in(dir: &std::path::Path, ext: Option<&str>) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let name = entry
+            .map_err(|e| format!("{}: {e}", dir.display()))?
+            .file_name()
+            .into_string()
+            .map_err(|_| "non-UTF-8 name".to_owned())?;
+        out.push(match ext {
+            Some(x) => name.strip_suffix(x).unwrap_or(&name).to_owned(),
+            None => name,
+        });
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn write_new(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .and_then(|mut f| f.write_all(bytes))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Admit a whole v4 run directory: recompute the plan from the protocol,
+/// require exactly one admitted chunk and one ledger entry per coordinate,
+/// require one run, one host and one clean candidate, and recompute every
+/// run-level file from the chunks. With `seal`, write them as new files and
+/// then the run's index, refusing if any already exists; without it, compare
+/// each with its recomputation and name the first path that differs.
+pub fn admit_v4(dir: &std::path::Path, a: &Admission, seal: bool) -> Result<RunAdmitted, String> {
+    a.protocol.validate().map_err(|r| r.to_string())?;
+    if a.protocol.protocol_version != crate::protocol::PROTOCOL_VERSION_4 {
+        return Err(format!(
+            "admit-v4 needs protocol_version 4, not {}",
+            a.protocol.protocol_version
+        ));
+    }
+    if seal {
+        for f in SEALED_FILES.iter().chain(&["index.json"]) {
+            if dir.join(f).exists() {
+                return Err(format!(
+                    "{f} already exists: the run is sealed, and admit-v4 --seal never overwrites"
+                ));
+            }
+        }
+    }
+    let plan = crate::runner::plan_v4(a.protocol);
+    let mut want: Vec<String> = plan.iter().map(crate::runner::Chunk::name).collect();
+    want.sort();
+    let have = names_in(&dir.join("chunks"), None)?;
+    if let Some(n) = want.iter().find(|n| !have.contains(n)) {
+        return Err(format!(
+            "chunk {n} is missing: every planned coordinate needs one sealed chunk"
+        ));
+    }
+    if let Some(n) = have.iter().find(|n| !want.contains(n)) {
+        return Err(format!("chunk {n} is not in the protocol's plan"));
+    }
+    let ledger_names = names_in(&dir.join("ledger"), Some(".json"))?;
+    if let Some(n) = ledger_names.iter().find(|n| !want.contains(n)) {
+        return Err(format!("ledger entry {n} is not in the protocol's plan"));
+    }
+    let mut admitted = Vec::new();
+    let mut ledger = Vec::new();
+    for c in &plan {
+        let name = c.name();
+        let raw = std::fs::read(dir.join("ledger").join(format!("{name}.json")))
+            .map_err(|_| format!("chunk {name}: no ledger entry"))?;
+        let entry: LedgerEntry =
+            serde_json::from_slice(&raw).map_err(|e| format!("chunk {name}: ledger entry: {e}"))?;
+        if entry.coordinate != name {
+            return Err(format!(
+                "chunk {name}: its ledger entry is for {}",
+                entry.coordinate
+            ));
+        }
+        if !matches!(entry.exit, 0 | 1) {
+            return Err(format!(
+                "chunk {name}: ledger exit {}: the run is incomplete and is never admitted",
+                entry.exit
+            ));
+        }
+        if !entry.scope_clean {
+            return Err(format!(
+                "chunk {name}: its scope was not clean when the chunk ended"
+            ));
+        }
+        ledger.push(entry);
+        admitted.push(admit_chunk(&dir.join("chunks").join(&name), c, a)?);
+    }
+    let first = admitted[0].manifest.clone();
+    for c in &admitted {
+        let m = &c.manifest;
+        let same = [
+            ("the run id", m.run_id == first.run_id),
+            ("the mode", m.mode == first.mode),
+            (
+                "the candidate commit",
+                m.candidate_commit == first.candidate_commit,
+            ),
+            (
+                "the host facts (kernel, CPUs and layout)",
+                m.host == first.host,
+            ),
+        ];
+        if let Some((what, _)) = same.iter().find(|(_, ok)| !ok) {
+            return Err(format!(
+                "chunk {}: {what} differs from the first chunk's",
+                c.name
+            ));
+        }
+    }
+    if first.candidate_commit.is_none() || first.candidate_dirty != Some(false) {
+        return Err("the candidate commit is missing or its tree was dirty: a v4 run is never admitted from either".into());
+    }
+    let footprint = std::fs::read(dir.join("footprint.json")).map_err(|_| {
+        "footprint.json is missing: collect-v4 writes it before the first chunk".to_owned()
+    })?;
+    serde_json::from_slice::<serde_json::Value>(&footprint)
+        .map_err(|e| format!("footprint.json: {e}"))?;
+    // The run-level files, recomputed from the chunks alone.
+    let rows: Vec<Row> = admitted.iter().flat_map(|c| c.rows.clone()).collect();
+    let groups: Vec<&[ResourceRow]> = admitted.iter().map(|c| &c.resources[..]).collect();
+    let mut run_manifest = first.clone();
+    run_manifest.chunk = None;
+    let run_report = serde_json::to_value(report_v4(
+        a.protocol,
+        &run_manifest,
+        &rows,
+        &groups,
+        &no_life(),
+    ))
+    .map_err(|e| format!("report: {e}"))?;
+    let pick = |keys: &[&str]| {
+        let mut o = serde_json::Map::new();
+        for k in keys {
+            o.insert((*k).to_owned(), run_report[*k].clone());
+        }
+        serde_json::Value::Object(o)
+    };
+    let mut files = std::collections::BTreeMap::new();
+    files.insert(
+        "manifest.json".to_owned(),
+        serde_json::json!({
+            "admission_version": ADMISSION_VERSION,
+            "run_id": first.run_id,
+            "mode": first.mode,
+            "protocol_id": first.protocol_id,
+            "protocol_sha256": first.protocol_sha256,
+            "sources_sha256": first.sources_sha256,
+            "candidate_commit": first.candidate_commit,
+            "candidate_dirty": false,
+            "chunks": plan.iter().map(crate::runner::Chunk::name).collect::<Vec<_>>(),
+        }),
+    );
+    files.insert(
+        "host.json".to_owned(),
+        serde_json::to_value(&first.host).map_err(|e| e.to_string())?,
+    );
+    files.insert(
+        "chunks.json".to_owned(),
+        serde_json::to_value(&ledger).map_err(|e| e.to_string())?,
+    );
+    let per_chunk = admitted.iter().map(|c| {
+        serde_json::json!({
+            "chunk": c.name,
+            "launches": c.report["launches"],
+            "cleanups": c.report["cleanups"],
+        })
+    });
+    files.insert(
+        "launches.json".to_owned(),
+        serde_json::Value::Array(per_chunk.collect()),
+    );
+    files.insert("report.json".to_owned(), run_report.clone());
+    files.insert(
+        "report-cost.json".to_owned(),
+        pick(&[
+            "report_version",
+            "run_id",
+            "protocol_id",
+            "protocol_sha256",
+            "cost",
+            "idle",
+            "startup",
+            "headline",
+            "mib_per_1k_retained",
+            "blocked",
+        ]),
+    );
+    let out = RunAdmitted {
+        run_id: first.run_id.clone(),
+        chunks: admitted.len(),
+        files,
+    };
+    if seal {
+        for (name, value) in &out.files {
+            let mut bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+            bytes.push(b'\n');
+            write_new(&dir.join(name), &bytes)?;
+        }
+        let index = crate::records::Index {
+            index_version: crate::records::INDEX_VERSION,
+            run_id: out.run_id.clone(),
+            artifacts: top_files(dir)?,
+        };
+        let mut bytes = serde_json::to_vec_pretty(&index).map_err(|e| e.to_string())?;
+        bytes.push(b'\n');
+        write_new(&dir.join("index.json"), &bytes)?;
+        return Ok(out);
+    }
+    for (name, value) in &out.files {
+        let on_disk: serde_json::Value = std::fs::read(dir.join(name))
+            .map_err(|_| format!("{name} is missing: run admit-v4 --seal first"))
+            .and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{name}: {e}")))?;
+        if let Some((at, found, derived)) = first_difference(name, &on_disk, value) {
+            return Err(format!(
+                "{name} disagrees with the chunks it was derived from at {at}: file {found}, chunks {derived}"
+            ));
+        }
+    }
+    let raw = std::fs::read(dir.join("index.json"))
+        .map_err(|_| "index.json is missing: run admit-v4 --seal first".to_owned())?;
+    let index: crate::records::Index =
+        serde_json::from_slice(&raw).map_err(|e| format!("index: {e}"))?;
+    if index.run_id != out.run_id || index.artifacts != top_files(dir)? {
+        return Err(
+            "index does not match the files present (missing, extra or altered artifact)".into(),
+        );
+    }
+    Ok(out)
 }

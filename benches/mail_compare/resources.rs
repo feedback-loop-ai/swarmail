@@ -729,10 +729,6 @@ impl Leaf {
         &self.name
     }
 
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
     /// Remove a leaf that never held a process (a launch that failed before
     /// the fork). Whatever held one goes through [`Leaf::teardown`].
     pub fn discard(&self) {
@@ -833,10 +829,6 @@ impl Scope {
             layout,
             next: std::sync::atomic::AtomicU32::new(0),
         }
-    }
-
-    pub fn dir(&self) -> &Path {
-        &self.dir
     }
 
     /// The next leaf: `target-<launch id>`, ids counted from 1.
@@ -1016,4 +1008,194 @@ pub fn host_facts(kernel: &str, systemd: &str, layout: &Layout) -> crate::record
         cpu_layout: layout.clone(),
         governor,
     }
+}
+
+// ---- fixed facts: the footprint (0132 §4.5) --------------------------------
+
+/// The total apparent size and file count of every regular file under
+/// `root` (symlinks are not followed and count for nothing).
+pub fn tree_bytes(root: &Path) -> std::io::Result<(u64, u64)> {
+    let meta = std::fs::symlink_metadata(root)?;
+    if meta.is_file() {
+        return Ok((meta.len(), 1));
+    }
+    if !meta.is_dir() {
+        return Ok((0, 0));
+    }
+    let (mut bytes, mut files) = (0, 0);
+    for entry in std::fs::read_dir(root)? {
+        let (b, f) = tree_bytes(&entry?.path())?;
+        bytes += b;
+        files += f;
+    }
+    Ok((bytes, files))
+}
+
+/// Fixed facts per target, computed once from the pinned bytes with no
+/// measurement window: what a user downloads, what it takes installed, and
+/// what it needs that nothing pins. Launches nothing; rechecks every digest
+/// it relies on, so a replaced executable refuses.
+///
+/// `docs` is the directory the lock's captured documents live under.
+pub fn footprint(
+    p: &crate::protocol::Protocol,
+    lock: &crate::protocol::SourceLock,
+    docs: &Path,
+    bins: &BTreeMap<crate::protocol::TargetKind, PathBuf>,
+    runtimes: &BTreeMap<crate::protocol::TargetKind, PathBuf>,
+) -> Result<serde_json::Value, String> {
+    use crate::protocol::{DocKind, TargetKind};
+    let mut targets = Vec::new();
+    for t in p.launch_order(0) {
+        let bin = bins
+            .get(&t)
+            .ok_or_else(|| format!("--bin {t}=PATH is required"))?;
+        let size = |path: &Path| {
+            std::fs::metadata(path)
+                .map(|m| m.len())
+                .map_err(|e| format!("{t}: {}: {e}", path.display()))
+        };
+        let mut entry = serde_json::Map::new();
+        entry.insert("target".into(), serde_json::json!(t));
+        if t == TargetKind::Swarmail {
+            // The candidate is the release binary itself; its digest is
+            // recorded per run, not pinned.
+            let n = size(bin)?;
+            entry.insert("download_bytes".into(), n.into());
+            entry.insert(
+                "download_basis".into(),
+                "the release binary (cargo build --release --locked --bin swarmail)".into(),
+            );
+            entry.insert("installed_bytes".into(), n.into());
+            entry.insert("installed_files".into(), 1.into());
+            entry.insert(
+                "installed_basis".into(),
+                "the release binary alone: it needs no runtime".into(),
+            );
+            targets.push(serde_json::Value::Object(entry));
+            continue;
+        }
+        let pin = lock
+            .pin(t)
+            .ok_or_else(|| format!("{t}: the source lock pins no executable"))?;
+        let runtime = runtimes.get(&t).cloned();
+        let spec = crate::targets::LaunchSpec::from_pin(
+            t,
+            bin.clone(),
+            runtime.clone(),
+            pin,
+            pin.storage.max_messages,
+        )?;
+        // Every digest the footprint relies on is rechecked from the files.
+        let measured = spec.extra.artifact.as_ref().unwrap_or(&spec.binary);
+        let want = spec.expected_sha256.clone().unwrap_or_default();
+        if !crate::targets::unchanged(measured, &want) {
+            return Err(format!(
+                "{t}: the executable {} is not the pinned bytes (changed or unreadable)",
+                measured.display()
+            ));
+        }
+        for (path, sha) in &spec.extra.members {
+            if !crate::targets::unchanged(path, sha) {
+                return Err(format!(
+                    "{t}: the checked member {} is not the pinned bytes (changed or unreadable)",
+                    path.display()
+                ));
+            }
+        }
+        // Download: the archive, jar or executable a user fetches; for the
+        // image row, the compressed layers of the captured manifest.
+        let (download, basis) = match &pin.image {
+            Some(img) => {
+                let doc = pin
+                    .documents
+                    .iter()
+                    .find(|d| d.kind == DocKind::ImageManifest)
+                    .ok_or_else(|| format!("{t}: no captured image manifest"))?;
+                let bytes = std::fs::read(docs.join(&doc.path))
+                    .map_err(|e| format!("{t}: {}: {e}", doc.path))?;
+                let v: serde_json::Value = serde_json::from_slice(&bytes)
+                    .map_err(|e| format!("{t}: {}: {e}", doc.path))?;
+                let layers = v["layers"]
+                    .as_array()
+                    .ok_or_else(|| format!("{t}: the captured manifest has no layers"))?;
+                let sum = layers
+                    .iter()
+                    .map(|l| l["size"].as_u64())
+                    .sum::<Option<u64>>()
+                    .ok_or_else(|| format!("{t}: a layer states no size"))?;
+                (
+                    sum,
+                    format!(
+                        "the compressed layers of {} in the captured manifest ({} layers)",
+                        img.reference,
+                        layers.len()
+                    ),
+                )
+            }
+            None => (
+                pin.artifact.size,
+                format!("the pinned {}", pin.artifact.file_name),
+            ),
+        };
+        entry.insert("download_bytes".into(), download.into());
+        entry.insert("download_basis".into(), basis.into());
+        // Installed: the executable, its checked members and the whole
+        // pinned runtime tree it needs.
+        let mut installed = size(measured)?;
+        let mut files = 1u64;
+        let mut parts = vec![measured.display().to_string()];
+        match &runtime {
+            Some(dir) => {
+                let (b, f) = tree_bytes(dir).map_err(|e| format!("{t}: {}: {e}", dir.display()))?;
+                installed += b;
+                files += f;
+                parts.push(format!("the pinned runtime tree {}", dir.display()));
+            }
+            None => {
+                for (path, _) in &spec.extra.members {
+                    if path != measured {
+                        installed += size(path)?;
+                        files += 1;
+                    }
+                }
+            }
+        }
+        entry.insert("installed_bytes".into(), installed.into());
+        entry.insert("installed_files".into(), files.into());
+        entry.insert(
+            "installed_basis".into(),
+            "the executable, its checked members and the whole pinned runtime tree".into(),
+        );
+        // What the row needs that nothing pins is labelled, never zero.
+        let unpinned = match t {
+            TargetKind::MailslurperSourceBuild => Some("host glibc"),
+            TargetKind::Smtp4dev => Some("host libraries of the self-contained .NET bundle"),
+            _ => None,
+        };
+        if let Some(what) = unpinned {
+            entry.insert(
+                "unpinned_runtime".into(),
+                format!("unpinned, not counted: {what}").into(),
+            );
+        }
+        targets.push(serde_json::Value::Object(entry));
+    }
+    let blocked: Vec<serde_json::Value> = p
+        .does_not_start
+        .iter()
+        .flatten()
+        .map(|d| {
+            serde_json::json!({
+                "target": d.target,
+                "result": format!("does not start (published result: {})", d.cite),
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "footprint_version": 1,
+        "protocol_id": p.id,
+        "targets": targets,
+        "blocked": blocked,
+    }))
 }
