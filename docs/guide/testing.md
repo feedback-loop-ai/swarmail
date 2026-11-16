@@ -22,7 +22,8 @@ jobs:
 | `chart-verify` | `scripts/chart-verify.sh`: its selftest, the chart-version bump check against history, and lint + both profiles + contract assertions |
 | `docker-smoke` | real Docker: the built image as its own uid keeps accepted mail across a graceful stop and a hard kill on a named volume, `--rm` leaks no anonymous volume, and no `target/` reaches the build context |
 | `release-rate-5k` (tags only) | `cargo test --release --locked --test rate -- --ignored --nocapture`, the 5000/5000 proof |
-| `docker`, `chart-publish` | publication only, after the jobs above succeed (main and `v*` tags for the image, `v*` tags for the chart) |
+| `docker-build` | main and `v*` tags only, after the jobs above succeed: builds the image for `linux/amd64` and `linux/arm64`, each on a native runner of its own architecture, pushes each by digest with no tag, and runs `scripts/docker-smoke.sh` against that exact pushed digest (`DOCKER_SMOKE_IMAGE`), refusing an image whose platform is not the runner's own |
+| `docker`, `chart-publish` | publication only, after the jobs above succeed (main and `v*` tags for the image, `v*` tags for the chart); `docker` writes the tags as one multi-platform index over both `docker-build` digests and refuses unless it names `linux/amd64` and `linux/arm64` |
 
 The coverage gate is not a percentage to trend upwards. It demands literal
 integer equality — `covered == count` — over **lines, branches and
