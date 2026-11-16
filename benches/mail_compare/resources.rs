@@ -1055,23 +1055,155 @@ pub fn host_facts(kernel: &str, systemd: &str, layout: &Layout) -> crate::record
 
 // ---- fixed facts: the footprint (0132 §4.5) --------------------------------
 
-/// The total apparent size and file count of every regular file under
-/// `root` (symlinks are not followed and count for nothing).
-pub fn tree_bytes(root: &Path) -> std::io::Result<(u64, u64)> {
-    let meta = std::fs::symlink_metadata(root)?;
-    if meta.is_file() {
-        return Ok((meta.len(), 1));
+/// What one walk of a directory found: the bytes and the number of its
+/// regular files, and the sha256 of its listing (V18).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeWalk {
+    pub bytes: u64,
+    pub files: u64,
+    pub sha256: String,
+}
+
+fn file_sha256(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let rustls::SupportedCipherSuite::Tls13(suite) =
+        rustls::crypto::ring::cipher_suite::TLS13_AES_128_GCM_SHA256
+    else {
+        unreachable!("a TLS 1.3 suite")
+    };
+    let mut ctx = suite.common.hash_provider.start();
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        ctx.update(&buf[..n]);
     }
+    Ok(ctx
+        .finish()
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// A name `sha256sum` prints as it is: UTF-8, no newline, no backslash.
+fn plain_name(name: &std::ffi::OsStr, under: &Path) -> Result<String, String> {
+    let text = name.to_str().ok_or_else(|| {
+        format!(
+            "{}: a file name that is not UTF-8 (sha256sum would escape it)",
+            under.display()
+        )
+    })?;
+    if text.contains('\n') || text.contains('\\') {
+        return Err(format!(
+            "{}: the name {text:?} holds a newline or a backslash (sha256sum would escape it)",
+            under.display()
+        ));
+    }
+    Ok(text.to_owned())
+}
+
+/// One walk of `root`: the bytes (by length) and count of its regular
+/// files, and the sha256 of its listing, one line
+/// `<sha256 of the file>  ./<relative path>` and a newline per file, sorted
+/// by the path's bytes. That is the output of
+/// `find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum` and so
+/// can be checked by hand. A symbolic link and a directory count for
+/// nothing and are not listed; the root itself may be reached through a link.
+pub fn walk_tree(root: &Path) -> Result<TreeWalk, String> {
+    let meta = std::fs::metadata(root).map_err(|e| format!("{}: {e}", root.display()))?;
     if !meta.is_dir() {
-        return Ok((0, 0));
+        return Err(format!("{}: not a directory", root.display()));
     }
-    let (mut bytes, mut files) = (0, 0);
-    for entry in std::fs::read_dir(root)? {
-        let (b, f) = tree_bytes(&entry?.path())?;
-        bytes += b;
-        files += f;
+    let mut found: Vec<(String, PathBuf, u64)> = Vec::new();
+    let mut pending: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, rel)) = pending.pop() {
+        let entries = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
+            let kind = entry
+                .file_type()
+                .map_err(|e| format!("{}: {e}", entry.path().display()))?;
+            if !kind.is_file() && !kind.is_dir() {
+                continue;
+            }
+            let name = plain_name(&entry.file_name(), &dir)?;
+            let here = format!("{rel}/{name}");
+            if kind.is_dir() {
+                pending.push((entry.path(), here));
+            } else {
+                let len = entry
+                    .metadata()
+                    .map_err(|e| format!("{}: {e}", entry.path().display()))?
+                    .len();
+                found.push((here, entry.path(), len));
+            }
+        }
     }
-    Ok((bytes, files))
+    found.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    let mut listing = String::new();
+    let mut bytes = 0;
+    for (rel, path, len) in &found {
+        let digest = file_sha256(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        listing.push_str(&format!("{digest}  .{rel}\n"));
+        bytes += len;
+    }
+    Ok(TreeWalk {
+        bytes,
+        files: found.len() as u64,
+        sha256: crate::targets::sha256_hex(listing.as_bytes()),
+    })
+}
+
+/// The directory an archive was extracted into: `bin` with the pinned
+/// `member` path removed from its end (V18).
+pub fn extraction_root(bin: &Path, member: &str) -> Result<PathBuf, String> {
+    if !bin.ends_with(member) {
+        return Err(format!(
+            "--bin {} does not end with the pinned member {member}",
+            bin.display()
+        ));
+    }
+    let mut root = bin;
+    for _ in Path::new(member).components() {
+        root = root.parent().unwrap_or(Path::new("."));
+    }
+    Ok(if root.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        root.to_path_buf()
+    })
+}
+
+/// One target's executable and the trees `footprint` walked for it, as
+/// resolved paths: what the containment guard compares.
+struct Occupied {
+    target: crate::protocol::TargetKind,
+    executable: PathBuf,
+    trees: Vec<PathBuf>,
+}
+
+/// No target's walked tree may contain another target's executable or
+/// walked tree, the candidate included (V18): a careless extraction of every
+/// archive into one directory would inflate a row without changing a digest
+/// the lock holds.
+fn refuse_shared_trees(all: &[Occupied]) -> Result<(), String> {
+    for a in all {
+        for tree in &a.trees {
+            for b in all.iter().filter(|b| b.target != a.target) {
+                if b.executable.starts_with(tree) || b.trees.iter().any(|t| t.starts_with(tree)) {
+                    return Err(format!(
+                        "{} and {} share a tree: one's installed tree contains the other's executable or tree",
+                        a.target, b.target
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Fixed facts per target, computed once from the pinned bytes with no
@@ -1089,6 +1221,7 @@ pub fn footprint(
 ) -> Result<serde_json::Value, String> {
     use crate::protocol::{DocKind, TargetKind};
     let mut targets = Vec::new();
+    let mut occupied: Vec<Occupied> = Vec::new();
     for t in p.launch_order(0) {
         let bin = bins
             .get(&t)
@@ -1115,6 +1248,13 @@ pub fn footprint(
                 "installed_basis".into(),
                 "the release binary alone: it needs no runtime".into(),
             );
+            entry.insert("installed_trees".into(), serde_json::json!([]));
+            occupied.push(Occupied {
+                target: t,
+                executable: std::fs::canonicalize(bin)
+                    .map_err(|e| format!("{t}: {}: {e}", bin.display()))?,
+                trees: Vec::new(),
+            });
             targets.push(serde_json::Value::Object(entry));
             continue;
         }
@@ -1183,49 +1323,85 @@ pub fn footprint(
         };
         entry.insert("download_bytes".into(), download.into());
         entry.insert("download_basis".into(), basis.into());
-        // Installed: the executable, its checked members and the whole
-        // pinned runtime tree it needs.
-        let mut installed = size(measured)?;
-        let mut files = 1u64;
-        let mut parts = vec![measured.display().to_string()];
-        match &runtime {
-            Some(dir) => {
-                let (b, f) = tree_bytes(dir).map_err(|e| format!("{t}: {}: {e}", dir.display()))?;
-                installed += b;
-                files += f;
-                parts.push(format!("the pinned runtime tree {}", dir.display()));
+        // Installed (V18): every row has a size. An archive row is every
+        // regular file of its extraction root; any other row is the
+        // executable, its checked members and the whole pinned runtime tree.
+        let mut trees: Vec<(&str, PathBuf, TreeWalk)> = Vec::new();
+        let mut walk = |kind: &'static str, dir: &Path| -> Result<(), String> {
+            let found = walk_tree(dir).map_err(|e| format!("{t}: {e}"))?;
+            trees.push((kind, dir.to_path_buf(), found));
+            Ok(())
+        };
+        let (installed, files, basis) = if pin.artifact.kind
+            == crate::protocol::ArtifactKind::Archive
+        {
+            let member = pin
+                .artifact
+                .member
+                .as_deref()
+                .ok_or_else(|| format!("{t}: an archive pin names its member"))?;
+            let root = extraction_root(measured, member).map_err(|e| format!("{t}: {e}"))?;
+            walk("archive", &root)?;
+            if let Some(dir) = &runtime {
+                walk("runtime", dir)?;
             }
-            None => {
-                for (path, _) in &spec.extra.members {
-                    if path != measured {
-                        installed += size(path)?;
-                        files += 1;
-                    }
+            (
+                0,
+                0,
+                "every regular file of the extraction root (the extracted archive), the executable counted once",
+            )
+        } else if let Some(dir) = &runtime {
+            walk("runtime", dir)?;
+            (
+                size(measured)?,
+                1,
+                "the executable, its checked members and the whole pinned runtime tree",
+            )
+        } else {
+            let mut sum = size(measured)?;
+            let mut count = 1u64;
+            for (path, _) in &spec.extra.members {
+                if path != measured {
+                    sum += size(path)?;
+                    count += 1;
                 }
             }
+            (sum, count, "the executable and its checked members")
+        };
+        let installed = installed + trees.iter().map(|(_, _, w)| w.bytes).sum::<u64>();
+        let files = files + trees.iter().map(|(_, _, w)| w.files).sum::<u64>();
+        if installed == 0 {
+            return Err(format!("{t}: the installed size is 0"));
         }
-        if pin.artifact.kind == crate::protocol::ArtifactKind::Archive {
-            // The installed tree is the extracted archive, which nothing
-            // here walks or pins (smtp4dev's .NET runtime is inside its
-            // archive): the size is owed, and the digest-checked
-            // executable's own size is published under its own name, never
-            // as an installed size (0132 §4.5 counts every pinned runtime
-            // tree).
-            entry.insert("installed_bytes".into(), serde_json::Value::Null);
-            entry.insert("installed_files".into(), serde_json::Value::Null);
-            entry.insert(
-                "installed_basis".into(),
-                "owed: the extracted archive is not walked".into(),
-            );
-            entry.insert("executable_bytes".into(), size(measured)?.into());
-        } else {
-            entry.insert("installed_bytes".into(), installed.into());
-            entry.insert("installed_files".into(), files.into());
-            entry.insert(
-                "installed_basis".into(),
-                "the executable, its checked members and the whole pinned runtime tree".into(),
-            );
-        }
+        entry.insert("installed_bytes".into(), installed.into());
+        entry.insert("installed_files".into(), files.into());
+        entry.insert("installed_basis".into(), basis.into());
+        entry.insert(
+            "installed_trees".into(),
+            trees
+                .iter()
+                .map(|(kind, _, w)| {
+                    serde_json::json!({
+                        "kind": kind,
+                        "files": w.files,
+                        "bytes": w.bytes,
+                        "sha256": w.sha256,
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into(),
+        );
+        occupied.push(Occupied {
+            target: t,
+            executable: std::fs::canonicalize(measured)
+                .map_err(|e| format!("{t}: {}: {e}", measured.display()))?,
+            trees: trees
+                .iter()
+                .map(|(_, dir, _)| {
+                    std::fs::canonicalize(dir).map_err(|e| format!("{t}: {}: {e}", dir.display()))
+                })
+                .collect::<Result<_, _>>()?,
+        });
         // What the row needs that nothing pins is labelled, never zero.
         let unpinned = match t {
             TargetKind::MailslurperSourceBuild => Some("host glibc"),
@@ -1240,6 +1416,7 @@ pub fn footprint(
         }
         targets.push(serde_json::Value::Object(entry));
     }
+    refuse_shared_trees(&occupied)?;
     let blocked: Vec<serde_json::Value> = p
         .does_not_start
         .iter()

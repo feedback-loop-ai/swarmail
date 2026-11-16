@@ -663,6 +663,20 @@ pub struct Headline {
     pub cost: Vec<CostCell>,
     pub idle: Vec<IdleCell>,
     pub startup: Vec<StartupCell>,
+    /// The installed size of every launched target, copied from the run's
+    /// `footprint.json` (0132 §4.5, §5.6). Only a whole run has one; a
+    /// chunk's report carries none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed: Option<Vec<InstalledCell>>,
+}
+
+/// One launched target's installed size, as `footprint` published it.
+#[derive(Debug, Clone, Serialize)]
+pub struct InstalledCell {
+    pub target: TargetKind,
+    pub installed_bytes: u64,
+    pub installed_files: u64,
+    pub installed_basis: String,
 }
 
 const MIB: f64 = 1_048_576.0;
@@ -1039,6 +1053,7 @@ pub fn report_v4(
                 .filter(|c| c.profile == lead)
                 .cloned()
                 .collect(),
+            installed: None,
             profile: lead,
         },
         cost: CostSection {
@@ -1404,6 +1419,51 @@ fn write_new(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// The installed size of each launched target, read from the run's
+/// `footprint.json`: the file must be the run's protocol's, and every
+/// launched target must have exactly one row with a positive size. A hole is
+/// a refusal naming the target, never a `null` in the headline.
+fn installed_cells(fp: &serde_json::Value, p: &Protocol) -> Result<Vec<InstalledCell>, String> {
+    if fp["protocol_id"].as_str() != Some(p.id.as_str()) {
+        return Err(format!(
+            "footprint.json is for protocol {}, not {}",
+            fp["protocol_id"], p.id
+        ));
+    }
+    let rows = fp["targets"]
+        .as_array()
+        .ok_or("footprint.json has no list of targets")?;
+    let mut out = Vec::new();
+    for t in p.launch_order(0) {
+        let mine: Vec<&serde_json::Value> =
+            rows.iter().filter(|r| r["target"] == t.name()).collect();
+        let [row] = mine.as_slice() else {
+            return Err(format!(
+                "footprint.json has {} rows for {t}: a launched target has exactly one",
+                mine.len()
+            ));
+        };
+        let positive = |key: &str| {
+            row[key].as_u64().filter(|n| *n > 0).ok_or_else(|| {
+                format!(
+                    "footprint.json: {t}'s {key} is {}, not a positive integer",
+                    row[key]
+                )
+            })
+        };
+        out.push(InstalledCell {
+            target: t,
+            installed_bytes: positive("installed_bytes")?,
+            installed_files: positive("installed_files")?,
+            installed_basis: row["installed_basis"]
+                .as_str()
+                .ok_or_else(|| format!("footprint.json: {t} states no installed_basis"))?
+                .to_owned(),
+        });
+    }
+    Ok(out)
+}
+
 /// Admit a whole v4 run directory: recompute the plan from the protocol,
 /// require exactly one admitted chunk and one ledger entry per coordinate,
 /// require one run, one host and one clean candidate, and recompute every
@@ -1532,21 +1592,19 @@ pub fn admit_v4(dir: &std::path::Path, a: &Admission, seal: bool) -> Result<RunA
     let footprint = std::fs::read(dir.join("footprint.json")).map_err(|_| {
         "footprint.json is missing: collect-v4 writes it before the first chunk".to_owned()
     })?;
-    serde_json::from_slice::<serde_json::Value>(&footprint)
+    let footprint = serde_json::from_slice::<serde_json::Value>(&footprint)
         .map_err(|e| format!("footprint.json: {e}"))?;
+    let installed = installed_cells(&footprint, a.protocol)?;
     // The run-level files, recomputed from the chunks alone.
     let rows: Vec<Row> = admitted.iter().flat_map(|c| c.rows.clone()).collect();
     let groups: Vec<&[ResourceRow]> = admitted.iter().map(|c| &c.resources[..]).collect();
     let mut run_manifest = first.clone();
     run_manifest.chunk = None;
-    let run_report = serde_json::to_value(report_v4(
-        a.protocol,
-        &run_manifest,
-        &rows,
-        &groups,
-        &no_life(),
-    ))
-    .map_err(|e| format!("report: {e}"))?;
+    let mut whole = report_v4(a.protocol, &run_manifest, &rows, &groups, &no_life());
+    if let Some(v4) = whole.v4.as_mut() {
+        v4.headline.installed = Some(installed);
+    }
+    let run_report = serde_json::to_value(whole).map_err(|e| format!("report: {e}"))?;
     let pick = |keys: &[&str]| {
         let mut o = serde_json::Map::new();
         for k in keys {

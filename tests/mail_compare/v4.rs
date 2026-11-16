@@ -3484,6 +3484,10 @@ fn an_unread_fidelity_is_not_exact_and_not_a_fidelity_mismatch() {
 /// authored from what the footprint reads, never from its own output.
 struct Footprints {
     _root: tempfile::TempDir,
+    /// The directory every target's files live under.
+    dir: PathBuf,
+    /// Bytes written beside each archive row's executable, in its root.
+    archive_extra: std::collections::BTreeMap<TargetKind, u64>,
     lock: SourceLock,
     bins: std::collections::BTreeMap<TargetKind, PathBuf>,
     runtimes: std::collections::BTreeMap<TargetKind, PathBuf>,
@@ -3499,6 +3503,8 @@ fn footprints() -> Footprints {
     let mut l = lock5();
     let mut out = Footprints {
         lock: lock_from(l.clone()).unwrap(),
+        dir: root.path().to_path_buf(),
+        archive_extra: Default::default(),
         _root: fixture(),
         bins: Default::default(),
         runtimes: Default::default(),
@@ -3508,14 +3514,32 @@ fn footprints() -> Footprints {
     for t in p.launch_order(0) {
         let dir = root.path().join(t.name());
         std::fs::create_dir_all(&dir).unwrap();
-        let bin = dir.join("executable");
         let content = format!("executable of {t}");
-        std::fs::write(&bin, &content).unwrap();
-        out.bins.insert(t, bin);
         if t == TargetKind::Swarmail {
+            let bin = dir.join("executable");
+            std::fs::write(&bin, &content).unwrap();
+            out.bins.insert(t, bin);
             continue;
         }
         let pin = pin_of(&mut l, t.name());
+        // An archive's executable sits at its pinned member path inside the
+        // extraction root; any other row's is a file of its own.
+        let bin = if pin["artifact"]["kind"] == "archive" {
+            let member = pin["artifact"]["member"].as_str().unwrap();
+            let bin = dir.join(member);
+            std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(dir.join("docs")).unwrap();
+            std::fs::create_dir_all(dir.join("lib/deep")).unwrap();
+            std::fs::write(dir.join("docs/readme.txt"), vec![2u8; 500]).unwrap();
+            std::fs::write(dir.join("lib/deep/data.bin"), vec![3u8; 700]).unwrap();
+            std::os::unix::fs::symlink("/etc/hostname", dir.join("link")).unwrap();
+            out.archive_extra.insert(t, 1200);
+            bin
+        } else {
+            dir.join("executable")
+        };
+        std::fs::write(&bin, &content).unwrap();
+        out.bins.insert(t, bin);
         pin["artifact"]["executable_sha256"] = json!(targets::sha256_hex(content.as_bytes()));
         let mut member_bytes = 0;
         if let Some(ms) = pin["artifact"]["checked_members"].as_array_mut() {
@@ -3631,7 +3655,8 @@ fn footprint_installed_bytes_include_the_runtime_tree() {
     // A tree pin's checked members beside its executable count too.
     for (t, bytes) in &f.members {
         let e = entry(&v, t.name());
-        assert_eq!(e["installed_bytes"], exe(*t) + bytes, "{t}");
+        let around = f.archive_extra.get(t).copied().unwrap_or(0);
+        assert_eq!(e["installed_bytes"], exe(*t) + bytes + around, "{t}");
     }
     // A plain executable is itself.
     assert_eq!(
@@ -3656,51 +3681,22 @@ fn archive_targets() -> Vec<&'static str> {
 }
 
 #[test]
-fn footprint_owes_the_installed_size_of_an_archive_row() {
-    let f = footprints();
-    let v = run_footprint(&f).unwrap();
-    let archives = archive_targets();
-    assert_eq!(archives, ["mailpit", "smtp4dev", "inbucket"]);
-    for t in archives {
-        let e = entry(&v, t);
-        assert!(e["installed_bytes"].is_null(), "{t}: {e}");
-        assert!(e["installed_files"].is_null(), "{t}: {e}");
-        assert_eq!(
-            e["installed_basis"], "owed: the extracted archive is not walked",
-            "{t}"
-        );
-        let own = std::fs::metadata(&f.bins[&TargetKind::parse(t).unwrap()])
-            .unwrap()
-            .len();
-        assert_eq!(
-            e["executable_bytes"], own,
-            "{t}: the executable under its own name"
-        );
-        assert!(
-            e["download_bytes"].as_u64().unwrap() > 0,
-            "{t}: the download stands"
-        );
-    }
-}
-
-#[test]
 fn footprint_never_publishes_an_executable_alone_as_installed() {
     let f = footprints();
     let v = run_footprint(&f).unwrap();
     let archives = archive_targets();
+    assert_eq!(archives, ["mailpit", "smtp4dev", "inbucket"]);
     for e in v["targets"].as_array().unwrap() {
         let t = e["target"].as_str().unwrap();
         let exe = std::fs::metadata(&f.bins[&TargetKind::parse(t).unwrap()])
             .unwrap()
             .len();
         if archives.contains(&t) {
-            // Whatever the document says, it is not the executable's size.
-            assert_ne!(e["installed_bytes"].as_u64(), Some(exe), "{t}");
-            assert!(e.get("executable_bytes").is_some(), "{t}");
+            // The extracted archive: more than the executable it holds.
+            assert!(e["installed_bytes"].as_u64().unwrap() > exe, "{t}");
         } else {
             // A row whose artifact is the executable keeps its sum.
             assert!(e["installed_bytes"].as_u64().is_some(), "{t}: {e}");
-            assert!(e.get("executable_bytes").is_none(), "{t}");
         }
     }
 }
@@ -3725,13 +3721,9 @@ fn footprint_labels_an_unpinned_runtime_and_never_counts_it_as_zero() {
             e.get("runtime_bytes").is_none(),
             "{t}: an unpinned runtime has no byte count"
         );
-        // smtp4dev's .NET runtime is inside its archive, which is not walked:
-        // its installed size is owed, and the label above stands beside it.
-        if t == "smtp4dev" {
-            assert!(e["installed_bytes"].is_null(), "{e}");
-        } else {
-            assert!(e["installed_bytes"].as_u64().unwrap() > 0);
-        }
+        // smtp4dev's .NET runtime is inside its archive, which is walked
+        // whole: it has a size, and the label above stands beside it.
+        assert!(e["installed_bytes"].as_u64().unwrap() > 0, "{e}");
     }
     // A target whose runtime is pinned or absent carries no such label.
     for t in ["mailpit", "greenmail", "swarmail"] {
@@ -3785,6 +3777,358 @@ fn footprint_refuses_a_changed_executable() {
             .unwrap_err()
             .contains("--bin inbucket=PATH is required")
     );
+}
+
+// ---- S1 --------------------------------------------------------------------
+
+/// Every regular file under `root` by hand, as `sha256sum` prints it, sorted
+/// by the path's bytes, hashed: the expected digest, built from V18's format
+/// and never from the function under test.
+fn listing_by_hand(root: &Path) -> (u64, u64, String) {
+    fn files(dir: &Path, rel: &str, out: &mut Vec<(String, PathBuf)>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let e = e.unwrap();
+            let rel = format!("{rel}/{}", e.file_name().to_str().unwrap());
+            let t = e.file_type().unwrap();
+            if t.is_dir() {
+                files(&e.path(), &rel, out);
+            } else if t.is_file() {
+                out.push((rel, e.path()));
+            }
+        }
+    }
+    let mut all = Vec::new();
+    files(root, "", &mut all);
+    all.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    let mut text = String::new();
+    let mut bytes = 0;
+    for (rel, path) in &all {
+        let body = std::fs::read(path).unwrap();
+        bytes += body.len() as u64;
+        text.push_str(&format!("{}  .{rel}\n", targets::sha256_hex(&body)));
+    }
+    (
+        bytes,
+        all.len() as u64,
+        targets::sha256_hex(text.as_bytes()),
+    )
+}
+
+#[test]
+fn a_tree_walk_counts_each_regular_file_once_and_no_link() {
+    let d = fixture();
+    let r = d.path();
+    std::fs::create_dir_all(r.join("a/b")).unwrap();
+    std::fs::create_dir_all(r.join("empty")).unwrap();
+    std::fs::write(r.join("top"), vec![1u8; 10]).unwrap();
+    std::fs::write(r.join("a/mid"), vec![1u8; 20]).unwrap();
+    std::fs::write(r.join("a/b/deep"), vec![1u8; 30]).unwrap();
+    std::os::unix::fs::symlink(r.join("top"), r.join("link-to-file")).unwrap();
+    std::os::unix::fs::symlink(r.join("a"), r.join("link-to-dir")).unwrap();
+    std::os::unix::fs::symlink("/nonexistent/target", r.join("dangling")).unwrap();
+    let w = resources::walk_tree(r).unwrap();
+    assert_eq!((w.bytes, w.files), (60, 3));
+    // A root reached through a link is walked as the directory it is.
+    let l = fixture();
+    std::os::unix::fs::symlink(r, l.path().join("via")).unwrap();
+    assert_eq!(resources::walk_tree(&l.path().join("via")).unwrap(), w);
+    // A file or a missing path is not a tree.
+    assert!(
+        resources::walk_tree(&r.join("top"))
+            .unwrap_err()
+            .contains("not a directory")
+    );
+    assert!(resources::walk_tree(&r.join("missing")).is_err());
+}
+
+#[test]
+fn a_tree_digest_equals_the_listing_the_test_builds_by_hand() {
+    let d = fixture();
+    let r = d.path();
+    std::fs::create_dir_all(r.join("lib/x")).unwrap();
+    std::fs::create_dir_all(r.join("bin")).unwrap();
+    std::fs::write(r.join("lib/x/b.so"), b"second").unwrap();
+    std::fs::write(r.join("lib/a.so"), b"first").unwrap();
+    std::fs::write(r.join("bin/run"), b"#!run").unwrap();
+    std::fs::write(r.join("B upper"), b"upper-case sorts before lower").unwrap();
+    std::fs::write(r.join("a lower"), b"lower").unwrap();
+    std::fs::write(r.join("z"), b"").unwrap();
+    let (bytes, files, digest) = listing_by_hand(r);
+    let w = resources::walk_tree(r).unwrap();
+    assert_eq!(
+        (w.bytes, w.files, w.sha256.as_str()),
+        (bytes, files, digest.as_str())
+    );
+    // The same bytes through V18's own command line.
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(
+            "cd \"$1\" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum",
+        )
+        .arg("sh")
+        .arg(r)
+        .output()
+        .expect("sh runs");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .split_whitespace()
+            .next(),
+        Some(digest.as_str()),
+        "the documented command prints the same digest"
+    );
+}
+
+#[test]
+fn a_tree_digest_changes_when_a_file_is_added_removed_or_changed() {
+    let d = fixture();
+    let r = d.path();
+    std::fs::write(r.join("one"), b"1").unwrap();
+    std::fs::write(r.join("two"), b"2").unwrap();
+    let base = resources::walk_tree(r).unwrap();
+    std::fs::write(r.join("three"), b"3").unwrap();
+    let added = resources::walk_tree(r).unwrap();
+    assert_ne!(added.sha256, base.sha256);
+    std::fs::remove_file(r.join("three")).unwrap();
+    assert_eq!(resources::walk_tree(r).unwrap(), base, "removed again");
+    std::fs::write(r.join("two"), b"X").unwrap();
+    let changed = resources::walk_tree(r).unwrap();
+    assert_eq!((changed.bytes, changed.files), (base.bytes, base.files));
+    assert_ne!(changed.sha256, base.sha256, "same size, other bytes");
+    // A rename is a change of the listing too.
+    std::fs::rename(r.join("two"), r.join("2")).unwrap();
+    assert_ne!(resources::walk_tree(r).unwrap().sha256, changed.sha256);
+}
+
+#[test]
+fn a_tree_walk_refuses_a_name_sha256sum_would_escape() {
+    for name in ["new\nline", "back\\slash"] {
+        let d = fixture();
+        std::fs::write(d.path().join(name), b"x").unwrap();
+        let e = resources::walk_tree(d.path()).unwrap_err();
+        assert!(e.contains("newline or a backslash"), "{e}");
+        // The same name on a directory on the way to a file.
+        let d = fixture();
+        std::fs::create_dir(d.path().join(name)).unwrap();
+        std::fs::write(d.path().join(name).join("f"), b"x").unwrap();
+        assert!(resources::walk_tree(d.path()).is_err());
+    }
+    // A link with such a name is not listed, so it is not refused.
+    let d = fixture();
+    std::fs::write(d.path().join("ok"), b"x").unwrap();
+    std::os::unix::fs::symlink("ok", d.path().join("new\nline")).unwrap();
+    assert_eq!(resources::walk_tree(d.path()).unwrap().files, 1);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_tree_walk_refuses_a_name_that_is_not_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+    let d = fixture();
+    let name = std::ffi::OsStr::from_bytes(b"bad\xff\xfename");
+    std::fs::write(d.path().join(name), b"x").unwrap();
+    let e = resources::walk_tree(d.path()).unwrap_err();
+    assert!(e.contains("not UTF-8"), "{e}");
+}
+
+fn tree_row(e: &Value, kind: &str) -> Value {
+    let [t] = e["installed_trees"].as_array().unwrap().as_slice() else {
+        panic!("one walked tree: {e}")
+    };
+    assert_eq!(t["kind"], kind);
+    t.clone()
+}
+
+#[test]
+fn footprint_sizes_an_archive_row_from_its_extraction_root() {
+    let f = footprints();
+    let bin = f.bins[&TargetKind::Mailpit].clone();
+    let root = bin.parent().unwrap().to_path_buf();
+    // A root the test builds whole: the member, two more files, a nested
+    // directory and a link.
+    std::fs::remove_dir_all(&root).unwrap();
+    std::fs::create_dir_all(root.join("share/deep")).unwrap();
+    std::fs::write(&bin, "executable of mailpit").unwrap();
+    std::fs::write(root.join("share/a.txt"), vec![0u8; 11]).unwrap();
+    std::fs::write(root.join("share/deep/b.bin"), vec![0u8; 13]).unwrap();
+    std::os::unix::fs::symlink(&bin, root.join("alias")).unwrap();
+    let v = run_footprint(&f).unwrap();
+    let e = entry(&v, "mailpit");
+    let exe = "executable of mailpit".len() as u64;
+    assert_eq!(e["installed_bytes"], exe + 11 + 13, "{e}");
+    assert_eq!(e["installed_files"], 3, "the executable is counted once");
+    // The archive's download is a different number and stays.
+    assert!(e["download_bytes"].as_u64().unwrap() > 0);
+    // The rule that applied is stated as fixed text.
+    assert!(
+        e["installed_basis"]
+            .as_str()
+            .unwrap()
+            .contains("extraction root"),
+        "{e}"
+    );
+}
+
+#[test]
+fn footprint_lists_each_walked_tree_with_its_kind_and_digest() {
+    let f = footprints();
+    let v = run_footprint(&f).unwrap();
+    // An archive row: its extraction root.
+    let root = f.bins[&TargetKind::Smtp4dev]
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let (bytes, files, digest) = listing_by_hand(&root);
+    let t = tree_row(entry(&v, "smtp4dev"), "archive");
+    assert_eq!(
+        (
+            t["bytes"].as_u64(),
+            t["files"].as_u64(),
+            t["sha256"].as_str()
+        ),
+        (Some(bytes), Some(files), Some(digest.as_str()))
+    );
+    // An executable row with a runtime: that runtime tree.
+    let (bytes, files, digest) = listing_by_hand(&f.runtimes[&TargetKind::Greenmail]);
+    let t = tree_row(entry(&v, "greenmail"), "runtime");
+    assert_eq!(
+        (
+            t["bytes"].as_u64(),
+            t["files"].as_u64(),
+            t["sha256"].as_str()
+        ),
+        (Some(bytes), Some(files), Some(digest.as_str()))
+    );
+    // A row that walks none has an empty list.
+    for t in ["swarmail", "mailhog", "mailslurper-source-build"] {
+        assert_eq!(entry(&v, t)["installed_trees"], json!([]), "{t}");
+    }
+}
+
+#[test]
+fn footprint_refuses_a_bin_that_does_not_end_with_the_pinned_member() {
+    let mut f = footprints();
+    let bin = f.bins[&TargetKind::Mailpit].clone();
+    let other = bin.with_file_name("not-the-member");
+    std::fs::rename(&bin, &other).unwrap();
+    f.bins.insert(TargetKind::Mailpit, other);
+    let w = run_footprint(&f).unwrap_err();
+    assert!(
+        w.contains("mailpit") && w.contains("pinned member mailpit"),
+        "{w}"
+    );
+    // The pure rule, for a nested member and a bare file name.
+    assert_eq!(
+        resources::extraction_root(Path::new("/x/y/a/b/exe"), "a/b/exe").unwrap(),
+        Path::new("/x/y")
+    );
+    assert_eq!(
+        resources::extraction_root(Path::new("exe"), "exe").unwrap(),
+        Path::new(".")
+    );
+    assert!(resources::extraction_root(Path::new("/x/bexe"), "exe").is_err());
+}
+
+#[test]
+fn footprint_never_publishes_null_zero_owed_or_a_host_path() {
+    fn walk(v: &Value, dir: &str, at: &str) {
+        match v {
+            Value::Object(m) => {
+                for (k, v) in m {
+                    assert_ne!(k, "executable_bytes", "{at}");
+                    if k == "installed_bytes" || k == "installed_files" {
+                        assert!(v.as_u64().unwrap() > 0, "{at}.{k}: {v}");
+                    }
+                    walk(v, dir, &format!("{at}.{k}"));
+                }
+            }
+            Value::Array(a) => {
+                for (i, v) in a.iter().enumerate() {
+                    walk(v, dir, &format!("{at}[{i}]"));
+                }
+            }
+            Value::String(s) => {
+                assert!(!s.contains("owed"), "{at}: {s}");
+                assert!(!s.contains(dir), "{at}: a host path: {s}");
+            }
+            _ => {}
+        }
+    }
+    let f = footprints();
+    let v = run_footprint(&f).unwrap();
+    // Every artifact kind is in the document: an archive, an executable
+    // with a runtime, an executable alone, the candidate and the image row.
+    for t in [
+        "mailpit",
+        "greenmail",
+        "mailhog",
+        "swarmail",
+        "alkemio-mailslurper",
+    ] {
+        assert!(entry(&v, t)["installed_bytes"].as_u64().unwrap() > 0, "{t}");
+    }
+    walk(&v, f.dir.to_str().unwrap(), "$");
+}
+
+#[test]
+fn footprint_refuses_two_targets_that_share_a_tree() {
+    // Two separate directories pass.
+    run_footprint(&footprints()).expect("separate trees");
+
+    // Another competitor's executable inside an archive root.
+    let mut f = footprints();
+    let root = f.bins[&TargetKind::Mailpit].parent().unwrap().to_path_buf();
+    let inside = root.join("mailhog-inside");
+    std::fs::write(&inside, "executable of mailhog").unwrap();
+    f.bins.insert(TargetKind::Mailhog, inside);
+    let w = run_footprint(&f).unwrap_err();
+    assert!(
+        w.contains("mailpit") && w.contains("mailhog") && w.contains("share a tree"),
+        "{w}"
+    );
+
+    // The candidate inside an archive root.
+    let mut f = footprints();
+    let root = f.bins[&TargetKind::Inbucket]
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let inside = root.join("swarmail");
+    std::fs::write(&inside, "the candidate").unwrap();
+    f.bins.insert(TargetKind::Swarmail, inside);
+    let w = run_footprint(&f).unwrap_err();
+    assert!(w.contains("inbucket") && w.contains("swarmail"), "{w}");
+
+    // A runtime tree inside an archive root.
+    let mut f = footprints();
+    let root = f.bins[&TargetKind::Mailpit].parent().unwrap().to_path_buf();
+    let moved = root.join("jre");
+    std::fs::rename(&f.runtimes[&TargetKind::Greenmail], &moved).unwrap();
+    f.runtimes.insert(TargetKind::Greenmail, moved);
+    let w = run_footprint(&f).unwrap_err();
+    assert!(w.contains("mailpit") && w.contains("greenmail"), "{w}");
+
+    // An archive root inside a runtime tree.
+    let mut f = footprints();
+    let rt = f.runtimes[&TargetKind::Greenmail].clone();
+    let old = f.bins[&TargetKind::Mailpit].parent().unwrap().to_path_buf();
+    let moved = rt.join("mailpit-root");
+    std::fs::rename(&old, &moved).unwrap();
+    f.bins.insert(TargetKind::Mailpit, moved.join("mailpit"));
+    let w = run_footprint(&f).unwrap_err();
+    assert!(w.contains("mailpit") && w.contains("greenmail"), "{w}");
+
+    // The same directory reached through a symbolic link.
+    let mut f = footprints();
+    let mailpit_root = f.bins[&TargetKind::Mailpit].parent().unwrap().to_path_buf();
+    let via = f.dir.join("via-link");
+    std::os::unix::fs::symlink(&mailpit_root, &via).unwrap();
+    let body = std::fs::read(&f.bins[&TargetKind::Inbucket]).unwrap();
+    std::fs::write(mailpit_root.join("inbucket"), body).unwrap();
+    f.bins.insert(TargetKind::Inbucket, via.join("inbucket"));
+    let w = run_footprint(&f).unwrap_err();
+    assert!(w.contains("mailpit") && w.contains("inbucket"), "{w}");
 }
 
 // ---- T5.2 ------------------------------------------------------------------
@@ -4136,6 +4480,8 @@ struct Build {
     /// One chunk, by coordinate, whose launch ran a different executable.
     other_digest: Option<&'static str>,
     no_footprint: bool,
+    /// An edit of the footprint document the run carries.
+    footprint: Option<Edit>,
     edit: Option<(&'static str, Edit)>,
     ledger: Option<(&'static str, LedgerEdit)>,
 }
@@ -4184,7 +4530,31 @@ fn build_run(b: Build) -> Fixture {
     std::fs::create_dir_all(run.join("chunks")).unwrap();
     std::fs::create_dir_all(run.join("ledger")).unwrap();
     if !b.no_footprint {
-        std::fs::write(run.join("footprint.json"), b"{\"footprint_version\":1}\n").unwrap();
+        let mut doc = json!({
+            "footprint_version": 1,
+            "protocol_id": p.id,
+            "targets": p
+                .launch_order(0)
+                .enumerate()
+                .map(|(i, t)| json!({
+                    "target": t,
+                    "download_bytes": 1000 + i,
+                    "installed_bytes": 5000 + i,
+                    "installed_files": 3 + i,
+                    "installed_basis": "authored for the fixture run",
+                    "installed_trees": [],
+                }))
+                .collect::<Vec<_>>(),
+            "blocked": [],
+        });
+        if let Some(edit) = b.footprint {
+            edit(&mut doc);
+        }
+        std::fs::write(
+            run.join("footprint.json"),
+            serde_json::to_vec(&doc).unwrap(),
+        )
+        .unwrap();
     }
     for c in runner::plan_v4(&p) {
         let name = c.name();
@@ -4278,7 +4648,7 @@ fn build_run(b: Build) -> Fixture {
         }
         let mut entry = report::LedgerEntry {
             coordinate: name.clone(),
-            command: format!("timeout --kill-after=30 600 taskset -c 0-7 systemd-run … {name}"),
+            command: format!("timeout --kill-after=30 560 taskset -c 0-7 systemd-run … {name}"),
             exit: 0,
             wall_ms: 1234,
             load_before: "0.10 0.20 0.30 1/200 99".into(),
@@ -4725,6 +5095,192 @@ fn admit_v4_names_the_path_of_an_edited_figure() {
             .unwrap_err()
             .contains("footprint.json is missing")
     );
+}
+
+// ---- S1.4 ------------------------------------------------------------------
+
+#[test]
+fn the_run_headline_carries_each_targets_installed_size() {
+    let f = build_run(Build::default());
+    let sealed = f.admit(true).unwrap();
+    let want: Vec<Value> =
+        f.p.launch_order(0)
+            .enumerate()
+            .map(|(i, t)| {
+                json!({
+                    "target": t,
+                    "installed_bytes": 5000 + i,
+                    "installed_files": 3 + i,
+                    "installed_basis": "authored for the fixture run",
+                })
+            })
+            .collect();
+    assert_eq!(want.len(), 8, "every launched target, none blocked");
+    for file in ["report.json", "report-cost.json"] {
+        assert_eq!(
+            sealed.files[file]["headline"]["installed"],
+            json!(want),
+            "{file}"
+        );
+    }
+    // It is in the bytes on disk and verifies.
+    let disk: Value = json(&std::fs::read(f.dir().join("report-cost.json")).unwrap());
+    assert_eq!(disk["headline"]["installed"], json!(want));
+    f.admit(false).unwrap();
+    assert!(
+        want.iter().all(|c| c["target"] != "mailslurper"),
+        "the does-not-start row has no number"
+    );
+}
+
+#[test]
+fn a_chunk_report_has_no_installed_key() {
+    let f = build_run(Build::default());
+    f.admit(true).unwrap();
+    for c in runner::plan_v4(&f.p) {
+        let chunk: Value = json(
+            &std::fs::read(f.dir().join("chunks").join(c.name()).join("report.json")).unwrap(),
+        );
+        assert!(
+            chunk["headline"].get("installed").is_none(),
+            "{}: {}",
+            c.name(),
+            chunk["headline"]
+        );
+    }
+}
+
+#[test]
+fn admit_v4_refuses_a_footprint_without_a_launched_targets_row() {
+    let f = build_run(Build {
+        footprint: Some(|d| {
+            d["targets"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|r| r["target"] != "inbucket");
+        }),
+        ..Default::default()
+    });
+    let w = f.admit(true).unwrap_err();
+    assert!(w.contains("inbucket") && w.contains("0 rows"), "{w}");
+    // Two rows for one target are as wrong as none.
+    let f = build_run(Build {
+        footprint: Some(|d| {
+            let row = d["targets"][0].clone();
+            d["targets"].as_array_mut().unwrap().push(row);
+        }),
+        ..Default::default()
+    });
+    let w = f.admit(true).unwrap_err();
+    assert!(w.contains("swarmail") && w.contains("2 rows"), "{w}");
+    // A list that is not a list.
+    let f = build_run(Build {
+        footprint: Some(|d| d["targets"] = json!("none")),
+        ..Default::default()
+    });
+    assert!(f.admit(true).unwrap_err().contains("no list of targets"));
+}
+
+#[test]
+fn admit_v4_refuses_a_null_or_zero_installed_size() {
+    for (bad, shown) in [(json!(null), "null"), (json!(0), "0")] {
+        let f = build_run(Build {
+            footprint: Some(match shown {
+                "null" => |d| d["targets"][3]["installed_bytes"] = json!(null),
+                _ => |d| d["targets"][3]["installed_bytes"] = json!(0),
+            }),
+            ..Default::default()
+        });
+        let target = f.p.launch_order(0).nth(3).unwrap();
+        let w = f.admit(true).unwrap_err();
+        assert!(
+            w.contains(target.name()) && w.contains("installed_bytes") && w.contains(shown),
+            "{bad}: {w}"
+        );
+    }
+    // A missing file count or basis is refused by name too.
+    let f = build_run(Build {
+        footprint: Some(|d| {
+            d["targets"][1]
+                .as_object_mut()
+                .unwrap()
+                .remove("installed_files");
+        }),
+        ..Default::default()
+    });
+    assert!(f.admit(true).unwrap_err().contains("installed_files"));
+    let f = build_run(Build {
+        footprint: Some(|d| {
+            d["targets"][2]
+                .as_object_mut()
+                .unwrap()
+                .remove("installed_basis");
+        }),
+        ..Default::default()
+    });
+    assert!(f.admit(true).unwrap_err().contains("installed_basis"));
+}
+
+#[test]
+fn admit_v4_refuses_a_footprint_of_another_protocol() {
+    let f = build_run(Build {
+        footprint: Some(|d| d["protocol_id"] = json!("fair-mail-comparison-v3")),
+        ..Default::default()
+    });
+    let w = f.admit(true).unwrap_err();
+    assert!(
+        w.contains("fair-mail-comparison-v3") && w.contains("fair-mail-comparison-v4"),
+        "{w}"
+    );
+    let f = build_run(Build {
+        footprint: Some(|d| {
+            d.as_object_mut().unwrap().remove("protocol_id");
+        }),
+        ..Default::default()
+    });
+    assert!(
+        f.admit(true)
+            .unwrap_err()
+            .contains("footprint.json is for protocol")
+    );
+}
+
+#[test]
+fn admit_v4_names_the_path_of_an_edited_installed_cell() {
+    let f = build_run(Build::default());
+    f.admit(true).unwrap();
+    rewrite_and_reindex(&f.dir(), "report.json", |v| {
+        v["headline"]["installed"][2]["installed_bytes"] = json!(1);
+    });
+    let w = f.admit(false).unwrap_err();
+    assert!(
+        w.contains("report.json.headline.installed[2].installed_bytes"),
+        "the first differing path is named: {w}"
+    );
+}
+
+#[test]
+fn a_footprint_changed_after_the_seal_fails_the_verify() {
+    let f = build_run(Build::default());
+    f.admit(true).unwrap();
+    // Changed without a new index: the index's refusal.
+    let path = f.dir().join("footprint.json");
+    let mut doc: Value = json(&std::fs::read(&path).unwrap());
+    doc["targets"][0]["installed_bytes"] = json!(1);
+    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let w = f.admit(false).unwrap_err();
+    assert!(
+        w.contains("index does not match the files present") || w.contains("headline.installed"),
+        "{w}"
+    );
+    // Changed with the index remade: the headline no longer agrees.
+    let g = build_run(Build::default());
+    g.admit(true).unwrap();
+    rewrite_and_reindex(&g.dir(), "footprint.json", |d| {
+        d["targets"][0]["installed_bytes"] = json!(1);
+    });
+    let w = g.admit(false).unwrap_err();
+    assert!(w.contains("headline.installed[0].installed_bytes"), "{w}");
 }
 
 #[test]
