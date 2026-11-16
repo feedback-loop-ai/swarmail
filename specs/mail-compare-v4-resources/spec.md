@@ -1,6 +1,6 @@
 # Mail comparison protocol v4, story A: lock v5, enforced resources and cost to operate
 
-Date: 2026-11-16. Status: draft, revision 1 (returned from review 1; see
+Date: 2026-11-16. Status: draft, revision 2 (returned from review 2; see
 [*Revisions*](#revisions)). Issue #359, part of #349 and #351 (#163, epic
 #164). Run: `issue-359-comparison-protocol-v4-b0a29b93`. Branch
 `feat/compare-v4-resources-359`, from `e23a8ba`. Recipe: `claude-careful`.
@@ -68,6 +68,46 @@ collection) are separate runs. Nothing here collects, freezes or publishes.
   finding to its change and task, and says where a criterion's text was
   wrong and on what evidence.
 
+- **2026-11-16, revision 2, after review 2 of head `c2041b9`.** Security and
+  tests were clean; correctness, guarantees and independent returned
+  residual findings, and the guarantees member found three places where
+  revision 1 contradicts accepted 0132. Each is corrected toward the
+  decision:
+  - **0132 §4.5 and §5.6: an installed size for every row, and in the
+    headline.** Revision 1 published `null` and `owed` for the three archive
+    rows and the headline had no installed size. Now every launched row has
+    a number or `footprint` refuses, the walked trees are identified by a
+    digest, and the run-level headline carries the installed size (Reading
+    9, V17, V18, V20, AC14, AC16).
+  - **0132 §11.1: no process runs longer than 10 minutes.** Revision 1's
+    `timeout --kill-after=30 600` allowed 630 s and a further scope wait.
+    The prefix is now `timeout --kill-after=30 560`, `CHUNK_KILL_MS` is
+    560000, and V21 states the sum for every process the mode starts
+    (Reading 10, V2, V21, AC2, AC17).
+  - **0132 §2.3: the candidate is a committed, clean `main`.** Revision 1
+    checked only committed and clean, so a clean pull-request branch passed.
+    `HEAD` must now be in `main`'s history (Reading 11, V21, AC17).
+
+  The same revision answers the findings reported beside those, each in the
+  requirement that owns it:
+  - no `QUIT` is sent after the chunk deadline (V16, AC21);
+  - a sealed chunk that launched nothing is admitted (V16, V20, AC16);
+  - a never-opened window keeps V13's order of outcomes, so an OOM is not
+    relabelled (V13, AC10);
+  - an idle cell ranks only on every value it publishes (V17, AC23);
+  - the join is compared by the whole cgroup path, and a cleanup receipt
+    names the leaf it removed (V10, V15, V20, AC9, AC11, AC16);
+  - `collect-v4` runs every bounded step where a signal can reach it, keeps
+    a chunk until its ledger entry is written, and calls a scope clean only
+    when systemd says so (V21, AC17);
+  - V22 says what a seat's typed result does and does not state about
+    AC18b, which stays open and stays the merge gate.
+
+  No criterion is loosened. Two texts were wrong and are replaced by
+  stricter ones (V18's owed rule; V21's 600). [plan.md](plan.md)
+  § *Revision 2* rules the two positions, maps every finding of review 2 to
+  its change and task, and says which findings change nothing and why.
+
 ## Why
 
 Protocols v2 and v3 declare a 2 CPU / 2048 MiB budget with `enforced: false`
@@ -108,7 +148,7 @@ ruling of 0132.
    what is in flight on the wire is cancelled, not awaited (V16). V2 bounds
    the value so that the little that may still run after it (one launch
    already in flight, the teardowns, the seal) ends before the wrapper's
-   600 s kill. Only an interrupt of the work in flight makes a slow target a
+   `timeout` acts (V21; 560 s since revision 2). Only an interrupt of the work in flight makes a slow target a
    measured row (0132 §11.3) and not a killed driver; a check between
    profiles does not. *(Revision 1: the first text claimed this for a check
    made only before each profile.)*
@@ -127,6 +167,39 @@ ruling of 0132.
    opened, whatever ended it. A window that was never opened has no counters
    and gives no figure: its values are `null`, never zero, in the rows and in
    every figure derived from them. *(Revision 1.)*
+9. **An archive row's installed tree is the extracted archive as it stands
+   on the collection host.** 0132 §4.5 requires an installed size for every
+   row and §5.6 puts it in the headline; the acceptance note leaves none
+   owed. For Mailpit, smtp4dev and Inbucket the lock binds two things: the
+   archive's digest and the executable's digest. `footprint` and
+   `collect-v4` are given the extracted executable (`--bin`), not the
+   archive, and 0132 §11.1's command has no archive argument. So the tree
+   `footprint` sizes is the directory the pinned member was extracted into.
+   What is proved of it: it contains the digest-checked executable at the
+   pinned member path, and it is not shared with another target. What is
+   not proved: that it holds every file of the archive and no other. That
+   limit is the one 0132 already accepts for a runtime tree, which is walked
+   whole while the lock digests two of its files. The design does not hide
+   it: every walked tree is published with its file count and a digest of
+   its listing (V18), so a second extraction of the same pinned archive can
+   be compared with the one that was measured, and the README fixes the
+   procedure (a new, empty directory per archive). A row without a number is
+   a refusal, never a `null`. *(Revision 2: replaces revision 1's owed
+   rule.)*
+10. **"No process the command starts runs longer than 10 minutes" (0132
+    §11.1) counts every process: the step under `timeout`, the driver, and
+    the targets a dead driver leaves in its scope.** A target outlives a
+    killed driver until the wrapper kills the scope, so the wrapper's own
+    wait belongs in the sum. V21 states the sum for each case and each term
+    has its own bound. *(Revision 2.)*
+11. **"A committed, clean `main`" (0132 §2.3) means a commit in `main`'s
+    history**, the tip or an earlier one, with a clean tree. `main` is
+    linear and append-only and pull requests land by squash, so no commit of
+    a pull-request branch is ever in that history: a feature branch refuses,
+    whether or not it has `main` merged in. An earlier commit of `main` is
+    accepted because `reproduce.txt` must still run after `main` has moved
+    on; equality with the tip would make every published run unrepeatable
+    at the next merge. *(Revision 2.)*
 
 ## Requirements
 
@@ -153,7 +226,8 @@ chunk_deadline_ms + startup_deadline_ms + 2 × cleanup_deadline_ms
   + CHUNK_MARGIN_MS  ≤  CHUNK_KILL_MS
 ```
 
-`CHUNK_KILL_MS = 600000` is the wrapper's `timeout` (V21) and
+`CHUNK_KILL_MS = 560000` is the instant, counted from the chunk's start, at
+which the wrapper's `timeout` sends the chunk SIGTERM (V21), and
 `CHUNK_MARGIN_MS = 30000` covers what the chunk clock does not see: the
 scope's and the driver's start before it, and the sample stop, the read-back
 of the rows, the report and the seal after it. Both are named constants in
@@ -161,8 +235,11 @@ of the rows, the report and the seal after it. Both are named constants in
 launch already in flight, and the teardowns, which the driver settles within
 twice the cleanup budget. A value above the bound refuses, and the refusal
 prints the ceiling it computed. With the draft's budgets (30 s, 10 s) the
-ceiling is 520000. *(Revision 1: the first text allowed any value up to
-540000, a constant that bounded nothing.)*
+ceiling is 480000, which is the draft's value. *(Revision 1: the first text
+allowed any value up to 540000, a constant that bounded nothing. Revision 2:
+`CHUNK_KILL_MS` was 600000, the wrapper's kill 30 s later, and 0132 §11.1's
+ten minutes were exceeded; the inequality is unchanged and the ceiling moves
+from 520000 to 480000.)*
 
 Each new field is optional in the type and omitted when absent, so v2 and v3
 bytes round-trip unchanged; protocols 1 to 3 refuse each new field by name.
@@ -281,9 +358,15 @@ then the existing `setrlimit(RLIMIT_NOFILE)`. Nothing in the closure
 allocates, formats or builds a path, and every return value is checked: a
 failure fails the spawn. After the spawn the driver reads
 `/proc/<pid>/cgroup` and `Cpus_allowed_list` from `/proc/<pid>/status` and
-requires the leaf and exactly the two target CPUs. On a mismatch the leaf is
+requires the leaf and exactly the two target CPUs. The leaf is required by
+its whole path: the `0::` line must equal the cgroup path of the leaf the
+driver made (the driver's scope, then `target-<launch-id>`), so a cgroup of
+the same name under another parent is a mismatch. On a mismatch the leaf is
 killed and removed and the launch is refused. A launch receipt therefore
-means the target was in the leaf, not only that the leaf had limits.
+means the target was in the leaf, not only that the leaf had limits. The
+receipt still records the leaf's name and not its path, which carries the
+uid and the unit name. *(Revision 2: the comparison was of the path's last
+component only.)*
 
 **V11. CPU layout.** A pure function of the driver's allowed CPU set and the
 kernel's `thread_siblings_list`: the two target CPUs are the lowest allowed
@@ -336,7 +419,11 @@ planned window has its row (V20). It has no counters: `cpu.stat` and
 `null`, never zero. Its two bounds are the instant it was given up, its
 `launch` is the leaf of the instance that failed, or `none` when no instance
 was launched, and its outcome says why: `chunk_deadline`, `oom_killed` or
-`target_exited`. The reader refuses a `measured` window without counters, a
+`target_exited`. The order above holds for it too *(revision 2)*: when the
+instance's leaf shows `oom_kill` ≥ 1 in `memory.events` at the instant the
+window is given up, the outcome is `oom_killed`; otherwise `target_exited`
+when the target's leader has exited; otherwise `chunk_deadline`. The reader
+refuses a `measured` window without counters, a
 window with some counters and not others, and a `sample` row that names
 launch `none`. The resource row version stays 1: no v4 row exists outside
 this branch. *(Revision 1: the first design wrote zero counters and
@@ -370,6 +457,11 @@ does not become ready still yields its launch receipt (leaf, limits and join
 as read back) beside its cleanup receipt, so a startup failure under the
 budget is evidenced as one. *(Revision 1, for V16's classification.)*
 
+The cleanup receipt of a leaf launch names the leaf it emptied and removed
+(`leaf`, the name its launch receipt carries; absent, and absent from the
+bytes, for a launch without a leaf). A cleanup is then tied to its launch by
+the leaf's identity and not by its place in a list (V20). *(Revision 2.)*
+
 ### Measurement
 
 **V16. The cost chunk.** `run` takes `--chunk cost.<target>.r<rep>` for
@@ -395,6 +487,11 @@ down; there is no second timer.
   A cleanup cut short would be unproved. V2's bound is the sum of exactly
   these.
 - After `chunk_end` the driver sends the target nothing but its teardown.
+  That includes the `QUIT` that ends an SMTP session *(revision 2)*: at or
+  after `chunk_end` no `QUIT` is begun and the session is dropped, and a
+  `QUIT` in flight at `chunk_end` is cut like any other step. A cut or
+  omitted `QUIT` changes no row: the send it follows already has its
+  disposition. Before `chunk_end` a session ends as protocol 3 ends it.
 
 What the cut leaves, in the existing vocabulary:
 
@@ -443,7 +540,10 @@ profile is not measured.
 
 The chunk seals and exits 1 when any window is not `measured` or any workload
 failure occurred, exits 0 when none did, and exits 2 unsealed on a launch
-refusal, an unproved cleanup or an interrupt. Protocols 1 to 3 keep their
+refusal, an unproved cleanup or an interrupt. A sealed chunk may hold no
+launch at all (`chunk_end` had passed at entry): it has every planned row
+and window, no launch receipt and no cleanup receipt, and V20 admits it
+*(revision 2)*. Protocols 1 to 3 keep their
 behaviour: none of this applies without `--chunk`.
 
 The chunk manifest carries the collection's run id, the chunk coordinate and
@@ -498,11 +598,23 @@ gives no label; neither changes ranking, which stays 0132 §5.2's. Per target
 the report gives `idle_memory_mib` (current and `anon`, with the scratch
 footprint) and startup (ready ms, CPU ms to ready). These idle and startup
 cells carry the same pair as the cost cells: `ranked` is true only when every
-repetition has a value, and `shortfalls` names why one has none, from the
-same list (`oom`, `timeout`, `target_exited`). The headline is the cells of
-`headline.profile` with those two. *(Revision 1: the first design published
-0 for the idle memory, startup and peak memory of a repetition that never
-ran, and fed it to the median.)*
+repetition has every value the cell publishes (an idle cell: current memory,
+`anon` and the scratch footprint; a startup cell: ready ms and CPU ms to
+ready), and `shortfalls` names why one has none, from the same list (`oom`,
+`timeout`, `target_exited`). *(Revision 1: the first design published 0 for
+the idle memory, startup and peak memory of a repetition that never ran, and
+fed it to the median. Revision 2: an idle cell ranked on two of its three
+values.)*
+
+The headline is the cells of `headline.profile` with those two, and, in the
+run-level report, the installed size of 0132 §5.6 *(revision 2)*:
+`headline.installed` has one entry per launched target with
+`installed_bytes`, `installed_files` and `installed_basis`, copied from the
+run's `footprint.json` and citing it. It is a fixed fact (0132 §5.5): it has
+no window, no repetition and no median. The does-not-start row is blocked
+there as in every other cell. A chunk's own report has no footprint and
+carries no `installed` key.
+
 `mib_per_1k_retained` needs story B's fill levels: it is published as owed,
 never as a number. The official MailSlurper row is blocked in every cell.
 
@@ -514,19 +626,59 @@ installed bytes, and the unpinned runtime as the label `unpinned, not
 counted` where the row has one. It launches nothing and rechecks every digest
 it relies on. The does-not-start row is blocked, with no number.
 
-Installed bytes are what the lock binds, or they are owed *(revision 1)*:
+Every launched row has an installed size, as 0132 §4.5 requires
+*(revision 2; Reading 9)*. `installed_bytes` is a positive integer or
+`footprint` refuses with exit 2 and prints no document: no row carries
+`null`, and the word `owed` appears nowhere in it.
 
-- a row whose artifact is the executable itself (MailHog, the MailSlurper
-  source build, GreenMail's jar, the Alkemio binary, the candidate):
-  the executable, its checked members and the whole pinned runtime tree;
-- a row whose artifact is an archive (Mailpit, smtp4dev, Inbucket): the
-  installed tree is the extracted archive, which nothing in story A walks or
-  pins. `installed_bytes` is `null`, `installed_basis` says
-  `owed: the extracted archive is not walked`, and the digest-checked
-  executable's size is published beside it as `executable_bytes`, under that
-  name. An executable alone is never published as an installed size: 0132
-  §4.5 counts every pinned runtime tree, and smtp4dev's .NET runtime is
-  inside its archive.
+- **The candidate:** the release binary alone; it needs no runtime.
+- **A row whose artifact is the executable itself** (MailHog, the
+  MailSlurper source build, GreenMail's jar, the Alkemio binary): the
+  executable, its checked members, and, where the pin has a runtime, the
+  whole runtime tree under `--runtime`.
+- **A row whose artifact is an archive** (Mailpit, smtp4dev, Inbucket): the
+  extracted archive, which is every regular file under the *extraction
+  root*. The root is `--bin`'s path with the pin's `member` path removed
+  from its end; a `--bin` whose path does not end with the pinned member
+  refuses by name. The executable is inside the root and is counted once.
+  smtp4dev's .NET bundle is therefore counted, as 0132 §4.5 requires.
+
+One walk sizes every tree: regular files only, by their length; a symbolic
+link is not followed and counts for nothing; a directory counts for nothing.
+`installed_files` is the number of files counted.
+
+*The walked trees are identified.* Each directory `footprint` walks (a
+runtime tree, an extraction root) is listed in the row's `installed_trees`
+with its `kind` (`runtime` or `archive`), `files`, `bytes` and `sha256`. The
+digest is the sha256 of the tree's listing: one line per regular file,
+`<sha256 of the file>  ./<path relative to the root>` and a newline, the
+lines sorted by the path's bytes. That is what
+
+```
+(cd ROOT && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum)
+```
+
+prints, so anyone can check it by hand. A file name that is not UTF-8, or
+holds a newline or a backslash, refuses by name: `sha256sum` would escape
+it and the two digests would differ. A row that walks no directory has an
+empty `installed_trees`. No host path appears in the document; a tree is
+named by its kind and its digest, and `installed_basis` is fixed text that
+says which of the three rules above applied.
+
+*No two targets share a tree.* `footprint` refuses by name, giving both
+targets, when one target's walked tree contains another target's executable
+or another target's walked tree, the candidate included. The paths are
+compared after they are resolved (`canonicalize`). This is the one way a
+careless extraction (every archive unpacked into one directory) would
+inflate a row without changing a digest the lock holds.
+
+What this does not prove is Reading 9's and the README says it: the lock
+does not digest every file of an extracted tree. The digest published here
+identifies what was measured; it does not pin it.
+
+*(Revision 1 withdrew the archive rows' installed size as `null`, `owed`,
+with an `executable_bytes` beside it. That contradicted 0132 §4.5 and §5.6;
+the field `executable_bytes` is removed.)*
 
 **V19. `hold`.** `mail_compare hold --protocol P --sources S --bin T=PATH
 [--runtime T=DIR] --scratch DIR --samples FILE` launches one target under the
@@ -553,7 +705,23 @@ coordinate per line; the wrapper never computes it. `admit-v4 DIR PROTOCOL`:
 - requires, per launch, the five limits of V9, the join read-back, the
   protocol's cap in the receipt of every capped target, and
   `cgroup_removed: true`; and per chunk as many cleanup receipts as launch
-  receipts, every one proved;
+  receipts, every one proved. Each cleanup receipt names the leaf of the
+  launch it is paired with, and no leaf is named twice in a chunk
+  *(revision 2: the pairing was by position and target only)*;
+- admits a sealed chunk with no launch receipt and no cleanup receipt
+  *(revision 2)*: every per-launch requirement is then met by having nothing
+  to check, and every other requirement of this list still holds for it (its
+  planned rows and windows, its manifest, its host facts, its ledger entry).
+  Revision 1's code refused it, so one chunk that V16 seals made a whole run
+  inadmissible;
+- reads the run's `footprint.json` *(revision 2)*, requires its protocol id
+  to be the run's and one row per launched target, the candidate included,
+  each with a positive integer `installed_bytes`, and refuses a missing
+  row, a `null` or a zero by naming the target. `headline.installed` is
+  recomputed from that file, so an edited cell is refused by its path like
+  any other figure. Admission does not walk the trees again: the size is
+  computed once per collection (0132 §4.5), and `footprint.json` is one of
+  the files the run's `index.json` seals;
 - requires every planned window row once and no unplanned one;
 - requires one ledger entry per coordinate with exit 0 or 1 and a clean scope;
 - rechecks every executable digest against the lock, and against the files
@@ -572,48 +740,127 @@ per-chunk dirty flag, the per-target digest, the empty plan and the status.)*
 NAME=PATH… [--runtime NAME=DIR…] [--protocol P --sources S --documents DIR]
 [--dry-run]`:
 
-- refuses by name, before building: not Linux; no `systemd-run`, `systemctl`,
-  `taskset` or `timeout`; an existing `--output`; a protocol that is not
-  version 4 (the message names the draft route); fewer than 3 CPUs in
-  `min(nproc/4, 32)`; a shell whose allowed CPUs are not all of the host's
-  (`nproc` differs from `nproc --all`), because the chunks are pinned to
-  CPUs `0-<n-1>` and would otherwise leave the set the operator gave; a
-  dirty or uncommitted candidate (real run only);
-- `--dry-run` prints every chunk's coordinate and command and launches
-  nothing;
-- every process the mode starts after the preflight runs under
-  `timeout --kill-after=30 600 taskset -c 0-<n-1>`: the two `cargo` builds,
-  `check`, `footprint`, each chunk and both admissions (0132 §11.1: no
-  process runs longer than 10 minutes or on more than 32 CPUs);
-- otherwise requires `check` to pass, writes `footprint.json`, and runs the
-  plan in order. Each chunk is
-  `timeout --kill-after=30 600 taskset -c 0-<n-1> systemd-run --user --scope
-  -p Delegate=yes --unit=mail-compare-<run>-<coordinate> -- <driver> run …`,
-  in that nesting, so the driver is the scope's only process. The 600 is
-  V2's `CHUNK_KILL_MS`;
-- reads `/proc/loadavg` before and after each chunk and writes one new ledger
-  file per chunk (coordinate, command, exit, wall time, both loads, whether
-  the scope was clean);
-- after each chunk it waits for the chunk's scope to go inactive, polling
-  `systemctl --user is-active` for at most 10 s, because systemd learns that
-  a scope is empty after the driver has exited. Only a scope still active at
-  the end of that wait is killed and stopped, and the chunk then counts as
-  exit 2. Exit 124, 137 or above 2 counts as 2. Exit 0 or 1 without the
-  chunk's `index.json` counts as 2;
-- on SIGINT, SIGTERM or SIGHUP during a chunk it sends SIGTERM to that
-  chunk's `timeout`, which passes it to the driver (the driver's own
-  interrupt path tears down and exits 2, unsealed), waits for the chunk to
-  end, judges the scope as after any chunk, writes the chunk's ledger entry
-  with exit 2, starts no later chunk and exits 2. Outside a chunk a signal
-  ends the mode with exit 2;
-- exit 2 stops the run as incomplete; nothing is resumed, overwritten or
-  removed, and no `reproduce.txt` is written. Otherwise, after the last
-  chunk, it writes `reproduce.txt`, runs `admit-v4 --seal` and `admit-v4`,
-  and exits 2 if admission refuses, else 1 if any chunk exited 1, else 0.
+*Preflight.* It refuses by name, before building: not Linux; no
+`systemd-run`, `systemctl`, `taskset` or `timeout`; an existing `--output`; a
+protocol that is not version 4 (the message names the draft route); fewer
+than 3 CPUs in `min(nproc/4, 32)`; a shell whose allowed CPUs are not all of
+the host's (`nproc` differs from `nproc --all`), because the chunks are
+pinned to CPUs `0-<n-1>` and would otherwise leave the set the operator gave;
+and, for a real run only, a candidate that is uncommitted, dirty or not on
+`main`.
+
+*The candidate is on `main` (revision 2; 0132 §2.3, Reading 11).* `HEAD`
+must be an ancestor of, or equal to, `refs/heads/main`, and also of
+`refs/remotes/origin/main` where that ref exists
+(`git merge-base --is-ancestor`). When neither ref exists the mode refuses
+and says so. Nothing is fetched. A stale `main` therefore refuses a newer
+`HEAD`, and a local `main` with commits `origin/main` does not have refuses
+too: both fail closed. The check needs no record of its own: `main` is
+append-only, so anyone can repeat it later on the candidate commit the
+manifest names. `--dry-run` skips it with the other candidate checks.
+
+`--dry-run` prints every chunk's coordinate and command and launches
+nothing.
+
+*The bound (revision 2; 0132 §11.1, Reading 10).* One prefix,
+`timeout --kill-after=30 560 taskset -c 0-<n-1>`, is on every `cargo` and
+driver process the mode starts after the preflight: both builds, both
+`targets` calls, `check`, `footprint`, each chunk and both admissions. The
+560 is V2's `CHUNK_KILL_MS` in seconds. Every `systemctl` call has its own
+`timeout`: 1 s for `is-active`, 3 s each for `kill` and `stop`. What is left
+unbounded is the shell's own short utilities (`git`, `nproc`, `date`,
+`cat`, `mkdir`, `cp`, `sed`), which read local files and take nothing from
+a target. The ten minutes then hold for every process, as a sum:
+
+| case | terms | at most |
+|---|---|---|
+| a build, `targets`, `check`, `footprint` or an admission | SIGTERM at 560 s, SIGKILL 30 s later | 590 s |
+| a chunk that failed (see below), and the targets it left in its scope | 560 + 30, one state query (1), `kill` (3), `stop` (3) | 597 s |
+| a chunk that sealed, and anything left in its scope | the driver has exited by 560 s, or the chunk is the case above; twenty state queries (20 × 1) half a second apart (20 × 0.5); `kill` (3), `stop` (3) | 596 s |
+
+*(Revision 1 used `timeout --kill-after=30 600`: 630 s for a step that
+ignores SIGTERM, and a further scope wait for its targets.)*
+
+*A run.* It requires `check` to pass, writes `footprint.json`, and runs the
+plan in order. Each chunk is
+`timeout --kill-after=30 560 taskset -c 0-<n-1> systemd-run --user --scope
+-p Delegate=yes --unit=mail-compare-<run>-<coordinate> -- <driver> run …`,
+in that nesting, so the driver is the scope's only process. It reads
+`/proc/loadavg` before and after each chunk and writes one new ledger file
+per chunk (coordinate, command, exit, wall time, both loads, whether the
+scope was clean).
+
+*A chunk's exit.* Exit 124, 137 or above 2 counts as 2. Exit 0 or 1 without
+the chunk's `index.json` counts as 2. An interrupted chunk counts as 2. A
+chunk that counts as 2 has *failed*; otherwise it has *sealed*.
+
+*The scope is judged from what systemd says (revision 2).* The state is the
+word `systemctl --user is-active <unit>` prints. Only `inactive` and
+`failed` mean the scope is gone: systemd reports a scope in either state
+only when it holds no process, and a scope whose leaf saw an OOM kill may
+end as `failed`, which must not turn a measured OOM into a lost run. Every
+other answer is *not known to be gone*: `active`, `activating`,
+`deactivating`, `reloading`, any other word, no output, a failed query, or a
+query cut by its 1 s bound. A non-zero exit status alone decides nothing.
+
+- After a chunk that sealed, the wrapper asks at most twenty times, half a
+  second apart, because systemd learns that a scope is empty after the
+  driver has exited. The scope is clean at the first `inactive` or
+  `failed`. A slow or failed query is asked again; it is not a dirty scope.
+  If the twentieth answer is still not one of the two, the scope is
+  unclean: it is killed and stopped, and the chunk counts as 2.
+- After a chunk that failed, the wrapper asks once and does not wait: the
+  run is already stopped, and a wait would only keep the scope's processes
+  alive. Unless the answer is `inactive` or `failed`, the scope is killed
+  and stopped and is ledgered unclean.
+
+*(Revision 1 called any non-zero status of `is-active --quiet` inactive, so
+a bus failure was ledgered as a clean scope; and it waited up to 10 s on
+every chunk, a killed one included.)*
+
+*One owner for a running step (revision 2).* Every bounded step is started
+by one helper, in the background, and waited for there. A step whose output
+the wrapper reads writes it to a file, never through `$(…)`, which would
+put the step back in the foreground where a trap cannot act until it ends.
+The wrapper knows a chunk as *owned* from the moment it is started until its
+ledger entry has been written: the chunk's pid and unit are not forgotten
+when the process is reaped.
+
+*Signals.* On SIGINT, SIGTERM or SIGHUP the handler does two things only: it
+records the interrupt, and if a step is running it sends that step's
+`timeout` a SIGTERM, which passes it on (the driver's own interrupt path
+tears down and exits 2, unsealed). Everything else happens in the main
+flow:
+
+- when the step that was running is a chunk, the main flow waits until it is
+  reaped, judges its scope as a failed chunk's, writes its ledger entry with
+  exit 2, starts nothing further and exits 2;
+- when it is any other step, the main flow ends the mode with exit 2 as soon
+  as the step is reaped, naming the interrupt;
+- a signal that arrives while a chunk is owned but already reaped (during
+  the scope's judgement or the ledger write) does not abandon the chunk: the
+  judgement and the ledger entry are completed, the entry has exit 2, and
+  the mode exits 2;
+- a signal between two steps, when nothing is owned, ends the mode with
+  exit 2 at once;
+- no step is started once an interrupt is recorded.
+
+A signal is therefore acted on within about 3 s (the longest `systemctl`
+bound) plus the time the interrupted process takes to end. *(Revision 1 ran
+the builds, `check`, `footprint` and the admissions in the foreground, where
+bash holds a trap until the child ends, up to the whole bound; and it forgot
+the chunk's pid before the scope wait and the ledger write, so a signal
+there exited without the chunk's ledger entry and left a live scope.)*
+
+*The end.* Exit 2 stops the run as incomplete; nothing is resumed,
+overwritten or removed, and no `reproduce.txt` is written. Otherwise, after
+the last chunk, it writes `reproduce.txt`, runs `admit-v4 --seal` and
+`admit-v4`, and exits 2 if admission refuses, else 1 if any chunk exited 1,
+else 0.
 
 *(Revision 1: the wait for the scope, the signal path, the bound on every
-process and the restricted-shell refusal are new. The `reproduce.txt` rule is
-unchanged; the code wrote the file before the first chunk and is corrected.)*
+process and the restricted-shell refusal were new. The `reproduce.txt` rule
+is unchanged since the first design.)*
 
 The host load is recorded, not gated (see *For the operator at freeze*).
 
@@ -652,7 +899,8 @@ cgroup, and the test could then not enable controllers (V8).
    by its interrupt instead of EOF and gives the same receipt.
 5. `v4_real_cost_chunk_seals_and_admits`: one cost chunk of a small v4 draft
    fixture against the candidate seals with exit 0, every window has
-   `affinity_held: true`, and its windows, samples and figures pass the
+   `affinity_held: true`, each cleanup receipt names the leaf of its launch
+   receipt (revision 2), and its windows, samples and figures pass the
    chunk-level checks of V20. A second chunk whose "candidate" is a program
    that exits at once (`/bin/false`) seals with exit 1: every profile is not
    measured with `target_exited`, each launch has its launch receipt and a
@@ -675,6 +923,18 @@ in its result, with the refusal output of all five: that is the stated
 state of AC18b, not a claim that it is met. *(Revision 1: the first text
 let a seat report the proofs as "owed" without saying what that held up.)*
 
+*What a seat's typed result states (revision 2).* The engine gives a seat
+one word for "my tasks are done" and the run cannot reach review without
+it. That word is about the seat's own tasks. It says nothing about AC18b
+and discharges nothing: review 2 found the implement seat's `complete`
+beside notes that said the story was not complete, and read it correctly as
+not discharging the gate. So the rule is on the notes: a seat that could not
+run the five on a kernel writes, in these words, "AC18b is open and the
+story is not complete", with the refusal output, whatever its typed word
+is. Only the host output closes AC18b. Revision 2 changes code the proofs
+exercise (the join comparison, the cleanup receipt, the chunk's end), so the
+five run at the revised head; no earlier output counts.
+
 **V23. Docs.** `docs/evals/README.md` gains a v4 section: what story A
 measures, the budget and mechanism, the refusals, the draft route and
 `collect-v4`, Reading 4's sentence, "a ceiling, not a reservation" for the
@@ -686,10 +946,21 @@ these sentences exact: the SMT siblings of the two target CPUs are left idle
 window; it is a *frozen* v4 that this driver refuses, while `admit-v4`
 admits a draft run and labels it a draft; a value that was not observed is
 `null` and never zero; a startup that is alive but not ready stops the run
-(Reading 7); an archive row's installed size is owed (V18); a sealed run
-proves the directory's state at the seal, not that a host power loss cannot
-lose the tail of `samples.jsonl`; and the host run of the five proofs is
-what the merge waits for.
+(Reading 7); a sealed run proves the directory's state at the seal, not
+that a host power loss cannot lose the tail of `samples.jsonl`; and the host
+run of the five proofs is what the merge waits for.
+
+Revision 2 replaces the sentence that an archive row's installed size is
+owed, and adds: every row has an installed size and the headline carries it;
+how to extract an archive for it (a new, empty directory for each pinned
+archive, the extracted member passed as `--bin`); what the tree digest is,
+with the command that reproduces it, and Reading 9's limit in plain words
+(the lock digests the archive and the executable, not every extracted file);
+the prefix `timeout --kill-after=30 560` with V21's three sums in place of
+every `600` the v4 section states for `collect-v4`; that the candidate must
+be in `main`'s history and which refs are read; and that a scope is clean
+only when systemd answers `inactive` or `failed`. The proofs' own command
+keeps `timeout 600`, which is 0132's wording for them.
 
 **V24. Unchanged.** No file under `src/` or `evals/` changes. `Cargo.toml`,
 `Cargo.lock`, `evals/Cargo.lock` and `deny.toml` are byte-identical. No
@@ -707,7 +978,9 @@ means a refusal whose text names the cause.
 - **AC2 (V2).** Each field of the v4 resources block, absent or at another
   value, refuses. A `chunk_deadline_ms` exactly at V2's ceiling passes and
   one millisecond above it refuses, naming the ceiling; the ceiling moves
-  with the startup and cleanup budgets. Each new field on a protocol 2 or 3
+  with the startup and cleanup budgets, and with the draft's budgets it is
+  480000 (`CHUNK_KILL_MS` is 560000; revision 2). Each new field on a
+  protocol 2 or 3
   refuses. The v2 and v3 history bytes still parse, validate and
   re-serialize to the same value.
 - **AC3 (V3).** A frozen protocol 4 with a profile added, removed or changed
@@ -742,8 +1015,9 @@ means a refusal whose text names the cause.
 - **AC9 (V10, V11).** The parsers of `/proc/<pid>/cgroup` and
   `Cpus_allowed_list` (list and range forms) and the layout function are
   proved on fixtures: SMT and non-SMT maps, one core only, no client CPU
-  left, siblings outside the set. The join itself is proved by real proofs 2
-  to 4.
+  left, siblings outside the set. The join comparison refuses a cgroup with
+  the leaf's name under another parent, and passes the leaf's own path
+  (revision 2). The join itself is proved by real proofs 2 to 4.
 - **AC10 (V12, V13).** A tmpfs scratch refuses (on Linux, against
   `/dev/shm`). The parsers of `cpu.stat`, `memory.stat`, `memory.events`,
   `memory.current`, `memory.peak`, `pids.current` and `cgroup.procs` pass on
@@ -753,14 +1027,19 @@ means a refusal whose text names the cause.
   some counters and not others, and a `sample` row that names launch `none`.
   `affinity_held` is `true`, `false` and `null` for a fixture leaf whose
   tasks all hold the pair, whose one task differs, and that holds no task,
-  in each of the three window kinds.
+  in each of the three window kinds. A never-opened window given up at the
+  chunk deadline is `oom_killed` when its instance's leaf shows an OOM kill,
+  `target_exited` when only the leader has exited, and `chunk_deadline`
+  otherwise (revision 2).
 - **AC11 (V14, V15).** On a fixture leaf whose `cgroup.procs` never empties,
   teardown ends at the budget with `cgroup_removed: false`, the leaf in place
   and cleanup unproved. A v3 cleanup receipt and a v3 launch receipt
   serialize byte for byte as before. A leaf launch whose receipt lacks
   `cgroup_removed` is not proved. A leaf launch's cleanup receipt carries
   `oom_kills` and `exited_early`, read from a fixture leaf and from a leader
-  that exited before the teardown.
+  that exited before the teardown. It also names its leaf, with the name its
+  launch receipt carries; a cleanup receipt of a launch without a leaf has
+  no `leaf` key (revision 2).
 - **AC12 (V16).** The plan of the committed draft is 24 cost chunks: eight
   launched targets in each repetition's rotation, none for `mailslurper`.
   Protocol 4 without `--chunk`, protocol 3 with it, an unknown coordinate,
@@ -772,13 +1051,26 @@ means a refusal whose text names the cause.
   three repetitions are right; `mib_per_1k_retained` is owed; the blocked row
   has no number; a v4 report is version 3 and a protocol 3 report is still
   version 2.
-- **AC14 (V18).** `footprint` on fixtures gives the archive size, the layer
-  sum, the candidate's file size, the installed sum including a runtime tree
-  for an executable row, the `unpinned, not counted` label, and a blocked
-  row; a changed executable refuses. An archive row gives `installed_bytes`
-  `null`, the `owed` basis and `executable_bytes`, and no document
-  `footprint` prints has an installed size equal to an archive row's
-  executable alone.
+- **AC14 (V18; rewritten in revision 2).** `footprint` on fixtures gives
+  the archive size, the layer sum, the candidate's file size, the installed
+  sum including a runtime tree for an executable row, the
+  `unpinned, not counted` label, and a blocked row; a changed executable
+  refuses. For an archive row built by the test (the member, two more files,
+  a nested directory and a symbolic link):
+  - `installed_bytes` is the sum of the regular files under the extraction
+    root, the executable counted once and the link not at all, and
+    `installed_files` is their count;
+  - `installed_trees` has one entry of kind `archive` whose `sha256` equals
+    a digest the test computes on its own from the listing format of V18,
+    and an executable row with a runtime has one of kind `runtime`; adding,
+    removing or changing one file changes the digest;
+  - a `--bin` whose path does not end with the pinned member refuses by
+    name, and so does a tree that holds another target's executable, a tree
+    inside another target's tree, and a file name with a newline or a
+    backslash;
+  - no row of any document `footprint` prints has `installed_bytes` `null`
+    or zero, the string `owed` or the key `executable_bytes`, and no value
+    in it is a path of the fixture's directory.
 - **AC15 (V19).** `hold`'s refusals (missing flags, protocol 3, bytes on
   stdin) are proved without a cgroup, and so are two facts on a launch
   without a leaf: every printed endpoint is the `host:port` the target
@@ -795,32 +1087,81 @@ means a refusal whose text names the cause.
   exit 2, an unclean scope, a second `--seal`, and one edited figure, which
   is named by its path. A protocol whose plan is empty refuses by name and
   does not panic. The sealed manifest carries `protocol_status: draft` for a
-  draft.
-- **AC17 (V21).** With a fake driver and fake `systemd-run` and `systemctl`
-  on `PATH`: `--dry-run` prints 24 commands in plan order and starts nothing;
-  the default protocol refuses and names the draft route; each preflight
-  refusal is named, the restricted shell among them; a chunk exit 2, exit 3,
-  a timeout (124), a kill (137), an exit 0 without an index and a scope that
-  stays active each stop the run with exit 2 and a ledger entry, with no
-  later chunk started and no `reproduce.txt`; a scope that reads active once
-  and then inactive is clean and the run goes on; a timeout whose scope is
-  still active is both killed and counted; a SIGTERM to the wrapper while a
-  chunk runs ends that chunk, writes its ledger entry with exit 2, starts no
-  later chunk and exits 2; a full fake run writes 24 ledger files, writes
-  `reproduce.txt` only after the last chunk, and calls `--seal` and then
-  verify; a seal that succeeds followed by a verify that refuses exits 2.
-  The logged commands show the builds, `check`, `footprint`, every chunk and
-  both admissions under `timeout --kill-after=30 600 taskset`, and the
-  chunk's `600` equal to `CHUNK_KILL_MS` ÷ 1000. Off Linux the mode refuses.
+  draft. Revision 2 adds:
+  - a run directory in which one chunk sealed with no launch (every row
+    `unstarted`, every window never opened with `chunk_deadline`, no
+    receipt) seals and verifies, and the same directory still refuses when
+    another chunk, which did launch, lacks a cleanup receipt;
+  - a cleanup receipt that names another launch's leaf, two cleanup
+    receipts that name one leaf, and a cleanup receipt of a leaf launch
+    without a leaf name each refuse by name;
+  - the sealed run-level report has `headline.installed` with one entry per
+    launched target equal to the fixture's `footprint.json`, and a chunk's
+    report has no such key; a `footprint.json` that lacks a launched
+    target's row, or states `null` or `0` for its `installed_bytes`, or
+    names another protocol, refuses naming the target or the protocol; an
+    edited `headline.installed` cell is refused by its path; and a
+    `footprint.json` changed after the seal makes the verify refuse.
+- **AC17 (V21; revision 2 marks its additions).** With a fake driver and
+  fake `systemd-run`, `systemctl`, `timeout` and `cargo` on `PATH`:
+  - `--dry-run` prints 24 commands in plan order and starts nothing; the
+    default protocol refuses and names the draft route; each preflight
+    refusal is named, the restricted shell among them; off Linux the mode
+    refuses.
+  - *Candidate (revision 2).* In the fixture repository a clean commit on a
+    branch that is not in `main`'s history refuses and names `main`; so does
+    that branch after `main` was merged into it; a detached `HEAD` at an
+    earlier commit of `main` and one at its tip both pass; a `HEAD` that is
+    in `refs/heads/main` but not in an existing `refs/remotes/origin/main`
+    refuses and names that ref; a repository with neither ref refuses and
+    says so; `--dry-run` passes in each of these.
+  - *Chunk exits.* A chunk exit 2, exit 3, a timeout (124), a kill (137), an
+    exit 0 without an index and a scope that stays active each stop the run
+    with exit 2 and a ledger entry, with no later chunk started and no
+    `reproduce.txt`.
+  - *Scope (revision 2).* After a sealed chunk: `active` once and then
+    `inactive` is clean and the run goes on; `failed` is clean; a query that
+    prints nothing and exits non-zero is asked again and a later `inactive`
+    is clean; twenty answers none of which is `inactive` or `failed`, in
+    each of three forms (`active`; no output with a non-zero status; an
+    unknown word), end with the scope killed and stopped, `scope_clean`
+    false in the ledger and exit 2. After a failed chunk (124) exactly one
+    state query is logged before the `kill` and the `stop`, and none when it
+    answers `inactive`.
+  - *Signals (revision 2).* A SIGTERM to the wrapper while a chunk runs ends
+    that chunk, writes its ledger entry with exit 2, starts no later chunk
+    and exits 2. A SIGTERM while a build, `check`, `footprint` or an
+    admission runs ends the mode with exit 2 while that fake process would
+    still be running, and the fake process is gone afterwards: the test
+    waits, with a deadline, for the fake's marker, signals, and requires the
+    wrapper to have exited before the fake's own duration has passed. A
+    SIGTERM that arrives while the chunk is reaped and its scope is being
+    judged (the fake `systemctl` writes a marker and waits) still leaves the
+    chunk's ledger entry, with exit 2, and a scope that was not gone is
+    killed and stopped.
+  - *A full run.* A full fake run writes 24 ledger files, writes
+    `reproduce.txt` only after the last chunk, and calls `--seal` and then
+    verify; a seal that succeeds followed by a verify that refuses exits 2.
+  - *The bound (revision 2).* The logged commands show both builds, both
+    `targets` calls, `check`, `footprint`, every chunk and both admissions
+    under `timeout --kill-after=30 560 taskset`; the chunk's `560` equals
+    `CHUNK_KILL_MS` ÷ 1000; every logged `systemctl` call is under its own
+    `timeout` (1 for `is-active`, 3 for `kill` and for `stop`); and
+    560 + 30 + 1 + 3 + 3 and 560 + 20 × 1.5 + 3 + 3, computed in the test
+    from the numbers it read in the log and the script's poll count, are
+    each at most 600. No `timeout` line logged by a `collect-v4` run carries
+    `600`.
 - **AC18a (V22, provable by a seat).** The five proofs exist, are ignored and
-  Linux-only, assert what V22 lists (revision 1's additions included), and
-  each fails with V8's exact refusal where there is no delegation.
+  Linux-only, assert what V22 lists (the additions of revisions 1 and 2
+  included), and each fails with V8's exact refusal where there is no
+  delegation.
 - **AC18b (V22, the merge gate).** The passing output of each of the five
   from the dispatcher host, run one at a time under V22's command at the
   head to be merged, with the load before and after, is attached to the PR.
   The story is not complete and the PR is not merged before that. A seat
-  that cannot run them reports AC18b as open and does not report the story
-  complete.
+  that cannot run them says in its notes that AC18b is open and the story
+  is not complete; its typed result states neither (V22, revision 2).
+  Output from a head before revision 2's code does not count.
 - **AC19 (V23, V24).** The README section exists and the decision inventory
   test passes. `git diff e23a8ba -- src evals Cargo.toml Cargo.lock deny.toml`
   is empty, and the only existing file changed under `docs/evals/` is
@@ -851,6 +1192,14 @@ means a refusal whose text names the cause.
   - a fidelity read cut by `chunk_end` leaves visible rows without
     `fidelity_ok`, an `incomplete` verification and a repetition that is not
     exact, named `timeout` and not `fidelity` or `lost`;
+  - no `QUIT` after the instant (revision 2), against a test-owned listener
+    that records every line it receives: a reused session whose sends ended
+    at `chunk_end` is dropped and the listener received no `QUIT`; a fresh
+    session whose send was accepted just before a `chunk_end` that has
+    passed when the `QUIT` would begin sends none, and its row stays
+    `accepted`; a `QUIT` in flight against a listener that never answers it
+    is cut at `chunk_end` and the call returns before one request deadline
+    has passed; before `chunk_end` the listener receives `QUIT` as before;
   - in every case each planned window has its one row and the teardown is
     proved.
 - **AC22 (V15, V16, a launch that does not become ready; revision 1).** The
@@ -873,7 +1222,9 @@ means a refusal whose text names the cause.
   keeps its CPU and peak figures and is unranked with `oom`; rows `unstarted`
   because the target failed before readiness do not name `timeout`. No JSON
   number in a report built from rows without counters is `0` where a figure
-  is meant.
+  is meant. An idle cell one of whose repetitions has current memory and
+  `anon` but no scratch footprint is unranked, and so is one that lacks
+  either of the other two (revision 2).
 
 ## Out of scope
 
@@ -894,13 +1245,22 @@ means a refusal whose text names the cause.
   writer already dot-stuffs (`wire.rs`, `dot_stuff`).
 - cpuset delegation, an unenforced pass, a container runtime, a second
   supervisor, a new package.
+- Reading or extracting an archive in the driver or the wrapper, an archive
+  argument on `footprint` or `collect-v4`, and a lock field that pins an
+  extracted tree (Reading 9; plan.md § *Revision 2* gives the cost).
+- A host-load gate, a sixth real proof, a raw exit code beside the mapped
+  one in the ledger, and a new outcome word for a target that is alive but
+  not ready: raised again in round 3 and left as they were.
 
 ## For the operator at freeze (story E)
 
 Story A leaves these open and labels them as such. None blocks this story.
 
-1. `chunk_deadline_ms`: the draft says 480000; V2's ceiling with the draft's
-   budgets is 520000. A chunk is one target's four profiles of one
+1. `chunk_deadline_ms`: the draft says 480000, and since revision 2 that is
+   V2's ceiling with the draft's budgets (30 s to start, 10 s to clean up).
+   A longer chunk deadline now needs a shorter startup or cleanup budget;
+   the ten minutes of 0132 §11.1 leave no other room. A chunk is one
+   target's four profiles of one
    repetition (0132 §11.1), so a target slow enough to use the deadline in
    an early profile leaves its later profiles of that chunk not measured,
    published unranked as `timeout`.
@@ -913,8 +1273,12 @@ Story A leaves these open and labels them as such. None blocks this story.
    the budget still stops the whole run with exit 2 (Reading 7). Hold each
    target once under the budget (`mail_compare hold`) before a day-long run,
    and set the startup budget from what that shows.
-5. The installed size of the three archive rows is owed (V18). It needs an
-   extraction path the collection procedure fixes.
+5. The installed size of an archive row is measured on the tree the
+   operator extracted and is identified by a digest, not pinned by the lock
+   (Reading 9, V18). Extract each pinned archive into a new, empty
+   directory. If the operator wants the tree bound to the lock, that is a
+   lock field 0132 does not name: an amendment, not a part of this story.
+   Nothing is owed here: every row has its number.
 6. `collect-v4` has run only against fake tools: a draft cannot pass `check`
    and a frozen v4 does not exist yet. The first real chunk is the first
    real test of how the scope deactivates under systemd 259. A run that
@@ -930,4 +1294,8 @@ the gates' coverage denominator turns out to include the bench. Revision 1
 adds: stop if the cut at `chunk_end` can only be built by changing what a
 protocol 1 to 3 run does, or if something other than a launch, a teardown and
 the seal turns out to run after `chunk_end`, so that V2's bound would be
-false.
+false. Revision 2 adds: stop if an archive row can only be sized by reading
+the archive itself (a decompressor, a package, a host `tar` or `unzip`, or a
+new `collect-v4` argument); if one of V21's three sums cannot be kept at or
+under 600 s; or if the smoke fixture or the draft cannot stay at or under
+V2's new ceiling without changing a budget.

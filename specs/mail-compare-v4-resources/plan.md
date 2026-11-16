@@ -4,10 +4,219 @@ Spec: [spec.md](spec.md). Authority: accepted
 [0132](../../docs/decisions/0132-mail-comparison-protocol-v4.md), story A.
 Base `e23a8ba`. No new decision record: nothing here amends a ruling.
 
-Revision 1 (2026-11-16, returned from review 1) is the next section. It
-overrides the round-1 text below wherever the two differ; the round-1 text
-is kept, marked where it was wrong, because the code at `2852bd2` was built
-to it.
+Revision 2 (2026-11-16, returned from review 2) is the next section and
+revision 1 follows it. A later revision overrides an earlier text wherever
+the two differ; the earlier texts are kept, marked where they were wrong,
+because the code at `2852bd2` and at `c2041b9` was built to them.
+
+## Revision 2 — after review 2 (2026-11-16)
+
+Review 2 read head `c2041b9` (tree `227345e4`, the verified candidate) and
+returned the run to design with `spec_defect: true` (decision 0102, addendum
+2026-10-31): correctness, guarantees and independent `residual`; security
+and tests `clean`; highest severity medium; no security finding. The design
+is revised, not restarted. Both design commits (`fcbc0c6`, `e33d113`) and
+every implementation commit stay as they are. This revision is a new commit
+on top, and the code it asks for is group S of [tasks.md](tasks.md).
+
+Findings are cited as the panel numbered them in review 2, with a leading
+`2` so that they cannot be mistaken for review 1's: `2C1`–`2C7`
+correctness, `2G1`–`2G11` guarantees, `2I1`–`2I5` independent (`2I4a`–`c`
+and the six bullets of `2I5`, `2I5.1`–`2I5.6`).
+
+### The three defects
+
+All three are places where revision 1's text contradicts accepted 0132. A
+criterion that conflicts with an accepted decision is corrected toward the
+decision; 0132 is the authority for each.
+
+- **`2G1`, 0132 §4.5 and §5.6.** Every fixed-fact row has installed bytes
+  and the headline row carries installed size. Revision 1's V18 published
+  `null` with an `owed` basis for Mailpit, smtp4dev and Inbucket, and
+  `report::Headline` has no installed field. The acceptance note leaves no
+  installed size owed, and story E is the operator's collection, not a code
+  story that could pay the debt.
+- **`2G2` (`2C4`), 0132 §11.1.** "No process the command starts runs longer
+  than 10 minutes." `timeout --kill-after=30 600` allows 630 s, and the
+  targets of a killed driver live a further scope wait.
+- **`2G3`, 0132 §2.3.** The candidate is a committed, clean `main`. The
+  wrapper checks committed and clean; a clean pull-request branch passes and
+  is labelled "clean main only".
+
+### Synthesis, round 3 — the positions ruled
+
+Both positions argue a revision with no new protocol version, outcome word,
+package or `src/` change, and they agree on most of it. Where they differ,
+or where the ruling is neither's:
+
+| # | Point | Simplicity | Robustness | Ruling | What the losing side costs |
+|---|---|---|---|---|---|
+| S-1 | Where an archive row's installed size comes from | Walk the executable's directory with the existing `tree_bytes`; refuse two `--bin` in one directory | Extract the pinned archive in `footprint` with the host's `tar` and `unzip` into a `0700` scratch tree, after checking every member name; walk that | **Simplicity's walk, held to robustness's rule that the fact is identified and a hole is a refusal.** The root is derived from the pinned member path, containment between targets refuses, every walked tree is published with a listing digest, and no row can be `null` | Robustness's extraction would make the size a function of pinned bytes alone. That is lost: the tree is the operator's extraction, identified but not pinned (Reading 9). It was not built because `footprint` and `collect-v4` are never given an archive (0132 §11.1's command has `--bin` and `--runtime`), so it needs a new argument on an accepted command, two host tools in the preflight, a parser of two listing formats to make extraction safe, and archives no seat's box holds to test against. Its own position names the new hostile-bytes surface; the walk has none |
+| S-2 | The headline | `Headline.installed`, copied from `footprint.json`; admission does not walk again | The same field, "recomputed by `admit-v4`" | **Simplicity.** Copied from the file, which `index.json` already seals; a missing, `null` or zero size refuses | A tree changed between `footprint` and admission is not noticed by admission. 0132 §4.5 computes the fixed facts once per collection, and admission cannot re-walk a directory it is not given |
+| S-3 | The `timeout` numbers | `--kill-after=30 560`, so 560 + 30 + 10 = 600 and the ceiling is the draft's 480000 | `--kill-after=30 570`, "ceiling stays 520000" | **560 (simplicity), and the sum is made complete.** Robustness's 570 leaves a killed driver's targets alive past 600 s until the scope is killed, and its ceiling is an arithmetic slip: 570000 − 30000 − 30000 − 20000 is 490000 | 10 s less of a chunk than robustness's number; the draft now sits exactly on its ceiling, so the operator cannot raise `chunk_deadline_ms` at freeze without shortening a budget |
+| S-4 | What the sum counts | The scope wait, as one 10 s term | Not counted | **Neither is enough.** Simplicity's 600 is reached only if every `systemctl` call returns at once, and a hung call is unbounded. So: a failed chunk's scope is not waited for (one query, then kill); every `systemctl` call has its own `timeout`; V21 gives three sums, each under 600 | A few more lines of bash and a fake `systemctl` that can be slow. Without it the sentence of §11.1 is true only on a healthy bus |
+| S-5 | "On `main`" | `git merge-base --is-ancestor HEAD main` | `HEAD` equals the tip of `main`; record the ref and commit in the manifest and ledger | **Ancestry (simplicity), with robustness's fail-closed reading of the ref:** `refs/heads/main`, and `refs/remotes/origin/main` too where it exists; neither is a refusal | Equality would refuse `reproduce.txt` at the first merge after a run, and `main` moves several times a day. Robustness's fear, that a descendant passes, does not apply: the check is that `HEAD` is *in* `main`'s history, and a squash-merged branch never is. Nothing is recorded: the check can be repeated on the manifest's commit for as long as `main` is append-only |
+| S-6 | Cleanup paired to its launch by leaf name (`2G11`, `2I5.4`) | Reject: a receipt field for a non-adversarial driver | Adopt | **Robustness.** One optional field on the cleanup receipt, absent without a leaf | Simplicity's refusal would leave "`cgroup_removed: true`" attached to a position in a list. The cost of adopting is one field and three refusal tests |
+| S-7 | An unknown scope state | Unclean at once | Unclean | **Unclean only when the polls run out.** After a sealed chunk an unanswered query is asked again; twenty without `inactive` or `failed` is unclean | A dead bus takes up to 30 s to become exit 2 instead of failing at the first query. An at-once rule would lose a day's run to one slow answer on a loaded host |
+| S-8 | The signal path | One helper owns every bounded step; the handler only records and forwards; the main flow judges | Keep the pid through the ledger; run steps in the background | **Both; they are one design.** Simplicity's single owner is how robustness's two requirements are built | none between the positions |
+| S-9 | Review 2's INFO items | Change none | Record, change none | **Two are taken, because a written criterion already covers them:** a never-opened window's outcome follows V13's order (`2I5.1`), and a walked runtime tree is identified by the digest S-1 adds (`2I5.5`). The rest stay as they are, listed below | Two small tasks. Leaving `2I5.1` would keep code that relabels an OOM, which V13 forbids in so many words |
+| S-10 | AC18b | No spec change | Unchanged; the five run at the revised head | **Unchanged as a criterion; V22 gains what a typed result states** | none: both positions keep it as the merge gate |
+| S-11 | A load gate, a sixth real proof, a per-profile replan, a resumable run | not raised | refused or deferred | **Unchanged from rounds 1 and 2** | as before |
+
+Agreed by both and adopted without a ruling: no `QUIT` after `chunk_end`
+(wrap it in the existing cut helper, do not add a term to V2); a zero-launch
+sealed chunk is admitted (delete the refusal, add no floor to
+`chunk_deadline_ms`); an idle cell ranks on all three values; the join is
+compared by the whole path.
+
+### Every finding of review 2, and where it is answered
+
+| Finding | Severity | Answer | Spec | Task |
+|---|---|---|---|---|
+| `2G1` archive rows publish `null`; no installed size in the headline | medium, defect | S-1, S-2 | Reading 9, V17, V18, V20, V23, AC14, AC16 | S1.1–S1.4, S6.1 |
+| `2G2`, `2C4` a step can run 630 s | low, defect | S-3, S-4 | Reading 10, V2, V21, AC2, AC17 | S2.1, S3.1, S3.2 |
+| `2G3` a clean branch passes as `main` | low, defect | S-5 | Reading 11, V21, AC17 | S3.5 |
+| `2C1`, `2G4`, `2I1` AC18b is open; the implement seat's typed `complete` | medium | S-10. The criterion stands; no seat in a box without cgroupfs can meet it | V22, AC18b | S7.1–S7.3 |
+| `2C2`, `2G6`, `2I2` a `QUIT` is sent and awaited after `chunk_end` | low | No `QUIT` is begun after it; one in flight is cut | V16, AC21 | S4.1 |
+| `2G5`, `2I3` admission refuses a zero-launch sealed chunk | low | Admitted | V16, V20, AC16 | S5.1 |
+| `2C3`, `2G7`, `2I4c` a signal during a foreground step is held up to the bound | low | Every bounded step runs in the background under one helper | V21, AC17 | S3.1, S3.4 |
+| `2G8`, `2I4b` any non-zero `is-active` is read as inactive | low | Only `inactive` or `failed` is clean | V21, AC17 | S3.3 |
+| `2G9`, `2I4a` `chunk_pid` cleared before the scope wait and the ledger write | low | A chunk is owned until its ledger entry is written | V21, AC17 | S3.4 |
+| `2G10` an idle cell ranks without a scratch value | low | Every published value | V17, AC23 | S5.3 |
+| `2G11` (first half), `2I5.4` cleanup paired by index and target | low / info | S-6 | V15, V20, AC11, AC16 | S5.2 |
+| `2G11` (second half), `2I5.6` `check_join` compares the last path component | low / info | The whole path | V10, AC9 | S4.3 |
+| `2I5.1` a cut, never-opened `measure` window ignores an earlier OOM kill | info | S-9: V13's order holds for it | V13, AC10 | S4.2 |
+| `2I5.5` a `--runtime` tree is sized without being pinned | info | S-9: identified by its listing digest; still not pinned, and said so | Reading 9, V18, AC14 | S1.1, S1.2 |
+| `2I5.2` a fidelity read cut by `chunk_end` after a listing the verify deadline ended keeps `verify deadline` | info | No change. The first cause that ended the verification names it; the cell is unranked either way | — | — |
+| `2I5.3` the ledger records the mapped exit 2, not 124, 137 or 3 | info | No change. V21 says the mapped value is what is recorded; each entry carries the full command | — | — |
+| `2C5` alive but not ready stops the run | info | No change (Reading 7; *For the operator at freeze* 4) | — | — |
+| `2C6` `cgroup.kill` runs after the listener probes, so an escapee that listens makes cleanup unproved | info | No change: V14 as written, on the conservative side | — | — |
+| `2C7` the mode shims and `prepare_host` run only in the real proofs | info | No change (*Out of scope*) | — | — |
+| security | clean | no finding | — | — |
+| tests | clean | no finding; its two non-defect observations (a leaked `Box` in two tests, a `>= 3` floor in the sampler test) are left | — | — |
+
+### Criteria whose text changed, and why none is a loosening
+
+- **V18 / AC14, installed bytes.** Revision 1's text was wrong against 0132
+  §4.5 and §5.6 (`2G1`). It is replaced by a stricter one: a number for
+  every row, or a refusal. AC14's `null`, `owed` and `executable_bytes`
+  assertions are removed because the thing they asserted is the defect.
+- **V2 / AC2 and V21 / AC17, the 600.** Wrong against 0132 §11.1 (`2G2`).
+  The inequality of V2 is unchanged; its constant drops from 600000 to
+  560000 and the ceiling from 520000 to 480000. Tighter.
+- **V21, the candidate.** Wrong against 0132 §2.3 (`2G3`). A check is added.
+- **V21, the scope wait.** Revision 1 waited up to 10 s after every chunk.
+  Now a failed chunk gets one query and no wait. That does not loosen the
+  cleanliness rule, which is stricter (S-7, `2G8`): the wait existed so that
+  a sealed chunk's scope was not called dirty too early, and a failed chunk
+  is exit 2 whatever its scope says. Evidence that the wait had to go: with
+  it kept, the failed case sums to 560 + 30 + 30 + 6 = 626 s.
+- **V20, the zero-launch chunk.** Revision 1's V16 and AC21 already seal it
+  and V20's text did not refuse it; the code did (`report.rs:1308`). The
+  text now says what V16 implied.
+- **V22, the typed result.** Revision 1 said "no seat reports it complete".
+  Review 2 showed that the engine's vocabulary cannot carry that: the
+  implement seat returned `complete` because no other word reaches review,
+  while its notes said the story was not complete. The requirement moves to
+  the notes, where a seat can meet it. AC18b itself is untouched.
+- **AC17's `600` assertions** follow V21. Everything else in AC17 stands and
+  is restated in groups.
+
+### How the changes are built
+
+**Installed size (S1).** `resources.rs` gains one function that walks a
+directory and returns bytes, files and the listing digest
+(`targets::sha256_hex` already exists); `tree_bytes` becomes that function
+or calls it, so there is one walk. `footprint` computes an archive row's
+root from `--bin` and `pin.artifact.member` (`Path::ends_with` on
+components, then that many `parent()` steps), walks it, and loses the
+`ArtifactKind::Archive` null arm. The containment guard runs once, after
+every row's executable and trees are known, on canonical paths. The
+existing `parts` vector, which holds host paths and is never printed, goes.
+`footprint_version` stays 1: no footprint document exists outside this
+branch.
+
+`report.rs`: `Headline` gains `installed: Option<Vec<InstalledCell>>`,
+skipped when absent. `admit_v4` already reads and parses `footprint.json`
+(`report.rs:1532`) and discards it; it now checks it and passes the cells to
+the run-level report. `headline` is already one of the keys admission
+compares, so an edited cell is refused by the existing path-naming code.
+`top_files` already puts `footprint.json` in the sealed index
+(`report.rs:1348`, `:1623`, `:1644`), so a file changed after the seal
+already fails the verify; S1.4 adds the test.
+
+**The bound (S2, S3).** `CHUNK_KILL_MS` is one constant. The smoke fixture
+and the draft both have the draft's budgets and 480000, which is exactly the
+new ceiling, so neither file changes. In the wrapper the prefix array
+changes one number. One function starts a command under the prefix in the
+background, records it as the running step, and waits in the existing reap
+loop; the builds, both `targets` calls, `check`, `footprint`, the chunks and
+the admissions all go through it. The two steps whose output is read
+(`cargo bench --no-run` for the driver's path, and the plan) write to a
+file under `$bin_dir` that is read afterwards. A second small function runs
+`timeout <n> systemctl --user …` and prints the state word. bash 3.2 syntax
+only.
+
+**Signals (S3).** Two variables replace `chunk_pid`: the pid of the step
+being waited for (set by the helper, cleared when it is reaped) and the
+coordinate of the owned chunk (set before the chunk starts, cleared after
+its ledger entry is written). The handler sets `interrupted`, sends SIGTERM
+to the first when it is set, and exits 2 itself only when neither is set.
+The main flow reads `interrupted` after every step, and for a chunk again
+just before the ledger entry is written.
+
+**The chunk (S4).** The two `quit()` calls of `throughput`
+(`runner.rs:753`, `:758`) go through the existing `until(chunk_end, …)`,
+with `past(chunk_end)` checked before the call so that none is begun after
+the instant. The warmup's `QUIT` (`:609`) is already inside the cut, and
+`send_one`'s (`:1081`) is on the wait path, which protocol 4 does not have.
+Protocols 1 to 3 pass no instant and are unchanged. The never-opened
+window's outcome is computed by one function from the leaf's `oom_kill`
+count, the leader's state and the cause in hand, in V13's order.
+`read_join` keeps the whole path for the comparison and `Joined.cgroup`
+keeps the last component for the receipt.
+
+**Admission (S5).** Delete `launches.is_empty() ||`. The cleanup receipt
+gains its leaf name; the struct's existing `leaf: bool` is not serialized
+and can be renamed. `check_launch` compares the two names and a set catches
+a leaf named twice. `idle_cells` requires the three values.
+
+A note on S5.3: the reader admits an `idle_ready` window only with all of
+its counters and its scratch bytes, or with none of them (V13), so rows
+that pass the reader cannot give a repetition with memory and no scratch.
+The predicate is the cell's own guard, and its test builds the repetition
+by hand.
+
+### Files this revision touches
+
+| File | Change |
+|---|---|
+| `benches/mail_compare/protocol.rs` | `CHUNK_KILL_MS` 560000 |
+| `benches/mail_compare/resources.rs` | the walk with its digest; `footprint`'s archive rows, `installed_trees` and the containment guard; the whole path in the join comparison |
+| `benches/mail_compare/targets.rs` | the cleanup receipt's leaf name |
+| `benches/mail_compare/runner.rs` | no `QUIT` after `chunk_end`; the never-opened window's outcome |
+| `benches/mail_compare/report.rs` | `Headline.installed`; admission of `footprint.json`, of a zero-launch chunk and of the leaf pairing; the idle cell's `ranked` |
+| `scripts/compare-mail.sh` | the prefix, the step helper, the bounded `systemctl`, the scope's judgement, the signal path, the `main` check (approved with 0132; the PR stays held) |
+| `tests/mail_compare/v4.rs` | the tests of group S; the rig's fake `systemctl` and its `git` fixture |
+| `docs/evals/README.md` | V23's revision 2 sentences |
+
+Still untouched: `src/`, `evals/`, `Cargo.toml`, both lockfiles, `deny.toml`,
+the active and historical records, `docs/decisions/`, and, in this
+revision, both draft files and the smoke fixture. No package is added.
+
+### Not designed for, with the cost
+
+- **Reading the archive.** S-1. Cost: an installed tree is identified, not
+  pinned; named to the operator (*For the operator at freeze* 5).
+- **Pinning a runtime tree** beyond its checked members (`2I5.5`). The same
+  limit, and the same digest now identifies it.
+- **A raw exit code in the ledger** (`2I5.3`), **a relabelled fidelity cut**
+  (`2I5.2`), **a new word for alive-but-not-ready** (`2C5`), **`cgroup.kill`
+  before the listener probes** (`2C6`), **a test of the mode shims**
+  (`2C7`). Each would add vocabulary or reorder a sequence that no criterion
+  asks to change. Cost: as review 2 recorded them, none above info.
+- **A real `collect-v4` run.** Still impossible before story E (a draft
+  fails `check`); the wrapper is proved with fakes (Risk 12).
 
 ## Revision 1 — after review 1 (2026-11-16)
 
@@ -335,6 +544,12 @@ IdleCell, StartupCell          + ranked, shortfalls           (revision 1)
 Run manifest   + protocol_status                              (revision 1)
 Footprint row  + executable_bytes; installed_bytes nullable   (revision 1)
 Chunk          Cost { target, repetition }; name "cost.<target>.r<rep>"
+CleanupFacts   + leaf (the leaf's name; absent without a leaf) (revision 2)
+Headline       + installed [ { target, installed_bytes, installed_files,
+                 installed_basis } ]; run-level report only    (revision 2)
+Footprint row  installed_bytes: positive integer, never null;
+               + installed_trees [ { kind: runtime | archive, files, bytes,
+                 sha256 } ]; − executable_bytes               (revision 2)
 ```
 
 The leaf name, not the cgroup path, goes into receipts: the path carries the
@@ -481,8 +696,9 @@ Seven groups, each committed green (`fmt`, `clippy --all-targets --locked`,
    proves AC18a and shows V8's exact refusal for all five. AC18b is the
    dispatcher's host run at the head to be merged, one proof at a time
    under the bounded command with the load before and after; it gates the
-   merge and the story's completion, and task R9.3 is the dispatcher's. No
-   seat reports the story complete before it. The PR is held for `scripts/`
+   merge and the story's completion, and task R9.3 (S7.2 since revision 2,
+   at the revised head) is the dispatcher's. No seat's notes call the story
+   complete before it (V22 says what a typed result does not state). The PR is held for `scripts/`
    anyway. A review that finds AC18b open finds what this plan says is open.
 2. **Host behaviour this design asserts but could not execute:** that
    `systemd-run --user --scope -p Delegate=yes` leaves the command as the
@@ -520,7 +736,8 @@ Seven groups, each committed green (`fmt`, `clippy --all-targets --locked`,
    members. *Mitigation:* `footprint` rechecks the members, reports the file
    count with the sum, and the README says what is and is not bound.
    *(Revision 1:* an archive row's extracted tree is not walked at all; its
-   installed size is `null` and owed, V18.)
+   installed size is `null` and owed, V18. *Revision 2:* that contradicted
+   0132 §4.5; the tree is walked and identified, Risk 19.)
 10. **Draft data drifts from v3.** A hand edit of the draft could change a
     v3 fact. *Mitigation:* a test compares the draft with the v3 bytes
     key by key and allows only the listed differences.
@@ -547,13 +764,14 @@ Seven groups, each committed green (`fmt`, `clippy --all-targets --locked`,
     *Mitigation:* a 10 s bounded wait, far above an asynchronous
     notification; a scope that outlasts it is treated as unclean, which is
     exit 2 and a stopped run, the safe side. The first real chunk shows the
-    real figure (*For the operator at freeze* 6).
+    real figure (*For the operator at freeze* 6). *(Revision 2:* the wait is
+    twenty queries half a second apart, after a sealed chunk only; Risk 23.)
 16. **Optional window counters touch the reader, the report and admission at
     once** (revision 1). *Mitigation:* one constructor per row shape, three
     reader refusals (AC10), and AC23's check that no report built from
     never-opened windows contains a zero where a figure is meant.
-17. **A release build inside `timeout 600` on at most 32 CPUs may not
-    finish** (revision 1). *Mitigation:* the refusal is named
+17. **A release build inside the bound (`timeout 600` in revision 1, 560
+    since revision 2) on at most 32 CPUs may not finish** (revision 1). *Mitigation:* the refusal is named
     (`blocked build`), nothing has been measured at that point, and
     `COMPARE_MAIL_SWARMAIL_BIN` and `COMPARE_MAIL_DRIVER_BIN` take prebuilt
     binaries.
@@ -563,3 +781,42 @@ Seven groups, each committed green (`fmt`, `clippy --all-targets --locked`,
     that never answers (a pole, 0020 §5), with the assertion that the call
     returned before one request deadline. No test waits for a deadline to
     arrive between two steps of a healthy target.
+19. **An installed tree is the operator's extraction** (revision 2). A
+    stray file in it, or a file missing from it, changes the published size
+    and no digest the lock holds. *Mitigation:* the root is derived from the
+    pinned member path, a tree shared between targets refuses, the tree's
+    file count and listing digest are published so a second extraction can
+    be compared, the README fixes the procedure, and Reading 9 and the
+    README state the limit. Pinning the tree is offered to the operator as
+    an amendment, not built.
+20. **The draft sits exactly on V2's ceiling** (revision 2): 480000 with
+    30 s and 10 s budgets against `CHUNK_KILL_MS` 560000. A later change of
+    a budget upward makes the draft refuse. *Mitigation:* that refusal names
+    the ceiling it computed; AC2 pins the number; the operator item says
+    what raising the deadline now costs.
+21. **The three sums of V21 rest on `timeout` enforcing its own numbers**
+    and on `systemctl kill` reaching the scope within 3 s (revision 2).
+    Neither is proved before story E. *Mitigation:* AC17 computes the sums
+    from the logged commands, so a changed number fails a test; a `kill`
+    that does not land leaves an unclean scope in the ledger and exit 2,
+    never a clean one.
+22. **Every bounded step now runs in the background** (revision 2), and
+    bash 3.2 has no `wait -n`. A step reaped between the trap and the
+    `kill -0` could leave a signal's status as the step's. *Mitigation:*
+    any status other than 0 or 1 already counts as 2, and an interrupt
+    forces 2; AC17 signals during a build, a chunk and the scope's
+    judgement.
+23. **A slow bus after a sealed chunk** (revision 2). Twenty queries cut at
+    1 s each read as "not known to be gone", and a clean scope is then
+    killed, stopped and counted as 2. *Mitigation:* a cut query is asked
+    again, so one slow answer costs nothing; twenty in a row mean the user
+    manager is not answering, and stopping there is the safe side.
+24. **`refs/heads/main` may be stale or absent** in the checkout the
+    operator collects from (revision 2). *Mitigation:* both cases refuse by
+    name and say which ref was read; nothing is fetched or guessed.
+25. **The listing digest must equal the hand command's**, or it identifies
+    nothing (revision 2). *Mitigation:* AC14 computes it independently in
+    the test from V18's format; names `sha256sum` would escape refuse.
+26. **A cleanup receipt gains a key**, and a v3 receipt must not
+    (revision 2). *Mitigation:* the field is absent without a leaf and the
+    existing byte-for-byte test of v3 receipts stays unchanged.

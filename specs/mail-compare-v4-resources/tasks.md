@@ -13,8 +13,18 @@ names below are the test functions to write. A test that reads `/proc`,
 AC17 and AC19 met on fixtures. They are ticked on that basis and kept as the
 record of what was built. T7.6 is not ticked: no real proof has passed on a
 kernel. Where revision 1 changes what a T task built, the task says so.
-**The work to do now is group R**, at the end, in its order. Each R task
-names the review finding it answers (plan.md § *Revision 1* has the table).
+Group R was the work after review 1. Each R task names the review finding
+it answers (plan.md § *Revision 1* has the table).
+
+**State after review 2 (2026-11-16).** Group R was built at head `c2041b9`;
+the verify seat passed every gate there, and review 2 found security and
+tests clean and AC1 to AC17, AC19 and AC21 to AC23 met as far as fixtures
+show, with the residual findings plan.md § *Revision 2* lists. R1 to R9.2
+are ticked on that basis and kept as the record. R9.3 and R9.4 are not
+ticked and are superseded by S7.2 and S7.3: no real proof has passed on a
+kernel, and the gates are run again on the final tree. **The work to do now
+is group S**, at the end, in its order. Where group S replaces what an R
+task built (R5.1's owed rule, R6.4's `600`), the S task says so.
 
 ## T1 Protocol 4, lock 5 and the records in the tree (V1–V7)
 
@@ -418,7 +428,8 @@ protocol 1 to 3 path must behave as before in every task.
 
 ### R5 `footprint` and `hold` (V18, V19; `G4` `C10` `C7`)
 
-- [x] R5.1 `resources.rs`: for a row whose artifact is an archive,
+- [x] R5.1 *(Revision 2: this owed rule contradicted 0132 §4.5 and §5.6;
+  S1.2 replaces it.)* `resources.rs`: for a row whose artifact is an archive,
   `installed_bytes` is `null`, `installed_basis` is
   `owed: the extracted archive is not walked`, and `executable_bytes` is the
   digest-checked executable's size; executable rows keep their sum. — Tests:
@@ -461,7 +472,8 @@ a marker and wait.
   (the test waits, with a deadline, for the fake driver's marker, then
   signals the wrapper: ledger exit 2, one ledger file, no `index.json`, no
   `reproduce.txt`, the fake driver gone). (AC17)
-- [x] R6.4 One bound prefix, `timeout --kill-after=30 600 taskset -c
+- [x] R6.4 *(Revision 2: the `600` let a step run 630 s; S3.1 makes it
+  `560`.)* One bound prefix, `timeout --kill-after=30 600 taskset -c
   0-<n-1>`, on both `cargo` builds, `check`, `footprint`, every chunk and
   both admissions; refuse, before building, a shell whose `nproc` differs
   from `nproc --all`. — Tests:
@@ -520,7 +532,8 @@ a marker and wait.
   output with `/proc/loadavg` before and after. Raw output goes under
   `target/mail-compare-v4-resources/receipts/`; nothing under `target/` is
   committed. — Proof: the receipts and the sentence in the notes. (AC18a)
-- [ ] R9.3 **Dispatcher, on the host, after R1 to R9.2 are committed and
+- [ ] R9.3 *(Not done; superseded by S7.2 at the revised head.)*
+  **Dispatcher, on the host, after R1 to R9.2 are committed and
   the gates are green; not a seat's task.** Run the five proofs one at a
   time under V22's command (`timeout 600 taskset -c 0-31`, a delegated
   scope, the test binary and not `cargo` inside it), at the head to be
@@ -528,13 +541,289 @@ a marker and wait.
   passing output to the PR. A proof that fails goes back as a finding with
   its output; the PR is not merged. — Proof: the five passing outputs on
   the PR. (AC18b)
-- [ ] R9.4 *(Every gate ran and passed but the brokkr compile of the shelf
+- [ ] R9.4 *(Superseded by S7.3 on the final tree.)* *(Every gate ran and passed but the brokkr compile of the shelf
   recipes: the pinned brokkr is not installed in the implement seat's box and
   nothing here changes `.brokkr/`; the verify seat and CI run it.)* Prove what did not change, then run every gate of
   `docs/house-rules.md` § Gates on the final tree, `--locked`, the coverage
   gate and its selftest, the publish-guard proof, the seal proof and
   `cargo deny check licenses` included, and read each recipe's compile
   output for the policy-sweep warning. — Proof:
+  `git diff e23a8ba --stat -- src evals Cargo.toml Cargo.lock deny.toml` is
+  empty; `git diff e23a8ba --name-status -- docs/evals` lists only added
+  files and `README.md`; the frozen sha256 of the two active records; each
+  gate's command and exit status in the notes, a failure reported with its
+  output. (AC19, AC20)
+
+## S Revision 2 — after review 2
+
+Ordered. The same rule as above: each group green and committed unsigned
+before the next; never push. Nothing under `src/`, `evals/`, the lockfiles,
+`deny.toml`, the active or historical records or `docs/decisions/` changes,
+and in this revision neither draft file and not the smoke fixture. Finding
+names (`2G1`, `2C2`, `2I4a`, …) are review 2's, as plan.md § *Revision 2*
+cites them. Tests go in `tests/mail_compare/v4.rs`. A protocol 1 to 3 path
+must behave as before in every task. Where a task replaces a test of group
+R, it says so; no other existing test changes its assertions.
+
+### S1 Every row has an installed size, and the headline carries it (V17, V18, V20; `2G1`, `2I5.5`)
+
+- [ ] S1.1 `resources.rs`: one walk of a directory that returns the bytes
+  and count of its regular files and the sha256 of its listing (one line
+  `<sha256 of the file>  ./<relative path>` and a newline per file, sorted
+  by the path's bytes); a symbolic link and a directory count for nothing
+  and are not listed; a file name that is not UTF-8 or holds a newline or a
+  backslash refuses by name. `tree_bytes` becomes this walk or calls it. —
+  Tests: `a_tree_walk_counts_each_regular_file_once_and_no_link`,
+  `a_tree_digest_equals_the_listing_the_test_builds_by_hand` (the test
+  writes the lines itself from V18's format and hashes them; it does not
+  call the function under test for the expected value),
+  `a_tree_digest_changes_when_a_file_is_added_removed_or_changed`,
+  `a_tree_walk_refuses_a_name_sha256sum_would_escape` (newline, backslash;
+  the non-UTF-8 name on Linux only). (AC14)
+- [ ] S1.2 `resources.rs`, `footprint`: an archive row's installed size is
+  the walk of its extraction root, which is `--bin`'s path with the pin's
+  `member` path removed from its end; a `--bin` that does not end with the
+  member refuses by name. Every walked directory is listed in
+  `installed_trees` with `kind` (`runtime`, `archive`), `files`, `bytes`
+  and `sha256`; a row that walks none has an empty list. Remove the
+  `ArtifactKind::Archive` null arm, `executable_bytes` and the unused
+  `parts` vector of host paths; `installed_basis` is fixed text naming the
+  rule that applied. — Tests:
+  `footprint_sizes_an_archive_row_from_its_extraction_root` (the member, two
+  more files, a nested directory and a link: the sum, the count, the
+  executable counted once), `footprint_lists_each_walked_tree_with_its_kind_and_digest`
+  (an archive row and an executable row with a runtime),
+  `footprint_refuses_a_bin_that_does_not_end_with_the_pinned_member`,
+  `footprint_never_publishes_null_zero_owed_or_a_host_path` (walks every
+  value of the document of a fixture with every artifact kind: no
+  `installed_bytes` that is `null` or 0, no string containing `owed`, no key
+  `executable_bytes`, no string containing the fixture's directory). This
+  replaces `footprint_owes_the_installed_size_of_an_archive_row`;
+  `footprint_never_publishes_an_executable_alone_as_installed` and
+  `footprint_installed_bytes_include_the_runtime_tree` still pass. (AC14)
+- [ ] S1.3 `resources.rs`, `footprint`: after every row's executable and
+  trees are known, refuse by name, giving both targets, when one target's
+  walked tree contains another target's executable or walked tree, the
+  candidate included; compare canonical paths. — Test:
+  `footprint_refuses_two_targets_that_share_a_tree` (another competitor's
+  executable inside an archive root; the candidate inside it; a runtime
+  tree inside an archive root; the same directory reached through a
+  symbolic link; and two separate directories pass). (AC14)
+- [ ] S1.4 `report.rs`: `Headline.installed` in the run-level report, one
+  entry per launched target (`installed_bytes`, `installed_files`,
+  `installed_basis`) copied from the run's `footprint.json`, the
+  does-not-start row blocked as elsewhere; absent from a chunk's report.
+  `admit_v4` requires the file's protocol id to be the run's and one row
+  per launched target with a positive integer `installed_bytes`, and
+  refuses naming the target or the protocol. — Tests:
+  `the_run_headline_carries_each_targets_installed_size`,
+  `a_chunk_report_has_no_installed_key`,
+  `admit_v4_refuses_a_footprint_without_a_launched_targets_row`,
+  `admit_v4_refuses_a_null_or_zero_installed_size` (both, each naming the
+  target), `admit_v4_refuses_a_footprint_of_another_protocol`,
+  `admit_v4_names_the_path_of_an_edited_installed_cell`,
+  `a_footprint_changed_after_the_seal_fails_the_verify`; the fixture run
+  directory's `footprint.json` gains real rows, and
+  `a_complete_fixture_run_seals_and_then_verifies` still passes. (AC16)
+
+### S2 `CHUNK_KILL_MS` is the instant of the SIGTERM (V2; `2G2`, `2C4`)
+
+- [ ] S2.1 `protocol.rs`: `CHUNK_KILL_MS = 560000`, documented as the
+  instant the wrapper's `timeout` sends SIGTERM; V2's inequality unchanged.
+  The draft and the smoke fixture are not edited: both state 480000 with
+  30 s and 10 s budgets, which is the new ceiling. — Tests:
+  `v4_chunk_deadline_ceiling_is_480000_for_the_draft_budgets`,
+  `the_v4_draft_and_the_smoke_fixture_sit_at_their_ceiling_and_validate`;
+  the three ceiling tests of R1.1 pass with their expected values derived
+  from the constant, and any test fixture that built a protocol above the
+  new ceiling is brought under it. Proof beside the tests:
+  `git diff c2041b9 -- docs/evals/draft tests/mail_compare/v4-smoke.json`
+  is empty. (AC2, AC6)
+
+### S3 `collect-v4` (V21; `2G2`, `2G3`, `2C3`, `2G7`–`2G9`, `2I4a`–`c`)
+
+Bash 3.2 syntax only. The rig's fakes gain what each test needs: a
+`systemctl` scripted per call that can print a state word, print nothing
+with a non-zero status, or write a marker and wait; a `cargo` and a driver
+that can write a marker and wait in any mode; a `git` fixture with a
+`main`, a side branch and, in one test, a `refs/remotes/origin/main`.
+
+- [ ] S3.1 One prefix, `timeout --kill-after=30 560 taskset -c 0-<n-1>`,
+  and one helper that starts a command under it in the background, records
+  it as the running step and waits until it is reaped. Both `cargo` builds,
+  both `targets` calls, `check`, `footprint`, every chunk and both
+  admissions go through it. A step whose output the wrapper reads (the
+  driver's path from `cargo bench --no-run`, the competitor list, the plan)
+  writes to a file that is read afterwards, never through `$(…)`. — Tests:
+  `collect_v4_runs_every_process_under_the_bound` (extended: both builds,
+  both `targets` calls, `check`, `footprint`, a chunk, `--seal`, verify,
+  each under `timeout --kill-after=30 560 taskset`),
+  `collect_v4_chunk_timeout_is_chunk_kill_ms` (the logged `560` against the
+  constant), `no_collect_v4_timeout_line_carries_600`; every existing
+  assertion on `timeout --kill-after=30 600` moves to `560`. (AC17)
+- [ ] S3.2 Every `systemctl` call has its own `timeout`: 1 for
+  `is-active`, 3 for `kill`, 3 for `stop`. — Tests:
+  `collect_v4_bounds_every_systemctl_call` (from the log: no `systemctl`
+  line of a run without its `timeout`, and the three numbers),
+  `collect_v4_sums_stay_within_ten_minutes` (reads the prefix's two numbers
+  and the three `systemctl` bounds from the log and the poll count and
+  interval from the script, and requires 560 + 30 + 1 + 3 + 3 ≤ 600 and
+  560 + 20 × 1.5 + 3 + 3 ≤ 600 as computed from them). (AC17)
+- [ ] S3.3 The scope is judged from the word `is-active` prints. Only
+  `inactive` and `failed` are clean; a non-zero status alone decides
+  nothing. After a sealed chunk: at most twenty queries half a second
+  apart, clean at the first of the two words, any other answer asked again,
+  unclean after the twentieth (kill, stop, the chunk counts as 2). After a
+  failed chunk: one query and no wait; unless it answers one of the two
+  words, kill and stop, ledgered unclean. — Tests:
+  `collect_v4_waits_for_a_scope_that_is_active_once_then_inactive` (kept),
+  `collect_v4_reads_a_failed_scope_as_gone`,
+  `collect_v4_asks_again_after_a_query_that_says_nothing`,
+  `collect_v4_never_calls_an_unknown_scope_clean` (three forms, each twenty
+  times: `active`; no output with a non-zero status; an unknown word; each
+  ends killed, stopped, `scope_clean` false, exit 2),
+  `collect_v4_does_not_wait_for_a_failed_chunks_scope` (a 124: exactly one
+  query before the `kill` and the `stop`; no `kill` when it answers
+  `inactive`); `collect_v4_stops_a_scope_that_stays_active_and_counts_two`
+  and `collect_v4_a_timeout_with_a_live_scope_is_killed_and_counted` still
+  pass. (AC17)
+- [ ] S3.4 Signals. The handler only records the interrupt and sends
+  SIGTERM to the running step's `timeout`; it exits 2 itself only when no
+  step is running and no chunk is owned. A chunk is owned from before it
+  starts until its ledger entry is written: its pid and unit are not
+  cleared when it is reaped. The main flow reads the interrupt after every
+  step and, for a chunk, again just before the ledger entry: an interrupted
+  chunk is judged as a failed one, ledgered with exit 2, and the mode exits
+  2; an interrupted step of another kind ends the mode with exit 2, naming
+  the interrupt; no step starts once an interrupt is recorded. — Tests:
+  `collect_v4_on_sigterm_ends_the_chunk_writes_its_ledger_and_exits_two`
+  (kept), `collect_v4_on_sigterm_during_a_build_exits_two_at_once`,
+  `collect_v4_on_sigterm_during_check_footprint_and_admission_exits_two_at_once`
+  (one case each; the fake writes a marker and would run on; the test waits
+  for the marker with a deadline, signals, and requires exit 2 before the
+  fake's own duration has passed and the fake gone afterwards),
+  `collect_v4_on_sigterm_during_the_scope_judgement_still_writes_the_ledger`
+  (the fake `systemctl` writes a marker and waits; after the signal the
+  chunk's ledger file exists with exit 2, a scope that was not gone is
+  killed and stopped, and no later chunk started). No test sleeps to place
+  the signal. (AC17)
+- [ ] S3.5 The candidate is on `main`: for a real run, refuse unless `HEAD`
+  is an ancestor of, or equal to, `refs/heads/main`, and of
+  `refs/remotes/origin/main` where it exists; refuse by name when neither
+  exists; fetch nothing; `--dry-run` skips it. The refusal for a dirty tree
+  keeps its text. — Tests: `collect_v4_refuses_a_clean_branch_that_is_not_main`,
+  `collect_v4_refuses_a_branch_with_main_merged_in`,
+  `collect_v4_accepts_an_earlier_commit_of_main_and_its_tip` (detached
+  `HEAD` in both), `collect_v4_refuses_a_head_origin_main_does_not_have`
+  (naming `refs/remotes/origin/main`),
+  `collect_v4_refuses_when_no_main_ref_exists`,
+  `collect_v4_dry_run_does_not_check_main`; the rig's default fixture is on
+  `main`, so every other test is unchanged. (AC17)
+
+### S4 The chunk and the join (V10, V13, V16; `2C2`, `2G6`, `2I2`, `2I5.1`, `2G11`, `2I5.6`)
+
+- [ ] S4.1 `runner.rs`: at or after `chunk_end` no `QUIT` is begun and the
+  session is dropped; a `QUIT` in flight is cut by the existing helper.
+  Before `chunk_end`, and on every protocol 1 to 3 path, a session ends as
+  it does today. — Tests, against a test-owned listener that records every
+  line it receives:
+  `a_reused_session_past_chunk_end_is_dropped_without_quit`,
+  `a_fresh_session_past_chunk_end_sends_no_quit_and_keeps_its_accepted_row`,
+  `a_quit_in_flight_is_cut_at_chunk_end` (a listener that never answers
+  `QUIT`; the call returns before one request deadline has passed),
+  `before_chunk_end_a_session_still_ends_with_quit`,
+  `a_protocol_3_session_still_ends_with_quit`. Each places `chunk_end` by
+  construction, as R1.3's tests do. (AC21)
+- [ ] S4.2 `runner.rs`: one function gives a never-opened window its
+  outcome in V13's order: `oom_killed` when the instance's leaf shows
+  `oom_kill` ≥ 1, else `target_exited` when the leader has exited, else the
+  cause in hand. The cut, never-opened `measure` window uses it. — Test:
+  `a_never_opened_window_keeps_the_order_of_outcomes` (fixture leaf with
+  `oom_kill 1` and a live leader; with `oom_kill 1` and an exited leader;
+  with `oom_kill 0` and an exited leader; with neither: `oom_killed`,
+  `oom_killed`, `target_exited`, `chunk_deadline`). (AC10)
+- [ ] S4.3 `resources.rs`, `targets.rs`: the join comparison requires the
+  whole cgroup path of the `0::` line to equal the path of the leaf the
+  driver made; the receipt's `joined.cgroup` stays the leaf's name. — Tests:
+  `a_join_under_another_parent_with_the_leafs_name_is_a_mismatch`,
+  `a_join_at_the_leafs_own_path_passes_and_the_receipt_keeps_the_name`;
+  `a_join_read_back_mismatch_refuses_the_launch` and
+  `a_target_that_exits_before_its_join_is_read_is_still_target_exited`
+  still pass. On a kernel it is real proofs 2 to 4. (AC9)
+
+### S5 Admission and the idle cell (V15, V17, V20; `2G5`, `2I3`, `2G10`, `2G11`, `2I5.4`)
+
+- [ ] S5.1 `report.rs`: `admit_chunk` no longer refuses a chunk without
+  launch receipts; the pairing and every other check stay. — Tests:
+  `admit_v4_admits_a_sealed_chunk_that_launched_nothing` (a fixture run in
+  which one chunk is the output of
+  `a_chunk_whose_deadline_has_passed_launches_nothing_and_seals_with_exit_one`'s
+  shape: it seals and verifies),
+  `a_run_with_a_zero_launch_chunk_still_refuses_a_missing_cleanup_elsewhere`.
+  (AC16)
+- [ ] S5.2 `targets.rs`, `report.rs`: the cleanup receipt of a leaf launch
+  carries `leaf`, the name in its launch receipt, absent without a leaf;
+  admission requires each cleanup to name the leaf of the launch it is
+  paired with and no leaf to be named twice in a chunk. — Tests:
+  `a_leaf_cleanup_receipt_names_its_leaf`,
+  `admit_v4_refuses_a_cleanup_that_names_another_launchs_leaf`,
+  `admit_v4_refuses_two_cleanups_of_one_leaf`,
+  `admit_v4_refuses_a_leaf_cleanup_without_a_leaf_name`;
+  `v3_launch_and_cleanup_receipts_serialize_byte_for_byte` passes
+  unchanged. (AC11, AC16)
+- [ ] S5.3 `report.rs`: an idle cell's `ranked` requires current memory,
+  `anon` and the scratch footprint on every repetition; a startup cell's
+  rule is unchanged. — Test: `an_idle_cell_ranks_only_on_all_three_values`
+  (one repetition lacking each of the three in turn, and one complete
+  cell); AC23's existing tests pass unchanged. (AC23)
+
+### S6 The README (V23; `2G1`–`2G3`)
+
+- [ ] S6.1 `docs/evals/README.md`, the v4 section: V23's revision 2
+  sentences. The paragraph that says an archive row's installed size is
+  owed goes; in its place, that every row has an installed size and the
+  headline carries it, how to extract an archive for it, what the tree
+  digest is with the command that reproduces it, and Reading 9's limit.
+  `timeout --kill-after=30 560` and V21's three sums replace each `600`
+  the section states for `collect-v4`; the candidate rule names `main`'s
+  history and the refs read; a scope is clean only on `inactive` or
+  `failed`. The proofs' command keeps `timeout 600`. — Tests:
+  `cargo test --locked --test store_contract_docs` passes;
+  `the_v4_readme_states_the_revised_sentences` is updated to require
+  `installed_trees`, `sha256sum`, `--kill-after=30 560`, `merge-base`
+  and "`inactive` or `failed`", and the absence of
+  `owed: the extracted archive` and of `--kill-after=30 600`. (AC19)
+
+### S7 Proofs and gates (V22; `2C1`, `2G4`, `2I1`)
+
+- [ ] S7.1 Bring the proofs to this revision and run them where the seat
+  stands. Proof 5 also asserts that each cleanup receipt names the leaf of
+  its launch receipt; proofs 2 to 4 exercise S4.3 as they are.
+  `the_five_real_proofs_are_ignored_and_linux_only` passes. Run each proof
+  alone with V22's command. Without delegation, keep the output showing
+  V8's exact refusal for all five and write in the result notes, in these
+  words, **AC18b is open and the story is not complete**, whatever the
+  typed result is. With delegation, keep each passing output with
+  `/proc/loadavg` before and after. Raw output goes under
+  `target/mail-compare-v4-resources/receipts/`; nothing under `target/` is
+  committed. — Proof: the receipts at this revision's head and the sentence
+  in the notes. (AC18a)
+- [ ] S7.2 **Dispatcher, on the host, after S1 to S7.1 are committed and
+  the gates are green; not a seat's task.** Run the five proofs one at a
+  time under V22's command (`timeout 600 taskset -c 0-31`, a delegated
+  scope, the test binary and not `cargo` inside it), at the head to be
+  merged, with `/proc/loadavg` before and after each, and attach the
+  passing output to the PR. Output from any earlier head does not count:
+  this revision changes code the proofs exercise. A proof that fails goes
+  back as a finding with its output; the PR is not merged. — Proof: the
+  five passing outputs on the PR. (AC18b)
+- [ ] S7.3 Prove what did not change, then run every gate of
+  `docs/house-rules.md` § Gates on the final tree, `--locked`, the coverage
+  gate and its selftest, the publish-guard proof, the seal proof and
+  `cargo deny check licenses` included, and read each recipe's compile
+  output for the policy-sweep warning. A gate the seat's box cannot run is
+  named with the reason and left to the verify seat; it is not reported as
+  passed. — Proof:
   `git diff e23a8ba --stat -- src evals Cargo.toml Cargo.lock deny.toml` is
   empty; `git diff e23a8ba --name-status -- docs/evals` lists only added
   files and `README.md`; the frozen sha256 of the two active records; each
