@@ -734,3 +734,619 @@ fn lock_v5_verifies_its_documents_and_pairs_with_the_draft() {
     protocol::does_not_start_matches(&p, &l).unwrap();
     protocol::launchable(&p, &l).unwrap();
 }
+
+// ============================================================================
+// T2: resources.rs on fixture trees
+// ============================================================================
+
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
+
+/// A cgroupfs imitation: a directory of plain files the test authors.
+fn fixture() -> tempfile::TempDir {
+    tempfile::tempdir().expect("fixture directory")
+}
+
+fn put(dir: &Path, name: &str, text: &str) {
+    std::fs::write(dir.join(name), text).expect("fixture file");
+}
+
+/// A scope directory as a delegated systemd scope shows it.
+fn scope_fixture(controllers: &str, procs: &str) -> tempfile::TempDir {
+    let d = fixture();
+    put(d.path(), "cgroup.controllers", controllers);
+    put(d.path(), "cgroup.procs", procs);
+    put(d.path(), "cgroup.subtree_control", "");
+    d
+}
+
+/// Every file a real leaf has, with plausible content.
+fn leaf_fixture(parent: &Path, name: &str) -> PathBuf {
+    let dir = parent.join(name);
+    std::fs::create_dir(&dir).unwrap();
+    for (f, text) in [
+        ("memory.max", "max\n"),
+        ("memory.swap.max", "max\n"),
+        ("memory.oom.group", "0\n"),
+        ("cpu.max", "max 100000\n"),
+        ("pids.max", "max\n"),
+        ("cgroup.kill", ""),
+        ("memory.peak", "1048576\n"),
+        ("cgroup.procs", ""),
+        ("memory.current", "4096\n"),
+        ("memory.stat", "anon 1\nfile 2\nkernel 3\n"),
+        ("memory.events", "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n"),
+        ("cpu.stat", CPU_STAT),
+        ("pids.current", "1\n"),
+    ] {
+        put(&dir, f, text);
+    }
+    dir
+}
+
+const CPU_STAT: &str = "usage_usec 8123456\nuser_usec 6000000\nsystem_usec 2123456\nnr_periods 400\nnr_throttled 12\nthrottled_usec 345678\nnr_bursts 0\nburst_usec 0\n";
+const MEM_STAT: &str = "anon 104857600\nfile 52428800\nkernel 3145728\nkernel_stack 163840\npagetables 409600\nslab 2000000\nshmem 0\n";
+const MEM_EVENTS: &str = "low 0\nhigh 0\nmax 3\noom 1\noom_kill 1\noom_group_kill 1\n";
+
+/// A tree that records every operation and can lie about one read.
+struct Spy {
+    log: Mutex<Vec<String>>,
+    lie: Option<(&'static str, &'static str)>,
+}
+
+impl Spy {
+    fn new(lie: Option<(&'static str, &'static str)>) -> Arc<Spy> {
+        Arc::new(Spy {
+            log: Mutex::new(Vec::new()),
+            lie,
+        })
+    }
+
+    fn ops(&self) -> Vec<String> {
+        self.log.lock().unwrap().clone()
+    }
+
+    fn note(&self, op: &str, p: &Path) {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("{op} {}", p.file_name().unwrap().to_string_lossy()));
+    }
+}
+
+impl resources::Tree for Spy {
+    fn read(&self, p: &Path) -> std::io::Result<String> {
+        self.note("read", p);
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        match self.lie {
+            Some((file, text)) if file == name => Ok(text.to_owned()),
+            _ => resources::Host.read(p),
+        }
+    }
+
+    fn write(&self, p: &Path, text: &str) -> std::io::Result<()> {
+        self.note(&format!("write[{text}]"), p);
+        resources::Host.write(p, text)
+    }
+
+    fn exists(&self, p: &Path) -> bool {
+        resources::Host.exists(p)
+    }
+
+    /// Like the kernel, a new cgroup comes with its `cgroup.procs`.
+    fn mkdir(&self, p: &Path) -> std::io::Result<()> {
+        self.note("mkdir", p);
+        resources::Host.mkdir(p)?;
+        std::fs::write(p.join("cgroup.procs"), "")
+    }
+
+    fn rmdir(&self, p: &Path) -> std::io::Result<()> {
+        self.note("rmdir", p);
+        std::fs::remove_dir_all(p)
+    }
+}
+
+// ---- T2.1 ------------------------------------------------------------------
+
+#[test]
+fn detect_refuses_exactly_without_a_cgroup2_root() {
+    let scope = scope_fixture("cpu memory pids\n", "");
+    let root = scope.path();
+    // The cgroup's own path is the root itself: `0::/`.
+    let found = resources::detect(&resources::Host, root, "0::/\n", true).expect("delegated");
+    assert_eq!(found, root.join(""));
+    for (own, is2) in [("0::/\n", false), ("1:name=x:/\n", true), ("", true)] {
+        assert_eq!(
+            resources::detect(&resources::Host, root, own, is2).unwrap_err(),
+            resources::NO_DELEGATION,
+            "own {own:?}, cgroup2 {is2}"
+        );
+    }
+    assert_eq!(
+        resources::NO_DELEGATION,
+        "resources: no delegated cgroup v2 (cpu memory pids)"
+    );
+    // A cgroup whose controllers file does not exist.
+    let gone = root.join("nowhere");
+    assert_eq!(
+        resources::detect(&resources::Host, &gone, "0::/\n", true).unwrap_err(),
+        resources::NO_DELEGATION
+    );
+}
+
+#[test]
+fn detect_refuses_exactly_without_each_controller() {
+    for lacking in resources::CONTROLLERS {
+        let have: Vec<&str> = resources::CONTROLLERS
+            .iter()
+            .copied()
+            .filter(|c| *c != lacking)
+            .chain(["io"])
+            .collect();
+        let scope = scope_fixture(&have.join(" "), "");
+        assert_eq!(
+            resources::detect(&resources::Host, scope.path(), "0::/\n", true).unwrap_err(),
+            resources::NO_DELEGATION,
+            "without {lacking}"
+        );
+    }
+}
+
+#[test]
+fn adoption_refuses_exactly_when_the_read_back_lacks_a_controller() {
+    let scope = scope_fixture("cpu memory pids\n", "77\n");
+    std::fs::write(scope.path().join("cgroup.subtree_control"), "").unwrap();
+    let spy = Spy::new(Some(("cgroup.subtree_control", "cpu memory\n")));
+    assert_eq!(
+        resources::adopt(&*spy, scope.path(), 77).unwrap_err(),
+        resources::NO_DELEGATION
+    );
+    // Told the truth, it adopts: the tokens may carry a leading plus.
+    let ok = scope_fixture("cpu memory pids\n", "77\n");
+    let spy = Spy::new(Some(("cgroup.subtree_control", "+cpu +memory +pids\n")));
+    resources::adopt(&*spy, ok.path(), 77).expect("adopts");
+    let spy = Spy::new(None);
+    let again = scope_fixture("cpu memory pids\n", "77\n");
+    resources::adopt(&*spy, again.path(), 77).expect("adopts on plain files too");
+}
+
+#[test]
+fn adoption_refuses_an_occupied_scope_and_an_existing_driver_leaf() {
+    let busy = scope_fixture("cpu memory pids\n", "77\n78\n79\n");
+    let w = resources::adopt(&resources::Host, busy.path(), 77).unwrap_err();
+    assert!(w.contains("holds 2 other process(es)"), "{w}");
+    assert!(!busy.path().join("driver").exists(), "nothing was made");
+    let taken = scope_fixture("cpu memory pids\n", "77\n");
+    std::fs::create_dir(taken.path().join("driver")).unwrap();
+    let w = resources::adopt(&resources::Host, taken.path(), 77).unwrap_err();
+    assert!(w.contains("already holds a driver leaf"), "{w}");
+    // A scope whose procs file is not pids.
+    let bad = scope_fixture("cpu memory pids\n", "x\n");
+    assert!(resources::adopt(&resources::Host, bad.path(), 77).is_err());
+}
+
+#[test]
+fn adoption_makes_the_driver_leaf_before_it_enables_controllers() {
+    let scope = scope_fixture("cpu memory pids\n", "4242\n");
+    let spy = Spy::new(None);
+    resources::adopt(&*spy, scope.path(), 4242).expect("adopts");
+    assert_eq!(
+        spy.ops(),
+        [
+            "read cgroup.procs",
+            "mkdir driver",
+            "write[4242] cgroup.procs",
+            "write[+cpu +memory +pids] cgroup.subtree_control",
+            "read cgroup.subtree_control",
+        ]
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn off_linux_detection_is_the_exact_refusal() {
+    let scope = scope_fixture("cpu memory pids\n", "");
+    assert_eq!(
+        resources::detect(&resources::Host, scope.path(), "0::/\n", true).unwrap_err(),
+        resources::NO_DELEGATION
+    );
+    assert_eq!(
+        resources::detect_host().unwrap_err(),
+        resources::NO_DELEGATION
+    );
+    assert_eq!(
+        resources::prepare_host(Path::new(".")).err().unwrap(),
+        resources::NO_DELEGATION
+    );
+}
+
+// ---- T2.2 ------------------------------------------------------------------
+
+#[test]
+fn a_leaf_records_the_five_limits_as_read_back() {
+    let scope = fixture();
+    let dir = leaf_fixture(scope.path(), "target-0001");
+    let (leaf, limits) = resources::Leaf::prepare(resources::host(), dir.clone(), "target-0001")
+        .expect("a complete leaf prepares");
+    assert_eq!(
+        limits,
+        resources::LimitsRead {
+            memory_max: "2147483648".into(),
+            memory_swap_max: "0".into(),
+            memory_oom_group: "1".into(),
+            cpu_max: "200000 100000".into(),
+            pids_max: "4096".into(),
+        }
+    );
+    // What was written is what the files hold now.
+    for (file, want) in [
+        ("memory.max", "2147483648"),
+        ("memory.swap.max", "0"),
+        ("memory.oom.group", "1"),
+        ("cpu.max", "200000 100000"),
+        ("pids.max", "4096"),
+    ] {
+        assert_eq!(std::fs::read_to_string(dir.join(file)).unwrap(), want);
+    }
+    assert_eq!(leaf.name(), "target-0001");
+    // The values are the decision's, not the code's own constants restated.
+    assert_eq!(2048u64 << 20, 2_147_483_648);
+    assert_eq!(limits.cpu_max, format!("{} {}", 2 * 100_000, 100_000));
+}
+
+#[test]
+fn a_differing_read_back_refuses_naming_the_file() {
+    for (file, lie) in [
+        ("memory.max", "1073741824\n"),
+        ("memory.swap.max", "max\n"),
+        ("memory.oom.group", "0\n"),
+        ("cpu.max", "max 100000\n"),
+        ("pids.max", "max\n"),
+    ] {
+        let scope = fixture();
+        let dir = leaf_fixture(scope.path(), "target-0001");
+        let spy: Arc<dyn resources::Tree> = Spy::new(Some((file, lie)));
+        let w = match resources::Leaf::prepare(spy, dir, "target-0001") {
+            Err(e) => e,
+            Ok(_) => panic!("{file}: a differing read-back must refuse"),
+        };
+        assert!(w.contains(&format!("{file} reads back")), "{w}");
+    }
+}
+
+#[test]
+fn a_leaf_without_each_required_file_refuses_naming_it() {
+    for file in [
+        "memory.max",
+        "memory.swap.max",
+        "memory.oom.group",
+        "cpu.max",
+        "pids.max",
+        "cgroup.kill",
+        "memory.peak",
+    ] {
+        let scope = fixture();
+        let dir = leaf_fixture(scope.path(), "target-0001");
+        std::fs::remove_file(dir.join(file)).unwrap();
+        let w = match resources::Leaf::prepare(resources::host(), dir, "target-0001") {
+            Err(e) => e,
+            Ok(_) => panic!("{file}: a missing file must refuse"),
+        };
+        assert!(w.contains(&format!("lacks {file}")), "{w}");
+    }
+    // `create` makes the directory and, on a refusal, removes it again: a
+    // plain directory has none of the files a cgroup brings.
+    let scope = fixture();
+    let w = match resources::Leaf::create(resources::host(), scope.path(), "target-0009") {
+        Err(e) => e,
+        Ok(_) => panic!("a bare directory is no leaf"),
+    };
+    assert!(w.contains("lacks"), "{w}");
+    assert!(!scope.path().join("target-0009").exists());
+}
+
+// ---- T2.3 ------------------------------------------------------------------
+
+#[test]
+fn cgroup_files_parse_from_captured_text() {
+    let c = resources::CpuStat::parse(CPU_STAT).unwrap();
+    assert_eq!(
+        c,
+        resources::CpuStat {
+            usage_usec: 8_123_456,
+            user_usec: 6_000_000,
+            system_usec: 2_123_456,
+            nr_throttled: 12,
+            throttled_usec: 345_678,
+        }
+    );
+    let m = resources::MemStat::parse(MEM_STAT).unwrap();
+    assert_eq!(
+        (m.anon, m.file, m.kernel),
+        (104_857_600, 52_428_800, 3_145_728)
+    );
+    // Kernels before 6.5 have no `kernel` key: its components are summed.
+    let old = resources::MemStat::parse("anon 10\nfile 20\nkernel_stack 1\npagetables 2\nslab 4\n")
+        .unwrap();
+    assert_eq!(old.kernel, 7);
+    let e = resources::MemEvents::parse(MEM_EVENTS).unwrap();
+    assert_eq!((e.max, e.oom, e.oom_kill), (3, 1, 1));
+    assert_eq!(
+        resources::parse_single("memory.current", "123456789\n"),
+        Ok(123_456_789)
+    );
+    assert_eq!(resources::parse_single("pids.current", " 7 "), Ok(7));
+    assert_eq!(resources::parse_procs("123\n456\n"), Ok(vec![123, 456]));
+    assert_eq!(resources::parse_procs(""), Ok(vec![]));
+}
+
+#[test]
+fn malformed_cgroup_text_refuses() {
+    for bad in [
+        "",
+        "usage_usec",
+        "usage_usec x\n",
+        "a 1 2\n",
+        "a 1\na 2\n",
+        "a -1\n",
+    ] {
+        assert!(resources::parse_flat("f", bad).is_err(), "{bad:?}");
+    }
+    // A well-formed file that lacks a required key.
+    assert!(
+        resources::CpuStat::parse("usage_usec 1\n")
+            .unwrap_err()
+            .contains("lacks user_usec")
+    );
+    assert!(
+        resources::MemEvents::parse("max 1\noom 0\n")
+            .unwrap_err()
+            .contains("lacks oom_kill")
+    );
+    assert!(
+        resources::MemStat::parse("anon 1\n")
+            .unwrap_err()
+            .contains("lacks file")
+    );
+    for bad in ["max\n", "", "abc", "-1", "1.5"] {
+        assert!(
+            resources::parse_single("memory.peak", bad).is_err(),
+            "{bad:?}"
+        );
+    }
+    for bad in ["abc\n", "0\n", "-5\n", "1 2\n"] {
+        assert!(resources::parse_procs(bad).is_err(), "{bad:?}");
+    }
+    for bad in ["", "1:name=x:/a\n", "no colon here"] {
+        assert!(resources::parse_proc_cgroup(bad).is_err(), "{bad:?}");
+    }
+    for bad in ["", "3-1", "a", "1-b", "0-99999999", ","] {
+        assert!(resources::parse_cpu_list(bad).is_err(), "{bad:?}");
+    }
+    assert!(resources::parse_cpus_allowed("Name:\tx\n").is_err());
+}
+
+#[test]
+fn proc_cgroup_and_cpus_allowed_parse() {
+    assert_eq!(
+        resources::parse_proc_cgroup(
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r1.scope/target-0003\n"
+        ),
+        Ok(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/run-r1.scope/target-0003"
+                .into()
+        )
+    );
+    let set = |v: &[u32]| v.iter().copied().collect::<BTreeSet<u32>>();
+    assert_eq!(resources::parse_cpu_list("0-1\n"), Ok(set(&[0, 1])));
+    assert_eq!(resources::parse_cpu_list("0,2"), Ok(set(&[0, 2])));
+    assert_eq!(
+        resources::parse_cpu_list("0-3,8,10-11"),
+        Ok(set(&[0, 1, 2, 3, 8, 10, 11]))
+    );
+    let status =
+        "Name:\tmailpit\nCpus_allowed:\t3\nCpus_allowed_list:\t0-1\nMems_allowed_list:\t0\n";
+    assert_eq!(resources::parse_cpus_allowed(status), Ok(set(&[0, 1])));
+    assert_eq!(resources::format_cpu_list(&[0, 1, 4, 6, 7, 8]), "0-1,4,6-8");
+    assert_eq!(resources::format_cpu_list(&[]), "");
+    // The join read-back compares the leaf and exactly the two target CPUs.
+    let joined = resources::Joined {
+        cgroup: "target-0003".into(),
+        cpus_allowed: vec![0, 1],
+    };
+    resources::check_join(&joined, "target-0003", &[0, 1]).unwrap();
+    let w = resources::check_join(&joined, "target-0004", &[0, 1]).unwrap_err();
+    assert!(w.contains("not its leaf"), "{w}");
+    let w = resources::check_join(&joined, "target-0003", &[0, 2]).unwrap_err();
+    assert!(w.contains("not exactly 0,2"), "{w}");
+    let wide = resources::Joined {
+        cgroup: "target-0003".into(),
+        cpus_allowed: vec![0, 1, 2],
+    };
+    assert!(resources::check_join(&wide, "target-0003", &[0, 1]).is_err());
+}
+
+#[test]
+fn a_join_read_back_mismatch_refuses_the_launch() {
+    // The comparison the launcher runs after the spawn, on a fixture /proc.
+    let proc_root = fixture();
+    let pid_dir = proc_root.path().join("4321");
+    std::fs::create_dir(&pid_dir).unwrap();
+    put(&pid_dir, "cgroup", "0::/a/b/scope/target-0002\n");
+    put(&pid_dir, "status", "Name:\tx\nCpus_allowed_list:\t4,6\n");
+    let j = resources::read_join(proc_root.path(), 4321).unwrap();
+    assert_eq!(j.cgroup, "target-0002");
+    assert_eq!(j.cpus_allowed, vec![4, 6]);
+    resources::check_join(&j, "target-0002", &[4, 6]).unwrap();
+    assert!(resources::check_join(&j, "target-0001", &[4, 6]).is_err());
+    assert!(resources::read_join(proc_root.path(), 1).is_err());
+}
+
+// ---- T2.4 ------------------------------------------------------------------
+
+fn smt(c: u32) -> BTreeSet<u32> {
+    BTreeSet::from([c % 4, c % 4 + 4])
+}
+
+fn alone(c: u32) -> BTreeSet<u32> {
+    BTreeSet::from([c])
+}
+
+fn cpus(v: &[u32]) -> BTreeSet<u32> {
+    v.iter().copied().collect()
+}
+
+#[test]
+fn layout_takes_two_distinct_cores_and_idles_their_siblings() {
+    // Eight CPUs, four cores: cpu n and n+4 are siblings.
+    let l = resources::layout(&cpus(&[0, 1, 2, 3, 4, 5, 6, 7]), &smt).unwrap();
+    assert_eq!(l.target_cpus, vec![0, 1]);
+    assert_eq!(l.idle_siblings, vec![4, 5]);
+    assert_eq!(l.client_cpus, vec![2, 3, 6, 7]);
+    assert!(l.siblings_outside_set.is_empty());
+    // A target is never its own sibling, and the two never share a core.
+    assert!(!smt(l.target_cpus[0]).contains(&l.target_cpus[1]));
+    // No SMT: nothing to idle.
+    let l = resources::layout(&cpus(&[0, 1, 2, 3]), &alone).unwrap();
+    assert_eq!(l.target_cpus, vec![0, 1]);
+    assert!(l.idle_siblings.is_empty());
+    assert_eq!(l.client_cpus, vec![2, 3]);
+    // The lowest allowed CPU, not CPU 0: a set that starts elsewhere.
+    let l = resources::layout(&cpus(&[8, 9, 10, 11]), &alone).unwrap();
+    assert_eq!(l.target_cpus, vec![8, 9]);
+    // Siblings that are adjacent numbers (0,1 one core): the second target
+    // is the next CPU that is not a sibling of the first.
+    let pairs = |c: u32| BTreeSet::from([c & !1, c | 1]);
+    let l = resources::layout(&cpus(&[0, 1, 2, 3, 4, 5]), &pairs).unwrap();
+    assert_eq!(l.target_cpus, vec![0, 2]);
+    assert_eq!(l.idle_siblings, vec![1, 3]);
+    assert_eq!(l.client_cpus, vec![4, 5]);
+}
+
+#[test]
+fn layout_refuses_one_core() {
+    let w = resources::layout(&cpus(&[0]), &alone).unwrap_err();
+    assert!(w.contains("fewer than two distinct cores"), "{w}");
+    // Two CPUs of one core are one core.
+    let w = resources::layout(&cpus(&[0, 4]), &smt).unwrap_err();
+    assert!(w.contains("fewer than two distinct cores"), "{w}");
+    assert!(resources::layout(&cpus(&[]), &alone).is_err());
+}
+
+#[test]
+fn layout_refuses_when_no_client_cpu_is_left() {
+    let w = resources::layout(&cpus(&[0, 1]), &alone).unwrap_err();
+    assert!(w.contains("no client CPU is left"), "{w}");
+    // Siblings of the targets are idle, so they are not clients either.
+    let w = resources::layout(&cpus(&[0, 1, 4, 5]), &smt).unwrap_err();
+    assert!(w.contains("no client CPU is left"), "{w}");
+}
+
+#[test]
+fn layout_records_siblings_outside_the_set() {
+    let l = resources::layout(&cpus(&[0, 1, 2, 3]), &smt).unwrap();
+    assert_eq!(l.target_cpus, vec![0, 1]);
+    assert!(l.idle_siblings.is_empty());
+    assert_eq!(l.siblings_outside_set, vec![4, 5]);
+    assert_eq!(l.client_cpus, vec![2, 3]);
+    // The sibling list is read from the kernel's file, and an unreadable
+    // CPU is its own only sibling.
+    let sys = fixture();
+    let topo = sys.path().join("devices/system/cpu/cpu3/topology");
+    std::fs::create_dir_all(&topo).unwrap();
+    put(&topo, "thread_siblings_list", "3,67\n");
+    assert_eq!(resources::read_siblings(sys.path(), 3), cpus(&[3, 67]));
+    assert_eq!(resources::read_siblings(sys.path(), 9), cpus(&[9]));
+}
+
+// ---- T2.5 ------------------------------------------------------------------
+
+#[test]
+fn tmpfs_magic_refuses_and_disk_magic_passes() {
+    for tmpfs in [0x0102_1994u64, 0x8584_58f6] {
+        let w = resources::scratch_backing(tmpfs).unwrap_err();
+        assert!(w.contains("scratch directory is on tmpfs"), "{w}");
+    }
+    for disk in [
+        0xEF53u64,
+        0x5846_5342,
+        0x9123_683E,
+        0x6969,
+        resources::CGROUP2_SUPER_MAGIC,
+    ] {
+        resources::scratch_backing(disk).expect("not a RAM filesystem");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_tmpfs_scratch_refuses() {
+    let w = resources::check_scratch(Path::new("/dev/shm")).unwrap_err();
+    assert!(w.contains("tmpfs"), "{w}");
+    assert!(resources::check_scratch(Path::new("/no/such/dir")).is_err());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_target_dir_scratch_passes() {
+    resources::check_scratch(Path::new(env!("CARGO_TARGET_TMPDIR")))
+        .expect("the target directory is disk backed");
+}
+
+#[test]
+fn allocated_bytes_sums_blocks_of_a_tree() {
+    use std::os::unix::fs::MetadataExt;
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("alloc-{}", std::process::id()));
+    std::fs::create_dir_all(base.join("sub")).unwrap();
+    std::fs::write(base.join("big"), vec![7u8; 300_000]).unwrap();
+    std::fs::write(base.join("sub/small"), b"x").unwrap();
+    std::os::unix::fs::symlink("/etc", base.join("link")).unwrap();
+    let blocks = |p: &Path| std::fs::symlink_metadata(p).unwrap().blocks() * 512;
+    let want = blocks(&base)
+        + blocks(&base.join("big"))
+        + blocks(&base.join("sub"))
+        + blocks(&base.join("sub/small"))
+        + blocks(&base.join("link"));
+    let got = resources::allocated_bytes(&base).unwrap();
+    assert_eq!(got, want, "a symlink counts as itself, not its target");
+    assert!(got >= 300_000, "the 300 kB file is allocated: {got}");
+    assert!(resources::allocated_bytes(&base.join("missing")).is_err());
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn affinity_held_reads_every_task_of_every_process() {
+    let proc_root = fixture();
+    let mk = |pid: u32, tid: u32, list: &str| {
+        let d = proc_root.path().join(format!("{pid}/task/{tid}"));
+        std::fs::create_dir_all(&d).unwrap();
+        put(
+            &d,
+            "status",
+            &format!("Name:\tx\nCpus_allowed_list:\t{list}\n"),
+        );
+    };
+    mk(10, 10, "0-1");
+    mk(10, 11, "0-1");
+    mk(11, 11, "0-1");
+    assert!(resources::affinity_held(
+        proc_root.path(),
+        &[10, 11],
+        &[0, 1]
+    ));
+    // One widened thread makes it false.
+    mk(10, 12, "0-3");
+    assert!(!resources::affinity_held(
+        proc_root.path(),
+        &[10, 11],
+        &[0, 1]
+    ));
+    // A process that vanished is skipped; a status that cannot be parsed is not.
+    assert!(resources::affinity_held(
+        proc_root.path(),
+        &[11, 99],
+        &[0, 1]
+    ));
+    put(&proc_root.path().join("11/task/11"), "status", "garbage\n");
+    assert!(!resources::affinity_held(proc_root.path(), &[11], &[0, 1]));
+}

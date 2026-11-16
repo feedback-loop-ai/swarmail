@@ -32,6 +32,9 @@ mod records;
 #[path = "../benches/mail_compare/report.rs"]
 mod report;
 #[allow(dead_code)]
+#[path = "../benches/mail_compare/resources.rs"]
+mod resources;
+#[allow(dead_code)]
 #[path = "../benches/mail_compare/runner.rs"]
 mod runner;
 #[allow(dead_code)]

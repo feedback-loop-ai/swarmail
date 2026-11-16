@@ -1,0 +1,875 @@
+//! Enforced resources (accepted decision 0132 §3 and §4): every protocol 4
+//! launch runs in a driver-owned cgroup v2 leaf with 2 CPUs, 2048 MiB, no
+//! swap and 4096 tasks, pinned to two cores by affinity, sampled, and removed
+//! with `cgroup.kill`. The leaf is a child of the scope systemd made for the
+//! driver (`systemd-run --user --scope -p Delegate=yes`); systemd supervises
+//! nothing of the target, so the driver stays the one owner, parent and
+//! reaper (0092 §6, 0093 §7).
+//!
+//! Everything that reads or writes cgroupfs goes through [`Tree`], and every
+//! `/proc` and `/sys` reader takes its root as a path, so the logic is proved
+//! on fixture trees of plain files on any host. What only the kernel can do
+//! (the join, `cgroup.kill`, `rmdir` of a populated leaf, the OOM killer, the
+//! CPU quota) is proved by the ignored real proofs. Protocols 1 to 3 never
+//! touch any of this.
+
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+/// The one refusal for a host without delegated cgroup v2, word for word
+/// (0132 §3.7). There is no unenforced fallback.
+pub const NO_DELEGATION: &str = "resources: no delegated cgroup v2 (cpu memory pids)";
+pub const CONTROLLERS: [&str; 3] = ["cpu", "memory", "pids"];
+pub const CGROUP_ROOT: &str = "/sys/fs/cgroup";
+
+/// The five limits of 0132 §3.2, as written. A read-back that differs
+/// refuses the launch.
+pub const MEMORY_MAX: &str = "2147483648";
+pub const MEMORY_SWAP_MAX: &str = "0";
+pub const MEMORY_OOM_GROUP: &str = "1";
+pub const CPU_MAX: &str = "200000 100000";
+pub const PIDS_MAX: &str = "4096";
+
+/// Files every leaf must have: the five limits, the kill switch, the peak
+/// and the readings the sampler takes.
+const LEAF_FILES: [&str; 13] = [
+    "memory.max",
+    "memory.swap.max",
+    "memory.oom.group",
+    "cpu.max",
+    "pids.max",
+    "cgroup.kill",
+    "memory.peak",
+    "cgroup.procs",
+    "memory.current",
+    "memory.stat",
+    "memory.events",
+    "cpu.stat",
+    "pids.current",
+];
+
+/// The filesystem the cgroup code reads and writes. [`Host`] is the real
+/// one; a test passes a tree that records or lies.
+pub trait Tree: Send + Sync {
+    fn read(&self, p: &Path) -> std::io::Result<String>;
+    /// Replace the contents of an existing file with one `write`, as
+    /// cgroupfs wants. A missing file is an error, never created.
+    fn write(&self, p: &Path, text: &str) -> std::io::Result<()>;
+    fn exists(&self, p: &Path) -> bool;
+    fn mkdir(&self, p: &Path) -> std::io::Result<()>;
+    fn rmdir(&self, p: &Path) -> std::io::Result<()>;
+}
+
+pub struct Host;
+
+impl Tree for Host {
+    fn read(&self, p: &Path) -> std::io::Result<String> {
+        std::fs::read_to_string(p)
+    }
+
+    fn write(&self, p: &Path, text: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(p)?;
+        f.write_all(text.as_bytes())
+    }
+
+    fn exists(&self, p: &Path) -> bool {
+        std::fs::symlink_metadata(p).is_ok()
+    }
+
+    fn mkdir(&self, p: &Path) -> std::io::Result<()> {
+        std::fs::create_dir(p)
+    }
+
+    fn rmdir(&self, p: &Path) -> std::io::Result<()> {
+        std::fs::remove_dir(p)
+    }
+}
+
+pub fn host() -> Arc<dyn Tree> {
+    Arc::new(Host)
+}
+
+// ---- parsers ---------------------------------------------------------------
+
+/// A flat `key value` file (`cpu.stat`, `memory.stat`, `memory.events`):
+/// one unsigned integer per key, every key once. Anything else is malformed.
+pub fn parse_flat(name: &str, text: &str) -> Result<BTreeMap<String, u64>, String> {
+    let mut out = BTreeMap::new();
+    for (n, line) in text.lines().enumerate() {
+        let mut it = line.split_whitespace();
+        let (Some(key), Some(value), None) = (it.next(), it.next(), it.next()) else {
+            return Err(format!(
+                "resources: {name}: line {} is not 'key value'",
+                n + 1
+            ));
+        };
+        let value: u64 = value
+            .parse()
+            .map_err(|_| format!("resources: {name}: {key} is not an unsigned integer"))?;
+        if out.insert(key.to_owned(), value).is_some() {
+            return Err(format!("resources: {name}: {key} appears twice"));
+        }
+    }
+    if out.is_empty() {
+        return Err(format!("resources: {name} is empty"));
+    }
+    Ok(out)
+}
+
+/// A single-value file (`memory.current`, `memory.peak`, `pids.current`).
+/// `max` is a limit, not a reading, and refuses.
+pub fn parse_single(name: &str, text: &str) -> Result<u64, String> {
+    text.trim().parse().map_err(|_| {
+        format!(
+            "resources: {name} is not an unsigned integer: {:?}",
+            text.trim()
+        )
+    })
+}
+
+/// `cgroup.procs`: one pid per line; an empty file is an empty leaf.
+pub fn parse_procs(text: &str) -> Result<Vec<i32>, String> {
+    text.lines()
+        .map(|l| {
+            l.trim()
+                .parse::<i32>()
+                .ok()
+                .filter(|p| *p > 0)
+                .ok_or_else(|| format!("resources: cgroup.procs holds {l:?}, not a pid"))
+        })
+        .collect()
+}
+
+/// The cgroup v2 line of `/proc/<pid>/cgroup` (`0::/path`), as the path.
+pub fn parse_proc_cgroup(text: &str) -> Result<String, String> {
+    text.lines()
+        .find_map(|l| l.strip_prefix("0::"))
+        .map(str::to_owned)
+        .ok_or_else(|| "resources: /proc cgroup has no cgroup v2 line".to_owned())
+}
+
+/// A kernel CPU list (`0-3,8,10-11`) as a set.
+pub fn parse_cpu_list(text: &str) -> Result<BTreeSet<u32>, String> {
+    let bad = || format!("resources: {:?} is not a CPU list", text.trim());
+    let mut out = BTreeSet::new();
+    for part in text.trim().split(',').filter(|p| !p.is_empty()) {
+        match part.split_once('-') {
+            Some((a, b)) => {
+                let a: u32 = a.parse().map_err(|_| bad())?;
+                let b: u32 = b.parse().map_err(|_| bad())?;
+                if a > b || b > 1 << 16 {
+                    return Err(bad());
+                }
+                out.extend(a..=b);
+            }
+            None => {
+                out.insert(part.parse().map_err(|_| bad())?);
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err(bad());
+    }
+    Ok(out)
+}
+
+/// `Cpus_allowed_list` of a `/proc/<pid>/status`.
+pub fn parse_cpus_allowed(status: &str) -> Result<BTreeSet<u32>, String> {
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+        .ok_or_else(|| "resources: status has no Cpus_allowed_list".to_owned())
+        .and_then(parse_cpu_list)
+}
+
+/// The compact list form the receipts print (`0-1,4`).
+pub fn format_cpu_list(cpus: &[u32]) -> String {
+    let set: BTreeSet<u32> = cpus.iter().copied().collect();
+    let mut parts: Vec<String> = Vec::new();
+    let mut it = set.iter().copied().peekable();
+    while let Some(a) = it.next() {
+        let mut b = a;
+        while it.peek() == Some(&(b + 1)) {
+            b += 1;
+            it.next();
+        }
+        parts.push(if a == b {
+            a.to_string()
+        } else {
+            format!("{a}-{b}")
+        });
+    }
+    parts.join(",")
+}
+
+fn need(map: &BTreeMap<String, u64>, name: &str, key: &str) -> Result<u64, String> {
+    map.get(key)
+        .copied()
+        .ok_or_else(|| format!("resources: {name} lacks {key}"))
+}
+
+/// `cpu.stat`: the target's CPU time and its throttling.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CpuStat {
+    pub usage_usec: u64,
+    pub user_usec: u64,
+    pub system_usec: u64,
+    pub nr_throttled: u64,
+    pub throttled_usec: u64,
+}
+
+impl CpuStat {
+    pub fn parse(text: &str) -> Result<CpuStat, String> {
+        let m = parse_flat("cpu.stat", text)?;
+        Ok(CpuStat {
+            usage_usec: need(&m, "cpu.stat", "usage_usec")?,
+            user_usec: need(&m, "cpu.stat", "user_usec")?,
+            system_usec: need(&m, "cpu.stat", "system_usec")?,
+            nr_throttled: need(&m, "cpu.stat", "nr_throttled")?,
+            throttled_usec: need(&m, "cpu.stat", "throttled_usec")?,
+        })
+    }
+}
+
+/// `memory.events`: `max` counts pressure at the limit, `oom_kill` the
+/// processes the OOM killer ended. Only a rise of `oom_kill` is an OOM.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemEvents {
+    pub max: u64,
+    pub oom: u64,
+    pub oom_kill: u64,
+}
+
+impl MemEvents {
+    pub fn parse(text: &str) -> Result<MemEvents, String> {
+        let m = parse_flat("memory.events", text)?;
+        Ok(MemEvents {
+            max: need(&m, "memory.events", "max")?,
+            oom: need(&m, "memory.events", "oom")?,
+            oom_kill: need(&m, "memory.events", "oom_kill")?,
+        })
+    }
+}
+
+/// What a `sample` row takes from `memory.stat`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemStat {
+    pub anon: u64,
+    pub file: u64,
+    pub kernel: u64,
+}
+
+impl MemStat {
+    /// `kernel` is a key of kernels from 6.5; earlier ones state its
+    /// components, which are summed.
+    pub fn parse(text: &str) -> Result<MemStat, String> {
+        let m = parse_flat("memory.stat", text)?;
+        let kernel = match m.get("kernel") {
+            Some(k) => *k,
+            None => [
+                "kernel_stack",
+                "pagetables",
+                "percpu",
+                "sock",
+                "vmalloc",
+                "slab",
+            ]
+            .iter()
+            .map(|k| m.get(*k).copied().unwrap_or(0))
+            .sum(),
+        };
+        Ok(MemStat {
+            anon: need(&m, "memory.stat", "anon")?,
+            file: need(&m, "memory.stat", "file")?,
+            kernel,
+        })
+    }
+}
+
+// ---- detection and adoption ------------------------------------------------
+
+/// The Linux `statfs` magic of cgroup2fs.
+pub const CGROUP2_SUPER_MAGIC: u64 = 0x6367_7270;
+const TMPFS_MAGIC: u64 = 0x0102_1994;
+const RAMFS_MAGIC: u64 = 0x8584_58f6;
+
+/// The `statfs` magic of the filesystem under `path`. Off Linux there is no
+/// such thing, and the caller refuses.
+#[cfg(target_os = "linux")]
+pub fn fs_magic(path: &Path) -> std::io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::other("path holds a NUL"))?;
+    // SAFETY: statfs fills a caller-owned struct from a NUL-terminated path.
+    let mut s: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c.as_ptr(), &mut s) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(s.f_type as u64)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn fs_magic(_: &Path) -> std::io::Result<u64> {
+    Err(std::io::Error::other("statfs magic is read on Linux only"))
+}
+
+/// A tmpfs or ramfs scratch refuses: its pages would be charged to the
+/// leaf as `shmem` and distort the memory figures (0132 §3.8). An overlay
+/// whose upper layer is tmpfs is not seen; the README says so.
+pub fn scratch_backing(magic: u64) -> Result<(), String> {
+    if matches!(magic, TMPFS_MAGIC | RAMFS_MAGIC) {
+        return Err("resources: the scratch directory is on tmpfs, whose pages would be charged to the target as shmem; use a disk-backed directory".into());
+    }
+    Ok(())
+}
+
+/// [`scratch_backing`] for a real directory.
+pub fn check_scratch(dir: &Path) -> Result<(), String> {
+    let magic = fs_magic(dir).map_err(|e| format!("resources: scratch {}: {e}", dir.display()))?;
+    scratch_backing(magic)
+}
+
+/// Detect the driver's delegated scope: `cgroup.controllers` of the cgroup
+/// the driver is in lists `cpu`, `memory` and `pids`. `root` is the cgroup2
+/// mount, `self_cgroup` the text of `/proc/self/cgroup` and `is_cgroup2` what
+/// `statfs` said of the mount. Every failure is [`NO_DELEGATION`].
+pub fn detect(
+    tree: &dyn Tree,
+    root: &Path,
+    self_cgroup: &str,
+    is_cgroup2: bool,
+) -> Result<PathBuf, String> {
+    if !cfg!(target_os = "linux") || !is_cgroup2 {
+        return Err(NO_DELEGATION.into());
+    }
+    let own = parse_proc_cgroup(self_cgroup).map_err(|_| NO_DELEGATION.to_owned())?;
+    let dir = root.join(own.trim_start_matches('/'));
+    let controllers = tree
+        .read(&dir.join("cgroup.controllers"))
+        .map_err(|_| NO_DELEGATION.to_owned())?;
+    let have: BTreeSet<&str> = controllers.split_whitespace().collect();
+    if CONTROLLERS.iter().all(|c| have.contains(c)) {
+        Ok(dir)
+    } else {
+        Err(NO_DELEGATION.into())
+    }
+}
+
+/// [`detect`] on this host.
+pub fn detect_host() -> Result<PathBuf, String> {
+    let root = Path::new(CGROUP_ROOT);
+    let is2 = fs_magic(root).is_ok_and(|m| m == CGROUP2_SUPER_MAGIC);
+    let own = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+    detect(&Host, root, &own, is2)
+}
+
+/// Adopt the scope: it must hold nothing but this process and no `driver`
+/// leaf. Then, in this order, make `<scope>/driver`, move the driver into it,
+/// enable `+cpu +memory +pids` in the scope's `cgroup.subtree_control` and
+/// read that file back (a cgroup with a member process cannot enable
+/// controllers for its children, which is why the driver leaves first).
+pub fn adopt(tree: &dyn Tree, scope: &Path, pid: i32) -> Result<(), String> {
+    let driver = scope.join("driver");
+    if tree.exists(&driver) {
+        return Err(format!(
+            "resources: the scope {} already holds a driver leaf",
+            scope.display()
+        ));
+    }
+    let procs = tree
+        .read(&scope.join("cgroup.procs"))
+        .map_err(|e| format!("resources: scope cgroup.procs: {e}"))
+        .and_then(|t| parse_procs(&t))?;
+    let others = procs.iter().filter(|p| **p != pid).count();
+    if others > 0 {
+        return Err(format!(
+            "resources: the scope {} holds {others} other process(es); the driver must be its only process",
+            scope.display()
+        ));
+    }
+    tree.mkdir(&driver)
+        .map_err(|e| format!("resources: make the driver leaf: {e}"))?;
+    tree.write(&driver.join("cgroup.procs"), &pid.to_string())
+        .map_err(|e| format!("resources: move the driver into its leaf: {e}"))?;
+    tree.write(&scope.join("cgroup.subtree_control"), "+cpu +memory +pids")
+        .map_err(|_| NO_DELEGATION.to_owned())?;
+    let read = tree
+        .read(&scope.join("cgroup.subtree_control"))
+        .map_err(|_| NO_DELEGATION.to_owned())?;
+    let enabled: BTreeSet<&str> = read
+        .split_whitespace()
+        .map(|t| t.trim_start_matches('+'))
+        .collect();
+    if CONTROLLERS.iter().all(|c| enabled.contains(c)) {
+        Ok(())
+    } else {
+        Err(NO_DELEGATION.into())
+    }
+}
+
+// ---- CPU layout ------------------------------------------------------------
+
+/// Where each role runs (0132 §3.4): two distinct cores for the target, their
+/// SMT siblings left idle, the rest for the clients and the driver.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Layout {
+    pub target_cpus: Vec<u32>,
+    pub idle_siblings: Vec<u32>,
+    pub client_cpus: Vec<u32>,
+    /// Siblings of a target core outside the driver's allowed set: the
+    /// driver cannot keep them idle, and says so.
+    pub siblings_outside_set: Vec<u32>,
+}
+
+/// A pure function of the allowed CPU set and the kernel's sibling lists:
+/// the two target CPUs are the lowest allowed CPU and the lowest allowed
+/// CPU that is not its sibling. `siblings(cpu)` includes `cpu` itself.
+pub fn layout(
+    allowed: &BTreeSet<u32>,
+    siblings: &dyn Fn(u32) -> BTreeSet<u32>,
+) -> Result<Layout, String> {
+    let Some(&first) = allowed.iter().next() else {
+        return Err("resources: the allowed CPU set is empty".into());
+    };
+    let of_first = siblings(first);
+    let Some(&second) = allowed
+        .iter()
+        .find(|c| !of_first.contains(c) && **c != first)
+    else {
+        return Err("resources: fewer than two distinct cores in the allowed CPU set".into());
+    };
+    let targets = BTreeSet::from([first, second]);
+    let mut sib: BTreeSet<u32> = of_first.union(&siblings(second)).copied().collect();
+    sib.retain(|c| !targets.contains(c));
+    let idle: BTreeSet<u32> = sib
+        .iter()
+        .copied()
+        .filter(|c| allowed.contains(c))
+        .collect();
+    let outside: BTreeSet<u32> = sib.difference(&idle).copied().collect();
+    let clients: Vec<u32> = allowed
+        .iter()
+        .copied()
+        .filter(|c| !targets.contains(c) && !idle.contains(c))
+        .collect();
+    if clients.is_empty() {
+        return Err("resources: no client CPU is left after the two target cores".into());
+    }
+    Ok(Layout {
+        target_cpus: targets.into_iter().collect(),
+        idle_siblings: idle.into_iter().collect(),
+        client_cpus: clients,
+        siblings_outside_set: outside.into_iter().collect(),
+    })
+}
+
+/// The kernel's `thread_siblings_list` of `cpu` under `sys` (the `/sys`
+/// root); a CPU whose list cannot be read is its own only sibling.
+pub fn read_siblings(sys: &Path, cpu: u32) -> BTreeSet<u32> {
+    let path = sys.join(format!(
+        "devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"
+    ));
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| parse_cpu_list(&t).ok())
+        .unwrap_or_else(|| BTreeSet::from([cpu]))
+}
+
+/// A set of CPUs as the kernel wants it. Built before the fork, copied into
+/// the child and applied there with the one async-signal-safe call.
+#[derive(Clone, Copy)]
+pub struct Affinity {
+    #[cfg(target_os = "linux")]
+    set: libc::cpu_set_t,
+}
+
+impl Affinity {
+    #[cfg(target_os = "linux")]
+    pub fn of(cpus: &[u32]) -> Result<Affinity, String> {
+        // SAFETY: cpu_set_t is plain data; CPU_ZERO and CPU_SET write only
+        // into it, and every index is bounds-checked first.
+        let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        unsafe { libc::CPU_ZERO(&mut set) };
+        for c in cpus {
+            if (*c as usize) >= libc::CPU_SETSIZE as usize {
+                return Err(format!("resources: CPU {c} is beyond the affinity mask"));
+            }
+            unsafe { libc::CPU_SET(*c as usize, &mut set) };
+        }
+        Ok(Affinity { set })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn of(_: &[u32]) -> Result<Affinity, String> {
+        Err(NO_DELEGATION.into())
+    }
+
+    /// Restrict the calling thread. Async-signal-safe: one syscall.
+    #[cfg(target_os = "linux")]
+    pub fn apply(&self) -> std::io::Result<()> {
+        // SAFETY: sched_setaffinity reads the mask it is given.
+        let rc = unsafe {
+            libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &self.set)
+        };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn apply(&self) -> std::io::Result<()> {
+        Err(std::io::Error::other(NO_DELEGATION))
+    }
+}
+
+/// Pin the driver to the client CPUs. Called before the runtime is built so
+/// every worker thread inherits it; the sampler is thereby charged to the
+/// driver and never to the target.
+pub fn pin_self(cpus: &[u32]) -> Result<(), String> {
+    Affinity::of(cpus)?
+        .apply()
+        .map_err(|e| format!("resources: pin the driver to the client CPUs: {e}"))
+}
+
+/// The child's side of the join, between fork and exec: write `0` to the
+/// leaf's `cgroup.procs` through the fd the driver opened before the fork,
+/// then set the affinity. Allocates nothing; every return is checked.
+pub fn join_in_child(procs_fd: i32, affinity: &Affinity) -> std::io::Result<()> {
+    // SAFETY: write(2) on a descriptor the driver opened for this purpose,
+    // from a one-byte static buffer.
+    let n = unsafe { libc::write(procs_fd, b"0".as_ptr().cast(), 1) };
+    if n != 1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    affinity.apply()
+}
+
+// ---- the join's proof ------------------------------------------------------
+
+/// What `/proc/<pid>` says after the spawn: the cgroup the process is in
+/// (its last path component, since the full path carries the uid and the
+/// unit name) and the CPUs it may run on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Joined {
+    pub cgroup: String,
+    pub cpus_allowed: Vec<u32>,
+}
+
+pub fn read_join(proc_root: &Path, pid: i32) -> Result<Joined, String> {
+    let dir = proc_root.join(pid.to_string());
+    let path = std::fs::read_to_string(dir.join("cgroup"))
+        .map_err(|e| format!("resources: /proc/{pid}/cgroup: {e}"))
+        .and_then(|t| parse_proc_cgroup(&t))?;
+    let cpus = std::fs::read_to_string(dir.join("status"))
+        .map_err(|e| format!("resources: /proc/{pid}/status: {e}"))
+        .and_then(|t| parse_cpus_allowed(&t))?;
+    Ok(Joined {
+        cgroup: path.rsplit('/').next().unwrap_or_default().to_owned(),
+        cpus_allowed: cpus.into_iter().collect(),
+    })
+}
+
+/// The join is proved when the target is in its own leaf and may run on
+/// exactly the two target CPUs.
+pub fn check_join(j: &Joined, leaf: &str, target_cpus: &[u32]) -> Result<(), String> {
+    if j.cgroup != leaf {
+        return Err(format!(
+            "resources: the target is in cgroup {:?}, not its leaf {leaf:?}",
+            j.cgroup
+        ));
+    }
+    if j.cpus_allowed != target_cpus {
+        return Err(format!(
+            "resources: the target may run on CPUs {}, not exactly {}",
+            format_cpu_list(&j.cpus_allowed),
+            format_cpu_list(target_cpus)
+        ));
+    }
+    Ok(())
+}
+
+/// Whether every task of every process in the leaf still has exactly the two
+/// target CPUs. A process or thread that vanished between the listing and
+/// the read is skipped: it cannot have widened anything.
+pub fn affinity_held(proc_root: &Path, pids: &[i32], target_cpus: &[u32]) -> bool {
+    let want: BTreeSet<u32> = target_cpus.iter().copied().collect();
+    pids.iter().all(|pid| {
+        let tasks = proc_root.join(pid.to_string()).join("task");
+        let Ok(dir) = std::fs::read_dir(tasks) else {
+            return true;
+        };
+        dir.flatten().all(|t| {
+            match std::fs::read_to_string(t.path().join("status")).map(|s| parse_cpus_allowed(&s)) {
+                Ok(Ok(have)) => have == want,
+                Ok(Err(_)) => false,
+                Err(_) => true,
+            }
+        })
+    })
+}
+
+// ---- the leaf --------------------------------------------------------------
+
+/// The five limits exactly as read back from the leaf.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LimitsRead {
+    pub memory_max: String,
+    pub memory_swap_max: String,
+    pub memory_oom_group: String,
+    pub cpu_max: String,
+    pub pids_max: String,
+}
+
+/// One launch's cgroup: `<scope>/target-<launch-id>`.
+#[derive(Clone)]
+pub struct Leaf {
+    fs: Arc<dyn Tree>,
+    dir: PathBuf,
+    name: String,
+}
+
+/// What teardown established.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Teardown {
+    /// `cgroup.kill` was written.
+    pub killed: bool,
+    /// The leaf was empty and was removed. The only way `cgroup_removed`
+    /// is true.
+    pub removed: bool,
+    /// The leaf's lifetime `memory.peak`, read before removal.
+    pub memory_peak_bytes: Option<u64>,
+}
+
+impl Leaf {
+    /// Make the leaf and apply the budget.
+    pub fn create(
+        fs: Arc<dyn Tree>,
+        scope: &Path,
+        name: &str,
+    ) -> Result<(Leaf, LimitsRead), String> {
+        let dir = scope.join(name);
+        fs.mkdir(&dir)
+            .map_err(|e| format!("resources: make leaf {name}: {e}"))?;
+        match Leaf::prepare(fs.clone(), dir.clone(), name) {
+            Ok(done) => Ok(done),
+            Err(e) => {
+                let _ = fs.rmdir(&dir);
+                Err(e)
+            }
+        }
+    }
+
+    /// Check the leaf's files, write the five limits and read each back. A
+    /// missing file or a different read-back refuses, naming the file.
+    pub fn prepare(
+        fs: Arc<dyn Tree>,
+        dir: PathBuf,
+        name: &str,
+    ) -> Result<(Leaf, LimitsRead), String> {
+        for f in LEAF_FILES {
+            if !fs.exists(&dir.join(f)) {
+                return Err(format!("resources: the leaf {name} lacks {f}"));
+            }
+        }
+        let want = [
+            ("memory.swap.max", MEMORY_SWAP_MAX),
+            ("memory.max", MEMORY_MAX),
+            ("memory.oom.group", MEMORY_OOM_GROUP),
+            ("cpu.max", CPU_MAX),
+            ("pids.max", PIDS_MAX),
+        ];
+        let mut got = BTreeMap::new();
+        for (file, value) in want {
+            fs.write(&dir.join(file), value)
+                .map_err(|e| format!("resources: write {file}: {e}"))?;
+            let read = fs
+                .read(&dir.join(file))
+                .map_err(|e| format!("resources: read {file}: {e}"))?;
+            let read = read.trim().to_owned();
+            if read != value {
+                return Err(format!(
+                    "resources: {file} reads back {read:?}, not {value:?}"
+                ));
+            }
+            got.insert(file, read);
+        }
+        let limits = LimitsRead {
+            memory_max: got["memory.max"].clone(),
+            memory_swap_max: got["memory.swap.max"].clone(),
+            memory_oom_group: got["memory.oom.group"].clone(),
+            cpu_max: got["cpu.max"].clone(),
+            pids_max: got["pids.max"].clone(),
+        };
+        Ok((
+            Leaf {
+                fs,
+                dir,
+                name: name.to_owned(),
+            },
+            limits,
+        ))
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub fn procs_path(&self) -> PathBuf {
+        self.dir.join("cgroup.procs")
+    }
+
+    fn text(&self, file: &str) -> Result<String, String> {
+        self.fs
+            .read(&self.dir.join(file))
+            .map_err(|e| format!("resources: read {file}: {e}"))
+    }
+
+    pub fn read_procs(&self) -> Result<Vec<i32>, String> {
+        parse_procs(&self.text("cgroup.procs")?)
+    }
+
+    pub fn cpu_stat(&self) -> Result<CpuStat, String> {
+        CpuStat::parse(&self.text("cpu.stat")?)
+    }
+
+    pub fn mem_events(&self) -> Result<MemEvents, String> {
+        MemEvents::parse(&self.text("memory.events")?)
+    }
+
+    pub fn mem_stat(&self) -> Result<MemStat, String> {
+        MemStat::parse(&self.text("memory.stat")?)
+    }
+
+    pub fn mem_current(&self) -> Result<u64, String> {
+        parse_single("memory.current", &self.text("memory.current")?)
+    }
+
+    pub fn pids_current(&self) -> Result<u64, String> {
+        parse_single("pids.current", &self.text("pids.current")?)
+    }
+
+    pub fn mem_peak(&self) -> Result<u64, String> {
+        parse_single("memory.peak", &self.text("memory.peak")?)
+    }
+
+    /// End every process in the leaf, whatever group, session or parent it
+    /// has: a process that called `setsid` is still in the leaf (0132 §3.5).
+    pub fn kill(&self) -> std::io::Result<()> {
+        self.fs.write(&self.dir.join("cgroup.kill"), "1")
+    }
+
+    /// The cgroup step of cleanup: write `cgroup.kill`, read `cgroup.procs`
+    /// until it is empty or `until` passes (at least once after the kill, even
+    /// when the earlier steps used the whole budget), read `memory.peak`, and
+    /// remove the leaf. A leaf that cannot be emptied stays in place.
+    pub async fn teardown(&self, until: tokio::time::Instant) -> Teardown {
+        let killed = self.kill().is_ok();
+        let mut empty = false;
+        loop {
+            if matches!(self.read_procs(), Ok(p) if p.is_empty()) {
+                empty = true;
+                break;
+            }
+            if tokio::time::Instant::now() >= until {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let memory_peak_bytes = self.mem_peak().ok();
+        let removed = empty && self.fs.rmdir(&self.dir).is_ok();
+        Teardown {
+            killed,
+            removed,
+            memory_peak_bytes,
+        }
+    }
+}
+
+/// The driver's adopted scope: where leaves are made, and the CPU layout the
+/// run uses. One per driver process.
+pub struct Scope {
+    fs: Arc<dyn Tree>,
+    dir: PathBuf,
+    pub layout: Layout,
+    next: std::sync::atomic::AtomicU32,
+}
+
+impl Scope {
+    pub fn new(fs: Arc<dyn Tree>, dir: PathBuf, layout: Layout) -> Scope {
+        Scope {
+            fs,
+            dir,
+            layout,
+            next: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The next leaf: `target-<launch id>`, ids counted from 1.
+    pub fn leaf(&self) -> Result<(Leaf, LimitsRead), String> {
+        let n = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        Leaf::create(self.fs.clone(), &self.dir, &format!("target-{n:04}"))
+    }
+}
+
+/// The whole preamble of a v4 run on this host, before any runtime exists:
+/// check the scratch's backing, read the allowed CPUs and the sibling
+/// layout, pin the driver to the client CPUs, then detect and adopt the
+/// scope. Every failure is a refusal; none falls back to an unenforced run.
+pub fn prepare_host(scratch_parent: &Path) -> Result<Scope, String> {
+    if !cfg!(target_os = "linux") {
+        return Err(NO_DELEGATION.into());
+    }
+    let dir = detect_host()?;
+    check_scratch(scratch_parent)?;
+    let status = std::fs::read_to_string("/proc/self/status")
+        .map_err(|e| format!("resources: /proc/self/status: {e}"))?;
+    let allowed = parse_cpus_allowed(&status)?;
+    let lay = layout(&allowed, &|c| read_siblings(Path::new("/sys"), c))?;
+    pin_self(&lay.client_cpus)?;
+    adopt(&Host, &dir, std::process::id() as i32)?;
+    Ok(Scope::new(host(), dir, lay))
+}
+
+// ---- the scratch tree's footprint ------------------------------------------
+
+/// Allocated bytes (`st_blocks × 512`) of every entry under `root`,
+/// `root` included, without following symlinks: the store's disk footprint.
+pub fn allocated_bytes(root: &Path) -> std::io::Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(root)?;
+    let mut total = meta.blocks() * 512;
+    if meta.is_dir() {
+        for entry in std::fs::read_dir(root)? {
+            match allocated_bytes(&entry?.path()) {
+                Ok(n) => total += n,
+                // A file the target removed while we walked is not an error.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(total)
+}

@@ -35,6 +35,11 @@ mod protocol;
 mod records;
 #[path = "mail_compare/report.rs"]
 mod report;
+// Wired into the driver by the groups that follow; each item is used or
+// removed before the story is done.
+#[allow(dead_code)]
+#[path = "mail_compare/resources.rs"]
+mod resources;
 #[path = "mail_compare/runner.rs"]
 mod runner;
 #[path = "mail_compare/stats.rs"]
