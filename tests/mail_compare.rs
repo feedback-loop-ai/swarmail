@@ -3649,7 +3649,9 @@ async fn the_adapter_refuses_incomplete_malformed_and_overbudget_upstream_answer
         expect(
             &mut c,
             "mailpit_wait",
-            serde_json::json!({"query": query, "timeout_ms": 1000}),
+            // Each answer ends the wait at once; the timeout only has to
+            // outlast a loaded host (verify runs beside other gates).
+            serde_json::json!({"query": query, "timeout_ms": 15000}),
             want,
         )
         .await;
@@ -3896,7 +3898,9 @@ async fn full_pages_isolate_duplicate_moving_short_and_overlong_scans() {
     let http = wire::Http::new(addr, bounds.request, bounds.max_body);
     let wait = |query: &str| mailpit_mcp::Call::Wait {
         query: query.into(),
-        timeout_ms: 2000,
+        // Every case ends before the timeout; it only has to outlast a
+        // loaded host (the 2 s it had failed verify under load).
+        timeout_ms: 20000,
     };
     for (query, want) in [
         ("dup", mailpit_mcp::ToolError::Incomplete),
@@ -5896,7 +5900,8 @@ async fn a_mailslurper_scan_walks_every_page_of_a_filtered_search_before_it_answ
     }))
     .await;
     let mut c = initialized_for::<mailslurper_mcp::Mailslurper>(addr).await;
-    let args = serde_json::json!({"to": "ann@x.invalid", "timeout_ms": 2000});
+    // Found on the first scan; the timeout only has to outlast a loaded host.
+    let args = serde_json::json!({"to": "ann@x.invalid", "timeout_ms": 15000});
     let (e, v) = c.tool(1, "mailslurper_wait", args).await;
     assert!(!e, "{v}");
     assert_eq!(v["status"], "found");
