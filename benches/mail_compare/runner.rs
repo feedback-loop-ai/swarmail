@@ -1951,38 +1951,10 @@ pub async fn measured_instance(
         sink,
         closing.window(WindowKind::Ready, (&zero, &ready), None, outcome),
     )?;
-    // idle_ready: five seconds without traffic. At or after the chunk's
-    // instant it is not opened; the instant ends it early if it comes first.
-    if past(end) {
-        note(WindowKind::IdleReady, WindowOutcome::ChunkDeadline);
-        emit_window(
-            sink,
-            unopened_window(
-                &run,
-                &launch,
-                key,
-                WindowKind::IdleReady,
-                clock.now_ns(),
-                WindowOutcome::ChunkDeadline,
-            ),
-        )?;
-    } else {
-        let idle_a = bound(&leaf, &run, target, clock, sink)?;
-        let cut = until(end, tokio::time::sleep(IDLE_READY)).await.is_none();
-        let idle_b = bound(&leaf, &run, target, clock, sink)?;
-        let scratch_bytes = crate::resources::allocated_bytes(&scratch).ok();
-        let outcome = window_outcome(&idle_a.events, &idle_b.events, owned.has_exited(), cut);
-        note(WindowKind::IdleReady, outcome);
-        emit_window(
-            sink,
-            closing.window(
-                WindowKind::IdleReady,
-                (&idle_a, &idle_b),
-                scratch_bytes,
-                outcome,
-            ),
-        )?;
-    }
+    // idle_ready: five seconds without traffic.
+    let idle = idle_ready(&closing, (&owned, &scratch), sink, clock, end).await?;
+    note(WindowKind::IdleReady, idle.outcome);
+    emit_window(sink, idle)?;
     // measure: the profile's send-and-verify window.
     let probe = Probe::new(
         (leaf.clone(), target_cpus.to_vec()),
@@ -2054,6 +2026,36 @@ pub async fn measured_instance(
     let mut workload = result?;
     failures.append(&mut workload);
     Ok(failures)
+}
+
+/// The `idle_ready` window: five seconds without traffic after readiness. At
+/// or after the chunk's instant it is not opened; the instant ends it early
+/// when it comes first, and the window then keeps its counters with outcome
+/// `chunk_deadline`.
+pub async fn idle_ready(
+    closing: &Closing<'_>,
+    (owned, scratch): (&Owned, &std::path::Path),
+    sink: &Sink,
+    clock: &Clock,
+    end: Option<Instant>,
+) -> Result<WindowRow, String> {
+    let (run, target) = (closing.run, closing.key.0);
+    if past(end) {
+        return Ok(unopened_window(
+            run,
+            closing.launch,
+            closing.key,
+            WindowKind::IdleReady,
+            clock.now_ns(),
+            WindowOutcome::ChunkDeadline,
+        ));
+    }
+    let a = bound(closing.leaf, run, target, clock, sink)?;
+    let cut = until(end, tokio::time::sleep(IDLE_READY)).await.is_none();
+    let b = bound(closing.leaf, run, target, clock, sink)?;
+    let scratch_bytes = crate::resources::allocated_bytes(scratch).ok();
+    let outcome = window_outcome(&a.events, &b.events, owned.has_exited(), cut);
+    Ok(closing.window(WindowKind::IdleReady, (&a, &b), scratch_bytes, outcome))
 }
 
 /// Where a sampler is parked, and when its leaf was made.

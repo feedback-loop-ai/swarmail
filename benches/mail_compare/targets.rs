@@ -495,6 +495,11 @@ struct Joining {
     procs: std::fs::File,
     affinity: crate::resources::Affinity,
     layout: crate::resources::Layout,
+    /// A test seam: a fixture scope cannot move a real process into its
+    /// leaf, so the cgroup the process reports is taken to be the leaf.
+    /// The CPUs it may run on are still read from `/proc`.
+    #[cfg(test)]
+    trust_cgroup: bool,
 }
 
 fn joining(scope: &crate::resources::Scope) -> Result<Joining, String> {
@@ -522,6 +527,8 @@ fn joining(scope: &crate::resources::Scope) -> Result<Joining, String> {
         procs,
         affinity,
         layout: scope.layout.clone(),
+        #[cfg(test)]
+        trust_cgroup: scope.trust_cgroup,
     })
 }
 
@@ -809,6 +816,8 @@ impl Owned {
         // target was in its leaf on exactly the two target CPUs, not only
         // that the leaf had limits.
         if let Some(j) = joining {
+            #[cfg(test)]
+            let trust_cgroup = j.trust_cgroup;
             let Joining {
                 leaf,
                 layout,
@@ -816,7 +825,21 @@ impl Owned {
                 ..
             } = j;
             drop(procs);
+            // A fixture leaf lists what the kernel would: the target's group.
+            #[cfg(test)]
+            if trust_cgroup {
+                let _ = std::fs::write(leaf.procs_path(), format!("{pgid}\n"));
+            }
             let proof = crate::resources::read_join(Path::new("/proc"), pgid).and_then(|read| {
+                #[cfg(test)]
+                let read = if trust_cgroup {
+                    crate::resources::Joined {
+                        cgroup: leaf.name().to_owned(),
+                        ..read
+                    }
+                } else {
+                    read
+                };
                 crate::resources::check_join(&read, leaf.name(), &layout.target_cpus).map(|()| read)
             });
             match proof {
@@ -1325,6 +1348,10 @@ impl Owned {
     }
 }
 
+/// How long a leaf launch's teardown waits, signalling nothing, for a leader
+/// that is exiting to be reaped before it calls the leader alive.
+const EARLY_EXIT_GRACE: Duration = Duration::from_millis(100);
+
 /// What a cleanup worker needs besides the child itself.
 struct Worker {
     kind: TargetKind,
@@ -1373,7 +1400,18 @@ async fn keep(
             reaped = Some(status.is_ok());
             let _ = stop.await;
         }
-        _ = &mut stop => {}
+        _ = &mut stop => {
+            // A leader whose output has closed is on its way out but may not
+            // be reaped yet: a moment's wait, with no signal, tells an early
+            // exit from a live target that is merely not ready. Only a leaf
+            // launch records the difference.
+            if w.leaf.is_some()
+                && let Ok(status) = tokio::time::timeout(EARLY_EXIT_GRACE, child.wait()).await
+            {
+                w.exited.store(true, Ordering::SeqCst);
+                reaped = Some(status.is_ok());
+            }
+        }
     }
     #[cfg(test)]
     {

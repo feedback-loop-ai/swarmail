@@ -842,6 +842,9 @@ pub struct Scope {
     dir: PathBuf,
     pub layout: Layout,
     next: std::sync::atomic::AtomicU32,
+    /// A test seam: see `targets::Joining`. Always false outside tests.
+    #[cfg(test)]
+    pub trust_cgroup: bool,
 }
 
 impl std::fmt::Debug for Scope {
@@ -857,7 +860,18 @@ impl Scope {
             dir,
             layout,
             next: std::sync::atomic::AtomicU32::new(0),
+            #[cfg(test)]
+            trust_cgroup: false,
         }
+    }
+
+    /// A fixture scope that cannot move a real process into its leaf: the
+    /// join's cgroup read-back is taken to be the leaf (test only).
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub fn trusting_the_join(mut self) -> Scope {
+        self.trust_cgroup = true;
+        self
     }
 
     /// The next leaf: `target-<launch id>`, ids counted from 1.

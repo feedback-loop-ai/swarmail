@@ -2290,6 +2290,12 @@ struct Rep {
     outcome: records::WindowOutcome,
     held: bool,
     oom_kill: u64,
+    /// The three windows were never opened (outcome as `outcome`): no
+    /// counters and no samples.
+    unopened: bool,
+    /// How the `ready` and `idle_ready` windows ended.
+    startup: records::WindowOutcome,
+    idle: records::WindowOutcome,
 }
 
 impl Rep {
@@ -2303,6 +2309,9 @@ impl Rep {
             outcome: records::WindowOutcome::Measured,
             held: true,
             oom_kill: 0,
+            unopened: false,
+            startup: records::WindowOutcome::Measured,
+            idle: records::WindowOutcome::Measured,
         }
     }
 }
@@ -2347,7 +2356,14 @@ fn res_rows(run: &str, r: &Rep) -> Vec<records::ResourceRow> {
             o,
         ))
     };
-    let m = records::WindowOutcome::Measured;
+    if r.unopened {
+        for kind in [Ready, IdleReady, Measure] {
+            out.push(records::ResourceRow::Window(runner::unopened_window(
+                run, "none", key, kind, SEC, r.outcome,
+            )));
+        }
+        return out;
+    }
     out.push(w(
         Ready,
         (
@@ -2356,7 +2372,7 @@ fn res_rows(run: &str, r: &Rep) -> Vec<records::ResourceRow> {
         ),
         Some(true),
         None,
-        m,
+        r.startup,
     ));
     out.push(w(
         IdleReady,
@@ -2366,7 +2382,7 @@ fn res_rows(run: &str, r: &Rep) -> Vec<records::ResourceRow> {
         ),
         Some(true),
         Some(4096),
-        m,
+        r.idle,
     ));
     out.push(w(
         Measure,
@@ -2853,6 +2869,445 @@ fn a_v4_report_is_version_3_and_a_v3_report_is_still_version_2() {
             "{key} must not appear in a version 2 report"
         );
     }
+}
+
+// ============================================================================
+// R3: no observation, no number
+// ============================================================================
+
+/// Every send `unstarted` and the verification `incomplete`, as a profile
+/// that was not measured leaves them.
+fn unstarted_rows(run: &str, r: &Rep, reason: &str) -> Vec<Row> {
+    let mut rows = Vec::new();
+    for i in 0..4 {
+        let mut s = runner::row(run, r.target, r.profile, r.rep, Phase::Send, i, "unstarted");
+        s.reason = Some(reason.into());
+        rows.push(s);
+    }
+    let mut v = runner::row(
+        run,
+        r.target,
+        r.profile,
+        r.rep,
+        Phase::Verified,
+        0,
+        "incomplete",
+    );
+    v.reason = Some(reason.into());
+    (v.start_ns, v.ack_ns, v.observed_ns) = (Some(8 * SEC), Some(8 * SEC), Some(8 * SEC));
+    v.requests = Some(0);
+    rows.push(v);
+    rows
+}
+
+/// A repetition whose three windows were never opened, for `outcome`.
+fn dead(rep: u32, outcome: records::WindowOutcome) -> Rep {
+    let mut r = Rep::new(rep, (0, 0), 0);
+    r.unopened = true;
+    r.outcome = outcome;
+    r
+}
+
+fn dead_rows(reason: &'static str) -> impl Fn(&mut Vec<Row>) {
+    move |rows: &mut Vec<Row>| {
+        let r = Rep::new(rows[0].repetition, (0, 0), 0);
+        *rows = unstarted_rows("run-g", &r, reason);
+    }
+}
+
+/// Every number under `v` that is zero, skipping the coordinates that name a
+/// repetition (an index is not a figure).
+fn zeros(v: &Value, path: &str, out: &mut Vec<String>) {
+    match v {
+        Value::Number(n) if n.as_f64() == Some(0.0) => out.push(path.to_owned()),
+        Value::Array(a) => {
+            for (i, x) in a.iter().enumerate() {
+                zeros(x, &format!("{path}[{i}]"), out);
+            }
+        }
+        Value::Object(m) => {
+            for (k, x) in m {
+                if k != "repetition" {
+                    zeros(x, &format!("{path}.{k}"), out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn a_never_opened_window_serializes_null_counters_and_never_zero() {
+    let w = runner::unopened_window(
+        "run-h",
+        "none",
+        (TargetKind::Mailpit, "cost-c8-reused", 0),
+        records::WindowKind::Measure,
+        7,
+        records::WindowOutcome::ChunkDeadline,
+    );
+    let v = serde_json::to_value(&w).unwrap();
+    for k in [
+        "cpu_start",
+        "cpu_end",
+        "events_start",
+        "events_end",
+        "affinity_held",
+        "scratch_bytes",
+    ] {
+        assert!(v[k].is_null(), "{k}: {v}");
+    }
+    let text = serde_json::to_string(&w).unwrap();
+    assert!(
+        !text.contains("usage_usec") && !text.contains("oom_kill"),
+        "{text}"
+    );
+    assert_eq!(
+        (w.start_ns, w.end_ns),
+        (7, 7),
+        "both bounds are the instant it was given up"
+    );
+    assert!(w.counters().is_none());
+}
+
+#[test]
+fn the_reader_refuses_a_measured_window_without_counters() {
+    let p = tiny4();
+    let m = tiny_manifest(&p, "run-i", &mailpit_chunk(0));
+    let dir = fixture();
+    let mut ws = all_windows("run-i", 0);
+    let write = |ws: &[records::WindowRow]| {
+        let mut lines = message_lines("run-i", 0);
+        lines.extend(ws.iter().map(window_line));
+        write_samples(dir.path(), &lines);
+    };
+    write(&ws);
+    records::read_run(dir.path(), &m).expect("the whole set reads");
+    ws[2].cpu_start = None;
+    ws[2].cpu_end = None;
+    ws[2].events_start = None;
+    ws[2].events_end = None;
+    ws[2].affinity_held = None;
+    write(&ws);
+    let w = records::read_run(dir.path(), &m).unwrap_err();
+    assert!(w.contains("is measured but has no counters"), "{w}");
+    // The same window that was never opened reads, with its own outcome.
+    ws[2].outcome = records::WindowOutcome::ChunkDeadline;
+    write(&ws);
+    records::read_run(dir.path(), &m).expect("a never-opened window reads");
+    // And it may not carry an affinity or a scratch size it never read.
+    ws[2].affinity_held = Some(true);
+    write(&ws);
+    let w = records::read_run(dir.path(), &m).unwrap_err();
+    assert!(w.contains("never opened but carries"), "{w}");
+}
+
+#[test]
+fn the_reader_refuses_a_window_with_partial_counters() {
+    let p = tiny4();
+    let m = tiny_manifest(&p, "run-i", &mailpit_chunk(0));
+    let dir = fixture();
+    for field in ["cpu_start", "cpu_end", "events_start", "events_end"] {
+        let mut ws = all_windows("run-i", 0);
+        match field {
+            "cpu_start" => ws[0].cpu_start = None,
+            "cpu_end" => ws[0].cpu_end = None,
+            "events_start" => ws[0].events_start = None,
+            _ => ws[0].events_end = None,
+        }
+        let mut lines = message_lines("run-i", 0);
+        lines.extend(ws.iter().map(window_line));
+        write_samples(dir.path(), &lines);
+        let w = records::read_run(dir.path(), &m).unwrap_err();
+        assert!(w.contains("some counters and not others"), "{field}: {w}");
+    }
+}
+
+#[test]
+fn the_reader_refuses_a_sample_of_launch_none() {
+    let p = tiny4();
+    let m = tiny_manifest(&p, "run-i", &mailpit_chunk(0));
+    let dir = fixture();
+    let mut lines = message_lines("run-i", 0);
+    let sample = sample_at("run-i", "none", 5, 10, 4);
+    lines.push(serde_json::to_string(&records::ResourceRow::Sample(sample)).unwrap());
+    lines.extend(all_windows("run-i", 0).iter().map(window_line));
+    write_samples(dir.path(), &lines);
+    let w = records::read_run(dir.path(), &m).unwrap_err();
+    assert!(w.contains("sample of launch none"), "{w}");
+}
+
+#[test]
+fn affinity_is_read_at_the_end_of_each_window_kind() {
+    use records::WindowKind::*;
+    let scope = fixture();
+    let dir = leaf_fixture(scope.path(), "target-0001");
+    let (leaf, _) =
+        resources::Leaf::prepare(resources::host(), dir.clone(), "target-0001").unwrap();
+    let proc_root = fixture();
+    let task = |pid: u32, tid: u32, list: &str| {
+        let d = proc_root.path().join(format!("{pid}/task/{tid}"));
+        std::fs::create_dir_all(&d).unwrap();
+        put(&d, "status", &format!("Cpus_allowed_list:\t{list}\n"));
+    };
+    let closing = |procs: &str| {
+        put(&dir, "cgroup.procs", procs);
+        runner::Closing {
+            run: "run-j",
+            launch: "target-0001",
+            key: (TargetKind::Mailpit, "cost-c8-reused", 0),
+            leaf: &leaf,
+            proc_root: proc_root.path(),
+            target_cpus: &[2, 3],
+        }
+    };
+    let snaps = (zero_snap(0), zero_snap(SEC));
+    let m = records::WindowOutcome::Measured;
+    for kind in [Ready, IdleReady, Measure] {
+        // No task at all: no observation, not a pass.
+        let w = closing("").window(kind, (&snaps.0, &snaps.1), None, m);
+        assert_eq!(w.affinity_held, None, "{kind:?}: an empty leaf");
+        // Every task on the pair.
+        task(5, 5, "2-3");
+        task(5, 6, "2-3");
+        let w = closing("5\n").window(kind, (&snaps.0, &snaps.1), None, m);
+        assert_eq!(w.affinity_held, Some(true), "{kind:?}: the pair");
+        // One task differing.
+        task(5, 6, "2-4");
+        let w = closing("5\n").window(kind, (&snaps.0, &snaps.1), None, m);
+        assert_eq!(w.affinity_held, Some(false), "{kind:?}: one widened");
+        task(5, 6, "2-3");
+        // A pid listed that has no /proc entry: still no observation.
+        let w = closing("99\n").window(kind, (&snaps.0, &snaps.1), None, m);
+        assert_eq!(w.affinity_held, None, "{kind:?}: a vanished process");
+    }
+}
+
+#[test]
+fn a_repetition_that_was_not_measured_has_null_figures() {
+    use records::WindowOutcome::ChunkDeadline;
+    let gone = dead_rows("chunk deadline");
+    let r = v4_report(&[(dead(0, ChunkDeadline), Some(&gone))]);
+    let v = serde_json::to_value(&r).unwrap();
+    let rep = &v["cost"]["repetitions"][0];
+    for k in [
+        "visible",
+        "cpu_user_usec",
+        "cpu_system_usec",
+        "cpu_total_usec",
+        "peak_memory_bytes",
+        "mean_memory_bytes",
+        "peak_anon_bytes",
+        "mean_anon_bytes",
+        "oom_kills",
+        "nr_throttled",
+        "throttled_usec",
+        "affinity_held",
+        "visible_per_cpu_second",
+        "cpu_ms_per_1k_visible",
+    ] {
+        assert!(rep[k].is_null(), "{k}: {rep}");
+    }
+    let cell = only_cell(&r);
+    assert!(!cell.ranked);
+    assert_eq!(cell.shortfalls, vec!["timeout"]);
+    assert!(cell.cpu_ms_per_1k_visible.is_none() && cell.peak_memory_mib.is_none());
+    assert_eq!(rep["window_outcome"], "chunk_deadline");
+}
+
+#[test]
+fn one_of_three_not_measured_gives_a_median_over_two_with_n_two() {
+    use records::WindowOutcome::ChunkDeadline;
+    let gone = dead_rows("chunk deadline");
+    let r = v4_report(&[
+        (Rep::new(0, (1_500_000, 500_000), 300), None),
+        (Rep::new(1, (3_000_000, 1_000_000), 400), None),
+        (dead(2, ChunkDeadline), Some(&gone)),
+    ]);
+    let cell = only_cell(&r);
+    assert_eq!(cell.repetitions, 3);
+    // 2 and 1 mails per CPU second: the lower of two is the median.
+    let s = cell.visible_per_cpu_second.unwrap();
+    assert_eq!((s.median, s.min, s.max, s.n), (1.0, 1.0, 2.0, 2));
+    let s = cell.cpu_ms_per_1k_visible.unwrap();
+    assert_eq!(
+        (s.median, s.min, s.max, s.n),
+        (500_000.0, 500_000.0, 1_000_000.0, 2)
+    );
+    let s = cell.peak_memory_mib.unwrap();
+    assert_eq!((s.median, s.min, s.max, s.n), (300.0, 300.0, 400.0, 2));
+    // The idle and startup cells are over the two as well, and unranked.
+    let v4 = r.v4.as_ref().unwrap();
+    assert_eq!(v4.idle[0].memory_mib.unwrap().n, 2);
+    assert_eq!(v4.startup[0].ready_ms.unwrap().n, 2);
+    assert!(!v4.idle[0].ranked && !v4.startup[0].ranked);
+}
+
+#[test]
+fn three_not_measured_give_null_figures_and_no_zero() {
+    use records::WindowOutcome::ChunkDeadline;
+    let gone = dead_rows("chunk deadline");
+    let r = v4_report(&[
+        (dead(0, ChunkDeadline), Some(&gone)),
+        (dead(1, ChunkDeadline), Some(&gone)),
+        (dead(2, ChunkDeadline), Some(&gone)),
+    ]);
+    let v = serde_json::to_value(&r.v4).unwrap();
+    let mut found = Vec::new();
+    for key in ["cost", "idle", "startup", "headline"] {
+        zeros(&v[key], key, &mut found);
+    }
+    assert!(
+        found.is_empty(),
+        "a zero where a figure is meant: {found:?}"
+    );
+    let cell = only_cell(&r);
+    assert!(
+        cell.visible_per_cpu_second.is_none()
+            && cell.cpu_ms_per_1k_visible.is_none()
+            && cell.peak_memory_mib.is_none()
+            && cell.peak_anon_mib.is_none()
+    );
+    let v4 = r.v4.as_ref().unwrap();
+    assert!(v4.idle[0].memory_mib.is_none() && v4.idle[0].scratch_bytes.is_none());
+    assert!(v4.startup[0].ready_ms.is_none() && v4.startup[0].cpu_ms_to_ready.is_none());
+}
+
+#[test]
+fn idle_and_startup_cells_are_unranked_and_name_the_window_outcome() {
+    use records::WindowOutcome as O;
+    for (outcome, name) in [
+        (O::ChunkDeadline, "timeout"),
+        (O::OomKilled, "oom"),
+        (O::TargetExited, "target_exited"),
+    ] {
+        let mut rep = Rep::new(0, (1_000_000, 0), 300);
+        (rep.startup, rep.idle) = (outcome, outcome);
+        let r = v4_report(&[(rep, None)]);
+        let v4 = r.v4.as_ref().unwrap();
+        for (ranked, shortfalls) in [
+            (v4.idle[0].ranked, &v4.idle[0].shortfalls),
+            (v4.startup[0].ranked, &v4.startup[0].shortfalls),
+        ] {
+            assert!(!ranked, "{outcome:?}");
+            assert_eq!(shortfalls, &vec![name], "{outcome:?}");
+        }
+        assert!(v4.idle[0].memory_mib.is_none() && v4.startup[0].ready_ms.is_none());
+    }
+    let r = v4_report(&[(Rep::new(0, (1_000_000, 0), 300), None)]);
+    let v4 = r.v4.as_ref().unwrap();
+    assert!(v4.idle[0].ranked && v4.startup[0].ranked);
+    assert!(v4.idle[0].shortfalls.is_empty() && v4.startup[0].shortfalls.is_empty());
+}
+
+#[test]
+fn a_target_that_exited_in_its_idle_window_has_no_idle_figure() {
+    let mut rep = Rep::new(0, (1_000_000, 0), 300);
+    rep.idle = records::WindowOutcome::TargetExited;
+    let r = v4_report(&[(rep, None)]);
+    let v4 = r.v4.as_ref().unwrap();
+    let idle = &v4.idle[0];
+    assert!(idle.memory_mib.is_none() && idle.anon_mib.is_none() && idle.scratch_bytes.is_none());
+    assert_eq!(idle.shortfalls, vec!["target_exited"]);
+    // It was ready, so its startup figure stands.
+    assert!(v4.startup[0].ready_ms.is_some() && v4.startup[0].ranked);
+}
+
+#[test]
+fn an_opened_oom_killed_measure_window_keeps_its_cpu_and_peak_unranked() {
+    let mut rep = Rep::new(0, (1_500_000, 500_000), 300);
+    (rep.outcome, rep.oom_kill) = (records::WindowOutcome::OomKilled, 2);
+    let r = v4_report(&[(rep, None)]);
+    let c = &r.v4.as_ref().unwrap().cost.repetitions[0];
+    assert_eq!(c.cpu_total_usec, Some(2_000_000));
+    assert_eq!(c.peak_memory_bytes, Some(300 * MIB));
+    assert_eq!(c.oom_kills, Some(2));
+    let cell = only_cell(&r);
+    assert!(!cell.ranked);
+    assert_eq!(cell.shortfalls, vec!["oom"]);
+    assert!(cell.peak_memory_mib.is_some() && cell.cpu_ms_per_1k_visible.is_some());
+}
+
+#[test]
+fn a_verification_cut_by_the_chunk_deadline_names_timeout_not_lost() {
+    // Four accepted, nothing listed because the deadline came: not lost.
+    let cut = |reason: &'static str| {
+        move |rows: &mut Vec<Row>| {
+            rows.retain(|r| r.phase != Phase::Visible);
+            let v = rows
+                .iter_mut()
+                .find(|r| r.phase == Phase::Verified)
+                .unwrap();
+            v.outcome = "incomplete".into();
+            v.reason = Some(reason.into());
+        }
+    };
+    let by_deadline = cut("chunk deadline");
+    let r = v4_report(&[(Rep::new(0, (1_000_000, 0), 300), Some(&by_deadline))]);
+    let cell = only_cell(&r);
+    assert!(!cell.ranked);
+    assert!(
+        cell.shortfalls.contains(&"timeout"),
+        "{:?}",
+        cell.shortfalls
+    );
+    assert!(!cell.shortfalls.contains(&"lost"), "{:?}", cell.shortfalls);
+    // The same rows ended by the profile's own verify deadline are lost.
+    let by_verify = cut("verify deadline");
+    let r = v4_report(&[(Rep::new(0, (1_000_000, 0), 300), Some(&by_verify))]);
+    let cell = only_cell(&r);
+    assert!(cell.shortfalls.contains(&"lost"), "{:?}", cell.shortfalls);
+    assert!(
+        !cell.shortfalls.contains(&"timeout"),
+        "{:?}",
+        cell.shortfalls
+    );
+}
+
+#[test]
+fn unstarted_rows_of_a_dead_target_do_not_name_timeout() {
+    use records::WindowOutcome as O;
+    for (outcome, reason, name) in [
+        (O::TargetExited, "target exited", "target_exited"),
+        (O::OomKilled, "oom killed", "oom"),
+    ] {
+        let gone = dead_rows(reason);
+        let r = v4_report(&[(dead(0, outcome), Some(&gone))]);
+        let cell = only_cell(&r);
+        assert_eq!(cell.shortfalls, vec![name], "{reason}");
+    }
+    // Whereas rows left unstarted by a deadline do.
+    let gone = dead_rows("send deadline");
+    let r = v4_report(&[(dead(0, O::Measured), Some(&gone))]);
+    let rep = &r.v4.as_ref().unwrap().cost.repetitions[0];
+    assert!(rep.shortfalls.contains(&"timeout"), "{:?}", rep.shortfalls);
+}
+
+#[test]
+fn an_unread_fidelity_is_not_exact_and_not_a_fidelity_mismatch() {
+    let unread: &dyn Fn(&mut Vec<Row>) = &|rows| {
+        let v = rows.iter_mut().find(|r| r.phase == Phase::Visible).unwrap();
+        v.fidelity_ok = None;
+    };
+    let r = v4_report(&[(Rep::new(0, (1_000_000, 0), 300), Some(unread))]);
+    let rep = &r.v4.as_ref().unwrap().cost.repetitions[0];
+    assert!(
+        !rep.exact,
+        "a visible row whose fidelity was never read is not exact"
+    );
+    assert!(
+        !rep.shortfalls.contains(&"fidelity"),
+        "{:?}",
+        rep.shortfalls
+    );
+    assert!(!only_cell(&r).ranked);
+    // A read that failed is a mismatch, as before.
+    let wrong: &dyn Fn(&mut Vec<Row>) = &|rows| {
+        let v = rows.iter_mut().find(|r| r.phase == Phase::Visible).unwrap();
+        v.fidelity_ok = Some(false);
+    };
+    let r = v4_report(&[(Rep::new(0, (1_000_000, 0), 300), Some(wrong))]);
+    assert!(only_cell(&r).shortfalls.contains(&"fidelity"));
 }
 
 // ============================================================================
@@ -4521,6 +4976,1019 @@ fn collect_v4_usage_names_the_mode() {
     assert_eq!(code, 2);
     assert!(text.contains("compare-mail.sh collect-v4"), "{text}");
     assert!(text.contains("Linux only"), "{text}");
+}
+
+// ============================================================================
+// R1 to R3: the chunk's own code, against a real target on a fixture scope
+//
+// A fixture scope is a directory of plain files that a fake kernel keeps like
+// cgroupfs does for what the driver reads: a new leaf appears with its control
+// files, `cgroup.kill` empties `cgroup.procs`, and a leaf can be removed with
+// what is in it. It cannot move a real process, so the scope trusts the join's
+// cgroup read-back (a test-only seam); the CPUs the target may run on are
+// still read from `/proc`, where the child has set them.
+// ============================================================================
+
+#[cfg(target_os = "linux")]
+mod chunk {
+    use super::*;
+    use records::{ResourceRow, WindowKind, WindowOutcome};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    pub struct FakeKernel {
+        killed: Mutex<BTreeSet<PathBuf>>,
+        oom_kill: u64,
+    }
+
+    impl FakeKernel {
+        pub fn new(oom_kill: u64) -> Arc<FakeKernel> {
+            Arc::new(FakeKernel {
+                killed: Mutex::new(BTreeSet::new()),
+                oom_kill,
+            })
+        }
+    }
+
+    impl resources::Tree for FakeKernel {
+        fn read(&self, p: &Path) -> std::io::Result<String> {
+            let emptied = p.file_name().is_some_and(|n| n == "cgroup.procs")
+                && p.parent()
+                    .is_some_and(|d| self.killed.lock().unwrap().contains(d));
+            if emptied {
+                return Ok(String::new());
+            }
+            std::fs::read_to_string(p)
+        }
+
+        fn write(&self, p: &Path, text: &str) -> std::io::Result<()> {
+            if p.file_name().is_some_and(|n| n == "cgroup.kill")
+                && let Some(d) = p.parent()
+            {
+                self.killed.lock().unwrap().insert(d.to_owned());
+            }
+            resources::host().write(p, text)
+        }
+
+        fn exists(&self, p: &Path) -> bool {
+            resources::host().exists(p)
+        }
+
+        fn mkdir(&self, p: &Path) -> std::io::Result<()> {
+            std::fs::create_dir(p)?;
+            let events = format!(
+                "low 0\nhigh 0\nmax 0\noom {k}\noom_kill {k}\n",
+                k = self.oom_kill
+            );
+            for (f, text) in [
+                ("memory.max", "max\n"),
+                ("memory.swap.max", "max\n"),
+                ("memory.oom.group", "0\n"),
+                ("cpu.max", "max 100000\n"),
+                ("pids.max", "max\n"),
+                ("cgroup.kill", ""),
+                ("memory.peak", "1048576\n"),
+                ("cgroup.procs", ""),
+                ("memory.current", "4096\n"),
+                ("memory.stat", "anon 1\nfile 2\nkernel 3\n"),
+                ("memory.events", events.as_str()),
+                ("cpu.stat", CPU_STAT),
+                ("pids.current", "1\n"),
+            ] {
+                std::fs::write(p.join(f), text)?;
+            }
+            Ok(())
+        }
+
+        fn rmdir(&self, p: &Path) -> std::io::Result<()> {
+            std::fs::remove_dir_all(p)
+        }
+    }
+
+    fn layout() -> resources::Layout {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let allowed: Vec<u32> = resources::parse_cpus_allowed(&status)
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert!(allowed.len() >= 2, "a fixture scope needs two allowed CPUs");
+        resources::Layout {
+            target_cpus: allowed[..2].to_vec(),
+            idle_siblings: Vec::new(),
+            client_cpus: allowed[2..].to_vec(),
+            siblings_outside_set: Vec::new(),
+        }
+    }
+
+    pub struct Rig {
+        pub dir: tempfile::TempDir,
+        pub scope: Arc<resources::Scope>,
+        pub keepers: targets::Keepers,
+    }
+
+    impl Rig {
+        /// A fixture scope; `oom_kill` is what each new leaf's
+        /// `memory.events` already counts, `trusting` whether the join's
+        /// cgroup read-back is taken as the leaf.
+        pub fn new(oom_kill: u64, trusting: bool) -> Rig {
+            let dir = fixture();
+            let scope_dir = dir.path().join("scope");
+            std::fs::create_dir(&scope_dir).unwrap();
+            let mut scope = resources::Scope::new(FakeKernel::new(oom_kill), scope_dir, layout());
+            if trusting {
+                scope = scope.trusting_the_join();
+            }
+            Rig {
+                dir,
+                scope: Arc::new(scope),
+                keepers: targets::Keepers::default(),
+            }
+        }
+
+        pub fn target_cpus(&self) -> Vec<u32> {
+            self.scope.layout.target_cpus.clone()
+        }
+
+        pub fn scope_dir(&self) -> PathBuf {
+            self.dir.path().join("scope")
+        }
+
+        /// A launch spec for `binary` as the Swarmail candidate, in a leaf
+        /// of this scope.
+        pub fn spec(&self, p: &Protocol, binary: &Path) -> targets::LaunchSpec {
+            let sbytes = serde_json::to_vec(&lock5()).unwrap();
+            let lock = SourceLock::parse(&sbytes).unwrap();
+            let bins = vec![format!("swarmail={}", binary.display())];
+            let mut specs =
+                runner::launch_specs_of(p, &lock, &bins, &[], &[TargetKind::Swarmail]).unwrap();
+            let mut spec = specs.remove(&TargetKind::Swarmail).unwrap();
+            spec.extra.scope = Some(self.scope.clone());
+            spec
+        }
+
+        /// The chunk `cost.swarmail.r0` of `p` against `binary`.
+        pub fn config(
+            &self,
+            p: &Protocol,
+            binary: &Path,
+            run: &str,
+        ) -> (runner::Config, runner::Chunk) {
+            let chunk = runner::Chunk::Cost {
+                target: TargetKind::Swarmail,
+                repetition: 0,
+            };
+            let mut m = manifest(p, run);
+            let (planned, windows) = runner::plan_chunk(p, &chunk);
+            (m.planned, m.planned_windows, m.chunk) = (planned, Some(windows), Some(chunk.name()));
+            let scratch = self.dir.path().join("scratch");
+            std::fs::create_dir(&scratch).unwrap();
+            let cfg = runner::Config {
+                protocol: p.clone(),
+                manifest: m,
+                specs: [(TargetKind::Swarmail, self.spec(p, binary))].into(),
+                output: self.dir.path().join("out"),
+                scratch,
+                keepers: self.keepers.clone(),
+            };
+            (cfg, chunk)
+        }
+    }
+
+    pub fn profile(name: &str, warmup: u32, messages: u32, sessions: u32) -> Value {
+        json!({
+            "name": name, "repetitions": 1, "warmup_messages": warmup,
+            "messages": messages, "sessions": sessions, "connection": "reused",
+            "send_deadline_ms": 300000, "verify_deadline_ms": 60000
+        })
+    }
+
+    /// The smoke draft with these profiles and this chunk deadline. It is
+    /// parsed, not validated: the deadline is the test's to place.
+    pub fn protocol(profiles: Vec<Value>, deadline_ms: u64) -> Protocol {
+        let mut v = json(V4_SMOKE);
+        v["throughput"] = json!(profiles);
+        v["resources"]["chunk_deadline_ms"] = json!(deadline_ms);
+        Protocol::parse(&serde_json::to_vec(&v).unwrap()).unwrap()
+    }
+
+    /// A candidate that stays up briefly and exits: it never announces a
+    /// listener, so it is never ready, and it has exited when the launch is
+    /// torn down.
+    pub fn exits_soon(dir: &Path) -> PathBuf {
+        let path = dir.join("exits-soon");
+        std::fs::write(&path, "#!/bin/sh\nsleep 0.3\nexit 1\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    pub fn windows(res: &[ResourceRow]) -> Vec<&records::WindowRow> {
+        res.iter()
+            .filter_map(|r| match r {
+                ResourceRow::Window(w) => Some(w),
+                ResourceRow::Sample(_) => None,
+            })
+            .collect()
+    }
+
+    pub fn window<'a>(
+        res: &'a [ResourceRow],
+        profile: &str,
+        kind: WindowKind,
+    ) -> &'a records::WindowRow {
+        windows(res)
+            .into_iter()
+            .find(|w| w.profile == profile && w.window == kind)
+            .unwrap_or_else(|| panic!("no {kind:?} window of {profile}"))
+    }
+
+    pub fn sends(rows: &[Row]) -> Vec<&Row> {
+        rows.iter().filter(|r| r.phase == Phase::Send).collect()
+    }
+
+    /// A scripted SMTP server that accepts every message, or stops answering
+    /// at the first command that begins with `hang_on` (empty: never).
+    pub async fn smtp_stub(hang_on: &'static str) -> std::net::SocketAddr {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((s, _)) = l.accept().await {
+                tokio::spawn(async move {
+                    let (r, mut w) = s.into_split();
+                    let mut r = tokio::io::BufReader::new(r);
+                    let _ = w.write_all(b"220 stub\r\n").await;
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        if r.read_line(&mut line).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                        let up = line.to_ascii_uppercase();
+                        if !hang_on.is_empty() && up.starts_with(hang_on) {
+                            std::future::pending::<()>().await;
+                        }
+                        let reply: &[u8] = if up.starts_with("DATA") {
+                            let _ = w.write_all(b"354 go\r\n").await;
+                            loop {
+                                line.clear();
+                                if r.read_line(&mut line).await.unwrap_or(0) == 0 {
+                                    return;
+                                }
+                                if line == ".\r\n" {
+                                    break;
+                                }
+                            }
+                            b"250 queued\r\n"
+                        } else if up.starts_with("QUIT") {
+                            b"221 bye\r\n"
+                        } else {
+                            b"250 ok\r\n"
+                        };
+                        let _ = w.write_all(reply).await;
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    /// A Mailpit read path listing `messages` (id, subject) at once, and
+    /// holding every raw fetch without an answer when `hang_fetch`.
+    pub async fn mailpit_http(
+        messages: Vec<(String, String)>,
+        hang_fetch: bool,
+    ) -> std::net::SocketAddr {
+        super::super::responder(Box::new(move |target: &str| {
+            if target.contains("/raw") && hang_fetch {
+                return None;
+            }
+            let items: Vec<Value> = messages
+                .iter()
+                .map(|(id, subject)| json!({"ID": id, "Subject": subject}))
+                .collect();
+            Some((
+                200,
+                json!({"start": 0, "messages_count": items.len(), "messages": items}).to_string(),
+            ))
+        }))
+        .await
+    }
+
+    /// A detached Mailpit whose SMTP side is `smtp` and read path `http`.
+    pub fn detached(
+        smtp: std::net::SocketAddr,
+        http: std::net::SocketAddr,
+        p: &Protocol,
+    ) -> targets::Owned {
+        let mut o = targets::Owned::fixture(TargetKind::Mailpit, http, None, &runner::limits(p));
+        o.smtp = smtp;
+        o
+    }
+
+    /// A manifest that plans the rows of one Mailpit chunk and no windows,
+    /// for the stages that write rows and no windows.
+    pub fn rows_only(p: &Protocol, run: &str) -> Manifest {
+        let mut m = tiny_manifest(p, run, &mailpit_chunk(0));
+        m.planned_windows = None;
+        m
+    }
+
+    pub fn sink_for(m: &Manifest, out: &Path) -> runner::Sink {
+        Arc::new(Mutex::new(records::RunDir::create(out, m).unwrap()))
+    }
+
+    pub fn read_rows(out: &Path, m: &Manifest, sink: runner::Sink) -> Vec<Row> {
+        drop(sink);
+        records::read_rows(out, m).expect("the rows read back")
+    }
+
+    pub fn subject_of(p: &Protocol, tag: &str, i: u32) -> String {
+        wire::authored(p.corpus.seed, tag, i, &p.corpus.kinds).subject
+    }
+
+    // ---- R1.2 ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_chunk_whose_deadline_has_passed_launches_nothing_and_seals_with_exit_one() {
+        let rig = Rig::new(0, true);
+        let p = protocol(
+            vec![profile("cost-a", 3, 6, 2), profile("cost-b", 0, 6, 2)],
+            1,
+        );
+        let (cfg, chunk) = rig.config(&p, Path::new(env!("CARGO_BIN_EXE_swarmail")), "run-d1");
+        let manifest = cfg.manifest.clone();
+        // A clock whose origin is older than the deadline: the instant has
+        // come before the chunk starts.
+        let old = Instant::now()
+            .checked_sub(Duration::from_secs(5))
+            .expect("the host has been up five seconds");
+        let (verdict, life, sealed) = runner::run_chunk(cfg, chunk, wire::Clock(old)).await;
+        assert_eq!(verdict.exit_code(), 1, "{verdict:?}");
+        let runner::Verdict::WorkloadFailures(failures) = verdict else {
+            panic!("a chunk with unmeasured profiles is a workload failure")
+        };
+        assert_eq!(failures.len(), 2);
+        assert!(failures.iter().all(|f| f.contains("chunk deadline")));
+        assert!(
+            life.launches.is_empty() && life.cleanups.is_empty(),
+            "nothing was launched"
+        );
+        let sealed = sealed.expect("the chunk is sealed");
+        assert!(sealed.join("index.json").exists());
+        let (rows, res) =
+            records::read_run(&sealed, &manifest).expect("every planned row and window");
+        assert_eq!(sends(&rows).len(), 12);
+        assert!(sends(&rows).iter().all(|r| {
+            r.outcome == "unstarted" && r.reason.as_deref() == Some("chunk deadline")
+        }));
+        assert_eq!(windows(&res).len(), 6, "every planned window once");
+        for w in windows(&res) {
+            assert_eq!(w.outcome, WindowOutcome::ChunkDeadline);
+            assert_eq!((w.launch.as_str(), w.counters().is_none()), ("none", true));
+        }
+        assert!(
+            std::fs::read_dir(rig.scope_dir()).unwrap().next().is_none(),
+            "no leaf was made"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_send_window_past_chunk_end_is_all_unstarted_and_lists_nothing() {
+        let rig = Rig::new(0, true);
+        let p = protocol(vec![profile("cost-a", 0, 6, 2)], 480_000);
+        let (cfg, _) = rig.config(&p, Path::new(env!("CARGO_BIN_EXE_swarmail")), "run-d2");
+        let (manifest, out) = (cfg.manifest.clone(), cfg.output.clone());
+        let sink = sink_for(&manifest, &out);
+        let mut life = runner::Lifecycle {
+            launches: vec![],
+            cleanups: vec![],
+        };
+        let spec = &cfg.specs[&TargetKind::Swarmail];
+        let clock = wire::Clock(Instant::now());
+        // The instant is already here when the stage is entered.
+        let failures = runner::measured_instance(
+            (spec, &rig.target_cpus()),
+            &cfg,
+            &runner::limits(&p),
+            &clock,
+            (0, &p.throughput[0], 0),
+            1,
+            &sink,
+            &mut life,
+            Instant::now(),
+        )
+        .await
+        .expect("a cut profile is a workload failure, not an infrastructure one");
+        assert!(!failures.is_empty());
+        drop(sink);
+        let (rows, res) = records::read_run(&out, &manifest).unwrap();
+        assert_eq!(sends(&rows).len(), 6, "every index has exactly one row");
+        assert!(sends(&rows).iter().all(|r| {
+            r.outcome == "unstarted" && r.reason.as_deref() == Some("chunk deadline")
+        }));
+        assert!(
+            rows.iter().all(|r| r.phase != Phase::Visible),
+            "nothing was listed"
+        );
+        let v = rows.iter().find(|r| r.phase == Phase::Verified).unwrap();
+        assert_eq!(
+            (v.outcome.as_str(), v.reason.as_deref()),
+            ("incomplete", Some("chunk deadline"))
+        );
+        assert_eq!(v.requests, Some(0), "the target was sent no request");
+        let ready = window(&res, "cost-a", WindowKind::Ready);
+        assert_eq!(ready.outcome, WindowOutcome::Measured);
+        assert!(ready.counters().is_some());
+        for kind in [WindowKind::IdleReady, WindowKind::Measure] {
+            let w = window(&res, "cost-a", kind);
+            assert_eq!(w.outcome, WindowOutcome::ChunkDeadline, "{kind:?}");
+            assert!(w.counters().is_none(), "{kind:?} was never opened");
+            assert_eq!(
+                w.launch, ready.launch,
+                "{kind:?} is the launched instance's"
+            );
+        }
+        assert_eq!(life.launches.len(), 1);
+        assert!(
+            life.cleanups
+                .iter()
+                .all(|c| c.proved() && c.cgroup_removed == Some(true))
+        );
+    }
+
+    // ---- R1.3 ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_send_in_flight_is_cancelled_at_chunk_end() {
+        let p = protocol(vec![profile("cost-a", 0, 3, 1)], 480_000);
+        // Accepts, greets, answers EHLO, and never answers MAIL FROM.
+        let owned = detached(
+            smtp_stub("MAIL").await,
+            mailpit_http(vec![], false).await,
+            &p,
+        );
+        let m = rows_only(&p, "run-d3");
+        let dir = fixture();
+        let out = dir.path().join("run");
+        let sink = sink_for(&m, &out);
+        let clock = wire::Clock(Instant::now());
+        let started = Instant::now();
+        let end = started + Duration::from_millis(1500);
+        let failures = runner::throughput(
+            &owned,
+            &p,
+            &p.throughput[0],
+            "cuttest",
+            0,
+            "run-d3",
+            &sink,
+            &clock,
+            (None, Some(end)),
+        )
+        .await
+        .unwrap();
+        let request = Duration::from_millis(p.resources.request_deadline_ms);
+        assert!(
+            started.elapsed() < request / 2,
+            "returned at the instant, not a request deadline later: {:?}",
+            started.elapsed()
+        );
+        assert!(!failures.is_empty());
+        let rows = read_rows(&out, &m, sink);
+        let s = sends(&rows);
+        assert_eq!(s.len(), 3, "the rows count the profile's messages exactly");
+        let cut: Vec<&&Row> = s.iter().filter(|r| r.outcome == "ambiguous").collect();
+        assert_eq!(cut.len(), 1, "one send was in flight");
+        assert!(cut[0].reason.as_deref().unwrap().contains("chunk deadline"));
+        assert!(s.iter().filter(|r| r.outcome != "ambiguous").all(|r| {
+            r.outcome == "unstarted" && r.reason.as_deref() == Some("chunk deadline")
+        }));
+        let v = rows.iter().find(|r| r.phase == Phase::Verified).unwrap();
+        assert_eq!(
+            (v.outcome.as_str(), v.reason.as_deref()),
+            ("incomplete", Some("chunk deadline"))
+        );
+        assert!(
+            rows.iter().all(|r| r.phase != Phase::Visible),
+            "no listing after the instant"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connect_in_flight_is_cancelled_with_a_failed_connects_disposition() {
+        let p = protocol(vec![profile("cost-a", 0, 2, 1)], 480_000);
+        // Never greets: the connect cannot finish.
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = silent.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((s, _)) = silent.accept().await {
+                held.push(s);
+            }
+        });
+        let owned = detached(addr, mailpit_http(vec![], false).await, &p);
+        let m = rows_only(&p, "run-d3b");
+        let dir = fixture();
+        let out = dir.path().join("run");
+        let sink = sink_for(&m, &out);
+        let clock = wire::Clock(Instant::now());
+        let end = Instant::now() + Duration::from_millis(300);
+        runner::throughput(
+            &owned,
+            &p,
+            &p.throughput[0],
+            "cuttest",
+            0,
+            "run-d3b",
+            &sink,
+            &clock,
+            (None, Some(end)),
+        )
+        .await
+        .unwrap();
+        let rows = read_rows(&out, &m, sink);
+        let s = sends(&rows);
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].outcome, "failed_before_terminator");
+        assert!(s[0].reason.as_deref().unwrap().contains("chunk deadline"));
+        assert_eq!(
+            (s[1].outcome.as_str(), s[1].reason.as_deref()),
+            ("unstarted", Some("chunk deadline"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_warmup_cut_by_chunk_end_launches_no_measured_instance() {
+        let rig = Rig::new(0, true);
+        let p = protocol(vec![profile("cost-a", 50, 6, 2)], 480_000);
+        let (cfg, _) = rig.config(&p, Path::new(env!("CARGO_BIN_EXE_swarmail")), "run-d4");
+        let spec = &cfg.specs[&TargetKind::Swarmail];
+        let mut life = runner::Lifecycle {
+            launches: vec![],
+            cleanups: vec![],
+        };
+        let clock = wire::Clock(Instant::now());
+        // The instant is here once the warmup instance is up.
+        let warm = runner::warmup(
+            spec,
+            &cfg,
+            &runner::limits(&p),
+            &clock,
+            &p.throughput[0],
+            1,
+            &mut life,
+            Some(Instant::now()),
+        )
+        .await
+        .unwrap();
+        let runner::Warm::NotMeasured(cause, launch) = warm else {
+            panic!("the warmup was cut")
+        };
+        assert_eq!(cause, runner::Cause::ChunkDeadline);
+        assert_eq!(launch, "target-0001");
+        assert_eq!(life.launches.len(), 1, "only the warmup's launch receipt");
+        assert!(
+            life.cleanups
+                .iter()
+                .all(|c| c.proved() && c.cgroup_removed == Some(true))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fidelity_read_cut_by_chunk_end_is_unread_not_a_mismatch() {
+        let p = protocol(vec![profile("cost-a", 0, 1, 1)], 480_000);
+        let subject = subject_of(&p, "fidtest", 0);
+        let owned = detached(
+            smtp_stub("").await,
+            mailpit_http(vec![("m1".into(), subject)], true).await,
+            &p,
+        );
+        let m = rows_only(&p, "run-d5");
+        let dir = fixture();
+        let out = dir.path().join("run");
+        let sink = sink_for(&m, &out);
+        let clock = wire::Clock(Instant::now());
+        // The send and the listing finish at once; the fetch is never answered.
+        let end = Instant::now() + Duration::from_secs(3);
+        let failures = runner::throughput(
+            &owned,
+            &p,
+            &p.throughput[0],
+            "fidtest",
+            0,
+            "run-d5",
+            &sink,
+            &clock,
+            (None, Some(end)),
+        )
+        .await
+        .unwrap();
+        assert!(!failures.is_empty(), "the repetition is not exact");
+        let rows = read_rows(&out, &m, sink);
+        assert_eq!(sends(&rows)[0].outcome, "accepted");
+        let visible: Vec<&Row> = rows.iter().filter(|r| r.phase == Phase::Visible).collect();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(
+            visible[0].fidelity_ok, None,
+            "unread, not intact and not a mismatch"
+        );
+        let v = rows.iter().find(|r| r.phase == Phase::Verified).unwrap();
+        assert_eq!(
+            (v.outcome.as_str(), v.reason.as_deref()),
+            ("incomplete", Some("chunk deadline"))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_idle_wait_cut_by_chunk_end_keeps_its_counters_as_chunk_deadline() {
+        let rig = Rig::new(0, true);
+        let p = protocol(vec![profile("cost-a", 0, 6, 2)], 480_000);
+        let (cfg, _) = rig.config(&p, Path::new(env!("CARGO_BIN_EXE_swarmail")), "run-d6");
+        let spec = &cfg.specs[&TargetKind::Swarmail];
+        let clock = wire::Clock(Instant::now());
+        let scratch = rig.dir.path().join("scratch").join("leaf");
+        let mut owned =
+            targets::Owned::launch(spec, &scratch, &runner::limits(&p), &clock, &rig.keepers)
+                .await
+                .unwrap();
+        let leaf = owned.leaf.clone().unwrap();
+        let sink = sink_for(&cfg.manifest, &cfg.output);
+        let closing = runner::Closing {
+            run: "run-d6",
+            launch: leaf.name(),
+            key: (TargetKind::Swarmail, "cost-a", 0),
+            leaf: &leaf,
+            proc_root: Path::new("/proc"),
+            target_cpus: &rig.target_cpus(),
+        };
+        // The instant comes one second into the five of the idle window.
+        let started = Instant::now();
+        let idle = runner::idle_ready(
+            &closing,
+            (&owned, &scratch),
+            &sink,
+            &clock,
+            Some(started + Duration::from_secs(1)),
+        )
+        .await
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "cut, not awaited"
+        );
+        assert_eq!(idle.outcome, WindowOutcome::ChunkDeadline);
+        assert!(
+            idle.counters().is_some(),
+            "it was opened, so it keeps its counters"
+        );
+        assert!(idle.end_ns - idle.start_ns < 5_000_000_000);
+        // At or after the instant the window is not opened at all.
+        let never = runner::idle_ready(&closing, (&owned, &scratch), &sink, &clock, Some(started))
+            .await
+            .unwrap();
+        assert_eq!(never.outcome, WindowOutcome::ChunkDeadline);
+        assert!(never.counters().is_none());
+        // Without an instant it is the full five seconds, measured.
+        let full = runner::idle_ready(&closing, (&owned, &scratch), &sink, &clock, None)
+            .await
+            .unwrap();
+        assert_eq!(full.outcome, WindowOutcome::Measured);
+        assert!(full.end_ns - full.start_ns >= 5_000_000_000);
+        assert!(owned.shutdown().await.proved());
+    }
+
+    #[tokio::test]
+    async fn the_profiles_own_send_deadline_still_writes_send_deadline() {
+        let mut t = profile("cost-a", 0, 3, 1);
+        t["send_deadline_ms"] = json!(0);
+        let p = protocol(vec![t], 480_000);
+        let owned = detached(smtp_stub("").await, mailpit_http(vec![], false).await, &p);
+        let m = rows_only(&p, "run-d7");
+        let dir = fixture();
+        let out = dir.path().join("run");
+        let sink = sink_for(&m, &out);
+        let clock = wire::Clock(Instant::now());
+        // The chunk's instant is far off: the profile's own deadline comes first.
+        let end = Instant::now() + Duration::from_secs(600);
+        runner::throughput(
+            &owned,
+            &p,
+            &p.throughput[0],
+            "t",
+            0,
+            "run-d7",
+            &sink,
+            &clock,
+            (None, Some(end)),
+        )
+        .await
+        .unwrap();
+        let rows = read_rows(&out, &m, sink);
+        assert_eq!(sends(&rows).len(), 3);
+        assert!(
+            sends(&rows).iter().all(|r| {
+                r.outcome == "unstarted" && r.reason.as_deref() == Some("send deadline")
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_protocol_3_run_has_no_chunk_end() {
+        // The same hung server, with no instant: the send ends at the request
+        // deadline and its row says what it always said.
+        let mut v = json(V4_SMOKE);
+        v["throughput"] = json!([profile("cost-a", 0, 2, 1)]);
+        v["resources"]["request_deadline_ms"] = json!(300);
+        let p = Protocol::parse(&serde_json::to_vec(&v).unwrap()).unwrap();
+        let owned = detached(
+            smtp_stub("MAIL").await,
+            mailpit_http(vec![], false).await,
+            &p,
+        );
+        let m = rows_only(&p, "run-d8");
+        let dir = fixture();
+        let out = dir.path().join("run");
+        let sink = sink_for(&m, &out);
+        let clock = wire::Clock(Instant::now());
+        let started = Instant::now();
+        runner::throughput(
+            &owned,
+            &p,
+            &p.throughput[0],
+            "t",
+            0,
+            "run-d8",
+            &sink,
+            &clock,
+            (None, None),
+        )
+        .await
+        .unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(300),
+            "the request deadline was awaited"
+        );
+        let rows = read_rows(&out, &m, sink);
+        assert!(
+            rows.iter()
+                .all(|r| { !r.reason.as_deref().unwrap_or_default().contains("chunk") })
+        );
+        assert!(
+            sends(&rows)
+                .iter()
+                .all(|r| r.outcome == "failed_before_terminator")
+        );
+    }
+
+    // ---- R2.1, R2.3 -----------------------------------------------------------
+
+    async fn launch_exits_soon(rig: &Rig, root: &Path) -> targets::LaunchError {
+        let p = protocol(vec![profile("cost-a", 0, 2, 1)], 480_000);
+        let spec = rig.spec(&p, &exits_soon(root));
+        let scratch = root.join("s");
+        std::fs::create_dir(&scratch).unwrap();
+        match targets::Owned::launch(
+            &spec,
+            &scratch.join("leaf"),
+            &runner::limits(&p),
+            &wire::Clock(Instant::now()),
+            &rig.keepers,
+        )
+        .await
+        {
+            Err(e) => e,
+            Ok(_) => panic!("a program that exits is never ready"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_leaf_cleanup_receipt_carries_oom_kills_and_exited_early() {
+        // A leaf that counted one OOM kill and a leader that was gone.
+        let rig = Rig::new(1, true);
+        let root = fixture();
+        let targets::LaunchError::NotReady(_, facts, _) =
+            launch_exits_soon(&rig, root.path()).await
+        else {
+            panic!("not ready")
+        };
+        assert_eq!((facts.oom_kills, facts.exited_early), (Some(1), Some(true)));
+        assert!(facts.proved());
+        // The same leader, no OOM.
+        let rig = Rig::new(0, true);
+        let root = fixture();
+        let targets::LaunchError::NotReady(_, facts, _) =
+            launch_exits_soon(&rig, root.path()).await
+        else {
+            panic!("not ready")
+        };
+        assert_eq!((facts.oom_kills, facts.exited_early), (Some(0), Some(true)));
+        // A leader the driver had to stop is not an early exit.
+        let rig = Rig::new(0, true);
+        let p = protocol(vec![profile("cost-a", 0, 2, 1)], 480_000);
+        let spec = rig.spec(&p, Path::new(env!("CARGO_BIN_EXE_swarmail")));
+        let root = fixture();
+        let mut owned = targets::Owned::launch(
+            &spec,
+            &root.path().join("leaf"),
+            &runner::limits(&p),
+            &wire::Clock(Instant::now()),
+            &rig.keepers,
+        )
+        .await
+        .unwrap();
+        let facts = owned.shutdown().await;
+        assert_eq!(
+            (facts.oom_kills, facts.exited_early),
+            (Some(0), Some(false))
+        );
+        assert!(facts.proved());
+        // And a launch without a leaf carries neither, in its bytes.
+        let none = targets::CleanupFacts::unproved(TargetKind::Mailpit);
+        let text = serde_json::to_string(&none).unwrap();
+        assert!(
+            !text.contains("oom_kills") && !text.contains("exited_early"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_not_ready_leaf_launch_keeps_its_launch_receipt() {
+        let rig = Rig::new(0, true);
+        let root = fixture();
+        let targets::LaunchError::NotReady(_, facts, launch) =
+            launch_exits_soon(&rig, root.path()).await
+        else {
+            panic!("not ready")
+        };
+        let launch = launch.expect("a leaf launch keeps its receipt");
+        assert_eq!(launch.leaf.as_deref(), Some("target-0001"));
+        assert!(launch.limits.is_some() && launch.joined.is_some() && launch.cpu_layout.is_some());
+        assert!(facts.proved());
+    }
+
+    fn chunk_of_two_profiles() -> Protocol {
+        // The first profile has a warmup, the second does not: a target that
+        // exits at once is met on each of the two paths.
+        protocol(
+            vec![profile("cost-a", 3, 6, 2), profile("cost-b", 0, 6, 2)],
+            480_000,
+        )
+    }
+
+    type Ran = (
+        runner::Verdict,
+        runner::Lifecycle,
+        Option<PathBuf>,
+        Manifest,
+        Rig,
+    );
+
+    async fn run_exits_soon() -> Ran {
+        let rig = Rig::new(0, true);
+        let p = chunk_of_two_profiles();
+        let candidate = exits_soon(rig.dir.path());
+        let (cfg, chunk) = rig.config(&p, &candidate, "run-e1");
+        let manifest = cfg.manifest.clone();
+        let (v, life, sealed) = runner::run_chunk(cfg, chunk, wire::Clock(Instant::now())).await;
+        (v, life, sealed, manifest, rig)
+    }
+
+    #[tokio::test]
+    async fn a_chunk_whose_target_exits_at_once_seals_with_exit_one_and_goes_on() {
+        let (verdict, life, sealed, manifest, _rig) = run_exits_soon().await;
+        assert_eq!(verdict.exit_code(), 1, "{verdict:?}");
+        let sealed = sealed.expect("a failed target is a measured outcome: the chunk seals");
+        assert_eq!(
+            life.launches.len(),
+            life.cleanups.len(),
+            "a launch receipt for each cleanup"
+        );
+        assert_eq!(life.launches.len(), 2, "each profile was attempted");
+        assert!(
+            life.cleanups
+                .iter()
+                .all(|c| c.proved() && c.cgroup_removed == Some(true))
+        );
+        let (rows, res) = records::read_run(&sealed, &manifest).unwrap();
+        assert_eq!(sends(&rows).len(), 12);
+        assert!(
+            sends(&rows).iter().all(|r| {
+                r.outcome == "unstarted" && r.reason.as_deref() == Some("target exited")
+            })
+        );
+        assert_eq!(windows(&res).len(), 6);
+        for w in windows(&res) {
+            assert_eq!(w.outcome, WindowOutcome::TargetExited);
+            assert!(w.counters().is_none());
+        }
+        assert_eq!(
+            window(&res, "cost-a", WindowKind::Measure).launch,
+            "target-0001"
+        );
+        assert_eq!(
+            window(&res, "cost-b", WindowKind::Measure).launch,
+            "target-0002"
+        );
+        // And the figures say so: no number, and the reason.
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(sealed.join("report.json")).unwrap()).unwrap();
+        for cell in report["cost"]["cells"].as_array().unwrap() {
+            assert_eq!(cell["ranked"], false);
+            assert_eq!(cell["shortfalls"], json!(["target_exited"]));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_chunk_goes_on_after_a_profile_that_was_not_measured() {
+        let (_, life, _, _, _rig) = run_exits_soon().await;
+        let names: Vec<&str> = life
+            .launches
+            .iter()
+            .map(|l| l.leaf.as_deref().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            ["target-0001", "target-0002"],
+            "the second profile was still attempted"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_join_mismatch_is_still_exit_two_and_unsealed() {
+        // A scope that does not trust the join: the real process is not in
+        // the fixture leaf, and the read-back says so.
+        let rig = Rig::new(0, false);
+        let p = protocol(vec![profile("cost-a", 0, 6, 2)], 480_000);
+        let (cfg, chunk) = rig.config(&p, Path::new(env!("CARGO_BIN_EXE_swarmail")), "run-e2");
+        let (verdict, life, sealed) =
+            runner::run_chunk(cfg, chunk, wire::Clock(Instant::now())).await;
+        assert_eq!(verdict.exit_code(), 2, "{verdict:?}");
+        assert!(sealed.is_none(), "no seal on a launch refusal");
+        let runner::Verdict::Infrastructure(why) = verdict else {
+            panic!()
+        };
+        assert!(why.contains("not its leaf"), "{why}");
+        assert!(life.cleanups.iter().all(targets::CleanupFacts::proved));
+    }
+
+    #[tokio::test]
+    async fn a_protocol_3_target_that_exits_at_once_is_still_infrastructure() {
+        let root = fixture();
+        let p = smoke();
+        let mut spec = swarmail_spec(targets::swarmail_template(0));
+        spec.binary = exits_soon(root.path());
+        let cfg = runner::Config {
+            manifest: manifest(&p, "run-e3"),
+            specs: [(TargetKind::Swarmail, spec)].into(),
+            output: root.path().join("out"),
+            scratch: root.path().join("s"),
+            protocol: p,
+            keepers: targets::Keepers::default(),
+        };
+        std::fs::create_dir(root.path().join("s")).unwrap();
+        let (verdict, _, sealed) = runner::run(cfg, wire::Clock(Instant::now())).await;
+        assert!(sealed.is_none());
+        let runner::Verdict::Infrastructure(why) = verdict else {
+            panic!("protocol 3 keeps its behaviour: {verdict:?}")
+        };
+        assert!(why.contains("not ready"), "{why}");
+    }
+}
+
+// ---- R2.2 ------------------------------------------------------------------
+
+#[test]
+fn a_not_ready_launch_is_classified_from_its_receipts() {
+    use runner::Cause::*;
+    let facts = |oom: Option<u64>, early: Option<bool>, proved: bool| {
+        let mut f = targets::CleanupFacts::unproved(TargetKind::Swarmail);
+        (
+            f.reaped,
+            f.group_gone,
+            f.listeners_closed,
+            f.scratch_removed,
+        ) = (proved, proved, proved, proved);
+        f.leaf = true;
+        f.cgroup_removed = Some(proved);
+        (f.oom_kills, f.exited_early) = (oom, early);
+        f
+    };
+    let c = |f: &targets::CleanupFacts, receipt| runner::classify_not_ready(f, receipt);
+    // An OOM kill is an OOM whatever else is true.
+    assert_eq!(c(&facts(Some(1), Some(true), true), true), Some(OomKilled));
+    assert_eq!(c(&facts(Some(2), Some(false), true), true), Some(OomKilled));
+    // A leader that was gone, with no OOM, exited on its own.
+    assert_eq!(
+        c(&facts(Some(0), Some(true), true), true),
+        Some(TargetExited)
+    );
+    assert_eq!(c(&facts(None, Some(true), true), true), Some(TargetExited));
+    // Alive and never ready is not something the driver can call a result.
+    assert_eq!(c(&facts(Some(0), Some(false), true), true), None);
+    assert_eq!(c(&facts(None, None, true), true), None);
+    // No launch receipt: nothing evidences the launch.
+    assert_eq!(c(&facts(Some(1), Some(true), true), false), None);
+    // An unproved cleanup proves nothing, whatever it read.
+    assert_eq!(c(&facts(Some(1), Some(true), false), true), None);
+    assert_eq!(c(&facts(Some(0), Some(true), false), true), None);
 }
 
 // ============================================================================
