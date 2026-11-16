@@ -481,6 +481,10 @@ async fn warmup(
             life.cleanups.push(facts);
             return Err(format!("{}: warmup not ready ({why})", spec.kind));
         }
+        Err(LaunchError::Leaf(why, facts)) => {
+            life.cleanups.extend(facts);
+            return Err(format!("{}: warmup {why}", spec.kind));
+        }
         Err(e) => return Err(format!("{}: warmup launch refused ({e:?})", spec.kind)),
     };
     life.launches.push(owned.facts.clone());

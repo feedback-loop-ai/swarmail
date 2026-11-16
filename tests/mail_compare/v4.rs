@@ -4410,3 +4410,508 @@ fn collect_v4_usage_names_the_mode() {
     assert!(text.contains("compare-mail.sh collect-v4"), "{text}");
     assert!(text.contains("Linux only"), "{text}");
 }
+
+// ============================================================================
+// T7: the real proofs. `#[ignore]`d and Linux-only; each fails, never skips,
+// without a delegated cgroup v2 hierarchy, with the refusal's exact text.
+// Run one at a time, as the only process of a delegated scope:
+//
+//   bin=$(cargo test --locked --test mail_compare --no-run --message-format=json \
+//     | grep -o '"executable":"[^"]*mail_compare-[^"]*"' | tail -n1 | cut -d'"' -f4)
+//   cat /proc/loadavg
+//   timeout 600 taskset -c 0-31 systemd-run --user --scope --quiet -p Delegate=yes -- \
+//     "$bin" --ignored --exact v4::<name> --test-threads=1
+//   cat /proc/loadavg
+//
+// cargo must not be the process inside the scope: it would stay in the
+// scope's own cgroup, and the test could then not enable controllers.
+// ============================================================================
+
+const V4_SMOKE: &[u8] = include_bytes!("v4-smoke.json");
+
+#[test]
+fn the_v4_smoke_fixture_validates_as_a_draft() {
+    let p = Protocol::parse(V4_SMOKE).unwrap();
+    p.validate().expect("the smoke fixture validates");
+    assert_eq!(p.status, protocol::Status::Draft);
+    assert_eq!(p.throughput.len(), 1);
+    assert_eq!(
+        (p.throughput[0].messages, p.throughput[0].warmup_messages),
+        (20, 10)
+    );
+    let l = lock_from(lock5()).unwrap();
+    protocol::pairing(&p, &l).unwrap();
+    protocol::retention_matches(&p, &l).unwrap();
+    protocol::launchable(&p, &l).unwrap();
+    assert_eq!(
+        runner::plan_v4(&p).len(),
+        8,
+        "one repetition of eight targets"
+    );
+}
+
+/// Detect, check the scratch, pin this thread to the client CPUs and adopt
+/// the scope, or fail with the refusal's exact text. Call it before any
+/// runtime is built, so every worker thread inherits the pin.
+#[cfg(target_os = "linux")]
+fn proof_scope() -> resources::Scope {
+    resources::prepare_host(Path::new(env!("CARGO_TARGET_TMPDIR")))
+        .unwrap_or_else(|e| panic!("{e}"))
+}
+
+#[cfg(target_os = "linux")]
+fn proof_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+/// A child that joins `leaf` and the target CPUs between fork and exec, by
+/// the same call the launcher makes.
+#[cfg(target_os = "linux")]
+fn spawn_in_leaf(
+    leaf: &resources::Leaf,
+    layout: &resources::Layout,
+    mut cmd: std::process::Command,
+) -> std::process::Child {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let procs = std::fs::OpenOptions::new()
+        .write(true)
+        .open(leaf.procs_path())
+        .unwrap();
+    let fd = procs.as_raw_fd();
+    let affinity = resources::Affinity::of(&layout.target_cpus).unwrap();
+    // SAFETY: the closure only writes to an open descriptor and sets an
+    // affinity mask built before the fork.
+    unsafe {
+        cmd.pre_exec(move || resources::join_in_child(fd, &affinity));
+    }
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("spawn into the leaf")
+}
+
+/// Wait for `check` for at most `secs`, polling: a real deadline, never a
+/// sleep a result depends on.
+#[cfg(target_os = "linux")]
+fn within(secs: u64, what: &str, mut check: impl FnMut() -> bool) {
+    let end = Instant::now() + Duration::from_secs(secs);
+    while !check() {
+        assert!(Instant::now() < end, "{what}: not within {secs} s");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn teardown(rt: &tokio::runtime::Runtime, leaf: &resources::Leaf) -> resources::Teardown {
+    rt.block_on(async {
+        leaf.teardown(tokio::time::Instant::now() + Duration::from_secs(10))
+            .await
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn reap(children: &mut [std::process::Child]) {
+    for c in children {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "needs a delegated cgroup v2 scope; see the header of this section"]
+fn v4_real_oom_at_two_gib() {
+    let scope = proof_scope();
+    let rt = proof_runtime();
+    let (leaf, limits) = scope.leaf().expect("a leaf with the budget");
+    assert_eq!(limits.memory_max, "2147483648");
+    let before = leaf.mem_events().unwrap();
+    // `tail /dev/zero` reads a never-ending line into memory.
+    let mut cmd = std::process::Command::new("tail");
+    cmd.arg("/dev/zero");
+    let mut hog = spawn_in_leaf(&leaf, &scope.layout, cmd);
+    within(120, "the hog is OOM-killed", || {
+        hog.try_wait().unwrap().is_some()
+    });
+    let after = leaf.mem_events().unwrap();
+    assert!(after.oom_kill >= 1, "the kernel killed it: {after:?}");
+    // The cell's outcome is `oom_killed`, and nothing is retried: there is
+    // exactly one process, and it is gone.
+    assert_eq!(
+        runner::window_outcome(&before, &after, true),
+        records::WindowOutcome::OomKilled
+    );
+    let peak = leaf.mem_peak().unwrap();
+    let (half, limit) = (1u64 << 30, 2u64 << 30);
+    assert!(
+        peak >= half && peak <= limit + (64 << 20),
+        "peak {peak} sits at the 2 GiB limit"
+    );
+    let t = teardown(&rt, &leaf);
+    assert!(
+        t.killed && t.removed,
+        "the leaf was emptied and removed: {t:?}"
+    );
+    assert!(t.memory_peak_bytes.is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "needs a delegated cgroup v2 scope; see the header of this section"]
+fn v4_real_cpu_held_within_two() {
+    let scope = proof_scope();
+    let rt = proof_runtime();
+    let clock = wire::Clock(Instant::now());
+    for widen in [false, true] {
+        let (leaf, _) = scope.leaf().unwrap();
+        let mut spinners: Vec<std::process::Child> = (0..4)
+            .map(|_| {
+                let mut cmd = std::process::Command::new("sh");
+                cmd.arg("-c").arg(if widen {
+                    "taskset -pc 0-31 $$ >/dev/null 2>&1; while :; do :; done"
+                } else {
+                    "while :; do :; done"
+                });
+                spawn_in_leaf(&leaf, &scope.layout, cmd)
+            })
+            .collect();
+        let held = |leaf: &resources::Leaf| {
+            let pids = leaf.read_procs().unwrap();
+            resources::affinity_held(Path::new("/proc"), &pids, &scope.layout.target_cpus)
+        };
+        if widen {
+            // The spinners widen their own affinity; wait for all four to.
+            within(20, "every spinner widened its affinity", || !held(&leaf));
+        } else {
+            assert!(held(&leaf), "every task has exactly the two target CPUs");
+        }
+        let a = leaf.snap(&clock).unwrap();
+        let start = Instant::now();
+        // The fixed five-second window is the measurement itself.
+        std::thread::sleep(Duration::from_secs(5));
+        let b = leaf.snap(&clock).unwrap();
+        let wall_us = start.elapsed().as_micros() as f64;
+        let used = (b.cpu.usage_usec - a.cpu.usage_usec) as f64;
+        let bound = 2.0 * wall_us * 1.05 + 100_000.0;
+        assert!(
+            used <= bound,
+            "widen={widen}: {used} µs of CPU in {wall_us} µs of wall time exceeds {bound}"
+        );
+        assert!(
+            used >= wall_us,
+            "widen={widen}: the spinners did use the budget ({used} µs)"
+        );
+        if widen {
+            assert!(
+                b.cpu.nr_throttled > a.cpu.nr_throttled,
+                "the quota throttled: {:?} -> {:?}",
+                a.cpu,
+                b.cpu
+            );
+            assert!(
+                !held(&leaf),
+                "affinity_held is false once a task widened it"
+            );
+        } else {
+            assert!(held(&leaf), "affinity held through the window");
+        }
+        let t = teardown(&rt, &leaf);
+        reap(&mut spinners);
+        assert!(t.killed && t.removed, "widen={widen}: {t:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "needs a delegated cgroup v2 scope; see the header of this section"]
+fn v4_real_setsid_escapee_removed() {
+    let scope = proof_scope();
+    let rt = proof_runtime();
+    let (leaf, _) = scope.leaf().unwrap();
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("setsid-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pidfile = dir.join("escapee.pid");
+    // The child starts a sleeper in a new session and exits.
+    let script = format!(
+        "setsid sh -c 'echo $$ > {}; exec sleep 300' & exit 0",
+        pidfile.display()
+    );
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg("-c").arg(script);
+    let mut outer = spawn_in_leaf(&leaf, &scope.layout, cmd);
+    let outer_pid = outer.id() as i32;
+    outer.wait().unwrap();
+    within(10, "the escapee wrote its pid", || {
+        std::fs::read_to_string(&pidfile).is_ok_and(|t| !t.trim().is_empty())
+    });
+    let escapee: i32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // The process-group kill of 0092 §6 does not reach it: it is in its own
+    // session and group, but still in the leaf.
+    // SAFETY: signalling a process group the test created.
+    unsafe { libc::killpg(outer_pid, libc::SIGKILL) };
+    assert!(
+        unsafe { libc::kill(escapee, 0) } == 0,
+        "the escapee survived the group kill"
+    );
+    let procs = leaf.read_procs().unwrap();
+    assert!(
+        procs.contains(&escapee),
+        "cgroup.procs is not empty: {procs:?}"
+    );
+    let t = teardown(&rt, &leaf);
+    assert!(
+        t.killed && t.removed,
+        "after cgroup.kill the leaf is empty and removed: {t:?}"
+    );
+    within(
+        10,
+        "the escapee is gone",
+        || unsafe { libc::kill(escapee, 0) } != 0,
+    );
+    assert!(!leaf.read_procs().is_ok_and(|p| !p.is_empty()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Default)]
+struct Shared(Arc<Mutex<Vec<u8>>>);
+
+#[cfg(target_os = "linux")]
+impl std::io::Write for Shared {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn proof_dir(name: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "needs a delegated cgroup v2 scope; see the header of this section"]
+fn v4_real_hold_swarmail_under_budget() {
+    let scope = Arc::new(proof_scope());
+    let rt = proof_runtime();
+    let mut spec = swarmail_spec(targets::swarmail_template(protocol::V4_CAP));
+    spec.extra.scope = Some(scope.clone());
+    let dir = proof_dir("hold");
+    let (hold_dir, samples) = (dir.join("hold"), dir.join("samples.jsonl"));
+    let out = Shared::default();
+    let (stdin, reader) = tokio::io::duplex(64);
+    let receipt = rt.block_on(async {
+        let task = {
+            let (out, samples) = (out.clone(), samples.clone());
+            tokio::spawn(async move {
+                let mut w = out;
+                runner::hold(
+                    &spec,
+                    (&hold_dir, &samples),
+                    &limits(),
+                    &wire::Clock(Instant::now()),
+                    Duration::from_millis(100),
+                    reader,
+                    &mut w,
+                    std::future::pending(),
+                )
+                .await
+            })
+        };
+        let first = loop {
+            let text = String::from_utf8(out.0.lock().unwrap().clone()).unwrap();
+            if let Some(line) = text.lines().next() {
+                break line.to_owned();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let up: Value = serde_json::from_str(&first).unwrap();
+        assert!(up["leaf"].as_str().unwrap().starts_with("target-"), "{up}");
+        let smtp = up["smtp"].as_str().unwrap().parse().unwrap();
+        let http = up["http"].as_str().unwrap().parse().unwrap();
+        // One mail, accepted, and then visible: the held target is the real one.
+        let clock = wire::Clock(Instant::now());
+        let step = Duration::from_secs(10);
+        let kinds = [protocol::MessageKind::Plain];
+        let msg = wire::authored(163, "holdproof0001", 0, &kinds);
+        let mut s = wire::Smtp::open(smtp, step)
+            .await
+            .expect("the held target accepts a session");
+        let rec = s.send(&msg, &clock).await;
+        assert!(
+            matches!(rec.disposition, wire::Disposition::Accepted { .. }),
+            "{:?}",
+            rec.disposition
+        );
+        s.quit().await;
+        let reader_side = targets::Owned::fixture(TargetKind::Swarmail, http, None, &limits());
+        let end = Instant::now() + Duration::from_secs(10);
+        loop {
+            let seen = reader_side.list_all(4).await.unwrap_or_default();
+            if seen.iter().any(|(tok, _)| *tok == msg.token) {
+                break;
+            }
+            assert!(
+                Instant::now() < end,
+                "the accepted mail never became visible"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Sampled while it is held.
+        let end = Instant::now() + Duration::from_secs(10);
+        while std::fs::read_to_string(&samples).map_or(0, |t| t.lines().count()) < 3 {
+            assert!(Instant::now() < end, "the sampler wrote no rows");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        drop(stdin);
+        task.await
+            .unwrap()
+            .expect("it tears down and prints its receipts")
+    });
+    runner::hold_verdict(&receipt).expect("EOF with no byte is a clean end");
+    let l = &receipt.launch;
+    assert_eq!(l.limits.as_ref().unwrap().memory_max, "2147483648");
+    assert_eq!(l.limits.as_ref().unwrap().cpu_max, "200000 100000");
+    let joined = l.joined.as_ref().expect("the join read-back");
+    assert_eq!(Some(&joined.cgroup), l.leaf.as_ref());
+    assert_eq!(joined.cpus_allowed, scope.layout.target_cpus);
+    assert_eq!(receipt.cleanup.cgroup_removed, Some(true));
+    assert!(receipt.cleanup.proved(), "{:?}", receipt.cleanup);
+    let lines = std::fs::read_to_string(&samples).unwrap();
+    assert!(lines.lines().all(|l| l.contains("\"kind\":\"sample\"")));
+    let printed = String::from_utf8(out.0.lock().unwrap().clone()).unwrap();
+    assert_eq!(printed.lines().count(), 2, "{printed}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "needs a delegated cgroup v2 scope; see the header of this section"]
+fn v4_real_cost_chunk_seals_and_admits() {
+    let scope = Arc::new(proof_scope());
+    let rt = proof_runtime();
+    let p = Protocol::parse(V4_SMOKE).unwrap();
+    let sbytes = serde_json::to_vec(&lock5()).unwrap();
+    let lock = SourceLock::parse(&sbytes).unwrap();
+    let chunk = runner::Chunk::Cost {
+        target: TargetKind::Swarmail,
+        repetition: 0,
+    };
+    let bins = vec![format!("swarmail={}", env!("CARGO_BIN_EXE_swarmail"))];
+    let mut specs =
+        runner::launch_specs_of(&p, &lock, &bins, &[], &[TargetKind::Swarmail]).unwrap();
+    specs.get_mut(&TargetKind::Swarmail).unwrap().extra.scope = Some(scope.clone());
+    let dir = proof_dir("chunk");
+    let (output, scratch) = (dir.join("chunk"), dir.join("scratch"));
+    std::fs::create_dir(&scratch).unwrap();
+    let mut m = manifest(&p, "proof5");
+    m.protocol_sha256 = targets::sha256_hex(V4_SMOKE);
+    m.sources_sha256 = targets::sha256_hex(&sbytes);
+    let (planned, windows) = runner::plan_chunk(&p, &chunk);
+    (m.planned, m.planned_windows, m.chunk) = (planned, Some(windows), Some(chunk.name()));
+    m.host = Some(resources::host_facts(
+        "Linux (proof)",
+        "systemd (proof)",
+        &scope.layout,
+    ));
+    let keepers = targets::Keepers::default();
+    let cfg = runner::Config {
+        protocol: p.clone(),
+        manifest: m,
+        specs,
+        output: output.clone(),
+        scratch: scratch.clone(),
+        keepers: keepers.clone(),
+    };
+    let clock = wire::Clock(Instant::now());
+    let (verdict, life, sealed) = rt.block_on(runner::run_chunk(cfg, chunk.clone(), clock));
+    let settled = rt.block_on(keepers.settle(Duration::from_secs(60)));
+    assert!(
+        settled.iter().all(targets::CleanupFacts::proved),
+        "{settled:?}"
+    );
+    assert_eq!(
+        verdict,
+        runner::Verdict::Clean,
+        "the candidate is exact under the budget"
+    );
+    let sealed = sealed.expect("the chunk sealed");
+    assert!(std::fs::remove_dir(&scratch).is_ok(), "the scratch is gone");
+    // Two launches: the warmup instance and the measured one, both in leaves.
+    assert_eq!(life.launches.len(), 2);
+    assert!(
+        life.cleanups
+            .iter()
+            .all(|c| c.proved() && c.cgroup_removed == Some(true))
+    );
+    let bins = Default::default();
+    let a = report::Admission {
+        protocol: &p,
+        protocol_bytes: V4_SMOKE,
+        lock: &lock,
+        lock_bytes: &sbytes,
+        bins: &bins,
+    };
+    let c = report::admit_chunk(&sealed, &chunk, &a).expect("windows, samples and figures admit");
+    let windows: Vec<&records::WindowRow> = c
+        .resources
+        .iter()
+        .filter_map(|r| match r {
+            records::ResourceRow::Window(w) => Some(w),
+            records::ResourceRow::Sample(_) => None,
+        })
+        .collect();
+    assert_eq!(windows.len(), 3);
+    assert!(
+        windows
+            .iter()
+            .all(|w| w.outcome == records::WindowOutcome::Measured && w.affinity_held)
+    );
+    let idle = windows
+        .iter()
+        .find(|w| w.window == records::WindowKind::IdleReady)
+        .unwrap();
+    assert!(
+        idle.end_ns - idle.start_ns >= 5_000_000_000,
+        "five seconds without traffic"
+    );
+    assert!(idle.scratch_bytes.is_some_and(|b| b > 0));
+    let measure = windows
+        .iter()
+        .find(|w| w.window == records::WindowKind::Measure)
+        .unwrap();
+    assert!(
+        measure.cpu_end.usage_usec > measure.cpu_start.usage_usec,
+        "the target used CPU"
+    );
+    assert!(
+        c.resources
+            .iter()
+            .filter(|r| matches!(r, records::ResourceRow::Sample(_)))
+            .count()
+            >= 10
+    );
+    let cell = &c.report["cost"]["cells"][0];
+    assert_eq!(cell["ranked"], true, "{cell}");
+    assert!(cell["visible_per_cpu_second"]["median"].as_f64().unwrap() > 0.0);
+    assert!(cell["peak_memory_mib"]["median"].as_f64().unwrap() > 0.0);
+    let _ = std::fs::remove_dir_all(&dir);
+}

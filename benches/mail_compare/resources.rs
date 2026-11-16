@@ -785,19 +785,28 @@ impl Leaf {
     /// remove the leaf. A leaf that cannot be emptied stays in place.
     pub async fn teardown(&self, until: tokio::time::Instant) -> Teardown {
         let killed = self.kill().is_ok();
-        let mut empty = false;
+        let mut peak = None;
+        let mut removed = false;
         loop {
+            // Empty first; then the peak while the leaf still exists; then
+            // the removal, which the kernel may refuse for an instant while a
+            // process it has just ended is still being released, so it is
+            // retried inside the same budget.
             if matches!(self.read_procs(), Ok(p) if p.is_empty()) {
-                empty = true;
-                break;
+                if peak.is_none() {
+                    peak = self.mem_peak().ok();
+                }
+                if self.fs.rmdir(&self.dir).is_ok() {
+                    removed = true;
+                    break;
+                }
             }
             if tokio::time::Instant::now() >= until {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let memory_peak_bytes = self.mem_peak().ok();
-        let removed = empty && self.fs.rmdir(&self.dir).is_ok();
+        let memory_peak_bytes = peak.or_else(|| self.mem_peak().ok());
         Teardown {
             killed,
             removed,

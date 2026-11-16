@@ -772,6 +772,126 @@ commit's tree), and a config file may run in its own directory (`cwd`, the
 Alkemio fork reads `./config.json`). The operator may strike any of them when
 ruling on 0130; nothing was collected that a strike could invalidate.
 
+## Protocol v4: cost to operate under an enforced budget (story A, #359)
+
+This section makes no comparison claim. It records what story A of accepted
+decision [0132](../decisions/0132-mail-comparison-protocol-v4.md) built.
+Nothing was collected, no agent session started and nothing paid ran.
+
+**Records.** Protocol v3 and lock v4 are still the active
+[`protocol.json`](protocol.json) and [`sources.lock.json`](sources.lock.json),
+and v3 still collects from those paths: the eval crate's tests and the
+adapters' launch mode read the active lock, and v3 is frozen but not yet
+collected. Their bytes are also under [`history/`](history/)
+(`2026-11-07-protocol.v3.json`, `2026-11-07-sources.lock.v4.json`), identical,
+and the tests that mean "v3" read those copies, so the v4 freeze (story E) is a
+replacement of two files. The protocol v4 draft
+([`draft/protocol.v4.json`](draft/protocol.v4.json)) and source lock v5
+([`draft/sources.lock.v5.json`](draft/sources.lock.v5.json)) are a draft: this
+driver refuses a frozen protocol 4 while the `api`, `waits` and `testexec`
+sections are owed, so a run of the cost section alone can never be admitted as
+"v4". Protocol v4 pairs only with lock v5. No v4 cell merges with a v2 or v3
+cell.
+
+**What it measures.** Under one enforced budget, per target and cost profile
+(`cost-c1-reused`, `cost-c8-reused`, `cost-c32-reused`, `cost-c32-fresh`; 3
+repetitions of 3,000 messages after 100 warmup): visible mail per
+target-CPU-second (and CPU-ms per 1,000 visible mail), the sampled peak of
+`memory.current` with the peak `anon` beside it, idle memory after readiness
+(the mean of the last two seconds of five without traffic) with the scratch
+tree's allocated bytes, and startup (ready ms and CPU-ms to ready). Each is
+the nearest-rank median over repetitions with the minimum and maximum beside
+it. A cell is ranked only *at equal results*: requested = accepted = visible,
+seen once, fidelity intact, and every measured window `measured`. Any other
+cell keeps its figures, is not ranked, and names its shortfall (`refused`,
+`lost`, `fidelity`, `oom`, `timeout`, `target_exited`, `duplicate`,
+`unexpected`, `ambiguous`). `mib_per_1k_retained` needs the API section's fill
+levels (story B) and is published as owed, never as a number. The official
+MailSlurper row is blocked in every cell. `mail_compare footprint` computes the
+fixed facts (download bytes, installed bytes including every pinned runtime
+tree, and a label, never a zero, for a runtime nothing pins) from the pinned
+bytes with no measurement window.
+
+**The budget and how it is enforced.** Every launch runs in its own cgroup v2
+leaf, owned by the driver, under the scope `systemd-run --user --scope -p
+Delegate=yes` makes for it: 2 CPUs (`cpu.max` `200000 100000`, and affinity to
+two distinct physical cores, their SMT siblings left idle), 2048 MiB
+(`memory.max`, no swap, `memory.oom.group` 1) and 4096 tasks. The driver
+writes each limit, reads it back and records it in the launch receipt; the
+child joins the leaf and sets its affinity between fork and exec, and the
+driver reads `/proc/<pid>/cgroup` and `Cpus_allowed_list` back after the spawn
+and refuses a mismatch. A sampler reads the leaf every 100 ms from its
+creation. Teardown runs the group sequence of 0092 §6 and 0093 §7 first, then
+writes `cgroup.kill`, requires `cgroup.procs` to be empty and removes the leaf;
+`cgroup_removed` joins the cleanup receipt, and a leaf launch is proved only
+with it true. Off Linux, or without a delegated cgroup v2 hierarchy with `cpu`,
+`memory` and `pids`, every v4 mode that launches refuses with exactly
+`resources: no delegated cgroup v2 (cpu memory pids)` and there is no
+unenforced fallback. A scratch directory on tmpfs is refused, because tmpfs
+pages are charged to the leaf as `shmem`.
+
+**What the figures do and do not say.**
+
+- The CPU budget is a ceiling, not a reservation: a target that wants less
+  uses less, and a busy neighbour on the host can still change a cell. The
+  host's load is recorded beside every chunk and gates nothing.
+- `memory.current` includes reclaimable page cache, so a target can sit at
+  its limit without an OOM. The peak `anon` is published beside it, and only a
+  rise of `oom_kill` over a window is an OOM; a rise of `max` alone is
+  pressure.
+- `nr_throttled` counts quota throttling, which also happens with the
+  affinity intact. It is not evidence of the affinity, which is read back
+  from `/proc` at launch and at the end of each window; a window in which a
+  task held more than the two target CPUs is labelled `affinity_widened`,
+  and ranking stays what it was.
+- An empty leaf proves that no process remains in the leaf. It does not prove
+  that a same-uid process never moved itself to another cgroup the user owns.
+  The pinned targets are not adversarial and this is not hostile confinement.
+- Storage stays unmatched: each target keeps its own backend, and every
+  capped target is launched with the same 150,000 cap through lock v5's
+  `{max_messages}` placeholder.
+
+**Reproduce.** A plan of the draft, launching nothing, then the proofs
+that need a delegated host:
+
+```bash
+scripts/compare-mail.sh collect-v4 --dry-run --output /var/tmp/v4-dry \
+  --protocol docs/evals/draft/protocol.v4.json \
+  --sources docs/evals/draft/sources.lock.v5.json --documents docs/evals \
+  --bin mailpit=… --bin mailhog=… --bin mailslurper-source-build=… \
+  --bin smtp4dev=… --bin inbucket=… --bin greenmail=… --runtime greenmail=… \
+  --bin alkemio-mailslurper=… --runtime alkemio-mailslurper=…
+
+# one real proof, as the only process of a delegated scope (cargo must not
+# be inside the scope):
+bin=$(cargo test --locked --test mail_compare --no-run --message-format=json \
+  | grep -o '"executable":"[^"]*mail_compare-[^"]*"' | tail -n1 | cut -d'"' -f4)
+cat /proc/loadavg
+timeout 600 taskset -c 0-31 systemd-run --user --scope --quiet -p Delegate=yes -- \
+  "$bin" --ignored --exact v4::v4_real_oom_at_two_gib --test-threads=1
+cat /proc/loadavg
+```
+
+`collect-v4` refuses by name before building: not Linux, a missing
+`systemd-run`, `systemctl`, `taskset` or `timeout`, an existing `--output`, a
+protocol that is not version 4 (the message names this draft route), fewer than
+3 CPUs in `min(nproc/4, 32)`, and a dirty or uncommitted candidate. Each chunk
+is one driver in its own scope, run as `timeout --kill-after=30 600 taskset -c
+0-<n-1> systemd-run --user --scope -p Delegate=yes --unit=… -- <driver> run …`.
+Exit 1 is a measured outcome of a target; exit 2 stops the run as incomplete,
+and nothing is resumed or overwritten. `mail_compare hold` launches one target
+under the budget for the story that follows; `mail_compare admit-v4 [--seal]`
+recomputes the plan and every figure from the rows and names the first path
+that differs.
+
+**Owed.** The five real proofs (`v4_real_oom_at_two_gib`,
+`v4_real_cpu_held_within_two`, `v4_real_setsid_escapee_removed`,
+`v4_real_hold_swarmail_under_budget`, `v4_real_cost_chunk_seals_and_admits`)
+need a host with a delegated cgroup v2 scope. Each fails, never skips, without
+one, with the exact refusal above. Their passing output belongs to the host
+that ran them. Stories B (API level), C (`wait-best`), D (test execution) and
+E (freeze and collection) are separate runs.
+
 ## What closes the remaining rows
 
 1. Build provenance for each executable needs genuine build evidence (an
