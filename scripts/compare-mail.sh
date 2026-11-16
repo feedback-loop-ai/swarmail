@@ -509,6 +509,31 @@ case "$mode" in
     [ "$chunk_cpus" -le 32 ] || chunk_cpus=32
     [ "$chunk_cpus" -ge 3 ] \
       || blocked prerequisites "collect-v4 needs at least 3 CPUs in min(nproc/4, 32), and nproc $ncpu gives $chunk_cpus"
+    # The chunks are pinned to CPUs 0-<n-1>, which are the operator's CPUs
+    # only when the shell may use every CPU of the host: a narrowed shell
+    # would be pinned outside the set it was given.
+    all_cpus=$(nproc --all 2>/dev/null) || all_cpus=0
+    [ "$ncpu" = "$all_cpus" ] \
+      || blocked prerequisites "collect-v4 pins the chunks to CPUs 0-$((chunk_cpus - 1)) and needs a shell that may use all of the host's CPUs: nproc is $ncpu, nproc --all is $all_cpus"
+    # Every process the mode starts after the preflight runs under this one
+    # prefix (0132 §11.1: no process runs longer than 10 minutes or on more
+    # than 32 CPUs). The 600 is `CHUNK_KILL_MS` of the driver's protocol.rs.
+    bound=(timeout --kill-after=30 600 taskset -c "0-$((chunk_cpus - 1))")
+    interrupted=0 chunk_pid=''
+    # A signal ends the mode with exit 2. During a chunk it goes to the
+    # chunk's `timeout`, which passes it to the driver (whose own interrupt
+    # path tears down and exits 2, unsealed); the chunk is then judged and
+    # written to the ledger like any other, and no later chunk starts.
+    on_signal() {
+      if [ -n "$chunk_pid" ]; then
+        interrupted=1
+        kill -TERM "$chunk_pid" 2>/dev/null
+      else
+        printf 'compare-mail: blocked at phase "interrupt": collect-v4 was interrupted; %s is incomplete and is never resumed\n' "$output" >&2
+        exit 2
+      fi
+    }
+    trap on_signal INT TERM HUP
     commit=$(git rev-parse HEAD 2>/dev/null || true)
     if [ "$dry_run" != 1 ]; then
       [ -n "$commit" ] || blocked candidate "the candidate is not a committed git checkout; collect-v4 never measures an uncommitted tree"
@@ -523,13 +548,13 @@ case "$mode" in
     command -v cargo >/dev/null 2>&1 || [ -n "${COMPARE_MAIL_DRIVER_BIN:-}" ] || blocked prerequisites "cargo is not installed"
     candidate=${COMPARE_MAIL_SWARMAIL_BIN:-}
     if [ -z "$candidate" ]; then
-      cargo build --release --locked --offline --bin swarmail >&2 \
+      "${bound[@]}" cargo build --release --locked --offline --bin swarmail >&2 \
         || blocked build "the candidate binary does not build"
       candidate=$PWD/target/release/swarmail
     fi
     driver=${COMPARE_MAIL_DRIVER_BIN:-}
     if [ -z "$driver" ]; then
-      driver=$(cargo bench --locked --offline --no-run --bench mail_compare --message-format=json 2>/dev/null \
+      driver=$("${bound[@]}" cargo bench --locked --offline --no-run --bench mail_compare --message-format=json 2>/dev/null \
         | grep -o '"executable":"[^"]*mail_compare[^"]*"' | tail -n1 | cut -d'"' -f4)
     fi
     [ -n "$driver" ] && [ -x "$driver" ] || blocked build "the mail_compare driver does not build"
@@ -560,7 +585,7 @@ case "$mode" in
       target="${rest%.*}"
       unit="mail-compare-$run_token-$(printf '%s' "$coord" | tr -c 'A-Za-z0-9_.\n-' '_')"
       chunk_unit="$unit"
-      chunk_cmd=(timeout --kill-after=30 600 taskset -c "0-$((chunk_cpus - 1))"
+      chunk_cmd=("${bound[@]}"
         systemd-run --user --scope -p Delegate=yes "--unit=$unit" --
         "$driver" run --mode collect --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"}
         --output "$output/chunks/$coord" --scratch "$scratch_root/$coord" --run-id "$run_id"
@@ -592,7 +617,18 @@ case "$mode" in
       esac
     done
     json_text() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
-    "$driver" check --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"} \
+    # A scope goes inactive a moment after its driver exits: wait for at most
+    # ten seconds (twenty polls) before calling it alive.
+    scope_inactive() {
+      local tries=0
+      while systemctl --user is-active --quiet "$1" 2>/dev/null; do
+        tries=$((tries + 1))
+        [ "$tries" -le 20 ] || return 1
+        sleep 0.5
+      done
+      return 0
+    }
+    "${bound[@]}" "$driver" check --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"} \
       || blocked collection-ready "the protocol and lock are not ready for collection (see above)"
     mkdir -p "$output/chunks" "$output/ledger" "$scratch_root" \
       || blocked prerequisites "cannot make $output"
@@ -601,34 +637,41 @@ case "$mode" in
       fp_args+=(--bin "$t=$(bin_for "$t")")
       [ -z "$(runtime_for "$t")" ] || fp_args+=(--runtime "$t=$(runtime_for "$t")")
     done
-    timeout --kill-after=30 600 "$driver" "${fp_args[@]}" >"$output/footprint.json" \
+    "${bound[@]}" "$driver" "${fp_args[@]}" >"$output/footprint.json" \
       || blocked footprint "the footprint could not be computed (see above); $output is incomplete"
-    # What a reader needs to repeat the run: the one command, as given.
-    {
-      printf '%s' "scripts/compare-mail.sh $mode"
-      for w in ${orig_args[@]+"${orig_args[@]}"}; do printf ' %q' "$w"; done
-      printf '\n'
-    } >"$output/reproduce.txt"
     any_failed=0
     for coord in $plan; do
       chunk_command "$coord"
       load_before=$(cat /proc/loadavg 2>/dev/null || echo unavailable)
       started=$(date +%s)
-      "${chunk_cmd[@]}"
-      status=$?
+      # The chunk runs in the background and is waited for, so that a signal
+      # can reach it: `wait` returns early on a trapped signal, and is
+      # repeated until the chunk itself has been reaped.
+      "${chunk_cmd[@]}" &
+      chunk_pid=$!
+      while :; do
+        wait "$chunk_pid"
+        status=$?
+        kill -0 "$chunk_pid" 2>/dev/null || break
+      done
+      chunk_pid=''
       wall_ms=$((($(date +%s) - started) * 1000))
       load_after=$(cat /proc/loadavg 2>/dev/null || echo unavailable)
       # A timeout (124), a kill (137) or any status above 2 is an
       # infrastructure failure, and so is a chunk that claims 0 or 1 without
-      # its completion index: such a chunk was never sealed.
+      # its completion index: such a chunk was never sealed. So is a chunk
+      # that was interrupted.
       case "$status" in
         0|1) [ -f "$output/chunks/$coord/index.json" ] || status=2 ;;
         *) status=2 ;;
       esac
-      # A scope that outlives its chunk is killed and stopped, and the chunk
-      # counts as an infrastructure failure.
+      [ "$interrupted" = 0 ] || status=2
+      # systemd learns that a scope is empty after the driver has exited, so
+      # the scope is given a moment to go inactive before it is judged. One
+      # still active after that is killed and stopped, and the chunk counts
+      # as an infrastructure failure.
       scope_clean=true
-      if systemctl --user is-active --quiet "$chunk_unit.scope" 2>/dev/null; then
+      if ! scope_inactive "$chunk_unit.scope"; then
         scope_clean=false
         systemctl --user kill "$chunk_unit.scope" >/dev/null 2>&1
         systemctl --user stop "$chunk_unit.scope" >/dev/null 2>&1
@@ -641,16 +684,24 @@ case "$mode" in
         || blocked ledger "cannot write the ledger entry of $coord"
       if [ "$status" -eq 2 ]; then
         # Nothing is resumed, overwritten or removed: the run is incomplete.
-        blocked "chunk-$coord" "the chunk ended in an infrastructure failure (scope clean: $scope_clean); $output is incomplete and is never resumed"
+        blocked "chunk-$coord" "the chunk ended in an infrastructure failure (interrupted: $interrupted, scope clean: $scope_clean); $output is incomplete and is never resumed"
       fi
       [ "$status" -eq 0 ] || any_failed=1
     done
     rmdir "$scratch_root" 2>/dev/null || true
+    # What a reader needs to repeat the run: the one command, as given. It is
+    # written only once every chunk has run, so an incomplete directory does
+    # not carry it.
+    {
+      printf '%s' "scripts/compare-mail.sh $mode"
+      for w in ${orig_args[@]+"${orig_args[@]}"}; do printf ' %q' "$w"; done
+      printf '\n'
+    } >"$output/reproduce.txt" || blocked prerequisites "cannot write $output/reproduce.txt"
     adm=(--sources "$sources" ${doc_args[@]+"${doc_args[@]}"} --bin "swarmail=$candidate")
     for t in $declared; do adm+=(--bin "$t=$(bin_for "$t")"); done
-    timeout --kill-after=30 600 "$driver" admit-v4 --seal "$output" "$protocol" "${adm[@]}" \
+    "${bound[@]}" "$driver" admit-v4 --seal "$output" "$protocol" "${adm[@]}" \
       || blocked admission "the run could not be sealed (see above)"
-    timeout --kill-after=30 600 "$driver" admit-v4 "$output" "$protocol" "${adm[@]}" \
+    "${bound[@]}" "$driver" admit-v4 "$output" "$protocol" "${adm[@]}" \
       || blocked admission "the sealed run is not admitted (see above)"
     echo "compare-mail collect-v4: wrote $output ($(printf '%s\n' "$plan" | wc -l | tr -d ' ') chunks)"
     exit "$any_failed"

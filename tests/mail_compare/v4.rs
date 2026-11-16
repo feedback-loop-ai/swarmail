@@ -4708,7 +4708,18 @@ fn admit_run_still_refuses_a_protocol_4_directory() {
 // ============================================================================
 
 const FAKE_UNAME: &str = "#!/bin/sh\nif [ \"$1\" = -s ]; then echo \"${FAKE_UNAME:-Linux}\"; else echo \"${FAKE_UNAME:-Linux}\"; fi\n";
-const FAKE_NPROC: &str = "#!/bin/sh\necho \"${FAKE_NPROC:-32}\"\n";
+const FAKE_NPROC: &str = "#!/bin/sh\nif [ \"$1\" = --all ]; then echo \"${FAKE_NPROC_ALL:-${FAKE_NPROC:-32}}\"; else echo \"${FAKE_NPROC:-32}\"; fi\n";
+/// A `sleep` that returns at once: the wrapper's polls take no time.
+const FAKE_SLEEP: &str = "#!/bin/sh\nexit 0\n";
+/// A `cargo` that logs, and leaves what the wrapper looks for.
+const FAKE_CARGO: &str = r#"#!/bin/bash
+echo "cargo $*" >> "$FAKE_LOG"
+case "$1" in
+  build) mkdir -p target/release && cp "$FAKE_DIR/candidate" target/release/swarmail ;;
+  bench) echo "{\"executable\":\"$FAKE_DIR/mail_compare-fake\"}" ;;
+esac
+exit 0
+"#;
 const FAKE_TASKSET: &str =
     "#!/bin/bash\necho \"taskset $*\" >> \"$FAKE_LOG\"\nshift 2\nexec \"$@\"\n";
 const FAKE_SYSTEMD_RUN: &str = "#!/bin/bash\necho \"systemd-run $*\" >> \"$FAKE_LOG\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n";
@@ -4728,6 +4739,10 @@ case "$*" in
   --version) echo "systemd 259 (fake)"; exit 0 ;;
   *is-active*)
     unit="${@: -1}"
+    if [ -n "${FAKE_ACTIVE_ONCE:-}" ]; then
+      case "$unit" in *"$FAKE_ACTIVE_ONCE"*)
+        if [ ! -e "$FAKE_LOG.once" ]; then : > "$FAKE_LOG.once"; exit 0; fi ;; esac
+    fi
     if [ -s "${FAKE_ACTIVE:-/dev/null}" ]; then
       while read -r coord; do
         case "$unit" in *"$coord"*) exit 0 ;; esac
@@ -4745,7 +4760,11 @@ case "$1" in
     case " $* " in *" --plan "*) cat "$FAKE_PLAN" ;; *) cat "$FAKE_TARGETS" ;; esac
     exit 0 ;;
   footprint) echo '{"footprint_version":1}'; exit 0 ;;
-  admit-v4) exit "${FAKE_ADMIT_EXIT:-0}" ;;
+  admit-v4)
+    case " $* " in
+      *" --seal "*) exit "${FAKE_SEAL_EXIT:-${FAKE_ADMIT_EXIT:-0}}" ;;
+      *) exit "${FAKE_VERIFY_EXIT:-${FAKE_ADMIT_EXIT:-0}}" ;;
+    esac ;;
   run)
     out='' chunk=''
     while [ $# -gt 0 ]; do
@@ -4753,7 +4772,17 @@ case "$1" in
       shift
     done
     how=$(grep "^$chunk " "${FAKE_BEHAVE:-/dev/null}" 2>/dev/null | cut -d' ' -f2)
+    # Whether the run's reproduce.txt existed when this chunk began.
+    root=$(dirname "$(dirname "$out")")
+    [ ! -e "$root/reproduce.txt" ] || echo "present when $chunk began" >> "$FAKE_LOG.repro"
     mkdir -p "$out"
+    if [ "$how" = wait ]; then
+      # A driver that is running: it says so, and ends as the real one does
+      # on a signal (exit 2, nothing sealed).
+      echo "$chunk" > "$FAKE_MARKER"
+      trap 'echo terminated > "$FAKE_MARKER.done"; exit 2' TERM
+      while :; do command -p sleep 0.05; done
+    fi
     [ "$how" = noindex ] || echo '{}' > "$out/index.json"
     case "$how" in noindex|'') exit 0 ;; *) exit "$how" ;; esac ;;
 esac
@@ -4819,27 +4848,34 @@ impl V4Rig {
         self.exec(&args, env)
     }
 
-    fn exec(&self, args: &[String], env: &[(&str, &str)]) -> (i32, String) {
+    /// The wrapper's command, in a cleared environment of the rig's own: its
+    /// git sees no ambient configuration.
+    fn command(&self, args: &[String], env: &[(&str, &str)]) -> std::process::Command {
         let path = format!(
             "{}:{}",
             self.file("fake").display(),
             self.file("tools").display()
         );
-        let out = std::process::Command::new("bash")
-            .arg(self.repo().join("scripts/compare-mail.sh"))
+        let mut cmd = std::process::Command::new("bash");
+        cmd.arg(self.repo().join("scripts/compare-mail.sh"))
             .args(args)
             .env_clear()
             .env("PATH", path)
             .env("HOME", self.root.path())
             .env("FAKE_LOG", self.file("log"))
+            .env("FAKE_DIR", self.file("fake"))
             .env("FAKE_PLAN", self.file("plan"))
             .env("FAKE_TARGETS", self.file("targets"))
             .env("COMPARE_MAIL_DRIVER_BIN", self.file("fake/driver"))
             .env("COMPARE_MAIL_SWARMAIL_BIN", self.file("fake/candidate"))
             .env("COMPARE_MAIL_BIN_DIR", self.file("frozen"))
-            .envs(env.iter().copied())
-            .output()
-            .unwrap();
+            .envs(env.iter().copied());
+        own_git_environment(&mut cmd);
+        cmd
+    }
+
+    fn exec(&self, args: &[String], env: &[(&str, &str)]) -> (i32, String) {
+        let out = self.command(args, env).output().unwrap();
         let text = format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
@@ -4858,7 +4894,30 @@ impl V4Rig {
     }
 }
 
+/// The rig owns its git environment: no system or global configuration, and
+/// none of the `GIT_CONFIG_COUNT` family that a caller's shell may carry
+/// (a count with no key makes git refuse to run at all).
+fn own_git_environment(cmd: &mut std::process::Command) {
+    for (name, _) in std::env::vars_os().filter_map(|(k, v)| k.into_string().ok().map(|k| (k, v))) {
+        if name == "GIT_CONFIG_COUNT"
+            || name.starts_with("GIT_CONFIG_KEY_")
+            || name.starts_with("GIT_CONFIG_VALUE_")
+        {
+            cmd.env_remove(&name);
+        }
+    }
+    cmd.env_remove("GIT_CONFIG_COUNT")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+}
+
 fn v4_rig() -> V4Rig {
+    v4_rig_with(&[])
+}
+
+/// The rig, built while `ambient` is in the environment of the commands it
+/// runs (so a test can show that an ambient git configuration is ignored).
+fn v4_rig_with(ambient: &[(&str, &str)]) -> V4Rig {
     let root = fixture();
     let r = root.path();
     let plan: Vec<String> = runner::plan_v4(&p4(draft()))
@@ -4896,6 +4955,9 @@ fn v4_rig() -> V4Rig {
     for (name, body) in [
         ("uname", FAKE_UNAME),
         ("nproc", FAKE_NPROC),
+        ("sleep", FAKE_SLEEP),
+        ("cargo", FAKE_CARGO),
+        ("mail_compare-fake", FAKE_DRIVER),
         ("taskset", FAKE_TASKSET),
         ("systemd-run", FAKE_SYSTEMD_RUN),
         ("timeout", FAKE_TIMEOUT),
@@ -4920,6 +4982,7 @@ fn v4_rig() -> V4Rig {
         "date",
         "cat",
         "head",
+        "tail",
         "wc",
         "mkdir",
         "rmdir",
@@ -4945,8 +5008,8 @@ fn v4_rig() -> V4Rig {
         }
     }
     let git = |args: &[&str]| {
-        let ok = std::process::Command::new("git")
-            .current_dir(r.join("repo"))
+        let mut cmd = std::process::Command::new("git");
+        cmd.current_dir(r.join("repo"))
             .args([
                 "-c",
                 "user.email=t@example.invalid",
@@ -4956,11 +5019,14 @@ fn v4_rig() -> V4Rig {
                 "commit.gpgsign=false",
             ])
             .args(args)
-            .output()
-            .unwrap()
-            .status
-            .success();
-        assert!(ok, "git {args:?}");
+            .envs(ambient.iter().copied());
+        own_git_environment(&mut cmd);
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     };
     git(&["init", "-q"]);
     git(&["add", "-A"]);
@@ -5283,38 +5349,6 @@ fn collect_v4_counts_a_sealless_exit_zero_as_two() {
 }
 
 #[test]
-fn collect_v4_stops_a_scope_that_outlives_its_chunk_and_counts_two() {
-    let rig = v4_rig();
-    std::fs::write(rig.file("active"), "cost.mailpit.r0\n").unwrap();
-    let (code, text) = rig.run(
-        &DRAFT_ROUTE,
-        &[("FAKE_ACTIVE", rig.file("active").to_str().unwrap())],
-    );
-    assert_eq!(code, 2, "{text}");
-    let log = rig.log();
-    let kill = log
-        .iter()
-        .position(|l| {
-            l.starts_with("systemctl --user kill mail-compare-") && l.contains("cost.mailpit.r0")
-        })
-        .expect("the scope was killed");
-    assert!(
-        log[kill + 1].starts_with("systemctl --user stop mail-compare-"),
-        "then stopped: {log:?}"
-    );
-    let ledger = rig.ledger();
-    assert_eq!(ledger.len(), 2);
-    assert_eq!(
-        (
-            ledger[1]["exit"].as_i64(),
-            ledger[1]["scope_clean"].as_bool()
-        ),
-        (Some(2), Some(false))
-    );
-    assert_eq!(chunk_lines(&log, "driver run").len(), 2, "no later chunk");
-}
-
-#[test]
 fn collect_v4_full_fake_run_writes_24_ledgers_seals_and_verifies() {
     let rig = v4_rig();
     std::fs::write(rig.file("behave"), "cost.smtp4dev.r1 1\n").unwrap();
@@ -5415,6 +5449,348 @@ fn collect_v4_usage_names_the_mode() {
     assert_eq!(code, 2);
     assert!(text.contains("compare-mail.sh collect-v4"), "{text}");
     assert!(text.contains("Linux only"), "{text}");
+}
+
+// ---- R6: the wrapper's waits, signal, bound and git environment --------------
+
+fn behave(rig: &V4Rig, lines: &str) -> String {
+    std::fs::write(rig.file("behave"), lines).unwrap();
+    rig.file("behave").to_str().unwrap().to_owned()
+}
+
+fn is_active_calls(log: &[String], coord: &str) -> usize {
+    log.iter()
+        .filter(|l| l.starts_with("systemctl --user is-active") && l.contains(coord))
+        .count()
+}
+
+#[test]
+fn collect_v4_waits_for_a_scope_that_is_active_once_then_inactive() {
+    let rig = v4_rig();
+    // systemd has not yet learned that the scope is empty at the first look.
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[("FAKE_ACTIVE_ONCE", "cost.mailpit.r0")]);
+    assert_eq!(code, 0, "a scope that goes inactive is clean: {text}");
+    let log = rig.log();
+    assert_eq!(is_active_calls(&log, "cost.mailpit.r0"), 2, "{log:?}");
+    assert!(
+        !log.iter().any(|l| l.starts_with("systemctl --user kill")),
+        "nothing was killed: {log:?}"
+    );
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 24, "the run went on");
+    assert!(ledger.iter().all(|e| e["scope_clean"] == true));
+}
+
+#[test]
+fn collect_v4_stops_a_scope_that_stays_active_and_counts_two() {
+    let rig = v4_rig();
+    std::fs::write(rig.file("active"), "cost.mailpit.r0\n").unwrap();
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[("FAKE_ACTIVE", rig.file("active").to_str().unwrap())],
+    );
+    assert_eq!(code, 2, "{text}");
+    let log = rig.log();
+    // Twenty-one looks (the first and twenty polls) before it is called alive.
+    assert_eq!(is_active_calls(&log, "cost.mailpit.r0"), 21, "{log:?}");
+    let last_look = log
+        .iter()
+        .rposition(|l| l.starts_with("systemctl --user is-active") && l.contains("cost.mailpit.r0"))
+        .unwrap();
+    let kill = log
+        .iter()
+        .position(|l| {
+            l.starts_with("systemctl --user kill mail-compare-") && l.contains("cost.mailpit.r0")
+        })
+        .expect("the scope was killed");
+    let stop = log
+        .iter()
+        .position(|l| {
+            l.starts_with("systemctl --user stop mail-compare-") && l.contains("cost.mailpit.r0")
+        })
+        .expect("and stopped");
+    assert!(last_look < kill && kill < stop, "after the wait: {log:?}");
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 2);
+    assert_eq!(
+        (ledger[1]["exit"].as_i64(), &ledger[1]["scope_clean"]),
+        (Some(2), &json!(false))
+    );
+    assert_eq!(chunk_lines(&log, "driver run").len(), 2, "no later chunk");
+}
+
+#[test]
+fn collect_v4_writes_reproduce_txt_only_after_the_last_chunk() {
+    let rig = v4_rig();
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 0, "{text}");
+    // No chunk's driver ever found it.
+    let seen = std::fs::read_to_string(rig.file("log.repro")).unwrap_or_default();
+    assert!(seen.is_empty(), "present while a chunk ran: {seen}");
+    assert!(rig.out().join("reproduce.txt").is_file());
+    // And the seal and the verification come after it.
+    let log = rig.log();
+    assert_eq!(chunk_lines(&log, "driver admit-v4").len(), 2);
+}
+
+#[test]
+fn an_incomplete_collect_v4_has_no_reproduce_txt() {
+    let rig = v4_rig();
+    let b = behave(&rig, "cost.mailhog.r0 2\n");
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[("FAKE_BEHAVE", &b)]);
+    assert_eq!(code, 2, "{text}");
+    assert!(!rig.out().join("reproduce.txt").exists());
+    assert!(rig.out().join("ledger").is_dir(), "the ledger is there");
+}
+
+#[test]
+fn collect_v4_on_sigterm_ends_the_chunk_writes_its_ledger_and_exits_two() {
+    let rig = v4_rig();
+    let b = behave(&rig, "cost.swarmail.r0 wait\n");
+    let marker = rig.file("marker");
+    let mut args: Vec<String> = vec![
+        "collect-v4".into(),
+        "--output".into(),
+        rig.out().display().to_string(),
+    ];
+    args.extend(DRAFT_ROUTE.map(str::to_owned));
+    for t in V4Rig::competitors() {
+        args.extend(["--bin".to_owned(), format!("{t}=/bin/sh")]);
+    }
+    args.extend(
+        [
+            "--runtime",
+            "greenmail=/never/jre",
+            "--runtime",
+            "alkemio-mailslurper=/never/musl",
+        ]
+        .map(str::to_owned),
+    );
+    let mut child = rig
+        .command(
+            &args,
+            &[
+                ("FAKE_BEHAVE", &b),
+                ("FAKE_MARKER", marker.to_str().unwrap()),
+            ],
+        )
+        .spawn()
+        .unwrap();
+    // The fake driver says it is running; then, and only then, the signal.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "the driver never started");
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the wrapper ended early"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // SAFETY: signalling a child process this test owns.
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "the wrapper did not end");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status.code(), Some(2), "{status:?}");
+    // The chunk was ended by the signal, not abandoned: the driver ran its
+    // own interrupt path, and its entry is in the ledger with exit 2.
+    assert!(rig.file("marker.done").exists(), "the driver was signalled");
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 1, "{ledger:?}");
+    assert_eq!(
+        (ledger[0]["coordinate"].as_str(), ledger[0]["exit"].as_i64()),
+        (Some("cost.swarmail.r0"), Some(2))
+    );
+    assert_eq!(ledger[0]["scope_clean"], true);
+    assert!(!rig.out().join("index.json").exists());
+    assert!(!rig.out().join("reproduce.txt").exists());
+    assert!(
+        !rig.out()
+            .join("chunks/cost.swarmail.r0/index.json")
+            .exists()
+    );
+    let log = rig.log();
+    assert_eq!(chunk_lines(&log, "driver run").len(), 1, "no later chunk");
+    assert!(chunk_lines(&log, "driver admit-v4").is_empty());
+}
+
+#[test]
+fn collect_v4_runs_every_process_under_the_bound() {
+    let rig = v4_rig();
+    // No overrides: the wrapper builds the candidate and the driver itself.
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[
+            ("COMPARE_MAIL_DRIVER_BIN", ""),
+            ("COMPARE_MAIL_SWARMAIL_BIN", ""),
+        ],
+    );
+    assert_eq!(code, 0, "{text}");
+    let log = rig.log();
+    let bound = "timeout --kill-after=30 600 taskset -c 0-7 ";
+    // The timeout line that carries each kind of process, and the process's
+    // own line: one for each, every time.
+    let kinds = [
+        ("cargo build --release --locked", "cargo build"),
+        ("cargo bench --locked", "cargo bench"),
+        ("check --protocol", "driver check"),
+        ("footprint --protocol", "driver footprint"),
+        ("run --mode collect", "driver run"),
+        ("admit-v4 --seal", "driver admit-v4 --seal"),
+        ("admit-v4 /", "driver admit-v4 /"),
+    ];
+    for (needle, own) in kinds {
+        let started = log.iter().filter(|l| l.starts_with(own)).count();
+        let bounded = log
+            .iter()
+            .filter(|l| l.starts_with(bound) && l.contains(needle))
+            .count();
+        assert!(started >= 1, "{own} ran: {log:?}");
+        assert_eq!(
+            bounded, started,
+            "{own}: each run is under the bound: {log:?}"
+        );
+    }
+    assert_eq!(chunk_lines(&log, "driver run").len(), 24);
+}
+
+#[test]
+fn collect_v4_refuses_a_restricted_shell_by_name() {
+    let rig = v4_rig();
+    // A shell narrowed to 32 of 64 CPUs would be pinned outside its own set.
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[("FAKE_NPROC", "32"), ("FAKE_NPROC_ALL", "64")],
+    );
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("needs a shell that may use all of the host's CPUs")
+            && text.contains("nproc is 32, nproc --all is 64"),
+        "{text}"
+    );
+    assert!(
+        rig.log().is_empty(),
+        "before anything was built or run: {:?}",
+        rig.log()
+    );
+    assert!(!rig.out().exists());
+}
+
+#[test]
+fn collect_v4_chunk_timeout_is_chunk_kill_ms() {
+    let rig = v4_rig();
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 0, "{text}");
+    let log = rig.log();
+    let chunk = log
+        .iter()
+        .find(|l| l.starts_with("timeout ") && l.contains("--chunk cost.swarmail.r0"))
+        .unwrap();
+    let seconds: u64 = chunk
+        .split(' ')
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("a number of seconds in {chunk}"));
+    assert_eq!(seconds * 1000, protocol::CHUNK_KILL_MS);
+    // And the protocol's own bound is what that number is for.
+    assert!(
+        chunk.starts_with("timeout --kill-after=30 600 taskset"),
+        "{chunk}"
+    );
+}
+
+#[test]
+fn collect_v4_counts_exit_three_and_a_kill_as_two() {
+    for (status, coord) in [("3", "cost.mailpit.r0"), ("137", "cost.swarmail.r0")] {
+        let rig = v4_rig();
+        let b = behave(&rig, &format!("{coord} {status}\n"));
+        let (code, text) = rig.run(&DRAFT_ROUTE, &[("FAKE_BEHAVE", &b)]);
+        assert_eq!(code, 2, "{status}: {text}");
+        let ledger = rig.ledger();
+        let last = ledger.last().unwrap();
+        assert_eq!(
+            (last["coordinate"].as_str(), last["exit"].as_i64()),
+            (Some(coord), Some(2)),
+            "{status}"
+        );
+        assert!(!rig.out().join("reproduce.txt").exists(), "{status}");
+        assert!(chunk_lines(&rig.log(), "driver admit-v4").is_empty());
+    }
+}
+
+#[test]
+fn collect_v4_a_timeout_with_a_live_scope_is_killed_and_counted() {
+    let rig = v4_rig();
+    std::fs::write(rig.file("timeouts"), "cost.mailpit.r0\n").unwrap();
+    std::fs::write(rig.file("active"), "cost.mailpit.r0\n").unwrap();
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[
+            ("FAKE_TIMEOUTS", rig.file("timeouts").to_str().unwrap()),
+            ("FAKE_ACTIVE", rig.file("active").to_str().unwrap()),
+        ],
+    );
+    assert_eq!(code, 2, "{text}");
+    let ledger = rig.ledger();
+    let last = ledger.last().unwrap();
+    assert_eq!(
+        (last["exit"].as_i64(), &last["scope_clean"]),
+        (Some(2), &json!(false))
+    );
+    let log = rig.log();
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("systemctl --user kill") && l.contains("cost.mailpit.r0")),
+        "{log:?}"
+    );
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("systemctl --user stop") && l.contains("cost.mailpit.r0")),
+        "{log:?}"
+    );
+}
+
+#[test]
+fn collect_v4_a_seal_followed_by_a_refused_verify_exits_two() {
+    let rig = v4_rig();
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[("FAKE_VERIFY_EXIT", "1")]);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("blocked at phase \"admission\"") && text.contains("not admitted"),
+        "{text}"
+    );
+    let log = rig.log();
+    assert_eq!(
+        chunk_lines(&log, "driver admit-v4 --seal").len(),
+        1,
+        "it sealed first"
+    );
+    assert_eq!(chunk_lines(&log, "driver admit-v4").len(), 2);
+    // A refused seal never reaches the verification.
+    let rig = v4_rig();
+    let (code, _) = rig.run(&DRAFT_ROUTE, &[("FAKE_SEAL_EXIT", "1")]);
+    assert_eq!(code, 2);
+    assert_eq!(chunk_lines(&rig.log(), "driver admit-v4").len(), 1);
+}
+
+#[test]
+fn the_v4_rig_ignores_an_ambient_git_config_count() {
+    // A count with no key makes git refuse to run at all: the rig owns its
+    // git environment, for the fixture and for the wrapper alike.
+    let rig = v4_rig_with(&[("GIT_CONFIG_COUNT", "1")]);
+    assert!(rig.repo().join(".git").is_dir(), "git init and commit ran");
+    let mut dry = DRAFT_ROUTE.to_vec();
+    dry.push("--dry-run");
+    let (code, text) = rig.run(&dry, &[("GIT_CONFIG_COUNT", "1")]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(text.lines().filter(|l| l.starts_with("cost.")).count(), 24);
+    // A real run reads the tree's state with git, and still does.
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[("GIT_CONFIG_COUNT", "1")]);
+    assert_eq!(code, 0, "{text}");
 }
 
 // ============================================================================
