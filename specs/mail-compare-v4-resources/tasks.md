@@ -567,7 +567,7 @@ R, it says so; no other existing test changes its assertions.
 
 ### S1 Every row has an installed size, and the headline carries it (V17, V18, V20; `2G1`, `2I5.5`)
 
-- [ ] S1.1 `resources.rs`: one walk of a directory that returns the bytes
+- [x] S1.1 `resources.rs`: one walk of a directory that returns the bytes
   and count of its regular files and the sha256 of its listing (one line
   `<sha256 of the file>  ./<relative path>` and a newline per file, sorted
   by the path's bytes); a symbolic link and a directory count for nothing
@@ -580,7 +580,7 @@ R, it says so; no other existing test changes its assertions.
   `a_tree_digest_changes_when_a_file_is_added_removed_or_changed`,
   `a_tree_walk_refuses_a_name_sha256sum_would_escape` (newline, backslash;
   the non-UTF-8 name on Linux only). (AC14)
-- [ ] S1.2 `resources.rs`, `footprint`: an archive row's installed size is
+- [x] S1.2 `resources.rs`, `footprint`: an archive row's installed size is
   the walk of its extraction root, which is `--bin`'s path with the pin's
   `member` path removed from its end; a `--bin` that does not end with the
   member refuses by name. Every walked directory is listed in
@@ -601,7 +601,7 @@ R, it says so; no other existing test changes its assertions.
   replaces `footprint_owes_the_installed_size_of_an_archive_row`;
   `footprint_never_publishes_an_executable_alone_as_installed` and
   `footprint_installed_bytes_include_the_runtime_tree` still pass. (AC14)
-- [ ] S1.3 `resources.rs`, `footprint`: after every row's executable and
+- [x] S1.3 `resources.rs`, `footprint`: after every row's executable and
   trees are known, refuse by name, giving both targets, when one target's
   walked tree contains another target's executable or walked tree, the
   candidate included; compare canonical paths. — Test:
@@ -609,7 +609,7 @@ R, it says so; no other existing test changes its assertions.
   executable inside an archive root; the candidate inside it; a runtime
   tree inside an archive root; the same directory reached through a
   symbolic link; and two separate directories pass). (AC14)
-- [ ] S1.4 `report.rs`: `Headline.installed` in the run-level report, one
+- [x] S1.4 `report.rs`: `Headline.installed` in the run-level report, one
   entry per launched target (`installed_bytes`, `installed_files`,
   `installed_basis`) copied from the run's `footprint.json`, the
   does-not-start row blocked as elsewhere; absent from a chunk's report.
@@ -628,7 +628,7 @@ R, it says so; no other existing test changes its assertions.
 
 ### S2 `CHUNK_KILL_MS` is the instant of the SIGTERM (V2; `2G2`, `2C4`)
 
-- [ ] S2.1 `protocol.rs`: `CHUNK_KILL_MS = 560000`, documented as the
+- [x] S2.1 `protocol.rs`: `CHUNK_KILL_MS = 560000`, documented as the
   instant the wrapper's `timeout` sends SIGTERM; V2's inequality unchanged.
   The draft and the smoke fixture are not edited: both state 480000 with
   30 s and 10 s budgets, which is the new ceiling. — Tests:
@@ -648,7 +648,7 @@ with a non-zero status, or write a marker and wait; a `cargo` and a driver
 that can write a marker and wait in any mode; a `git` fixture with a
 `main`, a side branch and, in one test, a `refs/remotes/origin/main`.
 
-- [ ] S3.1 One prefix, `timeout --kill-after=30 560 taskset -c 0-<n-1>`,
+- [x] S3.1 One prefix, `timeout --kill-after=30 560 taskset -c 0-<n-1>`,
   and one helper that starts a command under it in the background, records
   it as the running step and waits until it is reaped. Both `cargo` builds,
   both `targets` calls, `check`, `footprint`, every chunk and both
@@ -661,7 +661,7 @@ that can write a marker and wait in any mode; a `git` fixture with a
   `collect_v4_chunk_timeout_is_chunk_kill_ms` (the logged `560` against the
   constant), `no_collect_v4_timeout_line_carries_600`; every existing
   assertion on `timeout --kill-after=30 600` moves to `560`. (AC17)
-- [ ] S3.2 Every `systemctl` call has its own `timeout`: 1 for
+- [x] S3.2 Every `systemctl` call has its own `timeout`: 1 for
   `is-active`, 3 for `kill`, 3 for `stop`. — Tests:
   `collect_v4_bounds_every_systemctl_call` (from the log: no `systemctl`
   line of a run without its `timeout`, and the three numbers),
@@ -669,7 +669,7 @@ that can write a marker and wait in any mode; a `git` fixture with a
   and the three `systemctl` bounds from the log and the poll count and
   interval from the script, and requires 560 + 30 + 1 + 3 + 3 ≤ 600 and
   560 + 20 × 1.5 + 3 + 3 ≤ 600 as computed from them). (AC17)
-- [ ] S3.3 The scope is judged from the word `is-active` prints. Only
+- [x] S3.3 The scope is judged from the word `is-active` prints. Only
   `inactive` and `failed` are clean; a non-zero status alone decides
   nothing. After a sealed chunk: at most twenty queries half a second
   apart, clean at the first of the two words, any other answer asked again,
@@ -687,7 +687,7 @@ that can write a marker and wait in any mode; a `git` fixture with a
   `inactive`); `collect_v4_stops_a_scope_that_stays_active_and_counts_two`
   and `collect_v4_a_timeout_with_a_live_scope_is_killed_and_counted` still
   pass. (AC17)
-- [ ] S3.4 Signals. The handler only records the interrupt and sends
+- [x] S3.4 Signals. The handler only records the interrupt and sends
   SIGTERM to the running step's `timeout`; it exits 2 itself only when no
   step is running and no chunk is owned. A chunk is owned from before it
   starts until its ledger entry is written: its pid and unit are not
@@ -707,7 +707,7 @@ that can write a marker and wait in any mode; a `git` fixture with a
   chunk's ledger file exists with exit 2, a scope that was not gone is
   killed and stopped, and no later chunk started). No test sleeps to place
   the signal. (AC17)
-- [ ] S3.5 The candidate is on `main`: for a real run, refuse unless `HEAD`
+- [x] S3.5 The candidate is on `main`: for a real run, refuse unless `HEAD`
   is an ancestor of, or equal to, `refs/heads/main`, and of
   `refs/remotes/origin/main` where it exists; refuse by name when neither
   exists; fetch nothing; `--dry-run` skips it. The refusal for a dirty tree
@@ -722,7 +722,7 @@ that can write a marker and wait in any mode; a `git` fixture with a
 
 ### S4 The chunk and the join (V10, V13, V16; `2C2`, `2G6`, `2I2`, `2I5.1`, `2G11`, `2I5.6`)
 
-- [ ] S4.1 `runner.rs`: at or after `chunk_end` no `QUIT` is begun and the
+- [x] S4.1 `runner.rs`: at or after `chunk_end` no `QUIT` is begun and the
   session is dropped; a `QUIT` in flight is cut by the existing helper.
   Before `chunk_end`, and on every protocol 1 to 3 path, a session ends as
   it does today. — Tests, against a test-owned listener that records every
@@ -734,7 +734,7 @@ that can write a marker and wait in any mode; a `git` fixture with a
   `before_chunk_end_a_session_still_ends_with_quit`,
   `a_protocol_3_session_still_ends_with_quit`. Each places `chunk_end` by
   construction, as R1.3's tests do. (AC21)
-- [ ] S4.2 `runner.rs`: one function gives a never-opened window its
+- [x] S4.2 `runner.rs`: one function gives a never-opened window its
   outcome in V13's order: `oom_killed` when the instance's leaf shows
   `oom_kill` ≥ 1, else `target_exited` when the leader has exited, else the
   cause in hand. The cut, never-opened `measure` window uses it. — Test:
@@ -742,7 +742,7 @@ that can write a marker and wait in any mode; a `git` fixture with a
   `oom_kill 1` and a live leader; with `oom_kill 1` and an exited leader;
   with `oom_kill 0` and an exited leader; with neither: `oom_killed`,
   `oom_killed`, `target_exited`, `chunk_deadline`). (AC10)
-- [ ] S4.3 `resources.rs`, `targets.rs`: the join comparison requires the
+- [x] S4.3 `resources.rs`, `targets.rs`: the join comparison requires the
   whole cgroup path of the `0::` line to equal the path of the leaf the
   driver made; the receipt's `joined.cgroup` stays the leaf's name. — Tests:
   `a_join_under_another_parent_with_the_leafs_name_is_a_mismatch`,
@@ -753,7 +753,7 @@ that can write a marker and wait in any mode; a `git` fixture with a
 
 ### S5 Admission and the idle cell (V15, V17, V20; `2G5`, `2I3`, `2G10`, `2G11`, `2I5.4`)
 
-- [ ] S5.1 `report.rs`: `admit_chunk` no longer refuses a chunk without
+- [x] S5.1 `report.rs`: `admit_chunk` no longer refuses a chunk without
   launch receipts; the pairing and every other check stay. — Tests:
   `admit_v4_admits_a_sealed_chunk_that_launched_nothing` (a fixture run in
   which one chunk is the output of
@@ -761,7 +761,7 @@ that can write a marker and wait in any mode; a `git` fixture with a
   shape: it seals and verifies),
   `a_run_with_a_zero_launch_chunk_still_refuses_a_missing_cleanup_elsewhere`.
   (AC16)
-- [ ] S5.2 `targets.rs`, `report.rs`: the cleanup receipt of a leaf launch
+- [x] S5.2 `targets.rs`, `report.rs`: the cleanup receipt of a leaf launch
   carries `leaf`, the name in its launch receipt, absent without a leaf;
   admission requires each cleanup to name the leaf of the launch it is
   paired with and no leaf to be named twice in a chunk. — Tests:
@@ -771,7 +771,7 @@ that can write a marker and wait in any mode; a `git` fixture with a
   `admit_v4_refuses_a_leaf_cleanup_without_a_leaf_name`;
   `v3_launch_and_cleanup_receipts_serialize_byte_for_byte` passes
   unchanged. (AC11, AC16)
-- [ ] S5.3 `report.rs`: an idle cell's `ranked` requires current memory,
+- [x] S5.3 `report.rs`: an idle cell's `ranked` requires current memory,
   `anon` and the scratch footprint on every repetition; a startup cell's
   rule is unchanged. — Test: `an_idle_cell_ranks_only_on_all_three_values`
   (one repetition lacking each of the three in turn, and one complete
@@ -779,7 +779,7 @@ that can write a marker and wait in any mode; a `git` fixture with a
 
 ### S6 The README (V23; `2G1`–`2G3`)
 
-- [ ] S6.1 `docs/evals/README.md`, the v4 section: V23's revision 2
+- [x] S6.1 `docs/evals/README.md`, the v4 section: V23's revision 2
   sentences. The paragraph that says an archive row's installed size is
   owed goes; in its place, that every row has an installed size and the
   headline carries it, how to extract an archive for it, what the tree
@@ -796,7 +796,7 @@ that can write a marker and wait in any mode; a `git` fixture with a
 
 ### S7 Proofs and gates (V22; `2C1`, `2G4`, `2I1`)
 
-- [ ] S7.1 Bring the proofs to this revision and run them where the seat
+- [x] S7.1 Bring the proofs to this revision and run them where the seat
   stands. Proof 5 also asserts that each cleanup receipt names the leaf of
   its launch receipt; proofs 2 to 4 exercise S4.3 as they are.
   `the_five_real_proofs_are_ignored_and_linux_only` passes. Run each proof
