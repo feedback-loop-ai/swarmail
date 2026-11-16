@@ -4,6 +4,188 @@ Spec: [spec.md](spec.md). Authority: accepted
 [0132](../../docs/decisions/0132-mail-comparison-protocol-v4.md), story A.
 Base `e23a8ba`. No new decision record: nothing here amends a ruling.
 
+Revision 1 (2026-11-16, returned from review 1) is the next section. It
+overrides the round-1 text below wherever the two differ; the round-1 text
+is kept, marked where it was wrong, because the code at `2852bd2` was built
+to it.
+
+## Revision 1 — after review 1 (2026-11-16)
+
+Review 1 read head `2852bd2` and returned the run to design with
+`spec_defect: true` (decision 0102, addendum 2026-10-31): four members
+`residual`, security `clean`, highest severity medium, no security finding.
+The design is revised, not restarted. The first design commit `fcbc0c6` and
+the seven implementation commits stay as they are; this revision is a new
+commit on top, and the code changes it asks for are group R of
+[tasks.md](tasks.md).
+
+Findings are cited by member and number as the panel wrote them: `C` is
+correctness (1–10), `G` guarantees (1–6 and its info note `Gi`), `I`
+independent (`I0` is its spec defect, then 1–8), `T` tests (`a`, `b`).
+
+### The defect
+
+`I0`, `C4`, `G2`: V16 checked the chunk deadline once before each profile and
+V2 allowed 540000 ms. One profile's own worst case is over 600 s (100 warmup
+sends, each several protocol steps of up to 10 s; 300 s of send; 60 s of
+verify; a listing of up to 16 pages; 3,000 fidelity reads), so the wrapper's
+`timeout 600` could kill the driver, map 124 to exit 2 and lose a run that is
+never resumed. 0132 §11.3 makes a target's own timeout a measured row with
+exit 1. Reading 5 claimed that and V16 could not deliver it.
+
+No static value repairs it, because a single profile can exceed 600 s. The
+deadline has to reach the work in flight.
+
+### Synthesis, round 2 — the positions ruled
+
+Both positions argue a revision and agree on most of it. Where they differ:
+
+| # | Point | Simplicity | Robustness | Ruling | What the losing side costs |
+|---|---|---|---|---|---|
+| R-1 | Shape of the deadline | One instant `chunk_end`; existing deadlines become `min(own, chunk_end)`; no cancellation machinery | A guard in every loop, local deadline `min(own, chunk_end − teardown margin)` | **One instant (simplicity), and in-flight I/O is cancelled at it (robustness's "interruptible").** Clipping a loop's deadline does not stop the await inside it: a send is up to eight steps of 10 s and a listing up to 16 pages (`runner.rs` `max_pages = messages / 250 + 4`), GreenMail's a POP3 session per call | Simplicity's "no cancellation" would leave an overrun of minutes after the deadline, so its V2 inequality (one `request_deadline_ms`) was false as written. Robustness's per-loop margin is replaced by one margin in V2 |
+| R-2 | V2's bound | An inequality with startup, one request, cleanup and a 10 s seal margin | "Worst-case profile + cleanup + seal must fit", 540000 stays admissible | **An inequality over exactly what V16 leaves uncut:** startup + 2 × cleanup + a 30 s margin ≤ 600000. The draft moves to 480000 | Robustness's 540000 is above the ceiling (520000) and goes. 40 s less measuring time per chunk than the ceiling allows; the operator may raise it at freeze, inside the bound |
+| R-3 | A never-run window | A rule: figures only from `measured` windows; values `null` | The same, plus "real launch" | **Structural: a never-opened window has no counters at all (`null`), and figures need counters.** Cost figures come from any opened `measure` window; idle and startup only from a `measured` one | Simplicity's "only from `measured`" would drop the CPU and peak of an OOM-killed window, which 0132 §5.2 keeps for an unranked cell. Six window fields become optional |
+| R-4 | Count behind a median | not raised | "median of two, not zero" | **`n` beside every median, minimum and maximum** | One field; without it a median of two reads like a median of three |
+| R-5 | AC18 | Owed to the dispatcher host; no spec change | The merge gate; delete the "owed" sentence; a seat without cgroupfs escalates | **Robustness, in two parts.** AC18a is what a seat can prove; AC18b is the host run and gates the merge. The "owed" sentence is replaced | The story cannot be reported complete by any seat in a box without cgroupfs. That is the true state, and the PR is held for `scripts/` anyway |
+| R-6 | A target dead before readiness | Classify from the leaf's evidence; alive-not-ready stays exit 2 | The same boundary: spawned and joined, then exited or OOMed, is measured | **Both, with the evidence in receipts** (`oom_kills`, `exited_early`, and the launch receipt kept for a not-ready launch) | none between the positions. A harness mistake that makes a target exit at once now seals as `target_exited` instead of stopping the run; the row has no number and names the cause |
+| R-7 | `reproduce.txt` | Amend V21 to the code: write it before the first chunk | Keep V21: only after the last chunk | **Robustness.** The criterion is sound and the code missed it; a criterion is not moved to the code | An incomplete directory does not carry the command; each ledger entry already carries its chunk's full command |
+| R-8 | Signal to the wrapper | A trap that stops the unit and exits 2; no ledger entry | A trap that writes the ledger entry with exit 2 | **Robustness**, and the signal goes to the chunk's `timeout` so the driver runs its own interrupt path | A few more lines of bash 3.2 and a background `wait` |
+| R-9 | `footprint` for archive rows | `null` with an `owed` basis | Walk the extracted tree, or owed | **Simplicity**, with the executable's size kept under its own name | The installed size of Mailpit, smtp4dev and Inbucket is owed until story E fixes an extraction path. A walk of an unpinned directory would publish a confident wrong number |
+| R-10 | `taskset -c 0-<n-1>` | Accept; fails closed | Derive the mask from the allowed set | **Neither: refuse a restricted shell by name**, and bound every process the mode starts | `collect-v4` cannot run inside a narrowed CPU set. Deriving a mask in bash 3.2 is more code than the refusal, and the collection host is unrestricted (0132 acceptance 7) |
+| R-11 | `hold` on a signal | Accept the test gap; real proof 4 covers EOF | A signal test | **A test through `hold`'s own `interrupt` argument on a launch without a leaf, and a second leg in proof 4.** No signal seam | The process-level SIGTERM of the `hold` shim stays untested (out of scope, named) |
+| R-12 | GreenMail in the v4 draft | An `unresolved` entry and the claim's wording | Block or owe the GreenMail row in the report | **Simplicity.** The draft cannot be collected (`check` refuses a draft) and V5 refuses to freeze with an unresolved entry | none: no GreenMail figure can exist on the POP3 path |
+| R-13 | A real driver-kill proof, `pid_limit`, a load gate, hostile bodies, certificates | not raised | raised, mostly as "not asked for" | **Unchanged from round 1**: fakes for the driver's death, no `pid_limit` label, load recorded, the rest out of scope | as round 1 |
+
+### Every finding, and where it is answered
+
+| Finding | Severity | Answer | Spec | Task |
+|---|---|---|---|---|
+| `I0` `C4` `G2` chunk deadline cannot stop a running profile | defect | One instant; cancel in flight; V2 bounds what is left | Reading 5, V2, V16, AC2, AC21 | R1.1–R1.4 |
+| `I0` (last line), `C6` the loop's failure paths and deadline branch have no test | low | Tests that drive `run_chunk` itself | AC21, AC22 | R1.3, R1.4, R2.3 |
+| `C1`, `I` (AC18) no real proof has passed on a kernel | medium | AC18 split; the host run gates the merge | V22, AC18a, AC18b | R9.1–R9.3 |
+| `C2` `G3` a skipped profile publishes zeros | medium | Never-opened windows have no counters; figures need them; idle and startup cells get `ranked` and `shortfalls` | Reading 8, V13, V17, AC10, AC23 | R3.1–R3.4 |
+| `C3` `I4` `G3` `affinity_held` is a literal on two windows and on skipped ones | low | Read at every opened window's end; `null` when no task | V13, AC10 | R3.2 |
+| `G1` `C8` an OOM or crash before readiness loses the run | medium | Classified from receipts; measured, exit 1 | Reading 7, V15, V16, AC11, AC22 | R2.1–R2.3 |
+| `G4` `C10` `installed_bytes` is the executable alone for an archive row | medium | `null`, an `owed` basis, `executable_bytes` | V18, AC14 | R5.1 |
+| `I1` `C5` `is-active` read at once after the driver exits | medium | Bounded wait for inactive before judging | V21, AC17 | R6.1 |
+| `I2` a `null` Swarmail cap launches uncapped | low | Refused in the validator and when the spec is built | V4, AC4 | R4.1 |
+| `I3` a second literal at the cap flag validates | low | The cap flag occurs once | V6, AC4 | R4.2 |
+| `G5` later chunks' `candidate_dirty` unchecked | low | Every chunk | V20, AC16 | R4.3 |
+| `I7` `admitted[0]` panics on an empty plan; candidate digest not compared across chunks | low | Refusal by name; one digest per target across chunks | V20, AC16 | R4.3 |
+| `C7` `hold` prints `"pop3":"pop3"`; its signal path is untested | low | The address; a test through the interrupt argument | V19, AC15 | R5.2 |
+| `I5` `reproduce.txt` written early; no trap | low | Written after the last chunk; INT, TERM and HUP handled | V21, AC17 | R6.2, R6.3 |
+| `I6` `taskset -c 0-<n-1>` assumes the allowed set; builds, footprint and admission outside the bound | low | Restricted shell refused; every process under the bound | V21, AC17 | R6.4 |
+| `G6` the v4 draft's claim asserts the POP3 read path | low | `unresolved` entry; "in this draft" | V7, AC6 | R7.1 |
+| `I8` `wait_operation_ms` changed without a note; AC17 lacks exits 137 and 3, a timeout with a live scope, seal-then-refused-verify; some refusal tests assert only `is_err` | info | V7 says why; AC17 gains the cases; the tests assert the named field | V7, AC17 | R7.1, R6.5, R4.4 |
+| `Gi` "can never be admitted as v4" is not what `admit-v4` does | info | Reworded; the sealed manifest carries `protocol_status` | Reading 2, V20, V23 | R4.3, R8.1 |
+| `C9` "SMT siblings left idle" stated unconditionally | info | Conditional sentence | V23 | R8.1 |
+| `C8` (operator note) alive-but-not-ready is exit 2 | info | Named for the operator | Reading 7, *For the operator at freeze* 4 | R8.1 |
+| `T b` the rig's git fixture inherits the seat's git environment | info | The v4 rig owns its git environment | — | R6.6 |
+| `T a` the mode shims in `benches/mail_compare.rs` have no CLI test | info | Not designed for; see below | *Out of scope* | — |
+| security | clean | no finding | — | — |
+
+### Criteria whose text changed, and why that is not a loosening
+
+- **V2 / AC2, the 540000 ceiling.** Wrong, not strict: review showed
+  (`I0`'s arithmetic, confirmed in `runner.rs`) that no constant ceiling
+  bounds a chunk while in-flight work is uncut. The replacement is tighter
+  for the draft's budgets (520000) and is a property the tests can check.
+- **V16's deadline sentence.** Wrong as `I0`, `C4` and `G2` show. Replaced
+  by a stronger contract; AC21 is new.
+- **V16's "exits 2 on a launch refusal", for a target that died.** Corrected
+  toward accepted 0132 §11.3 and §4.2 (`G1`): the authority says an OOM or a
+  crash is a measured row and exit 1. The rest of the sentence stands.
+- **V13's `affinity_held` and V17's figures.** The first text did not say
+  what a window without an observation holds; the code filled in `true` and
+  `0`. The rule now stated is `stats.rs`'s own ("a figure that has no value
+  is absent from the list, never zero") and 0132 §5.2. AC13 is unchanged;
+  AC23 is added.
+- **V18 / AC14, installed bytes.** The first text counted "the executable,
+  its checked members and the whole pinned runtime tree" for every row.
+  For an archive row that is an undercount against 0132 §4.5 (`G4`:
+  smtp4dev's runtime is inside its archive). The figure is withdrawn for
+  those rows, not redefined: `null` and `owed`.
+- **V22 / AC18.** Not loosened: the host run was a merge condition and is
+  now also a completion condition, stated in two parts so that a seat's
+  result cannot blur them.
+- **V21's `reproduce.txt`.** Unchanged; the code moves.
+
+### How the changes are built
+
+**The deadline.** `run_chunk` computes `chunk_end` once from the run clock's
+origin (`Clock.0`, which `execute` takes before the run) and passes it to
+`warmup`, `measured_instance` and `throughput`. A test places `chunk_end`
+exactly by passing a clock whose origin is older, with no sleep.
+
+- A small helper races a future against `chunk_end`
+  (`tokio::time::timeout_at`) and reports "cut". It wraps: each warmup
+  `open`/`send`, the idle wait, each measured `Smtp::open` and `send`, each
+  `list_all`, each `fetch`. Dropping the future is the cancellation; an SMTP
+  session cut this way is dropped, never reused.
+- The workers' send deadline becomes `min(send_deadline, chunk_end)`, and
+  the row's reason says which one ended it.
+- Launches and `shutdown` are not wrapped.
+- Protocols 1 to 3 pass no `chunk_end`; their paths are byte-for-byte what
+  they were. The existing `probe.is_some()` distinction is the model.
+
+**The not-ready launch.** `LaunchError::NotReady` gains the launch facts of a
+leaf launch (optional; absent without a leaf). `cleanup` records
+`exited_early` from what it already knows (`reaped_early`) and the leaf's
+teardown reads `memory.events` beside `memory.peak`, before the `rmdir`. One
+pure function maps the cleanup receipt to `Option<WindowOutcome>`; `warmup`
+and `measured_instance` call it, push both receipts, and return "not
+measured" instead of an error. `skip_profile` takes the outcome, the reason
+and the launch name.
+
+**Rows and figures.** `WindowRow`'s counters, `affinity_held` and
+`scratch_bytes` become optional together; `window_row` has one constructor
+for an opened window and one for a never-opened one, so a row with some
+counters cannot be built. `Probe::mark` reads affinity at both kinds of end
+bound through one function, which returns `None` for an empty task list.
+`figures` returns optional values per repetition; `spread` returns `n`; the
+idle and startup cells take `ranked` and `shortfalls` from the function the
+cost cells use. `report.rs`'s `mean` and the `unwrap_or(0)` on peaks lose
+their zero defaults.
+
+**The wrapper.** One array holds the bound prefix and every started process
+uses it. The chunk runs in the background and is `wait`ed, so a trap can
+signal it; the wait is repeated until the child is reaped. The scope check
+is a bounded loop. `reproduce.txt` moves below the loop. bash 3.2 syntax
+only, as the file states.
+
+### Files this revision touches
+
+| File | Change |
+|---|---|
+| `benches/mail_compare/protocol.rs` | V2's two constants and the inequality; Swarmail's cap; the cap flag once |
+| `benches/mail_compare/runner.rs` | `chunk_end` and the cut helper; `skip_profile` generalized; the not-ready classification; affinity at every bound; `hold`'s endpoints; no `--max-per-inbox 0` for protocol 4 |
+| `benches/mail_compare/targets.rs` | `CleanupFacts.oom_kills`, `exited_early`; `NotReady` keeps the launch facts |
+| `benches/mail_compare/resources.rs` | the teardown reads `oom_kill`; `footprint`'s archive rows |
+| `benches/mail_compare/records.rs` | optional window counters and the reader's three refusals |
+| `benches/mail_compare/stats.rs`, `report.rs` | `n`; optional per-repetition figures; idle and startup `ranked` and `shortfalls`; the `timeout` and `lost` rules; exactness needs fidelity read; `admit_v4`'s four checks and `protocol_status` |
+| `scripts/compare-mail.sh` | V21's four changes (approved with 0132; the PR stays held) |
+| `tests/mail_compare/v4.rs`, `tests/mail_compare/v4-smoke.json` | the tests of group R; the fixture's `chunk_deadline_ms` under the new bound |
+| `docs/evals/draft/protocol.v4.json` | `chunk_deadline_ms` 480000; two `unresolved` entries; "in this draft" |
+| `docs/evals/README.md` | V23's exact sentences |
+
+Still untouched: `src/`, `evals/`, `Cargo.toml`, both lockfiles, `deny.toml`,
+the active and historical records, `docs/decisions/`. No package is added.
+The draft files were added by this branch, so AC19's `git diff e23a8ba`
+statement still holds.
+
+### Not designed for, with the cost
+
+- **A CLI test of the mode shims** (`T a`). The bench is `harness = false`
+  and has no `CARGO_BIN_EXE`; a test would have to build it through `cargo`
+  from inside a test. Every function the shims call is tested. Cost: a typo
+  in a shim's flag plumbing is found by the first host run, not by CI.
+- **A real driver-kill proof and a real `collect-v4` chunk.** A draft cannot
+  pass `check`, so no real wrapper run exists before story E. Cost: named to
+  the operator (*For the operator at freeze* 6).
+- **Alive but not ready.** Stays exit 2 (Reading 7). Cost: named to the
+  operator (4).
+
+
 ## Technical context
 
 - The bench driver `benches/mail_compare.rs` and its modules under
@@ -62,7 +244,7 @@ Base `e23a8ba`. No new decision record: nothing here amends a ruling.
 - **Held PR.** It changes `scripts/compare-mail.sh`; the operator approved
   that change by accepting 0132, and the merge stays the operator's.
 
-## Synthesis — the panel's positions, ruled
+## Synthesis, round 1 — the panel's positions, ruled
 
 | # | Point | Simplicity | Robustness | Ruling | What the losing side costs |
 |---|---|---|---|---|---|
@@ -91,7 +273,9 @@ Three points neither position raised, added here:
 
 - **A per-chunk deadline in the driver** (Reading 5). Four profiles at v3's
   300 s send deadline can exceed the wrapper's 600 s kill, which would turn a
-  slow target into a lost run.
+  slow target into a lost run. *(Round 1 built this as a check before each
+  profile, which does not bound a running one: the defect of review 1. See
+  Revision 1.)*
 - **macOS.** `resources.rs` must compile there and refuse.
 - **The seat cannot run the real proofs** (Risk 1).
 
@@ -137,9 +321,19 @@ LaunchFacts    + leaf (name only), limits { memory_max, memory_swap_max,
                  siblings_outside_set }, joined { cgroup, cpus_allowed },
                  env_template
 CleanupFacts   + cgroup_removed, memory_peak_bytes
+               + oom_kills, exited_early                      (revision 1)
 Manifest       + chunk (coordinate), host { kernel, systemd, cpu_model,
                  nproc, siblings, cpu_layout, governor }
 ResourceRow    kind = sample | window   (deny_unknown_fields; see V13)
+WindowRow      cpu_start, cpu_end, events_start, events_end, affinity_held:
+                 all present (opened) or all null (never opened); the
+                 affinity alone may be null on an opened window whose leaf
+                 holds no task                                (revision 1)
+Spread         + n                                            (revision 1)
+CostRep, IdleRep, StartupRep   figures optional               (revision 1)
+IdleCell, StartupCell          + ranked, shortfalls           (revision 1)
+Run manifest   + protocol_status                              (revision 1)
+Footprint row  + executable_bytes; installed_bytes nullable   (revision 1)
 Chunk          Cost { target, repetition }; name "cost.<target>.r<rep>"
 ```
 
@@ -280,13 +474,16 @@ Seven groups, each committed green (`fmt`, `clippy --all-targets --locked`,
 
 ## Risks
 
-1. **The seat cannot run the real proofs.** A seat's box has no cgroupfs, so
-   AC18's passing output cannot come from the implement or verify seat.
-   *Mitigation:* each proof fails there with V8's exact refusal, which the
-   seat can and must show. The seat reports the five host runs as owed in
-   its result notes and does not mark them passed. The dispatcher runs them
-   on the host, one at a time under the bounded command, and attaches the
-   output before the operator's merge; the PR is held for `scripts/` anyway.
+1. **The seat cannot run the real proofs.** A seat's box has no cgroupfs
+   (the design seat's has none: `/sys/fs/cgroup` is absent, read again
+   2026-11-16), so AC18b's passing output cannot come from the implement or
+   verify seat. *Mitigation (revision 1):* AC18 is two criteria. A seat
+   proves AC18a and shows V8's exact refusal for all five. AC18b is the
+   dispatcher's host run at the head to be merged, one proof at a time
+   under the bounded command with the load before and after; it gates the
+   merge and the story's completion, and task R9.3 is the dispatcher's. No
+   seat reports the story complete before it. The PR is held for `scripts/`
+   anyway. A review that finds AC18b open finds what this plan says is open.
 2. **Host behaviour this design asserts but could not execute:** that
    `systemd-run --user --scope -p Delegate=yes` leaves the command as the
    scope's only process with `cpu memory pids` delegated; that a write of
@@ -306,9 +503,13 @@ Seven groups, each committed green (`fmt`, `clippy --all-targets --locked`,
 5. **clippy over two compilations.** Each module is built into the bench and
    into the test crate. *Mitigation:* no speculative types for stories B to
    D; mode shims call module functions the tests also call.
-6. **A slow target meets the chunk deadline.** *Mitigation:* that is a
-   measured `chunk_deadline` outcome and exit 1, not a killed driver; the
-   value is the operator's at freeze.
+6. **A slow target meets the chunk deadline.** *Mitigation (revision 1):*
+   the deadline cancels the work in flight, so this is a measured
+   `chunk_deadline` outcome and exit 1; V2 bounds the value by what may
+   still run afterwards, and AC21 drives each cut. The wrapper's `timeout`
+   remains as a backstop whose 124 is exit 2. If the model behind V2's bound
+   is wrong on the host (a teardown or a seal slower than its budget), the
+   result is that backstop, an incomplete run, never a wrong figure.
 7. **Host load is recorded, not gated.** A neighbour can change a cell.
    *Mitigation:* the load is in every ledger entry and the README states the
    budget is a ceiling, not a reservation; the gate is an operator question.
@@ -318,6 +519,8 @@ Seven groups, each committed green (`fmt`, `clippy --all-targets --locked`,
 9. **The installed-size walk is not digest-bound** beyond the lock's checked
    members. *Mitigation:* `footprint` rechecks the members, reports the file
    count with the sum, and the README says what is and is not bound.
+   *(Revision 1:* an archive row's extracted tree is not walked at all; its
+   installed size is `null` and owed, V18.)
 10. **Draft data drifts from v3.** A hand edit of the draft could change a
     v3 fact. *Mitigation:* a test compares the draft with the v3 bytes
     key by key and allows only the listed differences.
@@ -328,3 +531,35 @@ Seven groups, each committed green (`fmt`, `clippy --all-targets --locked`,
     is refused here, so no real `collect-v4` run exists yet. *Mitigation:*
     AC17's fake-driver tests cover every branch of the loop, and real proof
     5 runs a real chunk through the driver.
+13. **Cancelling a send in flight leaves the server's state unknown**
+    (revision 1). The message may have been stored. *Mitigation:* the row is
+    `ambiguous`, never `accepted`; nothing is listed after `chunk_end`, so
+    it cannot appear as `unexpected`; the instance is discarded with its
+    profile; the cell is unranked.
+14. **A harness fault now seals as `target_exited`** (revision 1): a target
+    that exits at once because of a wrong flag is the target's failure by
+    the evidence. *Mitigation:* the row has no number and names the outcome;
+    both receipts are kept; `check` and the lock's launch checks run first;
+    the operator holds each target once before a long run (*For the operator
+    at freeze* 4).
+15. **How long a scope stays active after its driver exits is not known for
+    systemd 259** (revision 1; `C5` and `I1` could not verify it either).
+    *Mitigation:* a 10 s bounded wait, far above an asynchronous
+    notification; a scope that outlasts it is treated as unclean, which is
+    exit 2 and a stopped run, the safe side. The first real chunk shows the
+    real figure (*For the operator at freeze* 6).
+16. **Optional window counters touch the reader, the report and admission at
+    once** (revision 1). *Mitigation:* one constructor per row shape, three
+    reader refusals (AC10), and AC23's check that no report built from
+    never-opened windows contains a zero where a figure is meant.
+17. **A release build inside `timeout 600` on at most 32 CPUs may not
+    finish** (revision 1). *Mitigation:* the refusal is named
+    (`blocked build`), nothing has been measured at that point, and
+    `COMPARE_MAIL_SWARMAIL_BIN` and `COMPARE_MAIL_DRIVER_BIN` take prebuilt
+    binaries.
+18. **The in-flight cut tests could become races** (revision 1).
+    *Mitigation:* each places `chunk_end` by construction, not by timing: a
+    clock whose origin is already older than the deadline, or a listener
+    that never answers (a pole, 0020 §5), with the assertion that the call
+    returned before one request deadline. No test waits for a deadline to
+    arrive between two steps of a healthy target.

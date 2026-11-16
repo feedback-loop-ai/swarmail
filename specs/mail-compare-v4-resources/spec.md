@@ -1,7 +1,8 @@
 # Mail comparison protocol v4, story A: lock v5, enforced resources and cost to operate
 
-Date: 2026-11-16. Status: draft. Issue #359, part of #349 and #351 (#163,
-epic #164). Run: `issue-359-comparison-protocol-v4-b0a29b93`. Branch
+Date: 2026-11-16. Status: draft, revision 1 (returned from review 1; see
+[*Revisions*](#revisions)). Issue #359, part of #349 and #351 (#163, epic
+#164). Run: `issue-359-comparison-protocol-v4-b0a29b93`. Branch
 `feat/compare-v4-resources-359`, from `e23a8ba`. Recipe: `claude-careful`.
 
 Authority: accepted
@@ -35,6 +36,38 @@ run:
 Stories B (API level), C (`wait-best`), D (test execution) and E (freeze and
 collection) are separate runs. Nothing here collects, freezes or publishes.
 
+## Revisions
+
+- **2026-11-16, revision 1, after review 1 of head `2852bd2`.** The panel
+  found one defect in this spec and returned the run to design (decision
+  0102, addendum 2026-10-31). The defect: V16 consulted the chunk deadline
+  only before a profile started and V2 allowed 540000 ms, so a profile
+  already running could outlive the wrapper's 600 s kill and Reading 5 was
+  false. Corrected here: Reading 5, V2, V16, AC2, AC21. The same revision
+  answers the findings reported beside it, each in the requirement that owns
+  it:
+  - a window that was never opened has no counters and gives no figure,
+    where the first design wrote zeros (Reading 8, V13, V17, AC13, AC23);
+  - `affinity_held` is read at the end of every opened window (V13);
+  - a target that exits or is OOM-killed before readiness is a measured
+    outcome, as 0132 §11.3 rules, not a lost run (Reading 7, V15, V16, AC22);
+  - Swarmail's cap may not be null and the cap flag occurs once (V4, V6);
+  - admission holds every chunk to a clean candidate and one executable per
+    target, and refuses an empty plan (V20);
+  - `footprint` no longer publishes an executable alone as an archive row's
+    installed size (V18);
+  - `hold` prints the POP3 address (V19);
+  - `collect-v4` waits for the scope to go inactive, handles a signal, bounds
+    every process it starts and refuses a restricted shell (V21);
+  - the draft names GreenMail's owed REST path and its changed wait budget
+    (V7), and three sentences are made exact (Reading 2, V23);
+  - AC18 is split into what a seat can prove and the host run that gates the
+    merge (V22).
+
+  No criterion is loosened. [plan.md](plan.md) § *Revision 1* maps every
+  finding to its change and task, and says where a criterion's text was
+  wrong and on what evidence.
+
 ## Why
 
 Protocols v2 and v3 declare a 2 CPU / 2048 MiB budget with `enforced: false`
@@ -54,9 +87,13 @@ ruling of 0132.
    them, so story E's swap is a replacement of two files. The v4 draft and
    the lock v5 live under `docs/evals/draft/` until then.
 2. **Story A's plan is the `cost` section: 24 chunks.** 0132 §11.2's 264 is
-   the whole of v4. The plan is derived from the sections a protocol carries,
-   and this driver refuses a frozen v4 while any section is owed (V5), so a
-   24-chunk run can never be admitted as "v4".
+   the whole of v4. The plan is derived from the sections a protocol carries.
+   This driver refuses a frozen v4 while any section is owed (V5), and
+   `collect-v4` refuses a draft at `check`, so story A cannot collect at all.
+   `admit-v4` admits a directory against the protocol it is given, a draft
+   included; the sealed run manifest carries that protocol's id, sha256 and
+   status (V20), so a draft run is labelled a draft in its own bytes and is
+   never a v4 result.
 3. **`nr_throttled` is a throttle count, not an affinity proof.** 0132 §3.4's
    parenthesis says it "records" a widened affinity. It records quota
    throttling, which also happens with the affinity intact. Affinity is
@@ -66,11 +103,30 @@ ruling of 0132.
    prove that a same-uid process never moved itself to another cgroup the
    user owns. The pinned targets are not adversarial and 0132's non-goals
    exclude hostile confinement; the README says exactly this.
-5. **The per-chunk deadline of 0132 §10 is a protocol value below the
-   wrapper's 600 s kill** (V2, V16), so a slow target is a measured row
-   (0132 §11.3) and not a killed driver.
+5. **The per-chunk deadline of 0132 §10 is one instant inside the driver that
+   ends the chunk's work on the target.** After it nothing new starts, and
+   what is in flight on the wire is cancelled, not awaited (V16). V2 bounds
+   the value so that the little that may still run after it (one launch
+   already in flight, the teardowns, the seal) ends before the wrapper's
+   600 s kill. Only an interrupt of the work in flight makes a slow target a
+   measured row (0132 §11.3) and not a killed driver; a check between
+   profiles does not. *(Revision 1: the first text claimed this for a check
+   made only before each profile.)*
 6. **Resource samples share `samples.jsonl` with the message rows** (0132
    §4.1), as a second row family that only a v4 run directory may carry.
+7. **A target that exits or is OOM-killed before it is ready has failed on
+   its own** (0132 §11.3: "OOM, crash"; §4.2: published as a row, never
+   retried). It is a measured outcome and the chunk exits 1. What the driver
+   could not establish stays a launch refusal and exit 2: a spawn, join or
+   limit failure, and a target that is still alive but not ready at the
+   startup deadline. The second case cannot be told from a broken launch by
+   any evidence the leaf holds, and 0132 names no outcome for it.
+   *(Revision 1.)*
+8. **No observation, no number.** 0132 §5.2 keeps the resource figures of a
+   cell that is not at equal results. That holds for a window that was
+   opened, whatever ended it. A window that was never opened has no counters
+   and gives no figure: its values are `null`, never zero, in the rows and in
+   every figure derived from them. *(Revision 1.)*
 
 ## Requirements
 
@@ -89,10 +145,27 @@ is no second type tree.
 **V2. The v4 resources block.** Protocol 4 requires exactly: `enforced: true`,
 `profile: enforced`, `mechanism: cgroup_v2_user_scope`,
 `cpu_placement: affinity_plus_quota`, `cpus: 2`, `memory_mib: 2048`,
-`swap_mib: 0`, `tasks: 4096`, `sample_interval_ms: 100`, and
-`chunk_deadline_ms` in 1..=540000. Each new field is optional in the type and
-omitted when absent, so v2 and v3 bytes round-trip unchanged; protocols 1 to 3
-refuse each new field by name.
+`swap_mib: 0`, `tasks: 4096`, `sample_interval_ms: 100`, and a
+`chunk_deadline_ms` of at least 1 that satisfies
+
+```
+chunk_deadline_ms + startup_deadline_ms + 2 × cleanup_deadline_ms
+  + CHUNK_MARGIN_MS  ≤  CHUNK_KILL_MS
+```
+
+`CHUNK_KILL_MS = 600000` is the wrapper's `timeout` (V21) and
+`CHUNK_MARGIN_MS = 30000` covers what the chunk clock does not see: the
+scope's and the driver's start before it, and the sample stop, the read-back
+of the rows, the report and the seal after it. Both are named constants in
+`protocol.rs`. The other terms are what V16 lets run after the deadline: one
+launch already in flight, and the teardowns, which the driver settles within
+twice the cleanup budget. A value above the bound refuses, and the refusal
+prints the ceiling it computed. With the draft's budgets (30 s, 10 s) the
+ceiling is 520000. *(Revision 1: the first text allowed any value up to
+540000, a constant that bounded nothing.)*
+
+Each new field is optional in the type and omitted when absent, so v2 and v3
+bytes round-trip unchanged; protocols 1 to 3 refuse each new field by name.
 
 **V3. The cost section.** Protocol 4's `throughput` list is the cost section
 (the report names it `cost`). A frozen protocol 4 carries exactly these four
@@ -113,8 +186,11 @@ profile when the protocol is frozen. A draft protocol 4 may carry other
 bounded profiles, as protocol 3's smoke fixtures do.
 
 **V4. Caps.** In protocol 4 every retention entry that states a cap states
-150,000, Swarmail's included (launched `--max-per-inbox 150000`). A target
-whose lock entry has no cap flag stays uncapped and `no_cap_observed`.
+150,000. Swarmail always has a cap flag, so its entry must state 150,000: a
+`null` there refuses by name, and a protocol 4 launch spec for Swarmail is
+never built with `--max-per-inbox 0`. A target whose lock entry has no cap
+flag stays uncapped and `no_cap_observed`. *(Revision 1: a null Swarmail cap
+validated and launched it uncapped.)*
 
 **V5. The freeze rule.** A frozen protocol 4 needs `unresolved: []`, a
 non-empty `clients_sha256` (name → 64 hex; refused by protocols 1 to 3) and
@@ -127,7 +203,10 @@ and D each remove their entry.
 
 - wherever a pin states a cap and its flag, the launch sets that flag to
   `{max_messages}` (argv pair, `flag={max_messages}`, or the `env:` value); a
-  literal number there refuses, and the placeholder anywhere else refuses;
+  literal number there refuses, and the placeholder anywhere else refuses.
+  The cap flag occurs exactly once in the launch, in any of its forms: a
+  second occurrence refuses whatever it carries, so `--max {max_messages}
+  --max 500` is refused;
 - lock 4 and lock 3 refuse the placeholder by name;
 - the placeholder is resolved once, when the launch spec is built, to the
   protocol's cap for that target (`retention_matches` already holds it equal
@@ -147,9 +226,17 @@ of 0093 §1 and 0130 §2, added by the stories that cite them.
   hold both the copies and the active files, and every test that means "v3"
   or "lock 4" reads the history copy.
 - `docs/evals/draft/protocol.v4.json` is the v4 draft: `status: draft`, V2's
-  block, V3's four profiles, V4's caps, v3's targets, products, budgets,
-  corpus, statistics, capabilities and `does_not_start` unchanged, and an
-  `unresolved` list naming what stories B to E owe.
+  block with `chunk_deadline_ms` 480000, V3's four profiles, V4's caps, v3's
+  targets, products, corpus, statistics, capabilities and `does_not_start`
+  unchanged, and an `unresolved` list naming what stories B to E owe. Its
+  budgets are v3's except `wait_operation_ms`: the inherited rule (the
+  longest wait plus one request bound) gives 10000 on a protocol with no wait
+  profile, where v3 has 40000; story C restores it with its profiles, and the
+  `unresolved` list says so. The list also names GreenMail's read path:
+  0132's acceptance answer 8 reads GreenMail over REST in v4, this draft
+  still reads it over POP3 as v3 does, and story B owes the change. The
+  claim's sentence about POP3 says "in this draft". V5 then keeps a v4 that
+  reads GreenMail over POP3 from freezing, with no code.
 - `docs/evals/draft/sources.lock.v5.json` is lock 4 with `lock_version` 5,
   the three capped launches (Mailpit `--max`, smtp4dev `--messagestokeep`,
   Inbucket `INBUCKET_STORAGE_MAILBOXMSGCAP`) rewritten to the placeholder and
@@ -222,19 +309,38 @@ the message rows unchanged and a second family, the resource rows:
   `idle_ready`, `measure`), `start_ns`, `end_ns`, `cpu.stat` at both bounds
   (`usage_usec`, `user_usec`, `system_usec`, `nr_throttled`,
   `throttled_usec`), `memory.events` at both bounds (`max`, `oom`,
-  `oom_kill`), `affinity_held` (every task in the leaf still has exactly the
-  two target CPUs at the window's end), the scratch tree's allocated bytes
+  `oom_kill`), `affinity_held`, the scratch tree's allocated bytes
   (`st_blocks × 512`) for `idle_ready`, and an outcome.
+
+`affinity_held` is read from `/proc` at the end of every opened window,
+`ready` and `idle_ready` included: `true` when every task in the leaf has
+exactly the two target CPUs, `false` when any task has another set, and
+`null` when the leaf holds no task at that instant (the target is gone).
+*(Revision 1: two of the three windows wrote a literal `true`.)*
 
 Window outcomes are `measured`, `oom_killed` (the `oom_kill` count rose over
 the window; a rise of `max` alone is pressure, not an OOM), `target_exited`
-and `chunk_deadline`. `ready` runs from leaf creation to readiness and gives
-the CPU time to ready. `idle_ready` is 5 s without traffic after readiness on
-each measured instance; its figure is the mean over the samples of its last
-2 s. `measure` is the profile's send-and-verify window. Peak and mean memory
-are not stored on the window: the report derives them from the `sample` rows
+and `chunk_deadline`. Where more than one applies, the first in that order
+after `measured` wins: an OOM is a kernel fact and is never relabelled as a
+deadline. `ready` runs from leaf creation to readiness and gives the CPU time
+to ready. `idle_ready` is 5 s without traffic after readiness on each
+measured instance; its figure is the mean over the samples of its last 2 s.
+`measure` is the profile's send-and-verify window. Peak and mean memory are
+not stored on the window: the report derives them from the `sample` rows
 inside the window's bounds, so there is one source. Protocols 1 to 3 refuse a
 resource row.
+
+**A window that was never opened** is still written, once, so that every
+planned window has its row (V20). It has no counters: `cpu.stat` and
+`memory.events` at both bounds, `affinity_held` and the scratch bytes are all
+`null`, never zero. Its two bounds are the instant it was given up, its
+`launch` is the leaf of the instance that failed, or `none` when no instance
+was launched, and its outcome says why: `chunk_deadline`, `oom_killed` or
+`target_exited`. The reader refuses a `measured` window without counters, a
+window with some counters and not others, and a `sample` row that names
+launch `none`. The resource row version stays 1: no v4 row exists outside
+this branch. *(Revision 1: the first design wrote zero counters and
+`affinity_held: true` for a profile that was never launched.)*
 
 **V14. Teardown.** The 0092 §6 / 0093 §7 sequence is unchanged and runs
 first. Then, inside the same composed cleanup budget: write `1` to
@@ -255,23 +361,90 @@ private paths stay slots, as 0093's privacy rule requires. For a leaf launch,
 cleanup is proved only with `cgroup_removed: true`; a missing value is not
 true.
 
+The cleanup receipt of a leaf launch also carries two facts the driver reads
+before the leaf is removed, absent for a launch without a leaf: `oom_kills`,
+the leaf's lifetime `oom_kill` count from `memory.events`, and
+`exited_early`, whether the target's leader had already exited when the
+driver began the teardown, before any signal of its own. A leaf launch that
+does not become ready still yields its launch receipt (leaf, limits and join
+as read back) beside its cleanup receipt, so a startup failure under the
+budget is evidenced as one. *(Revision 1, for V16's classification.)*
+
 ### Measurement
 
 **V16. The cost chunk.** `run` takes `--chunk cost.<target>.r<rep>` for
 protocol 4 and refuses to run protocol 4 without it. A cost chunk runs that
 target's profiles of that repetition in order, each as v3 does: a warmup
 instance, then a fresh measured instance, both in leaves. A v4 `collect`
-refuses a missing or dirty candidate commit by name. Inside a chunk:
+refuses a missing or dirty candidate commit by name.
 
-- when the target exits during a window, every unsent index still gets its
-  row, the window's outcome is `oom_killed` or `target_exited`, nothing is
-  retried, and the chunk goes on to its next profile;
-- when `chunk_deadline_ms` has passed, a profile not yet started is not
-  launched: its send rows are `unstarted` with reason `chunk deadline` and
-  its `measure` window has outcome `chunk_deadline`;
-- the chunk seals and exits 1 when any such outcome or workload failure
-  occurred, exits 0 when none did, and exits 2 unsealed on a launch refusal,
-  an unproved cleanup or an interrupt.
+*The chunk deadline (revision 1).* `chunk_end` is the run clock's origin plus
+`chunk_deadline_ms`. The driver takes the origin once, when it starts the
+chunk and before it makes the output directory, and passes the one instant
+down; there is no second timer.
+
+- **Nothing new starts at or after `chunk_end`:** no instance is launched,
+  no window is opened, no send, listing or fidelity read is begun.
+- **What is in flight on the wire is cancelled at `chunk_end`, not awaited:**
+  a warmup send, a measured connect or send, a listing, a fidelity read and
+  the idle wait. A send is several protocol steps and a listing several
+  pages, each with its own request deadline, so waiting for one "request" to
+  finish is not a bound.
+- **Two things are never cut:** a launch already in flight, which ends within
+  the startup deadline, and a teardown, which ends within the cleanup budget.
+  A cleanup cut short would be unproved. V2's bound is the sum of exactly
+  these.
+- After `chunk_end` the driver sends the target nothing but its teardown.
+
+What the cut leaves, in the existing vocabulary:
+
+- an index whose send never began is `unstarted` with reason
+  `chunk deadline` (the profile's own deadline still writes
+  `send deadline`); a connect cancelled in flight keeps the disposition of a
+  failed connect, and a send cancelled in flight is `ambiguous`, each with a
+  reason that names `chunk deadline`. Every index has exactly one row, and
+  nothing is retried;
+- the verification row is `incomplete` with reason `chunk deadline` when the
+  deadline ended the send, the listing or the fidelity reads. A listing that
+  did not complete yields no visible rows, and a visible row whose fidelity
+  read was not made carries no `fidelity_ok`;
+- an `idle_ready` window cut before its 5 s, and a `measure` window whose
+  send or verification the deadline ended, were opened: they keep their
+  counters and have outcome `chunk_deadline`;
+- a warmup cut by the deadline ends the profile: its instance is torn down
+  and proved, the measured instance is not launched, and the profile is
+  *not measured*.
+
+*A profile that is not measured* is written by one path, whatever the cause:
+every send row `unstarted` and the verification row `incomplete`, both with
+the cause as their reason (`chunk deadline`, `oom killed` or
+`target exited`), and its three windows as V13's never-opened rows with the
+matching outcome. The causes are: `chunk_end` passed before its measured
+instance could be launched; or its warmup or measured instance did not
+become ready *and the target itself failed*.
+
+*A launch that does not become ready (revision 1, Reading 7).* The driver
+classifies it from its receipts (V15), and only when its cleanup is proved:
+
+| evidence | result |
+|---|---|
+| `oom_kills` ≥ 1 | the profile is not measured, `oom_killed`; exit 1 |
+| else `exited_early` is true | the profile is not measured, `target_exited`; exit 1 |
+| else (alive, never ready), or no launch receipt | launch refusal; exit 2, unsealed |
+
+A spawn failure, a join mismatch (V10) and a limit or leaf refusal (V9) are
+launch refusals as before. An unproved cleanup is exit 2 on every path.
+
+Inside a window, as before: when the target exits, every unsent index still
+gets its row, the window's outcome is `oom_killed` or `target_exited`, and
+nothing is retried. After a profile that was not measured, or whose target
+died, the chunk goes on to its next profile; after `chunk_end` every later
+profile is not measured.
+
+The chunk seals and exits 1 when any window is not `measured` or any workload
+failure occurred, exits 0 when none did, and exits 2 unsealed on a launch
+refusal, an unproved cleanup or an interrupt. Protocols 1 to 3 keep their
+behaviour: none of this applies without `--chunk`.
 
 The chunk manifest carries the collection's run id, the chunk coordinate and
 the host facts (kernel, systemd version as passed by the wrapper, CPU model,
@@ -289,16 +462,47 @@ nearest-rank median over repetitions with minimum and maximum:
   infinite, when its divisor is zero;
 - `peak_memory_mib` and peak `anon`.
 
-A cell is *at equal results* when every repetition is exact (requested =
-accepted = visible, seen once, fidelity intact) and every `measure` window
-is `measured`. Only such a cell has `ranked: true`. Any other cell keeps its
-figures, has `ranked: false`, and names its shortfalls from a closed list
-(`refused`, `lost`, `fidelity`, `oom`, `timeout`, `target_exited`,
-`duplicate`, `unexpected`, `ambiguous`). `affinity_held: false` is published
-as the label `affinity_widened`; it does not change ranking, which stays
-0132 §5.2's. Per target the report gives `idle_memory_mib` (current and
-`anon`, with the scratch footprint) and startup (ready ms, CPU ms to ready).
-The headline is the cells of `headline.profile` with those two.
+*No observation, no number (revision 1, Reading 8).* One rule decides
+whether a repetition has a value:
+
+| figure | has a value only from |
+|---|---|
+| CPU time, peak and mean memory, OOM and throttle counts, and the two per-CPU figures | a `measure` window with counters, whatever its outcome (0132 §5.2: an unranked cell keeps its figures) |
+| idle memory, `anon` and the scratch footprint | an `idle_ready` window whose outcome is `measured` |
+| ready ms and CPU ms to ready | a `ready` window whose outcome is `measured` |
+
+Otherwise the repetition's value is `null`. A median, minimum and maximum
+are taken over the values that exist and carry `n`, their count; with none,
+the figure is `null`. No path turns an absent value into zero. A peak with no
+sample inside the window is `null`.
+
+A repetition is exact when requested = accepted = visible, every message was
+seen once, and every visible message's fidelity was read and intact; a
+visible row without `fidelity_ok` is not exact. A cell is *at equal results*
+when every repetition is exact and every `measure` window is `measured`. Only
+such a cell has `ranked: true`. Any other cell keeps the figures it has, has
+`ranked: false`, and names its shortfalls from a closed list (`refused`,
+`lost`, `fidelity`, `oom`, `timeout`, `target_exited`, `duplicate`,
+`unexpected`, `ambiguous`):
+
+- `oom` and `target_exited` come from the window's outcome;
+- `timeout` is named for a `chunk_deadline` window, for a send row
+  `unstarted` at a deadline (`send deadline`, `chunk deadline`), and for a
+  verification the chunk deadline ended. Rows `unstarted` because the target
+  failed before readiness name that failure, not `timeout`;
+- `lost` is not named from a verification the chunk deadline ended: what was
+  not looked for was not lost.
+
+`affinity_held: false` is published as the label `affinity_widened`; `null`
+gives no label; neither changes ranking, which stays 0132 §5.2's. Per target
+the report gives `idle_memory_mib` (current and `anon`, with the scratch
+footprint) and startup (ready ms, CPU ms to ready). These idle and startup
+cells carry the same pair as the cost cells: `ranked` is true only when every
+repetition has a value, and `shortfalls` names why one has none, from the
+same list (`oom`, `timeout`, `target_exited`). The headline is the cells of
+`headline.profile` with those two. *(Revision 1: the first design published
+0 for the idle memory, startup and peak memory of a repetition that never
+ran, and fed it to the median.)*
 `mib_per_1k_retained` needs story B's fill levels: it is published as owed,
 never as a number. The official MailSlurper row is blocked in every cell.
 
@@ -306,16 +510,31 @@ never as a number. The official MailSlurper row is blocked in every cell.
 T=PATH… [--runtime T=DIR…]` prints one JSON document with, per target: the
 download bytes (the pinned archive's size; for the image row the sum of the
 captured manifest's layer sizes; for the candidate the release binary), the
-installed bytes (the executable, its checked members and the whole pinned
-runtime tree), and the unpinned runtime as the label `unpinned, not counted`
-where the row has one. It launches nothing and rechecks every digest it
-relies on. The does-not-start row is blocked, with no number.
+installed bytes, and the unpinned runtime as the label `unpinned, not
+counted` where the row has one. It launches nothing and rechecks every digest
+it relies on. The does-not-start row is blocked, with no number.
+
+Installed bytes are what the lock binds, or they are owed *(revision 1)*:
+
+- a row whose artifact is the executable itself (MailHog, the MailSlurper
+  source build, GreenMail's jar, the Alkemio binary, the candidate):
+  the executable, its checked members and the whole pinned runtime tree;
+- a row whose artifact is an archive (Mailpit, smtp4dev, Inbucket): the
+  installed tree is the extracted archive, which nothing in story A walks or
+  pins. `installed_bytes` is `null`, `installed_basis` says
+  `owed: the extracted archive is not walked`, and the digest-checked
+  executable's size is published beside it as `executable_bytes`, under that
+  name. An executable alone is never published as an installed size: 0132
+  §4.5 counts every pinned runtime tree, and smtp4dev's .NET runtime is
+  inside its archive.
 
 **V19. `hold`.** `mail_compare hold --protocol P --sources S --bin T=PATH
 [--runtime T=DIR] --scratch DIR --samples FILE` launches one target under the
-budget, prints its endpoints as one JSON line, samples, and waits. On stdin
-EOF, or SIGTERM or SIGINT, it runs V14's teardown and prints the launch and
-cleanup receipts as one JSON line. It exits 0 only when cleanup is proved.
+budget, prints its endpoints as one JSON line, samples, and waits. Every
+endpoint is the address the launched target listens on, `host:port`, the
+POP3 listener's included. On stdin EOF, or SIGTERM or SIGINT, it runs V14's
+teardown and prints the launch and cleanup receipts as one JSON line. It
+exits 0 only when cleanup is proved.
 Any byte on stdin before EOF is refused by name after teardown, so a later
 story can add a line protocol without changing what silence means.
 
@@ -324,12 +543,17 @@ protocol: for each repetition, for each launched target in that repetition's
 rotation, one `cost` chunk. `targets --protocol P --plan v4` prints it, one
 coordinate per line; the wrapper never computes it. `admit-v4 DIR PROTOCOL`:
 
-- recomputes the plan and requires exactly one sealed, admitted chunk
-  directory per coordinate, all naming one run id, protocol, lock and clean
-  candidate commit, with the same host facts and target CPU pair;
+- recomputes the plan, refuses an empty plan by name, and requires exactly
+  one sealed, admitted chunk directory per coordinate, all naming one run
+  id, protocol, lock and candidate commit, with the same host facts and
+  target CPU pair. Every chunk, not only the first, must state
+  `candidate_dirty: false`;
+- requires that all launch receipts of one target, across every chunk, name
+  one executable digest, whether or not `--bin` is passed;
 - requires, per launch, the five limits of V9, the join read-back, the
   protocol's cap in the receipt of every capped target, and
-  `cgroup_removed: true`;
+  `cgroup_removed: true`; and per chunk as many cleanup receipts as launch
+  receipts, every one proved;
 - requires every planned window row once and no unplanned one;
 - requires one ledger entry per coordinate with exit 0 or 1 and a clean scope;
 - rechecks every executable digest against the lock, and against the files
@@ -340,7 +564,9 @@ coordinate per line; the wrapper never computes it. `admit-v4 DIR PROTOCOL`:
 `admit-v4 --seal` writes the run-level `manifest.json`, `host.json`,
 `chunks.json`, `launches.json`, `report.json`, `report-cost.json` and
 `index.json` as new files and refuses if any exists; plain `admit-v4`
-verifies them.
+verifies them. The run-level manifest carries `protocol_status` (`draft` or
+`frozen`) beside the protocol's id and sha256 (Reading 2). *(Revision 1: the
+per-chunk dirty flag, the per-target digest, the empty plan and the status.)*
 
 **V21. `collect-v4`.** `scripts/compare-mail.sh collect-v4 --output DIR --bin
 NAME=PATH… [--runtime NAME=DIR…] [--protocol P --sources S --documents DIR]
@@ -349,24 +575,45 @@ NAME=PATH… [--runtime NAME=DIR…] [--protocol P --sources S --documents DIR]
 - refuses by name, before building: not Linux; no `systemd-run`, `systemctl`,
   `taskset` or `timeout`; an existing `--output`; a protocol that is not
   version 4 (the message names the draft route); fewer than 3 CPUs in
-  `min(nproc/4, 32)`; a dirty or uncommitted candidate (real run only);
+  `min(nproc/4, 32)`; a shell whose allowed CPUs are not all of the host's
+  (`nproc` differs from `nproc --all`), because the chunks are pinned to
+  CPUs `0-<n-1>` and would otherwise leave the set the operator gave; a
+  dirty or uncommitted candidate (real run only);
 - `--dry-run` prints every chunk's coordinate and command and launches
   nothing;
+- every process the mode starts after the preflight runs under
+  `timeout --kill-after=30 600 taskset -c 0-<n-1>`: the two `cargo` builds,
+  `check`, `footprint`, each chunk and both admissions (0132 §11.1: no
+  process runs longer than 10 minutes or on more than 32 CPUs);
 - otherwise requires `check` to pass, writes `footprint.json`, and runs the
   plan in order. Each chunk is
   `timeout --kill-after=30 600 taskset -c 0-<n-1> systemd-run --user --scope
   -p Delegate=yes --unit=mail-compare-<run>-<coordinate> -- <driver> run …`,
-  in that nesting, so the driver is the scope's only process;
+  in that nesting, so the driver is the scope's only process. The 600 is
+  V2's `CHUNK_KILL_MS`;
 - reads `/proc/loadavg` before and after each chunk and writes one new ledger
   file per chunk (coordinate, command, exit, wall time, both loads, whether
   the scope was clean);
-- after each chunk, a scope that is still active is killed and stopped, and
-  the chunk counts as exit 2. Exit 124, 137 or above 2 counts as 2. Exit 0
-  or 1 without the chunk's `index.json` counts as 2;
+- after each chunk it waits for the chunk's scope to go inactive, polling
+  `systemctl --user is-active` for at most 10 s, because systemd learns that
+  a scope is empty after the driver has exited. Only a scope still active at
+  the end of that wait is killed and stopped, and the chunk then counts as
+  exit 2. Exit 124, 137 or above 2 counts as 2. Exit 0 or 1 without the
+  chunk's `index.json` counts as 2;
+- on SIGINT, SIGTERM or SIGHUP during a chunk it sends SIGTERM to that
+  chunk's `timeout`, which passes it to the driver (the driver's own
+  interrupt path tears down and exits 2, unsealed), waits for the chunk to
+  end, judges the scope as after any chunk, writes the chunk's ledger entry
+  with exit 2, starts no later chunk and exits 2. Outside a chunk a signal
+  ends the mode with exit 2;
 - exit 2 stops the run as incomplete; nothing is resumed, overwritten or
-  removed. Otherwise it writes `reproduce.txt`, runs `admit-v4 --seal` and
-  `admit-v4`, and exits 2 if admission refuses, else 1 if any chunk exited 1,
-  else 0.
+  removed, and no `reproduce.txt` is written. Otherwise, after the last
+  chunk, it writes `reproduce.txt`, runs `admit-v4 --seal` and `admit-v4`,
+  and exits 2 if admission refuses, else 1 if any chunk exited 1, else 0.
+
+*(Revision 1: the wait for the scope, the signal path, the bound on every
+process and the restricted-shell refusal are new. The `reproduce.txt` rule is
+unchanged; the code wrote the file before the first chunk and is corrected.)*
 
 The host load is recorded, not gated (see *For the operator at freeze*).
 
@@ -388,8 +635,9 @@ cat /proc/loadavg
 cgroup, and the test could then not enable controllers (V8).
 
 1. `v4_real_oom_at_two_gib`: a memory hog in a leaf is killed; `memory.events`
-   shows `oom_kill` ≥ 1; the window outcome is `oom_killed`; nothing is
-   retried; the leaf is emptied and removed.
+   shows `oom_kill` ≥ 1; the window outcome is `oom_killed`; the teardown's
+   `oom_kills` is ≥ 1 (V15); nothing is retried; the leaf is emptied and
+   removed.
 2. `v4_real_cpu_held_within_two`: four spinners for a fixed 5 s window. With
    affinity held, every task's `Cpus_allowed_list` is the two target CPUs and
    the `usage_usec` delta is at most 2 × wall × 1.05 + 100 ms. With spinners
@@ -400,22 +648,48 @@ cgroup, and the test could then not enable controllers (V8).
    V14 it is, the leaf is removed, and the escapee's pid is gone.
 4. `v4_real_hold_swarmail_under_budget`: `hold` on the candidate Swarmail:
    the limits read back, the join read-back, one accepted and visible mail,
-   and on EOF a receipt with `cgroup_removed: true`.
+   and on EOF a receipt with `cgroup_removed: true`. A second hold is ended
+   by its interrupt instead of EOF and gives the same receipt.
 5. `v4_real_cost_chunk_seals_and_admits`: one cost chunk of a small v4 draft
-   fixture against the candidate seals, and its windows, samples and figures
-   pass the chunk-level checks of V20.
+   fixture against the candidate seals with exit 0, every window has
+   `affinity_held: true`, and its windows, samples and figures pass the
+   chunk-level checks of V20. A second chunk whose "candidate" is a program
+   that exits at once (`/bin/false`) seals with exit 1: every profile is not
+   measured with `target_exited`, each launch has its launch receipt and a
+   proved cleanup with `cgroup_removed: true`, and no figure of it is a
+   number.
 
 Each fails, never skips, when V8 refuses or its bytes are missing. Without
-delegation the failure message is V8's exact refusal. A proof is recorded as
-passed only with its output from a host where it ran; a seat whose box has no
-cgroupfs reports the proofs as owed, with the refusal output, and does not
-claim them.
+delegation the failure message is V8's exact refusal.
+
+**The host run gates the merge.** A proof is passed only by its output from a
+host where it ran. The fixture tests prove the driver's logic on plain
+files; they do not prove the join through `cgroup.procs`, `cgroup.kill`, the
+removal of a leaf, the OOM or the quota, and no reading of the code does.
+The five therefore run on the dispatcher host, one at a time under the
+command above, at the head that is to be merged, and their passing output
+with the load before and after is attached to the PR. Until that is done
+the story is not complete, no seat reports it complete, and the PR is not
+merged. A seat whose box has no cgroupfs cannot discharge this and says so
+in its result, with the refusal output of all five: that is the stated
+state of AC18b, not a claim that it is met. *(Revision 1: the first text
+let a seat report the proofs as "owed" without saying what that held up.)*
 
 **V23. Docs.** `docs/evals/README.md` gains a v4 section: what story A
 measures, the budget and mechanism, the refusals, the draft route and
 `collect-v4`, Reading 4's sentence, "a ceiling, not a reservation" for the
 CPU budget, `memory.current` labelled as including reclaimable cache beside
-`anon`, and that v3 still collects from the active paths.
+`anon`, and that v3 still collects from the active paths. Revision 1 makes
+these sentences exact: the SMT siblings of the two target CPUs are left idle
+*where they are inside the chunk's CPU set* and are recorded as
+`siblings_outside_set` otherwise; affinity is read back at the end of every
+window; it is a *frozen* v4 that this driver refuses, while `admit-v4`
+admits a draft run and labels it a draft; a value that was not observed is
+`null` and never zero; a startup that is alive but not ready stops the run
+(Reading 7); an archive row's installed size is owed (V18); a sealed run
+proves the directory's state at the seal, not that a host power loss cannot
+lose the tail of `samples.jsonl`; and the host run of the five proofs is
+what the merge waits for.
 
 **V24. Unchanged.** No file under `src/` or `evals/` changes. `Cargo.toml`,
 `Cargo.lock`, `evals/Cargo.lock` and `deny.toml` are byte-identical. No
@@ -431,14 +705,19 @@ means a refusal whose text names the cause.
   reason; each of them wrong refuses. Every cross pairing of protocols 2, 3
   and 4 with locks 3, 4 and 5 refuses; the three right pairings pass.
 - **AC2 (V2).** Each field of the v4 resources block, absent or at another
-  value, refuses. Each new field on a protocol 2 or 3 refuses. The v2 and v3
-  history bytes still parse, validate and re-serialize to the same value.
+  value, refuses. A `chunk_deadline_ms` exactly at V2's ceiling passes and
+  one millisecond above it refuses, naming the ceiling; the ceiling moves
+  with the startup and cleanup budgets. Each new field on a protocol 2 or 3
+  refuses. The v2 and v3 history bytes still parse, validate and
+  re-serialize to the same value.
 - **AC3 (V3).** A frozen protocol 4 with a profile added, removed or changed
   from the table refuses. Any protocol 4 with 33 sessions, a wait profile, no
   headline or another headline profile refuses.
-- **AC4 (V4, V6).** A protocol 4 cap other than 150,000 refuses. Lock 5 with
-  a literal cap, with the placeholder outside the cap flag, or lock 4 with
-  the placeholder, refuses. The spec built from lock 5 and protocol 4 carries
+- **AC4 (V4, V6).** A protocol 4 cap other than 150,000 refuses, and so does
+  a `null` cap for Swarmail. Lock 5 with a literal cap, with the placeholder
+  outside the cap flag, with the cap flag twice (placeholder then literal,
+  in each of the three forms), or lock 4 with the placeholder, refuses. The
+  spec built from lock 5 and protocol 4 carries
   `150000` at each of the three cap flags and Swarmail's
   `--max-per-inbox 150000`; a spec with an unresolved placeholder refuses
   before spawn.
@@ -448,8 +727,10 @@ means a refusal whose text names the cause.
   capability, each on its own.
 - **AC6 (V7).** The two history copies have the frozen sha256 values and the
   active files still have them too. The draft protocol validates as a draft
-  and `check` reports it not ready for collection. Lock 5 validates, verifies
-  its documents through `--documents docs/evals`, and pairs with the draft.
+  and `check` reports it not ready for collection. Its `chunk_deadline_ms`
+  is 480000, and its `unresolved` list names GreenMail's REST read path and
+  the wait budget. Lock 5 validates, verifies its documents through
+  `--documents docs/evals`, and pairs with the draft.
 - **AC7 (V8).** On fixture trees: no cgroup2 root, a missing controller, and
   a controller missing from the `subtree_control` read-back each give the
   exact refusal; an occupied scope and an existing `driver` leaf refuse by
@@ -468,12 +749,18 @@ means a refusal whose text names the cause.
   `memory.current`, `memory.peak`, `pids.current` and `cgroup.procs` pass on
   captured text and refuse malformed text. A resource row in a protocol 3 run
   directory, a duplicate or unplanned window, and a missing planned window
-  each refuse.
+  each refuse. So do a `measured` window without counters, a window with
+  some counters and not others, and a `sample` row that names launch `none`.
+  `affinity_held` is `true`, `false` and `null` for a fixture leaf whose
+  tasks all hold the pair, whose one task differs, and that holds no task,
+  in each of the three window kinds.
 - **AC11 (V14, V15).** On a fixture leaf whose `cgroup.procs` never empties,
   teardown ends at the budget with `cgroup_removed: false`, the leaf in place
   and cleanup unproved. A v3 cleanup receipt and a v3 launch receipt
   serialize byte for byte as before. A leaf launch whose receipt lacks
-  `cgroup_removed` is not proved.
+  `cgroup_removed` is not proved. A leaf launch's cleanup receipt carries
+  `oom_kills` and `exited_early`, read from a fixture leaf and from a leader
+  that exited before the teardown.
 - **AC12 (V16).** The plan of the committed draft is 24 cost chunks: eight
   launched targets in each repetition's rotation, none for `mailslurper`.
   Protocol 4 without `--chunk`, protocol 3 with it, an unknown coordinate,
@@ -486,37 +773,107 @@ means a refusal whose text names the cause.
   has no number; a v4 report is version 3 and a protocol 3 report is still
   version 2.
 - **AC14 (V18).** `footprint` on fixtures gives the archive size, the layer
-  sum, the candidate's file size, the installed sum including a runtime tree,
-  the `unpinned, not counted` label, and a blocked row; a changed executable
-  refuses.
+  sum, the candidate's file size, the installed sum including a runtime tree
+  for an executable row, the `unpinned, not counted` label, and a blocked
+  row; a changed executable refuses. An archive row gives `installed_bytes`
+  `null`, the `owed` basis and `executable_bytes`, and no document
+  `footprint` prints has an installed size equal to an archive row's
+  executable alone.
 - **AC15 (V19).** `hold`'s refusals (missing flags, protocol 3, bytes on
-  stdin) are proved without a cgroup; its behaviour under the budget is real
-  proof 4.
+  stdin) are proved without a cgroup, and so are two facts on a launch
+  without a leaf: every printed endpoint is the `host:port` the target
+  listens on, the POP3 listener's included, and a hold ended by its
+  interrupt runs the teardown and prints a receipt with cleanup proved. Its
+  behaviour under the budget is real proof 4.
 - **AC16 (V20).** On a fixture run directory built by the test, a complete
   one seals and then verifies, and each of these refuses by name: a missing
-  chunk, an extra chunk, an unsealed chunk, two run ids, a dirty candidate,
-  differing host facts, a limit other than V9's, a missing join read-back, a
-  cap other than the protocol's, `cgroup_removed` false or absent, a ledger
+  chunk, an extra chunk, an unsealed chunk, two run ids, a dirty candidate
+  in the first chunk and in a later one, a target whose executable digest
+  differs between two chunks, differing host facts, a limit other than V9's,
+  a missing join read-back, a cap other than the protocol's, `cgroup_removed`
+  false or absent, a cleanup receipt without its launch receipt, a ledger
   exit 2, an unclean scope, a second `--seal`, and one edited figure, which
-  is named by its path.
+  is named by its path. A protocol whose plan is empty refuses by name and
+  does not panic. The sealed manifest carries `protocol_status: draft` for a
+  draft.
 - **AC17 (V21).** With a fake driver and fake `systemd-run` and `systemctl`
   on `PATH`: `--dry-run` prints 24 commands in plan order and starts nothing;
   the default protocol refuses and names the draft route; each preflight
-  refusal is named; a chunk exit 2, a timeout, an exit 0 without an index and
-  a still-active scope each stop the run with exit 2 and a ledger entry, with
-  no later chunk started; a full fake run writes 24 ledger files and
-  `reproduce.txt` and calls `--seal` and then verify. Off Linux the mode
-  refuses.
-- **AC18 (V22).** The five proofs exist, are ignored and Linux-only, and each
-  fails with V8's exact refusal where there is no delegation. Their passing
-  output from the dispatcher host, with the load before and after, is
-  attached to the PR before the operator merges it.
+  refusal is named, the restricted shell among them; a chunk exit 2, exit 3,
+  a timeout (124), a kill (137), an exit 0 without an index and a scope that
+  stays active each stop the run with exit 2 and a ledger entry, with no
+  later chunk started and no `reproduce.txt`; a scope that reads active once
+  and then inactive is clean and the run goes on; a timeout whose scope is
+  still active is both killed and counted; a SIGTERM to the wrapper while a
+  chunk runs ends that chunk, writes its ledger entry with exit 2, starts no
+  later chunk and exits 2; a full fake run writes 24 ledger files, writes
+  `reproduce.txt` only after the last chunk, and calls `--seal` and then
+  verify; a seal that succeeds followed by a verify that refuses exits 2.
+  The logged commands show the builds, `check`, `footprint`, every chunk and
+  both admissions under `timeout --kill-after=30 600 taskset`, and the
+  chunk's `600` equal to `CHUNK_KILL_MS` ÷ 1000. Off Linux the mode refuses.
+- **AC18a (V22, provable by a seat).** The five proofs exist, are ignored and
+  Linux-only, assert what V22 lists (revision 1's additions included), and
+  each fails with V8's exact refusal where there is no delegation.
+- **AC18b (V22, the merge gate).** The passing output of each of the five
+  from the dispatcher host, run one at a time under V22's command at the
+  head to be merged, with the load before and after, is attached to the PR.
+  The story is not complete and the PR is not merged before that. A seat
+  that cannot run them reports AC18b as open and does not report the story
+  complete.
 - **AC19 (V23, V24).** The README section exists and the decision inventory
   test passes. `git diff e23a8ba -- src evals Cargo.toml Cargo.lock deny.toml`
   is empty, and the only existing file changed under `docs/evals/` is
   `README.md`.
 - **AC20.** Every gate of `docs/house-rules.md` § Gates passes `--locked` on
   the final tree, the coverage selftest and the publish-guard proof included.
+- **AC21 (V16, the chunk deadline in flight; revision 1).** Driving the cost
+  chunk's own code against a real target instance on a fixture scope
+  (`run_chunk`, and its stages with a `chunk_end` the test passes), not
+  hand-built rows. Each test places `chunk_end` by construction, never by
+  waiting for it between two steps of a healthy target:
+  - with `chunk_end` already passed at entry, nothing is launched, every
+    profile is not measured with `chunk_deadline`, and the chunk seals with
+    exit 1;
+  - with `chunk_end` passed before the measured send, every index is
+    `unstarted` with reason `chunk deadline`, no listing is made, the
+    verification row is `incomplete` with that reason, and the `measure`
+    window is `chunk_deadline`;
+  - against a listener that accepts and never answers, a send in flight is
+    cancelled at `chunk_end`: the call returns before one request deadline
+    has passed, the index has exactly one row whose reason names
+    `chunk deadline`, and the rows count the profile's messages exactly;
+  - a warmup cut by `chunk_end` launches no measured instance: the only
+    launch receipt, if there is one, is the warmup's, every cleanup is
+    proved, and the profile is not measured;
+  - a profile's own `send_deadline_ms`, when it comes first, still writes
+    `send deadline`;
+  - a fidelity read cut by `chunk_end` leaves visible rows without
+    `fidelity_ok`, an `incomplete` verification and a repetition that is not
+    exact, named `timeout` and not `fidelity` or `lost`;
+  - in every case each planned window has its one row and the teardown is
+    proved.
+- **AC22 (V15, V16, a launch that does not become ready; revision 1).** The
+  classification is exact on receipts: `oom_kills` ≥ 1 gives `oom_killed`
+  whatever `exited_early` says; `exited_early` alone gives `target_exited`;
+  neither, a missing launch receipt, or an unproved cleanup is a launch
+  refusal. A chunk whose target exits at once seals with exit 1, its
+  profiles not measured with `target_exited` and reason `target exited`, and
+  goes on to its next profile; a join mismatch is still exit 2 and unsealed;
+  a protocol 3 run of the same target is still an infrastructure failure, as
+  before.
+- **AC23 (V13, V17, no observation, no number; revision 1).** With hand-built
+  rows: a repetition that was not measured has `null` for every figure, in
+  the per-repetition list and in the cell; with one of three repetitions not
+  measured the median, minimum and maximum are over the other two and `n` is
+  2; with all three not measured every figure is `null` and none is `0`; the
+  idle and startup cells are then unranked and name `timeout`, `oom` or
+  `target_exited` as the window says; a target that exited during its idle
+  window has no idle figure; an OOM-killed `measure` window that was opened
+  keeps its CPU and peak figures and is unranked with `oom`; rows `unstarted`
+  because the target failed before readiness do not name `timeout`. No JSON
+  number in a report built from rows without counters is `0` where a figure
+  is meant.
 
 ## Out of scope
 
@@ -525,8 +882,14 @@ means a refusal whose text names the cause.
   `mib_per_1k_retained`, clients and `clients_sha256` values, the frozen v4
   and lock 5 hashes, the swap of the active records, collection, the write-up
   and the README headline.
-- GreenMail's REST read path (0132 §6.2). The cost section verifies as v3
-  does, over POP3.
+- GreenMail's REST read path (0132 §6.2, acceptance answer 8). In this
+  story's draft the cost section verifies as v3 does, over POP3; the draft's
+  `unresolved` list names the REST path as owed by story B (V7), so no v4
+  can freeze, and nothing can be collected, on the POP3 path.
+- A CLI-level test of the driver's mode shims in `benches/mail_compare.rs`,
+  and a signal test of `hold` through a real SIGTERM. Every function the
+  shims call is tested; the tests seat deferred the shims to the story that
+  next touches them.
 - A hostile-body, TLS, webhook or chaos campaign (0132 non-goals). The `DATA`
   writer already dot-stuffs (`wire.rs`, `dot_stuff`).
 - cpuset delegation, an unenforced pass, a container runtime, a second
@@ -536,12 +899,26 @@ means a refusal whose text names the cause.
 
 Story A leaves these open and labels them as such. None blocks this story.
 
-1. `chunk_deadline_ms`: the draft says 540000.
+1. `chunk_deadline_ms`: the draft says 480000; V2's ceiling with the draft's
+   budgets is 520000. A chunk is one target's four profiles of one
+   repetition (0132 §11.1), so a target slow enough to use the deadline in
+   an early profile leaves its later profiles of that chunk not measured,
+   published unranked as `timeout`.
 2. Whether a host-load ceiling should gate a chunk. Story A records the load
    beside every chunk and gates nothing: a gate would abort a day-long run on
    a neighbour's burst, and its threshold would be a frozen protocol value
    that 0132 does not name.
 3. Whether a cell labelled `affinity_widened` should rank.
+4. A target that is alive but not ready within `startup_deadline_ms` under
+   the budget still stops the whole run with exit 2 (Reading 7). Hold each
+   target once under the budget (`mail_compare hold`) before a day-long run,
+   and set the startup budget from what that shows.
+5. The installed size of the three archive rows is owed (V18). It needs an
+   extraction path the collection procedure fixes.
+6. `collect-v4` has run only against fake tools: a draft cannot pass `check`
+   and a frozen v4 does not exist yet. The first real chunk is the first
+   real test of how the scope deactivates under systemd 259. A run that
+   stops at its first chunk costs one empty directory.
 
 ## Stop triggers
 
@@ -549,4 +926,8 @@ Stop and report, without working around it, if: a requirement can only be met
 by editing `src/`, `evals/`, a lockfile, `deny.toml` or an active or
 historical record; lock 5 cannot verify against the captured documents
 without changing one; a v3 test can only pass by changing v3 behaviour; or
-the gates' coverage denominator turns out to include the bench.
+the gates' coverage denominator turns out to include the bench. Revision 1
+adds: stop if the cut at `chunk_end` can only be built by changing what a
+protocol 1 to 3 run does, or if something other than a launch, a teardown and
+the seal turns out to run after `chunk_end`, so that V2's bound would be
+false.
