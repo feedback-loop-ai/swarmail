@@ -150,7 +150,18 @@ pub fn launch_specs_of(
                     .iter()
                     .find(|r| r.target == t)
                     .and_then(|r| r.max_messages);
-                LaunchSpec::new(t, binary, None, swarmail_template(cap.unwrap_or(0)))
+                // Protocol 4 always launches Swarmail capped: no cap is an
+                // error, never `--max-per-inbox 0` (which is uncapped).
+                let cap = match (p.protocol_version, cap) {
+                    (crate::protocol::PROTOCOL_VERSION_4, None) => {
+                        return Err(
+                            "swarmail: a protocol 4 launch needs the retention cap its entry states, and it states none"
+                                .into(),
+                        );
+                    }
+                    (_, cap) => cap.unwrap_or(0),
+                };
+                LaunchSpec::new(t, binary, None, swarmail_template(cap))
             }
             _ => {
                 let pin = s.pin(t).ok_or_else(|| format!("{t}: no source pin"))?;

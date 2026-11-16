@@ -1135,6 +1135,19 @@ impl Protocol {
                 r.startup_deadline_ms, r.cleanup_deadline_ms
             )),
         }
+        // Swarmail always has a cap flag, so its entry states the cap: a
+        // null there would launch it uncapped.
+        if self
+            .storage
+            .retention
+            .iter()
+            .find(|e| e.target == TargetKind::Swarmail)
+            .is_none_or(|e| e.max_messages.is_none())
+        {
+            out.push(format!(
+                "storage: protocol 4 launches swarmail with a cap, so its retention entry states {V4_CAP}, not null"
+            ));
+        }
         for e in &self.storage.retention {
             if e.max_messages.is_some_and(|cap| cap != V4_CAP) {
                 out.push(format!(
@@ -3049,6 +3062,21 @@ pub fn resolve_cap(
     };
     let cap = cap.to_string();
     let mut found = 0;
+    // The flag occurs exactly once in the launch, in any of its forms: a
+    // second occurrence (a literal after the placeholder, say) would leave
+    // the target with whichever the tool reads last.
+    let flag_forms = match flag.strip_prefix("env:") {
+        Some(name) => env.iter().filter(|[k, _]| k == name).count(),
+        None => launch
+            .iter()
+            .filter(|a| *a == flag || a.starts_with(&format!("{flag}=")))
+            .count(),
+    };
+    if flag_forms > 1 {
+        out.push(format!(
+            "{t}: the cap flag {flag} occurs {flag_forms} times in the launch; lock_version {LOCK_VERSION_5} sets it exactly once"
+        ));
+    }
     match flag.strip_prefix("env:") {
         Some(name) => {
             for [k, v] in env.iter_mut() {

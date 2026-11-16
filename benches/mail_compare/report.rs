@@ -1306,7 +1306,11 @@ pub fn admit_chunk(
     let listed = |key: &str| on_disk[key].as_array().cloned().unwrap_or_default();
     let (launches, cleanups) = (listed("launches"), listed("cleanups"));
     if launches.is_empty() || launches.len() != cleanups.len() {
-        return refuse("every launch needs a cleanup receipt before the chunk can be admitted");
+        return refuse(&format!(
+            "launch and cleanup receipts must pair, one proved cleanup for each launch: {} launch receipts, {} cleanup receipts",
+            launches.len(),
+            cleanups.len()
+        ));
     }
     for (n, pair) in launches.iter().zip(&cleanups).enumerate() {
         if pair.0["target"].as_str() != Some(chunk.target().name()) {
@@ -1407,13 +1411,18 @@ fn write_new(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
 /// then the run's index, refusing if any already exists; without it, compare
 /// each with its recomputation and name the first path that differs.
 pub fn admit_v4(dir: &std::path::Path, a: &Admission, seal: bool) -> Result<RunAdmitted, String> {
-    a.protocol.validate().map_err(|r| r.to_string())?;
     if a.protocol.protocol_version != crate::protocol::PROTOCOL_VERSION_4 {
         return Err(format!(
             "admit-v4 needs protocol_version 4, not {}",
             a.protocol.protocol_version
         ));
     }
+    // Before anything is indexed: a protocol with no chunk has nothing to
+    // admit, and a run of nothing is not a run.
+    if crate::runner::plan_v4(a.protocol).is_empty() {
+        return Err("the protocol's chunk plan is empty: there is no chunk to admit".into());
+    }
+    a.protocol.validate().map_err(|r| r.to_string())?;
     if seal {
         for f in SEALED_FILES.iter().chain(&["index.json"]) {
             if dir.join(f).exists() {
@@ -1468,8 +1477,36 @@ pub fn admit_v4(dir: &std::path::Path, a: &Admission, seal: bool) -> Result<RunA
         admitted.push(admit_chunk(&dir.join("chunks").join(&name), c, a)?);
     }
     let first = admitted[0].manifest.clone();
+    let mut digests: std::collections::BTreeMap<String, (String, String)> =
+        std::collections::BTreeMap::new();
     for c in &admitted {
         let m = &c.manifest;
+        // Every chunk, not only the first, ran on a clean candidate.
+        if m.candidate_dirty != Some(false) {
+            return Err(format!(
+                "chunk {}: its tree was dirty or not stated clean: a v4 run is never admitted from a dirty candidate",
+                c.name
+            ));
+        }
+        // One executable per target across the whole run.
+        for l in c.report["launches"].as_array().into_iter().flatten() {
+            let (t, d) = (
+                l["target"].as_str().unwrap_or_default().to_owned(),
+                l["executable_sha256"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
+            if let Some((was, earlier)) = digests.get(&t)
+                && *was != d
+            {
+                return Err(format!(
+                    "chunk {}: {t}'s executable digest differs from the one chunk {earlier} ran: one executable per target across the run",
+                    c.name
+                ));
+            }
+            digests.entry(t).or_insert((d, c.name.clone()));
+        }
         let same = [
             ("the run id", m.run_id == first.run_id),
             ("the mode", m.mode == first.mode),
@@ -1529,6 +1566,8 @@ pub fn admit_v4(dir: &std::path::Path, a: &Admission, seal: bool) -> Result<RunA
             "sources_sha256": first.sources_sha256,
             "candidate_commit": first.candidate_commit,
             "candidate_dirty": false,
+            // A draft run is labelled a draft in its own bytes.
+            "protocol_status": a.protocol.status,
             "chunks": plan.iter().map(crate::runner::Chunk::name).collect::<Vec<_>>(),
         }),
     );

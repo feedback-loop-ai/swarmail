@@ -171,7 +171,10 @@ fn v4_resources_block_refuses_each_absent_or_different_value() {
         let mut v = draft();
         v["resources"][field] = value.clone();
         let w = why(v);
-        assert!(w.contains(expect), "{field}={value}: {w}");
+        assert!(
+            w.contains(expect) && w.contains(field),
+            "{field}={value}: {w}"
+        );
         // And absent: the field omitted refuses too.
         let mut v = draft();
         v["resources"].as_object_mut().unwrap().remove(field);
@@ -180,10 +183,8 @@ fn v4_resources_block_refuses_each_absent_or_different_value() {
             Ok(p) => refusals(p.validate()),
             Err(e) => e.to_string(),
         };
-        assert!(
-            w.contains(expect) || w.contains("missing field") || w.contains("resources"),
-            "{field} absent: {w}"
-        );
+        // The refusal names the field, whether the type or the rule refuses.
+        assert!(w.contains(field), "{field} absent: {w}");
     }
     let mut v = draft();
     v["resources"]["chunk_deadline_ms"] = json!(0);
@@ -418,6 +419,77 @@ fn v4_refuses_a_cap_other_than_150000() {
     assert_eq!(e.max_messages, None);
 }
 
+#[test]
+fn v4_refuses_a_null_swarmail_cap() {
+    let mut v = draft();
+    let r = v["storage"]["retention"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|r| r["target"] == "swarmail")
+        .unwrap();
+    r["max_messages"] = Value::Null;
+    let w = why(v);
+    assert!(
+        w.contains("protocol 4 launches swarmail with a cap") && w.contains("not null"),
+        "{w}"
+    );
+    // The same entry removed altogether is the same refusal.
+    let mut v = draft();
+    v["storage"]["retention"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|r| r["target"] != "swarmail");
+    assert!(why(v).contains("protocol 4 launches swarmail with a cap"));
+}
+
+#[test]
+fn a_v4_swarmail_spec_is_never_built_uncapped() {
+    let lock = lock_from(lock5()).unwrap();
+    let bins = vec!["swarmail=/never/swarmail".to_owned()];
+    let build = |p: &Protocol, l: &SourceLock| {
+        runner::launch_specs_of(p, l, &bins, &[], &[TargetKind::Swarmail])
+    };
+    // Protocol 4 with no cap stated: an error, not `--max-per-inbox 0`.
+    let mut v = draft();
+    for r in v["storage"]["retention"].as_array_mut().unwrap() {
+        if r["target"] == "swarmail" {
+            r["max_messages"] = Value::Null;
+        }
+    }
+    let w = build(&p4(v), &lock).unwrap_err();
+    assert!(w.contains("needs the retention cap"), "{w}");
+    // With its cap it carries 150000.
+    let specs = build(&p4(draft()), &lock).unwrap();
+    let t = &specs[&TargetKind::Swarmail].template;
+    assert!(
+        t.windows(2).any(|w| w == ["--max-per-inbox", "150000"]),
+        "{t:?}"
+    );
+    // Protocol 3's Swarmail spec is what it was, null cap and all.
+    let (p3, l4) = (
+        Protocol::parse(PROTOCOL_V3).unwrap(),
+        SourceLock::parse(SOURCES_V4).unwrap(),
+    );
+    let t = &build(&p3, &l4).unwrap()[&TargetKind::Swarmail].template;
+    let cap = p3
+        .storage
+        .retention
+        .iter()
+        .find(|r| r.target == TargetKind::Swarmail)
+        .and_then(|r| r.max_messages)
+        .unwrap_or(0);
+    assert_eq!(*t, targets::swarmail_template(cap));
+    let mut v = json(PROTOCOL_V3);
+    for r in v["storage"]["retention"].as_array_mut().unwrap() {
+        if r["target"] == "swarmail" {
+            r["max_messages"] = Value::Null;
+        }
+    }
+    let t = &build(&protocol_from(v).unwrap(), &l4).unwrap()[&TargetKind::Swarmail].template;
+    assert_eq!(*t, targets::swarmail_template(0), "protocol 3 is unchanged");
+}
+
 // ---- T1.5 ------------------------------------------------------------------
 
 #[test]
@@ -602,6 +674,50 @@ fn lock_v5_refuses_the_placeholder_elsewhere() {
         .unwrap()
         .push(json!(["OTHER_VALUE", "{max_messages}"]));
     assert!(lock_why(l).contains("names a slot the declared listeners"));
+}
+
+#[test]
+fn lock_v5_refuses_a_second_cap_flag() {
+    let twice = "occurs 2 times in the launch";
+    // As an argv pair, the placeholder then a literal.
+    let mut l = lock5();
+    let argv = pin_of(&mut l, "mailpit")["launch"].as_array_mut().unwrap();
+    argv.extend([json!("--max"), json!("500")]);
+    let w = lock_why(l);
+    assert!(
+        w.contains("mailpit: the cap flag --max") && w.contains(twice),
+        "{w}"
+    );
+    // As `flag=`, after the placeholder in either of its forms.
+    for first_is_joined in [false, true] {
+        let mut l = lock5();
+        let argv = pin_of(&mut l, "mailpit")["launch"].as_array_mut().unwrap();
+        if first_is_joined {
+            let at = argv.iter().position(|a| a == "--max").unwrap();
+            argv.remove(at + 1);
+            argv[at] = json!("--max={max_messages}");
+        }
+        argv.push(json!("--max=500"));
+        let w = lock_why(l);
+        assert!(w.contains(twice), "{first_is_joined}: {w}");
+    }
+    // As the environment entry the cap flag names.
+    let mut l = lock5();
+    pin_of(&mut l, "inbucket")["launch_env"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!(["INBUCKET_STORAGE_MAILBOXMSGCAP", "500"]));
+    let w = lock_why(l);
+    assert!(
+        w.contains("inbucket: the cap flag env:INBUCKET_STORAGE_MAILBOXMSGCAP")
+            && w.contains(twice),
+        "{w}"
+    );
+    // smtp4dev's flag, twice, with the literal first.
+    let mut l = lock5();
+    let argv = pin_of(&mut l, "smtp4dev")["launch"].as_array_mut().unwrap();
+    argv.splice(0..0, [json!("--messagestokeep"), json!("500")]);
+    assert!(lock_why(l).contains(twice));
 }
 
 #[test]
@@ -3715,9 +3831,14 @@ async fn hold_refuses_bytes_on_stdin_by_name() {
 /// A protocol whose plan is eight small chunks: one repetition of one tiny
 /// cost profile, so a whole run is cheap to author and to admit.
 fn adm_protocol() -> (Protocol, Vec<u8>) {
+    adm_protocol_n(1)
+}
+
+/// The admission fixture's protocol over `reps` repetitions.
+fn adm_protocol_n(reps: u32) -> (Protocol, Vec<u8>) {
     let mut v = draft();
     let mut prof = v["throughput"][1].clone();
-    prof["repetitions"] = json!(1);
+    prof["repetitions"] = json!(reps);
     prof["messages"] = json!(4);
     prof["warmup_messages"] = json!(0);
     prof["sessions"] = json!(2);
@@ -3754,6 +3875,12 @@ struct Build {
     other_run: Option<&'static str>,
     other_host: Option<&'static str>,
     dirty: bool,
+    /// One chunk, by coordinate, whose candidate tree was dirty.
+    dirty_chunk: Option<&'static str>,
+    /// Repetitions of the protocol (0 is 1).
+    reps: u32,
+    /// One chunk, by coordinate, whose launch ran a different executable.
+    other_digest: Option<&'static str>,
     no_footprint: bool,
     edit: Option<(&'static str, Edit)>,
     ledger: Option<(&'static str, LedgerEdit)>,
@@ -3787,7 +3914,7 @@ impl Fixture {
 
 fn build_run(b: Build) -> Fixture {
     let root = fixture();
-    let (p, pbytes) = adm_protocol();
+    let (p, pbytes) = adm_protocol_n(b.reps.max(1));
     let sbytes = serde_json::to_vec(&lock5()).unwrap();
     let lock = SourceLock::parse(&sbytes).unwrap();
     let bins: Vec<String> = p
@@ -3817,10 +3944,13 @@ fn build_run(b: Build) -> Fixture {
         let layout = adm_host(128).cpu_layout;
         let launch = targets::LaunchFacts {
             target: c.target(),
-            executable_sha256: spec
-                .expected_sha256
-                .clone()
-                .unwrap_or_else(|| "ab".repeat(32)),
+            executable_sha256: if is(b.other_digest) {
+                "cd".repeat(32)
+            } else {
+                spec.expected_sha256
+                    .clone()
+                    .unwrap_or_else(|| "ab".repeat(32))
+            },
             argv_template: spec.template.clone(),
             ready_ns: 1,
             members: spec
@@ -3861,7 +3991,7 @@ fn build_run(b: Build) -> Fixture {
         m.protocol_sha256 = targets::sha256_hex(&pbytes);
         m.sources_sha256 = targets::sha256_hex(&sbytes);
         m.candidate_commit = Some("a".repeat(40));
-        m.candidate_dirty = Some(b.dirty);
+        m.candidate_dirty = Some(b.dirty || is(b.dirty_chunk));
         let (planned, windows) = runner::plan_chunk(&p, &c);
         (m.planned, m.planned_windows, m.chunk) = (planned, Some(windows), Some(name.clone()));
         m.host = Some(adm_host(if is(b.other_host) { 64 } else { 128 }));
@@ -3869,7 +3999,7 @@ fn build_run(b: Build) -> Fixture {
         if !skipped {
             let dir = run.join("chunks").join(&name);
             let mut rd = records::RunDir::create(&dir, &m).unwrap();
-            let mut rep = Rep::new(0, (1_000_000, 500_000), 300);
+            let mut rep = Rep::new(c.repetition(), (1_000_000, 500_000), 300);
             rep.target = c.target();
             let rows = msg_rows(run_id, &rep);
             for r in &rows {
@@ -4054,6 +4184,111 @@ fn admit_v4_refuses_a_dirty_candidate() {
             ..Default::default()
         },
         "its tree was dirty",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_a_later_dirty_chunk() {
+    // Not the first chunk of the plan, and the first is clean.
+    let (p, _) = adm_protocol();
+    let last = runner::plan_v4(&p).last().unwrap().name();
+    assert_ne!(last, runner::plan_v4(&p)[0].name());
+    let last: &'static str = Box::leak(last.into_boxed_str());
+    refuses(
+        Build {
+            dirty_chunk: Some(last),
+            ..Default::default()
+        },
+        &format!("chunk {last}: its tree was dirty"),
+    );
+}
+
+#[test]
+fn admit_v4_refuses_a_target_whose_digest_differs_between_chunks() {
+    let (a, b) = ("cost.swarmail.r0", "cost.swarmail.r1");
+    // Two repetitions, so Swarmail has two chunks; the second ran other bytes.
+    let f = build_run(Build {
+        reps: 2,
+        other_digest: Some(b),
+        ..Default::default()
+    });
+    let w = f.admit(true).expect_err("must refuse");
+    assert!(
+        w.contains("swarmail's executable digest differs")
+            && w.contains(&format!("chunk {b}"))
+            && w.contains(a),
+        "{w}"
+    );
+    // The same two chunks on one executable admit.
+    build_run(Build {
+        reps: 2,
+        ..Default::default()
+    })
+    .admit(true)
+    .expect("one executable per target admits");
+}
+
+#[test]
+fn admit_v4_refuses_a_cleanup_without_its_launch_receipt() {
+    refuses(
+        Build {
+            edit: Some(("cost.greenmail.r0", |r| r["launches"] = json!([]))),
+            ..Default::default()
+        },
+        "chunk cost.greenmail.r0: launch and cleanup receipts must pair",
+    );
+    refuses(
+        Build {
+            edit: Some(("cost.mailpit.r0", |r| {
+                let c = r["cleanups"][0].clone();
+                r["cleanups"].as_array_mut().unwrap().push(c);
+            })),
+            ..Default::default()
+        },
+        "1 launch receipts, 2 cleanup receipts",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_an_empty_plan_without_panicking() {
+    let mut v = draft();
+    v["throughput"] = json!([]);
+    let p = p4(v);
+    assert!(runner::plan_v4(&p).is_empty());
+    let (root, sbytes) = (fixture(), serde_json::to_vec(&lock5()).unwrap());
+    let lock = SourceLock::parse(&sbytes).unwrap();
+    let pbytes = serde_json::to_vec(&p).unwrap();
+    let bins = Default::default();
+    let a = report::Admission {
+        protocol: &p,
+        protocol_bytes: &pbytes,
+        lock: &lock,
+        lock_bytes: &sbytes,
+        bins: &bins,
+    };
+    // The directory is empty and is never read.
+    for seal in [true, false] {
+        let w = report::admit_v4(root.path(), &a, seal).unwrap_err();
+        assert!(w.contains("chunk plan is empty"), "{w}");
+    }
+}
+
+#[test]
+fn the_sealed_manifest_names_a_draft_as_a_draft() {
+    let f = build_run(Build::default());
+    assert_eq!(f.p.status, protocol::Status::Draft);
+    let sealed = f.admit(true).unwrap();
+    assert_eq!(sealed.files["manifest.json"]["protocol_status"], "draft");
+    // It is in the bytes on disk, and verification recomputes it.
+    let on_disk: Value = json(&std::fs::read(f.dir().join("manifest.json")).unwrap());
+    assert_eq!(on_disk["protocol_status"], "draft");
+    rewrite_and_reindex(&f.dir(), "manifest.json", |m| {
+        m["protocol_status"] = json!("frozen");
+    });
+    let w = f.admit(false).unwrap_err();
+    assert!(
+        w.contains("manifest.json") && w.contains("protocol_status"),
+        "{w}"
     );
 }
 
