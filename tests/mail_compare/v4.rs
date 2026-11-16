@@ -851,9 +851,59 @@ fn the_v4_draft_differs_from_v3_only_where_0132_says() {
             .unwrap()
             .to_owned()
     };
+    // The one change in it: GreenMail's POP3 read is this draft's, not v4's.
     assert_eq!(
-        after(&d["claim"].clone().into_wrapped()),
+        after(&d["claim"].clone().into_wrapped()).replace(" in this draft", ""),
         after(&v3["claim"].clone().into_wrapped())
+    );
+}
+
+#[test]
+fn the_v4_draft_names_greenmail_rest_and_the_wait_budget_as_unresolved() {
+    let d = draft();
+    let owed: Vec<&str> = d["unresolved"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap())
+        .collect();
+    let rest = owed
+        .iter()
+        .find(|x| x.contains("GreenMail"))
+        .expect("an entry for GreenMail's read path");
+    assert!(
+        rest.contains("REST") && rest.contains("POP3") && rest.contains("story B"),
+        "{rest}"
+    );
+    assert!(rest.contains("answer 8"), "{rest}");
+    let wait = owed
+        .iter()
+        .find(|x| x.contains("wait_operation_ms"))
+        .expect("an entry for the wait budget");
+    assert!(
+        wait.contains("story C")
+            && wait.contains("10000")
+            && wait.contains("40000")
+            && wait.contains("no wait profile"),
+        "{wait}"
+    );
+    // The budget it names is the draft's, and v3's is what it says.
+    assert_eq!(d["budgets"]["wait_operation_ms"], 10_000);
+    assert_eq!(json(PROTOCOL_V3)["budgets"]["wait_operation_ms"], 40_000);
+    // The claim says the POP3 read is the draft's.
+    let claim = d["claim"]["statement"].as_str().unwrap();
+    assert!(
+        claim.contains("GreenMail is read over POP3 in this draft"),
+        "{claim}"
+    );
+    // A draft still validates, and the frozen rule keeps it from freezing.
+    p4(d.clone()).validate().unwrap();
+    let mut frozen = frozen_ready();
+    frozen["unresolved"] = d["unresolved"].clone();
+    let w = refusals(p4(frozen).validate_owing(&[]));
+    assert!(
+        w.contains("a frozen protocol has nothing unresolved"),
+        "{w}"
     );
 }
 
