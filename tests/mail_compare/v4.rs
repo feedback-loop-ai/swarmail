@@ -9060,6 +9060,11 @@ fn v4_real_cost_chunk_seals_and_admits() {
             .iter()
             .all(|c| c.proved() && c.cgroup_removed == Some(true))
     );
+    // Each cleanup receipt names the leaf of its launch receipt (revision 2).
+    for (launch, cleanup) in life.launches.iter().zip(&life.cleanups) {
+        assert!(launch.leaf.is_some(), "{launch:?}");
+        assert_eq!(cleanup.leaf, launch.leaf, "{cleanup:?}");
+    }
     let bins = Default::default();
     let a = report::Admission {
         protocol: &p,
@@ -9158,6 +9163,12 @@ fn v4_real_cost_chunk_seals_and_admits() {
             .iter()
             .all(|c| c.proved() && c.cgroup_removed == Some(true))
     );
+    for (launch, cleanup) in life.launches.iter().zip(&life.cleanups) {
+        assert!(
+            cleanup.leaf.is_some() && cleanup.leaf == launch.leaf,
+            "{cleanup:?}"
+        );
+    }
     let bins = Default::default();
     let a = report::Admission {
         protocol: &p,
