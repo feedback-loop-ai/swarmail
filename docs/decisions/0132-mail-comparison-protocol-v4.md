@@ -1,6 +1,7 @@
 # 0132 — Mail comparison protocol v4: cost to operate, API level, best wait and test execution
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-16: "Accept all as proposed"; see
+  the dated acceptance note at the end)
 - **Date:** 2026-11-16
 - **Scope:** issues #349 (cost to operate, the README headline) and #351 (API
   level, each tool's best wait, test execution), both part of #163 (epic
@@ -700,3 +701,31 @@ issue closure or acceptance is authorized by this record.
 11. **Raw samples:** commit them below 50 MiB, keep them out of git above.
 12. **MCP adapters** for smtp4dev, Inbucket, GreenMail and the Alkemio image
     stay a non-goal. Their `mcp` rows read `no MCP surface`.
+
+## Acceptance — 2026-11-16 (operator)
+
+The operator accepted this record as proposed ("Accept all as proposed"),
+answering every open question above with the record's own proposal:
+
+1. API concurrency is 1, 8 and 32.
+2. One enforced profile only; no unenforced accounting pass.
+3. The headline profile is `cost-c8-reused`. A cell not at equal results is
+   published unranked, with its shortfall named.
+4. `wait-tight` at 10 ms is kept.
+5. The stream backstop interval is 1,000 ms.
+6. The 150,000 cap holds, through lock v5's placeholder.
+7. A driver-owned cgroup v2 leaf is the requested enforced profile of 0092
+   §2. Storage stays unmatched, and the collection host keeps its current
+   delegation (no `Delegate=cpuset`); CPUs are pinned by affinity.
+8. GreenMail is read over REST in v4; v3 keeps POP3.
+9. A tool with only a global clear cleans per test at parallelism 1, and once
+   after the suite at 8 and 32.
+10. About one working day of host time at 3 repetitions is accepted.
+11. Raw samples are committed below 50 MiB and kept out of git above.
+12. MCP adapters for smtp4dev, Inbucket, GreenMail and the Alkemio image stay
+    a non-goal.
+
+Story C no longer waits: with acceptance, stories A to D are all admissible
+work, and the pointer addenda on 0093 and 0130 are added with this note.
+Story E (freeze and collection) stays operator-run after A to D merge, and
+the README headline stays a separate operator ruling (§13).
