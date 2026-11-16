@@ -3759,6 +3759,26 @@ mod test_probes {
             .is_some_and(|now| same_identity(want, &now) && !matches!(now.state, 'Z' | 'X'))
     }
 
+    /// Every path under `root`, relative, for a timeout diagnostic.
+    fn walkdir_names(root: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for e in rd.flatten() {
+                let p = e.path();
+                out.push(p.strip_prefix(root).unwrap_or(&p).display().to_string());
+                if p.is_dir() && out.len() < 400 {
+                    stack.push(p);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
     fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while !condition() {
@@ -4689,13 +4709,22 @@ wait "$child"
                     std::fs::read_to_string(dir.join("probe.stderr")).unwrap_or_default()
                 );
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for the runner's agent readiness; stdout={}; stderr={}; runtime-env present={}",
-                std::fs::read_to_string(dir.join("probe.stdout")).unwrap_or_default(),
-                std::fs::read_to_string(dir.join("probe.stderr")).unwrap_or_default(),
-                dir.join("runtime-env").exists()
-            );
+            if std::time::Instant::now() >= deadline {
+                // Where the trial stands: every process with its state and
+                // kernel wait channel, and the probe directory's entries.
+                let ps = Command::new("ps")
+                    .args(["-eo", "pid,ppid,pgid,stat,etimes,wchan:32,args", "--forest"])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                    .unwrap_or_else(|e| format!("ps failed: {e}"));
+                let entries: Vec<String> = walkdir_names(dir);
+                panic!(
+                    "timed out waiting for the runner's agent readiness; stdout={}; stderr={}; runtime-env present={}; entries={entries:?}; ps=\n{ps}",
+                    std::fs::read_to_string(dir.join("probe.stdout")).unwrap_or_default(),
+                    std::fs::read_to_string(dir.join("probe.stderr")).unwrap_or_default(),
+                    dir.join("runtime-env").exists()
+                );
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
         let ids: Vec<i32> = std::fs::read_to_string(&pids)
