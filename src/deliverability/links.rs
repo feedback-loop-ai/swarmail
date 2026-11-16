@@ -399,7 +399,7 @@ pub(super) fn compose(report: &Report, observed: Vec<Finding>) -> Result<Report,
     for finding in report.findings.iter().cloned().chain(observed) {
         out.push(finding)?;
     }
-    out.finish_with(&Inputs::default(), report.dns.clone())
+    out.finish_with(&Inputs::default(), report.dns.clone(), report.arc.clone())
 }
 
 #[cfg(test)]
@@ -554,7 +554,7 @@ mod tests {
             (SHORTENERS_VERSION, super::super::RULE_SET_ID, digest),
             (
                 "swarmail-shorteners/1",
-                "swarmail-html/8",
+                "swarmail-html/9",
                 0xd850a45b7e464f79
             )
         );

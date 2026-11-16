@@ -435,12 +435,12 @@ Same store, the two shapes existing suites already speak:
 ## Deliverability report (decision 0085; epic #251)
 
 GET /api/v1/messages/{id}/deliverability takes only the optional query key reachability (see Opt-in link reachability below) and returns
-{rule_set_id, findings:[{rule_id,severity,location,fix_hint}], dns}. Severity is
+{rule_set_id, findings:[{rule_id,severity,location,fix_hint,weight}], dns, arc:{state,sets,failing_instance,reason}, total}. Severity is
 info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/8):
+The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/9):
 one_click, message_id and date are errors; plain_text is warning-level presence
 advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
 are independent checks. They read six facts that the report evaluator computes
@@ -473,7 +473,7 @@ https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 204
 or 7489 sections. These are fixed published references, not live verification or
 provider certification. The rule record is decision 0089.
 
-`swarmail-html/8` retains the synthetic demo.marker.v1: the first root
+`swarmail-html/9` retains the synthetic demo.marker.v1: the first root
 X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
 and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
 html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
@@ -643,6 +643,10 @@ findings and 65536 compact bytes and excess is an error, never truncation. rule_
 moves when the report's bytes move: ignore unknown members and match rule ids, not whole
 bodies. Published fixtures: tests/fixtures/deliverability-agent/ (newsletter-failing.eml,
 newsletter-fixed.eml); the eval task newsletter-findings measures this loop.
+Forwarded mail: read the report's arc member (state none, pass, fail or
+not_evaluated; sets; failing_instance; reason, the id of the one arc.* finding) and
+assert arc.state is pass, not that arc.* findings are absent: a message with no
+chain has none either. arc.* are authentication findings, not a content family.
 
 Cache: 128 Weak-identity slots per Store, exact immutable inputs and rule version,
 four admitted blocking jobs retained through cancellation. Up to 256 findings and
@@ -672,7 +676,7 @@ row's immutable SMTP envelope observation), the frozen policy snapshot (includin
 `spf_client_ip`) and the rule set; every authentication fact is a function of
 those, so two requests with equal keys get equal facts.
 
-## DKIM verification (`swarmail-html/8`)
+## DKIM verification (`swarmail-html/9`)
 
 Decision 0125 (issue #254): each `DKIM-Signature` field of a stored
 message is verified lazily in the report, from the stored bytes, after the SMTP
@@ -706,7 +710,7 @@ A report also needs its SPF and DMARC evidence and the rest of the checklist to 
 clean before it qualifies at a threshold; assert on DKIM rule ids to judge a signer
 alone. See the deliverability guide for each rule's hint, passing and failing fixture.
 
-## SPF and DMARC (`swarmail-html/8`)
+## SPF and DMARC (`swarmail-html/9`)
 
 Decision 0126 (issue #255): SPF for the SMTP envelope and DMARC for the
 root From, lazily in the report on the stored bytes after the SMTP 250, on
@@ -749,6 +753,44 @@ inside one evaluation turns a verdict into `spf.permerror.v1` (fail-closed; a he
 amendment of the no-ambient-time rule, decision 0126 section 8). See the
 deliverability guide for each rule's hint, passing and failing fixture.
 
+## ARC (`swarmail-html/9`)
+
+Proposed decision 0133 (issue #256): the ARC chain (RFC 8617) of a stored message is
+validated lazily in the report, from the stored bytes, after the SMTP 250, on
+`mail-auth` with keys only from the declared DNS map (`<s>._domainkey.<d>` of each
+hop's `s=` and `d=`; real DNS is not supported). Every report carries a required
+member after `dns` and before `total`:
+`"arc":{"state":"pass","sets":2,"failing_instance":null,"reason":null}`.
+`state` is `none` (no ARC field), `pass`, `fail` or `not_evaluated` (Swarmail
+declined to judge: a declared temporary key failure, an ambiguous header boundary,
+a bound, or an `x=` it cannot judge); `sets` is the largest number of fields any
+one family (ARC-Seal, ARC-Message-Signature, ARC-Authentication-Results) holds;
+`failing_instance` is the `i=` that broke the chain, only with `fail`; `reason` is
+the id of the report's one `arc.*` finding. It names results as
+Authentication-Results does: `arc=none` is state none, `arc=pass` is pass,
+`arc=fail` is fail with the finding saying why, and no `arc=` clause is
+not_evaluated. A pass and a message with no chain emit no finding, so read
+`arc.state`. arc=pass says the chain validated, not that the sender is authentic;
+nothing else in the report (no fact, no DMARC result, no other finding) reads it,
+and the contents of an ARC-Authentication-Results field are never read.
+At most one finding per report, an error, at `{"kind":"header","name":"arc-seal"
+|"arc-message-signature"|"arc-authentication-results","occurrence":k}` where k is
+the field's index among the message's fields of that name (null for a missing
+family). The failing seal is the newest seal that does not verify (each seal
+covers every older set). Expiry is judged at the receipt second, never the wall
+clock: an `x=` on the newest ARC-Message-Signature at or before it (or its `t=`) is
+`arc.signature_expired.v1`, any later `x=` is `arc.not_evaluated.v1` and the chain
+is not verified. A chain asks for at most 51 keys, all recorded in `dns.lookups`.
+Rule ids, each at version 1, all errors (`arc.not_evaluated.v1` weighs 0):
+`arc.header_boundary_ambiguous.v1`, `arc.limits_exceeded.v1`, `arc.malformed.v1`,
+`arc.unsupported.v1`, `arc.set_incomplete.v1`, `arc.signature_expired.v1`,
+`arc.instance_invalid.v1`, `arc.cv_invalid.v1`, `arc.body_hash_mismatch.v1`,
+`arc.key_missing.v1`, `arc.key_invalid.v1`, `arc.signature_mismatch.v1`,
+`arc.not_evaluated.v1`; the first two and the last give state not_evaluated, the
+others fail. A message whose DKIM-Signature has `l=` and that also carries more
+than 15 ARC-Message-Signature `l=` fields gets `dkim.limits_exceeded.v1`. See the
+deliverability guide for each rule's hint, passing and failing fixture.
+
 ## Spam signals (`swarmail-spam/1`)
 
 Six built-in, offline, deterministic rules read only the captured message: the
@@ -759,8 +801,9 @@ emits at most one finding per report, severity info or warning (error stays the
 bulk checklist's requirement level), so a large message can never flood the
 report. They arrived as `swarmail-spam/1`; with the link rules of decision 0121,
 the `dns` member of decision 0120, the DKIM rules of decision 0125, the SPF and
-DMARC rules of decision 0126 and the weight and total of decision 0122 §2 the
-report's `rule_set_id` is now `swarmail-html/8`, so the rule-set version
+DMARC rules of decision 0126, the weight and total of decision 0122 §2 and the
+ARC chain of proposed decision 0133 the report's `rule_set_id` is now
+`swarmail-html/9`, so the rule-set version
 is recorded in every report and in the cache key. Every finding carries a
 `weight` and the report a `total` (see Weight and total below); the weights
 named in each rule are the weights the report emits.
@@ -899,9 +942,9 @@ gives every finding a `weight` and the report a `total`, so no reader has to
 invent a weighting and no edge (REST, MCP, the UI) computes a score. Both are
 non-negative integers, and each is the **last** key of its object: a finding is
 `rule_id`, `location`, `severity`, `fix_hint`, `weight`, and the report is
-`rule_set_id`, `findings`, `dns`, `total`. MCP serializes the same report with
-sorted keys, where `weight` and `total` also sort last, so no key that was
-already served moves.
+`rule_set_id`, `findings`, `dns`, `arc`, `total`. MCP serializes the same report
+with sorted keys, where `weight` and `total` also sort last and the new `arc`
+sorts first, so no key that was already served moves.
 
 | severity | weight |
 |---|---|
@@ -960,5 +1003,8 @@ after `swarmail-html/6`; the three authentication entries of the bulk checklist
 now read evaluated facts, so their findings changed), then
 `swarmail-html/8` (the per-finding `weight` and the report `total` of decision
 0122 §2, integrated after `swarmail-html/7`; no rule changed meaning, and every
-report gained the two keys). A change to
+report gained the two keys), then
+`swarmail-html/9` (the thirteen ARC rules and the required `arc` report member of
+proposed 0133, integrated after `swarmail-html/8`; no existing rule changed
+meaning, and every report gained the member). A change to
 any rule's meaning, hint, location or order requires a new id.

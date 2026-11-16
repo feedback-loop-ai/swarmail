@@ -669,7 +669,7 @@ mod tests {
             serde_json::to_vec(&first).unwrap(),
             serde_json::to_vec(&again).unwrap()
         );
-        assert_eq!(first.rule_set_id, "swarmail-html/8");
+        assert_eq!(first.rule_set_id, "swarmail-html/9");
         let spam = first
             .findings
             .iter()

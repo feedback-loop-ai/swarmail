@@ -23,6 +23,7 @@
 //! hands over; `%{t}` is unreachable because an explanation is fetched as a
 //! different record type than the one the adapter builds; DMARC reads no clock.
 
+use super::arc::{self, ArcChain};
 use super::dkim::{self, AUTHENTICATOR, Prepared, name_of, not_found, owner_of};
 use super::dns::{Lookups, Txt};
 use super::{
@@ -723,14 +724,15 @@ pub(super) fn collect(
     envelope: &Envelope<'_>,
     lookups: &mut Lookups,
     out: &mut Collector,
-) -> Result<AuthEvidence, AnalysisError> {
+) -> Result<(AuthEvidence, ArcChain), AnalysisError> {
     let prepared = dkim::prepare(raw, fields, size, out)?;
     // One borrow of the policy for the three evaluations, which run one after
     // the other: the DKIM outputs live on into DMARC, so their cache must too.
     let shared = RefCell::new(lookups);
-    let adapter = dkim::Adapter { lookups: &shared };
+    let adapter = dkim::Adapter::over(&shared);
     let (outputs, dkim_pass) = match &prepared {
-        Prepared::Ready(message) => {
+        Prepared::Ready { strict, full } => {
+            let message = full.as_deref().unwrap_or(strict);
             let verified = dkim::verify(message, &adapter, receipt, out)?;
             (verified.outputs, verified.pass)
         }
@@ -738,6 +740,9 @@ pub(super) fn collect(
         Prepared::Stopped | Prepared::Limited(_) => (Vec::new(), Fact::Unknown),
     };
     let dkim_known = !matches!(prepared, Prepared::Stopped | Prepared::Limited(_));
+    // ARC reads the strict parse DKIM bounded, through the same adapter; no fact,
+    // no DMARC verdict and no other finding reads the chain (decision 0133 §7).
+    let chain = arc::evaluate(prepared.strict(), fields, size, &adapter, receipt, out)?;
     let spf = spf(envelope, &shared);
     if let Some(rule) = spf.rule() {
         out.push(rule.finding(fields))?;
@@ -765,7 +770,7 @@ pub(super) fn collect(
     if let Some(rule) = rule {
         out.push(rule.finding(fields))?;
     }
-    Ok(facts)
+    Ok((facts, chain))
 }
 
 #[cfg(test)]
@@ -846,7 +851,7 @@ mod tests {
         let (fields, size) = headers(raw).unwrap();
         let mut lookups = Lookups::new(world.clone());
         let mut out = Collector(Vec::new());
-        let facts = collect(
+        let (facts, _) = collect(
             raw,
             &fields,
             size,
@@ -2690,7 +2695,7 @@ mod tests {
         assert_eq!(guide.matches("\n### `spf.").count(), 8);
         assert_eq!(guide.matches("\n### `dmarc.").count(), 8);
         for fact in [
-            "## SPF and DMARC (`swarmail-html/8`)",
+            "## SPF and DMARC (`swarmail-html/9`)",
             "**The observed envelope.**",
             "**Record types: TXT only.**",
             "**Limits (RFC 7208 section 4.6.4).**",
