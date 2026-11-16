@@ -266,7 +266,7 @@ protocol 1 to 3 path must behave as before in every task.
 
 ### R1 The chunk deadline reaches the work in flight (V2, V16; `I0` `C4` `G2` `C6`)
 
-- [ ] R1.1 `protocol.rs`: `CHUNK_KILL_MS = 600000`, `CHUNK_MARGIN_MS =
+- [x] R1.1 `protocol.rs`: `CHUNK_KILL_MS = 600000`, `CHUNK_MARGIN_MS =
   30000`, and V2's inequality in place of `1..=540000`; the refusal prints
   the computed ceiling. Set `chunk_deadline_ms` to 480000 in
   `docs/evals/draft/protocol.v4.json` and bring
@@ -277,7 +277,7 @@ protocol 1 to 3 path must behave as before in every task.
   `the_v4_draft_states_a_chunk_deadline_of_480000`; the existing
   `v4_resources_block_refuses_each_absent_or_different_value` still passes.
   (AC2, AC6)
-- [ ] R1.2 `runner.rs`: compute `chunk_end` once in `run_chunk` from the run
+- [x] R1.2 `runner.rs`: compute `chunk_end` once in `run_chunk` from the run
   clock's origin and pass it to the warmup, the measured instance and the
   send-and-verify window. At or after it: launch no instance, open no
   window, begin no send, listing or fidelity read. Remove the
@@ -289,7 +289,7 @@ protocol 1 to 3 path must behave as before in every task.
   `a_send_window_past_chunk_end_is_all_unstarted_and_lists_nothing` (one row
   per index, reason `chunk deadline`; verification `incomplete` with that
   reason; `measure` window `chunk_deadline`). (AC21)
-- [ ] R1.3 `runner.rs`: one helper that races a future against `chunk_end`;
+- [x] R1.3 `runner.rs`: one helper that races a future against `chunk_end`;
   wrap each warmup connect and send, the idle wait, each measured connect
   and send, each listing and each fidelity read. A cut connect keeps a
   failed connect's disposition, a cut send is `ambiguous`, both with a
@@ -307,7 +307,7 @@ protocol 1 to 3 path must behave as before in every task.
   `the_profiles_own_send_deadline_still_writes_send_deadline`,
   `a_protocol_3_run_has_no_chunk_end` (its rows for a slow listener are what
   they were). (AC21)
-- [ ] R1.4 `runner.rs`: `skip_profile` becomes the one "not measured" path:
+- [x] R1.4 `runner.rs`: `skip_profile` becomes the one "not measured" path:
   it takes the outcome, the reason (`chunk deadline`, `oom killed`,
   `target exited`) and the launch name (`none` when nothing was launched),
   writes the send rows, the verification row and the three never-opened
@@ -320,7 +320,7 @@ protocol 1 to 3 path must behave as before in every task.
 
 ### R2 A target that dies before readiness is measured (V15, V16; `G1` `C8`)
 
-- [ ] R2.1 `targets.rs`, `resources.rs`: the leaf teardown reads `oom_kill`
+- [x] R2.1 `targets.rs`, `resources.rs`: the leaf teardown reads `oom_kill`
   from `memory.events` beside `memory.peak`, before the `rmdir`;
   `CleanupFacts` gains `oom_kills` and `exited_early` (optional, absent
   without a leaf); `LaunchError::NotReady` keeps the launch facts of a leaf
@@ -330,12 +330,12 @@ protocol 1 to 3 path must behave as before in every task.
   `a_not_ready_leaf_launch_keeps_its_launch_receipt`; the existing
   `v3_launch_and_cleanup_receipts_serialize_byte_for_byte` passes unchanged.
   (AC11)
-- [ ] R2.2 `runner.rs`: one pure function from the cleanup receipt (and
+- [x] R2.2 `runner.rs`: one pure function from the cleanup receipt (and
   whether a launch receipt exists) to the outcome of V16's table. — Test:
   `a_not_ready_launch_is_classified_from_its_receipts` (`oom_kills` ≥ 1
   with either `exited_early`; `exited_early` alone; neither; no launch
   receipt; an unproved cleanup with each of the above). (AC22)
-- [ ] R2.3 `runner.rs`: the warmup and the measured instance call it, push
+- [x] R2.3 `runner.rs`: the warmup and the measured instance call it, push
   both receipts, and hand a target failure to R1.4's path instead of
   returning an infrastructure error. — Tests:
   `a_chunk_whose_target_exits_at_once_seals_with_exit_one_and_goes_on`
@@ -347,7 +347,7 @@ protocol 1 to 3 path must behave as before in every task.
 
 ### R3 No observation, no number (V13, V17; `C2` `G3` `C3` `I4`)
 
-- [ ] R3.1 `records.rs`, `runner.rs`: the window's counters, `affinity_held`
+- [x] R3.1 `records.rs`, `runner.rs`: the window's counters, `affinity_held`
   and `scratch_bytes` become optional together; one constructor for an
   opened window and one for a never-opened one; the reader refuses a
   `measured` window without counters, a window with some counters and not
@@ -357,14 +357,14 @@ protocol 1 to 3 path must behave as before in every task.
   `the_reader_refuses_a_window_with_partial_counters`,
   `the_reader_refuses_a_sample_of_launch_none`; the existing duplicate,
   unplanned and missing window tests pass. (AC10)
-- [ ] R3.2 `runner.rs`: read affinity from `/proc` at the end of `ready`,
+- [x] R3.2 `runner.rs`: read affinity from `/proc` at the end of `ready`,
   `idle_ready` and `measure` through one function that gives `None` for an
   empty task list; remove both literal `true`s. — Tests:
   `affinity_is_read_at_the_end_of_each_window_kind` (fixture `/proc` tree:
   all tasks on the pair, one task differing, no task; for each of the three
   kinds), and the existing `affinity_held_is_false_when_any_task_differs`.
   (AC10)
-- [ ] R3.3 `stats.rs`, `report.rs`: per-repetition figures are optional and
+- [x] R3.3 `stats.rs`, `report.rs`: per-repetition figures are optional and
   follow V17's table; `spread` carries `n`; `mean` and the peaks lose their
   zero defaults; the idle and startup cells carry `ranked` and `shortfalls`
   from the function the cost cells use. — Tests:
@@ -378,7 +378,7 @@ protocol 1 to 3 path must behave as before in every task.
   `an_opened_oom_killed_measure_window_keeps_its_cpu_and_peak_unranked`;
   extend `median_min_max_over_one_two_and_three_values` with `n`. AC13's
   existing tests pass with their expected values unchanged. (AC13, AC23)
-- [ ] R3.4 `report.rs`: `timeout` from a `chunk_deadline` window, a send row
+- [x] R3.4 `report.rs`: `timeout` from a `chunk_deadline` window, a send row
   `unstarted` at a deadline, or a verification the chunk deadline ended;
   `lost` not named from such a verification; rows `unstarted` because the
   target failed before readiness name that failure; a visible row without
@@ -390,17 +390,17 @@ protocol 1 to 3 path must behave as before in every task.
 
 ### R4 Validators and admission (V4, V6, V20; `I2` `I3` `G5` `I7` `I8` `Gi`)
 
-- [ ] R4.1 `protocol.rs`, `runner.rs`: protocol 4 refuses a `null` Swarmail
+- [x] R4.1 `protocol.rs`, `runner.rs`: protocol 4 refuses a `null` Swarmail
   cap by name, and a protocol 4 launch spec for Swarmail is an error without
   a cap, never `--max-per-inbox 0`. — Tests:
   `v4_refuses_a_null_swarmail_cap`,
   `a_v4_swarmail_spec_is_never_built_uncapped`; protocol 3's Swarmail spec is
   unchanged. (AC4)
-- [ ] R4.2 `protocol.rs`: in lock 5 the cap flag occurs exactly once in a
+- [x] R4.2 `protocol.rs`: in lock 5 the cap flag occurs exactly once in a
   launch, in any form. — Test: `lock_v5_refuses_a_second_cap_flag`
   (placeholder then literal, as an argv pair, as `flag=` and as `env:`).
   (AC4)
-- [ ] R4.3 `report.rs`: `admit_v4` requires `candidate_dirty: false` on
+- [x] R4.3 `report.rs`: `admit_v4` requires `candidate_dirty: false` on
   every chunk, one executable digest per target across chunks, as many
   proved cleanup receipts as launch receipts per chunk, and refuses an empty
   plan by name before it indexes anything; the sealed manifest carries
@@ -409,7 +409,7 @@ protocol 1 to 3 path must behave as before in every task.
   `admit_v4_refuses_a_cleanup_without_its_launch_receipt`,
   `admit_v4_refuses_an_empty_plan_without_panicking`,
   `the_sealed_manifest_names_a_draft_as_a_draft`. (AC16)
-- [ ] R4.4 Tests only: every absent-field refusal test of the v4 resources
+- [x] R4.4 Tests only: every absent-field refusal test of the v4 resources
   block and of `clients_sha256` asserts that the refusal text names the
   field, not only that validation failed. — Proof: the changed assertions in
   `v4_resources_block_refuses_each_absent_or_different_value` and its
@@ -418,7 +418,7 @@ protocol 1 to 3 path must behave as before in every task.
 
 ### R5 `footprint` and `hold` (V18, V19; `G4` `C10` `C7`)
 
-- [ ] R5.1 `resources.rs`: for a row whose artifact is an archive,
+- [x] R5.1 `resources.rs`: for a row whose artifact is an archive,
   `installed_bytes` is `null`, `installed_basis` is
   `owed: the extracted archive is not walked`, and `executable_bytes` is the
   digest-checked executable's size; executable rows keep their sum. — Tests:
@@ -427,7 +427,7 @@ protocol 1 to 3 path must behave as before in every task.
   row of a fixture with both artifact kinds);
   `footprint_installed_bytes_include_the_runtime_tree` passes for an
   executable row. (AC14)
-- [ ] R5.2 `runner.rs`: `hold` prints each endpoint as the `host:port` the
+- [x] R5.2 `runner.rs`: `hold` prints each endpoint as the `host:port` the
   target listens on, the POP3 listener's included. — Tests:
   `hold_prints_each_endpoint_as_the_address_it_listens_on` (a launch without
   a leaf; a connect to each printed address succeeds; a fixture with a POP3
@@ -443,17 +443,17 @@ Bash 3.2 syntax only. The rig's fake tools gain what each test needs: a
 that answers `--all`, a `cargo` that logs, and a fake driver that can write
 a marker and wait.
 
-- [ ] R6.1 After a chunk, poll `systemctl --user is-active` until inactive,
+- [x] R6.1 After a chunk, poll `systemctl --user is-active` until inactive,
   for at most 10 s, before judging the scope. — Tests:
   `collect_v4_waits_for_a_scope_that_is_active_once_then_inactive` (the
   chunk is clean and the run goes on),
   `collect_v4_stops_a_scope_that_stays_active_and_counts_two` (the existing
   test, now through the wait; the kill and stop are logged after it). (AC17)
-- [ ] R6.2 Write `reproduce.txt` after the last chunk, before the seal. —
+- [x] R6.2 Write `reproduce.txt` after the last chunk, before the seal. —
   Tests: `collect_v4_writes_reproduce_txt_only_after_the_last_chunk` (absent
   when the fake driver of chunk 1 runs),
   `an_incomplete_collect_v4_has_no_reproduce_txt`. (AC17)
-- [ ] R6.3 A trap on INT, TERM and HUP: during a chunk, SIGTERM to the
+- [x] R6.3 A trap on INT, TERM and HUP: during a chunk, SIGTERM to the
   chunk's `timeout`, wait until it is reaped, judge the scope, write the
   ledger entry with exit 2, start no later chunk, exit 2; outside a chunk,
   exit 2. The chunk runs in the background and is `wait`ed. — Test:
@@ -461,7 +461,7 @@ a marker and wait.
   (the test waits, with a deadline, for the fake driver's marker, then
   signals the wrapper: ledger exit 2, one ledger file, no `index.json`, no
   `reproduce.txt`, the fake driver gone). (AC17)
-- [ ] R6.4 One bound prefix, `timeout --kill-after=30 600 taskset -c
+- [x] R6.4 One bound prefix, `timeout --kill-after=30 600 taskset -c
   0-<n-1>`, on both `cargo` builds, `check`, `footprint`, every chunk and
   both admissions; refuse, before building, a shell whose `nproc` differs
   from `nproc --all`. — Tests:
@@ -470,11 +470,11 @@ a marker and wait.
   `collect_v4_refuses_a_restricted_shell_by_name`,
   `collect_v4_chunk_timeout_is_chunk_kill_ms` (the logged `600` against the
   constant in `protocol.rs`). (AC17)
-- [ ] R6.5 Tests only, the cases AC17 lacked: —
+- [x] R6.5 Tests only, the cases AC17 lacked: —
   `collect_v4_counts_exit_three_and_a_kill_as_two` (3 and 137),
   `collect_v4_a_timeout_with_a_live_scope_is_killed_and_counted`,
   `collect_v4_a_seal_followed_by_a_refused_verify_exits_two`. (AC17)
-- [ ] R6.6 The v4 rig owns its git environment: the fixture's `git` calls
+- [x] R6.6 The v4 rig owns its git environment: the fixture's `git` calls
   and the wrapper it runs get `GIT_CONFIG_GLOBAL=/dev/null`,
   `GIT_CONFIG_NOSYSTEM=1` and no inherited `GIT_CONFIG_COUNT`,
   `GIT_CONFIG_KEY_*` or `GIT_CONFIG_VALUE_*`. — Test:
@@ -483,7 +483,7 @@ a marker and wait.
 
 ### R7 The draft's text (V7; `G6` `I8`)
 
-- [ ] R7.1 `docs/evals/draft/protocol.v4.json`: add two `unresolved`
+- [x] R7.1 `docs/evals/draft/protocol.v4.json`: add two `unresolved`
   entries, one for GreenMail's REST read path (story B, 0132 acceptance
   answer 8; this draft reads POP3) and one for `wait_operation_ms` (story C
   restores it with its wait profiles); make the claim's sentence say "in
@@ -494,7 +494,7 @@ a marker and wait.
 
 ### R8 The README (V23; `C9` `Gi` `C8`)
 
-- [ ] R8.1 `docs/evals/README.md`, the v4 section: the sentences V23 lists
+- [x] R8.1 `docs/evals/README.md`, the v4 section: the sentences V23 lists
   for revision 1, and the **Owed** paragraph replaced by AC18b's statement
   (the host run gates the merge). — Tests:
   `cargo test --locked --test store_contract_docs` passes; a test
@@ -505,7 +505,7 @@ a marker and wait.
 
 ### R9 Proofs and gates (V22; `C1`, `I` on AC18)
 
-- [ ] R9.1 Update the five proofs to V22's revised list: proof 1 asserts the
+- [x] R9.1 Update the five proofs to V22's revised list: proof 1 asserts the
   teardown's `oom_kills`; proof 4 adds the hold ended by its interrupt;
   proof 5 asserts `affinity_held: true` on every window and adds the chunk
   whose candidate exits at once (`/bin/false`). Each still fails with V8's
@@ -513,7 +513,7 @@ a marker and wait.
   `the_five_real_proofs_are_ignored_and_linux_only` (reads the test file:
   the five names, `#[ignore]`, the `cfg`), and each proof's own run in
   R9.2. (AC18a)
-- [ ] R9.2 Run each proof where the seat stands, alone, with V22's command.
+- [x] R9.2 Run each proof where the seat stands, alone, with V22's command.
   Without delegation, keep the output showing V8's exact refusal for all
   five, and state in the result notes, in these words, that **AC18b is
   open and the story is not complete**. With delegation, keep each passing
@@ -528,7 +528,9 @@ a marker and wait.
   passing output to the PR. A proof that fails goes back as a finding with
   its output; the PR is not merged. — Proof: the five passing outputs on
   the PR. (AC18b)
-- [ ] R9.4 Prove what did not change, then run every gate of
+- [ ] R9.4 *(Every gate ran and passed but the brokkr compile of the shelf
+  recipes: the pinned brokkr is not installed in the implement seat's box and
+  nothing here changes `.brokkr/`; the verify seat and CI run it.)* Prove what did not change, then run every gate of
   `docs/house-rules.md` § Gates on the final tree, `--locked`, the coverage
   gate and its selftest, the publish-guard proof, the seal proof and
   `cargo deny check licenses` included, and read each recipe's compile
