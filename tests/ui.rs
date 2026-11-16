@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{SmtpConn, SseReader, http_get_text, http_json, smtp_send, start};
+use common::{SmtpConn, SseReader, http_get_text, http_head_text, http_json, smtp_send, start};
 
 /// Seed one fixture mail into `inbox` (the default extractor path).
 async fn seed(addr: std::net::SocketAddr, inbox: &str, body: &str) {
@@ -1549,6 +1549,49 @@ async fn the_stylesheet_shows_one_pane_at_phone_width_and_has_both_themes() {
     );
 }
 
+/// Review finding (security): the console's Clear inbox is a destructive
+/// control and the CSP is a meta tag (no `frame-ancestors`), so every UI
+/// route, errors included, refuses framing by header.
+#[tokio::test]
+async fn every_ui_route_refuses_framing_by_header() {
+    let srv = start().await;
+    let key = seeded_thread_key(srv.http_addr, "framed").await;
+    for path in [
+        "/".to_string(),
+        "/ui/inbox/framed".to_string(),
+        format!("/ui/inbox/framed/thread/{key}"),
+        "/ui/message/no-such-id".to_string(),
+        "/ui/inbox/framed/thread/no-such-key".to_string(),
+    ] {
+        let (_, head) = http_head_text(srv.http_addr, &path).await;
+        assert!(
+            head.lines()
+                .any(|l| l.eq_ignore_ascii_case("x-frame-options: DENY")),
+            "{path} must carry X-Frame-Options: DENY: {head}"
+        );
+    }
+}
+
+/// Review findings (low): the poll must not rebuild interactive nodes when
+/// nothing changed, and a deterministic analysis failure must not be
+/// retried forever. No JavaScript engine runs in a gate, so both are pinned
+/// on the served bytes.
+#[tokio::test]
+async fn the_script_keeps_unchanged_nodes_and_settles_a_failed_analysis() {
+    let srv = start().await;
+    let (_, page) = http_get_text(srv.http_addr, "/ui/inbox/anywhere").await;
+    let script = the_executable_script(&page);
+    for needle in [
+        "if (key !== railKey) {",
+        "if (key === clearKey) return;",
+        "result.body.error === 'deliverability analysis failed'",
+        "terminal: true",
+        "record.retryAt = again ? tickCount + 1 : Infinity;",
+    ] {
+        assert!(script.contains(needle), "missing {needle:?}: {script}");
+    }
+}
+
 /// R2.2: the counters say what they count, in the bar the server renders.
 #[tokio::test]
 async fn the_status_bar_labels_its_counters_as_lifetime_and_cap_eviction() {
@@ -1563,7 +1606,7 @@ async fn the_status_bar_labels_its_counters_as_lifetime_and_cap_eviction() {
         "{page}"
     );
     assert!(
-        page.contains(r#"title="Mail evicted by the per-inbox cap since the server started""#),
+        page.contains(r#"title="Mail evicted by the per-inbox cap over the store's lifetime""#),
         "{page}"
     );
 }

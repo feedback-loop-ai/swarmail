@@ -210,7 +210,7 @@ The intake's seventeen criteria stand except where the code or the operator's ru
 
 ### R11. Scope
 
-Changed: `src/ui.rs`, `src/static/ui.js`, `src/static/ui.css` (new), `src/api.rs`, `src/pop3.rs` and `tests/smtp_edges.rs` (test-only: pinned bodies follow the additive 0132 members), `src/store.rs` (one read-only method), `src/static/openapi.json`, `src/static/llms.txt`, `tests/ui.rs`, `tests/api.rs`, `docs/decisions/0132-ui-projection-route.md` and its row in `docs/decisions/README.md`, one appended dated pointer in each of the 0110, 0094, 0126 and 0027 records, and this directory. Untouched: `Cargo.toml`, `Cargo.lock`, `deny.toml`, `evals/`, `scripts/`, `.brokkr/`, `.github/`, `src/smtp.rs`, `src/extract.rs`, `src/feed.rs`, `src/model.rs`.
+Changed: `src/ui.rs`, `src/static/ui.js`, `src/static/ui.css` (new), `src/api.rs`, `src/pop3.rs` and `tests/smtp_edges.rs` (test-only: pinned bodies follow the additive 0132 members), `src/store.rs` (one read-only method), `src/static/openapi.json`, `src/static/llms.txt`, `tests/ui.rs`, `tests/api.rs`, `docs/guide/rest-api.md`, `docs/guide/focused-waits.md`, `docs/guide/attachments.md`, `docs/decisions/0132-ui-projection-route.md` and its row in `docs/decisions/README.md`, one appended dated pointer in each of the 0110, 0094, 0126 and 0027 records, and this directory. Untouched: `Cargo.toml`, `Cargo.lock`, `deny.toml`, `evals/`, `scripts/`, `.brokkr/`, `.github/`, `src/smtp.rs`, `src/extract.rs`, `src/feed.rs`, `src/model.rs`.
 
 ## Deviations from the prototype
 
@@ -277,6 +277,7 @@ Every criterion names where it is proven. "Served page" means the bytes of a rea
 - **AC25.** The served script contains none of `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval(`, `Function(`, `.style`, `window.open`, `location.assign`, `location.replace`, `location.href =` or `setAttribute('href'`. Every occurrence of `.href =` in it is followed by the literal `'/ui/`.
 - **AC26.** Markup payloads (`<img src=x onerror=alert(1)>` and `"><script>alert(1)</script>`) sent through the subject, the From display name, the `EHLO` name, an attachment filename, a calendar summary, an anchor text and a code-bearing text body: every console route's page for that inbox contains neither `<img src=x` nor `<script>alert`, and has exactly one script element; the thread view and the projection return each payload as an equal JSON string. An inbox named `a"><b` is served with `data-inbox="a&quot;&gt;&lt;b"`.
 - **AC27.** The CSP meta of `/`, an inbox route, a thread route and a message page equals the string in R8.5, compared with a literal the test owns.
+- **AC27a.** Every UI route answers with `X-Frame-Options: DENY`, error answers included (review finding: the Clear inbox control must not be clickjackable; the CSP meta cannot carry `frame-ancestors`).
 - **AC28.** No served console page (empty store, benign inbox name) contains `http://`, `https://`, `<link`, `@import`, `url(`, `@font-face`, `src="//` or `href="//`.
 
 **Layout** (`tests/ui.rs`)

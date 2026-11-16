@@ -232,6 +232,7 @@ const railOffset = railRows.dataset.offset;
 
 let railList = [];
 let polled = false;
+let railKey = null;
 const inboxCounts = new Map();
 const dotNames = new Set();
 
@@ -317,9 +318,19 @@ function railRow(item) {
 function renderRail() {
   const needle = railFilter.value.trim().toLowerCase();
   const shown = railList.filter((item) => item.name.toLowerCase().includes(needle));
-  railRows.replaceChildren();
-  for (const item of shown) railRows.appendChild(railRow(item));
-  if (railList.length && !shown.length) railRows.appendChild(el('div', 'empty', 'No inbox matches.'));
+  // Rebuild only when something visible changed: a fresh node every tick
+  // would drop keyboard focus and swallow a click that straddles it.
+  const key = JSON.stringify([
+    inbox,
+    railList.length,
+    shown.map((item) => [item.name, item.count, dotNames.has(item.name), typeof item.last_received_ms === 'number' ? ago(item.last_received_ms) : null]),
+  ]);
+  if (key !== railKey) {
+    railKey = key;
+    railRows.replaceChildren();
+    for (const item of shown) railRows.appendChild(railRow(item));
+    if (railList.length && !shown.length) railRows.appendChild(el('div', 'empty', 'No inbox matches.'));
+  }
   $('inbox-total').textContent = String(railList.length);
   railEmpty.hidden = railList.length > 0;
 }
@@ -371,6 +382,12 @@ function failed(state) {
   return Boolean(state) && state.state === 'failed';
 }
 
+// A refusal that repeating cannot change: the analysis failed for this mail
+// (limits exceeded), unlike a busy 503, which a later tick may clear.
+function terminal(state) {
+  return failed(state) && state.terminal === true;
+}
+
 function cacheSet(id, record) {
   cache.delete(id);
   cache.set(id, record);
@@ -399,6 +416,9 @@ async function fetchState(path) {
   try {
     const result = await readJson(path);
     if (result.status === 404) return { state: 'gone', body: null };
+    if (result.status === 503 && result.body && result.body.error === 'deliverability analysis failed') {
+      return { state: 'failed', terminal: true, body: null };
+    }
     if (result.status === 200 && result.body && typeof result.body === 'object') return { state: 'ok', body: result.body };
   } catch (e) {
     // falls through: a failure is not cached
@@ -412,17 +432,20 @@ async function fetchOne(id) {
     record = { projection: null, report: null, retryAt: 0 };
     cacheSet(id, record);
   }
-  if (!settled(record.projection)) {
+  if (!settled(record.projection) && !terminal(record.projection)) {
     record.projection = await fetchState('/api/v1/messages/' + encodeURIComponent(id) + '/projection');
     // A pruned or cleared mail is gone for both reads: no second request.
     if (record.projection.state === 'gone') record.report = record.projection;
     afterStep(id);
   }
-  if (!settled(record.report)) {
+  if (!settled(record.report) && !terminal(record.report)) {
     record.report = await fetchState('/api/v1/messages/' + encodeURIComponent(id) + '/deliverability');
     if (record.report.state === 'gone') record.projection = record.report;
   }
-  if (failed(record.projection) || failed(record.report)) record.retryAt = tickCount + 1;
+  if (failed(record.projection) || failed(record.report)) {
+    const again = (failed(record.projection) && !terminal(record.projection)) || (failed(record.report) && !terminal(record.report));
+    record.retryAt = again ? tickCount + 1 : Infinity;
+  }
   afterStep(id);
 }
 
@@ -493,15 +516,24 @@ function paintHeader() {
   renderClear();
 }
 
+let clearKey = null;
+
 function renderClear() {
   const slot = $('clear-slot');
-  slot.replaceChildren();
   if (!inbox || heldCount() === 0) {
     clearState = 'idle';
+    if (clearKey !== 'none') slot.replaceChildren();
+    clearKey = 'none';
     return;
   }
   const total = inboxCounts.get(inbox);
   const n = typeof total === 'number' ? total : heldCount();
+  // The poll repaints the header every tick: keep the buttons (and the
+  // focus on them) unless what they say changed.
+  const key = clearState + ':' + n;
+  if (key === clearKey) return;
+  clearKey = key;
+  slot.replaceChildren();
   if (clearState === 'busy') {
     slot.appendChild(el('span', 'muted', 'Clearing…'));
   } else if (clearState === 'armed') {

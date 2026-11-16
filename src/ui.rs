@@ -76,7 +76,7 @@ fn console(title: &str, pane: &str, view_attrs: &str, open: &str, rail: String) 
     };
     Html(format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{CSP}"><title>{title} · Swarmail</title><style>{CSS}</style></head>
-<body class="app"><header id="status" class="bar"><div class="brand">{LOGO}Swarmail</div><div class="muted">Built for a program waiting on mail. · <a href="/">inboxes</a> · <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">openapi</a></div><div class="endpoints" aria-label="Listeners"><span class="ep" id="listener-smtp">SMTP <b>unknown</b></span><span class="ep" id="listener-pop3">POP3 <b>unknown</b></span><span class="ep" id="listener-http">HTTP <b>unknown</b></span></div><div class="stats tnum"><span title="Mail accepted since the server started"><b id="count-accepted">–</b> accepted (lifetime)</span><span class="dropped" title="Mail evicted by the per-inbox cap since the server started"><b id="count-dropped">–</b> dropped (evicted by cap, lifetime)</span></div><span class="spacer"></span><span class="chip chaos-unknown" id="chaos">Chaos unknown</span><span class="live" id="live"><span class="pulse"></span><span>{live}</span></span></header>
+<body class="app"><header id="status" class="bar"><div class="brand">{LOGO}Swarmail</div><div class="muted">Built for a program waiting on mail. · <a href="/">inboxes</a> · <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">openapi</a></div><div class="endpoints" aria-label="Listeners"><span class="ep" id="listener-smtp">SMTP <b>unknown</b></span><span class="ep" id="listener-pop3">POP3 <b>unknown</b></span><span class="ep" id="listener-http">HTTP <b>unknown</b></span></div><div class="stats tnum"><span title="Mail accepted over the store's lifetime"><b id="count-accepted">–</b> accepted (lifetime)</span><span class="dropped" title="Mail evicted by the per-inbox cap over the store's lifetime"><b id="count-dropped">–</b> dropped (evicted by cap, lifetime)</span></div><span class="spacer"></span><span class="chip chaos-unknown" id="chaos">Chaos unknown</span><span class="live" id="live"><span class="pulse"></span><span>{live}</span></span></header>
 <main id="panes" data-pane="{pane}">{rail}<section id="stream" class="pane stream" aria-label="Messages"><div class="pane-head"><button class="btn ghost back-rail" id="back-rail" type="button" aria-label="Back to inboxes">←</button><span class="stream-title" id="stream-title">{open}</span><span class="muted tnum" id="stream-count"></span><span class="spacer"></span><span id="clear-slot"></span></div><div id="view" class="msgs" {view_attrs}></div></section><section id="reader" class="pane reader" aria-label="Message"><div class="pane-head"><button class="btn ghost back" id="back" type="button">← Messages</button></div><div class="reader-body" id="reader-body"></div></section></main>
 <div class="toast" id="toast" hidden></div><noscript><div class="card muted">This console is live and needs JavaScript; the JSON API works without it.</div></noscript><script>{SCRIPT}</script></body></html>"#
     ))
@@ -127,6 +127,19 @@ pub fn router() -> Router<AppState> {
         .route("/ui/inbox/{inbox}", get(inbox_view))
         .route("/ui/inbox/{inbox}/thread/{key}", get(thread_view))
         .route("/ui/message/{id}", get(message_view))
+        .layer(axum::middleware::map_response(refuse_framing))
+}
+
+/// No other origin may frame the console (issue #355 review). The page's
+/// CSP is a `<meta>` tag, which cannot carry `frame-ancestors`, and the
+/// console holds the first destructive browser control (Clear inbox): a
+/// framing page could clickjack it. The header is the only way to refuse.
+async fn refuse_framing(mut res: Response) -> Response {
+    res.headers_mut().insert(
+        axum::http::header::X_FRAME_OPTIONS,
+        axum::http::HeaderValue::from_static("DENY"),
+    );
+    res
 }
 
 /// The console on `/`, paged like `/api/v1/inboxes` (decision 0044 §3, issue

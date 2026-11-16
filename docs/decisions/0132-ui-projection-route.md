@@ -180,11 +180,13 @@ amended ruling stands as written.
   kept internal. The exception is one route, read-only, bounded, with no
   bytes.
 - `/healthz` answers grow by two members. A consumer that compares the whole
-  `ok` or `degraded` body for equality would break. Three repository tests
-  pinned such bodies and were adapted to read the new members and keep their
+  `ok` or `degraded` body for equality would break. Five repository test
+  functions pinned such bodies and were adapted to read the new members and keep their
   original invariants (`a_degraded_smtp_listener_answers_503_naming_it_on_the_wire`
   in `src/api.rs`, `pop3_degradation_reaches_http_healthz` in `src/pop3.rs`,
-  and the `/api/v1/inboxes` body test in `tests/smtp_edges.rs`). The chart's
+  the `/api/v1/inboxes` body test in `tests/smtp_edges.rs`, and
+  `a_blank_path_inbox_refuses_on_every_native_route` and
+  `the_inbox_listing_pages_past_the_cap` in `tests/api.rs`). The chart's
   probes read the status code only, and the one byte-pinned body (stopping) is
   left alone.
 - `last_received_ms` can step backwards by a few milliseconds when two mails

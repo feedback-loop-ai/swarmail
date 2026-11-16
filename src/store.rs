@@ -1339,6 +1339,23 @@ mod tests {
         assert!(store.inbox_summaries().is_empty());
     }
 
+    /// Under a roomy cap the deque holds both mails, so the stamp must come
+    /// from the newest (back), not the oldest (front): a cap of 1 cannot
+    /// tell the two apart.
+    #[test]
+    fn inbox_summaries_stamp_is_the_newest_of_several_retained() {
+        let store = Store::new(10);
+        for (id, ms) in [("1", 100), ("2", 200)] {
+            let mut mail = email(id, "box", "a@x.io");
+            mail.received_ms = ms;
+            let _ = store.insert(mail);
+        }
+        assert_eq!(
+            store.inbox_summaries(),
+            vec![("box".to_string(), 2, Some(200))]
+        );
+    }
+
     /// Pruning follows acceptance order, never the timestamp (decision
     /// 0038): mail stamped deliberately *later* but accepted first is the
     /// oldest and the one evicted. Synthetic stamps, no clock.
