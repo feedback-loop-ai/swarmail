@@ -977,9 +977,10 @@ pub fn idle_cells(reps: &[IdleRep]) -> Vec<IdleCell> {
             target,
             profile,
             repetitions: rs.len() as u32,
-            ranked: rs
-                .iter()
-                .all(|r| r.memory_mib.is_some() && r.anon_mib.is_some()),
+            // Every published value of a cell is needed to rank it.
+            ranked: rs.iter().all(|r| {
+                r.memory_mib.is_some() && r.anon_mib.is_some() && r.scratch_bytes.is_some()
+            }),
             shortfalls: named(rs.iter().map(|r| r.shortfall)),
             memory_mib: spread(&rs.iter().filter_map(|r| r.memory_mib).collect::<Vec<_>>()),
             anon_mib: spread(&rs.iter().filter_map(|r| r.anon_mib).collect::<Vec<_>>()),
@@ -1194,6 +1195,17 @@ fn check_launch(
         )));
     }
     let leaf = l["leaf"].as_str().unwrap_or_default();
+    // The cleanup is the launch's by the leaf it names, not only by its
+    // place in a list.
+    match c["leaf"].as_str() {
+        None => return Err(at("its cleanup receipt names no leaf")),
+        Some(named) if named != leaf => {
+            return Err(at(&format!(
+                "its cleanup receipt names the leaf {named:?}, not the launch's {leaf:?}"
+            )));
+        }
+        Some(_) => {}
+    }
     let joined = &l["joined"];
     if leaf.is_empty()
         || joined["cgroup"].as_str() != Some(leaf)
@@ -1320,7 +1332,10 @@ pub fn admit_chunk(
     }
     let listed = |key: &str| on_disk[key].as_array().cloned().unwrap_or_default();
     let (launches, cleanups) = (listed("launches"), listed("cleanups"));
-    if launches.is_empty() || launches.len() != cleanups.len() {
+    // A chunk whose instant came before it could launch anything has no
+    // launch and no cleanup receipt, and is admitted: it is sealed, and every
+    // one of its rows says why it was not measured (V16).
+    if launches.len() != cleanups.len() {
         return refuse(&format!(
             "launch and cleanup receipts must pair, one proved cleanup for each launch: {} launch receipts, {} cleanup receipts",
             launches.len(),
@@ -1332,6 +1347,15 @@ pub fn admit_chunk(
             return refuse(&format!("launch {n} is not of the chunk's target"));
         }
         check_launch(a, &name, pair, n, &host.cpu_layout.target_cpus)?;
+    }
+    let mut named = std::collections::BTreeSet::new();
+    for c in &cleanups {
+        let leaf = c["leaf"].as_str().unwrap_or_default();
+        if !named.insert(leaf) {
+            return refuse(&format!(
+                "two cleanup receipts name the leaf {leaf:?}: one proved cleanup for each launch"
+            ));
+        }
     }
     let groups = [&admitted.resources[..]];
     let fresh = serde_json::to_value(report_v4(

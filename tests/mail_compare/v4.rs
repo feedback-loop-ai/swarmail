@@ -1837,7 +1837,7 @@ fn a_leaf_launch_without_cgroup_removed_is_not_proved() {
         f.proved(),
         "a launch without a leaf is proved as it always was"
     );
-    f.leaf = true;
+    f.leaf = Some("target-0001".into());
     assert!(
         !f.proved(),
         "a leaf launch with no cgroup_removed is not proved"
@@ -4527,6 +4527,9 @@ struct Build {
     no_footprint: bool,
     /// An edit of the footprint document the run carries.
     footprint: Option<Edit>,
+    /// One chunk, by coordinate, whose instant came before it could launch
+    /// anything: no receipts, every row `unstarted`, no window opened.
+    no_launch: Option<&'static str>,
     edit: Option<(&'static str, Edit)>,
     ledger: Option<(&'static str, LedgerEdit)>,
 }
@@ -4650,10 +4653,18 @@ fn build_run(b: Build) -> Fixture {
             cleanup.listeners_closed,
             cleanup.scratch_removed,
         ) = (true, true, true, true);
-        (cleanup.cgroup_removed, cleanup.leaf) = (Some(true), true);
-        let life = runner::Lifecycle {
-            launches: vec![launch],
-            cleanups: vec![cleanup],
+        (cleanup.cgroup_removed, cleanup.leaf) = (Some(true), Some("target-0001".into()));
+        let nothing = is(b.no_launch);
+        let life = if nothing {
+            runner::Lifecycle {
+                launches: vec![],
+                cleanups: vec![],
+            }
+        } else {
+            runner::Lifecycle {
+                launches: vec![launch],
+                cleanups: vec![cleanup],
+            }
         };
         let mut m = manifest(&p, run_id);
         m.mode = "collect".into();
@@ -4670,7 +4681,14 @@ fn build_run(b: Build) -> Fixture {
             let mut rd = records::RunDir::create(&dir, &m).unwrap();
             let mut rep = Rep::new(c.repetition(), (1_000_000, 500_000), 300);
             rep.target = c.target();
-            let rows = msg_rows(run_id, &rep);
+            if nothing {
+                (rep.unopened, rep.outcome) = (true, records::WindowOutcome::ChunkDeadline);
+            }
+            let rows = if nothing {
+                unstarted_rows(run_id, &rep, "chunk deadline")
+            } else {
+                msg_rows(run_id, &rep)
+            };
             for r in &rows {
                 rd.append(r).unwrap();
             }
@@ -4694,7 +4712,7 @@ fn build_run(b: Build) -> Fixture {
         let mut entry = report::LedgerEntry {
             coordinate: name.clone(),
             command: format!("timeout --kill-after=30 560 taskset -c 0-7 systemd-run … {name}"),
-            exit: 0,
+            exit: i32::from(is(b.no_launch)),
             wall_ms: 1234,
             load_before: "0.10 0.20 0.30 1/200 99".into(),
             load_after: "0.15 0.20 0.30 1/200 99".into(),
@@ -5326,6 +5344,118 @@ fn a_footprint_changed_after_the_seal_fails_the_verify() {
     });
     let w = g.admit(false).unwrap_err();
     assert!(w.contains("headline.installed[0].installed_bytes"), "{w}");
+}
+
+// ---- S5 --------------------------------------------------------------------
+
+#[test]
+fn admit_v4_admits_a_sealed_chunk_that_launched_nothing() {
+    // The chunk's instant came before it could launch: no receipts, rows
+    // that say why, a ledger exit of 1. It seals, and it verifies.
+    let f = build_run(Build {
+        no_launch: Some("cost.inbucket.r0"),
+        ..Default::default()
+    });
+    let chunk: Value =
+        json(&std::fs::read(f.dir().join("chunks/cost.inbucket.r0/report.json")).unwrap());
+    assert_eq!(chunk["launches"], json!([]), "nothing was launched");
+    assert_eq!(chunk["cleanups"], json!([]));
+    f.admit(true)
+        .expect("a sealed zero-launch chunk is admitted");
+    f.admit(false).expect("and verifies");
+    let ledger: Value = json(&std::fs::read(f.dir().join("ledger/cost.inbucket.r0.json")).unwrap());
+    assert_eq!(ledger["exit"], 1);
+}
+
+#[test]
+fn a_run_with_a_zero_launch_chunk_still_refuses_a_missing_cleanup_elsewhere() {
+    refuses(
+        Build {
+            no_launch: Some("cost.inbucket.r0"),
+            edit: Some(("cost.greenmail.r0", |r| r["cleanups"] = json!([]))),
+            ..Default::default()
+        },
+        "chunk cost.greenmail.r0: launch and cleanup receipts must pair",
+    );
+    // And an extra cleanup in the chunk that launched nothing is not a pair.
+    refuses(
+        Build {
+            no_launch: Some("cost.inbucket.r0"),
+            edit: Some(("cost.inbucket.r0", |r| {
+                r["cleanups"] = json!([{"target": "inbucket", "leaf": "target-0001"}]);
+            })),
+            ..Default::default()
+        },
+        "chunk cost.inbucket.r0: launch and cleanup receipts must pair",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_a_cleanup_that_names_another_launchs_leaf() {
+    refuses(
+        Build {
+            edit: Some(("cost.mailpit.r0", |r| {
+                r["cleanups"][0]["leaf"] = json!("target-0009");
+            })),
+            ..Default::default()
+        },
+        "its cleanup receipt names the leaf \"target-0009\", not the launch's \"target-0001\"",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_two_cleanups_of_one_leaf() {
+    refuses(
+        Build {
+            edit: Some(("cost.mailpit.r0", |r| {
+                let (l, c) = (r["launches"][0].clone(), r["cleanups"][0].clone());
+                r["launches"].as_array_mut().unwrap().push(l);
+                r["cleanups"].as_array_mut().unwrap().push(c);
+            })),
+            ..Default::default()
+        },
+        "two cleanup receipts name the leaf \"target-0001\"",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_a_leaf_cleanup_without_a_leaf_name() {
+    refuses(
+        Build {
+            edit: Some(("cost.mailpit.r0", |r| {
+                r["cleanups"][0].as_object_mut().unwrap().remove("leaf");
+            })),
+            ..Default::default()
+        },
+        "its cleanup receipt names no leaf",
+    );
+}
+
+#[test]
+fn an_idle_cell_ranks_only_on_all_three_values() {
+    let rep = |memory: Option<f64>, anon: Option<f64>, scratch: Option<u64>| report::IdleRep {
+        target: TargetKind::Mailpit,
+        profile: "cost-c8-reused".into(),
+        repetition: 0,
+        memory_mib: memory,
+        anon_mib: anon,
+        scratch_bytes: scratch,
+        shortfall: None,
+    };
+    let ranked = |r: report::IdleRep| report::idle_cells(&[r])[0].ranked;
+    assert!(ranked(rep(Some(10.0), Some(5.0), Some(4096))), "all three");
+    assert!(!ranked(rep(None, Some(5.0), Some(4096))), "no memory");
+    assert!(!ranked(rep(Some(10.0), None, Some(4096))), "no anon");
+    assert!(!ranked(rep(Some(10.0), Some(5.0), None)), "no scratch");
+    // One repetition short is enough: the cell is not ranked.
+    let cells = report::idle_cells(&[
+        rep(Some(10.0), Some(5.0), Some(4096)),
+        report::IdleRep {
+            repetition: 1,
+            ..rep(Some(10.0), Some(5.0), None)
+        },
+    ]);
+    assert!(!cells[0].ranked);
 }
 
 #[test]
@@ -8144,6 +8274,26 @@ mod chunk {
     }
 
     #[tokio::test]
+    async fn a_leaf_cleanup_receipt_names_its_leaf() {
+        let rig = Rig::new(0, true);
+        let root = fixture();
+        let targets::LaunchError::NotReady(_, facts, launch) =
+            launch_exits_soon(&rig, root.path()).await
+        else {
+            panic!("not ready")
+        };
+        let launch = launch.expect("a leaf launch keeps its receipt");
+        assert_eq!(facts.leaf.as_deref(), Some("target-0001"));
+        assert_eq!(facts.leaf, launch.leaf, "the name in its launch receipt");
+        let cleanup = serde_json::to_value(&facts).unwrap();
+        assert_eq!(cleanup["leaf"], "target-0001");
+        // A launch without a leaf has none to name: the key is absent.
+        let none = targets::CleanupFacts::unproved(TargetKind::Mailpit);
+        assert!(none.leaf.is_none());
+        assert!(serde_json::to_value(&none).unwrap().get("leaf").is_none());
+    }
+
+    #[tokio::test]
     async fn a_not_ready_leaf_launch_keeps_its_launch_receipt() {
         let rig = Rig::new(0, true);
         let root = fixture();
@@ -8318,7 +8468,7 @@ fn a_not_ready_launch_is_classified_from_its_receipts() {
             f.listeners_closed,
             f.scratch_removed,
         ) = (proved, proved, proved, proved);
-        f.leaf = true;
+        f.leaf = Some("target-0001".into());
         f.cgroup_removed = Some(proved);
         (f.oom_kills, f.exited_early) = (oom, early);
         f

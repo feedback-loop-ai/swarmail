@@ -250,11 +250,13 @@ pub struct CleanupFacts {
     /// the driver began the teardown, before any signal of its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exited_early: Option<bool>,
-    /// Whether this launch had a leaf. It decides what `proved` requires,
-    /// and is not itself a receipt field: a leaf launch is the one whose
-    /// receipt carries `cgroup_removed`.
-    #[serde(skip)]
-    pub leaf: bool,
+    /// Protocol 4 only: the name of the leaf this cleanup is of, which is
+    /// the name in its launch receipt, so a cleanup is paired to its launch
+    /// by what it says and not by its place in a list. Its presence decides
+    /// what `proved` requires: a leaf launch is the one whose receipt carries
+    /// `cgroup_removed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leaf: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -271,7 +273,7 @@ impl CleanupFacts {
             && self.scratch_removed
             // A leaf launch is proved only with `cgroup_removed: true`; a
             // missing value is not true.
-            && (!self.leaf || self.cgroup_removed == Some(true))
+            && (self.leaf.is_none() || self.cgroup_removed == Some(true))
     }
 
     /// What a worker that failed, panicked or never finished establishes:
@@ -289,7 +291,7 @@ impl CleanupFacts {
             memory_peak_bytes: None,
             oom_kills: None,
             exited_early: None,
-            leaf: false,
+            leaf: None,
         }
     }
 }
@@ -1470,7 +1472,7 @@ async fn cleanup(w: &Worker, mut child: Child, reaped_early: Option<bool>) -> Cl
         memory_peak_bytes: None,
         oom_kills: None,
         exited_early: w.leaf.is_some().then_some(reaped_early.is_some()),
-        leaf: w.leaf.is_some(),
+        leaf: w.leaf.as_ref().map(|l| l.name().to_owned()),
     };
     if reaped_early.is_none() {
         signal_group(w.pgid, libc::SIGTERM);
