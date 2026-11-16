@@ -1,0 +1,3041 @@
+{
+  "manifest_version": 1,
+  "run_id": "collect-20261107T112319Z-3344019",
+  "mode": "collect",
+  "protocol_id": "fair-mail-comparison-v2",
+  "protocol_sha256": "735da43a0cbaaa85cd0fd6ab55765cbf3f71ba176d58702dd71bc4444a82231d",
+  "sources_sha256": "6523abf4df890d7aca8ea7e5112ae3e32ab35f2260e2528b070eefa70007b03c",
+  "candidate_commit": "c95386eda8734d19123a173c090e280afbdba07b",
+  "candidate_dirty": false,
+  "os": "linux",
+  "arch": "x86_64",
+  "kernel": "Linux 7.0.0-38-generic",
+  "cpus": 32,
+  "prelaunch_utc": "2026-11-07T11:23:19.314190250+00:00",
+  "planned": [
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 0,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 0,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 0,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 0,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 0,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 0,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 0,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 0,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 0,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 0,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 0,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 0,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 1,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 1,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 1,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 1,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 1,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 1,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 1,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 1,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 1,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 1,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 1,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 1,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 2,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 2,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 2,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 2,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 2,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 2,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 2,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 2,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 2,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 2,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 2,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 2,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 3,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 3,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 3,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 3,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 3,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 3,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 3,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 3,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 3,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 3,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 3,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 3,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 4,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 4,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 4,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 4,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 4,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 4,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 4,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 4,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 4,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 4,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 4,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 4,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-fresh",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-fresh",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-fresh",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c1-reused",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c10-reused",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "throughput-c100-reused",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailhog",
+      "profile": "stress-c1000-fresh",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 5,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 5,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "mailhog",
+      "profile": "wait-common",
+      "repetition": 5,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-fresh",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-fresh",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-fresh",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c1-reused",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c10-reused",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "throughput-c100-reused",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "mailpit",
+      "profile": "stress-c1000-fresh",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 5,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 5,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "mailpit",
+      "profile": "wait-common",
+      "repetition": 5,
+      "phase": "empty",
+      "rows": 20
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-fresh",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-fresh",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-fresh",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c1-reused",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c10-reused",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "throughput-c100-reused",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 5,
+      "phase": "send",
+      "rows": 3000
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 5,
+      "phase": "visible",
+      "rows": null
+    },
+    {
+      "target": "swarmail",
+      "profile": "stress-c1000-fresh",
+      "repetition": 5,
+      "phase": "verified",
+      "rows": 1
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 5,
+      "phase": "present",
+      "rows": 100
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 5,
+      "phase": "future",
+      "rows": 100
+    },
+    {
+      "target": "swarmail",
+      "profile": "wait-common",
+      "repetition": 5,
+      "phase": "empty",
+      "rows": 20
+    }
+  ]
+}
