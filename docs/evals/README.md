@@ -13,6 +13,8 @@ all by the operator on 2026-11-02. The operator's 2026-11-07 widening of #163
 [0129](../decisions/0129-agent-suite-comparison.md)
 ([spec](../../specs/agent-suite-comparison/spec.md)).
 
+**Status, 2026-11-16: the hard and expert tiers' paid run is published.** [`expert-2026-11-07.md`](expert-2026-11-07.md): 160 trials on main `c95386e` (2026-11-07), eight tasks (three hard, five expert) × four models × five trials, with its rows, report, post-hoc controls and failure evidence in [`expert-2026-11-07/`](expert-2026-11-07/). 151 passed: hard 57/60, expert 94/100. By model, claude-opus 40/40, claude-sonnet 39/40, codex-sol 40/40 and codex-luna 32/40. The failures are 5 `stale_code` (codex-luna × `otp-late`, 0/5) and 4 `gave_up`. One model fails at least 10%, not #325's two. No GLM ran; the DashScope GLM cell is a separate run after 2026-11-22. Tokens per success and transcripts are not measured. That file proposes the #164 re-prioritization for the operator. The statuses below are kept as they were.
+
 **Status, 2026-11-09: the paid agent-suite comparison ran.** [`agent-comparison-2026-11-09.md`](agent-comparison-2026-11-09.md): 240 sessions on main `2e5c289`, four targets × three hard-tier tasks × four models × five trials. 236 passed: Swarmail 60/60, MailHog 60/60, Mailpit 59/60 and MailSlurper 57/60, which no test separates. Session wall time is reported there but measures the model and its context, not the server. Cost is unavailable. The throughput comparison is tracked in #349, and the status below is kept as it was.
 
 **Status, 2026-11-02: one baseline, no comparison result.** The #151 paid
