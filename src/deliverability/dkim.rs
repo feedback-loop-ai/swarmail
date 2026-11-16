@@ -35,7 +35,7 @@
 //! with a distinct `l=`, so the `l=` fields of both kinds share the bound of 16
 //! that keeps the work at "one re-parse, at most 16 more hashes": past it, one
 //! `dkim.limits_exceeded.v1` at the first `DKIM-Signature` with `l=` and no other
-//! DKIM verdict (decision 0132 section 6). ARC reads the strict parse only.
+//! DKIM verdict (decision 0133 section 6). ARC reads the strict parse only.
 
 use super::arc;
 use super::dns::{Lookups, OwnerName, Txt};
@@ -260,7 +260,7 @@ pub(super) struct Adapter<'a, 'l> {
     pub(super) lookups: &'a RefCell<&'l mut Lookups>,
     /// How many names the crate has asked this adapter for, answered or not. ARC
     /// reads the difference across one `verify_arc` call to name the field whose
-    /// key failed (decision 0132 section 4): the crate asks once per key.
+    /// key failed (decision 0133 section 4): the crate asks once per key.
     calls: Cell<u64>,
 }
 
@@ -702,7 +702,7 @@ pub(super) enum Prepared<'r> {
     /// A bound fired and its one finding is pushed. The parse is sound.
     Limited(AuthenticatedMessage<'r>),
     /// Every guard passed: the signatures can be verified. `strict` is the parse
-    /// that bounded the work, and the one ARC reads (decision 0132 section 6);
+    /// that bounded the work, and the one ARC reads (decision 0133 section 6);
     /// `full` is the non-strict re-parse a signature with `l=` needs, or `None`
     /// when no `l=` signature made it necessary and `strict` is the parse.
     Ready {
@@ -791,7 +791,7 @@ pub(super) fn prepare<'r>(
     // With ARC compiled in that parse would also hash every ARC-Message-Signature
     // with a distinct `l=`, so the `l=` fields of both kinds share the one bound
     // of 16 that keeps "at most one re-parse, at most 16 more hashes" true
-    // (decision 0132 section 6). ARC never reads the re-parse.
+    // (decision 0133 section 6). ARC never reads the re-parse.
     if let Some(at) = first_l {
         if dkim_l + arc::message_signatures_with_l(&strict) > MAX_DKIM_SIGNATURES {
             out.push(Rule::LimitsExceeded.finding(at))?;
@@ -3175,7 +3175,7 @@ pub(super) mod tests {
 
     /// With ARC compiled in, the non-strict re-parse would also hash every
     /// ARC-Message-Signature with a distinct `l=`: both kinds share one bound of
-    /// 16 (decision 0132 section 6).
+    /// 16 (decision 0133 section 6).
     #[test]
     fn reparse_is_bounded_with_arc_fields() {
         let world = key_of(Kind::Ed25519);

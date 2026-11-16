@@ -18,7 +18,7 @@
 //!   compares it with the newest signature's `x=` only. Swarmail decides every
 //!   chain whose newest signature carries an `x=` itself, at the receipt second,
 //!   and calls the verifier only when that field has none, so the value is never
-//!   compared and no verdict, lookup or byte can depend on it (decision 0132
+//!   compared and no verdict, lookup or byte can depend on it (decision 0133
 //!   section 5, held for the operator).
 
 use crate::{model::Email, store::Store};
@@ -96,7 +96,7 @@ pub struct Report {
     pub findings: Vec<Finding>,
     /// Which DNS policy and which records this evaluation used (decision 0120).
     pub dns: DnsRecord,
-    /// The ARC chain validation state (decision 0132 §2), computed once by the
+    /// The ARC chain validation state (decision 0133 §2), computed once by the
     /// evaluator: `none` when the message carries no ARC field.
     pub arc: ArcChain,
     /// The sum of the findings' weights, computed in `Collector::finish_with`
@@ -1416,7 +1416,7 @@ mod tests {
         let mut extra = wire.clone();
         extra["dns"]["ttl"] = json!(1);
         assert!(serde_json::from_value::<Report>(extra).is_err());
-        // `arc` is required and closed in the same way (decision 0132 §2).
+        // `arc` is required and closed in the same way (decision 0133 §2).
         let mut no_arc = wire.clone();
         no_arc.as_object_mut().unwrap().remove("arc");
         assert!(serde_json::from_value::<Report>(no_arc).is_err());

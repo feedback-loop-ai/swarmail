@@ -1080,7 +1080,7 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         }),
         json!(["source", "policy", "lookups"]),
     );
-    // The report's `arc` member (decision 0132 §2): the chain state, once.
+    // The report's `arc` member (decision 0133 §2): the chain state, once.
     let arc = output_object(
         json!({
             "state":{"type":"string","enum":["none","pass","fail","not_evaluated"]},

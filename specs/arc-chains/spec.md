@@ -1,6 +1,6 @@
 # ARC chain reports (issue #256)
 
-Decision: 0132 — [ARC chain validation in the deliverability report](../../docs/decisions/0132-arc-chain-reports.md) (proposed; two operator holds)
+Decision: 0133 — [ARC chain validation in the deliverability report](../../docs/decisions/0133-arc-chain-reports.md) (proposed; two operator holds)
 
 - **Epic:** #251. Filed P3 ("only if a need is shown"); the operator ruled on
   2026-11-16 to deliver it. This story closes the epic.
@@ -64,7 +64,7 @@ Out of scope, and not built:
 
 The delivery PR is not merged on green. Under 0045 section 8 it waits for the
 operator on two items, both stated in
-[0132](../../docs/decisions/0132-arc-chain-reports.md):
+[0133](../../docs/decisions/0133-arc-chain-reports.md):
 
 1. **The `arc` report member** amends accepted 0085 section 1's report shape
    (already amended by 0120's `dns` and 0122's `total`).
@@ -74,7 +74,7 @@ operator on two items, both stated in
    amended by 0125 section 8 and 0126 section 8) is a reading of accepted
    text, so the operator rules on it.
 
-A refusal of either returns the run to design with the remedy 0132 names for
+A refusal of either returns the run to design with the remedy 0133 names for
 it.
 
 ## Contract
@@ -533,7 +533,7 @@ Each criterion is proven by the task that names it in
   absent.
 - **AC19 — Docs.** The guide, `llms.txt` and the MCP description name the
   four states, the thirteen ids and the correspondence. The doc-contract tests
-  pass. 0132 has its README row, still proposed.
+  pass. 0133 has its README row, still proposed.
 - **AC20 — Gates.** Every gate in house rules § Gates is clean, `--locked`,
   with exact 100% coverage, the coverage selftest and the publish-guard
   proof.

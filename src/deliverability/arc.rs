@@ -1,4 +1,4 @@
-//! ARC chain validation (issue #256, decision 0132).
+//! ARC chain validation (issue #256, decision 0133).
 //!
 //! The chain of a stored message is validated by `mail-auth` against keys that
 //! come from one place only: the declared DNS map, through `Lookups` (decision
@@ -30,7 +30,7 @@
 //! newest signature, `x == 0 || (x > t && x > now)`. Step 6 decides every chain
 //! whose newest signature carries an `x=` tag, so the crate is called only when
 //! its `x` is 0 and the left side of that test is true: the value it read is
-//! never compared (decision 0132 section 5, held for the operator).
+//! never compared (decision 0133 section 5, held for the operator).
 //!
 //! The failing seal. The crate looks up the newest signature's key first, then
 //! each seal's key from the newest down, once each, and stops at the first
@@ -65,7 +65,7 @@ pub enum ArcState {
     NotEvaluated,
 }
 
-/// The report's `arc` member (decision 0132 section 2). The evaluator computes it
+/// The report's `arc` member (decision 0133 section 2). The evaluator computes it
 /// once; REST, MCP and the message page render that value and none derives it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -80,7 +80,7 @@ pub struct ArcChain {
     pub reason: Option<String>,
 }
 
-/// The three field families, in the order ties are broken (decision 0132's rule
+/// The three field families, in the order ties are broken (decision 0133's rule
 /// table): `arc-authentication-results`, `arc-message-signature`, `arc-seal`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Family {

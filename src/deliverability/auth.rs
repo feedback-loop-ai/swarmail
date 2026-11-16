@@ -741,7 +741,7 @@ pub(super) fn collect(
     };
     let dkim_known = !matches!(prepared, Prepared::Stopped | Prepared::Limited(_));
     // ARC reads the strict parse DKIM bounded, through the same adapter; no fact,
-    // no DMARC verdict and no other finding reads the chain (decision 0132 §7).
+    // no DMARC verdict and no other finding reads the chain (decision 0133 §7).
     let chain = arc::evaluate(prepared.strict(), fields, size, &adapter, receipt, out)?;
     let spf = spf(envelope, &shared);
     if let Some(rule) = spf.rule() {

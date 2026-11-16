@@ -173,7 +173,7 @@ async fn message_view(State(state): State<AppState>, Path(id): Path<String>) -> 
     crate::store::Store::offload(move || render_message(&email, report.as_deref())).await
 }
 
-/// The ARC chain line (decision 0132 section 2): the evaluator's own member,
+/// The ARC chain line (decision 0133 section 2): the evaluator's own member,
 /// escaped like every other provider field, never derived from the findings.
 fn arc_line(arc: &crate::deliverability::ArcChain) -> String {
     let state = serde_json::to_value(arc.state).unwrap();

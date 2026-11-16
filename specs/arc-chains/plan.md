@@ -1,7 +1,7 @@
 # Plan: ARC chain reports (issue #256)
 
 Spec: [spec.md](spec.md) · Tasks: [tasks.md](tasks.md) · Decision:
-[0132](../../docs/decisions/0132-arc-chain-reports.md) (proposed, two holds).
+[0133](../../docs/decisions/0133-arc-chain-reports.md) (proposed, two holds).
 
 ## Technical context
 
@@ -33,8 +33,8 @@ Spec: [spec.md](spec.md) · Tasks: [tasks.md](tasks.md) · Decision:
 | 0003 oldest-only pruning | not edited |
 | 0005 extraction at ingest | the report stays a lazy derived product (0085) |
 | 0085 bounds and cache | at most one more finding and one small member; the cache key is unchanged |
-| 0085 section 1 shape | amended by the `arc` member: hold 1 in 0132 |
-| 0085 section 8 ambient time | Swarmail reads no clock; the crate's dead read is hold 2 in 0132 |
+| 0085 section 1 shape | amended by the `arc` member: hold 1 in 0133 |
+| 0085 section 8 ambient time | Swarmail reads no clock; the crate's dead read is hold 2 in 0133 |
 | 0120 one key source | every lookup goes through `Lookups` by the existing adapter |
 | 0122 section 1.4 and section 2 | `swarmail-html/9`; weights by the existing function, no new exception |
 | 0125 section 5 and section 6 | Swarmail owns the crate's silent defaults; the re-parse guard keeps the work bound |
@@ -57,7 +57,7 @@ Spec: [spec.md](spec.md) · Tasks: [tasks.md](tasks.md) · Decision:
 | `src/static/llms.txt`, `docs/guide/deliverability.md` | the ARC section, the correspondence lines, the version history |
 | `src/deliverability/{links,html,spam}.rs`, `html-rules.json`, `tests/*.rs`, `tests/fixtures/**` | the `swarmail-html/9` literals and the new member in expected reports |
 | `tests/deliverability.rs` | the wire fixtures and the surface, assert and await proofs |
-| `docs/decisions/README.md`, `docs/decisions/0085-*.md` | the 0132 row (proposed); one dated pointer on 0085 naming both holds, its text unchanged |
+| `docs/decisions/README.md`, `docs/decisions/0085-*.md` | the 0133 row (proposed); one dated pointer on 0085 naming both holds, its text unchanged |
 
 Nothing under `.github/`, `scripts/`, `.brokkr/`, `evals/` or the toolchain
 files changes. If the eval harness pins a report shape that the new member
@@ -191,14 +191,14 @@ sealing, or by forging fields that never reach the crypto.
 
 | risk | likelihood | mitigation |
 |---|---|---|
-| The operator refuses hold 1 (the member) | medium | 0132 names the remedy: drop the member, keep the findings. The member lives in one type and one `finish_with` argument, so removal is small. The run returns to design. |
-| The operator refuses hold 2 (the dead clock read) | low | 0132 names the two scope remedies; neither is built. The verifier call is one site. |
+| The operator refuses hold 1 (the member) | medium | 0133 names the remedy: drop the member, keep the findings. The member lives in one type and one `finish_with` argument, so removal is small. The run returns to design. |
+| The operator refuses hold 2 (the dead clock read) | low | 0133 names the two scope remedies; neither is built. The verifier call is one site. |
 | A crate fact in Research is wrong | low | T0 re-reads each before code. A stop condition applies: if any ambient read on the ARC path can reach a verdict, or a lookup can miss the adapter, the seat stops and reports. Every mapped crate result has a fixture that pins it. |
 | The lookup-count attribution drifts on a crate upgrade | low | the exact pin `=0.14.0`; fixtures for `i=1` of 2 and `i=2` of 3 fail on any reorder. |
 | Turning the feature on changes a DKIM verdict | low | the crate's ARC fields are filtered out of DKIM's field list by name today; AC12 runs every existing test and adds the `l=` independence proof. |
 | The re-parse guard changes `dkim.limits_exceeded.v1`'s reach | certain, narrow | only a message with a DKIM `l=` and more than 16 `l=` fields in total; the guide and the hint say so; the id is bumped. |
 | Step 3's `i=` check for `ARC-Authentication-Results` rejects a real sealer's field | low | RFC 8617 section 4.1.1 puts the instance first. The fixture set includes the crate sealer's own output. A rejected field is an error finding, never a silent pass, so a false positive is visible and reportable. |
-| A chain with `x=` on its newest signature goes unverified | unknown frequency | reported as an error, never clean; the guide states it; 0132 section 5 names the alternative for the operator. |
+| A chain with `x=` on its newest signature goes unverified | unknown frequency | reported as an error, never clean; the guide states it; 0133 section 5 names the alternative for the operator. |
 | The exact coverage gate refuses a defensive arm | medium | the design has no dead arm by construction (the catch-all is reached by ordinary failures). If one appears in code, restructure; never exclude. |
 | Report bytes change in every pinned fixture | certain | T10 and T12 regenerate them with provenance, as the earlier id bumps did. |
 | The eval harness pins the report shape | low | `evals/` builds its own loose report values today. If its tests fail on the member, stop and report: `evals/` is outside this change. |

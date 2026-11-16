@@ -13,7 +13,7 @@ speak real SMTP, REST and MCP against a real server.
   10. Stop and report, without building around it, if an ambient read on the
   ARC path can reach a verdict or a lookup, or if a lookup can miss the
   adapter.
-  *Proof:* a short implementation record appended to 0132 (dated, status
+  *Proof:* a short implementation record appended to 0133 (dated, status
   unchanged) lists every ambient read on the path and each Research item as
   confirmed or corrected.
 - [ ] **T1 — Turn on `arc`.** `Cargo.toml`: features
@@ -169,13 +169,13 @@ speak real SMTP, REST and MCP against a real server.
   that `arc=pass` is not sender authentication, and the version history line.
   *Proof (AC1, AC19):* the guide-binds-code test for the `arc.*` table; the
   doc-contract tests.
-- [ ] **T18 — Decision records.** Add the 0132 row to
+- [ ] **T18 — Decision records.** Add the 0133 row to
   `docs/decisions/README.md` (proposed, two holds named). Append one dated
-  pointer to accepted 0085 saying 0132's two items wait for the operator
+  pointer to accepted 0085 saying 0133's two items wait for the operator
   under 0045 section 8; its text above is unchanged. Change no status.
   *Proof:* `git diff f05f2ee -- docs/decisions/` shows the new record, the
   row and the appended pointer only; `bash scripts/design-check.sh check`
-  still reads 0132 as proposed.
+  still reads 0133 as proposed.
 
 ## Gates
 

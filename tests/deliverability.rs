@@ -610,7 +610,7 @@ async fn report_served_docs_match_contract() {
         json!(["rule_set_id", "findings", "dns", "arc", "total"])
     );
     // The `arc` member is closed, with the state's four values and the instance
-    // range the RFC gives (decision 0132 section 2).
+    // range the RFC gives (decision 0133 section 2).
     let arc = &schemas["ArcChain"];
     assert_eq!(arc["additionalProperties"], false);
     assert_eq!(
@@ -2862,7 +2862,7 @@ async fn the_agent_contract_is_in_the_guide_and_the_served_llms_txt() {
     srv.stop().await;
 }
 
-// ---- ARC chains over the wire (issue #256, proposed decision 0132) ----
+// ---- ARC chains over the wire (issue #256, proposed decision 0133) ----
 
 /// A TXT cache that answers every name with the one test key, so a chain can be
 /// sealed hop by hop by the real crate: each hop is sealed from the previous

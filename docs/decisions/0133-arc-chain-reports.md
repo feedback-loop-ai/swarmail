@@ -1,10 +1,10 @@
-# 0132 — ARC chain validation in the deliverability report, on mail-auth
+# 0133 — ARC chain validation in the deliverability report, on mail-auth
 
 - **Status:** proposed
 - **Date:** 2026-11-16
 - **Scope:** epic #251, issue #256, the epic's last story. Filed P3 ("only if
   a need is shown"); the operator ruled on 2026-11-16 to deliver it. Run
-  `issue-256-report-arc-chains-part-b186e59e`, from `main` `f05f2ee`. 0132 is
+  `issue-256-report-arc-chains-part-b186e59e`, from `main` `f05f2ee`. 0133 is
   the next free number after 0131.
 - **Specification:** [ARC chain reports](../../specs/arc-chains/spec.md).
 - **Authority:** the operator's #251 ruling of 2026-10-26 (authentication on

@@ -508,7 +508,7 @@ fn compare(v: &Value, bound: i128) -> Option<std::cmp::Ordering> {
         other => other,
     })
 }
-/// The `arc` member of a report whose message carries no ARC field (0132 §2).
+/// The `arc` member of a report whose message carries no ARC field (0133 §2).
 fn arc_none() -> Value {
     json!({"state":"none","sets":0,"failing_instance":null,"reason":null})
 }
@@ -1712,7 +1712,7 @@ async fn report_schema_typed_forms_and_negatives() {
         json!({"rule_set_id":"r","findings":[],"arc":arc_none(),"total":0}),
         "no dns",
     );
-    // The `arc` member is required and closed (decision 0132 §2): four states,
+    // The `arc` member is required and closed (decision 0133 §2): four states,
     // an instance from 1 to 50 or null, a rule id or null.
     refuse(
         json!({"rule_set_id":"r","findings":[],"dns":dns,"total":0}),
