@@ -788,10 +788,13 @@ and the tests that mean "v3" read those copies, so the v4 freeze (story E) is a
 replacement of two files. The protocol v4 draft
 ([`draft/protocol.v4.json`](draft/protocol.v4.json)) and source lock v5
 ([`draft/sources.lock.v5.json`](draft/sources.lock.v5.json)) are a draft: this
-driver refuses a frozen protocol 4 while the `api`, `waits` and `testexec`
-sections are owed, so a run of the cost section alone can never be admitted as
-"v4". Protocol v4 pairs only with lock v5. No v4 cell merges with a v2 or v3
-cell.
+driver refuses a *frozen* protocol 4 while the `api`, `waits` and `testexec`
+sections are owed, and `collect-v4` refuses a draft at `check`, so nothing can
+be collected for a v4 yet. `admit-v4` admits a directory against the protocol it
+is given, a draft included, and the sealed run manifest carries the protocol's
+`protocol_status` (`draft` or `frozen`), so a draft run is labelled a draft in
+its own bytes and is never a v4 result. Protocol v4 pairs only with lock v5. No
+v4 cell merges with a v2 or v3 cell.
 
 **What it measures.** Under one enforced budget, per target and cost profile
 (`cost-c1-reused`, `cost-c8-reused`, `cost-c32-reused`, `cost-c32-fresh`; 3
@@ -810,12 +813,44 @@ levels (story B) and is published as owed, never as a number. The official
 MailSlurper row is blocked in every cell. `mail_compare footprint` computes the
 fixed facts (download bytes, installed bytes including every pinned runtime
 tree, and a label, never a zero, for a runtime nothing pins) from the pinned
-bytes with no measurement window.
+bytes with no measurement window. For the three archive rows (Mailpit,
+smtp4dev, Inbucket) the installed tree is the extracted archive, which nothing
+walks or pins, so `installed_bytes` is `null` with the basis `owed: the
+extracted archive is not walked`, and the digest-checked executable's size is
+published beside it as `executable_bytes`, never as an installed size.
+
+**A figure that was not observed is `null`, never zero.** A window that was never
+opened (the chunk deadline came first, or the target was killed for memory or
+had exited before it was ready) has no counters: its CPU, memory, affinity and
+scratch fields are `null` in the rows, and so is every figure derived from it,
+in the per-repetition lists and in the cells. A median, minimum and maximum
+are taken over the repetitions that have a value and carry `n`, their count; a
+cell with none has `null` and no number. CPU, memory and the OOM and throttle
+counts come from a `measure` window that was opened, whatever ended it (an
+unranked cell keeps them); idle memory and the scratch footprint come from an
+`idle_ready` window that was `measured`, and startup from a `ready` window that
+was. The idle and startup cells carry `ranked` and `shortfalls` as the cost
+cells do.
+
+**The chunk deadline.** One instant per chunk, taken from the run clock, ends
+the chunk's work on the target: after it nothing new starts, and a connect, a
+send, a listing, a fidelity read or the idle wait still in flight is cancelled,
+not awaited. Only a launch already begun and the teardown are never cut, and
+`chunk_deadline_ms` is bounded so that those and a margin fit inside the
+wrapper's 600 s kill. A slow target is therefore a measured `timeout` row and
+exit 1, not a killed driver. A target that exits or is OOM-killed before it is
+ready is a measured outcome too (`target_exited`, `oom`) and the chunk goes on
+to its next profile; one that is alive but not ready at the startup deadline
+cannot be told from a broken launch, and stops the run with exit 2, so hold each
+target once under the budget (`mail_compare hold`) before a long run.
 
 **The budget and how it is enforced.** Every launch runs in its own cgroup v2
 leaf, owned by the driver, under the scope `systemd-run --user --scope -p
 Delegate=yes` makes for it: 2 CPUs (`cpu.max` `200000 100000`, and affinity to
-two distinct physical cores, their SMT siblings left idle), 2048 MiB
+two distinct physical cores; their SMT siblings are left idle where they are
+inside the chunk's CPU set, and are recorded as `siblings_outside_set`
+otherwise, because the driver cannot keep a CPU outside its own set idle),
+2048 MiB
 (`memory.max`, no swap, `memory.oom.group` 1) and 4096 tasks. The driver
 writes each limit, reads it back and records it in the launch receipt; the
 child joins the leaf and sets its affinity between fork and exec, and the
@@ -841,12 +876,17 @@ pages are charged to the leaf as `shmem`.
   pressure.
 - `nr_throttled` counts quota throttling, which also happens with the
   affinity intact. It is not evidence of the affinity, which is read back
-  from `/proc` at launch and at the end of each window; a window in which a
-  task held more than the two target CPUs is labelled `affinity_widened`,
-  and ranking stays what it was.
+  from `/proc` at launch and at the end of every window that was opened
+  (`ready`, `idle_ready` and `measure`); a window in which a task held more
+  than the two target CPUs is labelled `affinity_widened`, and ranking stays
+  what it was. A window whose leaf held no task at that instant has `null`, no
+  observation.
 - An empty leaf proves that no process remains in the leaf. It does not prove
   that a same-uid process never moved itself to another cgroup the user owns.
   The pinned targets are not adversarial and this is not hostile confinement.
+- A sealed run proves the directory's state at the seal: the index lists every
+  file with its digest. It does not prove that a host power loss cannot lose
+  the tail of `samples.jsonl` before the seal was written.
 - Storage stays unmatched: each target keeps its own backend, and every
   capped target is launched with the same 150,000 cap through lock v5's
   `{max_messages}` placeholder.
@@ -875,22 +915,35 @@ cat /proc/loadavg
 `collect-v4` refuses by name before building: not Linux, a missing
 `systemd-run`, `systemctl`, `taskset` or `timeout`, an existing `--output`, a
 protocol that is not version 4 (the message names this draft route), fewer than
-3 CPUs in `min(nproc/4, 32)`, and a dirty or uncommitted candidate. Each chunk
-is one driver in its own scope, run as `timeout --kill-after=30 600 taskset -c
-0-<n-1> systemd-run --user --scope -p Delegate=yes --unit=… -- <driver> run …`.
-Exit 1 is a measured outcome of a target; exit 2 stops the run as incomplete,
-and nothing is resumed or overwritten. `mail_compare hold` launches one target
+3 CPUs in `min(nproc/4, 32)`, a shell whose `nproc` differs from `nproc --all`
+(the chunks are pinned to CPUs `0-<n-1>`), and a dirty or uncommitted
+candidate. Every process it starts after that (the two `cargo` builds,
+`check`, `footprint`, each chunk and both admissions) runs under `timeout
+--kill-after=30 600 taskset -c 0-<n-1>`, and each chunk is one driver in its
+own scope: `timeout --kill-after=30 600 taskset -c 0-<n-1> systemd-run --user
+--scope -p Delegate=yes --unit=… -- <driver> run …`. After a chunk it waits up
+to ten seconds for the scope to go inactive before it judges it. A SIGINT,
+SIGTERM or SIGHUP during a chunk goes to that chunk's `timeout`, the chunk is
+judged and written to the ledger with exit 2, and no later chunk starts.
+`reproduce.txt` is written only after the last chunk. Exit 1 is a measured
+outcome of a target; exit 2 stops the run as incomplete, and nothing is resumed
+or overwritten. `mail_compare hold` launches one target
 under the budget for the story that follows; `mail_compare admit-v4 [--seal]`
 recomputes the plan and every figure from the rows and names the first path
 that differs.
 
-**Owed.** The five real proofs (`v4_real_oom_at_two_gib`,
-`v4_real_cpu_held_within_two`, `v4_real_setsid_escapee_removed`,
-`v4_real_hold_swarmail_under_budget`, `v4_real_cost_chunk_seals_and_admits`)
-need a host with a delegated cgroup v2 scope. Each fails, never skips, without
-one, with the exact refusal above. Their passing output belongs to the host
-that ran them. Stories B (API level), C (`wait-best`), D (test execution) and
-E (freeze and collection) are separate runs.
+**The host run gates the merge.** The fixture tests prove the driver's logic on
+plain files. They do not prove the join through `cgroup.procs`, `cgroup.kill`,
+the removal of a leaf, the OOM or the quota, and no reading of the code does.
+The five real proofs (`v4_real_oom_at_two_gib`, `v4_real_cpu_held_within_two`,
+`v4_real_setsid_escapee_removed`, `v4_real_hold_swarmail_under_budget`,
+`v4_real_cost_chunk_seals_and_admits`) therefore run on a host with a delegated
+cgroup v2 scope, one at a time, and their passing output with the load before
+and after is attached to the pull request. Each fails, never skips, without
+that scope, with the exact refusal above. Until that output exists the story is
+not complete and the change is not merged. Stories B (API level), C
+(`wait-best`), D (test execution) and E (freeze and collection) are separate
+runs.
 
 ## What closes the remaining rows
 

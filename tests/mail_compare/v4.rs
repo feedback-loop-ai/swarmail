@@ -6875,6 +6875,53 @@ fn a_not_ready_launch_is_classified_from_its_receipts() {
 const V4_SMOKE: &[u8] = include_bytes!("v4-smoke.json");
 
 #[test]
+fn the_v4_readme_states_the_revised_sentences() {
+    let readme = std::fs::read_to_string("docs/evals/README.md").unwrap();
+    let start = readme
+        .find("## Protocol v4: cost to operate")
+        .expect("the v4 section");
+    let section = &readme[start..];
+    let section = &section[..section[3..].find("\n## ").map_or(section.len(), |n| n + 3)];
+    // The markdown is wrapped: compare the words, not the line breaks.
+    let section = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        // SMT siblings: idle where they are inside the set, recorded otherwise.
+        "siblings_outside_set",
+        // A figure that was not observed is null, never zero.
+        "`null`, never zero",
+        // An archive row's installed size is owed, not an executable's size.
+        "owed: the extracted archive is not walked",
+        "`executable_bytes`",
+        // A startup that is alive but not ready stops the run.
+        "alive but not ready",
+        // It is a frozen v4 that the driver refuses; a draft run is labelled.
+        "refuses a *frozen* protocol 4",
+        "`protocol_status`",
+        // Affinity is read at the end of every opened window.
+        "end of every window that was opened",
+        // The chunk deadline reaches the work in flight.
+        "cancelled, not awaited",
+        // The seal proves the state at the seal.
+        "power loss",
+        // The host run is what the merge waits for.
+        "The host run gates the merge",
+        "is not merged",
+    ] {
+        assert!(section.contains(needle), "the v4 section lacks {needle:?}");
+    }
+    assert!(
+        !section.contains("can never be admitted"),
+        "admit-v4 does admit a draft run, and labels it"
+    );
+    assert!(
+        !section.contains("**Owed.**"),
+        "the owed paragraph is replaced by the merge gate"
+    );
+    // v3 still collects from the active paths.
+    assert!(section.contains("v3 still collects from those paths"));
+}
+
+#[test]
 fn the_v4_smoke_fixture_validates_as_a_draft() {
     let p = Protocol::parse(V4_SMOKE).unwrap();
     p.validate().expect("the smoke fixture validates");
