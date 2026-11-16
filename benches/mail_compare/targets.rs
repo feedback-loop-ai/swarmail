@@ -755,6 +755,13 @@ impl Owned {
         };
         let pgid = child.id().map(|p| p as i32).unwrap_or(0);
         let stdout = child.stdout.take();
+        // The join is read back before the worker starts waiting on the
+        // child: a target that exits at once is a zombie until it is
+        // reaped, and a zombie's `/proc` entry still reads, so the proof
+        // never races an instant exit.
+        let join_read = joining
+            .as_ref()
+            .map(|_| crate::resources::read_join(Path::new("/proc"), pgid));
         // From here the worker owns the child: every later exit of this
         // function, its cancellation included, ends in the worker's cleanup.
         let shared = Arc::new(Mutex::new(Shared::default()));
@@ -830,18 +837,21 @@ impl Owned {
             if trust_cgroup {
                 let _ = std::fs::write(leaf.procs_path(), format!("{pgid}\n"));
             }
-            let proof = crate::resources::read_join(Path::new("/proc"), pgid).and_then(|read| {
-                #[cfg(test)]
-                let read = if trust_cgroup {
-                    crate::resources::Joined {
-                        cgroup: leaf.name().to_owned(),
-                        ..read
-                    }
-                } else {
-                    read
-                };
-                crate::resources::check_join(&read, leaf.name(), &layout.target_cpus).map(|()| read)
-            });
+            let proof = join_read
+                .expect("a leaf launch read its join back")
+                .and_then(|read| {
+                    #[cfg(test)]
+                    let read = if trust_cgroup {
+                        crate::resources::Joined {
+                            cgroup: leaf.name().to_owned(),
+                            ..read
+                        }
+                    } else {
+                        read
+                    };
+                    crate::resources::check_join(&read, leaf.name(), &layout.target_cpus)
+                        .map(|()| read)
+                });
             match proof {
                 Ok(read) => owned.facts.joined = Some(read),
                 Err(why) => {

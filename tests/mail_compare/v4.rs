@@ -6762,6 +6762,24 @@ mod chunk {
     }
 
     #[tokio::test]
+    async fn a_target_that_exits_before_its_join_is_read_is_still_target_exited() {
+        // `/bin/false` is gone in well under a millisecond: the join's
+        // read-back must not race it, whatever the schedule.
+        for n in 0..8 {
+            let rig = Rig::new(0, true);
+            let p = protocol(vec![profile("cost-a", 0, 6, 2)], 480_000);
+            let (cfg, chunk) = rig.config(&p, Path::new("/bin/false"), "run-e4");
+            let (verdict, life, sealed) =
+                runner::run_chunk(cfg, chunk, wire::Clock(Instant::now())).await;
+            assert_eq!(verdict.exit_code(), 1, "round {n}: {verdict:?}");
+            assert!(sealed.is_some(), "round {n}");
+            assert_eq!(life.launches.len(), 1);
+            assert!(life.launches[0].joined.is_some(), "its join was read back");
+            assert!(life.cleanups.iter().all(targets::CleanupFacts::proved));
+        }
+    }
+
+    #[tokio::test]
     async fn the_chunk_goes_on_after_a_profile_that_was_not_measured() {
         let (_, life, _, _, _rig) = run_exits_soon().await;
         let names: Vec<&str> = life
@@ -7051,6 +7069,11 @@ fn v4_real_oom_at_two_gib() {
         "the leaf was emptied and removed: {t:?}"
     );
     assert!(t.memory_peak_bytes.is_some());
+    // The teardown reads the OOM it is the receipt of, before the leaf goes.
+    assert!(
+        t.oom_kills.is_some_and(|n| n >= 1),
+        "the teardown's oom_kills is the kernel's: {t:?}"
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -7291,6 +7314,51 @@ fn v4_real_hold_swarmail_under_budget() {
     assert!(lines.lines().all(|l| l.contains("\"kind\":\"sample\"")));
     let printed = String::from_utf8(out.0.lock().unwrap().clone()).unwrap();
     assert_eq!(printed.lines().count(), 2, "{printed}");
+    // A second hold, ended by its interrupt instead of EOF, gives the same
+    // receipt: the interrupt fires after the endpoints line, and the pipe
+    // stays open and silent throughout.
+    let mut spec = swarmail_spec(targets::swarmail_template(protocol::V4_CAP));
+    spec.extra.scope = Some(scope.clone());
+    let (hold_dir, samples2) = (dir.join("hold2"), dir.join("samples2.jsonl"));
+    let out2 = Shared::default();
+    let (stdin2, reader2) = tokio::io::duplex(64);
+    let (fire, interrupt) = tokio::sync::oneshot::channel::<()>();
+    let by_interrupt = rt.block_on(async {
+        let task = {
+            let (out, samples2) = (out2.clone(), samples2.clone());
+            tokio::spawn(async move {
+                let mut w = out;
+                runner::hold(
+                    &spec,
+                    (&hold_dir, &samples2),
+                    &limits(),
+                    &wire::Clock(Instant::now()),
+                    Duration::from_millis(100),
+                    reader2,
+                    &mut w,
+                    async {
+                        let _ = interrupt.await;
+                    },
+                )
+                .await
+            })
+        };
+        while out2.0.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        fire.send(()).unwrap();
+        task.await
+            .unwrap()
+            .expect("the interrupt tears it down and prints its receipts")
+    });
+    drop(stdin2);
+    runner::hold_verdict(&by_interrupt).expect("an interrupt is a clean end");
+    assert_eq!(by_interrupt.cleanup.cgroup_removed, Some(true));
+    assert!(by_interrupt.cleanup.proved(), "{:?}", by_interrupt.cleanup);
+    assert_eq!(by_interrupt.launch.limits, receipt.launch.limits);
+    assert_eq!(by_interrupt.cleanup.exited_early, Some(false));
+    let printed = String::from_utf8(out2.0.lock().unwrap().clone()).unwrap();
+    assert_eq!(printed.lines().count(), 2, "{printed}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -7406,5 +7474,118 @@ fn v4_real_cost_chunk_seals_and_admits() {
     assert_eq!(cell["ranked"], true, "{cell}");
     assert!(cell["visible_per_cpu_second"]["median"].as_f64().unwrap() > 0.0);
     assert!(cell["peak_memory_mib"]["median"].as_f64().unwrap() > 0.0);
+    // A second chunk whose "candidate" is a program that exits at once seals
+    // with exit 1: the profile is not measured with `target_exited`, each
+    // launch has its receipt and a proved cleanup, and no figure is a number.
+    let bins = vec!["swarmail=/bin/false".to_owned()];
+    let mut specs =
+        runner::launch_specs_of(&p, &lock, &bins, &[], &[TargetKind::Swarmail]).unwrap();
+    specs.get_mut(&TargetKind::Swarmail).unwrap().extra.scope = Some(scope.clone());
+    let (output, scratch) = (dir.join("chunk-false"), dir.join("scratch-false"));
+    std::fs::create_dir(&scratch).unwrap();
+    let mut m = manifest(&p, "proof5b");
+    m.protocol_sha256 = targets::sha256_hex(V4_SMOKE);
+    m.sources_sha256 = targets::sha256_hex(&sbytes);
+    let (planned, windows) = runner::plan_chunk(&p, &chunk);
+    (m.planned, m.planned_windows, m.chunk) = (planned, Some(windows), Some(chunk.name()));
+    m.host = Some(resources::host_facts(
+        "Linux (proof)",
+        "systemd (proof)",
+        &scope.layout,
+    ));
+    let keepers = targets::Keepers::default();
+    let cfg = runner::Config {
+        protocol: p.clone(),
+        manifest: m,
+        specs,
+        output,
+        scratch: scratch.clone(),
+        keepers: keepers.clone(),
+    };
+    let (verdict, life, sealed) = rt.block_on(runner::run_chunk(
+        cfg,
+        chunk.clone(),
+        wire::Clock(Instant::now()),
+    ));
+    let settled = rt.block_on(keepers.settle(Duration::from_secs(60)));
+    assert!(
+        settled.iter().all(targets::CleanupFacts::proved),
+        "{settled:?}"
+    );
+    assert_eq!(verdict.exit_code(), 1, "{verdict:?}");
+    let sealed = sealed.expect("a target that failed on its own is sealed");
+    assert!(!life.launches.is_empty() && life.launches.len() == life.cleanups.len());
+    assert!(
+        life.cleanups
+            .iter()
+            .all(|c| c.proved() && c.cgroup_removed == Some(true))
+    );
+    let bins = Default::default();
+    let a = report::Admission {
+        protocol: &p,
+        protocol_bytes: V4_SMOKE,
+        lock: &lock,
+        lock_bytes: &sbytes,
+        bins: &bins,
+    };
+    let c = report::admit_chunk(&sealed, &chunk, &a).expect("the not-measured chunk admits");
+    let failed: Vec<&records::WindowRow> = c
+        .resources
+        .iter()
+        .filter_map(|r| match r {
+            records::ResourceRow::Window(w) => Some(w),
+            records::ResourceRow::Sample(_) => None,
+        })
+        .collect();
+    assert_eq!(failed.len(), 3);
+    assert!(
+        failed
+            .iter()
+            .all(|w| w.outcome == records::WindowOutcome::TargetExited && w.counters().is_none())
+    );
+    let cell = &c.report["cost"]["cells"][0];
+    assert_eq!(cell["ranked"], false, "{cell}");
+    assert_eq!(cell["shortfalls"], json!(["target_exited"]));
+    for figure in [
+        "visible_per_cpu_second",
+        "cpu_ms_per_1k_visible",
+        "peak_memory_mib",
+        "peak_anon_mib",
+    ] {
+        assert!(cell[figure].is_null(), "{figure}: {cell}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The five real proofs exist, are `#[ignore]`d and are Linux-only: the file
+/// says so, and each is the whole of its function.
+#[test]
+fn the_five_real_proofs_are_ignored_and_linux_only() {
+    let text = std::fs::read_to_string("tests/mail_compare/v4.rs").unwrap();
+    for name in [
+        "v4_real_oom_at_two_gib",
+        "v4_real_cpu_held_within_two",
+        "v4_real_setsid_escapee_removed",
+        "v4_real_hold_swarmail_under_budget",
+        "v4_real_cost_chunk_seals_and_admits",
+    ] {
+        let at = text
+            .find(&format!("\nfn {name}()"))
+            .unwrap_or_else(|| panic!("the proof {name} exists"));
+        let head: Vec<&str> = text[..at].lines().rev().take(4).collect();
+        let head = head.join("\n");
+        assert!(
+            head.contains("#[cfg(target_os = \"linux\")]"),
+            "{name}: {head}"
+        );
+        assert!(head.contains("#[test]"), "{name}: {head}");
+        assert!(
+            head.contains("#[ignore = \"needs a delegated cgroup v2 scope"),
+            "{name}: {head}"
+        );
+        // It fails, never skips: no early return on a missing hierarchy.
+        let body_end = text[at..].find("\n}\n").map_or(text.len(), |n| at + n);
+        let body = &text[at..body_end];
+        assert!(!body.contains("return;"), "{name} must not skip");
+    }
 }
