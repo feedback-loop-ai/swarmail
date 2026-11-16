@@ -1,0 +1,794 @@
+{
+  "claim_scope": "official_artifact",
+  "evidence": false,
+  "median_rule": "middle value, or the mean of the two middle values for an even count, over repetitions",
+  "protocol_id": "fair-mail-comparison-v2",
+  "protocol_sha256": "735da43a0cbaaa85cd0fd6ab55765cbf3f71ba176d58702dd71bc4444a82231d",
+  "resource_profile": "unenforced_local",
+  "run_id": "collect-20261107T112319Z-3344019",
+  "storage_profile": "unmatched",
+  "throughput": [
+    {
+      "accepted_per_second": {
+        "max": 2926.4047968456866,
+        "median": 2740.5029702703805,
+        "min": 2324.25192685017,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c1-fresh",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 190930,
+        "median": 174945,
+        "min": 156836,
+        "of": 6
+      },
+      "sessions": 1,
+      "target": "swarmail",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 2853.2194467113695,
+        "median": 2661.307858914791,
+        "min": 2210.2914634803133,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 1262.8933231054802,
+        "median": 1236.6039541303153,
+        "min": 1182.6329224737653,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c1-fresh",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 477912,
+        "median": 463520,
+        "min": 456431,
+        "of": 6
+      },
+      "sessions": 1,
+      "target": "mailpit",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 1233.5147304186903,
+        "median": 1208.9698125503378,
+        "min": 1155.6204753006846,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 2027.2448695556213,
+        "median": 1813.886100850134,
+        "min": 1689.7767015231984,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c1-fresh",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 240484,
+        "median": 201039.5,
+        "min": 188306,
+        "of": 6
+      },
+      "sessions": 1,
+      "target": "mailhog",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 1914.4429840265043,
+        "median": 1717.3479312692896,
+        "min": 1612.2056634208652,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 14884.431321447752,
+        "median": 12802.68346901012,
+        "min": 9783.297354713795,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c10-fresh",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 455079,
+        "median": 356327.5,
+        "min": 297221,
+        "of": 6
+      },
+      "sessions": 10,
+      "target": "swarmail",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 13147.386342324151,
+        "median": 11385.873360839327,
+        "min": 8931.986424714478,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 2648.1455134068283,
+        "median": 2597.2541596880023,
+        "min": 2478.4992605682482,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c10-fresh",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 1982671,
+        "median": 1922814,
+        "min": 1854079,
+        "of": 6
+      },
+      "sessions": 10,
+      "target": "mailpit",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 2518.389513176243,
+        "median": 2480.522766766395,
+        "min": 2369.6211722176295,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 4705.633888090499,
+        "median": 4260.919170988077,
+        "min": 3066.846821154591,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c10-fresh",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 1720827,
+        "median": 1234184,
+        "min": 1174697,
+        "of": 6
+      },
+      "sessions": 10,
+      "target": "mailhog",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 4119.499077370897,
+        "median": 3762.3739059757318,
+        "min": 2812.2294767066664,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 26696.590578417232,
+        "median": 24302.107834289258,
+        "min": 21758.38944749444,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c100-fresh",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 2099312,
+        "median": 1803459,
+        "min": 1733522,
+        "of": 6
+      },
+      "sessions": 100,
+      "target": "swarmail",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 20437.002656599165,
+        "median": 19341.02749856792,
+        "min": 16215.836152078078,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 2593.4868252490205,
+        "median": 2582.5450028714977,
+        "min": 2506.4498055103563,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c100-fresh",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 28780174,
+        "median": 27560349,
+        "min": 26981640,
+        "of": 6
+      },
+      "sessions": 100,
+      "target": "mailpit",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 2474.39186901965,
+        "median": 2463.4558613422587,
+        "min": 2393.6521627641055,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 5038.930102111567,
+        "median": 3953.7604260593307,
+        "min": 3108.489217427509,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c100-fresh",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 18030647,
+        "median": 16897816.5,
+        "min": 15149915,
+        "of": 6
+      },
+      "sessions": 100,
+      "target": "mailhog",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 4358.96328869785,
+        "median": 3522.110237741308,
+        "min": 2859.430311524267,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 6462.379909136396,
+        "median": 6173.904130352647,
+        "min": 5555.448500005387,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c1-reused",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 162216,
+        "median": 152538,
+        "min": 145394,
+        "of": 6
+      },
+      "sessions": 1,
+      "target": "swarmail",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 6059.751476502885,
+        "median": 5710.909077650287,
+        "min": 5310.597527669377,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 1688.303955148706,
+        "median": 1602.8705284727785,
+        "min": 1569.8155325204254,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c1-reused",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 464948,
+        "median": 454983.5,
+        "min": 443768,
+        "of": 6
+      },
+      "sessions": 1,
+      "target": "mailpit",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 1635.5009271690192,
+        "median": 1555.9350681253661,
+        "min": 1524.3898821696773,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 3897.502983255965,
+        "median": 3429.901896236741,
+        "min": 3055.382221741776,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c1-reused",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 253588,
+        "median": 208268,
+        "min": 194677,
+        "of": 6
+      },
+      "sessions": 1,
+      "target": "mailhog",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 3513.1759115510185,
+        "median": 3113.2032102379317,
+        "min": 2805.350182830095,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 30593.278626092568,
+        "median": 26010.72358267807,
+        "min": 19660.132278743742,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c10-reused",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 424120,
+        "median": 325113.5,
+        "min": 277965,
+        "of": 6
+      },
+      "sessions": 10,
+      "target": "swarmail",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 23801.590323885535,
+        "median": 20665.507424606752,
+        "min": 16101.575004005133,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 2824.0232158128906,
+        "median": 2784.351253050611,
+        "min": 2669.758961853335,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c10-reused",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 2002490,
+        "median": 1928575,
+        "min": 1898684,
+        "of": 6
+      },
+      "sessions": 10,
+      "target": "mailpit",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 2682.9049260761008,
+        "median": 2647.5322201244135,
+        "min": 2539.082187805245,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 6858.640172757806,
+        "median": 6180.507008130012,
+        "min": 4885.74140018313,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c10-reused",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 1885999,
+        "median": 1524872,
+        "min": 1418137,
+        "of": 6
+      },
+      "sessions": 10,
+      "target": "mailhog",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 5743.373967091524,
+        "median": 5214.471160872544,
+        "min": 4243.937132278851,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 43882.335777160115,
+        "median": 40995.476603686504,
+        "min": 33953.89240235593,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c100-reused",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 1865130,
+        "median": 1622457,
+        "min": 1587276,
+        "of": 6
+      },
+      "sessions": 100,
+      "target": "swarmail",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 31505.180806447355,
+        "median": 29369.568073060636,
+        "min": 21201.26059868685,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 2779.389046225059,
+        "median": 2735.722077593833,
+        "min": 2636.149394505262,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c100-reused",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 27638529,
+        "median": 26393985.5,
+        "min": 25717630,
+        "of": 6
+      },
+      "sessions": 100,
+      "target": "mailpit",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 2641.951662109121,
+        "median": 2604.1545512013527,
+        "min": 2512.2330887375747,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 6320.795570389835,
+        "median": 5919.558702628863,
+        "min": 4835.572077480333,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "throughput-c100-reused",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 19088023,
+        "median": 14472850,
+        "min": 13741847,
+        "of": 6
+      },
+      "sessions": 100,
+      "target": "mailhog",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 5395.235842735695,
+        "median": 5050.480783744685,
+        "min": 4247.43745337933,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 23014.982853569265,
+        "median": 21757.968086638677,
+        "min": 19270.139360748584,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "stress-c1000-fresh",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 5275435,
+        "median": 4339666,
+        "min": 3916462,
+        "of": 6
+      },
+      "sessions": 1000,
+      "target": "swarmail",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 18800.05891687797,
+        "median": 17812.950897044095,
+        "min": 13341.351485576164,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 2603.9277232232726,
+        "median": 2539.193189190206,
+        "min": 2488.629441201153,
+        "of": 6
+      },
+      "admitted": 17858,
+      "ambiguous": 0,
+      "exact_repetitions": 0,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "stress-c1000-fresh",
+      "refused": 142,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 255659841,
+        "median": 238192716.5,
+        "min": 236184867,
+        "of": 6
+      },
+      "sessions": 1000,
+      "target": "mailpit",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 2479.5673699576564,
+        "median": 2420.1556851338282,
+        "min": 2372.268227509045,
+        "of": 6
+      }
+    },
+    {
+      "accepted_per_second": {
+        "max": 4467.440910908819,
+        "median": 4102.1617725474225,
+        "min": 3003.1947384989203,
+        "of": 6
+      },
+      "admitted": 18000,
+      "ambiguous": 0,
+      "exact_repetitions": 6,
+      "fidelity_mismatches": 0,
+      "missing_accepted": 0,
+      "profile": "stress-c1000-fresh",
+      "refused": 0,
+      "repetitions": 6,
+      "requested": 18000,
+      "send_latency_p50_ns": {
+        "max": 171549468,
+        "median": 158629375.5,
+        "min": 130262214,
+        "of": 6
+      },
+      "sessions": 1000,
+      "target": "mailhog",
+      "unstarted": 0,
+      "verified_per_second": {
+        "max": 3982.215595060326,
+        "median": 3657.5503832532004,
+        "min": 2763.0139351668395,
+        "of": 6
+      }
+    }
+  ],
+  "waits": [
+    {
+      "future_ns": {
+        "censored": 0,
+        "p50": 101338686,
+        "p95": 101914974,
+        "p99": 103207673,
+        "samples": 600
+      },
+      "future_offset_from_ack_ns": {
+        "p50": 100772587,
+        "p95": 101622632,
+        "p99": 102425126
+      },
+      "outcomes": {
+        "empty": {
+          "timeout": 120
+        },
+        "future": {
+          "observed": 600
+        },
+        "present": {
+          "observed": 600
+        }
+      },
+      "present_ns": {
+        "censored": 0,
+        "p50": 109787,
+        "p95": 197513,
+        "p99": 365180,
+        "samples": 600
+      },
+      "profile": "wait-common",
+      "repetitions": 6,
+      "requests": 3000,
+      "target": "swarmail"
+    },
+    {
+      "future_ns": {
+        "censored": 0,
+        "p50": 103082323,
+        "p95": 103706474,
+        "p99": 103928614,
+        "samples": 600
+      },
+      "future_offset_from_ack_ns": {
+        "p50": 102307414,
+        "p95": 102983169,
+        "p99": 103150465
+      },
+      "outcomes": {
+        "empty": {
+          "timeout": 120
+        },
+        "future": {
+          "observed": 600
+        },
+        "present": {
+          "observed": 600
+        }
+      },
+      "present_ns": {
+        "censored": 0,
+        "p50": 699299,
+        "p95": 819056,
+        "p99": 1068998,
+        "samples": 600
+      },
+      "profile": "wait-common",
+      "repetitions": 6,
+      "requests": 3000,
+      "target": "mailpit"
+    },
+    {
+      "future_ns": {
+        "censored": 0,
+        "p50": 102369658,
+        "p95": 103013967,
+        "p99": 103404304,
+        "samples": 600
+      },
+      "future_offset_from_ack_ns": {
+        "p50": 102072346,
+        "p95": 102664217,
+        "p99": 103087311
+      },
+      "outcomes": {
+        "empty": {
+          "timeout": 120
+        },
+        "future": {
+          "observed": 600
+        },
+        "present": {
+          "observed": 600
+        }
+      },
+      "present_ns": {
+        "censored": 0,
+        "p50": 341765,
+        "p95": 683259,
+        "p99": 932830,
+        "samples": 600
+      },
+      "profile": "wait-common",
+      "repetitions": 6,
+      "requests": 2999,
+      "target": "mailhog"
+    }
+  ]
+}
