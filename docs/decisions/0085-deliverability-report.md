@@ -200,3 +200,10 @@ touch this record, and waits for the operator's acceptance under 0045 §8. Its
 ARC verifier, which is executed on every chain that reaches it and whose value
 can never reach a verdict, a lookup or a report byte. The text above is
 unchanged, and so are both sentences until the operator rules.
+
+## Dated pointer — 2026-11-16 (0133 accepted)
+
+The operator accepted [0133](0133-arc-chain-reports.md) on 2026-11-16, both
+holds included. Section 1's report shape gains the `arc` member (0133 section
+2), and section 8's sentence covers the dead clock read inside the ARC
+verifier (0133 section 5). The text above is unchanged.

@@ -1,6 +1,7 @@
 # 0133 — ARC chain validation in the deliverability report, on mail-auth
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-16: both holds accepted; see the
+  dated acceptance note at the end)
 - **Date:** 2026-11-16
 - **Scope:** epic #251, issue #256, the epic's last story. Filed P3 ("only if
   a need is shown"); the operator ruled on 2026-11-16 to deliver it. Run
@@ -288,3 +289,19 @@ clock. No lookup can miss the adapter.
 **One decision of form.** `ArcChain.failing_instance` is dropped to `null` for
 every `not_evaluated` rule at the point the finding is pushed, so the member's
 fifth invariant holds by construction rather than by each call site.
+
+## Acceptance — 2026-11-16 (operator)
+
+The operator accepted both holds on 2026-11-16:
+
+1. **Hold 1, the `arc` report member: "Accept".** The report shape of accepted
+   0085 section 1 gains the `arc` member, after `dns` and before `total`, as
+   section 2 states, with the OpenAPI and MCP schemas and `swarmail-html/9`.
+2. **Hold 2, the crate's dead clock read: "Accept the reading".** Accepted
+   0085 section 8, as amended by 0125 section 8 and 0126 section 8, covers
+   the one `SystemTime::now()` read inside `verify_arc`. Under section 5 its
+   value is never compared, so no verdict, lookup or report byte depends on
+   it.
+
+With both holds accepted, the delivery PR merges on green. 0085 carries a
+dated pointer to this note.
