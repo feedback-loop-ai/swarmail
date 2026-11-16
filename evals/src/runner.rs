@@ -2116,6 +2116,22 @@ fn identities(trial_id: &str, count: u8) -> Vec<Identity> {
         .collect()
 }
 
+/// The built `swarmail-evals` executable, for tests that run it as a child.
+/// Found by walking up from the test binary to the first ancestor holding a
+/// `swarmail-evals` file: cargo up to 1.99 puts unit-test binaries in
+/// `target/<profile>/deps/`, cargo 1.100 in
+/// `target/<profile>/build/<pkg>/<hash>/out/`. The final binary stays in
+/// `target/<profile>/` in both.
+#[cfg(test)]
+pub(crate) fn built_evals_executable() -> PathBuf {
+    let me = std::env::current_exe().unwrap();
+    me.ancestors()
+        .skip(1)
+        .map(|dir| dir.join(env!("CARGO_PKG_NAME")))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| panic!("no built {} above {}", env!("CARGO_PKG_NAME"), me.display()))
+}
+
 /// The trial's resolved agent argv (built-ins run as our own child).
 fn evals_executable() -> Result<PathBuf, String> {
     #[cfg(test)]
@@ -4050,16 +4066,7 @@ mod test_probes {
             .env("EVAL_TEST_LIBRARY_DROP_DIR", dir.path())
             .env("EVAL_TEST_FINALIZE_HOLD_DIR", dir.path())
             .env(BIN_ENV, resolve_swarmail_bin().unwrap())
-            .env(
-                "EVAL_TEST_RUNNER_EXECUTABLE",
-                std::env::current_exe()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .join("swarmail-evals"),
-            )
+            .env("EVAL_TEST_RUNNER_EXECUTABLE", built_evals_executable())
             .stdout(output.try_clone().unwrap())
             .stderr(output);
         struct LibraryProbe(std::process::Child, PathBuf);
@@ -4596,16 +4603,7 @@ wait "$child"
         .env(CLEANUP_BUDGET_RELEASE_ENV, dir.join("release"))
         .env(CLEANUP_BUDGET_LOG_ENV, dir.join("cleanup-budgets.log"))
         .env(RUNNER_SIGNAL_LOG_ENV, dir.join("signals.log"))
-        .env(
-            "EVAL_TEST_RUNNER_EXECUTABLE",
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join(env!("CARGO_PKG_NAME")),
-        )
+        .env("EVAL_TEST_RUNNER_EXECUTABLE", built_evals_executable())
         .stdout(output)
         .stderr(stderr);
         match fault {
@@ -4710,16 +4708,11 @@ wait "$child"
                 );
             }
             if std::time::Instant::now() >= deadline {
-                // Where the trial stands: every process with its state and
-                // kernel wait channel, and the probe directory's entries.
-                let ps = Command::new("ps")
-                    .args(["-eo", "pid,ppid,pgid,stat,etimes,wchan:32,args", "--forest"])
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-                    .unwrap_or_else(|e| format!("ps failed: {e}"));
+                // Where the trial stands: the probe directory's entries show
+                // whether the runner reached a cleanup hold instead.
                 let entries: Vec<String> = walkdir_names(dir);
                 panic!(
-                    "timed out waiting for the runner's agent readiness; stdout={}; stderr={}; runtime-env present={}; entries={entries:?}; ps=\n{ps}",
+                    "timed out waiting for the runner's agent readiness; stdout={}; stderr={}; runtime-env present={}; entries={entries:?}",
                     std::fs::read_to_string(dir.join("probe.stdout")).unwrap_or_default(),
                     std::fs::read_to_string(dir.join("probe.stderr")).unwrap_or_default(),
                     dir.join("runtime-env").exists()
@@ -5332,16 +5325,7 @@ wait "$child"
             .env(PIDS_ENV, dir.path().join("agent-pids"))
             .env(BIN_ENV, &bin)
             .env(SWARMAIL_BIN_ENV, &bin)
-            .env(
-                "EVAL_TEST_RUNNER_EXECUTABLE",
-                std::env::current_exe()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .join(env!("CARGO_PKG_NAME")),
-            )
+            .env("EVAL_TEST_RUNNER_EXECUTABLE", built_evals_executable())
             .env(PRE_HANDLER_HOLD_ENV, &hold)
             .stdout(stdout)
             .stderr(std::process::Stdio::null());

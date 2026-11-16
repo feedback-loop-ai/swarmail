@@ -3499,6 +3499,19 @@ async fn baseline_transition(resources: &mut MatrixResources) -> Result<(), Stri
 
 #[cfg(test)]
 mod tests {
+    /// The built `swarmail-evals` executable: the first ancestor of the test
+    /// binary that holds it. Cargo 1.100 moved unit-test binaries from
+    /// `target/<profile>/deps/` to `target/<profile>/build/<pkg>/<hash>/out/`;
+    /// the final binary stays in `target/<profile>/` (as `runner`'s helper).
+    fn built_evals_executable() -> std::path::PathBuf {
+        let me = std::env::current_exe().unwrap();
+        me.ancestors()
+            .skip(1)
+            .map(|dir| dir.join(env!("CARGO_PKG_NAME")))
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| panic!("no built {} above {}", env!("CARGO_PKG_NAME"), me.display()))
+    }
+
     use super::*;
     use std::os::unix::process::ExitStatusExt;
 
@@ -4088,13 +4101,7 @@ while :; do :; done
                 .env("EVAL_TEST_MATRIX_SOURCE_COMMIT_HOLD", dir.join("source"));
         }
         if controls.real_worker {
-            let worker = std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("swarmail-evals");
+            let worker = built_evals_executable();
             cmd.env(MATRIX_TRIAL_EXE_ENV, &worker)
                 .env(
                     runner::SWARMAIL_BIN_ENV,
