@@ -188,7 +188,7 @@ fn v4_resources_block_refuses_each_absent_or_different_value() {
     }
     let mut v = draft();
     v["resources"]["chunk_deadline_ms"] = json!(0);
-    assert!(why(v).contains("chunk_deadline_ms Some(0) is outside 1..=520000"));
+    assert!(why(v).contains("chunk_deadline_ms Some(0) is outside 1..=480000"));
 }
 
 // ---- R1.1 ------------------------------------------------------------------
@@ -203,14 +203,14 @@ fn with_deadline(ms: u64, startup: u64, cleanup: u64) -> Value {
 
 #[test]
 fn v4_chunk_deadline_at_its_ceiling_passes_and_one_above_refuses() {
-    // The draft's budgets: 600000 - 30000 - 30000 - 2 x 10000 = 520000.
+    // The draft's budgets: 560000 - 30000 - 30000 - 2 x 10000 = 480000.
     let ceiling = protocol::CHUNK_KILL_MS - protocol::CHUNK_MARGIN_MS - 30_000 - 2 * 10_000;
-    assert_eq!(ceiling, 520_000);
+    assert_eq!(ceiling, 480_000);
     p4(with_deadline(ceiling, 30_000, 10_000))
         .validate()
         .expect("a deadline exactly at the ceiling passes");
     let w = why(with_deadline(ceiling + 1, 30_000, 10_000));
-    assert!(w.contains("chunk_deadline_ms Some(520001)"), "{w}");
+    assert!(w.contains("chunk_deadline_ms Some(480001)"), "{w}");
     let w = why(with_deadline(0, 30_000, 10_000));
     assert!(w.contains("chunk_deadline_ms Some(0)"), "{w}");
 }
@@ -222,35 +222,78 @@ fn v4_chunk_deadline_ceiling_moves_with_the_startup_and_cleanup_budgets() {
     p4(with_deadline(480_000, 30_000, 10_000))
         .validate()
         .unwrap();
-    // startup 90 s: ceiling 600000 - 30000 - 90000 - 20000 = 460000.
+    let ceiling = |startup: u64, cleanup: u64| {
+        protocol::CHUNK_KILL_MS - protocol::CHUNK_MARGIN_MS - startup - 2 * cleanup
+    };
+    // startup 90 s: ceiling 560000 - 30000 - 90000 - 20000 = 420000.
+    assert_eq!(ceiling(90_000, 10_000), 420_000);
     let w = why(with_deadline(480_000, 90_000, 10_000));
-    assert!(w.contains("is outside 1..=460000"), "{w}");
-    p4(with_deadline(460_000, 90_000, 10_000))
+    assert!(w.contains("is outside 1..=420000"), "{w}");
+    p4(with_deadline(420_000, 90_000, 10_000))
         .validate()
         .unwrap();
-    // cleanup 30 s: ceiling 600000 - 30000 - 30000 - 60000 = 480000.
-    p4(with_deadline(480_000, 30_000, 30_000))
+    // cleanup 30 s: ceiling 560000 - 30000 - 30000 - 60000 = 440000.
+    assert_eq!(ceiling(30_000, 30_000), 440_000);
+    p4(with_deadline(440_000, 30_000, 30_000))
         .validate()
         .unwrap();
-    let w = why(with_deadline(480_001, 30_000, 30_000));
-    assert!(w.contains("is outside 1..=480000"), "{w}");
+    let w = why(with_deadline(440_001, 30_000, 30_000));
+    assert!(w.contains("is outside 1..=440000"), "{w}");
     // A shorter startup budget raises it.
-    p4(with_deadline(540_000, 10_000, 10_000))
+    assert_eq!(ceiling(10_000, 10_000), 500_000);
+    p4(with_deadline(500_000, 10_000, 10_000))
         .validate()
         .unwrap();
 }
 
 #[test]
 fn v4_chunk_deadline_refusal_names_the_ceiling() {
-    let w = why(with_deadline(600_000, 30_000, 10_000));
-    assert!(w.contains("1..=520000"), "{w}");
+    let w = why(with_deadline(protocol::CHUNK_KILL_MS, 30_000, 10_000));
+    assert!(w.contains("1..=480000"), "{w}");
     for part in [
-        "CHUNK_KILL_MS 600000",
+        "CHUNK_KILL_MS 560000",
         "CHUNK_MARGIN_MS 30000",
         "startup_deadline_ms 30000",
         "cleanup_deadline_ms 10000",
     ] {
         assert!(w.contains(part), "{part}: {w}");
+    }
+}
+
+#[test]
+fn v4_chunk_deadline_ceiling_is_480000_for_the_draft_budgets() {
+    // The wrapper's SIGTERM instant is the constant, not a round number.
+    assert_eq!(protocol::CHUNK_KILL_MS, 560_000);
+    let d = p4(draft());
+    let r = &d.resources;
+    let ceiling = protocol::CHUNK_KILL_MS
+        - protocol::CHUNK_MARGIN_MS
+        - r.startup_deadline_ms
+        - 2 * r.cleanup_deadline_ms;
+    assert_eq!(ceiling, 480_000);
+    assert_eq!(r.chunk_deadline_ms, Some(ceiling));
+}
+
+#[test]
+fn the_v4_draft_and_the_smoke_fixture_sit_at_their_ceiling_and_validate() {
+    let smoke: Value = json(include_bytes!("v4-smoke.json"));
+    for (name, v) in [("the draft", draft()), ("the smoke fixture", smoke)] {
+        assert_eq!(
+            v["resources"]["chunk_deadline_ms"],
+            json!(480_000),
+            "{name}"
+        );
+        assert_eq!(
+            v["resources"]["startup_deadline_ms"],
+            json!(30_000),
+            "{name}"
+        );
+        assert_eq!(
+            v["resources"]["cleanup_deadline_ms"],
+            json!(10_000),
+            "{name}"
+        );
+        p4(v).validate().unwrap_or_else(|r| panic!("{name}: {r}"));
     }
 }
 
@@ -5320,6 +5363,11 @@ const FAKE_SLEEP: &str = "#!/bin/sh\nexit 0\n";
 /// A `cargo` that logs, and leaves what the wrapper looks for.
 const FAKE_CARGO: &str = r#"#!/bin/bash
 echo "cargo $*" >> "$FAKE_LOG"
+# A build that is running: it says so, with its pid, and would run on.
+if [ "${FAKE_STALL:-}" = "cargo-$1" ]; then
+  echo $$ > "$FAKE_MARKER"
+  exec @SLEEP@ 120
+fi
 case "$1" in
   build) mkdir -p target/release && cp "$FAKE_DIR/candidate" target/release/swarmail ;;
   bench) echo "{\"executable\":\"$FAKE_DIR/mail_compare-fake\"}" ;;
@@ -5331,7 +5379,7 @@ const FAKE_TASKSET: &str =
 const FAKE_SYSTEMD_RUN: &str = "#!/bin/bash\necho \"systemd-run $*\" >> \"$FAKE_LOG\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n";
 const FAKE_TIMEOUT: &str = r#"#!/bin/bash
 echo "timeout $*" >> "$FAKE_LOG"
-shift 2
+case "$1" in --kill-after=*) shift 2 ;; *) shift 1 ;; esac
 if [ -s "${FAKE_TIMEOUTS:-/dev/null}" ]; then
   while read -r coord; do
     case "$*" in *"--chunk $coord "*|*"--chunk $coord") exit 124 ;; esac
@@ -5345,21 +5393,52 @@ case "$*" in
   --version) echo "systemd 259 (fake)"; exit 0 ;;
   *is-active*)
     unit="${@: -1}"
+    # FAKE_SCOPE: lines `<coordinate> <answer>...`, one answer per call, the
+    # last one repeating. An answer is a state word, `-` (nothing printed and
+    # a non-zero status) or `wait` (it writes FAKE_SCOPE_MARKER and waits for
+    # FAKE_SCOPE_MARKER.release, then says `active`).
+    answer=''
+    if [ -s "${FAKE_SCOPE:-/dev/null}" ]; then
+      while read -r coord rest; do
+        case "$unit" in *"$coord"*)
+          n=$(cat "$FAKE_LOG.n.$coord" 2>/dev/null || echo 0)
+          echo $((n + 1)) > "$FAKE_LOG.n.$coord"
+          answers=($rest)
+          [ "$n" -lt "${#answers[@]}" ] || n=$((${#answers[@]} - 1))
+          answer="${answers[$n]}" ;;
+        esac
+      done < "$FAKE_SCOPE"
+    fi
+    case "$answer" in
+      '') ;;
+      -) exit 3 ;;
+      wait)
+        echo "$unit" > "$FAKE_SCOPE_MARKER"
+        until [ -e "$FAKE_SCOPE_MARKER.release" ]; do @SLEEP@ 0.02; done
+        echo active; exit 0 ;;
+      active) echo active; exit 0 ;;
+      *) echo "$answer"; exit 3 ;;
+    esac
     if [ -n "${FAKE_ACTIVE_ONCE:-}" ]; then
       case "$unit" in *"$FAKE_ACTIVE_ONCE"*)
-        if [ ! -e "$FAKE_LOG.once" ]; then : > "$FAKE_LOG.once"; exit 0; fi ;; esac
+        if [ ! -e "$FAKE_LOG.once" ]; then : > "$FAKE_LOG.once"; echo active; exit 0; fi ;; esac
     fi
     if [ -s "${FAKE_ACTIVE:-/dev/null}" ]; then
       while read -r coord; do
-        case "$unit" in *"$coord"*) exit 0 ;; esac
+        case "$unit" in *"$coord"*) echo active; exit 0 ;; esac
       done < "$FAKE_ACTIVE"
     fi
-    exit 3 ;;
+    echo inactive; exit 3 ;;
 esac
 exit 0
 "#;
 const FAKE_DRIVER: &str = r#"#!/bin/bash
 echo "driver $*" >> "$FAKE_LOG"
+# A step that is running: it says so, with its pid, and would run on.
+if [ "${FAKE_STALL:-}" = "$1" ]; then
+  echo $$ > "$FAKE_MARKER"
+  exec @SLEEP@ 120
+fi
 case "$1" in
   check) echo "mail_compare check: ready"; exit 0 ;;
   targets)
@@ -5521,6 +5600,17 @@ fn v4_rig() -> V4Rig {
     v4_rig_with(&[])
 }
 
+/// The host's own `sleep`, which the fakes `exec` so that a signal sent to
+/// the process they stand for reaches the sleeping process itself.
+fn real_sleep() -> String {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|d| d.join("sleep"))
+        .find(|p| p.is_file())
+        .expect("a sleep on PATH")
+        .display()
+        .to_string()
+}
+
 /// The rig, built while `ambient` is in the environment of the commands it
 /// runs (so a test can show that an ambient git configuration is ignored).
 fn v4_rig_with(ambient: &[(&str, &str)]) -> V4Rig {
@@ -5572,7 +5662,7 @@ fn v4_rig_with(ambient: &[(&str, &str)]) -> V4Rig {
         ("candidate", "#!/bin/sh\nexit 0\n"),
     ] {
         let p = r.join("fake").join(name);
-        std::fs::write(&p, body).unwrap();
+        std::fs::write(&p, body.replace("@SLEEP@", &real_sleep())).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     // The real tools the script itself needs, and nothing else: a tool the
@@ -5635,6 +5725,8 @@ fn v4_rig_with(ambient: &[(&str, &str)]) -> V4Rig {
         );
     };
     git(&["init", "-q"]);
+    // The candidate is on main (0132 §2.3): a rig's default fixture is.
+    git(&["symbolic-ref", "HEAD", "refs/heads/main"]);
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "fixture"]);
     V4Rig { root, plan }
@@ -5662,13 +5754,15 @@ fn collect_v4_dry_run_prints_24_commands_in_plan_order_and_starts_nothing() {
             line.starts_with(&format!("{coord}\t")),
             "{line} should be {coord}"
         );
-        assert!(line.contains("timeout --kill-after=30 600 taskset -c 0-7 systemd-run --user --scope -p Delegate=yes"), "{line}");
+        assert!(line.contains("timeout --kill-after=30 560 taskset -c 0-7 systemd-run --user --scope -p Delegate=yes"), "{line}");
         assert!(line.contains(&format!("--chunk {coord} ")), "{line}");
     }
     // Nothing was launched, written or built.
     assert!(!rig.out().exists());
     let log = rig.log();
-    let reads = |l: &String| l.starts_with("driver targets") || l == "systemctl --version";
+    // The plan and the version, each under its bound and its own line.
+    let reads =
+        |l: &String| l.contains(" targets --protocol") || l.ends_with("systemctl --version");
     assert!(
         log.iter().all(reads),
         "only the plan and the version were read: {log:?}"
@@ -5821,7 +5915,7 @@ fn collect_v4_nests_timeout_taskset_then_the_scope() {
         "{:?}",
         &log[first..first + 4]
     );
-    assert!(log[first].starts_with("timeout --kill-after=30 600 taskset -c 0-7 systemd-run --user --scope -p Delegate=yes --unit=mail-compare-"), "{}", log[first]);
+    assert!(log[first].starts_with("timeout --kill-after=30 560 taskset -c 0-7 systemd-run --user --scope -p Delegate=yes --unit=mail-compare-"), "{}", log[first]);
     assert!(
         log[first + 1].starts_with("taskset -c 0-7 systemd-run --user --scope"),
         "{}",
@@ -5870,7 +5964,7 @@ fn collect_v4_nests_timeout_taskset_then_the_scope() {
         .map(|l| l.split(' ').find(|w| w.starts_with("--unit=")).unwrap())
         .collect();
     assert_eq!(units.len(), 24, "one scope per chunk");
-    assert!(chunk_lines(&log, "timeout --kill-after=30 600").len() >= 24);
+    assert!(chunk_lines(&log, "timeout --kill-after=30 560").len() >= 24);
 }
 
 #[test]
@@ -6097,8 +6191,8 @@ fn collect_v4_stops_a_scope_that_stays_active_and_counts_two() {
     );
     assert_eq!(code, 2, "{text}");
     let log = rig.log();
-    // Twenty-one looks (the first and twenty polls) before it is called alive.
-    assert_eq!(is_active_calls(&log, "cost.mailpit.r0"), 21, "{log:?}");
+    // Twenty queries, and no more, before it is called alive (S3.3).
+    assert_eq!(is_active_calls(&log, "cost.mailpit.r0"), 20, "{log:?}");
     let last_look = log
         .iter()
         .rposition(|l| l.starts_with("systemctl --user is-active") && l.contains("cost.mailpit.r0"))
@@ -6237,12 +6331,13 @@ fn collect_v4_runs_every_process_under_the_bound() {
     );
     assert_eq!(code, 0, "{text}");
     let log = rig.log();
-    let bound = "timeout --kill-after=30 600 taskset -c 0-7 ";
+    let bound = "timeout --kill-after=30 560 taskset -c 0-7 ";
     // The timeout line that carries each kind of process, and the process's
     // own line: one for each, every time.
     let kinds = [
         ("cargo build --release --locked", "cargo build"),
         ("cargo bench --locked", "cargo bench"),
+        ("targets --protocol", "driver targets"),
         ("check --protocol", "driver check"),
         ("footprint --protocol", "driver footprint"),
         ("run --mode collect", "driver run"),
@@ -6304,7 +6399,7 @@ fn collect_v4_chunk_timeout_is_chunk_kill_ms() {
     assert_eq!(seconds * 1000, protocol::CHUNK_KILL_MS);
     // And the protocol's own bound is what that number is for.
     assert!(
-        chunk.starts_with("timeout --kill-after=30 600 taskset"),
+        chunk.starts_with("timeout --kill-after=30 560 taskset"),
         "{chunk}"
     );
 }
@@ -6397,6 +6492,548 @@ fn the_v4_rig_ignores_an_ambient_git_config_count() {
     // A real run reads the tree's state with git, and still does.
     let (code, text) = rig.run(&DRAFT_ROUTE, &[("GIT_CONFIG_COUNT", "1")]);
     assert_eq!(code, 0, "{text}");
+}
+
+// ---- S3: the bound, the scope's judgement, the signal path and main ----------
+
+impl V4Rig {
+    /// `collect-v4`'s arguments, as `run` builds them.
+    fn collect_args(&self, extra: &[&str]) -> Vec<String> {
+        let mut args: Vec<String> = ["collect-v4", "--output"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        args.push(self.out().display().to_string());
+        for t in Self::competitors() {
+            args.extend(["--bin".to_owned(), format!("{t}=/bin/sh")]);
+        }
+        args.extend(
+            [
+                "--runtime",
+                "greenmail=/never/jre",
+                "--runtime",
+                "alkemio-mailslurper=/never/musl",
+            ]
+            .map(str::to_owned),
+        );
+        args.extend(extra.iter().map(|s| (*s).to_owned()));
+        args
+    }
+
+    /// A git command in the rig's repository, in the rig's own environment.
+    fn git(&self, args: &[&str]) -> String {
+        let mut cmd = std::process::Command::new("git");
+        cmd.current_dir(self.repo())
+            .args([
+                "-c",
+                "user.email=t@example.invalid",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args);
+        own_git_environment(&mut cmd);
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    /// One more commit on the current branch.
+    fn commit(&self, name: &str) {
+        std::fs::write(self.repo().join(name), name).unwrap();
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "-q", "-m", name]);
+    }
+}
+
+/// Start `collect-v4` with the draft route and wait until `marker` appears,
+/// which is the fake process saying that it is running; then signal the
+/// wrapper with SIGTERM, run `after`, and return how the wrapper ended and
+/// how long it took from the signal. No sleep places the signal.
+fn signalled_at(
+    rig: &V4Rig,
+    env: &[(&str, &str)],
+    marker: &Path,
+    after: impl FnOnce(),
+) -> (std::process::ExitStatus, Duration) {
+    let mut child = rig
+        .command(&rig.collect_args(&DRAFT_ROUTE), env)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "the fake never started");
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the wrapper ended before the fake was running"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let signalled = Instant::now();
+    // SAFETY: signalling a child process this test owns.
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+    after();
+    loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            return (s, signalled.elapsed());
+        }
+        assert!(Instant::now() < deadline, "the wrapper did not end");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn process_is_gone(pid: i32) -> bool {
+    // SAFETY: signal 0 only asks whether the process exists.
+    unsafe { libc::kill(pid, 0) == -1 }
+}
+
+#[test]
+fn no_collect_v4_timeout_line_carries_600() {
+    let rig = v4_rig();
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[
+            ("COMPARE_MAIL_DRIVER_BIN", ""),
+            ("COMPARE_MAIL_SWARMAIL_BIN", ""),
+        ],
+    );
+    assert_eq!(code, 0, "{text}");
+    let log = rig.log();
+    let timeouts: Vec<&String> = log.iter().filter(|l| l.starts_with("timeout ")).collect();
+    assert!(
+        timeouts.len() >= 50,
+        "every step and every query is bounded"
+    );
+    for l in timeouts {
+        let words: Vec<&str> = l.split(' ').collect();
+        assert!(
+            !words[1..3].contains(&"600") && !l.contains("--kill-after=30 600"),
+            "{l}"
+        );
+    }
+}
+
+#[test]
+fn collect_v4_bounds_every_systemctl_call() {
+    let rig = v4_rig();
+    std::fs::write(rig.file("scope"), "cost.swarmail.r0 active\n").unwrap();
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[("FAKE_SCOPE", rig.file("scope").to_str().unwrap())],
+    );
+    assert_eq!(code, 2, "an unclean scope stops the run: {text}");
+    let log = rig.log();
+    let mut seen = std::collections::BTreeMap::new();
+    for (i, l) in log.iter().enumerate() {
+        let Some(call) = l.strip_prefix("systemctl ") else {
+            continue;
+        };
+        let bounded = &log[i - 1];
+        let want = if call.starts_with("--version") {
+            3
+        } else if call.starts_with("--user is-active") {
+            1
+        } else if call.starts_with("--user kill") || call.starts_with("--user stop") {
+            3
+        } else {
+            panic!("a systemctl call nobody expected: {l}")
+        };
+        assert_eq!(
+            bounded,
+            &format!("timeout {want} systemctl {call}"),
+            "line {i}: {log:?}"
+        );
+        seen.insert(call.split(' ').nth(1).unwrap_or("").to_owned(), want);
+    }
+    // All four kinds of call were made, so all four were checked.
+    let kinds: Vec<&str> = seen.keys().map(String::as_str).collect();
+    assert_eq!(kinds, ["", "is-active", "kill", "stop"], "{seen:?}");
+}
+
+#[test]
+fn collect_v4_sums_stay_within_ten_minutes() {
+    let rig = v4_rig();
+    std::fs::write(rig.file("scope"), "cost.swarmail.r0 active\n").unwrap();
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[("FAKE_SCOPE", rig.file("scope").to_str().unwrap())],
+    );
+    assert_eq!(code, 2, "{text}");
+    let log = rig.log();
+    // The prefix's two numbers, from the line of the first chunk.
+    let chunk = log
+        .iter()
+        .find(|l| l.starts_with("timeout --kill-after=") && l.contains("--chunk "))
+        .unwrap();
+    let words: Vec<&str> = chunk.split(' ').collect();
+    let after: f64 = words[1]
+        .trim_start_matches("--kill-after=")
+        .parse()
+        .unwrap();
+    let term: f64 = words[2].parse().unwrap();
+    // The three systemctl bounds, from the log.
+    let bound_of = |what: &str| -> f64 {
+        let l = log
+            .iter()
+            .find(|l| l.starts_with("timeout ") && l.contains(&format!("systemctl --user {what}")))
+            .unwrap_or_else(|| panic!("no bounded {what} in {log:?}"));
+        l.split(' ').nth(1).unwrap().parse().unwrap()
+    };
+    let (ask, kill, stop) = (bound_of("is-active"), bound_of("kill"), bound_of("stop"));
+    // The poll count and interval, from the script.
+    let script = std::fs::read_to_string(rig.repo().join("scripts/compare-mail.sh")).unwrap();
+    let after_word = |key: &str| -> f64 {
+        let at = script
+            .find(key)
+            .unwrap_or_else(|| panic!("no {key} in the script"));
+        script[at + key.len()..]
+            .split(|c: char| c != '.' && !c.is_ascii_digit())
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let (polls, interval) = (
+        after_word("scope_polls="),
+        after_word("scope_poll_interval="),
+    );
+    assert_eq!(
+        (term, after),
+        (protocol::CHUNK_KILL_MS as f64 / 1000.0, 30.0)
+    );
+    // 0132 section 11.1: ten minutes, for every kind of step.
+    assert!(term + after <= 600.0, "a step");
+    assert!(term + after + ask + kill + stop <= 600.0, "a failed chunk");
+    assert!(
+        term + polls * (ask + interval) + kill + stop <= 600.0,
+        "a sealed chunk"
+    );
+    assert_eq!(term + after + ask + kill + stop, 597.0);
+    assert_eq!(term + polls * (ask + interval) + kill + stop, 596.0);
+}
+
+fn scope_script(rig: &V4Rig, line: &str) -> String {
+    std::fs::write(rig.file("scope"), format!("{line}\n")).unwrap();
+    rig.file("scope").to_str().unwrap().to_owned()
+}
+
+#[test]
+fn collect_v4_reads_a_failed_scope_as_gone() {
+    let rig = v4_rig();
+    // A scope whose leaf saw an OOM kill may end as `failed`: that is gone.
+    let s = scope_script(&rig, "cost.mailpit.r0 failed");
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[("FAKE_SCOPE", &s)]);
+    assert_eq!(code, 0, "{text}");
+    let log = rig.log();
+    assert_eq!(is_active_calls(&log, "cost.mailpit.r0"), 1, "{log:?}");
+    assert!(!log.iter().any(|l| l.starts_with("systemctl --user kill")));
+    assert!(rig.ledger().iter().all(|e| e["scope_clean"] == true));
+}
+
+#[test]
+fn collect_v4_asks_again_after_a_query_that_says_nothing() {
+    let rig = v4_rig();
+    // A failed query, a silent one, then the answer: not a dirty scope.
+    let s = scope_script(&rig, "cost.mailpit.r0 - - inactive");
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[("FAKE_SCOPE", &s)]);
+    assert_eq!(code, 0, "{text}");
+    let log = rig.log();
+    assert_eq!(is_active_calls(&log, "cost.mailpit.r0"), 3, "{log:?}");
+    assert!(!log.iter().any(|l| l.starts_with("systemctl --user kill")));
+    assert_eq!(rig.ledger().len(), 24);
+}
+
+#[test]
+fn collect_v4_never_calls_an_unknown_scope_clean() {
+    for answer in ["active", "-", "reloading"] {
+        let rig = v4_rig();
+        let s = scope_script(&rig, &format!("cost.mailpit.r0 {answer}"));
+        let (code, text) = rig.run(&DRAFT_ROUTE, &[("FAKE_SCOPE", &s)]);
+        assert_eq!(code, 2, "{answer}: {text}");
+        let log = rig.log();
+        assert_eq!(
+            is_active_calls(&log, "cost.mailpit.r0"),
+            20,
+            "{answer}: twenty queries and no more"
+        );
+        let ends: Vec<&str> = log
+            .iter()
+            .filter(|l| {
+                l.starts_with("systemctl --user kill") || l.starts_with("systemctl --user stop")
+            })
+            .map(|l| l.split(' ').nth(2).unwrap())
+            .collect();
+        assert_eq!(ends, ["kill", "stop"], "{answer}: {log:?}");
+        let last = rig.ledger().pop().unwrap();
+        assert_eq!(
+            (
+                last["coordinate"].as_str(),
+                last["exit"].as_i64(),
+                &last["scope_clean"]
+            ),
+            (Some("cost.mailpit.r0"), Some(2), &json!(false)),
+            "{answer}"
+        );
+        assert_eq!(
+            chunk_lines(&log, "driver run").len(),
+            2,
+            "{answer}: no later chunk"
+        );
+    }
+}
+
+#[test]
+fn collect_v4_does_not_wait_for_a_failed_chunks_scope() {
+    // A chunk that timed out and whose scope is still active: one query,
+    // then the kill and the stop, in that order.
+    let rig = v4_rig();
+    std::fs::write(rig.file("timeouts"), "cost.mailpit.r0\n").unwrap();
+    let s = scope_script(&rig, "cost.mailpit.r0 active");
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[
+            ("FAKE_TIMEOUTS", rig.file("timeouts").to_str().unwrap()),
+            ("FAKE_SCOPE", &s),
+        ],
+    );
+    assert_eq!(code, 2, "{text}");
+    let log = rig.log();
+    let of_scope: Vec<&str> = log
+        .iter()
+        .filter(|l| l.starts_with("systemctl --user") && l.contains("cost.mailpit.r0"))
+        .map(|l| l.split(' ').nth(2).unwrap())
+        .collect();
+    assert_eq!(of_scope, ["is-active", "kill", "stop"], "{log:?}");
+    assert_eq!(rig.ledger().pop().unwrap()["scope_clean"], false);
+    // Gone at the one query: no kill, no stop, and still a failed chunk.
+    let rig = v4_rig();
+    std::fs::write(rig.file("timeouts"), "cost.mailpit.r0\n").unwrap();
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[("FAKE_TIMEOUTS", rig.file("timeouts").to_str().unwrap())],
+    );
+    assert_eq!(code, 2, "{text}");
+    let log = rig.log();
+    assert_eq!(is_active_calls(&log, "cost.mailpit.r0"), 1, "{log:?}");
+    assert!(
+        !log.iter()
+            .any(|l| l.starts_with("systemctl --user kill")
+                || l.starts_with("systemctl --user stop"))
+    );
+    let last = rig.ledger().pop().unwrap();
+    assert_eq!(
+        (last["exit"].as_i64(), &last["scope_clean"]),
+        (Some(2), &json!(true))
+    );
+}
+
+/// What a signal does to a step the wrapper is waiting for: the mode ends
+/// with exit 2 at once, not when the step would have ended, and the process
+/// the fake stands for is gone.
+fn signalled_step(stall: &str, bare: bool) -> (V4Rig, Duration) {
+    let rig = v4_rig();
+    let marker = rig.file("marker");
+    let mut env = vec![
+        ("FAKE_STALL", stall),
+        ("FAKE_MARKER", marker.to_str().unwrap()),
+    ];
+    if bare {
+        env.extend([
+            ("COMPARE_MAIL_DRIVER_BIN", ""),
+            ("COMPARE_MAIL_SWARMAIL_BIN", ""),
+        ]);
+    }
+    let (status, took) = signalled_at(&rig, &env, &marker, || {});
+    assert_eq!(status.code(), Some(2), "{stall}: {status:?}");
+    let pid: i32 = std::fs::read_to_string(&marker)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(process_is_gone(pid), "{stall}: the fake outlived the mode");
+    // The fake would have run for 120 s.
+    assert!(took < Duration::from_secs(30), "{stall}: {took:?}");
+    (rig, took)
+}
+
+#[test]
+fn collect_v4_on_sigterm_during_a_build_exits_two_at_once() {
+    for stall in ["cargo-build", "cargo-bench"] {
+        let (rig, _) = signalled_step(stall, true);
+        assert!(!rig.out().exists(), "{stall}: nothing was made");
+        assert!(chunk_lines(&rig.log(), "driver run").is_empty(), "{stall}");
+    }
+}
+
+#[test]
+fn collect_v4_on_sigterm_during_check_footprint_and_admission_exits_two_at_once() {
+    for stall in ["targets", "check", "footprint", "admit-v4"] {
+        let (rig, _) = signalled_step(stall, false);
+        let log = rig.log();
+        let ran = chunk_lines(&log, "driver run").len();
+        match stall {
+            "targets" | "check" | "footprint" => assert_eq!(ran, 0, "{stall}: {log:?}"),
+            _ => {
+                // The admission is after every chunk, and the run's own
+                // files were not removed by the interrupt.
+                assert_eq!(ran, 24, "{stall}");
+                assert!(rig.out().join("reproduce.txt").is_file());
+            }
+        }
+        assert!(
+            !rig.out().join("index.json").exists(),
+            "{stall}: nothing was sealed"
+        );
+    }
+}
+
+#[test]
+fn collect_v4_on_sigterm_during_the_scope_judgement_still_writes_the_ledger() {
+    let rig = v4_rig();
+    let marker = rig.file("scope-marker");
+    // The chunk has ended and is sealed: the first question about its scope
+    // does not answer until the test has signalled the wrapper.
+    let s = scope_script(&rig, "cost.swarmail.r0 wait");
+    let release = rig.file("scope-marker.release");
+    let (status, _) = signalled_at(
+        &rig,
+        &[
+            ("FAKE_SCOPE", &s),
+            ("FAKE_SCOPE_MARKER", marker.to_str().unwrap()),
+        ],
+        &marker,
+        || std::fs::write(&release, "go").unwrap(),
+    );
+    assert_eq!(status.code(), Some(2), "{status:?}");
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 1, "{ledger:?}");
+    assert_eq!(
+        (
+            ledger[0]["coordinate"].as_str(),
+            ledger[0]["exit"].as_i64(),
+            &ledger[0]["scope_clean"]
+        ),
+        (Some("cost.swarmail.r0"), Some(2), &json!(false)),
+        "the chunk was not abandoned: it is ledgered as failed"
+    );
+    let log = rig.log();
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("systemctl --user kill") && l.contains("cost.swarmail.r0")),
+        "a scope that was not gone is killed: {log:?}"
+    );
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("systemctl --user stop") && l.contains("cost.swarmail.r0")),
+        "and stopped: {log:?}"
+    );
+    assert_eq!(chunk_lines(&log, "driver run").len(), 1, "no later chunk");
+    assert!(chunk_lines(&log, "driver admit-v4").is_empty());
+}
+
+#[test]
+fn collect_v4_refuses_a_clean_branch_that_is_not_main() {
+    let rig = v4_rig();
+    rig.git(&["checkout", "-q", "-b", "feature"]);
+    rig.commit("feature.txt");
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("blocked at phase \"candidate\"")
+            && text.contains("refs/heads/main")
+            && text.contains("a commit of main only"),
+        "{text}"
+    );
+    assert!(rig.log().is_empty(), "before anything was built or run");
+    assert!(!rig.out().exists());
+}
+
+#[test]
+fn collect_v4_refuses_a_branch_with_main_merged_in() {
+    let rig = v4_rig();
+    rig.git(&["checkout", "-q", "-b", "feature"]);
+    rig.commit("feature.txt");
+    rig.git(&["checkout", "-q", "main"]);
+    rig.commit("later-on-main.txt");
+    rig.git(&["checkout", "-q", "feature"]);
+    rig.git(&["merge", "-q", "--no-edit", "main"]);
+    // The branch has everything main has, and is still not in its history.
+    assert_eq!(
+        rig.git(&["merge-base", "main", "HEAD"]),
+        rig.git(&["rev-parse", "main"])
+    );
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("not in the history of refs/heads/main"),
+        "{text}"
+    );
+}
+
+#[test]
+fn collect_v4_accepts_an_earlier_commit_of_main_and_its_tip() {
+    let rig = v4_rig();
+    rig.commit("second.txt");
+    rig.commit("third.txt");
+    // Detached at the tip, and at an earlier commit: main has moved on, and
+    // a published run must still be repeatable.
+    for at in ["main", "main~2"] {
+        rig.git(&["checkout", "-q", "--detach", at]);
+        let rig_out = rig.out();
+        let _ = std::fs::remove_dir_all(&rig_out);
+        let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+        assert_eq!(code, 0, "{at}: {text}");
+    }
+}
+
+#[test]
+fn collect_v4_refuses_a_head_origin_main_does_not_have() {
+    let rig = v4_rig();
+    rig.commit("second.txt");
+    // The remote's main is one commit behind the local one.
+    rig.git(&["update-ref", "refs/remotes/origin/main", "main~1"]);
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("not in the history of refs/remotes/origin/main"),
+        "{text}"
+    );
+    // At the same commit, both refs agree and the run goes on.
+    rig.git(&["update-ref", "refs/remotes/origin/main", "main"]);
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 0, "{text}");
+}
+
+#[test]
+fn collect_v4_refuses_when_no_main_ref_exists() {
+    let rig = v4_rig();
+    rig.git(&["branch", "-q", "-m", "main", "trunk"]);
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("neither refs/heads/main nor refs/remotes/origin/main exists"),
+        "{text}"
+    );
+    assert!(rig.log().is_empty());
+}
+
+#[test]
+fn collect_v4_dry_run_does_not_check_main() {
+    let rig = v4_rig();
+    rig.git(&["checkout", "-q", "-b", "feature"]);
+    rig.commit("feature.txt");
+    let mut dry = DRAFT_ROUTE.to_vec();
+    dry.push("--dry-run");
+    let (code, text) = rig.run(&dry, &[]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(text.lines().filter(|l| l.starts_with("cost.")).count(), 24);
 }
 
 // ============================================================================

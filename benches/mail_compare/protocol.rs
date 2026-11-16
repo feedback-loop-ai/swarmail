@@ -31,10 +31,12 @@ pub const PROTOCOL_V4_ID: &str = "fair-mail-comparison-v4";
 /// The one cap protocol 4 launches every capped target with (0132 §2.4): at
 /// least the largest fill plus every measured message.
 pub const V4_CAP: u64 = 150_000;
-/// The wrapper's `timeout` on one chunk (`collect-v4`, 600 s). The driver's
-/// chunk deadline plus everything that may still run after it must end
-/// before this.
-pub const CHUNK_KILL_MS: u64 = 600_000;
+/// The instant, counted from a chunk's start, at which the wrapper's
+/// `timeout` sends the chunk SIGTERM (`collect-v4`, 560 s; SIGKILL follows 30 s
+/// later and 0132 section 11.1's ten minutes hold with the scope's wait). The
+/// driver's chunk deadline plus everything that may still run after it must
+/// end before this.
+pub const CHUNK_KILL_MS: u64 = 560_000;
 /// What the chunk clock does not see: the scope's and the driver's start
 /// before it, and the sample stop, the read-back of the rows, the report and
 /// the seal after it.

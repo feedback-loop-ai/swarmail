@@ -491,9 +491,9 @@ case "$mode" in
   collect-v4)
     # Protocol 4 (accepted decision 0132 §11): the whole cost run as a fixed,
     # protocol-derived plan of bounded chunks. Each chunk is one driver in its
-    # own delegated systemd scope, under `timeout 600` and `taskset` on at most
-    # nproc/4 CPUs (never more than 32); nothing here runs longer than ten
-    # minutes. The plan is the driver's (`targets --plan v4`), never computed
+    # own delegated systemd scope, under `timeout --kill-after=30 560` and
+    # `taskset` on at most nproc/4 CPUs (never more than 32); nothing here runs
+    # longer than ten minutes. The plan is the driver's (`targets --plan v4`), never computed
     # here. Linux only: there is no unenforced fallback.
     [ "$(uname -s)" = Linux ] \
       || blocked platform "collect-v4 runs on Linux with delegated cgroup v2 only; $(uname -s) cannot enforce the budget"
@@ -517,28 +517,137 @@ case "$mode" in
       || blocked prerequisites "collect-v4 pins the chunks to CPUs 0-$((chunk_cpus - 1)) and needs a shell that may use all of the host's CPUs: nproc is $ncpu, nproc --all is $all_cpus"
     # Every process the mode starts after the preflight runs under this one
     # prefix (0132 §11.1: no process runs longer than 10 minutes or on more
-    # than 32 CPUs). The 600 is `CHUNK_KILL_MS` of the driver's protocol.rs.
-    bound=(timeout --kill-after=30 600 taskset -c "0-$((chunk_cpus - 1))")
-    interrupted=0 chunk_pid=''
-    # A signal ends the mode with exit 2. During a chunk it goes to the
-    # chunk's `timeout`, which passes it to the driver (whose own interrupt
-    # path tears down and exits 2, unsealed); the chunk is then judged and
-    # written to the ledger like any other, and no later chunk starts.
+    # than 32 CPUs). The 560 is `CHUNK_KILL_MS` of the driver's protocol.rs,
+    # in seconds: the instant `timeout` sends SIGTERM, and SIGKILL follows 30
+    # s later. Every `systemctl` call has its own `timeout` (1 s to ask, 3 s to
+    # kill, 3 s to stop), so the ten minutes hold as a sum, for the worst case
+    # of each kind of step:
+    #   a build, `targets`, `check`, `footprint` or an admission: 560 + 30
+    #   a chunk that failed: 560 + 30 + 1 (one query) + 3 (kill) + 3 (stop)
+    #   a chunk that sealed: 560 + 20 x (1 + 0.5) (the polls) + 3 + 3
+    bound=(timeout --kill-after=30 560 taskset -c "0-$((chunk_cpus - 1))")
+    scope_polls=20 scope_poll_interval=0.5
+    interrupted=0 step_pid='' step_status=0 owned='' owned_unit='' scope_clean=true
+    interrupt_exit() {
+      printf 'compare-mail: blocked at phase "interrupt": collect-v4 was interrupted; %s is incomplete and is never resumed\n' "$output" >&2
+      exit 2
+    }
+    # A signal does two things only: it records the interrupt, and sends the
+    # step that is running (its `timeout`, which passes the signal on) a
+    # SIGTERM; the driver's own interrupt path tears down and exits 2,
+    # unsealed. The handler ends the mode itself only when no step is running
+    # and no chunk is owned. Everything else is the main flow's: it reads
+    # `interrupted` after every step, and a chunk is judged and written to
+    # the ledger as a failed one before the mode exits 2.
     on_signal() {
-      if [ -n "$chunk_pid" ]; then
-        interrupted=1
-        kill -TERM "$chunk_pid" 2>/dev/null
-      else
-        printf 'compare-mail: blocked at phase "interrupt": collect-v4 was interrupted; %s is incomplete and is never resumed\n' "$output" >&2
-        exit 2
+      interrupted=1
+      if [ -n "$step_pid" ]; then
+        kill -TERM "$step_pid" 2>/dev/null
+      elif [ -z "$owned" ]; then
+        interrupt_exit
       fi
     }
     trap on_signal INT TERM HUP
+    # The one owner of a running step: start the command under the bound, in
+    # the background, and wait for it here, so that a trapped signal can act
+    # while it runs. OUT, when not empty, receives its stdout; a step whose
+    # output is read goes to a file, never through $(...), which would hold
+    # the trap until it ended. The status is $step_status. No step starts
+    # once an interrupt is recorded.
+    run_step() {
+      local out="$1"
+      shift
+      if [ "$interrupted" != 0 ]; then
+        step_status=2
+        return 0
+      fi
+      if [ -n "$out" ]; then
+        "${bound[@]}" "$@" >"$out" &
+      else
+        "${bound[@]}" "$@" &
+      fi
+      step_pid=$!
+      # A signal that came between the fork and the pid being known.
+      [ "$interrupted" = 0 ] || kill -TERM "$step_pid" 2>/dev/null
+      # `wait` returns early on a trapped signal: repeat until the step
+      # itself has been reaped.
+      while :; do
+        wait "$step_pid"
+        step_status=$?
+        kill -0 "$step_pid" 2>/dev/null || break
+      done
+      step_pid=''
+    }
+    # A step that is not a chunk: an interrupt ends the mode at once, naming
+    # the interrupt, before the caller reads the status.
+    step() {
+      run_step "$@"
+      [ "$interrupted" = 0 ] || interrupt_exit
+    }
+    # What systemd says of a scope: the word `is-active` prints, or nothing.
+    scope_state() {
+      timeout 1 systemctl --user is-active "$1" 2>/dev/null | head -n1
+    }
+    # Only `inactive` and `failed` mean that a scope holds no process; any
+    # other answer, none, a failed query or a cut one, is not known to be gone.
+    scope_gone() {
+      case "$1" in
+        inactive|failed) return 0 ;;
+      esac
+      return 1
+    }
+    scope_end() {
+      timeout 3 systemctl --user kill "$1" >/dev/null 2>&1
+      timeout 3 systemctl --user stop "$1" >/dev/null 2>&1
+    }
+    # A chunk that sealed: systemd learns that a scope is empty after the
+    # driver has exited, so it is asked up to $scope_polls times, half a
+    # second apart, and is clean at the first answer that says it is gone. An
+    # interrupt stops the asking. A scope not gone at the last answer is
+    # killed and stopped, and is unclean.
+    judge_sealed() {
+      local tries=0 state
+      scope_clean=false
+      while [ "$tries" -lt "$scope_polls" ]; do
+        state=$(scope_state "$1")
+        if scope_gone "$state"; then
+          scope_clean=true
+          return 0
+        fi
+        tries=$((tries + 1))
+        [ "$interrupted" = 0 ] || break
+        [ "$tries" -ge "$scope_polls" ] || sleep "$scope_poll_interval"
+      done
+      scope_end "$1"
+    }
+    # A chunk that failed: the run is already stopped, so the scope is asked
+    # once and not waited for; unless it is gone it is killed and stopped.
+    judge_failed() {
+      if scope_gone "$(scope_state "$1")"; then
+        scope_clean=true
+      else
+        scope_clean=false
+        scope_end "$1"
+      fi
+    }
     commit=$(git rev-parse HEAD 2>/dev/null || true)
     if [ "$dry_run" != 1 ]; then
       [ -n "$commit" ] || blocked candidate "the candidate is not a committed git checkout; collect-v4 never measures an uncommitted tree"
       [ -z "$(git status --porcelain 2>/dev/null)" ] \
         || blocked candidate "the candidate tree is dirty; collect-v4 measures a committed, clean main only"
+      # On main (0132 §2.3): HEAD is in the history of main, the tip or an
+      # earlier commit (a published run must stay repeatable after main has
+      # moved on), by the local ref and, where it exists, the remote one.
+      # Nothing is fetched. A pull-request branch is never in that history.
+      main_seen=0
+      for main_ref in refs/heads/main refs/remotes/origin/main; do
+        git rev-parse --verify --quiet "$main_ref^{commit}" >/dev/null 2>&1 || continue
+        main_seen=1
+        git merge-base --is-ancestor HEAD "$main_ref" 2>/dev/null \
+          || blocked candidate "the candidate $commit is not in the history of $main_ref; collect-v4 measures a commit of main only"
+      done
+      [ "$main_seen" = 1 ] \
+        || blocked candidate "neither refs/heads/main nor refs/remotes/origin/main exists: collect-v4 cannot tell that the candidate is on main"
     fi
     declared=$(declared_competitors "$protocol")
     [ -n "$declared" ] || blocked competitor-binaries "collect-v4 measures competitors, and the protocol $protocol declares none"
@@ -546,47 +655,50 @@ case "$mode" in
     doc_args=()
     [ -z "$documents" ] || doc_args=(--documents "$documents")
     command -v cargo >/dev/null 2>&1 || [ -n "${COMPARE_MAIL_DRIVER_BIN:-}" ] || blocked prerequisites "cargo is not installed"
+    bin_dir=${COMPARE_MAIL_BIN_DIR:-target/compare-mail}
+    mkdir -p "$bin_dir" || blocked prerequisites "cannot make $bin_dir"
+    run_token=$(date -u +%Y%m%dT%H%M%SZ)-$$
+    run_id="collect-v4-$run_token"
     candidate=${COMPARE_MAIL_SWARMAIL_BIN:-}
     if [ -z "$candidate" ]; then
-      "${bound[@]}" cargo build --release --locked --offline --bin swarmail >&2 \
-        || blocked build "the candidate binary does not build"
+      step '' cargo build --release --locked --offline --bin swarmail >&2
+      [ "$step_status" -eq 0 ] || blocked build "the candidate binary does not build"
       candidate=$PWD/target/release/swarmail
     fi
     driver=${COMPARE_MAIL_DRIVER_BIN:-}
     if [ -z "$driver" ]; then
-      driver=$("${bound[@]}" cargo bench --locked --offline --no-run --bench mail_compare --message-format=json 2>/dev/null \
-        | grep -o '"executable":"[^"]*mail_compare[^"]*"' | tail -n1 | cut -d'"' -f4)
+      step "$bin_dir/$run_token.bench.json" cargo bench --locked --offline --no-run --bench mail_compare --message-format=json 2>/dev/null
+      [ "$step_status" -eq 0 ] || blocked build "the mail_compare driver does not build"
+      driver=$(grep -o '"executable":"[^"]*mail_compare[^"]*"' "$bin_dir/$run_token.bench.json" | tail -n1 | cut -d'"' -f4)
     fi
     [ -n "$driver" ] && [ -x "$driver" ] || blocked build "the mail_compare driver does not build"
-    bin_dir=${COMPARE_MAIL_BIN_DIR:-target/compare-mail}
-    mkdir -p "$bin_dir" || blocked prerequisites "cannot make $bin_dir"
     candidate=$(freeze_binary "$candidate" "$bin_dir") || blocked build "cannot freeze the candidate binary"
     driver=$(freeze_binary "$driver" "$bin_dir") || blocked build "cannot freeze the driver"
     # The driver's own list is authoritative; the preflight must agree.
-    from_driver=$("$driver" targets --protocol "$protocol") \
-      || blocked collection-ready "the driver refuses the protocol $protocol"
+    step "$bin_dir/$run_token.targets" "$driver" targets --protocol "$protocol"
+    [ "$step_status" -eq 0 ] || blocked collection-ready "the driver refuses the protocol $protocol"
+    from_driver=$(cat "$bin_dir/$run_token.targets")
     [ "$from_driver" = "$declared" ] \
       || blocked competitor-binaries "the driver declares a different competitor list than the preflight read"
-    plan=$("$driver" targets --protocol "$protocol" --plan v4) \
-      || blocked collection-ready "the driver has no chunk plan for $protocol"
+    step "$bin_dir/$run_token.plan" "$driver" targets --protocol "$protocol" --plan v4
+    [ "$step_status" -eq 0 ] || blocked collection-ready "the driver has no chunk plan for $protocol"
+    plan=$(cat "$bin_dir/$run_token.plan")
     [ -n "$plan" ] || blocked collection-ready "the driver's chunk plan for $protocol is empty"
-    run_token=$(date -u +%Y%m%dT%H%M%SZ)-$$
-    run_id="collect-v4-$run_token"
-    systemd_version=$(systemctl --version 2>/dev/null | head -n1)
+    systemd_version=$(timeout 3 systemctl --version 2>/dev/null | head -n1)
     [ -n "$systemd_version" ] || systemd_version="not stated"
     scratch_root="$output.scratch"
 
-    # The command of one chunk, in this nesting: timeout, then taskset, then
-    # the scope, so the driver is the scope's only process (a process left in
-    # the scope's own cgroup would stop it enabling controllers for leaves).
+    # The command of one chunk, without its bound, in this nesting: the
+    # bound's timeout, then taskset, then the scope, so the driver is the
+    # scope's only process (a process left in the scope's own cgroup would
+    # stop it enabling controllers for leaves).
     chunk_command() {
       local coord="$1" target rest unit w
       rest="${coord#*.}"
       target="${rest%.*}"
       unit="mail-compare-$run_token-$(printf '%s' "$coord" | tr -c 'A-Za-z0-9_.\n-' '_')"
       chunk_unit="$unit"
-      chunk_cmd=("${bound[@]}"
-        systemd-run --user --scope -p Delegate=yes "--unit=$unit" --
+      chunk_cmd=(systemd-run --user --scope -p Delegate=yes "--unit=$unit" --
         "$driver" run --mode collect --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"}
         --output "$output/chunks/$coord" --scratch "$scratch_root/$coord" --run-id "$run_id"
         --chunk "$coord" --systemd "$systemd_version")
@@ -603,7 +715,7 @@ case "$mode" in
       for coord in $plan; do
         chunk_command "$coord"
         printf '%s\t' "$coord"
-        printf '%q ' "${chunk_cmd[@]}"
+        printf '%q ' "${bound[@]}" "${chunk_cmd[@]}"
         printf '\n'
       done
       exit 0
@@ -617,18 +729,8 @@ case "$mode" in
       esac
     done
     json_text() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
-    # A scope goes inactive a moment after its driver exits: wait for at most
-    # ten seconds (twenty polls) before calling it alive.
-    scope_inactive() {
-      local tries=0
-      while systemctl --user is-active --quiet "$1" 2>/dev/null; do
-        tries=$((tries + 1))
-        [ "$tries" -le 20 ] || return 1
-        sleep 0.5
-      done
-      return 0
-    }
-    "${bound[@]}" "$driver" check --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"} \
+    step '' "$driver" check --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"}
+    [ "$step_status" -eq 0 ] \
       || blocked collection-ready "the protocol and lock are not ready for collection (see above)"
     mkdir -p "$output/chunks" "$output/ledger" "$scratch_root" \
       || blocked prerequisites "cannot make $output"
@@ -637,51 +739,46 @@ case "$mode" in
       fp_args+=(--bin "$t=$(bin_for "$t")")
       [ -z "$(runtime_for "$t")" ] || fp_args+=(--runtime "$t=$(runtime_for "$t")")
     done
-    "${bound[@]}" "$driver" "${fp_args[@]}" >"$output/footprint.json" \
+    step "$output/footprint.json" "$driver" "${fp_args[@]}"
+    [ "$step_status" -eq 0 ] \
       || blocked footprint "the footprint could not be computed (see above); $output is incomplete"
     any_failed=0
     for coord in $plan; do
+      [ "$interrupted" = 0 ] || interrupt_exit
       chunk_command "$coord"
+      # The chunk is owned from before it starts until its ledger entry is
+      # written: a signal in between never abandons it.
+      owned="$coord" owned_unit="$chunk_unit.scope"
       load_before=$(cat /proc/loadavg 2>/dev/null || echo unavailable)
       started=$(date +%s)
-      # The chunk runs in the background and is waited for, so that a signal
-      # can reach it: `wait` returns early on a trapped signal, and is
-      # repeated until the chunk itself has been reaped.
-      "${chunk_cmd[@]}" &
-      chunk_pid=$!
-      while :; do
-        wait "$chunk_pid"
-        status=$?
-        kill -0 "$chunk_pid" 2>/dev/null || break
-      done
-      chunk_pid=''
+      run_step '' "${chunk_cmd[@]}"
+      status=$step_status
       wall_ms=$((($(date +%s) - started) * 1000))
       load_after=$(cat /proc/loadavg 2>/dev/null || echo unavailable)
       # A timeout (124), a kill (137) or any status above 2 is an
       # infrastructure failure, and so is a chunk that claims 0 or 1 without
       # its completion index: such a chunk was never sealed. So is a chunk
-      # that was interrupted.
+      # that was interrupted. A chunk that counts as 2 has failed; any other
+      # has sealed.
       case "$status" in
         0|1) [ -f "$output/chunks/$coord/index.json" ] || status=2 ;;
         *) status=2 ;;
       esac
       [ "$interrupted" = 0 ] || status=2
-      # systemd learns that a scope is empty after the driver has exited, so
-      # the scope is given a moment to go inactive before it is judged. One
-      # still active after that is killed and stopped, and the chunk counts
-      # as an infrastructure failure.
-      scope_clean=true
-      if ! scope_inactive "$chunk_unit.scope"; then
-        scope_clean=false
-        systemctl --user kill "$chunk_unit.scope" >/dev/null 2>&1
-        systemctl --user stop "$chunk_unit.scope" >/dev/null 2>&1
-        status=2
+      if [ "$status" -eq 2 ]; then
+        judge_failed "$owned_unit"
+      else
+        judge_sealed "$owned_unit"
+        [ "$scope_clean" = true ] || status=2
       fi
+      # A signal during the judgement: the entry is still written, with 2.
+      [ "$interrupted" = 0 ] || status=2
       printf '{"coordinate":"%s","command":"%s","exit":%s,"wall_ms":%s,"load_before":"%s","load_after":"%s","scope_clean":%s,"driver":"%s"}\n' \
-        "$(json_text "$coord")" "$(json_text "$(printf '%q ' "${chunk_cmd[@]}")")" "$status" "$wall_ms" \
+        "$(json_text "$coord")" "$(json_text "$(printf '%q ' "${bound[@]}" "${chunk_cmd[@]}")")" "$status" "$wall_ms" \
         "$(json_text "$load_before")" "$(json_text "$load_after")" "$scope_clean" "$(json_text "$driver")" \
         >"$output/ledger/$coord.json" \
         || blocked ledger "cannot write the ledger entry of $coord"
+      owned=''
       if [ "$status" -eq 2 ]; then
         # Nothing is resumed, overwritten or removed: the run is incomplete.
         blocked "chunk-$coord" "the chunk ended in an infrastructure failure (interrupted: $interrupted, scope clean: $scope_clean); $output is incomplete and is never resumed"
@@ -699,10 +796,10 @@ case "$mode" in
     } >"$output/reproduce.txt" || blocked prerequisites "cannot write $output/reproduce.txt"
     adm=(--sources "$sources" ${doc_args[@]+"${doc_args[@]}"} --bin "swarmail=$candidate")
     for t in $declared; do adm+=(--bin "$t=$(bin_for "$t")"); done
-    "${bound[@]}" "$driver" admit-v4 --seal "$output" "$protocol" "${adm[@]}" \
-      || blocked admission "the run could not be sealed (see above)"
-    "${bound[@]}" "$driver" admit-v4 "$output" "$protocol" "${adm[@]}" \
-      || blocked admission "the sealed run is not admitted (see above)"
+    step '' "$driver" admit-v4 --seal "$output" "$protocol" "${adm[@]}"
+    [ "$step_status" -eq 0 ] || blocked admission "the run could not be sealed (see above)"
+    step '' "$driver" admit-v4 "$output" "$protocol" "${adm[@]}"
+    [ "$step_status" -eq 0 ] || blocked admission "the sealed run is not admitted (see above)"
     echo "compare-mail collect-v4: wrote $output ($(printf '%s\n' "$plan" | wc -l | tr -d ' ') chunks)"
     exit "$any_failed"
     ;;
