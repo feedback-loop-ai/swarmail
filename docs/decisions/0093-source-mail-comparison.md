@@ -111,3 +111,9 @@ are applied without change. 0130 is a proposal, and only the operator accepts
 it.
 
 2026-11-08: the operator accepted [0130](0130-eight-target-mail-comparison.md) ("Accept and merge"); §1's annotated-tag chain is amended by addition as 0130 states.
+
+## Addendum — 2026-11-16 (pointer)
+
+[0132](0132-mail-comparison-protocol-v4.md), accepted by the operator on
+2026-11-16, adds protocol v4's `wait-best` stream clients beside this
+record's §4 wait. It adds to §4; nothing here is changed.

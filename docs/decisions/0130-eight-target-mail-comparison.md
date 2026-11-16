@@ -892,3 +892,9 @@ confirmation of its plan.
 2026-11-08: proposed [0129](0129-agent-suite-comparison.md) (issue #339, the agent-suite comparison) integrates with this record by addition. Its agent target `mailslurper` runs this record's `mailslurper-source-build` row, and it adds no lock entry, field or version; see 0129's 2026-11-08 addendum. Nothing here changes.
 
 2026-11-08: the operator accepted [0129](0129-agent-suite-comparison.md) ("Approve + accept 0129"); the references above to proposed 0129 read as accepted.
+
+## Addendum — 2026-11-16 (pointer)
+
+[0132](0132-mail-comparison-protocol-v4.md), accepted by the operator on
+2026-11-16, adds protocol v4's `wait-best` stream clients beside this
+record's §4 wait. It adds to §4; nothing here is changed.

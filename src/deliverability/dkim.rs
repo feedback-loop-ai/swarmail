@@ -29,7 +29,15 @@
 //! one of the two names a signature), the message gets one
 //! `dkim.header_boundary_ambiguous.v1` and nothing else. A passing guard proves
 //! those two facts and no more.
+//!
+//! The re-parse. A signature with `l=` is judged on a second, non-strict parse.
+//! With ARC compiled in that parse would also hash every `ARC-Message-Signature`
+//! with a distinct `l=`, so the `l=` fields of both kinds share the bound of 16
+//! that keeps the work at "one re-parse, at most 16 more hashes": past it, one
+//! `dkim.limits_exceeded.v1` at the first `DKIM-Signature` with `l=` and no other
+//! DKIM verdict (decision 0133 section 6). ARC reads the strict parse only.
 
+use super::arc;
 use super::dns::{Lookups, OwnerName, Txt};
 use super::{AnalysisError, Collector, Fact, Finding, Headers, Location, Severity};
 use futures_util::FutureExt;
@@ -46,7 +54,7 @@ use mail_auth::{
     NoCache, Parameters, ResolverCache, TxtRecord,
 };
 use std::borrow::Borrow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::sync::LazyLock;
@@ -149,7 +157,7 @@ impl Rule {
                 "A line in the header block that is not a header field (no colon, or only whitespace at the very top), or a DKIM-Signature field name that not every parser accepts (such as a space before the colon), ends or splits the headers differently at different receivers; remove it, fold it into the previous field, or write the name as DKIM-Signature: (RFC 5322 sections 2.2 and 2.2.3)."
             }
             Self::LimitsExceeded => {
-                "Send at most 16 DKIM-Signature fields, each with at most 128 header names in h=."
+                "Send at most 16 DKIM-Signature fields, each with at most 128 header names in h=, and no more than 16 fields with an l= tag in all, ARC-Message-Signature fields included."
             }
             Self::SignatureExpired => {
                 "Sign again with an x= expiration later than the time the message was received (RFC 6376 section 3.5)."
@@ -250,6 +258,10 @@ pub(super) fn name_of<Q: Hash + ?Sized>(key: &Q) -> Option<String> {
 /// crate never reaches its resolver; every answered name is recorded by `Lookups`.
 pub(super) struct Adapter<'a, 'l> {
     pub(super) lookups: &'a RefCell<&'l mut Lookups>,
+    /// How many names the crate has asked this adapter for, answered or not. ARC
+    /// reads the difference across one `verify_arc` call to name the field whose
+    /// key failed (decision 0133 section 4): the crate asks once per key.
+    calls: Cell<u64>,
 }
 
 /// The one judge of a DNS name. The crate asks for `<s>._domainkey.<d>.` with a
@@ -265,7 +277,18 @@ pub(super) fn not_found() -> TxtRecord {
     TxtRecord::Error(Error::Dns(DnsError::RecordNotFound(ResponseCode::NXDomain)))
 }
 
-impl Adapter<'_, '_> {
+impl<'a, 'l> Adapter<'a, 'l> {
+    pub(super) fn over(lookups: &'a RefCell<&'l mut Lookups>) -> Self {
+        Self {
+            lookups,
+            calls: Cell::new(0),
+        }
+    }
+
+    pub(super) fn calls(&self) -> u64 {
+        self.calls.get()
+    }
+
     fn answer(&self, name: &str) -> TxtRecord {
         // A name outside 0120's grammar is never looked up and never recorded.
         let Some(owner) = owner_of(name) else {
@@ -304,6 +327,7 @@ impl ResolverCache<Box<str>, TxtRecord> for Adapter<'_, '_> {
         Box<str>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
+        self.calls.set(self.calls.get() + 1);
         Some(self.answer(&name_of(name).unwrap_or_default()))
     }
 
@@ -552,8 +576,14 @@ fn fields<'m>(message: &'m AuthenticatedMessage<'m>) -> Vec<Field<'m>> {
                 }),
         )
         .collect();
-    fields.sort_by_key(|field| field.value.as_ptr() as usize);
+    fields.sort_by_key(|field| crate_order(field.value));
     fields
+}
+
+/// A crate field's place in the message: the crate's lists point into the raw
+/// bytes, so the address orders them in wire order.
+pub(super) fn crate_order(value: &[u8]) -> usize {
+    value.as_ptr() as usize
 }
 
 /// What `verdict` reads besides the field: the crate's outputs, the message body,
@@ -671,19 +701,37 @@ pub(super) enum Prepared<'r> {
     Stopped,
     /// A bound fired and its one finding is pushed. The parse is sound.
     Limited(AuthenticatedMessage<'r>),
-    /// Every guard passed: the signatures can be verified.
-    Ready(AuthenticatedMessage<'r>),
+    /// Every guard passed: the signatures can be verified. `strict` is the parse
+    /// that bounded the work, and the one ARC reads (decision 0133 section 6);
+    /// `full` is the non-strict re-parse a signature with `l=` needs, or `None`
+    /// when no `l=` signature made it necessary and `strict` is the parse.
+    Ready {
+        strict: AuthenticatedMessage<'r>,
+        full: Option<Box<AuthenticatedMessage<'r>>>,
+    },
 }
 
 impl<'r> Prepared<'r> {
-    /// The crate's parse of the message, unless the boundary guard refused it.
-    /// For unsigned mail the guard has not run: the caller checks that the parse
-    /// ends the headers where Swarmail's own scan does.
+    /// The crate's parse of the message that DKIM verifies and DMARC reads,
+    /// unless the boundary guard refused it. For unsigned mail the guard has not
+    /// run: the caller checks that the parse ends the headers where Swarmail's
+    /// own scan does.
     pub(super) fn message(&self) -> Option<&AuthenticatedMessage<'r>> {
+        match self {
+            Self::Ready { strict, full } => Some(full.as_deref().unwrap_or(strict)),
+            other => other.strict(),
+        }
+    }
+
+    /// The crate's strict parse, the only one ARC reads: its verdict must not
+    /// depend on whether an unrelated `DKIM-Signature` carries `l=`. `None` when
+    /// the boundary guard refused the parse or the crate could not read the
+    /// message.
+    pub(super) fn strict(&self) -> Option<&AuthenticatedMessage<'r>> {
         match self {
             Self::Unsigned(message) => message.as_ref(),
             Self::Stopped => None,
-            Self::Limited(message) | Self::Ready(message) => Some(message),
+            Self::Limited(strict) | Self::Ready { strict, .. } => Some(strict),
         }
     }
 }
@@ -731,7 +779,8 @@ pub(super) fn prepare<'r>(
     let by_names = first
         .iter()
         .position(|f| f.scan.h_names > MAX_DKIM_SIGNED_HEADERS);
-    let has_l = first.iter().any(|f| f.scan.has_l);
+    let first_l = first.iter().position(|f| f.scan.has_l);
+    let dkim_l = first.iter().filter(|f| f.scan.has_l).count();
     drop(first);
     let strict = parsed.expect("an agreed parse exists");
     if let Some(over) = [by_count, by_names].into_iter().flatten().min() {
@@ -739,12 +788,23 @@ pub(super) fn prepare<'r>(
         return Ok(Prepared::Limited(strict));
     }
     // A signature with `l=` is judged, not ignored: parse again without strict.
-    if has_l {
+    // With ARC compiled in that parse would also hash every ARC-Message-Signature
+    // with a distinct `l=`, so the `l=` fields of both kinds share the one bound
+    // of 16 that keeps "at most one re-parse, at most 16 more hashes" true
+    // (decision 0133 section 6). ARC never reads the re-parse.
+    if let Some(at) = first_l {
+        if dkim_l + arc::message_signatures_with_l(&strict) > MAX_DKIM_SIGNATURES {
+            out.push(Rule::LimitsExceeded.finding(at))?;
+            return Ok(Prepared::Limited(strict));
+        }
         let full = AuthenticatedMessage::parse_with_opts(raw, None, false)
             .expect("a message that parsed strictly parses without strict");
-        return Ok(Prepared::Ready(full));
+        return Ok(Prepared::Ready {
+            strict,
+            full: Some(Box::new(full)),
+        });
     }
-    Ok(Prepared::Ready(strict))
+    Ok(Prepared::Ready { strict, full: None })
 }
 
 /// What verification hands to DMARC (decision 0126 §7): the crate's outputs
@@ -826,15 +886,16 @@ pub(super) mod tests {
     // with its raw public key (RFC 8463 section 3.3). aws-lc will not sign with a
     // 1,024-bit RSA key (it verifies them), so that size is proved by the
     // published RFC 8463 vector instead.
-    const RSA2048_PRIVATE: &str = "MIIEpAIBAAKCAQEA0Cd1o2mJkXDFNQ9SdX9KtAWW71salDqwwb5QF6kRzuGkCSADrGCsFuKD7AWi4EhkAtsVoL0KEEVTAVW6Bu0uzYkLoQFVdjWdBGS3ZMotq2R1H6QkLMZFRQminfxX4huvJ+QDCxbI7BH3b15dmGJ250Q7fOPnJyWmxhaqQcm5+8A+GAMC4+u3Th8KuZUhwY9tiFSqtb4XosqvNMffZdzC1/Y0aZr8wpyvLHwp94++MrvDlqLfDhbbeg+cZvrTNUqaY7PiGm3CqjJLOB5tTQ8y7jCqXvcoquq/78MSGBhvjVhVjmZnME0f6vJfh9jgI1JdAF0fD5vNU5JfpJRZgEjFxQIDAQABAoIBAAPrycweWZNPMMPSpZouqOugAObUlWbpokJm6C9nDs/tY7QxTQPXlMdyS4uHZhRy3BO4aLjs0PwbaHz714g4XsknUUVMMocKfZNjbrxAfgUaChhZdKu1ZJNL40aRYZVtaJO6Zii0o1nKN9oe9mmbIF9YY3LqJNcIjNvOwv4SemnNRsBRJn7xpgOkpKTDi8bxL+WkHICWfYaR6WNNggH2ZEOeBUcclSRvMcMBANZ1dqbpRznL/nEE/5mjPqhW1KgK4wzrX1aE8VEy6M2aFI7UMUEPUd63ZxJVfwQW7WvdZ/y5XnIPjGhBV3bdj8POThcek515Iu0RMhKgAJJJI+pJfbkCgYEA50jblWAnMk5QpbkeXM5QL0y9GpsemCl+75NkLSQGvVKElVKxJ6rILJZ0E4bID76sJ0sIfMSYg4x9uxr7aUYOoEsu2KEn59ntCO1aF50awcaAYHUcqh0L0lvUPo9S+AJ8kT5ih5t/TjltF8QSckuLXuqC6hc7RYNDpQ3FOOes5t0CgYEA5mXVMcJVGzgtTvV6i5Yj1mpWHeaPoDIG61y+VQP7BNhxKW04n342r8Px8nw9uxlYfkdG4n7QTzhVw6uvOTrcoPnpiJx1mts+WUzEuyrGO/FwmQBGHdQSeYJv5OogzhkNViCS+hkcWarZlZlD+SvK1uIKUl+3Uipc1VqEpDi4yAkCgYEAn75Js61axTskJqJqXy08Yr786bBz/CLFApHpoef9I6wn2L7pjv09DtbHy2jPK1jFrMn9Tbe3ozxY5u9m8DosBfiHnaYJWvDA7+aH0EF5ZpdEudqJdtFjBeLZAHCbnKKTCPpusTzsO8ocGEsbdofI9kDBNQ/gp01XXlvZeUlCuZ0CgYB4P7v23YOH0lkrdcnA4trPhO5vaq+Zn6Km4t/gBVTVIZZmVcAQ1lH6iJ1VvuyFI2RhfBgODLvyLOfuWUP57bPLPMRbbbWf3j/7YaroORn/nTL0WAVAejguPRrjciMvDjo8soGjkMmQLzCi+LxWZznVz2ItvhEzDDMpk7XY9FXU6QKBgQC7MQbuTqgCrYLxGxA9VYDM+sJjQpq5eT0EcivvRnqlmLcGEAAMtXMXAPVmP2XnA/vKSIl/SLItE1FkpDXdc0kPnlok3tzCJz9+zfa0tuDxMmHDXBYcl8Z3jLszfQuqdOuD4HOr8WQ8Byklo8Oc+AwqqaeVBxAdKi1EXWzVj2+rTw==";
+    pub(in crate::deliverability) const RSA2048_PRIVATE: &str = "MIIEpAIBAAKCAQEA0Cd1o2mJkXDFNQ9SdX9KtAWW71salDqwwb5QF6kRzuGkCSADrGCsFuKD7AWi4EhkAtsVoL0KEEVTAVW6Bu0uzYkLoQFVdjWdBGS3ZMotq2R1H6QkLMZFRQminfxX4huvJ+QDCxbI7BH3b15dmGJ250Q7fOPnJyWmxhaqQcm5+8A+GAMC4+u3Th8KuZUhwY9tiFSqtb4XosqvNMffZdzC1/Y0aZr8wpyvLHwp94++MrvDlqLfDhbbeg+cZvrTNUqaY7PiGm3CqjJLOB5tTQ8y7jCqXvcoquq/78MSGBhvjVhVjmZnME0f6vJfh9jgI1JdAF0fD5vNU5JfpJRZgEjFxQIDAQABAoIBAAPrycweWZNPMMPSpZouqOugAObUlWbpokJm6C9nDs/tY7QxTQPXlMdyS4uHZhRy3BO4aLjs0PwbaHz714g4XsknUUVMMocKfZNjbrxAfgUaChhZdKu1ZJNL40aRYZVtaJO6Zii0o1nKN9oe9mmbIF9YY3LqJNcIjNvOwv4SemnNRsBRJn7xpgOkpKTDi8bxL+WkHICWfYaR6WNNggH2ZEOeBUcclSRvMcMBANZ1dqbpRznL/nEE/5mjPqhW1KgK4wzrX1aE8VEy6M2aFI7UMUEPUd63ZxJVfwQW7WvdZ/y5XnIPjGhBV3bdj8POThcek515Iu0RMhKgAJJJI+pJfbkCgYEA50jblWAnMk5QpbkeXM5QL0y9GpsemCl+75NkLSQGvVKElVKxJ6rILJZ0E4bID76sJ0sIfMSYg4x9uxr7aUYOoEsu2KEn59ntCO1aF50awcaAYHUcqh0L0lvUPo9S+AJ8kT5ih5t/TjltF8QSckuLXuqC6hc7RYNDpQ3FOOes5t0CgYEA5mXVMcJVGzgtTvV6i5Yj1mpWHeaPoDIG61y+VQP7BNhxKW04n342r8Px8nw9uxlYfkdG4n7QTzhVw6uvOTrcoPnpiJx1mts+WUzEuyrGO/FwmQBGHdQSeYJv5OogzhkNViCS+hkcWarZlZlD+SvK1uIKUl+3Uipc1VqEpDi4yAkCgYEAn75Js61axTskJqJqXy08Yr786bBz/CLFApHpoef9I6wn2L7pjv09DtbHy2jPK1jFrMn9Tbe3ozxY5u9m8DosBfiHnaYJWvDA7+aH0EF5ZpdEudqJdtFjBeLZAHCbnKKTCPpusTzsO8ocGEsbdofI9kDBNQ/gp01XXlvZeUlCuZ0CgYB4P7v23YOH0lkrdcnA4trPhO5vaq+Zn6Km4t/gBVTVIZZmVcAQ1lH6iJ1VvuyFI2RhfBgODLvyLOfuWUP57bPLPMRbbbWf3j/7YaroORn/nTL0WAVAejguPRrjciMvDjo8soGjkMmQLzCi+LxWZznVz2ItvhEzDDMpk7XY9FXU6QKBgQC7MQbuTqgCrYLxGxA9VYDM+sJjQpq5eT0EcivvRnqlmLcGEAAMtXMXAPVmP2XnA/vKSIl/SLItE1FkpDXdc0kPnlok3tzCJz9+zfa0tuDxMmHDXBYcl8Z3jLszfQuqdOuD4HOr8WQ8Byklo8Oc+AwqqaeVBxAdKi1EXWzVj2+rTw==";
     const RSA2048_PUBLIC: &str = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Cd1o2mJkXDFNQ9SdX9KtAWW71salDqwwb5QF6kRzuGkCSADrGCsFuKD7AWi4EhkAtsVoL0KEEVTAVW6Bu0uzYkLoQFVdjWdBGS3ZMotq2R1H6QkLMZFRQminfxX4huvJ+QDCxbI7BH3b15dmGJ250Q7fOPnJyWmxhaqQcm5+8A+GAMC4+u3Th8KuZUhwY9tiFSqtb4XosqvNMffZdzC1/Y0aZr8wpyvLHwp94++MrvDlqLfDhbbeg+cZvrTNUqaY7PiGm3CqjJLOB5tTQ8y7jCqXvcoquq/78MSGBhvjVhVjmZnME0f6vJfh9jgI1JdAF0fD5vNU5JfpJRZgEjFxQIDAQAB";
     const ED25519_PRIVATE: &str =
         "MC4CAQAwBQYDK2VwBCIEIAtvV61x8r6mErlreyiGrmEK48yeio3jk3mzi+LgprfU";
     const ED25519_PUBLIC: &str = "UodvhlES5fJESplf9URbrh0U2TXyG7w5hvtVVBMrQRg=";
     // The two public keys RFC 8463 appendix A publishes (no private half is held
     // here): a different key of each type, for the wrong-key proofs.
-    const RFC8463_ED25519_PUBLIC: &str = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=";
-    const RFC8463_RSA1024_PUBLIC: &str = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDkHlOQoBTzWRiGs5V6NpP3idY6Wk08a5qhdR6wy5bdOKb2jLQiY/J16JYi0Qvx/byYzCNb3W91y3FutACDfzwQ/BC/e/8uBsCR+yz1Lxj+PL6lHvqMKrM3rG4hstT5QjvHO9PzoxZyVYLzBfO2EeC3Ip3G+2kryOTIKT+l/K4w3QIDAQAB";
+    pub(in crate::deliverability) const RFC8463_ED25519_PUBLIC: &str =
+        "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=";
+    pub(in crate::deliverability) const RFC8463_RSA1024_PUBLIC: &str = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDkHlOQoBTzWRiGs5V6NpP3idY6Wk08a5qhdR6wy5bdOKb2jLQiY/J16JYi0Qvx/byYzCNb3W91y3FutACDfzwQ/BC/e/8uBsCR+yz1Lxj+PL6lHvqMKrM3rG4hstT5QjvHO9PzoxZyVYLzBfO2EeC3Ip3G+2kryOTIKT+l/K4w3QIDAQAB";
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(in crate::deliverability) enum Kind {
@@ -860,12 +921,12 @@ pub(super) mod tests {
         }
     }
 
-    fn rsa(private: &str) -> RsaKey<Sha256> {
+    pub(in crate::deliverability) fn rsa(private: &str) -> RsaKey<Sha256> {
         let der = B64.decode(private).unwrap();
         RsaKey::from_key_der(PrivateKeyDer::Pkcs1(PrivatePkcs1KeyDer::from(der))).unwrap()
     }
 
-    fn ed25519() -> Ed25519Key {
+    pub(in crate::deliverability) fn ed25519() -> Ed25519Key {
         Ed25519Key::from_pkcs8_maybe_unchecked_der(&B64.decode(ED25519_PRIVATE).unwrap()).unwrap()
     }
 
@@ -1009,7 +1070,10 @@ pub(super) mod tests {
     }
 
     /// A frozen policy: one record per `(name, value)`, and `tempfail` names.
-    fn policy(records: &[(&str, String)], tempfail: &[&str]) -> Arc<Effective> {
+    pub(in crate::deliverability) fn policy(
+        records: &[(&str, String)],
+        tempfail: &[&str],
+    ) -> Arc<Effective> {
         let txt: Vec<_> = records
             .iter()
             .map(|(name, value)| serde_json::json!({"name": name, "values": [value]}))
@@ -1136,7 +1200,7 @@ pub(super) mod tests {
         );
         let mut lookups = declared_lookups(&world);
         let shared = RefCell::new(&mut lookups);
-        let adapter = Adapter { lookups: &shared };
+        let adapter = Adapter::over(&shared);
         // Every shape of name gets the record type its shape selects.
         assert!(matches!(
             ask(&adapter, "sel._domainkey.example.com."),
@@ -1222,7 +1286,7 @@ pub(super) mod tests {
         let world = policy(&[], &[]);
         let mut lookups = declared_lookups(&world);
         let shared = RefCell::new(&mut lookups);
-        let adapter = Adapter { lookups: &shared };
+        let adapter = Adapter::over(&shared);
         // The crate never inserts, removes or asks another cache; each is inert.
         ResolverCache::<Box<str>, TxtRecord>::insert(
             &adapter,
@@ -2592,7 +2656,7 @@ pub(super) mod tests {
         let message = AuthenticatedMessage::parse_with_opts(raw, None, false).unwrap();
         let mut lookups = declared_lookups(world);
         let shared = RefCell::new(&mut lookups);
-        let adapter = Adapter { lookups: &shared };
+        let adapter = Adapter::over(&shared);
         let outputs = AUTHENTICATOR
             .verify_dkim(Parameters::new(&message).with_cache(&adapter))
             .now_or_never()
@@ -3066,7 +3130,7 @@ pub(super) mod tests {
             .filter(|r| r.severity() == Severity::Warning);
         assert_eq!(warnings.count(), 1);
         for fact in [
-            "## DKIM verification (`swarmail-html/8`)",
+            "## DKIM verification (`swarmail-html/9`)",
             "**Time is the receipt time.**",
             "`dkim.expired_since_receipt.v1`",
             "**The clock residual (its full radius).**",
@@ -3109,6 +3173,37 @@ pub(super) mod tests {
         }
     }
 
+    /// With ARC compiled in, the non-strict re-parse would also hash every
+    /// ARC-Message-Signature with a distinct `l=`: both kinds share one bound of
+    /// 16 (decision 0133 section 6).
+    #[test]
+    fn reparse_is_bounded_with_arc_fields() {
+        let world = key_of(Kind::Ed25519);
+        let signature = Sign {
+            body_length: true,
+            ..Sign::default()
+        };
+        let arc = "ARC-Message-Signature: i=1; a=rsa-sha256; s=s; d=x.example; h=from; l=5; bh=AAAA; b=AAAA\r\n";
+        let build = |count: usize| {
+            let mut raw = header_of(&signature, &msg());
+            raw.extend_from_slice(arc.repeat(count).as_bytes());
+            raw.extend_from_slice(&msg());
+            raw
+        };
+        // One DKIM `l=` beside 15 ARC `l=` fields is re-parsed, and the `l=`
+        // signature is judged as before: it verifies.
+        assert_eq!(dkim(&report(&build(15), 0, &world)), vec![]);
+        // Beside 16 it is not: one finding at that field, and no other verdict.
+        assert_eq!(
+            dkim(&report(&build(16), 0, &world)),
+            one("dkim.limits_exceeded.v1", 0, ERROR)
+        );
+        // ARC `l=` fields alone bound nothing: no DKIM field has `l=`.
+        let mut raw = arc.repeat(40).into_bytes();
+        raw.extend_from_slice(&base());
+        assert_eq!(dkim(&report(&raw, 0, &world)), vec![]);
+    }
+
     #[test]
     fn findings_past_the_report_cap_fail_the_analysis() {
         // The collector's cap is shared with every other collector: a full report
@@ -3131,9 +3226,11 @@ pub(super) mod tests {
             let (root, size) = super::super::headers(raw).unwrap();
             let mut out = full();
             let shared = RefCell::new(lookups);
-            let adapter = Adapter { lookups: &shared };
+            let adapter = Adapter::over(&shared);
             match prepare(raw, &root, size, &mut out)? {
-                Prepared::Ready(message) => verify(&message, &adapter, 0, &mut out).map(|_| ()),
+                ready @ Prepared::Ready { .. } => {
+                    verify(ready.message().unwrap(), &adapter, 0, &mut out).map(|_| ())
+                }
                 _ => Ok(()),
             }
         };

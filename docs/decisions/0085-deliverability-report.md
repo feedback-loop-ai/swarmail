@@ -190,3 +190,20 @@ The operator accepted [0126](0126-spf-dmarc-alignment.md) §8 on 2026-11-07.
 0.14.0's SPF lookup timer (`LookupLimit`, a 20-second monotonic bound inside
 `check_host`), within the radius 0126 §8 states. It covers every other
 ambient read. The text above is unchanged.
+
+## Dated pointer — 2026-11-16 (proposed 0133, two items held)
+
+Proposed [0133](0133-arc-chain-reports.md) asks the operator for two items that
+touch this record, and waits for the operator's acceptance under 0045 §8. Its
+§2 adds a required `arc` member to §1's report shape, after `dns` and before
+`total`. Its §5 asks whether §8's sentence covers the one clock read inside the
+ARC verifier, which is executed on every chain that reaches it and whose value
+can never reach a verdict, a lookup or a report byte. The text above is
+unchanged, and so are both sentences until the operator rules.
+
+## Dated pointer — 2026-11-16 (0133 accepted)
+
+The operator accepted [0133](0133-arc-chain-reports.md) on 2026-11-16, both
+holds included. Section 1's report shape gains the `arc` member (0133 section
+2), and section 8's sentence covers the dead clock read inside the ARC
+verifier (0133 section 5). The text above is unchanged.
