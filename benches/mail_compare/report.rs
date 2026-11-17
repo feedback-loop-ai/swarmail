@@ -1400,6 +1400,8 @@ pub fn admit_chunk(
         let rec: crate::api::ApiRecord =
             serde_json::from_slice(&bytes).map_err(|e| format!("chunk {name}: api.json: {e}"))?;
         crate::api_chunk::check_record(&rec, chunk).map_err(|e| format!("chunk {name}: {e}"))?;
+        crate::api_chunk::check_bracket_windows(&rec, &admitted.resources)
+            .map_err(|e| format!("chunk {name}: {e}"))?;
         fresh["api"] = crate::api_chunk::api_report(&rec, &admitted.resources);
         keys.push("api");
     }

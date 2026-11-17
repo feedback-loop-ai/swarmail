@@ -254,6 +254,37 @@ pub fn cell_stats(c: &CellRecord, cpu_usec: Option<u64>) -> api::CellStats {
     s
 }
 
+/// The control brackets bound to the holder's own windows (R14): each
+/// pair's holder instants are its cell window's start and end, and the
+/// idle-fill bracket's is the idle-fill window's end — the same clock, so
+/// equality is checkable; the runner's instants are never compared to it.
+pub fn check_bracket_windows(rec: &ApiRecord, resources: &[ResourceRow]) -> Result<(), String> {
+    let window = |kind: WindowKind, profile: &str| {
+        resources.iter().find_map(|r| match r {
+            ResourceRow::Window(w) if w.window == kind && w.profile == profile => Some(w),
+            _ => None,
+        })
+    };
+    for b in &rec.control {
+        let bound = match (b.cmd.as_str(), b.id.as_deref()) {
+            ("idle_fill", None) => window(WindowKind::IdleFill, &fill_profile(rec.fill.fill))
+                .is_some_and(|w| w.end_ns == b.owner_t_ns),
+            ("window_start", Some(id)) => window(WindowKind::ApiCell, &format!("api.{id}"))
+                .is_some_and(|w| w.start_ns == b.owner_t_ns),
+            ("window_end", Some(id)) => window(WindowKind::ApiCell, &format!("api.{id}"))
+                .is_some_and(|w| w.end_ns == b.owner_t_ns),
+            _ => false,
+        };
+        if !bound {
+            return Err(format!(
+                "the {} bracket {:?} names no window of the holder's",
+                b.cmd, b.id
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Whether a cell stands at equal results (0132 §9.6, spec AC8, R4): it
 /// measured, every planned operation started and was exact, and its
 /// resource window closed clean with its counters — a failed or missing
@@ -347,6 +378,7 @@ pub fn check_record(rec: &ApiRecord, chunk: &Chunk) -> Result<(), String> {
     {
         return Err("api.json names another chunk".into());
     }
+    api::check_brackets(rec).map_err(|e| format!("api.json: {e}"))?;
     let want = cells(*target, *surface);
     let names: Vec<String> = rec.cells.iter().map(|c| c.cell.clone()).collect();
     let planned: Vec<String> = want.iter().map(PlannedCell::name).collect();
@@ -500,6 +532,7 @@ pub async fn run(
         store: api::store_label(clients::Family::of(target.name()).expect("a launched family"))
             .to_owned(),
         ledger: Vec::new(),
+        control: Vec::new(),
     };
     let caps = |op: Operation| clients::capability(target.name(), surface, op);
     let not_measured = |why: &str,
@@ -908,6 +941,7 @@ fn blank_record(target: TargetKind, surface: Surface, rep: u32, fill: u32, seed:
         store: api::store_label(clients::Family::of(target.name()).expect("a launched family"))
             .to_owned(),
         ledger: Vec::new(),
+        control: Vec::new(),
     }
 }
 
@@ -941,6 +975,9 @@ fn seal(
     // windows' OOM or exit outcomes are the target's own failures, whoever
     // measured them.
     let mut failures = failures;
+    if let Err(e) = check_bracket_windows(&record, &resources) {
+        return infra(format!("accounting: {e}"), life);
+    }
     failures.extend(row_failures(&record));
     failures.extend(window_failures(&resources));
     if !record.ledger.is_empty() {

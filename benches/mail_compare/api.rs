@@ -1379,6 +1379,81 @@ pub struct ApiRecord {
     /// say, or when no ledger ran (an abandoned launch).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ledger: Vec<String>,
+    /// The MCP surface's control brackets (spec AC9, R14): every command
+    /// the eval runner sent the holder, with its own send and receive
+    /// instants and the holder's reply instant. Each clock is read only
+    /// against itself; nothing subtracts one from the other.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub control: Vec<Bracket>,
+}
+
+/// One control command's bracket: the eval runner's instants around it on
+/// its own clock, and the instant the holder stamped on its clock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bracket {
+    pub cmd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub sent_ns: u64,
+    pub received_ns: u64,
+    pub owner_t_ns: u64,
+}
+
+/// The brackets' structure against the record (R14): none on the native
+/// surface; on MCP an `idle_fill` first exactly when the fill was reached,
+/// then one `window_start`/`window_end` pair per measured cell, in the
+/// record's order, none for a blocked cell; each bracket sent before it
+/// was received and after the previous one was, on the runner's clock, and
+/// each pair's end at or after its start on the holder's.
+pub fn check_brackets(rec: &ApiRecord) -> Result<(), String> {
+    if rec.surface == Surface::Native {
+        return if rec.control.is_empty() {
+            Ok(())
+        } else {
+            Err("a native record carries control brackets".into())
+        };
+    }
+    let mut want: Vec<(&str, Option<&str>)> = Vec::new();
+    if rec.fill.reached {
+        want.push(("idle_fill", None));
+    }
+    for c in rec
+        .cells
+        .iter()
+        .filter(|c| c.status == CellStatus::Measured)
+    {
+        want.push(("window_start", Some(&c.cell)));
+        want.push(("window_end", Some(&c.cell)));
+    }
+    let got: Vec<(&str, Option<&str>)> = rec
+        .control
+        .iter()
+        .map(|b| (b.cmd.as_str(), b.id.as_deref()))
+        .collect();
+    if got != want {
+        return Err(format!(
+            "the control brackets {got:?} are not the record's {want:?}"
+        ));
+    }
+    let mut last = 0;
+    for b in &rec.control {
+        if b.sent_ns > b.received_ns || b.sent_ns < last {
+            return Err(format!("the {} bracket is out of order", b.cmd));
+        }
+        last = b.received_ns;
+    }
+    let windows: Vec<&Bracket> = rec
+        .control
+        .iter()
+        .filter(|b| b.cmd != "idle_fill")
+        .collect();
+    for pair in windows.chunks(2) {
+        if pair.len() != 2 || pair[1].owner_t_ns < pair[0].owner_t_ns {
+            return Err("a window ends before it starts on the holder's clock".into());
+        }
+    }
+    Ok(())
 }
 
 /// How a family's store relates the fill to the measured recipient.

@@ -699,8 +699,9 @@ pub struct ControlMeter {
         tokio::process::ChildStdin,
         tokio::io::BufReader<tokio::process::ChildStdout>,
     )>,
-    /// Local send and receive instants of every command, for the record.
-    pub brackets: std::sync::Mutex<Vec<(String, u64, u64)>>,
+    /// Every command's local send and receive instants and the holder's
+    /// reply instant, persisted in the record (R14).
+    pub brackets: std::sync::Mutex<Vec<api::Bracket>>,
     clock: api::Clock,
 }
 
@@ -733,11 +734,22 @@ impl ControlMeter {
         if v.get("ok").is_none() {
             return Err(format!("control refused: {}", v));
         }
-        self.brackets.lock().expect("brackets lock").push((
-            line["cmd"].as_str().unwrap_or_default().to_owned(),
-            sent,
-            got,
-        ));
+        let cmd = line["cmd"].as_str().unwrap_or_default().to_owned();
+        if cmd != "record" {
+            let owner_t_ns = v["t_ns"]
+                .as_u64()
+                .ok_or_else(|| format!("control reply to {cmd} has no t_ns"))?;
+            self.brackets
+                .lock()
+                .expect("brackets lock")
+                .push(api::Bracket {
+                    cmd,
+                    id: line["id"].as_str().map(str::to_owned),
+                    sent_ns: sent,
+                    received_ns: got,
+                    owner_t_ns,
+                });
+        }
         Ok(v)
     }
 }
@@ -1014,7 +1026,7 @@ async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
                 url
             }
         };
-        let rec = measure(
+        let mut rec = measure(
             &target,
             (repetition, fill, seed),
             (smtp, http, &url),
@@ -1022,6 +1034,7 @@ async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
             clock,
         )
         .await?;
+        rec.control = meter.brackets.lock().expect("brackets lock").clone();
         meter
             .command(&json!({"cmd": "record", "api": rec}))
             .await
@@ -1127,6 +1140,7 @@ async fn measure(
         abandoned: None,
         store: api::store_label(setup.family).to_owned(),
         ledger: Vec::new(),
+        control: Vec::new(),
     };
     let (filled, background) = api::fill_ledger(smtp, &setup, (seed, &tag), fill, clock).await;
     rec.fill = filled;

@@ -1898,6 +1898,7 @@ fn record_for(chunk: &runner::Chunk) -> api::ApiRecord {
         abandoned: None,
         store: "test".into(),
         ledger: Vec::new(),
+        control: Vec::new(),
     }
 }
 
@@ -2056,6 +2057,119 @@ fn the_global_clear_is_one_raw_sample_with_no_quantiles() {
     let mut warmed = rec.clone();
     warmed.cells[last].warmup = Some(api::Ran::default());
     assert!(api_chunk::check_record(&warmed, &chunk).is_err());
+}
+
+/// An MCP record whose first two cells measured, with the brackets the
+/// runner would have kept and the holder windows they name.
+fn bracketed() -> (runner::Chunk, api::ApiRecord, Vec<records::ResourceRow>) {
+    let chunk = runner::Chunk::Api {
+        surface: Surface::Mcp,
+        target: TargetKind::Mailpit,
+        repetition: 0,
+        fill: 0,
+    };
+    let mut rec = record_for(&chunk);
+    rec.fill.reached = true;
+    let plan = api_chunk::cells(TargetKind::Mailpit, Surface::Mcp);
+    let b = |cmd: &str, id: Option<&str>, at: u64, owner: u64| api::Bracket {
+        cmd: cmd.into(),
+        id: id.map(str::to_owned),
+        sent_ns: at,
+        received_ns: at + 5,
+        owner_t_ns: owner,
+    };
+    rec.control.push(b("idle_fill", None, 10, 500));
+    let mut resources = Vec::new();
+    let mut idle = cell_window("api.f0", records::WindowOutcome::Measured);
+    idle.window = records::WindowKind::IdleFill;
+    idle.end_ns = 500;
+    resources.push(records::ResourceRow::Window(idle));
+    for (n, (c, p)) in rec.cells.iter_mut().zip(&plan).take(2).enumerate() {
+        c.status = api::CellStatus::Measured;
+        c.blocked = None;
+        c.warmup = Some(api::Ran {
+            rows: rows(p.warmup, Phase::Warmup, Outcome::Exact),
+            planned: p.warmup,
+            started: p.warmup,
+            ..Default::default()
+        });
+        c.measured = api::Ran {
+            rows: rows(p.planned, Phase::Measured, Outcome::Exact),
+            planned: p.planned,
+            started: p.planned,
+            ..Default::default()
+        };
+        let at = 100 * (n as u64 + 1);
+        rec.control
+            .push(b("window_start", Some(&c.cell), at, 1_000 * at));
+        rec.control
+            .push(b("window_end", Some(&c.cell), at + 50, 1_000 * at + 7));
+        let mut w = cell_window(&format!("api.{}", c.cell), records::WindowOutcome::Measured);
+        (w.start_ns, w.end_ns) = (1_000 * at, 1_000 * at + 7);
+        resources.push(records::ResourceRow::Window(w));
+    }
+    (chunk, rec, resources)
+}
+
+#[test]
+fn control_brackets_roundtrip_and_bind_to_the_holders_windows() {
+    let (chunk, rec, resources) = bracketed();
+    api_chunk::check_record(&rec, &chunk).unwrap();
+    api_chunk::check_bracket_windows(&rec, &resources).unwrap();
+    let back: api::ApiRecord = serde_json::from_slice(&serde_json::to_vec(&rec).unwrap()).unwrap();
+    assert_eq!(back.control, rec.control);
+    api_chunk::check_record(&back, &chunk).unwrap();
+    let refuse = |f: &dyn Fn(&mut api::ApiRecord)| {
+        let mut r = rec.clone();
+        f(&mut r);
+        api_chunk::check_record(&r, &chunk).unwrap_err()
+    };
+    // Missing, duplicate, reordered, foreign, out of local order.
+    assert!(
+        refuse(&|r| {
+            r.control.remove(2);
+        })
+        .contains("brackets")
+    );
+    assert!(
+        refuse(&|r| {
+            let d = r.control[1].clone();
+            r.control.insert(1, d);
+        })
+        .contains("brackets")
+    );
+    assert!(refuse(&|r| r.control.swap(1, 2)).contains("brackets"));
+    assert!(refuse(&|r| r.control[1].id = Some("get.c32".into())).contains("brackets"));
+    assert!(refuse(&|r| r.control[3].sent_ns = 0).contains("out of order"));
+    assert!(
+        refuse(&|r| r.control[3].received_ns = r.control[3].sent_ns - 1).contains("out of order")
+    );
+    // A window that ends before it starts on the holder's clock.
+    assert!(refuse(&|r| r.control[2].owner_t_ns = 0).contains("holder's clock"));
+    // No idle-fill bracket although the fill was reached.
+    assert!(refuse(&|r| r.control.remove(0).cmd.clear()).contains("brackets"));
+    // A native record carries none.
+    let native = runner::Chunk::Api {
+        surface: Surface::Native,
+        target: TargetKind::Mailpit,
+        repetition: 0,
+        fill: 0,
+    };
+    let mut n = record_for(&native);
+    n.control = rec.control.clone();
+    assert!(
+        api_chunk::check_record(&n, &native)
+            .unwrap_err()
+            .contains("native")
+    );
+    // Bound to the holder's windows by its own clock only.
+    let mut r = rec.clone();
+    r.control[1].owner_t_ns += 1;
+    assert!(api_chunk::check_bracket_windows(&r, &resources).is_err());
+    let mut r = rec.clone();
+    r.control[0].owner_t_ns = 499;
+    assert!(api_chunk::check_bracket_windows(&r, &resources).is_err());
+    assert!(api_chunk::check_bracket_windows(&rec, &resources[..1]).is_err());
 }
 
 #[test]
