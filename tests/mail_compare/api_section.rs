@@ -2125,21 +2125,81 @@ async fn preparation_refuses_when_the_target_does_not_answer() {
 /// with the chunk coordinate, then `admit`-level checks of its directory.
 /// Needs a delegated cgroup v2 scope (run it as `systemd-run --user --scope -p
 /// Delegate=yes`), and fails, never skips, without one.
-#[test]
-#[ignore = "host proof: a delegated cgroup v2 scope; run alone under timeout 600 taskset -c 0-31"]
-fn api_native_real() {
+// ---- host proofs (AC10, R9) -------------------------------------------------
+//
+// Each runs one chunk of the real driver (`MAIL_COMPARE_BIN`, the built
+// `mail_compare` bench executable) against the pinned executable named by
+// `MAIL_COMPARE_<TARGET>` (and `MAIL_COMPARE_JRE` / `MAIL_COMPARE_MUSL` for
+// GreenMail's and the Alkemio image's runtime roots), under a delegated
+// cgroup v2 scope, as the only process in it, one test at a time:
+//
+//   bin=$(cargo test --locked --test mail_compare --no-run --message-format=json \
+//     | grep -o '"executable":"[^"]*mail_compare-[^"]*"' | tail -n1 | cut -d'"' -f4)
+//   cat /proc/loadavg
+//   timeout 600 taskset -c 0-31 systemd-run --user --scope --quiet -p Delegate=yes -- \
+//     env MAIL_COMPARE_BIN=… MAIL_COMPARE_MAILPIT=… "$bin" --ignored --exact \
+//     api_section::api_native_real_mailpit --test-threads=1
+//   cat /proc/loadavg
+//
+// Without a variable, or without delegation, each fails — never skips. A
+// pass is exact: every cell measured, every row exact or one of the
+// outcomes the capability table and v3's fidelity records document, the
+// ledger intact, every window clean, the chunk sealed, admitted and its
+// cleanup proved. Exit 0 or 1 alone, or a few measured cells, is no pass.
+
+fn env_path(var: &str) -> String {
+    std::env::var(var).unwrap_or_else(|_| panic!("{var} must name its pinned bytes"))
+}
+
+/// The `--bin` and `--runtime` arguments of `target`'s pinned bytes.
+fn pinned_args(target: TargetKind) -> Vec<String> {
+    let var = format!(
+        "MAIL_COMPARE_{}",
+        target.name().to_uppercase().replace('-', "_")
+    );
+    let bin = if target == TargetKind::Swarmail {
+        env!("CARGO_BIN_EXE_swarmail").to_owned()
+    } else {
+        env_path(&var)
+    };
+    let mut out = vec!["--bin".into(), format!("{target}={bin}")];
+    let runtime = match target {
+        TargetKind::Greenmail => Some("MAIL_COMPARE_JRE"),
+        TargetKind::AlkemioMailslurper => Some("MAIL_COMPARE_MUSL"),
+        _ => None,
+    };
+    if let Some(var) = runtime {
+        out.extend(["--runtime".into(), format!("{target}={}", env_path(var))]);
+    }
+    out
+}
+
+/// What a real chunk left: its exit, its record, its report and admission.
+struct RealChunk {
+    code: Option<i32>,
+    text: String,
+    rec: api::ApiRecord,
+    report: Value,
+    admitted: records::Admitted,
+}
+
+fn real_chunk(surface: Surface, target: TargetKind, fill: u32) -> RealChunk {
     let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
-    let out = std::process::Command::new(env!("CARGO"))
-        .args([
-            "bench",
-            "--locked",
-            "--bench",
-            "mail_compare",
-            "--",
-            "run",
-            "--mode",
-            "smoke",
-        ])
+    let driver = env_path("MAIL_COMPARE_BIN");
+    let chunk = format!("api.{}.{target}.r0.f{fill}", surface.name());
+    let mut cmd = match surface {
+        Surface::Native => {
+            let mut c = std::process::Command::new(&driver);
+            c.args(["run", "--mode", "smoke"]);
+            c
+        }
+        Surface::Mcp => {
+            let mut c = std::process::Command::new(env_path("SWARMAIL_EVALS_BIN"));
+            c.args(["api-mcp", "--driver", &driver, "--mode", "smoke"]);
+            c
+        }
+    };
+    let out = cmd
         .args(["--protocol", "docs/evals/draft/protocol.v4.json"])
         .args([
             "--sources",
@@ -2147,20 +2207,12 @@ fn api_native_real() {
             "--documents",
             "docs/evals",
         ])
+        .args(["--chunk", &chunk, "--run-id", "api-real"])
+        .args(pinned_args(target))
         .arg("--output")
         .arg(root.path().join("out"))
         .arg("--scratch")
         .arg(root.path().join("scratch"))
-        .args([
-            "--run-id",
-            "api-native-real",
-            "--chunk",
-            "api.native.swarmail.r0.f1000",
-        ])
-        .args([
-            "--bin",
-            &format!("swarmail={}", env!("CARGO_BIN_EXE_swarmail")),
-        ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .unwrap();
@@ -2169,20 +2221,275 @@ fn api_native_real() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        out.status.code() == Some(0),
-        "the chunk must seal clean: {text}"
+    let dir = root.path().join("out");
+    let admitted =
+        records::admit(&dir).unwrap_or_else(|e| panic!("{chunk} must admit: {e}\n{text}"));
+    let rec = serde_json::from_slice(&std::fs::read(dir.join("api.json")).unwrap()).unwrap();
+    let report = serde_json::from_slice(&std::fs::read(dir.join("report.json")).unwrap()).unwrap();
+    RealChunk {
+        code: out.status.code(),
+        text,
+        rec,
+        report,
+        admitted,
+    }
+}
+
+/// The failure reasons a real chunk may show without being wrong (0132
+/// §6.2, §7): a bridged call above the bridge's 16 slots or an adapter's
+/// queue is a published busy refusal, Swarmail's tool rate a published
+/// `rate_limited` one. Nothing else may fail.
+fn tolerated(surface: Surface, target: TargetKind) -> &'static [&'static str] {
+    match (surface, target) {
+        (Surface::Native, _) => &[],
+        (Surface::Mcp, TargetKind::Swarmail) => &["rate_limited"],
+        (Surface::Mcp, _) => &["busy_bridge", "busy_adapter"],
+    }
+}
+
+/// The one inexact outcome v3 documents: MailSlurper's absent body part,
+/// on reads of the message.
+fn documented_inexact(target: TargetKind, op: Operation, o: &Outcome) -> bool {
+    matches!(o, Outcome::InexactFidelity { detail } if detail.ends_with(" absent"))
+        && matches!(
+            target,
+            TargetKind::MailslurperSourceBuild | TargetKind::AlkemioMailslurper
+        )
+        && matches!(
+            op,
+            Operation::Get | Operation::ExtractCode | Operation::ExtractLink
+        )
+}
+
+fn assert_real_chunk(surface: Surface, target: TargetKind, c: &RealChunk) {
+    let ctx = format!("{} {target}", surface.name());
+    let rec = &c.rec;
+    // The plan's matrix: every planned cell in order, every unsupported
+    // operation a published capability row, the fill reached, nothing
+    // abandoned, the complete ledger intact.
+    let (cells, caps) = api::plan_cells(surface, |op| {
+        clients::capability(target.name(), surface, op)
+    });
+    assert_eq!(
+        rec.cells.iter().map(|x| x.cell.clone()).collect::<Vec<_>>(),
+        cells.iter().map(PlannedCell::name).collect::<Vec<_>>(),
+        "{ctx}"
     );
-    let admitted = records::admit(&root.path().join("out")).expect("the chunk admits");
-    let rec: api::ApiRecord =
-        serde_json::from_slice(&std::fs::read(root.path().join("out/api.json")).unwrap()).unwrap();
-    assert!(rec.fill.reached);
+    assert_eq!(rec.capabilities, caps, "{ctx}");
+    assert!(rec.fill.reached, "{ctx}: {:?}", rec.fill);
+    assert_eq!(rec.abandoned, None, "{ctx}");
+    assert!(rec.ledger.is_empty(), "{ctx}: {:?}", rec.ledger);
+    let ok = tolerated(surface, target);
+    let fine = |r: &api::OpRow, op| match &r.outcome {
+        Outcome::Exact => true,
+        Outcome::Failed { reason } => ok.contains(&reason.as_str()),
+        o => documented_inexact(target, op, o),
+    };
+    let mut failures = 0;
+    for cell in &rec.cells {
+        let warm = cell.warmup.iter().flat_map(|w| w.rows.iter());
+        if cell.status == api::CellStatus::Blocked {
+            // Only a warmup a tolerated refusal hit may block a cell.
+            assert_eq!(
+                cell.blocked.as_deref(),
+                Some("warmup_failed"),
+                "{ctx} {}",
+                cell.cell
+            );
+            assert!(!ok.is_empty(), "{ctx} {}: blocked", cell.cell);
+            assert!(
+                warm.clone().all(|r| fine(r, cell.operation)),
+                "{ctx} {}",
+                cell.cell
+            );
+            failures += 1;
+            continue;
+        }
+        assert!(
+            cell.postcheck.is_empty(),
+            "{ctx} {}: {:?}",
+            cell.cell,
+            cell.postcheck
+        );
+        assert!(cell.measured.started > 0, "{ctx} {}", cell.cell);
+        for r in &cell.measured.rows {
+            assert!(fine(r, cell.operation), "{ctx} {}: {r:?}", cell.cell);
+            failures += usize::from(matches!(r.outcome, Outcome::Failed { .. }));
+            if let (Some(w), Outcome::Exact) = (&r.wait, &r.outcome) {
+                let ack = w.ack_ns.expect("an exact wait was acknowledged");
+                assert!(w.call_ns <= w.send_ns, "{ctx} {r:?}");
+                assert_eq!(w.ack_to_return_ns, Some(w.return_ns as i64 - ack as i64));
+            }
+        }
+    }
+    // The single-worker reads carry no load of their own: always measured.
+    for name in ["list.c1", "search.c1", "get.c1"] {
+        let cell = rec.cells.iter().find(|x| x.cell == name).unwrap();
+        assert_eq!(cell.status, api::CellStatus::Measured, "{ctx} {name}");
+    }
+    // Exit 0 exactly when nothing failed; a tolerated refusal is still a
+    // failure row, so the chunk seals with 1 and says so.
+    let want = if failures == 0 { 0 } else { 1 };
+    assert_eq!(c.code, Some(want), "{ctx}: {}", c.text);
+    // Resources: every measured cell's window clean with counters, the
+    // idle-fill point taken, samples present.
+    for cell in rec
+        .cells
+        .iter()
+        .filter(|x| x.status == api::CellStatus::Measured)
+    {
+        let profile = format!("api.{}", cell.cell);
+        let w = c.admitted.resources.iter().find_map(|r| match r {
+            records::ResourceRow::Window(w)
+                if w.window == records::WindowKind::ApiCell && w.profile == profile =>
+            {
+                Some(w)
+            }
+            _ => None,
+        });
+        let w = w.unwrap_or_else(|| panic!("{ctx} {}: no window", cell.cell));
+        assert_eq!(
+            w.outcome,
+            records::WindowOutcome::Measured,
+            "{ctx} {}",
+            cell.cell
+        );
+        assert!(w.counters().is_some(), "{ctx} {}", cell.cell);
+    }
+    let idle_fill = c.admitted.resources.iter().any(|r| {
+        matches!(r, records::ResourceRow::Window(w)
+            if w.window == records::WindowKind::IdleFill
+                && w.outcome == records::WindowOutcome::Measured)
+    });
+    assert!(idle_fill, "{ctx}");
+    let sampled = c
+        .admitted
+        .resources
+        .iter()
+        .any(|r| matches!(r, records::ResourceRow::Sample(_)));
+    assert!(sampled, "{ctx}");
+    // Cleanup: every launch's receipt proves its leaf removed.
+    let cleanups = c.report["cleanups"].as_array().expect("cleanups");
+    assert!(!cleanups.is_empty(), "{ctx}");
     assert!(
-        rec.cells
+        cleanups.iter().all(|x| x["cgroup_removed"] == json!(true)),
+        "{ctx}"
+    );
+    // The report's API figures are api.json's, recomputed.
+    assert_eq!(
+        c.report["api"],
+        api_chunk::api_report(rec, &c.admitted.resources),
+        "{ctx}"
+    );
+}
+
+fn native_real(target: TargetKind) {
+    let c = real_chunk(Surface::Native, target, 1_000);
+    assert_real_chunk(Surface::Native, target, &c);
+    // Meaningful destruction where supported: some delete or clear landed.
+    for cell in c.rec.cells.iter().filter(|x| x.operation.destructive()) {
+        let landed = cell
+            .measured
+            .rows
             .iter()
-            .all(|c| c.status == api::CellStatus::Measured)
+            .any(|r| r.outcome == Outcome::Exact);
+        assert!(landed, "{target} {}", cell.cell);
+    }
+}
+
+fn mcp_real(target: TargetKind) {
+    let c = real_chunk(Surface::Mcp, target, 1_000);
+    assert_real_chunk(Surface::Mcp, target, &c);
+    // The coordinated future wait ran and returned exactly its own message.
+    let wait = c.rec.cells.iter().find(|x| x.cell == "wait.c1").unwrap();
+    assert_eq!(wait.status, api::CellStatus::Measured, "{target}");
+    let exact = wait
+        .measured
+        .rows
+        .iter()
+        .any(|r| r.outcome == Outcome::Exact);
+    assert!(exact, "{target}");
+    if target != TargetKind::Swarmail {
+        // An adapter's delete and clear are cited not_supported rows.
+        for op in [Operation::Delete, Operation::Clear] {
+            let row = c.rec.capabilities.iter().find(|r| r.operation == op);
+            let row = row.unwrap_or_else(|| panic!("{target}: no {op:?} row"));
+            assert_eq!(row.status, "not_supported", "{target} {op:?}");
+            assert!(!row.cites.is_empty(), "{target} {op:?}");
+        }
+    }
+}
+
+macro_rules! host_proofs {
+    ($($name:ident => $f:ident($t:expr), $why:literal;)*) => {$(
+        #[test]
+        #[ignore = $why]
+        fn $name() {
+            $f($t)
+        }
+    )*};
+}
+
+host_proofs! {
+    api_native_real_swarmail => native_real(TargetKind::Swarmail),
+        "host proof: MAIL_COMPARE_BIN, a delegated cgroup v2 scope; run alone under timeout 600 taskset -c 0-31";
+    api_native_real_mailpit => native_real(TargetKind::Mailpit),
+        "host proof: MAIL_COMPARE_BIN, MAIL_COMPARE_MAILPIT, a delegated scope; run alone under timeout 600 taskset -c 0-31";
+    api_native_real_mailhog => native_real(TargetKind::Mailhog),
+        "host proof: MAIL_COMPARE_BIN, MAIL_COMPARE_MAILHOG, a delegated scope; run alone under timeout 600 taskset -c 0-31";
+    api_native_real_mailslurper_source_build => native_real(TargetKind::MailslurperSourceBuild),
+        "host proof: MAIL_COMPARE_BIN, MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD, a delegated scope; run alone under timeout 600 taskset -c 0-31";
+    api_native_real_smtp4dev => native_real(TargetKind::Smtp4dev),
+        "host proof: MAIL_COMPARE_BIN, MAIL_COMPARE_SMTP4DEV, a delegated scope; run alone under timeout 600 taskset -c 0-31";
+    api_native_real_inbucket => native_real(TargetKind::Inbucket),
+        "host proof: MAIL_COMPARE_BIN, MAIL_COMPARE_INBUCKET, a delegated scope; run alone under timeout 600 taskset -c 0-31";
+    api_native_real_greenmail => native_real(TargetKind::Greenmail),
+        "host proof: MAIL_COMPARE_BIN, MAIL_COMPARE_GREENMAIL, MAIL_COMPARE_JRE, a delegated scope; run alone under timeout 600 taskset -c 0-31";
+    api_native_real_alkemio_mailslurper => native_real(TargetKind::AlkemioMailslurper),
+        "host proof: MAIL_COMPARE_BIN, MAIL_COMPARE_ALKEMIO_MAILSLURPER, MAIL_COMPARE_MUSL, a delegated scope; run alone under timeout 600 taskset -c 0-31";
+    api_mcp_real_swarmail => mcp_real(TargetKind::Swarmail),
+        "host proof: MAIL_COMPARE_BIN, SWARMAIL_EVALS_BIN, a delegated scope; run alone under timeout 600 taskset -c 0-31";
+    api_mcp_bridge_real_mailpit => mcp_real(TargetKind::Mailpit),
+        "host proof: MAIL_COMPARE_BIN, SWARMAIL_EVALS_BIN, MAIL_COMPARE_MAILPIT, a delegated scope; run alone under timeout 600 taskset -c 0-31";
+    api_mcp_bridge_real_mailhog => mcp_real(TargetKind::Mailhog),
+        "host proof: MAIL_COMPARE_BIN, SWARMAIL_EVALS_BIN, MAIL_COMPARE_MAILHOG, a delegated scope; run alone under timeout 600 taskset -c 0-31";
+    api_mcp_bridge_real_mailslurper_source_build => mcp_real(TargetKind::MailslurperSourceBuild),
+        "host proof: MAIL_COMPARE_BIN, SWARMAIL_EVALS_BIN, MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD, a delegated scope; run alone under timeout 600 taskset -c 0-31";
+}
+
+#[test]
+fn every_launchable_route_has_its_host_proof() {
+    // The proofs above cover every target that launches on each surface,
+    // nothing fewer (R9). The official MailSlurper launches on neither.
+    let native = [
+        "swarmail",
+        "mailpit",
+        "mailhog",
+        "mailslurper-source-build",
+        "smtp4dev",
+        "inbucket",
+        "greenmail",
+        "alkemio-mailslurper",
+    ];
+    for t in &native {
+        assert!(
+            clients::native_capability(t, Operation::List).supported(),
+            "{t}"
+        );
+    }
+    assert_eq!(
+        clients::native_capability("mailslurper", Operation::List).status(),
+        "does_not_start"
     );
-    assert!(admitted.resources.iter().any(|r| matches!(r, records::ResourceRow::Window(w) if w.window == records::WindowKind::ApiCell && w.counters().is_some())));
+    let mcp: Vec<&str> = native
+        .iter()
+        .copied()
+        .filter(|t| clients::has_mcp_surface(t))
+        .collect();
+    assert_eq!(
+        mcp,
+        ["swarmail", "mailpit", "mailhog", "mailslurper-source-build"]
+    );
 }
 
 /// Fill 100,000 into the real candidate within the 300 s bound and confirm
@@ -2194,8 +2501,10 @@ async fn api_fill_100k_real() {
     let mut owned = launch_candidate(root.path()).await;
     let clock = api::Clock(std::time::Instant::now());
     let client = clients::Client::new("swarmail", owned.http_addr).unwrap();
-    let fill = api::fill(owned.smtp, &client, (163, "f100k"), 100_000, clock).await;
+    let (fill, background) =
+        api::fill_ledger(owned.smtp, &client, (163, "f100k"), 100_000, clock).await;
     assert!(fill.reached, "{fill:?}");
+    let background = background.expect("the retained ids were read");
     assert!(fill.elapsed_ns < api::FILL_DEADLINE.as_nanos() as u64);
     // Every id, distinct, by a complete scan of the default inbox.
     let default = Scope {
@@ -2212,8 +2521,10 @@ async fn api_fill_100k_real() {
     )
     .await
     .unwrap();
-    let ids: BTreeSet<&String> = all.iter().map(|s| &s.id).collect();
+    let ids: BTreeSet<String> = all.iter().map(|s| s.id.clone()).collect();
     assert_eq!((all.len(), ids.len()), (100_000, 100_000));
+    // The retained ids the ledger holds the store to are exactly the scan's.
+    assert_eq!(ids, background);
     assert!(owned.shutdown().await.proved());
 }
 
@@ -2341,52 +2652,6 @@ fn control_lines_are_closed_bounded_and_ordered() {
 /// --control api-v1` for the candidate and a bridged adapter target, and
 /// both chunks seal and admit. Needs a delegated cgroup v2 scope and the
 /// eval binary (`SWARMAIL_EVALS_BIN`); fails, never skips, without them.
-#[test]
-#[ignore = "host proof: a delegated cgroup v2 scope and the eval binary; run alone under timeout 600 taskset -c 0-31"]
-fn api_mcp_bridge_real() {
-    let evals = std::env::var("SWARMAIL_EVALS_BIN")
-        .expect("SWARMAIL_EVALS_BIN names the built eval binary");
-    let driver =
-        std::env::var("MAIL_COMPARE_BIN").expect("MAIL_COMPARE_BIN names the built driver");
-    let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
-    let out = std::process::Command::new(evals)
-        .args(["api-mcp", "--driver", &driver, "--mode", "smoke"])
-        .args(["--protocol", "docs/evals/draft/protocol.v4.json"])
-        .args([
-            "--sources",
-            "docs/evals/draft/sources.lock.v5.json",
-            "--documents",
-            "docs/evals",
-        ])
-        .args([
-            "--chunk",
-            "api.mcp.swarmail.r0.f1000",
-            "--run-id",
-            "api-mcp-real",
-        ])
-        .args([
-            "--bin",
-            &format!("swarmail={}", env!("CARGO_BIN_EXE_swarmail")),
-        ])
-        .arg("--output")
-        .arg(root.path().join("out"))
-        .arg("--scratch")
-        .arg(root.path().join("scratch"))
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .unwrap();
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        matches!(out.status.code(), Some(0 | 1)),
-        "the chunk must seal: {text}"
-    );
-    let admitted = records::admit(&root.path().join("out")).expect("the chunk admits");
-    assert!(admitted.resources.iter().any(|r| matches!(r, records::ResourceRow::Window(w) if w.window == records::WindowKind::ApiCell && w.counters().is_some())));
-}
 
 // ---- adapter documents (R2) -------------------------------------------------
 
