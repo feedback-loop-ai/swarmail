@@ -527,7 +527,7 @@ case "$mode" in
     #   a chunk that sealed: 560 + 20 x (1 + 0.5) (the polls) + 3 + 3
     bound=(timeout --kill-after=30 560 taskset -c "0-$((chunk_cpus - 1))")
     scope_polls=20 scope_poll_interval=0.5
-    interrupted=0 step_pid='' step_status=0 owned='' owned_unit='' scope_clean=true
+    interrupted=0 step_pid='' step_starting='' step_status=0 owned='' owned_unit='' scope_clean=true
     interrupt_exit() {
       printf 'compare-mail: blocked at phase "interrupt": collect-v4 was interrupted; %s is incomplete and is never resumed\n' "$output" >&2
       exit 2
@@ -536,14 +536,14 @@ case "$mode" in
     # step that is running (its `timeout`, which passes the signal on) a
     # SIGTERM; the driver's own interrupt path tears down and exits 2,
     # unsealed. The handler ends the mode itself only when no step is running
-    # and no chunk is owned. Everything else is the main flow's: it reads
-    # `interrupted` after every step, and a chunk is judged and written to
-    # the ledger as a failed one before the mode exits 2.
+    # or starting and no chunk is owned. Everything else is the main flow's:
+    # it reads `interrupted` after every step, and a chunk is judged and
+    # written to the ledger as a failed one before the mode exits 2.
     on_signal() {
       interrupted=1
       if [ -n "$step_pid" ]; then
         kill -TERM "$step_pid" 2>/dev/null
-      elif [ -z "$owned" ]; then
+      elif [ -z "$step_starting" ] && [ -z "$owned" ]; then
         interrupt_exit
       fi
     }
@@ -561,12 +561,18 @@ case "$mode" in
         step_status=2
         return 0
       fi
+      # From here until its pid is known the step is starting: a signal in
+      # that window only records the interrupt (it must not end the mode and
+      # orphan a step it has just forked, which could be an admission that
+      # seals), and the check below delivers the SIGTERM.
+      step_starting=1
       if [ -n "$out" ]; then
         "${bound[@]}" "$@" >"$out" &
       else
         "${bound[@]}" "$@" &
       fi
       step_pid=$!
+      step_starting=''
       # A signal that came between the fork and the pid being known.
       [ "$interrupted" = 0 ] || kill -TERM "$step_pid" 2>/dev/null
       # `wait` returns early on a trapped signal: repeat until the step
