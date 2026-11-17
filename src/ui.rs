@@ -28,6 +28,11 @@ const SCRIPT: &str = include_str!("static/ui.js");
 /// stacks, no `url(`, no `@import`, nothing that loads from outside.
 const CSS: &str = include_str!("static/ui.css");
 
+/// The tab icon: a static rendering of the project mark (assets/logo.svg,
+/// without its animation), embedded at compile time and served same-origin,
+/// which the pages' `img-src 'self'` admits.
+const FAVICON: &str = include_str!("static/favicon.svg");
+
 /// HTML-escape untrusted text for element content and attribute values.
 /// Every interpolation of mail-controlled data goes through this.
 fn esc(s: &str) -> String {
@@ -50,7 +55,7 @@ const CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'un
 fn page(title: &str, body: String) -> Html<String> {
     let title = esc(title);
     Html(format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="{CSP}"><title>{title} · Swarmail</title><style>{CSS}</style></head>
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="{CSP}"><title>{title} · Swarmail</title><link rel="icon" href="/favicon.svg" type="image/svg+xml"><style>{CSS}</style></head>
 <body><div class="wrap"><h1>📮 Swarmail</h1><div class="muted">Built for a program waiting on mail. · <a href="/">inboxes</a> · <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">openapi</a></div>{body}</div></body></html>"#
     ))
 }
@@ -75,7 +80,7 @@ fn console(title: &str, pane: &str, view_attrs: &str, open: &str, rail: String) 
         "Connecting"
     };
     Html(format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{CSP}"><title>{title} · Swarmail</title><style>{CSS}</style></head>
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{CSP}"><title>{title} · Swarmail</title><link rel="icon" href="/favicon.svg" type="image/svg+xml"><style>{CSS}</style></head>
 <body class="app"><header id="status" class="bar"><div class="brand">{LOGO}Swarmail</div><div class="muted">Built for a program waiting on mail. · <a href="/">inboxes</a> · <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">openapi</a></div><div class="endpoints" aria-label="Listeners"><span class="ep" id="listener-smtp">SMTP <b>unknown</b></span><span class="ep" id="listener-pop3">POP3 <b>unknown</b></span><span class="ep" id="listener-http">HTTP <b>unknown</b></span></div><div class="stats tnum"><span title="Mail accepted over the store's lifetime"><b id="count-accepted">–</b> accepted (lifetime)</span><span class="dropped" title="Mail evicted by the per-inbox cap over the store's lifetime"><b id="count-dropped">–</b> dropped (evicted by cap, lifetime)</span></div><span class="spacer"></span><span class="chip chaos-unknown" id="chaos">Chaos unknown</span><span class="live" id="live"><span class="pulse"></span><span>{live}</span></span></header>
 <main id="panes" data-pane="{pane}">{rail}<section id="stream" class="pane stream" aria-label="Messages"><div class="pane-head"><button class="btn ghost back-rail" id="back-rail" type="button" aria-label="Back to inboxes">←</button><span class="stream-title" id="stream-title">{open}</span><span class="muted tnum" id="stream-count"></span><span class="spacer"></span><span id="clear-slot"></span></div><div id="view" class="msgs" {view_attrs}></div></section><section id="reader" class="pane reader" aria-label="Message"><div class="pane-head"><button class="btn ghost back" id="back" type="button">← Messages</button></div><div class="reader-body" id="reader-body"></div></section></main>
 <div class="toast" id="toast" hidden></div><noscript><div class="card muted">This console is live and needs JavaScript; the JSON API works without it.</div></noscript><script>{SCRIPT}</script></body></html>"#
@@ -127,7 +132,23 @@ pub fn router() -> Router<AppState> {
         .route("/ui/inbox/{inbox}", get(inbox_view))
         .route("/ui/inbox/{inbox}/thread/{key}", get(thread_view))
         .route("/ui/message/{id}", get(message_view))
+        // `/favicon.ico` answers too: clients that never read the page's
+        // `<link rel="icon">` still ask for it, and an SVG body is fine.
+        .route("/favicon.svg", get(favicon))
+        .route("/favicon.ico", get(favicon))
         .layer(axum::middleware::map_response(refuse_framing))
+}
+
+/// The tab icon, cacheable for a day: it changes only with a release.
+async fn favicon() -> Response {
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "image/svg+xml"),
+            (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        FAVICON,
+    )
+        .into_response()
 }
 
 /// No other origin may frame the console (issue #355 review). The page's

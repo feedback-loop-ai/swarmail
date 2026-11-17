@@ -478,12 +478,21 @@ mod tests {
         // Nothing bound: both configured ports are still free.
         drop(std::net::TcpListener::bind(&smtp).unwrap());
         drop(std::net::TcpListener::bind(&http).unwrap());
-        // The same configuration with a valid file starts, and serves it.
+        // The same configuration with a valid file starts, and serves it. It
+        // binds fresh ports: the ones released above are free only until a
+        // parallel test takes one (verify, 2026-11-17), and this half proves
+        // the file is served, not which ports are used.
         std::fs::write(
             &policy,
             br#"{"tempfail":["x.example"],"spf_client_ip":"::ffff:192.0.2.9"}"#,
         )
         .unwrap();
+        let cfg = config::Config {
+            smtp_listen: "127.0.0.1:0".into(),
+            http_listen: "127.0.0.1:0".into(),
+            pop3_listen: "127.0.0.1:0".into(),
+            ..cfg
+        };
         let server = run_on(&cfg).await.unwrap();
         let effective = server.store.reports.policy_for("any");
         assert_eq!(effective.source, deliverability::dns::Source::Server);

@@ -767,7 +767,7 @@ deliverability guide for each rule's hint, passing and failing fixture.
 
 ## ARC (`swarmail-html/9`)
 
-Proposed decision 0133 (issue #256): the ARC chain (RFC 8617) of a stored message is
+Decision 0133 (accepted; issue #256): the ARC chain (RFC 8617) of a stored message is
 validated lazily in the report, from the stored bytes, after the SMTP 250, on
 `mail-auth` with keys only from the declared DNS map (`<s>._domainkey.<d>` of each
 hop's `s=` and `d=`; real DNS is not supported). Every report carries a required
@@ -814,7 +814,7 @@ bulk checklist's requirement level), so a large message can never flood the
 report. They arrived as `swarmail-spam/1`; with the link rules of decision 0121,
 the `dns` member of decision 0120, the DKIM rules of decision 0125, the SPF and
 DMARC rules of decision 0126, the weight and total of decision 0122 §2 and the
-ARC chain of proposed decision 0133 the report's `rule_set_id` is now
+ARC chain of decision 0133 the report's `rule_set_id` is now
 `swarmail-html/9`, so the rule-set version
 is recorded in every report and in the cache key. Every finding carries a
 `weight` and the report a `total` (see Weight and total below); the weights

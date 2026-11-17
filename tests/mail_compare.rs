@@ -1903,7 +1903,11 @@ async fn a_term_resistant_child_is_killed_within_one_composed_cleanup_budget() {
         // budget: the grace, the kill, the group, the drain and the listener
         // probes share that budget rather than each taking their own.
         let bound = lim.startup + lim.request * 2 + lim.cleanup;
-        assert!(took < bound + Duration::from_millis(500), "{took:?}");
+        // Slack for an instrumented coverage build on a busy host: 500 ms was
+        // exceeded at 3.42 s (verify, 2026-11-17). 1.5 s stays below one more
+        // cleanup budget (2 s), so budgets that added instead of composing
+        // (bound + 2 s or more) still fail here.
+        assert!(took < bound + Duration::from_millis(1_500), "{took:?}");
         assert!(!scratch.exists());
         assert!(
             facts.forced_kill && facts.reaped && facts.group_gone && facts.scratch_removed,

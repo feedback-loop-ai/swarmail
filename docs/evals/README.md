@@ -9,9 +9,12 @@ accepted [0093](../decisions/0093-source-mail-comparison.md)
 ([source-attributed continuation](../../specs/source-mail-comparison/spec.md)),
 all by the operator on 2026-11-02. The operator's 2026-11-07 widening of #163
 ("compare with all that we have shims for") is recorded as dated addenda on
-0091 and 0092; its contracts are in proposed
-[0129](../decisions/0129-agent-suite-comparison.md)
+0091 and 0092; its contracts are in
+[0129](../decisions/0129-agent-suite-comparison.md) (accepted by the operator
+on 2026-11-08)
 ([spec](../../specs/agent-suite-comparison/spec.md)).
+
+**Status, 2026-11-17: the #151 baseline's DashScope GLM cell is published, and the baseline matrix is complete.** [`baseline-2026-11-01-glm-dashscope.md`](baseline-2026-11-01-glm-dashscope.md): `dashscope/glm-5.3`, 80 trials (16 tasks × five trials) run on 2026-11-16 with the 2026-11-01 baseline's executables (main `a4f552d`, harness `87d9728e…`, target `ad538afa…`, on every row), with its rows and report in [`baseline-2026-11-01-glm-dashscope/`](baseline-2026-11-01-glm-dashscope/). All 80 passed, with no failure of any class. The baseline is now six models × 16 tasks × five trials: 475 of 480 passed, and the only failures are still codex-luna's five `gave_up`. The status below calls the DashScope GLM cell "a separate run, started 2026-11-16": that is this run. It ran the 2026-11-01 suite, not the hard and expert tiers, which still have no GLM model. Tokens per success and transcripts are not measured. The statuses below are kept as they were.
 
 **Status, 2026-11-16: the hard and expert tiers' paid run is published.** [`expert-2026-11-07.md`](expert-2026-11-07.md): 160 trials on main `c95386e` (2026-11-07), eight tasks (three hard, five expert) × four models × five trials, with its rows, report, post-hoc controls and failure evidence in [`expert-2026-11-07/`](expert-2026-11-07/). 151 passed: hard 57/60, expert 94/100. By model, claude-opus 40/40, claude-sonnet 39/40, codex-sol 40/40 and codex-luna 32/40. The failures are 5 `stale_code` (codex-luna × `otp-late`, 0/5) and 4 `gave_up`. One model fails at least 10%, not #325's two. No GLM ran; the DashScope GLM cell is a separate run, started 2026-11-16. Tokens per success and transcripts are not measured. That file proposes the #164 re-prioritization for the operator. The statuses below are kept as they were.
 

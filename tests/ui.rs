@@ -1516,7 +1516,15 @@ async fn every_ui_route_ships_the_one_policy_byte_for_byte() {
 #[tokio::test]
 async fn the_console_loads_nothing_from_outside() {
     let srv = start().await;
+    // The one link a page carries is its same-origin tab icon.
+    let icon = r#"<link rel="icon" href="/favicon.svg" type="image/svg+xml">"#;
     for (path, page) in console_pages(srv.http_addr, "benign", "k").await {
+        assert_eq!(
+            page.matches("<link").count(),
+            1,
+            "{path}: only the icon link"
+        );
+        let page = page.replacen(icon, "", 1);
         for external in [
             "http://",
             "https://",
@@ -1685,4 +1693,35 @@ async fn the_bare_link_fallback_is_capped_and_waits_for_a_settled_projection() {
     assert!(script.contains("'Links unavailable — retrying'"));
     // An in-flight fetch is never queued a second time.
     assert!(script.contains("if (id === fetching) return;"));
+}
+
+/// The console has a tab icon: every page links /favicon.svg, which is
+/// served as SVG with no script, and /favicon.ico answers with the same mark.
+#[tokio::test]
+async fn every_page_links_a_served_favicon() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    for path in ["/", "/ui/inbox/icon"] {
+        let (status, page) = http_get_text(addr, path).await;
+        assert_eq!(status, 200, "{path}");
+        assert!(
+            page.contains(r#"<link rel="icon" href="/favicon.svg" type="image/svg+xml">"#),
+            "{path} links the icon"
+        );
+    }
+    for path in ["/favicon.svg", "/favicon.ico"] {
+        let (status, head) = http_head_text(addr, path).await;
+        assert_eq!(status, 200, "{path}");
+        let head = head.to_ascii_lowercase();
+        assert!(
+            head.contains("content-type: image/svg+xml"),
+            "{path}: {head}"
+        );
+        let (_, body) = http_get_text(addr, path).await;
+        assert!(body.starts_with("<svg"), "{path} is the SVG mark");
+        assert!(
+            !body.to_ascii_lowercase().contains("<script"),
+            "{path} carries no script"
+        );
+    }
 }
