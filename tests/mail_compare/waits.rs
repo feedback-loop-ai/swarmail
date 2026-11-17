@@ -2622,3 +2622,510 @@ mod mailhog_channel {
         assert_eq!(e, StreamError::Deadline);
     }
 }
+
+// ============================================================================
+// T7/T9: v4 wait rows, their facts and the wait section's arithmetic
+// ============================================================================
+
+mod accounting {
+    use crate::protocol::{Protocol, TargetKind};
+    use crate::records::{Phase, Row, WindowKind, WindowOutcome};
+    use crate::{json, protocol_from, report, runner};
+    use serde_json::json;
+
+    const DRAFT_PROTOCOL: &[u8] = include_bytes!("../../docs/evals/draft/protocol.v4.json");
+
+    /// The draft with MailHog's wait-best row streaming.
+    fn protocol() -> Protocol {
+        let mut v = json(DRAFT_PROTOCOL);
+        let o = v["waits"][1]["observation"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|o| o["target"] == "mailhog")
+            .unwrap();
+        o["mode"] = json!("stream");
+        o["interval_ms"] = serde_json::Value::Null;
+        o["backstop_ms"] = json!(1000);
+        protocol_from(v).unwrap()
+    }
+
+    /// A wait row: `(expected, unrelated)` counts, times in ms.
+    fn wait(phase: Phase, i: u32, outcome: &str, counts: Option<(u64, u64)>) -> Row {
+        let mut r = runner::row(
+            "run",
+            TargetKind::Mailhog,
+            "wait-best",
+            0,
+            phase,
+            i,
+            outcome,
+        );
+        r.token = Some(format!("tok{i}"));
+        r.invoked_ns = Some(1_000_000);
+        if let Some((e, u)) = counts {
+            (r.expected, r.unrelated) = (Some(e), Some(u));
+        }
+        if matches!(outcome, "observed" | "late" | "unrelated") {
+            r.cause = Some("event".into());
+        }
+        r
+    }
+
+    fn at(mut r: Row, start: u64, ack: Option<u64>, seen: Option<u64>) -> Row {
+        r.start_ns = Some(start);
+        r.ack_ns = ack;
+        r.observed_ns = seen;
+        r
+    }
+
+    /// The measure window of the profile, never opened: no counters.
+    fn window() -> crate::records::ResourceRow {
+        crate::records::ResourceRow::Window(runner::unopened_window(
+            "run",
+            "target-0001",
+            (TargetKind::Mailhog, "wait-best", 0),
+            WindowKind::Measure,
+            9,
+            WindowOutcome::ChunkDeadline,
+        ))
+    }
+
+    fn rows() -> Vec<Row> {
+        let mut c = wait(Phase::Future, 2, "observed", Some((1, 0)));
+        c.cause = Some("backstop".into());
+        vec![
+            // Present: one exact, one duplicated, one late, one error.
+            at(
+                wait(Phase::Present, 0, "observed", Some((1, 0))),
+                0,
+                Some(5),
+                Some(4_000_000),
+            ),
+            at(
+                wait(Phase::Present, 1, "observed", Some((2, 0))),
+                0,
+                Some(5),
+                Some(2_000_000),
+            ),
+            at(
+                wait(Phase::Present, 2, "late", Some((1, 0))),
+                0,
+                Some(5),
+                Some(9_000_000),
+            ),
+            wait(Phase::Present, 3, "error", None),
+            // Future: seen before the 250 (a negative offset, kept), after
+            // it, by a backstop, with no ack timestamp (unavailable), and
+            // an answer with the mail and other mail (both facts).
+            at(
+                wait(Phase::Future, 0, "observed", Some((1, 0))),
+                10,
+                Some(500),
+                Some(400),
+            ),
+            at(
+                wait(Phase::Future, 1, "observed", Some((1, 0))),
+                10,
+                Some(500),
+                Some(900),
+            ),
+            at(c, 10, Some(500), Some(1_700)),
+            at(
+                wait(Phase::Future, 3, "observed", Some((1, 0))),
+                10,
+                None,
+                Some(800),
+            ),
+            at(
+                wait(Phase::Future, 4, "unrelated", Some((2, 1))),
+                10,
+                Some(500),
+                Some(600),
+            ),
+            // An answer with only other mail is a miss, as is a timeout.
+            at(
+                wait(Phase::Future, 5, "unrelated", Some((0, 3))),
+                10,
+                Some(500),
+                Some(700),
+            ),
+            at(
+                wait(Phase::Future, 6, "timeout", Some((0, 0))),
+                10,
+                Some(500),
+                None,
+            ),
+            wait(Phase::Future, 7, "send_failed", None),
+            wait(Phase::Future, 8, "unstarted", None),
+            // Empty: a correct silence and an answer with foreign mail.
+            wait(Phase::Empty, 0, "timeout", Some((0, 0))),
+            at(
+                wait(Phase::Empty, 1, "unrelated", Some((0, 1))),
+                0,
+                None,
+                Some(3),
+            ),
+        ]
+    }
+
+    #[test]
+    fn duplicates_unrelated_misses_and_signed_offsets_are_counted_independently() {
+        let p = protocol();
+        let rows = rows();
+        report::check_wait_rows(&p, &rows).unwrap();
+        let reps = report::wait_figures(&p, &rows, &[window()]);
+        assert_eq!(reps.len(), 1);
+        let r = &reps[0];
+        assert_eq!((r.method, r.interval_ms), ("stream", None));
+        // 4 present + 7 future were sent; send_failed and unstarted were not.
+        assert_eq!(r.sent, 11);
+        assert_eq!(r.timely, 7, "present 0, 1 and future 0 to 4");
+        assert_eq!(r.missed, 4, "late, error, foreign-only answer, timeout");
+        assert_eq!(r.duplicate, 2, "present 1 and future 4");
+        assert_eq!(r.unrelated, 3, "future 4, future 5 and empty 1");
+        assert_eq!(r.duplicate_and_unrelated, 1);
+        assert_eq!(r.empty_correct, 1);
+        // Every answer of a stream names its cause; nothing else does.
+        let causes: Vec<(&str, u64)> = r.causes.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        assert_eq!(causes, [("backstop", 1), ("event", 9)]);
+        // Signed, never clamped; the ack-less row is unavailable, not zero;
+        // the misses are censored.
+        assert_eq!(r.ack_to_return.samples, 4);
+        assert_eq!(r.ack_to_return.censored, 2);
+        let p50 = r
+            .ack_to_return
+            .values
+            .iter()
+            .find(|(q, _)| *q == 50)
+            .unwrap()
+            .1;
+        assert_eq!(p50, Some(100));
+        let mut acks: Vec<i64> = rows
+            .iter()
+            .filter(|x| x.phase == Phase::Future && x.outcome != "timeout")
+            .filter_map(|x| Some(x.observed_ns? as i64 - x.ack_ns? as i64))
+            .collect();
+        acks.sort();
+        assert_eq!(acks[0], -100, "seen before the 250");
+        assert_eq!(r.present_latency.samples, 2);
+        assert_eq!(r.present_latency.censored, 2);
+        // A never-opened window has no CPU: null, never zero.
+        assert_eq!(r.window_outcome, Some(WindowOutcome::ChunkDeadline));
+        assert_eq!(r.cpu_total_usec, None);
+        let cells = report::wait_cells(&p, &rows, &reps);
+        assert_eq!(cells.len(), 1);
+        let c = &cells[0];
+        assert_eq!((c.sent, c.timely, c.missed), (11, 7, 4));
+        assert_eq!(
+            (c.duplicate, c.unrelated, c.duplicate_and_unrelated),
+            (2, 3, 1)
+        );
+        assert_eq!(c.ack_to_return.samples, 4);
+        assert_eq!(c.cpu_total_usec, None);
+        // Rows of a repetition whose windows another chunk holds are that
+        // chunk's: nothing is derived without its window.
+        assert!(report::wait_figures(&p, &rows, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_row_whose_facts_disagree_with_its_outcome_is_refused_by_name() {
+        let p = protocol();
+        type RowEdit = Box<dyn Fn(&mut Row)>;
+        let edits: Vec<(&str, RowEdit)> = vec![
+            (
+                "disagree with its outcome \"observed\"",
+                Box::new(|r| r.unrelated = Some(1)),
+            ),
+            (
+                "disagree with its outcome \"observed\"",
+                Box::new(|r| r.expected = Some(0)),
+            ),
+            (
+                "disagree with its outcome \"observed\"",
+                Box::new(|r| r.observed_ns = None),
+            ),
+            (
+                "disagree with its outcome \"timeout\"",
+                Box::new(|r| {
+                    r.outcome = "timeout".into();
+                    r.observed_ns = None;
+                }),
+            ),
+            (
+                "disagree with its outcome \"error\"",
+                Box::new(|r| r.outcome = "error".into()),
+            ),
+            (
+                "disagree with its outcome \"unrelated\"",
+                Box::new(|r| r.outcome = "unrelated".into()),
+            ),
+            (
+                "outcome \"vanished\" is not a wait outcome",
+                Box::new(|r| r.outcome = "vanished".into()),
+            ),
+            (
+                "a stream answer names no scan cause",
+                Box::new(|r| r.cause = None),
+            ),
+            (
+                "cause \"replay\" is not a scan cause",
+                Box::new(|r| r.cause = Some("replay".into())),
+            ),
+            (
+                "no wait profile observes mailhog by that name",
+                Box::new(|r| r.profile = "wait-later".into()),
+            ),
+        ];
+        for (want, edit) in edits {
+            let mut r = at(
+                wait(Phase::Future, 0, "observed", Some((1, 0))),
+                1,
+                Some(2),
+                Some(3),
+            );
+            edit(&mut r);
+            let e = report::check_wait_rows(&p, &[r]).unwrap_err();
+            assert!(e.contains(want), "{want}: {e}");
+            assert!(e.starts_with("wait row mailhog wait-"), "{e}");
+        }
+        // A poll's answer names no cause.
+        let mut r = at(
+            wait(Phase::Future, 0, "observed", Some((1, 0))),
+            1,
+            Some(2),
+            Some(3),
+        );
+        r.profile = "wait-common".into();
+        let e = report::check_wait_rows(&p, &[r]).unwrap_err();
+        assert!(
+            e.contains("cause \"event\" on a row that is no stream answer"),
+            "{e}"
+        );
+        // Cost rows are not wait rows.
+        let send = runner::row(
+            "run",
+            TargetKind::Mailhog,
+            "cost-c1-reused",
+            0,
+            Phase::Send,
+            0,
+            "accepted",
+        );
+        report::check_wait_rows(&p, &[send]).unwrap();
+    }
+
+    #[test]
+    fn earlier_protocols_refuse_rows_that_carry_protocol_fours_facts() {
+        let clean = runner::row(
+            "run",
+            TargetKind::Swarmail,
+            "wait-common",
+            0,
+            Phase::Future,
+            0,
+            "observed",
+        );
+        report::refuse_v4_row_facts(std::slice::from_ref(&clean)).unwrap();
+        for f in [
+            |r: &mut Row| r.expected = Some(1),
+            |r: &mut Row| r.unrelated = Some(0),
+            |r: &mut Row| r.cause = Some("event".into()),
+        ] {
+            let mut r = clean.clone();
+            f(&mut r);
+            let e = report::refuse_v4_row_facts(&[r.clone()]).unwrap_err();
+            assert!(e.contains("carries protocol 4's wait facts"), "{e}");
+            // Serialized, an old row has none of the keys at all.
+            let v = serde_json::to_value(&clean).unwrap();
+            for k in ["expected", "unrelated", "cause"] {
+                assert!(v.get(k).is_none(), "{k}");
+            }
+        }
+    }
+}
+
+// ============================================================================
+// T10: the real-binary proof of each implemented stream candidate. Ignored
+// by default; run on the dispatcher host, one at a time, under
+// `timeout 600 taskset -c 0-31` (docs/evals/README.md names the command).
+// It fails, never skips, without its digest-checked bytes.
+// ============================================================================
+
+mod real {
+    use crate::observe::{
+        Cause, Channel, MailhogChannel, Scanner, Seen, StreamBounds, Trace, Wake, stream_wait,
+    };
+    use crate::protocol::{SourceLock, TargetKind};
+    use crate::{json, targets, wire};
+    use std::ffi::OsString;
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    const DRAFT_LOCK: &[u8] = include_bytes!("../../docs/evals/draft/sources.lock.v5.json");
+
+    /// The variable that names a stream candidate's pinned executable.
+    pub fn variable(t: TargetKind) -> String {
+        format!("MAIL_COMPARE_{}", t.name().to_uppercase().replace('-', "_"))
+    }
+
+    /// The launch of `t`'s pinned executable from lock v5, whose digest the
+    /// launch checks before it spawns; an absent variable is a refusal by
+    /// name, never a skip.
+    pub fn pinned_v5(
+        t: TargetKind,
+        value: Option<OsString>,
+    ) -> Result<targets::LaunchSpec, String> {
+        let var = variable(t);
+        let binary = value.ok_or_else(|| {
+            format!(
+                "{var} must name the pinned {t} executable (lock v5's digest is checked at launch)"
+            )
+        })?;
+        let lock = SourceLock::parse(DRAFT_LOCK).map_err(|r| r.to_string())?;
+        let pin = lock.pin(t).ok_or_else(|| format!("{t} has no pin"))?;
+        targets::LaunchSpec::from_pin(t, binary.into(), None, pin, None)
+            .map_err(|e| format!("{t}: {e:?}"))
+    }
+
+    #[test]
+    fn a_missing_pinned_executable_is_a_refusal_by_name() {
+        let e = pinned_v5(TargetKind::Mailhog, None).unwrap_err();
+        assert_eq!(
+            e,
+            "MAIL_COMPARE_MAILHOG must name the pinned mailhog executable (lock v5's digest is checked at launch)"
+        );
+        // Lock v5's pin is MailHog's, with no cap placeholder to fill.
+        let lock = json(DRAFT_LOCK);
+        assert!(lock.to_string().contains("mailhog"));
+    }
+
+    /// The first complete scan, then a signal: what the proof sends after
+    /// it can only be found by a later scan.
+    struct Signalled<'a> {
+        owned: &'a targets::Owned,
+        token: &'a str,
+        first_done: &'a Notify,
+        scans: std::cell::Cell<u32>,
+    }
+
+    impl Scanner for Signalled<'_> {
+        async fn scan(&self) -> Result<Vec<String>, String> {
+            let got = self
+                .owned
+                .find(self.token)
+                .await
+                .map_err(|e| e.reason().to_owned());
+            self.scans.set(self.scans.get() + 1);
+            if self.scans.get() == 1 {
+                self.first_done.notify_one();
+            }
+            got
+        }
+    }
+
+    /// MailHog's api/v2/websocket against the pinned executable: readiness
+    /// by the matched pong, then a real SMTP delivery, then an event, then
+    /// a complete authoritative scan that finds the mail. The backstop is set
+    /// beyond the wait, so neither the initial scan nor the backstop can
+    /// answer: only the event can.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs MAIL_COMPARE_MAILHOG (the pinned MailHog executable); dispatcher host, wait-best T10"]
+    async fn waits_real_mailhog_stream_event_wakes_an_authoritative_match() {
+        let spec = pinned_v5(
+            TargetKind::Mailhog,
+            std::env::var_os(variable(TargetKind::Mailhog)),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let root = tempfile::tempdir().unwrap();
+        let clock = wire::Clock(tokio::time::Instant::now().into_std());
+        let mut owned = targets::Owned::launch(
+            &spec,
+            &root.path().join("s"),
+            &crate::limits(),
+            &clock,
+            &targets::Keepers::default(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("mailhog did not launch: {e:?}"));
+        let channel = MailhogChannel {
+            addr: owned.http_addr,
+            path: crate::protocol::stream_route(TargetKind::Mailhog).unwrap(),
+            limits: crate::stream::Limits::DEFAULT,
+        };
+        let soon = || tokio::time::Instant::now() + Duration::from_secs(10);
+
+        // 1. Readiness, then a delivery, then its event, then the match.
+        let mut conn = channel
+            .ready(soon())
+            .await
+            .expect("readiness by the matched pong");
+        let first = wire::authored(7, "stream-proof", 0, &[crate::protocol::MessageKind::Plain]);
+        assert!(
+            owned.find(&first.token).await.unwrap().is_empty(),
+            "nothing yet"
+        );
+        crate::send_authored(&owned, &first).await;
+        let wake = MailhogChannel::next(&mut conn, soon()).await;
+        assert_eq!(wake, Ok(Wake::Delivery), "the delivery's event fired");
+        assert_eq!(
+            owned.find(&first.token).await.unwrap(),
+            std::slice::from_ref(&first.token)
+        );
+        drop(conn);
+
+        // 2. The observer end to end: the answer is an event's scan.
+        let second = wire::authored(7, "stream-proof", 1, &[crate::protocol::MessageKind::Plain]);
+        let first_done = Notify::new();
+        let scanner = Signalled {
+            owned: &owned,
+            token: &second.token,
+            first_done: &first_done,
+            scans: std::cell::Cell::new(0),
+        };
+        let bounds = StreamBounds {
+            wait: Duration::from_secs(30),
+            request: Duration::from_secs(10),
+            backstop: Duration::from_secs(60),
+            reconnect_gap: crate::observe::RECONNECT_GAP,
+        };
+        let mut trace = Trace::default();
+        let start = tokio::time::Instant::now();
+        let (seen, ()) = tokio::join!(
+            stream_wait(&channel, &scanner, start, bounds, &mut trace),
+            async {
+                first_done.notified().await;
+                crate::send_authored(&owned, &second).await;
+            }
+        );
+        let seen = seen.expect("the stream observation");
+        let Seen::Answer {
+            tokens,
+            cause,
+            late,
+        } = seen
+        else {
+            panic!("no answer: {seen:?} after {trace:?}");
+        };
+        assert_eq!(tokens, std::slice::from_ref(&second.token));
+        assert_eq!(cause, Cause::Event, "{trace:?}");
+        assert!(!late);
+        assert_eq!(trace.scans[0], Cause::InitialScan);
+        assert!(!trace.scans.contains(&Cause::Backstop), "{trace:?}");
+        assert!(trace.events >= 1);
+        eprintln!(
+            "mailhog stream proof: answered by {:?} in {:?}; scans {:?}, events {}, connects {}",
+            cause,
+            start.elapsed(),
+            trace.scans,
+            trace.events,
+            trace.connects
+        );
+
+        // 3. Cleanup, proved.
+        let facts = owned.shutdown().await;
+        assert!(facts.proved(), "{facts:?}");
+        eprintln!("mailhog stream proof: cleanup {facts:?}");
+    }
+}

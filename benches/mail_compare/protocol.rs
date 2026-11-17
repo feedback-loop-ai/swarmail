@@ -45,9 +45,9 @@ pub const CHUNK_MARGIN_MS: u64 = 30_000;
 pub const V4_MAX_SESSIONS: u32 = 32;
 /// The sections of 0132 §11 this driver does not implement yet. A frozen
 /// protocol 4 is refused by name while any is owed, so a plan of the
-/// implemented sections can never be admitted as "v4"; stories B, C and D
-/// each remove their entry.
-pub const OWED_SECTIONS: [&str; 3] = ["api", "waits", "testexec"];
+/// implemented sections can never be admitted as "v4"; stories B and D each
+/// remove their entry (story C removed `waits`).
+pub const OWED_SECTIONS: [&str; 2] = ["api", "testexec"];
 /// The profile whose cells are the headline row (acceptance answer 3).
 pub const HEADLINE_PROFILE: &str = "cost-c8-reused";
 /// The cost section's four profiles (0132 §4.6): name, sessions, connection.
