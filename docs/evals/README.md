@@ -484,8 +484,9 @@ Measurements use the controller's monotonic clock in nanoseconds:
   subscribing. *Empty*: a token that is never sent. Its expected outcome is
   a timeout, which is censored. A match first seen by a poll scan that
   ended after the cutoff is `late`: kept, but censored like a timeout. The
-  signed offset observed − ack is kept as is and is never clamped. An
-  answer carrying any other message is `unrelated`. *Native* (Swarmail's await) and *poll* (the common client
+  signed offset observed − ack is kept as is and is never clamped. A
+  timely answer carrying any other message is `unrelated`; a late one stays
+  `late` whatever it carried. *Native* (Swarmail's await) and *poll* (the common client
   path at a frozen interval) are separate profiles.
 - **Statistics.** Nearest-rank p50/p95/p99 over the successful samples,
   with sample and censored counts beside them. An empty set gives `null`.
@@ -810,8 +811,8 @@ and the tests that mean "v3" read those copies, so the v4 freeze (story E) is a
 replacement of two files. The protocol v4 draft
 ([`draft/protocol.v4.json`](draft/protocol.v4.json)) and source lock v5
 ([`draft/sources.lock.v5.json`](draft/sources.lock.v5.json)) are a draft: this
-driver refuses a *frozen* protocol 4 while the `api`, `waits` and `testexec`
-sections are owed, and `collect-v4` refuses a draft at `check`, so nothing can
+driver refuses a *frozen* protocol 4 while the `api` and `testexec` sections
+are owed (story C built `waits`, below), and `collect-v4` refuses a draft at `check`, so nothing can
 be collected for a v4 yet. `admit-v4` admits a directory against the protocol it
 is given, a draft included, and the sealed run manifest carries the protocol's
 `protocol_status` (`draft` or `frozen`), so a draft run is labelled a draft in
@@ -1014,6 +1015,140 @@ without it that proof fails at the spawn, not with the refusal above. Until that
 not complete and the change is not merged. Stories B (API level), C
 (`wait-best`), D (test execution) and E (freeze and collection) are separate
 runs.
+
+## Protocol v4 waits: `wait-best` beside `wait-common` and `wait-tight` (story C, #361)
+
+This section makes no comparison claim, collects nothing and selects no
+stream. It records what story C of accepted decision
+[0132](../decisions/0132-mail-comparison-protocol-v4.md) built: the wait
+evidence captured into the draft lock v5 on 2026-11-17, the three wait
+profiles of the draft protocol v4, the stream observer and the one real-binary
+proof that is still to run.
+
+**Evidence.** Every body was fetched from the upstream repository at the
+pinned commit (or, for the Alkemio image, from a layer of its pinned
+manifest), checked against its git blob id and size in the tagged tree (or the
+layer digest), and committed under `sources/<target>/` with its path, size,
+sha256 and attribution. `verify_files` rechecks every one each time the lock
+is used. Smtp4dev's and Inbucket's lock v5 pins replace their root tree
+listing with the recursive listing of the same tree id
+(`*-tree-recursive.json`, asked for with `?recursive=1`); it is rebuilt
+directory by directory to the commit's tree id, so a nested body is bound to
+the tagged commit. These documents are lock v5's alone: a lock that says
+version 4 refuses each by name (`lock_version 4 refuses the v5-only wait
+document …`), whether a lock v5 is downgraded or one document is spliced into
+a valid lock v4, independently of the `{max_messages}` placeholder.
+
+A blocking wait and a push channel are separate facts. No draft v4
+`native_wait` cell is `not_inspected`, and only Swarmail has a blocking wait.
+A push channel qualifies for `wait-best` only when captured bytes show
+readiness ordered after registration (0132 §7.2.2); a channel without that is
+a cited poll that names its gap, which is not proof that no channel exists.
+
+| Target | `native_wait` (cite) | Push channel in the pinned source | Readiness ordered after registration | `wait-best` today |
+|---|---|---|---|---|
+| swarmail | supported (0002) | n/a | n/a | native REST await |
+| mailpit | not_supported (`mailpit-server.go`) | WebSocket `api/events`; producer `Broadcast("new")` after the insert commits | not evidenced: the first hub frame is the optional `stats` frame, and the pong comes from gorilla/websocket v1.5.3, outside the tagged tree | poll, no documented wait (readiness gap) |
+| mailhog | not_supported (`mailhog-server-api-v1.go`) | WebSocket `api/v2/websocket`; SSE `api/v1/events` | WebSocket: a pong to this connection's ping, answered by the vendored gorilla `conn.go` from the read loop that starts after the register handoff; SSE: none shown | WebSocket, **selected**: its real-binary proof passed on 2026-11-18 (T10b); SSE does not qualify |
+| mailslurper | not_supported (`mailslurper-setup-services-listener.go`) | none | n/a | poll, no documented wait; row blocked (`does_not_start`) |
+| mailslurper-source-build | not_supported (`mailslurper-setup-services-listener.go`) | none | n/a | poll, no documented wait |
+| smtp4dev | not_supported (`smtp4dev-messages-controller.cs`) | SignalR hub `/hubs/notifications`; producer `OnMessagesChanged` after save | not evidenced: negotiation, handshake, hub-protocol framing and when a connection joins `Clients.All` are the ASP.NET Core SignalR framework's, shipped as assemblies; the singleton hub sends only while the framework has set its `Clients` | poll, no documented wait (envelope and registration gap) |
+| inbucket | not_supported (`inbucket-rest-routes.go`) | WebSocket `/api/v2/monitor/messages`; producer `AfterMessageStored`, then hub `Dispatch` | not evidenced: history playback only when the ring is non-empty, and the pong comes from gorilla/websocket v1.5.3, outside the tagged tree | poll, no documented wait (readiness gap) |
+| greenmail | not_supported (`greenmail-openapi.yml`) | none | n/a | poll, no documented wait |
+| alkemio-mailslurper | not_supported (`alkemio-setup-services-listener.go`) | none | n/a | poll, no documented wait |
+
+Each row's finding in the draft lock states the route, producer,
+registration, readiness evidence and what the channel loses; each `wait-best`
+row of the draft protocol cites the pin's documents its method rests on, and
+`waits_match` refuses a citation that is not one of them or a mode that is not
+the pin's best wait. No SignalR client was written: the envelope it would need
+is not in any captured byte.
+
+**The three profiles.** The draft protocol v4 carries `wait-common` (the
+common 100 ms complete-scan poll for every target, Swarmail included),
+`wait-best` (each target's method above) and `wait-tight` (the same poll at
+10 ms for every target, labelled as no tool's documented method), each with
+100 present, 100 future and 20 empty waits per repetition, 3 repetitions, a
+30 s deadline (1 s empty) and a fresh instance per profile under the enforced
+budget. `budgets.wait_operation_ms` is back to the longest wait plus one
+request bound (40,000 ms). A frozen protocol 4 needs exactly the three, in
+order, with those counts; an earlier protocol refuses a stream and the
+`backstop_ms` and `evidence` fields by name.
+
+**The stream observer** (`benches/mail_compare/clients/observe.rs`) treats a
+notification only as a wake-up. It awaits the channel's cited readiness (for
+MailHog a pong that echoes a fresh random ping payload), then runs one
+complete scan, and rescans after every delivery event, after every
+re-established readiness and on a 1,000 ms backstop anchored at the first
+readiness. The scan alone answers, through the target's complete
+`find`; an event never supplies mail or an id. Each answer records the cause
+of the scan that produced it (`initial_scan`, `event`, `reconnect` or
+`backstop`), so a dropped notification shows as a backstop answer. One owner
+drives the cutoff, the response bound of a scan in flight, the backstop, the
+channel and at most one reconnect attempt (100 ms apart, each within one
+request bound and the cutoff); causes arriving during a scan are kept and
+discharged by the next one, in that precedence. A readiness failure before the
+first scan, a malformed frame and a failed scan are errors, never an empty
+answer or a silent fallback to a poll.
+
+**Rows and the report.** Every protocol 4 wait row keeps how many messages of
+its answer were the expected one and how many were other mail, before any
+deduplication (`expected`, `unrelated`), and a stream answer its `cause`; no
+older row carries these keys, and an older run that does is refused. The
+`wait_profiles` section of a v4 report (and `report-waits.json` of a sealed
+run) recomputes from the rows and the `measure` window, per repetition and per
+cell: accepted sends, timely returns, `missed` (no timely return: timeout,
+late whatever else the answer carried, error, or an answer without the
+expected mail; censored), `duplicate`
+and `unrelated` answers counted independently (and both), correct empty waits,
+the stream causes, the signed future `ack_to_return` (client return minus the
+SMTP 250, never clamped; a row without either timestamp is absent), present
+latency, and the target's CPU and peak memory over the profile's window.
+`admit-v4` refuses a wait row whose counts, return time or cause disagree with
+its outcome, and any figure that differs from that arithmetic, by path. A send
+keeps the server's reply as soon as it has one: a send cut by the chunk instant
+in its `QUIT` after the 250 is a sent message (its wait an `error`, or a future
+wait's finished answer), and only a send cut before its reply is `send_failed`.
+
+**Chunks.** The plan adds one `waits.<target>.r<repetition>` chunk per launched
+target and repetition after that repetition's cost chunks (24 + 24 for the
+draft). A waits chunk runs each profile on a fresh instance with its `ready`,
+`idle_ready` and `measure` windows. The chunk instant covers the wait path
+too: at or after it nothing starts and the remaining instances are
+`unstarted`; a send (QUIT included) or an observation still in flight is
+cancelled and its row says so; nothing is resent. `collect-v4` reads the plan
+from the driver, so the wrapper is unchanged.
+
+**The real-binary proof (T10).** A stream row is selected only after its own
+proof passes against the pinned bytes, and only MailHog's is implemented. The
+proof is ignored by default, Linux-only, and fails rather than skips without
+its executable; the launch checks the executable against lock v5's digest
+before it spawns. It proves readiness by the matched pong, a real SMTP
+delivery, the delivery's event, and an event-caused complete scan that finds
+the mail, with the backstop set beyond the wait so that neither the initial
+scan nor the backstop can answer; then a proved cleanup. Run it alone on the
+dispatcher host, with the load before and after:
+
+```bash
+cat /proc/loadavg
+MAIL_COMPARE_MAILHOG=/path/to/the/pinned/MailHog_linux_amd64 \
+  timeout 600 taskset -c 0-31 cargo test --locked --test mail_compare -- \
+  --ignored --exact waits::real::waits_real_mailhog_stream_event_wakes_an_authoritative_match \
+  --test-threads=1 --nocapture; echo "exit $?"
+cat /proc/loadavg
+```
+
+Its output names the cause, the scans, the events and the cleanup receipt.
+**It passed on 2026-11-18** on the dispatcher host (128 CPUs), against the
+pinned executable (sha256 `e2ed634d…c5d09c7`, matching lock v5), three runs
+alone: each was answered by the delivery's `Event` after an empty initial scan
+(6.5 ms, 1.9 ms, 1.9 ms; one event, one connect), and each cleanup reaped the
+process group, closed both listeners and removed the scratch directory. The
+output is attached to the story's pull request. MailHog's `best_wait` in the
+lock is therefore `stream: …` and its `wait-best` row `stream` with
+`backstop_ms` 1000 (the validators require both, together), and the draft's
+`unresolved` list no longer names it. Default tests do not discharge the
+proof; rerun it after any change to the stream client or the pin.
 
 ## What closes the remaining rows
 
