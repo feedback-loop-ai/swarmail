@@ -1136,6 +1136,10 @@ impl resources::Tree for Spy {
 // ---- T2.1 ------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "Linux only: bind ownership reads /proc and the budget needs cgroup v2"
+)]
 fn detect_refuses_exactly_without_a_cgroup2_root() {
     let scope = scope_fixture("cpu memory pids\n", "");
     let root = scope.path();
@@ -1737,6 +1741,10 @@ fn a_lock_v4_spec_is_unchanged_by_the_cap_argument() {
 // ---- T3.2 ------------------------------------------------------------------
 
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "Linux only: bind ownership reads /proc and the budget needs cgroup v2"
+)]
 async fn a_launch_without_a_leaf_never_builds_a_resources_context() {
     let spec = swarmail_spec(targets::swarmail_template(0));
     assert!(
@@ -1901,6 +1909,10 @@ fn v3_launch_and_cleanup_receipts_serialize_byte_for_byte() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "Linux only: bind ownership reads /proc and the budget needs cgroup v2"
+)]
 async fn a_v4_launch_receipt_shows_the_cap_and_keeps_ports_and_paths_as_slots() {
     // The receipt's template is the spec's, with the cap resolved when the
     // spec was built; ports and private paths stay slots (0093's privacy rule).
@@ -4325,6 +4337,10 @@ fn hold_refuses_missing_flags_and_protocol_3() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "Linux only: bind ownership reads /proc and the budget needs cgroup v2"
+)]
 async fn hold_refuses_bytes_on_stdin_by_name() {
     // Without a scope the launch has no leaf, so this proves the teardown, the
     // receipts and the refusal on any host; the budget is real proof 4.
@@ -4453,6 +4469,10 @@ impl HeldOut {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "Linux only: bind ownership reads /proc and the budget needs cgroup v2"
+)]
 async fn hold_prints_each_endpoint_as_the_address_it_listens_on() {
     // A launch without a leaf, held open by a pipe whose far end stays up.
     let spec = swarmail_spec(targets::swarmail_template(0));
@@ -4510,6 +4530,10 @@ async fn hold_prints_each_endpoint_as_the_address_it_listens_on() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "Linux only: bind ownership reads /proc and the budget needs cgroup v2"
+)]
 async fn a_hold_ended_by_its_interrupt_tears_down_and_prints_a_proved_receipt() {
     let spec = swarmail_spec(targets::swarmail_template(0));
     let root = tempfile::tempdir().unwrap();
