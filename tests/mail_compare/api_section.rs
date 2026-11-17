@@ -3249,4 +3249,27 @@ fn the_run_report_publishes_every_coordinate_that_launches_nothing() {
         rows.iter()
             .all(|r| r.get("launch").is_none() && r.get("cleanup").is_none())
     );
+    // R15: every official MailSlurper coordinate, on both surfaces, cites
+    // the captured failure its pin records; every row has null figures; no
+    // other row claims a failure document.
+    let cite = "sources/mailslurper/mailslurper-official-failure.txt";
+    let official: Vec<&Value> = rows
+        .iter()
+        .filter(|r| r["target"] == "mailslurper")
+        .collect();
+    assert_eq!(official.len(), 2 * 3 * 4);
+    assert!(
+        official.iter().all(|r| r["cite"] == json!(cite)),
+        "{official:?}"
+    );
+    assert!(rows.iter().all(|r| r["stats"].is_null()));
+    assert!(
+        rows.iter()
+            .filter(|r| r["target"] != "mailslurper")
+            .all(|r| r.get("cite").is_none())
+    );
+    // The cited document is a document of that pin.
+    let lock = lock5();
+    let pin = lock.pin(TargetKind::Mailslurper).unwrap();
+    assert!(pin.documents.iter().any(|d| d.path == cite));
 }

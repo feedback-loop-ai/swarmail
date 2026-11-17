@@ -1454,14 +1454,28 @@ pub fn api_run_report(
                         crate::clients::Operation::List,
                     )
                     .status();
+                    // A target that does not start cites the document of its
+                    // pin that records the failure (R15); every row carries
+                    // no figures and no receipt — nothing ran.
+                    let cite = p
+                        .does_not_start
+                        .iter()
+                        .flatten()
+                        .find(|d| d.target == *t)
+                        .map(|d| d.cite.clone());
                     for fill in &api.fills {
-                        not_launched.push(serde_json::json!({
+                        let mut row = serde_json::json!({
                             "surface": surface,
                             "target": t,
                             "repetition": repetition,
                             "fill": fill,
                             "status": status,
-                        }));
+                            "stats": null,
+                        });
+                        if status == "does_not_start" {
+                            row["cite"] = serde_json::json!(cite);
+                        }
+                        not_launched.push(row);
                     }
                 }
             }
