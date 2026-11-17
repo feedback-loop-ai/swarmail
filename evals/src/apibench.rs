@@ -52,6 +52,10 @@ pub fn classify(e: &str, past_deadline: bool) -> Outcome {
         "tool_error"
     } else if e.contains("exhausted") {
         "id_range_exhausted"
+    } else if e.contains(crate::mcp::OVERSIZED) {
+        "oversized"
+    } else if e.contains(crate::mcp::REDIRECT) {
+        "redirect"
     } else {
         "transport"
     };
@@ -80,15 +84,17 @@ impl Worker {
             .ok_or(OpError::Timeout)?;
         spend.requests += 1;
         let mut c = self.client.lock().await;
-        match tokio::time::timeout(left, c.call_within(tool, args, Some(left))).await {
-            Ok(Ok(v)) => {
-                spend.bytes += v.to_string().len() as u64;
-                Ok(v)
-            }
+        // Every reply of the operation charges its one shared byte budget,
+        // checked before append in the transport (spec AC7, R11).
+        let call = c.call_spending(tool, args, Some(left), &mut spend.bytes);
+        match tokio::time::timeout(left, call).await {
+            Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(match classify(&e, Instant::now() >= deadline) {
                 Outcome::Timeout => OpError::Timeout,
                 Outcome::Failed { reason } => match reason.as_str() {
                     "transport" => OpError::Transport,
+                    "oversized" => OpError::Oversized,
+                    "redirect" => OpError::Status(302),
                     // A refusal by the server or the path to it: the class is
                     // kept as a status the row names (429 a rate limit, 503
                     // a busy bridge or adapter, 502 any other tool or RPC
@@ -114,12 +120,11 @@ impl Worker {
     ) -> Result<Vec<Summary>, OpError> {
         clients::scan_pages(
             paging,
-            |start, page, size| {
+            |start, page, size, mut so_far| {
                 let a = args(start, page, size);
                 async move {
-                    let mut one = Spend::default();
-                    let v = self.call(tool, a, deadline, &mut one).await?;
-                    Ok((v, one))
+                    let v = self.call(tool, a, deadline, &mut so_far).await?;
+                    Ok((v, so_far))
                 }
             },
             decode,
@@ -257,7 +262,10 @@ impl Worker {
             }
             Family::Mailhog => {
                 let mut start = 0u64;
+                // Finite paging: no more pages than the largest store needs.
+                let mut pages = clients::MAX_STORE / 250 + 2;
                 loop {
+                    pages = pages.checked_sub(1).ok_or(OpError::Oversized)?;
                     let v = self
                         .call(
                             "mailhog_list",

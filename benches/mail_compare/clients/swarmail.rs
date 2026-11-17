@@ -6,7 +6,7 @@
 
 use super::{
     Capability, Cite, ClearScope, Conn, Fetched, Method, OpError, Operation, Page, Paging, Scope,
-    Spend, Summary, addresses, escape, id_text, scan, supported,
+    Spend, Summary, addresses, escape, id_text, scan, segment, supported,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -153,7 +153,11 @@ pub async fn get(
     spend: &mut Spend,
 ) -> Result<Fetched, OpError> {
     let v = c
-        .get_json(&format!("/api/v1/messages/{}", escape(id)), deadline, spend)
+        .get_json(
+            &format!("/api/v1/messages/{}", segment(id)?),
+            deadline,
+            spend,
+        )
         .await?;
     decode_message(&v).ok_or(OpError::Malformed)
 }
@@ -164,7 +168,7 @@ pub async fn delete(
     deadline: Instant,
     spend: &mut Spend,
 ) -> Result<(), OpError> {
-    let path = format!("/api/v1/messages/{}", escape(id));
+    let path = format!("/api/v1/messages/{}", segment(id)?);
     c.mutate(
         reqwest::Method::DELETE,
         &path,

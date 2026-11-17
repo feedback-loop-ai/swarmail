@@ -448,6 +448,42 @@ pub fn escape(s: &str) -> String {
     out
 }
 
+/// A target-supplied id as one path segment (0132 §7, spec AC7): every
+/// byte outside `A-Z a-z 0-9 - _ ~` is percent-encoded, `.` and `/`
+/// included, so no id can become a separator. An id made only of dots (or
+/// empty) is refused: a URL parser normalizes `%2E` and `%2E%2E` back into
+/// the dot segments they spell, so no encoding of it reaches the intended
+/// route. `-` stays literal for MailSlurper's router, which does not decode.
+pub fn segment(id: &str) -> Result<String, OpError> {
+    if id.bytes().all(|b| b == b'.') {
+        return Err(OpError::Malformed);
+    }
+    let mut out = String::with_capacity(id.len());
+    for b in id.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    Ok(out)
+}
+
+/// The URL `base` + `path` names, refused if parsing it changes the path or
+/// query the client built (a dot segment resolved, a separator introduced):
+/// the request must reach exactly the route it was written for.
+pub fn exact_url(base: &str, path: &str) -> Result<reqwest::Url, OpError> {
+    let url = reqwest::Url::parse(&format!("{base}{path}")).map_err(|_| OpError::Malformed)?;
+    let (want_path, want_query) = match path.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (path, None),
+    };
+    if url.path() != want_path || url.query() != want_query || url.fragment().is_some() {
+        return Err(OpError::Malformed);
+    }
+    Ok(url)
+}
+
 /// What one operation has spent: bytes over all its responses (bounded by
 /// [`MAX_OPERATION_BYTES`]) and requests.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -500,12 +536,11 @@ impl Conn {
             .checked_duration_since(Instant::now())
             .filter(|d| !d.is_zero())
             .ok_or(OpError::Timeout)?;
+        // Refused before dispatch: a path the URL parser would rewrite.
+        let url = exact_url(&self.base, path)?;
         self.requests.fetch_add(1, Ordering::Relaxed);
         spend.requests += 1;
-        let mut req = self
-            .client
-            .request(method, format!("{}{path}", self.base))
-            .timeout(left);
+        let mut req = self.client.request(method, url).timeout(left);
         if let Some((ctype, bytes)) = body {
             req = req.header("content-type", ctype).body(bytes);
         }
@@ -515,14 +550,27 @@ impl Conn {
             if resp.status().is_redirection() {
                 return Err(OpError::Status(status));
             }
+            // A declared length over a bound refuses before any byte is
+            // read; a streamed body is accounted, checked, before append.
+            let over = |reply: u64, more: u64, spent: u64| {
+                reply > MAX_RESPONSE_BYTES
+                    || spent
+                        .checked_add(more)
+                        .is_none_or(|t| t > MAX_OPERATION_BYTES)
+            };
+            if resp
+                .content_length()
+                .is_some_and(|n| over(n, n, spend.bytes))
+            {
+                return Err(OpError::Oversized);
+            }
             let mut out = Vec::new();
             while let Some(chunk) = resp.chunk().await.map_err(classify)? {
-                spend.bytes += chunk.len() as u64;
-                if (out.len() + chunk.len()) as u64 > MAX_RESPONSE_BYTES
-                    || spend.bytes > MAX_OPERATION_BYTES
-                {
+                let len = chunk.len() as u64;
+                if over(out.len() as u64 + len, len, spend.bytes) {
                     return Err(OpError::Oversized);
                 }
+                spend.bytes += len;
                 out.extend_from_slice(&chunk);
             }
             Ok((status, out))
@@ -618,12 +666,11 @@ pub async fn scan(
 ) -> Result<Vec<Summary>, OpError> {
     scan_pages(
         paging,
-        |start, page, size| {
+        |start, page, size, mut so_far| {
             let p = path(start, page, size);
             async move {
-                let mut one = Spend::default();
-                let v = conn.get_json(&p, deadline, &mut one).await?;
-                Ok((v, one))
+                let v = conn.get_json(&p, deadline, &mut so_far).await?;
+                Ok((v, so_far))
             }
         },
         decode,
@@ -632,7 +679,8 @@ pub async fn scan(
     .await
 }
 
-/// Fetch pages from `fetch(start, page_number, size)` to completion, over
+/// Fetch pages from `fetch(start, page_number, size, spent_so_far)` to
+/// completion, over
 /// any transport (HTTP here, MCP tool calls in the eval crate). Complete
 /// means the pages reached the matching count with every id distinct, every
 /// page before the last full, the count unchanged and no more pages than the
@@ -644,14 +692,14 @@ pub async fn scan_pages<F, Fut>(
     spend: &mut Spend,
 ) -> Result<Vec<Summary>, OpError>
 where
-    F: FnMut(u64, u64, u32) -> Fut,
+    F: FnMut(u64, u64, u32, Spend) -> Fut,
     Fut: std::future::Future<Output = Result<(Value, Spend), OpError>>,
 {
-    // Each page reports what it spent; the operation's byte bound holds
-    // over all of them.
-    let account = |one: Spend, spend: &mut Spend| {
-        spend.bytes += one.bytes;
-        spend.requests += one.requests;
+    // Each page is handed the operation's spend so far and returns it with
+    // its own reply added: one shared budget, checked by the transport
+    // before any byte past it is buffered, and again here.
+    let account = |after: Spend, spend: &mut Spend| {
+        *spend = after;
         if spend.bytes > MAX_OPERATION_BYTES {
             Err(OpError::Oversized)
         } else {
@@ -661,7 +709,7 @@ where
     let size = match paging {
         Paging::Offset { size } | Paging::Number { size } => size,
         Paging::Whole => {
-            let (v, one) = fetch(0, 1, 0).await?;
+            let (v, one) = fetch(0, 1, 0, *spend).await?;
             account(one, spend)?;
             let (total, items) = decode(&v, 0).ok_or(OpError::Malformed)?;
             return complete(items, total);
@@ -674,7 +722,7 @@ where
     for page in 0..max_pages {
         // The next offset is what arrived, never a fixed stride.
         let start = out.len() as u64;
-        let (v, one) = fetch(start, page + 1, size).await?;
+        let (v, one) = fetch(start, page + 1, size, *spend).await?;
         account(one, spend)?;
         let (total, items) = decode(&v, start).ok_or(OpError::Malformed)?;
         if total > MAX_STORE || *expected.get_or_insert(total) != total {

@@ -287,6 +287,167 @@ fn the_mime_reader_refuses_shapes_it_does_not_know() {
     let mid = b"Content-Type: multipart/alternative; boundary=\"x\"\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nsee --x here\r\n--x--\r\n";
     assert!(clients::mime::parse(mid).is_none());
     assert_eq!(clients::escape("a b/é-._~"), "a%20b%2F%C3%A9-._~");
+    // A path segment encodes dots too, and refuses an id of dots alone.
+    assert_eq!(
+        clients::segment("a b/é-._~").unwrap(),
+        "a%20b%2F%C3%A9-%2E_~"
+    );
+    for dots in ["", ".", "..", "..."] {
+        assert_eq!(clients::segment(dots), Err(clients::OpError::Malformed));
+    }
+}
+
+// ---- path segments on the wire (R11) --------------------------------------
+
+/// Read through `get` for each id and return the request targets the
+/// responder saw, in order.
+async fn targets_seen(ids: &[&str]) -> (Vec<Result<(), clients::OpError>>, Vec<String>) {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let s = seen.clone();
+    let addr = responder(move |p| {
+        s.lock().unwrap().push(p.to_owned());
+        (404, "{}".into())
+    })
+    .await;
+    let conn = clients::Conn::new(addr);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut out = Vec::new();
+    for id in ids {
+        let mut spend = Spend::default();
+        let r = clients::mailpit::get(&conn, id, deadline, &mut spend).await;
+        out.push(match r {
+            Err(clients::OpError::Status(404)) => Ok(()),
+            Err(e) => Err(e),
+            Ok(_) => panic!("a 404 is never a message"),
+        });
+    }
+    let got = seen.lock().unwrap().clone();
+    (out, got)
+}
+
+#[tokio::test]
+async fn a_target_supplied_id_reaches_exactly_its_own_route() {
+    // Dots, separators, encoded-looking ids and router-sensitive `-` arrive
+    // on the wire as one segment under the intended route.
+    let (out, seen) = targets_seen(&["a.b", "a/../b", "%2e%2e", "%2F", "-x-", "a?b#c"]).await;
+    assert!(out.iter().all(Result::is_ok), "{out:?}");
+    assert_eq!(
+        seen,
+        [
+            "/api/v1/message/a%2Eb",
+            "/api/v1/message/a%2F%2E%2E%2Fb",
+            "/api/v1/message/%252e%252e",
+            "/api/v1/message/%252F",
+            "/api/v1/message/-x-",
+            "/api/v1/message/a%3Fb%23c",
+        ]
+    );
+    // An id of dots alone has no safe encoding: refused before dispatch,
+    // so no request reaches the server at all.
+    let (out, seen) = targets_seen(&[".", "..", "..."]).await;
+    assert_eq!(out, vec![Err(clients::OpError::Malformed); 3]);
+    assert!(seen.is_empty(), "{seen:?}");
+}
+
+#[tokio::test]
+async fn a_path_the_url_parser_would_rewrite_is_refused_before_dispatch() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let s = seen.clone();
+    let addr = responder(move |p| {
+        s.lock().unwrap().push(p.to_owned());
+        (200, "{}".into())
+    })
+    .await;
+    let conn = clients::Conn::new(addr);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    for path in [
+        "/api/v1/message/%2E%2E",
+        "/api/v1/message/%2e",
+        "/api/v1/message/../x",
+        "/api/./x",
+        "/a#frag",
+    ] {
+        let mut spend = Spend::default();
+        let e = conn.get_json(path, deadline, &mut spend).await.unwrap_err();
+        assert_eq!(
+            (e, spend.requests),
+            (clients::OpError::Malformed, 0),
+            "{path}"
+        );
+    }
+    assert!(seen.lock().unwrap().is_empty());
+    assert!(clients::exact_url("http://h", "/a/b?q=1").is_ok());
+}
+
+/// A loopback server that declares or streams one body over the bound.
+async fn huge_responder(chunked: bool) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut b = [0u8; 4096];
+                let _ = s.read(&mut b).await;
+                if !chunked {
+                    let _ = s
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n",
+                                clients::MAX_RESPONSE_BYTES + 1
+                            )
+                            .as_bytes(),
+                        )
+                        .await;
+                    return;
+                }
+                let _ = s
+                    .write_all(b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n")
+                    .await;
+                let pad = vec![b'x'; 64 << 10];
+                for _ in 0..(2 * clients::MAX_RESPONSE_BYTES / (64 << 10)) {
+                    let mut c = format!("{:x}\r\n", pad.len()).into_bytes();
+                    c.extend_from_slice(&pad);
+                    c.extend_from_slice(b"\r\n");
+                    if s.write_all(&c).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+#[tokio::test]
+async fn a_response_over_its_bound_is_refused_before_it_is_buffered() {
+    for chunked in [false, true] {
+        let conn = clients::Conn::new(huge_responder(chunked).await);
+        let mut spend = Spend::default();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let e = conn
+            .get_bytes("/x", deadline, &mut spend)
+            .await
+            .unwrap_err();
+        assert_eq!(e, clients::OpError::Oversized);
+        assert!(
+            spend.bytes <= clients::MAX_RESPONSE_BYTES,
+            "{}",
+            spend.bytes
+        );
+    }
+    // The operation's budget is shared: a scan already near it is refused
+    // on its next small reply, before append, with checked arithmetic.
+    let conn = clients::Conn::new(responder(|_| (200, "[]".into())).await);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    for start in [clients::MAX_OPERATION_BYTES - 1, u64::MAX] {
+        let mut spend = Spend {
+            bytes: start,
+            requests: 0,
+        };
+        let e = conn.get_json("/x", deadline, &mut spend).await.unwrap_err();
+        assert_eq!((e, spend.bytes), (clients::OpError::Oversized, start));
+    }
 }
 
 // ---- the scan's completeness rules (T2) -----------------------------------

@@ -9,6 +9,20 @@
 use serde_json::{Value, json};
 use std::time::Duration;
 
+/// One reply's byte bound (0132 §7, spec AC7): the native clients' bound,
+/// so no reply — initialization and JSON-RPC errors included — is buffered
+/// past it.
+pub const MAX_REPLY_BYTES: u64 = 16 << 20;
+/// One logical operation's byte bound over every reply it reads, shared
+/// across nested calls (a paged scan is one operation).
+pub const MAX_OPERATION_BYTES: u64 = 1 << 30;
+
+/// The marker of a byte-bound refusal in an error string, so a caller can
+/// classify it without parsing prose.
+pub const OVERSIZED: &str = "oversized reply";
+/// The marker of a refused redirect.
+pub const REDIRECT: &str = "refused redirect";
+
 pub const PROTOCOL_VERSION: &str = "2025-03-26";
 
 /// Above the server's 60 s wait ceiling, so a maximal wait is answered.
@@ -46,6 +60,7 @@ impl McpClient {
     async fn connect_ids(url: &str, ids: std::ops::Range<u64>) -> Result<McpClient, String> {
         let http = reqwest::Client::builder()
             .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(REQUEST_TIMEOUT)
             .connect_timeout(Duration::from_secs(10))
             .build()
@@ -78,19 +93,25 @@ impl McpClient {
     }
 
     async fn post(&self, body: &Value) -> Result<(u16, Vec<u8>), String> {
-        self.post_within(body, None).await
+        let mut spent = 0;
+        self.post_within(body, None, &mut spent).await
     }
 
+    /// One POST whose reply is streamed under [`MAX_REPLY_BYTES`] and the
+    /// operation's shared `spent` budget under [`MAX_OPERATION_BYTES`]: each
+    /// chunk is accounted, checked, before it is appended, and a redirect is
+    /// refused rather than followed.
     async fn post_within(
         &self,
         body: &Value,
         timeout: Option<Duration>,
+        spent: &mut u64,
     ) -> Result<(u16, Vec<u8>), String> {
         let mut req = self.http.post(&self.url);
         if let Some(t) = timeout {
             req = req.timeout(t);
         }
-        let resp = req
+        let mut resp = req
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream")
             .body(body.to_string())
@@ -98,8 +119,10 @@ impl McpClient {
             .await
             .map_err(|e| format!("POST {}: {e}", self.url))?;
         let status = resp.status().as_u16();
-        let bytes = resp.bytes().await.map_err(|e| format!("read body: {e}"))?;
-        Ok((status, bytes.to_vec()))
+        if resp.status().is_redirection() {
+            return Err(format!("POST {}: {REDIRECT} (status {status})", self.url));
+        }
+        bounded_body(&mut resp, spent).await.map(|b| (status, b))
     }
 
     async fn notify(&self, method: &str) -> Result<(), String> {
@@ -126,6 +149,19 @@ impl McpClient {
         params: Value,
         timeout: Option<Duration>,
     ) -> Result<Value, String> {
+        let mut spent = 0;
+        self.rpc_spending(method, params, timeout, &mut spent).await
+    }
+
+    /// [`Self::rpc_within`] charging the reply to an operation's shared
+    /// byte budget `spent`.
+    pub async fn rpc_spending(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Option<Duration>,
+        spent: &mut u64,
+    ) -> Result<Value, String> {
         if self.next_id >= self.last_id {
             return Err(format!("{method}: this client's id range is exhausted"));
         }
@@ -135,6 +171,7 @@ impl McpClient {
             .post_within(
                 &json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }),
                 timeout,
+                spent,
             )
             .await?;
         let reply: Value = serde_json::from_slice(&bytes)
@@ -163,12 +200,27 @@ impl McpClient {
         arguments: Value,
         timeout: Option<Duration>,
     ) -> Result<Value, String> {
+        let mut spent = 0;
+        self.call_spending(tool, arguments, timeout, &mut spent)
+            .await
+    }
+
+    /// [`Self::call_within`] charging the reply to an operation's shared
+    /// byte budget `spent` (every page of one scan charges the same one).
+    pub async fn call_spending(
+        &mut self,
+        tool: &str,
+        arguments: Value,
+        timeout: Option<Duration>,
+        spent: &mut u64,
+    ) -> Result<Value, String> {
         self.tool_calls += 1;
         let result = self
-            .rpc_within(
+            .rpc_spending(
                 "tools/call",
                 json!({ "name": tool, "arguments": arguments }),
                 timeout,
+                spent,
             )
             .await?;
         let text = result["content"][0]["text"]
@@ -265,4 +317,33 @@ impl McpClient {
             .cloned()
             .ok_or_else(|| "wait result has no emails".to_string())
     }
+}
+
+/// Read `resp`'s body under the reply and operation bounds. A declared
+/// length over either bound refuses before any byte is read; a streamed body
+/// is accounted chunk by chunk, with checked arithmetic, before the chunk is
+/// appended, so nothing past a bound is ever buffered.
+async fn bounded_body(resp: &mut reqwest::Response, spent: &mut u64) -> Result<Vec<u8>, String> {
+    let over = |reply: u64, spent: u64, more: u64| {
+        reply > MAX_REPLY_BYTES
+            || spent
+                .checked_add(more)
+                .is_none_or(|t| t > MAX_OPERATION_BYTES)
+    };
+    if let Some(n) = resp.content_length()
+        && over(n, *spent, n)
+    {
+        return Err(format!("{OVERSIZED}: declared {n} bytes"));
+    }
+    let mut out: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("read body: {e}"))? {
+        let len = chunk.len() as u64;
+        let reply = (out.len() as u64).checked_add(len).unwrap_or(u64::MAX);
+        if over(reply, *spent, len) {
+            return Err(format!("{OVERSIZED}: past {reply} bytes"));
+        }
+        *spent += len;
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
 }

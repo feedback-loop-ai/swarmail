@@ -13,7 +13,7 @@
 
 use super::{
     Capability, Cite, Conn, Fetched, Method, OpError, Operation, Page, Paging, Scope, Spend,
-    Summary, addresses, escape, id_text, mime, scan, supported,
+    Summary, addresses, escape, id_text, mime, scan, segment, supported,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -172,7 +172,7 @@ pub async fn get(
     spend: &mut Spend,
 ) -> Result<Fetched, OpError> {
     let v = c
-        .get_json(&format!("/mail/{}", escape(id)), deadline, spend)
+        .get_json(&format!("/mail/{}", segment(id)?), deadline, spend)
         .await?;
     decode_message(&v).ok_or(OpError::Malformed)
 }

@@ -6,7 +6,7 @@
 
 use super::{
     Capability, Cite, ClearScope, Conn, Fetched, Method, OpError, Operation, Page, Paging, Scope,
-    Spend, Summary, addresses, escape, id_text, mime, scan, supported,
+    Spend, Summary, addresses, escape, id_text, mime, scan, segment, supported,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -100,7 +100,7 @@ pub async fn get(
     let path = format!(
         "/api/v1/mailbox/{}/{}/source",
         escape(scope.local()),
-        escape(id)
+        segment(id)?
     );
     let raw = c.get_bytes(&path, deadline, spend).await?;
     let p = mime::parse(&raw).ok_or(OpError::Malformed)?;
@@ -127,7 +127,7 @@ pub async fn delete(
     let mut path = format!("/api/v1/mailbox/{}", escape(scope.local()));
     if let Some(id) = id {
         path.push('/');
-        path.push_str(&escape(id));
+        path.push_str(&segment(id)?);
     }
     c.mutate(
         reqwest::Method::DELETE,
