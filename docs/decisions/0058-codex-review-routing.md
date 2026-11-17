@@ -115,3 +115,14 @@ The `fable` alias in `.brokkr/adapters/claude.json` now resolves to
 `claude-fable-5-2`. Operator, 2026-11-10: "swap fable 5.1 with 5.2 in all
 recipes". Every seat this record routes to Fable 5.1 (`claude-fable-5-1`) runs
 Fable 5.2. Nothing else in this record changes.
+
+
+## Addendum — 2026-11-16 (operator: medium effort; Qwen 4.0 Max)
+
+The operator directed on 2026-11-16 that every Codex Sol 6.1 and Astra seat,
+and every Claude Opus and Fable seat, runs at **medium** effort. Haiku,
+Sonnet, Terra, Luna, DeepSeek Flash and GLM keep their efforts. The same
+direction moved the dsh `qwen-max` alias from `dashscope/qwen3.8-max` to
+`dashscope/qwen4-max` (Qwen 4.0 Max). Efforts and the alias live in
+`.brokkr/agents/` and `.brokkr/adapters/dsh.json`; the text above is
+unchanged and is read with this pointer.

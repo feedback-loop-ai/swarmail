@@ -20,7 +20,7 @@
   ],
   "models": {
     "glm-flash": "spark-glm/GLM-5.3-Flash-EXL3",
-    "qwen-max": "dashscope/qwen3.8-max",
+    "qwen-max": "dashscope/qwen4-max",
     "flash": "deepseek-flash",
     "glm53": "dashscope/glm-5.3"
   },
@@ -40,7 +40,7 @@
   ],
   "effortless_routes": {
     "spark-glm": "dsh 0.1.5-rc.1 refuses reasoningEffort at every level tried on this route; seats on spark-glm pin no effort and record not applicable (mirrors xbox-inference decision 0035 addendum, 2026-09-11)",
-    "dashscope": "Measured on this host 2026-10-23 (dsh 0.1.5-rc.1, decision 0057): the custom qwen3.8-max and glm-5.3 provider rows have no reasoningEfforts and the installed pi-ai catalog has no dashscope models. The adapter exposes no reasoning controls; an explicit effort fails UNSUPPORTED_REASONING_EFFORT before provider I/O. Use provider defaults without an effort flag."
+    "dashscope": "Measured on this host 2026-10-23 (dsh 0.1.5-rc.1, decision 0057): the custom qwen3.8-max (qwen4-max since 2026-11-16, operator) and glm-5.3 provider rows have no reasoningEfforts and the installed pi-ai catalog has no dashscope models. The adapter exposes no reasoning controls; an explicit effort fails UNSUPPORTED_REASONING_EFFORT before provider I/O. Use provider defaults without an effort flag."
   },
   "tool_permissions": "unsupported",
   "mcp": "unsupported"

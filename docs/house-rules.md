@@ -286,6 +286,11 @@ full-panel correctness and guarantees members from Codex Astra to official
 DeepSeek Flash through dsh at high effort (security's route; offices and
 results stay separate) and gives the `codex`, `codex-careful` and `codex-fast`
 review seat a 14400 s deadline instead of 3600 s.
+On 2026-11-16 the operator set every Codex Sol 6.1 and Astra seat, and every
+Opus and Fable seat, to medium effort (Haiku, Sonnet, Terra, Luna, Flash and
+GLM keep theirs), and moved `qwen-max` from `dashscope/qwen3.8-max` to
+`dashscope/qwen4-max` (Qwen 4.0 Max); the accepted records below carry dated
+addenda.
 Accepted [0099](decisions/0099-claude-careful-recipe.md) records the
 2026-10-28/29 direction for `claude-careful`, a zero-Codex careful lane:
 Haiku 5.5 intake, an Opus 5.5 / official Flash / Fable 5.2 design council,
