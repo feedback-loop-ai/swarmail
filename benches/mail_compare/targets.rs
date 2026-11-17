@@ -397,6 +397,9 @@ pub struct Owned {
     pub http: Http,
     /// GreenMail's read path (proposed decision 0130 §4).
     pub pop3: Option<Pop3>,
+    /// The POP3 listener the target holds, whichever reads it: a declared
+    /// `pop3` role, or the address the candidate reports on startup.
+    pub pop3_listen: Option<SocketAddr>,
     pub facts: LaunchFacts,
     /// Protocol 4's cgroup leaf, for the sampler and the windows.
     pub leaf: Option<crate::resources::Leaf>,
@@ -799,6 +802,7 @@ impl Owned {
                 limits.max_response_bytes,
             ),
             pop3: None,
+            pop3_listen: None,
             facts: LaunchFacts {
                 target: spec.kind,
                 executable_sha256: digest,
@@ -874,6 +878,7 @@ impl Owned {
             (TargetKind::Swarmail, Some(out)) => {
                 let (addrs, pop3, drain) = read_startup(out, deadline).await;
                 owned.shared.lock().expect("shared lock").drain = drain;
+                owned.pop3_listen = pop3;
                 addrs.map(|(s, h)| {
                     let mut v = vec![(ListenerRole::Smtp, s), (ListenerRole::Http, h)];
                     // The candidate also reports its POP3 address; it is a
@@ -901,6 +906,7 @@ impl Owned {
             return Err(owned.not_ready(NO_LISTENER_ADDRESSES, facts));
         };
         owned.smtp = smtp;
+        owned.pop3_listen = addr_of(ListenerRole::Pop3).or(owned.pop3_listen);
         if let Some(http) = http {
             owned.http_addr = http;
             owned.http = Http::new(http, limits.request, limits.max_response_bytes);
@@ -963,6 +969,7 @@ impl Owned {
             http_addr: http,
             http: Http::new(http, limits.request, limits.max_response_bytes),
             pop3: pop3.map(|a| Pop3::new(a, limits.request, limits.max_response_bytes)),
+            pop3_listen: pop3,
             facts: LaunchFacts {
                 target: kind,
                 executable_sha256: String::new(),

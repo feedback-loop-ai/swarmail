@@ -2115,10 +2115,17 @@ async fn undeclared_listener_refused_and_cleaned() {
     )
     .await
     .expect("an exactly declared set launches");
+    let listen = owned
+        .pop3_listen
+        .expect("the declared pop3 listener is recorded");
     let facts = owned.shutdown().await;
     assert!(facts.proved() && facts.listeners_closed, "{facts:?}");
     let roles: Vec<Role> = facts.listeners.iter().map(|l| l.role).collect();
     assert_eq!(roles, [Role::Smtp, Role::Http, Role::Pop3]);
+    assert!(
+        listen.ip().is_loopback() && listen.port() != 0,
+        "the recorded pop3 listener is a bound loopback address: {listen}"
+    );
     assert!(facts.listeners.iter().all(|l| l.closed));
 }
 

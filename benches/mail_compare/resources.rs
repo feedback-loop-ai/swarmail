@@ -1420,9 +1420,17 @@ pub fn footprint(
             )
         } else if let Some(dir) = &runtime {
             walk("runtime", dir)?;
+            // An executable inside its own runtime tree is one of the
+            // tree's files already: it is counted once, as the archive
+            // row's is (V18).
+            let canonical = |p: &Path| {
+                std::fs::canonicalize(p).map_err(|e| format!("{t}: {}: {e}", p.display()))
+            };
+            let inside = canonical(measured)?.starts_with(canonical(dir)?);
+            let (bytes, count) = if inside { (0, 0) } else { (size(measured)?, 1) };
             (
-                size(measured)?,
-                1,
+                bytes,
+                count,
                 "the executable, its checked members and the whole pinned runtime tree",
             )
         } else {

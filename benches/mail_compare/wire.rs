@@ -486,11 +486,6 @@ impl Pop3 {
         }
     }
 
-    /// The address this reads from.
-    pub fn addr(&self) -> SocketAddr {
-        self.addr
-    }
-
     /// Commands sent so far, logins included: polling overhead is part of
     /// the record.
     pub fn requests(&self) -> u64 {

@@ -502,6 +502,15 @@ fn a_v4_swarmail_spec_is_never_built_uncapped() {
     }
     let w = build(&p4(v), &lock).unwrap_err();
     assert!(w.contains("needs the retention cap"), "{w}");
+    // A cap of 0 is uncapped, so it is the same refusal.
+    let mut v = draft();
+    for r in v["storage"]["retention"].as_array_mut().unwrap() {
+        if r["target"] == "swarmail" {
+            r["max_messages"] = json!(0);
+        }
+    }
+    let w = build(&p4(v), &lock).unwrap_err();
+    assert!(w.contains("needs the retention cap"), "{w}");
     // With its cap it carries 150000.
     let specs = build(&p4(draft()), &lock).unwrap();
     let t = &specs[&TargetKind::Swarmail].template;
@@ -3710,6 +3719,30 @@ fn footprint_installed_bytes_include_the_runtime_tree() {
     );
 }
 
+#[test]
+fn footprint_counts_an_executable_inside_its_runtime_tree_once() {
+    let mut f = footprints();
+    let before = run_footprint(&f).unwrap();
+    let t = TargetKind::Greenmail;
+    let was = entry(&before, t.name()).clone();
+    // The same bytes, moved into the runtime tree the row walks.
+    let inside = f.runtimes[&t].join("lib/greenmail.jar");
+    std::fs::rename(&f.bins[&t], &inside).unwrap();
+    f.bins.insert(t, inside);
+    let after = run_footprint(&f).expect("an executable inside its runtime admits");
+    let now = entry(&after, t.name());
+    let exe = std::fs::metadata(&f.bins[&t]).unwrap().len();
+    assert_eq!(was["installed_bytes"], f.tree[&t] + exe);
+    assert_eq!(
+        (&now["installed_bytes"], &now["installed_files"]),
+        (&was["installed_bytes"], &was["installed_files"]),
+        "the executable is counted once, as a file of the tree: {now}"
+    );
+    let trees = now["installed_trees"].as_array().unwrap();
+    assert_eq!(trees.len(), 1);
+    assert_eq!(trees[0]["bytes"], f.tree[&t] + exe, "the tree holds it now");
+}
+
 /// The targets whose lock artifact is an archive: Mailpit, smtp4dev and
 /// Inbucket among the launched ones.
 fn archive_targets() -> Vec<&'static str> {
@@ -4464,6 +4497,13 @@ async fn hold_prints_each_endpoint_as_the_address_it_listens_on() {
     assert_eq!(e.http.as_deref(), Some("127.0.0.1:8025"));
     let line = serde_json::to_value(&e).unwrap();
     assert_eq!(line["pop3"], "127.0.0.1:2110");
+    // A target read over HTTP that also listens for POP3 (Inbucket's
+    // declared pop3 role) prints it too.
+    let owned = targets::Owned::fixture(TargetKind::Inbucket, http, Some(pop3), &limits());
+    assert_eq!(
+        runner::hold_endpoints(&owned).pop3.as_deref(),
+        Some("127.0.0.1:2110")
+    );
     // And a target with no POP3 listener prints none.
     let owned = targets::Owned::fixture(TargetKind::Mailpit, http, None, &limits());
     assert!(runner::hold_endpoints(&owned).pop3.is_none());
@@ -4501,6 +4541,14 @@ async fn a_hold_ended_by_its_interrupt_tears_down_and_prints_a_proved_receipt() 
         1,
         "the receipt is not printed before the interrupt"
     );
+    // The candidate reports its POP3 listener, and hold prints it.
+    let ends: Value = serde_json::from_str(&lines[0]).unwrap();
+    let pop3: std::net::SocketAddr = ends["pop3"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no pop3 endpoint: {ends}"))
+        .parse()
+        .unwrap();
+    assert!(pop3.ip().is_loopback() && pop3.port() != 0, "{pop3}");
     assert!(!held.is_finished(), "it holds until it is interrupted");
     fire.send(()).unwrap();
     let receipt = held.await.unwrap().expect("the interrupt ends the hold");
@@ -4572,6 +4620,10 @@ struct Build {
     reps: u32,
     /// One chunk, by coordinate, whose launch ran a different executable.
     other_digest: Option<&'static str>,
+    /// One chunk, by coordinate, and the digest its launch receipt names.
+    digest: Option<(&'static str, &'static str)>,
+    /// One chunk, by coordinate, whose manifest names another protocol id.
+    other_protocol_id: Option<&'static str>,
     no_footprint: bool,
     /// An edit of the footprint document the run carries.
     footprint: Option<Edit>,
@@ -4668,6 +4720,8 @@ fn build_run(b: Build) -> Fixture {
             target: c.target(),
             executable_sha256: if is(b.other_digest) {
                 "cd".repeat(32)
+            } else if let Some((_, d)) = b.digest.filter(|(who, _)| is(Some(who))) {
+                d.to_owned()
             } else {
                 spec.expected_sha256
                     .clone()
@@ -4719,6 +4773,9 @@ fn build_run(b: Build) -> Fixture {
         let mut m = manifest(&p, run_id);
         m.mode = "collect".into();
         m.protocol_sha256 = targets::sha256_hex(&pbytes);
+        if is(b.other_protocol_id) {
+            m.protocol_id = "fair-mail-comparison-v3".into();
+        }
         m.sources_sha256 = targets::sha256_hex(&sbytes);
         m.candidate_commit = Some("a".repeat(40));
         m.candidate_dirty = Some(b.dirty || is(b.dirty_chunk));
@@ -4963,6 +5020,75 @@ fn admit_v4_refuses_a_target_whose_digest_differs_between_chunks() {
     })
     .admit(true)
     .expect("one executable per target admits");
+}
+
+#[test]
+fn admit_v4_refuses_a_launch_that_names_no_executable_digest() {
+    // The candidate has no lock pin and no --bin is passed here, so only the
+    // receipt's own digest stands between admission and an unnamed binary.
+    for d in ["", "AB", "zz", "not-a-digest"] {
+        refuses(
+            Build {
+                digest: Some(("cost.swarmail.r0", d)),
+                ..Default::default()
+            },
+            "chunk cost.swarmail.r0",
+        );
+        refuses(
+            Build {
+                digest: Some(("cost.swarmail.r0", d)),
+                ..Default::default()
+            },
+            "its executable digest is not a sha256",
+        );
+    }
+    let upper: &'static str = Box::leak("AB".repeat(32).into_boxed_str());
+    refuses(
+        Build {
+            digest: Some(("cost.swarmail.r0", upper)),
+            ..Default::default()
+        },
+        "its executable digest is not a sha256",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_a_chunk_whose_manifest_names_another_protocol_id() {
+    // The bytes are the protocol's; the id is not, and the run would seal
+    // under the first chunk's id.
+    for who in ["cost.swarmail.r0", "cost.mailpit.r0"] {
+        refuses(
+            Build {
+                other_protocol_id: Some(who),
+                ..Default::default()
+            },
+            &format!("chunk {who}: its manifest names a different protocol"),
+        );
+    }
+}
+
+#[test]
+fn admit_v4_refuses_a_malformed_protocol_before_planning_it() {
+    // Throughput present, target orders gone: planning would index an empty
+    // list, so validation refuses first.
+    let mut v = draft();
+    v["statistics"]["orders"] = json!([]);
+    let p = p4(v);
+    let (root, sbytes) = (fixture(), serde_json::to_vec(&lock5()).unwrap());
+    let lock = SourceLock::parse(&sbytes).unwrap();
+    let pbytes = serde_json::to_vec(&p).unwrap();
+    let bins = Default::default();
+    let a = report::Admission {
+        protocol: &p,
+        protocol_bytes: &pbytes,
+        lock: &lock,
+        lock_bytes: &sbytes,
+        bins: &bins,
+    };
+    for seal in [true, false] {
+        let w = report::admit_v4(root.path(), &a, seal).unwrap_err();
+        assert!(w.contains("target orders"), "{w}");
+    }
 }
 
 #[test]
@@ -7236,6 +7362,48 @@ fn collect_v4_refuses_when_no_main_ref_exists() {
 }
 
 #[test]
+fn collect_v4_refuses_a_main_ref_that_is_not_a_readable_commit() {
+    let rig = v4_rig();
+    // The remote's main names a blob: it exists, and is no commit. The local
+    // main alone would accept HEAD, so skipping it would let the run go on.
+    std::fs::write(rig.repo().join("blob.txt"), "not a commit").unwrap();
+    let blob = rig.git(&["hash-object", "-w", "blob.txt"]);
+    std::fs::remove_file(rig.repo().join("blob.txt")).unwrap();
+    rig.git(&["update-ref", "refs/remotes/origin/main", blob.trim()]);
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("blocked at phase \"candidate\"")
+            && text.contains("refs/remotes/origin/main exists but is not a readable commit"),
+        "{text}"
+    );
+    assert!(rig.log().is_empty(), "before anything was built or run");
+}
+
+#[test]
+fn collect_v4_refuses_a_tree_whose_status_git_cannot_read() {
+    let rig = v4_rig();
+    // A corrupt index: HEAD still resolves, and `git status` fails.
+    std::fs::write(rig.repo().join(".git/index"), "garbage").unwrap();
+    let mut status = std::process::Command::new("git");
+    status
+        .args(["status", "--porcelain"])
+        .current_dir(rig.repo());
+    own_git_environment(&mut status);
+    assert!(
+        !status.output().unwrap().status.success(),
+        "the fixture makes git status fail"
+    );
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("git status failed on the candidate tree"),
+        "{text}"
+    );
+    assert!(rig.log().is_empty(), "before anything was built or run");
+}
+
+#[test]
 fn collect_v4_dry_run_does_not_check_main() {
     let rig = v4_rig();
     rig.git(&["checkout", "-q", "-b", "feature"]);
@@ -8118,7 +8286,7 @@ mod chunk {
             &p.throughput[0],
             1,
             &mut life,
-            Some(Instant::now()),
+            (Some(Instant::now()), None),
         )
         .await
         .unwrap();
@@ -8186,7 +8354,7 @@ mod chunk {
             &p.throughput[0],
             1,
             &mut life,
-            Some(Instant::now()),
+            (Some(Instant::now()), None),
         )
         .await
         .unwrap();
@@ -8564,6 +8732,39 @@ mod chunk {
         for cell in report["cost"]["cells"].as_array().unwrap() {
             assert_eq!(cell["ranked"], false);
             assert_eq!(cell["shortfalls"], json!(["target_exited"]));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_warmup_leaf_is_sampled_like_the_measured_leaf() {
+        // V13: one sampler per launch, the warmup's included. The warmup
+        // sends its messages and ends; the measured instance follows.
+        let rig = Rig::new(0, true);
+        let p = protocol(vec![profile("cost-a", 3, 6, 2)], 480_000);
+        let (cfg, chunk) = rig.config(&p, Path::new(env!("CARGO_BIN_EXE_swarmail")), "run-e5");
+        let manifest = cfg.manifest.clone();
+        let (verdict, life, sealed) =
+            runner::run_chunk(cfg, chunk, wire::Clock(Instant::now())).await;
+        assert_eq!(verdict.exit_code(), 0, "{verdict:?}");
+        let names: Vec<&str> = life
+            .launches
+            .iter()
+            .map(|l| l.leaf.as_deref().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            ["target-0001", "target-0002"],
+            "warmup, then measured"
+        );
+        let (_, res) = records::read_run(&sealed.expect("sealed"), &manifest).unwrap();
+        for leaf in names {
+            assert!(
+                res.iter().any(|r| matches!(
+                    r,
+                    ResourceRow::Sample(s) if s.launch == leaf && s.run_id == "run-e5"
+                )),
+                "no sample row for {leaf}"
+            );
         }
     }
 

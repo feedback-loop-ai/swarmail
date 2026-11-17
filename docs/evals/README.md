@@ -968,7 +968,8 @@ ancestor of, or equal to, `refs/heads/main`, and of `refs/remotes/origin/main`
 where that ref exists (`git merge-base --is-ancestor`), so a pull-request
 branch is refused whether or not it has `main` merged in, an earlier commit of
 `main` is accepted (a published run must stay repeatable after `main` moves
-on), neither ref is a refusal, and nothing is fetched. Every process it starts
+on), neither ref is a refusal, a ref that exists and is not a readable commit
+is a refusal, a `git status` that fails is a refusal, and nothing is fetched. Every process it starts
 after that (the two `cargo` builds, `targets`, `check`, `footprint`, each chunk
 and both admissions) runs under `timeout --kill-after=30 560 taskset -c
 0-<n-1>`: 560 s is the driver's `CHUNK_KILL_MS`, SIGTERM at 560 s and SIGKILL
@@ -988,8 +989,8 @@ once and does not wait. A scope that is not gone is killed and stopped and the
 chunk counts as 2. A SIGINT, SIGTERM or SIGHUP goes at once to the step that
 is running, a build, `check`, `footprint` or an admission included, and ends
 the mode with exit 2; a chunk is judged as a failed one and written to the
-ledger with exit 2, even when the signal came during its scope's judgement, and
-no later chunk starts. `reproduce.txt` is written only after the last chunk. Exit 1 is a measured
+ledger with exit 2, even when the signal came during its scope's judgement or
+the write of its entry, and no later chunk starts. `reproduce.txt` is written only after the last chunk. Exit 1 is a measured
 outcome of a target; exit 2 stops the run as incomplete, and nothing is resumed
 or overwritten. `mail_compare hold` launches one target
 under the budget for the story that follows; `mail_compare admit-v4 [--seal]`
@@ -1004,7 +1005,9 @@ The five real proofs (`v4_real_oom_at_two_gib`, `v4_real_cpu_held_within_two`,
 `v4_real_cost_chunk_seals_and_admits`) therefore run on a host with a delegated
 cgroup v2 scope, one at a time, and their passing output with the load before
 and after is attached to the pull request. Each fails, never skips, without
-that scope, with the exact refusal above. Until that output exists the story is
+that scope, with the exact refusal above. The host needs `python3` on its
+`PATH` as well: `v4_real_oom_at_two_gib` allocates its memory with it, and
+without it that proof fails at the spawn, not with the refusal above. Until that output exists the story is
 not complete and the change is not merged. Stories B (API level), C
 (`wait-best`), D (test execution) and E (freeze and collection) are separate
 runs.

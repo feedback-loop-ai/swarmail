@@ -153,9 +153,9 @@ pub fn launch_specs_of(
                 // Protocol 4 always launches Swarmail capped: no cap is an
                 // error, never `--max-per-inbox 0` (which is uncapped).
                 let cap = match (p.protocol_version, cap) {
-                    (crate::protocol::PROTOCOL_VERSION_4, None) => {
+                    (crate::protocol::PROTOCOL_VERSION_4, None | Some(0)) => {
                         return Err(
-                            "swarmail: a protocol 4 launch needs the retention cap its entry states, and it states none"
+                            "swarmail: a protocol 4 launch needs the retention cap its entry states, and it states none (0 is uncapped)"
                                 .into(),
                         );
                     }
@@ -424,8 +424,17 @@ pub async fn run(cfg: Config, clock: Clock) -> (Verdict, Lifecycle, Option<PathB
                     && t.warmup_messages > 0
                 {
                     leaf += 1;
-                    if let Err(e) =
-                        warmup(spec, &cfg, &limits, &clock, t, leaf, &mut life, None).await
+                    if let Err(e) = warmup(
+                        spec,
+                        &cfg,
+                        &limits,
+                        &clock,
+                        t,
+                        leaf,
+                        &mut life,
+                        (None, None),
+                    )
+                    .await
                     {
                         return (Verdict::Infrastructure(e), life, None);
                     }
@@ -567,7 +576,8 @@ pub enum Warm {
 /// Warmup traffic on its own instance, discarded with it: it warms the
 /// controller and host, never the measured server's state. In a chunk,
 /// the chunk's instant cancels what is in flight and no later message is
-/// sent.
+/// sent. With a sink (a chunk), its leaf is sampled from creation to
+/// teardown like every other launch's (V13).
 #[allow(clippy::too_many_arguments)]
 pub async fn warmup(
     spec: &LaunchSpec,
@@ -577,10 +587,28 @@ pub async fn warmup(
     t: &ThroughputProfile,
     leaf: u32,
     life: &mut Lifecycle,
-    chunk_end: Option<Instant>,
+    (chunk_end, sink): (Option<Instant>, Option<&Sink>),
 ) -> Result<Warm, String> {
     let scratch = cfg.scratch.join(format!("leaf-{leaf:04}"));
-    let mut owned = match Owned::launch(spec, &scratch, limits, clock, &cfg.keepers).await {
+    let sampler: Arc<Mutex<Option<Sampler>>> = Arc::default();
+    let mut spec = spec.clone();
+    if let Some(sink) = sink {
+        let interval =
+            Duration::from_millis(cfg.protocol.resources.sample_interval_ms.unwrap_or(100));
+        spec.extra.on_leaf = Some(sampler_hook(
+            (sampler.clone(), Arc::default()),
+            sink_emit(sink),
+            (cfg.manifest.run_id.clone(), spec.kind, *clock, interval),
+        ));
+    }
+    let spec = &spec;
+    let launched = Owned::launch(spec, &scratch, limits, clock, &cfg.keepers).await;
+    if launched.is_err() {
+        // The launch failed after its leaf was made: the sampler stops with
+        // it, and the launch's own error is the one reported.
+        let _ = stop_sampling(&sampler).await;
+    }
+    let mut owned = match launched {
         Ok(o) => o,
         Err(LaunchError::NotReady(why, facts, launch)) => {
             let name = launch.as_ref().and_then(|l| l.leaf.clone());
@@ -613,6 +641,7 @@ pub async fn warmup(
     )
     .await;
     let name = owned.leaf.as_ref().map(|l| l.name().to_owned());
+    let sampled = stop_sampling(&sampler).await;
     let facts = owned.shutdown().await;
     let proved = facts.proved();
     // A cut warmup keeps V13's order from its cleanup receipt: an OOM in the
@@ -622,6 +651,7 @@ pub async fn warmup(
     if !proved {
         return Err(format!("{}: warmup cleanup not proved", spec.kind));
     }
+    sampled.map_err(|e| format!("{}: warmup {e}", spec.kind))?;
     Ok(if cut {
         Warm::NotMeasured(cause, name.unwrap_or_else(|| "none".into()))
     } else {
@@ -1810,7 +1840,7 @@ pub async fn run_chunk(
                 t,
                 leaf_no,
                 &mut life,
-                Some(chunk_end),
+                (Some(chunk_end), Some(&sink)),
             )
             .await
             {
@@ -1909,18 +1939,9 @@ pub async fn measured_instance(
     // The sampler starts when the leaf is created, from inside the launch.
     let sampler: Arc<Mutex<Option<Sampler>>> = Arc::default();
     let created: Arc<Mutex<Option<u64>>> = Arc::default();
-    let emit: crate::resources::Emit = {
-        let sink = sink.clone();
-        Arc::new(move |row| {
-            sink.lock()
-                .expect("sink lock")
-                .append_resource(&ResourceRow::Sample(row))
-                .map_err(|e| format!("sample write failed: {e}"))
-        })
-    };
     let hook = sampler_hook(
         (sampler.clone(), created.clone()),
-        emit,
+        sink_emit(sink),
         (run.clone(), target, *clock, interval),
     );
     let mut spec = spec.clone();
@@ -2122,6 +2143,27 @@ pub type SamplerSlot = (Arc<Mutex<Option<Sampler>>>, Arc<Mutex<Option<u64>>>);
 
 /// A leaf hook that starts a sampler on each new leaf, parks it in `slot` and
 /// notes when the leaf was made. Used by the measured instance and by `hold`.
+/// Where a chunk's sampler writes: its sample rows, in the chunk's resource
+/// file.
+fn sink_emit(sink: &Sink) -> crate::resources::Emit {
+    let sink = sink.clone();
+    Arc::new(move |row| {
+        sink.lock()
+            .expect("sink lock")
+            .append_resource(&ResourceRow::Sample(row))
+            .map_err(|e| format!("sample write failed: {e}"))
+    })
+}
+
+/// Take a launch's sampler, if its leaf started one, and stop it.
+async fn stop_sampling(slot: &Mutex<Option<Sampler>>) -> Result<(), String> {
+    let s = slot.lock().expect("sampler lock").take();
+    match s {
+        Some(s) => s.stop().await.map(|_| ()),
+        None => Ok(()),
+    }
+}
+
 pub fn sampler_hook(
     (slot, created): SamplerSlot,
     emit: crate::resources::Emit,
@@ -2232,7 +2274,7 @@ pub fn hold_endpoints(owned: &Owned) -> HoldEndpoints {
         leaf: owned.leaf.as_ref().map(|l| l.name().to_owned()),
         smtp: owned.smtp.to_string(),
         http: (owned.http_addr.port() != 0).then(|| owned.http_addr.to_string()),
-        pop3: owned.pop3.as_ref().map(|p| p.addr().to_string()),
+        pop3: owned.pop3_listen.map(|p| p.to_string()),
     }
 }
 

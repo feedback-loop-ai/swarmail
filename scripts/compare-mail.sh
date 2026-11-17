@@ -635,7 +635,10 @@ case "$mode" in
     commit=$(git rev-parse HEAD 2>/dev/null || true)
     if [ "$dry_run" != 1 ]; then
       [ -n "$commit" ] || blocked candidate "the candidate is not a committed git checkout; collect-v4 never measures an uncommitted tree"
-      [ -z "$(git status --porcelain 2>/dev/null)" ] \
+      # A status git cannot read is not a clean tree.
+      porcelain=$(git status --porcelain 2>/dev/null) \
+        || blocked candidate "git status failed on the candidate tree; collect-v4 measures a committed, clean main only and cannot tell this one is clean"
+      [ -z "$porcelain" ] \
         || blocked candidate "the candidate tree is dirty; collect-v4 measures a committed, clean main only"
       # On main (0132 §2.3): HEAD is in the history of main, the tip or an
       # earlier commit (a published run must stay repeatable after main has
@@ -643,7 +646,11 @@ case "$mode" in
       # Nothing is fetched. A pull-request branch is never in that history.
       main_seen=0
       for main_ref in refs/heads/main refs/remotes/origin/main; do
-        git rev-parse --verify --quiet "$main_ref^{commit}" >/dev/null 2>&1 || continue
+        # An absent ref is skipped; one that exists and is not a readable
+        # commit refuses, so it can never leave the other ref to decide.
+        git rev-parse --verify --quiet "$main_ref" >/dev/null 2>&1 || continue
+        git rev-parse --verify --quiet "$main_ref^{commit}" >/dev/null 2>&1 \
+          || blocked candidate "$main_ref exists but is not a readable commit; collect-v4 cannot tell that the candidate is on main"
         main_seen=1
         git merge-base --is-ancestor HEAD "$main_ref" 2>/dev/null \
           || blocked candidate "the candidate $commit is not in the history of $main_ref; collect-v4 measures a commit of main only"
@@ -775,11 +782,20 @@ case "$mode" in
       fi
       # A signal during the judgement: the entry is still written, with 2.
       [ "$interrupted" = 0 ] || status=2
-      printf '{"coordinate":"%s","command":"%s","exit":%s,"wall_ms":%s,"load_before":"%s","load_after":"%s","scope_clean":%s,"driver":"%s"}\n' \
-        "$(json_text "$coord")" "$(json_text "$(printf '%q ' "${bound[@]}" "${chunk_cmd[@]}")")" "$status" "$wall_ms" \
-        "$(json_text "$load_before")" "$(json_text "$load_after")" "$scope_clean" "$(json_text "$driver")" \
-        >"$output/ledger/$coord.json" \
-        || blocked ledger "cannot write the ledger entry of $coord"
+      write_entry() {
+        printf '{"coordinate":"%s","command":"%s","exit":%s,"wall_ms":%s,"load_before":"%s","load_after":"%s","scope_clean":%s,"driver":"%s"}\n' \
+          "$(json_text "$coord")" "$(json_text "$(printf '%q ' "${bound[@]}" "${chunk_cmd[@]}")")" "$status" "$wall_ms" \
+          "$(json_text "$load_before")" "$(json_text "$load_after")" "$scope_clean" "$(json_text "$driver")" \
+          >"$output/ledger/$coord.json" \
+          || blocked ledger "cannot write the ledger entry of $coord"
+      }
+      write_entry
+      # A signal during the write: the handler only records it, so the entry
+      # is written again, with 2, before the chunk is let go.
+      if [ "$interrupted" != 0 ] && [ "$status" -ne 2 ]; then
+        status=2
+        write_entry
+      fi
       owned=''
       if [ "$status" -eq 2 ]; then
         # Nothing is resumed, overwritten or removed: the run is incomplete.

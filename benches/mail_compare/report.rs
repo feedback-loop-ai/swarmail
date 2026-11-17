@@ -1227,6 +1227,11 @@ fn check_launch(
         ));
     }
     let digest = l["executable_sha256"].as_str().unwrap_or_default();
+    // Every launch names the bytes that ran, the candidate's included,
+    // whether or not the operator passes --bin to compare them.
+    if !crate::protocol::is_hex(digest, 64) {
+        return Err(at("its executable digest is not a sha256"));
+    }
     if pinned.as_deref().is_some_and(|want| digest != want) {
         return Err(at("its executable digest is not the lock's"));
     }
@@ -1305,7 +1310,9 @@ pub fn admit_chunk(
     if m.chunk.as_deref() != Some(name.as_str()) {
         return refuse("its manifest names another chunk");
     }
-    if m.protocol_sha256 != crate::targets::sha256_hex(a.protocol_bytes) {
+    if m.protocol_sha256 != crate::targets::sha256_hex(a.protocol_bytes)
+        || m.protocol_id != a.protocol.id
+    {
         return refuse("its manifest names a different protocol");
     }
     if m.sources_sha256 != crate::targets::sha256_hex(a.lock_bytes) {
@@ -1517,11 +1524,18 @@ pub fn admit_v4(dir: &std::path::Path, a: &Admission, seal: bool) -> Result<RunA
         ));
     }
     // Before anything is indexed: a protocol with no chunk has nothing to
-    // admit, and a run of nothing is not a run.
-    if crate::runner::plan_v4(a.protocol).is_empty() {
-        return Err("the protocol's chunk plan is empty: there is no chunk to admit".into());
+    // admit, and a run of nothing is not a run. No repetition is no chunk,
+    // whatever else the protocol says.
+    let empty = || Err("the protocol's chunk plan is empty: there is no chunk to admit".into());
+    if a.protocol.throughput.iter().all(|t| t.repetitions == 0) {
+        return empty();
     }
+    // A malformed protocol is refused before its plan is computed: the
+    // launch order indexes the protocol's target orders.
     a.protocol.validate().map_err(|r| r.to_string())?;
+    if crate::runner::plan_v4(a.protocol).is_empty() {
+        return empty();
+    }
     if seal {
         for f in SEALED_FILES.iter().chain(&["index.json"]) {
             if dir.join(f).exists() {
