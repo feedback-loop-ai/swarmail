@@ -148,10 +148,12 @@ pub(crate) fn normalize_cid(raw: &str) -> Option<String> {
 /// [`MAX_IMAGE_BYTES`], and an entry whose type, size and SHA-256 agree
 /// with both the part and the retained content.
 fn eligible<'e>(part: &MessagePart<'_>, entry: &'e Attachment) -> Option<Image<'e>> {
-    let attachment = part
+    // 0135 §3: only an inline part, or one with no Content-Disposition,
+    // qualifies; `attachment` and any other token (e.g. `form-data`) do not.
+    let inline_or_absent = part
         .content_disposition()
-        .is_some_and(|disposition| disposition.ctype().eq_ignore_ascii_case("attachment"));
-    if attachment {
+        .is_none_or(|disposition| disposition.ctype().eq_ignore_ascii_case("inline"));
+    if !inline_or_absent {
         return None;
     }
     let header = part.content_type()?;
@@ -763,6 +765,34 @@ mod tests {
             .as_deref()
             .unwrap();
         assert!(std::ptr::eq(images["png"].bytes, retained));
+    }
+
+    /// 0135 §3: a disposition other than `inline` (or none) never resolves,
+    /// whatever its token; `inline` in any case does.
+    #[test]
+    fn only_inline_or_absent_disposition_resolves() {
+        let email = mail(&related(
+            "<p>",
+            &[
+                part(
+                    "Content-Type: image/png\r\nContent-ID: <form>\r\nContent-Disposition: form-data; name=a",
+                    PNG,
+                ),
+                part(
+                    "Content-Type: image/png\r\nContent-ID: <att>\r\nContent-Disposition: attachment",
+                    PNG,
+                ),
+                part(
+                    "Content-Type: image/png\r\nContent-ID: <upper>\r\nContent-Disposition: INLINE",
+                    PNG,
+                ),
+                part("Content-Type: image/png\r\nContent-ID: <none>", PNG),
+            ],
+        ));
+        let images = inline_images(&email);
+        let mut cids: Vec<&str> = images.keys().map(|k| k.as_ref()).collect();
+        cids.sort_unstable();
+        assert_eq!(cids, ["none", "upper"]);
     }
 
     #[test]

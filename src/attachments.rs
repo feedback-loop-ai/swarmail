@@ -129,7 +129,7 @@ pub fn extract(message: &Message<'_>) -> AttachmentList {
 /// The outer message's candidate parts in part order, each with its part id
 /// and whether it is calendar-shaped (decision 0110 §1): a leaf in the parser's attachment
 /// list or any calendar-shaped leaf. The one walk ingest's [`extract`] and
-/// the UI preview's identity lookup (proposed 0135 §2) share, so the
+/// the UI preview's identity lookup (0135 §2) share, so the
 /// preview's candidate ordinals are ingest's by construction.
 pub(crate) fn candidates<'m, 'x>(
     message: &'m Message<'x>,

@@ -687,7 +687,7 @@ async fn message_view_renders_text_html_and_missing() {
     assert_eq!(st, 200);
     assert!(page.contains("html mail"), "{page}");
     // The HTML is never in the page: a bare-sandbox frame loads the preview
-    // document by its own route (proposed decision 0135), default mode only.
+    // document by its own route (decision 0135), default mode only.
     assert!(!page.contains("<b>rich"), "the html stays out of the page");
     assert!(
         !page.contains("&lt;b&gt;rich"),
@@ -1743,7 +1743,7 @@ async fn every_page_links_a_served_favicon() {
     }
 }
 
-// ---------- the preview document (issue #374, proposed decision 0135) ----------
+// ---------- the preview document (issue #374, decision 0135) ----------
 
 const PREVIEW_CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox";
 const PREVIEW_REMOTE_CSP: &str = "default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline' https: http:; font-src https: http:; script-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox";

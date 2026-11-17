@@ -8,7 +8,7 @@
 //! text is rendered with `textContent` in `static/ui.js` — never `innerHTML` —
 //! so nothing the SMTP peer sent can become markup here. The one place mail
 //! HTML is displayed is a separate document, `/ui/message/{id}/preview`
-//! (proposed decision 0135), framed by a bare-`sandbox` iframe and governed
+//! (decision 0135), framed by a bare-`sandbox` iframe and governed
 //! by its own response headers.
 
 mod preview;
@@ -63,12 +63,12 @@ fn esc(s: &str) -> String {
 /// are allowed; `connect-src 'self'` permits same-origin SSE. Images may load
 /// from the same origin or data URLs, including same-origin image GETs.
 /// `frame-src 'self'` admits exactly one kind of frame, the same-origin
-/// preview document (proposed decision 0135 §6): `default-src 'none'` would
+/// preview document (decision 0135 §6): `default-src 'none'` would
 /// otherwise refuse it. Other resource loads are refused. Every UI route
 /// uses this one policy string.
 const CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-src 'self'";
 
-/// The preview document's policy (proposed decision 0135 §5), sent as a
+/// The preview document's policy (decision 0135 §5), sent as a
 /// response header: inline styles and `data:` images only, nothing remote,
 /// no scripts, plugins, frames, base URL or form target, framed only by its
 /// own origin, and a CSP `sandbox` without a single token — so the document
@@ -258,7 +258,7 @@ async fn preview_method_not_allowed() -> Response {
     res
 }
 
-/// `GET /ui/message/{id}/preview[?remote=1]` (proposed decision 0135): the
+/// `GET /ui/message/{id}/preview[?remote=1]` (decision 0135): the
 /// stored HTML as its own sandboxed document. The query is closed; a render
 /// slot is taken without waiting, before the snapshot, and moves into the
 /// blocking job; the mail is one `Arc` snapshot, so a prune after it cannot
@@ -478,7 +478,7 @@ fn render_message(
     report: Result<&crate::deliverability::Report, &crate::deliverability::AnalysisError>,
 ) -> Response {
     let report_section = report_section(report);
-    // The html preview is its own document (proposed decision 0135), framed
+    // The html preview is its own document (decision 0135), framed
     // by a bare sandbox. This page offers no remote toggle: the default
     // route only, with the same trusted note as the console.
     let html_body = email

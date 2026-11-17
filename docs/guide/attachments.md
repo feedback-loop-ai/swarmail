@@ -69,7 +69,7 @@ were recorded before these tools, answers "unknown" and is never backfilled.
 
 **One display exception: the console's preview.** Attachment bytes are
 otherwise served only by the MCP attachment tools. The run console's HTML
-preview (`GET /ui/message/{id}/preview`, proposed decision 0135) is the one
+preview (`GET /ui/message/{id}/preview`, decision 0135) is the one
 exception: it inlines stored bytes as `data:` URIs, and only for inline PNG,
 JPEG, GIF and WebP parts that the mail's HTML references with
 `<img src="cid:…">`. Each image must be at most 256 KiB, a preview inserts at

@@ -1,6 +1,7 @@
 # 0135 — Bounded inline images and opt-in remote preview content
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-11-17: "Accept 0135"; see the dated
+  acceptance note at the end)
 - **Date:** 2026-11-17
 - **Scope:** Issue #374.
 - **Specification:** [preview images](../../specs/preview-images/spec.md),
@@ -143,3 +144,25 @@ ruling above; each is narrower or equal.
   substitute for it. [The procedure](../../specs/preview-images/browser-proof.md)
   lists what to run on a machine with a browser before verification.
 
+## Acceptance — 2026-11-17 (operator)
+
+The operator accepted this record as proposed ("Accept 0135"), with every
+part the question named:
+
+1. The separate sandboxed preview document `GET /ui/message/{id}/preview`
+   with its own response CSP.
+2. The bounded read-time MIME parse, solely to associate `cid:` references
+   with retained inline parts, verified by type, size and SHA-256: the
+   exception to 0110 §2 stated in §2 and the dated addenda above.
+3. Only referenced PNG/JPEG/GIF/WebP from `<img src>`, inline or without a
+   disposition, under the per-image and per-document caps; SVG and CSS/srcset
+   substitution refused.
+4. Remote images, stylesheets and fonts opt-in per selected message; scripts,
+   forms, navigation and popups always refused.
+5. `frame-src 'self'` added to the console's own CSP so it can frame the
+   preview route (§6), the one change to the console policy the operator's
+   earlier "console CSP unchanged" did not foresee.
+
+The dated addenda to 0110 §§2/7 and 0134 §3 above take effect with this
+acceptance. Merge still waits for the browser proof (T8) on the dispatcher
+host, attached to the PR.

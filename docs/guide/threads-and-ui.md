@@ -37,7 +37,7 @@ updates live — no manual refresh, zero frontend dependencies.
 
 The reader's **Preview** tab, and the HTML section of the standalone page
 `/ui/message/{id}`, frame a separate document,
-`GET /ui/message/{id}/preview` (proposed decision 0135). The mail's HTML is
+`GET /ui/message/{id}/preview` (decision 0135). The mail's HTML is
 never written into the console page itself. The frame keeps a bare `sandbox`
 attribute, and the document carries its own `Content-Security-Policy`
 response header with a token-free `sandbox` directive. Scripts, forms,

@@ -382,7 +382,7 @@ naming the target and the cause), and a shutdown's undelivered backlog in
   `GET /api/v1/inboxes` item carries `last_received_ms`, the server's stamp of
   the inbox's most recently stored mail.
 - `GET /ui/message/{id}/preview[?remote=1]` — the run console's HTML preview
-  document (proposed decision 0135), for humans, not agents: the stored HTML
+  document (decision 0135), for humans, not agents: the stored HTML
   as its own `text/html` page under its own CSP response header with a
   token-free `sandbox` (no scripts, forms, popups, navigation or plugins),
   `nosniff`, `no-referrer`, `no-store` and `SAMEORIGIN` framing. `cid:` images
