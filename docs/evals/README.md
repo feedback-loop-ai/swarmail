@@ -1148,7 +1148,11 @@ client window, and target CPU-µs per *started* operation from the cell's
 (the client's and the owner's resource window) and the window's counters stay
 in the chunk, and `admit-v4` recomputes the `api` figures from `api.json` and
 the window rows, after checking that `api.json` is the plan's cells in order
-and that every count adds up.
+and that every count adds up. At run level, `admit-v4 --seal` also writes
+`report-api.json`: every API chunk's admitted figures in plan order, and a
+row for every (surface, target, repetition, fill) that launches nothing (the
+official MailSlurper's `does_not_start` and the MCP surface's
+`no_mcp_surface`), with its status and no invented receipt.
 
 **The MCP surface's owner.** `swarmail-evals api-mcp --driver PATH` takes
 `run`'s chunk flags and drives `mail_compare hold --control api-v1`, which

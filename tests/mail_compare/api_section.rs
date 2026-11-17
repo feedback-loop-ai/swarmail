@@ -1479,3 +1479,27 @@ fn the_readme_lists_every_client_modules_digest() {
         );
     }
 }
+
+#[test]
+fn the_run_report_publishes_every_coordinate_that_launches_nothing() {
+    let p = Protocol::parse(DRAFT_V4).unwrap();
+    let plan = runner::plan_v4(&p);
+    let v = report::api_run_report(&p, &plan, &[], &json!({"report_version": 3}));
+    let rows = v["not_launched"].as_array().unwrap();
+    // Native: the official MailSlurper row; MCP: it and the four targets
+    // with no MCP surface. Three repetitions, four fills, no receipts.
+    assert_eq!(rows.len(), (1 + 5) * 3 * 4);
+    let status = |surface: &str, target: &str| {
+        rows.iter()
+            .filter(|r| r["surface"] == surface && r["target"] == target)
+            .map(|r| r["status"].as_str().unwrap())
+            .collect::<BTreeSet<_>>()
+    };
+    assert_eq!(status("native", "mailslurper"), ["does_not_start"].into());
+    assert_eq!(status("mcp", "inbucket"), ["no_mcp_surface"].into());
+    assert!(status("native", "inbucket").is_empty());
+    assert!(
+        rows.iter()
+            .all(|r| r.get("launch").is_none() && r.get("cleanup").is_none())
+    );
+}

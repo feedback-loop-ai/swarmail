@@ -1419,6 +1419,62 @@ pub fn admit_chunk(
     })
 }
 
+/// `report-api.json`: the API chunks' figures, in plan order, and the rows
+/// of every (surface, target, repetition, fill) the plan launches nothing
+/// for, each with its capability status and no receipt.
+pub fn api_run_report(
+    p: &Protocol,
+    plan: &[crate::runner::Chunk],
+    admitted: &[ChunkAdmitted],
+    run_report: &serde_json::Value,
+) -> serde_json::Value {
+    use crate::clients::Surface;
+    let chunks: Vec<serde_json::Value> = admitted
+        .iter()
+        .filter(|c| c.name.starts_with("api."))
+        .map(|c| serde_json::json!({"chunk": c.name, "api": c.report["api"]}))
+        .collect();
+    let mut not_launched = Vec::new();
+    if let Some(api) = &p.api {
+        for surface in [Surface::Native, Surface::Mcp] {
+            for repetition in 0..api.repetitions {
+                for t in &p.targets {
+                    let launched = plan.iter().any(|c| {
+                        matches!(c, crate::runner::Chunk::Api { surface: s, target, repetition: r, .. }
+                            if *s == surface && target == t && *r == repetition)
+                    });
+                    if launched {
+                        continue;
+                    }
+                    let status = crate::clients::capability(
+                        t.name(),
+                        surface,
+                        crate::clients::Operation::List,
+                    )
+                    .status();
+                    for fill in &api.fills {
+                        not_launched.push(serde_json::json!({
+                            "surface": surface,
+                            "target": t,
+                            "repetition": repetition,
+                            "fill": fill,
+                            "status": status,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    serde_json::json!({
+        "report_version": run_report["report_version"],
+        "run_id": run_report["run_id"],
+        "protocol_id": run_report["protocol_id"],
+        "protocol_sha256": run_report["protocol_sha256"],
+        "chunks": chunks,
+        "not_launched": not_launched,
+    })
+}
+
 type Artifacts = std::collections::BTreeMap<String, (String, u64)>;
 
 fn top_files(dir: &std::path::Path) -> Result<Artifacts, String> {
@@ -1552,7 +1608,10 @@ pub fn admit_v4(dir: &std::path::Path, a: &Admission, seal: bool) -> Result<RunA
         return empty();
     }
     if seal {
-        for f in SEALED_FILES.iter().chain(&["index.json"]) {
+        for f in SEALED_FILES
+            .iter()
+            .chain(&["report-api.json", "index.json"])
+        {
             if dir.join(f).exists() {
                 return Err(format!(
                     "{f} already exists: the run is sealed, and admit-v4 --seal never overwrites"
@@ -1732,6 +1791,19 @@ pub fn admit_v4(dir: &std::path::Path, a: &Admission, seal: bool) -> Result<RunA
             "blocked",
         ]),
     );
+    // The API section (story B): every API chunk's admitted figures, and a
+    // row without a receipt for every coordinate that launches nothing (the
+    // official MailSlurper's `does_not_start`, the MCP surface's `no MCP
+    // surface`).
+    if plan
+        .iter()
+        .any(|c| matches!(c, crate::runner::Chunk::Api { .. }))
+    {
+        files.insert(
+            "report-api.json".to_owned(),
+            api_run_report(a.protocol, &plan, &admitted, &run_report),
+        );
+    }
     let out = RunAdmitted {
         run_id: first.run_id.clone(),
         chunks: admitted.len(),
