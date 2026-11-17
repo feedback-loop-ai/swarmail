@@ -9309,7 +9309,10 @@ mod chunk {
         let dir = fixture();
         let out = dir.path().join("out");
         let sink = sink_for(&m, &out);
-        let end = Instant::now() + Duration::from_millis(300);
+        // The wait never completes (the stub has no mail), so the instant
+        // always cuts it in the observe step; 5 s only has to let the send
+        // finish first (at 300 ms an instrumented coverage build cut the send).
+        let end = Instant::now() + Duration::from_secs(5);
         let failures = runner::waits(
             &o,
             &p,
@@ -9342,7 +9345,9 @@ mod chunk {
         );
         // A send whose QUIT hangs is cut too, never awaited.
         let o = detached(smtp_stub("QUIT").await, http, &p);
-        let end = Instant::now() + Duration::from_millis(300);
+        // QUIT never answers, so the instant always cuts the send; 3 s only
+        // has to let the send begin on a loaded or instrumented build.
+        let end = Instant::now() + Duration::from_secs(3);
         let out2 = dir.path().join("out2");
         let sink = sink_for(&m, &out2);
         runner::waits(
