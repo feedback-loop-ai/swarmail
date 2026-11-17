@@ -52,7 +52,9 @@ Run the complete docs/house-rules.md gate inventory on the implementation candid
 ## Review-return repair map — 2026-11-17
 
 Finding references below use C=correctness, G=guarantees, I=independent,
-T=tests from the returned review of 3da520c. Security reported no finding.
+T=tests from the returned review of 3da520c. That earlier review reported no
+security finding; the latest dispatch reports a subsequent security hold
+from run issue-360-comparison-protocol-v4-d06b4818, addressed by R11.
 No criterion is loosened to excuse a code defect. Only AC5’s blanket abandonment
 is removed because G/I demonstrate it contradicts 0132’s ordinary cutoff and
 shared-store comparison; remaining changes strengthen execution of sound ACs.
@@ -69,7 +71,7 @@ shared-store comparison; remaining changes strengthen execution of sound ACs.
 | C7; G5; I3 | clients error type and apibench Worker preserve refusal source to final rows. R8 proves row reasons through real bridge. |
 | C8; G3; I2,7 | strengthen tests/mail_compare/api_section.rs and evals/tests/apibench.rs; all pinned native routes and all three real adapter routes, candidate rate-limit evidence and 100k proof. R9 requires successful delegated-host logs. |
 | C9 | api.rs check_record validates warmups and cell identity against plan/capabilities. R10 proves tamper refusal. |
-| C10 | evals/src/mcp.rs streamed 16 MiB bound, redirect refusal, aggregate budget in apibench; existing dependencies. R11 proves finite refusal and legitimate replies. |
+| C10; latest dispatch R11 security hold | evals/src/mcp.rs streamed 16 MiB bound on every reply path, redirect refusal, shared 1 GiB operation budget in apibench; clients/mod.rs safe dot/path handling with URL construction checked. R11 proves finite refusal, actual request targets and legitimate replies using existing dependencies. |
 | C11; I4 receipt | apibench.rs one cleanup tail for every acquired holder, checked receipt and bounded waits. R12 proves startup/error/interruption paths and no leaked owned resources. |
 | C12; G4 | api_chunk/report statistics and admission preserve single clear sample, null quantiles. R13 proves emitted report and tamper refusal. |
 | G6; I4 brackets | apibench ControlMeter serializes local command brackets, api evidence/admission binds windows. R14 proves roundtrip and tampering without cross-clock subtraction. |
@@ -118,3 +120,32 @@ research/checklist files, dependencies, source-server changes or ADR are needed.
   validated receipt; preserve incomplete evidence rather than seal success.
 - Previous green verification is stale: run the full house inventory on the
   repaired candidate; missing delegated host proofs remain unmet work.
+
+## Continuation handoff — 2026-11-17, ac9a4a59
+
+This design-phase commit continues 02d3a33 and touches only its three design
+artifacts. It does not implement the dispatch's repair request or clear the
+security hold. The implementation seat must execute R11, R1, R2, R3 first,
+then R4–R10 and R12–R18; R9 proof code may be strengthened in that order,
+but host execution follows dependent repairs and precedes final verification.
+
+R11 answers both the newly reported security hold and prior C10. In
+evals/src/mcp.rs, keep redirect refusal and checked streaming budgets on
+initialization, successful and error responses; propagate a shared logical
+operation budget across apibench's nested calls rather than reset per RPC.
+In benches/mail_compare/clients/mod.rs, encode dots and test the final URL
+and wire request: reject unrepresentable dot segments before dispatch.
+Keep router-sensitive '-' handling and test encoded-looking identifiers and
+separators. This uses existing transport owners and reqwest facilities.
+The added refusal/test paths cost maintenance, but encoder-string assertions
+cannot prove that a URL parser preserved the intended endpoint.
+
+R9 separates implementation of strong ignored tests from execution on the
+dispatcher's delegated host. Preserve
+#[cfg_attr(not(target_os = "linux"), ignore = ...)] on tests reading /proc
+or cgroups as well as the required explicit ignored real-proof discipline.
+Missing pinned bytes fail a deliberately invoked proof. Host logs remain
+open here and must not be inferred from sandbox tests or a design check.
+R17 must document that distinction; R18 still requires current-candidate
+house gates and separately verified host evidence. No task checkbox is
+earned by this handoff, and no prior successful log proves a repaired tree.
