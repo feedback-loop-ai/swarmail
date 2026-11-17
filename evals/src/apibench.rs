@@ -872,6 +872,61 @@ pub async fn api_mcp(args: &[String]) -> i32 {
     }
 }
 
+/// How long the holder has to print its receipt once its control input
+/// closes, and then to exit: its own teardown is bounded inside these.
+const RECEIPT_BOUND: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Check the holder's cleanup receipt (spec AC8, R12): one JSON object whose
+/// launch and cleanup both name `target` and the same leaf (the endpoints'
+/// leaf, when they named one), and whose cleanup proves the leaf removed,
+/// the process reaped, its group gone, its listeners closed and its scratch
+/// removed. A missing, foreign or unproved receipt never seals.
+pub fn validate_receipt(v: &Value, target: &str, leaf: Option<&str>) -> Result<(), String> {
+    let launch = v.get("launch").filter(|l| l.is_object());
+    let cleanup = v.get("cleanup").filter(|c| c.is_object());
+    let (Some(launch), Some(cleanup)) = (launch, cleanup) else {
+        return Err("the receipt has no launch and cleanup".into());
+    };
+    if launch["target"] != json!(target) || cleanup["target"] != json!(target) {
+        return Err(format!("the receipt is not of {target}"));
+    }
+    let named = launch["leaf"]
+        .as_str()
+        .filter(|l| !l.is_empty())
+        .ok_or("the receipt's launch names no leaf")?;
+    if cleanup["leaf"] != json!(named) || leaf.is_some_and(|l| l != named) {
+        return Err("the receipt's cleanup is of another leaf".into());
+    }
+    for proof in [
+        "cgroup_removed",
+        "reaped",
+        "group_gone",
+        "listeners_closed",
+        "scratch_removed",
+    ] {
+        if cleanup[proof] != json!(true) {
+            return Err(format!("the receipt does not prove {proof}"));
+        }
+    }
+    Ok(())
+}
+
+/// The chunk's exit from the holder's status and receipt, and whether this
+/// side completed its part: 0 or 1 only when the holder said so and its
+/// receipt proves the cleanup; 2 otherwise (spec AC8, R12).
+pub fn chunk_exit(
+    holder: Option<i32>,
+    receipt: Result<(), String>,
+    ours: Result<(), String>,
+) -> (i32, Option<String>) {
+    match (ours, receipt, holder) {
+        (Err(e), _, _) => (2, Some(e)),
+        (_, Err(e), _) => (2, Some(format!("cleanup receipt: {e}"))),
+        (_, _, Some(c @ (0 | 1))) => (c, None),
+        (_, _, other) => (2, Some(format!("the holder exited {other:?}"))),
+    }
+}
+
 async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
     use tokio::io::AsyncBufReadExt;
     let f = flags(args)?;
@@ -884,6 +939,9 @@ async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
         .as_u64()
         .ok_or("--protocol has no corpus seed")?;
     // The holder: the one owner of the backend, its leaf and its sampler.
+    // From here on every path — a refusal, a malformed line, a rejected
+    // record, an interruption — closes its control input and awaits its
+    // receipt within a bound (R12). Nothing relies on kill-on-drop.
     let mut hold = tokio::process::Command::new(&f["driver"]);
     hold.arg("hold").args(["--control", "api-v1"]);
     for (k, v) in &f {
@@ -892,113 +950,141 @@ async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
         }
     }
     hold.stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .kill_on_drop(true);
+        .stdout(std::process::Stdio::piped());
     let mut holder = hold.spawn().map_err(|e| format!("hold: {e}"))?;
     let stdin = holder.stdin.take().ok_or("hold: no stdin")?;
-    let mut stdout = tokio::io::BufReader::new(holder.stdout.take().ok_or("hold: no stdout")?);
-    let mut line = String::new();
-    let read = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        stdout.read_line(&mut line),
-    )
-    .await;
-    let endpoints: Value = match read {
-        Ok(Ok(n)) if n > 0 => {
-            serde_json::from_str(&line).map_err(|e| format!("hold endpoints: {e}"))?
-        }
-        _ => {
-            // The holder refused before it announced: its stderr says why,
-            // and that is never a measurement.
-            let _ = holder.wait().await;
-            return Ok(2);
-        }
-    };
-    let http: std::net::SocketAddr = endpoints["http"]
-        .as_str()
-        .and_then(|s| s.parse().ok())
-        .ok_or("hold: no http endpoint")?;
-    let smtp: std::net::SocketAddr = endpoints["smtp"]
-        .as_str()
-        .and_then(|s| s.parse().ok())
-        .ok_or("hold: no smtp endpoint")?;
+    let stdout = tokio::io::BufReader::new(holder.stdout.take().ok_or("hold: no stdout")?);
     let clock = api::Clock(std::time::Instant::now());
     let meter = ControlMeter {
         pipe: Mutex::new((stdin, stdout)),
         brackets: std::sync::Mutex::new(Vec::new()),
         clock,
     };
-    // The MCP endpoint: Swarmail's own, or the adapter behind one bridge.
     let mut adapter = None;
     let mut bridge = None;
-    let url = match adapter_mode(&target) {
-        None => format!("http://{http}/mcp"),
-        Some(mode) => {
-            let mut a = adapter_command(
-                std::path::Path::new(&f["driver"]),
-                mode,
-                std::path::Path::new(&f["sources"]),
-                f.get("documents").map(std::path::Path::new),
-                http,
-            );
-            a.stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .kill_on_drop(true);
-            let mut child = a.spawn().map_err(|e| format!("adapter: {e}"))?;
-            let (to, from) = (
-                child.stdin.take().ok_or("adapter stdin")?,
-                child.stdout.take().ok_or("adapter stdout")?,
-            );
-            let b = crate::bridge::Bridge::start(to, tokio::io::BufReader::new(from))
-                .await
-                .map_err(|e| format!("bridge: {e}"))?;
-            let url = b.url();
-            adapter = Some(child);
-            bridge = Some(b);
-            url
+    let mut first_line = None;
+    let mut leaf = None;
+    let ours: Result<(), String> = async {
+        let mut line = String::new();
+        let read = {
+            let mut p = meter.pipe.lock().await;
+            tokio::time::timeout(RECEIPT_BOUND, p.1.read_line(&mut line)).await
+        };
+        let endpoints: Value = match read {
+            Ok(Ok(n)) if n > 0 => {
+                serde_json::from_str(&line).map_err(|e| format!("hold endpoints: {e}"))?
+            }
+            _ => return Err("the holder ended before it announced".into()),
+        };
+        if endpoints.get("cleanup").is_some() {
+            // It refused or its target did not come up: its first line is
+            // already its receipt.
+            first_line = Some(endpoints);
+            return Ok(());
         }
-    };
-    let result = measure(
-        &target,
-        (repetition, fill, seed),
-        (smtp, http, &url),
-        &meter,
-        clock,
-    )
-    .await;
-    // Teardown, in order: the record (or nothing, on failure), the control
-    // pipe, the bridge and adapter, then the holder's receipt and exit.
-    let sent = match &result {
-        Ok(rec) => meter
+        leaf = endpoints["leaf"].as_str().map(str::to_owned);
+        let http: std::net::SocketAddr = endpoints["http"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .ok_or("hold: no http endpoint")?;
+        let smtp: std::net::SocketAddr = endpoints["smtp"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .ok_or("hold: no smtp endpoint")?;
+        // The MCP endpoint: Swarmail's own, or the adapter behind one bridge.
+        let url = match adapter_mode(&target) {
+            None => format!("http://{http}/mcp"),
+            Some(mode) => {
+                let mut a = adapter_command(
+                    std::path::Path::new(&f["driver"]),
+                    mode,
+                    std::path::Path::new(&f["sources"]),
+                    f.get("documents").map(std::path::Path::new),
+                    http,
+                );
+                a.stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped());
+                let mut child = a.spawn().map_err(|e| format!("adapter: {e}"))?;
+                let io = (child.stdin.take(), child.stdout.take());
+                adapter = Some(child);
+                let (Some(to), Some(from)) = io else {
+                    return Err("adapter: no stdio".into());
+                };
+                let b = crate::bridge::Bridge::start(to, tokio::io::BufReader::new(from))
+                    .await
+                    .map_err(|e| format!("bridge: {e}"))?;
+                let url = b.url();
+                bridge = Some(b);
+                url
+            }
+        };
+        let rec = measure(
+            &target,
+            (repetition, fill, seed),
+            (smtp, http, &url),
+            &meter,
+            clock,
+        )
+        .await?;
+        meter
             .command(&json!({"cmd": "record", "api": rec}))
             .await
-            .map(|_| ()),
-        Err(e) => Err(e.clone()),
-    };
+            .map(|_| ())
+    }
+    .await;
+    // Teardown, in order and bounded: the bridge and adapter, the control
+    // input, then the holder's receipt and exit.
     if let Some(b) = bridge {
         b.stop().await;
     }
     if let Some(mut a) = adapter {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), a.wait()).await;
-        let _ = a.kill().await;
+        if tokio::time::timeout(std::time::Duration::from_secs(10), a.wait())
+            .await
+            .is_err()
+        {
+            let _ = a.kill().await;
+        }
     }
     let (stdin, mut stdout) = meter.pipe.into_inner();
     drop(stdin);
-    let mut receipt = String::new();
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        stdout.read_line(&mut receipt),
-    )
-    .await;
-    let status = tokio::time::timeout(std::time::Duration::from_secs(120), holder.wait())
-        .await
-        .map_err(|_| "hold did not exit".to_owned())?
-        .map_err(|e| format!("hold: {e}"))?;
-    if let Err(e) = sent {
+    let receipt = match first_line {
+        Some(v) => Some(v),
+        None => {
+            // A late control reply may precede the receipt: the receipt is
+            // the line that carries a cleanup.
+            let mut found = None;
+            for _ in 0..4 {
+                let mut line = String::new();
+                match tokio::time::timeout(RECEIPT_BOUND, stdout.read_line(&mut line)).await {
+                    Ok(Ok(n)) if n > 0 => {
+                        if let Ok(v) = serde_json::from_str::<Value>(&line)
+                            && v.get("cleanup").is_some()
+                        {
+                            found = Some(v);
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            found
+        }
+    };
+    let status = match tokio::time::timeout(RECEIPT_BOUND, holder.wait()).await {
+        Ok(Ok(s)) => s.code(),
+        _ => {
+            let _ = holder.kill().await;
+            None
+        }
+    };
+    let receipt = receipt
+        .ok_or_else(|| "missing".to_owned())
+        .and_then(|v| validate_receipt(&v, &target, leaf.as_deref()));
+    let (code, why) = chunk_exit(status, receipt, ours);
+    if let Some(e) = why {
         eprintln!("swarmail-evals api-mcp: {e}");
-        return Ok(2);
     }
-    Ok(status.code().filter(|c| matches!(c, 0 | 1)).unwrap_or(2))
+    Ok(code)
 }
 
 /// Fill, idle point, fixtures and every MCP cell; the record.

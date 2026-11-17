@@ -193,9 +193,7 @@ pub fn api_report(rec: &ApiRecord, resources: &[ResourceRow]) -> serde_json::Val
                     "outcome": w.outcome,
                     "cpu_usec": cpu(Some(w)),
                 })),
-                "at_equal_results": c.status == CellStatus::Measured
-                    && s.started == s.planned
-                    && s.exact == s.started,
+                "at_equal_results": at_equal_results(c, &s, w),
                 "postcheck": c.postcheck,
             })
         })
@@ -239,6 +237,78 @@ pub fn api_report(rec: &ApiRecord, resources: &[ResourceRow]) -> serde_json::Val
         "idle_fill": idle_fill,
         "cells": cells,
     })
+}
+
+/// Whether a cell stands at equal results (0132 §9.6, spec AC8, R4): it
+/// measured, every planned operation started and was exact, and its
+/// resource window closed clean with its counters — a failed or missing
+/// window never ranks, whatever the operations answered.
+pub fn at_equal_results(c: &CellRecord, s: &api::CellStats, w: Option<&WindowRow>) -> bool {
+    c.status == CellStatus::Measured
+        && s.started == s.planned
+        && s.exact == s.started
+        && w.is_some_and(|w| w.outcome == WindowOutcome::Measured && w.counters().is_some())
+}
+
+/// The target's own failures a record shows (spec AC8, R4), the same on
+/// both surfaces: a measured cell whose started operations include a
+/// `wrong_result`, `failed` or `timeout` row cannot exit clean. Inexact
+/// fidelity is documented, unranked evidence and capability rows are not
+/// executions: neither is a failure here.
+pub fn row_failures(rec: &ApiRecord) -> Vec<String> {
+    let mut out = Vec::new();
+    for c in rec
+        .cells
+        .iter()
+        .filter(|c| c.status == CellStatus::Measured)
+    {
+        let bad = |class: &str| {
+            c.measured
+                .rows
+                .iter()
+                .filter(|r| r.outcome.class() == class)
+                .count()
+        };
+        let (wrong, failed, timeout) = (bad("wrong_result"), bad("failed"), bad("timeout"));
+        if wrong + failed + timeout > 0 {
+            out.push(format!(
+                "{} {}: {wrong} wrong_result, {failed} failed, {timeout} timeout",
+                rec.target, c.cell
+            ));
+        }
+    }
+    out
+}
+
+/// The target's own failures its windows show (spec AC8, R4), the same on
+/// both surfaces: any readiness, idle, idle-fill or cell window that closed
+/// on an OOM kill or the target's exit. A blocked or deadline window is a
+/// cause recorded elsewhere, not a second failure.
+pub fn window_failures(resources: &[ResourceRow]) -> Vec<String> {
+    resources
+        .iter()
+        .filter_map(|r| match r {
+            ResourceRow::Window(w)
+                if matches!(
+                    w.outcome,
+                    WindowOutcome::OomKilled | WindowOutcome::TargetExited
+                ) =>
+            {
+                Some(format!(
+                    "{} {:?} {}: {:?}",
+                    w.target, w.window, w.profile, w.outcome
+                ))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The last look at a target before teardown (spec AC8, R4): it exited, or
+/// the kernel OOM-killed in its leaf, after its last reply.
+pub fn final_state_failure(exited: bool, oom_kills: Option<u64>) -> Option<String> {
+    (exited || oom_kills.is_some_and(|n| n >= 1))
+        .then(|| "the target exited or was OOM-killed".to_owned())
 }
 
 /// Structural admission of `api.json` against the chunk's plan: the cells
@@ -444,46 +514,19 @@ pub async fn run(
             .to_owned(),
     };
     let caps = |op: Operation| clients::capability(target.name(), surface, op);
-    // Every window and cell of a launch that never measured: one path.
     let not_measured = |why: &str,
                         outcome: WindowOutcome,
                         launch: &str,
                         from: WindowKind,
                         record: &mut ApiRecord|
      -> Result<(), String> {
-        let kinds = [
-            WindowKind::Ready,
-            WindowKind::IdleReady,
-            WindowKind::IdleFill,
-        ];
-        let skip = kinds.iter().position(|k| *k == from).unwrap_or(kinds.len());
-        for k in &kinds[skip..] {
-            unopened(
-                &sink,
-                (&run, launch),
-                (target, &profile, rep),
-                *k,
-                &clock,
-                outcome,
-            )?;
-        }
-        for c in &cells {
-            record.cells.push(CellRecord::blocked(
-                c,
-                &caps(c.operation),
-                why,
-                clock.now_ns(),
-            ));
-            unopened(
-                &sink,
-                (&run, launch),
-                (target, &cell_profile(c), rep),
-                WindowKind::ApiCell,
-                &clock,
-                outcome,
-            )?;
-        }
-        Ok(())
+        never_measured(
+            (&sink, &run, launch, &clock),
+            (target, &profile, rep),
+            (&cells, &caps),
+            (why, outcome, from),
+            record,
+        )
     };
     // Launch, as the cost chunk's measured instance does: the sampler starts
     // when the leaf is created, from inside the launch.
@@ -789,14 +832,84 @@ async fn measure(
     if let Some(why) = &abandoned {
         failures.push(format!("{target} f{fill}: launch abandoned: {why}"));
     }
-    if owned.has_exited() || leaf.mem_events().is_ok_and(|e| e.oom_kill >= 1) {
-        failures.push(format!(
-            "{target} f{fill}: the target exited or was OOM-killed"
-        ));
+    if let Some(why) = final_state_failure(
+        owned.has_exited(),
+        leaf.mem_events().ok().map(|e| e.oom_kill),
+    ) {
+        failures.push(format!("{target} f{fill}: {why}"));
     }
     record.cells = recs;
     record.abandoned = abandoned;
     Ok(())
+}
+
+/// Every window and cell of a launch that never measured, on either
+/// surface (R4): the windows from `from` on are written unopened with
+/// `outcome`, and every planned cell is blocked by `why`.
+fn never_measured(
+    (sink, run, launch, clock): (&Sink, &str, &str, &Clock),
+    (target, profile, rep): (TargetKind, &str, u32),
+    (cells, caps): (&[PlannedCell], Caps<'_>),
+    (why, outcome, from): (&str, WindowOutcome, WindowKind),
+    record: &mut ApiRecord,
+) -> Result<(), String> {
+    let kinds = [
+        WindowKind::Ready,
+        WindowKind::IdleReady,
+        WindowKind::IdleFill,
+    ];
+    let skip = kinds.iter().position(|k| *k == from).unwrap_or(kinds.len());
+    for k in &kinds[skip..] {
+        unopened(
+            sink,
+            (run, launch),
+            (target, profile, rep),
+            *k,
+            clock,
+            outcome,
+        )?;
+    }
+    for c in cells {
+        record.cells.push(CellRecord::blocked(
+            c,
+            &caps(c.operation),
+            why,
+            clock.now_ns(),
+        ));
+        unopened(
+            sink,
+            (run, launch),
+            (target, &cell_profile(c), rep),
+            WindowKind::ApiCell,
+            clock,
+            outcome,
+        )?;
+    }
+    Ok(())
+}
+
+/// A chunk's record before anything measured: every planned cell to come.
+fn blank_record(target: TargetKind, surface: Surface, rep: u32, fill: u32, seed: u64) -> ApiRecord {
+    let cells = cells(target, surface);
+    let (_, capabilities) = api::plan_cells(surface, |op| {
+        clients::capability(target.name(), surface, op)
+    });
+    ApiRecord {
+        surface,
+        target: target.name().to_owned(),
+        repetition: rep,
+        fill: api::FillRecord {
+            fill,
+            ..Default::default()
+        },
+        fixtures: 0,
+        growth: api::fixture_growth(seed, &cells),
+        capabilities,
+        cells: Vec::new(),
+        abandoned: None,
+        store: api::store_label(clients::Family::of(target.name()).expect("a launched family"))
+            .to_owned(),
+    }
 }
 
 /// Write `api.json` and the report, then seal: only a proved cleanup seals.
@@ -825,6 +938,12 @@ fn seal(
         Ok(r) => r,
         Err(e) => return infra(format!("accounting: {e}"), life),
     };
+    // One verdict for both surfaces (R4): the record's failed rows and the
+    // windows' OOM or exit outcomes are the target's own failures, whoever
+    // measured them.
+    let mut failures = failures;
+    failures.extend(row_failures(&record));
+    failures.extend(window_failures(&resources));
     for launched in &life.launches {
         let same = cfg
             .specs
@@ -1038,6 +1157,17 @@ pub fn windows_agree(st: &ControlState, rec: &ApiRecord) -> Result<(), String> {
     Ok(())
 }
 
+/// The next control line, unless the chunk's deadline passes first: then
+/// the hold ends as an infrastructure failure and tears down (R12).
+pub async fn next_control_line<R: tokio::io::AsyncBufRead + Unpin>(
+    r: &mut R,
+    chunk_end: std::time::Instant,
+) -> Result<Option<Vec<u8>>, String> {
+    tokio::time::timeout_at(Instant::from_std(chunk_end), read_line(r))
+        .await
+        .map_err(|_| "the chunk deadline passed with the control input still open".to_owned())?
+}
+
 /// Read one line of at most `MAX_RECORD_LINE` bytes; `None` at EOF.
 async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
@@ -1128,15 +1258,61 @@ where
             Ok(o) => o,
             Err(e) => {
                 let _ = stop_sampler().await;
-                return infra(format!("{target} did not launch: {e:?}"), life);
+                // As on the native surface (R4): a target that crashed or was
+                // OOM-killed before readiness is its own measured failure —
+                // every window and cell blocked, sealed, exit 1 — and anything
+                // else (no delegation, a refused leaf) is infrastructure.
+                let step = match e {
+                    crate::targets::LaunchError::NotReady(why, facts, launch) => {
+                        let name = launch.as_ref().and_then(|l| l.leaf.clone());
+                        let cause = crate::runner::classify_not_ready(&facts, launch.is_some());
+                        life.cleanups.push(facts);
+                        life.launches.extend(launch.map(|l| *l));
+                        match cause {
+                            Some(cause) => {
+                                let mut record =
+                                    blank_record(target, Surface::Mcp, rep, fill, p.corpus.seed);
+                                let caps = |op: Operation| {
+                                    clients::capability(target.name(), Surface::Mcp, op)
+                                };
+                                never_measured(
+                                    (&sink, &run, name.as_deref().unwrap_or("none"), &clock),
+                                    (target, &profile, rep),
+                                    (&cells, &caps),
+                                    (cause.reason(), cause.outcome(), WindowKind::Ready),
+                                    &mut record,
+                                )
+                                .map(|()| (record, vec![format!("{target}: {}", cause.reason())]))
+                            }
+                            None => Err(format!("{target}: not ready ({why})")),
+                        }
+                    }
+                    crate::targets::LaunchError::Leaf(why, facts) => {
+                        life.cleanups.extend(facts);
+                        Err(format!("{target}: {why}"))
+                    }
+                    other => Err(format!("{target} did not launch: {other:?}")),
+                };
+                let receipt = serde_json::json!({
+                    "launch": life.launches.last(),
+                    "cleanup": life.cleanups.last(),
+                });
+                let _ = writeln!(out, "{receipt}").and_then(|()| out.flush());
+                return match step {
+                    Ok((record, failures)) => seal(sink, &cfg, &chunk, record, life, failures),
+                    Err(e) => infra(e, life),
+                };
             }
         };
     life.launches.push(owned.facts.clone());
+    // The holder enforces the chunk's lifetime itself (R12): a caller that
+    // hangs or disappears cannot keep the target past it.
+    let chunk_end = clock.0 + Duration::from_millis(p.resources.chunk_deadline_ms.unwrap_or(0));
     let result = control_loop(
         &owned,
         (&run, &profile, &scratch, &sink, &clock),
         (&cells, &chunk, &scope.layout.target_cpus, rep),
-        &created,
+        (&created, chunk_end),
         &mut input,
         out,
     )
@@ -1168,7 +1344,7 @@ async fn control_loop<R, W>(
     owned: &crate::targets::Owned,
     (run, profile, scratch, sink, clock): Held<'_>,
     (cells, chunk, target_cpus, rep): (&[PlannedCell], &Chunk, &[u32], u32),
-    created: &Arc<Mutex<Option<u64>>>,
+    (created, chunk_end): (&Arc<Mutex<Option<u64>>>, std::time::Instant),
     input: &mut R,
     out: &mut W,
 ) -> Result<(ApiRecord, Vec<String>), String>
@@ -1202,7 +1378,7 @@ where
         sink,
         closing.window(WindowKind::Ready, (&zero, &ready), None, r),
     )?;
-    let idle = idle_ready(&closing, (owned, scratch), sink, clock, None).await?;
+    let idle = idle_ready(&closing, (owned, scratch), sink, clock, Some(chunk_end)).await?;
     emit_window(sink, idle)?;
     let endpoints =
         serde_json::to_string(&crate::runner::hold_endpoints(owned)).expect("endpoints serialize");
@@ -1210,7 +1386,7 @@ where
         .and_then(|()| out.flush())
         .map_err(|e| format!("endpoints: {e}"))?;
     let mut st = ControlState::default();
-    while let Some(line) = read_line(input).await? {
+    while let Some(line) = next_control_line(input, chunk_end).await? {
         let c = parse_control(&line)?;
         admit_control(&c, &st, cells)?;
         let reply = match c {
@@ -1238,7 +1414,8 @@ where
                 serde_json::json!({"ok": "window_end", "id": id, "t_ns": b.t_ns, "outcome": outcome})
             }
             Control::IdleFill {} => {
-                let mut w = idle_ready(&closing, (owned, scratch), sink, clock, None).await?;
+                let mut w =
+                    idle_ready(&closing, (owned, scratch), sink, clock, Some(chunk_end)).await?;
                 w.window = WindowKind::IdleFill;
                 let t = w.end_ns;
                 emit_window(sink, w)?;
@@ -1306,6 +1483,12 @@ where
     }
     if let Some(why) = &rec.abandoned {
         failures.push(format!("{target}: launch abandoned: {why}"));
+    }
+    if let Some(why) = final_state_failure(
+        owned.has_exited(),
+        leaf.mem_events().ok().map(|e| e.oom_kill),
+    ) {
+        failures.push(format!("{target}: {why}"));
     }
     Ok((rec, failures))
 }

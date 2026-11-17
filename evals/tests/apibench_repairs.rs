@@ -280,3 +280,157 @@ fn api_mcp_forwards_the_verified_documents_root_to_the_adapter() {
     }
     assert_eq!(apibench::adapter_mode("swarmail"), None);
 }
+
+// ---- the holder's receipt and every teardown path (R4, R12) -----------------
+
+fn receipt(target: &str, leaf: &str) -> Value {
+    json!({
+        "launch": {"target": target, "leaf": leaf},
+        "cleanup": {"target": target, "leaf": leaf, "cgroup_removed": true,
+            "reaped": true, "group_gone": true, "listeners_closed": true,
+            "scratch_removed": true, "forced_kill": false},
+    })
+}
+
+#[test]
+fn only_a_matching_proved_receipt_is_accepted() {
+    let good = receipt("mailpit", "leaf-1");
+    apibench::validate_receipt(&good, "mailpit", Some("leaf-1")).unwrap();
+    apibench::validate_receipt(&good, "mailpit", None).unwrap();
+    let refuse =
+        |v: &Value, leaf: Option<&str>| apibench::validate_receipt(v, "mailpit", leaf).unwrap_err();
+    // Foreign: another target, another leaf, a cleanup of another launch.
+    assert!(refuse(&receipt("mailhog", "leaf-1"), None).contains("not of"));
+    assert!(refuse(&good, Some("leaf-2")).contains("another leaf"));
+    let mut v = good.clone();
+    v["cleanup"]["leaf"] = json!("leaf-9");
+    assert!(refuse(&v, None).contains("another leaf"));
+    // Missing parts, and a launch without a leaf.
+    assert!(refuse(&json!({}), None).contains("no launch"));
+    let mut v = good.clone();
+    v["launch"]["leaf"] = Value::Null;
+    assert!(refuse(&v, None).contains("no leaf"));
+    // Each proof, false or absent.
+    for proof in [
+        "cgroup_removed",
+        "reaped",
+        "group_gone",
+        "listeners_closed",
+        "scratch_removed",
+    ] {
+        let mut v = good.clone();
+        v["cleanup"][proof] = json!(false);
+        assert!(refuse(&v, None).contains(proof));
+        v["cleanup"].as_object_mut().unwrap().remove(proof);
+        assert!(refuse(&v, None).contains(proof));
+    }
+}
+
+#[test]
+fn the_exit_is_the_holders_only_with_its_receipt_and_our_part_done() {
+    use apibench::chunk_exit;
+    assert_eq!(chunk_exit(Some(0), Ok(()), Ok(())).0, 0);
+    assert_eq!(chunk_exit(Some(1), Ok(()), Ok(())).0, 1);
+    // Infrastructure on either side, or no proof of cleanup: incomplete.
+    assert_eq!(chunk_exit(Some(2), Ok(()), Ok(())).0, 2);
+    assert_eq!(chunk_exit(None, Ok(()), Ok(())).0, 2);
+    assert_eq!(chunk_exit(Some(0), Err("x".into()), Ok(())).0, 2);
+    assert_eq!(chunk_exit(Some(0), Ok(()), Err("bridge".into())).0, 2);
+    assert_eq!(chunk_exit(Some(1), Err("x".into()), Ok(())).0, 2);
+}
+
+/// A fake driver: `hold` runs `hold_body`, an adapter mode runs
+/// `adapter_body`; both are bash. Every invocation appends its first
+/// argument to `calls`.
+fn fake_driver(dir: &std::path::Path, hold_body: &str, adapter_body: &str) -> std::path::PathBuf {
+    let p = dir.join("driver");
+    let calls = dir.join("calls");
+    std::fs::write(
+        &p,
+        format!(
+            "#!/bin/bash\necho \"$1\" >> '{}'\ncase \"$1\" in\nhold) {hold_body} ;;\n*) {adapter_body} ;;\nesac\n",
+            calls.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+async fn run_api_mcp(dir: &std::path::Path, driver: &std::path::Path, target: &str) -> i32 {
+    std::fs::write(dir.join("protocol.json"), r#"{"corpus":{"seed":1}}"#).unwrap();
+    let args: Vec<String> = [
+        "--driver",
+        &driver.display().to_string(),
+        "--mode",
+        "smoke",
+        "--protocol",
+        &dir.join("protocol.json").display().to_string(),
+        "--sources",
+        "lock.json",
+        "--documents",
+        "docs",
+        "--chunk",
+        &format!("api.mcp.{target}.r0.f0"),
+        "--bin",
+        "swarmail=/x",
+        "--output",
+        &dir.join("out").display().to_string(),
+        "--scratch",
+        &dir.join("scratch").display().to_string(),
+        "--run-id",
+        "r",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    apibench::api_mcp(&args).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_target_that_never_came_up_is_its_own_failure_with_a_proved_receipt() {
+    // The holder's first line is its receipt and it exits 1 (R4): the chunk
+    // exits 1, as a native NotReady crash does.
+    let d = tempfile::tempdir().unwrap();
+    let r = receipt("swarmail", "leaf-1").to_string();
+    let driver = fake_driver(d.path(), &format!("echo '{r}'; exit 1"), "exit 2");
+    assert_eq!(run_api_mcp(d.path(), &driver, "swarmail").await, 1);
+    // The same with a receipt that does not prove cgroup removal: exit 2.
+    let mut bad = receipt("swarmail", "leaf-1");
+    bad["cleanup"]["cgroup_removed"] = json!(false);
+    let driver = fake_driver(d.path(), &format!("echo '{bad}'; exit 1"), "exit 2");
+    assert_eq!(run_api_mcp(d.path(), &driver, "swarmail").await, 2);
+    // A holder that refused before it announced anything: exit 2.
+    let driver = fake_driver(d.path(), "exit 2", "exit 2");
+    assert_eq!(run_api_mcp(d.path(), &driver, "swarmail").await, 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_failure_after_the_holder_announced_closes_its_input_and_awaits_its_receipt() {
+    // The holder announces an endpoint nothing listens on, then waits for
+    // its input to close, records that it did, prints a proved receipt and
+    // exits 0. The MCP session cannot start (Swarmail direct), or the
+    // adapter dies at once (Mailpit through the bridge): either way the
+    // chunk is incomplete (2), and only after the holder saw EOF and proved
+    // its cleanup.
+    for target in ["swarmail", "mailpit"] {
+        let d = tempfile::tempdir().unwrap();
+        let eof = d.path().join("eof");
+        let r = receipt(target, "leaf-7").to_string();
+        let hold = format!(
+            "echo '{{\"target\":\"{target}\",\"leaf\":\"leaf-7\",\"smtp\":\"127.0.0.1:9\",\"http\":\"127.0.0.1:9\"}}'; cat >/dev/null; touch '{}'; echo '{r}'; exit 0",
+            eof.display()
+        );
+        let driver = fake_driver(d.path(), &hold, "exit 3");
+        assert_eq!(run_api_mcp(d.path(), &driver, target).await, 2, "{target}");
+        assert!(
+            eof.exists(),
+            "{target}: the holder never saw its input close"
+        );
+        let calls = std::fs::read_to_string(d.path().join("calls")).unwrap();
+        if target == "mailpit" {
+            assert_eq!(calls, "hold\nmailpit-mcp\n");
+        }
+    }
+}

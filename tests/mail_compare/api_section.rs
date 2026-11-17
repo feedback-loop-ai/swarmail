@@ -2166,6 +2166,184 @@ fn an_adapter_refuses_missing_resized_altered_or_escaping_documents() {
     assert!(mcp::adapter_sources(TargetKind::Mailpit, &lock, Some(copy.path())).is_err());
 }
 
+// ---- one lifecycle verdict for both surfaces (R4, R12) ------------------------
+
+fn cell_window(profile: &str, outcome: records::WindowOutcome) -> records::WindowRow {
+    let snap = |t_ns| resources::Snap {
+        t_ns,
+        cpu: Default::default(),
+        events: Default::default(),
+    };
+    runner::window_row(
+        "run",
+        "leaf",
+        (TargetKind::Mailpit, profile, 0),
+        records::WindowKind::ApiCell,
+        (&snap(1), &snap(2)),
+        Some(true),
+        None,
+        outcome,
+    )
+}
+
+fn exact_cell(name: &str) -> api::CellRecord {
+    let p = cell(Operation::List, 1);
+    let mut c = api::CellRecord::new(&p, &clients::native_capability("mailpit", Operation::List));
+    c.cell = name.into();
+    c.measured = api::Ran {
+        rows: rows(100, Phase::Measured, Outcome::Exact),
+        planned: 100,
+        started: 100,
+        ..Default::default()
+    };
+    c
+}
+
+#[test]
+fn equal_results_need_exact_rows_and_a_clean_resource_window() {
+    let c = exact_cell("list.c1");
+    let s = api::stats(&c.measured, Some(10));
+    let clean = cell_window("api.list.c1", records::WindowOutcome::Measured);
+    assert!(api_chunk::at_equal_results(&c, &s, Some(&clean)));
+    // A window that closed on an OOM kill or an exit, or none at all, never
+    // ranks, however exact the answers were.
+    for bad in [
+        records::WindowOutcome::OomKilled,
+        records::WindowOutcome::TargetExited,
+        records::WindowOutcome::ChunkDeadline,
+    ] {
+        let w = cell_window("api.list.c1", bad);
+        assert!(!api_chunk::at_equal_results(&c, &s, Some(&w)), "{bad:?}");
+    }
+    assert!(!api_chunk::at_equal_results(&c, &s, None));
+    let mut bare = clean.clone();
+    bare.cpu_end = None;
+    assert!(!api_chunk::at_equal_results(&c, &s, Some(&bare)));
+    // The report applies it: a failed window turns at_equal_results off.
+    let mut rec = record_for(&runner::Chunk::Api {
+        surface: Surface::Native,
+        target: TargetKind::Mailpit,
+        repetition: 0,
+        fill: 0,
+    });
+    rec.cells = vec![c];
+    let row = |o| vec![records::ResourceRow::Window(cell_window("api.list.c1", o))];
+    let good = api_chunk::api_report(&rec, &row(records::WindowOutcome::Measured));
+    let oom = api_chunk::api_report(&rec, &row(records::WindowOutcome::OomKilled));
+    assert_eq!(good["cells"][0]["at_equal_results"], json!(true));
+    assert_eq!(oom["cells"][0]["at_equal_results"], json!(false));
+}
+
+#[test]
+fn wrong_failed_or_timed_out_rows_and_dead_windows_cannot_exit_clean() {
+    let mut rec = record_for(&runner::Chunk::Api {
+        surface: Surface::Mcp,
+        target: TargetKind::Mailpit,
+        repetition: 0,
+        fill: 0,
+    });
+    let mut cells = vec![exact_cell("list.c1"), exact_cell("list.c8")];
+    assert!(api_chunk::row_failures(&ApiRecordView(&mut rec, cells.clone()).get()).is_empty());
+    // Inexact fidelity is unranked evidence, not a failure.
+    cells[0].measured.rows[3].outcome = Outcome::InexactFidelity {
+        detail: "text".into(),
+    };
+    assert!(api_chunk::row_failures(&ApiRecordView(&mut rec, cells.clone()).get()).is_empty());
+    for bad in [
+        Outcome::WrongResult { detail: "x".into() },
+        Outcome::Failed {
+            reason: "status_500".into(),
+        },
+        Outcome::Timeout,
+    ] {
+        let mut c = cells.clone();
+        c[1].measured.rows[7].outcome = bad.clone();
+        let f = api_chunk::row_failures(&ApiRecordView(&mut rec, c).get());
+        assert_eq!(f.len(), 1, "{bad:?}");
+        assert!(f[0].contains("list.c8"), "{f:?}");
+    }
+    // A blocked cell's cause is reported where it is blocked, not here.
+    let mut c = cells.clone();
+    c[0].status = api::CellStatus::Blocked;
+    c[0].measured.rows[0].outcome = Outcome::Timeout;
+    assert!(api_chunk::row_failures(&ApiRecordView(&mut rec, c).get()).is_empty());
+    // Every readiness, idle and cell window that closed on an OOM or an
+    // exit is the target's own failure, on either surface.
+    let mut ws: Vec<records::ResourceRow> = Vec::new();
+    for (kind, outcome) in [
+        (records::WindowKind::Ready, records::WindowOutcome::Measured),
+        (
+            records::WindowKind::IdleReady,
+            records::WindowOutcome::OomKilled,
+        ),
+        (
+            records::WindowKind::IdleFill,
+            records::WindowOutcome::TargetExited,
+        ),
+        (
+            records::WindowKind::ApiCell,
+            records::WindowOutcome::Blocked,
+        ),
+        (
+            records::WindowKind::ApiCell,
+            records::WindowOutcome::ChunkDeadline,
+        ),
+    ] {
+        let mut w = cell_window("api.f0", outcome);
+        w.window = kind;
+        ws.push(records::ResourceRow::Window(w));
+    }
+    let f = api_chunk::window_failures(&ws);
+    assert_eq!(f.len(), 2, "{f:?}");
+    assert!(
+        f[0].contains("IdleReady") && f[1].contains("IdleFill"),
+        "{f:?}"
+    );
+    // Death after the last reply: the final look.
+    assert!(api_chunk::final_state_failure(false, Some(0)).is_none());
+    assert!(api_chunk::final_state_failure(false, None).is_none());
+    assert!(api_chunk::final_state_failure(true, Some(0)).is_some());
+    assert!(api_chunk::final_state_failure(false, Some(1)).is_some());
+}
+
+/// A record with `cells` swapped in.
+struct ApiRecordView<'a>(&'a mut api::ApiRecord, Vec<api::CellRecord>);
+
+impl ApiRecordView<'_> {
+    fn get(self) -> api::ApiRecord {
+        let mut r = self.0.clone();
+        r.cells = self.1;
+        r
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_holder_ends_its_control_input_at_the_chunk_deadline() {
+    // A caller that holds the control input open and silent cannot keep the
+    // target past the chunk's lifetime (R12).
+    let (_keep, read) = tokio::io::duplex(64);
+    let mut r = tokio::io::BufReader::new(read);
+    let end = std::time::Instant::now() + Duration::from_secs(30);
+    let e = api_chunk::next_control_line(&mut r, end).await.unwrap_err();
+    assert!(e.contains("chunk deadline"), "{e}");
+    // Lines before the deadline, and EOF, read as ever.
+    let (mut w, read) = tokio::io::duplex(64);
+    tokio::io::AsyncWriteExt::write_all(&mut w, b"{\"cmd\":\"idle_fill\"}\n")
+        .await
+        .unwrap();
+    drop(w);
+    let mut r = tokio::io::BufReader::new(read);
+    let end = std::time::Instant::now() + Duration::from_secs(30);
+    assert_eq!(
+        api_chunk::next_control_line(&mut r, end).await.unwrap(),
+        Some(b"{\"cmd\":\"idle_fill\"}".to_vec())
+    );
+    assert_eq!(
+        api_chunk::next_control_line(&mut r, end).await.unwrap(),
+        None
+    );
+}
+
 #[test]
 fn the_readme_lists_every_client_modules_digest() {
     let readme = std::fs::read_to_string(root().join("docs/evals/README.md")).unwrap();
