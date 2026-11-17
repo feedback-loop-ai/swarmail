@@ -72,7 +72,13 @@ label warns that loading contacts the sender's hosts. Your browser makes
 those requests, not the server: the hosts see your IP address and may receive
 cookies or credentials your browser holds for them. They can also redirect,
 and they can be local or private addresses. Mixed-content blocking and font
-CORS may still refuse some loads. The choice lasts for that selection only:
+CORS may still refuse some loads. The preview itself sends no `Referer`
+(`Referrer-Policy: no-referrer`), so no request names Swarmail, the console or
+the mail. A font or image that a remote stylesheet requests is the stylesheet's
+own request, though: browsers give it the stylesheet's URL or origin as its
+`Referer` and apply the stylesheet's own referrer policy, which the preview
+cannot reach. That referrer only names the remote host back to itself. The
+choice lasts for that selection only:
 picking another mail, or coming back later, starts with remote content off
 again, and nothing is stored.
 

@@ -166,3 +166,18 @@ part the question named:
 The dated addenda to 0110 §§2/7 and 0134 §3 above take effect with this
 acceptance. Merge still waits for the browser proof (T8) on the dispatcher
 host, attached to the PR.
+
+## Clarification — 2026-11-17 (operator, after the browser proof)
+
+The browser proof (T8, Chromium 156 and Firefox 157, recorded in
+[browser-proof.md](../../specs/preview-images/browser-proof.md)) met every
+expectation but one literal reading: after **Load remote content**, the font
+that the remote stylesheet itself requests carried that stylesheet's URL
+(Chromium) or origin (Firefox) as `Referer`. Sub-requests of a stylesheet take
+the stylesheet as referrer and its own `Referrer-Policy`; the preview's
+`no-referrer` cannot reach them (a control with the stylesheet served
+`no-referrer` sent none). The operator ruled the expectation met as "no
+request carries a `Referer` naming Swarmail, the console or the message"
+("Met: no Swarmail Referer"); the stylesheet sub-request behaviour is a known
+limit, stated in the UI guide.
+
