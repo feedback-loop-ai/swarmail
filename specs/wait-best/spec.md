@@ -1,7 +1,8 @@
 # Each tool's best evidenced wait
 
-Issue #361, decision 0132 story C. Initial design, 2026-11-17; based on
-story A at `9ac77db`. There is no review return in this run.
+Issue #361, decision 0132 story C. Continuation design, 2026-11-17, on `ed17b7f` after
+`fc47a90`. Preserve the initial design commit `76a1024`. There is no
+review return in this run.
 
 ## Authority and purpose
 
@@ -24,7 +25,7 @@ ownership, one minimal shared `clients/stream.rs`, and story A's launch,
 resource, cleanup and admission machinery. Reject a client-framework rewrite,
 second supervisor, message cache, replay engine or per-event task. The cost
 is retaining the existing scanner interface until stories B/D extend it;
-there is no shared `clients/` directory on this base to assume already built.
+the existing transport from `fc47a90` is reused, not rebuilt.
 
 Adopt robustness's readiness evidence, cancellation-safe parsing, independent
 backstop and bounded wire handling. A sequential loop is acceptable only if
@@ -36,11 +37,12 @@ No detached reconnect service is permitted.
 
 Rule for evidence over convenience: neither HTTP 101 nor an arbitrary delay
 proves registration. A ping/pong or application signal qualifies only when
-pinned source establishes its ordering after registration. Mailpit and
-MailHog remain candidates, not preselected streams. A documented gap permits
+pinned source establishes its ordering after registration. Mailpit, MailHog, smtp4dev and Inbucket
+remain candidates, not preselected streams. A documented gap permits
 labelled polling; it cannot be described as proof that no channel exists.
 Reject choosing polling merely to avoid investigating an evidenced channel.
-The cost is source inspection and a separate pinned-binary proof for every
+T1 already captured 35 documents at `ed17b7f`; preserve those bytes.
+The cost is readiness analysis and a separate pinned-binary proof for every
 selected stream; some targets may honestly remain polling.
 
 Adopt both positions' v4-only accounting and historical compatibility. Reject
@@ -48,6 +50,37 @@ one exclusive outcome that conceals duplicate plus unrelated answers: retain
 both facts even where an existing primary outcome is kept. Extra notification
 events are not duplicate answers. This costs additive v4 facts and admission
 checks, not a second measurement ledger.
+
+## Continuation rulings — 2026-11-17
+
+Both positions agree on the owners and independent deadlines; their tension
+is implementation simplicity versus sufficient state. Rule for explicit
+pending scan/connection/wake state, rejecting an inline reconnect that blocks
+the backstop. The cost to simplicity is a small asynchronous state machine;
+robustness does not justify another supervisor or replay framework.
+
+Use MailHog WebSocket with a fresh matched ping/pong ordered by its captured
+register handoff and vendored reader. Reject a second MailHog SSE wait path:
+it has no demonstrated readiness and adds branches without qualification.
+Mailpit's optional stats frame and Inbucket's optional history are not
+unconditional readiness. Their out-of-tree pong handlers cannot establish
+registration ordering from the captured record. Keep each a precisely cited
+poll unless captured bytes establish a bounded readiness choice.
+
+Implement smtp4dev's minimal SignalR JSON exchange over the existing
+WebSocket client, subject to captured envelope/ordering evidence. A unique
+OnMessagesChanged probe echoed through Clients.All is the candidate barrier;
+upgrade, handshake or invocation completion alone is insufficient. Consume
+the probe before measurement and distinguish it from subsequent SMTP
+notifications. Reject a generic SDK, MessagePack and replay. If required
+framework behavior lacks evidence, retain a cited poll and report the gap.
+The cost of this evidence-first ruling is potentially fewer stream rows.
+
+T2 specifically refuses v5-only wait documents in a lock claiming v4,
+independently of cap-placeholder validation, while retaining legitimate
+historical documents. T10 proof implementation belongs here; execution is
+OPEN on the dispatcher host. Neither missing host bytes nor an unexecuted
+proof is evidence of absent capability. No candidate is promoted by design.
 
 ## Acceptance Criteria
 
@@ -104,6 +137,9 @@ checks, not a second measurement ledger.
    wrong/missing/duplicate modes, citations, profiles, counts, intervals,
    pairings and v4-only fields on historical protocols. Restore the draft's
    wait operation budget to the longest wait plus one request bound.
+   Lock v4 refuses v5-only captured wait documents with a named error:
+   test both version-only downgrade and insertion into a valid v4 lock,
+   independently of {max_messages}. Valid historical documents still pass.
 7. **Rows and timing.** Every started operation keeps a row. Stream answers
    carry `initial_scan`, `event`, `reconnect` or `backstop` from the scan
    that produced them. Rows retain expected occurrences and unrelated-answer
@@ -125,11 +161,15 @@ checks, not a second measurement ledger.
    refuse by name. OOM/target exit remain measured failures; infrastructure
    or unproved cleanup remains exit 2. Only the waits owed marker is cleared
    when the entire path works; API/testexec debt and draft refusal remain.
-9. **Real proofs.** Each selected stream has its own named `#[ignore]` proof
+9. **Real proofs.** Each implemented stream candidate has its own named, Linux-only
+   `#[ignore]` proof
    against digest-checked executable/runtime bytes, failing rather than
    skipping when absent. Run individually under `timeout 600 taskset -c
    0-31`, with load before/after and cleanup evidence. Document exact names,
-   environment variables and commands after evidence selects the rows.
+   MAIL_COMPARE_* variables and commands in docs/evals/README.md.
+   The dispatcher executes T10 serially against host digest-verified bytes
+   and attaches output before merge. Execution remains OPEN in this sandbox;
+   this is not an implementation failure. A failed candidate stays polled.
    Default tests do not discharge this criterion. No selected stream may
    ship with its proof merely written but not executed successfully.
 10. **Compatibility and scope.** No `src/`, adapter tool, dependency package
@@ -144,7 +184,9 @@ checks, not a second measurement ledger.
     hash fabrication, collection, publication, headline, paid run, push or
     merge. Necessary wrapper wiring preserves story A's bounds.
 11. **Verification.** Deterministic parser and state-machine regressions,
-    real loopback protocol tests and all selected pinned-binary proofs pass.
+    real loopback protocol tests pass locally; selected pinned-binary proofs
+    pass on the dispatcher under criterion 9. Preserve all six existing
+    Linux-only cfg_attr ignore guards for tests reading /proc.
     Use barriers or controlled clocks, never sleep as synchronization or
     probabilistic schedules. Pass the complete
     [house gate inventory](../../docs/house-rules.md#gates--part-of-every-change),

@@ -1,9 +1,11 @@
 # Ordered implementation tasks — wait-best
 
 Each checkbox includes its proving test. These are implementation tasks;
-none is checked off merely for having specified it.
+T1/T3/T4 are checked as built in the existing commits, not as newly
+verified by this design. Rerun their tests during T11. T10 execution is
+explicitly a dispatcher task and remains open.
 
-- [ ] T1 — Inspect all nine native_wait rows, capture lock-v5 documents and
+- [x] T1 — Built at ed17b7f: inspect all nine native_wait rows, capture lock-v5 documents and
   write the selection/evidence matrix (AC1–2). Prove path/size/hash/attribution
   validation and recheck-at-use corruption refusal; assert zero native_wait
   not_inspected cells and cited fallback reasons. Keep official MailSlurper
@@ -12,18 +14,29 @@ none is checked off merely for having specified it.
   longest-wait-plus-request budget (AC6,10). Prove valid common/best/tight
   matrices and refusals for wrong modes/intervals/counts, missing or duplicate
   targets/profiles, evidence and pairings. Retain historical validation,
-  serialization and byte checks.
-- [ ] T3 — Implement RFC 6455 transport and module wiring (AC3,5). Prove
+  serialization and byte checks. Separately prove lock v4 refuses v5-only
+  wait documents on a version-only downgrade and injection into valid v4
+  with no cap placeholder; preserve valid historical reviewed documents.
+- [x] T3 — Built at fc47a90: implement RFC 6455 transport and module wiring (AC3,5). Prove
   fresh key/ring accept checks, split/coalesced frames, fragmentation,
   interleaved ping/pong/close and client masking; reject bad status/tokens,
   accept/RSV/opcodes/masks/lengths/control frames/UTF-8/negotiation. Test
   all buffer limits, overflow, EOF mid-frame, partial-read cancellation
   and trickle cutoff.
-- [ ] T4 — Implement SSE (AC3,5). Prove status/content type, HTTP transfer
+- [x] T4 — Built at fc47a90: implement SSE (AC3,5). Prove status/content type, HTTP transfer
   framing and chunked bodies, split UTF-8/CRLF, comments, multiline data,
   empty dispatch, unterminated EOF, byte limits and trickle cutoff. Use real
   loopback endpoints for protocol tests and parser fixtures for malformed
   branches.
+- [ ] T5a — Resolve MailHog matched-pong readiness and Mailpit/Inbucket
+  evidence gaps using T1 captures, preserving cited polling where unresolved.
+  Prove target-specific readiness ordering and bounded failure, with no
+  sleep, optional stats/history assumption or upgrade-only readiness.
+- [ ] T5b — Implement the evidenced minimal smtp4dev SignalR JSON exchange
+  in targets.rs. Prove split/coalesced bounded record framing, handshake,
+  unique probe broadcast, ping/completion/close and malformed envelopes;
+  readiness probes never count as SMTP delivery. Missing framework evidence
+  keeps the row polled and is named in README.
 - [ ] T5 — Implement evidenced registration/readiness and authoritative
   stream observation (AC2,4–5). Use barriers to prove delivery before
   registration, between readiness and scan, and during scan. Prove events
@@ -51,18 +64,26 @@ none is checked off merely for having specified it.
   prove named refusal. Prove historical reports/admission unchanged and
   api/testexec/draft collection refusals retained. Clear waits debt only
   once the entire path works.
-- [ ] T10 — Add and execute a separate ignored pinned-binary proof per
-  selected stream (AC2,9). Verify executable/runtime digests, establish cited
-  readiness, send real SMTP, require an event-triggered complete match and
-  prove cleanup. Run each alone under timeout 600/taskset 0-31, recording
-  load before/after; missing bytes fail. Document exact test names, variables,
-  commands and actual results in the eval README. Initial/backstop-only
-  success cannot qualify a stream; source variants need separate proofs.
+- [ ] T10a — Add a separate Linux-only ignored pinned-binary proof for
+  each implemented stream candidate (AC2,9). Required bytes fail when absent;
+  executable/runtime identities are checked. Prove cited readiness, real
+  SMTP, event-triggered complete authoritative match and cleanup.
+  Initial/backstop-only success cannot qualify a stream. Document exact
+  qualified names, MAIL_COMPARE_* variables and individual commands in
+  docs/evals/README.md; verify test discovery and missing-prerequisite
+  refusal. Keep candidates polled pending host success.
+- [ ] T10b — OPEN, dispatcher host execution: run each T10a proof alone under
+  timeout 600 taskset -c 0-31 with digest-verified pinned bytes, record load
+  before/after, preserve test status and cleanup receipts, and attach output
+  to the PR before merge. Only successful evidenced rows may then be selected;
+  failed candidates stay cited polls. This execution is not a sandbox
+  implementation failure and default tests do not discharge it.
 - [ ] T11 — Final compatibility and full verification (AC10–11). Run locked
   mail_compare/store_contract_docs tests and bench build; run every house
   gate in docs/house-rules.md, including evals against the candidate binary,
   every recipe compile, coverage plus selftest, publish/seal proofs, licenses
   and native-tls absence proof. Distinguish CI-owned checks. Check no src,
   package, allowlist, active/frozen document or accepted-decision body drift,
-  no false freeze and no outstanding selected-stream proof before claiming
-  implementation completion. Never collect, publish or push in this task.
+  no false freeze. Preserve the six Linux-only cfg_attr ignore guards
+  for /proc readers. Report local gates separately from OPEN T10b host
+  execution; never claim an unexecuted candidate is qualified. Never collect, publish or push in this task.

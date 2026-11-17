@@ -3,13 +3,14 @@
 ## Technical context
 
 Rust comparison bench, tokio I/O and existing locked ring/base64; no new
-package. Base `9ac77db` contains story A. `Observation` has Native/Poll;
+package. Base `ed17b7f` contains story A (`9ac77db`), the bounded transport
+from `fc47a90` (20 tests), and T1's 35 captured wait documents and integrity
+tests. T1/T3/T4 are built; preserve and rerun them, not reimplement them. `Observation` has Native/Poll;
 `validate_budgets` requires the common interval, v4 refuses nonempty waits,
 `Chunk` has only Cost, and `OWED_SECTIONS` includes api/waits/testexec.
 `Owned` owns complete HTTP scans, `FindScan` adapts them, and `observe`
 currently accepts repeated expected tokens without recording that error.
-Add v4 semantics around these existing owners. The shared clients directory
-is absent; story B cannot be assumed merged.
+Add v4 semantics around these existing owners. The shared stream client exists; story B cannot be assumed merged.
 
 The repository exposes a spec template but no plan template. This plan
 includes technical context, constitution check, structure, research, data
@@ -29,15 +30,20 @@ avoid unrelated wrapper changes.
 
 ## Research and evidence
 
-Inspect the exact pinned documents under `docs/evals/sources/` and the draft
-lock. Capture missing documents through the existing integrity process when
-bytes are available. Record a nine-row matrix in the eval README: native
-capability/citation, stream route/producer/registration/readiness citations,
-selected method, reason and proof name. Mailpit/MailHog require examination
-of the upgrade-before-registration finding; smtp4dev, Inbucket and Alkemio
-require closing uninspected rows. Inspect other rows and retain sound
-existing evidence. Source-build and image variants cannot inherit a proof
-merely because they share a product family.
+Use the nine-row evidence table in docs/evals/README.md and the documents
+captured in ed17b7f. T1 is complete; do not recapture or infer upstream bytes.
+All native_wait cells are closed. Four stream candidates remain unselected.
+Resolve only the remaining readiness questions under the spec's continuation
+rulings. MailHog uses WebSocket, not an additional SSE path. Mailpit and
+Inbucket remain cited polls unless the captured record proves readiness.
+
+For smtp4dev add the minimal JSON handshake, record-separator framing and
+distinguishable OnMessagesChanged probe/broadcast barrier in targets.rs.
+Establish the required envelope from captured evidence before enabling it;
+missing framework evidence is a named gap. Bound split/coalesced records,
+reject unsupported forms and separate handshake, ping, completion, close,
+probe and delivery. Test that probe traffic cannot satisfy the SMTP proof.
+No generic SignalR package or additional module is needed.
 
 Absent binary bytes mean missing proof, not absence of stream support.
 An established source-level readiness gap permits an honest fallback.
@@ -51,15 +57,15 @@ by this design.
 
 | Files | Implementation |
 |---|---|
-| `docs/evals/draft/sources.lock.v5.json`, `docs/evals/sources/<target>/` | Wait evidence and integrity metadata |
+| `docs/evals/draft/sources.lock.v5.json`, `docs/evals/sources/<target>/` | Preserve T1 evidence; update only justified readiness/qualification facts |
 | `docs/evals/draft/protocol.v4.json` | Closed native_wait cells, citations, three profiles and operation budget; keep B/D/E debt |
 | `benches/mail_compare/protocol.rs` | Stream/evidence validation and version-specific profile/budget rules |
-| `benches/mail_compare/clients/stream.rs` (new) | Bounded reusable WebSocket/SSE transport and readiness primitives |
+| `benches/mail_compare/clients/stream.rs` (existing) | Reuse bounded WebSocket/SSE transport; change only for demonstrated integration gaps |
 | `benches/mail_compare.rs`, `tests/mail_compare.rs` | Path module declarations and waits chunk dispatch/test wiring |
 | `benches/mail_compare/targets.rs` | Minimal target registration and existing authoritative scan interface; no copied routes |
 | `benches/mail_compare/runner.rs` | Observer state, multiplicity, waits chunk/windows and bounded sends/QUIT |
 | `benches/mail_compare/records.rs`, `report.rs`, `stats.rs` as needed | V4 facts, validation, report/admission recomputation and signed timing |
-| `tests/mail_compare/v4.rs`, new `tests/mail_compare/waits.rs` | Profile/parser/lifecycle/accounting/admission tests and ignored proofs |
+| `tests/mail_compare/v4.rs`, existing `tests/mail_compare/waits.rs` | Profile/parser/lifecycle/accounting/admission tests and ignored proofs |
 | `scripts/compare-mail.sh` only if needed | Extend derived chunk dispatch while preserving bounds/signals/cleanup |
 | `docs/evals/README.md` | Evidence matrix, limitations, proof commands and remaining story debt |
 
@@ -72,7 +78,10 @@ modules being required for story C.
 ## Data model and contracts
 
 Extend typed observation with Stream and explicit backstop and transport/
-evidence references. Reject mismatched intervals and unresolved references.
+evidence references. Reject mismatched intervals and unresolved references. Add a narrow
+version-aware document rule: v4 refuses v5-only wait documents even with
+literal caps restored; valid old reviewed documents remain legal. Test a
+version-only downgrade and injection into historical v4 separately.
 Reuse document identity instead of a second registry. Configuration is
 source-cited and target-specific; connections use the owned target's declared
 endpoint, not dynamic URL discovery.
@@ -137,7 +146,7 @@ Run the complete house inventory on the final candidate, resolving
 `SWARMAIL_BIN` from its build artifact record. Root tests do not replace
 evals checks, and default tests do not execute ignored proofs.
 
-For each selected stream, document and execute a separate concrete command
+For each implemented candidate, document a separate dispatcher-host command
 of this form after evidence fixes its target and test name:
 
 ```bash
@@ -150,9 +159,26 @@ Set documented pinned binary/runtime variables first. Capture the test exit
 status independently of the final load read. Use existing launch/cleanup
 ownership and enforced v4 resources when measuring a window; missing
 resources refuse rather than yielding an unenforced measurement. Run proofs
-sequentially and preserve results/cleanup receipts. An unexecuted required
-proof leaves implementation work outstanding. No collection is needed for
+sequentially and preserve results/cleanup receipts. T10 execution remains OPEN on the dispatcher host and is not a sandbox
+implementation failure. Host success is still required before selection;
+failure leaves the candidate polled. Preserve the six Linux-only cfg_attr
+ignore patterns; new host proofs are Linux-only and explicitly ignored.
+README must specify exact qualified test names, MAIL_COMPARE_* variables,
+individual commands and cleanup expectations before handoff. No collection is needed for
 design validation.
+
+## Continuation changes and proof ownership
+
+This is a continuation, not a review return; there are no panel defect IDs.
+Correct stale baseline and task status from fc47a90/ed17b7f, add T2's explicit
+0132 §1.2 lock boundary, and assign T10 execution to the dispatcher as the
+user instructs. These changes relax no readiness or stream qualification
+criterion. Local code/proof readiness, host execution pending and qualified
+stream selection are three distinct states. Until host success, retain the
+candidate's cited 100 ms poll and unresolved qualification in draft metadata;
+the ignored proof can exercise its candidate path without changing selection.
+Update T1's candidate-state assertions only when real qualification evidence
+or a precisely cited final gap warrants it; retain all integrity regressions.
 
 ## Risks
 
