@@ -41,6 +41,9 @@ mod runner;
 #[path = "../benches/mail_compare/stats.rs"]
 mod stats;
 #[allow(dead_code)]
+#[path = "../benches/mail_compare/clients/stream.rs"]
+mod stream;
+#[allow(dead_code)]
 #[path = "../benches/mail_compare/targets.rs"]
 mod targets;
 #[allow(dead_code)]
@@ -57,6 +60,8 @@ use std::time::{Duration, Instant};
 mod eight_targets;
 #[path = "mail_compare/v4.rs"]
 mod v4;
+#[path = "mail_compare/waits.rs"]
+mod waits;
 
 const SMOKE: &[u8] = include_bytes!("mail_compare/swarmail-smoke.json");
 const SMOKE_LOCK: &[u8] = include_bytes!("mail_compare/swarmail-only.lock.json");

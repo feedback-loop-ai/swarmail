@@ -30,6 +30,8 @@
 //! Exit 2: prerequisite, operational, interrupt, cleanup or accounting
 //! failure — it dominates, and its output is never sealed.
 
+// The stream wake-up transports (decision 0132 §7, story C). Their observer
+// is not wired into a driver mode yet, so the bench compiles them unused.
 #[path = "mail_compare/mailhog_mcp.rs"]
 mod mailhog_mcp;
 #[path = "mail_compare/mailpit_mcp.rs"]
@@ -50,6 +52,9 @@ mod resources;
 mod runner;
 #[path = "mail_compare/stats.rs"]
 mod stats;
+#[allow(dead_code)]
+#[path = "mail_compare/clients/stream.rs"]
+mod stream;
 #[path = "mail_compare/targets.rs"]
 mod targets;
 #[path = "mail_compare/wire.rs"]
