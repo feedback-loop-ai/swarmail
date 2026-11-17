@@ -32,7 +32,9 @@ avoid unrelated wrapper changes.
 
 Use the nine-row evidence table in docs/evals/README.md and the documents
 captured in ed17b7f. T1 is complete; do not recapture or infer upstream bytes.
-All native_wait cells are closed. Four stream candidates remain unselected.
+All native_wait cells are closed. Of the four push channels, MailHog's
+WebSocket is selected by its T10b proof (2026-11-18); the other three are
+cited polls naming their readiness or registration gap.
 Resolve only the remaining readiness questions under the spec's continuation
 rulings. MailHog uses WebSocket, not an additional SSE path. Mailpit and
 Inbucket remain cited polls unless the captured record proves readiness.

@@ -1163,9 +1163,12 @@ mod evidence {
 
     /// The rows whose pinned sources show a push channel.
     const PUSH_CHANNELS: [&str; 4] = ["mailpit", "mailhog", "smtp4dev", "inbucket"];
-    /// The one push channel with readiness evidenced from captured bytes: a
-    /// candidate until its real-binary proof (T10) selects it.
-    const STREAM_CANDIDATES: [&str; 1] = ["mailhog"];
+    /// Push channels with readiness evidenced from captured bytes whose
+    /// real-binary proof (T10) has not run: none since T10b.
+    const STREAM_CANDIDATES: [&str; 0] = [];
+    /// Stream candidates whose real-binary proof (T10b) passed on the
+    /// dispatcher host against the pinned executable.
+    const SELECTED_STREAMS: [&str; 1] = ["mailhog"];
     /// Push channels whose readiness or registration cannot be evidenced
     /// from captured bytes (T5a, T5b): cited polls naming the gap.
     const GAP_ROWS: [&str; 3] = ["mailpit", "smtp4dev", "inbucket"];
@@ -1282,6 +1285,18 @@ mod evidence {
             };
             let name = t.name();
             match &pin.wait.best_wait {
+                Fact::Observed(m) if m.starts_with("stream: ") => {
+                    // Selected only by its real-binary proof (T10b).
+                    assert!(SELECTED_STREAMS.contains(&name), "{t}: {m}");
+                    assert!(
+                        m.contains("T10b") && m.contains("real-binary proof"),
+                        "{t}: {m}"
+                    );
+                    assert!(
+                        m.contains("1,000 ms backstop") && m.contains("taskset -c 0-31"),
+                        "{t}: {m}"
+                    );
+                }
                 Fact::Observed(m) => {
                     assert!(
                         POLL_ROWS.contains(&name),
@@ -1613,13 +1628,16 @@ mod profiles {
         assert!(interval(0).iter().all(|i| *i == Some(100)));
         assert!(interval(2).iter().all(|i| *i == Some(10)));
         for o in &p.waits[1].observation {
-            let want = if o.target == TargetKind::Swarmail {
-                Observation::Native
-            } else {
-                // No stream is selected before its proof runs on the host.
-                Observation::Poll
+            let want = match o.target {
+                TargetKind::Swarmail => Observation::Native,
+                // MailHog's stream is selected: its real-binary proof
+                // (T10b) passed on the dispatcher host.
+                TargetKind::Mailhog => Observation::Stream,
+                _ => Observation::Poll,
             };
             assert_eq!(o.mode, want, "{}", o.target);
+            let backstop = (want == Observation::Stream).then_some(1000);
+            assert_eq!(o.backstop_ms, backstop, "{}", o.target);
             assert!(o.evidence.as_ref().is_some_and(|e| !e.is_empty()));
             assert!(o.justification.starts_with("wait-best: "));
         }
@@ -1867,28 +1885,33 @@ mod profiles {
                 &lock_from(lv).unwrap(),
             ))
         };
-        // MailHog streams only once its pin's best wait says so.
-        let mut streaming = draft();
-        mailhog_streams(&mut streaming);
-        let w = check(streaming.clone(), lock.clone());
+        // MailHog streams, and its pin's best wait says so (T10b passed).
+        protocol::waits_match(
+            &protocol_from(draft()).unwrap(),
+            &lock_from(lock.clone()).unwrap(),
+        )
+        .unwrap();
+        // A pin still polling refuses the streaming row, and a polling row
+        // refuses the streaming pin.
+        let mut polling = lock.clone();
+        pin_mut(&mut polling, "mailhog")["wait"]["best_wait"] =
+            json!({"observed": "poll: the common 100 ms poll, labelled \"no documented wait\""});
+        let w = check(draft(), polling);
         assert!(
             w.contains("wait-best: mailhog observes by Stream, but its pin's best wait is Poll"),
             "{w}"
         );
-        let mut selected = lock.clone();
-        pin_mut(&mut selected, "mailhog")["wait"]["best_wait"] =
-            json!({"observed": "stream: the api/v2/websocket proof passed"});
-        protocol::waits_match(
-            &protocol_from(streaming).unwrap(),
-            &lock_from(selected.clone()).unwrap(),
-        )
-        .unwrap();
-        let w = check(draft(), selected.clone());
+        let mut poll_row = draft();
+        let o = obs(&mut poll_row, 1, "mailhog");
+        o["mode"] = json!("poll");
+        o["interval_ms"] = json!(100);
+        o["backstop_ms"] = Value::Null;
+        let w = check(poll_row, lock.clone());
         assert!(
             w.contains("wait-best: mailhog observes by Poll, but its pin's best wait is Stream"),
             "{w}"
         );
-        let mut odd = selected;
+        let mut odd = lock.clone();
         pin_mut(&mut odd, "mailhog")["wait"]["best_wait"] = json!({"observed": "carrier pigeon"});
         let w = check(draft(), odd);
         assert!(

@@ -1049,7 +1049,7 @@ a cited poll that names its gap, which is not proof that no channel exists.
 |---|---|---|---|---|
 | swarmail | supported (0002) | n/a | n/a | native REST await |
 | mailpit | not_supported (`mailpit-server.go`) | WebSocket `api/events`; producer `Broadcast("new")` after the insert commits | not evidenced: the first hub frame is the optional `stats` frame, and the pong comes from gorilla/websocket v1.5.3, outside the tagged tree | poll, no documented wait (readiness gap) |
-| mailhog | not_supported (`mailhog-server-api-v1.go`) | WebSocket `api/v2/websocket`; SSE `api/v1/events` | WebSocket: a pong to this connection's ping, answered by the vendored gorilla `conn.go` from the read loop that starts after the register handoff; SSE: none shown | WebSocket implemented, **unselected until its proof passes** (polls meanwhile); SSE does not qualify |
+| mailhog | not_supported (`mailhog-server-api-v1.go`) | WebSocket `api/v2/websocket`; SSE `api/v1/events` | WebSocket: a pong to this connection's ping, answered by the vendored gorilla `conn.go` from the read loop that starts after the register handoff; SSE: none shown | WebSocket, **selected**: its real-binary proof passed on 2026-11-18 (T10b); SSE does not qualify |
 | mailslurper | not_supported (`mailslurper-setup-services-listener.go`) | none | n/a | poll, no documented wait; row blocked (`does_not_start`) |
 | mailslurper-source-build | not_supported (`mailslurper-setup-services-listener.go`) | none | n/a | poll, no documented wait |
 | smtp4dev | not_supported (`smtp4dev-messages-controller.cs`) | SignalR hub `/hubs/notifications`; producer `OnMessagesChanged` after save | not evidenced: negotiation, handshake, hub-protocol framing and when a connection joins `Clients.All` are the ASP.NET Core SignalR framework's, shipped as assemblies; the singleton hub sends only while the framework has set its `Clients` | poll, no documented wait (envelope and registration gap) |
@@ -1139,13 +1139,16 @@ cat /proc/loadavg
 ```
 
 Its output names the cause, the scans, the events and the cleanup receipt.
-**This proof has not run yet**: the sandbox that built story C has no pinned
-bytes, and the dispatcher runs it and attaches its output to the pull request
-before merge. If it passes, MailHog's `best_wait` in the lock becomes
-`stream: …` and its `wait-best` row `stream` with `backstop_ms` 1000 (the
-validators require both, together); if it fails, MailHog stays a cited poll.
-Until then the draft's `unresolved` list names it, and `collect` refuses the
-unresolved best wait by name. Default tests do not discharge it.
+**It passed on 2026-11-18** on the dispatcher host (128 CPUs), against the
+pinned executable (sha256 `e2ed634d…c5d09c7`, matching lock v5), three runs
+alone: each was answered by the delivery's `Event` after an empty initial scan
+(6.5 ms, 1.9 ms, 1.9 ms; one event, one connect), and each cleanup reaped the
+process group, closed both listeners and removed the scratch directory. The
+output is attached to the story's pull request. MailHog's `best_wait` in the
+lock is therefore `stream: …` and its `wait-best` row `stream` with
+`backstop_ms` 1000 (the validators require both, together), and the draft's
+`unresolved` list no longer names it. Default tests do not discharge the
+proof; rerun it after any change to the stream client or the pin.
 
 ## What closes the remaining rows
 

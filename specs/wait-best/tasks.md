@@ -2,8 +2,7 @@
 
 Each checkbox includes its proving test. These are implementation tasks;
 checked tasks are built in the named commits; T10b (dispatcher host
-execution) is the one task genuinely open. Rerun their tests during T11. T10 execution is
-explicitly a dispatcher task and remains open.
+execution) ran on 2026-11-18 and passed. Rerun their tests during T11.
 
 - [x] T1 — Built at ed17b7f: inspect all nine native_wait rows, capture lock-v5 documents and
   write the selection/evidence matrix (AC1–2). Prove path/size/hash/attribution
@@ -72,7 +71,9 @@ explicitly a dispatcher task and remains open.
   qualified names, MAIL_COMPARE_* variables and individual commands in
   docs/evals/README.md; verify test discovery and missing-prerequisite
   refusal. Keep candidates polled pending host success.
-- [ ] T10b — OPEN, dispatcher host execution: run each T10a proof alone under
+- [x] T10b — Passed 2026-11-18 on the dispatcher host (MailHog, three runs, each
+  answered by its event; MailHog's best wait selected as stream with the
+  1,000 ms backstop). Dispatcher host execution: run each T10a proof alone under
   timeout 600 taskset -c 0-31 with digest-verified pinned bytes, record load
   before/after, preserve test status and cleanup receipts, and attach output
   to the PR before merge. Only successful evidenced rows may then be selected;

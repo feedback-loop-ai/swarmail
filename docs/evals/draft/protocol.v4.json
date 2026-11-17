@@ -162,9 +162,10 @@
         },
         {
           "target": "mailhog",
-          "mode": "poll",
-          "interval_ms": 100,
-          "justification": "wait-best: poll until its proof passes: native_wait is not_supported (mailhog-server-api-v1.go and -v2.go register no blocking route). The api/v2/websocket stream is the implemented candidate (route, producer, register handoff and a pong answered only by the read loop that starts after it, cited in the lock), and it is selected only after its real-binary proof (wait-best T10) passes against the pinned executable on the dispatcher host; until then the labelled common 100 ms poll observes it.",
+          "mode": "stream",
+          "interval_ms": null,
+          "backstop_ms": 1000,
+          "justification": "wait-best: stream: native_wait is not_supported (mailhog-server-api-v1.go and -v2.go register no blocking route). The api/v2/websocket stream (route, producer, register handoff and a pong answered only by the read loop that starts after it, cited in the lock) is selected under 0132 §7.2.2: its real-binary proof (wait-best T10b) passed against the pinned executable on the dispatcher host on 2026-11-18. An event triggers a complete authoritative scan; the 1,000 ms backstop scan covers a lost event.",
           "evidence": [
             "sources/mailhog/mailhog-server-api-v1.go",
             "sources/mailhog/mailhog-server-api-v2.go",
@@ -574,7 +575,6 @@
   },
   "unresolved": [
     "story B (0132 §6): the api section, its operation, surface and fill-level rows, and its clients",
-    "story C (0132 §7.2, wait-best T10b): mailhog's api/v2/websocket stream is implemented and unselected; its real-binary proof runs on the dispatcher host, and until it passes the lock's best wait stays unresolved and the common 100 ms poll observes mailhog",
     "story D (0132 §8): the test-execution section",
     "story B to D: clients_sha256, one digest per client module",
     "story B (0132 §6.2, acceptance answer 8): GreenMail's read path is REST in v4, and this draft still reads it over POP3 as v3 does; story B owes the change and its capture",

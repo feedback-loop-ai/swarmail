@@ -823,13 +823,12 @@ fn the_v4_draft_validates_and_is_not_ready_for_collection() {
     let w = refusals(protocol::collection_ready(&p, &l));
     assert!(w.contains("protocol is a draft, not frozen"), "{w}");
     assert!(w.contains("unresolved: story B"), "{w}");
-    // Nothing else is wrong with it: the refusals are the draft's own, and
-    // MailHog's stream candidate stays unselected until its proof (T10b).
+    // Nothing else is wrong with it: the refusals are the draft's own.
+    // MailHog's stream is selected (T10b passed), so no best wait is open.
+    assert!(!w.contains("best wait unresolved"), "{w}");
     for line in w.lines() {
         assert!(
-            line.contains("draft, not frozen")
-                || line.starts_with("unresolved:")
-                || line.starts_with("mailhog: best wait unresolved: stream candidate"),
+            line.contains("draft, not frozen") || line.starts_with("unresolved:"),
             "unexpected refusal: {line}"
         );
     }
