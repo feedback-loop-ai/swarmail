@@ -9,6 +9,10 @@
 #                            [--mailpit BIN] [--mailhog BIN]      (smoke, never evidence)
 #   compare-mail.sh collect  --output DIR --bin NAME=PATH... [--runtime NAME=DIR]...
 #                            [--protocol P] [--sources S]   (the frozen protocol, then admission)
+#   compare-mail.sh collect-v4 --output DIR --bin NAME=PATH... [--runtime NAME=DIR]...
+#                            [--protocol P --sources S --documents DIR] [--dry-run]
+#                            (protocol 4: the whole cost run as bounded chunks, each in its own
+#                            delegated systemd scope; Linux only; --dry-run prints the plan)
 #
 # NAME is a competitor the protocol declares (proposed decision 0130): the
 # required binaries are derived from the protocol, never from a fixed list.
@@ -61,6 +65,7 @@ blocked() {
 }
 
 mode="${1:-}"
+orig_args=("${@:2}")
 if [ -z "$mode" ]; then
   usage
   exit 2
@@ -98,7 +103,7 @@ done
 [ -z "$mailhog" ] || bin_args+=("mailhog=$mailhog")
 
 case "$mode" in
-  local|collect|controls|evidence|measure) ;;
+  local|collect|collect-v4|controls|evidence|measure) ;;
   *) usage; blocked arguments "unknown mode: $mode" ;;
 esac
 [ -n "$output" ] || blocked arguments "--output DIR is required"
@@ -400,6 +405,38 @@ bin_for() {
   printf '%s' "$found"
 }
 
+# Every --bin and --runtime names a declared competitor, and every declared
+# competitor has its --bin: a file the pinned runtime runs is read, never
+# exec'd, so a jar is no executable. Uses $declared.
+check_competitor_binaries() {
+  local w name t bin
+  for w in ${bin_args[@]+"${bin_args[@]}"}; do
+    name="${w%%=*}"
+    case $'\n'"$declared"$'\n' in
+      *$'\n'"$name"$'\n'*) ;;
+      *) blocked competitor-binaries "--bin $name names a target the protocol does not declare (it declares: $(printf '%s' "$declared" | tr '\n' ' '))" ;;
+    esac
+  done
+  for w in ${runtime_args[@]+"${runtime_args[@]}"}; do
+    name="${w%%=*}"
+    case $'\n'"$declared"$'\n' in
+      *$'\n'"$name"$'\n'*) ;;
+      *) blocked competitor-binaries "--runtime $name names a target the protocol does not declare" ;;
+    esac
+  done
+  for t in $declared; do
+    bin=$(bin_for "$t")
+    [ -n "$bin" ] || blocked competitor-binaries "the protocol declares $t; pass --bin $t=PATH with its pinned executable"
+    if [ -n "$(runtime_for "$t")" ]; then
+      # A pinned runtime (GreenMail's JRE, the Alkemio row's musl loader)
+      # runs this file; it is read, never exec'd, so a jar is no executable.
+      [ -f "$bin" ] || blocked competitor-binaries "--bin $t=$bin is not a file"
+    else
+      [ -x "$bin" ] || blocked competitor-binaries "--bin $t=$bin is not an executable file"
+    fi
+  done
+}
+
 case "$mode" in
   local|collect)
     declared=$(declared_competitors "$protocol")
@@ -408,31 +445,7 @@ case "$mode" in
     if [ "$mode" = collect ] && [ -z "$declared" ]; then
       blocked competitor-binaries "collect measures competitors, and the protocol $protocol declares none"
     fi
-    for w in ${bin_args[@]+"${bin_args[@]}"}; do
-      name="${w%%=*}"
-      case $'\n'"$declared"$'\n' in
-        *$'\n'"$name"$'\n'*) ;;
-        *) blocked competitor-binaries "--bin $name names a target the protocol does not declare (it declares: $(printf '%s' "$declared" | tr '\n' ' '))" ;;
-      esac
-    done
-    for w in ${runtime_args[@]+"${runtime_args[@]}"}; do
-      name="${w%%=*}"
-      case $'\n'"$declared"$'\n' in
-        *$'\n'"$name"$'\n'*) ;;
-        *) blocked competitor-binaries "--runtime $name names a target the protocol does not declare" ;;
-      esac
-    done
-    for t in $declared; do
-      bin=$(bin_for "$t")
-      [ -n "$bin" ] || blocked competitor-binaries "the protocol declares $t; pass --bin $t=PATH with its pinned executable"
-      if [ -n "$(runtime_for "$t")" ]; then
-        # A pinned runtime (GreenMail's JRE, the Alkemio row's musl loader)
-        # runs this file; it is read, never exec'd, so a jar is no executable.
-        [ -f "$bin" ] || blocked competitor-binaries "--bin $t=$bin is not a file"
-      else
-        [ -x "$bin" ] || blocked competitor-binaries "--bin $t=$bin is not an executable file"
-      fi
-    done
+    check_competitor_binaries
     doc_args=()
     [ -z "$documents" ] || doc_args=(--documents "$documents")
     command -v cargo >/dev/null 2>&1 || blocked prerequisites "cargo is not installed"
@@ -474,6 +487,356 @@ case "$mode" in
     fi
     [ "$status" -ne 2 ] || printf 'compare-mail: blocked at phase "%s-run": see the driver output above\n' "$mode" >&2
     exit "$status"
+    ;;
+  collect-v4)
+    # Protocol 4 (accepted decision 0132 §11): the whole cost run as a fixed,
+    # protocol-derived plan of bounded chunks. Each chunk is one driver in its
+    # own delegated systemd scope, under `timeout --kill-after=30 560` and
+    # `taskset` on at most nproc/4 CPUs (never more than 32); nothing here runs
+    # longer than ten minutes. The plan is the driver's (`targets --plan v4`), never computed
+    # here. Linux only: there is no unenforced fallback.
+    [ "$(uname -s)" = Linux ] \
+      || blocked platform "collect-v4 runs on Linux with delegated cgroup v2 only; $(uname -s) cannot enforce the budget"
+    for tool in systemd-run systemctl taskset timeout; do
+      command -v "$tool" >/dev/null 2>&1 || blocked prerequisites "collect-v4 needs $tool on PATH"
+    done
+    proto_version=$(sed -n 's/^ *"protocol_version": *\([0-9]*\).*/\1/p' "$protocol" | head -n1)
+    [ "$proto_version" = 4 ] \
+      || blocked protocol "collect-v4 needs a protocol_version 4 protocol, and $protocol is version ${proto_version:-unknown}; until the v4 freeze, pass the draft: --protocol docs/evals/draft/protocol.v4.json --sources docs/evals/draft/sources.lock.v5.json --documents docs/evals"
+    ncpu=$(nproc 2>/dev/null) || ncpu=0
+    case "$ncpu" in ''|*[!0-9]*) ncpu=0 ;; esac
+    chunk_cpus=$((ncpu / 4))
+    [ "$chunk_cpus" -le 32 ] || chunk_cpus=32
+    [ "$chunk_cpus" -ge 3 ] \
+      || blocked prerequisites "collect-v4 needs at least 3 CPUs in min(nproc/4, 32), and nproc $ncpu gives $chunk_cpus"
+    # The chunks are pinned to CPUs 0-<n-1>, which are the operator's CPUs
+    # only when the shell may use every CPU of the host: a narrowed shell
+    # would be pinned outside the set it was given.
+    all_cpus=$(nproc --all 2>/dev/null) || all_cpus=0
+    [ "$ncpu" = "$all_cpus" ] \
+      || blocked prerequisites "collect-v4 pins the chunks to CPUs 0-$((chunk_cpus - 1)) and needs a shell that may use all of the host's CPUs: nproc is $ncpu, nproc --all is $all_cpus"
+    # Every process the mode starts after the preflight runs under this one
+    # prefix (0132 §11.1: no process runs longer than 10 minutes or on more
+    # than 32 CPUs). The 560 is `CHUNK_KILL_MS` of the driver's protocol.rs,
+    # in seconds: the instant `timeout` sends SIGTERM, and SIGKILL follows 30
+    # s later. Every `systemctl` call has its own `timeout` (1 s to ask, 3 s to
+    # kill, 3 s to stop), so the ten minutes hold as a sum, for the worst case
+    # of each kind of step:
+    #   a build, `targets`, `check`, `footprint` or an admission: 560 + 30
+    #   a chunk that failed: 560 + 30 + 1 (one query) + 3 (kill) + 3 (stop)
+    #   a chunk that sealed: 560 + 20 x (1 + 0.5) (the polls) + 3 + 3
+    bound=(timeout --kill-after=30 560 taskset -c "0-$((chunk_cpus - 1))")
+    scope_polls=20 scope_poll_interval=0.5
+    interrupted=0 step_pid='' step_starting='' step_status=0 owned='' owned_unit='' scope_clean=true
+    interrupt_exit() {
+      printf 'compare-mail: blocked at phase "interrupt": collect-v4 was interrupted; %s is incomplete and is never resumed\n' "$output" >&2
+      exit 2
+    }
+    # A signal does two things only: it records the interrupt, and sends the
+    # step that is running (its `timeout`, which passes the signal on) a
+    # SIGTERM; the driver's own interrupt path tears down and exits 2,
+    # unsealed. The handler ends the mode itself only when no step is running
+    # or starting and no chunk is owned. Everything else is the main flow's:
+    # it reads `interrupted` after every step, and a chunk is judged and
+    # written to the ledger as a failed one before the mode exits 2.
+    on_signal() {
+      interrupted=1
+      if [ -n "$step_pid" ]; then
+        kill -TERM "$step_pid" 2>/dev/null
+      elif [ -z "$step_starting" ] && [ -z "$owned" ]; then
+        interrupt_exit
+      fi
+    }
+    trap on_signal INT TERM HUP
+    # The one owner of a running step: start the command under the bound, in
+    # the background, and wait for it here, so that a trapped signal can act
+    # while it runs. OUT, when not empty, receives its stdout; a step whose
+    # output is read goes to a file, never through $(...), which would hold
+    # the trap until it ended. The status is $step_status. No step starts
+    # once an interrupt is recorded.
+    run_step() {
+      local out="$1"
+      shift
+      if [ "$interrupted" != 0 ]; then
+        step_status=2
+        return 0
+      fi
+      # From here until its pid is known the step is starting: a signal in
+      # that window only records the interrupt (it must not end the mode and
+      # orphan a step it has just forked, which could be an admission that
+      # seals), and the check below delivers the SIGTERM.
+      step_starting=1
+      if [ -n "$out" ]; then
+        "${bound[@]}" "$@" >"$out" &
+      else
+        "${bound[@]}" "$@" &
+      fi
+      step_pid=$!
+      step_starting=''
+      # A signal that came between the fork and the pid being known.
+      [ "$interrupted" = 0 ] || kill -TERM "$step_pid" 2>/dev/null
+      # `wait` returns early on a trapped signal: repeat until the step
+      # itself has been reaped.
+      while :; do
+        wait "$step_pid"
+        step_status=$?
+        kill -0 "$step_pid" 2>/dev/null || break
+      done
+      step_pid=''
+    }
+    # A step that is not a chunk: an interrupt ends the mode at once, naming
+    # the interrupt, before the caller reads the status.
+    step() {
+      run_step "$@"
+      [ "$interrupted" = 0 ] || interrupt_exit
+    }
+    # What systemd says of a scope: the word `is-active` prints, or nothing.
+    scope_state() {
+      timeout 1 systemctl --user is-active "$1" 2>/dev/null | head -n1
+    }
+    # Only `inactive` and `failed` mean that a scope holds no process; any
+    # other answer, none, a failed query or a cut one, is not known to be gone.
+    scope_gone() {
+      case "$1" in
+        inactive|failed) return 0 ;;
+      esac
+      return 1
+    }
+    # SIGKILL, not systemctl's default SIGTERM: a target that ignores SIGTERM
+    # would otherwise live until systemd's own stop timeout, past the sums.
+    scope_end() {
+      timeout 3 systemctl --user kill --signal=KILL "$1" >/dev/null 2>&1
+      timeout 3 systemctl --user stop "$1" >/dev/null 2>&1
+    }
+    # A chunk that sealed: systemd learns that a scope is empty after the
+    # driver has exited, so it is asked up to $scope_polls times, half a
+    # second apart, and is clean at the first answer that says it is gone. An
+    # interrupt stops the asking. A scope not gone at the last answer is
+    # killed and stopped, and is unclean.
+    judge_sealed() {
+      local tries=0 state
+      scope_clean=false
+      while [ "$tries" -lt "$scope_polls" ]; do
+        state=$(scope_state "$1")
+        if scope_gone "$state"; then
+          scope_clean=true
+          return 0
+        fi
+        tries=$((tries + 1))
+        [ "$interrupted" = 0 ] || break
+        [ "$tries" -ge "$scope_polls" ] || sleep "$scope_poll_interval"
+      done
+      scope_end "$1"
+    }
+    # A chunk that failed: the run is already stopped, so the scope is asked
+    # once and not waited for; unless it is gone it is killed and stopped.
+    judge_failed() {
+      if scope_gone "$(scope_state "$1")"; then
+        scope_clean=true
+      else
+        scope_clean=false
+        scope_end "$1"
+      fi
+    }
+    commit=$(git rev-parse HEAD 2>/dev/null || true)
+    if [ "$dry_run" != 1 ]; then
+      [ -n "$commit" ] || blocked candidate "the candidate is not a committed git checkout; collect-v4 never measures an uncommitted tree"
+      # A status git cannot read is not a clean tree.
+      porcelain=$(git status --porcelain 2>/dev/null) \
+        || blocked candidate "git status failed on the candidate tree; collect-v4 measures a committed, clean main only and cannot tell this one is clean"
+      [ -z "$porcelain" ] \
+        || blocked candidate "the candidate tree is dirty; collect-v4 measures a committed, clean main only"
+      # On main (0132 §2.3): HEAD is in the history of main, the tip or an
+      # earlier commit (a published run must stay repeatable after main has
+      # moved on), by the local ref and, where it exists, the remote one.
+      # Nothing is fetched. A pull-request branch is never in that history.
+      # A ref exists when its loose file does, readable or not, or when git
+      # lists it (a packed or reftable ref). Resolving it is not the test: a
+      # loose ref that holds garbage does not resolve, and would read as absent.
+      main_ref_exists() {
+        local loose
+        loose=$(git rev-parse --git-path "$1" 2>/dev/null) && [ -f "$loose" ] && return 0
+        git for-each-ref --format='%(refname)' "$1" 2>/dev/null | grep -qxF "$1"
+      }
+      main_seen=0
+      for main_ref in refs/heads/main refs/remotes/origin/main; do
+        # An absent ref is skipped; one that exists and is not a readable
+        # commit refuses, so it can never leave the other ref to decide.
+        main_ref_exists "$main_ref" || continue
+        git rev-parse --verify --quiet "$main_ref^{commit}" >/dev/null 2>&1 \
+          || blocked candidate "$main_ref exists but is not a readable commit; collect-v4 cannot tell that the candidate is on main"
+        main_seen=1
+        git merge-base --is-ancestor HEAD "$main_ref" 2>/dev/null \
+          || blocked candidate "the candidate $commit is not in the history of $main_ref; collect-v4 measures a commit of main only"
+      done
+      [ "$main_seen" = 1 ] \
+        || blocked candidate "neither refs/heads/main nor refs/remotes/origin/main exists: collect-v4 cannot tell that the candidate is on main"
+    fi
+    declared=$(declared_competitors "$protocol")
+    [ -n "$declared" ] || blocked competitor-binaries "collect-v4 measures competitors, and the protocol $protocol declares none"
+    check_competitor_binaries
+    doc_args=()
+    [ -z "$documents" ] || doc_args=(--documents "$documents")
+    command -v cargo >/dev/null 2>&1 || [ -n "${COMPARE_MAIL_DRIVER_BIN:-}" ] || blocked prerequisites "cargo is not installed"
+    bin_dir=${COMPARE_MAIL_BIN_DIR:-target/compare-mail}
+    mkdir -p "$bin_dir" || blocked prerequisites "cannot make $bin_dir"
+    run_token=$(date -u +%Y%m%dT%H%M%SZ)-$$
+    run_id="collect-v4-$run_token"
+    candidate=${COMPARE_MAIL_SWARMAIL_BIN:-}
+    if [ -z "$candidate" ]; then
+      step '' cargo build --release --locked --offline --bin swarmail >&2
+      [ "$step_status" -eq 0 ] || blocked build "the candidate binary does not build"
+      candidate=$PWD/target/release/swarmail
+    fi
+    driver=${COMPARE_MAIL_DRIVER_BIN:-}
+    if [ -z "$driver" ]; then
+      step "$bin_dir/$run_token.bench.json" cargo bench --locked --offline --no-run --bench mail_compare --message-format=json 2>/dev/null
+      [ "$step_status" -eq 0 ] || blocked build "the mail_compare driver does not build"
+      driver=$(grep -o '"executable":"[^"]*mail_compare[^"]*"' "$bin_dir/$run_token.bench.json" | tail -n1 | cut -d'"' -f4)
+    fi
+    [ -n "$driver" ] && [ -x "$driver" ] || blocked build "the mail_compare driver does not build"
+    candidate=$(freeze_binary "$candidate" "$bin_dir") || blocked build "cannot freeze the candidate binary"
+    driver=$(freeze_binary "$driver" "$bin_dir") || blocked build "cannot freeze the driver"
+    # The driver's own list is authoritative; the preflight must agree.
+    step "$bin_dir/$run_token.targets" "$driver" targets --protocol "$protocol"
+    [ "$step_status" -eq 0 ] || blocked collection-ready "the driver refuses the protocol $protocol"
+    from_driver=$(cat "$bin_dir/$run_token.targets")
+    [ "$from_driver" = "$declared" ] \
+      || blocked competitor-binaries "the driver declares a different competitor list than the preflight read"
+    step "$bin_dir/$run_token.plan" "$driver" targets --protocol "$protocol" --plan v4
+    [ "$step_status" -eq 0 ] || blocked collection-ready "the driver has no chunk plan for $protocol"
+    plan=$(cat "$bin_dir/$run_token.plan")
+    [ -n "$plan" ] || blocked collection-ready "the driver's chunk plan for $protocol is empty"
+    systemd_version=$(timeout 3 systemctl --version 2>/dev/null | head -n1)
+    [ -n "$systemd_version" ] || systemd_version="not stated"
+    scratch_root="$output.scratch"
+
+    # The command of one chunk, without its bound, in this nesting: the
+    # bound's timeout, then taskset, then the scope, so the driver is the
+    # scope's only process (a process left in the scope's own cgroup would
+    # stop it enabling controllers for leaves).
+    chunk_command() {
+      local coord="$1" target rest unit w
+      rest="${coord#*.}"
+      target="${rest%.*}"
+      unit="mail-compare-$run_token-$(printf '%s' "$coord" | tr -c 'A-Za-z0-9_.\n-' '_')"
+      chunk_unit="$unit"
+      chunk_cmd=(systemd-run --user --scope -p Delegate=yes "--unit=$unit" --
+        "$driver" run --mode collect --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"}
+        --output "$output/chunks/$coord" --scratch "$scratch_root/$coord" --run-id "$run_id"
+        --chunk "$coord" --systemd "$systemd_version")
+      if [ "$target" = swarmail ]; then
+        chunk_cmd+=(--bin "swarmail=$candidate")
+      else
+        chunk_cmd+=(--bin "$target=$(bin_for "$target")")
+        [ -z "$(runtime_for "$target")" ] || chunk_cmd+=(--runtime "$target=$(runtime_for "$target")")
+      fi
+      [ -z "$commit" ] || chunk_cmd+=(--commit "$commit" --dirty false)
+    }
+
+    if [ "$dry_run" = 1 ]; then
+      for coord in $plan; do
+        chunk_command "$coord"
+        printf '%s\t' "$coord"
+        printf '%q ' "${bound[@]}" "${chunk_cmd[@]}"
+        printf '\n'
+      done
+      exit 0
+    fi
+
+    # Every value that reaches the ledger is plain text: a control character
+    # in one would need an escaper this script does not carry.
+    for w in "$protocol" "$sources" "$output" "$commit" "$driver" ${bin_args[@]+"${bin_args[@]}"} ${runtime_args[@]+"${runtime_args[@]}"}; do
+      case "$w" in
+        *[[:cntrl:]]*) blocked arguments "an argument carries a control character" ;;
+      esac
+    done
+    json_text() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+    step '' "$driver" check --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"}
+    [ "$step_status" -eq 0 ] \
+      || blocked collection-ready "the protocol and lock are not ready for collection (see above)"
+    mkdir -p "$output/chunks" "$output/ledger" "$scratch_root" \
+      || blocked prerequisites "cannot make $output"
+    fp_args=(footprint --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"} --bin "swarmail=$candidate")
+    for t in $declared; do
+      fp_args+=(--bin "$t=$(bin_for "$t")")
+      [ -z "$(runtime_for "$t")" ] || fp_args+=(--runtime "$t=$(runtime_for "$t")")
+    done
+    step "$output/footprint.json" "$driver" "${fp_args[@]}"
+    [ "$step_status" -eq 0 ] \
+      || blocked footprint "the footprint could not be computed (see above); $output is incomplete"
+    any_failed=0
+    for coord in $plan; do
+      [ "$interrupted" = 0 ] || interrupt_exit
+      chunk_command "$coord"
+      # The chunk is owned from before it starts until its ledger entry is
+      # written: a signal in between never abandons it.
+      owned="$coord" owned_unit="$chunk_unit.scope"
+      load_before=$(cat /proc/loadavg 2>/dev/null || echo unavailable)
+      started=$(date +%s)
+      run_step '' "${chunk_cmd[@]}"
+      status=$step_status
+      wall_ms=$((($(date +%s) - started) * 1000))
+      load_after=$(cat /proc/loadavg 2>/dev/null || echo unavailable)
+      # A timeout (124), a kill (137) or any status above 2 is an
+      # infrastructure failure, and so is a chunk that claims 0 or 1 without
+      # its completion index: such a chunk was never sealed. So is a chunk
+      # that was interrupted. A chunk that counts as 2 has failed; any other
+      # has sealed.
+      case "$status" in
+        0|1) [ -f "$output/chunks/$coord/index.json" ] || status=2 ;;
+        *) status=2 ;;
+      esac
+      [ "$interrupted" = 0 ] || status=2
+      if [ "$status" -eq 2 ]; then
+        judge_failed "$owned_unit"
+      else
+        judge_sealed "$owned_unit"
+        [ "$scope_clean" = true ] || status=2
+      fi
+      # A signal during the judgement: the entry is still written, with 2.
+      [ "$interrupted" = 0 ] || status=2
+      write_entry() {
+        printf '{"coordinate":"%s","command":"%s","exit":%s,"wall_ms":%s,"load_before":"%s","load_after":"%s","scope_clean":%s,"driver":"%s"}\n' \
+          "$(json_text "$coord")" "$(json_text "$(printf '%q ' "${bound[@]}" "${chunk_cmd[@]}")")" "$status" "$wall_ms" \
+          "$(json_text "$load_before")" "$(json_text "$load_after")" "$scope_clean" "$(json_text "$driver")" \
+          >"$output/ledger/$coord.json" \
+          || blocked ledger "cannot write the ledger entry of $coord"
+      }
+      write_entry
+      # The chunk is let go first and the interrupt read after: a signal
+      # while it was still owned was only recorded, and is seen here, so the
+      # entry is written again, with 2; one after it was let go ends the mode
+      # in the handler, not owning any chunk.
+      owned=''
+      if [ "$interrupted" != 0 ] && [ "$status" -ne 2 ]; then
+        status=2
+        write_entry
+      fi
+      if [ "$status" -eq 2 ]; then
+        # Nothing is resumed, overwritten or removed: the run is incomplete.
+        blocked "chunk-$coord" "the chunk ended in an infrastructure failure (interrupted: $interrupted, scope clean: $scope_clean); $output is incomplete and is never resumed"
+      fi
+      [ "$status" -eq 0 ] || any_failed=1
+    done
+    [ "$interrupted" = 0 ] || interrupt_exit
+    rmdir "$scratch_root" 2>/dev/null || true
+    # What a reader needs to repeat the run: the one command, as given. It is
+    # written only once every chunk has run, so an incomplete directory does
+    # not carry it.
+    {
+      printf '%s' "scripts/compare-mail.sh $mode"
+      for w in ${orig_args[@]+"${orig_args[@]}"}; do printf ' %q' "$w"; done
+      printf '\n'
+    } >"$output/reproduce.txt" || blocked prerequisites "cannot write $output/reproduce.txt"
+    adm=(--sources "$sources" ${doc_args[@]+"${doc_args[@]}"} --bin "swarmail=$candidate")
+    for t in $declared; do adm+=(--bin "$t=$(bin_for "$t")"); done
+    step '' "$driver" admit-v4 --seal "$output" "$protocol" "${adm[@]}"
+    [ "$step_status" -eq 0 ] || blocked admission "the run could not be sealed (see above)"
+    step '' "$driver" admit-v4 "$output" "$protocol" "${adm[@]}"
+    [ "$step_status" -eq 0 ] || blocked admission "the sealed run is not admitted (see above)"
+    echo "compare-mail collect-v4: wrote $output ($(printf '%s\n' "$plan" | wc -l | tr -d ' ') chunks)"
+    exit "$any_failed"
     ;;
   controls)
     controls_run

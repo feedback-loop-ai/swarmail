@@ -16,6 +16,10 @@ pub const DRAFT_PROTOCOL_VERSION: u32 = 1;
 /// separate run: protocol 2's collection stays as recorded, and no table or
 /// statistic merges a version 2 cell with a version 3 one.
 pub const PROTOCOL_VERSION_3: u32 = 3;
+/// The cost-to-operate method (accepted decision 0132 §1): the same nine
+/// targets under an enforced cgroup v2 budget. Another separate run with its
+/// own denominator; versions 2 and 3 stay as frozen.
+pub const PROTOCOL_VERSION_4: u32 = 4;
 /// Every protocol id the method has used; a new protocol never reuses one.
 pub const HISTORICAL_IDS: [&str; 3] = [
     "fair-mail-comparison-draft-2",
@@ -23,6 +27,38 @@ pub const HISTORICAL_IDS: [&str; 3] = [
     "fair-mail-comparison-v2",
 ];
 pub const PROTOCOL_V3_ID: &str = "fair-mail-comparison-v3";
+pub const PROTOCOL_V4_ID: &str = "fair-mail-comparison-v4";
+/// The one cap protocol 4 launches every capped target with (0132 §2.4): at
+/// least the largest fill plus every measured message.
+pub const V4_CAP: u64 = 150_000;
+/// The instant, counted from a chunk's start, at which the wrapper's
+/// `timeout` sends the chunk SIGTERM (`collect-v4`, 560 s; SIGKILL follows 30 s
+/// later and 0132 section 11.1's ten minutes hold with the scope's wait). The
+/// driver's chunk deadline plus everything that may still run after it must
+/// end before this.
+pub const CHUNK_KILL_MS: u64 = 560_000;
+/// What the chunk clock does not see: the scope's and the driver's start
+/// before it, and the sample stop, the read-back of the rows, the report and
+/// the seal after it.
+pub const CHUNK_MARGIN_MS: u64 = 30_000;
+/// The operator's bound on sessions, clients and workers (0132).
+pub const V4_MAX_SESSIONS: u32 = 32;
+/// The sections of 0132 §11 this driver does not implement yet. A frozen
+/// protocol 4 is refused by name while any is owed, so a plan of the
+/// implemented sections can never be admitted as "v4"; stories B, C and D
+/// each remove their entry.
+pub const OWED_SECTIONS: [&str; 3] = ["api", "waits", "testexec"];
+/// The profile whose cells are the headline row (acceptance answer 3).
+pub const HEADLINE_PROFILE: &str = "cost-c8-reused";
+/// The cost section's four profiles (0132 §4.6): name, sessions, connection.
+pub const COST_PROFILES: [(&str, u32, Connection); 4] = [
+    ("cost-c1-reused", 1, Connection::Reused),
+    ("cost-c8-reused", 8, Connection::Reused),
+    ("cost-c32-reused", 32, Connection::Reused),
+    ("cost-c32-fresh", 32, Connection::Fresh),
+];
+/// Lock 5's launch placeholder for a target's retention cap.
+pub const CAP_PLACEHOLDER: &str = "{max_messages}";
 
 /// Upper bounds the validator holds every count and deadline to: a
 /// protocol is an input file, and an absurd value must refuse rather than
@@ -225,10 +261,24 @@ pub struct Protocol {
     /// launches one and its report row carries no number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub does_not_start: Option<Vec<DoesNotStart>>,
+    /// Version 4: which cost profile leads the report (0132 §5.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headline: Option<Headline>,
+    /// Version 4: the digest of each tool's client module, frozen before
+    /// collection (0132 §9.2). Name to 64 hex digits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clients_sha256: Option<std::collections::BTreeMap<String, String>>,
     /// Every value the method still lacks, by name. Collection refuses
     /// while one remains; the list is how a draft says what it is missing
     /// instead of carrying a placeholder that looks like a value.
     pub unresolved: Vec<String>,
+}
+
+/// The cost profile whose cells are the headline row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Headline {
+    pub profile: String,
 }
 
 /// A target that does not start, with the document of its pin that records
@@ -311,6 +361,27 @@ pub struct Resources {
     /// Version 2: the profile this budget is, under its own name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<ResourceProfile>,
+    /// Version 4 (accepted decision 0132 §3): how the budget is enforced.
+    /// Always `cgroup_v2_user_scope`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mechanism: Option<String>,
+    /// Version 4: always `affinity_plus_quota`: two cores by affinity, and
+    /// `cpu.max` as the backstop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_placement: Option<String>,
+    /// Version 4: swap allowed to a target, always 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap_mib: Option<u32>,
+    /// Version 4: `pids.max` of a target's leaf, always 4096.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<u32>,
+    /// Version 4: the sampler's period, always 100 ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_interval_ms: Option<u64>,
+    /// Version 4: a chunk's own deadline, below the wrapper's kill (0132
+    /// §10). A profile not started by then is `chunk_deadline`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_deadline_ms: Option<u64>,
 }
 
 /// An unenforced budget is a separately named local profile, never the
@@ -559,23 +630,35 @@ impl Protocol {
     /// well formed. A draft can be structurally valid; collection needs
     /// [`collection_ready`] on top.
     pub fn validate(&self) -> Result<(), Refusal> {
+        self.validate_owing(&OWED_SECTIONS)
+    }
+
+    /// [`validate`](Self::validate) with the list of sections this driver
+    /// still owes passed in: a frozen protocol 4 is refused while it is not
+    /// empty. The driver passes [`OWED_SECTIONS`]; a test passes an empty
+    /// list to prove the freeze rule's other terms on their own.
+    pub fn validate_owing(&self, owed: &[&str]) -> Result<(), Refusal> {
         let mut out = Vec::new();
         if !matches!(
             self.protocol_version,
-            DRAFT_PROTOCOL_VERSION | PROTOCOL_VERSION | PROTOCOL_VERSION_3
+            DRAFT_PROTOCOL_VERSION | PROTOCOL_VERSION | PROTOCOL_VERSION_3 | PROTOCOL_VERSION_4
         ) {
             out.push(format!(
-                "protocol_version {} is not {DRAFT_PROTOCOL_VERSION}, {PROTOCOL_VERSION} or {PROTOCOL_VERSION_3}",
+                "protocol_version {} is not {DRAFT_PROTOCOL_VERSION}, {PROTOCOL_VERSION}, {PROTOCOL_VERSION_3} or {PROTOCOL_VERSION_4}",
                 self.protocol_version
             ));
         }
         // Target sets are scoped by version: protocol 2 and the drafts know
         // the original three, protocol 3 requires all eight.
-        let v3 = self.protocol_version == PROTOCOL_VERSION_3;
+        let v3 = matches!(
+            self.protocol_version,
+            PROTOCOL_VERSION_3 | PROTOCOL_VERSION_4
+        );
+        let v4 = self.protocol_version == PROTOCOL_VERSION_4;
         for t in &self.targets {
             if !v3 && !TargetKind::V2.contains(t) {
                 out.push(format!(
-                    "protocol_version {} refuses target {t}; only protocol_version {PROTOCOL_VERSION_3} declares it",
+                    "protocol_version {} refuses target {t}; only protocol_version {PROTOCOL_VERSION_3} and later declare it",
                     self.protocol_version
                 ));
             }
@@ -584,7 +667,8 @@ impl Protocol {
             for t in TargetKind::ALL {
                 if !self.targets.contains(&t) {
                     out.push(format!(
-                        "protocol_version {PROTOCOL_VERSION_3} needs target {t}"
+                        "protocol_version {} needs target {t}",
+                        self.protocol_version
                     ));
                 }
             }
@@ -674,6 +758,12 @@ impl Protocol {
             );
             if p.sessions > p.messages {
                 out.push(format!("{n}: more sessions than messages"));
+            }
+            if v4 && p.sessions > V4_MAX_SESSIONS {
+                out.push(format!(
+                    "{n}: {} sessions is above protocol 4's bound of {V4_MAX_SESSIONS}",
+                    p.sessions
+                ));
             }
             for r in &self.storage.retention {
                 let total = u64::from(p.messages) + u64::from(p.warmup_messages);
@@ -775,6 +865,9 @@ impl Protocol {
                 }
             }
         }
+        if v4 && !self.waits.is_empty() {
+            out.push("protocol 4 refuses wait profiles: the wait section is owed (0132 §7)".into());
+        }
         let r = &self.resources;
         bounded(
             &mut out,
@@ -871,7 +964,7 @@ impl Protocol {
                 ));
             }
         }
-        self.validate_sections(&mut out);
+        self.validate_sections(&mut out, owed);
         if v3 && self.status == Status::Frozen && !self.unresolved.is_empty() {
             out.push(format!(
                 "a frozen protocol has nothing unresolved, but {} entries remain",
@@ -888,8 +981,9 @@ impl Protocol {
     /// The version-specific sections. Version 1 carries none of them; a
     /// version 2 protocol carries every one, each held to what the code
     /// and the other sections say.
-    fn validate_sections(&self, out: &mut Vec<String>) {
+    fn validate_sections(&self, out: &mut Vec<String>, owed: &[&str]) {
         let r = &self.resources;
+        self.refuse_v4_fields_before_v4(out);
         let has = [
             self.claim.is_some(),
             self.budgets.is_some(),
@@ -945,6 +1039,195 @@ impl Protocol {
         if self.protocol_version == PROTOCOL_VERSION_3 {
             self.validate_v3(out);
         }
+        if self.protocol_version == PROTOCOL_VERSION_4 {
+            self.validate_eight(out);
+            self.validate_v4(out, owed);
+        }
+    }
+
+    /// Protocols 1 to 3 know none of version 4's fields, and each is refused
+    /// by name, so a v3 record cannot quietly grow a budget it never ran
+    /// under.
+    fn refuse_v4_fields_before_v4(&self, out: &mut Vec<String>) {
+        if self.protocol_version >= PROTOCOL_VERSION_4 {
+            return;
+        }
+        let r = &self.resources;
+        for (field, present) in [
+            ("resources.mechanism", r.mechanism.is_some()),
+            ("resources.cpu_placement", r.cpu_placement.is_some()),
+            ("resources.swap_mib", r.swap_mib.is_some()),
+            ("resources.tasks", r.tasks.is_some()),
+            (
+                "resources.sample_interval_ms",
+                r.sample_interval_ms.is_some(),
+            ),
+            ("resources.chunk_deadline_ms", r.chunk_deadline_ms.is_some()),
+            ("headline", self.headline.is_some()),
+            ("clients_sha256", self.clients_sha256.is_some()),
+        ] {
+            if present {
+                out.push(format!(
+                    "protocol_version {} refuses {field}; only protocol_version {PROTOCOL_VERSION_4} carries it",
+                    self.protocol_version
+                ));
+            }
+        }
+    }
+
+    /// Protocol 4's own rules (accepted decision 0132 §1, §3, §4.6, §5.6,
+    /// §10): its id, predecessor and reason; the exact enforced budget; the
+    /// cost section; the one cap; the headline; and, once frozen, what a
+    /// frozen record needs. Everything else is protocol 3's, shared.
+    fn validate_v4(&self, out: &mut Vec<String>, owed: &[&str]) {
+        if self.id != PROTOCOL_V4_ID {
+            out.push(format!(
+                "protocol 4's id is {PROTOCOL_V4_ID}, not {:?}",
+                self.id
+            ));
+        }
+        if self.supersedes.as_deref() != Some(PROTOCOL_V3_ID) {
+            out.push(format!("protocol 4 supersedes {PROTOCOL_V3_ID}"));
+        }
+        if !self
+            .change_reason
+            .as_deref()
+            .is_some_and(|r| r.contains("0132"))
+        {
+            out.push("protocol 4's change_reason must cite decision 0132".into());
+        }
+        let r = &self.resources;
+        if !r.enforced {
+            out.push("resources: protocol 4's budget is enforced".into());
+        }
+        if r.profile != Some(ResourceProfile::Enforced) {
+            out.push("resources: protocol 4's profile is enforced".into());
+        }
+        if r.mechanism.as_deref() != Some("cgroup_v2_user_scope") {
+            out.push("resources: protocol 4's mechanism is cgroup_v2_user_scope".into());
+        }
+        if r.cpu_placement.as_deref() != Some("affinity_plus_quota") {
+            out.push("resources: protocol 4's cpu_placement is affinity_plus_quota".into());
+        }
+        for (field, have, want) in [
+            ("cpus", r.cpus.map(u64::from), 2),
+            ("memory_mib", r.memory_mib.map(u64::from), 2048),
+            ("swap_mib", r.swap_mib.map(u64::from), 0),
+            ("tasks", r.tasks.map(u64::from), 4096),
+            ("sample_interval_ms", r.sample_interval_ms, 100),
+        ] {
+            if have != Some(want) {
+                out.push(format!(
+                    "resources: protocol 4's {field} is {want}, not {have:?}"
+                ));
+            }
+        }
+        // What may still run after the chunk deadline is one launch already
+        // in flight (the startup budget) and two teardowns (the cleanup
+        // budget twice); the margin covers the rest. The ceiling moves with
+        // the budgets.
+        let ceiling = CHUNK_KILL_MS
+            .saturating_sub(CHUNK_MARGIN_MS)
+            .saturating_sub(r.startup_deadline_ms)
+            .saturating_sub(r.cleanup_deadline_ms.saturating_mul(2));
+        match r.chunk_deadline_ms {
+            Some(ms) if (1..=ceiling).contains(&ms) => {}
+            other => out.push(format!(
+                "resources: chunk_deadline_ms {other:?} is outside 1..={ceiling} (CHUNK_KILL_MS {CHUNK_KILL_MS} - CHUNK_MARGIN_MS {CHUNK_MARGIN_MS} - startup_deadline_ms {} - 2 x cleanup_deadline_ms {})",
+                r.startup_deadline_ms, r.cleanup_deadline_ms
+            )),
+        }
+        // Swarmail always has a cap flag, so its entry states the cap: a
+        // null there would launch it uncapped.
+        if self
+            .storage
+            .retention
+            .iter()
+            .find(|e| e.target == TargetKind::Swarmail)
+            .is_none_or(|e| e.max_messages.is_none())
+        {
+            out.push(format!(
+                "storage: protocol 4 launches swarmail with a cap, so its retention entry states {V4_CAP}, not null"
+            ));
+        }
+        for e in &self.storage.retention {
+            if e.max_messages.is_some_and(|cap| cap != V4_CAP) {
+                out.push(format!(
+                    "storage: protocol 4 launches {} with the one cap {V4_CAP}, not {:?}",
+                    e.target, e.max_messages
+                ));
+            }
+        }
+        match &self.headline {
+            None => out.push("protocol 4 needs a headline profile".into()),
+            Some(h) if h.profile != HEADLINE_PROFILE => out.push(format!(
+                "headline profile is {HEADLINE_PROFILE}, not {:?}",
+                h.profile
+            )),
+            Some(h) => {
+                if self.status == Status::Frozen
+                    && !self.throughput.iter().any(|t| t.name == h.profile)
+                {
+                    out.push(format!(
+                        "headline profile {:?} is not a declared profile",
+                        h.profile
+                    ));
+                }
+            }
+        }
+        if !self.does_not_start(TargetKind::Mailslurper) {
+            out.push("protocol 4 publishes the official mailslurper row as does_not_start".into());
+        }
+        if self.status != Status::Frozen {
+            return;
+        }
+        if !owed.is_empty() {
+            out.push(format!(
+                "this driver cannot freeze protocol 4: the {} section(s) are owed (0132 §11)",
+                owed.join(", ")
+            ));
+        }
+        if self.throughput.len() != COST_PROFILES.len() {
+            out.push(format!(
+                "a frozen protocol 4 carries exactly the {} cost profiles",
+                COST_PROFILES.len()
+            ));
+        }
+        for (name, sessions, connection) in COST_PROFILES {
+            match self.throughput.iter().find(|t| t.name == name) {
+                None => out.push(format!("a frozen protocol 4 needs the profile {name}")),
+                Some(t) => {
+                    let exact = t.repetitions == 3
+                        && t.warmup_messages == 100
+                        && t.messages == 3000
+                        && t.sessions == sessions
+                        && t.connection == connection
+                        && t.send_deadline_ms == 300_000
+                        && t.verify_deadline_ms == 60_000;
+                    if !exact {
+                        out.push(format!(
+                            "{name}: a frozen protocol 4's cost table is exact (3 repetitions, 100 warmup, 3000 messages, {sessions} sessions, {connection:?}, 300000 ms send, 60000 ms verify)"
+                        ));
+                    }
+                }
+            }
+        }
+        match &self.clients_sha256 {
+            Some(c) if !c.is_empty() && c.iter().all(|(n, h)| is_name(n) && is_hex(h, 64)) => {}
+            _ => out.push(
+                "a frozen protocol 4 needs clients_sha256: one sha256 per client module".into(),
+            ),
+        }
+        for c in self.capabilities.iter().flatten() {
+            for (key, cap) in c.each() {
+                if cap.status == CapabilityStatus::NotInspected {
+                    out.push(format!(
+                        "a frozen protocol 4 has no not_inspected capability, but {} {key} is",
+                        c.target
+                    ));
+                }
+            }
+        }
     }
 
     /// Protocol 3's own rules (proposed decision 0130 §3): a new id that
@@ -970,6 +1253,17 @@ impl Protocol {
             .is_some_and(|r| r.contains("0130"))
         {
             out.push("protocol 3's change_reason must cite decision 0130".into());
+        }
+        self.validate_eight(out);
+    }
+
+    /// What protocols 3 and 4 share (0130 §3, kept by 0132 §2.1): the cyclic
+    /// rotations, one capability record per target, the published
+    /// does-not-start result and a product scope per provenance.
+    fn validate_eight(&self, out: &mut Vec<String>) {
+        if self.protocol_version == PROTOCOL_VERSION_4 && HISTORICAL_IDS.contains(&self.id.as_str())
+        {
+            out.push(format!("id {:?} reuses a historical protocol id", self.id));
         }
         let n = self.targets.len();
         if self.statistics.orders.len() != n {
@@ -1169,7 +1463,10 @@ impl Protocol {
                 out.push(format!("products: {t} needs exactly one product entry"));
                 continue;
             };
-            let v3 = self.protocol_version == PROTOCOL_VERSION_3;
+            let v3 = matches!(
+                self.protocol_version,
+                PROTOCOL_VERSION_3 | PROTOCOL_VERSION_4
+            );
             let tag_ok = |tag: &str| {
                 if v3 {
                     is_version_tag(tag)
@@ -1557,6 +1854,9 @@ pub const LOCK_VERSION: u32 = 3;
 /// pinned runtime, declared listeners, a launch environment, a config file
 /// and pending entries. Version 3 refuses each of them.
 pub const LOCK_VERSION_4: u32 = 4;
+/// Lock 4 plus the `{max_messages}` launch placeholder (accepted decision
+/// 0132 §1.2); only protocol 4 pairs with it.
+pub const LOCK_VERSION_5: u32 = 5;
 
 /// A fact the lock either observed or names as missing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1992,10 +2292,13 @@ impl SourceLock {
     /// ([`SourceLock::verify_files`]) or collection ([`collection_ready`]).
     pub fn validate(&self) -> Result<(), Refusal> {
         let mut out = Vec::new();
-        let v4 = self.lock_version == LOCK_VERSION_4;
-        if !matches!(self.lock_version, LOCK_VERSION | LOCK_VERSION_4) {
+        let v4 = matches!(self.lock_version, LOCK_VERSION_4 | LOCK_VERSION_5);
+        if !matches!(
+            self.lock_version,
+            LOCK_VERSION | LOCK_VERSION_4 | LOCK_VERSION_5
+        ) {
             out.push(format!(
-                "lock_version {} is not {LOCK_VERSION} or {LOCK_VERSION_4}",
+                "lock_version {} is not {LOCK_VERSION}, {LOCK_VERSION_4} or {LOCK_VERSION_5}",
                 self.lock_version
             ));
         }
@@ -2020,7 +2323,8 @@ impl SourceLock {
             for t in TargetKind::ALL {
                 if self.entry(t).is_none() {
                     out.push(format!(
-                        "lock_version {LOCK_VERSION_4} needs an entry for {t}"
+                        "lock_version {} needs an entry for {t}",
+                        self.lock_version
                     ));
                 }
             }
@@ -2030,7 +2334,7 @@ impl SourceLock {
                 continue;
             }
             if let Some(pin) = &e.pin {
-                validate_pin(&mut out, e.target, pin, v4);
+                validate_pin(&mut out, e.target, pin, self.lock_version);
             }
             if let Some(pending) = &e.pending {
                 validate_pending(&mut out, e.target, pending);
@@ -2742,6 +3046,71 @@ fn cap_check(
     }
 }
 
+/// Lock 5's launch with the placeholder at the cap flag replaced by the
+/// stated cap: the argv pair, `flag=value` or the `env:` entry the lock's
+/// `cap_flag` names. A capped target whose launch holds no placeholder at
+/// that flag (a literal number, or nothing) is refused by name. Anything the
+/// substitution leaves is the caller's to refuse.
+pub fn resolve_cap(
+    out: &mut Vec<String>,
+    t: TargetKind,
+    st: &StorageFacts,
+    launch: &[String],
+    env: &[[String; 2]],
+) -> (Vec<String>, Vec<[String; 2]>) {
+    let (mut launch, mut env) = (launch.to_vec(), env.to_vec());
+    let (Some(cap), Some(flag)) = (st.max_messages, &st.cap_flag) else {
+        return (launch, env);
+    };
+    let cap = cap.to_string();
+    let mut found = 0;
+    // The flag occurs exactly once in the launch, in any of its forms: a
+    // second occurrence (a literal after the placeholder, say) would leave
+    // the target with whichever the tool reads last.
+    let flag_forms = match flag.strip_prefix("env:") {
+        Some(name) => env.iter().filter(|[k, _]| k == name).count(),
+        None => launch
+            .iter()
+            .filter(|a| *a == flag || a.starts_with(&format!("{flag}=")))
+            .count(),
+    };
+    if flag_forms > 1 {
+        out.push(format!(
+            "{t}: the cap flag {flag} occurs {flag_forms} times in the launch; lock_version {LOCK_VERSION_5} sets it exactly once"
+        ));
+    }
+    match flag.strip_prefix("env:") {
+        Some(name) => {
+            for [k, v] in env.iter_mut() {
+                if k == name && v == CAP_PLACEHOLDER {
+                    *v = cap.clone();
+                    found += 1;
+                }
+            }
+        }
+        None => {
+            let joined = format!("{flag}={CAP_PLACEHOLDER}");
+            for i in 0..launch.len() {
+                if launch[i] == joined {
+                    launch[i] = format!("{flag}={cap}");
+                    found += 1;
+                } else if launch[i] == *flag
+                    && launch.get(i + 1).is_some_and(|v| v == CAP_PLACEHOLDER)
+                {
+                    launch[i + 1] = cap.clone();
+                    found += 1;
+                }
+            }
+        }
+    }
+    if found != 1 {
+        out.push(format!(
+            "{t}: lock_version {LOCK_VERSION_5} sets {flag} through {CAP_PLACEHOLDER} exactly once, and a literal cap is refused"
+        ));
+    }
+    (launch, env)
+}
+
 /// A document path confined to `sources/<target>/`, listed once, with a
 /// well-formed digest.
 fn document_path(out: &mut Vec<String>, t: TargetKind, earlier: &[&str], path: &str, sha: &str) {
@@ -2973,7 +3342,28 @@ fn validate_pending(out: &mut Vec<String>, t: TargetKind, p: &Pending) {
     }
 }
 
-fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin, v4: bool) {
+fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin, lock: u32) {
+    let v4 = lock >= LOCK_VERSION_4;
+    if lock < LOCK_VERSION_5 {
+        // The placeholder is lock 5's alone: an earlier lock's launch is
+        // literal, and a brace is never a stand-in for a value there.
+        let named = pin.launch.iter().any(|a| a.contains(CAP_PLACEHOLDER))
+            || pin
+                .launch_env
+                .iter()
+                .flatten()
+                .any(|[_, v]| v.contains(CAP_PLACEHOLDER))
+            || pin
+                .config_file
+                .iter()
+                .flat_map(|c| &c.lines)
+                .any(|l| l.contains(CAP_PLACEHOLDER));
+        if named {
+            out.push(format!(
+                "{t}: lock_version {lock} refuses the {CAP_PLACEHOLDER} placeholder; only lock_version {LOCK_VERSION_5} carries it"
+            ));
+        }
+    }
     if !v4 {
         for (field, present) in [
             ("image", pin.image.is_some()),
@@ -3025,13 +3415,22 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin, v4: bool) {
     }
     if v4 {
         let env = pin.launch_env.as_deref().unwrap_or_default();
+        // Lock 5 states the cap through the placeholder and nowhere else:
+        // it is resolved here to the pin's stated cap, so every other rule
+        // reads the launch the driver will run, and a placeholder that is
+        // not at the cap flag is still a brace no slot provides.
+        let (launch, env) = if lock >= LOCK_VERSION_5 {
+            resolve_cap(out, t, &pin.storage, &pin.launch, env)
+        } else {
+            (pin.launch.clone(), env.to_vec())
+        };
         match &pin.listeners {
-            Some(roles) => launch_checks(out, t, roles, &pin.launch, env, pin.config_file.as_ref()),
+            Some(roles) => launch_checks(out, t, roles, &launch, &env, pin.config_file.as_ref()),
             None => out.push(format!(
                 "{t}: lock_version {LOCK_VERSION_4} needs the declared listeners"
             )),
         }
-        cap_check(out, t, &pin.storage, &pin.launch, env);
+        cap_check(out, t, &pin.storage, &launch, &env);
         validate_runtime(out, t, pin);
         if let Some(m) = &pin.artifact.checked_members {
             checked_members(out, t, "artifact", m);
@@ -3547,12 +3946,13 @@ pub fn launchable(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> {
 }
 
 /// Protocol 2 (and the version 1 drafts) pair only with lock 3, protocol 3
-/// only with lock 4: neither reads the other's records (decision 0130 §3).
+/// only with lock 4 and protocol 4 only with lock 5: none reads another's
+/// records (decisions 0130 §3 and 0132 §1.3).
 pub fn pairing(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> {
-    let want = if p.protocol_version == PROTOCOL_VERSION_3 {
-        LOCK_VERSION_4
-    } else {
-        LOCK_VERSION
+    let want = match p.protocol_version {
+        PROTOCOL_VERSION_4 => LOCK_VERSION_5,
+        PROTOCOL_VERSION_3 => LOCK_VERSION_4,
+        _ => LOCK_VERSION,
     };
     if lock.lock_version == want {
         Ok(())
@@ -3654,9 +4054,12 @@ pub fn collection_ready(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> 
     if p.status != Status::Frozen {
         out.push("protocol is a draft, not frozen".into());
     }
-    if !matches!(p.protocol_version, PROTOCOL_VERSION | PROTOCOL_VERSION_3) {
+    if !matches!(
+        p.protocol_version,
+        PROTOCOL_VERSION | PROTOCOL_VERSION_3 | PROTOCOL_VERSION_4
+    ) {
         out.push(format!(
-            "protocol version {} is a historical draft; only versions {PROTOCOL_VERSION} and {PROTOCOL_VERSION_3} collect",
+            "protocol version {} is a historical draft; only versions {PROTOCOL_VERSION}, {PROTOCOL_VERSION_3} and {PROTOCOL_VERSION_4} collect",
             p.protocol_version
         ));
     }

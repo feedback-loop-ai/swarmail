@@ -791,6 +791,227 @@ commit's tree), and a config file may run in its own directory (`cwd`, the
 Alkemio fork reads `./config.json`). The operator may strike any of them when
 ruling on 0130; nothing was collected that a strike could invalidate.
 
+## Protocol v4: cost to operate under an enforced budget (story A, #359)
+
+This section makes no comparison claim. It records what story A of accepted
+decision [0132](../decisions/0132-mail-comparison-protocol-v4.md) built.
+Nothing was collected, no agent session started and nothing paid ran.
+
+**Records.** Protocol v3 and lock v4 are still the active
+[`protocol.json`](protocol.json) and [`sources.lock.json`](sources.lock.json),
+and v3 still collects from those paths: the eval crate's tests and the
+adapters' launch mode read the active lock, and v3 is frozen but not yet
+collected. Their bytes are also under [`history/`](history/)
+(`2026-11-07-protocol.v3.json`, `2026-11-07-sources.lock.v4.json`), identical,
+and the tests that mean "v3" read those copies, so the v4 freeze (story E) is a
+replacement of two files. The protocol v4 draft
+([`draft/protocol.v4.json`](draft/protocol.v4.json)) and source lock v5
+([`draft/sources.lock.v5.json`](draft/sources.lock.v5.json)) are a draft: this
+driver refuses a *frozen* protocol 4 while the `api`, `waits` and `testexec`
+sections are owed, and `collect-v4` refuses a draft at `check`, so nothing can
+be collected for a v4 yet. `admit-v4` admits a directory against the protocol it
+is given, a draft included, and the sealed run manifest carries the protocol's
+`protocol_status` (`draft` or `frozen`), so a draft run is labelled a draft in
+its own bytes and is never a v4 result. Protocol v4 pairs only with lock v5. No
+v4 cell merges with a v2 or v3 cell.
+
+**What it measures.** Under one enforced budget, per target and cost profile
+(`cost-c1-reused`, `cost-c8-reused`, `cost-c32-reused`, `cost-c32-fresh`; 3
+repetitions of 3,000 messages after 100 warmup): visible mail per
+target-CPU-second (and CPU-ms per 1,000 visible mail), the sampled peak of
+`memory.current` with the peak `anon` beside it, idle memory after readiness
+(the mean of the last two seconds of five without traffic) with the scratch
+tree's allocated bytes, and startup (ready ms and CPU-ms to ready). Each is
+the nearest-rank median over repetitions with the minimum and maximum beside
+it. A cell is ranked only *at equal results*: requested = accepted = visible,
+seen once, fidelity intact, and every measured window `measured`. Any other
+cell keeps its figures, is not ranked, and names its shortfall (`refused`,
+`lost`, `fidelity`, `oom`, `timeout`, `target_exited`, `duplicate`,
+`unexpected`, `ambiguous`). `mib_per_1k_retained` needs the API section's fill
+levels (story B) and is published as owed, never as a number. The official
+MailSlurper row is blocked in every cell. `mail_compare footprint` computes the
+fixed facts (download bytes, installed bytes including every pinned runtime
+tree, and a label, never a zero, for a runtime nothing pins) from the pinned
+bytes with no measurement window. Every row has an installed size, and the run
+headline carries each launched target's, copied from the run's
+`footprint.json`; where a size cannot be established `footprint` refuses and
+prints no document, and never publishes a `null`.
+
+**Installed size, and how to extract an archive.** The candidate's installed
+size is its release binary alone. For a row whose artifact is the executable
+(MailHog, the MailSlurper source build, GreenMail's jar, the Alkemio binary) it
+is the executable, its checked members and the whole runtime tree given with
+`--runtime`. For the three archive rows (Mailpit, smtp4dev, Inbucket) it is
+every regular file of the extracted archive: the *extraction root* is
+`--bin`'s path with the pin's `member` path removed from its end (a `--bin`
+that does not end with the member refuses by name), so extract each pinned
+archive into a new, empty directory of its own, one per archive, and pass the
+extracted member as `--bin`. Two targets that share a tree (one target's tree
+holding another's executable or tree, the candidate included, after the paths
+are resolved) refuse by name. A symbolic link and a directory count for
+nothing. Every tree `footprint` walked is listed beside its row in
+`installed_trees` with its `kind` (`runtime` or `archive`), `files`, `bytes` and
+`sha256`, the digest of the tree's listing, which is what
+
+```
+(cd ROOT && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum)
+```
+
+prints, so it can be checked by hand; a file name that is not UTF-8, or holds
+a newline or a backslash, refuses because `sha256sum` would escape it. What
+this does not prove, in plain words: the lock digests the archive and the
+executable, not every file of an extracted tree, so the installed tree is
+identified by its digest and not pinned. A second extraction of the same
+pinned archive can be compared with the one that was measured, and nothing
+more is claimed.
+
+**A figure that was not observed is `null`, never zero.** A window that was never
+opened (the chunk deadline came first, or the target was killed for memory or
+had exited before it was ready) has no counters: its CPU, memory, affinity and
+scratch fields are `null` in the rows, and so is every figure derived from it,
+in the per-repetition lists and in the cells. A median, minimum and maximum
+are taken over the repetitions that have a value and carry `n`, their count; a
+cell with none has `null` and no number. CPU, memory and the OOM and throttle
+counts come from a `measure` window that was opened, whatever ended it (an
+unranked cell keeps them); idle memory and the scratch footprint come from an
+`idle_ready` window that was `measured`, and startup from a `ready` window that
+was. The idle and startup cells carry `ranked` and `shortfalls` as the cost
+cells do.
+
+**The chunk deadline.** One instant per chunk, taken from the run clock, ends
+the chunk's work on the target: after it nothing new starts, and a connect, a
+send, a listing, a fidelity read or the idle wait still in flight is cancelled,
+not awaited. Only a launch already begun and the teardown are never cut, and
+`chunk_deadline_ms` is bounded so that those and a margin fit inside the
+wrapper's `timeout`, which sends SIGTERM at 560 s. A slow target is therefore a
+measured `timeout` row and exit 1, not a killed driver. A target that exits or is OOM-killed before it is
+ready is a measured outcome too (`target_exited`, `oom`) and the chunk goes on
+to its next profile; one that is alive but not ready at the startup deadline
+cannot be told from a broken launch, and stops the run with exit 2, so hold each
+target once under the budget (`mail_compare hold`) before a long run.
+
+**The budget and how it is enforced.** Every launch runs in its own cgroup v2
+leaf, owned by the driver, under the scope `systemd-run --user --scope -p
+Delegate=yes` makes for it: 2 CPUs (`cpu.max` `200000 100000`, and affinity to
+two distinct physical cores; their SMT siblings are left idle where they are
+inside the chunk's CPU set, and are recorded as `siblings_outside_set`
+otherwise, because the driver cannot keep a CPU outside its own set idle),
+2048 MiB
+(`memory.max`, no swap, `memory.oom.group` 1) and 4096 tasks. The driver
+writes each limit, reads it back and records it in the launch receipt; the
+child joins the leaf and sets its affinity between fork and exec, and the
+driver reads `/proc/<pid>/cgroup` and `Cpus_allowed_list` back after the spawn
+and refuses a mismatch. A sampler reads the leaf every 100 ms from its
+creation. Teardown runs the group sequence of 0092 §6 and 0093 §7 first, then
+writes `cgroup.kill`, requires `cgroup.procs` to be empty and removes the leaf;
+`cgroup_removed` joins the cleanup receipt, and a leaf launch is proved only
+with it true. Off Linux, or without a delegated cgroup v2 hierarchy with `cpu`,
+`memory` and `pids`, every v4 mode that launches refuses with exactly
+`resources: no delegated cgroup v2 (cpu memory pids)` and there is no
+unenforced fallback. A scratch directory on tmpfs is refused, because tmpfs
+pages are charged to the leaf as `shmem`.
+
+**What the figures do and do not say.**
+
+- The CPU budget is a ceiling, not a reservation: a target that wants less
+  uses less, and a busy neighbour on the host can still change a cell. The
+  host's load is recorded beside every chunk and gates nothing.
+- `memory.current` includes reclaimable page cache, so a target can sit at
+  its limit without an OOM. The peak `anon` is published beside it, and only a
+  rise of `oom_kill` over a window is an OOM; a rise of `max` alone is
+  pressure.
+- `nr_throttled` counts quota throttling, which also happens with the
+  affinity intact. It is not evidence of the affinity, which is read back
+  from `/proc` at launch and at the end of every window that was opened
+  (`ready`, `idle_ready` and `measure`); a window in which a task held more
+  than the two target CPUs is labelled `affinity_widened`, and ranking stays
+  what it was. A window whose leaf held no task at that instant has `null`, no
+  observation.
+- An empty leaf proves that no process remains in the leaf. It does not prove
+  that a same-uid process never moved itself to another cgroup the user owns.
+  The pinned targets are not adversarial and this is not hostile confinement.
+- A sealed run proves the directory's state at the seal: the index lists every
+  file with its digest. It does not prove that a host power loss cannot lose
+  the tail of `samples.jsonl` before the seal was written.
+- Storage stays unmatched: each target keeps its own backend, and every
+  capped target is launched with the same 150,000 cap through lock v5's
+  `{max_messages}` placeholder.
+
+**Reproduce.** A plan of the draft, launching nothing, then the proofs
+that need a delegated host:
+
+```bash
+scripts/compare-mail.sh collect-v4 --dry-run --output /var/tmp/v4-dry \
+  --protocol docs/evals/draft/protocol.v4.json \
+  --sources docs/evals/draft/sources.lock.v5.json --documents docs/evals \
+  --bin mailpit=… --bin mailhog=… --bin mailslurper-source-build=… \
+  --bin smtp4dev=… --bin inbucket=… --bin greenmail=… --runtime greenmail=… \
+  --bin alkemio-mailslurper=… --runtime alkemio-mailslurper=…
+
+# one real proof, as the only process of a delegated scope (cargo must not
+# be inside the scope):
+bin=$(cargo test --locked --test mail_compare --no-run --message-format=json \
+  | grep -o '"executable":"[^"]*mail_compare-[^"]*"' | tail -n1 | cut -d'"' -f4)
+cat /proc/loadavg
+timeout 600 taskset -c 0-31 systemd-run --user --scope --quiet -p Delegate=yes -- \
+  "$bin" --ignored --exact v4::v4_real_oom_at_two_gib --test-threads=1
+cat /proc/loadavg
+```
+
+`collect-v4` refuses by name before building: not Linux, a missing
+`systemd-run`, `systemctl`, `taskset` or `timeout`, an existing `--output`, a
+protocol that is not version 4 (the message names this draft route), fewer than
+3 CPUs in `min(nproc/4, 32)`, a shell whose `nproc` differs from `nproc --all`
+(the chunks are pinned to CPUs `0-<n-1>`), and, for a real run, a candidate
+that is uncommitted, dirty or not on `main`. On `main` means that `HEAD` is an
+ancestor of, or equal to, `refs/heads/main`, and of `refs/remotes/origin/main`
+where that ref exists (`git merge-base --is-ancestor`), so a pull-request
+branch is refused whether or not it has `main` merged in, an earlier commit of
+`main` is accepted (a published run must stay repeatable after `main` moves
+on), neither ref is a refusal, a ref that exists and is not a readable commit
+is a refusal, a `git status` that fails is a refusal, and nothing is fetched. Every process it starts
+after that (the two `cargo` builds, `targets`, `check`, `footprint`, each chunk
+and both admissions) runs under `timeout --kill-after=30 560 taskset -c
+0-<n-1>`: 560 s is the driver's `CHUNK_KILL_MS`, SIGTERM at 560 s and SIGKILL
+30 s later. Every `systemctl` call has its own `timeout` (1 s to ask, 3 s to
+kill with SIGKILL, 3 s to stop), so the ten minutes of 0132 §11.1 hold as three sums: a
+build, `targets`, `check`, `footprint` or an admission takes at most 560 + 30 =
+590 s; a chunk that failed, and the targets it left in its scope, at most 560 +
+30 + 1 + 3 + 3 = 597 s; a chunk that sealed at most 560 + 20 × (1 + 0.5) + 3 +
+3 = 596 s. Each chunk is one driver in its own scope: `timeout --kill-after=30
+560 taskset -c 0-<n-1> systemd-run --user --scope -p Delegate=yes --unit=… --
+<driver> run …`. A scope is judged from the word `systemctl --user is-active`
+prints, and it is clean only when that word is `inactive` or `failed`; no
+output, a failed or slow query or any other word is not known to be gone. After
+a chunk that sealed it asks up to twenty times, half a second apart, and the
+scope is clean at the first of the two words; after a chunk that failed it asks
+once and does not wait. A scope that is not gone is killed and stopped and the
+chunk counts as 2. A SIGINT, SIGTERM or SIGHUP goes at once to the step that
+is running, a build, `check`, `footprint` or an admission included, and ends
+the mode with exit 2; a chunk is judged as a failed one and written to the
+ledger with exit 2, even when the signal came during its scope's judgement or
+the write of its entry, and no later chunk starts. `reproduce.txt` is written only after the last chunk. Exit 1 is a measured
+outcome of a target; exit 2 stops the run as incomplete, and nothing is resumed
+or overwritten. `mail_compare hold` launches one target
+under the budget for the story that follows; `mail_compare admit-v4 [--seal]`
+recomputes the plan and every figure from the rows and names the first path
+that differs.
+
+**The host run gates the merge.** The fixture tests prove the driver's logic on
+plain files. They do not prove the join through `cgroup.procs`, `cgroup.kill`,
+the removal of a leaf, the OOM or the quota, and no reading of the code does.
+The five real proofs (`v4_real_oom_at_two_gib`, `v4_real_cpu_held_within_two`,
+`v4_real_setsid_escapee_removed`, `v4_real_hold_swarmail_under_budget`,
+`v4_real_cost_chunk_seals_and_admits`) therefore run on a host with a delegated
+cgroup v2 scope, one at a time, and their passing output with the load before
+and after is attached to the pull request. Each fails, never skips, without
+that scope, with the exact refusal above. The host needs `python3` on its
+`PATH` as well: `v4_real_oom_at_two_gib` allocates its memory with it, and
+without it that proof fails at the spawn, not with the refusal above. Until that output exists the story is
+not complete and the change is not merged. Stories B (API level), C
+(`wait-best`), D (test execution) and E (freeze and collection) are separate
+runs.
+
 ## What closes the remaining rows
 
 1. Build provenance for each executable needs genuine build evidence (an

@@ -101,7 +101,9 @@ pub fn launch_spec_for(
     let pin = lock
         .pin(kind)
         .ok_or_else(|| format!("the source lock pins no {kind}"))?;
-    crate::targets::LaunchSpec::from_pin(kind, binary, None, pin)
+    // The adapters' launch has no protocol: a lock 5 pin resolves its
+    // placeholder to the pin's own stated cap, which lock 4 never needs.
+    crate::targets::LaunchSpec::from_pin(kind, binary, None, pin, pin.storage.max_messages)
 }
 
 /// The SHA-256 of a backend's tool list as `tools/list` serves it: the

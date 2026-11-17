@@ -32,6 +32,9 @@ mod records;
 #[path = "../benches/mail_compare/report.rs"]
 mod report;
 #[allow(dead_code)]
+#[path = "../benches/mail_compare/resources.rs"]
+mod resources;
+#[allow(dead_code)]
 #[path = "../benches/mail_compare/runner.rs"]
 mod runner;
 #[allow(dead_code)]
@@ -52,6 +55,8 @@ use std::time::{Duration, Instant};
 
 #[path = "mail_compare/eight_targets.rs"]
 mod eight_targets;
+#[path = "mail_compare/v4.rs"]
+mod v4;
 
 const SMOKE: &[u8] = include_bytes!("mail_compare/swarmail-smoke.json");
 const SMOKE_LOCK: &[u8] = include_bytes!("mail_compare/swarmail-only.lock.json");
@@ -60,9 +65,14 @@ const SMOKE_LOCK: &[u8] = include_bytes!("mail_compare/swarmail-only.lock.json")
 /// proving them (proposed decision 0130 keeps both readable and launchable).
 const PROTOCOL: &[u8] = include_bytes!("../docs/evals/history/2026-10-30-protocol.v2.json");
 const SOURCES: &[u8] = include_bytes!("../docs/evals/history/2026-10-30-sources.lock.v3.json");
-/// The current records: protocol 3 and lock 4.
-const PROTOCOL_V3: &[u8] = include_bytes!("../docs/evals/protocol.json");
-const SOURCES_V4: &[u8] = include_bytes!("../docs/evals/sources.lock.json");
+/// Protocol 3 and lock 4, from their history copies (accepted decision 0132
+/// §1.4): they are byte-identical to the active files until the v4 freeze
+/// swaps those, and every test that means "v3" or "lock 4" reads the copy.
+const PROTOCOL_V3: &[u8] = include_bytes!("../docs/evals/history/2026-11-07-protocol.v3.json");
+const SOURCES_V4: &[u8] = include_bytes!("../docs/evals/history/2026-11-07-sources.lock.v4.json");
+/// The active records, which are still protocol 3 and lock 4.
+const ACTIVE_PROTOCOL: &[u8] = include_bytes!("../docs/evals/protocol.json");
+const ACTIVE_SOURCES: &[u8] = include_bytes!("../docs/evals/sources.lock.json");
 
 /// Characters beyond `[A-Za-z0-9._-]` that MailHog's own ids carry in the wire
 /// corpus: `=` and `@` (`<base64url, padded>@mailhog.example`). Only the
@@ -118,6 +128,9 @@ fn manifest(p: &Protocol, run_id: &str) -> Manifest {
         cpus: 1,
         prelaunch_utc: "2026-10-28T00:00:00Z".into(),
         planned: runner::plan(p),
+        chunk: None,
+        host: None,
+        planned_windows: None,
     }
 }
 
@@ -593,7 +606,7 @@ fn a_built_from_claim_or_a_draft_or_an_unlisted_enforcement_refuses_collection()
     let why = refusals(protocol::collection_ready(&draft, &s));
     for expected in [
         "protocol is a draft, not frozen",
-        "protocol version 1 is a historical draft; only versions 2 and 3 collect",
+        "protocol version 1 is a historical draft; only versions 2, 3 and 4 collect",
         "unresolved: binary build provenance",
         "mailpit: best wait unresolved: no route, producer",
         "mailpit does not store in memory",
@@ -1099,11 +1112,11 @@ fn the_source_lock_refuses_mutable_foreign_false_and_incomplete_pins() {
         "an unknown field never parses"
     );
     let mut v = json(SOURCES);
-    v["lock_version"] = 5.into();
+    v["lock_version"] = 6.into();
     v["checked_on"] = "today".into();
     let why = refusals(lock_from(v).unwrap().validate());
     assert!(
-        why.contains("lock_version 5 is not 3 or 4") && why.contains("checked_on"),
+        why.contains("lock_version 6 is not 3, 4 or 5") && why.contains("checked_on"),
         "{why}"
     );
     // A complete pin alone does not admit a draft protocol.
@@ -1721,7 +1734,7 @@ async fn launch_refusals_happen_before_spawn_and_partial_starts_are_cleaned() {
     .await
     .err()
     {
-        Some(targets::LaunchError::NotReady(_, facts)) => assert!(facts.proved(), "{facts:?}"),
+        Some(targets::LaunchError::NotReady(_, facts, _)) => assert!(facts.proved(), "{facts:?}"),
         other => panic!("expected a readiness refusal, got {other:?}"),
     }
     assert!(!leaf.exists());
@@ -1872,7 +1885,7 @@ async fn a_term_resistant_child_is_killed_within_one_composed_cleanup_budget() {
         .await;
         let took = begun.elapsed();
         let facts = match r.err() {
-            Some(targets::LaunchError::NotReady(why, facts)) => {
+            Some(targets::LaunchError::NotReady(why, facts, _)) => {
                 assert_eq!(why, "readiness deadline");
                 facts
             }
@@ -1911,7 +1924,7 @@ async fn output_pressure_never_stalls_the_child_or_its_cleanup() {
     )
     .await;
     match r.err() {
-        Some(targets::LaunchError::NotReady(why, facts)) => {
+        Some(targets::LaunchError::NotReady(why, facts, _)) => {
             assert_eq!(why, "readiness deadline");
             assert!(facts.proved() && !facts.forced_kill, "{facts:?}");
         }
@@ -2157,7 +2170,7 @@ async fn without_proc_bind_ownership_is_unknown_and_the_launch_refuses_after_cle
     )
     .await;
     match r.err() {
-        Some(targets::LaunchError::NotReady(why, facts)) => {
+        Some(targets::LaunchError::NotReady(why, facts, _)) => {
             assert_eq!(why, "smtp bind ownership unknown");
             assert!(facts.proved(), "{facts:?}");
         }
@@ -3636,7 +3649,9 @@ async fn the_adapter_refuses_incomplete_malformed_and_overbudget_upstream_answer
         expect(
             &mut c,
             "mailpit_wait",
-            serde_json::json!({"query": query, "timeout_ms": 1000}),
+            // Each answer ends the wait at once; the timeout only has to
+            // outlast a loaded host (verify runs beside other gates).
+            serde_json::json!({"query": query, "timeout_ms": 15000}),
             want,
         )
         .await;
@@ -3692,9 +3707,13 @@ async fn the_adapter_refuses_incomplete_malformed_and_overbudget_upstream_answer
     drop(c.w.take());
     assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
 
-    // Aggregate request and byte budgets end a long wait with an error.
+    // Aggregate request and byte budgets end a long wait with an error. The
+    // wait is far longer than either budget lasts, so the budget always ends
+    // it first: at 5 s an instrumented coverage build on a loaded host
+    // scanned only five times and timed out under the 600-byte budget.
     let tight = mailpit_mcp::Bounds {
         max_requests: 3,
+        operation: Duration::from_secs(65),
         ..small_bounds()
     };
     let mut c = Mcp::start(addr, tight, 1 << 20);
@@ -3703,7 +3722,7 @@ async fn the_adapter_refuses_incomplete_malformed_and_overbudget_upstream_answer
         .tool(
             1,
             "mailpit_wait",
-            serde_json::json!({"query": "neverq7", "timeout_ms": 5000}),
+            serde_json::json!({"query": "neverq7", "timeout_ms": 60000}),
         )
         .await;
     assert!(
@@ -3712,6 +3731,7 @@ async fn the_adapter_refuses_incomplete_malformed_and_overbudget_upstream_answer
     );
     let bytes = mailpit_mcp::Bounds {
         max_operation_bytes: 600,
+        operation: Duration::from_secs(65),
         ..small_bounds()
     };
     let mut c = Mcp::start(addr, bytes, 1 << 20);
@@ -3720,7 +3740,7 @@ async fn the_adapter_refuses_incomplete_malformed_and_overbudget_upstream_answer
         .tool(
             1,
             "mailpit_wait",
-            serde_json::json!({"query": "neverq7", "timeout_ms": 5000}),
+            serde_json::json!({"query": "neverq7", "timeout_ms": 60000}),
         )
         .await;
     assert!(
@@ -3873,12 +3893,20 @@ async fn full_pages_isolate_duplicate_moving_short_and_overlong_scans() {
         max_body: 1 << 20,
         max_operation_bytes: 8 << 20,
         max_pages: 3,
+        // Each scan page is 250 summaries; under a loaded verify a page took
+        // longer than small_bounds' 5 s request bound and the long case
+        // ended on that instead of its page budget. The budget stays the
+        // only limit any case can reach.
+        request: Duration::from_secs(20),
+        operation: Duration::from_secs(60),
         ..small_bounds()
     };
     let http = wire::Http::new(addr, bounds.request, bounds.max_body);
     let wait = |query: &str| mailpit_mcp::Call::Wait {
         query: query.into(),
-        timeout_ms: 2000,
+        // Every case ends before the timeout; it only has to outlast a
+        // loaded host (the 2 s it had failed verify under load).
+        timeout_ms: 20000,
     };
     for (query, want) in [
         ("dup", mailpit_mcp::ToolError::Incomplete),
@@ -4146,7 +4174,7 @@ fn pinned(t: TargetKind) -> targets::LaunchSpec {
         .unwrap_or_else(|| panic!("{var} must name the pinned {t} executable"));
     let lock = SourceLock::parse(SOURCES_V4).unwrap();
     let pin = lock.pin(t).unwrap();
-    targets::LaunchSpec::from_pin(t, binary.into(), None, pin).unwrap()
+    targets::LaunchSpec::from_pin(t, binary.into(), None, pin, None).unwrap()
 }
 
 async fn launch_pinned(t: TargetKind, scratch: &Path) -> targets::Owned {
@@ -4427,10 +4455,12 @@ async fn real_mailpit_through_the_adapter_lists_searches_reads_and_waits_faithfu
     );
 
     // Waits: present, future and empty, each answered after complete scans.
+    // A present mail ends the wait on its first scan; the timeout only has to
+    // outlast a loaded host (verify runs beside other gates).
     let v = call(
         &mut c,
         "mailpit_wait",
-        serde_json::json!({"query": corpus[2].token, "timeout_ms": 5000}),
+        serde_json::json!({"query": corpus[2].token, "timeout_ms": 15000}),
     )
     .await;
     assert_eq!(
@@ -4994,8 +5024,10 @@ async fn cancelling_one_batch_member_cancels_only_that_member() {
 
 #[test]
 fn the_mailpit_tool_list_digest_is_the_one_protocol_v2_froze() {
-    let protocol: serde_json::Value =
-        serde_json::from_slice(&std::fs::read("docs/evals/protocol.json").unwrap()).unwrap();
+    let protocol: serde_json::Value = serde_json::from_slice(
+        &std::fs::read("docs/evals/history/2026-11-07-protocol.v3.json").unwrap(),
+    )
+    .unwrap();
     let frozen = protocol["budgets"]["adapter"]["tools_sha256"]
         .as_str()
         .unwrap();
@@ -5282,7 +5314,7 @@ async fn the_mailhog_adapter_lists_searches_and_waits_over_real_smtp_into_swarma
         .tool(
             4,
             "mailhog_wait",
-            serde_json::json!({"kind": "containing", "query": "hog-one", "timeout_ms": 5000}),
+            serde_json::json!({"kind": "containing", "query": "hog-one", "timeout_ms": 15000}),
         )
         .await;
     assert!(!e, "{hit}");
@@ -5293,7 +5325,8 @@ async fn the_mailhog_adapter_lists_searches_and_waits_over_real_smtp_into_swarma
         .tool(
             5,
             "mailhog_wait",
-            serde_json::json!({"kind": "containing", "query": "never-sent", "timeout_ms": 300}),
+            // Long enough for two scans even on a loaded host.
+            serde_json::json!({"kind": "containing", "query": "never-sent", "timeout_ms": 2000}),
         )
         .await;
     assert!(
@@ -5396,8 +5429,10 @@ async fn launch_mode_is_not_a_receipt_when_cleanup_is_forced_to_fail() {
 
 #[test]
 fn launch_mode_uses_the_deadlines_protocol_v2_froze() {
-    let protocol: serde_json::Value =
-        serde_json::from_slice(&std::fs::read("docs/evals/protocol.json").unwrap()).unwrap();
+    let protocol: serde_json::Value = serde_json::from_slice(
+        &std::fs::read("docs/evals/history/2026-11-07-protocol.v3.json").unwrap(),
+    )
+    .unwrap();
     let r = &protocol["resources"];
     let l = mcp::launch_limits();
     assert_eq!(l.startup.as_millis() as u64, r["startup_deadline_ms"]);
@@ -5462,7 +5497,7 @@ async fn real_mailhog_through_the_adapter_lists_searches_and_waits() {
     let found = call(
         &mut c,
         "mailhog_wait",
-        serde_json::json!({"kind": "containing", "query": "hogtoken-one", "timeout_ms": 5000}),
+        serde_json::json!({"kind": "containing", "query": "hogtoken-one", "timeout_ms": 15000}),
     )
     .await;
     assert_eq!(found["status"], "found", "{found}");
@@ -5874,7 +5909,8 @@ async fn a_mailslurper_scan_walks_every_page_of_a_filtered_search_before_it_answ
     }))
     .await;
     let mut c = initialized_for::<mailslurper_mcp::Mailslurper>(addr).await;
-    let args = serde_json::json!({"to": "ann@x.invalid", "timeout_ms": 2000});
+    // Found on the first scan; the timeout only has to outlast a loaded host.
+    let args = serde_json::json!({"to": "ann@x.invalid", "timeout_ms": 15000});
     let (e, v) = c.tool(1, "mailslurper_wait", args).await;
     assert!(!e, "{v}");
     assert_eq!(v["status"], "found");
@@ -5926,7 +5962,7 @@ async fn launch_shim_with_fresh_slot(
         .await
         {
             Ok(owned) => return (slot, owned, attempt),
-            Err(targets::LaunchError::NotReady(targets::NO_LISTENER_ADDRESSES, facts)) => {
+            Err(targets::LaunchError::NotReady(targets::NO_LISTENER_ADDRESSES, facts, _)) => {
                 // Every refused launch proves its cleanup, the last one too.
                 assert!(
                     facts.proved(),
@@ -6077,6 +6113,7 @@ fn the_mailslurper_adapter_launches_main_s_source_build_pin() {
         PathBuf::from("/never/launched/mailslurper"),
         None,
         pin,
+        None,
     )
     .unwrap();
     assert_eq!(spec.template, wire_run.template);
@@ -7274,7 +7311,7 @@ async fn real_mailslurper_through_the_adapter_lists_searches_reads_and_waits() {
     let found = call(
         &mut c,
         "mailslurper_wait",
-        serde_json::json!({"message": "slurptoken-one", "timeout_ms": 5000}),
+        serde_json::json!({"message": "slurptoken-one", "timeout_ms": 15000}),
     )
     .await;
     assert_eq!(found["status"], "found", "{found}");
