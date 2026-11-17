@@ -434,3 +434,145 @@ async fn every_failure_after_the_holder_announced_closes_its_input_and_awaits_it
         }
     }
 }
+
+// ---- refusals keep their source to the row (R8) ------------------------------
+
+/// A stdio MCP server behind the real bridge: it holds every tool call until
+/// the bridge's whole in-flight bound is waiting on it, refuses the first
+/// one with the adapters' own busy error, and answers the rest with the read
+/// set's page.
+async fn holding_server(
+    page: Value,
+) -> (
+    tokio::io::WriteHalf<tokio::io::DuplexStream>,
+    tokio::io::BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let (bridge_side, server_side) = tokio::io::duplex(1 << 20);
+    let (bridge_r, bridge_w) = tokio::io::split(bridge_side);
+    let (server_r, mut server_w) = tokio::io::split(server_side);
+    tokio::spawn(async move {
+        let mut lines = tokio::io::BufReader::new(server_r).lines();
+        let mut held: Vec<Value> = Vec::new();
+        let mut released = false;
+        let mut first = true;
+        while let Ok(Some(line)) = lines.next_line().await {
+            let req: Value = serde_json::from_str(&line).unwrap();
+            let Some(id) = req.get("id").cloned() else {
+                continue;
+            };
+            let reply = |id: Value, method: &str| -> Value {
+                if method == "initialize" {
+                    json!({"jsonrpc": "2.0", "id": id, "result": {"protocolVersion": "2025-03-26"}})
+                } else {
+                    json!({"jsonrpc": "2.0", "id": id, "result": {"isError": false,
+                        "content": [{"type": "text", "text": page.to_string()}]}})
+                }
+            };
+            let method = req["method"].as_str().unwrap_or_default().to_owned();
+            let mut out = Vec::new();
+            if method != "tools/call" || released {
+                out.push(reply(id, &method));
+            } else if first {
+                first = false;
+                out.push(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000,
+                    "message": "too many tool calls in flight; retry later"}}));
+            } else {
+                held.push(id);
+                if held.len() + 1 >= swarmail_evals::bridge::MAX_IN_FLIGHT {
+                    released = true;
+                    out.extend(held.drain(..).map(|id| reply(id, "tools/call")));
+                }
+            }
+            for v in out {
+                let mut b = v.to_string().into_bytes();
+                b.push(b'\n');
+                if server_w.write_all(&b).await.is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    (bridge_w, tokio::io::BufReader::new(bridge_r))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn busy_refusals_reach_the_published_rows_by_source() {
+    let reads: Vec<api::Authored> = (0..api::K)
+        .map(|n| {
+            let mut a = api::author(7, Role::Read, n, &api::read_scope());
+            a.id = Some(format!("r{n}"));
+            a
+        })
+        .collect();
+    let page = scripted::swarmail_page(
+        &reads
+            .iter()
+            .map(|a| {
+                (
+                    a.id.clone().unwrap(),
+                    a.scope.address.clone(),
+                    a.subject.clone(),
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    let (to, from) = holding_server(page).await;
+    let bridge = swarmail_evals::bridge::Bridge::start(to, from)
+        .await
+        .unwrap();
+    // Thirty-two workers, initialization included in their disjoint ranges.
+    let surface = McpSurface {
+        workers: Arc::new(workers(&bridge.url(), 32).await),
+        verify: clients::Client::new("swarmail", "127.0.0.1:9".parse().unwrap()).unwrap(),
+        fixtures: Arc::new(reads),
+        smtp: "127.0.0.1:9".parse().unwrap(),
+        seed: 7,
+        clock: clock(),
+    };
+    let caps = |op| clients::mcp_capability("swarmail", op);
+    let mut c32 = cell(Operation::List, 32);
+    c32.warmup = 0;
+    let (recs, abandoned) = api::run_cells(&[c32], &caps, &surface, &api::NoMeter, clock(), None)
+        .await
+        .unwrap();
+    assert_eq!(abandoned, None);
+    let rows = &recs[0].measured.rows;
+    let reason = |r: &api::OpRow| match &r.outcome {
+        Outcome::Failed { reason } => reason.clone(),
+        other => other.class().to_owned(),
+    };
+    let mut seen = std::collections::BTreeMap::<String, usize>::new();
+    for r in rows {
+        *seen.entry(reason(r)).or_default() += 1;
+    }
+    // The adapter's queue and the bridge's bound both refused, each named;
+    // nothing else failed, nothing was retried (one row per start).
+    assert_eq!(seen.get("busy_adapter"), Some(&1), "{seen:?}");
+    assert!(
+        seen.get("busy_bridge").copied().unwrap_or(0) >= 1,
+        "{seen:?}"
+    );
+    assert!(seen.get("exact").copied().unwrap_or(0) >= 1, "{seen:?}");
+    assert_eq!(
+        seen.keys().cloned().collect::<Vec<_>>(),
+        ["busy_adapter", "busy_bridge", "exact"],
+        "{seen:?}"
+    );
+    assert_eq!(rows.len() as u32, recs[0].measured.started);
+    // The serialized row carries the source, as the report publishes it.
+    let busy = rows.iter().find(|r| reason(r) == "busy_bridge").unwrap();
+    let v = serde_json::to_value(busy).unwrap();
+    assert_eq!(
+        (v["outcome"].as_str(), v["reason"].as_str()),
+        (Some("failed"), Some("busy_bridge"))
+    );
+    // Completed refusals are known non-effects, never mutation uncertainty.
+    for r in ["busy_bridge", "busy_adapter", "rate_limited"] {
+        assert!(!api::uncertain(
+            Operation::Delete,
+            &Outcome::Failed { reason: r.into() }
+        ));
+    }
+    bridge.stop().await;
+}

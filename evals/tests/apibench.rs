@@ -230,8 +230,7 @@ async fn every_mcp_cell_of_the_candidate_is_exact() {
     // the 32-worker load: those are `rate_limited` failure rows, published,
     // never retried. A warmup it refuses blocks that cell. Nothing else may
     // fail, and no answer may be wrong.
-    let limited =
-        |r: &api::OpRow| matches!(&r.outcome, Outcome::Failed { reason } if reason == "status_429");
+    let limited = |r: &api::OpRow| matches!(&r.outcome, Outcome::Failed { reason } if reason == "rate_limited");
     for r in &recs {
         let warm = r.warmup.iter().flat_map(|w| w.rows.iter());
         assert!(

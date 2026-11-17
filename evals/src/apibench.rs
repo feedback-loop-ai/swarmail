@@ -13,7 +13,7 @@
 //! retried and never serialized around.
 
 use crate::api::{self, Done, Outcome, PlannedCell, Role, WaitTimes};
-use crate::clients::{self, Family, OpError, Page, Paging, Scope, Spend, Summary};
+use crate::clients::{self, Family, OpError, Page, Paging, Refusal, Scope, Spend, Summary};
 use crate::mcp::McpClient;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -32,36 +32,46 @@ pub fn id_range(n: u64) -> std::ops::Range<u64> {
     n * IDS_PER_CLIENT + 1..(n + 1) * IDS_PER_CLIENT
 }
 
-/// A tool call's failure, by source: a deadline is a timeout; a busy
-/// refusal names who refused; anything else is the class of error.
+/// The 0129 adapters' busy refusal (`benches/mail_compare/mcp.rs`), when
+/// their admission queue is full.
+pub const ADAPTER_BUSY: &str = "too many tool calls in flight";
+/// Swarmail's tool-call rate refusal (`src/mcp.rs`).
+pub const RATE_LIMITED: &str = "rate exceeds";
+
+/// A tool call's failure, by source (spec AC7, R8): a deadline is a
+/// timeout; a refusal names who refused — the bridge's bound, the adapter's
+/// queue, the target's rate limit — by the exact text each one sends.
 pub fn classify(e: &str, past_deadline: bool) -> Outcome {
+    api::from_error(op_error(e, past_deadline))
+}
+
+/// [`classify`] as the typed error the published row is made from.
+pub fn op_error(e: &str, past_deadline: bool) -> OpError {
     if past_deadline || e.contains("operation timed out") || e.contains("deadline") {
-        return Outcome::Timeout;
+        return OpError::Timeout;
     }
-    let reason = if e.contains("rate exceeds") {
-        "rate_limited"
-    } else if e.contains("busy") {
-        if e.contains("-32600") || e.contains("in flight") {
-            "busy_bridge"
-        } else {
-            "busy_adapter"
-        }
-    } else if e.contains("JSON-RPC error") {
-        "rpc_error"
-    } else if e.contains("tool error") {
-        "tool_error"
+    if e.contains(crate::mcp::OVERSIZED) {
+        return OpError::Oversized;
+    }
+    OpError::Refused(if e.contains(RATE_LIMITED) {
+        Refusal::RateLimited
+    } else if e.contains(crate::bridge::BUSY) {
+        Refusal::BusyBridge
+    } else if e.contains(crate::bridge::ID_IN_FLIGHT) {
+        Refusal::DuplicateId
+    } else if e.contains(ADAPTER_BUSY) || e.contains("busy") {
+        Refusal::BusyAdapter
     } else if e.contains("exhausted") {
-        "id_range_exhausted"
-    } else if e.contains(crate::mcp::OVERSIZED) {
-        "oversized"
+        Refusal::IdRangeExhausted
     } else if e.contains(crate::mcp::REDIRECT) {
-        "redirect"
+        Refusal::Redirect
+    } else if e.contains("JSON-RPC error") {
+        Refusal::RpcError
+    } else if e.contains("tool error") {
+        Refusal::ToolError
     } else {
-        "transport"
-    };
-    Outcome::Failed {
-        reason: reason.into(),
-    }
+        return OpError::Transport;
+    })
 }
 
 /// One worker's MCP session against one target.
@@ -89,22 +99,8 @@ impl Worker {
         let call = c.call_spending(tool, args, Some(left), &mut spend.bytes);
         match tokio::time::timeout(left, call).await {
             Ok(Ok(v)) => Ok(v),
-            Ok(Err(e)) => Err(match classify(&e, Instant::now() >= deadline) {
-                Outcome::Timeout => OpError::Timeout,
-                Outcome::Failed { reason } => match reason.as_str() {
-                    "transport" => OpError::Transport,
-                    "oversized" => OpError::Oversized,
-                    "redirect" => OpError::Status(302),
-                    // A refusal by the server or the path to it: the class is
-                    // kept as a status the row names (429 a rate limit, 503
-                    // a busy bridge or adapter, 502 any other tool or RPC
-                    // error), never retried.
-                    "rate_limited" => OpError::Status(429),
-                    "busy_bridge" | "busy_adapter" => OpError::Status(503),
-                    _ => OpError::Status(502),
-                },
-                _ => OpError::Status(502),
-            }),
+            // A completed refusal keeps its source to the row (R8).
+            Ok(Err(e)) => Err(op_error(&e, Instant::now() >= deadline)),
             Err(_) => Err(OpError::Timeout),
         }
     }

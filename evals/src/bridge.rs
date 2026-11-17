@@ -44,6 +44,10 @@ pub const MAX_BODY: usize = 64 << 10;
 /// The batch cap every adapter and Swarmail's own endpoint hold.
 pub const MAX_BATCH: usize = 16;
 pub const MAX_IN_FLIGHT: usize = 16;
+/// The bridge's own busy refusal: its in-flight bound is full.
+pub const BUSY: &str = "busy: too many requests in flight";
+/// The bridge's refusal of an id already in flight.
+pub const ID_IN_FLIGHT: &str = "a request with this id is in flight";
 /// The most request bodies in flight at once. An adapter admits eight tool
 /// calls at a time (a running one and a short queue) and refuses the rest
 /// with a busy error; this bound keeps a misbehaving client from queueing an
@@ -247,8 +251,7 @@ async fn post_mcp(State(sh): State<Arc<Shared>>, headers: HeaderMap, body: Bytes
             k
         };
         if inner.slots.len() >= MAX_IN_FLIGHT {
-            let busy =
-                |id: &Value| error_body(id.clone(), -32000, "busy: too many requests in flight");
+            let busy = |id: &Value| error_body(id.clone(), -32000, BUSY);
             return if batch {
                 let all: Vec<Value> = ids.iter().map(|i| busy(i)).collect();
                 json_response(StatusCode::OK, &Value::Array(all))
@@ -258,8 +261,7 @@ async fn post_mcp(State(sh): State<Arc<Shared>>, headers: HeaderMap, body: Bytes
         }
         if let Some(busy) = ids.iter().find(|i| inner.by_id.contains_key(&key_of(i))) {
             // An id already in flight: refuse, correlated, forward nothing.
-            let refuse =
-                |id: &Value| error_body(id.clone(), -32600, "a request with this id is in flight");
+            let refuse = |id: &Value| error_body(id.clone(), -32600, ID_IN_FLIGHT);
             return if batch {
                 let all: Vec<Value> = ids.iter().map(|i| refuse(i)).collect();
                 json_response(StatusCode::OK, &Value::Array(all))

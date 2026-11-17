@@ -417,6 +417,47 @@ pub enum OpError {
     Oversized,
     /// The capability table says no; never reached by a planned cell.
     NotSupported,
+    /// A completed refusal on the measured surface, kept by its source so
+    /// the published row names who refused (spec AC7, R8). Never retried.
+    Refused(Refusal),
+}
+
+/// Who refused a measured MCP call, and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Refusal {
+    /// The eval runner's bridge: its in-flight bound was full.
+    BusyBridge,
+    /// The 0129 adapter: its admission queue was full.
+    BusyAdapter,
+    /// The target's own tool-call rate limit (Swarmail's 1,024 a second).
+    RateLimited,
+    /// The bridge refused an id already in flight: never sent by disjoint
+    /// benchmark ranges, so seeing it is a correlation failure.
+    DuplicateId,
+    /// The client's own id range ran out before the call.
+    IdRangeExhausted,
+    /// Any other JSON-RPC error.
+    RpcError,
+    /// Any other tool error result.
+    ToolError,
+    /// A redirect, refused rather than followed.
+    Redirect,
+}
+
+impl Refusal {
+    pub fn name(self) -> &'static str {
+        match self {
+            Refusal::BusyBridge => "busy_bridge",
+            Refusal::BusyAdapter => "busy_adapter",
+            Refusal::RateLimited => "rate_limited",
+            Refusal::DuplicateId => "duplicate_id",
+            Refusal::IdRangeExhausted => "id_range_exhausted",
+            Refusal::RpcError => "rpc_error",
+            Refusal::ToolError => "tool_error",
+            Refusal::Redirect => "redirect",
+        }
+    }
 }
 
 impl OpError {
@@ -429,6 +470,7 @@ impl OpError {
             OpError::Incomplete => "incomplete".into(),
             OpError::Oversized => "oversized".into(),
             OpError::NotSupported => "not_supported".into(),
+            OpError::Refused(r) => r.name().into(),
         }
     }
 }
