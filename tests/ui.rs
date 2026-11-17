@@ -1292,8 +1292,25 @@ async fn the_reader_labels_ingest_and_query_time_data_apart() {
     ] {
         assert!(script.contains(needle), "the script lacks {needle}");
     }
+    // Only ARC has a positive verdict: accepted 0133 section 2 gives the
+    // report a typed chain state, which arcChip reads as it is. Everywhere
+    // else no chip claims a positive result.
+    let arc = script
+        .split_once("function arcChip(arc) {")
+        .and_then(|(_, rest)| rest.split_once("\n}\n"))
+        .map(|(body, _)| body)
+        .expect("the script has arcChip");
+    assert!(
+        arc.contains("arc.state"),
+        "arcChip reads the report's member"
+    );
+    assert!(script.contains("arcChip(report.body.arc)"));
+    let elsewhere = script.replacen(arc, "", 1);
     for positive in ["'pass'", "\"pass\"", "=pass"] {
-        assert!(!script.contains(positive), "the script claims {positive}");
+        assert!(
+            !elsewhere.contains(positive),
+            "the script claims {positive}"
+        );
     }
 }
 

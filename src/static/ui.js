@@ -857,6 +857,18 @@ function mechanismChip(findings, name) {
   return chip(worst.severity, name + ': ' + short);
 }
 
+// ARC has a typed chain state in the report (decision 0133 section 2), so
+// its chip reads that member, not the findings: pass is a positive result.
+function arcChip(arc) {
+  const state = arc && typeof arc.state === 'string' ? arc.state : 'not_evaluated';
+  let text = 'arc: ' + (state === 'not_evaluated' ? 'not evaluated' : state);
+  if (state === 'fail' && Number.isInteger(arc.failing_instance)) text += ' (i=' + arc.failing_instance + ')';
+  if (state === 'pass') return chip('clean', text);
+  if (state === 'fail') return chip('error', text);
+  if (state === 'none') return el('span', 'sev', text);
+  return chip('info', text);
+}
+
 // The authentication row comes from the query-time report, not from ingest,
 // and the report has no positive result: no finding is not a verdict.
 function authRow(report) {
@@ -871,7 +883,7 @@ function authRow(report) {
   } else if (report.state === 'ok') {
     const findings = Array.isArray(report.body.findings) ? report.body.findings : [];
     for (const name of ['dkim', 'spf', 'dmarc']) auth.appendChild(mechanismChip(findings, name));
-    auth.appendChild(el('span', 'sev', 'arc: not evaluated'));
+    auth.appendChild(arcChip(report.body.arc));
   }
   row.appendChild(auth);
   box.appendChild(row);
