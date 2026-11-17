@@ -409,11 +409,16 @@ fn v4_refuses_thirty_three_sessions() {
 }
 
 #[test]
-fn v4_refuses_a_wait_profile() {
+fn v4_holds_v3s_wait_profile_to_its_own_wait_rules() {
+    // Story C's wait section replaced the blanket refusal. v3's common poll
+    // is a valid draft `wait-common`; a frozen protocol 4 needs all three.
     let mut v = draft();
     let w = json(PROTOCOL_V3)["waits"][0].clone();
     v["waits"] = json!([w]);
-    assert!(why(v).contains("protocol 4 refuses wait profiles"));
+    p4(v.clone()).validate().unwrap();
+    v["status"] = json!("frozen");
+    let w = refusals(p4(v).validate_owing(&[]));
+    assert!(w.contains("a frozen protocol 4's wait profiles are"), "{w}");
 }
 
 #[test]
@@ -819,10 +824,13 @@ fn the_v4_draft_validates_and_is_not_ready_for_collection() {
     let w = refusals(protocol::collection_ready(&p, &l));
     assert!(w.contains("protocol is a draft, not frozen"), "{w}");
     assert!(w.contains("unresolved: story B"), "{w}");
-    // Nothing else is wrong with it: the refusals are the draft's own.
+    // Nothing else is wrong with it: the refusals are the draft's own, and
+    // MailHog's stream candidate stays unselected until its proof (T10b).
     for line in w.lines() {
         assert!(
-            line.contains("draft, not frozen") || line.starts_with("unresolved:"),
+            line.contains("draft, not frozen")
+                || line.starts_with("unresolved:")
+                || line.starts_with("mailhog: best wait unresolved: stream candidate"),
             "unexpected refusal: {line}"
         );
     }
@@ -937,7 +945,7 @@ fn the_v4_draft_differs_from_v3_only_where_0132_says() {
 }
 
 #[test]
-fn the_v4_draft_names_greenmail_rest_and_the_wait_budget_as_unresolved() {
+fn the_v4_draft_names_greenmail_rest_as_unresolved_and_restores_the_wait_budget() {
     let d = draft();
     let owed: Vec<&str> = d["unresolved"]
         .as_array()
@@ -954,19 +962,13 @@ fn the_v4_draft_names_greenmail_rest_and_the_wait_budget_as_unresolved() {
         "{rest}"
     );
     assert!(rest.contains("answer 8"), "{rest}");
-    let wait = owed
-        .iter()
-        .find(|x| x.contains("wait_operation_ms"))
-        .expect("an entry for the wait budget");
+    // Story C restored the wait budget with its profiles: the longest wait
+    // (30 s) plus one request bound (10 s), as v3's.
     assert!(
-        wait.contains("story C")
-            && wait.contains("10000")
-            && wait.contains("40000")
-            && wait.contains("no wait profile"),
-        "{wait}"
+        !owed.iter().any(|x| x.contains("wait_operation_ms")),
+        "{owed:?}"
     );
-    // The budget it names is the draft's, and v3's is what it says.
-    assert_eq!(d["budgets"]["wait_operation_ms"], 10_000);
+    assert_eq!(d["budgets"]["wait_operation_ms"], 40_000);
     assert_eq!(json(PROTOCOL_V3)["budgets"]["wait_operation_ms"], 40_000);
     // The claim says the POP3 read is the draft's.
     let claim = d["claim"]["statement"].as_str().unwrap();
@@ -3131,7 +3133,7 @@ fn the_blocked_row_has_no_number() {
     let b = &r.blocked[0];
     assert_eq!(b.target, TargetKind::Mailslurper);
     assert!(b.result.contains("does not start"));
-    assert_eq!(b.cells.len(), 4, "every cost profile is blocked");
+    assert_eq!(b.cells.len(), 7, "every cost and wait profile is blocked");
     assert!(b.cells.iter().all(|c| c.outcome == "blocked"));
     let v4 = r.v4.as_ref().unwrap();
     assert!(

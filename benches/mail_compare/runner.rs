@@ -273,6 +273,9 @@ pub fn row(
         occurrences: None,
         fidelity_ok: None,
         requests: None,
+        expected: None,
+        unrelated: None,
+        cause: None,
     }
 }
 
@@ -1026,6 +1029,7 @@ async fn waits(
     );
     let deadline = Duration::from_millis(w.deadline_ms);
     let step = Duration::from_millis(p.resources.request_deadline_ms);
+    let v4 = p.protocol_version == crate::protocol::PROTOCOL_VERSION_4;
     let mut failures = Vec::new();
     let mut fail = |r: &Row, want: &str| {
         if r.outcome != want {
@@ -1056,6 +1060,7 @@ async fn waits(
                 &msg.token,
                 deadline,
                 clock,
+                v4,
                 &mut r,
             )
             .await;
@@ -1088,6 +1093,7 @@ async fn waits(
                 &msg.token,
                 deadline,
                 clock,
+                v4,
                 &mut obs_row
             ),
             send_one(owned, &msg, step, clock, &mut send_row),
@@ -1099,6 +1105,9 @@ async fn waits(
             r.outcome = obs_row.outcome;
             r.reason = obs_row.reason;
             r.observed_ns = obs_row.observed_ns;
+            r.expected = obs_row.expected;
+            r.unrelated = obs_row.unrelated;
+            r.cause = obs_row.cause;
         } else {
             r.reason = send_row.reason;
         }
@@ -1119,6 +1128,7 @@ async fn waits(
             &token,
             empty_deadline,
             clock,
+            v4,
             &mut r,
         )
         .await;
@@ -1174,9 +1184,23 @@ pub fn connect_failure(r: &mut Row, code: u16, e: WireError) {
     });
 }
 
+/// What one observation answered: the tokens of a non-empty answer (every
+/// message it returned, related or not, before any deduplication), whether
+/// it came after the cutoff, and for a stream the cause of the scan that
+/// produced it.
+struct Answered {
+    tokens: Vec<String>,
+    late: bool,
+    cause: Option<ScanCause>,
+}
+
+use crate::observe::Cause as ScanCause;
+
 /// Observe `token` within `deadline` of now; sets outcome, observed_ns and
-/// the request count on `r`. An answer carrying any other message is
-/// `unrelated`, whatever else it carries.
+/// the request count on `r`, and on protocol 4 (`facts`) the answer's
+/// expected and unrelated counts and a stream answer's scan cause. An
+/// answer carrying any other message is `unrelated`, whatever else it
+/// carries; the counts keep both facts.
 #[allow(clippy::too_many_arguments)]
 async fn observe(
     owned: &Owned,
@@ -1185,24 +1209,22 @@ async fn observe(
     token: &str,
     deadline: Duration,
     clock: &Clock,
+    facts: bool,
     r: &mut Row,
 ) {
     let before = owned.requests();
-    let judge = |tokens: &[String]| {
-        if tokens.iter().any(|t| t != token) {
-            Some("unrelated")
-        } else if tokens.is_empty() {
-            None
-        } else {
-            Some("observed")
-        }
-    };
-    let result: Result<Option<&'static str>, &'static str> = match mode {
+    let result: Result<Option<Answered>, String> = match mode {
         Observation::Native => owned
             .native_wait(token, deadline)
             .await
-            .map(|a| a.and_then(|t| judge(&t)))
-            .map_err(|e| e.reason()),
+            .map(|a| {
+                a.filter(|t| !t.is_empty()).map(|tokens| Answered {
+                    tokens,
+                    late: false,
+                    cause: None,
+                })
+            })
+            .map_err(|e| e.reason().to_owned()),
         // The adapter's poll, so both observe under one tested rule
         // (proposed decision 0093 §5): a scan at once and `interval` after
         // each completed one; only a scan that ended by the cutoff can
@@ -1225,27 +1247,107 @@ async fn observe(
             };
             poll_wait(&mut s, frame, interval)
                 .await
-                .map(|v| match (v["status"].as_str(), judge(&s.last)) {
-                    (_, Some("unrelated")) => Some("unrelated"),
-                    (Some("found"), o) => o,
-                    (Some("late"), Some(_)) => Some("late"),
-                    _ => None,
+                .map(|v| {
+                    let late = match v["status"].as_str() {
+                        Some("found") => false,
+                        Some("late") => true,
+                        _ => return None,
+                    };
+                    Some(Answered {
+                        tokens: std::mem::take(&mut s.last),
+                        late,
+                        cause: None,
+                    })
                 })
-                .map_err(|e| e.reason())
+                .map_err(|e| e.reason().to_owned())
         }
+        Observation::Stream => stream_observe(owned, token, deadline, step).await,
     };
     let at = clock.now_ns();
     r.requests = Some(owned.requests() - before);
     match result {
-        Ok(Some(o)) => {
-            r.outcome = o.into();
+        Ok(Some(a)) => {
+            let expected = a.tokens.iter().filter(|t| *t == token).count() as u64;
+            let unrelated = a.tokens.len() as u64 - expected;
+            r.outcome = if unrelated > 0 {
+                "unrelated"
+            } else if a.late {
+                "late"
+            } else {
+                "observed"
+            }
+            .into();
             r.observed_ns = Some(at);
+            if facts {
+                r.expected = Some(expected);
+                r.unrelated = Some(unrelated);
+                r.cause = a.cause.map(|c| c.name().to_owned());
+            }
         }
-        Ok(None) => r.outcome = "timeout".into(),
+        Ok(None) => {
+            r.outcome = "timeout".into();
+            if facts {
+                r.expected = Some(0);
+                r.unrelated = Some(0);
+            }
+        }
         Err(e) => {
             r.outcome = "error".into();
-            r.reason = Some(e.into());
+            r.reason = Some(e);
         }
+    }
+}
+
+/// The scan a stream observation wakes: one complete [`Owned::find`].
+pub struct FindTokens<'a> {
+    pub owned: &'a Owned,
+    pub token: &'a str,
+}
+
+impl crate::observe::Scanner for FindTokens<'_> {
+    async fn scan(&self) -> Result<Vec<String>, String> {
+        self.owned
+            .find(self.token)
+            .await
+            .map_err(|e| e.reason().to_owned())
+    }
+}
+
+/// A stream observation of `token` (0132 §7.2), on the target's implemented
+/// channel; a target without one is an error, never a silent poll.
+async fn stream_observe(
+    owned: &Owned,
+    token: &str,
+    deadline: Duration,
+    step: Duration,
+) -> Result<Option<Answered>, String> {
+    let path = crate::protocol::stream_route(owned.kind)
+        .ok_or_else(|| format!("no stream is implemented for {}", owned.kind))?;
+    let channel = crate::observe::MailhogChannel {
+        addr: owned.http_addr,
+        path,
+        limits: crate::stream::Limits::DEFAULT,
+    };
+    let bounds = crate::observe::StreamBounds {
+        wait: deadline,
+        request: step,
+        backstop: Duration::from_millis(crate::protocol::STREAM_BACKSTOP_MS),
+        reconnect_gap: crate::observe::RECONNECT_GAP,
+    };
+    let scanner = FindTokens { owned, token };
+    let mut trace = crate::observe::Trace::default();
+    let start = tokio::time::Instant::now();
+    match crate::observe::stream_wait(&channel, &scanner, start, bounds, &mut trace).await? {
+        crate::observe::Seen::Answer {
+            tokens,
+            cause,
+            late,
+        } => Ok(Some(Answered {
+            tokens,
+            late,
+            cause: Some(cause),
+        })),
+        crate::observe::Seen::Timeout => Ok(None),
     }
 }
 

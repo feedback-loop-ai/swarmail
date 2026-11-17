@@ -1161,15 +1161,24 @@ mod evidence {
     const DRAFT_PROTOCOL: &[u8] = include_bytes!("../../docs/evals/draft/protocol.v4.json");
     const DRAFT_LOCK: &[u8] = include_bytes!("../../docs/evals/draft/sources.lock.v5.json");
 
-    /// The rows whose pinned sources show a push channel: candidates until
-    /// their real-binary proof (T10) selects them.
-    const STREAM_CANDIDATES: [&str; 4] = ["mailpit", "mailhog", "smtp4dev", "inbucket"];
-    /// The rows whose pinned sources show neither a wait nor a push route.
-    const POLL_ROWS: [&str; 4] = [
+    /// The rows whose pinned sources show a push channel.
+    const PUSH_CHANNELS: [&str; 4] = ["mailpit", "mailhog", "smtp4dev", "inbucket"];
+    /// The one push channel with readiness evidenced from captured bytes: a
+    /// candidate until its real-binary proof (T10) selects it.
+    const STREAM_CANDIDATES: [&str; 1] = ["mailhog"];
+    /// Push channels whose readiness or registration cannot be evidenced
+    /// from captured bytes (T5a, T5b): cited polls naming the gap.
+    const GAP_ROWS: [&str; 3] = ["mailpit", "smtp4dev", "inbucket"];
+    /// The rows whose pinned sources show neither a wait nor a push route,
+    /// and the gap rows.
+    const POLL_ROWS: [&str; 7] = [
         "mailslurper",
         "mailslurper-source-build",
         "greenmail",
         "alkemio-mailslurper",
+        "mailpit",
+        "smtp4dev",
+        "inbucket",
     ];
 
     fn pin_of<'a>(l: &'a mut Value, target: &str) -> &'a mut Value {
@@ -1307,9 +1316,22 @@ mod evidence {
             }
             assert!(!pin.wait.finding.trim().is_empty(), "{t}");
         }
-        // Every stream candidate's finding names the route, producer,
+        // A gap row names what is missing and says it is a gap, never proof
+        // that no channel exists.
+        for t in GAP_ROWS {
+            let kind = TargetKind::ALL.into_iter().find(|k| k.name() == t).unwrap();
+            let Fact::Observed(m) = &l.pin(kind).unwrap().wait.best_wait else {
+                panic!("{t} is a cited poll");
+            };
+            assert!(
+                m.contains("gap, not proof that no channel exists"),
+                "{t}: {m}"
+            );
+            assert!(m.contains("not in the tagged tree"), "{t}: {m}");
+        }
+        // Every push channel's finding names the route, producer,
         // registration and readiness it rests on, and what it loses.
-        for t in STREAM_CANDIDATES {
+        for t in PUSH_CHANNELS {
             let kind = TargetKind::ALL.into_iter().find(|k| k.name() == t).unwrap();
             let f = &l.pin(kind).unwrap().wait.finding;
             for part in ["Producer:", "Registration", "Readiness evidence:", "Loss"] {
@@ -1511,5 +1533,1092 @@ mod evidence {
             why.contains("inbucket: the captured tree listing does not rebuild to its own id"),
             "{why}"
         );
+    }
+}
+
+// ============================================================================
+// T2: the three wait profiles, Observation::Stream and lock v5's wait
+// documents (0132 §1.2, §7)
+// ============================================================================
+
+mod profiles {
+    use crate::protocol::{self, Observation};
+    use crate::{TargetKind, json, lock_from, protocol_from, refusals};
+    use serde_json::{Value, json};
+
+    const DRAFT_PROTOCOL: &[u8] = include_bytes!("../../docs/evals/draft/protocol.v4.json");
+    const DRAFT_LOCK: &[u8] = include_bytes!("../../docs/evals/draft/sources.lock.v5.json");
+
+    type Edit = Box<dyn Fn(&mut Value)>;
+
+    fn draft() -> Value {
+        json(DRAFT_PROTOCOL)
+    }
+
+    fn why(v: Value) -> String {
+        refusals(protocol_from(v).expect("parses").validate())
+    }
+
+    /// The observation of `target` in profile `i` (0 common, 1 best, 2 tight).
+    fn obs<'a>(v: &'a mut Value, i: usize, target: &str) -> &'a mut Value {
+        v["waits"][i]["observation"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|o| o["target"] == target)
+            .unwrap()
+    }
+
+    fn stream(o: &mut Value) {
+        o["mode"] = json!("stream");
+        o["interval_ms"] = Value::Null;
+        o["backstop_ms"] = json!(1000);
+    }
+
+    /// MailHog's wait-best row as the implemented stream.
+    fn mailhog_streams(v: &mut Value) {
+        stream(obs(v, 1, "mailhog"));
+    }
+
+    fn refuses_each(base: Value, cases: Vec<(&str, Edit)>) {
+        for (want, edit) in cases {
+            let mut v = base.clone();
+            edit(&mut v);
+            let w = why(v);
+            assert!(w.contains(want), "{want}: {w}");
+        }
+    }
+
+    #[test]
+    fn the_draft_carries_the_three_accepted_profiles_and_the_restored_budget() {
+        let p = protocol_from(draft()).unwrap();
+        p.validate().unwrap();
+        let names: Vec<_> = p.waits.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(names, protocol::WAIT_PROFILES);
+        for w in &p.waits {
+            assert_eq!(
+                (w.repetitions, w.present, w.future, w.empty),
+                (3, 100, 100, 20)
+            );
+            assert_eq!((w.deadline_ms, w.empty_deadline_ms), (30_000, 1_000));
+            assert_eq!(w.observation.len(), TargetKind::ALL.len());
+        }
+        let interval = |i: usize| -> Vec<Option<u64>> {
+            p.waits[i]
+                .observation
+                .iter()
+                .map(|o| o.interval_ms)
+                .collect()
+        };
+        assert!(interval(0).iter().all(|i| *i == Some(100)));
+        assert!(interval(2).iter().all(|i| *i == Some(10)));
+        for o in &p.waits[1].observation {
+            let want = if o.target == TargetKind::Swarmail {
+                Observation::Native
+            } else {
+                // No stream is selected before its proof runs on the host.
+                Observation::Poll
+            };
+            assert_eq!(o.mode, want, "{}", o.target);
+            assert!(o.evidence.as_ref().is_some_and(|e| !e.is_empty()));
+            assert!(o.justification.starts_with("wait-best: "));
+        }
+        let b = p.budgets.as_ref().unwrap();
+        assert_eq!(
+            b.wait_operation_ms,
+            30_000 + p.resources.request_deadline_ms
+        );
+        // The draft agrees with the lock: every citation is a document of
+        // the pin, and every mode is the pin's best wait.
+        let l = lock_from(json(DRAFT_LOCK)).unwrap();
+        protocol::waits_match(&p, &l).unwrap();
+        // A tight poll is labelled as no tool's documented method.
+        assert!(
+            p.waits[2].observation[0]
+                .justification
+                .contains("no tool's documented method")
+        );
+    }
+
+    #[test]
+    fn mailhogs_stream_row_validates_and_its_variants_refuse() {
+        let mut v = draft();
+        mailhog_streams(&mut v);
+        protocol_from(v.clone()).unwrap().validate().unwrap();
+        let cases: Vec<(&str, Edit)> = vec![
+            (
+                "stream carries a poll interval",
+                Box::new(|v| obs(v, 1, "mailhog")["interval_ms"] = json!(100)),
+            ),
+            (
+                "stream's backstop_ms is 1000, not None",
+                Box::new(|v| {
+                    obs(v, 1, "mailhog")
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("backstop_ms");
+                }),
+            ),
+            (
+                "stream's backstop_ms is 1000, not Some(500)",
+                Box::new(|v| obs(v, 1, "mailhog")["backstop_ms"] = json!(500)),
+            ),
+            (
+                "carries a backstop but does not stream",
+                Box::new(|v| obs(v, 1, "mailpit")["backstop_ms"] = json!(1000)),
+            ),
+            (
+                "no stream with evidenced readiness is implemented for mailpit",
+                Box::new(|v| stream(obs(v, 1, "mailpit"))),
+            ),
+            (
+                "wait-common: mailhog streams, and only protocol 4's wait-best may",
+                Box::new(|v| stream(obs(v, 0, "mailhog"))),
+            ),
+        ];
+        refuses_each(v, cases);
+    }
+
+    #[test]
+    fn wrong_modes_intervals_and_citations_refuse_by_name() {
+        let native = |o: &mut Value| {
+            o["mode"] = json!("native");
+            o["interval_ms"] = Value::Null;
+        };
+        let cases: Vec<(&str, Edit)> = vec![
+            (
+                "wait-common: swarmail observes by Native",
+                Box::new(move |v| native(obs(v, 0, "swarmail"))),
+            ),
+            (
+                "wait-common: mailpit polls at Some(10) ms, not the common 100 ms",
+                Box::new(|v| obs(v, 0, "mailpit")["interval_ms"] = json!(10)),
+            ),
+            (
+                "wait-tight: mailpit observes by Poll at Some(100) ms",
+                Box::new(|v| obs(v, 2, "mailpit")["interval_ms"] = json!(100)),
+            ),
+            (
+                "wait-best: swarmail observes by Poll",
+                Box::new(|v| {
+                    let o = obs(v, 1, "swarmail");
+                    o["mode"] = json!("poll");
+                    o["interval_ms"] = json!(100);
+                }),
+            ),
+            (
+                "wait-best: greenmail observes by Poll at Some(10) ms",
+                Box::new(|v| obs(v, 1, "greenmail")["interval_ms"] = json!(10)),
+            ),
+            (
+                "no source-verified native wait is implemented for mailpit",
+                Box::new(move |v| native(obs(v, 1, "mailpit"))),
+            ),
+            (
+                "wait-best: inbucket cites no evidence for its method",
+                Box::new(|v| {
+                    obs(v, 1, "inbucket")
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("evidence");
+                }),
+            ),
+            (
+                "wait-tight: inbucket cites evidence, but only wait-best chooses a method",
+                Box::new(|v| obs(v, 2, "inbucket")["evidence"] = json!(["sources/x.go"])),
+            ),
+            (
+                "wait-best: inbucket cites an empty evidence list or entry",
+                Box::new(|v| obs(v, 1, "inbucket")["evidence"] = json!([])),
+            ),
+            (
+                "wait-best: inbucket cites an empty evidence list or entry",
+                Box::new(|v| obs(v, 1, "inbucket")["evidence"] = json!([" "])),
+            ),
+            (
+                "wait-best: inbucket cites sources/x.go twice",
+                Box::new(|v| {
+                    obs(v, 1, "inbucket")["evidence"] = json!(["sources/x.go", "sources/x.go"])
+                }),
+            ),
+            (
+                "wait-best: smtp4dev needs exactly one observation mode",
+                Box::new(|v| {
+                    v["waits"][1]["observation"]
+                        .as_array_mut()
+                        .unwrap()
+                        .retain(|o| o["target"] != "smtp4dev");
+                }),
+            ),
+            (
+                "wait-best: smtp4dev needs exactly one observation mode",
+                Box::new(|v| {
+                    let o = obs(v, 1, "smtp4dev").clone();
+                    v["waits"][1]["observation"].as_array_mut().unwrap().push(o);
+                }),
+            ),
+            (
+                "profile name \"wait-best\" is malformed or duplicated",
+                Box::new(|v| {
+                    let w = v["waits"][1].clone();
+                    v["waits"].as_array_mut().unwrap().push(w);
+                }),
+            ),
+            (
+                "wait-later: protocol 4's wait profiles are",
+                Box::new(|v| v["waits"][2]["name"] = json!("wait-later")),
+            ),
+            (
+                "budgets: wait_operation_ms 10000 is not the longest wait 30000 plus one request bound",
+                Box::new(|v| v["budgets"]["wait_operation_ms"] = json!(10_000)),
+            ),
+        ];
+        refuses_each(draft(), cases);
+    }
+
+    #[test]
+    fn a_frozen_protocol_four_holds_exactly_the_three_exact_profiles() {
+        let frozen = |edit: &dyn Fn(&mut Value)| {
+            let mut v = draft();
+            v["status"] = json!("frozen");
+            edit(&mut v);
+            refusals(protocol_from(v).unwrap().validate_owing(&[]))
+        };
+        let clean = frozen(&|_| {});
+        assert!(!clean.contains("wait profile"), "{clean}");
+        let w = frozen(&|v| {
+            v["waits"].as_array_mut().unwrap().remove(2);
+        });
+        assert!(
+            w.contains("a frozen protocol 4's wait profiles are [\"wait-common\", \"wait-best\", \"wait-tight\"] in that order, not [\"wait-common\", \"wait-best\"]"),
+            "{w}"
+        );
+        let w = frozen(&|v| v["waits"].as_array_mut().unwrap().swap(0, 2));
+        assert!(w.contains("in that order"), "{w}");
+        for (field, value) in [
+            ("repetitions", json!(2)),
+            ("present", json!(99)),
+            ("future", json!(10)),
+            ("empty", json!(19)),
+            ("deadline_ms", json!(20_000)),
+            ("empty_deadline_ms", json!(2_000)),
+        ] {
+            let w = frozen(&|v| v["waits"][1][field] = value.clone());
+            assert!(
+                w.contains("wait-best: a frozen protocol 4's wait profile is exact"),
+                "{field}: {w}"
+            );
+        }
+        // A draft (a smoke fixture) may hold fewer, smaller profiles.
+        let mut v = draft();
+        v["waits"].as_array_mut().unwrap().truncate(1);
+        v["waits"][0]["present"] = json!(2);
+        protocol_from(v).unwrap().validate().unwrap();
+    }
+
+    #[test]
+    fn earlier_protocols_refuse_the_v4_only_wait_fields_and_streams() {
+        let v3 = json(crate::PROTOCOL_V3);
+        protocol_from(v3.clone()).unwrap().validate().unwrap();
+        for (field, value) in [("backstop_ms", json!(1000)), ("evidence", json!(["x"]))] {
+            let mut v = v3.clone();
+            v["waits"][0]["observation"][1][field] = value;
+            let w = refusals(protocol_from(v).unwrap().validate());
+            let want = format!("protocol_version 3 refuses waits[].observation[].{field}");
+            assert!(w.contains(&want), "{w}");
+        }
+        let mut v = v3;
+        let o = v["waits"][0]["observation"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|o| o["target"] == "mailhog")
+            .unwrap();
+        o["mode"] = json!("stream");
+        o["interval_ms"] = Value::Null;
+        let w = refusals(protocol_from(v).unwrap().validate());
+        assert!(
+            w.contains("wait-common: mailhog streams, and only protocol 4's wait-best may"),
+            "{w}"
+        );
+        // The frozen v2 and v3 bytes still validate and serialize unchanged.
+        for bytes in [crate::PROTOCOL, crate::PROTOCOL_V3] {
+            let p = protocol::Protocol::parse(bytes).unwrap();
+            p.validate().unwrap();
+            assert_eq!(serde_json::to_value(&p).unwrap(), json(bytes));
+        }
+    }
+
+    fn pin_mut<'a>(l: &'a mut Value, t: &str) -> &'a mut Value {
+        &mut l["entries"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|e| e["target"] == t)
+            .unwrap()["pin"]
+    }
+
+    #[test]
+    fn wait_best_agrees_with_the_pins_best_wait_and_cites_its_documents() {
+        let lock = json(DRAFT_LOCK);
+        let check = |pv: Value, lv: Value| {
+            refusals(protocol::waits_match(
+                &protocol_from(pv).unwrap(),
+                &lock_from(lv).unwrap(),
+            ))
+        };
+        // MailHog streams only once its pin's best wait says so.
+        let mut streaming = draft();
+        mailhog_streams(&mut streaming);
+        let w = check(streaming.clone(), lock.clone());
+        assert!(
+            w.contains("wait-best: mailhog observes by Stream, but its pin's best wait is Poll"),
+            "{w}"
+        );
+        let mut selected = lock.clone();
+        pin_mut(&mut selected, "mailhog")["wait"]["best_wait"] =
+            json!({"observed": "stream: the api/v2/websocket proof passed"});
+        protocol::waits_match(
+            &protocol_from(streaming).unwrap(),
+            &lock_from(selected.clone()).unwrap(),
+        )
+        .unwrap();
+        let w = check(draft(), selected.clone());
+        assert!(
+            w.contains("wait-best: mailhog observes by Poll, but its pin's best wait is Stream"),
+            "{w}"
+        );
+        let mut odd = selected;
+        pin_mut(&mut odd, "mailhog")["wait"]["best_wait"] = json!({"observed": "carrier pigeon"});
+        let w = check(draft(), odd);
+        assert!(
+            w.contains("mailhog: best wait \"carrier pigeon\" names neither a poll nor a stream"),
+            "{w}"
+        );
+        // A citation must be one of the pin's documents, or the candidate's
+        // repo: path.
+        let mut v = draft();
+        obs(&mut v, 1, "greenmail")["evidence"] = json!(["sources/greenmail/nothing.yml"]);
+        let w = check(v.clone(), lock.clone());
+        assert!(
+            w.contains("wait-best: greenmail cites \"sources/greenmail/nothing.yml\", which is no document of its pin"),
+            "{w}"
+        );
+        // Collection reports the disagreement too.
+        let w = refusals(protocol::collection_ready(
+            &protocol_from(v).unwrap(),
+            &lock_from(lock.clone()).unwrap(),
+        ));
+        assert!(w.contains("nothing.yml"), "{w}");
+        let mut v = draft();
+        obs(&mut v, 1, "swarmail")["evidence"] = json!(["docs/decisions/0002.md"]);
+        let w = check(v, lock);
+        assert!(w.contains("wait-best: swarmail cites"), "{w}");
+    }
+
+    #[test]
+    fn lock_four_refuses_the_v5_only_wait_documents_by_name() {
+        // A version-only downgrade, with every cap placeholder made literal
+        // so that only the wait documents can be refused.
+        let text = String::from_utf8(DRAFT_LOCK.to_vec()).unwrap();
+        let mut down: Value =
+            serde_json::from_str(&text.replace(protocol::CAP_PLACEHOLDER, "150000")).unwrap();
+        down["lock_version"] = json!(4);
+        let w = refusals(lock_from(down).unwrap().validate());
+        assert!(!w.contains("placeholder"), "{w}");
+        for (t, doc) in [
+            (
+                "mailhog",
+                "vendor/github.com/mailhog/MailHog-Server/api/v2.go",
+            ),
+            ("mailhog", "sources/mailhog/mailhog-server-api-v2.go"),
+            ("mailpit", "server/server.go"),
+            ("smtp4dev", "Rnwood.Smtp4dev/Hubs/NotificationsHub.cs"),
+            ("inbucket", "sources/inbucket/inbucket-msghub-hub.go"),
+            (
+                "alkemio-mailslurper",
+                "sources/alkemio-mailslurper/alkemio-setup-services-listener.go",
+            ),
+        ] {
+            let want = format!(
+                "{t}: lock_version 4 refuses the v5-only wait document {doc}; only lock_version 5 carries it (0132 §1.2)"
+            );
+            assert!(w.contains(&want), "{want}: {w}");
+        }
+        // What lock 4 froze is not refused.
+        assert!(!w.contains("document server/websockets/hub.go;"), "{w}");
+        assert!(
+            !w.contains("document sources/mailpit/mailpit-websockets-hub.go;"),
+            "{w}"
+        );
+
+        // One wait document inserted into the valid historical lock 4.
+        let valid = json(crate::SOURCES_V4);
+        lock_from(valid.clone()).unwrap().validate().unwrap();
+        let mut v5 = json(DRAFT_LOCK);
+        let pin5 = pin_mut(&mut v5, "mailhog").clone();
+        let reviewed = pin5["wait"]["reviewed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["upstream_path"] == "vendor/github.com/mailhog/MailHog-Server/api/v2.go")
+            .unwrap()
+            .clone();
+        let doc = pin5["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["path"] == "sources/mailhog/mailhog-server-api-v2.go")
+            .unwrap()
+            .clone();
+        let edit = |f: &dyn Fn(&mut Value)| {
+            let mut l = valid.clone();
+            f(pin_mut(&mut l, "mailhog"));
+            refusals(lock_from(l).unwrap().validate())
+        };
+        let w = edit(&|pin| {
+            pin["wait"]["reviewed"]
+                .as_array_mut()
+                .unwrap()
+                .push(reviewed.clone())
+        });
+        assert!(
+            w.contains("mailhog: lock_version 4 refuses the v5-only wait document vendor/github.com/mailhog/MailHog-Server/api/v2.go"),
+            "{w}"
+        );
+        let w = edit(&|pin| pin["documents"].as_array_mut().unwrap().push(doc.clone()));
+        assert!(
+            w.contains("mailhog: lock_version 4 refuses the v5-only wait document sources/mailhog/mailhog-server-api-v2.go"),
+            "{w}"
+        );
+        assert!(!w.contains("placeholder"), "{w}");
+        // Every historical lock still validates, and lock 5 carries them all.
+        lock_from(json(crate::SOURCES)).unwrap().validate().unwrap();
+        lock_from(json(crate::ACTIVE_SOURCES))
+            .unwrap()
+            .validate()
+            .unwrap();
+        lock_from(json(DRAFT_LOCK)).unwrap().validate().unwrap();
+    }
+}
+
+// ============================================================================
+// T5/T6: the stream observer's state machine, on a controlled clock. The
+// channel and the store are scripted in-process; the real wire is proved by
+// the loopback tests below and by the pinned MailHog proof (T10).
+// ============================================================================
+
+mod observer {
+    use crate::observe::{Cause, Channel, Scanner, Seen, StreamBounds, Trace, Wake, stream_wait};
+    use crate::stream::StreamError;
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
+    use std::rc::Rc;
+    use std::time::Duration;
+    use tokio::sync::{Notify, mpsc};
+    use tokio::time::{Instant, sleep, sleep_until};
+
+    type Item = Result<Wake, StreamError>;
+
+    enum Ready {
+        Now(mpsc::UnboundedReceiver<Item>),
+        Fail(StreamError),
+        /// Never ready: the attempt ends at its own deadline.
+        Stall,
+    }
+
+    #[derive(Default)]
+    struct Fake {
+        readies: RefCell<VecDeque<Ready>>,
+        /// Mail that becomes visible at the instant a readiness is proved
+        /// (between registration and the first scan).
+        on_ready: RefCell<Vec<String>>,
+        store: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl Channel for Fake {
+        type Conn = mpsc::UnboundedReceiver<Item>;
+
+        async fn ready(&self, deadline: Instant) -> Result<Self::Conn, StreamError> {
+            let step = self.readies.borrow_mut().pop_front();
+            match step {
+                Some(Ready::Now(rx)) => {
+                    let mut add = self.on_ready.borrow_mut();
+                    self.store.borrow_mut().append(&mut add);
+                    Ok(rx)
+                }
+                Some(Ready::Fail(e)) => Err(e),
+                Some(Ready::Stall) | None => {
+                    sleep_until(deadline).await;
+                    Err(StreamError::Deadline)
+                }
+            }
+        }
+
+        async fn next(conn: &mut Self::Conn, deadline: Instant) -> Item {
+            match tokio::time::timeout_at(deadline, conn.recv()).await {
+                Ok(Some(item)) => item,
+                Ok(None) => Err(StreamError::Eof {
+                    at: "between messages",
+                }),
+                Err(_) => Err(StreamError::Deadline),
+            }
+        }
+    }
+
+    enum Step {
+        Sleep(Duration),
+        Gate(Rc<Notify>),
+        Fail,
+        Forever,
+    }
+
+    /// A complete scan answers what the store held when it started.
+    struct Store {
+        tokens: Rc<RefCell<Vec<String>>>,
+        script: RefCell<VecDeque<Step>>,
+        started: Rc<Notify>,
+        scans: Cell<u32>,
+    }
+
+    impl Store {
+        fn new(tokens: Rc<RefCell<Vec<String>>>, script: Vec<Step>) -> Store {
+            Store {
+                tokens,
+                script: RefCell::new(script.into()),
+                started: Rc::new(Notify::new()),
+                scans: Cell::new(0),
+            }
+        }
+    }
+
+    impl Scanner for Store {
+        async fn scan(&self) -> Result<Vec<String>, String> {
+            let snapshot = self.tokens.borrow().clone();
+            self.scans.set(self.scans.get() + 1);
+            self.started.notify_one();
+            let step = self.script.borrow_mut().pop_front();
+            match step {
+                None => {}
+                Some(Step::Sleep(d)) => sleep(d).await,
+                Some(Step::Gate(g)) => g.notified().await,
+                Some(Step::Fail) => return Err("incomplete: a page was short".into()),
+                Some(Step::Forever) => std::future::pending::<()>().await,
+            }
+            Ok(snapshot)
+        }
+    }
+
+    const WAIT: Duration = Duration::from_secs(30);
+
+    fn bounds(wait: Duration) -> StreamBounds {
+        StreamBounds {
+            wait,
+            request: Duration::from_secs(10),
+            backstop: Duration::from_millis(1000),
+            reconnect_gap: Duration::from_millis(100),
+        }
+    }
+
+    /// One fake channel with one ready connection, its sender and store.
+    fn rig() -> (Fake, mpsc::UnboundedSender<Item>, Rc<RefCell<Vec<String>>>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let fake = Fake::default();
+        fake.readies.borrow_mut().push_back(Ready::Now(rx));
+        let store = fake.store.clone();
+        (fake, tx, store)
+    }
+
+    fn found(seen: &Seen) -> (Cause, bool) {
+        match seen {
+            Seen::Answer {
+                tokens,
+                cause,
+                late,
+            } => {
+                assert_eq!(tokens, &["tok".to_owned()]);
+                (*cause, *late)
+            }
+            Seen::Timeout => panic!("no answer"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn mail_delivered_before_registration_or_before_the_first_scan_is_seen_by_it() {
+        // Before registration: already stored when the channel opens.
+        let (fake, _tx, store) = rig();
+        store.borrow_mut().push("tok".into());
+        let s = Store::new(store.clone(), vec![]);
+        let mut t = Trace::default();
+        let start = Instant::now();
+        let seen = stream_wait(&fake, &s, start, bounds(WAIT), &mut t)
+            .await
+            .unwrap();
+        assert_eq!(found(&seen), (Cause::InitialScan, false));
+        assert_eq!(start.elapsed(), Duration::ZERO);
+        // Between readiness and the scan: stored after registration, with
+        // no event at all, and still the first scan's.
+        let (fake, _tx, store) = rig();
+        fake.on_ready.borrow_mut().push("tok".into());
+        let s = Store::new(store, vec![]);
+        let mut t = Trace::default();
+        let seen = stream_wait(&fake, &s, Instant::now(), bounds(WAIT), &mut t)
+            .await
+            .unwrap();
+        assert_eq!(found(&seen), (Cause::InitialScan, false));
+        assert_eq!(t.scans, [Cause::InitialScan]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_event_during_a_scan_is_kept_and_wakes_the_next_scan() {
+        let (fake, tx, store) = rig();
+        let gate = Rc::new(Notify::new());
+        let s = Store::new(store.clone(), vec![Step::Gate(gate.clone())]);
+        let started = s.started.clone();
+        let mut t = Trace::default();
+        let start = Instant::now();
+        let observer = stream_wait(&fake, &s, start, bounds(WAIT), &mut t);
+        let deliver = async {
+            // The first scan has taken its snapshot: the mail lands now and
+            // its event arrives while that scan still runs.
+            started.notified().await;
+            store.borrow_mut().push("tok".into());
+            tx.send(Ok(Wake::Delivery)).unwrap();
+            tokio::task::yield_now().await;
+            gate.notify_one();
+        };
+        let (seen, ()) = tokio::join!(observer, deliver);
+        assert_eq!(found(&seen.unwrap()), (Cause::Event, false));
+        assert_eq!(t.scans, [Cause::InitialScan, Cause::Event]);
+        assert_eq!(t.events, 1);
+        // Well before the backstop: the event, not the timer, found it.
+        assert!(start.elapsed() < Duration::from_millis(1000));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn events_alone_never_answer_and_the_wait_times_out_at_its_cutoff() {
+        let (fake, tx, store) = rig();
+        for _ in 0..5 {
+            tx.send(Ok(Wake::Delivery)).unwrap();
+            tx.send(Ok(Wake::Other)).unwrap();
+        }
+        let s = Store::new(store, vec![]);
+        let mut t = Trace::default();
+        let start = Instant::now();
+        let wait = Duration::from_millis(1000);
+        let seen = stream_wait(&fake, &s, start, bounds(wait), &mut t)
+            .await
+            .unwrap();
+        assert_eq!(seen, Seen::Timeout);
+        assert_eq!(start.elapsed(), wait);
+        // Five events were coalesced into scans; the `Other` traffic woke
+        // none; nothing started at the cutoff, where the backstop also falls.
+        assert_eq!(t.events, 5);
+        assert!(t.scans.len() <= 6, "{:?}", t.scans);
+        assert_eq!(t.scans[0], Cause::InitialScan);
+        assert!(!t.scans.contains(&Cause::Backstop), "{:?}", t.scans);
+        // The connection is owned by the observation and ends with it.
+        assert!(tx.is_closed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lost_event_is_answered_by_the_backstop_anchored_at_readiness() {
+        let (fake, _tx, store) = rig();
+        let s = Store::new(store.clone(), vec![]);
+        let mut t = Trace::default();
+        let start = Instant::now();
+        let observer = stream_wait(&fake, &s, start, bounds(WAIT), &mut t);
+        let lose = async {
+            sleep(Duration::from_millis(300)).await;
+            // Stored, and its notification dropped by the hub.
+            store.borrow_mut().push("tok".into());
+        };
+        let (seen, ()) = tokio::join!(observer, lose);
+        assert_eq!(found(&seen.unwrap()), (Cause::Backstop, false));
+        assert_eq!(start.elapsed(), Duration::from_millis(1000));
+        assert_eq!(t.scans, [Cause::InitialScan, Cause::Backstop]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lost_connection_is_reconnected_and_rescanned_after_readiness() {
+        let (fake, tx, store) = rig();
+        let (tx2, rx2) = mpsc::unbounded_channel();
+        fake.readies
+            .borrow_mut()
+            .push_back(Ready::Fail(StreamError::Io {
+                kind: std::io::ErrorKind::ConnectionRefused,
+                message: "refused".into(),
+            }));
+        fake.readies.borrow_mut().push_back(Ready::Now(rx2));
+        // Stored while no connection exists: only the rescan after the
+        // re-established readiness can see it before the backstop.
+        fake.on_ready.borrow_mut().clear();
+        let s = Store::new(store.clone(), vec![]);
+        let mut t = Trace::default();
+        let start = Instant::now();
+        let observer = stream_wait(&fake, &s, start, bounds(WAIT), &mut t);
+        let cut = async {
+            sleep(Duration::from_millis(50)).await;
+            drop(tx);
+            store.borrow_mut().push("tok".into());
+        };
+        let (seen, ()) = tokio::join!(observer, cut);
+        assert_eq!(found(&seen.unwrap()), (Cause::Reconnect, false));
+        // Lost at 50 ms; the first attempt at 150 ms is refused; the second,
+        // one gap later, is ready at 250 ms.
+        assert_eq!(start.elapsed(), Duration::from_millis(250));
+        assert_eq!(t.connects, 2);
+        assert_eq!(t.reconnect_failures, 1);
+        assert_eq!(t.scans, [Cause::InitialScan, Cause::Reconnect]);
+        assert!(tx2.is_closed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_reconnect_does_not_hold_back_the_backstop_or_the_cutoff() {
+        let (fake, tx, store) = rig();
+        fake.readies.borrow_mut().push_back(Ready::Stall);
+        let s = Store::new(store.clone(), vec![]);
+        let mut t = Trace::default();
+        let start = Instant::now();
+        let observer = stream_wait(&fake, &s, start, bounds(WAIT), &mut t);
+        let cut = async {
+            sleep(Duration::from_millis(10)).await;
+            drop(tx);
+            sleep(Duration::from_millis(200)).await;
+            store.borrow_mut().push("tok".into());
+        };
+        let (seen, ()) = tokio::join!(observer, cut);
+        // The reconnect attempt started at 110 ms is still pending: its
+        // bound is one request bound (10 s). The backstop answers.
+        assert_eq!(found(&seen.unwrap()), (Cause::Backstop, false));
+        assert_eq!(start.elapsed(), Duration::from_millis(1000));
+        assert_eq!(t.connects, 1);
+
+        // With nothing to find, every attempt stalls to its bound, the
+        // backstop keeps scanning, and the cutoff still ends the wait.
+        let (fake, tx, store) = rig();
+        drop(tx);
+        for _ in 0..10 {
+            fake.readies.borrow_mut().push_back(Ready::Stall);
+        }
+        let s = Store::new(store, vec![]);
+        let mut t = Trace::default();
+        let start = Instant::now();
+        let wait = Duration::from_millis(3500);
+        let seen = stream_wait(&fake, &s, start, bounds(wait), &mut t)
+            .await
+            .unwrap();
+        assert_eq!(seen, Seen::Timeout);
+        assert_eq!(start.elapsed(), wait);
+        assert_eq!(
+            t.scans,
+            [
+                Cause::InitialScan,
+                Cause::Backstop,
+                Cause::Backstop,
+                Cause::Backstop
+            ]
+        );
+        // One attempt in flight, bounded by the cutoff: the cutoff wins the
+        // instant they share, and nothing starts after it.
+        assert_eq!(t.reconnect_failures, 0);
+        assert_eq!(t.connects, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_event_flood_is_coalesced_and_starves_neither_backstop_nor_cutoff() {
+        let (fake, tx, store) = rig();
+        // A burst far larger than any scan count, queued at once.
+        for _ in 0..100_000 {
+            tx.send(Ok(Wake::Delivery)).unwrap();
+        }
+        let s = Store::new(
+            store,
+            (0..64)
+                .map(|_| Step::Sleep(Duration::from_millis(400)))
+                .collect(),
+        );
+        let mut t = Trace::default();
+        let start = Instant::now();
+        let wait = Duration::from_millis(2500);
+        let observer = stream_wait(&fake, &s, start, bounds(wait), &mut t);
+        let flood = async {
+            // Then one more every millisecond, for longer than the wait.
+            for _ in 0..4000 {
+                sleep(Duration::from_millis(1)).await;
+                if tx.send(Ok(Wake::Delivery)).is_err() {
+                    break;
+                }
+            }
+        };
+        let (seen, ()) = tokio::join!(observer, flood);
+        assert_eq!(seen.unwrap(), Seen::Timeout);
+        // The cutoff fell inside a scan (0, 400, ..., 2400): it ends at
+        // 2800 ms, inside its response allowance, empty.
+        assert_eq!(start.elapsed(), Duration::from_millis(2800));
+        assert!(t.events > 100_000, "{}", t.events);
+        // Back to back scans, never one per event, and the backstop ticks
+        // still won their scans over the pending events.
+        assert_eq!(t.scans.len(), 7, "{:?}", t.scans);
+        assert!(t.scans.contains(&Cause::Backstop), "{:?}", t.scans);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn coincident_causes_discharge_together_in_their_precedence() {
+        let (fake, tx, store) = rig();
+        let (_tx2, rx2) = mpsc::unbounded_channel();
+        fake.readies.borrow_mut().push_back(Ready::Now(rx2));
+        // The first scan runs 1.5 s: an event, a lost and re-established
+        // connection and a backstop tick all arrive while it runs.
+        let s = Store::new(
+            store.clone(),
+            vec![Step::Sleep(Duration::from_millis(1500))],
+        );
+        let mut t = Trace::default();
+        let start = Instant::now();
+        let observer = stream_wait(&fake, &s, start, bounds(WAIT), &mut t);
+        let events = async {
+            sleep(Duration::from_millis(10)).await;
+            store.borrow_mut().push("tok".into());
+            tx.send(Ok(Wake::Delivery)).unwrap();
+            sleep(Duration::from_millis(10)).await;
+            drop(tx);
+        };
+        let (seen, ()) = tokio::join!(observer, events);
+        // Reconnect outranks the backstop and the event; one scan
+        // discharges all three.
+        assert_eq!(found(&seen.unwrap()), (Cause::Reconnect, false));
+        assert_eq!(start.elapsed(), Duration::from_millis(1500));
+        assert_eq!(t.scans, [Cause::InitialScan, Cause::Reconnect]);
+        assert_eq!(t.connects, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_match_after_the_cutoff_is_late_and_an_unfinished_scan_is_an_error() {
+        // The first scan ends after the cutoff, inside its response
+        // allowance, with the mail: late, censored, never timely.
+        let (fake, _tx, store) = rig();
+        store.borrow_mut().push("tok".into());
+        let s = Store::new(store, vec![Step::Sleep(Duration::from_millis(1500))]);
+        let mut t = Trace::default();
+        let seen = stream_wait(
+            &fake,
+            &s,
+            Instant::now(),
+            bounds(Duration::from_secs(1)),
+            &mut t,
+        )
+        .await
+        .unwrap();
+        assert_eq!(found(&seen), (Cause::InitialScan, true));
+        // A scan still running one request bound after the cutoff.
+        let (fake, _tx, store) = rig();
+        let s = Store::new(store, vec![Step::Forever]);
+        let mut t = Trace::default();
+        let start = Instant::now();
+        let e = stream_wait(&fake, &s, start, bounds(Duration::from_secs(1)), &mut t)
+            .await
+            .unwrap_err();
+        assert!(e.starts_with("operation deadline"), "{e}");
+        assert_eq!(start.elapsed(), Duration::from_secs(11));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_scan_readiness_or_channel_is_an_error_never_an_empty_answer() {
+        // A failed scan.
+        let (fake, _tx, store) = rig();
+        let s = Store::new(store, vec![Step::Fail]);
+        let mut t = Trace::default();
+        let e = stream_wait(&fake, &s, Instant::now(), bounds(WAIT), &mut t)
+            .await
+            .unwrap_err();
+        assert_eq!(e, "incomplete: a page was short");
+        // Readiness never proved: no scan, and no silent poll.
+        let fake = Fake::default();
+        fake.readies
+            .borrow_mut()
+            .push_back(Ready::Fail(StreamError::Status(404)));
+        let s = Store::new(fake.store.clone(), vec![]);
+        let mut t = Trace::default();
+        let e = stream_wait(&fake, &s, Instant::now(), bounds(WAIT), &mut t)
+            .await
+            .unwrap_err();
+        assert_eq!(e, "readiness: stream: unexpected status 404");
+        assert_eq!(s.scans.get(), 0);
+        // Readiness that stalls is bounded by one request bound.
+        let fake = Fake::default();
+        fake.readies.borrow_mut().push_back(Ready::Stall);
+        let s = Store::new(fake.store.clone(), vec![]);
+        let start = Instant::now();
+        let e = stream_wait(&fake, &s, start, bounds(WAIT), &mut t)
+            .await
+            .unwrap_err();
+        assert_eq!(e, "readiness: stream: deadline passed");
+        assert_eq!(start.elapsed(), Duration::from_secs(10));
+        // A malformed channel.
+        let (fake, tx, store) = rig();
+        tx.send(Err(StreamError::Frame("a reserved opcode")))
+            .unwrap();
+        let s = Store::new(store, vec![]);
+        let mut t = Trace::default();
+        let e = stream_wait(&fake, &s, Instant::now(), bounds(WAIT), &mut t)
+            .await
+            .unwrap_err();
+        assert_eq!(e, "channel: stream: websocket frame: a reserved opcode");
+        // A reconnect that is answered, but not with an upgrade.
+        let (fake, tx, store) = rig();
+        drop(tx);
+        fake.readies
+            .borrow_mut()
+            .push_back(Ready::Fail(StreamError::Handshake(
+                "no Upgrade: websocket".into(),
+            )));
+        let s = Store::new(store, vec![]);
+        let mut t = Trace::default();
+        let e = stream_wait(&fake, &s, Instant::now(), bounds(WAIT), &mut t)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            e,
+            "reconnect: stream: websocket handshake: no Upgrade: websocket"
+        );
+    }
+
+    #[test]
+    fn causes_name_and_parse_in_precedence_order() {
+        let names: Vec<_> = Cause::ALL.iter().map(|c| c.name()).collect();
+        assert_eq!(names, ["initial_scan", "reconnect", "backstop", "event"]);
+        for c in Cause::ALL {
+            assert_eq!(Cause::parse(c.name()), Some(c));
+        }
+        assert_eq!(Cause::parse("replay"), None);
+        let mut sorted = Cause::ALL;
+        sorted.sort();
+        assert_eq!(sorted, Cause::ALL);
+    }
+}
+
+// ============================================================================
+// T5: MailHog's channel over real loopback TCP. The server plays the
+// captured hub's order: upgrade, register, then a read loop that answers a
+// ping with a pong; a broadcast is the stored message's JSON as text.
+// ============================================================================
+
+mod mailhog_channel {
+    use super::{client_frame, frame, header, read_request, upgrade_answer};
+    use crate::observe::{Channel, MailhogChannel, Wake};
+    use crate::stream::{Limits, StreamError};
+    use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+    use tokio::time::Instant;
+
+    fn soon() -> Instant {
+        Instant::now() + Duration::from_secs(10)
+    }
+
+    /// A one-connection hub: the server's frames before and after its pong
+    /// are `before` and `after`; `pong` maps the client's ping payload.
+    async fn hub(
+        before: Vec<u8>,
+        pong: fn(Vec<u8>) -> Vec<u8>,
+        after: Vec<u8>,
+    ) -> (MailhogChannel, tokio::task::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut s).await;
+            s.write_all(upgrade_answer(&request, "").as_bytes())
+                .await
+                .unwrap();
+            s.write_all(&before).await.unwrap();
+            let (op, payload) = client_frame(&mut s).await;
+            assert_eq!(op, 0x89, "the client's first frame is its ping");
+            assert_eq!(payload.len(), 24, "a fresh 16-byte key, base64");
+            s.write_all(&frame(0x8A, &pong(payload))).await.unwrap();
+            s.write_all(&after).await.unwrap();
+            // Hold the connection until the client drops it.
+            let mut rest = Vec::new();
+            let _ = tokio::io::AsyncReadExt::read_to_end(&mut s, &mut rest).await;
+            request
+        });
+        let channel = MailhogChannel {
+            addr,
+            path: crate::protocol::stream_route(crate::protocol::TargetKind::Mailhog).unwrap(),
+            limits: Limits::DEFAULT,
+        };
+        (channel, server)
+    }
+
+    #[tokio::test]
+    async fn readiness_is_the_pong_of_this_connections_own_ping() {
+        // A broadcast that lands between registration and the pong is
+        // skipped (the first scan follows readiness); after the pong, text
+        // is a delivery and a pong is other traffic.
+        let mut after = frame(0x81, br#"{"ID":"x@mailhog.example"}"#);
+        after.extend(frame(0x8A, b"late"));
+        let (channel, server) = hub(frame(0x81, b"{}"), |p| p, after).await;
+        let mut conn = channel.ready(soon()).await.expect("ready");
+        assert_eq!(
+            MailhogChannel::next(&mut conn, soon()).await,
+            Ok(Wake::Delivery)
+        );
+        assert_eq!(
+            MailhogChannel::next(&mut conn, soon()).await,
+            Ok(Wake::Other)
+        );
+        drop(conn);
+        let request = server.await.unwrap();
+        assert!(
+            request.starts_with("GET /api/v2/websocket HTTP/1.1\r\n"),
+            "{request}"
+        );
+        assert_eq!(header(&request, "Host"), channel.addr.to_string());
+    }
+
+    #[tokio::test]
+    async fn a_foreign_pong_or_a_binary_message_is_refused() {
+        let (channel, _server) = hub(Vec::new(), |_| b"someone else's".to_vec(), Vec::new()).await;
+        let e = channel.ready(soon()).await.err().expect("refused");
+        assert_eq!(
+            e,
+            StreamError::Handshake("a pong that does not echo this connection's ping".into())
+        );
+        let (channel, _server) = hub(frame(0x82, b"\x00"), |p| p, Vec::new()).await;
+        let e = channel.ready(soon()).await.err().expect("refused");
+        assert_eq!(e, StreamError::Frame("a binary message on a JSON channel"));
+        let (channel, _server) = hub(Vec::new(), |p| p, frame(0x82, b"\x00")).await;
+        let mut conn = channel.ready(soon()).await.expect("ready");
+        assert_eq!(
+            MailhogChannel::next(&mut conn, soon()).await,
+            Err(StreamError::Frame("a binary message on a JSON channel"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hub_that_never_answers_the_ping_is_not_ready_by_the_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _server = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut s).await;
+            s.write_all(upgrade_answer(&request, "").as_bytes())
+                .await
+                .unwrap();
+            // Registered, but its read loop never starts.
+            std::future::pending::<()>().await;
+        });
+        let channel = MailhogChannel {
+            addr,
+            path: "/api/v2/websocket",
+            limits: Limits::DEFAULT,
+        };
+        let e = channel
+            .ready(Instant::now() + Duration::from_millis(200))
+            .await
+            .err()
+            .expect("not ready");
+        assert_eq!(e, StreamError::Deadline);
     }
 }

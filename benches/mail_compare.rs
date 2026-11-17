@@ -30,8 +30,9 @@
 //! Exit 2: prerequisite, operational, interrupt, cleanup or accounting
 //! failure — it dominates, and its output is never sealed.
 
-// The stream wake-up transports (decision 0132 §7, story C). Their observer
-// is not wired into a driver mode yet, so the bench compiles them unused.
+// The stream wake-up transports and their observer (decision 0132 §7, story
+// C). The SSE reader and the observer's test trace have no driver caller (no
+// selected row uses an event stream), so those parts compile unused.
 #[path = "mail_compare/mailhog_mcp.rs"]
 mod mailhog_mcp;
 #[path = "mail_compare/mailpit_mcp.rs"]
@@ -40,6 +41,9 @@ mod mailpit_mcp;
 mod mailslurper_mcp;
 #[path = "mail_compare/mcp.rs"]
 mod mcp;
+#[allow(dead_code)]
+#[path = "mail_compare/clients/observe.rs"]
+mod observe;
 #[path = "mail_compare/protocol.rs"]
 mod protocol;
 #[path = "mail_compare/records.rs"]

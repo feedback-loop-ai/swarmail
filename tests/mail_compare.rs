@@ -23,6 +23,9 @@ mod mailslurper_mcp;
 #[path = "../benches/mail_compare/mcp.rs"]
 mod mcp;
 #[allow(dead_code)]
+#[path = "../benches/mail_compare/clients/observe.rs"]
+mod observe;
+#[allow(dead_code)]
 #[path = "../benches/mail_compare/protocol.rs"]
 mod protocol;
 #[allow(dead_code)]
@@ -2350,6 +2353,9 @@ fn an_unproved_or_colliding_run_is_never_sealed_or_overwritten() {
         occurrences: None,
         fidelity_ok: None,
         requests: None,
+        expected: None,
+        unrelated: None,
+        cause: None,
     };
     dir.append(&row).unwrap();
     row.sample = 1;
@@ -2631,6 +2637,9 @@ fn connect_refusal_is_a_coded_failed_before_terminator_row() {
         occurrences: None,
         fidelity_ok: None,
         requests: None,
+        expected: None,
+        unrelated: None,
+        cause: None,
     };
     // A peer that answers with a reply code refused the session itself.
     let mut refused = blank();
