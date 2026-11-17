@@ -235,3 +235,48 @@ async fn a_refused_or_ambiguous_delivery_is_classified_by_what_the_store_may_hol
         }
     ));
 }
+
+#[test]
+fn api_mcp_forwards_the_verified_documents_root_to_the_adapter() {
+    // R2: the adapter's command line carries the chunk's --documents, so the
+    // draft lock serves; without one it falls back to the lock's directory.
+    let http: std::net::SocketAddr = "127.0.0.1:4321".parse().unwrap();
+    let args = |c: &tokio::process::Command| {
+        c.as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    };
+    let with = apibench::adapter_command(
+        std::path::Path::new("/d/mail_compare"),
+        "mailhog-mcp",
+        std::path::Path::new("docs/evals/draft/sources.lock.v5.json"),
+        Some(std::path::Path::new("docs/evals")),
+        http,
+    );
+    assert_eq!(
+        args(&with),
+        [
+            "mailhog-mcp",
+            "--sources",
+            "docs/evals/draft/sources.lock.v5.json",
+            "--endpoint",
+            "http://127.0.0.1:4321",
+            "--documents",
+            "docs/evals",
+        ]
+    );
+    let without = apibench::adapter_command(
+        std::path::Path::new("/d/mail_compare"),
+        "mailpit-mcp",
+        std::path::Path::new("docs/evals/sources.lock.json"),
+        None,
+        http,
+    );
+    assert!(!args(&without).iter().any(|a| a == "--documents"));
+    // Every bridged target has an adapter mode; Swarmail is served directly.
+    for t in ["mailpit", "mailhog", "mailslurper-source-build"] {
+        assert!(apibench::adapter_mode(t).is_some(), "{t}");
+    }
+    assert_eq!(apibench::adapter_mode("swarmail"), None);
+}

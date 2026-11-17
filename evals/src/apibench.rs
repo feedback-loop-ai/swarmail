@@ -795,6 +795,29 @@ pub fn adapter_mode(target: &str) -> Option<&'static str> {
     }
 }
 
+/// The adapter's command line: its mode, the lock, the endpoint of the held
+/// backend and — when the chunk was given one — the document root the
+/// holder already verified (spec AC2, R2), so a draft lock whose documents
+/// live apart from it serves all three adapters without relocation. The
+/// adapter rechecks the same bytes before it serves.
+pub fn adapter_command(
+    driver: &std::path::Path,
+    mode: &str,
+    sources: &std::path::Path,
+    documents: Option<&std::path::Path>,
+    http: std::net::SocketAddr,
+) -> tokio::process::Command {
+    let mut a = tokio::process::Command::new(driver);
+    a.arg(mode)
+        .arg("--sources")
+        .arg(sources)
+        .args(["--endpoint", &format!("http://{http}")]);
+    if let Some(d) = documents {
+        a.arg("--documents").arg(d);
+    }
+    a
+}
+
 /// `--flag value` pairs; `--bin` and `--runtime` once each.
 pub fn flags(args: &[String]) -> Result<std::collections::BTreeMap<String, String>, String> {
     const KNOWN: [&str; 13] = [
@@ -911,15 +934,14 @@ async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
     let url = match adapter_mode(&target) {
         None => format!("http://{http}/mcp"),
         Some(mode) => {
-            let mut a = tokio::process::Command::new(&f["driver"]);
-            a.arg(mode)
-                .args([
-                    "--sources",
-                    &f["sources"],
-                    "--endpoint",
-                    &format!("http://{http}"),
-                ])
-                .stdin(std::process::Stdio::piped())
+            let mut a = adapter_command(
+                std::path::Path::new(&f["driver"]),
+                mode,
+                std::path::Path::new(&f["sources"]),
+                f.get("documents").map(std::path::Path::new),
+                http,
+            );
+            a.stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .kill_on_drop(true);
             let mut child = a.spawn().map_err(|e| format!("adapter: {e}"))?;

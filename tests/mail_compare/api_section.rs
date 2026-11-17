@@ -2055,6 +2055,117 @@ fn api_mcp_bridge_real() {
     assert!(admitted.resources.iter().any(|r| matches!(r, records::ResourceRow::Window(w) if w.window == records::WindowKind::ApiCell && w.counters().is_some())));
 }
 
+// ---- adapter documents (R2) -------------------------------------------------
+
+const ADAPTED: [TargetKind; 3] = [
+    TargetKind::Mailpit,
+    TargetKind::Mailhog,
+    TargetKind::MailslurperSourceBuild,
+];
+
+/// Copy the documents the draft lock pins under a fresh root.
+fn documents_copy() -> tempfile::TempDir {
+    let d = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let lock: Value = serde_json::from_slice(
+        &std::fs::read(root().join("docs/evals/draft/sources.lock.v5.json")).unwrap(),
+    )
+    .unwrap();
+    for e in lock["entries"].as_array().unwrap() {
+        for doc in e["pin"]["documents"].as_array().into_iter().flatten() {
+            let rel = doc["path"].as_str().unwrap();
+            let to = d.path().join(rel);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(root().join("docs/evals").join(rel), to).unwrap();
+        }
+    }
+    d
+}
+
+fn mailpit_doc(lock: &Path) -> String {
+    let v: Value = serde_json::from_slice(&std::fs::read(lock).unwrap()).unwrap();
+    v["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["target"] == "mailpit")
+        .unwrap()["pin"]["documents"][0]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn every_adapter_serves_the_draft_lock_from_its_documents_root() {
+    let draft = root().join("docs/evals/draft/sources.lock.v5.json");
+    let docs = root().join("docs/evals");
+    // The documented draft command: the lock under draft/, its documents
+    // under docs/evals. Every adapter accepts it.
+    for kind in ADAPTED {
+        mcp::adapter_sources(kind, &draft, Some(&docs)).unwrap_or_else(|e| panic!("{kind}: {e}"));
+    }
+    // Without --documents the draft lock's own directory holds none of them:
+    // refused, never served from wherever the bytes happen to be.
+    let e = mcp::adapter_sources(TargetKind::Mailpit, &draft, None).unwrap_err();
+    assert!(e.starts_with("source documents:"), "{e}");
+    // The default — documents beside the lock — still holds.
+    for kind in ADAPTED {
+        mcp::adapter_sources(kind, &root().join("docs/evals/sources.lock.json"), None)
+            .unwrap_or_else(|e| panic!("{kind}: {e}"));
+    }
+    // A copied root serves too: the documents need not be in the tree.
+    let copy = documents_copy();
+    for kind in ADAPTED {
+        mcp::adapter_sources(kind, &draft, Some(copy.path()))
+            .unwrap_or_else(|e| panic!("{kind}: {e}"));
+    }
+    // No adapter for a target without one, whatever the lock says.
+    let e = mcp::adapter_sources(TargetKind::Smtp4dev, &draft, Some(&docs)).unwrap_err();
+    assert!(e.contains("has no MCP adapter"), "{e}");
+}
+
+#[test]
+fn an_adapter_refuses_missing_resized_altered_or_escaping_documents() {
+    let draft = root().join("docs/evals/draft/sources.lock.v5.json");
+    let rel = mailpit_doc(&draft);
+    let refuses = |root: &Path, lock: &Path| {
+        let e = mcp::adapter_sources(TargetKind::Mailpit, lock, Some(root)).unwrap_err();
+        assert!(
+            e.starts_with("source documents:") || e.contains("path"),
+            "{e}"
+        );
+    };
+    // Missing.
+    let copy = documents_copy();
+    std::fs::remove_file(copy.path().join(&rel)).unwrap();
+    refuses(copy.path(), &draft);
+    // Resized.
+    let copy = documents_copy();
+    let p = copy.path().join(&rel);
+    let mut bytes = std::fs::read(&p).unwrap();
+    bytes.push(b'\n');
+    std::fs::write(&p, &bytes).unwrap();
+    refuses(copy.path(), &draft);
+    // Altered at the same size.
+    let copy = documents_copy();
+    let p = copy.path().join(&rel);
+    let mut bytes = std::fs::read(&p).unwrap();
+    let last = bytes.len() - 2;
+    bytes[last] ^= 0x01;
+    std::fs::write(&p, &bytes).unwrap();
+    refuses(copy.path(), &draft);
+    // Escaping: a lock naming a document outside its root.
+    let copy = documents_copy();
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&draft).unwrap()).unwrap();
+    for e in v["entries"].as_array_mut().unwrap() {
+        if e["target"] == "mailpit" {
+            e["pin"]["documents"][0]["path"] = json!(format!("../{rel}"));
+        }
+    }
+    let lock = copy.path().join("escaping.lock.json");
+    std::fs::write(&lock, serde_json::to_vec(&v).unwrap()).unwrap();
+    assert!(mcp::adapter_sources(TargetKind::Mailpit, &lock, Some(copy.path())).is_err());
+}
+
 #[test]
 fn the_readme_lists_every_client_modules_digest() {
     let readme = std::fs::read_to_string(root().join("docs/evals/README.md")).unwrap();

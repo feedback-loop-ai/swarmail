@@ -15,7 +15,7 @@
 //!       [--chunk cost.TARGET.rN --systemd VERSION]     (protocol 4)
 //!   mail_compare targets --protocol P --plan v4
 //!   mail_compare admit DIR
-//!   mail_compare mailpit-mcp|mailhog-mcp|mailslurper-mcp --sources S
+//!   mail_compare mailpit-mcp|mailhog-mcp|mailslurper-mcp --sources S [--documents DIR]
 //!       (--endpoint http://127.0.0.1:PORT | --launch BIN --scratch DIR)
 //!
 //!   mail_compare hold --protocol P --sources S [--documents DIR]
@@ -471,23 +471,20 @@ fn adapter_mode<B: mcp::Backend>(mode: &str, args: &[String]) -> i32 {
     let ready = mcp::adapter_target(kind)
         .and_then(|()| flags(args))
         .and_then(|f| {
-            if let Some(k) = f
-                .keys()
-                .find(|k| !["endpoint", "sources", "launch", "scratch"].contains(&k.as_str()))
-            {
+            if let Some(k) = f.keys().find(|k| {
+                !["endpoint", "sources", "documents", "launch", "scratch"].contains(&k.as_str())
+            }) {
                 return Err(format!("unknown flag --{k}"));
             }
-            let path = one(&f, "sources")?;
-            let s = SourceLock::parse(&std::fs::read(path).map_err(|e| format!("sources: {e}"))?)
-                .map_err(|r| r.to_string())?;
-            s.validate().map_err(|r| r.to_string())?;
-            let dir = Path::new(path)
-                .parent()
-                .filter(|d| !d.as_os_str().is_empty());
-            s.verify_files(dir.unwrap_or(Path::new(".")))
-                .map_err(|r| format!("source documents: {r}"))?;
-            s.pin(kind)
-                .ok_or_else(|| format!("the source lock pins no {kind}"))?;
+            // The documents are where `--documents` says, else beside the
+            // lock — the same contract as every other mode (R2) — and their
+            // bytes are rechecked here, before anything is served.
+            let documents = f
+                .get("documents")
+                .and_then(|v| v.first())
+                .map(PathBuf::from);
+            let s =
+                mcp::adapter_sources(kind, Path::new(one(&f, "sources")?), documents.as_deref())?;
             match (f.contains_key("endpoint"), f.contains_key("launch")) {
                 (true, false) if !f.contains_key("scratch") => {
                     Ok(Via::Endpoint(mcp::parse_endpoint(one(&f, "endpoint")?)?))
