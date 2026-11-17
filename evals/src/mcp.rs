@@ -338,7 +338,7 @@ async fn bounded_body(resp: &mut reqwest::Response, spent: &mut u64) -> Result<V
     let mut out: Vec<u8> = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| format!("read body: {e}"))? {
         let len = chunk.len() as u64;
-        let reply = (out.len() as u64).checked_add(len).unwrap_or(u64::MAX);
+        let reply = (out.len() as u64).saturating_add(len);
         if over(reply, *spent, len) {
             return Err(format!("{OVERSIZED}: past {reply} bytes"));
         }

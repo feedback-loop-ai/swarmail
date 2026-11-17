@@ -1978,6 +1978,9 @@ pub fn wait_scope_of(ordinal: u32, slot: u32) -> Scope {
     Scope::new(&format!("apiwt{ordinal:01}{slot:04}x"))
 }
 
+/// One wait scope's listing beside its expectation (scope, token, acked).
+pub type WaitView<'a> = (Vec<Summary>, &'a (Scope, String, bool));
+
 /// Compare what the store holds against `want` (untimed): every kept id
 /// present, every gone id absent, no id that nothing accounts for, and
 /// every wait scope holding exactly its acknowledged delivery. On a
@@ -1985,7 +1988,7 @@ pub fn wait_scope_of(ordinal: u32, slot: u32) -> Scope {
 pub fn ledger_problems(
     want: &Expected,
     observed: &BTreeSet<String>,
-    waits: &[(Vec<Summary>, &(Scope, String, bool))],
+    waits: &[WaitView<'_>],
 ) -> Vec<String> {
     let mut out = Vec::new();
     let missing: Vec<&String> = want.kept.difference(observed).collect();

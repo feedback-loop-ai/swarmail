@@ -1046,13 +1046,12 @@ async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
     if let Some(b) = bridge {
         b.stop().await;
     }
-    if let Some(mut a) = adapter {
-        if tokio::time::timeout(std::time::Duration::from_secs(10), a.wait())
+    if let Some(mut a) = adapter
+        && tokio::time::timeout(std::time::Duration::from_secs(10), a.wait())
             .await
             .is_err()
-        {
-            let _ = a.kill().await;
-        }
+    {
+        let _ = a.kill().await;
     }
     let (stdin, mut stdout) = meter.pipe.into_inner();
     drop(stdin);

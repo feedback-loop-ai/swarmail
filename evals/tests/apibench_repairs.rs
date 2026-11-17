@@ -349,14 +349,26 @@ fn fake_driver(dir: &std::path::Path, hold_body: &str, adapter_body: &str) -> st
     std::fs::write(
         &p,
         format!(
-            "#!/bin/bash\necho \"$1\" >> '{}'\ncase \"$1\" in\nhold) {hold_body} ;;\n*) {adapter_body} ;;\nesac\n",
+            "#!/bin/bash\n[ \"$1\" = probe ] && exit 0\necho \"$1\" >> '{}'\ncase \"$1\" in\nhold) {hold_body} ;;\n*) {adapter_body} ;;\nesac\n",
             calls.display()
         ),
     )
     .unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-    p
+    // A parallel test's fork may still hold the write descriptor of this
+    // fresh file (ETXTBSY) until its child execs: run a probe until the
+    // script executes, so the code under test never meets that race.
+    for _ in 0..200 {
+        match std::process::Command::new(&p).arg("probe").status() {
+            Ok(s) if s.success() => return p,
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(5))
+            }
+            other => panic!("the fake driver does not run: {other:?}"),
+        }
+    }
+    panic!("the fake driver stayed busy")
 }
 
 async fn run_api_mcp(dir: &std::path::Path, driver: &std::path::Path, target: &str) -> i32 {

@@ -2564,10 +2564,6 @@ async fn preparation_refuses_when_the_target_does_not_answer() {
     assert!(w.contains("smtp connect"), "{w}");
 }
 
-/// The whole native API chunk under the enforced leaf: the driver's own `run`
-/// with the chunk coordinate, then `admit`-level checks of its directory.
-/// Needs a delegated cgroup v2 scope (run it as `systemd-run --user --scope -p
-/// Delegate=yes`), and fails, never skips, without one.
 // ---- host proofs (AC10, R9) -------------------------------------------------
 //
 // Each runs one chunk of the real driver (`MAIL_COMPARE_BIN`, the built
@@ -3090,11 +3086,6 @@ fn control_lines_are_closed_bounded_and_ordered() {
         .is_ok()
     );
 }
-
-/// The held MCP chunk end to end: `swarmail-evals api-mcp` drives `hold
-/// --control api-v1` for the candidate and a bridged adapter target, and
-/// both chunks seal and admit. Needs a delegated cgroup v2 scope and the
-/// eval binary (`SWARMAIL_EVALS_BIN`); fails, never skips, without them.
 
 // ---- adapter documents (R2) -------------------------------------------------
 
