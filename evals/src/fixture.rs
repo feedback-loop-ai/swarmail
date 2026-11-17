@@ -4241,15 +4241,8 @@ mod hard_layout_proofs {
                                 );
                             }
                         }
-                        // Secrets are OS-random alphanumerics, so one can spell a
-                        // forbidden word by chance (verify, 2026-11-17); the words
-                        // are checked in the text the fixture wrote, secrets masked.
-                        let mut written = body.clone();
-                        for secret in p.tokens.keys() {
-                            written = written.replace(secret.as_str(), "SECRET");
-                        }
                         for bad in forbidden {
-                            assert!(!written.contains(bad), "{id}/{i}: {bad:?} in {body}");
+                            assert!(!body.contains(bad), "{id}/{i}: {bad:?} in {body}");
                         }
                     }
                     checked += 1;
