@@ -360,10 +360,14 @@ impl McpSurface {
     }
 }
 
+/// How long the SMTP QUIT after a wait's delivery may take: bounded apart
+/// from the instants it can no longer move.
+pub const QUIT_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// One future wait (spec AC7): the wait request is started first, then the
 /// attempt's own message is sent; no sleep orders them and no claim is made
 /// that the server registered the waiter. Exactly that message must return.
-async fn wait_once(
+pub async fn wait_once(
     w: &Worker,
     (smtp, clock): (std::net::SocketAddr, api::Clock),
     a: api::Authored,
@@ -388,33 +392,45 @@ async fn wait_once(
         Family::Mailhog => "mailhog_wait",
         _ => "mailslurper_wait",
     };
-    let call_ns = clock.now_ns();
     let mut spend = Spend::default();
-    let waiting = w.call(tool, args, deadline, &mut spend);
+    let call_ns = clock.now_ns();
+    // The return is stamped inside the waiting future the instant the call
+    // returns (spec AC7, R3): whatever the sending side still does — the
+    // SMTP QUIT — cannot shift it.
+    let waiting = async {
+        let got = w.call(tool, args, deadline, &mut spend).await;
+        (got, clock.now_ns())
+    };
     let sending = async {
-        // Started after the wait future's first poll below.
+        // Started after the wait future's first poll: `join!` polls it first.
         tokio::task::yield_now().await;
         let send_ns = clock.now_ns();
         let mut s = match clients::smtp::Session::open(smtp, api::SMTP_STEP).await {
             Ok(s) => s,
-            Err(_) => return (send_ns, None),
+            Err(_) => return (send_ns, Err("fixture_not_sent")),
         };
         if family == Family::Swarmail && s.auth(&a.scope.inbox).await.is_err() {
-            return (send_ns, None);
+            return (send_ns, Err("fixture_not_sent"));
         }
         let sent = s
             .send(api::SENDER, &a.scope.address, &api::fixture_bytes(&a))
             .await;
-        let ack = (sent == clients::smtp::Sent::Accepted).then(|| clock.now_ns());
-        s.quit().await;
+        // The acknowledgement is stamped at the `250` itself, before QUIT.
+        let ack = match sent {
+            clients::smtp::Sent::Accepted => Ok(clock.now_ns()),
+            clients::smtp::Sent::Refused(_) | clients::smtp::Sent::Failed => Err("fixture_refused"),
+            clients::smtp::Sent::Ambiguous => Err("fixture_ambiguous"),
+        };
+        // QUIT is bounded on its own and never moves the instants above.
+        let _ = tokio::time::timeout(QUIT_BOUND, s.quit()).await;
         (send_ns, ack)
     };
-    let (got, (send_ns, ack_ns)) = tokio::join!(waiting, sending);
-    let return_ns = clock.now_ns();
-    let outcome = match (got, ack_ns) {
-        (_, None) => Outcome::Failed {
-            reason: "fixture_not_accepted".into(),
-        },
+    let ((got, return_ns), (send_ns, ack)) = tokio::join!(waiting, sending);
+    let ack_ns = ack.ok();
+    let outcome = match (got, ack) {
+        // A delivery whose fate is unknown outranks the wait's own answer:
+        // it is mutation uncertainty (R1).
+        (_, Err(why)) => Outcome::Failed { reason: why.into() },
         (Err(e), _) => api::from_error(e),
         (Ok(v), _) => match wait_summaries(family, &v) {
             None => Outcome::Failed {

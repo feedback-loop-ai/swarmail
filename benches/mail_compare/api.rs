@@ -466,8 +466,46 @@ pub struct Ran {
     /// offered and the instant the last worker returned.
     pub start_ns: u64,
     pub end_ns: u64,
-    /// Some operation ran out of budget with its request in flight.
+    /// Mutation uncertainty (spec AC5, R1): a delete, clear or future wait
+    /// ended in a timeout or a transport loss after dispatch, so the store
+    /// may or may not hold its effect. A read's timeout never sets it: the
+    /// read keeps its terminal row and later cells still measure.
     pub unresolved: bool,
+    /// Local cancellation was not proved within [`CANCEL_BOUND`] of the
+    /// deadline: a worker did not return when its operation was dropped.
+    /// The chunk cannot be complete and its owner tears the target down.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cancel_unproved: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// How long, past a cell's deadline, its workers have to return once their
+/// in-flight operations are dropped (spec AC5): outside measurement.
+pub const CANCEL_BOUND: Duration = Duration::from_secs(5);
+
+/// Whether `op` changes the store when it acts: a delete, a clear, or a
+/// future wait, whose SMTP delivery is part of the operation.
+pub fn mutates(op: Operation) -> bool {
+    matches!(op, Operation::Delete | Operation::Clear | Operation::Wait)
+}
+
+/// Whether `outcome` leaves `op`'s effect unknown (spec AC5, R1): a
+/// mutating operation that timed out, lost its transport after dispatch, or
+/// whose SMTP delivery was ambiguous. A completed refusal (a status, a busy
+/// or rate-limit answer, a refused fixture) is a known non-effect, and no
+/// read is ever uncertain.
+pub fn uncertain(op: Operation, outcome: &Outcome) -> bool {
+    mutates(op)
+        && match outcome {
+            Outcome::Timeout => true,
+            Outcome::Failed { reason } => {
+                matches!(reason.as_str(), "transport" | "fixture_ambiguous")
+            }
+            _ => false,
+        }
 }
 
 /// A boxed operation future.
@@ -488,7 +526,10 @@ impl Clock {
 /// the next index from one shared queue, until the queue is empty or the
 /// absolute deadline `budget` from now passes. A worker never starts an
 /// index at or after the deadline, and every operation gets only what
-/// remains of it. Every taken index ends in exactly one row.
+/// remains of it: one still in flight at the deadline is dropped there
+/// (cancelled, its connection discarded with it) and ends as a `timeout`
+/// row. Every taken index ends in exactly one row; only untaken indices are
+/// unstarted.
 pub async fn run_cell<F>(
     clock: Clock,
     phase: Phase,
@@ -500,14 +541,36 @@ pub async fn run_cell<F>(
 where
     F: Fn(u32, u32, Instant) -> OpFuture + Send + Sync + 'static,
 {
+    run_cell_bounded(clock, phase, workers, planned, budget, CANCEL_BOUND, op).await
+}
+
+/// [`run_cell`] with an explicit local-cancellation bound. Every start is
+/// recorded in one append-only ledger before its operation runs, so a
+/// worker that fails to return within `cancel` of the deadline still leaves
+/// its start a terminal `timeout` row, and the phase is marked
+/// [`Ran::cancel_unproved`].
+pub async fn run_cell_bounded<F>(
+    clock: Clock,
+    phase: Phase,
+    workers: u32,
+    planned: u32,
+    budget: Duration,
+    cancel: Duration,
+    op: Arc<F>,
+) -> Ran
+where
+    F: Fn(u32, u32, Instant) -> OpFuture + Send + Sync + 'static,
+{
     let start_ns = clock.now_ns();
     let cutoff = Instant::now() + budget;
     let next = Arc::new(AtomicU32::new(0));
+    // index -> (worker, start, terminal row once it ends).
+    type Ledger = BTreeMap<u32, (u32, u64, Option<OpRow>)>;
+    let ledger: Arc<std::sync::Mutex<Ledger>> = Arc::default();
     let mut set = tokio::task::JoinSet::new();
     for worker in 0..workers.max(1) {
-        let (op, next) = (op.clone(), next.clone());
+        let (op, next, ledger) = (op.clone(), next.clone(), ledger.clone());
         set.spawn(async move {
-            let mut rows = Vec::new();
             loop {
                 if Instant::now() >= cutoff {
                     break;
@@ -517,11 +580,15 @@ where
                     break;
                 }
                 let start = clock.now_ns();
+                ledger
+                    .lock()
+                    .expect("ledger lock")
+                    .insert(index, (worker, start, None));
                 let done = match tokio::time::timeout_at(cutoff, op(worker, index, cutoff)).await {
                     Ok(d) => d,
                     Err(_) => Done::of(Outcome::Timeout, Spend::default()),
                 };
-                rows.push(OpRow {
+                let row = OpRow {
                     phase,
                     index,
                     worker,
@@ -531,27 +598,54 @@ where
                     requests: done.spend.requests,
                     bytes: done.spend.bytes,
                     wait: done.wait,
-                });
+                };
+                if let Some(e) = ledger.lock().expect("ledger lock").get_mut(&index) {
+                    e.2 = Some(row);
+                }
             }
-            rows
         });
     }
-    let mut rows = Vec::new();
-    while let Some(r) = set.join_next().await {
-        // A worker that panicked loses no accounting silently: the panic is
-        // the driver's bug, and it propagates.
-        rows.extend(r.expect("a cell worker never panics"));
+    let joined = tokio::time::timeout_at(cutoff + cancel, async {
+        while let Some(r) = set.join_next().await {
+            // A worker that panicked loses no accounting silently: the
+            // panic is the driver's bug, and it propagates.
+            r.expect("a cell worker never panics");
+        }
+    })
+    .await;
+    let cancel_unproved = joined.is_err();
+    if cancel_unproved {
+        set.abort_all();
     }
-    rows.sort_by_key(|r| r.index);
+    let end_ns = clock.now_ns();
+    let rows: Vec<OpRow> = std::mem::take(&mut *ledger.lock().expect("ledger lock"))
+        .into_iter()
+        .map(|(index, (worker, start, row))| {
+            row.unwrap_or(OpRow {
+                phase,
+                index,
+                worker,
+                start_ns: start,
+                end_ns,
+                outcome: Outcome::Timeout,
+                requests: 0,
+                bytes: 0,
+                wait: None,
+            })
+        })
+        .collect();
     let started = rows.len() as u32;
     Ran {
-        unresolved: rows.iter().any(|r| r.outcome == Outcome::Timeout),
+        // The scheduler does not know the operation: its caller decides
+        // which outcomes leave an effect unknown ([`uncertain`]).
+        unresolved: false,
         rows,
         planned,
         started,
         unstarted: planned - started,
         start_ns,
-        end_ns: clock.now_ns(),
+        end_ns,
+        cancel_unproved,
     }
 }
 
@@ -1285,11 +1379,15 @@ pub trait Surfacer: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>>;
 }
 
-/// Run `cells` in order (spec AC5): each cell's warmup on its own five-second
-/// bound, then its measured operations inside the meter's window. A failed
-/// warmup blocks that cell; a call left unresolved blocks every later cell
-/// and abandons the launch (its caller tears it down). `deadline` is the
-/// chunk's: a cell not started by then is blocked.
+/// Run `cells` in order (spec AC5, R1): each cell's warmup on its own
+/// five-second bound, then its measured operations inside the meter's
+/// window, neither past the chunk's `deadline`. A read that times out keeps
+/// its terminal row and later cells still run; a failed warmup blocks only
+/// its own cell. A delete, clear or wait whose effect is left unknown
+/// ([`uncertain`]), or a phase whose local cancellation was not proved,
+/// blocks every later cell and abandons the launch: its owner tears the
+/// target down, and no final clear runs. A cell not started by `deadline`
+/// is blocked.
 pub async fn run_cells(
     cells: &[PlannedCell],
     capability: &dyn Fn(Operation) -> Capability,
@@ -1300,6 +1398,14 @@ pub async fn run_cells(
 ) -> Result<(Vec<CellRecord>, Option<String>), String> {
     let mut out = Vec::new();
     let mut abandoned: Option<String> = None;
+    // A phase's budget: its own five seconds, never past the chunk's end.
+    let budget = || {
+        deadline.map_or(CELL_DEADLINE, |d| {
+            d.saturating_duration_since(Instant::now())
+                .min(CELL_DEADLINE)
+        })
+    };
+    let verdict = phase_verdict;
     for cell in cells {
         let cap = capability(cell.operation);
         if let Some(why) = &abandoned {
@@ -1316,14 +1422,15 @@ pub async fn run_cells(
             continue;
         }
         let workers = cell.concurrency.unwrap_or(1);
+        let name = cell.name();
         let mut rec = CellRecord::new(cell, &cap);
         if cell.warmup > 0 {
-            let warm = run_cell(
+            let mut warm = run_cell(
                 clock,
                 Phase::Warmup,
                 workers,
                 cell.warmup,
-                CELL_DEADLINE,
+                budget(),
                 Arc::new(wrap(surface.op(cell, 0))),
             )
             .await;
@@ -1334,39 +1441,27 @@ pub async fn run_cells(
                         Outcome::Failed { .. } | Outcome::Timeout | Outcome::WrongResult { .. }
                     )
                 });
-            let unresolved = warm.unresolved;
+            abandoned = verdict(&mut warm, cell.operation, "warmup", &name);
             rec.warmup = Some(warm);
-            if unresolved {
-                abandoned = Some(format!(
-                    "{}: a warmup call was left unresolved",
-                    cell.name()
-                ));
-            }
-            if failed {
+            if failed || abandoned.is_some() {
                 let mut b = CellRecord::blocked(cell, &cap, "warmup_failed", clock.now_ns());
                 b.warmup = rec.warmup;
                 out.push(b);
                 continue;
             }
         }
-        let name = cell.name();
         meter.open(&name).await?;
-        let measured = run_cell(
+        let mut measured = run_cell(
             clock,
             Phase::Measured,
             workers,
             cell.planned,
-            CELL_DEADLINE,
+            budget(),
             Arc::new(wrap(surface.op(cell, cell.warmup))),
         )
         .await;
         meter.close(&name).await?;
-        if measured.unresolved {
-            abandoned = Some(format!(
-                "{}: a measured call was left unresolved",
-                cell.name()
-            ));
-        }
+        abandoned = verdict(&mut measured, cell.operation, "measured", &name);
         rec.measured = measured;
         if cell.operation.destructive() {
             let mut rows: Vec<OpRow> = rec
@@ -1386,6 +1481,25 @@ pub async fn run_cells(
         out.push(rec);
     }
     Ok((out, abandoned))
+}
+
+/// Why a phase of `op` abandons the launch, if it does: it sets
+/// [`Ran::unresolved`] from its rows ([`uncertain`]), and an unproved local
+/// cancellation abandons whatever the operation.
+pub fn phase_verdict(ran: &mut Ran, op: Operation, what: &str, name: &str) -> Option<String> {
+    ran.unresolved = ran.rows.iter().any(|r| uncertain(op, &r.outcome));
+    if ran.cancel_unproved {
+        Some(format!(
+            "{name}: local cancellation of a {what} call was not proved"
+        ))
+    } else if ran.unresolved {
+        Some(format!(
+            "{name}: a {what} {} left its effect unknown",
+            op.name()
+        ))
+    } else {
+        None
+    }
 }
 
 fn wrap(

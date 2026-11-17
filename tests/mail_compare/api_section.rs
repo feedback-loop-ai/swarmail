@@ -458,13 +458,23 @@ async fn a_response_over_its_bound_is_refused_before_it_is_buffered() {
 async fn responder(
     answer: impl Fn(&str) -> (u16, String) + Send + Sync + 'static,
 ) -> std::net::SocketAddr {
+    delaying_responder(answer, |_| None).await
+}
+
+/// [`responder`], holding the `n`th request's answer (counted from 1 across
+/// all connections) for `delay(n)` when it names one.
+async fn delaying_responder(
+    answer: impl Fn(&str) -> (u16, String) + Send + Sync + 'static,
+    delay: fn(u64) -> Option<Duration>,
+) -> std::net::SocketAddr {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let answer = Arc::new(answer);
     tokio::spawn(async move {
         while let Ok((mut s, _)) = listener.accept().await {
-            let answer = answer.clone();
+            let (answer, count) = (answer.clone(), count.clone());
             tokio::spawn(async move {
                 let mut buf = Vec::new();
                 loop {
@@ -492,6 +502,10 @@ async fn responder(
                         let path = head.split(' ').nth(1).unwrap_or("/").to_owned();
                         buf.drain(..end + 4 + len);
                         let (status, body) = answer(&path);
+                        let n = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                        if let Some(d) = delay(n) {
+                            tokio::time::sleep(d).await;
+                        }
                         let resp = format!(
                             "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
                             body.len()
@@ -683,7 +697,10 @@ async fn a_cell_stops_assigning_at_its_deadline_and_every_start_ends_once() {
     )
     .await;
     assert_eq!((r.started, r.unstarted), (2, 98));
-    assert!(r.rows.iter().all(|x| x.outcome == Outcome::Timeout) && r.unresolved);
+    // The scheduler records the timeouts; whether an effect is unknown is
+    // the operation's to say (R1): a read never, a mutation always.
+    assert!(r.rows.iter().all(|x| x.outcome == Outcome::Timeout) && !r.unresolved);
+    assert!(!r.cancel_unproved);
     // Zero: a zero budget starts nothing.
     let r = api::run_cell(
         clock(),
@@ -706,6 +723,416 @@ async fn a_cell_stops_assigning_at_its_deadline_and_every_start_ends_once() {
     )
     .await;
     assert_eq!((r.started, r.rows.len()), (20, 20));
+}
+
+// ---- effect-specific cutoffs (R1) -------------------------------------------
+
+#[test]
+fn only_a_mutation_left_unresolved_is_uncertain() {
+    let failed = |r: &str| Outcome::Failed { reason: r.into() };
+    for op in [Operation::Delete, Operation::Clear, Operation::Wait] {
+        assert!(api::uncertain(op, &Outcome::Timeout), "{op:?}");
+        assert!(api::uncertain(op, &failed("transport")), "{op:?}");
+        assert!(api::uncertain(op, &failed("fixture_ambiguous")), "{op:?}");
+        // A completed refusal is a known non-effect.
+        for known in ["status_404", "status_429", "busy_bridge", "fixture_refused"] {
+            assert!(!api::uncertain(op, &failed(known)), "{op:?} {known}");
+        }
+        assert!(!api::uncertain(op, &Outcome::Exact));
+    }
+    for op in [
+        Operation::List,
+        Operation::Search,
+        Operation::Get,
+        Operation::ExtractCode,
+        Operation::ExtractLink,
+    ] {
+        assert!(!api::uncertain(op, &Outcome::Timeout), "{op:?}");
+        assert!(!api::uncertain(op, &failed("transport")), "{op:?}");
+    }
+}
+
+/// A surface whose operation closures are scripted per operation: `slow`
+/// indices sleep past any deadline, `fail` indices end in the given outcome.
+struct Scripted {
+    script: fn(Operation, Phase, u32) -> Option<Outcome>,
+    phase_of: fn(u32) -> Phase,
+}
+
+impl api::Surfacer for Scripted {
+    fn op(
+        &self,
+        cell: &PlannedCell,
+        offset: u32,
+    ) -> Arc<dyn Fn(u32, u32, tokio::time::Instant) -> api::OpFuture + Send + Sync> {
+        let (op, script) = (cell.operation, self.script);
+        let phase = (self.phase_of)(offset);
+        Arc::new(move |_w, i, _d| {
+            let got = script(op, phase, i);
+            Box::pin(async move {
+                match got {
+                    // In flight past the deadline: the scheduler drops it.
+                    None => {
+                        tokio::time::sleep(Duration::from_secs(3_600)).await;
+                        api::Done::of(Outcome::Exact, Spend::default())
+                    }
+                    Some(o) => {
+                        tokio::time::sleep(Duration::from_millis(7)).await;
+                        api::Done::of(o, Spend::default())
+                    }
+                }
+            }) as api::OpFuture
+        })
+    }
+
+    fn postcheck<'a>(
+        &'a self,
+        _cell: &'a PlannedCell,
+        _rows: &'a mut Vec<api::OpRow>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + 'a>>
+    {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
+fn cell(op: Operation, c: u32) -> PlannedCell {
+    PlannedCell {
+        operation: op,
+        concurrency: Some(c),
+        warmup: api::WARMUP,
+        planned: api::MEASURED,
+        scope: None,
+        ordinal: 0,
+    }
+}
+
+async fn run_script(
+    cells: &[PlannedCell],
+    script: fn(Operation, Phase, u32) -> Option<Outcome>,
+    deadline: Option<tokio::time::Instant>,
+) -> (Vec<api::CellRecord>, Option<String>) {
+    let s = Scripted {
+        script,
+        phase_of: |offset| {
+            if offset == 0 {
+                Phase::Warmup
+            } else {
+                Phase::Measured
+            }
+        },
+    };
+    let caps = |op| clients::native_capability("swarmail", op);
+    api::run_cells(cells, &caps, &s, &api::NoMeter, clock(), deadline)
+        .await
+        .unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_read_in_flight_at_the_deadline_times_out_and_later_cells_still_measure() {
+    // list.c1: measured index 37 never answers; at the five-second deadline
+    // it is a timeout row, the rest of the queue untaken. search.c1 after it
+    // measures normally and the launch is not abandoned.
+    let cells = [cell(Operation::List, 1), cell(Operation::Search, 1)];
+    let (recs, abandoned) = run_script(
+        &cells,
+        |op, phase, i| {
+            if op == Operation::List && phase == Phase::Measured && i == 37 {
+                None
+            } else {
+                Some(Outcome::Exact)
+            }
+        },
+        None,
+    )
+    .await;
+    assert_eq!(abandoned, None);
+    let list = &recs[0].measured;
+    assert_eq!(recs[0].status, api::CellStatus::Measured);
+    assert_eq!((list.started, list.unstarted), (38, 62));
+    assert_eq!(list.rows.last().unwrap().outcome, Outcome::Timeout);
+    assert!(!list.unresolved && !list.cancel_unproved);
+    let search = &recs[1];
+    assert_eq!(search.status, api::CellStatus::Measured);
+    assert_eq!(
+        (search.measured.started, search.measured.unstarted),
+        (100, 0)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_read_warmup_blocks_only_its_own_cell() {
+    let cells = [cell(Operation::Get, 8), cell(Operation::Get, 32)];
+    let (recs, abandoned) = run_script(
+        &cells,
+        |_, phase, i| match (phase, i) {
+            // get.c8's warmup has a slow read; get.c32's warmup is clean.
+            (Phase::Warmup, 3) => None,
+            _ => Some(Outcome::Exact),
+        },
+        None,
+    )
+    .await;
+    // Both warmups saw index 3 hang, so both are blocked — and neither
+    // abandoned the launch: a read never does.
+    assert_eq!(abandoned, None);
+    assert!(
+        recs.iter()
+            .all(|r| r.blocked.as_deref() == Some("warmup_failed"))
+    );
+    // A read warmup that merely fails blocks only itself.
+    let cells = [cell(Operation::List, 1), cell(Operation::Search, 1)];
+    let (recs, abandoned) = run_script(
+        &cells,
+        |op, phase, _| match (op, phase) {
+            (Operation::List, Phase::Warmup) => Some(Outcome::Failed {
+                reason: "transport".into(),
+            }),
+            _ => Some(Outcome::Exact),
+        },
+        None,
+    )
+    .await;
+    assert_eq!(abandoned, None);
+    assert_eq!(recs[0].blocked.as_deref(), Some("warmup_failed"));
+    assert_eq!(recs[1].status, api::CellStatus::Measured);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unresolved_mutation_blocks_every_later_cell_and_abandons_the_launch() {
+    let later = [
+        cell(Operation::Clear, 1),
+        PlannedCell {
+            operation: Operation::Clear,
+            concurrency: None,
+            warmup: 0,
+            planned: 1,
+            scope: Some(ClearScope::All),
+            ordinal: 0,
+        },
+    ];
+    // A delete timing out in its measured phase, a delete losing its
+    // transport after dispatch, a clear doing so in warmup, a wait timing out.
+    type Script = fn(Operation, Phase, u32) -> Option<Outcome>;
+    let cases: [(Operation, Script, &str); 4] = [
+        (
+            Operation::Delete,
+            |op, ph, i| {
+                (op != Operation::Delete || ph != Phase::Measured || i != 50)
+                    .then_some(Outcome::Exact)
+            },
+            "measured",
+        ),
+        (
+            Operation::Delete,
+            |op, ph, i| {
+                Some(
+                    if op == Operation::Delete && ph == Phase::Measured && i == 2 {
+                        Outcome::Failed {
+                            reason: "transport".into(),
+                        }
+                    } else {
+                        Outcome::Exact
+                    },
+                )
+            },
+            "measured",
+        ),
+        (
+            Operation::Clear,
+            |op, ph, i| {
+                Some(if op == Operation::Clear && ph == Phase::Warmup && i == 0 {
+                    Outcome::Failed {
+                        reason: "transport".into(),
+                    }
+                } else {
+                    Outcome::Exact
+                })
+            },
+            "warmup",
+        ),
+        (
+            Operation::Wait,
+            |op, ph, i| {
+                (op != Operation::Wait || ph != Phase::Measured || i != 0).then_some(Outcome::Exact)
+            },
+            "measured",
+        ),
+    ];
+    for (op, script, phase) in cases {
+        let mut cells = vec![cell(op, 8)];
+        cells.extend(later.iter().cloned());
+        let (recs, abandoned) = run_script(&cells, script, None).await;
+        let why = abandoned.unwrap_or_else(|| panic!("{op:?} must abandon"));
+        assert!(
+            why.contains(phase) && why.contains("effect unknown"),
+            "{why}"
+        );
+        // No later cell runs — the global clear included — and each names why.
+        for r in &recs[1..] {
+            assert_eq!(r.status, api::CellStatus::Blocked);
+            assert_eq!(r.blocked.as_deref(), Some(why.as_str()));
+            assert_eq!(r.measured.started, 0);
+        }
+        // The uncertain cell keeps its started rows, the failure among them.
+        let first = &recs[0];
+        let ran = if phase == "warmup" {
+            first.warmup.as_ref().unwrap()
+        } else {
+            &first.measured
+        };
+        assert!(ran.unresolved && ran.started >= 1);
+    }
+    // A completed refusal on a delete is a failure row, not uncertainty.
+    let mut cells = vec![cell(Operation::Delete, 1)];
+    cells.extend(later.iter().cloned());
+    let (recs, abandoned) = run_script(
+        &cells,
+        |op, ph, i| {
+            Some(
+                if op == Operation::Delete && ph == Phase::Measured && i == 9 {
+                    Outcome::Failed {
+                        reason: "status_404".into(),
+                    }
+                } else {
+                    Outcome::Exact
+                },
+            )
+        },
+        None,
+    )
+    .await;
+    assert_eq!(abandoned, None);
+    assert!(recs.iter().all(|r| r.status == api::CellStatus::Measured));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_chunk_deadline_bounds_a_cell_and_blocks_the_rest() {
+    // Half a second of chunk left: list.c1's phases get only what remains, and
+    // the cells after the deadline are blocked by it, not by a failure.
+    let cells = [
+        cell(Operation::List, 1),
+        cell(Operation::Search, 1),
+        cell(Operation::Get, 1),
+    ];
+    let end = tokio::time::Instant::now() + Duration::from_millis(500);
+    let (recs, abandoned) = run_script(&cells, |_, _, _| Some(Outcome::Exact), Some(end)).await;
+    assert_eq!(abandoned, None);
+    // 20 warmups at 7 ms leave 360 ms: the measured phase stops there.
+    assert_eq!(recs[0].status, api::CellStatus::Measured);
+    let m = &recs[0].measured;
+    assert_eq!((m.started, m.unstarted), (52, 48));
+    for r in &recs[1..] {
+        assert_eq!(r.blocked.as_deref(), Some("chunk_deadline"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_worker_that_does_not_return_leaves_its_start_and_an_unproved_cancellation() {
+    // The operation blocks its thread past the deadline and the bound: it
+    // cannot be dropped in time. Its start is still a terminal timeout row,
+    // and the phase says local cancellation was not proved.
+    let op = Arc::new(|_w: u32, i: u32, _d: tokio::time::Instant| {
+        Box::pin(async move {
+            if i == 0 {
+                std::thread::sleep(Duration::from_millis(600));
+            }
+            api::Done::of(Outcome::Exact, Spend::default())
+        }) as api::OpFuture
+    });
+    let r = api::run_cell_bounded(
+        clock(),
+        Phase::Measured,
+        1,
+        5,
+        Duration::from_millis(50),
+        Duration::from_millis(100),
+        op,
+    )
+    .await;
+    assert!(r.cancel_unproved);
+    assert_eq!((r.started, r.unstarted), (1, 4));
+    assert_eq!(r.rows[0].outcome, Outcome::Timeout);
+    // A phase whose cancellation was not proved abandons the launch even
+    // for a read; a read's timeout alone never does.
+    let mut ran = r.clone();
+    let why = api::phase_verdict(&mut ran, Operation::List, "measured", "list.c1").unwrap();
+    assert!(why.contains("cancellation") && !ran.unresolved, "{why}");
+    ran.cancel_unproved = false;
+    assert_eq!(
+        api::phase_verdict(&mut ran, Operation::List, "measured", "list.c1"),
+        None
+    );
+    let why = api::phase_verdict(&mut ran, Operation::Delete, "measured", "delete.c1").unwrap();
+    assert!(why.contains("effect unknown") && ran.unresolved, "{why}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_native_surface_keeps_measuring_after_a_read_times_out() {
+    // The producer path (R1): the real native surface over Mailpit's client,
+    // against a loopback server holding one measured list request past the
+    // cell's five-second deadline. That list is a timeout row; the next
+    // cell measures all of its operations; nothing is abandoned.
+    let reads: Vec<api::Authored> = (0..api::K)
+        .map(|n| {
+            let mut a = api::author(7, api::Role::Read, n, &api::read_scope());
+            a.id = Some(format!("r{n}"));
+            a
+        })
+        .collect();
+    let body = {
+        let items: Vec<Value> = reads
+            .iter()
+            .map(
+                |a| json!({"ID": a.id, "To": [{"Address": a.scope.address}], "Subject": a.subject}),
+            )
+            .collect();
+        json!({"start": 0, "messages_count": items.len(), "messages": items}).to_string()
+    };
+    // Request 1..20 are list.c1's warmup; 31 is its 11th measured call.
+    let addr = delaying_responder(
+        move |_| (200, body.clone()),
+        |n| (n == 31).then_some(Duration::from_secs(8)),
+    )
+    .await;
+    let surface = api::NativeSurface {
+        clients: Arc::new(
+            (0..8)
+                .map(|_| clients::Client::new("mailpit", addr).unwrap())
+                .collect(),
+        ),
+        fixtures: Arc::new(reads),
+    };
+    let caps = |op| clients::native_capability("mailpit", op);
+    let cells = [cell(Operation::List, 1), cell(Operation::List, 8)];
+    let (recs, abandoned) = api::run_cells(&cells, &caps, &surface, &api::NoMeter, clock(), None)
+        .await
+        .unwrap();
+    assert_eq!(abandoned, None);
+    let first = &recs[0].measured;
+    assert_eq!(recs[0].status, api::CellStatus::Measured);
+    assert_eq!(
+        first.started,
+        11,
+        "{:?}",
+        first
+            .rows
+            .iter()
+            .map(|r| r.outcome.class())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(first.rows[10].outcome, Outcome::Timeout);
+    assert!(first.rows[..10].iter().all(|r| r.outcome == Outcome::Exact));
+    assert!(!first.unresolved && !first.cancel_unproved);
+    let second = &recs[1];
+    assert_eq!(second.status, api::CellStatus::Measured);
+    assert_eq!(second.measured.started, 100);
+    assert!(
+        second
+            .measured
+            .rows
+            .iter()
+            .all(|r| r.outcome == Outcome::Exact)
+    );
 }
 
 #[test]
@@ -738,6 +1165,7 @@ fn statistics_are_nearest_rank_over_exact_successes_only() {
         start_ns: 0,
         end_ns: 2_000_000_000,
         unresolved: false,
+        cancel_unproved: false,
     };
     let s = api::stats(&ran, Some(5_000));
     assert_eq!((s.exact, s.inexact_fidelity, s.failed), (98, 1, 1));
