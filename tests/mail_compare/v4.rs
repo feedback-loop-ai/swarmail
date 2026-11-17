@@ -9135,8 +9135,16 @@ fn v4_real_hold_swarmail_under_budget() {
     });
     runner::hold_verdict(&receipt).expect("EOF with no byte is a clean end");
     let l = &receipt.launch;
-    assert_eq!(l.limits.as_ref().unwrap().memory_max, "2147483648");
-    assert_eq!(l.limits.as_ref().unwrap().cpu_max, "200000 100000");
+    // All five limits read back as V9 sets them, not only two of them.
+    let read = l.limits.as_ref().expect("the limits read back");
+    assert_eq!(read.memory_max, "2147483648");
+    assert_eq!(read.memory_swap_max, "0");
+    assert_eq!(read.memory_oom_group, "1");
+    assert_eq!(read.cpu_max, "200000 100000");
+    assert_eq!(read.pids_max, "4096");
+    // The cleanup receipt names the leaf of its launch receipt (revision 2).
+    assert!(l.leaf.is_some(), "{l:?}");
+    assert_eq!(receipt.cleanup.leaf, l.leaf, "{:?}", receipt.cleanup);
     let joined = l.joined.as_ref().expect("the join read-back");
     assert_eq!(Some(&joined.cgroup), l.leaf.as_ref());
     assert_eq!(joined.cpus_allowed, scope.layout.target_cpus);
@@ -9188,6 +9196,8 @@ fn v4_real_hold_swarmail_under_budget() {
     assert_eq!(by_interrupt.cleanup.cgroup_removed, Some(true));
     assert!(by_interrupt.cleanup.proved(), "{:?}", by_interrupt.cleanup);
     assert_eq!(by_interrupt.launch.limits, receipt.launch.limits);
+    assert!(by_interrupt.launch.leaf.is_some());
+    assert_eq!(by_interrupt.cleanup.leaf, by_interrupt.launch.leaf);
     assert_eq!(by_interrupt.cleanup.exited_early, Some(false));
     let printed = String::from_utf8(out2.0.lock().unwrap().clone()).unwrap();
     assert_eq!(printed.lines().count(), 2, "{printed}");
@@ -9396,6 +9406,22 @@ fn v4_real_cost_chunk_seals_and_admits() {
         "peak_anon_mib",
     ] {
         assert!(cell[figure].is_null(), "{figure}: {cell}");
+    }
+    // No idle or startup figure of it is a number either: one cell each,
+    // unranked, every value null.
+    for (section, figures) in [
+        ("idle", &["memory_mib", "anon_mib", "scratch_bytes"][..]),
+        ("startup", &["ready_ms", "cpu_ms_to_ready"][..]),
+    ] {
+        let cells = c.report[section]
+            .as_array()
+            .unwrap_or_else(|| panic!("{section}: {}", c.report));
+        assert_eq!(cells.len(), 1, "{section}: {cells:?}");
+        let cell = &cells[0];
+        assert_eq!(cell["ranked"], false, "{section}: {cell}");
+        for figure in figures {
+            assert!(cell[*figure].is_null(), "{section}.{figure}: {cell}");
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
