@@ -603,30 +603,15 @@ pub async fn warmup(
     };
     life.launches.push(owned.facts.clone());
     let step = Duration::from_millis(cfg.protocol.resources.request_deadline_ms);
-    let mut cut = false;
-    for i in 0..t.warmup_messages {
-        if past(chunk_end) {
-            cut = true;
-            break;
-        }
-        let msg = authored(
-            cfg.protocol.corpus.seed,
-            "warmup00000000",
-            i,
-            &cfg.protocol.corpus.kinds,
-        );
-        let sent = until(chunk_end, async {
-            if let Ok(mut s) = Smtp::open(owned.smtp, step).await {
-                let _ = s.send(&msg, clock).await;
-                s.quit().await;
-            }
-        })
-        .await;
-        if sent.is_none() {
-            cut = true;
-            break;
-        }
-    }
+    let cut = warmup_sends(
+        owned.smtp,
+        &cfg.protocol,
+        t.warmup_messages,
+        step,
+        clock,
+        chunk_end,
+    )
+    .await;
     let name = owned.leaf.as_ref().map(|l| l.name().to_owned());
     let facts = owned.shutdown().await;
     let proved = facts.proved();
@@ -642,6 +627,37 @@ pub async fn warmup(
     } else {
         Warm::Done
     })
+}
+
+/// The warmup's sends, one fresh session each, nothing recorded; `true` when
+/// the chunk's instant cut them. Each session ends through `end_session`, so
+/// the warmup keeps V16's rule as the measure path does: at or after the
+/// instant no `QUIT` is begun and a `QUIT` in flight is cut at it.
+pub async fn warmup_sends(
+    smtp: std::net::SocketAddr,
+    p: &Protocol,
+    messages: u32,
+    step: Duration,
+    clock: &Clock,
+    chunk_end: Option<Instant>,
+) -> bool {
+    for i in 0..messages {
+        if past(chunk_end) {
+            return true;
+        }
+        let msg = authored(p.corpus.seed, "warmup00000000", i, &p.corpus.kinds);
+        let sent = until(chunk_end, async {
+            if let Ok(mut s) = Smtp::open(smtp, step).await {
+                let _ = s.send(&msg, clock).await;
+                end_session(s, chunk_end).await;
+            }
+        })
+        .await;
+        if sent.is_none() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Closed-loop workers, one outstanding delivery each. Every index gets

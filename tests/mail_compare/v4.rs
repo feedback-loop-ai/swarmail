@@ -4134,6 +4134,37 @@ fn footprint_never_publishes_null_zero_owed_or_a_host_path() {
 }
 
 #[test]
+fn footprint_refuses_an_empty_or_non_regular_candidate() {
+    // V18: every launched row's installed size is positive, the candidate's
+    // too; a zero-length or directory --bin refuses and prints no document.
+    let mut f = footprints();
+    let empty = f.dir.join("empty-swarmail");
+    std::fs::write(&empty, "").unwrap();
+    f.bins.insert(TargetKind::Swarmail, empty);
+    let w = run_footprint(&f).unwrap_err();
+    assert!(
+        w.contains("swarmail") && w.contains("nonempty regular file"),
+        "{w}"
+    );
+
+    let mut f = footprints();
+    let dir = f.dir.join("swarmail-dir");
+    std::fs::create_dir(&dir).unwrap();
+    f.bins.insert(TargetKind::Swarmail, dir);
+    let w = run_footprint(&f).unwrap_err();
+    assert!(w.contains("nonempty regular file"), "{w}");
+
+    let mut f = footprints();
+    f.bins
+        .insert(TargetKind::Swarmail, f.dir.join("no-such-swarmail"));
+    let w = run_footprint(&f).unwrap_err();
+    assert!(
+        w.contains("swarmail") && w.contains("no-such-swarmail"),
+        "{w}"
+    );
+}
+
+#[test]
 fn footprint_refuses_two_targets_that_share_a_tree() {
     // Two separate directories pass.
     run_footprint(&footprints()).expect("separate trees");
@@ -7849,6 +7880,40 @@ mod chunk {
             assert_eq!(sends(&rows)[0].outcome, "accepted", "{connection}");
             let lines = ended(&heard, 1).await;
             assert_eq!(quits(&lines), 1, "{connection}: {lines:?}");
+        }
+    }
+
+    /// The warmup's sessions keep V16's rule too: an acceptance before the
+    /// instant, the instant here before the client's next step, no `QUIT`.
+    #[tokio::test]
+    async fn a_warmup_session_past_chunk_end_sends_no_quit() {
+        // 5 s only has to outlast setup (see the reused-session case).
+        let end = Instant::now() + Duration::from_secs(5);
+        let (smtp, heard) = smtp_recording(false, Some(end + Duration::from_millis(100))).await;
+        let p = protocol(vec![profile("cost-a", 1, 1, 1)], 480_000);
+        let clock = wire::Clock(Instant::now());
+        let cut =
+            runner::warmup_sends(smtp, &p, 2, Duration::from_secs(10), &clock, Some(end)).await;
+        assert!(cut, "the second send never began");
+        let lines = ended(&heard, 1).await;
+        assert_eq!(quits(&lines), 0, "{lines:?}");
+        assert_eq!(
+            lines.iter().filter(|l| *l == "DATA").count(),
+            1,
+            "one send, accepted before the instant: {lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn before_chunk_end_a_warmup_session_still_ends_with_quit() {
+        for end in [None, Some(Instant::now() + Duration::from_secs(60))] {
+            let (smtp, heard) = smtp_recording(false, None).await;
+            let p = protocol(vec![profile("cost-a", 1, 1, 1)], 480_000);
+            let clock = wire::Clock(Instant::now());
+            let cut = runner::warmup_sends(smtp, &p, 2, Duration::from_secs(10), &clock, end).await;
+            assert!(!cut, "{end:?}");
+            let lines = ended(&heard, 2).await;
+            assert_eq!(quits(&lines), 2, "{end:?}: {lines:?}");
         }
     }
 

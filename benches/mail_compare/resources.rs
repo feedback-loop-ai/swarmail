@@ -1283,7 +1283,15 @@ pub fn footprint(
         if t == TargetKind::Swarmail {
             // The candidate is the release binary itself; its digest is
             // recorded per run, not pinned.
-            let n = size(bin)?;
+            let meta =
+                std::fs::metadata(bin).map_err(|e| format!("{t}: {}: {e}", bin.display()))?;
+            if !meta.is_file() || meta.len() == 0 {
+                return Err(format!(
+                    "{t}: {} is not a nonempty regular file; the installed size must be positive",
+                    bin.display()
+                ));
+            }
+            let n = meta.len();
             entry.insert("download_bytes".into(), n.into());
             entry.insert(
                 "download_basis".into(),
