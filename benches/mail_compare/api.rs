@@ -1219,10 +1219,30 @@ pub async fn fill_within(
 /// untimed and matching the authored token in the subject: the server tells
 /// the client which id holds which token, never what the message contains.
 /// Every token must appear exactly once and nothing else may be there.
+///
+/// The whole preparation stops at `end` (the chunk's cell deadline): a
+/// preparation cut there is refused like any other, so its cells are
+/// published blocked and the chunk still seals.
 pub async fn prepare(
     smtp: std::net::SocketAddr,
     client: &clients::Client,
     fixtures: &mut [Authored],
+    end: Option<Instant>,
+) -> Result<(), String> {
+    let work = prepare_within(smtp, client, fixtures, end);
+    match end {
+        Some(end) => tokio::time::timeout_at(end, work)
+            .await
+            .unwrap_or_else(|_| Err(CHUNK_DEADLINE.into())),
+        None => work.await,
+    }
+}
+
+async fn prepare_within(
+    smtp: std::net::SocketAddr,
+    client: &clients::Client,
+    fixtures: &mut [Authored],
+    end: Option<Instant>,
 ) -> Result<(), String> {
     let mut by_scope: BTreeMap<Scope, Vec<usize>> = BTreeMap::new();
     for (i, f) in fixtures.iter().enumerate() {
@@ -1270,7 +1290,7 @@ pub async fn prepare(
         s.quit().await;
     }
     for (scope, idx) in &by_scope {
-        let deadline = Instant::now() + VERIFY_DEADLINE;
+        let deadline = verify_deadline(end);
         let mut spend = Spend::default();
         let listed = client
             .list(scope, deadline, &mut spend)
@@ -1518,12 +1538,47 @@ pub trait Surfacer: Send + Sync {
         cell: &PlannedCell,
         offset: u32,
     ) -> Arc<dyn Fn(u32, u32, Instant) -> OpFuture + Send + Sync>;
-    /// After a destructive cell: check the batch ledger and rewrite rows.
+    /// After a destructive cell: check the batch ledger and rewrite rows,
+    /// every listing within [`VERIFY_DEADLINE`] and never past `end`.
     fn postcheck<'a>(
         &'a self,
         cell: &'a PlannedCell,
         rows: &'a mut Vec<OpRow>,
+        end: Option<Instant>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>>;
+}
+
+/// The blocked reason of a cell the chunk deadline cut or never started.
+pub const CHUNK_DEADLINE: &str = "chunk_deadline";
+
+/// A chunk's two stopping points for [`run_cells`] (spec AC5, AC8): no
+/// phase starts or runs past `cells`, and no untimed verification runs past
+/// `verify`, which is never earlier than `cells`.
+#[derive(Debug, Clone, Copy)]
+pub struct Ends {
+    pub cells: Instant,
+    pub verify: Instant,
+}
+
+/// The deadline of one untimed verification step: its own bound, never
+/// past the chunk's `end`.
+pub fn verify_deadline(end: Option<Instant>) -> Instant {
+    let own = Instant::now() + VERIFY_DEADLINE;
+    end.map_or(own, |e| e.min(own))
+}
+
+/// What a destructive cell's rows become when the chunk deadline cut its
+/// postcheck: no success stands unverified, and nothing is uncertain — the
+/// operations themselves answered.
+pub const POSTCHECK_CUT: &str = "postcheck_chunk_deadline";
+
+/// Rewrite every exact row of a cell whose postcheck the chunk deadline cut.
+pub fn unverified(rows: &mut [OpRow]) {
+    for r in rows.iter_mut().filter(|r| r.outcome == Outcome::Exact) {
+        r.outcome = Outcome::Failed {
+            reason: POSTCHECK_CUT.into(),
+        };
+    }
 }
 
 /// Run `cells` in order (spec AC5, R1): each cell's warmup on its own
@@ -1534,15 +1589,19 @@ pub trait Surfacer: Send + Sync {
 /// ([`uncertain`]), or a phase whose local cancellation was not proved,
 /// blocks every later cell and abandons the launch: its owner tears the
 /// target down, and no final clear runs. A cell not started by `deadline`
-/// is blocked.
+/// is blocked, as is one whose warmup ended at it. A postcheck runs within
+/// `ends.verify`; one cut there leaves its cell's successes unverified
+/// ([`unverified`]), not an infrastructure failure.
 pub async fn run_cells(
     cells: &[PlannedCell],
     capability: &dyn Fn(Operation) -> Capability,
     surface: &dyn Surfacer,
     meter: &dyn Meter,
     clock: Clock,
-    deadline: Option<Instant>,
+    ends: Option<Ends>,
 ) -> Result<(Vec<CellRecord>, Option<String>), String> {
+    let deadline = ends.map(|e| e.cells);
+    let past = |d: Option<Instant>| d.is_some_and(|d| Instant::now() >= d);
     let mut out = Vec::new();
     let mut abandoned: Option<String> = None;
     // A phase's budget: its own five seconds, never past the chunk's end.
@@ -1559,7 +1618,7 @@ pub async fn run_cells(
             out.push(CellRecord::blocked(cell, &cap, why, clock.now_ns()));
             continue;
         }
-        if deadline.is_some_and(|d| Instant::now() >= d) {
+        if past(deadline) {
             out.push(CellRecord::blocked(
                 cell,
                 &cap,
@@ -1590,8 +1649,16 @@ pub async fn run_cells(
                 });
             abandoned = verdict(&mut warm, cell.operation, "warmup", &name);
             rec.warmup = Some(warm);
-            if failed || abandoned.is_some() {
-                let mut b = CellRecord::blocked(cell, &cap, "warmup_failed", clock.now_ns());
+            // A warmup the chunk deadline cut, or one that ran to it and
+            // left the measured phase no time, is a cut cell, not a failed
+            // or an empty one; an unknown effect still abandons first.
+            let why = match (abandoned.is_some(), past(deadline), failed) {
+                (true, _, _) | (false, false, true) => Some("warmup_failed"),
+                (false, true, _) => Some("chunk_deadline"),
+                (false, false, false) => None,
+            };
+            if let Some(why) = why {
+                let mut b = CellRecord::blocked(cell, &cap, why, clock.now_ns());
                 b.warmup = rec.warmup;
                 out.push(b);
                 continue;
@@ -1617,7 +1684,16 @@ pub async fn run_cells(
                 .flat_map(|w| w.rows.clone())
                 .chain(rec.measured.rows.clone())
                 .collect();
-            rec.postcheck = surface.postcheck(cell, &mut rows).await?;
+            let verify = ends.map(|e| e.verify);
+            rec.postcheck = match surface.postcheck(cell, &mut rows, verify).await {
+                Ok(problems) => problems,
+                // Cut by the chunk deadline: bounded, sealed, unverified.
+                Err(e) if past(verify) => {
+                    unverified(&mut rows);
+                    vec![format!("{name}: {POSTCHECK_CUT}: {e}")]
+                }
+                Err(e) => return Err(e),
+            };
             let (warm, meas): (Vec<OpRow>, Vec<OpRow>) =
                 rows.into_iter().partition(|r| r.phase == Phase::Warmup);
             if let Some(w) = rec.warmup.as_mut() {
@@ -1771,10 +1847,11 @@ impl Surfacer for NativeSurface {
         &'a self,
         cell: &'a PlannedCell,
         rows: &'a mut Vec<OpRow>,
+        end: Option<Instant>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
         Box::pin(async move {
             let c = &self.clients[0];
-            let deadline = Instant::now() + VERIFY_DEADLINE;
+            let deadline = verify_deadline(end);
             let mut spend = Spend::default();
             let ids = |v: Vec<Summary>| v.into_iter().map(|s| s.id).collect::<BTreeSet<_>>();
             let reason = |e: OpError| format!("postcheck listing: {}", e.reason());
@@ -2091,8 +2168,7 @@ pub async fn final_ledger(
 ) -> Vec<String> {
     // Its own bound, and never past the chunk's end (AC5): the chunk
     // deadline is a stopping reason for verification too.
-    let own = Instant::now() + VERIFY_DEADLINE;
-    let deadline = chunk_end.map_or(own, |end| end.min(own));
+    let deadline = verify_deadline(chunk_end);
     let want = expected_ledger(seed, background, fixtures, cells, recs);
     let mut spend = Spend::default();
     let observed = match client.all_ids(deadline).await {

@@ -1044,6 +1044,81 @@ pub fn answer_link(family: Family, f: &Fetched, label: &str) -> Option<String> {
     }
 }
 
+/// What one MCP future wait answered, read from its own envelope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WaitAnswer {
+    /// The wait returned within its window with these messages.
+    Found(Vec<Summary>),
+    /// A 0129 adapter's poll first saw a match after the cutoff.
+    Late,
+    /// The window closed with no match: Swarmail's `timed_out`, an
+    /// adapter's `timeout`.
+    TimedOut,
+    /// The envelope is not the tool's documented shape.
+    Malformed,
+}
+
+/// Decode a wait tool's answer. Swarmail's `swarmail_wait_for_email`
+/// answers `{emails}`, or `{timed_out: true}`; the 0129 adapters' poll
+/// (`benches/mail_compare/mcp.rs`, `poll_wait`) answers `{status,
+/// messages_count, messages, scans, requests, method}` whose messages are
+/// the family's own native page items, read here by the same family page
+/// decoder the native client uses.
+pub fn wait_answer(family: Family, v: &Value) -> WaitAnswer {
+    let found = |page: Option<Page>| match page {
+        Some((total, items)) if total == items.len() as u64 => WaitAnswer::Found(items),
+        _ => WaitAnswer::Malformed,
+    };
+    if family == Family::Swarmail {
+        if v.get("timed_out").and_then(Value::as_bool) == Some(true) {
+            return WaitAnswer::TimedOut;
+        }
+        let Some(emails) = v.get("emails").and_then(Value::as_array) else {
+            return WaitAnswer::Malformed;
+        };
+        return found(swarmail::decode_page(
+            &serde_json::json!({"total": emails.len(), "emails": emails}),
+            0,
+        ));
+    }
+    if !matches!(
+        family,
+        Family::Mailpit | Family::Mailhog | Family::Mailslurper
+    ) {
+        return WaitAnswer::Malformed;
+    }
+    let status = v.get("status").and_then(Value::as_str);
+    let (Some(count), Some(messages)) = (
+        v.get("messages_count").and_then(Value::as_u64),
+        v.get("messages").and_then(Value::as_array),
+    ) else {
+        return WaitAnswer::Malformed;
+    };
+    match status {
+        Some("found") => {}
+        Some("late") => return WaitAnswer::Late,
+        Some("timeout") => return WaitAnswer::TimedOut,
+        _ => return WaitAnswer::Malformed,
+    }
+    if count != messages.len() as u64 {
+        return WaitAnswer::Malformed;
+    }
+    found(match family {
+        Family::Mailpit => mailpit::decode_page(
+            &serde_json::json!({"start": 0, "messages_count": count, "messages": messages}),
+            0,
+        ),
+        Family::Mailhog => mailhog::decode_page(
+            &serde_json::json!({"start": 0, "total": count, "items": messages}),
+            0,
+        ),
+        _ => mailslurper::decode_page(
+            &serde_json::json!({"totalRecords": count, "mailItems": messages}),
+            0,
+        ),
+    })
+}
+
 /// The MCP surface (0132 §6.2): Swarmail's own `POST /mcp` tools, and the
 /// 0129 adapters' tools behind the eval runner's bridge, every one at
 /// revision 2025-03-26. The adapters offer no delete or clear (0092 §3, 0129

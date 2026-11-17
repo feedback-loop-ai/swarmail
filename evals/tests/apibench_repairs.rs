@@ -237,6 +237,86 @@ async fn a_refused_or_ambiguous_delivery_is_classified_by_what_the_store_may_hol
     ));
 }
 
+/// The poll envelope a 0129 adapter answers a wait with
+/// (`benches/mail_compare/mcp.rs`, `poll_wait`), its messages in the
+/// family's own native item shape.
+fn adapter_envelope(target: &str, status: &str, address: &str, subject: &str) -> Value {
+    let item = match target {
+        "mailpit" => json!({"ID": "m1", "Subject": subject, "To": [{"Address": address}]}),
+        "mailhog" => json!({"ID": "h1", "Content": {"Headers":
+            {"To": [address], "Subject": [subject]}}}),
+        _ => json!({"id": "s1", "subject": subject, "toAddresses": [address]}),
+    };
+    let messages = if status == "timeout" {
+        vec![]
+    } else {
+        vec![item]
+    };
+    json!({"status": status, "messages_count": messages.len(), "messages": messages,
+        "scans": 1, "requests": 1, "method": "client-side poll"})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_adapter_wait_envelope_is_read_through_wait_once() {
+    // The bridged wait matrix: each adapter's found envelope is the
+    // attempt's own message exactly; late and timeout are the wait's own
+    // failures, never "malformed" and never mutation uncertainty.
+    for target in ["mailpit", "mailhog", "mailslurper-source-build"] {
+        for (status, want) in [
+            ("found", Outcome::Exact),
+            (
+                "late",
+                Outcome::Failed {
+                    reason: "wait_late".into(),
+                },
+            ),
+            (
+                "timeout",
+                Outcome::Failed {
+                    reason: "wait_timeout".into(),
+                },
+            ),
+        ] {
+            let sent = Arc::new(tokio::sync::Semaphore::new(0));
+            let smtp = scripted::smtp(SmtpScript {
+                hold_data_ack: None,
+                data_received: Some(sent.clone()),
+                quit_delay: Duration::ZERO,
+            })
+            .await;
+            let a = api::author(7, Role::Future, 3, &apibench::wait_scope(0, 3));
+            let (address, token) = (a.scope.address.clone(), a.token.clone());
+            let (t, st) = (target.to_owned(), status.to_owned());
+            let url = scripted::mcp(handler(move |_, _, _| {
+                let (sent, t, st) = (sent.clone(), t.clone(), st.clone());
+                let (address, token) = (address.clone(), token.clone());
+                Box::pin(async move {
+                    // Answer only once the attempt's message has arrived.
+                    sent.acquire().await.unwrap().forget();
+                    Answer::Result(adapter_envelope(&t, &st, &address, &token))
+                })
+            }))
+            .await;
+            let worker = Worker {
+                client: Mutex::new(
+                    McpClient::connect_range(&url, apibench::id_range(0))
+                        .await
+                        .unwrap(),
+                ),
+                target: target.into(),
+            };
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            let done = apibench::wait_once(&worker, (smtp, clock()), a, deadline).await;
+            assert_eq!(done.outcome, want, "{target} {status}");
+            assert!(
+                !api::uncertain(Operation::Wait, &done.outcome),
+                "{target} {status}"
+            );
+            assert!(done.wait.unwrap().ack_ns.is_some(), "{target} {status}");
+        }
+    }
+}
+
 #[test]
 fn api_mcp_forwards_the_verified_documents_root_to_the_adapter() {
     // R2: the adapter's command line carries the chunk's --documents, so the

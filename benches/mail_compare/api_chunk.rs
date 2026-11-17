@@ -759,7 +759,13 @@ async fn measure(
     emit_window(sink, idle)?;
     // fixtures: authored before the server sees them, resolved untimed.
     let mut fixtures = api::plan_fixtures(cfg.protocol.corpus.seed, cells);
-    if let Err(e) = api::prepare(owned.smtp, &client, &mut fixtures).await {
+    if let Err(e) = api::prepare(owned.smtp, &client, &mut fixtures, Some(chunk_end)).await {
+        // Cut by the chunk deadline: every cell is a cut cell (AC5).
+        if e == api::CHUNK_DEADLINE {
+            let outcome =
+                never_opened_outcome(&leaf, owned.has_exited(), WindowOutcome::ChunkDeadline);
+            return block_rest(api::CHUNK_DEADLINE, outcome, false, record);
+        }
         failures.push(format!("{target} f{fill}: fixtures not prepared: {e}"));
         let outcome = never_opened_outcome(&leaf, owned.has_exited(), WindowOutcome::Blocked);
         return block_rest(
@@ -801,8 +807,14 @@ async fn measure(
         .position(|c| c.concurrency.is_none())
         .unwrap_or(cells.len());
     let (head, tail) = cells.split_at(split);
+    // The native driver owns its chunk end: cells and verification both
+    // stop there.
+    let ends = Some(api::Ends {
+        cells: chunk_end,
+        verify: chunk_end,
+    });
     let (mut recs, mut abandoned) =
-        api::run_cells(head, caps, &native, &meter, api_clock, Some(chunk_end)).await?;
+        api::run_cells(head, caps, &native, &meter, api_clock, ends).await?;
     // The complete batch ledger, before the global clear or at batch end
     // (R6). An abandoned launch runs no ledger and no final clear: what an
     // unknown mutation did cannot be told apart.
@@ -814,7 +826,7 @@ async fn measure(
             &native.fixtures,
             head,
             &mut recs,
-            None,
+            Some(chunk_end),
         )
         .await;
         record.ledger = problems;
@@ -829,8 +841,7 @@ async fn measure(
             ));
         }
     } else {
-        let (more, ab) =
-            api::run_cells(tail, caps, &native, &meter, api_clock, Some(chunk_end)).await?;
+        let (more, ab) = api::run_cells(tail, caps, &native, &meter, api_clock, ends).await?;
         recs.extend(more);
         abandoned = ab;
     }
@@ -853,7 +864,7 @@ async fn measure(
             clock,
             outcome,
         )?;
-        if r.blocked.as_deref() != Some("chunk_deadline") {
+        if blocked_is_failure(r.blocked.as_deref()) {
             failures.push(format!(
                 "{target} f{fill} {}: {}",
                 r.cell,
@@ -1482,7 +1493,6 @@ where
         .record
         .take()
         .ok_or("the control input ended without a record")?;
-    let mut failures = Vec::new();
     if !st.idle_fill {
         let outcome = if rec.fill.reached {
             WindowOutcome::Blocked
@@ -1498,9 +1508,7 @@ where
             outcome,
         )?;
     }
-    if !rec.fill.reached {
-        failures.push(format!("{target}: fill_not_reached"));
-    }
+    let mut failures = held_failures(&target.to_string(), &rec);
     for c in rec.cells.iter().filter(|c| c.status == CellStatus::Blocked) {
         let cell = cells
             .iter()
@@ -1520,14 +1528,6 @@ where
             clock,
             outcome,
         )?;
-        failures.push(format!(
-            "{target} {}: {}",
-            c.cell,
-            c.blocked.clone().unwrap_or_default()
-        ));
-    }
-    if let Some(why) = &rec.abandoned {
-        failures.push(format!("{target}: launch abandoned: {why}"));
     }
     if let Some(why) = final_state_failure(
         owned.has_exited(),
@@ -1536,6 +1536,37 @@ where
         failures.push(format!("{target}: {why}"));
     }
     Ok((rec, failures))
+}
+
+/// Whether a blocked cell is the target's own failure. A cell the chunk
+/// deadline cut is the harness's stopping reason, not the target's: it is
+/// published blocked and the chunk still seals clean. Both surfaces rule
+/// with this one predicate (spec AC5, AC8; R4, R19).
+pub fn blocked_is_failure(reason: Option<&str>) -> bool {
+    reason != Some("chunk_deadline")
+}
+
+/// The target's own failures that an MCP record states: a fill that was
+/// not reached, every blocked cell [`blocked_is_failure`] counts, and an
+/// abandoned launch. Rows, windows and the final look are judged apart.
+pub fn held_failures(target: &str, rec: &ApiRecord) -> Vec<String> {
+    let mut failures = Vec::new();
+    if !rec.fill.reached {
+        failures.push(format!("{target}: fill_not_reached"));
+    }
+    for c in rec.cells.iter().filter(|c| c.status == CellStatus::Blocked) {
+        if blocked_is_failure(c.blocked.as_deref()) {
+            failures.push(format!(
+                "{target} {}: {}",
+                c.cell,
+                c.blocked.clone().unwrap_or_default()
+            ));
+        }
+    }
+    if let Some(why) = &rec.abandoned {
+        failures.push(format!("{target}: launch abandoned: {why}"));
+    }
+    failures
 }
 
 fn closing_copy<'a>(c: &Closing<'a>) -> Closing<'a> {

@@ -189,7 +189,9 @@ async fn every_mcp_cell_of_the_candidate_is_exact() {
     assert!(fill.reached, "{fill:?}");
     let background = background.unwrap();
     let mut fixtures = api::plan_fixtures(163, &cells);
-    api::prepare(s.smtp, &setup, &mut fixtures).await.unwrap();
+    api::prepare(s.smtp, &setup, &mut fixtures, None)
+        .await
+        .unwrap();
     let url = format!("http://{}/mcp", s.http);
     let mut pool = Vec::new();
     for n in 0..32 {
@@ -450,10 +452,11 @@ fn chunk_args(dir: &std::path::Path, driver: &std::path::Path, protocol: &str) -
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_chunk_deadline_blocks_mcp_cells_and_the_record_still_reaches_the_holder() {
     // A chunk deadline that leaves nothing for cells once the record margin
-    // and the ledger reserve are kept: the real candidate is filled and its
-    // fixtures prepared, then every planned cell is a `chunk_deadline` row, the ledger runs within its
-    // reserve and is clean, and the record reaches the holder before its
-    // own input deadline instead of being torn down unsealed.
+    // and the ledger reserve are kept: the real candidate is filled, the
+    // fixture preparation is cut at the cells' end (it can no longer serve a
+    // cell), every planned cell is a `chunk_deadline` row, and the record
+    // reaches the holder before its own input deadline instead of being
+    // torn down unsealed.
     let s = serve().await;
     let d = common::tempdir();
     let lines = d.path().join("lines");
@@ -520,6 +523,20 @@ async fn an_mcp_chunk_without_its_deadline_refuses_before_the_holder_starts() {
         );
         assert!(!ran.exists(), "{protocol}: the holder was spawned");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_mcp_chunk_over_the_cap_refuses_before_the_holder_starts() {
+    // The capacity preflight runs before any launch, as natively.
+    let d = common::tempdir();
+    let ran = d.path().join("ran");
+    let driver = fake_holder(d.path(), &format!("touch '{}'; exit 0", ran.display()));
+    let protocol = r#"{"corpus":{"seed":5},"resources":{"chunk_deadline_ms":480000}}"#;
+    let mut args = chunk_args(d.path(), &driver, protocol);
+    let at = args.iter().position(|a| a == "--chunk").unwrap() + 1;
+    args[at] = format!("api.mcp.swarmail.r0.f{}", api::CAP);
+    assert_eq!(apibench::api_mcp(&args).await, 2);
+    assert!(!ran.exists(), "the holder was spawned");
 }
 
 #[test]

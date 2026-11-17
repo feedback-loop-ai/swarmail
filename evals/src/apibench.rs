@@ -327,25 +327,6 @@ pub fn wait_scope(ordinal: u32, slot: u32) -> Scope {
     api::wait_scope_of(ordinal, slot)
 }
 
-/// A wait's answer as summaries: Swarmail's `{emails}`, or the adapter's
-/// page in its family's shape.
-fn wait_summaries(family: Family, v: &Value) -> Option<Vec<Summary>> {
-    match family {
-        Family::Swarmail => clients::swarmail::decode_page(
-            &json!({"total": v.get("emails")?.as_array()?.len(), "emails": v.get("emails")?}),
-            0,
-        )
-        .map(|(_, s)| s),
-        Family::Mailpit => {
-            clients::mailpit::decode_page(v, v.get("start")?.as_u64()?).map(|(_, s)| s)
-        }
-        Family::Mailhog => {
-            clients::mailhog::decode_page(v, v.get("start")?.as_u64()?).map(|(_, s)| s)
-        }
-        _ => clients::mailslurper::decode_page(v, 0).map(|(_, s)| s),
-    }
-}
-
 impl McpSurface {
     fn of(&self, role: Role, scope: Option<&Scope>) -> Vec<api::Authored> {
         self.fixtures
@@ -428,11 +409,19 @@ pub async fn wait_once(
         // it is mutation uncertainty (R1).
         (_, Err(why)) => Outcome::Failed { reason: why.into() },
         (Err(e), _) => api::from_error(e),
-        (Ok(v), _) => match wait_summaries(family, &v) {
-            None => Outcome::Failed {
+        (Ok(v), _) => match clients::wait_answer(family, &v) {
+            // The acknowledged message is in the store either way: a late
+            // or empty answer is the wait's failure, not uncertainty.
+            clients::WaitAnswer::Late => Outcome::Failed {
+                reason: "wait_late".into(),
+            },
+            clients::WaitAnswer::TimedOut => Outcome::Failed {
+                reason: "wait_timeout".into(),
+            },
+            clients::WaitAnswer::Malformed => Outcome::Failed {
                 reason: "malformed".into(),
             },
-            Some(hits) => {
+            clients::WaitAnswer::Found(hits) => {
                 let mine: Vec<&Summary> = hits
                     .iter()
                     .filter(|s| s.subject.contains(&a.token))
@@ -609,10 +598,11 @@ impl api::Surfacer for McpSurface {
         &'a self,
         cell: &'a PlannedCell,
         rows: &'a mut Vec<api::OpRow>,
+        end: Option<Instant>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
         Box::pin(async move {
             let wk = &self.verify;
-            let deadline = Instant::now() + api::VERIFY_DEADLINE;
+            let deadline = api::verify_deadline(end);
             let mut spend = Spend::default();
             let reason = |e: OpError| format!("postcheck listing: {}", e.reason());
             let ids = |v: Vec<Summary>| v.into_iter().map(|s| s.id).collect::<BTreeSet<_>>();
@@ -987,6 +977,12 @@ async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
         .as_u64()
         .ok_or("--protocol has no corpus seed")?;
     let ends = mcp_chunk_ends(started, &protocol)?;
+    // The capacity preflight, before any launch (spec AC6, 0132 §6.4): the
+    // fill plus every fixture and wait stays below the cap.
+    let (cells, _) = api::plan_cells(clients::Surface::Mcp, |op| {
+        clients::mcp_capability(&target, op)
+    });
+    api::within_cap(fill, api::fixture_growth(seed, &cells))?;
     // The holder: the one owner of the backend, its leaf and its sampler.
     // From here on every path — a refusal, a malformed line, a rejected
     // record, an interruption — closes its control input and awaits its
@@ -1147,8 +1143,8 @@ async fn measure(
     let surface = clients::Surface::Mcp;
     let caps = |op| clients::mcp_capability(target, op);
     let (cells, capabilities) = api::plan_cells(surface, caps);
+    // Checked against the cap before the holder launched (api_mcp_inner).
     let growth = api::fixture_growth(seed, &cells);
-    api::within_cap(fill, growth)?;
     // Every worker initializes before any clock (spec AC5), each with its own
     // id range, initialization included.
     let workers = cells
@@ -1196,8 +1192,14 @@ async fn measure(
     }
     meter.command(&json!({"cmd": "idle_fill"})).await?;
     let mut fixtures = api::plan_fixtures(seed, &cells);
-    if let Err(e) = api::prepare(smtp, &setup, &mut fixtures).await {
-        block(&format!("fixtures_not_prepared: {e}"), &mut rec);
+    if let Err(e) = api::prepare(smtp, &setup, &mut fixtures, Some(cell_end)).await {
+        // A preparation the chunk deadline cut leaves every cell cut (AC5).
+        let why = if e == api::CHUNK_DEADLINE {
+            e
+        } else {
+            format!("fixtures_not_prepared: {e}")
+        };
+        block(&why, &mut rec);
         return Ok(rec);
     }
     rec.fixtures = fixtures.len() as u64;
@@ -1219,8 +1221,11 @@ async fn measure(
     // The chunk deadline is an independent stopping reason on this surface
     // as on the native one (spec AC5, R1): a cell it cuts or never starts is
     // a `chunk_deadline` row, and the record still reaches the holder.
-    let (mut recs, mut abandoned) =
-        api::run_cells(head, &caps, &s, meter, clock, Some(cell_end)).await?;
+    let ends = Some(api::Ends {
+        cells: cell_end,
+        verify: ledger_end,
+    });
+    let (mut recs, mut abandoned) = api::run_cells(head, &caps, &s, meter, clock, ends).await?;
     if abandoned.is_none() {
         // Untimed verification through the native API: not a measurement,
         // and never a fallback for one.
@@ -1234,7 +1239,7 @@ async fn measure(
         )
         .await;
         rec.ledger = problems;
-        let (more, ab) = api::run_cells(tail, &caps, &s, meter, clock, Some(cell_end)).await?;
+        let (more, ab) = api::run_cells(tail, &caps, &s, meter, clock, ends).await?;
         recs.extend(more);
         abandoned = ab;
     } else {

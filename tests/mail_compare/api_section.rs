@@ -757,6 +757,8 @@ fn only_a_mutation_left_unresolved_is_uncertain() {
 struct Scripted {
     script: fn(Operation, Phase, u32) -> Option<Outcome>,
     phase_of: fn(u32) -> Phase,
+    /// The postcheck's listing never answers: it ends only at its `end`.
+    postcheck_hangs: bool,
 }
 
 impl api::Surfacer for Scripted {
@@ -789,9 +791,18 @@ impl api::Surfacer for Scripted {
         &'a self,
         _cell: &'a PlannedCell,
         _rows: &'a mut Vec<api::OpRow>,
+        end: Option<tokio::time::Instant>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + 'a>>
     {
-        Box::pin(async { Ok(Vec::new()) })
+        let hangs = self.postcheck_hangs;
+        Box::pin(async move {
+            if hangs {
+                // A listing that outlives its verification deadline.
+                tokio::time::sleep_until(api::verify_deadline(end)).await;
+                return Err("postcheck listing: timeout".into());
+            }
+            Ok(Vec::new())
+        })
     }
 }
 
@@ -811,7 +822,21 @@ async fn run_script(
     script: fn(Operation, Phase, u32) -> Option<Outcome>,
     deadline: Option<tokio::time::Instant>,
 ) -> (Vec<api::CellRecord>, Option<String>) {
+    let ends = deadline.map(|d| api::Ends {
+        cells: d,
+        verify: d,
+    });
+    run_scripted(cells, script, ends, false).await
+}
+
+async fn run_scripted(
+    cells: &[PlannedCell],
+    script: fn(Operation, Phase, u32) -> Option<Outcome>,
+    ends: Option<api::Ends>,
+    postcheck_hangs: bool,
+) -> (Vec<api::CellRecord>, Option<String>) {
     let s = Scripted {
+        postcheck_hangs,
         script,
         phase_of: |offset| {
             if offset == 0 {
@@ -822,7 +847,7 @@ async fn run_script(
         },
     };
     let caps = |op| clients::native_capability("swarmail", op);
-    api::run_cells(cells, &caps, &s, &api::NoMeter, clock(), deadline)
+    api::run_cells(cells, &caps, &s, &api::NoMeter, clock(), ends)
         .await
         .unwrap()
 }
@@ -1024,6 +1049,109 @@ async fn the_chunk_deadline_bounds_a_cell_and_blocks_the_rest() {
     for r in &recs[1..] {
         assert_eq!(r.blocked.as_deref(), Some("chunk_deadline"));
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_warmup_cut_or_ended_by_the_chunk_deadline_is_a_cut_cell() {
+    // Cut mid-warmup (100 ms of 140): not "warmup_failed". Ended exactly at
+    // it (20 warmups at 7 ms): not a measured cell that started nothing.
+    for ms in [100, 140] {
+        let cells = [cell(Operation::List, 1), cell(Operation::Search, 1)];
+        let end = tokio::time::Instant::now() + Duration::from_millis(ms);
+        let (recs, abandoned) = run_script(&cells, |_, _, _| Some(Outcome::Exact), Some(end)).await;
+        assert_eq!(abandoned, None, "{ms}");
+        assert_eq!(recs[0].status, api::CellStatus::Blocked, "{ms}");
+        assert_eq!(recs[0].blocked.as_deref(), Some("chunk_deadline"), "{ms}");
+        assert!(recs[0].warmup.is_some(), "{ms}");
+        assert_eq!(recs[0].measured.started, 0, "{ms}");
+        assert_eq!(recs[1].blocked.as_deref(), Some("chunk_deadline"), "{ms}");
+        // The cut is the harness's stopping reason on both surfaces.
+        assert!(
+            recs.iter()
+                .all(|r| !api_chunk::blocked_is_failure(r.blocked.as_deref()))
+        );
+    }
+    // An unknown effect in a warmup still abandons, deadline or not.
+    let cells = [cell(Operation::Delete, 1), cell(Operation::List, 1)];
+    let end = tokio::time::Instant::now() + Duration::from_millis(100);
+    let (recs, abandoned) = run_script(
+        &cells,
+        |op, _, i| (op == Operation::Delete && i == 0).then_some(Outcome::Timeout),
+        Some(end),
+    )
+    .await;
+    assert!(abandoned.is_some());
+    assert_eq!(recs[0].blocked.as_deref(), Some("warmup_failed"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_postcheck_cut_by_the_chunk_deadline_is_bounded_and_unverified() {
+    // The delete cell measures fully, then its postcheck's listing never
+    // answers: it stops at the verification end, the cell's successes are
+    // unverified failures (not uncertainty), and run_cells returns — no
+    // infrastructure error, no teardown — with later cells cut.
+    let cells = [cell(Operation::Delete, 1), cell(Operation::List, 1)];
+    let start = tokio::time::Instant::now();
+    let ends = api::Ends {
+        cells: start + Duration::from_secs(30),
+        verify: start + Duration::from_secs(40),
+    };
+    let (recs, abandoned) =
+        run_scripted(&cells, |_, _, _| Some(Outcome::Exact), Some(ends), true).await;
+    assert_eq!(tokio::time::Instant::now(), ends.verify);
+    assert_eq!(abandoned, None);
+    let d = &recs[0];
+    assert_eq!(d.status, api::CellStatus::Measured);
+    assert_eq!(d.measured.started, api::MEASURED);
+    let cut = Outcome::Failed {
+        reason: api::POSTCHECK_CUT.into(),
+    };
+    assert!(d.measured.rows.iter().all(|r| r.outcome == cut));
+    assert!(
+        d.warmup
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .all(|r| r.outcome == cut)
+    );
+    assert!(!api::uncertain(Operation::Delete, &cut));
+    assert_eq!(d.postcheck.len(), 1);
+    assert!(
+        d.postcheck[0].contains(api::POSTCHECK_CUT),
+        "{:?}",
+        d.postcheck
+    );
+    assert_eq!(recs[1].blocked.as_deref(), Some("chunk_deadline"));
+    // A postcheck that fails before the end is still infrastructure.
+    let s = Scripted {
+        postcheck_hangs: true,
+        script: |_, _, _| Some(Outcome::Exact),
+        phase_of: |o| {
+            if o == 0 {
+                Phase::Warmup
+            } else {
+                Phase::Measured
+            }
+        },
+    };
+    let caps = |op| clients::native_capability("swarmail", op);
+    // Without an end the hanging listing runs to its own bound: an error.
+    let err = api::run_cells(&cells[..1], &caps, &s, &api::NoMeter, clock(), None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("postcheck listing"), "{err}");
+    // The bound itself: never past `end`, never past its own 120 s.
+    let now = tokio::time::Instant::now();
+    assert_eq!(api::verify_deadline(None), now + api::VERIFY_DEADLINE);
+    assert_eq!(
+        api::verify_deadline(Some(now + Duration::from_secs(1))),
+        now + Duration::from_secs(1)
+    );
+    assert_eq!(
+        api::verify_deadline(Some(now + Duration::from_secs(999))),
+        now + api::VERIFY_DEADLINE
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2457,7 +2585,7 @@ async fn the_candidates_native_cells_are_exact_end_to_end() {
     });
     assert!(rows.is_empty());
     let mut fixtures = api::plan_fixtures(163, &cells);
-    api::prepare(owned.smtp, &client, &mut fixtures)
+    api::prepare(owned.smtp, &client, &mut fixtures, None)
         .await
         .expect("fixtures resolve");
     assert!(fixtures.iter().all(|f| f.id.is_some()));
@@ -2570,10 +2698,27 @@ async fn preparation_refuses_when_the_target_does_not_answer() {
         .unwrap();
     let client = clients::Client::new("mailpit", dead).unwrap();
     let mut fixtures = vec![api::author(1, api::Role::Read, 0, &api::read_scope())];
-    let w = api::prepare(dead, &client, &mut fixtures)
+    let w = api::prepare(dead, &client, &mut fixtures, None)
         .await
         .unwrap_err();
     assert!(w.contains("smtp connect"), "{w}");
+    // A server that accepts and never greets holds preparation only to the
+    // chunk's end, well inside its own ten-second step: a cut, by name.
+    let mute = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = mute.local_addr().unwrap();
+    let held = tokio::spawn(async move {
+        let mut keep = Vec::new();
+        while let Ok((s, _)) = mute.accept().await {
+            keep.push(s);
+        }
+    });
+    let end = tokio::time::Instant::now() + Duration::from_millis(300);
+    let w = api::prepare(addr, &client, &mut fixtures, Some(end))
+        .await
+        .unwrap_err();
+    assert_eq!(w, "chunk_deadline");
+    assert!(tokio::time::Instant::now() < end + api::SMTP_STEP);
+    held.abort();
 }
 
 // ---- host proofs (AC10, R9) -------------------------------------------------

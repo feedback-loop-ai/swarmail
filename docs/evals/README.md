@@ -1156,8 +1156,15 @@ and no global clear run. A completed refusal is a known non-effect and
 abandons nothing. A failed read warmup blocks only its own cell. Every start
 is recorded before it runs, so a worker that does not return within five
 seconds of the deadline still leaves a `timeout` row and abandons the launch
-as unproved cancellation; no phase runs past the chunk deadline. After each
-destructive cell an untimed batch postcheck checks its scope. At batch end,
+as unproved cancellation; no phase runs past the chunk deadline, and a
+warmup it cuts (or that ends on it) makes its cell a `chunk_deadline` row,
+never a measured cell that started nothing. After each destructive cell an
+untimed batch postcheck checks its scope, within its own 120 s and never
+past the chunk's verification end (the chunk end natively; the ledger's end
+on MCP); a postcheck cut there turns that cell's exact rows into
+`postcheck_chunk_deadline` failures — unverified, not uncertain — instead of
+tearing the chunk down. Fixture preparation stops at the cells' end, and a
+preparation cut there makes every cell a `chunk_deadline` row. At batch end,
 before the global clear, both surfaces run the same complete ledger, read
 untimed through the native API: the store must hold, id for id, the
 background the fill confirmed, the read set, every survivor, every victim
@@ -1192,7 +1199,13 @@ failure — when any measured row is `wrong_result`, `failed` or `timeout`,
 when a readiness, idle, idle-fill or cell window closed on an OOM kill or
 the target's exit, when the target is found dead or OOM-killed after its last
 reply, when the ledger fails, or when a target crashed before readiness; the
-MCP holder seals that last case exactly as the native chunk does. A
+MCP holder seals that last case exactly as the native chunk does. A cell
+blocked by the chunk deadline is the harness's stopping reason, not the
+target's failure: on both surfaces it is published blocked and alone does
+not fail the chunk. A future wait's answer is read from the tool's own
+envelope — Swarmail's `{emails}` or `{timed_out}`, an adapter's `{status,
+messages_count, messages}` with the family's native items — and a `late` or
+timed-out answer is a `wait_late` or `wait_timeout` failure. A
 capability row is not an execution, and documented inexact fidelity is
 unranked evidence, not a failure. Infrastructure, interruption or an
 unproved cleanup exits 2 unsealed.
