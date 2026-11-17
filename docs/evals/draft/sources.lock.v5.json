@@ -155,6 +155,76 @@
                 "url": "https://api.github.com/repos/axllent/mailpit/git/trees/ce798cfd781ef07b321427fc5082b3eebdcae460"
               }
             }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailpit/mailpit-server.go",
+            "size": 19221,
+            "sha256": "9c6671d90b8eba40fc4d714f929711e2ef4dd3d7960dac0d282b9af24fc79f21",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/axllent/mailpit/blob/ce798cfd781ef07b321427fc5082b3eebdcae460/server/server.go",
+                "upstream_path": "server/server.go",
+                "git_blob": "da584bff83f1dc5a06fdd4f22fe721a491c3e953"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailpit/mailpit-storage-messages.go",
+            "size": 20892,
+            "sha256": "afa9dc209a00c59df7588c3f3ff7124f7290c997e2a88d08d4acb026551a678a",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/axllent/mailpit/blob/ce798cfd781ef07b321427fc5082b3eebdcae460/internal/storage/messages.go",
+                "upstream_path": "internal/storage/messages.go",
+                "git_blob": "bd54f7ad78769ddc03e514bf19c6e103d35fbe45"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailpit/mailpit-storage-notifications.go",
+            "size": 818,
+            "sha256": "3777d610d3cbf9e0286d2517e12e5937c432a931140d41d2bbe1d157607e9c47",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/axllent/mailpit/blob/ce798cfd781ef07b321427fc5082b3eebdcae460/internal/storage/notifications.go",
+                "upstream_path": "internal/storage/notifications.go",
+                "git_blob": "b3917a3cd8d4537424781d793461e459fa46ca90"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailpit/mailpit-cors.go",
+            "size": 7981,
+            "sha256": "242fc6d5a1a92e535687033e715414a529f2c8423ce1d44eb3442067a47cab74",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/axllent/mailpit/blob/ce798cfd781ef07b321427fc5082b3eebdcae460/server/cors.go",
+                "upstream_path": "server/cors.go",
+                "git_blob": "18efa8d3f532374f0eaff46daa703d8e7fa60c8a"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailpit/mailpit-go.mod",
+            "size": 2515,
+            "sha256": "17a50cc9d5cc26ff479589442bee19f1c49bade49fe902116825d22eae99997e",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/axllent/mailpit/blob/ce798cfd781ef07b321427fc5082b3eebdcae460/go.mod",
+                "upstream_path": "go.mod",
+                "git_blob": "2687da158e22f55d26f3925bae1d3dada4577783"
+              }
+            }
           }
         ],
         "launch": [
@@ -194,13 +264,58 @@
               "sha256": "2b2f619c7002797d9a0b7a10b01e60de3586e4fc10bc205dd14c243cc056ba97",
               "git_blob": "c66e396bde2239067cd505aeb809c57462f02f5e",
               "retained_as": {
-                "unresolved": "not retained here: its header attributes it to The Gorilla WebSocket Authors under a BSD-style license whose text was not captured, so its bytes are bound by digest and git blob id only"
+                "unresolved": "not retained here: its header attributes it to The Gorilla WebSocket Authors under a BSD-style license whose text is not in the tagged tree, so its bytes are bound by digest and git blob id only; the finding states what it shows"
+              }
+            },
+            {
+              "upstream_path": "server/server.go",
+              "size": 19221,
+              "sha256": "9c6671d90b8eba40fc4d714f929711e2ef4dd3d7960dac0d282b9af24fc79f21",
+              "git_blob": "da584bff83f1dc5a06fdd4f22fe721a491c3e953",
+              "retained_as": {
+                "observed": "sources/mailpit/mailpit-server.go"
+              }
+            },
+            {
+              "upstream_path": "internal/storage/messages.go",
+              "size": 20892,
+              "sha256": "afa9dc209a00c59df7588c3f3ff7124f7290c997e2a88d08d4acb026551a678a",
+              "git_blob": "bd54f7ad78769ddc03e514bf19c6e103d35fbe45",
+              "retained_as": {
+                "observed": "sources/mailpit/mailpit-storage-messages.go"
+              }
+            },
+            {
+              "upstream_path": "internal/storage/notifications.go",
+              "size": 818,
+              "sha256": "3777d610d3cbf9e0286d2517e12e5937c432a931140d41d2bbe1d157607e9c47",
+              "git_blob": "b3917a3cd8d4537424781d793461e459fa46ca90",
+              "retained_as": {
+                "observed": "sources/mailpit/mailpit-storage-notifications.go"
+              }
+            },
+            {
+              "upstream_path": "server/cors.go",
+              "size": 7981,
+              "sha256": "242fc6d5a1a92e535687033e715414a529f2c8423ce1d44eb3442067a47cab74",
+              "git_blob": "18efa8d3f532374f0eaff46daa703d8e7fa60c8a",
+              "retained_as": {
+                "observed": "sources/mailpit/mailpit-cors.go"
+              }
+            },
+            {
+              "upstream_path": "go.mod",
+              "size": 2515,
+              "sha256": "17a50cc9d5cc26ff479589442bee19f1c49bade49fe902116825d22eae99997e",
+              "git_blob": "2687da158e22f55d26f3925bae1d3dada4577783",
+              "retained_as": {
+                "observed": "sources/mailpit/mailpit-go.mod"
               }
             }
           ],
-          "finding": "Reviewed server/websockets/hub.go and client.go at the tagged commit: a hub sends Type/Data notifications to registered websocket clients; Broadcast returns without sending when no client is counted and otherwise hands the message to the hub from a new goroutine, so the order of separate broadcasts is not fixed; each client queues 256 prepared messages and a client whose queue is full is dropped; the upgrade response is written before the hub registers the client, and nothing acknowledges registration; writes have a 10 s deadline and pings run every 54 s. These bodies do not show which route serves the hub, which producer broadcasts new mail or when relative to storage, or any replay after a gap. A dropped notification is not a lost stored message, and no lossless subscribe-before-scan wait is established.",
+          "finding": "Reviewed at the tagged commit (captured 2026-11-17 from raw.githubusercontent.com at the tagged commit; each body matches its git blob id and size in the tagged tree listing). Native: server/server.go registers every REST route (api/v1/messages, search, message/{id} and its parts, tags, send, info, webui, chaos, swagger) and none blocks until mail arrives, so there is no blocking wait route. Stream candidate, WebSocket GET {webroot}api/events (server/server.go: middleWareFunc(apiWebsocket); apiWebsocket calls websockets.ServeWs and then storage.BroadcastMailboxStats). Producer: internal/storage/messages.go Store commits the insert transaction, sets tags, then calls websockets.Broadcast(\"new\", summary) and BroadcastMailboxStats; frames are JSON {\"Type\",\"Data\"}. Registration: client.go ServeWs writes the upgrade response first, then sends the client on the hub's unbuffered register channel, and only then starts readPump and writePump; hub.go Run adds it to Clients and increments clientCount in that case. Readiness evidence: the hub sends only to registered clients, so the first hub frame a client receives is ordered after its registration; notifications.go BroadcastMailboxStats sends a \"stats\" frame 250 ms after it is called, but only one stats broadcast may be pending at a time, so its arrival is not guaranteed. readPump reads with NextReader, so a pong to a client ping comes from the default handler of gorilla/websocket v1.5.3 (go.mod), whose source is not in the tagged tree; readPump starts only after the register send returns, but clientCount is incremented by the hub after that handoff, and Broadcast returns without sending while clientCount reads 0. Loss: Broadcast hands each message to the hub from a new goroutine, so the order of separate broadcasts is not fixed; the hub drops a client whose 256-slot queue is full; writes have a 10 s deadline and pings run every 54 s; nothing is replayed after a gap. Access: middleWareFunc checks the Host header and the CORS origin before the handler; cors.go admits a request with no Origin header, and Basic auth applies only when UI credentials are set.",
           "best_wait": {
-            "unresolved": "no route, producer, registration-acknowledgement or gap-replay evidence and no real-binary observation exist, so a best-available wait cannot be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+            "unresolved": "stream candidate, not yet selected: the api/events WebSocket, with route, producer and registration cited (mailpit-server.go, mailpit-storage-messages.go, server/websockets/client.go, mailpit-websockets-hub.go) and readiness by the first hub frame or a pong; 0132 §7.2.2 selects it only after a real-binary proof against the pinned executable establishes readiness, sends by real SMTP and obtains an event-triggered complete match (wait-best T10). Until then the labelled common 100 ms poll observes this target"
           }
         },
         "listeners": [
@@ -343,6 +458,132 @@
                 "url": "https://api.github.com/repos/mailhog/MailHog/git/trees/0441dd494b03c9255a9b8e90e3458ebb115eacff"
               }
             }
+          },
+          {
+            "kind": "license",
+            "path": "sources/mailhog/mailhog-server-license.md",
+            "size": 1082,
+            "sha256": "3cfc2f2454199ebf2cc3ec3c0ad4bf79904724c398f8558c3a8e71fd7bb400b2",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailhog/MailHog/blob/0441dd494b03c9255a9b8e90e3458ebb115eacff/vendor/github.com/mailhog/MailHog-Server/LICENSE.md",
+                "upstream_path": "vendor/github.com/mailhog/MailHog-Server/LICENSE.md",
+                "git_blob": "eec4a9acfa5d0f6ab24821196c63541ac72e5ab3"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailhog/mailhog-server-api.go",
+            "size": 404,
+            "sha256": "b11200fa438db8faa3f556b31502f1d6e098f3f8cb4555127f3eeb7d8aeaf633",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailhog/MailHog/blob/0441dd494b03c9255a9b8e90e3458ebb115eacff/vendor/github.com/mailhog/MailHog-Server/api/api.go",
+                "upstream_path": "vendor/github.com/mailhog/MailHog-Server/api/api.go",
+                "git_blob": "d85e3e8b1eb410c54298e8c4c0c7c3d3ea38cbac"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailhog/mailhog-server-api-v1.go",
+            "size": 10382,
+            "sha256": "6df69fd6c393c8e7daa9668cef0e50f2fbd24723fe91988d4e4aa062dda5a060",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailhog/MailHog/blob/0441dd494b03c9255a9b8e90e3458ebb115eacff/vendor/github.com/mailhog/MailHog-Server/api/v1.go",
+                "upstream_path": "vendor/github.com/mailhog/MailHog-Server/api/v1.go",
+                "git_blob": "9bebf4ad99e5401346ad817986b9357e8f72946f"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailhog/mailhog-server-api-v2.go",
+            "size": 6412,
+            "sha256": "b79a6d54783dd5abe1140bd12c21e00482c0fc07fe65e34ef59c5e77b6bfbe15",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailhog/MailHog/blob/0441dd494b03c9255a9b8e90e3458ebb115eacff/vendor/github.com/mailhog/MailHog-Server/api/v2.go",
+                "upstream_path": "vendor/github.com/mailhog/MailHog-Server/api/v2.go",
+                "git_blob": "4ef0c405da8fff83ac34cd28854a52fc07adcd62"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailhog/mailhog-websockets-hub.go",
+            "size": 1468,
+            "sha256": "1f4b14c2f6083cec1e4b80aa1bb6a719d0c088769d6a442638639dc0ac4800fb",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailhog/MailHog/blob/0441dd494b03c9255a9b8e90e3458ebb115eacff/vendor/github.com/mailhog/MailHog-Server/websockets/hub.go",
+                "upstream_path": "vendor/github.com/mailhog/MailHog-Server/websockets/hub.go",
+                "git_blob": "1a29e5678172893fa67914c17c715f91bf814903"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailhog/mailhog-websockets-connection.go",
+            "size": 1681,
+            "sha256": "346585974c6dc17f9db6dc2dc71378d7241a7bd51b4b7c8d4f3247f5c1355b13",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailhog/MailHog/blob/0441dd494b03c9255a9b8e90e3458ebb115eacff/vendor/github.com/mailhog/MailHog-Server/websockets/connection.go",
+                "upstream_path": "vendor/github.com/mailhog/MailHog-Server/websockets/connection.go",
+                "git_blob": "1fcb17aa65fc340bd82ba1cb12a66ae92ef6166c"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailhog/mailhog-smtp-session.go",
+            "size": 4113,
+            "sha256": "e8c3ebae0e427743b790fb76473a31374bdb68394e0a172143d3a756b3c41a31",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailhog/MailHog/blob/0441dd494b03c9255a9b8e90e3458ebb115eacff/vendor/github.com/mailhog/MailHog-Server/smtp/session.go",
+                "upstream_path": "vendor/github.com/mailhog/MailHog-Server/smtp/session.go",
+                "git_blob": "10a220dc12dc59abcb781ee59201941b840bc20c"
+              }
+            }
+          },
+          {
+            "kind": "license",
+            "path": "sources/mailhog/mailhog-goose-license.md",
+            "size": 1075,
+            "sha256": "416d5a183059eb77c51bfbd0cd2eb342b6aca5fb376c4acf8921d49981e3b3ca",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailhog/MailHog/blob/0441dd494b03c9255a9b8e90e3458ebb115eacff/vendor/github.com/ian-kent/goose/LICENSE.md",
+                "upstream_path": "vendor/github.com/ian-kent/goose/LICENSE.md",
+                "git_blob": "1f0d99400a5905a7217ddec8b6b8d1c84550745c"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailhog/mailhog-goose.go",
+            "size": 2459,
+            "sha256": "dedc54146b034aceb8e9c475980b9f4f555a5c446539fc464109d308f242e0b6",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailhog/MailHog/blob/0441dd494b03c9255a9b8e90e3458ebb115eacff/vendor/github.com/ian-kent/goose/goose.go",
+                "upstream_path": "vendor/github.com/ian-kent/goose/goose.go",
+                "git_blob": "17969c956e3a0129a8e7825286e23548663c0881"
+              }
+            }
           }
         ],
         "launch": [
@@ -369,7 +610,7 @@
               "sha256": "1f4b14c2f6083cec1e4b80aa1bb6a719d0c088769d6a442638639dc0ac4800fb",
               "git_blob": "1a29e5678172893fa67914c17c715f91bf814903",
               "retained_as": {
-                "unresolved": "not retained here: it is the vendored MailHog-Server package, whose own license file was not captured, so its bytes are bound by digest and git blob id only"
+                "observed": "sources/mailhog/mailhog-websockets-hub.go"
               }
             },
             {
@@ -378,13 +619,67 @@
               "sha256": "346585974c6dc17f9db6dc2dc71378d7241a7bd51b4b7c8d4f3247f5c1355b13",
               "git_blob": "1fcb17aa65fc340bd82ba1cb12a66ae92ef6166c",
               "retained_as": {
-                "unresolved": "not retained here: it is the vendored MailHog-Server package, whose own license file was not captured, so its bytes are bound by digest and git blob id only"
+                "observed": "sources/mailhog/mailhog-websockets-connection.go"
+              }
+            },
+            {
+              "upstream_path": "vendor/github.com/mailhog/MailHog-Server/api/api.go",
+              "size": 404,
+              "sha256": "b11200fa438db8faa3f556b31502f1d6e098f3f8cb4555127f3eeb7d8aeaf633",
+              "git_blob": "d85e3e8b1eb410c54298e8c4c0c7c3d3ea38cbac",
+              "retained_as": {
+                "observed": "sources/mailhog/mailhog-server-api.go"
+              }
+            },
+            {
+              "upstream_path": "vendor/github.com/mailhog/MailHog-Server/api/v1.go",
+              "size": 10382,
+              "sha256": "6df69fd6c393c8e7daa9668cef0e50f2fbd24723fe91988d4e4aa062dda5a060",
+              "git_blob": "9bebf4ad99e5401346ad817986b9357e8f72946f",
+              "retained_as": {
+                "observed": "sources/mailhog/mailhog-server-api-v1.go"
+              }
+            },
+            {
+              "upstream_path": "vendor/github.com/mailhog/MailHog-Server/api/v2.go",
+              "size": 6412,
+              "sha256": "b79a6d54783dd5abe1140bd12c21e00482c0fc07fe65e34ef59c5e77b6bfbe15",
+              "git_blob": "4ef0c405da8fff83ac34cd28854a52fc07adcd62",
+              "retained_as": {
+                "observed": "sources/mailhog/mailhog-server-api-v2.go"
+              }
+            },
+            {
+              "upstream_path": "vendor/github.com/mailhog/MailHog-Server/smtp/session.go",
+              "size": 4113,
+              "sha256": "e8c3ebae0e427743b790fb76473a31374bdb68394e0a172143d3a756b3c41a31",
+              "git_blob": "10a220dc12dc59abcb781ee59201941b840bc20c",
+              "retained_as": {
+                "observed": "sources/mailhog/mailhog-smtp-session.go"
+              }
+            },
+            {
+              "upstream_path": "vendor/github.com/ian-kent/goose/goose.go",
+              "size": 2459,
+              "sha256": "dedc54146b034aceb8e9c475980b9f4f555a5c446539fc464109d308f242e0b6",
+              "git_blob": "17969c956e3a0129a8e7825286e23548663c0881",
+              "retained_as": {
+                "observed": "sources/mailhog/mailhog-goose.go"
+              }
+            },
+            {
+              "upstream_path": "vendor/github.com/gorilla/websocket/conn.go",
+              "size": 30334,
+              "sha256": "910ab8869b9d54c1375e3f1c1bb5c9c02e52e8299c87056ea5188d4be4c95a2a",
+              "git_blob": "97e1dbacb1237677ceece110c3e9a0a45068f49f",
+              "retained_as": {
+                "unresolved": "not retained here: the vendored gorilla/websocket library is BSD-licensed under its own vendored LICENSE, not the pin's MIT license, so its bytes are bound by digest and git blob id only; the finding states what it shows"
               }
             }
           ],
-          "finding": "Reviewed the vendored MailHog-Server websockets hub.go and connection.go at the tagged commit: the hub sends each broadcast to registered connections, each queuing 256 messages, and unregisters a connection whose queue is full; Broadcast blocks its caller until the hub loop takes the message; the upgrade response is written before the connection is registered, and nothing acknowledges registration; connections have a 10 s write deadline and a 60 s pong deadline. These bodies do not show the route that serves the hub, the producer of new-mail broadcasts, the EventSource stream the README advertises, or any replay after a gap. A dropped notification is not a lost stored message, and no lossless subscribe-before-scan wait is established.",
+          "finding": "Reviewed the vendored MailHog-Server, goose and gorilla/websocket packages at the tagged commit (captured 2026-11-17 from raw.githubusercontent.com at the tagged commit; each body matches its git blob id and size in the tagged tree listing; the MailHog-Server and goose license files are retained beside them). Native: MailHog-Server api/v1.go and api/v2.go register the message, download, release, search, jim, outgoing-smtp, events and websocket routes; none blocks until mail arrives, so there is no blocking wait route. Producer: smtp/session.go acceptMessage calls storage.Store and then sends the message on the server's message channel before returning; api/api.go forwards each message to the v1 channel and then the v2 channel, each send blocking until its loop takes it. Stream candidate 1, WebSocket GET {WebPath}/api/v2/websocket (api/v2.go): the v2 loop passes each message (the full message JSON) to websockets/hub.go Broadcast, which blocks until the hub loop takes it. Registration: Hub.Serve writes the upgrade response first, then sends the connection on the unbuffered registerChan, which the hub loop adds to its connections in that case, and only then starts writeLoop and readLoop. Readiness evidence: readLoop reads with NextReader; the vendored gorilla/websocket conn.go answers a ping with a pong through its default ping handler, and its read limit (here 1 byte, connection.go) counts only data frames. A pong therefore follows the registration handoff, and the single hub loop takes any later broadcast only after adding the connection. Loss: the hub unregisters a connection whose 256-slot queue is full; writes have a 10 s deadline, pings run every 54 s and a pong is required within 60 s; nothing is replayed after a gap; CheckOrigin admits every origin. Stream candidate 2, server-sent events GET {WebPath}/api/v1/events (api/v1.go, goose.go): AddReceiver writes the 200 text/event-stream header, hijacks the connection and only then registers the receiver; after registration it receives a data event per message and a keepalive event once a minute, and Notify writes to each receiver from a new goroutine. No readiness ordered after registration is shown, so this channel does not qualify.",
           "best_wait": {
-            "unresolved": "no route, producer, registration-acknowledgement or gap-replay evidence and no real-binary observation exist, so a best-available wait cannot be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+            "unresolved": "stream candidate, not yet selected: the api/v2/websocket WebSocket, with route, producer, registration and pong readiness cited (mailhog-server-api-v2.go, mailhog-server-api.go, mailhog-smtp-session.go, mailhog-websockets-hub.go, mailhog-websockets-connection.go, vendored gorilla/websocket conn.go); the api/v1/events stream shows no readiness after registration and does not qualify. 0132 §7.2.2 selects the WebSocket only after a real-binary proof against the pinned executable (wait-best T10). Until then the labelled common 100 ms poll observes this target"
           }
         },
         "listeners": [
@@ -603,7 +898,7 @@
           "reviewed": [],
           "finding": "Reviewed the service route registrations in cmd/mailslurper/setupServicesListener.go at the tagged release (a member of the pinned source archive): the service registers GET /mail, /mail/:id, /mail/:id/message, /mail/:mailID/attachment/:attachmentID, /mailcount, /version and /pruneoptions, DELETE /mail, and login routes under an authentication scheme. None is a blocking wait, a long-poll or a push route, so MailSlurper has no server-side wait that the driver can use, and the labelled common-client poll is the only method. The nested source files are bound by their archive member, not by a git blob id, because the supplied git capture is the root tree only.",
           "best_wait": {
-            "unresolved": "no wait or push route exists in the reviewed route registrations, so no best-available wait can be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+            "observed": "poll: the common 100 ms poll, labelled \"no documented wait\" (the reviewed route registrations in mailslurper-setup-services-listener.go show no wait or push route); the official row is published blocked as does_not_start, with no number"
           }
         },
         "listeners": [
@@ -826,7 +1121,7 @@
           "reviewed": [],
           "finding": "Reviewed the service route registrations in cmd/mailslurper/setupServicesListener.go at the tagged release (a member of the pinned source archive): the service registers GET /mail, /mail/:id, /mail/:id/message, /mail/:mailID/attachment/:attachmentID, /mailcount, /version and /pruneoptions, DELETE /mail, and login routes under an authentication scheme. None is a blocking wait, a long-poll or a push route, so MailSlurper has no server-side wait that the driver can use, and the labelled common-client poll is the only method. The nested source files are bound by their archive member, not by a git blob id, because the supplied git capture is the root tree only.",
           "best_wait": {
-            "unresolved": "no wait or push route exists in the reviewed route registrations, so no best-available wait can be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+            "observed": "poll: the common 100 ms poll, labelled \"no documented wait\"; the reviewed route registrations in mailslurper-setup-services-listener.go show no wait or push route"
           }
         },
         "listeners": [
@@ -984,13 +1279,97 @@
           },
           {
             "kind": "git_tree",
-            "path": "sources/smtp4dev/smtp4dev-tree.json",
-            "size": 8412,
-            "sha256": "2f11062f5d939191022576489c99eb51f25317a5e1b696e887f78cbda7970dbb",
+            "path": "sources/smtp4dev/smtp4dev-tree-recursive.json",
+            "size": 302372,
+            "sha256": "63534820b3c8f34c3cc5b7842d3c0f9ef85011974e3b59418d7ceb04217f0d3a",
             "attribution": {
               "observed": {
                 "from": "api",
                 "url": "https://api.github.com/repos/rnwood/smtp4dev/git/trees/9622c9bb2d5044ee2ca08d94a2c8aaaa93428a7d"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/smtp4dev/smtp4dev-notifications-hub.cs",
+            "size": 2058,
+            "sha256": "2853e0084122fa9a8b94df1cd971c6198c39445fe5f5a78d05e08417e4c3108e",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/rnwood/smtp4dev/blob/9fac83c10cb7cb58105bc0d9d891d36150b8605f/Rnwood.Smtp4dev/Hubs/NotificationsHub.cs",
+                "upstream_path": "Rnwood.Smtp4dev/Hubs/NotificationsHub.cs",
+                "git_blob": "075426361ffa5672553874b4b9e65ef012d32299"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/smtp4dev/smtp4dev-startup.cs",
+            "size": 19409,
+            "sha256": "f73f776449fa39d7416f4cb25bec78094b26db0f26cbff224730c5424226cc85",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/rnwood/smtp4dev/blob/9fac83c10cb7cb58105bc0d9d891d36150b8605f/Rnwood.Smtp4dev/Startup.cs",
+                "upstream_path": "Rnwood.Smtp4dev/Startup.cs",
+                "git_blob": "6b08eaeffa194a3845992f16f830bdefbbfd05af"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/smtp4dev/smtp4dev-server.cs",
+            "size": 46345,
+            "sha256": "b6151acfa4e5346f9294a99c0af128bf80df6aa4211d1675b8ec6ff3c588545e",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/rnwood/smtp4dev/blob/9fac83c10cb7cb58105bc0d9d891d36150b8605f/Rnwood.Smtp4dev/Server/Smtp4devServer.cs",
+                "upstream_path": "Rnwood.Smtp4dev/Server/Smtp4devServer.cs",
+                "git_blob": "28099272b31a1bf39761c1ecb37b3c89b1d70283"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/smtp4dev/smtp4dev-task-queue.cs",
+            "size": 2362,
+            "sha256": "dd8ab914f557038a7f31cf0fc481bc7d7d6a19c41cc885d8222c3deb150d8afe",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/rnwood/smtp4dev/blob/9fac83c10cb7cb58105bc0d9d891d36150b8605f/Rnwood.Smtp4dev/Server/TaskQueue.cs",
+                "upstream_path": "Rnwood.Smtp4dev/Server/TaskQueue.cs",
+                "git_blob": "546048e68131c3b577dcd7f60d7bb7c07f93e76c"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/smtp4dev/smtp4dev-messages-controller.cs",
+            "size": 30748,
+            "sha256": "f8915662166add8efec2bdd2bc8cdbad9792e800ba0a7795779ae80a3834660a",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/rnwood/smtp4dev/blob/9fac83c10cb7cb58105bc0d9d891d36150b8605f/Rnwood.Smtp4dev/Controllers/MessagesController.cs",
+                "upstream_path": "Rnwood.Smtp4dev/Controllers/MessagesController.cs",
+                "git_blob": "0940c8a302d24532a56111ced0e089d6de65459c"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/smtp4dev/smtp4dev-hub-connection-manager.ts",
+            "size": 2812,
+            "sha256": "776cb3dc701b20baf2f597b712a2d144ad6743dec6f7733cebc54cadaa8d434a",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/rnwood/smtp4dev/blob/9fac83c10cb7cb58105bc0d9d891d36150b8605f/Rnwood.Smtp4dev/ClientApp/src/HubConnectionManager.ts",
+                "upstream_path": "Rnwood.Smtp4dev/ClientApp/src/HubConnectionManager.ts",
+                "git_blob": "22f66a795cf3702485516f57474e7e79977b828f"
               }
             }
           }
@@ -1017,10 +1396,65 @@
           "basis": "The archive's appsettings.json sets NumberOfMessagesToKeep 100 (a default the launch must not keep); `--help` of the pinned executable lists --messagestokeep (per mailbox), --db (relative to XDG_CONFIG_HOME, which the launcher owns; an empty value selects an in-memory database, which this launch does not use) and --nousersettings. The launch raises the cap to the protocol's cap ({max_messages}; protocol 4 states 150000), above every profile's residency, and puts the database inside the owned scratch. Pruning behavior at the cap is not established, and nothing about durability is claimed."
         },
         "wait": {
-          "reviewed": [],
-          "finding": "The archive's own API documentation (Rnwood.Smtp4dev.xml, a member of the pinned archive) documents GetSummaries (paged, with search terms), GetNewSummaries (messages since a last-seen id, summaries only) and per-message source and part routes; it documents no blocking wait or long-poll. The UI is a client-side application and its transport was not inspected. The labelled common-client poll is the only method.",
+          "reviewed": [
+            {
+              "upstream_path": "Rnwood.Smtp4dev/Hubs/NotificationsHub.cs",
+              "size": 2058,
+              "sha256": "2853e0084122fa9a8b94df1cd971c6198c39445fe5f5a78d05e08417e4c3108e",
+              "git_blob": "075426361ffa5672553874b4b9e65ef012d32299",
+              "retained_as": {
+                "observed": "sources/smtp4dev/smtp4dev-notifications-hub.cs"
+              }
+            },
+            {
+              "upstream_path": "Rnwood.Smtp4dev/Startup.cs",
+              "size": 19409,
+              "sha256": "f73f776449fa39d7416f4cb25bec78094b26db0f26cbff224730c5424226cc85",
+              "git_blob": "6b08eaeffa194a3845992f16f830bdefbbfd05af",
+              "retained_as": {
+                "observed": "sources/smtp4dev/smtp4dev-startup.cs"
+              }
+            },
+            {
+              "upstream_path": "Rnwood.Smtp4dev/Server/Smtp4devServer.cs",
+              "size": 46345,
+              "sha256": "b6151acfa4e5346f9294a99c0af128bf80df6aa4211d1675b8ec6ff3c588545e",
+              "git_blob": "28099272b31a1bf39761c1ecb37b3c89b1d70283",
+              "retained_as": {
+                "observed": "sources/smtp4dev/smtp4dev-server.cs"
+              }
+            },
+            {
+              "upstream_path": "Rnwood.Smtp4dev/Server/TaskQueue.cs",
+              "size": 2362,
+              "sha256": "dd8ab914f557038a7f31cf0fc481bc7d7d6a19c41cc885d8222c3deb150d8afe",
+              "git_blob": "546048e68131c3b577dcd7f60d7bb7c07f93e76c",
+              "retained_as": {
+                "observed": "sources/smtp4dev/smtp4dev-task-queue.cs"
+              }
+            },
+            {
+              "upstream_path": "Rnwood.Smtp4dev/Controllers/MessagesController.cs",
+              "size": 30748,
+              "sha256": "f8915662166add8efec2bdd2bc8cdbad9792e800ba0a7795779ae80a3834660a",
+              "git_blob": "0940c8a302d24532a56111ced0e089d6de65459c",
+              "retained_as": {
+                "observed": "sources/smtp4dev/smtp4dev-messages-controller.cs"
+              }
+            },
+            {
+              "upstream_path": "Rnwood.Smtp4dev/ClientApp/src/HubConnectionManager.ts",
+              "size": 2812,
+              "sha256": "776cb3dc701b20baf2f597b712a2d144ad6743dec6f7733cebc54cadaa8d434a",
+              "git_blob": "22f66a795cf3702485516f57474e7e79977b828f",
+              "retained_as": {
+                "observed": "sources/smtp4dev/smtp4dev-hub-connection-manager.ts"
+              }
+            }
+          ],
+          "finding": "Reviewed at the tagged commit (captured 2026-11-17 from raw.githubusercontent.com at the tagged commit; each body matches its git blob id and size in the tagged tree listing; the recursive listing of the commit's root tree, asked for with ?recursive=1, binds each nested path to the commit's tree id). Native: Controllers/MessagesController.cs routes api/messages (new, list, {id} and its parts, source, raw, plaintext, html, reply, send, relay, markRead, delete, folders); GetNewSummaries returns summaries newer than a last-seen id at once, and none blocks until mail arrives, so there is no blocking wait route. Stream candidate, ASP.NET Core SignalR: Startup.cs calls AddSignalR, registers NotificationsHub as a singleton, enables UseWebSockets and maps the hub at /hubs/notifications (under BasePath when it is not \"/\"; the pinned appsettings default is \"/\"). Producer: Server/Smtp4devServer.cs OnMessageReceived awaits ProcessMessage on the task queue (TaskQueue.cs completes the returned task after the action runs); ProcessMessage adds the message, saves, trims, saves again and then calls NotificationsHub.OnMessagesChanged(mailbox), which sends \"messageschanged\" with the mailbox name to Clients.All when Clients is set (Hubs/NotificationsHub.cs). Registration and wire protocol are the SignalR framework's (negotiate, handshake, hub-protocol framing), shipped as framework assemblies in the release archive; no source in the tagged tree shows when a connection joins Clients.All relative to the handshake reply. The UI client (ClientApp/src/HubConnectionManager.ts) connects with @microsoft/signalr HubConnectionBuilder. Readiness evidence: NotificationsHub's public methods are hub methods a client may invoke, and each sends to Clients.All, so a client that receives the broadcast of its own invocation (for example OnMailboxesChanged, which sends \"mailboxeschanged\") was a member of Clients.All at that send. Loss and replay: nothing in the reviewed sources replays a notification after a gap, and OnMessagesChanged sends nothing while the singleton hub's Clients is unset.",
           "best_wait": {
-            "unresolved": "no wait or push route is documented in the pinned archive's API XML and the UI transport was not inspected, so no best-available wait can be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+            "unresolved": "stream candidate, not yet selected: the SignalR hub /hubs/notifications, with route and producer cited (smtp4dev-startup.cs, smtp4dev-server.cs, smtp4dev-notifications-hub.cs) and readiness by receiving the broadcast of the client's own hub invocation; registration and framing are the SignalR framework's and are not in the tagged tree. 0132 §7.2.2 selects it only after a real-binary proof against the pinned executable (wait-best T10). Until then the labelled common 100 ms poll observes this target"
           }
         },
         "listeners": [
@@ -1184,13 +1618,139 @@
           },
           {
             "kind": "git_tree",
-            "path": "sources/inbucket/inbucket-tree.json",
-            "size": 5320,
-            "sha256": "038288705abe47ab4aeef7f0df01d9db9403169db603c44ee2f596a8f71f9ac4",
+            "path": "sources/inbucket/inbucket-tree-recursive.json",
+            "size": 67640,
+            "sha256": "5945e4003dd27480eb835ef18946247309c5829b9e2ae297ecafff3ff5aff7a0",
             "attribution": {
               "observed": {
                 "from": "api",
                 "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/ee202b296ea6c94dfce4977561efa71017734eba"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/inbucket/inbucket-rest-routes.go",
+            "size": 1427,
+            "sha256": "4e016683850aba8b28a2e63b92702ae0e31306da11b6be4ffbaa667994f7c984",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/inbucket/inbucket/blob/742249691d2f8f40253411394a8bbb8e50561849/pkg/rest/routes.go",
+                "upstream_path": "pkg/rest/routes.go",
+                "git_blob": "e05e94b094a137423027a9877771fc2b99ea123c"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/inbucket/inbucket-rest-socket-controller.go",
+            "size": 8356,
+            "sha256": "9960e5b62b41f424c805c989d2671ac6ac6665f322cdcf20718e019424cf39c6",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/inbucket/inbucket/blob/742249691d2f8f40253411394a8bbb8e50561849/pkg/rest/socket_controller.go",
+                "upstream_path": "pkg/rest/socket_controller.go",
+                "git_blob": "fc8c1a6f25890399d41a74ced5ecfc00efb4d00e"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/inbucket/inbucket-rest-socketv1-controller.go",
+            "size": 1339,
+            "sha256": "f9b41e483e1180ed51d9c283b7490fdcb0f3ce95124375d365079bf28f914717",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/inbucket/inbucket/blob/742249691d2f8f40253411394a8bbb8e50561849/pkg/rest/socketv1_controller.go",
+                "upstream_path": "pkg/rest/socketv1_controller.go",
+                "git_blob": "887c2f8952d29d1ac0dfde4f3ea0e7a0abee08a5"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/inbucket/inbucket-rest-socketv2-controller.go",
+            "size": 1614,
+            "sha256": "48da49c721e79f6adb262814d6653b679a8cfe8f9235752a2fd866c3499b5396",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/inbucket/inbucket/blob/742249691d2f8f40253411394a8bbb8e50561849/pkg/rest/socketv2_controller.go",
+                "upstream_path": "pkg/rest/socketv2_controller.go",
+                "git_blob": "1e6b2872cc3878df1d89a2ecd9c55b0450074a08"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/inbucket/inbucket-msghub-hub.go",
+            "size": 4034,
+            "sha256": "1343bad5c449c36b90d45021c4cd0802abf986a0597315d1f7ae63312585588f",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/inbucket/inbucket/blob/742249691d2f8f40253411394a8bbb8e50561849/pkg/msghub/hub.go",
+                "upstream_path": "pkg/msghub/hub.go",
+                "git_blob": "16749a338edaffc3fe18735d4667f02c32dae83e"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/inbucket/inbucket-message-manager.go",
+            "size": 6246,
+            "sha256": "ea32c33f77100356a34630c348e38b1f5abb7f4fb0d4f4fa2743e9656c50e2ff",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/inbucket/inbucket/blob/742249691d2f8f40253411394a8bbb8e50561849/pkg/message/manager.go",
+                "upstream_path": "pkg/message/manager.go",
+                "git_blob": "8f8a3f325b98126c5461858ea49a02aa750657df"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/inbucket/inbucket-extension-async-broker.go",
+            "size": 2206,
+            "sha256": "2300c0770bd263be18cb80b3a2bec280f926da85ae4af32e0a0377633da4f980",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/inbucket/inbucket/blob/742249691d2f8f40253411394a8bbb8e50561849/pkg/extension/async_broker.go",
+                "upstream_path": "pkg/extension/async_broker.go",
+                "git_blob": "368fee813898e3b6c998d826f32412b4c503421d"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/inbucket/inbucket-server-lifecycle.go",
+            "size": 3990,
+            "sha256": "e98e34445d65cbcc8ed8f3ee4c068d8d3255b2c04a27195e576f56340fde7b17",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/inbucket/inbucket/blob/742249691d2f8f40253411394a8bbb8e50561849/pkg/server/lifecycle.go",
+                "upstream_path": "pkg/server/lifecycle.go",
+                "git_blob": "a770e992cbe804bf71e954b729f711ef29e45b07"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/inbucket/inbucket-go.mod",
+            "size": 1872,
+            "sha256": "aef732fe65c36037eb6793b9058fd0c3c3f472a095d0e9d60da54f0e0c6e2b4a",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/inbucket/inbucket/blob/742249691d2f8f40253411394a8bbb8e50561849/go.mod",
+                "upstream_path": "go.mod",
+                "git_blob": "494a7758f1681c56ef511819a704c24fb8455aca"
               }
             }
           }
@@ -1203,10 +1763,92 @@
           "basis": "`inbucket -help` of the pinned executable lists INBUCKET_STORAGE_TYPE ('Storage impl: file or memory', default memory) and INBUCKET_STORAGE_MAILBOXMSGCAP ('Maximum messages per mailbox', default 500); the launch names the memory store and raises the per-mailbox cap to the protocol's cap ({max_messages}; protocol 4 states 150000), above every profile's residency, and the workload addresses one mailbox. INBUCKET_STORAGE_RETENTIONPERIOD keeps its 24h default. Pruning behavior at the cap is not established."
         },
         "wait": {
-          "reviewed": [],
-          "finding": "No Inbucket source body is retained: the supplied git capture is the root tree only, and the release archive carries the executable, the built UI, the docs and the REST example, so no nested source file is bound to the tagged tree. The pinned help lists a UI monitor (INBUCKET_WEB_MONITORVISIBLE, INBUCKET_WEB_MONITORHISTORY), and no captured document shows its transport, its producer or any replay after a gap. No server-side wait is established.",
+          "reviewed": [
+            {
+              "upstream_path": "pkg/rest/routes.go",
+              "size": 1427,
+              "sha256": "4e016683850aba8b28a2e63b92702ae0e31306da11b6be4ffbaa667994f7c984",
+              "git_blob": "e05e94b094a137423027a9877771fc2b99ea123c",
+              "retained_as": {
+                "observed": "sources/inbucket/inbucket-rest-routes.go"
+              }
+            },
+            {
+              "upstream_path": "pkg/rest/socket_controller.go",
+              "size": 8356,
+              "sha256": "9960e5b62b41f424c805c989d2671ac6ac6665f322cdcf20718e019424cf39c6",
+              "git_blob": "fc8c1a6f25890399d41a74ced5ecfc00efb4d00e",
+              "retained_as": {
+                "observed": "sources/inbucket/inbucket-rest-socket-controller.go"
+              }
+            },
+            {
+              "upstream_path": "pkg/rest/socketv1_controller.go",
+              "size": 1339,
+              "sha256": "f9b41e483e1180ed51d9c283b7490fdcb0f3ce95124375d365079bf28f914717",
+              "git_blob": "887c2f8952d29d1ac0dfde4f3ea0e7a0abee08a5",
+              "retained_as": {
+                "observed": "sources/inbucket/inbucket-rest-socketv1-controller.go"
+              }
+            },
+            {
+              "upstream_path": "pkg/rest/socketv2_controller.go",
+              "size": 1614,
+              "sha256": "48da49c721e79f6adb262814d6653b679a8cfe8f9235752a2fd866c3499b5396",
+              "git_blob": "1e6b2872cc3878df1d89a2ecd9c55b0450074a08",
+              "retained_as": {
+                "observed": "sources/inbucket/inbucket-rest-socketv2-controller.go"
+              }
+            },
+            {
+              "upstream_path": "pkg/msghub/hub.go",
+              "size": 4034,
+              "sha256": "1343bad5c449c36b90d45021c4cd0802abf986a0597315d1f7ae63312585588f",
+              "git_blob": "16749a338edaffc3fe18735d4667f02c32dae83e",
+              "retained_as": {
+                "observed": "sources/inbucket/inbucket-msghub-hub.go"
+              }
+            },
+            {
+              "upstream_path": "pkg/message/manager.go",
+              "size": 6246,
+              "sha256": "ea32c33f77100356a34630c348e38b1f5abb7f4fb0d4f4fa2743e9656c50e2ff",
+              "git_blob": "8f8a3f325b98126c5461858ea49a02aa750657df",
+              "retained_as": {
+                "observed": "sources/inbucket/inbucket-message-manager.go"
+              }
+            },
+            {
+              "upstream_path": "pkg/extension/async_broker.go",
+              "size": 2206,
+              "sha256": "2300c0770bd263be18cb80b3a2bec280f926da85ae4af32e0a0377633da4f980",
+              "git_blob": "368fee813898e3b6c998d826f32412b4c503421d",
+              "retained_as": {
+                "observed": "sources/inbucket/inbucket-extension-async-broker.go"
+              }
+            },
+            {
+              "upstream_path": "pkg/server/lifecycle.go",
+              "size": 3990,
+              "sha256": "e98e34445d65cbcc8ed8f3ee4c068d8d3255b2c04a27195e576f56340fde7b17",
+              "git_blob": "a770e992cbe804bf71e954b729f711ef29e45b07",
+              "retained_as": {
+                "observed": "sources/inbucket/inbucket-server-lifecycle.go"
+              }
+            },
+            {
+              "upstream_path": "go.mod",
+              "size": 1872,
+              "sha256": "aef732fe65c36037eb6793b9058fd0c3c3f472a095d0e9d60da54f0e0c6e2b4a",
+              "git_blob": "494a7758f1681c56ef511819a704c24fb8455aca",
+              "retained_as": {
+                "observed": "sources/inbucket/inbucket-go.mod"
+              }
+            }
+          ],
+          "finding": "Reviewed at the tagged commit (captured 2026-11-17 from raw.githubusercontent.com at the tagged commit; each body matches its git blob id and size in the tagged tree listing; the recursive listing of the commit's root tree, asked for with ?recursive=1, binds each nested path to the commit's tree id). Native: pkg/rest/routes.go registers the mailbox list, show, purge, delete, mark-seen and source routes and the v1/v2 monitor routes; none blocks until mail arrives, so there is no blocking wait route. Stream candidate, WebSocket monitor GET /api/v2/monitor/messages (every mailbox) or /api/v2/monitor/messages/{name} (one mailbox): pkg/server/lifecycle.go mounts the REST routes under /api/ and builds the hub with Web.MonitorHistory (help: INBUCKET_WEB_MONITORHISTORY, default 30; the launch does not set it). The v1 routes send message headers only and drop deletions; v2 sends {\"variant\":\"message-stored\"|\"message-deleted\", ...} events. Producer: pkg/message/manager.go Deliver stores each message (Store.AddMessage) and then emits AfterMessageStored; pkg/extension/async_broker.go runs each listener in a new goroutine; pkg/msghub/hub.go's listener queues a Dispatch operation that records the message in the history ring and relays it to every listener. Registration: pkg/rest/socket_controller.go serveMonitor writes the upgrade response first, then newMsgListener queues hub.AddListener, one hub operation that plays the history ring back to the listener and then registers it, and only after that queue send returns starts the write pump and the read pump. Every hub operation runs in order on one goroutine from one FIFO channel. Readiness evidence: a played-back history event is sent by the AddListener operation itself (only when the ring is non-empty); the read pump reads with ReadMessage, so a pong to a client ping comes from the default handler of gorilla/websocket v1.5.3 (go.mod), whose source is not in the tagged tree; the read pump starts only after AddListener is queued, so any Dispatch queued later runs after the registration. Loss: Receive waits for space in the listener's 100-slot queue or for its close, so a slow listener blocks the hub rather than being dropped; the read limit is 512 bytes; pings run every 54 s and a pong is required within 60 s. Replay: up to MonitorHistory recent messages on registration. The upgrader sets no CheckOrigin, so the library default applies.",
           "best_wait": {
-            "unresolved": "no source, route or real-binary observation of a wait exists, so a best-available wait cannot be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+            "unresolved": "stream candidate, not yet selected: the api/v2/monitor/messages WebSocket, with route, producer, registration and readiness cited (inbucket-rest-routes.go, inbucket-server-lifecycle.go, inbucket-message-manager.go, inbucket-extension-async-broker.go, inbucket-msghub-hub.go, inbucket-rest-socket-controller.go, inbucket-rest-socketv2-controller.go); the pong comes from the gorilla/websocket library, not the tagged tree. 0132 §7.2.2 selects it only after a real-binary proof against the pinned executable (wait-best T10). Until then the labelled common 100 ms poll observes this target"
           }
         },
         "listeners": [
@@ -1419,7 +2061,7 @@
           "reviewed": [],
           "finding": "GreenMail's REST API (the pinned jar's greenmail-openapi.yml) lists configuration, user, mail-by-address and purge operations and no wait or push route; its messages are read over POP3 (or IMAP), which has no blocking wait. The REST API cannot read message content, so the driver reads over POP3 with a fresh session per scan, and the labelled common-client poll is the only method.",
           "best_wait": {
-            "unresolved": "no wait or push route exists in the pinned OpenAPI document and POP3 has none, so no best-available wait can be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+            "observed": "poll: the common 100 ms poll, labelled \"no documented wait\"; the pinned greenmail-openapi.yml lists no wait or push route, and POP3 and IMAP reads have none"
           }
         },
         "runtime": {
@@ -1551,6 +2193,30 @@
                 "reference": "ghcr.io/alkem-io/test-suites/mailslurper:smtps-4c6aecc-p2"
               }
             }
+          },
+          {
+            "kind": "source",
+            "path": "sources/alkemio-mailslurper/alkemio-setup-services-listener.go",
+            "size": 2566,
+            "sha256": "037ca07c1870cbcfed3744a2442ea1e1f07ec1e63da36c785c2ac29ffa91e081",
+            "attribution": {
+              "observed": {
+                "from": "image",
+                "reference": "ghcr.io/alkem-io/test-suites/mailslurper:smtps-4c6aecc-p2"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/alkemio-mailslurper/alkemio-setup-admin-listener.go",
+            "size": 2644,
+            "sha256": "45d90d25e810dbe71043366bbe796c2fde78a29253afa2518deb9e032791d0e6",
+            "attribution": {
+              "observed": {
+                "from": "image",
+                "reference": "ghcr.io/alkem-io/test-suites/mailslurper:smtps-4c6aecc-p2"
+              }
+            }
           }
         ],
         "launch": [
@@ -1564,9 +2230,9 @@
         },
         "wait": {
           "reviewed": [],
-          "finding": "An image has no tagged tree to review sources in. The retained ServiceController.go (from the image's own source layer) shows no wait or push route for the service API. The labelled common-client poll is the only method.",
+          "finding": "An image has no tagged tree to review sources in. The image's source layer sha256:91d68efc0542f5a12b6ed723387cca7888503f6322c0b790f014c8be43fe9af6 (a layer of the pinned manifest, fetched from ghcr.io on 2026-11-17 and checked against that digest) holds the MailSlurper tree the image builds, under go/src/github.com/mailslurper/mailslurper/; its cmd/mailslurper/setupServicesListener.go, cmd/mailslurper/setupAdminListener.go and cmd/mailslurper/controllers/ServiceController.go are retained. setupServicesListener.go registers the service API on echo: GET /mail/:id, /mail/:id/message, /mail, /mailcount, /mail/:mailID/attachment/:attachmentID, /version and /pruneoptions, DELETE /mail, and login/logout under an authentication scheme. setupAdminListener.go registers the UI listener: /www/*, /, /admin, /savedsearches, /servicesettings, /version, /masterversion, /theme and login routes. None is a blocking wait, a long-poll or a push route, so the image has neither a server-side wait nor a push channel.",
           "best_wait": {
-            "unresolved": "no wait or push route is shown, so no best-available wait can be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+            "observed": "poll: the common 100 ms poll, labelled \"no documented wait\"; the service and UI route registrations (alkemio-setup-services-listener.go, alkemio-setup-admin-listener.go) show no blocking wait and no push channel"
           }
         },
         "runtime": {

@@ -1012,6 +1012,44 @@ not complete and the change is not merged. Stories B (API level), C
 (`wait-best`), D (test execution) and E (freeze and collection) are separate
 runs.
 
+## Protocol v4 waits: the evidence for `wait-best` (story C, #361)
+
+This section makes no comparison claim and selects no stream. It records the
+wait evidence that story C of accepted decision
+[0132](../decisions/0132-mail-comparison-protocol-v4.md) captured into the
+draft lock v5 on 2026-11-17. Every body was fetched from the upstream
+repository at the pinned commit (or, for the Alkemio image, from a layer of
+its pinned manifest), checked against its git blob id and size in the tagged
+tree (or the layer digest), and committed under `sources/<target>/` with its
+path, size, sha256 and attribution. `verify_files` rechecks every one each
+time the lock is used. Smtp4dev's and Inbucket's lock v5 pins replace their
+root tree listing with the recursive listing of the same tree id
+(`*-tree-recursive.json`, asked for with `?recursive=1`); it is rebuilt
+directory by directory to the commit's tree id, so a nested body is bound to
+the tagged commit.
+
+A blocking wait and a push channel are separate facts. No draft v4
+`native_wait` cell is `not_inspected`. Only Swarmail has a blocking wait. A
+stream candidate stays unselected (`best_wait` unresolved, polled at the
+common 100 ms) until its own real-binary proof against the pinned bytes
+shows readiness, a real SMTP send and an event-triggered complete match.
+
+| Target | `native_wait` (cite) | Push channel in the pinned source | Readiness ordered after registration | `wait-best` today |
+|---|---|---|---|---|
+| swarmail | supported (0002) | n/a | n/a | native REST await |
+| mailpit | not_supported (`mailpit-server.go`) | WebSocket `api/events`; producer `Broadcast("new")` after the insert commits | first hub frame (a `stats` frame, not guaranteed); pong from the gorilla library, not in the tree | candidate, proof owed |
+| mailhog | not_supported (`mailhog-server-api-v1.go`) | WebSocket `api/v2/websocket`; SSE `api/v1/events` | WebSocket: pong after the register handoff, from the vendored gorilla `conn.go`; SSE: none shown | WebSocket candidate, proof owed; SSE does not qualify |
+| mailslurper | not_supported (`mailslurper-setup-services-listener.go`) | none | n/a | poll, no documented wait; row blocked (`does_not_start`) |
+| mailslurper-source-build | not_supported (`mailslurper-setup-services-listener.go`) | none | n/a | poll, no documented wait |
+| smtp4dev | not_supported (`smtp4dev-messages-controller.cs`) | SignalR hub `/hubs/notifications`; producer `OnMessagesChanged` after save | the client's own hub invocation broadcast to `Clients.All`; the SignalR framework is not in the tree | candidate, proof owed |
+| inbucket | not_supported (`inbucket-rest-routes.go`) | WebSocket `/api/v2/monitor/messages`; producer `AfterMessageStored`, then hub `Dispatch` | pong after `AddListener` is queued (gorilla library, not in the tree); history replay when the ring is non-empty | candidate, proof owed |
+| greenmail | not_supported (`greenmail-openapi.yml`) | none | n/a | poll, no documented wait |
+| alkemio-mailslurper | not_supported (`alkemio-setup-services-listener.go`) | none | n/a | poll, no documented wait |
+
+Each row's finding in the draft lock states the route, producer,
+registration, readiness evidence and what the channel loses. The real-binary
+proofs, their test names and commands are owed by the rest of the story.
+
 ## What closes the remaining rows
 
 1. Build provenance for each executable needs genuine build evidence (an

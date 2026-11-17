@@ -2638,7 +2638,9 @@ fn tag_chain(
     // Mailpit's and MailHog's captures) or by tree id, linked to the tagged
     // commit by a captured commit object whose `tree` names it. On the second
     // route the listing is rebuilt into git's tree object and hashed, so an
-    // edited entry cannot vouch for a blob (ruling 2026-11-07).
+    // edited entry cannot vouch for a blob (ruling 2026-11-07). A recursive
+    // listing on that route (lock v5's wait documents below the root) is
+    // rebuilt directory by directory up to the same root id.
     let commit_object = json.get(&DocKind::GitCommit);
     let route_ok = |tr: &serde_json::Value| match commit_object {
         None => s(tr, "/sha") == ts.commit,
@@ -2672,7 +2674,7 @@ fn tag_chain(
     };
     if commit_object.is_some()
         && let Some(listing) = json.get(&DocKind::GitTree)
-        && tree_object_id(tree).as_deref() != Some(s(listing, "/sha").as_str())
+        && listing_object_id(tree).as_deref() != Some(s(listing, "/sha").as_str())
     {
         out.push(format!(
             "{t}: the captured tree listing does not rebuild to its own id"
@@ -2708,6 +2710,42 @@ fn tag_chain(
             ));
         }
     }
+}
+
+/// Git's root tree object id of a listing that may be recursive (asked for
+/// with `?recursive=1`). Every directory listed together with its children
+/// is rebuilt from them and must equal the id its parent lists for it, so
+/// each listed entry, however deep, is bound to the root id. A directory
+/// listed without children stays opaque: a non-recursive listing is all
+/// opaque, and its id is then [`tree_object_id`]'s. `None` for a malformed
+/// entry, a path whose parent is not a listed directory, or a directory
+/// whose rebuilt id is not the one listed for it.
+pub fn listing_object_id(entries: &[serde_json::Value]) -> Option<String> {
+    use std::collections::HashMap;
+    let mut children: HashMap<&str, Vec<serde_json::Value>> = HashMap::new();
+    let mut dirs: HashMap<&str, &str> = HashMap::new();
+    for e in entries {
+        let path = e.get("path")?.as_str()?;
+        let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+        if name.is_empty() {
+            return None;
+        }
+        if e.get("type")?.as_str()? == "tree" {
+            dirs.insert(path, e.get("sha")?.as_str()?);
+        }
+        let mut own = e.clone();
+        own["path"] = serde_json::Value::from(name);
+        children.entry(parent).or_default().push(own);
+    }
+    for (dir, listed) in &children {
+        if dir.is_empty() {
+            continue;
+        }
+        if dirs.get(dir).copied() != Some(tree_object_id(listed)?.as_str()) {
+            return None;
+        }
+    }
+    tree_object_id(children.get("").map(Vec::as_slice).unwrap_or_default())
 }
 
 /// Git's tree object id of a non-recursive tree listing: SHA-1 over

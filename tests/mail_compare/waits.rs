@@ -1148,3 +1148,368 @@ async fn malformed_or_oversized_event_stream_bodies_are_errors_not_silence() {
         assert!(err.is_disconnect());
     }
 }
+
+// ============================================================================
+// T1: the wait evidence of lock v5 and the closed native_wait cells
+// ============================================================================
+
+mod evidence {
+    use crate::protocol::{self, CapabilityStatus, Fact};
+    use crate::{TargetKind, evals_copy, json, lock_from, protocol_from, refusals};
+    use serde_json::Value;
+
+    const DRAFT_PROTOCOL: &[u8] = include_bytes!("../../docs/evals/draft/protocol.v4.json");
+    const DRAFT_LOCK: &[u8] = include_bytes!("../../docs/evals/draft/sources.lock.v5.json");
+
+    /// The rows whose pinned sources show a push channel: candidates until
+    /// their real-binary proof (T10) selects them.
+    const STREAM_CANDIDATES: [&str; 4] = ["mailpit", "mailhog", "smtp4dev", "inbucket"];
+    /// The rows whose pinned sources show neither a wait nor a push route.
+    const POLL_ROWS: [&str; 4] = [
+        "mailslurper",
+        "mailslurper-source-build",
+        "greenmail",
+        "alkemio-mailslurper",
+    ];
+
+    fn pin_of<'a>(l: &'a mut Value, target: &str) -> &'a mut Value {
+        l["entries"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|e| e["target"] == target)
+            .unwrap()
+            .get_mut("pin")
+            .unwrap()
+    }
+
+    fn doc_mut<'a>(v: &'a mut Value, t: &str, path: &str) -> &'a mut Value {
+        pin_of(v, t)["documents"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|d| d["path"] == path)
+            .unwrap()
+    }
+
+    /// The wait documents lock v5 adds: source bodies and their licenses.
+    fn wait_documents(l: &Value) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for e in l["entries"].as_array().unwrap() {
+            for d in e["pin"]["documents"].as_array().into_iter().flatten() {
+                let path = d["path"].as_str().unwrap();
+                let added = !json(crate::SOURCES_V4)["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|o| {
+                        o["target"] == e["target"]
+                            && o["pin"]["documents"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .any(|x| x["path"] == path)
+                    });
+                if added {
+                    out.push((e["target"].as_str().unwrap().to_owned(), path.to_owned()));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_native_wait_cell_is_closed_with_a_citation_of_its_pin() {
+        let p = protocol_from(json(DRAFT_PROTOCOL)).unwrap();
+        let l = lock_from(json(DRAFT_LOCK)).unwrap();
+        p.validate().unwrap();
+        l.validate().unwrap();
+        let caps = p.capabilities.as_ref().expect("v4 states capabilities");
+        assert_eq!(caps.len(), TargetKind::ALL.len());
+        for c in caps {
+            let t = c.target;
+            assert_ne!(
+                c.native_wait.status,
+                CapabilityStatus::NotInspected,
+                "{t} native_wait is still not_inspected"
+            );
+            let cite = c
+                .native_wait
+                .cite
+                .as_deref()
+                .unwrap_or_else(|| panic!("{t} cites nothing"));
+            if t == TargetKind::Swarmail {
+                assert_eq!(c.native_wait.status, CapabilityStatus::Supported);
+                assert!(cite.starts_with("repo:docs/decisions/0002"), "{cite}");
+                continue;
+            }
+            // A blocking wait and a push channel are distinct facts: no
+            // competitor has a blocking wait route.
+            assert_eq!(c.native_wait.status, CapabilityStatus::NotSupported, "{t}");
+            let pin = l.pin(t).unwrap();
+            assert!(
+                pin.documents.iter().any(|d| d.path == cite),
+                "{t} native_wait cites {cite}, which is not one of its documents"
+            );
+        }
+        protocol::capabilities_match(&p, &l).unwrap();
+        // Official MailSlurper stays blocked.
+        let blocked: Vec<_> = p
+            .does_not_start
+            .iter()
+            .flatten()
+            .map(|d| d.target)
+            .collect();
+        assert_eq!(blocked, [TargetKind::Mailslurper]);
+    }
+
+    #[test]
+    fn every_best_wait_states_its_method_or_its_open_proof() {
+        let l = lock_from(json(DRAFT_LOCK)).unwrap();
+        for t in TargetKind::ALL {
+            let Some(pin) = l.pin(t) else {
+                assert_eq!(t, TargetKind::Swarmail, "only the candidate has no pin");
+                continue;
+            };
+            let name = t.name();
+            match &pin.wait.best_wait {
+                Fact::Observed(m) => {
+                    assert!(
+                        POLL_ROWS.contains(&name),
+                        "{t} selects {m:?} before its proof"
+                    );
+                    assert!(
+                        m.starts_with("poll: ") && m.contains("no documented wait"),
+                        "{t}: {m}"
+                    );
+                    // The fallback cites the document that shows the absence.
+                    assert!(
+                        pin.documents
+                            .iter()
+                            .any(|d| m.contains(d.path.rsplit('/').next().unwrap())),
+                        "{t}: the poll reason cites no captured document: {m}"
+                    );
+                }
+                Fact::Unresolved(why) => {
+                    assert!(
+                        STREAM_CANDIDATES.contains(&name),
+                        "{t} is unresolved: {why}"
+                    );
+                    assert!(
+                        why.starts_with("stream candidate, not yet selected"),
+                        "{t}: {why}"
+                    );
+                    assert!(
+                        why.contains("T10") && why.contains("100 ms poll"),
+                        "{t}: {why}"
+                    );
+                }
+            }
+            assert!(!pin.wait.finding.trim().is_empty(), "{t}");
+        }
+        // Every stream candidate's finding names the route, producer,
+        // registration and readiness it rests on, and what it loses.
+        for t in STREAM_CANDIDATES {
+            let kind = TargetKind::ALL.into_iter().find(|k| k.name() == t).unwrap();
+            let f = &l.pin(kind).unwrap().wait.finding;
+            for part in ["Producer:", "Registration", "Readiness evidence:", "Loss"] {
+                assert!(f.contains(part), "{t} finding has no {part}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_wait_documents_verify_and_each_is_rechecked_at_use() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = evals_copy(root.path());
+        let v = json(DRAFT_LOCK);
+        let l = lock_from(v.clone()).unwrap();
+        l.verify_files(&dir).expect("the copy verifies");
+        let added = wait_documents(&v);
+        // Every target the review touched carries new documents.
+        for t in [
+            "mailpit",
+            "mailhog",
+            "smtp4dev",
+            "inbucket",
+            "alkemio-mailslurper",
+        ] {
+            assert!(
+                added.iter().any(|(at, _)| at == t),
+                "{t} gained no document"
+            );
+        }
+        // A changed byte in any one of them refuses that document by name.
+        for (_, path) in &added {
+            let file = dir.join(path);
+            let good = std::fs::read(&file).unwrap();
+            let mut bad = good.clone();
+            let at = bad.len() / 2;
+            bad[at] ^= 1;
+            std::fs::write(&file, &bad).unwrap();
+            let why = refusals(l.verify_files(&dir));
+            assert!(
+                why.contains(&format!("{path} does not match its digest")),
+                "{why}"
+            );
+            std::fs::write(&file, &good).unwrap();
+        }
+        l.verify_files(&dir).expect("restored");
+        // A missing one refuses.
+        let gone = "sources/mailpit/mailpit-server.go";
+        let saved = std::fs::read(dir.join(gone)).unwrap();
+        std::fs::remove_file(dir.join(gone)).unwrap();
+        assert!(refusals(l.verify_files(&dir)).contains(&format!("{gone} is missing")));
+        std::fs::write(dir.join(gone), &saved).unwrap();
+    }
+
+    /// Lock edits the bytes still have to agree with: size, git blob,
+    /// attribution path and the retained reviewed body.
+    #[test]
+    fn a_wait_document_whose_facts_disagree_with_its_bytes_refuses() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = evals_copy(root.path());
+        let check = |edit: &dyn Fn(&mut Value)| {
+            let mut v = json(DRAFT_LOCK);
+            edit(&mut v);
+            let l = lock_from(v).unwrap();
+            let text = |r: Result<(), protocol::Refusal>| r.err().map(|e| e.0.join("\n"));
+            let why = [text(l.validate()), text(l.verify_files(&dir))]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(!why.is_empty(), "the edit must refuse");
+            why
+        };
+        let why = check(&|v| {
+            doc_mut(v, "mailhog", "sources/mailhog/mailhog-server-api-v2.go")["size"] = 1.into();
+        });
+        assert!(
+            why.contains("mailhog-server-api-v2.go is not 1 bytes"),
+            "{why}"
+        );
+        let why = check(&|v| {
+            doc_mut(v, "inbucket", "sources/inbucket/inbucket-msghub-hub.go")["attribution"]["observed"]
+                ["git_blob"] = "0123456789abcdef0123456789abcdef01234567".into();
+        });
+        assert!(
+            why.contains("inbucket-msghub-hub.go is not the git blob its attribution names"),
+            "{why}"
+        );
+        let why = check(&|v| {
+            doc_mut(v, "smtp4dev", "sources/smtp4dev/smtp4dev-startup.cs")["attribution"]["observed"]
+                ["upstream_path"] = "Rnwood.Smtp4dev/Program.cs".into();
+        });
+        assert!(
+            why.contains("smtp4dev-startup.cs is not attributed to its path"),
+            "{why}"
+        );
+        // A reviewed body retained under a digest the document does not carry.
+        let why = check(&|v| {
+            let r = &mut pin_of(v, "mailpit")["wait"]["reviewed"][2];
+            r["sha256"] = "0".repeat(64).into();
+        });
+        assert!(
+            why.contains("names no retained source document with its digest"),
+            "{why}"
+        );
+        // A reviewed path the tagged tree does not hold.
+        let why = check(&|v| {
+            let r = &mut pin_of(v, "inbucket")["wait"]["reviewed"][0];
+            r["upstream_path"] = "pkg/rest/elsewhere.go".into();
+            r["retained_as"] = serde_json::json!({"unresolved": "moved for the test"});
+        });
+        assert!(
+            why.contains("reviewed source pkg/rest/elsewhere.go is not in the tagged tree"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn a_recursive_listing_binds_every_nested_entry_to_the_root_tree() {
+        let dir = crate::evals_dir();
+        let listing = |p: &str| json(&std::fs::read(dir.join(p)).unwrap());
+        for p in [
+            "sources/smtp4dev/smtp4dev-tree-recursive.json",
+            "sources/inbucket/inbucket-tree-recursive.json",
+        ] {
+            let v = listing(p);
+            let entries = v["tree"].as_array().unwrap();
+            assert!(
+                entries
+                    .iter()
+                    .any(|e| e["path"].as_str().unwrap().contains('/'))
+            );
+            assert_eq!(
+                protocol::listing_object_id(entries).as_deref(),
+                v["sha"].as_str(),
+                "{p}"
+            );
+        }
+        // A flat listing is all opaque directories: the same id as before.
+        for p in [
+            "sources/smtp4dev/smtp4dev-tree.json",
+            "sources/inbucket/inbucket-tree.json",
+            "sources/greenmail/greenmail-tree.json",
+        ] {
+            let v = listing(p);
+            let entries = v["tree"].as_array().unwrap();
+            assert_eq!(
+                protocol::listing_object_id(entries),
+                protocol::tree_object_id(entries)
+            );
+            assert_eq!(
+                protocol::listing_object_id(entries).as_deref(),
+                v["sha"].as_str()
+            );
+        }
+        let v = listing("sources/inbucket/inbucket-tree-recursive.json");
+        let entries = v["tree"].as_array().unwrap().clone();
+        let nested = entries
+            .iter()
+            .position(|e| e["path"] == "pkg/msghub/hub.go")
+            .unwrap();
+        // A forged nested blob id breaks its directory's rebuilt id.
+        let mut forged = entries.clone();
+        forged[nested]["sha"] = "0123456789abcdef0123456789abcdef01234567".into();
+        assert_eq!(protocol::listing_object_id(&forged), None);
+        // So does an entry added inside a listed directory.
+        let mut added = entries.clone();
+        let mut extra = entries[nested].clone();
+        extra["path"] = "pkg/msghub/zz.go".into();
+        added.insert(nested + 1, extra);
+        assert_eq!(protocol::listing_object_id(&added), None);
+        // An entry under a directory the listing never names is refused.
+        let mut orphan = entries.clone();
+        let mut extra = entries[nested].clone();
+        extra["path"] = "nowhere/hub.go".into();
+        orphan.push(extra);
+        assert_eq!(protocol::listing_object_id(&orphan), None);
+
+        // Through the lock: a forged recursive capture whose digest and size
+        // are made to agree still refuses, because it no longer rebuilds.
+        let root = tempfile::tempdir().unwrap();
+        let copy = evals_copy(root.path());
+        let path = "sources/inbucket/inbucket-tree-recursive.json";
+        let mut bad = v.clone();
+        bad["tree"] = Value::from(forged);
+        let bytes = serde_json::to_vec(&bad).unwrap();
+        std::fs::write(copy.join(path), &bytes).unwrap();
+        let mut l = json(DRAFT_LOCK);
+        for d in pin_of(&mut l, "inbucket")["documents"]
+            .as_array_mut()
+            .unwrap()
+        {
+            if d["path"] == path {
+                d["size"] = bytes.len().into();
+                d["sha256"] = protocol::sha256_hex(&bytes).into();
+            }
+        }
+        let why = refusals(lock_from(l).unwrap().verify_files(&copy));
+        assert!(
+            why.contains("inbucket: the captured tree listing does not rebuild to its own id"),
+            "{why}"
+        );
+    }
+}

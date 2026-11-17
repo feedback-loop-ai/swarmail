@@ -375,8 +375,8 @@
         "cite": "sources/mailpit/mailpit-swagger.json"
       },
       "native_wait": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/mailpit/mailpit-server.go"
       },
       "retention_cap": {
         "status": "supported",
@@ -394,8 +394,8 @@
         "cite": "sources/mailhog/mailhog-swagger.json"
       },
       "native_wait": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/mailhog/mailhog-server-api-v1.go"
       },
       "retention_cap": {
         "status": "not_inspected",
@@ -451,8 +451,8 @@
         "cite": "sources/smtp4dev/smtp4dev-api.xml"
       },
       "native_wait": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/smtp4dev/smtp4dev-messages-controller.cs"
       },
       "retention_cap": {
         "status": "supported",
@@ -470,8 +470,8 @@
         "cite": null
       },
       "native_wait": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/inbucket/inbucket-rest-routes.go"
       },
       "retention_cap": {
         "status": "supported",
@@ -508,8 +508,8 @@
         "cite": "sources/alkemio-mailslurper/alkemio-service-controller.go"
       },
       "native_wait": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/alkemio-mailslurper/alkemio-setup-services-listener.go"
       },
       "retention_cap": {
         "status": "not_inspected",

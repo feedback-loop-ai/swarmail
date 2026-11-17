@@ -846,7 +846,33 @@ fn the_v4_draft_differs_from_v3_only_where_0132_says() {
         "budgets",
         "headline",
         "unresolved",
+        "capabilities",
     ];
+    // Capabilities: v3's, except that story C closes the native_wait cells
+    // v3 left not_inspected (0132 §7.2), each as a cited fact.
+    let (dc, vc) = (
+        d["capabilities"].as_array().unwrap(),
+        v3["capabilities"].as_array().unwrap(),
+    );
+    assert_eq!(dc.len(), vc.len());
+    for (a, b) in dc.iter().zip(vc) {
+        let (mut a, mut b) = (a.clone(), b.clone());
+        if b["native_wait"]["status"] == "not_inspected" {
+            assert_ne!(
+                a["native_wait"]["status"], "not_inspected",
+                "{}",
+                b["target"]
+            );
+            assert!(a["native_wait"]["cite"].is_string(), "{}", b["target"]);
+            a["native_wait"] = Value::Null;
+            b["native_wait"] = Value::Null;
+        }
+        assert_eq!(
+            a, b,
+            "capabilities of {} must be v3's, unchanged",
+            b["target"]
+        );
+    }
     let mut keys: Vec<&String> = d.keys().chain(v3.keys()).collect();
     keys.sort();
     keys.dedup();
@@ -970,7 +996,7 @@ impl Wrapped for Value {
 }
 
 #[test]
-fn lock_v5_differs_from_lock_v4_only_in_version_caps_and_three_launches() {
+fn lock_v5_differs_from_lock_v4_only_in_version_caps_launches_and_wait_evidence() {
     let (l5, l4) = (lock5(), json(SOURCES_V4));
     assert_eq!(l5["lock_version"], 5);
     assert_eq!(l5["checked_on"], l4["checked_on"]);
@@ -981,20 +1007,60 @@ fn lock_v5_differs_from_lock_v4_only_in_version_caps_and_three_launches() {
     assert_eq!(e5.len(), e4.len());
     for (a, b) in e5.iter().zip(e4) {
         let t = b["target"].as_str().unwrap();
-        if !["mailpit", "smtp4dev", "inbucket"].contains(&t) {
+        if b["pin"].is_null() {
             assert_eq!(a, b, "{t} is lock 4's, unchanged");
             continue;
+        }
+        // Story C's wait evidence (0132 §1.2): every lock 4 document is
+        // kept, except that smtp4dev and Inbucket replace their root tree
+        // listing with the recursive listing of the same tree id, which
+        // binds the nested wait sources to it.
+        let (docs5, docs4) = (
+            a["pin"]["documents"].as_array().unwrap(),
+            b["pin"]["documents"].as_array().unwrap(),
+        );
+        for d in docs4 {
+            if docs5.contains(d) {
+                continue;
+            }
+            assert!(
+                ["smtp4dev", "inbucket"].contains(&t) && d["kind"] == "git_tree",
+                "{t} dropped {}",
+                d["path"]
+            );
+            let tree = |p: &Value| {
+                json(&std::fs::read(Path::new("docs/evals").join(p.as_str().unwrap())).unwrap())["sha"].clone()
+            };
+            let new = docs5.iter().find(|n| n["kind"] == "git_tree").unwrap();
+            assert_eq!(
+                tree(&new["path"]),
+                tree(&d["path"]),
+                "{t}: the same tree id"
+            );
+            assert!(
+                new["path"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("-tree-recursive.json")
+            );
         }
         let (mut a, mut b) = (a.clone(), b.clone());
         for e in [&mut a, &mut b] {
             let pin = e["pin"].as_object_mut().unwrap();
-            pin.insert("launch".into(), Value::Null);
-            pin.insert("launch_env".into(), Value::Null);
-            let st = pin["storage"].as_object_mut().unwrap();
-            st.remove("max_messages");
-            st.remove("basis");
+            pin.insert("documents".into(), Value::Null);
+            pin.insert("wait".into(), Value::Null);
+            if ["mailpit", "smtp4dev", "inbucket"].contains(&t) {
+                pin.insert("launch".into(), Value::Null);
+                pin.insert("launch_env".into(), Value::Null);
+                let st = pin["storage"].as_object_mut().unwrap();
+                st.remove("max_messages");
+                st.remove("basis");
+            }
         }
-        assert_eq!(a, b, "{t}: only its launch, cap and basis moved");
+        assert_eq!(
+            a, b,
+            "{t}: only its launch, cap, basis and wait evidence moved"
+        );
     }
     let mut l = l5.clone();
     for t in ["mailpit", "smtp4dev", "inbucket"] {
