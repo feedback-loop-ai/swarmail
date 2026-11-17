@@ -46,18 +46,18 @@ they are useful when the operator has already ruled that path necessary:
 +---------------------+-----------------------+-----------------------+
 | Seat                | codex                 | codex-careful         |
 +---------------------+-----------------------+-----------------------+
-| Intake              | Sol / medium          | Sol / high            |
-| Design: simplicity  | Sol / high            | Sol / high            |
-| Design: robustness  | Astra / high          | Astra / high          |
-| Design: chief       | Astra / high          | Astra / high          |
+| Intake              | Sol / medium          | Sol / medium          |
+| Design: simplicity  | Sol / medium          | Sol / medium          |
+| Design: robustness  | Astra / medium        | Astra / medium        |
+| Design: chief       | Astra / medium        | Astra / medium        |
 | Design: check       | Offline exec gate     | Offline exec gate     |
-| Implement           | Sol / high            | Sol / xhigh           |
+| Implement           | Sol / medium          | Sol / medium          |
 | Verify              | Pinned offline gates  | Pinned offline gates  |
-| Review: correctness | Fable 5.2 / high      | Official Flash / high |
+| Review: correctness | Fable 5.2 / medium    | Official Flash / high |
 | Review: security    | Official Flash / high | Official Flash / high |
 | Review: guarantees  | absent                | Official Flash / high |
 | Review: tests       | GLM Flash / N/A       | GLM Flash / N/A       |
-| Review: independent | absent                | Fable 5.2 / high      |
+| Review: independent | absent                | Fable 5.2 / medium    |
 | Review: deadline    | 14400 s, 3 attempts   | 14400 s, 3 attempts   |
 | Ship                | Pinned exec gate      | Pinned exec gate      |
 +---------------------+-----------------------+-----------------------+
@@ -70,7 +70,7 @@ they are useful when the operator has already ruled that path necessary:
 | sol       | gpt-6.1-sol           | Codex CLI                  |
 | luna      | gpt-6-luna            | Codex CLI                  |
 | astra     | gpt-6-astra           | Codex CLI                  |
-| qwen-max  | dashscope/qwen3.8-max | DashScope through dsh      |
+| qwen-max  | dashscope/qwen4-max   | DashScope through dsh      |
 | opus      | claude-opus-5-5       | Claude CLI                 |
 | fable     | claude-fable-5-2      | Claude CLI                 |
 | sonnet    | claude-sonnet-5-5     | Claude CLI                 |
