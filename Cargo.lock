@@ -2225,6 +2225,7 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest",
+ "ring",
  "rusqlite",
  "rustls",
  "rustls-pemfile",

@@ -23,6 +23,9 @@ mod mailslurper_mcp;
 #[path = "../benches/mail_compare/mcp.rs"]
 mod mcp;
 #[allow(dead_code)]
+#[path = "../benches/mail_compare/clients/observe.rs"]
+mod observe;
+#[allow(dead_code)]
 #[path = "../benches/mail_compare/protocol.rs"]
 mod protocol;
 #[allow(dead_code)]
@@ -41,6 +44,9 @@ mod runner;
 #[path = "../benches/mail_compare/stats.rs"]
 mod stats;
 #[allow(dead_code)]
+#[path = "../benches/mail_compare/clients/stream.rs"]
+mod stream;
+#[allow(dead_code)]
 #[path = "../benches/mail_compare/targets.rs"]
 mod targets;
 #[allow(dead_code)]
@@ -57,6 +63,8 @@ use std::time::{Duration, Instant};
 mod eight_targets;
 #[path = "mail_compare/v4.rs"]
 mod v4;
+#[path = "mail_compare/waits.rs"]
+mod waits;
 
 const SMOKE: &[u8] = include_bytes!("mail_compare/swarmail-smoke.json");
 const SMOKE_LOCK: &[u8] = include_bytes!("mail_compare/swarmail-only.lock.json");
@@ -2349,6 +2357,9 @@ fn an_unproved_or_colliding_run_is_never_sealed_or_overwritten() {
         occurrences: None,
         fidelity_ok: None,
         requests: None,
+        expected: None,
+        unrelated: None,
+        cause: None,
     };
     dir.append(&row).unwrap();
     row.sample = 1;
@@ -2630,6 +2641,9 @@ fn connect_refusal_is_a_coded_failed_before_terminator_row() {
         occurrences: None,
         fidelity_ok: None,
         requests: None,
+        expected: None,
+        unrelated: None,
+        cause: None,
     };
     // A peer that answers with a reply code refused the session itself.
     let mut refused = blank();

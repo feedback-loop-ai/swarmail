@@ -409,11 +409,16 @@ fn v4_refuses_thirty_three_sessions() {
 }
 
 #[test]
-fn v4_refuses_a_wait_profile() {
+fn v4_holds_v3s_wait_profile_to_its_own_wait_rules() {
+    // Story C's wait section replaced the blanket refusal. v3's common poll
+    // is a valid draft `wait-common`; a frozen protocol 4 needs all three.
     let mut v = draft();
     let w = json(PROTOCOL_V3)["waits"][0].clone();
     v["waits"] = json!([w]);
-    assert!(why(v).contains("protocol 4 refuses wait profiles"));
+    p4(v.clone()).validate().unwrap();
+    v["status"] = json!("frozen");
+    let w = refusals(p4(v).validate_owing(&[]));
+    assert!(w.contains("a frozen protocol 4's wait profiles are"), "{w}");
 }
 
 #[test]
@@ -548,12 +553,11 @@ fn a_v4_swarmail_spec_is_never_built_uncapped() {
 fn this_driver_refuses_a_frozen_v4_naming_the_owed_sections() {
     let w = refusals(p4(frozen_ready()).validate());
     assert!(
-        w.contains(
-            "this driver cannot freeze protocol 4: the api, waits, testexec section(s) are owed"
-        ),
+        w.contains("this driver cannot freeze protocol 4: the api, testexec section(s) are owed"),
         "{w}"
     );
-    assert_eq!(protocol::OWED_SECTIONS, ["api", "waits", "testexec"]);
+    // Story C built the waits section: only B's and D's remain owed.
+    assert_eq!(protocol::OWED_SECTIONS, ["api", "testexec"]);
     // A draft is not refused for it.
     p4(draft()).validate().unwrap();
 }
@@ -820,6 +824,8 @@ fn the_v4_draft_validates_and_is_not_ready_for_collection() {
     assert!(w.contains("protocol is a draft, not frozen"), "{w}");
     assert!(w.contains("unresolved: story B"), "{w}");
     // Nothing else is wrong with it: the refusals are the draft's own.
+    // MailHog's stream is selected (T10b passed), so no best wait is open.
+    assert!(!w.contains("best wait unresolved"), "{w}");
     for line in w.lines() {
         assert!(
             line.contains("draft, not frozen") || line.starts_with("unresolved:"),
@@ -846,7 +852,33 @@ fn the_v4_draft_differs_from_v3_only_where_0132_says() {
         "budgets",
         "headline",
         "unresolved",
+        "capabilities",
     ];
+    // Capabilities: v3's, except that story C closes the native_wait cells
+    // v3 left not_inspected (0132 §7.2), each as a cited fact.
+    let (dc, vc) = (
+        d["capabilities"].as_array().unwrap(),
+        v3["capabilities"].as_array().unwrap(),
+    );
+    assert_eq!(dc.len(), vc.len());
+    for (a, b) in dc.iter().zip(vc) {
+        let (mut a, mut b) = (a.clone(), b.clone());
+        if b["native_wait"]["status"] == "not_inspected" {
+            assert_ne!(
+                a["native_wait"]["status"], "not_inspected",
+                "{}",
+                b["target"]
+            );
+            assert!(a["native_wait"]["cite"].is_string(), "{}", b["target"]);
+            a["native_wait"] = Value::Null;
+            b["native_wait"] = Value::Null;
+        }
+        assert_eq!(
+            a, b,
+            "capabilities of {} must be v3's, unchanged",
+            b["target"]
+        );
+    }
     let mut keys: Vec<&String> = d.keys().chain(v3.keys()).collect();
     keys.sort();
     keys.dedup();
@@ -911,7 +943,7 @@ fn the_v4_draft_differs_from_v3_only_where_0132_says() {
 }
 
 #[test]
-fn the_v4_draft_names_greenmail_rest_and_the_wait_budget_as_unresolved() {
+fn the_v4_draft_names_greenmail_rest_as_unresolved_and_restores_the_wait_budget() {
     let d = draft();
     let owed: Vec<&str> = d["unresolved"]
         .as_array()
@@ -928,19 +960,13 @@ fn the_v4_draft_names_greenmail_rest_and_the_wait_budget_as_unresolved() {
         "{rest}"
     );
     assert!(rest.contains("answer 8"), "{rest}");
-    let wait = owed
-        .iter()
-        .find(|x| x.contains("wait_operation_ms"))
-        .expect("an entry for the wait budget");
+    // Story C restored the wait budget with its profiles: the longest wait
+    // (30 s) plus one request bound (10 s), as v3's.
     assert!(
-        wait.contains("story C")
-            && wait.contains("10000")
-            && wait.contains("40000")
-            && wait.contains("no wait profile"),
-        "{wait}"
+        !owed.iter().any(|x| x.contains("wait_operation_ms")),
+        "{owed:?}"
     );
-    // The budget it names is the draft's, and v3's is what it says.
-    assert_eq!(d["budgets"]["wait_operation_ms"], 10_000);
+    assert_eq!(d["budgets"]["wait_operation_ms"], 40_000);
     assert_eq!(json(PROTOCOL_V3)["budgets"]["wait_operation_ms"], 40_000);
     // The claim says the POP3 read is the draft's.
     let claim = d["claim"]["statement"].as_str().unwrap();
@@ -970,7 +996,7 @@ impl Wrapped for Value {
 }
 
 #[test]
-fn lock_v5_differs_from_lock_v4_only_in_version_caps_and_three_launches() {
+fn lock_v5_differs_from_lock_v4_only_in_version_caps_launches_and_wait_evidence() {
     let (l5, l4) = (lock5(), json(SOURCES_V4));
     assert_eq!(l5["lock_version"], 5);
     assert_eq!(l5["checked_on"], l4["checked_on"]);
@@ -981,20 +1007,60 @@ fn lock_v5_differs_from_lock_v4_only_in_version_caps_and_three_launches() {
     assert_eq!(e5.len(), e4.len());
     for (a, b) in e5.iter().zip(e4) {
         let t = b["target"].as_str().unwrap();
-        if !["mailpit", "smtp4dev", "inbucket"].contains(&t) {
+        if b["pin"].is_null() {
             assert_eq!(a, b, "{t} is lock 4's, unchanged");
             continue;
+        }
+        // Story C's wait evidence (0132 §1.2): every lock 4 document is
+        // kept, except that smtp4dev and Inbucket replace their root tree
+        // listing with the recursive listing of the same tree id, which
+        // binds the nested wait sources to it.
+        let (docs5, docs4) = (
+            a["pin"]["documents"].as_array().unwrap(),
+            b["pin"]["documents"].as_array().unwrap(),
+        );
+        for d in docs4 {
+            if docs5.contains(d) {
+                continue;
+            }
+            assert!(
+                ["smtp4dev", "inbucket"].contains(&t) && d["kind"] == "git_tree",
+                "{t} dropped {}",
+                d["path"]
+            );
+            let tree = |p: &Value| {
+                json(&std::fs::read(Path::new("docs/evals").join(p.as_str().unwrap())).unwrap())["sha"].clone()
+            };
+            let new = docs5.iter().find(|n| n["kind"] == "git_tree").unwrap();
+            assert_eq!(
+                tree(&new["path"]),
+                tree(&d["path"]),
+                "{t}: the same tree id"
+            );
+            assert!(
+                new["path"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("-tree-recursive.json")
+            );
         }
         let (mut a, mut b) = (a.clone(), b.clone());
         for e in [&mut a, &mut b] {
             let pin = e["pin"].as_object_mut().unwrap();
-            pin.insert("launch".into(), Value::Null);
-            pin.insert("launch_env".into(), Value::Null);
-            let st = pin["storage"].as_object_mut().unwrap();
-            st.remove("max_messages");
-            st.remove("basis");
+            pin.insert("documents".into(), Value::Null);
+            pin.insert("wait".into(), Value::Null);
+            if ["mailpit", "smtp4dev", "inbucket"].contains(&t) {
+                pin.insert("launch".into(), Value::Null);
+                pin.insert("launch_env".into(), Value::Null);
+                let st = pin["storage"].as_object_mut().unwrap();
+                st.remove("max_messages");
+                st.remove("basis");
+            }
         }
-        assert_eq!(a, b, "{t}: only its launch, cap and basis moved");
+        assert_eq!(
+            a, b,
+            "{t}: only its launch, cap, basis and wait evidence moved"
+        );
     }
     let mut l = l5.clone();
     for t in ["mailpit", "smtp4dev", "inbucket"] {
@@ -1955,6 +2021,8 @@ fn tiny4() -> Protocol {
     prof["warmup_messages"] = json!(0);
     prof["sessions"] = json!(2);
     v["throughput"] = json!([prof]);
+    v["waits"] = json!([]);
+    v["budgets"]["wait_operation_ms"] = json!(10_000);
     p4(v)
 }
 
@@ -2308,29 +2376,39 @@ async fn the_sampler_writes_a_row_per_tick_and_one_at_each_bound() {
 // ---- T4.3 ------------------------------------------------------------------
 
 #[test]
-fn the_draft_plans_24_cost_chunks_in_rotation_order() {
+fn the_draft_plans_24_cost_and_24_waits_chunks_in_rotation_order() {
     let p = p4(draft());
     let plan = runner::plan_v4(&p);
-    assert_eq!(plan.len(), 24);
+    assert_eq!(plan.len(), 48);
     let mut want = Vec::new();
     for rep in 0..3u32 {
-        for t in p.order(rep) {
-            if *t != TargetKind::Mailslurper {
-                want.push(runner::Chunk::Cost {
-                    target: *t,
-                    repetition: rep,
-                });
-            }
+        let order: Vec<TargetKind> = p
+            .order(rep)
+            .iter()
+            .copied()
+            .filter(|t| *t != TargetKind::Mailslurper)
+            .collect();
+        for &target in &order {
+            want.push(runner::Chunk::Cost {
+                target,
+                repetition: rep,
+            });
+        }
+        for &target in &order {
+            want.push(runner::Chunk::Waits {
+                target,
+                repetition: rep,
+            });
         }
     }
     assert_eq!(plan, want);
     assert!(!plan.iter().any(|c| c.target() == TargetKind::Mailslurper));
     assert_eq!(plan[0].name(), "cost.swarmail.r0");
-    assert_eq!(plan[8].name(), "cost.mailpit.r1");
-    assert_eq!(plan[16].name(), "cost.mailhog.r2");
-    assert_eq!(plan[23].name(), "cost.mailpit.r2");
+    assert_eq!(plan[8].name(), "waits.swarmail.r0");
+    assert_eq!(plan[16].name(), "cost.mailpit.r1");
+    assert_eq!(plan[47].name(), "waits.mailpit.r2");
     for rep in 0..3 {
-        assert_eq!(plan.iter().filter(|c| c.repetition() == rep).count(), 8);
+        assert_eq!(plan.iter().filter(|c| c.repetition() == rep).count(), 16);
     }
     // Each chunk plans its profiles' rows and three windows apiece.
     let (planned, windows) = runner::plan_chunk(&p, &plan[0]);
@@ -2358,6 +2436,8 @@ fn chunk_names_round_trip_and_unknown_ones_refuse() {
         ("cost.mailpit.r3", "not in the protocol's plan"),
         ("cost.nobody.r0", "unknown target"),
         ("api.mailpit.r0", "is not implemented"),
+        ("waits.mailslurper.r0", "not in the protocol's plan"),
+        ("waits.mailpit.r3", "not in the protocol's plan"),
         ("cost.mailpit", "not a chunk coordinate"),
         ("cost.mailpit.0", "not r<repetition>"),
         ("", "not a chunk coordinate"),
@@ -3065,7 +3145,7 @@ fn the_blocked_row_has_no_number() {
     let b = &r.blocked[0];
     assert_eq!(b.target, TargetKind::Mailslurper);
     assert!(b.result.contains("does not start"));
-    assert_eq!(b.cells.len(), 4, "every cost profile is blocked");
+    assert_eq!(b.cells.len(), 7, "every cost and wait profile is blocked");
     assert!(b.cells.iter().all(|c| c.outcome == "blocked"));
     let v4 = r.v4.as_ref().unwrap();
     assert!(
@@ -4606,6 +4686,9 @@ fn adm_protocol_n(reps: u32) -> (Protocol, Vec<u8>) {
     prof["warmup_messages"] = json!(0);
     prof["sessions"] = json!(2);
     v["throughput"] = json!([prof]);
+    // A cost-only run: the waits chunks are story C's own fixtures.
+    v["waits"] = json!([]);
+    v["budgets"]["wait_operation_ms"] = json!(10_000);
     let bytes = serde_json::to_vec(&v).unwrap();
     (p4(v), bytes)
 }
@@ -4911,12 +4994,18 @@ fn a_complete_fixture_run_seals_and_then_verifies() {
         "launches.json",
         "report.json",
         "report-cost.json",
+        "report-waits.json",
         "index.json",
     ] {
         assert!(f.dir().join(name).is_file(), "{name}");
     }
     let verified = f.admit(false).expect("a sealed run verifies");
-    assert_eq!(verified.files.keys().len(), 6);
+    assert_eq!(verified.files.keys().len(), 7);
+    // A cost-only plan has an empty wait section, never an invented one.
+    assert_eq!(
+        verified.files["report-waits.json"]["wait_profiles"]["cells"],
+        json!([])
+    );
     let manifest = &verified.files["manifest.json"];
     assert_eq!(manifest["chunks"].as_array().unwrap().len(), 8);
     assert_eq!(manifest["candidate_dirty"], false);
@@ -5156,6 +5245,8 @@ fn admit_v4_refuses_a_row_whose_launch_has_no_receipt() {
 fn admit_v4_refuses_an_empty_plan_without_panicking() {
     let mut v = draft();
     v["throughput"] = json!([]);
+    v["waits"] = json!([]);
+    v["budgets"]["wait_operation_ms"] = json!(10_000);
     let p = p4(v);
     assert!(runner::plan_v4(&p).is_empty());
     let (root, sbytes) = (fixture(), serde_json::to_vec(&lock5()).unwrap());
@@ -5337,6 +5428,33 @@ fn admit_v4_refuses_a_second_seal() {
     );
     // The first seal is untouched and still verifies.
     f.admit(false).unwrap();
+}
+
+#[test]
+fn admit_v4_recomputes_the_wait_section_and_names_an_edited_wait_figure() {
+    // A chunk report that claims a wait cell its rows do not give.
+    let f = build_run(Build {
+        edit: Some(("cost.swarmail.r0", |r: &mut Value| {
+            r["wait_profiles"]["cells"] = json!([{"target": "swarmail"}])
+        })),
+        ..Default::default()
+    });
+    let w = f.admit(true).unwrap_err();
+    assert!(
+        w.contains("chunk cost.swarmail.r0: the report disagrees with the rows it was derived from at wait_profiles"),
+        "{w}"
+    );
+    // The run's own wait file, edited and reindexed, is named by its path.
+    let g = build_run(Build::default());
+    g.admit(true).unwrap();
+    rewrite_and_reindex(&g.dir(), "report-waits.json", |v| {
+        v["wait_profiles"]["repetitions"] = json!([{"sent": 1}]);
+    });
+    let w = g.admit(false).unwrap_err();
+    assert!(
+        w.contains("report-waits.json disagrees with the chunks it was derived from at report-waits.json.wait_profiles.repetitions"),
+        "{w}"
+    );
 }
 
 #[test]
@@ -6081,7 +6199,7 @@ fn v4_rig_with(ambient: &[(&str, &str)]) -> V4Rig {
 }
 
 #[test]
-fn collect_v4_dry_run_prints_24_commands_in_plan_order_and_starts_nothing() {
+fn collect_v4_dry_run_prints_48_commands_in_plan_order_and_starts_nothing() {
     let rig = v4_rig();
     let draft_route = [
         "--protocol",
@@ -6095,8 +6213,11 @@ fn collect_v4_dry_run_prints_24_commands_in_plan_order_and_starts_nothing() {
     extra.push("--dry-run");
     let (code, text) = rig.run(&extra, &[]);
     assert_eq!(code, 0, "{text}");
-    let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("cost.")).collect();
-    assert_eq!(lines.len(), 24, "{text}");
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("cost.") || l.starts_with("waits."))
+        .collect();
+    assert_eq!(lines.len(), 48, "{text}");
     for (line, coord) in lines.iter().zip(&rig.plan) {
         assert!(
             line.starts_with(&format!("{coord}\t")),
@@ -6311,8 +6432,8 @@ fn collect_v4_nests_timeout_taskset_then_the_scope() {
         .filter(|l| l.starts_with("systemd-run "))
         .map(|l| l.split(' ').find(|w| w.starts_with("--unit=")).unwrap())
         .collect();
-    assert_eq!(units.len(), 24, "one scope per chunk");
-    assert!(chunk_lines(&log, "timeout --kill-after=30 560").len() >= 24);
+    assert_eq!(units.len(), 48, "one scope per chunk");
+    assert!(chunk_lines(&log, "timeout --kill-after=30 560").len() >= 48);
 }
 
 #[test]
@@ -6397,7 +6518,7 @@ fn collect_v4_counts_a_sealless_exit_zero_as_two() {
 }
 
 #[test]
-fn collect_v4_full_fake_run_writes_24_ledgers_seals_and_verifies() {
+fn collect_v4_full_fake_run_writes_48_ledgers_seals_and_verifies() {
     let rig = v4_rig();
     std::fs::write(rig.file("behave"), "cost.smtp4dev.r1 1\n").unwrap();
     let (code, text) = rig.run(
@@ -6409,11 +6530,11 @@ fn collect_v4_full_fake_run_writes_24_ledgers_seals_and_verifies() {
         "a chunk that exited 1 makes the run exit 1: {text}"
     );
     assert!(
-        text.contains("wrote") && text.contains("(24 chunks)"),
+        text.contains("wrote") && text.contains("(48 chunks)"),
         "{text}"
     );
     let ledger = rig.ledger();
-    assert_eq!(ledger.len(), 24);
+    assert_eq!(ledger.len(), 48);
     let coords: std::collections::BTreeSet<&str> = ledger
         .iter()
         .map(|e| e["coordinate"].as_str().unwrap())
@@ -6525,7 +6646,7 @@ fn collect_v4_waits_for_a_scope_that_is_active_once_then_inactive() {
         "nothing was killed: {log:?}"
     );
     let ledger = rig.ledger();
-    assert_eq!(ledger.len(), 24, "the run went on");
+    assert_eq!(ledger.len(), 48, "the run went on");
     assert!(ledger.iter().all(|e| e["scope_clean"] == true));
 }
 
@@ -6705,7 +6826,7 @@ fn collect_v4_runs_every_process_under_the_bound() {
             "{own}: each run is under the bound: {log:?}"
         );
     }
-    assert_eq!(chunk_lines(&log, "driver run").len(), 24);
+    assert_eq!(chunk_lines(&log, "driver run").len(), 48);
 }
 
 #[test]
@@ -7096,7 +7217,7 @@ fn collect_v4_asks_again_after_a_query_that_says_nothing() {
     let log = rig.log();
     assert_eq!(is_active_calls(&log, "cost.mailpit.r0"), 3, "{log:?}");
     assert!(!log.iter().any(|l| l.starts_with("systemctl --user kill")));
-    assert_eq!(rig.ledger().len(), 24);
+    assert_eq!(rig.ledger().len(), 48);
 }
 
 #[test]
@@ -7244,7 +7365,7 @@ fn collect_v4_on_sigterm_during_check_footprint_and_admission_exits_two_at_once(
             _ => {
                 // The admission is after every chunk, and the run's own
                 // files were not removed by the interrupt.
-                assert_eq!(ran, 24, "{stall}");
+                assert_eq!(ran, 48, "{stall}");
                 assert!(rig.out().join("reproduce.txt").is_file());
             }
         }
@@ -8955,6 +9076,385 @@ mod chunk {
             panic!("protocol 3 keeps its behaviour: {verdict:?}")
         };
         assert!(why.contains("not ready"), "{why}");
+    }
+
+    // ---- story C, T8: the waits chunk ---------------------------------------
+
+    /// One tiny wait profile: `present`, `future` and `empty` instances.
+    fn wait_profile(name: &str, mode: &str, interval: Option<u64>, n: (u32, u32, u32)) -> Value {
+        let mut o = json!({
+            "target": "swarmail", "mode": mode, "interval_ms": interval,
+            "justification": format!("{name}: the fixture's"),
+        });
+        if name == "wait-best" {
+            o["evidence"] = json!(["repo:docs/decisions/0002-awaits-subscribe-before-checking.md"]);
+        }
+        json!({
+            "name": name, "repetitions": 1, "present": n.0, "future": n.1, "empty": n.2,
+            "deadline_ms": 30000, "empty_deadline_ms": 1000, "observation": [o],
+        })
+    }
+
+    /// The smoke draft with the three wait profiles and no cost profile.
+    pub fn wait_protocol(n: (u32, u32, u32), deadline_ms: u64) -> Protocol {
+        let mut v = json(V4_SMOKE);
+        v["throughput"] = json!([]);
+        v["waits"] = json!([
+            wait_profile("wait-common", "poll", Some(100), n),
+            wait_profile("wait-best", "native", None, n),
+            wait_profile("wait-tight", "poll", Some(10), n),
+        ]);
+        v["budgets"]["wait_operation_ms"] = json!(40_000);
+        v["resources"]["chunk_deadline_ms"] = json!(deadline_ms);
+        Protocol::parse(&serde_json::to_vec(&v).unwrap()).unwrap()
+    }
+
+    fn waits_config(rig: &Rig, p: &Protocol, run: &str) -> (runner::Config, runner::Chunk) {
+        let (mut cfg, _) = rig.config(p, Path::new(env!("CARGO_BIN_EXE_swarmail")), run);
+        let chunk = runner::Chunk::Waits {
+            target: TargetKind::Swarmail,
+            repetition: 0,
+        };
+        let (planned, windows) = runner::plan_chunk(p, &chunk);
+        let m = &mut cfg.manifest;
+        (m.planned, m.planned_windows, m.chunk) = (planned, Some(windows), Some(chunk.name()));
+        (cfg, chunk)
+    }
+
+    #[tokio::test]
+    async fn a_waits_chunk_measures_each_profile_on_its_own_instance_and_window() {
+        let rig = Rig::new(0, true);
+        // Parsed, not validated: it observes Swarmail alone.
+        let p = wait_protocol((2, 2, 1), 400_000);
+        let (cfg, chunk) = waits_config(&rig, &p, "run-w1");
+        let manifest = cfg.manifest.clone();
+        let (verdict, life, sealed) =
+            runner::run_chunk(cfg, chunk.clone(), wire::Clock(Instant::now())).await;
+        assert_eq!(verdict, runner::Verdict::Clean, "every wait is exact");
+        let sealed = sealed.expect("the chunk sealed");
+        // One fresh instance per profile, each in its own leaf, no warmup.
+        let leaves: Vec<_> = life
+            .launches
+            .iter()
+            .map(|l| l.leaf.clone().unwrap())
+            .collect();
+        assert_eq!(leaves, ["target-0001", "target-0002", "target-0003"]);
+        assert!(life.cleanups.iter().all(|c| c.proved()));
+        let (rows, res) = records::read_run(&sealed, &manifest).unwrap();
+        assert_eq!(rows.len(), 3 * 5, "every planned instance has its row");
+        for r in &rows {
+            let want = if r.phase == Phase::Empty {
+                "timeout"
+            } else {
+                "observed"
+            };
+            assert_eq!(r.outcome, want, "{r:?}");
+            // Protocol 4's counts are kept on every answered or empty row;
+            // no row of a poll or a native wait names a scan cause.
+            let expected = u64::from(r.phase != Phase::Empty);
+            assert_eq!(
+                (r.expected, r.unrelated),
+                (Some(expected), Some(0)),
+                "{r:?}"
+            );
+            assert_eq!(r.cause, None);
+        }
+        for name in protocol::WAIT_PROFILES {
+            for kind in [
+                WindowKind::Ready,
+                WindowKind::IdleReady,
+                WindowKind::Measure,
+            ] {
+                assert_eq!(window(&res, name, kind).outcome, WindowOutcome::Measured);
+            }
+        }
+        report::check_wait_rows(&p, &rows).unwrap();
+        // The sealed report is the arithmetic of its rows and windows.
+        let disk: Value =
+            serde_json::from_slice(&std::fs::read(sealed.join("report.json")).unwrap()).unwrap();
+        let fresh =
+            serde_json::to_value(report::report_v4(&p, &manifest, &rows, &[&res[..]], &life))
+                .unwrap();
+        assert_eq!(disk["wait_profiles"], fresh["wait_profiles"]);
+        let cells = disk["wait_profiles"]["cells"].as_array().unwrap();
+        let methods: Vec<_> = cells
+            .iter()
+            .map(|c| c["method"].as_str().unwrap())
+            .collect();
+        assert_eq!(methods, ["poll", "native", "poll"]);
+        for c in cells {
+            assert_eq!(
+                (c["sent"].clone(), c["timely"].clone()),
+                (json!(4), json!(4)),
+                "{c}"
+            );
+            assert_eq!(
+                (c["missed"].clone(), c["empty_correct"].clone()),
+                (json!(0), json!(1))
+            );
+            assert_eq!(c["ack_to_return"]["samples"], 2);
+            assert!(c["cpu_total_usec"].is_object(), "the window's CPU: {c}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_waits_chunk_past_its_deadline_launches_nothing_and_keeps_every_row() {
+        let rig = Rig::new(0, true);
+        let p = wait_protocol((2, 2, 1), 1);
+        let (cfg, chunk) = waits_config(&rig, &p, "run-w2");
+        let manifest = cfg.manifest.clone();
+        let old = Instant::now() - Duration::from_secs(1);
+        let (verdict, life, sealed) = runner::run_chunk(cfg, chunk, wire::Clock(old)).await;
+        assert!(
+            matches!(verdict, runner::Verdict::WorkloadFailures(_)),
+            "{verdict:?}"
+        );
+        assert!(life.launches.is_empty());
+        let (rows, res) = records::read_run(&sealed.unwrap(), &manifest).unwrap();
+        assert_eq!(rows.len(), 15);
+        assert!(rows.iter().all(|r| r.outcome == "unstarted"
+            && r.reason.as_deref() == Some("chunk deadline")
+            && r.expected.is_none()));
+        assert!(
+            windows(&res)
+                .iter()
+                .all(|w| w.outcome == WindowOutcome::ChunkDeadline)
+        );
+        let r = report::report_v4(&p, &manifest, &rows, &[&res[..]], &life);
+        let cells = &r.v4.as_ref().unwrap().wait_profiles.cells;
+        assert_eq!(cells.len(), 3);
+        assert!(
+            cells
+                .iter()
+                .all(|c| c.sent == 0 && c.missed == 0 && c.timely == 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_answer_keeps_its_duplicate_and_unrelated_counts_on_the_wire() {
+        let mut p = wait_protocol((1, 0, 1), 400_000);
+        p.waits.truncate(1);
+        p.waits[0].observation[0].target = TargetKind::Mailpit;
+        // The search answers the expected message twice and one other.
+        let mine = subject_of(&p, "tag", 0);
+        let other = subject_of(&p, "elsewhere", 7);
+        let http = mailpit_http(
+            vec![
+                ("a".into(), mine.clone()),
+                ("b".into(), mine),
+                ("c".into(), other),
+            ],
+            false,
+        )
+        .await;
+        let o = detached(smtp_stub("").await, http, &p);
+        let mut m = tiny_manifest(
+            &p,
+            "run-w4",
+            &runner::Chunk::Waits {
+                target: TargetKind::Mailpit,
+                repetition: 0,
+            },
+        );
+        m.planned_windows = None;
+        let dir = fixture();
+        let out = dir.path().join("out");
+        let sink = sink_for(&m, &out);
+        runner::waits(
+            &o,
+            &p,
+            &p.waits[0],
+            ("tag", 0, "run-w4"),
+            &sink,
+            &wire::Clock(Instant::now()),
+            (None, None),
+        )
+        .await
+        .unwrap();
+        let rows = read_rows(&out, &m, sink);
+        let facts: Vec<_> = rows
+            .iter()
+            .map(|r| (r.phase, r.outcome.as_str(), r.expected, r.unrelated))
+            .collect();
+        assert_eq!(
+            facts,
+            [
+                // Both facts are kept, and the answer is never an exact one.
+                (Phase::Present, "unrelated", Some(2), Some(1)),
+                // An empty wait answered with other mail is not silent.
+                (Phase::Empty, "unrelated", Some(0), Some(3)),
+            ]
+        );
+        let reps = report::wait_figures(&p, &rows, &[]);
+        assert!(reps.is_empty(), "no window, no figures");
+    }
+
+    #[tokio::test]
+    async fn a_wait_cut_in_flight_is_an_error_and_the_rest_are_unstarted() {
+        let mut p = wait_protocol((2, 1, 1), 400_000);
+        p.waits.truncate(1);
+        p.waits[0].observation[0].target = TargetKind::Mailpit;
+        let http = mailpit_http(Vec::new(), false).await;
+        let o = detached(smtp_stub("").await, http, &p);
+        let mut m = tiny_manifest(
+            &p,
+            "run-w3",
+            &runner::Chunk::Waits {
+                target: TargetKind::Mailpit,
+                repetition: 0,
+            },
+        );
+        m.planned_windows = None;
+        let dir = fixture();
+        let out = dir.path().join("out");
+        let sink = sink_for(&m, &out);
+        // The wait never completes (the stub has no mail), so the instant
+        // always cuts it in the observe step; 5 s only has to let the send
+        // finish first (at 300 ms an instrumented coverage build cut the send).
+        let end = Instant::now() + Duration::from_secs(5);
+        let failures = runner::waits(
+            &o,
+            &p,
+            &p.waits[0],
+            ("tag", 0, "run-w3"),
+            &sink,
+            &wire::Clock(Instant::now()),
+            (None, Some(end)),
+        )
+        .await
+        .unwrap();
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("3 instances unstarted at the chunk deadline"))
+        );
+        let rows = read_rows(&out, &m, sink);
+        let outcomes: Vec<(&str, Option<&str>)> = rows
+            .iter()
+            .map(|r| (r.outcome.as_str(), r.reason.as_deref()))
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                ("error", Some("observe: chunk deadline")),
+                ("unstarted", Some("chunk deadline")),
+                ("unstarted", Some("chunk deadline")),
+                ("unstarted", Some("chunk deadline")),
+            ]
+        );
+    }
+
+    /// One Mailpit wait profile of `n` instances against an SMTP stub that
+    /// hangs on `hang`, a search answering `mail`, cut `secs` from now.
+    async fn cut_waits(
+        n: (u32, u32, u32),
+        hang: &'static str,
+        mail: &[u32],
+        secs: u64,
+    ) -> Vec<Row> {
+        let mut p = wait_protocol(n, 400_000);
+        p.waits.truncate(1);
+        p.waits[0].observation[0].target = TargetKind::Mailpit;
+        let mail = mail
+            .iter()
+            .map(|i| (format!("m{i}"), subject_of(&p, "tag", *i)))
+            .collect();
+        let http = mailpit_http(mail, false).await;
+        let o = detached(smtp_stub(hang).await, http, &p);
+        let mut m = tiny_manifest(
+            &p,
+            "run-w5",
+            &runner::Chunk::Waits {
+                target: TargetKind::Mailpit,
+                repetition: 0,
+            },
+        );
+        m.planned_windows = None;
+        let dir = fixture();
+        let out = dir.path().join("out");
+        let sink = sink_for(&m, &out);
+        let end = Instant::now() + Duration::from_secs(secs);
+        runner::waits(
+            &o,
+            &p,
+            &p.waits[0],
+            ("tag", 0, "run-w5"),
+            &sink,
+            &wire::Clock(Instant::now()),
+            (None, Some(end)),
+        )
+        .await
+        .unwrap();
+        read_rows(&out, &m, sink)
+    }
+
+    // A send cut in its QUIT after the server's 250 keeps the 250: the mail
+    // was sent (0132 §7.3, §11.3). QUIT never answers, so the instant always
+    // cuts the session; 5 s only has to let the message itself be answered
+    // on a loaded or instrumented build.
+    #[tokio::test]
+    async fn a_present_send_cut_in_its_quit_keeps_its_acceptance() {
+        let rows = cut_waits((1, 1, 0), "QUIT", &[], 5).await;
+        let r = &rows[0];
+        assert_eq!(r.phase, Phase::Present);
+        assert_eq!(
+            (r.outcome.as_str(), r.reason.as_deref(), r.code),
+            ("error", Some("observe: chunk deadline"), Some(250))
+        );
+        assert!(r.start_ns.is_some() && r.ack_ns.is_some());
+        assert_eq!(rows[1].outcome, "unstarted");
+    }
+
+    #[tokio::test]
+    async fn a_future_send_cut_in_its_quit_keeps_its_acceptance_and_any_answer() {
+        // The search already holds the message: the observer answers before
+        // the cut, and its answer stands.
+        let future = 200_000;
+        let rows = cut_waits((0, 1, 0), "QUIT", &[future], 5).await;
+        let r = &rows[0];
+        assert_eq!(r.phase, Phase::Future);
+        assert_eq!(
+            (r.outcome.as_str(), r.code, r.expected, r.unrelated),
+            ("observed", Some(250), Some(1), Some(0))
+        );
+        assert!(r.ack_ns.is_some() && r.observed_ns.is_some());
+        // Nothing to find: accepted, and the wait has no answer.
+        let rows = cut_waits((0, 1, 0), "QUIT", &[], 5).await;
+        let r = &rows[0];
+        assert_eq!(
+            (r.outcome.as_str(), r.reason.as_deref(), r.code),
+            ("error", Some("observe: chunk deadline"), Some(250))
+        );
+        assert!(r.ack_ns.is_some());
+    }
+
+    // A message the server never answers is cut before its reply: not sent.
+    // The DATA command never answers, so no window has to be wide.
+    #[tokio::test]
+    async fn a_send_cut_before_its_reply_is_a_failed_send() {
+        let rows = cut_waits((1, 1, 0), "DATA", &[], 1).await;
+        let facts: Vec<_> = rows
+            .iter()
+            .map(|r| (r.phase, r.outcome.as_str(), r.reason.as_deref(), r.ack_ns))
+            .collect();
+        assert_eq!(
+            facts,
+            [
+                (
+                    Phase::Present,
+                    "send_failed",
+                    Some("send: chunk deadline"),
+                    None
+                ),
+                (Phase::Future, "unstarted", Some("chunk deadline"), None),
+            ]
+        );
+        let rows = cut_waits((0, 1, 0), "DATA", &[], 1).await;
+        assert_eq!(
+            (rows[0].outcome.as_str(), rows[0].reason.as_deref()),
+            ("send_failed", Some("send: chunk deadline"))
+        );
+        assert_eq!(rows[0].ack_ns, None);
     }
 }
 
