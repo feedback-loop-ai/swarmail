@@ -1026,7 +1026,15 @@ GreenMail) over one bounded keep-alive transport and one strict pager: an
 answer is complete only when paging reached the server's own count with every
 id distinct, every page before the last full and the count unchanged; a
 repeated id, a moving count, a short page, an overshoot, a redirect, a body
-over 16 MiB or an operation over 1 GiB is an error. The three MailSlurper
+over 16 MiB or an operation over 1 GiB is an error. The byte bounds are
+checked before a chunk is appended, a declared length over them refuses
+before any byte is read, and one operation's pages share one budget. An id
+the target supplies becomes one path segment with every byte outside
+`A-Z a-z 0-9 - _ ~` percent-encoded, dots included; an id of dots alone is
+refused, and so is any path the URL parser would rewrite, before dispatch
+(wire tests assert the request target the server received). The eval
+crate's MCP client holds the same bounds on every reply, initialization and
+JSON-RPC errors included, and refuses redirects. The three MailSlurper
 products share one family and keep their own citations. The eval crate
 compiles the same modules by `#[path]` (`evals/src/lib.rs`), with only the
 packages it already names directly (`reqwest`, `serde`, `serde_json`, `tokio`,
@@ -1077,7 +1085,10 @@ never published as `not_supported`. What the captured documents establish:
   filter and `pageNumber`; read by id; no delete by id (`not_supported`: the
   only delete route prunes by date); clear is `not_inspected`, because the
   prune codes are not captured. Its one decoded body is v3's documented
-  fidelity discrepancy, so a missing part is `inexact_fidelity`.
+  fidelity discrepancy, so exactly one absent body part, with everything
+  else exact, is `inexact_fidelity`; a part it returns but gets wrong, both
+  parts absent, or an absent part beside any other mismatch is a
+  `wrong_result`.
 - **smtp4dev** (`Rnwood.Smtp4dev.xml`): the file documents controller members,
   not route templates. Each citation binds the member (`GetSummaries` with
   `searchTerms`, `GetMessageSourceRaw`, `Delete`, `DeleteAll`); the templates
@@ -1132,19 +1143,39 @@ no quantiles). Each cell is 20 warmup operations under their own 5 s bound
 or an absolute 5 s deadline. A worker never starts an index at or after the
 deadline; every started operation ends in exactly one row (`exact`,
 `inexact_fidelity`, `wrong_result`, `failed` with its class, or `timeout`);
-untaken slots are `unstarted`. A call left unresolved at the deadline blocks
-every later cell and abandons the launch, because cancelling a request does
-not prove the server did not act on it. After each destructive cell an untimed
-batch postcheck compares the whole expected ledger: a victim still retained
-makes its row wrong, and a missing survivor, unstarted victim or sentinel, or
-a foreign id, invalidates every success of the cell. Before the global clear
-a final check confirms the read set, the sentinel and the background fill.
+untaken slots are `unstarted`. What happens at the deadline depends on the
+operation's effect (0132 §6.5). A read still in flight is dropped there — its
+connection discarded with it — and ends as a `timeout` row; later cells
+still run, because a slow shared-store scan must not censor them. A client
+cannot prove the server stopped that read, so a remote resource tail is
+possible and is disclosed, not drained. A delete, clear or future wait
+(whose SMTP delivery is part of it) that timed out, lost its transport after
+dispatch or whose delivery was ambiguous leaves its effect unknown: every
+later cell is blocked, the launch is abandoned and torn down, and no ledger
+and no global clear run. A completed refusal is a known non-effect and
+abandons nothing. A failed read warmup blocks only its own cell. Every start
+is recorded before it runs, so a worker that does not return within five
+seconds of the deadline still leaves a `timeout` row and abandons the launch
+as unproved cancellation; no phase runs past the chunk deadline. After each
+destructive cell an untimed batch postcheck checks its scope. At batch end,
+before the global clear, both surfaces run the same complete ledger, read
+untimed through the native API: the store must hold, id for id, the
+background the fill confirmed, the read set, every survivor, every victim
+whose delete was refused or never started, every clear scope whose clear
+was refused or never started, the sentinel, and each acknowledged wait
+delivery exactly once — and none of the ids an exact delete or clear
+removed, and nothing unaccounted for. Equal counts with substituted ids
+fail. A mismatch turns every destructive and wait success into a
+`wrong_result` and fails the chunk.
 
 **Figures.** Per cell: planned = started + unstarted, started = exact +
 failures, nearest-rank p50/p95/p99 over exact successes only (null when there
 are none), inexact latencies kept apart, exact successes per second of the
 client window, and target CPU-µs per *started* operation from the cell's
-`cpu.stat` window (null when nothing started). The raw rows, both intervals
+`cpu.stat` window (null when nothing started). A cell is
+`at_equal_results` only when every planned operation started and was exact
+*and* its resource window closed clean with its counters. The global clear
+is one raw `sample_ns` with null quantiles. The raw rows, both intervals
 (the client's and the owner's resource window) and the window's counters stay
 in the chunk, and `admit-v4` recomputes the `api` figures from `api.json` and
 the window rows, after checking that `api.json` is the plan's cells in order
@@ -1152,7 +1183,19 @@ and that every count adds up. At run level, `admit-v4 --seal` also writes
 `report-api.json`: every API chunk's admitted figures in plan order, and a
 row for every (surface, target, repetition, fill) that launches nothing (the
 official MailSlurper's `does_not_start` and the MCP surface's
-`no_mcp_surface`), with its status and no invented receipt.
+`no_mcp_surface`), with its status, null figures and no invented receipt;
+the official MailSlurper's rows cite the captured failure its pin records
+(`sources/mailslurper/mailslurper-official-failure.txt`).
+
+**One verdict for both surfaces.** A chunk exits 1 — sealed, the target's own
+failure — when any measured row is `wrong_result`, `failed` or `timeout`,
+when a readiness, idle, idle-fill or cell window closed on an OOM kill or
+the target's exit, when the target is found dead or OOM-killed after its last
+reply, when the ledger fails, or when a target crashed before readiness; the
+MCP holder seals that last case exactly as the native chunk does. A
+capability row is not an execution, and documented inexact fidelity is
+unranked evidence, not a failure. Infrastructure, interruption or an
+unproved cleanup exits 2 unsealed.
 
 **The MCP surface's owner.** `swarmail-evals api-mcp --driver PATH` takes
 `run`'s chunk flags and drives `mail_compare hold --control api-v1`, which
@@ -1162,15 +1205,28 @@ its endpoints, and then obeys JSON lines on stdin: `window_start` and
 `idle_fill` (once, before any cell) and `record` (last; checked against the
 plan and the windows). An unknown, duplicate, unmatched, out-of-order or
 oversized line ends the hold with teardown and no seal; a hold without
-`--control` keeps its silent-stdin meaning. The control round trip is inside
-each resource window, and the eval side keeps its own send and receive
-instants. Benchmark clients each draw JSON-RPC ids from a disjoint range,
-initialization included, so 32 of them share one bridge; the bridge's and the
-adapters' admission limits stay as they are, and a busy or rate-limited
-refusal is a failure row by source, never retried. Swarmail's own MCP tool
-rate (1,024 calls a second, a product limit the frozen launch does not raise)
-refuses part of a 32-worker cell, and its window carries into the next cell:
-those refusals are published as `status_429` failures.
+`--control` keeps its silent-stdin meaning. The holder ends its control
+input itself at the chunk deadline, so a caller that hangs cannot keep the
+target. The control round trip is inside each resource window. The eval
+side's send and receive instants of every command, with the holder's reply
+instant, are kept in `api.json`; admission requires one idle-fill bracket
+once the fill is reached and one start/end pair per measured cell, in order
+on the runner's clock, each holder instant equal to its window's own, and
+never subtracts one clock from the other. Every path after the holder starts
+— a refusal, a failed adapter or bridge start, a rejected record, an
+interruption — closes the control input and awaits the holder's receipt and
+exit within a bound; the receipt must name the chunk's target and leaf and
+prove the leaf removed, the process reaped, its group gone, its listeners
+closed and its scratch removed, or the chunk is incomplete (exit 2). The
+adapter receives the chunk's `--documents`, which the holder verified, and
+rechecks the same bytes. Benchmark clients each draw JSON-RPC ids from a
+disjoint range, initialization included, so 32 of them share one bridge;
+the bridge's and the adapters' admission limits stay as they are, and a
+refusal is a failure row by source, never retried: `busy_bridge` (the
+bridge's 16 slots), `busy_adapter` (an adapter's queue), `rate_limited`
+(Swarmail's own MCP tool rate, 1,024 calls a second, a product limit the
+frozen launch does not raise, which refuses part of a 32-worker cell and
+whose window carries into the next cell).
 
 **Commands.** The wrapper's `collect-v4` runs the 96 native chunks
 (`api.native.<target>.r<n>.f<fill>`) as `mail_compare run` and the 48 MCP
@@ -1178,7 +1234,18 @@ chunks (`api.mcp.<target>.r<n>.f<fill>`) as `swarmail-evals api-mcp`, each in
 its own scope under the same bound, after the 24 cost chunks. The full v4
 collection still refuses: the `waits` and `testexec` sections are owed
 (stories C and D), and the draft lists every unresolved item, including the
-`not_inspected` API cells above.
+`not_inspected` API cells above. An adapter serves the draft lock from its
+documents root exactly as the chunk passes it:
+
+```bash
+mail_compare mailpit-mcp --sources docs/evals/draft/sources.lock.v5.json \
+  --documents docs/evals --endpoint http://127.0.0.1:PORT
+```
+
+(likewise `mailhog-mcp` and `mailslurper-mcp`; without `--documents` the
+documents are read beside the lock, and a missing, resized, altered or
+escaping document refuses before anything is served —
+`every_adapter_serves_the_draft_lock_from_its_documents_root`).
 
 **Proof.** `cargo test --locked --test mail_compare` runs the deterministic
 tests (citations against the bytes, decoders against the real wire corpus,
@@ -1187,12 +1254,26 @@ exactness, postchecks, plan, admission, the control lines) and the whole
 native cell sequence against the real candidate; `cd evals && cargo test
 --locked --test apibench` runs 32 id-disjoint clients through a real bridge
 and every MCP cell, the coordinated future wait included, against the real
-candidate. Three host proofs are ignored and run one at a time under `timeout
-600 taskset -c 0-31` with the load recorded: `api_fill_100k_real` (100,000
-retained ids, every one confirmed by a complete scan; it needs no
-delegation), and `api_native_real` and `api_mcp_bridge_real`, which need a
-delegated cgroup v2 scope (and, for the second, `SWARMAIL_EVALS_BIN` and
-`MAIL_COMPARE_BIN`) and fail, never skip, without them.
+candidate; `--test apibench_repairs` and `--test mcp_bounds` drive the
+producers against scripted loopback MCP, SMTP and holder processes (cutoffs,
+wait ordering, busy sources, receipts, a fill not reached) and the transport
+bounds. The host proofs are ignored and run one at a time under `timeout 600
+taskset -c 0-31` with the load recorded: `api_fill_100k_real` (100,000
+retained ids, held to a complete scan; it needs no delegation); one native
+proof per launchable target, `api_native_real_<target>` for `swarmail`,
+`mailpit`, `mailhog`, `mailslurper_source_build`, `smtp4dev`, `inbucket`,
+`greenmail` and `alkemio_mailslurper`; and `api_mcp_real_swarmail` with
+`api_mcp_bridge_real_{mailpit,mailhog,mailslurper_source_build}`, which
+launch the real adapters behind the bridge. They need `MAIL_COMPARE_BIN`
+(the built driver), `SWARMAIL_EVALS_BIN` for MCP, `MAIL_COMPARE_<TARGET>`
+for a competitor's pinned bytes (`MAIL_COMPARE_JRE`, `MAIL_COMPARE_MUSL` for
+GreenMail's and the Alkemio image's roots) and a delegated cgroup v2 scope,
+and fail, never skip, without them. Each passes only exactly: the planned
+matrix and capability rows, every row exact or a documented outcome (busy
+or rate refusals on MCP, MailSlurper's absent part), exit 0 exactly when
+nothing failed, an intact ledger, clean windows with counters, samples,
+proved cgroup removal and the recomputed report; exit 0-or-1 or a few
+measured cells is not a pass.
 
 **The host run gates the merge, again.** The deterministic tests and the
 real-candidate runs above prove the clients, the scheduler, the checks and
@@ -1207,6 +1288,10 @@ output with the load before and after is attached to the pull request. The
 seat that built this story had no delegated scope: both proofs reached the
 refusal `resources: no delegated cgroup v2 (cpu memory pids)`, and
 `api_fill_100k_real` passed there (39.8 s; load 3.85 before, 4.49 after).
+That evidence is of the earlier tree. On 2026-11-17 the review's repairs
+(R1–R18 in `specs/api-latency/tasks.md`) replaced those two proofs with the
+per-route proofs above; none of them has yet run on the delegated host, so
+every API host log is still owed before merge.
 
 ## What closes the remaining rows
 

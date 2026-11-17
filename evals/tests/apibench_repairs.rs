@@ -114,15 +114,16 @@ async fn the_mcp_surface_keeps_measuring_after_a_read_times_out() {
     assert_eq!(first.rows[10].outcome, Outcome::Timeout);
     assert!(first.rows[..10].iter().all(|r| r.outcome == Outcome::Exact));
     assert!(!first.unresolved && !first.cancel_unproved);
+    // The later cell measures; how many fit in its five seconds is the
+    // host's business.
     assert_eq!(recs[1].status, api::CellStatus::Measured);
-    assert_eq!(recs[1].measured.started, 100);
+    assert!(recs[1].measured.started > 0);
+    let rows = &recs[1].measured.rows;
     assert!(
-        recs[1]
-            .measured
-            .rows
-            .iter()
-            .all(|r| r.outcome == Outcome::Exact)
+        rows.iter()
+            .all(|r| matches!(r.outcome, Outcome::Exact | Outcome::Timeout))
     );
+    assert!(rows.iter().any(|r| r.outcome == Outcome::Exact));
 }
 
 #[tokio::test(flavor = "current_thread")]

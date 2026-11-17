@@ -3,9 +3,9 @@
 //! clients with disjoint JSON-RPC ids through one real bridge in front of a
 //! real stdio MCP server, and every MCP cell, the coordinated future wait
 //! included, over Swarmail's own `POST /mcp` with the exact checks and the
-//! destructive postchecks. The held, enforced chunk (`hold --control
-//! api-v1` under a delegated cgroup) is the host proof `api_mcp_bridge_real`
-//! in the driver's suite.
+//! destructive postchecks. The held, enforced chunks (`hold --control
+//! api-v1` under a delegated cgroup) are the host proofs
+//! `api_mcp_real_swarmail` and `api_mcp_bridge_real_*` in the driver's suite.
 
 mod common;
 
