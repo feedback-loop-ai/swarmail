@@ -273,6 +273,9 @@ pub fn row(
         occurrences: None,
         fidelity_ok: None,
         requests: None,
+        expected: None,
+        unrelated: None,
+        cause: None,
     }
 }
 
@@ -482,11 +485,10 @@ pub async fn run(cfg: Config, clock: Clock) -> (Verdict, Lifecycle, Option<PathB
                             &owned,
                             p,
                             w,
-                            &tag(&run_id, target, i, rep),
-                            rep,
-                            &run_id,
+                            (&tag(&run_id, target, i, rep), rep, &run_id),
                             &sink,
                             &clock,
+                            (None, None),
                         )
                         .await
                     }
@@ -1004,16 +1006,21 @@ pub fn fidelity(m: &Message, f: &crate::targets::Fetched) -> bool {
 
 /// Present, future and empty waits. Every attempt is one row whatever its
 /// outcome; nothing is clamped, and a timeout is a censored sample.
+///
+/// Protocol 4 measures the profile as one window (`probe`) and bounds it by
+/// the chunk's instant: at or after it nothing new starts and the remaining
+/// instances are `unstarted`; a send (QUIT included) or an observation still
+/// in flight is cancelled, not awaited, and its row says so. Nothing is
+/// resent or retried.
 #[allow(clippy::too_many_arguments)]
-async fn waits(
+pub async fn waits(
     owned: &Owned,
     p: &Protocol,
     w: &WaitProfile,
-    tag: &str,
-    rep: u32,
-    run: &str,
+    (tag, rep, run): (&str, u32, &str),
     sink: &Sink,
     clock: &Clock,
+    (probe, chunk_end): (Option<&Probe>, Option<Instant>),
 ) -> Result<Vec<String>, String> {
     let obs = w
         .observation
@@ -1026,7 +1033,9 @@ async fn waits(
     );
     let deadline = Duration::from_millis(w.deadline_ms);
     let step = Duration::from_millis(p.resources.request_deadline_ms);
+    let v4 = p.protocol_version == crate::protocol::PROTOCOL_VERSION_4;
     let mut failures = Vec::new();
+    let mut cut_rows = 0u32;
     let mut fail = |r: &Row, want: &str| {
         if r.outcome != want {
             failures.push(format!(
@@ -1035,6 +1044,19 @@ async fn waits(
             ));
         }
     };
+    let cut = |r: &mut Row| {
+        r.outcome = "unstarted".into();
+        r.reason = Some(Cause::ChunkDeadline.reason().into());
+    };
+    // Nothing begins at or after the instant, the window included.
+    let opened = !past(chunk_end);
+    if let Some(probe) = probe {
+        if opened {
+            probe.mark(Mark::Start);
+        } else {
+            probe.cut();
+        }
+    }
     for i in 0..w.present {
         let msg = authored(p.corpus.seed, tag, i, &p.corpus.kinds);
         let mut r = row(
@@ -1047,18 +1069,42 @@ async fn waits(
             "send_failed",
         );
         r.token = Some(msg.token.clone());
-        if send_one(owned, &msg, step, clock, &mut r).await {
-            r.invoked_ns = Some(clock.now_ns());
-            observe(
-                owned,
-                mode,
-                (interval, step),
-                &msg.token,
-                deadline,
-                clock,
-                &mut r,
-            )
-            .await;
+        if past(chunk_end) {
+            cut(&mut r);
+            cut_rows += 1;
+            emit(sink, &r)?;
+            continue;
+        }
+        match until(chunk_end, send_one(owned, &msg, step, clock, &mut r)).await {
+            Some(true) => {
+                r.invoked_ns = Some(clock.now_ns());
+                let seen = until(
+                    chunk_end,
+                    observe(
+                        owned,
+                        mode,
+                        (interval, step),
+                        &msg.token,
+                        deadline,
+                        clock,
+                        v4,
+                        &mut r,
+                    ),
+                )
+                .await;
+                if seen.is_none() {
+                    r.outcome = "error".into();
+                    r.reason = Some("observe: chunk deadline".into());
+                }
+            }
+            Some(false) => {}
+            // Cut in its QUIT after the server accepted the message: the
+            // mail was sent and the wait never began.
+            None if r.outcome == "accepted" => {
+                r.outcome = "error".into();
+                r.reason = Some("observe: chunk deadline".into());
+            }
+            None => r.reason = Some("send: chunk deadline".into()),
         }
         fail(&r, "observed");
         emit(sink, &r)?;
@@ -1075,34 +1121,55 @@ async fn waits(
             "send_failed",
         );
         r.token = Some(msg.token.clone());
+        if past(chunk_end) {
+            cut(&mut r);
+            cut_rows += 1;
+            emit(sink, &r)?;
+            continue;
+        }
         r.invoked_ns = Some(clock.now_ns());
         // The observer is polled first, so its request is issued before the
         // send starts; issuing is not server subscription readiness.
         let mut send_row = r.clone();
         let mut obs_row = r.clone();
-        let (_, sent) = tokio::join!(
-            observe(
-                owned,
-                mode,
-                (interval, step),
-                &msg.token,
-                deadline,
-                clock,
-                &mut obs_row
-            ),
-            send_one(owned, &msg, step, clock, &mut send_row),
-        );
+        let joined = until(chunk_end, async {
+            tokio::join!(
+                observe(
+                    owned,
+                    mode,
+                    (interval, step),
+                    &msg.token,
+                    deadline,
+                    clock,
+                    v4,
+                    &mut obs_row
+                ),
+                send_one(owned, &msg, step, clock, &mut send_row),
+            )
+            .1
+        })
+        .await;
         r.start_ns = send_row.start_ns;
         r.ack_ns = send_row.ack_ns;
         r.code = send_row.code;
-        if sent {
-            r.outcome = obs_row.outcome;
-            r.reason = obs_row.reason;
-            r.observed_ns = obs_row.observed_ns;
-        } else {
-            r.reason = send_row.reason;
-        }
         r.requests = obs_row.requests;
+        // The observer sets an outcome only when it has finished.
+        let finished = obs_row.outcome != r.outcome;
+        let accepted = send_row.outcome == "accepted";
+        match joined {
+            Some(false) => r.reason = send_row.reason,
+            // Sent, and either both finished or the send was cut in its QUIT
+            // after the server's reply: the observer's answer stands.
+            Some(true) => answer(&mut r, obs_row),
+            None if accepted && finished => answer(&mut r, obs_row),
+            // Cut in flight: whether the send was accepted is what the send
+            // row says; the wait has no answer.
+            None if accepted => {
+                r.outcome = "error".into();
+                r.reason = Some("observe: chunk deadline".into());
+            }
+            None => r.reason = Some("send: chunk deadline".into()),
+        }
         fail(&r, "observed");
         emit(sink, &r)?;
     }
@@ -1111,24 +1178,64 @@ async fn waits(
         let token = authored(p.corpus.seed, tag, 400_000 + i, &p.corpus.kinds).token;
         let mut r = row(run, owned.kind, &w.name, rep, Phase::Empty, i, "timeout");
         r.token = Some(token.clone());
+        if past(chunk_end) {
+            cut(&mut r);
+            cut_rows += 1;
+            emit(sink, &r)?;
+            continue;
+        }
         r.invoked_ns = Some(clock.now_ns());
-        observe(
-            owned,
-            mode,
-            (interval, step),
-            &token,
-            empty_deadline,
-            clock,
-            &mut r,
+        let seen = until(
+            chunk_end,
+            observe(
+                owned,
+                mode,
+                (interval, step),
+                &token,
+                empty_deadline,
+                clock,
+                v4,
+                &mut r,
+            ),
         )
         .await;
+        if seen.is_none() {
+            r.outcome = "error".into();
+            r.reason = Some("observe: chunk deadline".into());
+        }
         fail(&r, "timeout");
         emit(sink, &r)?;
+    }
+    if let Some(probe) = probe
+        && opened
+    {
+        if past(chunk_end) {
+            probe.cut();
+        }
+        probe.mark(Mark::End);
+    }
+    if cut_rows > 0 {
+        failures.push(format!(
+            "{} {} rep {rep}: {cut_rows} instances unstarted at the chunk deadline",
+            owned.kind, w.name
+        ));
     }
     Ok(failures)
 }
 
-/// One fresh session, one message; records start/ack/code on `r`.
+/// Carry a finished observation's answer onto the wait row.
+fn answer(r: &mut Row, obs: Row) {
+    r.outcome = obs.outcome;
+    r.reason = obs.reason;
+    r.observed_ns = obs.observed_ns;
+    r.expected = obs.expected;
+    r.unrelated = obs.unrelated;
+    r.cause = obs.cause;
+}
+
+/// One fresh session, one message; records start/ack/code on `r` as soon
+/// as the server has answered the message, before `QUIT`, so a send cut in
+/// its `QUIT` keeps the reply it had (0132 §7.3, §11.3).
 async fn send_one(
     owned: &Owned,
     msg: &Message,
@@ -1139,7 +1246,6 @@ async fn send_one(
     match Smtp::open(owned.smtp, step).await {
         Ok(mut s) => {
             let rec = s.send(msg, clock).await;
-            s.quit().await;
             r.start_ns = Some(rec.start_ns);
             r.ack_ns = rec.ack_ns;
             let ok = fill(r, &rec.disposition);
@@ -1151,6 +1257,7 @@ async fn send_one(
                 ));
                 r.outcome = "send_failed".into();
             }
+            s.quit().await;
             ok
         }
         Err((_, e)) => {
@@ -1174,9 +1281,23 @@ pub fn connect_failure(r: &mut Row, code: u16, e: WireError) {
     });
 }
 
+/// What one observation answered: the tokens of a non-empty answer (every
+/// message it returned, related or not, before any deduplication), whether
+/// it came after the cutoff, and for a stream the cause of the scan that
+/// produced it.
+struct Answered {
+    tokens: Vec<String>,
+    late: bool,
+    cause: Option<ScanCause>,
+}
+
+use crate::observe::Cause as ScanCause;
+
 /// Observe `token` within `deadline` of now; sets outcome, observed_ns and
-/// the request count on `r`. An answer carrying any other message is
-/// `unrelated`, whatever else it carries.
+/// the request count on `r`, and on protocol 4 (`facts`) the answer's
+/// expected and unrelated counts and a stream answer's scan cause. An
+/// answer after the cutoff is `late`, whatever it carries; a timely answer
+/// carrying any other message is `unrelated`; the counts keep both facts.
 #[allow(clippy::too_many_arguments)]
 async fn observe(
     owned: &Owned,
@@ -1185,24 +1306,22 @@ async fn observe(
     token: &str,
     deadline: Duration,
     clock: &Clock,
+    facts: bool,
     r: &mut Row,
 ) {
     let before = owned.requests();
-    let judge = |tokens: &[String]| {
-        if tokens.iter().any(|t| t != token) {
-            Some("unrelated")
-        } else if tokens.is_empty() {
-            None
-        } else {
-            Some("observed")
-        }
-    };
-    let result: Result<Option<&'static str>, &'static str> = match mode {
+    let result: Result<Option<Answered>, String> = match mode {
         Observation::Native => owned
             .native_wait(token, deadline)
             .await
-            .map(|a| a.and_then(|t| judge(&t)))
-            .map_err(|e| e.reason()),
+            .map(|a| {
+                a.filter(|t| !t.is_empty()).map(|tokens| Answered {
+                    tokens,
+                    late: false,
+                    cause: None,
+                })
+            })
+            .map_err(|e| e.reason().to_owned()),
         // The adapter's poll, so both observe under one tested rule
         // (proposed decision 0093 §5): a scan at once and `interval` after
         // each completed one; only a scan that ended by the cutoff can
@@ -1225,27 +1344,110 @@ async fn observe(
             };
             poll_wait(&mut s, frame, interval)
                 .await
-                .map(|v| match (v["status"].as_str(), judge(&s.last)) {
-                    (_, Some("unrelated")) => Some("unrelated"),
-                    (Some("found"), o) => o,
-                    (Some("late"), Some(_)) => Some("late"),
-                    _ => None,
+                .map(|v| {
+                    let late = match v["status"].as_str() {
+                        Some("found") => false,
+                        Some("late") => true,
+                        _ => return None,
+                    };
+                    Some(Answered {
+                        tokens: std::mem::take(&mut s.last),
+                        late,
+                        cause: None,
+                    })
                 })
-                .map_err(|e| e.reason())
+                .map_err(|e| e.reason().to_owned())
         }
+        Observation::Stream => stream_observe(owned, token, deadline, step).await,
     };
     let at = clock.now_ns();
     r.requests = Some(owned.requests() - before);
     match result {
-        Ok(Some(o)) => {
-            r.outcome = o.into();
+        Ok(Some(a)) => {
+            let expected = a.tokens.iter().filter(|t| *t == token).count() as u64;
+            let unrelated = a.tokens.len() as u64 - expected;
+            // Lateness decides first: an answer after the cutoff is never
+            // timely, whatever else it carries (0132 §7.3); the counts keep
+            // the unrelated fact beside it.
+            r.outcome = if a.late {
+                "late"
+            } else if unrelated > 0 {
+                "unrelated"
+            } else {
+                "observed"
+            }
+            .into();
             r.observed_ns = Some(at);
+            if facts {
+                r.expected = Some(expected);
+                r.unrelated = Some(unrelated);
+                r.cause = a.cause.map(|c| c.name().to_owned());
+            }
         }
-        Ok(None) => r.outcome = "timeout".into(),
+        Ok(None) => {
+            r.outcome = "timeout".into();
+            if facts {
+                r.expected = Some(0);
+                r.unrelated = Some(0);
+            }
+        }
         Err(e) => {
             r.outcome = "error".into();
-            r.reason = Some(e.into());
+            r.reason = Some(e);
         }
+    }
+}
+
+/// The scan a stream observation wakes: one complete [`Owned::find`].
+pub struct FindTokens<'a> {
+    pub owned: &'a Owned,
+    pub token: &'a str,
+}
+
+impl crate::observe::Scanner for FindTokens<'_> {
+    async fn scan(&self) -> Result<Vec<String>, String> {
+        self.owned
+            .find(self.token)
+            .await
+            .map_err(|e| e.reason().to_owned())
+    }
+}
+
+/// A stream observation of `token` (0132 §7.2), on the target's implemented
+/// channel; a target without one is an error, never a silent poll.
+async fn stream_observe(
+    owned: &Owned,
+    token: &str,
+    deadline: Duration,
+    step: Duration,
+) -> Result<Option<Answered>, String> {
+    let path = crate::protocol::stream_route(owned.kind)
+        .ok_or_else(|| format!("no stream is implemented for {}", owned.kind))?;
+    let channel = crate::observe::MailhogChannel {
+        addr: owned.http_addr,
+        path,
+        limits: crate::stream::Limits::DEFAULT,
+    };
+    let bounds = crate::observe::StreamBounds {
+        wait: deadline,
+        request: step,
+        backstop: Duration::from_millis(crate::protocol::STREAM_BACKSTOP_MS),
+        reconnect_gap: crate::observe::RECONNECT_GAP,
+    };
+    let scanner = FindTokens { owned, token };
+    let mut trace = crate::observe::Trace::default();
+    let start = tokio::time::Instant::now();
+    match crate::observe::stream_wait(&channel, &scanner, start, bounds, &mut trace).await? {
+        crate::observe::Seen::Answer {
+            tokens,
+            cause,
+            late,
+        } => Ok(Some(Answered {
+            tokens,
+            late,
+            cause: Some(cause),
+        })),
+        crate::observe::Seen::Timeout => Ok(None),
     }
 }
 
@@ -1272,13 +1474,43 @@ impl Scan for FindScan<'_> {
 }
 
 // ============================================================================
-// Protocol 4: the cost chunk (accepted decision 0132 §4, §11)
+// Protocol 4: the cost and waits chunks (accepted decision 0132 §4, §7, §11)
 // ============================================================================
 
 /// Five seconds without traffic after readiness (0132 §4.3).
 pub const IDLE_READY: Duration = Duration::from_secs(5);
 /// The figure of an idle point is the mean over the last two seconds of it.
 pub const IDLE_TAIL_NS: u64 = 2_000_000_000;
+
+/// A profile a v4 chunk measures on one fresh instance: a cost profile or a
+/// wait profile (0132 §4.2: a window is a cost cell's send-and-verify window
+/// or a wait profile instance).
+#[derive(Debug, Clone, Copy)]
+pub enum Profile<'a> {
+    Cost(&'a ThroughputProfile),
+    Wait(&'a WaitProfile),
+}
+
+impl Profile<'_> {
+    pub fn name(&self) -> &str {
+        match self {
+            Profile::Cost(t) => &t.name,
+            Profile::Wait(w) => &w.name,
+        }
+    }
+}
+
+impl<'a> From<&'a ThroughputProfile> for Profile<'a> {
+    fn from(t: &'a ThroughputProfile) -> Profile<'a> {
+        Profile::Cost(t)
+    }
+}
+
+impl<'a> From<&'a WaitProfile> for Profile<'a> {
+    fn from(w: &'a WaitProfile) -> Profile<'a> {
+        Profile::Wait(w)
+    }
+}
 
 /// One bounded unit of a v4 collection: one driver process for one
 /// coordinate. Story A builds the cost section's; later stories add the
@@ -1288,13 +1520,17 @@ pub enum Chunk {
     /// All of one target's cost profiles of one repetition (0-based, as the
     /// rows number them).
     Cost { target: TargetKind, repetition: u32 },
+    /// All of one target's wait profiles of one repetition (0132 §11.1:
+    /// `(waits, target, repetition)`), each on a fresh instance.
+    Waits { target: TargetKind, repetition: u32 },
 }
 
 impl Chunk {
-    /// `cost.<target>.r<repetition>`.
+    /// `cost.<target>.r<repetition>` or `waits.<target>.r<repetition>`.
     pub fn name(&self) -> String {
         match self {
             Chunk::Cost { target, repetition } => format!("cost.{target}.r{repetition}"),
+            Chunk::Waits { target, repetition } => format!("waits.{target}.r{repetition}"),
         }
     }
 
@@ -1306,9 +1542,9 @@ impl Chunk {
         let [section, target, rep] = parts.as_slice() else {
             return Err(format!("{text:?} is not a chunk coordinate"));
         };
-        if *section != "cost" {
+        if !matches!(*section, "cost" | "waits") {
             return Err(format!(
-                "chunk {text:?}: section {section:?} is not implemented (only cost)"
+                "chunk {text:?}: section {section:?} is not implemented (only cost and waits)"
             ));
         }
         let target = TargetKind::parse(target)
@@ -1317,7 +1553,10 @@ impl Chunk {
             .strip_prefix('r')
             .and_then(|n| n.parse().ok())
             .ok_or_else(|| format!("chunk {text:?}: {rep:?} is not r<repetition>"))?;
-        let chunk = Chunk::Cost { target, repetition };
+        let chunk = match *section {
+            "cost" => Chunk::Cost { target, repetition },
+            _ => Chunk::Waits { target, repetition },
+        };
         if !plan_v4(p).contains(&chunk) {
             return Err(format!("chunk {text:?} is not in the protocol's plan"));
         }
@@ -1326,31 +1565,68 @@ impl Chunk {
 
     pub fn target(&self) -> TargetKind {
         match self {
-            Chunk::Cost { target, .. } => *target,
+            Chunk::Cost { target, .. } | Chunk::Waits { target, .. } => *target,
         }
     }
 
     pub fn repetition(&self) -> u32 {
         match self {
-            Chunk::Cost { repetition, .. } => *repetition,
+            Chunk::Cost { repetition, .. } | Chunk::Waits { repetition, .. } => *repetition,
+        }
+    }
+
+    /// The profiles the chunk measures, in protocol order, each with the
+    /// index its tokens are tagged with (cost profiles first, then waits, so
+    /// no two profiles of a run share a tag).
+    pub fn profiles<'a>(&self, p: &'a Protocol) -> Vec<(usize, Profile<'a>)> {
+        let rep = self.repetition();
+        match self {
+            Chunk::Cost { .. } => p
+                .throughput
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.repetitions > rep)
+                .map(|(i, t)| (i, Profile::Cost(t)))
+                .collect(),
+            Chunk::Waits { .. } => p
+                .waits
+                .iter()
+                .enumerate()
+                .filter(|(_, w)| w.repetitions > rep)
+                .map(|(i, w)| (p.throughput.len() + i, Profile::Wait(w)))
+                .collect(),
         }
     }
 }
 
 /// The chunk plan, derived from the protocol and never computed by the
 /// wrapper: for each repetition, for each launched target in that
-/// repetition's rotation, one cost chunk.
+/// repetition's rotation, one cost chunk, then, in the same rotation, one
+/// waits chunk.
 pub fn plan_v4(p: &Protocol) -> Vec<Chunk> {
-    let reps = p
+    let cost = p
         .throughput
         .iter()
         .map(|t| t.repetitions)
         .max()
         .unwrap_or(0);
+    let waits = p.waits.iter().map(|w| w.repetitions).max().unwrap_or(0);
     let mut out = Vec::new();
-    for repetition in 0..reps {
-        for target in p.launch_order(repetition) {
-            out.push(Chunk::Cost { target, repetition });
+    for repetition in 0..cost.max(waits) {
+        let order: Vec<TargetKind> = p.launch_order(repetition).collect();
+        if repetition < cost {
+            out.extend(
+                order
+                    .iter()
+                    .map(|&target| Chunk::Cost { target, repetition }),
+            );
+        }
+        if repetition < waits {
+            out.extend(
+                order
+                    .iter()
+                    .map(|&target| Chunk::Waits { target, repetition }),
+            );
         }
     }
     out
@@ -1362,17 +1638,27 @@ pub fn plan_chunk(p: &Protocol, chunk: &Chunk) -> (Vec<Planned>, Vec<PlannedWind
     let (target, rep) = (chunk.target(), chunk.repetition());
     let mut planned = Vec::new();
     let mut windows = Vec::new();
-    for t in p.throughput.iter().filter(|t| t.repetitions > rep) {
+    for (_, profile) in chunk.profiles(p) {
+        let name = profile.name().to_owned();
         let mk = |phase, rows| Planned {
             target,
-            profile: t.name.clone(),
+            profile: name.clone(),
             repetition: rep,
             phase,
             rows,
         };
-        planned.push(mk(Phase::Send, Some(t.messages)));
-        planned.push(mk(Phase::Visible, None));
-        planned.push(mk(Phase::Verified, Some(1)));
+        match profile {
+            Profile::Cost(t) => {
+                planned.push(mk(Phase::Send, Some(t.messages)));
+                planned.push(mk(Phase::Visible, None));
+                planned.push(mk(Phase::Verified, Some(1)));
+            }
+            Profile::Wait(w) => {
+                planned.push(mk(Phase::Present, Some(w.present)));
+                planned.push(mk(Phase::Future, Some(w.future)));
+                planned.push(mk(Phase::Empty, Some(w.empty)));
+            }
+        }
         for window in [
             WindowKind::Ready,
             WindowKind::IdleReady,
@@ -1380,7 +1666,7 @@ pub fn plan_chunk(p: &Protocol, chunk: &Chunk) -> (Vec<Planned>, Vec<PlannedWind
         ] {
             windows.push(PlannedWindow {
                 target,
-                profile: t.name.clone(),
+                profile: name.clone(),
                 repetition: rep,
                 window,
             });
@@ -1412,7 +1698,10 @@ pub fn v4_preflight(
         };
     }
     let Some(text) = chunk else {
-        return Err("protocol 4 needs --chunk cost.<target>.r<repetition>".into());
+        return Err(
+            "protocol 4 needs --chunk cost.<target>.r<repetition> or waits.<target>.r<repetition>"
+                .into(),
+        );
     };
     let chunk = Chunk::parse(text, p)?;
     if mode == "collect" {
@@ -1708,14 +1997,32 @@ fn emit_window(sink: &Sink, w: WindowRow) -> Result<(), String> {
 /// Every send of a profile as an `unstarted` row and the verification row as
 /// `incomplete`, both with the cause as their reason. Nothing was sent and
 /// nothing was listed.
-pub fn write_unstarted(
+pub fn write_unstarted<'a>(
     run: &str,
-    t: &ThroughputProfile,
+    t: impl Into<Profile<'a>>,
     (target, rep): (TargetKind, u32),
     cause: Cause,
     sink: &Sink,
     clock: &Clock,
 ) -> Result<(), String> {
+    let t = match t.into() {
+        Profile::Cost(t) => t,
+        Profile::Wait(w) => {
+            // Every instance of the profile keeps its row, unstarted.
+            for (phase, n) in [
+                (Phase::Present, w.present),
+                (Phase::Future, w.future),
+                (Phase::Empty, w.empty),
+            ] {
+                for i in 0..n {
+                    let mut r = row(run, target, &w.name, rep, phase, i, "unstarted");
+                    r.reason = Some(cause.reason().into());
+                    emit(sink, &r)?;
+                }
+            }
+            return Ok(());
+        }
+    };
     for i in 0..t.messages {
         let mut r = row(run, target, &t.name, rep, Phase::Send, i, "unstarted");
         r.reason = Some(cause.reason().into());
@@ -1735,14 +2042,15 @@ pub fn write_unstarted(
 /// sends are `unstarted`, its verification `incomplete`, and its three
 /// windows are never opened (no counters), each with the cause as outcome.
 /// `launch` is the leaf of the instance that failed, or `none`.
-pub fn skip_profile(
+pub fn skip_profile<'a>(
     run: &str,
-    t: &ThroughputProfile,
+    t: impl Into<Profile<'a>>,
     (target, rep): (TargetKind, u32),
     (cause, launch): (Cause, &str),
     sink: &Sink,
     clock: &Clock,
 ) -> Result<(), String> {
+    let t = t.into();
     write_unstarted(run, t, (target, rep), cause, sink, clock)?;
     let now = clock.now_ns();
     for kind in [
@@ -1755,7 +2063,7 @@ pub fn skip_profile(
             unopened_window(
                 run,
                 launch,
-                (target, &t.name, rep),
+                (target, t.name(), rep),
                 kind,
                 now,
                 cause.outcome(),
@@ -1765,9 +2073,10 @@ pub fn skip_profile(
     Ok(())
 }
 
-/// Run one cost chunk: that target's cost profiles of that repetition, in
+/// Run one chunk: that target's cost profiles of that repetition, in
 /// order, each as protocol 3 does it (a warmup instance, then a fresh measured
-/// one), both in leaves. A target that exits in a window, or before it is
+/// one), both in leaves; or its wait profiles, each on one fresh measured
+/// instance in a leaf (0132 §7.1). A target that exits in a window, or before it is
 /// ready, is a measured outcome and the chunk goes on. The directory is
 /// sealed on every outcome but an infrastructure failure.
 ///
@@ -1806,7 +2115,7 @@ pub async fn run_chunk(
     let mut leaf_no = 0u32;
     // A profile that was not measured: one path for every cause.
     let not_measured =
-        |t: &ThroughputProfile, (cause, launch): (Cause, &str), failures: &mut Vec<String>| {
+        |t: Profile<'_>, (cause, launch): (Cause, &str), failures: &mut Vec<String>| {
             skip_profile(
                 &cfg.manifest.run_id,
                 t,
@@ -1815,22 +2124,24 @@ pub async fn run_chunk(
                 &sink,
                 &clock,
             )?;
-            failures.push(format!("{target} {} rep {rep}: {}", t.name, cause.reason()));
+            failures.push(format!(
+                "{target} {} rep {rep}: {}",
+                t.name(),
+                cause.reason()
+            ));
             Ok::<(), String>(())
         };
-    for (i, t) in p
-        .throughput
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| t.repetitions > rep)
-    {
+    for (i, profile) in chunk.profiles(p) {
         if past(Some(chunk_end)) {
-            if let Err(e) = not_measured(t, (Cause::ChunkDeadline, "none"), &mut failures) {
+            if let Err(e) = not_measured(profile, (Cause::ChunkDeadline, "none"), &mut failures) {
                 return infra(e, life);
             }
             continue;
         }
-        if t.warmup_messages > 0 {
+        // A wait profile has no warmup: its instance is fresh (0132 §7.1).
+        if let Profile::Cost(t) = profile
+            && t.warmup_messages > 0
+        {
             leaf_no += 1;
             match warmup(
                 spec,
@@ -1846,7 +2157,7 @@ pub async fn run_chunk(
             {
                 Ok(Warm::Done) => {}
                 Ok(Warm::NotMeasured(cause, launch)) => {
-                    if let Err(e) = not_measured(t, (cause, &launch), &mut failures) {
+                    if let Err(e) = not_measured(profile, (cause, &launch), &mut failures) {
                         return infra(e, life);
                     }
                     continue;
@@ -1855,7 +2166,7 @@ pub async fn run_chunk(
             }
         }
         if past(Some(chunk_end)) {
-            if let Err(e) = not_measured(t, (Cause::ChunkDeadline, "none"), &mut failures) {
+            if let Err(e) = not_measured(profile, (Cause::ChunkDeadline, "none"), &mut failures) {
                 return infra(e, life);
             }
             continue;
@@ -1866,7 +2177,7 @@ pub async fn run_chunk(
             &cfg,
             &limits,
             &clock,
-            (i, t, rep),
+            (i, profile, rep),
             leaf_no,
             &sink,
             &mut life,
@@ -1919,18 +2230,19 @@ pub async fn run_chunk(
 /// become ready because the target itself failed (killed for memory, or
 /// exited) makes the profile not measured, which is a workload failure.
 #[allow(clippy::too_many_arguments)]
-pub async fn measured_instance(
+pub async fn measured_instance<'a>(
     (spec, target_cpus): (&LaunchSpec, &[u32]),
     cfg: &Config,
     limits: &Limits,
     clock: &Clock,
-    (i, t, rep): (usize, &ThroughputProfile, u32),
+    (i, t, rep): (usize, impl Into<Profile<'a>>, u32),
     leaf_no: u32,
     sink: &Sink,
     life: &mut Lifecycle,
     chunk_end: Instant,
 ) -> Result<Vec<String>, String> {
     let end = Some(chunk_end);
+    let t: Profile<'a> = t.into();
     let p = &cfg.protocol;
     let run = cfg.manifest.run_id.clone();
     let target = spec.kind;
@@ -1975,7 +2287,7 @@ pub async fn measured_instance(
                             )?;
                             Ok(vec![format!(
                                 "{target} {} rep {rep}: {}",
-                                t.name,
+                                t.name(),
                                 cause.reason()
                             )])
                         }
@@ -1997,7 +2309,7 @@ pub async fn measured_instance(
         .lock()
         .expect("created lock")
         .unwrap_or_else(|| clock.now_ns());
-    let key = (target, t.name.as_str(), rep);
+    let key = (target, t.name(), rep);
     let closing = Closing {
         run: &run,
         launch: &launch,
@@ -2011,7 +2323,7 @@ pub async fn measured_instance(
         if outcome != WindowOutcome::Measured {
             failures.push(format!(
                 "{target} {} rep {rep}: {label:?} {outcome:?}",
-                t.name
+                t.name()
             ));
         }
     };
@@ -2040,18 +2352,35 @@ pub async fn measured_instance(
         *clock,
         sink.clone(),
     );
-    let result = throughput(
-        &owned,
-        p,
-        t,
-        &tag(&run, target, i, rep),
-        rep,
-        &run,
-        sink,
-        clock,
-        (Some(&probe), end),
-    )
-    .await;
+    let tagged = tag(&run, target, i, rep);
+    let result = match t {
+        Profile::Cost(t) => {
+            throughput(
+                &owned,
+                p,
+                t,
+                &tagged,
+                rep,
+                &run,
+                sink,
+                clock,
+                (Some(&probe), end),
+            )
+            .await
+        }
+        Profile::Wait(w) => {
+            waits(
+                &owned,
+                p,
+                w,
+                (&tagged, rep, &run),
+                sink,
+                clock,
+                (Some(&probe), end),
+            )
+            .await
+        }
+    };
     let marks = probe.into_marks();
     let measured = match (marks.start, marks.end, marks.error) {
         (Some(a), Some(b), None) => {

@@ -1,0 +1,1854 @@
+{
+  "sha": "ee202b296ea6c94dfce4977561efa71017734eba",
+  "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/ee202b296ea6c94dfce4977561efa71017734eba",
+  "tree": [
+    {
+      "path": ".dockerignore",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "001847abf12ed0f621a87ca95cc4f7d4860a2f19",
+      "size": 144,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/001847abf12ed0f621a87ca95cc4f7d4860a2f19"
+    },
+    {
+      "path": ".envrc",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1d953f4bd73593aba0a2af3db2d14178e2b8b9fe",
+      "size": 8,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/1d953f4bd73593aba0a2af3db2d14178e2b8b9fe"
+    },
+    {
+      "path": ".gitattributes",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6f768818669c12029cbe6064ecf43f1bc461f43d",
+      "size": 520,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/6f768818669c12029cbe6064ecf43f1bc461f43d"
+    },
+    {
+      "path": ".github",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "b9e1a7aa0a3b3a4736f4171acf2afa1a2453e9f8",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/b9e1a7aa0a3b3a4736f4171acf2afa1a2453e9f8"
+    },
+    {
+      "path": ".github/dependabot.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "23c4cb3b50919fe9d0ee76c19ecfdc907a84636a",
+      "size": 122,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/23c4cb3b50919fe9d0ee76c19ecfdc907a84636a"
+    },
+    {
+      "path": ".github/workflows",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "2d07b75a39f76da6bee25e75184e864e6cf4b96e",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/2d07b75a39f76da6bee25e75184e864e6cf4b96e"
+    },
+    {
+      "path": ".github/workflows/build-and-test.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "aed8842729e68672c0e9fbaa170f94811da0fb3c",
+      "size": 1981,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/aed8842729e68672c0e9fbaa170f94811da0fb3c"
+    },
+    {
+      "path": ".github/workflows/docker-build.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "57497dc5fff03c135c9a201ddf4138b4a4504215",
+      "size": 1853,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/57497dc5fff03c135c9a201ddf4138b4a4504215"
+    },
+    {
+      "path": ".github/workflows/lint.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8fbfafc931fbe7baa2a9f9d422b43b42d9aae1f9",
+      "size": 327,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/8fbfafc931fbe7baa2a9f9d422b43b42d9aae1f9"
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "59438ecb808fd7616f134f13b3c6cf11b188a1e3",
+      "size": 1292,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/59438ecb808fd7616f134f13b3c6cf11b188a1e3"
+    },
+    {
+      "path": ".gitignore",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4472964dfda1c2573dd0acec586e08e58fa387a6",
+      "size": 809,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/4472964dfda1c2573dd0acec586e08e58fa387a6"
+    },
+    {
+      "path": ".go-version",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5e2b95002760f7bd3578061fe21bb6787a206e42",
+      "size": 5,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/5e2b95002760f7bd3578061fe21bb6787a206e42"
+    },
+    {
+      "path": ".golangci.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6fab6e788812d32749dff4c71dce14196c4c388b",
+      "size": 1386,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/6fab6e788812d32749dff4c71dce14196c4c388b"
+    },
+    {
+      "path": ".goreleaser.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a6b8795ad3f8e24290e20a599bc580d409f0c5dc",
+      "size": 1867,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/a6b8795ad3f8e24290e20a599bc580d409f0c5dc"
+    },
+    {
+      "path": ".luarc.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e645f9973c15d65504ce7622a8f97beb3e03725e",
+      "size": 100,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e645f9973c15d65504ce7622a8f97beb3e03725e"
+    },
+    {
+      "path": "AGENTS.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0d98fd9c04562aaf5560a5dbd5283a570f881bf3",
+      "size": 8147,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/0d98fd9c04562aaf5560a5dbd5283a570f881bf3"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e08ed4d461c06c5d6471434274e89bf8002e4751",
+      "size": 14353,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e08ed4d461c06c5d6471434274e89bf8002e4751"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "23c56485423d218b2a5257f4d54b94bfe5e06347",
+      "size": 936,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/23c56485423d218b2a5257f4d54b94bfe5e06347"
+    },
+    {
+      "path": "Dockerfile",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fb4d3cbc6dad6e44d216fb5733d68194aba73026",
+      "size": 1758,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/fb4d3cbc6dad6e44d216fb5733d68194aba73026"
+    },
+    {
+      "path": "LICENSE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "01d5c176000639ba306be10630cf5eea3e05a7c4",
+      "size": 1102,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/01d5c176000639ba306be10630cf5eea3e05a7c4"
+    },
+    {
+      "path": "Makefile",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fea5891cc5fe81feb668be23cfa57f33ae9ef491",
+      "size": 809,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/fea5891cc5fe81feb668be23cfa57f33ae9ef491"
+    },
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "24a48ebfc179e97b53e9f53684bc1fabceb2c764",
+      "size": 3517,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/24a48ebfc179e97b53e9f53684bc1fabceb2c764"
+    },
+    {
+      "path": "cmd",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "90a64200e1c79ad671b822dc83454b806cc4ae95",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/90a64200e1c79ad671b822dc83454b806cc4ae95"
+    },
+    {
+      "path": "cmd/client",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "d6241e09d5bbc9ab9bbab51d1d33d557d01ac61a",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/d6241e09d5bbc9ab9bbab51d1d33d557d01ac61a"
+    },
+    {
+      "path": "cmd/client/list.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "717e1934c78717aa87fdce8d5ff71d5c3511f939",
+      "size": 950,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/717e1934c78717aa87fdce8d5ff71d5c3511f939"
+    },
+    {
+      "path": "cmd/client/main.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cb99deac9ac613dc88f6335b808506eab80cda78",
+      "size": 1800,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/cb99deac9ac613dc88f6335b808506eab80cda78"
+    },
+    {
+      "path": "cmd/client/match.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f447d0c74bbdd7c886e6cb63d1d3bc3c12533ed3",
+      "size": 3704,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/f447d0c74bbdd7c886e6cb63d1d3bc3c12533ed3"
+    },
+    {
+      "path": "cmd/client/mbox.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6e8db2f7d6c4b344a40d5f89a9b830d07df3f85a",
+      "size": 1803,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/6e8db2f7d6c4b344a40d5f89a9b830d07df3f85a"
+    },
+    {
+      "path": "cmd/inbucket",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "3182a33b8cc36ddb6ad79b52c68340c377335dc2",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/3182a33b8cc36ddb6ad79b52c68340c377335dc2"
+    },
+    {
+      "path": "cmd/inbucket/main.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a93c83e0246860429b586a449ebc86e1faf9aba8",
+      "size": 6078,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/a93c83e0246860429b586a449ebc86e1faf9aba8"
+    },
+    {
+      "path": "doc",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "2b608f9ca72dfd4ac5c3af5d891ff8cb2de71df5",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/2b608f9ca72dfd4ac5c3af5d891ff8cb2de71df5"
+    },
+    {
+      "path": "doc/config.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "531cb2471964ac6d21c4758191d3914c6510f1dd",
+      "size": 16564,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/531cb2471964ac6d21c4758191d3914c6510f1dd"
+    },
+    {
+      "path": "etc",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "af4f250ad34977b0f37cdbe4762f6fc761490634",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/af4f250ad34977b0f37cdbe4762f6fc761490634"
+    },
+    {
+      "path": "etc/dev-start.sh",
+      "mode": "100755",
+      "type": "blob",
+      "sha": "4be944913c05de4225e20554536ba8fc2c2dfd74",
+      "size": 1208,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/4be944913c05de4225e20554536ba8fc2c2dfd74"
+    },
+    {
+      "path": "etc/docker",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "195156eb5da4d499815e6d0c9a073ac40ccac1b8",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/195156eb5da4d499815e6d0c9a073ac40ccac1b8"
+    },
+    {
+      "path": "etc/docker/defaults",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "f5155bba18ee70d552a1808f81d7272927536213",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/f5155bba18ee70d552a1808f81d7272927536213"
+    },
+    {
+      "path": "etc/docker/defaults/greeting.html",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6277e7ca473310b395c68913f9e129cf3023039e",
+      "size": 952,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/6277e7ca473310b395c68913f9e129cf3023039e"
+    },
+    {
+      "path": "etc/docker/defaults/start-inbucket.sh",
+      "mode": "100755",
+      "type": "blob",
+      "sha": "9960437fd075abebfa40f72c5958ee1f2e64f9f8",
+      "size": 522,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/9960437fd075abebfa40f72c5958ee1f2e64f9f8"
+    },
+    {
+      "path": "etc/docker/docker-run.sh",
+      "mode": "100755",
+      "type": "blob",
+      "sha": "cd52469237d0f2fda48b84e70d8620fd3e0e406f",
+      "size": 1204,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/cd52469237d0f2fda48b84e70d8620fd3e0e406f"
+    },
+    {
+      "path": "etc/linux",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "2364e4b1925d4089a6e16d045a57fd6b09ed659c",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/2364e4b1925d4089a6e16d045a57fd6b09ed659c"
+    },
+    {
+      "path": "etc/linux/inbucket.service",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7ec716571c51244ca364cc9e13430efeb4636854",
+      "size": 884,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/7ec716571c51244ca364cc9e13430efeb4636854"
+    },
+    {
+      "path": "etc/rest-apiv1.sh",
+      "mode": "100755",
+      "type": "blob",
+      "sha": "e1eaf9e470cbd71b6a6678c14cf8b98d92d68c6e",
+      "size": 2972,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e1eaf9e470cbd71b6a6678c14cf8b98d92d68c6e"
+    },
+    {
+      "path": "etc/swaks-tests",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "606329f661d8d2b777330c0504b5d3429f6b7a93",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/606329f661d8d2b777330c0504b5d3429f6b7a93"
+    },
+    {
+      "path": "etc/swaks-tests/README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c8b7102d0c6cfd149218ad17b3027d861781002c",
+      "size": 807,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/c8b7102d0c6cfd149218ad17b3027d861781002c"
+    },
+    {
+      "path": "etc/swaks-tests/favicon.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "92f1f507c64d78268da38de8cc1f802a05435f30",
+      "size": 3025,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/92f1f507c64d78268da38de8cc1f802a05435f30"
+    },
+    {
+      "path": "etc/swaks-tests/gmail.raw",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "93b964800c572a02b6e0e79fd7e0033511766d22",
+      "size": 13803,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/93b964800c572a02b6e0e79fd7e0033511766d22"
+    },
+    {
+      "path": "etc/swaks-tests/mime-errors.raw",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c00fd09f6fb2bbbc819f587ab096645d83508892",
+      "size": 1329,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/c00fd09f6fb2bbbc819f587ab096645d83508892"
+    },
+    {
+      "path": "etc/swaks-tests/mime-html.raw",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e42a7a3d2677864cf1eba734e11289b2228f4734",
+      "size": 657,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e42a7a3d2677864cf1eba734e11289b2228f4734"
+    },
+    {
+      "path": "etc/swaks-tests/mime-inline.raw",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "911885f82f21768d94d81746bdd368da583255a3",
+      "size": 1560,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/911885f82f21768d94d81746bdd368da583255a3"
+    },
+    {
+      "path": "etc/swaks-tests/nonmime-html-inlined.raw",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "99c80cfc848945ab40a3007aef066118938f6c9b",
+      "size": 24236,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/99c80cfc848945ab40a3007aef066118938f6c9b"
+    },
+    {
+      "path": "etc/swaks-tests/nonmime-html-responsive.raw",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7db14df03d44198ec3a8a8056b4c4f768dcd3a94",
+      "size": 15003,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/7db14df03d44198ec3a8a8056b4c4f768dcd3a94"
+    },
+    {
+      "path": "etc/swaks-tests/nonmime-html.raw",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3079d6519d68b46c8b27456bb80244e4ca739cc0",
+      "size": 263,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/3079d6519d68b46c8b27456bb80244e4ca739cc0"
+    },
+    {
+      "path": "etc/swaks-tests/outlook.raw",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bd34ea933fb4afac64971dd5fc7d36853a990e23",
+      "size": 18321,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/bd34ea933fb4afac64971dd5fc7d36853a990e23"
+    },
+    {
+      "path": "etc/swaks-tests/run-tests.sh",
+      "mode": "100755",
+      "type": "blob",
+      "sha": "ecd237d1ba1cbbda90fb7db0163266f84eeb1d42",
+      "size": 1568,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/ecd237d1ba1cbbda90fb7db0163266f84eeb1d42"
+    },
+    {
+      "path": "etc/swaks-tests/text.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "90e8390fa85274b0e1fd4577704de6cb3e7dbdcf",
+      "size": 70,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/90e8390fa85274b0e1fd4577704de6cb3e7dbdcf"
+    },
+    {
+      "path": "etc/swaks-tests/utf8-subject.raw",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "24d7094dd0fa6ed4015e00b311abdedf356ad06a",
+      "size": 2983,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/24d7094dd0fa6ed4015e00b311abdedf356ad06a"
+    },
+    {
+      "path": "go.mod",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "494a7758f1681c56ef511819a704c24fb8455aca",
+      "size": 1872,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/494a7758f1681c56ef511819a704c24fb8455aca"
+    },
+    {
+      "path": "go.sum",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fa818553bbf11d66de391f015b512cb783974e65",
+      "size": 7043,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/fa818553bbf11d66de391f015b512cb783974e65"
+    },
+    {
+      "path": "pkg",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "fbea3172324acea17dbac1c9fc2ce6805abd4aac",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/fbea3172324acea17dbac1c9fc2ce6805abd4aac"
+    },
+    {
+      "path": "pkg/config",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "9f10fbe8fc3cbd98d5d9df700a486c10de671516",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/9f10fbe8fc3cbd98d5d9df700a486c10de671516"
+    },
+    {
+      "path": "pkg/config/config.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7c6f8523560ce0fbe900ea445961cca3d50f2665",
+      "size": 5889,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/7c6f8523560ce0fbe900ea445961cca3d50f2665"
+    },
+    {
+      "path": "pkg/extension",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "dd5db545e48e77559ff17e9687a82d506865b390",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/dd5db545e48e77559ff17e9687a82d506865b390"
+    },
+    {
+      "path": "pkg/extension/async_broker.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "368fee813898e3b6c998d826f32412b4c503421d",
+      "size": 2206,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/368fee813898e3b6c998d826f32412b4c503421d"
+    },
+    {
+      "path": "pkg/extension/async_broker_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1dbcca421adb7d32058b07faf47ad9d7251a0ac7",
+      "size": 2213,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/1dbcca421adb7d32058b07faf47ad9d7251a0ac7"
+    },
+    {
+      "path": "pkg/extension/broker.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e76a0e901565003743dce2830313f24a34eaf40e",
+      "size": 1616,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e76a0e901565003743dce2830313f24a34eaf40e"
+    },
+    {
+      "path": "pkg/extension/broker_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b6526c7ce38a936570963ee42cc7cebafc0d3f79",
+      "size": 2911,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/b6526c7ce38a936570963ee42cc7cebafc0d3f79"
+    },
+    {
+      "path": "pkg/extension/event",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "c2573df0400a6981d50bec0d28bec92195df84cc",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/c2573df0400a6981d50bec0d28bec92195df84cc"
+    },
+    {
+      "path": "pkg/extension/event/events.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "52a07aa5c11de1979937deb002b05825c7bad178",
+      "size": 1369,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/52a07aa5c11de1979937deb002b05825c7bad178"
+    },
+    {
+      "path": "pkg/extension/host.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e2a5f68f8edfa2bca5acde2d2d59f329cd88b45f",
+      "size": 1465,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e2a5f68f8edfa2bca5acde2d2d59f329cd88b45f"
+    },
+    {
+      "path": "pkg/extension/luahost",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "d9bc326c87bce89fa233fb598223bfc94cc6b48d",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/d9bc326c87bce89fa233fb598223bfc94cc6b48d"
+    },
+    {
+      "path": "pkg/extension/luahost/bind_address.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d659309405cd2494f1b59844962c0d0ab17a064c",
+      "size": 2109,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/d659309405cd2494f1b59844962c0d0ab17a064c"
+    },
+    {
+      "path": "pkg/extension/luahost/bind_address_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "69326acc10dcbe1a47a930e6e8ddec8b64e44c7f",
+      "size": 1189,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/69326acc10dcbe1a47a930e6e8ddec8b64e44c7f"
+    },
+    {
+      "path": "pkg/extension/luahost/bind_inboundmessage.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f4406516372358f5513963df463986c88399be66",
+      "size": 3349,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/f4406516372358f5513963df463986c88399be66"
+    },
+    {
+      "path": "pkg/extension/luahost/bind_inboundmessage_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e63f8df000b013e50da429ce2445997d3a2eb529",
+      "size": 2043,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e63f8df000b013e50da429ce2445997d3a2eb529"
+    },
+    {
+      "path": "pkg/extension/luahost/bind_inbucket.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "64fa18e9f86666234276a8d82cd7b8de93194d93",
+      "size": 5339,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/64fa18e9f86666234276a8d82cd7b8de93194d93"
+    },
+    {
+      "path": "pkg/extension/luahost/bind_inbucket_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "714196fbdbf65b221e52c255f6fa83635b6ed2a9",
+      "size": 3183,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/714196fbdbf65b221e52c255f6fa83635b6ed2a9"
+    },
+    {
+      "path": "pkg/extension/luahost/bind_message.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c14f3a28d52a553a7f3132aafe6667068d8348fc",
+      "size": 2914,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/c14f3a28d52a553a7f3132aafe6667068d8348fc"
+    },
+    {
+      "path": "pkg/extension/luahost/bind_message_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "011d8fbdbfa1863c4b4a1849f6fd2224b5fc4a0f",
+      "size": 2245,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/011d8fbdbfa1863c4b4a1849f6fd2224b5fc4a0f"
+    },
+    {
+      "path": "pkg/extension/luahost/bind_smtpresponse.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dd420fe4c9a23b0f3a1060dc6430c2b3b8ff0395",
+      "size": 1393,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/dd420fe4c9a23b0f3a1060dc6430c2b3b8ff0395"
+    },
+    {
+      "path": "pkg/extension/luahost/bind_smtpresponse_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6abeb501b7e39204301cc518cd7929950214e55c",
+      "size": 1061,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/6abeb501b7e39204301cc518cd7929950214e55c"
+    },
+    {
+      "path": "pkg/extension/luahost/bind_smtpsession.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4b56780e4a271f4dbfe36dc2d9d5936733f8ba72",
+      "size": 1731,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/4b56780e4a271f4dbfe36dc2d9d5936733f8ba72"
+    },
+    {
+      "path": "pkg/extension/luahost/bind_smtpsession_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "21b00f434a48ddf87b5f32e62e96a4dbaee42f04",
+      "size": 1132,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/21b00f434a48ddf87b5f32e62e96a4dbaee42f04"
+    },
+    {
+      "path": "pkg/extension/luahost/lua.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bfe0232ce938dc67c6f1a094144ce5be6e39a9fa",
+      "size": 7310,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/bfe0232ce938dc67c6f1a094144ce5be6e39a9fa"
+    },
+    {
+      "path": "pkg/extension/luahost/lua_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f16d452a49114af194036731b32a9e86000ec1be",
+      "size": 8651,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/f16d452a49114af194036731b32a9e86000ec1be"
+    },
+    {
+      "path": "pkg/extension/luahost/pool.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ff700ab848537570b9b017863351e1d3553904da",
+      "size": 2647,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/ff700ab848537570b9b017863351e1d3553904da"
+    },
+    {
+      "path": "pkg/extension/luahost/pool_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9e936ea0e15217f3055f9126571fe67f1ab70c33",
+      "size": 2277,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/9e936ea0e15217f3055f9126571fe67f1ab70c33"
+    },
+    {
+      "path": "pkg/message",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "ab21f0aa63ca6ef6bd3103cd280eebf0f1dd26e5",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/ab21f0aa63ca6ef6bd3103cd280eebf0f1dd26e5"
+    },
+    {
+      "path": "pkg/message/manager.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8f8a3f325b98126c5461858ea49a02aa750657df",
+      "size": 6246,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/8f8a3f325b98126c5461858ea49a02aa750657df"
+    },
+    {
+      "path": "pkg/message/manager_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "99d28b29d996ef24750e0023b9abdd532e7bb37f",
+      "size": 18362,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/99d28b29d996ef24750e0023b9abdd532e7bb37f"
+    },
+    {
+      "path": "pkg/message/message.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d44c7c6cf639887d2169513d2cdae85e1f1d5b0f",
+      "size": 2191,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/d44c7c6cf639887d2169513d2cdae85e1f1d5b0f"
+    },
+    {
+      "path": "pkg/metric",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "fb5a81a030ccb469ada45d1158f13832c678be1d",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/fb5a81a030ccb469ada45d1158f13832c678be1d"
+    },
+    {
+      "path": "pkg/metric/metric.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "566445dc559f3aab59ddbf40eb2f9f9d6ac40dbd",
+      "size": 1558,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/566445dc559f3aab59ddbf40eb2f9f9d6ac40dbd"
+    },
+    {
+      "path": "pkg/msghub",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "e9946b6d4e0b8fc1702b99196b28d615c64e3f55",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/e9946b6d4e0b8fc1702b99196b28d615c64e3f55"
+    },
+    {
+      "path": "pkg/msghub/hub.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "16749a338edaffc3fe18735d4667f02c32dae83e",
+      "size": 4034,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/16749a338edaffc3fe18735d4667f02c32dae83e"
+    },
+    {
+      "path": "pkg/msghub/hub_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a8688b23e63588e6cf58bfcbbf7fa15932dd70ff",
+      "size": 8650,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/a8688b23e63588e6cf58bfcbbf7fa15932dd70ff"
+    },
+    {
+      "path": "pkg/policy",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "fdb7638a0def7a2d82b060c10d731206b5d0fac0",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/fdb7638a0def7a2d82b060c10d731206b5d0fac0"
+    },
+    {
+      "path": "pkg/policy/address.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e19c2ffa695181578746084237ee29ce83690fb0",
+      "size": 10083,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e19c2ffa695181578746084237ee29ce83690fb0"
+    },
+    {
+      "path": "pkg/policy/address_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1c538834c5da1d1fbe16306c35640f7ba27f9ba4",
+      "size": 24365,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/1c538834c5da1d1fbe16306c35640f7ba27f9ba4"
+    },
+    {
+      "path": "pkg/policy/origin.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6555ececd9ca8082bcb29577e329119b0e75de59",
+      "size": 515,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/6555ececd9ca8082bcb29577e329119b0e75de59"
+    },
+    {
+      "path": "pkg/policy/recipient.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "860eebee2d14f081cfda189760404952578654ff",
+      "size": 767,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/860eebee2d14f081cfda189760404952578654ff"
+    },
+    {
+      "path": "pkg/rest",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "71100f196e6616959db5486260d3a74e894c0c26",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/71100f196e6616959db5486260d3a74e894c0c26"
+    },
+    {
+      "path": "pkg/rest/apiv1_controller.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "143e1a218ea2bf2350413b6348c77d6722922463",
+      "size": 5597,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/143e1a218ea2bf2350413b6348c77d6722922463"
+    },
+    {
+      "path": "pkg/rest/apiv1_controller_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "87b29e20a41c9fe766a3c5404767b40d024618f9",
+      "size": 9849,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/87b29e20a41c9fe766a3c5404767b40d024618f9"
+    },
+    {
+      "path": "pkg/rest/client",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "d537e0002c84efd703120e6512d228f73b6f6029",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/d537e0002c84efd703120e6512d228f73b6f6029"
+    },
+    {
+      "path": "pkg/rest/client/apiv1_client.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4650cf8d58d1eeba8ee535ba3b6954aca1e82824",
+      "size": 6860,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/4650cf8d58d1eeba8ee535ba3b6954aca1e82824"
+    },
+    {
+      "path": "pkg/rest/client/apiv1_client_opts.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "283d801e537b42827cf324dda4c8be0bec05ff30",
+      "size": 807,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/283d801e537b42827cf324dda4c8be0bec05ff30"
+    },
+    {
+      "path": "pkg/rest/client/apiv1_client_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3a401434dfb71c5ef5a286d11c9e69121e3a5b93",
+      "size": 8776,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/3a401434dfb71c5ef5a286d11c9e69121e3a5b93"
+    },
+    {
+      "path": "pkg/rest/client/example_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "91ff86685d2bba6c3c305fd6cfa8aa52da00d025",
+      "size": 2527,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/91ff86685d2bba6c3c305fd6cfa8aa52da00d025"
+    },
+    {
+      "path": "pkg/rest/client/rest.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8de01fa9635348a5a3699a94162d8a977a44c132",
+      "size": 1341,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/8de01fa9635348a5a3699a94162d8a977a44c132"
+    },
+    {
+      "path": "pkg/rest/client/rest_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "efa141037dfde5fe45ecbfd3c0baf1946fec0a97",
+      "size": 3691,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/efa141037dfde5fe45ecbfd3c0baf1946fec0a97"
+    },
+    {
+      "path": "pkg/rest/model",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "573e4a8d1c03f5c8cb3d4bb0047db147e021ea24",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/573e4a8d1c03f5c8cb3d4bb0047db147e021ea24"
+    },
+    {
+      "path": "pkg/rest/model/apiv1_model.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "95695874a6d67d1c7cbe01cf58dc03e74337eee1",
+      "size": 1740,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/95695874a6d67d1c7cbe01cf58dc03e74337eee1"
+    },
+    {
+      "path": "pkg/rest/model/apiv2_model.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1fed72f9a38d7d53b7249f7f7cc6356868be9833",
+      "size": 483,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/1fed72f9a38d7d53b7249f7f7cc6356868be9833"
+    },
+    {
+      "path": "pkg/rest/routes.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e05e94b094a137423027a9877771fc2b99ea123c",
+      "size": 1427,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e05e94b094a137423027a9877771fc2b99ea123c"
+    },
+    {
+      "path": "pkg/rest/socket_controller.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fc8c1a6f25890399d41a74ced5ecfc00efb4d00e",
+      "size": 8356,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/fc8c1a6f25890399d41a74ced5ecfc00efb4d00e"
+    },
+    {
+      "path": "pkg/rest/socket_controller_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "23e39c2fed4a6967e583306bc86da10a98faba9e",
+      "size": 25788,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/23e39c2fed4a6967e583306bc86da10a98faba9e"
+    },
+    {
+      "path": "pkg/rest/socketv1_controller.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "887c2f8952d29d1ac0dfde4f3ea0e7a0abee08a5",
+      "size": 1339,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/887c2f8952d29d1ac0dfde4f3ea0e7a0abee08a5"
+    },
+    {
+      "path": "pkg/rest/socketv2_controller.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1e6b2872cc3878df1d89a2ecd9c55b0450074a08",
+      "size": 1614,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/1e6b2872cc3878df1d89a2ecd9c55b0450074a08"
+    },
+    {
+      "path": "pkg/rest/testutils_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0a8fa0e4a129d5ecb5cda4787044ca348db1ea27",
+      "size": 4106,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/0a8fa0e4a129d5ecb5cda4787044ca348db1ea27"
+    },
+    {
+      "path": "pkg/server",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "de8749d512ac4f103d3a88d436f65cb0bd4dab7b",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/de8749d512ac4f103d3a88d436f65cb0bd4dab7b"
+    },
+    {
+      "path": "pkg/server/lifecycle.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a770e992cbe804bf71e954b729f711ef29e45b07",
+      "size": 3990,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/a770e992cbe804bf71e954b729f711ef29e45b07"
+    },
+    {
+      "path": "pkg/server/pop3",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "3c4cc44177fae4d219306a3142e88b08fa0df104",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/3c4cc44177fae4d219306a3142e88b08fa0df104"
+    },
+    {
+      "path": "pkg/server/pop3/handler.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "61c17ec415abf71f3feba9319a5464390c034162",
+      "size": 16605,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/61c17ec415abf71f3feba9319a5464390c034162"
+    },
+    {
+      "path": "pkg/server/pop3/handler_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "47c43c717c491d2e9497054d810fdb9b92cdb475",
+      "size": 12162,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/47c43c717c491d2e9497054d810fdb9b92cdb475"
+    },
+    {
+      "path": "pkg/server/pop3/listener.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5254f89ab725d730a8185fc13b022ad24d7a853b",
+      "size": 3972,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/5254f89ab725d730a8185fc13b022ad24d7a853b"
+    },
+    {
+      "path": "pkg/server/pop3/transaction_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fc16a5a399260a8232c0bc7a3f5554c1772720aa",
+      "size": 31344,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/fc16a5a399260a8232c0bc7a3f5554c1772720aa"
+    },
+    {
+      "path": "pkg/server/smtp",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "703ffccd15987a4122a79d8df3b9f97e5154b5d3",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/703ffccd15987a4122a79d8df3b9f97e5154b5d3"
+    },
+    {
+      "path": "pkg/server/smtp/handler.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d0f6779bf2b8fdb4a5635f688f4571f953888b4f",
+      "size": 19727,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/d0f6779bf2b8fdb4a5635f688f4571f953888b4f"
+    },
+    {
+      "path": "pkg/server/smtp/handler_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "62cfb02f5e9c7144055a85f4dd82a53f23397784",
+      "size": 19804,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/62cfb02f5e9c7144055a85f4dd82a53f23397784"
+    },
+    {
+      "path": "pkg/server/smtp/listener.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b2909a9c82d69df3463f35b1217143c18e576858",
+      "size": 5657,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/b2909a9c82d69df3463f35b1217143c18e576858"
+    },
+    {
+      "path": "pkg/server/smtp/loghook.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "59f69daf2c36b9e818d8cb718809a2aade89859a",
+      "size": 340,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/59f69daf2c36b9e818d8cb718809a2aade89859a"
+    },
+    {
+      "path": "pkg/server/tlscert",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "8e55ef9c257e68e30a47c2eadaeca2f35345ed35",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/8e55ef9c257e68e30a47c2eadaeca2f35345ed35"
+    },
+    {
+      "path": "pkg/server/tlscert/reloader.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e4f90d2637c03d5617af7a1a1b201472443c6b97",
+      "size": 3834,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e4f90d2637c03d5617af7a1a1b201472443c6b97"
+    },
+    {
+      "path": "pkg/server/tlscert/reloader_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "245690604d3a02931b60a2b4bc4036d28c0dcccc",
+      "size": 8199,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/245690604d3a02931b60a2b4bc4036d28c0dcccc"
+    },
+    {
+      "path": "pkg/server/web",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "bfe3300a61c130435ba100160df10f6a3ffded56",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/bfe3300a61c130435ba100160df10f6a3ffded56"
+    },
+    {
+      "path": "pkg/server/web/app_json.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e1635cda56898bb0cbb849c6dfb39399aeb7edf7",
+      "size": 133,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e1635cda56898bb0cbb849c6dfb39399aeb7edf7"
+    },
+    {
+      "path": "pkg/server/web/context.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "63139ef4d365d4c506f87d9f02f9a78acaa7f4ce",
+      "size": 1352,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/63139ef4d365d4c506f87d9f02f9a78acaa7f4ce"
+    },
+    {
+      "path": "pkg/server/web/handlers.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d06a6949242c40f6fd62af021430b01708380f21",
+      "size": 3657,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/d06a6949242c40f6fd62af021430b01708380f21"
+    },
+    {
+      "path": "pkg/server/web/helpers.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2285b41a9736d0f4c98f6beff9046175a2cdba68",
+      "size": 959,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/2285b41a9736d0f4c98f6beff9046175a2cdba68"
+    },
+    {
+      "path": "pkg/server/web/helpers_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9cc2968057d81f738cb8e4e7c82a22b783ed4228",
+      "size": 1118,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/9cc2968057d81f738cb8e4e7c82a22b783ed4228"
+    },
+    {
+      "path": "pkg/server/web/rest.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "aa9d86415f70eb0720448b2040d1b62cf9418d51",
+      "size": 398,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/aa9d86415f70eb0720448b2040d1b62cf9418d51"
+    },
+    {
+      "path": "pkg/server/web/server.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "530e423aa7b45906c289d8cd361f8acf0fa45d21",
+      "size": 6340,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/530e423aa7b45906c289d8cd361f8acf0fa45d21"
+    },
+    {
+      "path": "pkg/storage",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "c245d2c831c40b373f3ec1ab9d25bcf98830d6b6",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/c245d2c831c40b373f3ec1ab9d25bcf98830d6b6"
+    },
+    {
+      "path": "pkg/storage/file",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "8c4881326bed08cfcb523ae5a37ccd35fc730d78",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/8c4881326bed08cfcb523ae5a37ccd35fc730d78"
+    },
+    {
+      "path": "pkg/storage/file/fmessage.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a7ed1e2a8bde33e26d3460791746ced0504f84e8",
+      "size": 2468,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/a7ed1e2a8bde33e26d3460791746ced0504f84e8"
+    },
+    {
+      "path": "pkg/storage/file/fstore.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f3c2ec086c9dc7fcc2fbac1b03029f8139d7410d",
+      "size": 7904,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/f3c2ec086c9dc7fcc2fbac1b03029f8139d7410d"
+    },
+    {
+      "path": "pkg/storage/file/fstore_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e23e3346172b87ea3aff6e293fad68a822b5e720",
+      "size": 7075,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e23e3346172b87ea3aff6e293fad68a822b5e720"
+    },
+    {
+      "path": "pkg/storage/file/mbox.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "afcb346728d62adfe3a37873393e5237dbc760cb",
+      "size": 6221,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/afcb346728d62adfe3a37873393e5237dbc760cb"
+    },
+    {
+      "path": "pkg/storage/lock.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d1e0c2d94bc93d991f6e1cde039edd778088e123",
+      "size": 570,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/d1e0c2d94bc93d991f6e1cde039edd778088e123"
+    },
+    {
+      "path": "pkg/storage/lock_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fa583095128978d7fa867d4aa1a24f2337056daa",
+      "size": 1219,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/fa583095128978d7fa867d4aa1a24f2337056daa"
+    },
+    {
+      "path": "pkg/storage/mem",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "196939a93c7aec86a19b8c93c7c1934b70fce9cd",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/196939a93c7aec86a19b8c93c7c1934b70fce9cd"
+    },
+    {
+      "path": "pkg/storage/mem/maxsize.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3b11850cca69607b7a7abea2a56c6bc85086f719",
+      "size": 1452,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/3b11850cca69607b7a7abea2a56c6bc85086f719"
+    },
+    {
+      "path": "pkg/storage/mem/message.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7701f363b2f4707eb155e69bca24ef775f80f576",
+      "size": 1322,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/7701f363b2f4707eb155e69bca24ef775f80f576"
+    },
+    {
+      "path": "pkg/storage/mem/store.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c94db71e300b274bff35c9e14bdf14eb69112283",
+      "size": 5272,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/c94db71e300b274bff35c9e14bdf14eb69112283"
+    },
+    {
+      "path": "pkg/storage/mem/store_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f56a4b1ee00fdf3a365dae068286a166afcab3c8",
+      "size": 2475,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/f56a4b1ee00fdf3a365dae068286a166afcab3c8"
+    },
+    {
+      "path": "pkg/storage/retention.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "208cbaab111c8e2ffa026e4a143e79a410708b96",
+      "size": 4762,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/208cbaab111c8e2ffa026e4a143e79a410708b96"
+    },
+    {
+      "path": "pkg/storage/retention_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b6fa113f4db8af210289b20c726673a5b83b3646",
+      "size": 1833,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/b6fa113f4db8af210289b20c726673a5b83b3646"
+    },
+    {
+      "path": "pkg/storage/storage.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a3a632912488a56c6756649ed13c96283359ca5c",
+      "size": 1730,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/a3a632912488a56c6756649ed13c96283359ca5c"
+    },
+    {
+      "path": "pkg/stringutil",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "f1cbb2bff189af56f4a1c9c5c7424281b32cde68",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/f1cbb2bff189af56f4a1c9c5c7424281b32cde68"
+    },
+    {
+      "path": "pkg/stringutil/utils.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c91ff850f798e65a76cb6178dfc097910640a6b1",
+      "size": 2719,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/c91ff850f798e65a76cb6178dfc097910640a6b1"
+    },
+    {
+      "path": "pkg/stringutil/utils_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e6fdbfe6e3ecab5769ddb4ae57f6d005e335b4f4",
+      "size": 4845,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e6fdbfe6e3ecab5769ddb4ae57f6d005e335b4f4"
+    },
+    {
+      "path": "pkg/test",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "e964ee0f870108bc95b6f4fd1757450a4ade8a44",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/e964ee0f870108bc95b6f4fd1757450a4ade8a44"
+    },
+    {
+      "path": "pkg/test/integration_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7f9ef7721701c18a6fe982d232fbc4b1420442b1",
+      "size": 6495,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/7f9ef7721701c18a6fe982d232fbc4b1420442b1"
+    },
+    {
+      "path": "pkg/test/lua.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "45ae62b9d79b742ff6b9239422d4f441073601c3",
+      "size": 2253,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/45ae62b9d79b742ff6b9239422d4f441073601c3"
+    },
+    {
+      "path": "pkg/test/manager.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4614b92881d663f60767ddb04533ea22f5579954",
+      "size": 2115,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/4614b92881d663f60767ddb04533ea22f5579954"
+    },
+    {
+      "path": "pkg/test/storage.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1382fcab1fb4fefa2600413472010c846db86489",
+      "size": 3599,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/1382fcab1fb4fefa2600413472010c846db86489"
+    },
+    {
+      "path": "pkg/test/storage_helpers.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8e5a6857db25c0cb8f9baae994f85b0947a99aba",
+      "size": 1566,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/8e5a6857db25c0cb8f9baae994f85b0947a99aba"
+    },
+    {
+      "path": "pkg/test/storage_suite.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0a413117c9b1cecff664f49a34c8ab0f81f68655",
+      "size": 12649,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/0a413117c9b1cecff664f49a34c8ab0f81f68655"
+    },
+    {
+      "path": "pkg/test/storage_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6d84889f62998bb58abeeba13ce752cf6310ab08",
+      "size": 7578,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/6d84889f62998bb58abeeba13ce752cf6310ab08"
+    },
+    {
+      "path": "pkg/test/testdata",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "324966888b85110225c2af106df5c4fa84ec12ab",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/324966888b85110225c2af106df5c4fa84ec12ab"
+    },
+    {
+      "path": "pkg/test/testdata/basic.golden",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e01ad2e9cf77a4dd534cfc52089103dc0e4ad37e",
+      "size": 154,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e01ad2e9cf77a4dd534cfc52089103dc0e4ad37e"
+    },
+    {
+      "path": "pkg/test/testdata/basic.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1087c28c2ba3e55cd4aef700fe2b3a3a3388207f",
+      "size": 94,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/1087c28c2ba3e55cd4aef700fe2b3a3a3388207f"
+    },
+    {
+      "path": "pkg/test/testdata/encodedheader.golden",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1d756e1cdc10a4002596f01c623a6063d1db31ff",
+      "size": 208,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/1d756e1cdc10a4002596f01c623a6063d1db31ff"
+    },
+    {
+      "path": "pkg/test/testdata/encodedheader.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8855f722f73ba771dff0281719bc3274152e03e4",
+      "size": 228,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/8855f722f73ba771dff0281719bc3274152e03e4"
+    },
+    {
+      "path": "pkg/test/testdata/fullname.golden",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "82bd0dc8c2bbe4582eb0c2a9267d33df479085a9",
+      "size": 177,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/82bd0dc8c2bbe4582eb0c2a9267d33df479085a9"
+    },
+    {
+      "path": "pkg/test/testdata/fullname.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c595d8cb45206f4dffe718e35863e4bfc0b1bed6",
+      "size": 123,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/c595d8cb45206f4dffe718e35863e4bfc0b1bed6"
+    },
+    {
+      "path": "pkg/test/testdata/no-to-ipv4.golden",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ff08189f8f82650500cd19a7b50af30a288a8260",
+      "size": 165,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/ff08189f8f82650500cd19a7b50af30a288a8260"
+    },
+    {
+      "path": "pkg/test/testdata/no-to-ipv6.golden",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9cece1c85129e2f724b5b7370aab61363e6f08e8",
+      "size": 194,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/9cece1c85129e2f724b5b7370aab61363e6f08e8"
+    },
+    {
+      "path": "pkg/test/testdata/no-to.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e33ed29b55b4efc9fa4ffbf61f0d2222c29ea9ad",
+      "size": 67,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e33ed29b55b4efc9fa4ffbf61f0d2222c29ea9ad"
+    },
+    {
+      "path": "pkg/webui",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "be5b8d41f2dc3950f257d3d67172383af317008b",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/be5b8d41f2dc3950f257d3d67172383af317008b"
+    },
+    {
+      "path": "pkg/webui/mailbox_controller.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f9374feef33ca76d852e6b10b782b8542f945f02",
+      "size": 4506,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/f9374feef33ca76d852e6b10b782b8542f945f02"
+    },
+    {
+      "path": "pkg/webui/mailbox_json.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "70252c58e9526600e7fda3589387458fe1943c77",
+      "size": 1105,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/70252c58e9526600e7fda3589387458fe1943c77"
+    },
+    {
+      "path": "pkg/webui/root_controller.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7075aa0f7b0b18be308e9b63848763ce32f320bf",
+      "size": 1593,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/7075aa0f7b0b18be308e9b63848763ce32f320bf"
+    },
+    {
+      "path": "pkg/webui/routes.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e603040864f028794f9527988d1013fd01330338",
+      "size": 908,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e603040864f028794f9527988d1013fd01330338"
+    },
+    {
+      "path": "pkg/webui/sanitize",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "895de34184915d34379882ee88ccf2580e5b1759",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/895de34184915d34379882ee88ccf2580e5b1759"
+    },
+    {
+      "path": "pkg/webui/sanitize/css.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e37d04eeb89f3fc9d459eab6865b0d6f705cbbd2",
+      "size": 2438,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e37d04eeb89f3fc9d459eab6865b0d6f705cbbd2"
+    },
+    {
+      "path": "pkg/webui/sanitize/css_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7fee26ce36af925e9f52845366da93ac982f2962",
+      "size": 609,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/7fee26ce36af925e9f52845366da93ac982f2962"
+    },
+    {
+      "path": "pkg/webui/sanitize/html.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4878171ac03fee87424f38faa8566304a4ee1deb",
+      "size": 1948,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/4878171ac03fee87424f38faa8566304a4ee1deb"
+    },
+    {
+      "path": "pkg/webui/sanitize/html_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1a6140924acdfae35308195241996b0507cbc251",
+      "size": 3317,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/1a6140924acdfae35308195241996b0507cbc251"
+    },
+    {
+      "path": "pkg/webui/status_json.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5511129d5da0c3b9e3996bda17129c7477b8963e",
+      "size": 1011,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/5511129d5da0c3b9e3996bda17129c7477b8963e"
+    },
+    {
+      "path": "shell.nix",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a5d4a98e031ffabf7fa06fb0554f3e3e89f90e32",
+      "size": 785,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/a5d4a98e031ffabf7fa06fb0554f3e3e89f90e32"
+    },
+    {
+      "path": "ui",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "e234dd26c7340f4a256a103f34f55aaa61c4efa2",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/e234dd26c7340f4a256a103f34f55aaa61c4efa2"
+    },
+    {
+      "path": "ui/.parcelrc",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "18b8c18c9b5ee2a24bbf4e5484644214f3402b81",
+      "size": 82,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/18b8c18c9b5ee2a24bbf4e5484644214f3402b81"
+    },
+    {
+      "path": "ui/.proxyrc.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3f9f11d4ead9857a19077853fe27bfcafaef6c13",
+      "size": 188,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/3f9f11d4ead9857a19077853fe27bfcafaef6c13"
+    },
+    {
+      "path": "ui/README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "83fc2edaaed81499d7f8518c97e9a8ff867d21e3",
+      "size": 1037,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/83fc2edaaed81499d7f8518c97e9a8ff867d21e3"
+    },
+    {
+      "path": "ui/elm.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "27d2d34b6abcd26d85224cba9e51cc7b904644eb",
+      "size": 931,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/27d2d34b6abcd26d85224cba9e51cc7b904644eb"
+    },
+    {
+      "path": "ui/greeting.html",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3eed9b118640a48f8d6b927d79089839eb55c721",
+      "size": 546,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/3eed9b118640a48f8d6b927d79089839eb55c721"
+    },
+    {
+      "path": "ui/package.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0dc4a86baefa1b6c4e08293072c8333a5c4ecc95",
+      "size": 905,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/0dc4a86baefa1b6c4e08293072c8333a5c4ecc95"
+    },
+    {
+      "path": "ui/src",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "0fe76efdd18229e4d7f268f61fe85108d869a97d",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/0fe76efdd18229e4d7f268f61fe85108d869a97d"
+    },
+    {
+      "path": "ui/src/Api.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "673629913b345f2a63379878f859a989b5a63f1b",
+      "size": 5026,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/673629913b345f2a63379878f859a989b5a63f1b"
+    },
+    {
+      "path": "ui/src/Data",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "02fc994f9ab5b6056b2d3e99275310dd8cc2e81b",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/02fc994f9ab5b6056b2d3e99275310dd8cc2e81b"
+    },
+    {
+      "path": "ui/src/Data/AppConfig.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fa983ed3887bc84f1e680967d13a698283972273",
+      "size": 415,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/fa983ed3887bc84f1e680967d13a698283972273"
+    },
+    {
+      "path": "ui/src/Data/Date.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d02830556a2bfa9d87d5a5e1b555cca294fc0ca5",
+      "size": 221,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/d02830556a2bfa9d87d5a5e1b555cca294fc0ca5"
+    },
+    {
+      "path": "ui/src/Data/Message.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b193af90ba866de9d9c4d289eba5e6109de4c944",
+      "size": 1640,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/b193af90ba866de9d9c4d289eba5e6109de4c944"
+    },
+    {
+      "path": "ui/src/Data/MessageHeader.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "742d72b72acb7f7893ab0f8abf25f387bc408413",
+      "size": 807,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/742d72b72acb7f7893ab0f8abf25f387bc408413"
+    },
+    {
+      "path": "ui/src/Data/Metrics.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4cd8e5cad2ced47674fb7233fd037cdd661adf2e",
+      "size": 2512,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/4cd8e5cad2ced47674fb7233fd037cdd661adf2e"
+    },
+    {
+      "path": "ui/src/Data/MonitorEvent.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "23147043cad4949d8e23c5c437a4932b325f8f93",
+      "size": 1087,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/23147043cad4949d8e23c5c437a4932b325f8f93"
+    },
+    {
+      "path": "ui/src/Data/ServerConfig.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "00545c80ceb8e5ac59e71b31f2ecc8c4f1b0a4f2",
+      "size": 3407,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/00545c80ceb8e5ac59e71b31f2ecc8c4f1b0a4f2"
+    },
+    {
+      "path": "ui/src/Data/Session.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c192f024abd590fdbd20fe2a0ca30de38a968c05",
+      "size": 2695,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/c192f024abd590fdbd20fe2a0ca30de38a968c05"
+    },
+    {
+      "path": "ui/src/Effect.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "05989c6b1f1081f93fce179f2feaa0813da038c8",
+      "size": 9318,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/05989c6b1f1081f93fce179f2feaa0813da038c8"
+    },
+    {
+      "path": "ui/src/HttpUtil.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7733c9fa91e0fd4979a6742919d1bdb5d41d2a2c",
+      "size": 3535,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/7733c9fa91e0fd4979a6742919d1bdb5d41d2a2c"
+    },
+    {
+      "path": "ui/src/Layout.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b14180878025516809d766c8b93d154442e51372",
+      "size": 8941,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/b14180878025516809d766c8b93d154442e51372"
+    },
+    {
+      "path": "ui/src/Main.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1b38ebaa50edb8cfc25596cb0a97c827e84d3c53",
+      "size": 11220,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/1b38ebaa50edb8cfc25596cb0a97c827e84d3c53"
+    },
+    {
+      "path": "ui/src/Modal.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7ebbcecd527f3c98f7e51c2fa4b1af46dcf26f6f",
+      "size": 1488,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/7ebbcecd527f3c98f7e51c2fa4b1af46dcf26f6f"
+    },
+    {
+      "path": "ui/src/Page",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "bf1b4e5af06b991cc669f24269f57f1028cca10b",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/bf1b4e5af06b991cc669f24269f57f1028cca10b"
+    },
+    {
+      "path": "ui/src/Page/Home.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e3572dd6adba310ed9678e17c663b2f4603c423f",
+      "size": 1184,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e3572dd6adba310ed9678e17c663b2f4603c423f"
+    },
+    {
+      "path": "ui/src/Page/Mailbox.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "53adaf6791d0b300a2b3fd2669f2c18cbc111194",
+      "size": 21500,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/53adaf6791d0b300a2b3fd2669f2c18cbc111194"
+    },
+    {
+      "path": "ui/src/Page/Monitor.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7e01dd647b19591f51aa82ff8b9790f49c48c790",
+      "size": 5553,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/7e01dd647b19591f51aa82ff8b9790f49c48c790"
+    },
+    {
+      "path": "ui/src/Page/Status.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5f8a4a29c309fb69ac67140d29e0a8690fdd27ab",
+      "size": 16116,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/5f8a4a29c309fb69ac67140d29e0a8690fdd27ab"
+    },
+    {
+      "path": "ui/src/Ports.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6e9a32e4de6f94033d7816d7db699aabe051d1d4",
+      "size": 201,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/6e9a32e4de6f94033d7816d7db699aabe051d1d4"
+    },
+    {
+      "path": "ui/src/Route.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "44ce3689159fc992e432f05537986ab787b1310c",
+      "size": 2376,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/44ce3689159fc992e432f05537986ab787b1310c"
+    },
+    {
+      "path": "ui/src/Timer.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1787950a2ea0f8d3f3bc4375fe0487d13a6b99eb",
+      "size": 1049,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/1787950a2ea0f8d3f3bc4375fe0487d13a6b99eb"
+    },
+    {
+      "path": "ui/src/favicon.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "92f1f507c64d78268da38de8cc1f802a05435f30",
+      "size": 3025,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/92f1f507c64d78268da38de8cc1f802a05435f30"
+    },
+    {
+      "path": "ui/src/index-dev.html",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5bdefefe1f7ba470487a72f9ce6013c8004ac997",
+      "size": 965,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/5bdefefe1f7ba470487a72f9ce6013c8004ac997"
+    },
+    {
+      "path": "ui/src/index.html",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f544be278b55d3dadeeb0746466c05a8cd3f0636",
+      "size": 910,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/f544be278b55d3dadeeb0746466c05a8cd3f0636"
+    },
+    {
+      "path": "ui/src/index.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e12d79d4faca34f114d04cf73344cf2d2e100c4b",
+      "size": 1820,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e12d79d4faca34f114d04cf73344cf2d2e100c4b"
+    },
+    {
+      "path": "ui/src/mailbox.css",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9a0783a997d20ce03a1b53c22461d79ee9164ccc",
+      "size": 3555,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/9a0783a997d20ce03a1b53c22461d79ee9164ccc"
+    },
+    {
+      "path": "ui/src/main.css",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9442acabaefc6e2b2d644cb079b4ce23e7ae7b20",
+      "size": 8262,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/9442acabaefc6e2b2d644cb079b4ce23e7ae7b20"
+    },
+    {
+      "path": "ui/src/manifest.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e304f40a55699d92c0aa65955f83495fb61e4742",
+      "size": 280,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/e304f40a55699d92c0aa65955f83495fb61e4742"
+    },
+    {
+      "path": "ui/src/monitorMessages.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "58ac9d2a19c22c3289f7f0df0f7bf9f0651e9318",
+      "size": 2061,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/58ac9d2a19c22c3289f7f0df0f7bf9f0651e9318"
+    },
+    {
+      "path": "ui/src/navbar.css",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c6283cfd735687800263950a09f100a5678bf155",
+      "size": 3786,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/c6283cfd735687800263950a09f100a5678bf155"
+    },
+    {
+      "path": "ui/src/renderedHtml.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "62b04adbf9717d9745c7f8b34f86b8b72f93adef",
+      "size": 494,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/62b04adbf9717d9745c7f8b34f86b8b72f93adef"
+    },
+    {
+      "path": "ui/tests",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "087fbdbf93140157161b31957adfdabf2b0cbfeb",
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/trees/087fbdbf93140157161b31957adfdabf2b0cbfeb"
+    },
+    {
+      "path": "ui/tests/Tests.elm",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c730ab684202bbab36b6c14c8561c48001a76219",
+      "size": 551,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/c730ab684202bbab36b6c14c8561c48001a76219"
+    },
+    {
+      "path": "ui/tests/elm-package.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1e47e76094eb1f4ac0eb9e9018bb3427895cb58d",
+      "size": 450,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/1e47e76094eb1f4ac0eb9e9018bb3427895cb58d"
+    },
+    {
+      "path": "ui/yarn.lock",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "269ae48539d007c1415f215294b44948790c547c",
+      "size": 106126,
+      "url": "https://api.github.com/repos/inbucket/inbucket/git/blobs/269ae48539d007c1415f215294b44948790c547c"
+    }
+  ],
+  "truncated": false
+}
