@@ -60,10 +60,11 @@ envelope recipients — so a Bcc'd address matches, and `assert?to=…&count=0`
 is not a "this address is in no header" check. `from` is the header `From`
 address. Closed native query rules are method-specific: the existing
 list/count/await/assert/thread/feed routes accept only their documented
-keys; an unknown key is a `400` naming the route and key. These ten native
+keys; an unknown key is a `400` naming the route and key. These eleven native
 operations take no query keys: `DELETE /api/v1/inboxes/{inbox}/messages`,
 `DELETE /api/v1/delete-all`, `GET` and `DELETE /api/v1/messages/{id}`,
-`GET /api/v1/messages/{id}/raw`, `GET` and `DELETE /api/v1/chaos`,
+`GET /api/v1/messages/{id}/raw`, `GET /api/v1/messages/{id}/projection`,
+`GET` and `DELETE /api/v1/chaos`,
 `GET` and `DELETE /api/v1/webhooks`, and
 `POST /api/v1/inboxes/{inbox}/seed`. Unsupported selectors (for example
 `?subject=keep`, `?inbox=a`, or `?event=data`) and typos receive a native

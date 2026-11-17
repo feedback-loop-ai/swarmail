@@ -3852,7 +3852,11 @@ async fn a_blank_path_inbox_refuses_on_every_native_route() {
     assert_eq!(inboxes, serde_json::json!([]), "nothing blank was stored");
     seed(srv.http_addr, "%20pad%20", "a@x.io").await;
     let (_, inboxes) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
-    assert_eq!(inboxes, serde_json::json!([{"name": " pad ", "count": 1}]));
+    // Decision 0134 §7: each item also carries the server's stamp.
+    assert_eq!(inboxes[0]["name"], " pad ");
+    assert_eq!(inboxes[0]["count"], 1);
+    assert!(inboxes[0]["last_received_ms"].is_i64(), "{inboxes}");
+    assert_eq!(inboxes.as_array().unwrap().len(), 1);
 }
 
 /// A decoded inbox segment carrying a control character refuses on every
@@ -3928,7 +3932,10 @@ async fn the_inbox_listing_pages_past_the_cap() {
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
     assert_eq!(st, 200);
     assert_eq!(names(&body).len(), 100);
-    assert_eq!(body[0], serde_json::json!({"name": "page-000", "count": 1}));
+    // Decision 0134 §7: the stamp joins the name and the count.
+    assert_eq!(body[0]["name"], "page-000");
+    assert_eq!(body[0]["count"], 1);
+    assert!(body[0]["last_received_ms"].is_i64(), "{}", body[0]);
     let (_, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes?limit=250", None).await;
     assert_eq!(names(&body).len(), 250);
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes?limit=251", None).await;
@@ -5796,4 +5803,365 @@ async fn the_documents_describe_the_compact_view_and_fields() {
         }
     }
     srv.stop().await;
+}
+
+// ---------- the run console's read-only additions (decision 0134) ----------
+
+/// Deliver `raw` into `inbox` over real SMTP, saying `helo` at the greeting,
+/// and return the accepted mail's id (the id the `250` carries).
+async fn smtp_with_helo(addr: std::net::SocketAddr, inbox: &str, helo: &str, raw: &str) -> String {
+    let mut conn = SmtpConn::connect(addr).await;
+    conn.send(&format!("EHLO {helo}")).await;
+    assert!(conn.reply_multi().await.starts_with("250"));
+    let auth = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        format!("\0{inbox}\0x"),
+    );
+    conn.send(&format!("AUTH PLAIN {auth}")).await;
+    assert!(conn.reply().await.starts_with("235"));
+    for line in ["MAIL FROM:<sender@x.io>", "RCPT TO:<rcpt@x.io>"] {
+        conn.send(line).await;
+        assert!(conn.reply().await.starts_with("250"));
+    }
+    let accepted = conn.data(raw).await;
+    assert!(accepted.starts_with("250"), "{accepted}");
+    accepted.split_whitespace().last().unwrap().into()
+}
+
+/// The multipart mail the projection tests read: a text part with one URL,
+/// an HTML part with one anchor, a PDF and a calendar invite.
+fn console_mail() -> String {
+    "From: Sender <sender@x.io>\r\nTo: rcpt@x.io\r\nSubject: Console\r\nMIME-Version: 1.0\r\n\
+     Content-Type: multipart/mixed; boundary=b\r\n\r\n\
+     --b\r\nContent-Type: text/plain\r\n\r\nOpen https://text.example/plain-link now\r\n\
+     --b\r\nContent-Type: text/html\r\n\r\n<p><a href=\"https://app.example/verify?t=1\">Confirm email</a></p>\r\n\
+     --b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"invoice.pdf\"\r\n\r\npdf\r\n\
+     --b\r\nContent-Type: text/calendar; method=REQUEST\r\n\r\n\
+     BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:evt-77@x.io\r\nDTSTART;TZID=Europe/Sofia:20261118T090000\r\n\
+     DTEND;TZID=Europe/Sofia:20261118T120000\r\nSUMMARY:Delivery window\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n\
+     --b--"
+        .into()
+}
+
+fn sorted_keys(value: &serde_json::Value) -> Vec<&str> {
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .unwrap_or_else(|| panic!("not an object: {value}"))
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    keys
+}
+
+async fn projection_of(addr: std::net::SocketAddr, id: &str) -> serde_json::Value {
+    let (st, body) = http_json(
+        addr,
+        "GET",
+        &format!("/api/v1/messages/{id}/projection"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    body
+}
+
+/// AC5: the `/healthz` counters over the wire, equal to `/metrics`: zero on a
+/// fresh server, two after two accepted mails, and under a cap of one the
+/// second mail to an inbox evicts the first (a drop, not a chaos refusal).
+#[tokio::test]
+async fn healthz_reports_the_store_counters() {
+    let srv = start().await;
+    let (st, body) = http_json(srv.http_addr, "GET", "/healthz", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["emails_inserted_total"], 0, "{body}");
+    assert_eq!(body["emails_dropped_total"], 0, "{body}");
+    for subject in ["one", "two"] {
+        common::smtp_send(srv.smtp_addr, Some("hz"), "s@x.io", "r@x.io", subject, "b")
+            .await
+            .unwrap();
+    }
+    let (_, body) = http_json(srv.http_addr, "GET", "/healthz", None).await;
+    assert_eq!(body["emails_inserted_total"], 2, "{body}");
+    assert_eq!(body["emails_dropped_total"], 0, "{body}");
+    for (member, metric) in [
+        ("emails_inserted_total", "swarmail_emails_inserted_total"),
+        ("emails_dropped_total", "swarmail_emails_dropped_total"),
+    ] {
+        assert_eq!(
+            body[member].as_u64().unwrap(),
+            common::metric_now(srv.http_addr, metric).await,
+            "{member} is the value /metrics exposes"
+        );
+    }
+
+    let capped = start_with(|mut cfg| {
+        cfg.max_per_inbox = 1;
+        cfg
+    })
+    .await;
+    for subject in ["first", "second"] {
+        common::smtp_send(
+            capped.smtp_addr,
+            Some("cap"),
+            "s@x.io",
+            "r@x.io",
+            subject,
+            "b",
+        )
+        .await
+        .unwrap();
+    }
+    let (_, body) = http_json(capped.http_addr, "GET", "/healthz", None).await;
+    assert_eq!(body["emails_inserted_total"], 2, "{body}");
+    assert_eq!(body["emails_dropped_total"], 1, "{body}");
+    assert_eq!(
+        body["emails_dropped_total"].as_u64().unwrap(),
+        common::metric_now(capped.http_addr, "swarmail_emails_dropped_total").await
+    );
+}
+
+/// AC8: every inbox item carries `last_received_ms`, the server's stamp of
+/// the mail most recently stored; a cleared inbox is not listed.
+#[tokio::test]
+async fn the_inbox_list_carries_the_last_received_stamp() {
+    let srv = start().await;
+    let stamp_of = |list: &serde_json::Value, subject: &str| {
+        list["emails"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["subject"] == subject)
+            .unwrap_or_else(|| panic!("no {subject}: {list}"))["received_ms"]
+            .clone()
+    };
+    let listed = |inboxes: &serde_json::Value| {
+        inboxes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "stamp")
+            .cloned()
+    };
+    for subject in ["first", "second"] {
+        let (st, _) = http_json(
+            srv.http_addr,
+            "POST",
+            "/api/v1/inboxes/stamp/seed",
+            Some(&format!(r#"{{"to": "u@x.io", "subject": "{subject}"}}"#)),
+        )
+        .await;
+        assert_eq!(st, 200);
+        let (_, inboxes) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+        let item = listed(&inboxes).expect("the inbox is listed");
+        assert!(item.get("last_received_ms").is_some(), "{item}");
+        let (_, list) =
+            http_json(srv.http_addr, "GET", "/api/v1/inboxes/stamp/messages", None).await;
+        assert_eq!(
+            item["last_received_ms"],
+            stamp_of(&list, subject),
+            "{subject}: the newest stored mail's stamp"
+        );
+    }
+    let (st, _) = http_json(
+        srv.http_addr,
+        "DELETE",
+        "/api/v1/inboxes/stamp/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (_, inboxes) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert!(listed(&inboxes).is_none(), "an emptied inbox is not listed");
+}
+
+/// AC18: what ingest stored for a real multipart mail, over real SMTP with a
+/// chosen EHLO name.
+#[tokio::test]
+async fn the_projection_serves_what_ingest_stored() {
+    let srv = start().await;
+    let id = smtp_with_helo(srv.smtp_addr, "proj", "mailer.example.org", &console_mail()).await;
+    let body = projection_of(srv.http_addr, &id).await;
+    assert_eq!(body["id"], id.as_str());
+    assert_eq!(body["smtp_helo"], "mailer.example.org");
+    assert_eq!(body["smtp_client_ip"], "127.0.0.1");
+
+    assert_eq!(body["links"]["total"], 2, "{body}");
+    let links = body["links"]["items"].as_array().unwrap();
+    let html = links.iter().find(|l| l["source"] == "html").unwrap();
+    assert_eq!(html["url"], "https://app.example/verify?t=1");
+    assert_eq!(html["anchor_text"], "Confirm email");
+    let text = links.iter().find(|l| l["source"] == "text").unwrap();
+    assert_eq!(text["url"], "https://text.example/plain-link");
+    assert!(text["anchor_text"].is_null(), "{text}");
+
+    assert_eq!(body["attachments"]["total"], 2, "{body}");
+    let parts = body["attachments"]["items"].as_array().unwrap();
+    assert_eq!(parts[0]["filename"], "invoice.pdf");
+    assert_eq!(parts[0]["content_type"], "application/pdf");
+    assert_eq!(parts[0]["size"], 3);
+    assert!(parts[0]["ics"].is_null(), "{}", parts[0]);
+    assert!(parts[1]["filename"].is_null());
+    assert_eq!(parts[1]["content_type"], "text/calendar");
+    assert_eq!(
+        parts[1]["ics"],
+        serde_json::json!({
+            "summary": "Delivery window",
+            "dtstart": "20261118T090000",
+            "dtstart_tzid": "Europe/Sofia",
+            "dtend": "20261118T120000",
+            "dtend_tzid": "Europe/Sofia"
+        })
+    );
+
+    // AC20: the closed member sets, and nothing the ruling withholds.
+    assert_eq!(
+        sorted_keys(&body),
+        ["attachments", "id", "links", "smtp_client_ip", "smtp_helo"]
+    );
+    assert_eq!(sorted_keys(&links[0]), ["anchor_text", "source", "url"]);
+    assert_eq!(
+        sorted_keys(&parts[0]),
+        ["content_type", "filename", "ics", "size"]
+    );
+    assert_eq!(
+        sorted_keys(&parts[1]["ics"]),
+        ["dtend", "dtend_tzid", "dtstart", "dtstart_tzid", "summary"]
+    );
+    let text = body.to_string();
+    for withheld in [
+        "\"content\":",
+        "\"bytes\":",
+        "\"body\":",
+        "\"raw\":",
+        "\"text\":",
+        "\"html\":",
+        "\"sha256\":",
+        "\"stored\":",
+        "\"uid\":",
+        "\"rel\":",
+        "evt-77",
+    ] {
+        assert!(!text.contains(withheld), "{withheld} in {text}");
+    }
+}
+
+/// AC19: a seeded mail never crossed an SMTP session, so the two observations
+/// are null; its lists are known, not unknown.
+#[tokio::test]
+async fn a_seeded_mail_projects_no_smtp_client() {
+    let srv = start().await;
+    seed(srv.http_addr, "seeded", "u@x.io").await;
+    let id = first_id(srv.http_addr, "seeded").await;
+    let body = projection_of(srv.http_addr, &id).await;
+    assert!(body["smtp_client_ip"].is_null(), "{body}");
+    assert!(body["smtp_helo"].is_null(), "{body}");
+    assert!(body["links"]["total"].is_u64(), "{body}");
+    assert!(body["attachments"]["total"].is_u64(), "{body}");
+}
+
+/// AC21: an unknown id is a 404, any query key a 400 naming route and key,
+/// every other method a 405, a foreign Origin a 403, and a grant of no CORS.
+#[tokio::test]
+async fn the_projection_refuses_unknown_ids_queries_and_methods() {
+    let srv = start().await;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/messages/no-such-id/projection",
+        None,
+    )
+    .await;
+    assert_eq!(st, 404);
+    assert_eq!(body, serde_json::json!({"error": "message not found"}));
+
+    seed(srv.http_addr, "refuse", "u@x.io").await;
+    let id = first_id(srv.http_addr, "refuse").await;
+    let path = format!("/api/v1/messages/{id}/projection");
+    assert_named_query_refusal(
+        srv.http_addr,
+        "GET",
+        &format!("{path}?x=1"),
+        "GET /api/v1/messages/{id}/projection",
+        "x",
+        "",
+    )
+    .await;
+    for method in ["POST", "PUT", "DELETE"] {
+        let (st, _) = http_send_text(srv.http_addr, method, &path, None).await;
+        assert_eq!(st, 405, "{method}");
+    }
+    let (st, _) = http_send_text_with_headers(
+        srv.http_addr,
+        "GET",
+        &path,
+        &[("Origin", "https://evil.example")],
+        None,
+    )
+    .await;
+    assert_eq!(st, 403, "the Origin guard wraps the new route");
+    let (st, head) = http_head_text(srv.http_addr, &path).await;
+    assert_eq!(st, 200);
+    assert!(
+        !head.to_ascii_lowercase().contains("access-control-"),
+        "no CORS grant: {head}"
+    );
+}
+
+/// AC23: no existing serialization gained a projected member — the message,
+/// the list, the thread view and a feed frame of the AC18 mail.
+#[tokio::test]
+async fn no_other_surface_gains_the_projected_fields() {
+    let srv = start().await;
+    let id = smtp_with_helo(
+        srv.smtp_addr,
+        "quiet",
+        "mailer.example.org",
+        &console_mail(),
+    )
+    .await;
+    let mut feed = common::SseReader::open(srv.http_addr, "/api/v1/inboxes/quiet/feed").await;
+    let (_, frame) = feed.next_frame().await;
+    let mut surfaces = vec![("feed frame".to_string(), frame)];
+    for path in [
+        format!("/api/v1/messages/{id}"),
+        "/api/v1/inboxes/quiet/messages".to_string(),
+        "/api/v1/inboxes/quiet/threads".to_string(),
+    ] {
+        let (st, text) = http_get_text(srv.http_addr, &path).await;
+        assert_eq!(st, 200, "{path}");
+        surfaces.push((path, text));
+    }
+    for (name, text) in surfaces {
+        assert!(text.contains("Console"), "{name} carries the mail: {text}");
+        for withheld in [
+            "link_metadata",
+            "smtp_client_ip",
+            "smtp_helo",
+            "attachments",
+            "mailer.example.org",
+            "invoice.pdf",
+        ] {
+            assert!(!text.contains(withheld), "{name} gained {withheld}");
+        }
+    }
+}
+
+/// AC24: the published document names the route, its schema and answers, the
+/// inbox stamp and the two `/healthz` counters.
+#[tokio::test]
+async fn openapi_documents_the_projection_and_the_two_fields() {
+    let srv = start().await;
+    let (st, doc) = http_json(srv.http_addr, "GET", "/openapi.json", None).await;
+    assert_eq!(st, 200);
+    let get = &doc["paths"]["/api/v1/messages/{id}/projection"]["get"];
+    for status in ["200", "400", "403", "404"] {
+        assert!(get["responses"][status].is_object(), "{status}: {get}");
+    }
+    assert!(doc["components"]["schemas"]["MessageProjection"].is_object());
+    let stamp = &doc["components"]["schemas"]["InboxSummary"]["properties"]["last_received_ms"];
+    assert_eq!(stamp["type"], serde_json::json!(["integer", "null"]));
+    let healthz = doc["paths"]["/healthz"]["get"].to_string();
+    assert!(healthz.contains("emails_inserted_total"), "{healthz}");
+    assert!(healthz.contains("emails_dropped_total"), "{healthz}");
 }

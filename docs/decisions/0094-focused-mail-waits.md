@@ -201,3 +201,9 @@ nothing beyond the acceptance.
   [0108](0108-compact-email-view.md), the compact view on modern search and
   latest serves `anchors` with `url` and `anchor_text` (`src/api.rs`,
   `src/mcp.rs` `MODERN_SEARCH_DESCRIPTION`).
+
+## Dated pointer — 2026-11-16 (proposed 0134)
+
+Proposed [0134](0134-ui-projection-route.md) §1 amends §2 of this record: the skip of the occurrence vector in every `Email` serialization stands, and the occurrences' `url`, `anchor_text` and `source` gain one read, `GET /api/v1/messages/{id}/projection`, which is not an `Email` serialization. `rel` is not served by it. It is a proposal until the operator accepts it; this record's ruling stands as written until then.
+
+Accepted by the operator on 2026-11-16 ([0134](0134-ui-projection-route.md), acceptance note).

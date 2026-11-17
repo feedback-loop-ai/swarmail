@@ -2353,7 +2353,13 @@ async fn auth_control_names_refuse_without_identity_change() {
     assert_eq!(c.reply().await, "235 2.7.0 Accepted");
     deliver(&mut c, "f@x.io", "r@x.io").await;
 
-    let (_, inboxes) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    let (_, mut inboxes) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    // Decision 0134 §7: every item also carries the server's ingest stamp,
+    // which this test is not about: read it as a number and set it aside.
+    for item in inboxes.as_array_mut().unwrap() {
+        assert!(item["last_received_ms"].is_i64(), "{item}");
+        item.as_object_mut().unwrap().remove("last_received_ms");
+    }
     assert_eq!(
         inboxes,
         serde_json::json!([

@@ -1,12 +1,16 @@
-//! Minimal embedded web UI. The agent-native surfaces (REST/MCP) stay the
-//! primary interface; this is for humans watching a run. The inbox and thread
-//! views are live: the server ships a thin shell and the browser paints it
-//! from the JSON API (`/api/v1/inboxes/{inbox}/threads[...]`), refreshed by
-//! the SSE feed on every accepted mail. All mail-controlled text is rendered
-//! with `textContent` in `static/ui.js` — never `innerHTML` — so nothing the
-//! SMTP peer sent can become markup here.
+//! Embedded web UI. The agent-native surfaces (REST/MCP) stay the primary
+//! interface; this is for humans watching a run. `/`, the inbox view and the
+//! thread view are one live **run console** (issue #355): a status bar over
+//! three panes (inboxes, stream, reader). The server ships a thin shell and
+//! the first paint of the inbox rail; the browser paints the rest from the
+//! JSON API (`/api/v1/inboxes/{inbox}/threads[...]`, the per-message
+//! projection and deliverability report) and the SSE feed. All mail-controlled
+//! text is rendered with `textContent` in `static/ui.js` — never `innerHTML` —
+//! so nothing the SMTP peer sent can become markup here.
 
-use crate::api::{ApiError, AppState, InboxPageQuery, bad_request, inbox_page, parse_query};
+use crate::api::{
+    ApiError, AppState, DEFAULT_LIST_LIMIT, InboxPageQuery, bad_request, inbox_page, parse_query,
+};
 use crate::model::validate_inbox;
 use axum::Router;
 use axum::extract::{Path, RawQuery, State};
@@ -20,17 +24,9 @@ use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 /// inlined into the shell.
 const SCRIPT: &str = include_str!("static/ui.js");
 
-const STYLE: &str = r#"<style>
-body{font-family:ui-sans-serif,system-ui,sans-serif;margin:0;background:#0d1117;color:#e6edf3}
-a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}
-.wrap{max-width:960px;margin:0 auto;padding:24px}
-h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;color:#8b949e;margin:24px 0 8px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 16px;margin:8px 0}
-.mono{font-family:ui-monospace,monospace;font-size:12px}
-.pill{display:inline-block;background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb55;border-radius:99px;padding:1px 10px;font-size:12px;margin-right:6px}
-.muted{color:#8b949e;font-size:12px}
-iframe{width:100%;min-height:320px;border:1px solid #30363d;border-radius:8px;background:#fff}
-</style>"#;
+/// The stylesheet of every UI page, embedded at compile time: system font
+/// stacks, no `url(`, no `@import`, nothing that loads from outside.
+const CSS: &str = include_str!("static/ui.css");
 
 /// HTML-escape untrusted text for element content and attribute values.
 /// Every interpolation of mail-controlled data goes through this.
@@ -54,19 +50,74 @@ const CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'un
 fn page(title: &str, body: String) -> Html<String> {
     let title = esc(title);
     Html(format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="{CSP}"><title>{title} · Swarmail</title>{STYLE}</head>
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="{CSP}"><title>{title} · Swarmail</title><style>{CSS}</style></head>
 <body><div class="wrap"><h1>📮 Swarmail</h1><div class="muted">Built for a program waiting on mail. · <a href="/">inboxes</a> · <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">openapi</a></div>{body}</div></body></html>"#
     ))
 }
 
-/// A live shell: no mail is rendered server-side. The `data-*` attributes are
-/// the only state the script needs; everything else comes from the JSON API.
-fn shell(title: &str, view: String) -> Html<String> {
-    page(
-        title,
-        format!(
-            r#"{view}<noscript><div class="card muted">This view is live and needs JavaScript; the JSON API works without it.</div></noscript><script>{SCRIPT}</script>"#
-        ),
+/// The run console's logo, inline (the page loads nothing from outside).
+const LOGO: &str = r##"<svg viewBox="0 0 150 150" aria-hidden="true"><rect x="6" y="6" width="138" height="138" rx="14" fill="none" stroke="#f0a232" stroke-width="8"/><rect x="35" y="47" width="80" height="56" rx="8" fill="none" stroke="#f0a232" stroke-width="9"/><path d="M35 63l40 26 40-26" fill="none" stroke="#f0a232" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/><circle cx="47" cy="30" r="7" fill="#7c5cff"/><circle cx="75" cy="30" r="7" fill="#7c5cff"/><circle cx="103" cy="30" r="8" fill="#f0a232"/></svg>"##;
+
+/// The run console (issue #355): one page for `/`, the inbox view and the
+/// thread view. No mail is rendered server-side. The `data-*` attributes are
+/// the only state the script needs (`#view` names the inbox and thread,
+/// `#inbox-rows` the page of the inbox list, `#panes` the pane to show before
+/// any script runs); everything else comes from the JSON API and the feed.
+/// `rail` is the first paint of the inbox pane, already escaped.
+fn console(title: &str, pane: &str, view_attrs: &str, open: &str, rail: String) -> Html<String> {
+    let title = esc(title);
+    let open = esc(open);
+    // `/` has no feed to follow; an inbox route connects as soon as the
+    // script runs. The script, never this text, says "Live".
+    let live = if pane == "inboxes" {
+        "Idle"
+    } else {
+        "Connecting"
+    };
+    Html(format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{CSP}"><title>{title} · Swarmail</title><style>{CSS}</style></head>
+<body class="app"><header id="status" class="bar"><div class="brand">{LOGO}Swarmail</div><div class="muted">Built for a program waiting on mail. · <a href="/">inboxes</a> · <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">openapi</a></div><div class="endpoints" aria-label="Listeners"><span class="ep" id="listener-smtp">SMTP <b>unknown</b></span><span class="ep" id="listener-pop3">POP3 <b>unknown</b></span><span class="ep" id="listener-http">HTTP <b>unknown</b></span></div><div class="stats tnum"><span title="Mail accepted over the store's lifetime"><b id="count-accepted">–</b> accepted (lifetime)</span><span class="dropped" title="Mail evicted by the per-inbox cap over the store's lifetime"><b id="count-dropped">–</b> dropped (evicted by cap, lifetime)</span></div><span class="spacer"></span><span class="chip chaos-unknown" id="chaos">Chaos unknown</span><span class="live" id="live"><span class="pulse"></span><span>{live}</span></span></header>
+<main id="panes" data-pane="{pane}">{rail}<section id="stream" class="pane stream" aria-label="Messages"><div class="pane-head"><button class="btn ghost back-rail" id="back-rail" type="button" aria-label="Back to inboxes">←</button><span class="stream-title" id="stream-title">{open}</span><span class="muted tnum" id="stream-count"></span><span class="spacer"></span><span id="clear-slot"></span></div><div id="view" class="msgs" {view_attrs}></div></section><section id="reader" class="pane reader" aria-label="Message"><div class="pane-head"><button class="btn ghost back" id="back" type="button">← Messages</button></div><div class="reader-body" id="reader-body"></div></section></main>
+<div class="toast" id="toast" hidden></div><noscript><div class="card muted">This console is live and needs JavaScript; the JSON API works without it.</div></noscript><script>{SCRIPT}</script></body></html>"#
+    ))
+}
+
+/// The inbox pane's first paint: one link per inbox of the page, the open one
+/// marked, the server's own empty sentence (the script only shows or hides
+/// it), and the pager. The href is percent-encoded (a `#` or `?` in an inbox
+/// name would otherwise be read as a fragment or query, and `a#b` would link
+/// to `a`); the visible text stays escaped HTML.
+fn rail(state: &AppState, limit: usize, offset: usize, open: &str) -> String {
+    let total = state.store.inboxes().len();
+    let mut rows = String::new();
+    for summary in inbox_page(&state.store, limit, offset) {
+        let href = utf8_percent_encode(&summary.name, NON_ALPHANUMERIC);
+        let label = esc(&summary.name);
+        let count = summary.count;
+        let current = if summary.name == open {
+            r#" aria-current="true""#
+        } else {
+            ""
+        };
+        rows.push_str(&format!(
+            r#"<a class="inbox" href="/ui/inbox/{href}"{current}><span class="name">{label}</span><span class="count">{count}</span><span class="when"></span></a>"#
+        ));
+    }
+    // The server chooses the sentence: the existing contract is that a
+    // non-empty store's page never says "No inboxes yet".
+    let (sentence, hidden) = if total == 0 {
+        (
+            "No inboxes yet — point SMTP at this server and send something.",
+            "",
+        )
+    } else if rows.is_empty() {
+        ("No inboxes on this page.", "")
+    } else {
+        ("No inboxes on this page.", " hidden")
+    };
+    let pager = pager(limit, offset, total);
+    format!(
+        r#"<nav id="inboxes" class="pane rail" aria-label="Inboxes"><div class="pane-head"><span class="label">Inboxes</span><span class="spacer"></span><span class="muted tnum" id="inbox-total"></span></div><div class="filter"><input id="inbox-filter" type="search" placeholder="Filter inboxes" aria-label="Filter inboxes" autocomplete="off"></div><div class="inboxes" id="inbox-rows" data-limit="{limit}" data-offset="{offset}">{rows}</div><div class="empty" id="inbox-empty"{hidden}>{sentence}</div><div class="empty problem" id="inbox-note" hidden></div>{pager}<div class="rail-foot">One inbox per test: the SMTP <code>AUTH</code> username picks it, or the recipient's domain routes it.</div></nav>"#
     )
 }
 
@@ -76,33 +127,35 @@ pub fn router() -> Router<AppState> {
         .route("/ui/inbox/{inbox}", get(inbox_view))
         .route("/ui/inbox/{inbox}/thread/{key}", get(thread_view))
         .route("/ui/message/{id}", get(message_view))
+        .layer(axum::middleware::map_response(refuse_framing))
 }
 
-/// The inbox index, paged like `/api/v1/inboxes` (decision 0044 §3, issue
+/// No other origin may frame the console (issue #355 review). The page's
+/// CSP is a `<meta>` tag, which cannot carry `frame-ancestors`, and the
+/// console holds the first destructive browser control (Clear inbox): a
+/// framing page could clickjack it. The header is the only way to refuse.
+async fn refuse_framing(mut res: Response) -> Response {
+    res.headers_mut().insert(
+        axum::http::header::X_FRAME_OPTIONS,
+        axum::http::HeaderValue::from_static("DENY"),
+    );
+    res
+}
+
+/// The console on `/`, paged like `/api/v1/inboxes` (decision 0044 §3, issue
 /// #91): the same closed `limit`/`offset` query, the same default and cap.
-/// An empty store says so; an empty page beyond the end says only that.
+/// An empty store says so; an empty page beyond the end says only that. No
+/// inbox is open, so the stream pane says to pick one.
 async fn index(State(state): State<AppState>, raw: RawQuery) -> Result<Html<String>, ApiError> {
     let q: InboxPageQuery = parse_query(raw.0.as_deref().unwrap_or(""), "inboxes")?;
     let (limit, offset) = q.page().map_err(bad_request)?;
-    let total = state.store.inboxes().len();
-    let mut rows = String::new();
-    for (name, count) in inbox_page(&state.store, limit, offset) {
-        // The href is percent-encoded (a `#` or `?` in an inbox name would
-        // otherwise be read as a fragment or query, and `a#b` would link to
-        // `a`); the visible text stays escaped HTML.
-        let href = utf8_percent_encode(&name, NON_ALPHANUMERIC);
-        let label = esc(&name);
-        rows.push_str(&format!(
-            r#"<div class="card"><a href="/ui/inbox/{href}"><b>{label}</b></a> <span class="pill">{count} emails</span></div>"#
-        ));
-    }
-    if total == 0 {
-        rows = r#"<div class="card muted">No inboxes yet — point SMTP at this server and send something.</div>"#.into();
-    } else if rows.is_empty() {
-        rows = r#"<div class="card muted">No inboxes on this page.</div>"#.into();
-    }
-    let pager = pager(limit, offset, total);
-    Ok(page("inboxes", format!(r#"<h2>inboxes</h2>{rows}{pager}"#)))
+    Ok(console(
+        "inboxes",
+        "inboxes",
+        r#"data-inbox="""#,
+        "",
+        rail(&state, limit, offset, ""),
+    ))
 }
 
 /// The index's navigation. A positive page links back (saturating at the
@@ -133,26 +186,38 @@ fn pager(limit: usize, offset: usize, total: usize) -> String {
     }
 }
 
-/// The live inbox view: the thread list, repainted from the feed as mail
+/// The console on an inbox: the thread list, repainted from the feed as mail
 /// arrives (no manual refresh). A blank inbox refuses (decision 0044 §3).
-async fn inbox_view(Path(inbox): Path<String>) -> Result<Html<String>, ApiError> {
+async fn inbox_view(
+    State(state): State<AppState>,
+    Path(inbox): Path<String>,
+) -> Result<Html<String>, ApiError> {
     validate_inbox(&inbox).map_err(bad_request)?;
-    Ok(shell(
+    Ok(console(
         &inbox,
-        format!(r#"<div id="view" data-inbox="{}"></div>"#, esc(&inbox)),
+        "stream",
+        &format!(r#"data-inbox="{}""#, esc(&inbox)),
+        &inbox,
+        rail(&state, DEFAULT_LIST_LIMIT, 0, &inbox),
     ))
 }
 
-/// The live thread view: one conversation, oldest first, kept fresh too.
-async fn thread_view(Path((inbox, key)): Path<(String, String)>) -> Result<Html<String>, ApiError> {
+/// The console on one conversation, kept fresh too.
+async fn thread_view(
+    State(state): State<AppState>,
+    Path((inbox, key)): Path<(String, String)>,
+) -> Result<Html<String>, ApiError> {
     validate_inbox(&inbox).map_err(bad_request)?;
-    Ok(shell(
+    Ok(console(
         "thread",
-        format!(
-            r#"<div id="view" data-inbox="{}" data-thread="{}"></div>"#,
+        "stream",
+        &format!(
+            r#"data-inbox="{}" data-thread="{}""#,
             esc(&inbox),
             esc(&key)
         ),
+        &inbox,
+        rail(&state, DEFAULT_LIST_LIMIT, 0, &inbox),
     ))
 }
 

@@ -1,0 +1,537 @@
+<title>Swarmail Run Console</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: a run console in three panes (inboxes, live stream, reader) under one status bar; one pane at a time on a phone.
+   System font stacks only: the real UI's CSP (default-src 'none') loads no web fonts, so this ports back as-is. */
+:root {
+  --bg: #f4f3f8;
+  --surface: #ffffff;
+  --surface-2: #eeecf5;
+  --line: #dddaea;
+  --fg: #1b1830;
+  --muted: #676281;
+  --accent: #6247e0;          /* interactive: selection, links, focus */
+  --accent-soft: #6247e01a;
+  --live: #f0a232;            /* the logo's pulse: new and live only */
+  --live-ink: #9a5c00;
+  --live-soft: #f0a23224;
+  --ok: #1d7a4c;  --ok-soft: #1d7a4c17;
+  --warn: #8f6a00; --warn-soft: #c9950f1f;
+  --err: #c0362c; --err-soft: #c0362c17;
+  --info: #49618a; --info-soft: #49618a17;
+  --shadow: 0 1px 2px #1b18300f, 0 4px 16px #1b18300a;
+  --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  --r: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #110f18; --surface: #18151f; --surface-2: #211d2c; --line: #2e2940;
+    --fg: #ebe8f4; --muted: #9a94b2; --accent: #a28fff; --accent-soft: #a28fff1f;
+    --live: #f0a232; --live-ink: #f5b95a; --live-soft: #f0a23226;
+    --ok: #4cc38a; --ok-soft: #4cc38a1c; --warn: #e3b341; --warn-soft: #e3b3411f;
+    --err: #ff7b72; --err-soft: #ff7b721c; --info: #8fa8d6; --info-soft: #8fa8d61c;
+    --shadow: 0 1px 2px #0006, 0 6px 20px #0004;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #110f18; --surface: #18151f; --surface-2: #211d2c; --line: #2e2940;
+  --fg: #ebe8f4; --muted: #9a94b2; --accent: #a28fff; --accent-soft: #a28fff1f;
+  --live: #f0a232; --live-ink: #f5b95a; --live-soft: #f0a23226;
+  --ok: #4cc38a; --ok-soft: #4cc38a1c; --warn: #e3b341; --warn-soft: #e3b3411f;
+  --err: #ff7b72; --err-soft: #ff7b721c; --info: #8fa8d6; --info-soft: #8fa8d61c;
+  --shadow: 0 1px 2px #0006, 0 6px 20px #0004;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 14px; line-height: 1.45; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+* { box-sizing: border-box; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.mono { font-family: var(--font-mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+.tnum { font-variant-numeric: tabular-nums; }
+
+.app { height: 100%; display: grid; grid-template-rows: auto 1fr; }
+
+/* status bar */
+.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--surface); border-bottom: 1px solid var(--line);
+  padding-block: 10px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 650; letter-spacing: -0.01em; font-size: 15px; }
+.brand svg { width: 26px; height: 26px; flex: none; }
+.endpoints { display: flex; flex-wrap: wrap; gap: 6px; }
+.ep { font-family: var(--font-mono); font-size: 12px; padding: 3px 8px; border-radius: 6px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+.ep b { color: var(--fg); font-weight: 600; }
+.stats { display: flex; gap: 14px; align-items: center; font-size: 12.5px; color: var(--muted); }
+.stats b { color: var(--fg); font-weight: 600; }
+.spacer { flex: 1; }
+.live { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; color: var(--live-ink); }
+.pulse { position: relative; width: 9px; height: 9px; border-radius: 50%; background: var(--live); }
+.pulse::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 2px solid var(--live); opacity: 0; animation: ring 1.8s ease-out infinite; }
+@keyframes ring { 0% { transform: scale(.4); opacity: .7 } 100% { transform: scale(1.4); opacity: 0 } }
+.btn { border: 1px solid var(--line); background: var(--surface); border-radius: 7px; padding: 6px 11px; cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+.btn.ghost:hover { color: var(--fg); background: var(--surface-2); }
+.chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; border-radius: 99px; padding: 2px 9px; border: 1px solid var(--line); background: var(--surface); white-space: nowrap; }
+.chip.chaos-on { border-color: var(--err); color: var(--err); background: var(--err-soft); }
+.sample { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); border: 1px dashed var(--line); border-radius: 5px; padding: 2px 7px; }
+
+/* panes */
+.panes { min-height: 0; display: grid; grid-template-columns: 250px minmax(300px, 400px) minmax(0, 1fr); }
+.pane { min-height: 0; min-width: 0; overflow: auto; }
+.rail { border-right: 1px solid var(--line); background: var(--surface); display: flex; flex-direction: column; }
+.stream { border-right: 1px solid var(--line); }
+.pane-head { position: sticky; top: 0; z-index: 2; background: inherit; padding: 14px 16px 10px; display: flex; align-items: center; gap: 8px; }
+.stream .pane-head, .reader .pane-head { background: var(--bg); }
+.label { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+
+.filter { margin: 0 12px 8px; }
+.filter input { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 7px; padding: 7px 10px; font: inherit; font-size: 13px; }
+.inboxes { list-style: none; margin: 0; padding: 0 8px 12px; display: grid; gap: 2px; }
+.inbox { width: 100%; text-align: left; border: 0; background: transparent; border-radius: 7px; padding: 8px 10px; cursor: pointer;
+  display: grid; grid-template-columns: 1fr auto; gap: 1px 8px; align-items: center; }
+.inbox:hover { background: var(--surface-2); }
+.inbox[aria-current="true"] { background: var(--accent-soft); }
+.inbox .name { font-family: var(--font-mono); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox[aria-current="true"] .name { color: var(--accent); font-weight: 600; }
+.inbox .count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.inbox .when { grid-column: 1 / -1; font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.newdot { width: 7px; height: 7px; border-radius: 50%; background: var(--live); flex: none; }
+.rail-foot { margin-top: auto; padding: 12px 16px 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.rail-foot code { font-family: var(--font-mono); font-size: 11.5px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; color: var(--fg); }
+
+/* stream */
+.stream-title { font-family: var(--font-mono); font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.msgs { list-style: none; margin: 0; padding: 0 10px 16px; display: grid; gap: 6px; }
+.thread-label { font-size: 11.5px; color: var(--muted); padding: 8px 6px 2px; display: flex; gap: 6px; align-items: center; }
+.msg { width: 100%; text-align: left; cursor: pointer; border: 1px solid var(--line); background: var(--surface); border-radius: var(--r); padding: 10px 12px;
+  display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; position: relative; overflow: hidden; }
+.msg:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.msg[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.msg .from { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg .time { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.msg .subj { grid-column: 1 / -1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg .tags { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
+.tag { font-size: 11.5px; border-radius: 5px; padding: 1px 7px; background: var(--surface-2); color: var(--muted); white-space: nowrap; display: inline-flex; gap: 4px; align-items: center; }
+.tag.code { font-family: var(--font-mono); color: var(--fg); background: var(--accent-soft); }
+.sev { font-size: 11.5px; border-radius: 5px; padding: 1px 7px; white-space: nowrap; font-weight: 600; display: inline-flex; gap: 4px; align-items: center; }
+.sev.error { background: var(--err-soft); color: var(--err); }
+.sev.warning { background: var(--warn-soft); color: var(--warn); }
+.sev.info { background: var(--info-soft); color: var(--info); }
+.sev.clean { background: var(--ok-soft); color: var(--ok); }
+.msg.fresh::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--live); }
+.msg.arrive { animation: arrive .9s ease-out; }
+@keyframes arrive { from { background: var(--live-soft); transform: translateY(-4px); } to { background: var(--surface); transform: none; } }
+.empty { margin: 8px 16px; padding: 18px; border: 1px dashed var(--line); border-radius: var(--r); color: var(--muted); font-size: 13px; }
+
+/* reader */
+.reader { background: var(--bg); }
+.reader-body { padding: 4px 24px 32px; max-width: 880px; display: grid; gap: 18px; }
+.subject { font-size: 21px; line-height: 1.25; font-weight: 650; letter-spacing: -0.015em; margin: 0; text-wrap: balance; overflow-wrap: anywhere; }
+.meta { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; font-size: 13px; }
+.meta dt { color: var(--muted); }
+.meta dd { margin: 0; font-family: var(--font-mono); font-size: 12.5px; overflow-wrap: anywhere; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); }
+.panel-head { padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.panel-body { padding: 12px 14px; display: grid; gap: 10px; }
+.codes { display: flex; flex-wrap: wrap; gap: 8px; }
+.codebox { display: inline-flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 6px 6px 12px; background: var(--bg); }
+.codebox span { font-family: var(--font-mono); font-size: 19px; letter-spacing: .12em; font-weight: 600; font-variant-numeric: tabular-nums; }
+.links { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.link { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; align-items: start; }
+.link .anchor { font-weight: 600; }
+.link .url { grid-column: 1 / 2; font-family: var(--font-mono); font-size: 12px; color: var(--accent); overflow-wrap: anywhere; }
+.link .src { grid-row: 1 / 3; grid-column: 2; display: flex; gap: 4px; }
+.auth { display: flex; flex-wrap: wrap; gap: 6px; }
+.auth .sev { font-family: var(--font-mono); font-weight: 500; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); padding: 0 8px; overflow-x: auto; }
+.tab { border: 0; background: transparent; padding: 10px 12px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; font-size: 13px; }
+.tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+.tabpanel { padding: 14px; }
+.preview { width: 100%; height: 360px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+pre.text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; }
+.findings { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.finding { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; padding: 10px 12px; border-radius: 7px; background: var(--bg); border: 1px solid var(--line); }
+.finding .rule { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+.finding .loc { grid-column: 2; font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
+.finding .hint { grid-column: 2; font-size: 13px; }
+.note { font-size: 12px; color: var(--muted); }
+.snip { position: relative; }
+.snip pre { margin: 0; padding: 12px 14px; padding-right: 76px; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; overflow-x: auto; font-family: var(--font-mono); font-size: 12px; line-height: 1.55; }
+.snip .btn { position: absolute; top: 7px; right: 7px; padding: 3px 9px; font-size: 12px; }
+.snip-title { font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
+.back { display: none; }
+.confirm { display: inline-flex; gap: 6px; align-items: center; font-size: 12.5px; }
+.toast { position: fixed; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 20; }
+
+@media (max-width: 1080px) {
+  .panes { grid-template-columns: 220px minmax(0, 1fr); }
+  .reader { display: none; }
+  .panes.reading { grid-template-columns: minmax(0, 1fr); }
+  .panes.reading .rail, .panes.reading .stream { display: none; }
+  .panes.reading .reader { display: block; }
+  .panes.reading .back { display: inline-flex; }
+}
+@media (max-width: 680px) {
+  .panes { grid-template-columns: minmax(0, 1fr); }
+  .panes:not(.reading):not(.listing) .stream { display: none; }
+  .panes.listing .rail { display: none; }
+  .panes.listing .back-rail { display: inline-flex; }
+  .endpoints, .stats .dropped { display: none; }
+  .reader-body { padding: 4px 16px 28px; }
+  .bar { gap: 8px 12px; }
+}
+.back-rail { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .pulse::after, .msg.arrive { animation: none; }
+}
+</style>
+
+<div class="app">
+  <header class="bar">
+    <div class="brand">
+      <svg viewBox="0 0 150 150" aria-hidden="true">
+        <rect x="6" y="6" width="138" height="138" rx="14" fill="none" stroke="#f0a232" stroke-width="8"/>
+        <rect x="35" y="47" width="80" height="56" rx="8" fill="none" stroke="#f0a232" stroke-width="9"/>
+        <path d="M35 63l40 26 40-26" fill="none" stroke="#f0a232" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="47" cy="30" r="7" fill="#7c5cff"/><circle cx="75" cy="30" r="7" fill="#7c5cff"/><circle cx="103" cy="30" r="8" fill="#f0a232"/>
+      </svg>
+      Swarmail
+    </div>
+    <div class="endpoints" aria-label="Listeners">
+      <span class="ep">SMTP <b>127.0.0.1:1025</b></span>
+      <span class="ep">POP3 <b>:1110</b></span>
+      <span class="ep">HTTP <b>:8025</b></span>
+    </div>
+    <div class="stats tnum">
+      <span><b id="accepted">0</b> accepted</span>
+      <span class="dropped"><b>0</b> dropped</span>
+    </div>
+    <span class="spacer"></span>
+    <button class="chip" id="chaos" type="button" aria-pressed="false">Chaos off</button>
+    <span class="live"><span class="pulse"></span>Live</span>
+    <button class="btn primary" id="send" type="button">Send sample mail</button>
+    <span class="sample" title="This prototype shows invented mail">Sample data</span>
+  </header>
+
+  <main class="panes" id="panes">
+    <nav class="pane rail" aria-label="Inboxes">
+      <div class="pane-head"><span class="label">Inboxes</span><span class="spacer"></span><span class="muted tnum" id="inbox-total"></span></div>
+      <div class="filter"><input id="filter" type="search" placeholder="Filter inboxes" aria-label="Filter inboxes" autocomplete="off"></div>
+      <ul class="inboxes" id="inboxes"></ul>
+      <div class="rail-foot">One inbox per test: the SMTP <code>AUTH</code> username picks it, or the recipient's domain routes it.</div>
+    </nav>
+
+    <section class="pane stream" aria-label="Messages">
+      <div class="pane-head">
+        <button class="btn ghost back-rail" id="back-rail" type="button" aria-label="Back to inboxes">←</button>
+        <span class="stream-title" id="stream-title"></span>
+        <span class="muted tnum" id="stream-count"></span>
+        <span class="spacer"></span>
+        <span id="clear-slot"></span>
+      </div>
+      <ul class="msgs" id="msgs"></ul>
+    </section>
+
+    <section class="pane reader" aria-label="Message">
+      <div class="pane-head"><button class="btn ghost back" id="back" type="button">← Messages</button></div>
+      <div class="reader-body" id="reader"></div>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+// Sample mail, shaped like /api/v1/messages/{id} plus its deliverability report.
+// Every mail-controlled string reaches the page through textContent only, as in the real UI.
+const T0 = Date.parse('2026-11-16T14:02:11.000Z');
+const at = (s) => new Date(T0 + s * 1000).toISOString();
+
+const MAIL = [
+  { id: 'm1', inbox: 'signup-e2e-4f1c', thread: 'confirm-your-email', from: { name: 'Acme Accounts', address: 'no-reply@accounts.acme.test' },
+    envelope_from: 'bounce+4f1c@mailer.acme.test', to: ['ada@example.test'], subject: 'Confirm your email for Acme',
+    received_at: at(0.412), size: 8213, message_id: '<0c1f.4f1c@mailer.acme.test>', smtp_helo: 'mailer.acme.test', smtp_client_ip: '172.18.0.7',
+    codes: ['482913'],
+    links: [
+      { url: 'https://app.acme.test/verify?token=f3b9c1e2', anchor_text: 'Confirm email', source: 'html', rel: null },
+      { url: 'https://app.acme.test/unsubscribe?u=4f1c', anchor_text: 'Unsubscribe', source: 'html', rel: null },
+    ],
+    attachments: [],
+    auth: { dkim: 'pass', spf: 'pass', dmarc: 'pass', arc: 'none' },
+    report: { rule_set_id: 'swarmail-html/8', total: 0, findings: [] },
+    text: 'Hi Ada,\n\nYour Acme verification code is 482913. It expires in 10 minutes.\n\nOr confirm with this link:\nhttps://app.acme.test/verify?token=f3b9c1e2\n\nIf you did not sign up, ignore this mail.\n\nAcme',
+    html: '<div style="font-family:Arial,sans-serif;max-width:480px;margin:24px auto;color:#222"><h2 style="margin:0 0 12px">Confirm your email</h2><p>Hi Ada, your verification code is</p><p style="font-size:30px;letter-spacing:6px;font-weight:bold;margin:8px 0">482913</p><p><a href="https://app.acme.test/verify?token=f3b9c1e2" style="display:inline-block;background:#4b3fd1;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">Confirm email</a></p><p style="font-size:12px;color:#777">Not you? <a href="https://app.acme.test/unsubscribe?u=4f1c">Unsubscribe</a></p></div>' },
+
+  { id: 'm2', inbox: 'signup-e2e-4f1c', thread: 'welcome-to-acme', from: { name: 'Acme', address: 'hello@acme.test' },
+    envelope_from: 'bounce+4f1c@mailer.acme.test', to: ['ada@example.test'], subject: 'Welcome to Acme, Ada',
+    received_at: at(3.981), size: 14092, message_id: '<77a2.4f1c@mailer.acme.test>', smtp_helo: 'mailer.acme.test', smtp_client_ip: '172.18.0.7',
+    codes: [], links: [{ url: 'https://app.acme.test/start', anchor_text: 'Open your dashboard', source: 'html', rel: null }],
+    attachments: [], auth: { dkim: 'pass', spf: 'pass', dmarc: 'pass', arc: 'none' },
+    report: { rule_set_id: 'swarmail-html/8', total: 1, findings: [
+      { severity: 'info', rule_id: 'html.alt-text.missing.v1', location: { kind: 'mime_part', path: [1, 2] }, fix_hint: 'Give the header image an alt attribute; clients that block images show only the alt text.' } ] },
+    text: 'Welcome, Ada. Your account is ready.\n\nOpen your dashboard: https://app.acme.test/start',
+    html: '<div style="font-family:Arial,sans-serif;max-width:480px;margin:24px auto;color:#222"><div style="height:80px;background:#ece8ff;border-radius:8px"></div><h2>Welcome, Ada</h2><p>Your account is ready.</p><p><a href="https://app.acme.test/start">Open your dashboard</a></p></div>' },
+
+  { id: 'm3', inbox: 'password-reset-91', thread: 'reset-your-password', from: { name: 'Acme Security', address: 'security@acme.test' },
+    envelope_from: 'security@acme.test', to: ['grace@example.test'], subject: 'RESET YOUR PASSWORD NOW',
+    received_at: at(9.207), size: 6120, message_id: '<b51e.91@acme.test>', smtp_helo: 'localhost', smtp_client_ip: '172.18.0.9',
+    codes: [], links: [{ url: 'http://acme.test/reset?k=91aa07', anchor_text: 'Reset password', source: 'html', rel: null }],
+    attachments: [], auth: { dkim: 'none', spf: 'fail', dmarc: 'fail', arc: 'none' },
+    report: { rule_set_id: 'swarmail-html/8', total: 23, findings: [
+      { severity: 'error', rule_id: 'spf.fail.v1', location: { kind: 'header', name: 'Return-Path', occurrence: 1 }, fix_hint: 'The sending IP 172.18.0.9 is not in acme.test\'s SPF record. Add it, or send through the host the record names.' },
+      { severity: 'warning', rule_id: 'link.scheme.unsafe.v1', location: { kind: 'link', part_path: [1], byte_offset: 412 }, fix_hint: 'Use https for the reset link; a plain http link can be rewritten in transit.' },
+      { severity: 'warning', rule_id: 'spam.subject.all_caps.v1', location: { kind: 'header', name: 'Subject', occurrence: 1 }, fix_hint: 'Write the subject in sentence case; an all-caps subject scores as spam.' } ] },
+    text: 'Someone asked to reset your password.\nReset it here: http://acme.test/reset?k=91aa07\n',
+    html: '<div style="font-family:Arial,sans-serif;max-width:480px;margin:24px auto;color:#222"><p>Someone asked to reset your password.</p><p><a href="http://acme.test/reset?k=91aa07">Reset password</a></p></div>' },
+
+  { id: 'm4', inbox: 'checkout-flow-a7', thread: 'order-a7-1042', from: { name: 'Acme Store', address: 'orders@store.acme.test' },
+    envelope_from: 'orders@store.acme.test', to: ['lin@example.test'], subject: 'Your order A7-1042 is confirmed',
+    received_at: at(14.660), size: 48211, message_id: '<o1042.a7@store.acme.test>', smtp_helo: 'store.acme.test', smtp_client_ip: '172.18.0.11',
+    codes: ['A7-1042'], links: [{ url: 'https://store.acme.test/orders/A7-1042', anchor_text: 'Track your order', source: 'html', rel: null }],
+    attachments: [
+      { filename: 'invoice-A7-1042.pdf', content_type: 'application/pdf', size: 31544 },
+      { filename: 'delivery.ics', content_type: 'text/calendar', size: 612, ics: { summary: 'Delivery window', dtstart: '2026-11-18T09:00', dtend: '2026-11-18T12:00' } } ],
+    auth: { dkim: 'pass', spf: 'pass', dmarc: 'pass', arc: 'none' },
+    report: { rule_set_id: 'swarmail-html/8', total: 0, findings: [] },
+    text: 'Thanks, Lin. Order A7-1042 is confirmed.\nDelivery: Wed 18 Nov, 09:00–12:00 (invite attached).\nTrack it: https://store.acme.test/orders/A7-1042',
+    html: '<div style="font-family:Arial,sans-serif;max-width:480px;margin:24px auto;color:#222"><h2>Order A7-1042 is confirmed</h2><p>Delivery: Wed 18 Nov, 09:00–12:00.</p><p><a href="https://store.acme.test/orders/A7-1042">Track your order</a></p></div>' },
+
+  { id: 'm5', inbox: 'newsletter-bulk', thread: 'november-digest', from: { name: 'Acme News', address: 'news@acme.test' },
+    envelope_from: 'news@acme.test', to: ['list@example.test'], subject: 'The November digest',
+    received_at: at(21.033), size: 96410, message_id: '<nov.digest@acme.test>', smtp_helo: 'news.acme.test', smtp_client_ip: '172.18.0.12',
+    codes: [], links: [
+      { url: 'https://acme.test/blog/november', anchor_text: 'Read the digest', source: 'html', rel: null },
+      { url: 'https://t.acme.test/o.gif?c=nov', anchor_text: null, source: 'html', rel: null } ],
+    attachments: [], auth: { dkim: 'pass', spf: 'pass', dmarc: 'pass', arc: 'none' },
+    report: { rule_set_id: 'swarmail-html/8', total: 31, findings: [
+      { severity: 'error', rule_id: 'bulk.one_click.v1', location: { kind: 'header', name: 'List-Unsubscribe-Post', occurrence: null }, fix_hint: 'Bulk mail needs one-click unsubscribe (RFC 8058): add List-Unsubscribe with an https URL and List-Unsubscribe-Post: List-Unsubscribe=One-Click.' },
+      { severity: 'warning', rule_id: 'html.tracking-pixel.v1', location: { kind: 'mime_part', path: [2] }, fix_hint: 'A 1×1 remote image tracks opens. Disclose it in your privacy notice or drop it.' },
+      { severity: 'info', rule_id: 'dmarc.policy_none.v1', location: { kind: 'header', name: 'From', occurrence: 1 }, fix_hint: 'acme.test publishes p=none. Move to quarantine once reports are clean.' } ] },
+    text: '',
+    html: '<div style="font-family:Georgia,serif;max-width:520px;margin:24px auto;color:#222"><h1>The November digest</h1><p>Three things we shipped this month.</p><p><a href="https://acme.test/blog/november">Read the digest</a></p><img src="https://t.acme.test/o.gif?c=nov" width="1" height="1" alt=""></div>' },
+];
+const INBOXES = ['signup-e2e-4f1c', 'password-reset-91', 'checkout-flow-a7', 'newsletter-bulk', 'invite-team-3b'];
+
+const state = { inbox: 'signup-e2e-4f1c', id: 'm1', tab: 'overview', fresh: new Set(), chaos: false, accepted: 1279, clearing: false, filter: '' };
+const $ = (id) => document.getElementById(id);
+function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined && text !== null) n.textContent = text; return n; }
+const SEV_ORDER = { error: 3, warning: 2, info: 1 };
+const worst = (m) => m.report.findings.reduce((w, f) => (SEV_ORDER[f.severity] > SEV_ORDER[w] ? f.severity : w), 'clean');
+SEV_ORDER.clean = 0;
+const hms = (iso) => iso.slice(11, 23);
+const ago = (iso) => { const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000)); return s < 60 ? s + 's ago' : s < 3600 ? Math.round(s / 60) + 'm ago' : Math.round(s / 3600) + 'h ago'; };
+const kb = (b) => b < 1024 ? b + ' B' : (b / 1024).toFixed(1) + ' KB';
+function locText(l) {
+  if (l.kind === 'header') return 'header ' + l.name + (l.occurrence ? ' #' + l.occurrence : '');
+  if (l.kind === 'mime_part') return 'MIME part ' + l.path.join('.');
+  return 'link in part ' + l.part_path.join('.') + ', byte ' + l.byte_offset;
+}
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, 1800); }
+function copy(text, what) {
+  const done = () => toast('Copied ' + what);
+  try { navigator.clipboard.writeText(text).then(done, () => toast('Copy blocked here; select the text instead')); } catch (e) { toast('Copy blocked here; select the text instead'); }
+}
+function sevChip(sev, label) { const c = el('span', 'sev ' + sev, label || sev); return c; }
+
+// Rail
+function renderRail() {
+  const ul = $('inboxes'); ul.replaceChildren();
+  const names = INBOXES.filter((n) => n.includes(state.filter.trim()));
+  $('inbox-total').textContent = INBOXES.length;
+  for (const name of names) {
+    const mails = MAIL.filter((m) => m.inbox === name);
+    const last = mails[mails.length - 1];
+    const li = el('li');
+    const b = el('button', 'inbox'); b.type = 'button';
+    b.setAttribute('aria-current', String(name === state.inbox));
+    b.append(el('span', 'name', name), el('span', 'count', String(mails.length)));
+    const when = el('span', 'when');
+    if (mails.some((m) => state.fresh.has(m.id))) when.append(el('span', 'newdot'));
+    when.append(document.createTextNode(last ? 'last mail ' + ago(last.received_at) : 'empty, waiting'));
+    b.append(when);
+    b.addEventListener('click', () => { state.inbox = name; const ms = MAIL.filter((m) => m.inbox === name); state.id = ms.length ? ms[ms.length - 1].id : null; state.clearing = false; setPane('listing'); render(); });
+    li.append(b); ul.append(li);
+  }
+  if (!names.length) { const li = el('li', 'empty', 'No inbox matches.'); ul.append(li); }
+}
+
+// Stream
+function renderStream() {
+  const mails = MAIL.filter((m) => m.inbox === state.inbox);
+  $('stream-title').textContent = state.inbox;
+  $('stream-count').textContent = mails.length + (mails.length === 1 ? ' mail' : ' mails');
+  const slot = $('clear-slot'); slot.replaceChildren();
+  if (mails.length) {
+    if (state.clearing) {
+      const c = el('span', 'confirm'); c.append(el('span', 'muted', 'Clear ' + mails.length + '?'));
+      const yes = el('button', 'btn', 'Clear'); yes.type = 'button';
+      yes.addEventListener('click', () => { for (let i = MAIL.length - 1; i >= 0; i--) if (MAIL[i].inbox === state.inbox) MAIL.splice(i, 1); state.id = null; state.clearing = false; toast('Inbox cleared'); render(); });
+      const no = el('button', 'btn ghost', 'Keep'); no.type = 'button'; no.addEventListener('click', () => { state.clearing = false; render(); });
+      c.append(yes, no); slot.append(c);
+    } else {
+      const clr = el('button', 'btn ghost', 'Clear inbox'); clr.type = 'button';
+      clr.addEventListener('click', () => { state.clearing = true; render(); }); slot.append(clr);
+    }
+  }
+  const ul = $('msgs'); ul.replaceChildren();
+  if (!mails.length) { ul.append(el('li', 'empty', 'Empty and live. Point SMTP at :1025 with AUTH user "' + state.inbox + '"; mail appears here as it is accepted.')); return; }
+  const threads = new Map();
+  for (const m of mails.slice().reverse()) { if (!threads.has(m.thread)) threads.set(m.thread, []); threads.get(m.thread).push(m); }
+  for (const [, list] of threads) {
+    if (list.length > 1) { const lab = el('li', 'thread-label'); lab.append(el('span', null, 'Thread · ' + list.length + ' mails')); ul.append(lab); }
+    for (const m of list) ul.append(msgRow(m));
+  }
+}
+function msgRow(m) {
+  const li = el('li');
+  const b = el('button', 'msg' + (state.fresh.has(m.id) ? ' fresh' : '') + (m.justArrived ? ' arrive' : '')); b.type = 'button';
+  m.justArrived = false;
+  b.setAttribute('aria-current', String(m.id === state.id));
+  b.append(el('span', 'from', (m.from.name ? m.from.name + ' · ' : '') + m.from.address), el('span', 'time', hms(m.received_at)), el('span', 'subj', m.subject || '(no subject)'));
+  const tags = el('span', 'tags');
+  for (const c of m.codes) tags.append(el('span', 'tag code', c));
+  if (m.links.length) tags.append(el('span', 'tag', m.links.length + (m.links.length === 1 ? ' link' : ' links')));
+  for (const a of m.attachments) tags.append(el('span', 'tag', a.ics ? 'calendar' : 'attachment'));
+  const w = worst(m); const n = m.report.findings.length;
+  tags.append(sevChip(w, w === 'clean' ? 'no findings' : n + (n === 1 ? ' finding' : ' findings')));
+  b.append(tags);
+  b.addEventListener('click', () => { state.id = m.id; state.fresh.delete(m.id); setPane('reading'); render(); });
+  li.append(b); return li;
+}
+
+// Reader
+function renderReader() {
+  const r = $('reader'); r.replaceChildren();
+  const m = MAIL.find((x) => x.id === state.id);
+  if (!m) { r.append(el('div', 'empty', 'Pick a mail to read it.')); return; }
+  r.append(el('h1', 'subject', m.subject || '(no subject)'));
+  const dl = el('dl', 'meta');
+  const row = (k, v) => { dl.append(el('dt', null, k), el('dd', null, v)); };
+  row('From', (m.from.name ? m.from.name + ' <' + m.from.address + '>' : m.from.address));
+  row('To', m.to.join(', '));
+  row('Envelope', m.envelope_from);
+  row('Received', m.received_at.replace('T', ' ').replace('Z', ' UTC') + ' · ' + kb(m.size));
+  row('Client', m.smtp_helo + ' (' + m.smtp_client_ip + ')');
+  r.append(dl);
+
+  // Extracted at ingest
+  const ex = el('div', 'panel');
+  const eh = el('div', 'panel-head'); eh.append(el('span', 'label', 'Extracted at ingest'));
+  const auth = el('span', 'auth'); auth.style.marginLeft = 'auto';
+  for (const k of ['dkim', 'spf', 'dmarc', 'arc']) { const v = m.auth[k]; auth.append(sevChip(v === 'pass' ? 'clean' : v === 'fail' ? 'error' : 'info', k + '=' + v)); }
+  eh.append(auth); ex.append(eh);
+  const eb = el('div', 'panel-body');
+  if (m.codes.length) {
+    const codes = el('div', 'codes');
+    for (const c of m.codes) { const box = el('div', 'codebox'); box.append(el('span', null, c)); const cb = el('button', 'btn', 'Copy'); cb.type = 'button'; cb.addEventListener('click', () => copy(c, 'code')); box.append(cb); codes.append(box); }
+    eb.append(codes);
+  }
+  if (m.links.length) {
+    const ul = el('ul', 'links');
+    for (const l of m.links) {
+      const li = el('li', 'link');
+      li.append(el('span', 'anchor', l.anchor_text || '(no anchor text, image link)'));
+      const src = el('span', 'src'); src.append(el('span', 'tag', l.source));
+      if (l.url.startsWith('http:')) src.append(sevChip('warning', 'http'));
+      li.append(src, el('span', 'url', l.url)); ul.append(li);
+    }
+    eb.append(ul);
+  }
+  for (const a of m.attachments) {
+    const line = el('div', 'link');
+    line.append(el('span', 'anchor', a.filename), el('span', 'src'));
+    line.lastChild.append(el('span', 'tag', kb(a.size)));
+    line.append(el('span', 'url muted', a.ics ? 'Invite: ' + a.ics.summary + ', ' + a.ics.dtstart.replace('T', ' ') + ' to ' + a.ics.dtend.slice(11) : a.content_type));
+    eb.append(line);
+  }
+  if (!m.codes.length && !m.links.length && !m.attachments.length) eb.append(el('div', 'note', 'No codes, links or attachments in this mail.'));
+  ex.append(eb); r.append(ex);
+
+  // Tabs
+  const p = el('div', 'panel');
+  const tabs = el('div', 'tabs'); tabs.setAttribute('role', 'tablist');
+  const n = m.report.findings.length;
+  const defs = [['overview', 'Preview'], ['text', 'Text'], ['deliv', 'Deliverability' + (n ? ' (' + n + ')' : '')], ['tests', 'For your test']];
+  for (const [key, label] of defs) {
+    const t = el('button', 'tab', label); t.type = 'button'; t.setAttribute('role', 'tab'); t.id = 'tab-' + key;
+    t.setAttribute('aria-selected', String(state.tab === key));
+    t.addEventListener('click', () => { state.tab = key; renderReader(); });
+    tabs.append(t);
+  }
+  p.append(tabs);
+  const body = el('div', 'tabpanel'); body.setAttribute('role', 'tabpanel');
+  if (state.tab === 'overview') {
+    if (m.html) { const f = document.createElement('iframe'); f.className = 'preview'; f.setAttribute('sandbox', ''); f.setAttribute('title', 'HTML preview, scripts disabled'); f.srcdoc = m.html; body.append(f); body.append(el('div', 'note', 'Rendered in a sandbox with scripts off. Remote images still load when the mail asks for them.')); }
+    else body.append(el('div', 'note', 'No HTML part.'));
+  } else if (state.tab === 'text') {
+    body.append(m.text ? el('pre', 'text', m.text) : el('div', 'note', 'No text part. Bulk senders should include one.'));
+  } else if (state.tab === 'deliv') {
+    const head = el('div', 'note'); head.style.marginBottom = '10px';
+    head.textContent = 'Rule set ' + m.report.rule_set_id + ' · weight ' + m.report.total + '. Computed from the stored bytes, never on the SMTP path.';
+    body.append(head);
+    if (!n) body.append(sevChip('clean', 'No findings from this rule set'));
+    const ul = el('ul', 'findings');
+    for (const f of m.report.findings.slice().sort((a, b) => SEV_ORDER[b.severity] - SEV_ORDER[a.severity])) {
+      const li = el('li', 'finding');
+      li.append(sevChip(f.severity), el('span', 'rule', f.rule_id), el('span', 'loc', locText(f.location)), el('span', 'hint', f.fix_hint));
+      ul.append(li);
+    }
+    body.append(ul);
+    const foot = el('div', 'note'); foot.style.marginTop = '10px'; foot.textContent = 'No findings does not mean the mail will be delivered. These are demo and bulk-sender checks only.'; body.append(foot);
+  } else {
+    const inboxQ = encodeURIComponent(m.inbox);
+    const snips = [
+      ['Wait for the next mail (REST)', 'curl -s "http://localhost:8025/api/v1/inboxes/' + inboxQ + '/await?timeout_ms=10000"'],
+      ['Assert exactly ' + MAIL.filter((x) => x.inbox === m.inbox).length + ' mail(s) and no errors', 'curl -s "http://localhost:8025/api/v1/inboxes/' + inboxQ + '/assert?count=' + MAIL.filter((x) => x.inbox === m.inbox).length + '"'],
+      m.codes.length ? ['Agent: wait for this code (MCP)', '{ "tool": "swarmail_wait_for_code", "arguments": { "inbox": "' + m.inbox + '", "timeout_ms": 10000 } }\n→ "' + m.codes[0] + '"']
+                     : ['Agent: wait for a link (MCP)', '{ "tool": "swarmail_wait_for_link", "arguments": { "inbox": "' + m.inbox + '", "anchor_text": "' + ((m.links[0] && m.links[0].anchor_text) || '') + '" } }'],
+    ];
+    const wrap = el('div', 'panel-body'); wrap.style.padding = '0';
+    for (const [title, code] of snips) {
+      const box = el('div');
+      box.append(el('div', 'snip-title', title));
+      const s = el('div', 'snip'); s.append(el('pre', null, code));
+      const cb = el('button', 'btn', 'Copy'); cb.type = 'button'; cb.addEventListener('click', () => copy(code, 'snippet')); s.append(cb);
+      box.append(s); wrap.append(box);
+    }
+    body.append(wrap);
+  }
+  p.append(body); r.append(p);
+}
+
+function setPane(mode) { const p = $('panes'); p.classList.toggle('reading', mode === 'reading'); p.classList.toggle('listing', mode === 'listing'); }
+function render() { $('accepted').textContent = state.accepted.toLocaleString('en-US'); renderRail(); renderStream(); renderReader(); }
+
+$('back').addEventListener('click', () => setPane('listing'));
+$('back-rail').addEventListener('click', () => setPane('rail'));
+$('filter').addEventListener('input', (e) => { state.filter = e.target.value; renderRail(); });
+$('chaos').addEventListener('click', (e) => {
+  state.chaos = !state.chaos; const b = e.currentTarget;
+  b.classList.toggle('chaos-on', state.chaos); b.setAttribute('aria-pressed', String(state.chaos));
+  b.textContent = state.chaos ? 'Chaos on · 451 on 20% of RCPT' : 'Chaos off';
+});
+
+// A simulated SMTP arrival into the signup inbox: a new code each time.
+// The template is kept apart, so clearing the inbox never breaks it.
+const TEMPLATE = MAIL[0];
+let seq = 0;
+$('send').addEventListener('click', () => {
+  if (state.chaos && Math.random() < 0.2) { toast('451 4.3.0 refused by chaos; the sender should retry'); return; }
+  seq++;
+  const code = String(100000 + Math.floor(Math.random() * 900000));
+  const id = 'n' + seq;
+  MAIL.push({ ...TEMPLATE, id, thread: 'confirm-your-email', codes: [code], subject: 'Confirm your email for Acme', received_at: new Date().toISOString(),
+    message_id: '<n' + seq + '.4f1c@mailer.acme.test>', text: TEMPLATE.text.replace('482913', code), html: TEMPLATE.html.replace('482913', code), justArrived: true });
+  state.fresh.add(id); state.accepted++;
+  if (state.inbox !== 'signup-e2e-4f1c') toast('250 accepted into signup-e2e-4f1c');
+  render();
+});
+setInterval(renderRail, 15000);
+render();
+</script>

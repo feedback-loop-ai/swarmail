@@ -57,10 +57,10 @@
   seed build, the REST list/await pages and SSE thread-view serialization
   stay inline (none is on the ingest path).
 - Strict native input: existing closed list/count/await/assert/thread/feed
-  query shapes accept only their documented keys. Ten further methods take
+  query shapes accept only their documented keys. Eleven further methods take
   no query keys: `DELETE /api/v1/inboxes/{inbox}/messages`,
   `DELETE /api/v1/delete-all`, `GET /api/v1/messages/{id}`,
-  `DELETE /api/v1/messages/{id}`, `GET /api/v1/messages/{id}/raw`,
+  `DELETE /api/v1/messages/{id}`, `GET /api/v1/messages/{id}/raw`, `GET /api/v1/messages/{id}/projection`,
   `GET /api/v1/chaos`, `DELETE /api/v1/chaos`, `GET /api/v1/webhooks`,
   `DELETE /api/v1/webhooks`, and `POST /api/v1/inboxes/{inbox}/seed`. Each
   unknown, bare or empty-valued key is a native JSON 400 naming method,
@@ -369,6 +369,18 @@ naming the target and the cause), and a shutdown's undelivered backlog in
   snapshot; a lagging watcher is repaired with a recomputed view). The web UI
   is built on these: `/ui/inbox/{inbox}` and `/ui/inbox/{inbox}/thread/{key}`
   update live, no manual refresh.
+- `GET /api/v1/messages/{id}/projection` — a read-only projection for the web
+  UI's run console (decision 0134): `{id, smtp_client_ip, smtp_helo,
+  links, attachments}`, always those five members. `links` is `null` when the
+  stored occurrences are unknown, else `{total, items}` with each item
+  `{url, anchor_text, source}`; `attachments` likewise, each item
+  `{filename, content_type, size, ics}`. Items are capped at 250 with the exact
+  `total` beside them. It serves stored fields only and never attachment
+  bytes, hashes or link `rel`; an unknown id is 404 and any query key is 400.
+  `GET /healthz` also reports `emails_inserted_total` and
+  `emails_dropped_total` (the `/metrics` counters) and each
+  `GET /api/v1/inboxes` item carries `last_received_ms`, the server's stamp of
+  the inbox's most recently stored mail.
 - Thread fields (`message_id`, `in_reply_to`, `references`) are extracted at
   ingest and stored on every email, so views never re-parse raw headers.
 
