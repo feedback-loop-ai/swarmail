@@ -253,8 +253,10 @@ task built (R5.1's owed rule, R6.4's `600`), the S task says so.
   notes shows the refusal text, the draft route and Reading 4's sentence.
   (AC19)
 - [x] T7.8 Prove what did not change. — Proof:
-  `git diff e23a8ba --stat -- src evals Cargo.toml Cargo.lock deny.toml` is
-  empty; `git diff e23a8ba --name-status -- docs/evals` lists only added
+  with `B=$(git merge-base HEAD origin/main)` (the merge base, not
+  `e23a8ba`, once main is merged in), `git diff "$B" --stat -- src evals
+  Cargo.toml Cargo.lock deny.toml` is empty; `git diff "$B" --name-status --
+  docs/evals` lists only added
   files and `README.md`; `sha256sum docs/evals/protocol.json
   docs/evals/sources.lock.json` equals the frozen constants. (AC19)
 - [x] T7.9 Run every gate of `docs/house-rules.md` § Gates on the final
@@ -548,8 +550,10 @@ a marker and wait.
   gate and its selftest, the publish-guard proof, the seal proof and
   `cargo deny check licenses` included, and read each recipe's compile
   output for the policy-sweep warning. — Proof:
-  `git diff e23a8ba --stat -- src evals Cargo.toml Cargo.lock deny.toml` is
-  empty; `git diff e23a8ba --name-status -- docs/evals` lists only added
+  with `B=$(git merge-base HEAD origin/main)` (the merge base, not
+  `e23a8ba`, once main is merged in), `git diff "$B" --stat -- src evals
+  Cargo.toml Cargo.lock deny.toml` is empty; `git diff "$B" --name-status --
+  docs/evals` lists only added
   files and `README.md`; the frozen sha256 of the two active records; each
   gate's command and exit status in the notes, a failure reported with its
   output. (AC19, AC20)
@@ -824,8 +828,10 @@ that can write a marker and wait in any mode; a `git` fixture with a
   output for the policy-sweep warning. A gate the seat's box cannot run is
   named with the reason and left to the verify seat; it is not reported as
   passed. — Proof:
-  `git diff e23a8ba --stat -- src evals Cargo.toml Cargo.lock deny.toml` is
-  empty; `git diff e23a8ba --name-status -- docs/evals` lists only added
+  with `B=$(git merge-base HEAD origin/main)` (the merge base, not
+  `e23a8ba`, once main is merged in), `git diff "$B" --stat -- src evals
+  Cargo.toml Cargo.lock deny.toml` is empty; `git diff "$B" --name-status --
+  docs/evals` lists only added
   files and `README.md`; the frozen sha256 of the two active records; each
   gate's command and exit status in the notes, a failure reported with its
   output. (AC19, AC20)

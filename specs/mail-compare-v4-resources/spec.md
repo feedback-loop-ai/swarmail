@@ -1163,9 +1163,10 @@ means a refusal whose text names the cause.
   is not complete; its typed result states neither (V22, revision 2).
   Output from a head before revision 2's code does not count.
 - **AC19 (V23, V24).** The README section exists and the decision inventory
-  test passes. `git diff e23a8ba -- src evals Cargo.toml Cargo.lock deny.toml`
-  is empty, and the only existing file changed under `docs/evals/` is
-  `README.md`.
+  test passes. `git diff "$(git merge-base HEAD origin/main)" -- src evals
+  Cargo.toml Cargo.lock deny.toml` is empty (the merge base, not `e23a8ba`:
+  the required main merge brings main's own changes to those paths), and the
+  only existing file changed under `docs/evals/` is `README.md`.
 - **AC20.** Every gate of `docs/house-rules.md` § Gates passes `--locked` on
   the final tree, the coverage selftest and the publish-guard proof included.
 - **AC21 (V16, the chunk deadline in flight; revision 1).** Driving the cost

@@ -379,8 +379,9 @@ only, as the file states.
 
 Still untouched: `src/`, `evals/`, `Cargo.toml`, both lockfiles, `deny.toml`,
 the active and historical records, `docs/decisions/`. No package is added.
-The draft files were added by this branch, so AC19's `git diff e23a8ba`
-statement still holds.
+The draft files were added by this branch, so AC19's `git diff` against
+the merge base with main still holds (against `e23a8ba` it stops holding
+once main is merged in, because main's own changes come with the merge).
 
 ### Not designed for, with the cost
 
