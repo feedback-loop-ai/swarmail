@@ -644,11 +644,19 @@ case "$mode" in
       # earlier commit (a published run must stay repeatable after main has
       # moved on), by the local ref and, where it exists, the remote one.
       # Nothing is fetched. A pull-request branch is never in that history.
+      # A ref exists when its loose file does, readable or not, or when git
+      # lists it (a packed or reftable ref). Resolving it is not the test: a
+      # loose ref that holds garbage does not resolve, and would read as absent.
+      main_ref_exists() {
+        local loose
+        loose=$(git rev-parse --git-path "$1" 2>/dev/null) && [ -f "$loose" ] && return 0
+        git for-each-ref --format='%(refname)' "$1" 2>/dev/null | grep -qxF "$1"
+      }
       main_seen=0
       for main_ref in refs/heads/main refs/remotes/origin/main; do
         # An absent ref is skipped; one that exists and is not a readable
         # commit refuses, so it can never leave the other ref to decide.
-        git rev-parse --verify --quiet "$main_ref" >/dev/null 2>&1 || continue
+        main_ref_exists "$main_ref" || continue
         git rev-parse --verify --quiet "$main_ref^{commit}" >/dev/null 2>&1 \
           || blocked candidate "$main_ref exists but is not a readable commit; collect-v4 cannot tell that the candidate is on main"
         main_seen=1
@@ -790,19 +798,22 @@ case "$mode" in
           || blocked ledger "cannot write the ledger entry of $coord"
       }
       write_entry
-      # A signal during the write: the handler only records it, so the entry
-      # is written again, with 2, before the chunk is let go.
+      # The chunk is let go first and the interrupt read after: a signal
+      # while it was still owned was only recorded, and is seen here, so the
+      # entry is written again, with 2; one after it was let go ends the mode
+      # in the handler, not owning any chunk.
+      owned=''
       if [ "$interrupted" != 0 ] && [ "$status" -ne 2 ]; then
         status=2
         write_entry
       fi
-      owned=''
       if [ "$status" -eq 2 ]; then
         # Nothing is resumed, overwritten or removed: the run is incomplete.
         blocked "chunk-$coord" "the chunk ended in an infrastructure failure (interrupted: $interrupted, scope clean: $scope_clean); $output is incomplete and is never resumed"
       fi
       [ "$status" -eq 0 ] || any_failed=1
     done
+    [ "$interrupted" = 0 ] || interrupt_exit
     rmdir "$scratch_root" 2>/dev/null || true
     # What a reader needs to repeat the run: the one command, as given. It is
     # written only once every chunk has run, so an incomplete directory does

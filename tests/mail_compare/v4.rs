@@ -7276,6 +7276,58 @@ fn collect_v4_on_sigterm_during_the_scope_judgement_still_writes_the_ledger() {
 }
 
 #[test]
+fn collect_v4_on_sigterm_during_the_ledger_write_rewrites_the_entry_with_2() {
+    let rig = v4_rig();
+    let marker = rig.file("sed-marker");
+    let release = rig.file("sed-marker.release");
+    // The first chunk has sealed and its scope is gone: the only thing left
+    // is its ledger entry. The entry's first escape (of the coordinate) does
+    // not run until the test has signalled the wrapper, so the signal lands
+    // inside the write, while the chunk is owned.
+    let sed = rig.file("fake/sed");
+    std::fs::write(
+        &sed,
+        format!(
+            "#!/bin/bash\n\
+             in=$(cat)\n\
+             if [ \"$in\" = cost.swarmail.r0 ] && [ ! -e {m} ]; then\n\
+               echo write > {m}\n\
+               until [ -e {r} ]; do {sleep} 0.02; done\n\
+             fi\n\
+             printf '%s' \"$in\" | \"$FAKE_DIR/../tools/sed\" \"$@\"\n",
+            m = marker.display(),
+            r = release.display(),
+            sleep = real_sleep(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&sed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (status, _) = signalled_at(&rig, &[], &marker, || {
+        std::fs::write(&release, "go").unwrap()
+    });
+    assert_eq!(status.code(), Some(2), "{status:?}");
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 1, "{ledger:?}");
+    assert_eq!(
+        (
+            ledger[0]["coordinate"].as_str(),
+            ledger[0]["exit"].as_i64(),
+            &ledger[0]["scope_clean"]
+        ),
+        (Some("cost.swarmail.r0"), Some(2), &json!(true)),
+        "a sealed chunk signalled during its write is ledgered with 2"
+    );
+    let log = rig.log();
+    assert!(
+        !log.iter().any(|l| l.starts_with("systemctl --user kill")),
+        "the scope was gone: {log:?}"
+    );
+    assert_eq!(chunk_lines(&log, "driver run").len(), 1, "no later chunk");
+    assert!(chunk_lines(&log, "driver admit-v4").is_empty());
+    assert!(!rig.out().join("reproduce.txt").exists());
+}
+
+#[test]
 fn collect_v4_refuses_a_clean_branch_that_is_not_main() {
     let rig = v4_rig();
     rig.git(&["checkout", "-q", "-b", "feature"]);
@@ -7378,6 +7430,45 @@ fn collect_v4_refuses_a_main_ref_that_is_not_a_readable_commit() {
         "{text}"
     );
     assert!(rig.log().is_empty(), "before anything was built or run");
+}
+
+#[test]
+fn collect_v4_refuses_a_main_ref_that_holds_garbage() {
+    let rig = v4_rig();
+    // A loose remote main that names no object at all does not resolve; it
+    // still exists, so it refuses instead of leaving the local main to decide.
+    let loose = rig.repo().join(".git/refs/remotes/origin/main");
+    std::fs::create_dir_all(loose.parent().unwrap()).unwrap();
+    std::fs::write(&loose, "garbage\n").unwrap();
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("blocked at phase \"candidate\"")
+            && text.contains("refs/remotes/origin/main exists but is not a readable commit"),
+        "{text}"
+    );
+    assert!(rig.log().is_empty(), "before anything was built or run");
+}
+
+#[test]
+fn collect_v4_reads_a_packed_main_ref_as_present() {
+    let rig = v4_rig();
+    // A packed main has no loose file: git's own list finds it, and a
+    // candidate that is not in its history refuses by it.
+    rig.git(&["checkout", "-q", "-b", "side"]);
+    rig.commit("side.txt");
+    let side = rig.git(&["rev-parse", "HEAD"]);
+    rig.git(&["checkout", "-q", "main"]);
+    rig.git(&["update-ref", "refs/remotes/origin/main", side.trim()]);
+    rig.git(&["pack-refs", "--all"]);
+    assert!(!rig.repo().join(".git/refs/remotes/origin/main").exists());
+    rig.commit("main-only.txt");
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("not in the history of refs/remotes/origin/main"),
+        "{text}"
+    );
 }
 
 #[test]
