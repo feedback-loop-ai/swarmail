@@ -1207,7 +1207,12 @@ plan and the windows). An unknown, duplicate, unmatched, out-of-order or
 oversized line ends the hold with teardown and no seal; a hold without
 `--control` keeps its silent-stdin meaning. The holder ends its control
 input itself at the chunk deadline, so a caller that hangs cannot keep the
-target. The control round trip is inside each resource window. The eval
+target. The caller stops first: it reads the protocol's required
+`resources.chunk_deadline_ms` from an instant taken before it spawns the
+holder, stops its cells 40 s before that end (a cut or unstarted cell is a
+`chunk_deadline` row, as on the native surface), bounds the batch ledger to
+end 10 s before it, and so sends its record while the holder still reads.
+The control round trip is inside each resource window. The eval
 side's send and receive instants of every command, with the holder's reply
 instant, are kept in `api.json`; admission requires one idle-fill bracket
 once the fill is reached and one start/end pair per measured cell, in order

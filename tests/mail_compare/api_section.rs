@@ -1130,7 +1130,17 @@ async fn the_native_surface_keeps_measuring_after_a_read_times_out() {
     // The later cell measures. How many of its 100 fit in its five seconds
     // is the host's business, not this property's.
     let second = &recs[1];
-    assert_eq!(second.status, api::CellStatus::Measured);
+    assert_eq!(
+        second.status,
+        api::CellStatus::Measured,
+        "{:?} {:?}",
+        second.blocked,
+        second
+            .warmup
+            .iter()
+            .flat_map(|w| w.rows.iter().map(|r| r.outcome.class()))
+            .collect::<Vec<_>>()
+    );
     assert!(second.measured.started > 0);
     assert!(
         second
@@ -2469,6 +2479,7 @@ async fn the_candidates_native_cells_are_exact_end_to_end() {
         &native.fixtures,
         &cells,
         &mut recs,
+        None,
     )
     .await;
     assert!(problems.is_empty(), "{problems:?}");
@@ -2531,6 +2542,7 @@ async fn the_candidates_native_cells_are_exact_end_to_end() {
         &native.fixtures,
         &cells,
         &mut recs,
+        None,
     )
     .await;
     assert_eq!(problems.len(), 1, "{problems:?}");

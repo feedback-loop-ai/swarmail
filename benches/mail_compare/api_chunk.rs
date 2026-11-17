@@ -814,6 +814,7 @@ async fn measure(
             &native.fixtures,
             head,
             &mut recs,
+            None,
         )
         .await;
         record.ledger = problems;

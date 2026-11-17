@@ -372,7 +372,11 @@ fn fake_driver(dir: &std::path::Path, hold_body: &str, adapter_body: &str) -> st
 }
 
 async fn run_api_mcp(dir: &std::path::Path, driver: &std::path::Path, target: &str) -> i32 {
-    std::fs::write(dir.join("protocol.json"), r#"{"corpus":{"seed":1}}"#).unwrap();
+    std::fs::write(
+        dir.join("protocol.json"),
+        r#"{"corpus":{"seed":1},"resources":{"chunk_deadline_ms":480000}}"#,
+    )
+    .unwrap();
     let args: Vec<String> = [
         "--driver",
         &driver.display().to_string(),
@@ -691,7 +695,11 @@ async fn a_fill_the_store_did_not_keep_blocks_every_mcp_cell_and_exits_one() {
         lines.display()
     );
     let driver = fake_driver(d.path(), &hold, "exit 3");
-    std::fs::write(d.path().join("protocol.json"), r#"{"corpus":{"seed":1}}"#).unwrap();
+    std::fs::write(
+        d.path().join("protocol.json"),
+        r#"{"corpus":{"seed":1},"resources":{"chunk_deadline_ms":480000}}"#,
+    )
+    .unwrap();
     let args: Vec<String> = [
         "--driver",
         &driver.display().to_string(),

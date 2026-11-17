@@ -2087,8 +2087,12 @@ pub async fn final_ledger(
     fixtures: &[Authored],
     cells: &[PlannedCell],
     recs: &mut [CellRecord],
+    chunk_end: Option<Instant>,
 ) -> Vec<String> {
-    let deadline = Instant::now() + VERIFY_DEADLINE;
+    // Its own bound, and never past the chunk's end (AC5): the chunk
+    // deadline is a stopping reason for verification too.
+    let own = Instant::now() + VERIFY_DEADLINE;
+    let deadline = chunk_end.map_or(own, |end| end.min(own));
     let want = expected_ledger(seed, background, fixtures, cells, recs);
     let mut spend = Spend::default();
     let observed = match client.all_ids(deadline).await {

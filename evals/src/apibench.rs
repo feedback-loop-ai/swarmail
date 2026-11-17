@@ -884,6 +884,43 @@ pub async fn api_mcp(args: &[String]) -> i32 {
 /// closes, and then to exit: its own teardown is bounded inside these.
 const RECEIPT_BOUND: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// What the chunk keeps after its last cell for the record line to reach
+/// the holder before the holder's own input deadline (the cancellation
+/// bound of a cut cell, and the line's round trip).
+pub const RECORD_MARGIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What the chunk keeps after its last head cell for the complete batch
+/// ledger (spec AC6), which runs before the global clear.
+pub const LEDGER_RESERVE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The MCP chunk's two stopping points (spec AC5, R1), measured from an
+/// instant taken before the holder was spawned, so both fall no later than
+/// the holder's own chunk end: the cells' deadline, and the ledger's.
+/// The protocol's `resources.chunk_deadline_ms` is required — the holder
+/// enforces it, so a chunk that does not know it cannot seal in time.
+pub fn mcp_chunk_ends(
+    started: std::time::Instant,
+    protocol: &Value,
+) -> Result<(tokio::time::Instant, tokio::time::Instant), String> {
+    let ms = protocol["resources"]["chunk_deadline_ms"]
+        .as_u64()
+        .filter(|ms| *ms > 0)
+        .ok_or("--protocol has no resources.chunk_deadline_ms")?;
+    let end = started + std::time::Duration::from_millis(ms);
+    let ledger = end
+        .checked_sub(RECORD_MARGIN)
+        .unwrap_or(started)
+        .max(started);
+    let cells = ledger
+        .checked_sub(LEDGER_RESERVE)
+        .unwrap_or(started)
+        .max(started);
+    Ok((
+        tokio::time::Instant::from_std(cells),
+        tokio::time::Instant::from_std(ledger),
+    ))
+}
+
 /// Check the holder's cleanup receipt (spec AC8, R12): one JSON object whose
 /// launch and cleanup both name `target` and the same leaf (the endpoints'
 /// leaf, when they named one), and whose cleanup proves the leaf removed,
@@ -937,6 +974,9 @@ pub fn chunk_exit(
 
 async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
     use tokio::io::AsyncBufReadExt;
+    // Before the holder exists: every deadline derived from it falls no
+    // later than the holder's own.
+    let started = std::time::Instant::now();
     let f = flags(args)?;
     let (target, repetition, fill) = parse_chunk(&f["chunk"])?;
     let protocol: Value = serde_json::from_slice(
@@ -946,6 +986,7 @@ async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
     let seed = protocol["corpus"]["seed"]
         .as_u64()
         .ok_or("--protocol has no corpus seed")?;
+    let ends = mcp_chunk_ends(started, &protocol)?;
     // The holder: the one owner of the backend, its leaf and its sampler.
     // From here on every path — a refusal, a malformed line, a rejected
     // record, an interruption — closes its control input and awaits its
@@ -1031,7 +1072,7 @@ async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
             (repetition, fill, seed),
             (smtp, http, &url),
             &meter,
-            clock,
+            (clock, ends),
         )
         .await?;
         rec.control = meter.brackets.lock().expect("brackets lock").clone();
@@ -1101,7 +1142,7 @@ async fn measure(
     (repetition, fill, seed): (u32, u32, u64),
     (smtp, http, url): (std::net::SocketAddr, std::net::SocketAddr, &str),
     meter: &ControlMeter,
-    clock: api::Clock,
+    (clock, (cell_end, ledger_end)): (api::Clock, (tokio::time::Instant, tokio::time::Instant)),
 ) -> Result<api::ApiRecord, String> {
     let surface = clients::Surface::Mcp;
     let caps = |op| clients::mcp_capability(target, op);
@@ -1175,7 +1216,11 @@ async fn measure(
         .position(|c| c.concurrency.is_none())
         .unwrap_or(cells.len());
     let (head, tail) = cells.split_at(split);
-    let (mut recs, mut abandoned) = api::run_cells(head, &caps, &s, meter, clock, None).await?;
+    // The chunk deadline is an independent stopping reason on this surface
+    // as on the native one (spec AC5, R1): a cell it cuts or never starts is
+    // a `chunk_deadline` row, and the record still reaches the holder.
+    let (mut recs, mut abandoned) =
+        api::run_cells(head, &caps, &s, meter, clock, Some(cell_end)).await?;
     if abandoned.is_none() {
         // Untimed verification through the native API: not a measurement,
         // and never a fallback for one.
@@ -1185,10 +1230,11 @@ async fn measure(
             &s.fixtures,
             head,
             &mut recs,
+            Some(ledger_end),
         )
         .await;
         rec.ledger = problems;
-        let (more, ab) = api::run_cells(tail, &caps, &s, meter, clock, None).await?;
+        let (more, ab) = api::run_cells(tail, &caps, &s, meter, clock, Some(cell_end)).await?;
         recs.extend(more);
         abandoned = ab;
     } else {

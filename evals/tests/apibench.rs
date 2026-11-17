@@ -223,6 +223,7 @@ async fn every_mcp_cell_of_the_candidate_is_exact() {
         &surface.fixtures,
         &cells,
         &mut recs,
+        None,
     )
     .await;
     assert!(problems.is_empty(), "{problems:?}");
@@ -315,6 +316,7 @@ async fn every_mcp_cell_of_the_candidate_is_exact() {
         &surface.fixtures,
         &cells,
         &mut recs,
+        None,
     )
     .await;
     assert_eq!(problems.len(), 2, "{problems:?}");
@@ -390,4 +392,150 @@ async fn a_future_wait_returns_exactly_its_own_message_with_its_instants() {
         assert_eq!(w.ack_to_return_ns, Some(w.return_ns as i64 - ack as i64));
         assert!(scopes.insert((row.phase == api::Phase::Warmup, row.index)));
     }
+}
+
+// ---- the chunk deadline on the MCP surface (AC5, R1) -------------------------
+
+/// A fake driver whose `hold` is `hold_body` (bash).
+fn fake_holder(dir: &std::path::Path, hold_body: &str) -> std::path::PathBuf {
+    let p = dir.join("driver");
+    std::fs::write(
+        &p,
+        format!("#!/bin/bash\n[ \"$1\" = probe ] && exit 0\ncase \"$1\" in\nhold) {hold_body} ;;\n*) exit 3 ;;\nesac\n"),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // A parallel test's fork may hold this fresh file's write descriptor
+    // (ETXTBSY) until its child execs: probe until the script runs.
+    for _ in 0..200 {
+        match std::process::Command::new(&p).arg("probe").status() {
+            Ok(s) if s.success() => return p,
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(5))
+            }
+            other => panic!("the fake driver does not run: {other:?}"),
+        }
+    }
+    panic!("the fake driver stayed busy")
+}
+
+fn chunk_args(dir: &std::path::Path, driver: &std::path::Path, protocol: &str) -> Vec<String> {
+    std::fs::write(dir.join("protocol.json"), protocol).unwrap();
+    [
+        "--driver",
+        &driver.display().to_string(),
+        "--mode",
+        "smoke",
+        "--protocol",
+        &dir.join("protocol.json").display().to_string(),
+        "--sources",
+        "lock.json",
+        "--chunk",
+        "api.mcp.swarmail.r0.f0",
+        "--bin",
+        "swarmail=/x",
+        "--output",
+        &dir.join("out").display().to_string(),
+        "--scratch",
+        &dir.join("scratch").display().to_string(),
+        "--run-id",
+        "r",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_chunk_deadline_blocks_mcp_cells_and_the_record_still_reaches_the_holder() {
+    // A chunk deadline that leaves nothing for cells once the record margin
+    // and the ledger reserve are kept: the real candidate is filled and its
+    // fixtures prepared, then every planned cell is a `chunk_deadline` row, the ledger runs within its
+    // reserve and is clean, and the record reaches the holder before its
+    // own input deadline instead of being torn down unsealed.
+    let s = serve().await;
+    let d = common::tempdir();
+    let lines = d.path().join("lines");
+    let receipt = json!({
+        "launch": {"target": "swarmail", "leaf": "leaf-9"},
+        "cleanup": {"target": "swarmail", "leaf": "leaf-9", "cgroup_removed": true,
+            "reaped": true, "group_gone": true, "listeners_closed": true,
+            "scratch_removed": true, "forced_kill": false},
+    });
+    let hold = format!(
+        "echo '{{\"target\":\"swarmail\",\"leaf\":\"leaf-9\",\"smtp\":\"{}\",\"http\":\"{}\"}}'; \
+         while IFS= read -r l; do printf '%s\\n' \"$l\" >> '{}'; echo '{{\"ok\":\"x\",\"t_ns\":1}}'; done; \
+         echo '{receipt}'; exit 0",
+        s.smtp,
+        s.http,
+        lines.display()
+    );
+    let driver = fake_holder(d.path(), &hold);
+    let ms = (apibench::RECORD_MARGIN + apibench::LEDGER_RESERVE).as_millis();
+    let protocol = format!(r#"{{"corpus":{{"seed":5}},"resources":{{"chunk_deadline_ms":{ms}}}}}"#);
+    let started = std::time::Instant::now();
+    let code = apibench::api_mcp(&chunk_args(d.path(), &driver, &protocol)).await;
+    assert_eq!(code, 0);
+    assert!(started.elapsed() < std::time::Duration::from_millis(ms as u64));
+    let cmds: Vec<serde_json::Value> = std::fs::read_to_string(&lines)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    // The idle point, then the record: no window ever opened.
+    let names: Vec<&str> = cmds.iter().map(|c| c["cmd"].as_str().unwrap()).collect();
+    assert_eq!(names, ["idle_fill", "record"]);
+    let rec: api::ApiRecord = serde_json::from_value(cmds[1]["api"].clone()).unwrap();
+    assert!(rec.fill.reached);
+    assert_eq!(rec.abandoned, None);
+    assert!(rec.ledger.is_empty(), "{:?}", rec.ledger);
+    let (cells, _) = api::plan_cells(Surface::Mcp, |op| clients::mcp_capability("swarmail", op));
+    assert_eq!(rec.cells.len(), cells.len());
+    for c in &rec.cells {
+        assert_eq!(c.status, api::CellStatus::Blocked, "{}", c.cell);
+        assert_eq!(c.blocked.as_deref(), Some("chunk_deadline"), "{}", c.cell);
+        assert_eq!(
+            (c.measured.started, c.measured.unstarted),
+            (0, c.measured.planned)
+        );
+    }
+    api::check_brackets(&rec).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_mcp_chunk_without_its_deadline_refuses_before_the_holder_starts() {
+    let d = common::tempdir();
+    let ran = d.path().join("ran");
+    let driver = fake_holder(d.path(), &format!("touch '{}'; exit 0", ran.display()));
+    for protocol in [
+        r#"{"corpus":{"seed":5}}"#,
+        r#"{"corpus":{"seed":5},"resources":{"chunk_deadline_ms":0}}"#,
+        r#"{"corpus":{"seed":5},"resources":{"chunk_deadline_ms":"480000"}}"#,
+    ] {
+        assert_eq!(
+            apibench::api_mcp(&chunk_args(d.path(), &driver, protocol)).await,
+            2,
+            "{protocol}"
+        );
+        assert!(!ran.exists(), "{protocol}: the holder was spawned");
+    }
+}
+
+#[test]
+fn the_mcp_chunk_ends_keep_the_record_margin_and_the_ledger_reserve() {
+    let t = std::time::Instant::now();
+    let p = |ms: u64| json!({"resources": {"chunk_deadline_ms": ms}});
+    let (cells, ledger) = apibench::mcp_chunk_ends(t, &p(480_000)).unwrap();
+    assert_eq!(ledger.into_std() - t, std::time::Duration::from_secs(470));
+    assert_eq!(cells.into_std() - t, std::time::Duration::from_secs(440));
+    // A deadline shorter than the margins ends both at the start, never
+    // before it.
+    let (cells, ledger) = apibench::mcp_chunk_ends(t, &p(1)).unwrap();
+    assert_eq!((cells.into_std(), ledger.into_std()), (t, t));
+    let (cells, ledger) = apibench::mcp_chunk_ends(t, &p(25_000)).unwrap();
+    assert_eq!(
+        (cells.into_std(), ledger.into_std() - t),
+        (t, std::time::Duration::from_secs(15))
+    );
 }
