@@ -8802,9 +8802,16 @@ fn v4_real_oom_at_two_gib() {
     let (leaf, limits) = scope.leaf().expect("a leaf with the budget");
     assert_eq!(limits.memory_max, "2147483648");
     let before = leaf.mem_events().unwrap();
-    // `tail /dev/zero` reads a never-ending line into memory.
-    let mut cmd = std::process::Command::new("tail");
-    cmd.arg("/dev/zero");
+    // A hog that allocates and writes 64 MiB at a time until the kernel
+    // kills it. Not `tail /dev/zero`: GNU tail buffers the endless line,
+    // but the uutils tail of Ubuntu 26.04 streams it to stdout and never
+    // grows (the proof timed out on this host, 2026-11-17).
+    let mut cmd = std::process::Command::new("python3");
+    cmd.args([
+        "-c",
+        "b = []\nwhile True:\n    b.append(bytearray(b'\\x01') * (64 << 20))",
+    ])
+    .stdout(std::process::Stdio::null());
     let mut hog = spawn_in_leaf(&leaf, &scope.layout, cmd);
     within(120, "the hog is OOM-killed", || {
         hog.try_wait().unwrap().is_some()
