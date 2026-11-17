@@ -1116,8 +1116,21 @@ pub async fn fill_ledger(
     n: u32,
     clock: Clock,
 ) -> (FillRecord, Option<BTreeSet<String>>) {
+    fill_within(smtp, client, (seed, run_tag), n, clock, FILL_DEADLINE).await
+}
+
+/// [`fill_ledger`] within `bound` instead of [`FILL_DEADLINE`]: the one
+/// fill path, its bound a parameter so its exhaustion branch can be driven.
+pub async fn fill_within(
+    smtp: std::net::SocketAddr,
+    client: &clients::Client,
+    (seed, run_tag): (u64, &str),
+    n: u32,
+    clock: Clock,
+    bound: Duration,
+) -> (FillRecord, Option<BTreeSet<String>>) {
     let start = clock.now_ns();
-    let deadline = Instant::now() + FILL_DEADLINE;
+    let deadline = Instant::now() + bound;
     let mut rec = FillRecord {
         fill: n,
         ..FillRecord::default()
@@ -1193,7 +1206,7 @@ pub async fn fill_ledger(
             "accepted {} retained {:?} of {n} within {} s",
             rec.accepted,
             rec.retained,
-            FILL_DEADLINE.as_secs()
+            bound.as_secs()
         ));
     }
     rec.elapsed_ns = clock.now_ns() - start;

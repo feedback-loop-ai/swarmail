@@ -576,3 +576,159 @@ async fn busy_refusals_reach_the_published_rows_by_source() {
     }
     bridge.stop().await;
 }
+
+// ---- a fill not reached, through the MCP producer (R16) ----------------------
+
+/// Swarmail's HTTP shape, just enough: `POST /mcp` initializes, and the
+/// default inbox lists `kept` distinct ids, paged.
+async fn short_store(kept: u64) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                loop {
+                    let mut chunk = [0u8; 8192];
+                    let Ok(n) = s.read(&mut chunk).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    while let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..end]).to_string();
+                        let len = head
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if buf.len() < end + 4 + len {
+                            break;
+                        }
+                        let body: Vec<u8> = buf[end + 4..end + 4 + len].to_vec();
+                        buf.drain(..end + 4 + len);
+                        let target = head.split(' ').nth(1).unwrap_or("/").to_owned();
+                        let (status, reply) = if target == "/mcp" {
+                            let req: Value = serde_json::from_slice(&body).unwrap();
+                            match req.get("id") {
+                                None => (202, String::new()),
+                                Some(id) => (
+                                    200,
+                                    json!({"jsonrpc": "2.0", "id": id,
+                                    "result": {"protocolVersion": "2025-03-26"}})
+                                    .to_string(),
+                                ),
+                            }
+                        } else {
+                            let q = |k: &str| -> u64 {
+                                target
+                                    .split(&format!("{k}="))
+                                    .nth(1)
+                                    .and_then(|v| v.split('&').next())
+                                    .and_then(|v| v.parse().ok())
+                                    .unwrap_or(0)
+                            };
+                            let (offset, limit) = (q("offset"), q("limit"));
+                            let emails: Vec<Value> = (offset..kept.min(offset + limit))
+                                .map(|i| json!({"id": format!("m{i}"), "to": [{"address": "x@y"}], "subject": "s"}))
+                                .collect();
+                            (200, json!({"total": kept, "emails": emails}).to_string())
+                        };
+                        let resp = format!(
+                            "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{reply}",
+                            reply.len()
+                        );
+                        if s.write_all(resp.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fill_the_store_did_not_keep_blocks_every_mcp_cell_and_exits_one() {
+    // The holder announces a store that keeps 99 of 100 accepted messages.
+    // api-mcp fills, finds the disagreement, blocks every planned cell as
+    // fill_not_reached, sends that record, closes its input and takes the
+    // holder's exit 1 with a proved receipt. Nothing is retried.
+    let d = tempfile::tempdir().unwrap();
+    let smtp = scripted::smtp(SmtpScript {
+        hold_data_ack: None,
+        data_received: None,
+        quit_delay: Duration::ZERO,
+    })
+    .await;
+    let http = short_store(99).await;
+    let lines = d.path().join("lines");
+    let r = receipt("swarmail", "leaf-3").to_string();
+    let hold = format!(
+        "echo '{{\"target\":\"swarmail\",\"leaf\":\"leaf-3\",\"smtp\":\"{smtp}\",\"http\":\"{http}\"}}'; \
+         while IFS= read -r l; do printf '%s\\n' \"$l\" >> '{}'; echo '{{\"ok\":\"x\",\"t_ns\":1}}'; done; \
+         echo '{r}'; exit 1",
+        lines.display()
+    );
+    let driver = fake_driver(d.path(), &hold, "exit 3");
+    std::fs::write(d.path().join("protocol.json"), r#"{"corpus":{"seed":1}}"#).unwrap();
+    let args: Vec<String> = [
+        "--driver",
+        &driver.display().to_string(),
+        "--mode",
+        "smoke",
+        "--protocol",
+        &d.path().join("protocol.json").display().to_string(),
+        "--sources",
+        "lock.json",
+        "--chunk",
+        "api.mcp.swarmail.r0.f100",
+        "--bin",
+        "swarmail=/x",
+        "--output",
+        &d.path().join("out").display().to_string(),
+        "--scratch",
+        &d.path().join("scratch").display().to_string(),
+        "--run-id",
+        "r",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    assert_eq!(apibench::api_mcp(&args).await, 1);
+    let sent = std::fs::read_to_string(&lines).unwrap();
+    let cmds: Vec<Value> = sent
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    // No idle point and no window: the record was the only command.
+    assert_eq!(cmds.len(), 1, "{cmds:?}");
+    assert_eq!(cmds[0]["cmd"], "record");
+    let rec: api::ApiRecord = serde_json::from_value(cmds[0]["api"].clone()).unwrap();
+    assert!(!rec.fill.reached);
+    assert_eq!(
+        (rec.fill.fill, rec.fill.accepted, rec.fill.retained),
+        (100, 100, Some(99))
+    );
+    let (cells, _) = api::plan_cells(clients::Surface::Mcp, |op| {
+        clients::mcp_capability("swarmail", op)
+    });
+    assert_eq!(rec.cells.len(), cells.len());
+    for c in &rec.cells {
+        assert_eq!(c.status, api::CellStatus::Blocked, "{}", c.cell);
+        assert_eq!(c.blocked.as_deref(), Some("fill_not_reached"));
+        assert_eq!(
+            (c.measured.started, c.measured.unstarted),
+            (0, c.measured.planned)
+        );
+    }
+    assert!(rec.control.is_empty());
+    api::check_brackets(&rec).unwrap();
+}

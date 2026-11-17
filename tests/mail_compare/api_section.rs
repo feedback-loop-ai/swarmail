@@ -1745,6 +1745,165 @@ fn the_ledger_holds_each_wait_scope_to_its_acknowledged_delivery() {
     assert_eq!(p.len(), 3, "{p:?}");
 }
 
+// ---- the fill's failure branches (R16) ---------------------------------------
+
+/// A loopback SMTP server that accepts every transaction (or, with `hold`,
+/// never acknowledges a terminator), recording each session and recipient.
+async fn fill_smtp(
+    hold: bool,
+) -> (
+    std::net::SocketAddr,
+    Arc<std::sync::Mutex<Vec<(u32, String)>>>,
+) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen: Arc<std::sync::Mutex<Vec<(u32, String)>>> = Arc::default();
+    let s2 = seen.clone();
+    tokio::spawn(async move {
+        let mut session = 0u32;
+        while let Ok((s, _)) = listener.accept().await {
+            session += 1;
+            let (seen, me) = (s2.clone(), session);
+            tokio::spawn(async move {
+                let (r, mut w) = s.into_split();
+                let mut r = tokio::io::BufReader::new(r);
+                let _ = w.write_all(b"220 x\r\n").await;
+                let mut data = false;
+                loop {
+                    let mut l = String::new();
+                    if r.read_line(&mut l).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    if data {
+                        if l == ".\r\n" {
+                            data = false;
+                            if hold {
+                                std::future::pending::<()>().await;
+                            }
+                            let _ = w.write_all(b"250 ok\r\n").await;
+                        }
+                        continue;
+                    }
+                    let reply: &[u8] = if l.starts_with("EHLO") {
+                        b"250-x\r\n250 OK\r\n"
+                    } else if let Some(to) = l.strip_prefix("RCPT TO:<") {
+                        seen.lock()
+                            .unwrap()
+                            .push((me, to.trim_end().trim_end_matches('>').to_owned()));
+                        b"250 ok\r\n"
+                    } else if l.starts_with("DATA") {
+                        data = true;
+                        b"354 go\r\n"
+                    } else if l.starts_with("QUIT") {
+                        let _ = w.write_all(b"221 bye\r\n").await;
+                        return;
+                    } else {
+                        b"250 ok\r\n"
+                    };
+                    let _ = w.write_all(reply).await;
+                }
+            });
+        }
+    });
+    (addr, seen)
+}
+
+/// A Mailpit-shaped listing of `n` distinct ids.
+async fn listing_of(n: u64) -> std::net::SocketAddr {
+    responder(move |p| {
+        let s = start_of(p);
+        let ids: Vec<String> = (s..n.min(s + 250)).map(|i| format!("m{i}")).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        (200, page(s, n, &refs))
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fill_goes_over_eight_sessions_round_robin_and_reaches_its_level() {
+    let (smtp, seen) = fill_smtp(false).await;
+    let client = clients::Client::new("mailpit", listing_of(400).await).unwrap();
+    let (rec, ids) = api::fill_ledger(smtp, &client, (163, "t"), 400, clock()).await;
+    assert!(rec.reached, "{rec:?}");
+    assert_eq!((rec.accepted, rec.retained), (400, Some(400)));
+    assert_eq!(ids.unwrap().len(), 400);
+    let seen = seen.lock().unwrap().clone();
+    let sessions: BTreeSet<u32> = seen.iter().map(|x| x.0).collect();
+    assert_eq!(sessions.len(), api::FILL_SESSIONS);
+    let mut per = std::collections::BTreeMap::<&str, u32>::new();
+    for (_, to) in &seen {
+        *per.entry(to.as_str()).or_default() += 1;
+    }
+    assert_eq!(per.len(), api::BACKGROUND as usize);
+    assert!(per.values().all(|&n| n == 4), "{per:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fill_whose_store_keeps_less_than_it_accepted_is_not_reached() {
+    // Every send acknowledged, one message short in the store: never a
+    // shorter success, never retried.
+    let (smtp, seen) = fill_smtp(false).await;
+    let client = clients::Client::new("mailpit", listing_of(99).await).unwrap();
+    let (rec, ids) = api::fill_ledger(smtp, &client, (163, "t"), 100, clock()).await;
+    assert!(!rec.reached);
+    assert_eq!((rec.accepted, rec.retained), (100, Some(99)));
+    assert_eq!(ids.unwrap().len(), 99);
+    assert!(
+        rec.detail
+            .unwrap()
+            .contains("accepted 100 retained Some(99) of 100")
+    );
+    assert_eq!(seen.lock().unwrap().len(), 100);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fill_that_runs_out_of_time_is_not_reached_and_says_how_far_it_got() {
+    // No terminator is ever acknowledged: each session's first send is in
+    // flight at the bound, counted ambiguous, never retried, and nothing
+    // after it is sent. The same path FILL_DEADLINE bounds.
+    let (smtp, seen) = fill_smtp(true).await;
+    let client = clients::Client::new("mailpit", listing_of(0).await).unwrap();
+    let (rec, _) = api::fill_within(
+        smtp,
+        &client,
+        (163, "t"),
+        1_000,
+        clock(),
+        Duration::from_millis(500),
+    )
+    .await;
+    assert!(!rec.reached);
+    assert_eq!(rec.accepted, 0);
+    assert_eq!(rec.ambiguous, api::FILL_SESSIONS as u64);
+    assert_eq!(seen.lock().unwrap().len(), api::FILL_SESSIONS);
+    assert!(rec.elapsed_ns >= 500_000_000);
+}
+
+#[test]
+fn a_fill_not_reached_blocks_every_cell_and_admits() {
+    // What both producers publish for it: every planned cell blocked by
+    // fill_not_reached, nothing started, and the record admits as such.
+    for surface in [Surface::Native, Surface::Mcp] {
+        let chunk = runner::Chunk::Api {
+            surface,
+            target: TargetKind::Swarmail,
+            repetition: 0,
+            fill: 10_000,
+        };
+        let rec = record_for(&chunk);
+        assert!(
+            rec.cells
+                .iter()
+                .all(|c| c.status == api::CellStatus::Blocked
+                    && c.blocked.as_deref() == Some("fill_not_reached")
+                    && c.measured.unstarted == c.measured.planned)
+        );
+        api_chunk::check_record(&rec, &chunk).unwrap();
+        assert!(api_chunk::row_failures(&rec).is_empty());
+    }
+}
+
 // ---- plan, growth and admission (T4, T10) -----------------------------------
 
 #[test]
