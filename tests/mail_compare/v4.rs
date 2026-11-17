@@ -7735,8 +7735,11 @@ mod chunk {
     #[tokio::test]
     async fn a_reused_session_past_chunk_end_is_dropped_without_quit() {
         // The acceptance comes before the instant; the instant is here by the
-        // time the worker would end its session.
-        let end = Instant::now() + Duration::from_millis(400);
+        // time the worker would end its session. The 5 s window only has to
+        // outlast setup: at 400 ms an instrumented coverage build had not yet
+        // started the send (verify, 2026-11-17); the server's hold still puts
+        // the instant between acceptance and the client's next step.
+        let end = Instant::now() + Duration::from_secs(5);
         let (smtp, heard) = smtp_recording(false, Some(end + Duration::from_millis(100))).await;
         let (rows, _) = one_send("reused", smtp, Some(end), "run-q1").await;
         assert_eq!(sends(&rows)[0].outcome, "accepted");
@@ -7746,7 +7749,8 @@ mod chunk {
 
     #[tokio::test]
     async fn a_fresh_session_past_chunk_end_sends_no_quit_and_keeps_its_accepted_row() {
-        let end = Instant::now() + Duration::from_millis(400);
+        // 5 s only has to outlast setup (see the reused-session case).
+        let end = Instant::now() + Duration::from_secs(5);
         let (smtp, heard) = smtp_recording(false, Some(end + Duration::from_millis(100))).await;
         let (rows, _) = one_send("fresh", smtp, Some(end), "run-q2").await;
         let s = sends(&rows);
@@ -7763,12 +7767,13 @@ mod chunk {
     #[tokio::test]
     async fn a_quit_in_flight_is_cut_at_chunk_end() {
         let (smtp, heard) = smtp_recording(true, None).await;
-        let end = Instant::now() + Duration::from_millis(600);
+        // 5 s only has to outlast setup and the send before QUIT begins.
+        let end = Instant::now() + Duration::from_secs(5);
         let (rows, took) = one_send("reused", smtp, Some(end), "run-q3").await;
         assert_eq!(sends(&rows)[0].outcome, "accepted");
         // The listener never answers QUIT: the call returned at the instant,
-        // not one request deadline (10 s) later.
-        assert!(took < Duration::from_secs(5), "{took:?}");
+        // not one request deadline (10 s) after the QUIT.
+        assert!(took < Duration::from_secs(9), "{took:?}");
         let lines = heard.lock().unwrap().clone();
         assert_eq!(
             quits(&lines),
@@ -7954,7 +7959,9 @@ mod chunk {
         let out = dir.path().join("run");
         let sink = sink_for(&m, &out);
         let clock = wire::Clock(Instant::now());
-        let end = Instant::now() + Duration::from_millis(300);
+        // The connect never finishes, so the instant always cuts it in flight;
+        // 3 s only has to let the connect begin on a loaded host.
+        let end = Instant::now() + Duration::from_secs(3);
         runner::throughput(
             &owned,
             &p,
