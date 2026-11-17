@@ -3893,6 +3893,12 @@ async fn full_pages_isolate_duplicate_moving_short_and_overlong_scans() {
         max_body: 1 << 20,
         max_operation_bytes: 8 << 20,
         max_pages: 3,
+        // Each scan page is 250 summaries; under a loaded verify a page took
+        // longer than small_bounds' 5 s request bound and the long case
+        // ended on that instead of its page budget. The budget stays the
+        // only limit any case can reach.
+        request: Duration::from_secs(20),
+        operation: Duration::from_secs(60),
         ..small_bounds()
     };
     let http = wire::Http::new(addr, bounds.request, bounds.max_body);
