@@ -1279,6 +1279,65 @@ fn get_is_exact_inexact_only_where_v3_documents_it_and_otherwise_wrong() {
         api::check_get(Family::Mailslurper, Ok(subject), &a),
         Outcome::WrongResult { .. }
     ));
+    // R7: only the documented absent part. A part MailSlurper returns but
+    // gets wrong, both parts gone, or an absent part beside any other
+    // mismatch is a wrong result, never inexact.
+    let ms = |g: clients::Fetched| api::check_get(Family::Mailslurper, Ok(g), &a);
+    let mut empty_html = f.clone();
+    empty_html.html = Some("  \r\n".into());
+    assert_eq!(
+        ms(empty_html),
+        Outcome::InexactFidelity {
+            detail: "html absent".into()
+        }
+    );
+    let mut wrong_text = f.clone();
+    wrong_text.text = Some(format!("{}\n..dot-stuffed", a.text));
+    assert_eq!(
+        ms(wrong_text),
+        Outcome::WrongResult {
+            detail: "text".into()
+        }
+    );
+    let mut wrong_html = f.clone();
+    wrong_html.html = Some("<p>other</p>".into());
+    assert!(matches!(ms(wrong_html), Outcome::WrongResult { .. }));
+    let mut both = f.clone();
+    (both.text, both.html) = (None, None);
+    assert_eq!(
+        ms(both),
+        Outcome::WrongResult {
+            detail: "text absent,html absent".into()
+        }
+    );
+    let mut mixed = f.clone();
+    mixed.text = None;
+    mixed.to = vec!["someone@else.invalid".into()];
+    assert_eq!(
+        ms(mixed),
+        Outcome::WrongResult {
+            detail: "to,text absent".into()
+        }
+    );
+    let mut mixed = f.clone();
+    mixed.text = None;
+    mixed.html = Some("<p>other</p>".into());
+    assert!(matches!(ms(mixed), Outcome::WrongResult { .. }));
+    // Inexact latencies stay out of the exact quantiles.
+    let ran = api::Ran {
+        rows: {
+            let mut r = rows(2, Phase::Measured, Outcome::Exact);
+            r[1].outcome = Outcome::InexactFidelity {
+                detail: "html absent".into(),
+            };
+            r
+        },
+        planned: 2,
+        started: 2,
+        ..Default::default()
+    };
+    let st = api::stats(&ran, None);
+    assert_eq!((st.exact, st.inexact_fidelity), (1, 1));
     let mut absent_from = f.clone();
     absent_from.from = None;
     assert!(

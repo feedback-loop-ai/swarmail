@@ -775,19 +775,26 @@ pub fn check_search(got: Result<Vec<Summary>, OpError>, expected: &str) -> Outco
 }
 
 /// The discrepancies v3's fidelity records document, per family: only
-/// these may be `inexact_fidelity`. MailSlurper keeps one decoded body per
-/// message and no raw source, so a part it does not keep is documented.
+/// these may be `inexact_fidelity` (spec AC3, R7). MailSlurper keeps one
+/// decoded body per message and no raw source, so the one body part it
+/// does not keep may be absent. Nothing else is documented: a part it
+/// returns but gets wrong is not that discrepancy.
 pub fn documented_discrepancy(family: Family, field: &str) -> bool {
     family == Family::Mailslurper && matches!(field, "text" | "html")
 }
 
-/// `get`: subject, from, to, text and HTML as authored (0132 §6.1).
+/// `get`: subject, from, to, text and HTML as authored (0132 §6.1). Only a
+/// documented discrepancy alone — one absent MailSlurper body part, the
+/// other part present and exact — is `inexact_fidelity`; a present but
+/// wrong part, both parts absent, or any other mismatch beside it is a
+/// `wrong_result` (R7).
 pub fn check_get(family: Family, got: Result<Fetched, OpError>, a: &Authored) -> Outcome {
     let f = match got {
         Ok(f) => f,
         Err(e) => return from_error(e),
     };
     let mut wrong = Vec::new();
+    let mut absent = Vec::new();
     if f.subject.as_deref() != Some(a.subject.as_str()) {
         wrong.push("subject");
     }
@@ -801,21 +808,30 @@ pub fn check_get(family: Family, got: Result<Fetched, OpError>, a: &Authored) ->
     if f.to.len() != 1 || !f.to[0].eq_ignore_ascii_case(&a.scope.address) {
         wrong.push("to");
     }
-    if !same_body(Some(&a.text), f.text.as_deref()) {
-        wrong.push("text");
+    for (field, authored, observed) in [
+        ("text", &a.text, f.text.as_deref()),
+        ("html", &a.html, f.html.as_deref()),
+    ] {
+        if same_body(Some(authored), observed) {
+            continue;
+        }
+        if observed.is_none_or(|o| o.trim().is_empty()) {
+            absent.push(field);
+        } else {
+            wrong.push(field);
+        }
     }
-    if !same_body(Some(&a.html), f.html.as_deref()) {
-        wrong.push("html");
-    }
-    if wrong.is_empty() {
+    if wrong.is_empty() && absent.is_empty() {
         Outcome::Exact
-    } else if wrong.iter().all(|w| documented_discrepancy(family, w)) {
+    } else if wrong.is_empty() && absent.len() == 1 && documented_discrepancy(family, absent[0]) {
         Outcome::InexactFidelity {
-            detail: wrong.join(","),
+            detail: format!("{} absent", absent[0]),
         }
     } else {
+        let mut detail: Vec<String> = wrong.iter().map(|w| (*w).to_owned()).collect();
+        detail.extend(absent.iter().map(|w| format!("{w} absent")));
         Outcome::WrongResult {
-            detail: wrong.join(","),
+            detail: detail.join(","),
         }
     }
 }
