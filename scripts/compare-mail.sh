@@ -11,7 +11,7 @@
 #                            [--protocol P] [--sources S]   (the frozen protocol, then admission)
 #   compare-mail.sh collect-v4 --output DIR --bin NAME=PATH... [--runtime NAME=DIR]...
 #                            [--protocol P --sources S --documents DIR] [--dry-run]
-#                            (protocol 4: the whole cost run as bounded chunks, each in its own
+#                            (protocol 4: the cost and API runs as bounded chunks, each in its own
 #                            delegated systemd scope; Linux only; --dry-run prints the plan)
 #
 # NAME is a competitor the protocol declares (proposed decision 0130): the
@@ -707,6 +707,14 @@ case "$mode" in
     [ "$step_status" -eq 0 ] || blocked collection-ready "the driver has no chunk plan for $protocol"
     plan=$(cat "$bin_dir/$run_token.plan")
     [ -n "$plan" ] || blocked collection-ready "the driver's chunk plan for $protocol is empty"
+    # The MCP API chunks are the eval crate's: it is built (or named) and
+    # frozen like the driver, before any chunk runs.
+    case "$plan" in
+      *api.mcp.*)
+        build_evals
+        evals_bin=$(freeze_binary "$evals_bin" "$bin_dir") || blocked build "cannot freeze the eval binary"
+        ;;
+    esac
     systemd_version=$(timeout 3 systemctl --version 2>/dev/null | head -n1)
     [ -n "$systemd_version" ] || systemd_version="not stated"
     scratch_root="$output.scratch"
@@ -715,14 +723,30 @@ case "$mode" in
     # bound's timeout, then taskset, then the scope, so the driver is the
     # scope's only process (a process left in the scope's own cgroup would
     # stop it enabling controllers for leaves).
+    # A coordinate is cost.<target>.r<n>, api.native.<target>.r<n>.f<fill>
+    # (the driver's `run`) or api.mcp.<target>.r<n>.f<fill> (the eval crate's
+    # `api-mcp`, which drives `hold --control api-v1` and, for an adapter
+    # target, the bridge; story B of 0132). Every one takes the same flags.
     chunk_command() {
-      local coord="$1" target rest unit w
-      rest="${coord#*.}"
-      target="${rest%.*}"
+      local coord="$1" target rest unit w program
+      case "$coord" in
+        api.*)
+          rest="${coord#api.*.}"
+          target="${rest%%.r*}"
+          ;;
+        *)
+          rest="${coord#*.}"
+          target="${rest%.*}"
+          ;;
+      esac
+      program=("$driver" run)
+      case "$coord" in
+        api.mcp.*) program=("$evals_bin" api-mcp --driver "$driver") ;;
+      esac
       unit="mail-compare-$run_token-$(printf '%s' "$coord" | tr -c 'A-Za-z0-9_.\n-' '_')"
       chunk_unit="$unit"
       chunk_cmd=(systemd-run --user --scope -p Delegate=yes "--unit=$unit" --
-        "$driver" run --mode collect --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"}
+        "${program[@]}" --mode collect --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"}
         --output "$output/chunks/$coord" --scratch "$scratch_root/$coord" --run-id "$run_id"
         --chunk "$coord" --systemd "$systemd_version")
       if [ "$target" = swarmail ]; then

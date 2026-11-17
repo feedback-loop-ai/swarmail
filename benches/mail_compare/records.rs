@@ -148,6 +148,11 @@ pub enum WindowKind {
     IdleReady,
     /// The profile's send-and-verify window.
     Measure,
+    /// API section (story B): five idle seconds after a fill level is
+    /// reached, before any fixture (0132 §4.3, `idle_fill_N`).
+    IdleFill,
+    /// API section: one cell's measured operations (0132 §4.2).
+    ApiCell,
 }
 
 /// How a window ended. `OomKilled` is a rise of `oom_kill` over the window
@@ -160,6 +165,11 @@ pub enum WindowOutcome {
     OomKilled,
     TargetExited,
     ChunkDeadline,
+    /// API section: the cell never ran (its warmup failed, its fixtures
+    /// could not be prepared, or an earlier call was left unresolved).
+    Blocked,
+    /// API section: the fill level was not reached within its bound.
+    FillNotReached,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

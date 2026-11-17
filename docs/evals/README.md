@@ -1012,6 +1012,184 @@ not complete and the change is not merged. Stories B (API level), C
 (`wait-best`), D (test execution) and E (freeze and collection) are separate
 runs.
 
+## Protocol v4: API latency, native and MCP (story B, #360)
+
+Story B of accepted [0132](../decisions/0132-mail-comparison-protocol-v4.md)
+§6 builds the API section on story A's enforced lifecycle. It measures the
+cost of an *exact* requested answer: a wrong, partial or inexact answer is a
+failure row, never a fast one, and every unsupported operation is a published
+row. Nothing here is a comparison figure; collection is story E's.
+
+**One client per tool.** `benches/mail_compare/clients/` holds one module per
+API family (Swarmail, Mailpit, MailHog, MailSlurper, smtp4dev, Inbucket,
+GreenMail) over one bounded keep-alive transport and one strict pager: an
+answer is complete only when paging reached the server's own count with every
+id distinct, every page before the last full and the count unchanged; a
+repeated id, a moving count, a short page, an overshoot, a redirect, a body
+over 16 MiB or an operation over 1 GiB is an error. The three MailSlurper
+products share one family and keep their own citations. The eval crate
+compiles the same modules by `#[path]` (`evals/src/lib.rs`), with only the
+packages it already names directly (`reqwest`, `serde`, `serde_json`, `tokio`,
+`base64`), so each tool has exactly one client; its MIME reader
+(`clients/mime.rs`) and SMTP sender (`clients/smtp.rs`) exist because the eval
+crate holds neither. The frozen oracle extractors `six_digit_code` and
+`labelled_url` moved, unchanged, to `clients/extract.rs`; `evals/src/oracle.rs`
+re-exports them, so the oracle and the API clients run one function. The
+client digests, which `clients_sha256` freezes in story E (a test keeps this
+table equal to the files):
+
+| Client module | sha256 |
+|---|---|
+| `swarmail.rs` | `8d4fe3b46faeef82eeebf2c7248baf5168d631665ee0fad98942004e1a7faecf` |
+| `mailpit.rs` | `92048844ac690368561dc74f62dde7d9d703a991bc37ac0ac616e9e8c0adcb85` |
+| `mailhog.rs` | `3613f7f31277724083abca93b42e363f6bcaa888ba71aff99f9950967fa63702` |
+| `mailslurper.rs` | `9653a447cb246865d7dae61d72d58e395292a3b5d2a9552a7ad2626920780542` |
+| `smtp4dev.rs` | `dcffd66769ce372cbed82347bc828924fe8b9eb25584f6267d8ea5756eba91eb` |
+| `inbucket.rs` | `7f75915c6c8679efcf939683aff49b15c1db840527e20456ef5ddef63db7302a` |
+| `greenmail.rs` | `9fd00f29b47a020c582c1ef5f434ed2900f638f945815209e1fc5c76bd06e85d` |
+
+**Every route is cited and rechecked.** Each (target, surface, operation) is
+`supported` with its routes and citations, `not_supported` with a citation,
+`not_inspected` with the evidence that is missing, `no_mcp_surface` or
+`does_not_start`. A citation names a lock v5 document of that target's pin
+and a literal the document must contain; before an API chunk launches, the
+driver rechecks every citation of its target on both surfaces against the
+documents `verify_files` has just rechecked (path, size, digest), and a
+candidate citation (`repo:`) against the tree. Missing evidence refuses; it is
+never published as `not_supported`. What the captured documents establish:
+
+- **Swarmail** reads its own inboxes (`GET /api/v1/inboxes/{inbox}/messages`,
+  with `subject` for search), one message by id, codes and links from the
+  fields ingest extracted (0005), delete by id and the narrowest clear, its
+  inbox. Its fixtures are delivered per inbox through SMTP AUTH (0004), and the
+  fill goes unauthenticated to `default`: per-test inboxes are the product
+  feature measured, and the report says so.
+- **Mailpit** (Swagger): no recipient filter is cited (the query syntax is
+  behind a link the lock does not capture), so `list` is a complete scan
+  filtered on the client; `search` sends the subject token to the documented
+  search; delete by id and clear-everything are the documented
+  `DELETE /api/v1/messages`.
+- **MailHog** (Swagger, v2 only): `search kind=to` lists and searches; no read
+  by id is captured, so `get` scans the store for the id (labelled
+  `client_scan`); delete and clear are `not_inspected`, because `APIv1.md`,
+  which its README names for them, is not captured.
+- **MailSlurper** (route registrations and service controller): the `to`
+  filter and `pageNumber`; read by id; no delete by id (`not_supported`: the
+  only delete route prunes by date); clear is `not_inspected`, because the
+  prune codes are not captured. Its one decoded body is v3's documented
+  fidelity discrepancy, so a missing part is `inexact_fidelity`.
+- **smtp4dev** (`Rnwood.Smtp4dev.xml`): the file documents controller members,
+  not route templates. Each citation binds the member (`GetSummaries` with
+  `searchTerms`, `GetMessageSourceRaw`, `Delete`, `DeleteAll`); the templates
+  under `/api/messages` are those the wire driver checked against the pinned
+  executable, and the real host proof exercises them. Its narrowest clear is
+  everything.
+- **Inbucket** (REST example client): a mailbox per recipient, listed whole,
+  source by id, delete by id and purge of one mailbox, so its clear is a
+  recipient clear.
+- **GreenMail** is read over REST, not POP3 (acceptance answer 8): the user's
+  folder carries each message's MIME source, so `get` reads the folder and
+  picks the uid; there is no delete of one message (`not_supported`), and its
+  only clear is the purge of every mail.
+- **MCP**: Swarmail's own tools at `POST /mcp`; the 0129 adapters of Mailpit,
+  MailHog and the MailSlurper source build behind the bridge (no delete or
+  clear: `not_supported`, 0092 §3, 0129 §5; MailHog's adapter has no read
+  tool, so its `get` pages `mailhog_list`); `no_mcp_surface` for smtp4dev,
+  Inbucket, GreenMail and the Alkemio image. Nothing on this surface falls
+  back to native HTTP; untimed setup and postchecks read the native API.
+
+**Exact answers, authored first.** Every fixture is a `code_link` message
+authored before the server sees it (`api.rs`, `author`): subject, from, to,
+text and HTML, one six-digit code and one link under `Confirm your account:`,
+the eval fixture's templates, and a token whose five digits cannot be read as
+the code. Setup resolves each fixture's server id by listing its own scope and
+matching the token; nothing about its content is learned from the server.
+`list` must equal the measured recipient's ten ids after full paging and an
+exact recipient match (a substring filter's look-alike is dropped), `search`
+(recipient AND subject) exactly one id, `get` every field as authored, and
+the extractions the authored values.
+
+**Fill and fixtures.** Each chunk is one fresh instance at one fill level (0,
+1,000, 10,000, 100,000): the v3 corpus, byte for byte (a test compares it with
+`wire::authored`), over eight reused SMTP sessions, round robin to 100
+background recipients that are never measured. Accepted and retained counts
+are confirmed within 300 s, or the level is `fill_not_reached` with the count
+reached and every cell blocked; nothing is retried or reduced. Then
+`idle_fill_N`: five quiet seconds, the last two sampled, and the scratch's
+allocated bytes. Fixtures follow, outside every window: the read set (10),
+each delete cell's 120 victims and 10 survivors in its own scope, each
+recipient-clear cell's 120 ten-message scopes and one sentinel scope, and on
+the MCP surface one fresh message per wait attempt. For Swarmail that is 4,010
+messages (4,370 on MCP), computed before launch so fill plus fixtures stays
+below the 150,000 cap; the record carries both counts separately.
+
+**Cells.** Reads first (list, search, get, extract_code, extract_link at 1, 8
+and 32 closed-loop workers, each worker on its own connection), then the MCP
+future wait, then deletes, then recipient clears, then the single global
+clear where that is the narrowest documented clear (one invocation, no warmup,
+no quantiles). Each cell is 20 warmup operations under their own 5 s bound
+(a failed warmup blocks the cell), then one queue of 100 measured operations
+or an absolute 5 s deadline. A worker never starts an index at or after the
+deadline; every started operation ends in exactly one row (`exact`,
+`inexact_fidelity`, `wrong_result`, `failed` with its class, or `timeout`);
+untaken slots are `unstarted`. A call left unresolved at the deadline blocks
+every later cell and abandons the launch, because cancelling a request does
+not prove the server did not act on it. After each destructive cell an untimed
+batch postcheck compares the whole expected ledger: a victim still retained
+makes its row wrong, and a missing survivor, unstarted victim or sentinel, or
+a foreign id, invalidates every success of the cell. Before the global clear
+a final check confirms the read set, the sentinel and the background fill.
+
+**Figures.** Per cell: planned = started + unstarted, started = exact +
+failures, nearest-rank p50/p95/p99 over exact successes only (null when there
+are none), inexact latencies kept apart, exact successes per second of the
+client window, and target CPU-µs per *started* operation from the cell's
+`cpu.stat` window (null when nothing started). The raw rows, both intervals
+(the client's and the owner's resource window) and the window's counters stay
+in the chunk, and `admit-v4` recomputes the `api` figures from `api.json` and
+the window rows, after checking that `api.json` is the plan's cells in order
+and that every count adds up.
+
+**The MCP surface's owner.** `swarmail-evals api-mcp --driver PATH` takes
+`run`'s chunk flags and drives `mail_compare hold --control api-v1`, which
+launches the target under the budget, takes `ready` and `idle_ready`, prints
+its endpoints, and then obeys JSON lines on stdin: `window_start` and
+`window_end` (one cell at a time, each window on the holder's clock),
+`idle_fill` (once, before any cell) and `record` (last; checked against the
+plan and the windows). An unknown, duplicate, unmatched, out-of-order or
+oversized line ends the hold with teardown and no seal; a hold without
+`--control` keeps its silent-stdin meaning. The control round trip is inside
+each resource window, and the eval side keeps its own send and receive
+instants. Benchmark clients each draw JSON-RPC ids from a disjoint range,
+initialization included, so 32 of them share one bridge; the bridge's and the
+adapters' admission limits stay as they are, and a busy or rate-limited
+refusal is a failure row by source, never retried. Swarmail's own MCP tool
+rate (1,024 calls a second, a product limit the frozen launch does not raise)
+refuses part of a 32-worker cell, and its window carries into the next cell:
+those refusals are published as `status_429` failures.
+
+**Commands.** The wrapper's `collect-v4` runs the 96 native chunks
+(`api.native.<target>.r<n>.f<fill>`) as `mail_compare run` and the 48 MCP
+chunks (`api.mcp.<target>.r<n>.f<fill>`) as `swarmail-evals api-mcp`, each in
+its own scope under the same bound, after the 24 cost chunks. The full v4
+collection still refuses: the `waits` and `testexec` sections are owed
+(stories C and D), and the draft lists every unresolved item, including the
+`not_inspected` API cells above.
+
+**Proof.** `cargo test --locked --test mail_compare` runs the deterministic
+tests (citations against the bytes, decoders against the real wire corpus,
+the pager against a bounded responder, the scheduler under a paused clock,
+exactness, postchecks, plan, admission, the control lines) and the whole
+native cell sequence against the real candidate; `cd evals && cargo test
+--locked --test apibench` runs 32 id-disjoint clients through a real bridge
+and every MCP cell, the coordinated future wait included, against the real
+candidate. Three host proofs are ignored and run one at a time under `timeout
+600 taskset -c 0-31` with the load recorded: `api_fill_100k_real` (100,000
+retained ids, every one confirmed by a complete scan; it needs no
+delegation), and `api_native_real` and `api_mcp_bridge_real`, which need a
+delegated cgroup v2 scope (and, for the second, `SWARMAIL_EVALS_BIN` and
+`MAIL_COMPARE_BIN`) and fail, never skip, without them.
+
 ## What closes the remaining rows
 
 1. Build provenance for each executable needs genuine build evidence (an

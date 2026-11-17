@@ -22,11 +22,28 @@ pub struct McpClient {
     /// `initialize` and the initialized notification are session setup, not
     /// calls, and are not counted.
     tool_calls: u32,
+    /// The last id this client may use: `u64::MAX` for an ordinary client, the
+    /// end of its range for a benchmark client (0132 §7, spec AC7).
+    last_id: u64,
 }
 
 impl McpClient {
     /// Initialize a session against `url` (which ends in `/mcp`).
     pub async fn connect(url: &str) -> Result<McpClient, String> {
+        McpClient::connect_ids(url, 1..u64::MAX).await
+    }
+
+    /// A benchmark client: every JSON-RPC id it sends, initialization
+    /// included, is drawn from `ids`, so clients given disjoint ranges share
+    /// one bridge without colliding. Past the range it refuses to send.
+    pub async fn connect_range(url: &str, ids: std::ops::Range<u64>) -> Result<McpClient, String> {
+        if ids.start == 0 || ids.is_empty() {
+            return Err(format!("id range {ids:?} is empty or starts at 0"));
+        }
+        McpClient::connect_ids(url, ids).await
+    }
+
+    async fn connect_ids(url: &str, ids: std::ops::Range<u64>) -> Result<McpClient, String> {
         let http = reqwest::Client::builder()
             .no_proxy()
             .timeout(REQUEST_TIMEOUT)
@@ -36,8 +53,9 @@ impl McpClient {
         let mut client = McpClient {
             http,
             url: url.to_string(),
-            next_id: 0,
+            next_id: ids.start - 1,
             tool_calls: 0,
+            last_id: ids.end - 1,
         };
         let init = client
             .rpc(
@@ -60,9 +78,19 @@ impl McpClient {
     }
 
     async fn post(&self, body: &Value) -> Result<(u16, Vec<u8>), String> {
-        let resp = self
-            .http
-            .post(&self.url)
+        self.post_within(body, None).await
+    }
+
+    async fn post_within(
+        &self,
+        body: &Value,
+        timeout: Option<Duration>,
+    ) -> Result<(u16, Vec<u8>), String> {
+        let mut req = self.http.post(&self.url);
+        if let Some(t) = timeout {
+            req = req.timeout(t);
+        }
+        let resp = req
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream")
             .body(body.to_string())
@@ -87,10 +115,27 @@ impl McpClient {
 
     /// One request; returns its `result` or an error naming the failure.
     pub async fn rpc(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.rpc_within(method, params, None).await
+    }
+
+    /// One request bounded by `timeout` (the remaining budget of a
+    /// measured operation) instead of the client's ordinary deadline.
+    pub async fn rpc_within(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Option<Duration>,
+    ) -> Result<Value, String> {
+        if self.next_id >= self.last_id {
+            return Err(format!("{method}: this client's id range is exhausted"));
+        }
         self.next_id += 1;
         let id = self.next_id;
         let (status, bytes) = self
-            .post(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
+            .post_within(
+                &json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }),
+                timeout,
+            )
             .await?;
         let reply: Value = serde_json::from_slice(&bytes)
             .map_err(|e| format!("{method}: status {status}, unparseable reply: {e}"))?;
@@ -108,11 +153,22 @@ impl McpClient {
 
     /// Call a tool and decode the JSON inside its text block.
     pub async fn call(&mut self, tool: &str, arguments: Value) -> Result<Value, String> {
+        self.call_within(tool, arguments, None).await
+    }
+
+    /// [`McpClient::call`] bounded by `timeout`.
+    pub async fn call_within(
+        &mut self,
+        tool: &str,
+        arguments: Value,
+        timeout: Option<Duration>,
+    ) -> Result<Value, String> {
         self.tool_calls += 1;
         let result = self
-            .rpc(
+            .rpc_within(
                 "tools/call",
                 json!({ "name": tool, "arguments": arguments }),
+                timeout,
             )
             .await?;
         let text = result["content"][0]["text"]

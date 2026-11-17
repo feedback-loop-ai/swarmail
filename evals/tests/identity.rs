@@ -41,6 +41,15 @@ fn copy_tree(from: &Path, to: &Path) {
         }
     }
 }
+/// The modules the eval crate compiles by path from the wire driver's tree
+/// (accepted decision 0132 §9.2: one client per tool): a disposable checkout
+/// needs them beside `evals/`, as the repository has them.
+fn copy_shared(actual: &Path, root: &Path) {
+    let from = actual.join("../benches/mail_compare");
+    let to = root.join("benches/mail_compare");
+    copy_tree(&from.join("clients"), &to.join("clients"));
+    std::fs::copy(from.join("api.rs"), to.join("api.rs")).unwrap();
+}
 fn build(root: &Path, target: &Path) -> PathBuf {
     let out = Command::new("cargo")
         .current_dir(root.join("evals"))
@@ -172,6 +181,7 @@ fn rebuilds_follow_source_git_indirection_packed_refs_and_archive_unavailability
     std::fs::create_dir(&root).unwrap();
     let actual = Path::new(env!("CARGO_MANIFEST_DIR"));
     copy_tree(actual, &root.join("evals"));
+    copy_shared(actual, &root);
     std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
     std::fs::write(root.join("Cargo.lock"), "").unwrap();
     std::fs::create_dir(root.join("src")).unwrap();

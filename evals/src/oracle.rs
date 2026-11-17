@@ -153,15 +153,10 @@ fn ok(what: &str, (status, body): (u16, Value)) -> Result<Value, String> {
     }
 }
 
-/// The URL on the text line that starts with `label`.
-pub fn labelled_url(text: &str, label: &str) -> Option<String> {
-    text.lines().find_map(|line| {
-        let rest = line.trim().strip_prefix(label)?;
-        rest.split_whitespace()
-            .find(|w| w.starts_with("http://"))
-            .map(str::to_string)
-    })
-}
+/// The URL on the text line that starts with `label`, and the first
+/// standalone six-digit run: the frozen extractors, which live with the API
+/// clients so both run the one function (accepted decision 0132 §6.1).
+pub use crate::clients::extract::{labelled_url, six_digit_code};
 
 /// Decode the HTML character references an `href` may carry.
 pub fn decode_entities(s: &str) -> String {
@@ -248,13 +243,6 @@ pub fn html_anchors(html: &str) -> Vec<(String, String)> {
         rest = &after[text_end..];
     }
     found
-}
-
-/// The first standalone six-digit run in `text`.
-pub fn six_digit_code(text: &str) -> Option<String> {
-    text.split(|c: char| !c.is_ascii_digit())
-        .find(|w| w.len() == 6)
-        .map(str::to_string)
 }
 
 /// The minutes on the mail's `Requested N minutes before this email was

@@ -548,12 +548,10 @@ fn a_v4_swarmail_spec_is_never_built_uncapped() {
 fn this_driver_refuses_a_frozen_v4_naming_the_owed_sections() {
     let w = refusals(p4(frozen_ready()).validate());
     assert!(
-        w.contains(
-            "this driver cannot freeze protocol 4: the api, waits, testexec section(s) are owed"
-        ),
+        w.contains("this driver cannot freeze protocol 4: the waits, testexec section(s) are owed"),
         "{w}"
     );
-    assert_eq!(protocol::OWED_SECTIONS, ["api", "waits", "testexec"]);
+    assert_eq!(protocol::OWED_SECTIONS, ["waits", "testexec"]);
     // A draft is not refused for it.
     p4(draft()).validate().unwrap();
 }
@@ -845,6 +843,7 @@ fn the_v4_draft_differs_from_v3_only_where_0132_says() {
         "claim",
         "budgets",
         "headline",
+        "api",
         "unresolved",
     ];
     let mut keys: Vec<&String> = d.keys().chain(v3.keys()).collect();
@@ -2310,7 +2309,12 @@ async fn the_sampler_writes_a_row_per_tick_and_one_at_each_bound() {
 #[test]
 fn the_draft_plans_24_cost_chunks_in_rotation_order() {
     let p = p4(draft());
-    let plan = runner::plan_v4(&p);
+    let all = runner::plan_v4(&p);
+    // Story B's API chunks follow the cost chunks (0132 §11.2: 24 cost, 96
+    // native, 48 mcp), so the cost plan is the first 24, unchanged.
+    assert_eq!(all.len(), 24 + 96 + 48);
+    let plan: Vec<runner::Chunk> = all[..24].to_vec();
+    assert!(plan.iter().all(|c| matches!(c, runner::Chunk::Cost { .. })));
     assert_eq!(plan.len(), 24);
     let mut want = Vec::new();
     for rep in 0..3u32 {
@@ -2357,7 +2361,14 @@ fn chunk_names_round_trip_and_unknown_ones_refuse() {
         ("cost.mailslurper.r0", "not in the protocol's plan"),
         ("cost.mailpit.r3", "not in the protocol's plan"),
         ("cost.nobody.r0", "unknown target"),
-        ("api.mailpit.r0", "is not implemented"),
+        ("waits.mailpit.r0", "is not implemented"),
+        ("api.mailpit.r0", "not a chunk coordinate"),
+        ("api.native.mailpit.r0.f5", "not in the protocol's plan"),
+        ("api.mcp.inbucket.r0.f0", "not in the protocol's plan"),
+        ("api.native.mailslurper.r0.f0", "not in the protocol's plan"),
+        ("api.web.mailpit.r0.f0", "unknown surface"),
+        ("api.native.mailpit.r0.f01000", "is not f<fill>"),
+        ("api.native.mailpit.r00.f0", "is not r<repetition>"),
         ("cost.mailpit", "not a chunk coordinate"),
         ("cost.mailpit.0", "not r<repetition>"),
         ("", "not a chunk coordinate"),
@@ -4600,6 +4611,9 @@ fn adm_protocol() -> (Protocol, Vec<u8>) {
 /// The admission fixture's protocol over `reps` repetitions.
 fn adm_protocol_n(reps: u32) -> (Protocol, Vec<u8>) {
     let mut v = draft();
+    // The cost section's admission: a draft without the API section plans
+    // only cost chunks (the API chunk's admission is proved in `api.rs`).
+    v.as_object_mut().unwrap().remove("api");
     let mut prof = v["throughput"][1].clone();
     prof["repetitions"] = json!(reps);
     prof["messages"] = json!(4);
@@ -5156,6 +5170,7 @@ fn admit_v4_refuses_a_row_whose_launch_has_no_receipt() {
 fn admit_v4_refuses_an_empty_plan_without_panicking() {
     let mut v = draft();
     v["throughput"] = json!([]);
+    v.as_object_mut().unwrap().remove("api");
     let p = p4(v);
     assert!(runner::plan_v4(&p).is_empty());
     let (root, sbytes) = (fixture(), serde_json::to_vec(&lock5()).unwrap());
@@ -5798,7 +5813,7 @@ case "$1" in
       *" --seal "*) exit "${FAKE_SEAL_EXIT:-${FAKE_ADMIT_EXIT:-0}}" ;;
       *) exit "${FAKE_VERIFY_EXIT:-${FAKE_ADMIT_EXIT:-0}}" ;;
     esac ;;
-  run)
+  run|api-mcp)
     out='' chunk=''
     while [ $# -gt 0 ]; do
       case "$1" in --output) out="$2" ;; --chunk) chunk="$2" ;; esac
@@ -5900,6 +5915,7 @@ impl V4Rig {
             .env("FAKE_PLAN", self.file("plan"))
             .env("FAKE_TARGETS", self.file("targets"))
             .env("COMPARE_MAIL_DRIVER_BIN", self.file("fake/driver"))
+            .env("COMPARE_MAIL_EVALS_BIN", self.file("fake/driver"))
             .env("COMPARE_MAIL_SWARMAIL_BIN", self.file("fake/candidate"))
             .env("COMPARE_MAIL_BIN_DIR", self.file("frozen"))
             .envs(env.iter().copied());
@@ -5962,12 +5978,20 @@ fn real_sleep() -> String {
 /// The rig, built while `ambient` is in the environment of the commands it
 /// runs (so a test can show that an ambient git configuration is ignored).
 fn v4_rig_with(ambient: &[(&str, &str)]) -> V4Rig {
-    let root = fixture();
-    let r = root.path();
+    // The cost rig: the plan's 24 cost chunks. The API chunks' dispatch is
+    // proved by `collect_v4_dispatches_api_chunks_to_run_and_to_api_mcp`.
     let plan: Vec<String> = runner::plan_v4(&p4(draft()))
         .iter()
+        .filter(|c| matches!(c, runner::Chunk::Cost { .. }))
         .map(runner::Chunk::name)
         .collect();
+    v4_rig_planned(ambient, plan)
+}
+
+/// The rig with the fake driver answering `plan`.
+fn v4_rig_planned(ambient: &[(&str, &str)], plan: Vec<String>) -> V4Rig {
+    let root = fixture();
+    let r = root.path();
     for d in ["repo/scripts", "repo/docs/evals/draft", "fake", "tools"] {
         std::fs::create_dir_all(r.join(d)).unwrap();
     }
@@ -6078,6 +6102,53 @@ fn v4_rig_with(ambient: &[(&str, &str)]) -> V4Rig {
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "fixture"]);
     V4Rig { root, plan }
+}
+
+#[test]
+fn collect_v4_dispatches_api_chunks_to_run_and_to_api_mcp() {
+    let plan: Vec<String> = [
+        "cost.swarmail.r0",
+        "api.native.mailslurper-source-build.r0.f1000",
+        "api.mcp.mailslurper-source-build.r0.f0",
+        "api.mcp.swarmail.r1.f100000",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect();
+    let rig = v4_rig_planned(&[], plan);
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 0, "{text}");
+    let log = rig.log();
+    let line = |coord: &str| {
+        log.iter()
+            .find(|l| l.starts_with("driver ") && l.contains(&format!("--chunk {coord} ")))
+            .unwrap_or_else(|| panic!("{coord}: {log:?}"))
+            .clone()
+    };
+    // A native API chunk is the driver's own run, with its target's bytes.
+    let native = line("api.native.mailslurper-source-build.r0.f1000");
+    assert!(native.starts_with("driver run --mode collect"), "{native}");
+    assert!(
+        native.contains("--bin mailslurper-source-build=") && !native.contains("--bin swarmail="),
+        "{native}"
+    );
+    // An MCP chunk is the eval crate's api-mcp, given the driver to hold with.
+    let mcp = line("api.mcp.mailslurper-source-build.r0.f0");
+    assert!(mcp.starts_with("driver api-mcp --driver "), "{mcp}");
+    assert!(mcp.contains("--bin mailslurper-source-build="), "{mcp}");
+    let sw = line("api.mcp.swarmail.r1.f100000");
+    assert!(
+        sw.contains("--bin swarmail=") && sw.contains("--mode collect"),
+        "{sw}"
+    );
+    // Each in its own scope, under the one bound.
+    let units: std::collections::BTreeSet<&str> = log
+        .iter()
+        .filter(|l| l.starts_with("systemd-run "))
+        .map(|l| l.split(' ').find(|w| w.starts_with("--unit=")).unwrap())
+        .collect();
+    assert_eq!(units.len(), 4);
+    assert!(text.contains("(4 chunks)"), "{text}");
 }
 
 #[test]

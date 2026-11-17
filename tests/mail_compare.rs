@@ -11,6 +11,15 @@
 // The driver's own modules, compiled into this test crate. Some items serve
 // only the driver binary (its CLI), so dead-code analysis here is partial.
 #[allow(dead_code)]
+#[path = "../benches/mail_compare/api.rs"]
+mod api;
+#[allow(dead_code)]
+#[path = "../benches/mail_compare/api_chunk.rs"]
+mod api_chunk;
+#[allow(dead_code)]
+#[path = "../benches/mail_compare/clients/mod.rs"]
+mod clients;
+#[allow(dead_code)]
 #[path = "../benches/mail_compare/mailhog_mcp.rs"]
 mod mailhog_mcp;
 #[allow(dead_code)]
@@ -53,6 +62,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+#[path = "mail_compare/api_section.rs"]
+mod api_section;
 #[path = "mail_compare/eight_targets.rs"]
 mod eight_targets;
 #[path = "mail_compare/v4.rs"]

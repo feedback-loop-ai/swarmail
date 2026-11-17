@@ -705,6 +705,8 @@ fn outcome_shortfall(o: WindowOutcome) -> Option<&'static str> {
         WindowOutcome::OomKilled => Some("oom"),
         WindowOutcome::TargetExited => Some("target_exited"),
         WindowOutcome::ChunkDeadline => Some("timeout"),
+        WindowOutcome::Blocked => Some("blocked"),
+        WindowOutcome::FillNotReached => Some("fill_not_reached"),
     }
 }
 
@@ -1388,7 +1390,20 @@ pub fn admit_chunk(
         &no_life(),
     ))
     .map_err(|e| format!("chunk {name}: report: {e}"))?;
-    for key in DERIVED {
+    let mut fresh = fresh;
+    let mut keys: Vec<&str> = DERIVED.to_vec();
+    if let crate::runner::Chunk::Api { .. } = chunk {
+        // The API section's record is an indexed artifact; its structure is
+        // checked against the plan and its figures recomputed (spec AC9).
+        let bytes = std::fs::read(dir.join("api.json"))
+            .map_err(|e| format!("chunk {name}: api.json: {e}"))?;
+        let rec: crate::api::ApiRecord =
+            serde_json::from_slice(&bytes).map_err(|e| format!("chunk {name}: api.json: {e}"))?;
+        crate::api_chunk::check_record(&rec, chunk).map_err(|e| format!("chunk {name}: {e}"))?;
+        fresh["api"] = crate::api_chunk::api_report(&rec, &admitted.resources);
+        keys.push("api");
+    }
+    for key in keys {
         if let Some((at, rep, rows)) = first_difference(key, &on_disk[key], &fresh[key]) {
             return Err(format!(
                 "chunk {name}: the report disagrees with the rows it was derived from at {at}: report {rep}, rows {rows}"
