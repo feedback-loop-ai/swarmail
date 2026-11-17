@@ -1040,12 +1040,12 @@ table equal to the files):
 
 | Client module | sha256 |
 |---|---|
-| `swarmail.rs` | `e457987b3e33143c709d2973cdf58911b99a601d9ee1f12cdb7a76ba5946faab` |
-| `mailpit.rs` | `b16a25a903a4cc0a65f68a1a044038a17d8f0f690f3efba3b2a5b486297f69ed` |
+| `swarmail.rs` | `f2dca32df491471bdcd0509f4bcb0266d34385e86661c7daaa1b1f038bd3e143` |
+| `mailpit.rs` | `d852e93846009002f589d01516bd6104e398be892f05cf5b31926088d198801b` |
 | `mailhog.rs` | `3613f7f31277724083abca93b42e363f6bcaa888ba71aff99f9950967fa63702` |
-| `mailslurper.rs` | `1831b2df8e41bc2fcd2c9fd7bd769a9c8616b3ac45b555ee3eb5a43db5f75ae8` |
-| `smtp4dev.rs` | `50f6839f9c1277cb8378ed50e7655065c6f16e789042ac92521a84092cf7f784` |
-| `inbucket.rs` | `f395b0e671a86be73f1c29f801ee6457d4bb87662c44b2211e26284b09b68381` |
+| `mailslurper.rs` | `5a4b9bb1dce0c3f601d9c3ec704537e537b82c3caad5d8f5e4cf68e548fc0cfe` |
+| `smtp4dev.rs` | `122ca842737d847470fcfa713e16eb5b38944ce5b2e57c5e12a1297ef7496f9e` |
+| `inbucket.rs` | `77f5026c806aac85629160b6d02b9ddcef6d96ff9b0aa96c5be2ac0dc4a6b62c` |
 | `greenmail.rs` | `9fd00f29b47a020c582c1ef5f434ed2900f638f945815209e1fc5c76bd06e85d` |
 
 **Every route is cited and rechecked.** Each (target, surface, operation) is
