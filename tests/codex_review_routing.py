@@ -221,10 +221,11 @@ def resolved_matrix(engine, out):
             assert result.returncode == 0, result.stderr
             office = json.loads(result.stdout)
             model = 'luna' if recipe == 'codex-fast' else 'sol'
-            effort = ('medium' if key == 'intake' else 'high') if recipe == 'codex' else (
-                'high' if key == 'intake' else 'xhigh')
+            # Operator, 2026-11-16: every Sol 6.1 seat at medium; Luna keeps xhigh.
+            effort = 'xhigh' if recipe == 'codex-fast' else 'medium'
             if recipe == 'mixed-opus-terra':
-                model, effort = ('terra61' if key == 'intake' else 'opus'), 'high'
+                # Terra 6.1 keeps high; Opus runs at medium (2026-11-16).
+                model, effort = ('terra61', 'high') if key == 'intake' else ('opus', 'medium')
             if recipe == 'claude-careful':
                 model, effort = ('haiku55' if key == 'intake' else 'sonnet'), 'high'
             assert office['models'] == [model] and office['efforts'] == {model: effort}
@@ -298,7 +299,7 @@ def resolved_matrix(engine, out):
 # adapter route and office effort for each of its seven model seats.
 MIXED_ROUTE = {
     'intake': ('mixed-terra-intake', 'codex', 'terra61', 'gpt-6.1-terra', None, 'high'),
-    'implement': ('mixed-opus-implementer', 'claude', 'opus', 'claude-opus-5-5', None, 'high'),
+    'implement': ('mixed-opus-implementer', 'claude', 'opus', 'claude-opus-5-5', None, 'medium'),
     'review:correctness': ('codex-review-astra-correctness', 'dsh', 'flash', 'deepseek-flash',
                            ('deepseek-official', 'uncontracted'), 'high'),
     'review:security': ('codex-review-security', 'dsh', 'flash', 'deepseek-flash',
@@ -307,7 +308,7 @@ MIXED_ROUTE = {
                      ('spark-glm', 'local'), None),
     'review:guarantees': ('codex-review-guarantees', 'dsh', 'flash', 'deepseek-flash',
                           ('deepseek-official', 'uncontracted'), 'high'),
-    'review:independent': ('codex-review-independent', 'claude', 'fable', 'claude-fable-5-2', None, 'high'),
+    'review:independent': ('codex-review-independent', 'claude', 'fable', 'claude-fable-5-2', None, 'medium'),
 }
 
 
@@ -437,13 +438,13 @@ def mixed_route(engine, out, manifests):
 CLAUDE_CAREFUL_ROUTE = {
     'intake': ('claude-intake', 'claude', 'haiku55', 'claude-haiku-5-5', None, 'high', True),
     'design:positions:simplicity': ('claude-position-simplicity', 'claude', 'opus',
-                                    'claude-opus-5-5', None, 'high', True),
+                                    'claude-opus-5-5', None, 'medium', True),
     'design:positions:robustness': ('dsh-position-robustness', 'dsh', 'flash', 'deepseek-flash',
                                     ('deepseek-official', 'uncontracted'), 'high', False),
-    'design:chief': ('claude-chief-architect', 'claude', 'fable', 'claude-fable-5-2', None, 'high', True),
+    'design:chief': ('claude-chief-architect', 'claude', 'fable', 'claude-fable-5-2', None, 'medium', True),
     'implement': ('claude-implementer', 'claude', 'sonnet', 'claude-sonnet-5-5', None, 'high', True),
     'review:correctness': ('codex-review-correctness', 'claude', 'fable', 'claude-fable-5-2',
-                           None, 'high', False),
+                           None, 'medium', False),
     'review:security': ('codex-review-security', 'dsh', 'flash', 'deepseek-flash',
                         ('deepseek-official', 'uncontracted'), 'high', False),
     'review:guarantees': ('codex-review-guarantees', 'dsh', 'flash', 'deepseek-flash',
@@ -451,7 +452,7 @@ CLAUDE_CAREFUL_ROUTE = {
     'review:tests': ('codex-review-tests', 'dsh', 'glm-flash', 'spark-glm/GLM-5.3-Flash-EXL3',
                      ('spark-glm', 'local'), None, False),
     'review:independent': ('claude-review-independent', 'claude', 'opus', 'claude-opus-5-5',
-                           None, 'high', False),
+                           None, 'medium', False),
 }
 VALIDATOR = ['scripts/design-check.sh', 'scripts/speckit/check-prerequisites.sh',
              'scripts/speckit/common.sh']
@@ -663,7 +664,7 @@ def fixture(engine, out, name, roles, outcomes, fallback=False, single=False, re
     dump(case/'adapters/exec.json', exec_adapter)
     models = {role: role for role in roles}
     if fallback:
-        models.update({'qwen-max':'dashscope/qwen3.8-max','sonnet':'claude-sonnet-5-5'})
+        models.update({'qwen-max':'dashscope/qwen4-max','sonnet':'claude-sonnet-5-5'})
     adapter = dict(provider='controlled', trust_tier='trusted', egress='uncontracted', binary='python3',
         driver=['python3', str(case/'driver.py')], models=models, judges=list(models),
         model_flag='--model', efforts=[], effort_flag='unsupported', tool_permissions='unsupported',
@@ -740,11 +741,11 @@ def main():
         assert entered(row,'ship')==(1 if want else 0),name
         return row
     for mode,want in [('fail',True),('clean',True),('high',False),('bad-clean',False),('null',False),('string',False),('absent',False)]:
-        row=check('qwen-'+mode,['correctness','security'],{'dashscope/qwen3.8-max':mode},want,True)
+        row=check('qwen-'+mode,['correctness','security'],{'dashscope/qwen4-max':mode},want,True)
         models=[c['model'] for c in row['calls'] if c['seat']=='review:correctness']
-        assert models==(['dashscope/qwen3.8-max','claude-sonnet-5-5'] if mode=='fail' else ['dashscope/qwen3.8-max']),models
-    row=check('exhausted',['correctness','security'],{'dashscope/qwen3.8-max':'fail','claude-sonnet-5-5':'fail'},False,True)
-    assert [c['model'] for c in row['calls'] if c['seat']=='review:correctness']==['dashscope/qwen3.8-max','claude-sonnet-5-5','claude-sonnet-5-5']
+        assert models==(['dashscope/qwen4-max','claude-sonnet-5-5'] if mode=='fail' else ['dashscope/qwen4-max']),models
+    row=check('exhausted',['correctness','security'],{'dashscope/qwen4-max':'fail','claude-sonnet-5-5':'fail'},False,True)
+    assert [c['model'] for c in row['calls'] if c['seat']=='review:correctness']==['dashscope/qwen4-max','claude-sonnet-5-5','claude-sonnet-5-5']
     row=check('security-failure',['correctness','security'],{'security':'fail'},False,True)
     assert all(c['model']=='security' for c in row['calls'] if c['seat']=='review:security')
     for roles in [['security'],['correctness','security'],['correctness','security','tests'],

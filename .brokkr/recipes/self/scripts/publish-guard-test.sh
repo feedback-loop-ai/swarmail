@@ -519,53 +519,110 @@ ordinary = {"quality", "test", "coverage", "deny", "dependency-audit", "brokkr-c
 def normalized(s):
     return re.sub(r"\s+", "", s or "")
 tag = "startsWith(github.ref, 'refs/tags/v')"
-docker_if = "!cancelled() && github.event_name == 'push' " + " ".join("&& needs."+n+".result == 'success'" for n in ("quality", "test", "coverage", "deny", "dependency-audit", "brokkr-compile", "chart-verify", "docker-smoke")) + " && ((github.ref == 'refs/heads/main' && needs.release-rate-5k.result == 'skipped') || ("+tag+" && needs.release-rate-5k.result == 'success'))"
+build_if = "!cancelled() && github.event_name == 'push' " + " ".join("&& needs."+n+".result == 'success'" for n in ("quality", "test", "coverage", "deny", "dependency-audit", "brokkr-compile", "chart-verify", "docker-smoke")) + " && ((github.ref == 'refs/heads/main' && needs.release-rate-5k.result == 'skipped') || ("+tag+" && needs.release-rate-5k.result == 'success'))"
+docker_if = "!cancelled() && github.event_name == 'push' && needs.docker-build.result == 'success'"
 chart_if = "github.event_name == 'push' && "+tag+" && needs.docker.result == 'success'"
 image_guard = 'scripts/publish-guard.sh "v$VERSION" feedback-loop-ai/swarmail'
 preflight = 'scripts/publish-guard.sh "v$APP_VERSION" feedback-loop-ai/swarmail bare require-present'
 chart_guard = 'scripts/publish-guard.sh "v$VERSION" feedback-loop-ai/charts/swarmail bare'
 helm_push = 'helm package charts/swarmail\nhelm push swarmail-*.tgz oci://ghcr.io/feedback-loop-ai/charts'
+smoke_run = 'bash scripts/docker-smoke.sh'
+# Each platform is built on a native runner of its own architecture and
+# pushed by digest only; no tag is ever written outside the docker job.
+native = {"linux/amd64": "ubuntu-latest", "linux/arm64": "ubuntu-24.04-arm"}
+digest_output = "type=image,name=ghcr.io/feedback-loop-ai/swarmail,push-by-digest=true,name-canonical=true,push=true"
+pushed_digest = "ghcr.io/feedback-loop-ai/swarmail@${{ steps.build.outputs.digest }}"
+# The one step that writes image tags: exact text, so a changed tag set,
+# a dropped platform check or a softened refusal is a deliberate edit here.
+tag_push = r"""set -euo pipefail
+repo=ghcr.io/feedback-loop-ai/swarmail
+cd "$RUNNER_TEMP/digests"
+digests=(*)
+[ "${#digests[@]}" -eq 2 ] || { echo "REFUSAL: expected 2 platform digests, found ${#digests[@]}: ${digests[*]}" >&2; exit 1; }
+sources=()
+for d in "${digests[@]}"; do
+  [[ "$d" =~ ^[0-9a-f]{64}$ ]] || { echo "REFUSAL: '$d' is not a sha256 digest" >&2; exit 1; }
+  sources+=("$repo@sha256:$d")
+done
+if [ "$GITHUB_REF" = refs/heads/main ]; then
+  tags=("$repo:main" "$repo:sha-$GITHUB_SHA")
+elif [[ "$GITHUB_REF" = refs/tags/v* ]]; then
+  tags=("$repo:v$VERSION" "$repo:$VERSION")
+else
+  echo "REFUSAL: $GITHUB_REF publishes no image" >&2; exit 1
+fi
+args=()
+for t in "${tags[@]}"; do args+=(--tag "$t"); done
+docker buildx imagetools create "${args[@]}" "${sources[@]}"
+for t in "${tags[@]}"; do
+  platforms="$(docker buildx imagetools inspect --raw "$t" \
+    | python3 -c 'import json,sys; m=json.load(sys.stdin)["manifests"]; print(" ".join(sorted({p["platform"]["os"]+"/"+p["platform"]["architecture"] for p in m if p.get("platform",{}).get("os")!="unknown"})))')"
+  [ "$platforms" = "linux/amd64 linux/arm64" ] || { echo "REFUSAL: $t names '$platforms', not linux/amd64 linux/arm64" >&2; exit 1; }
+  echo "$t: $platforms"
+done""".strip()
+version_input = "${{ steps.ver.outputs.version }}"
+admission = {
+    "docker-build": (ordinary | {"chart-verify", "docker-smoke", "release-rate-5k"}, build_if),
+    "docker": ({"docker-build"}, docker_if),
+    "chart-publish": (ordinary | {"docker", "chart-verify", "release-rate-5k"}, chart_if),
+}
 def check(w):
     jobs = w["jobs"]
-    for name, extra, cond in (("docker", {"chart-verify", "docker-smoke", "release-rate-5k"}, docker_if), ("chart-publish", {"docker", "chart-verify", "release-rate-5k"}, chart_if)):
+    # A changed default shell can ignore failure; retain the default
+    # failure-propagating bash behavior at every publish boundary.
+    assert "defaults" not in w, "workflow: shell defaults"
+    for name, (needs, cond) in admission.items():
         j = jobs[name]
-        assert set(j["needs"]) == ordinary | extra, name+": prerequisites"
+        assert set(j["needs"]) == needs, name+": prerequisites"
         assert normalized(j["if"]) == normalized(cond), name+": admission condition"
         assert "continue-on-error" not in j, name+": job continue-on-error"
-        # A changed default shell can ignore failure; retain the default
-        # failure-propagating bash behavior at every publish boundary.
-        assert "defaults" not in j and "defaults" not in w, name+": shell defaults"
-        steps = j["steps"]
-        for step in steps:
+        assert "defaults" not in j, name+": shell defaults"
+        for step in j["steps"]:
             assert "continue-on-error" not in step, name+": step continue-on-error"
             assert "shell" not in step, name+": custom shell"
-        def one_run(body, cond=None):
-            matches = [(i,s) for i,s in enumerate(steps) if s.get("run", "").strip() == body]
-            assert len(matches) == 1, name+": required run body"
-            i, step = matches[0]
-            assert normalized(step.get("if")) == normalized(cond), name+": guard/push condition"
-            return i, step
-        if name == "docker":
-            guard, gs = one_run(image_guard, tag)
-            release = [(i,s) for i,s in enumerate(steps) if "docker/build-push-action@" in s.get("uses", "") and "swarmail:v" in s.get("with",{}).get("tags", "")]
-            assert len(release) == 1, "docker: release push"
-            push, step = release[0]
-            assert guard < push, "docker: guard order"
-            assert normalized(step.get("if")) == normalized(tag), "docker: publish condition"
-            assert step["with"]["push"] is True, "docker: release push enabled"
-            assert step["with"]["tags"].strip() == "ghcr.io/feedback-loop-ai/swarmail:v${{ steps.ver.outputs.version }}\nghcr.io/feedback-loop-ai/swarmail:${{ steps.ver.outputs.version }}", "docker: both release forms"
-            assert gs.get("env", {}).get("VERSION") == "${{ steps.ver.outputs.version }}", "docker: version input"
-            continuous = [s for s in steps if "swarmail:main" in s.get("with",{}).get("tags", "")]
-            assert len(continuous) == 1 and continuous[0].get("if") == "github.ref == 'refs/heads/main'", "docker: continuous condition"
-            assert continuous[0]["with"]["tags"].strip() == "ghcr.io/feedback-loop-ai/swarmail:main\nghcr.io/feedback-loop-ai/swarmail:sha-${{ github.sha }}", "docker: continuous tags"
-            assert continuous[0]["with"]["push"] is True, "docker: continuous push"
-        else:
-            pre, ps = one_run(preflight)
-            guard, _ = one_run(chart_guard)
-            push, _ = one_run(helm_push)
-            assert pre < guard < push, "chart: guard order"
-            assert ps.get("env", {}).get("DOCKER_RESULT") == "${{ needs.docker.result }}", "chart: docker result input"
-            assert ps.get("env", {}).get("APP_VERSION") == "${{ steps.chartver.outputs.app }}", "chart: app input"
+    def one_run(name, body, cond=None):
+        steps = jobs[name]["steps"]
+        matches = [(i,s) for i,s in enumerate(steps) if s.get("run", "").strip() == body]
+        assert len(matches) == 1, name+": required run body"
+        i, step = matches[0]
+        assert normalized(step.get("if")) == normalized(cond), name+": guard/push condition"
+        return i, step
+    # Only docker-build builds, and only docker writes image tags.
+    for name, j in jobs.items():
+        for s in j.get("steps", []):
+            if "docker/build-push-action@" in s.get("uses", ""):
+                assert name == "docker-build", name+": image build outside docker-build"
+            if "imagetools create" in s.get("run", "") or "docker push" in s.get("run", ""):
+                assert name == "docker" and s.get("run", "").strip() == tag_push, name+": image tag write outside the guarded tag push"
+    # docker-build: both platforms, each native, each an untagged digest
+    # smoked on its own architecture before the docker job may tag it.
+    j = jobs["docker-build"]
+    assert set(j["strategy"]["matrix"]) == {"include"}, "docker-build: matrix shape"
+    legs = j["strategy"]["matrix"]["include"]
+    assert len(legs) == len(native) and {(l["platform"], l["runner"]) for l in legs} == set(native.items()), "docker-build: native platforms"
+    assert j["runs-on"] == "${{ matrix.runner }}", "docker-build: native runner"
+    builds = [(i,s) for i,s in enumerate(j["steps"]) if "docker/build-push-action@" in s.get("uses", "")]
+    assert len(builds) == 1, "docker-build: one build"
+    build, bs = builds[0]
+    assert bs.get("id") == "build" and "if" not in bs, "docker-build: build condition"
+    assert bs["with"].get("platforms") == "${{ matrix.platform }}", "docker-build: build platform"
+    assert bs["with"].get("outputs") == digest_output and "tags" not in bs["with"] and "push" not in bs["with"], "docker-build: untagged digest push"
+    smoke, ss = one_run("docker-build", smoke_run)
+    assert build < smoke, "docker-build: smoke order"
+    assert ss.get("env", {}) == {"DOCKER_SMOKE_IMAGE": pushed_digest, "DOCKER_SMOKE_PLATFORM": "${{ matrix.platform }}"}, "docker-build: smoke the pushed digest natively"
+    # docker: the release guard precedes the one tag write.
+    guard, gs = one_run("docker", image_guard, tag)
+    push, ps = one_run("docker", tag_push)
+    assert guard < push, "docker: guard order"
+    assert gs.get("env", {}).get("VERSION") == version_input, "docker: version input"
+    assert ps.get("env", {}).get("VERSION") == version_input, "docker: tag version input"
+    # chart-publish
+    pre, ps = one_run("chart-publish", preflight)
+    guard, _ = one_run("chart-publish", chart_guard)
+    push, _ = one_run("chart-publish", helm_push)
+    assert pre < guard < push, "chart: guard order"
+    assert ps.get("env", {}).get("DOCKER_RESULT") == "${{ needs.docker.result }}", "chart: docker result input"
+    assert ps.get("env", {}).get("APP_VERSION") == "${{ steps.chartver.outputs.app }}", "chart: app input"
     return True
 check(workflow)
 count = 0
@@ -585,14 +642,22 @@ def mutant(desc, mutate):
         raise AssertionError("workflow mutation admitted: "+desc)
 def step(w, job, body):
     return next(s for s in w["jobs"][job]["steps"] if s.get("run", "").strip() == body)
-for job, body in (("docker", image_guard), ("chart-publish", preflight), ("chart-publish", chart_guard)):
+def build_step(w):
+    return next(s for s in w["jobs"]["docker-build"]["steps"] if "docker/build-push-action@" in s.get("uses", ""))
+def move(w, job, body, where):
+    steps = w["jobs"][job]["steps"]
+    s = steps.pop(steps.index(step(w,job,body)))
+    steps.insert(0 if where == "front" else len(steps), s)
+# A guard moves to the end (after what it guards); a push or smoke moves
+# to the front (before its guard or its build).
+for job, body, where in (("docker", image_guard, "end"), ("docker", tag_push, "front"), ("docker-build", smoke_run, "front"), ("chart-publish", preflight, "end"), ("chart-publish", chart_guard, "end")):
     mutant(job+body+" removed", lambda w: w["jobs"][job]["steps"].remove(step(w,job,body)))
     mutant(job+body+" commented", lambda w: step(w,job,body).update(run="# "+body))
     mutant(job+body+" ignored", lambda w: step(w,job,body).update(run=body+" || true"))
     mutant(job+body+" skipped", lambda w: step(w,job,body).update({"if":"false"}))
     mutant(job+body+" softened", lambda w: step(w,job,body).update({"continue-on-error": True}))
-    mutant(job+body+" moved", lambda w: w["jobs"][job]["steps"].append(w["jobs"][job]["steps"].pop(w["jobs"][job]["steps"].index(step(w,job,body)))))
-for job in ("docker", "chart-publish"):
+    mutant(job+body+" moved", lambda w: move(w,job,body,where))
+for job in admission:
     mutant(job+" job softened", lambda w: w["jobs"][job].update({"continue-on-error": True}))
     mutant(job+" if always", lambda w: w["jobs"][job].update({"if":"always()"}))
     mutant(job+" if false", lambda w: w["jobs"][job].update({"if":"false"}))
@@ -601,11 +666,22 @@ for job in ("docker", "chart-publish"):
 mutant("dropped docker success", lambda w: w["jobs"]["chart-publish"].update({"if":chart_if.replace(" && needs.docker.result == 'success'", "")}))
 mutant("dropped docker result", lambda w: step(w,"chart-publish",preflight)["env"].pop("DOCKER_RESULT"))
 mutant("ignored helm failure", lambda w: step(w,"chart-publish",helm_push).update(run=helm_push+" || true"))
-for job in ("docker", "chart-publish"):
-    for i, s in enumerate(workflow["jobs"][job]["steps"]):
-        if "docker/build-push-action@" in s.get("uses", "") or s.get("run", "").strip() == helm_push:
-            mutant(job+" publish softened", lambda w: w["jobs"][job]["steps"][i].update({"continue-on-error":True}))
-            mutant(job+" publish condition bypass", lambda w: w["jobs"][job]["steps"][i].update({"if":"always()"}))
+mutant("helm publish softened", lambda w: step(w,"chart-publish",helm_push).update({"continue-on-error":True}))
+mutant("helm publish condition bypass", lambda w: step(w,"chart-publish",helm_push).update({"if":"always()"}))
+mutant("dropped tag version input", lambda w: step(w,"docker",tag_push)["env"].pop("VERSION"))
+mutant("docker admission without !cancelled()", lambda w: w["jobs"]["docker"].update({"if": docker_if.replace("!cancelled() && ", "")}))
+mutant("tag push accepts one platform", lambda w: step(w,"docker",tag_push).update(run=tag_push.replace('"linux/amd64 linux/arm64" ]', '"linux/amd64" ]')))
+mutant("arm64 leg dropped", lambda w: w["jobs"]["docker-build"]["strategy"]["matrix"]["include"].pop())
+mutant("arm64 leg emulated", lambda w: w["jobs"]["docker-build"]["strategy"]["matrix"]["include"][1].update(runner="ubuntu-latest"))
+mutant("leg excluded", lambda w: w["jobs"]["docker-build"]["strategy"]["matrix"].update(exclude=[{"arch": "arm64"}]))
+mutant("build tagged", lambda w: build_step(w)["with"].update(tags="ghcr.io/feedback-loop-ai/swarmail:main"))
+mutant("build pushes tags", lambda w: build_step(w)["with"].update(outputs=digest_output.replace(",push-by-digest=true", "")))
+mutant("build softened", lambda w: build_step(w).update({"continue-on-error":True}))
+mutant("build condition bypass", lambda w: build_step(w).update({"if":"always()"}))
+mutant("smoke not the pushed digest", lambda w: step(w,"docker-build",smoke_run)["env"].update(DOCKER_SMOKE_IMAGE="ghcr.io/feedback-loop-ai/swarmail:main"))
+mutant("smoke platform unchecked", lambda w: step(w,"docker-build",smoke_run)["env"].pop("DOCKER_SMOKE_PLATFORM"))
+mutant("tagged build in docker", lambda w: w["jobs"]["docker"]["steps"].append(copy.deepcopy(build_step(w))))
+mutant("unguarded tag write", lambda w: w["jobs"]["docker-build"]["steps"].append({"run": "docker buildx imagetools create --tag ghcr.io/feedback-loop-ai/swarmail:main x"}))
 check(workflow)
 print("workflow active-step checker: %d mutation-red / restored-green receipts" % count)
 WIRING

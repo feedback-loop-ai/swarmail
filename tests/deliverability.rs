@@ -94,6 +94,10 @@ fn envelope_findings() -> Vec<Value> {
         json!({"rule_id":"spf.none.v1","severity":"error","location":{"kind":"header","name":"return-path","occurrence":null},"fix_hint":"Declare a v=spf1 TXT record for the domain of the envelope sender in the DNS policy; none is declared, or the domain is not a valid name (RFC 7208 section 2.6.1)."}),
     ]
 }
+/// The `arc` member of a report whose message carries no ARC field.
+fn no_chain() -> Value {
+    json!({"state":"none","sets":0,"failing_instance":null,"reason":null})
+}
 /// The 0122 §2.2 table, restated here and not read from the crate: info 1,
 /// warning 3, error 10, and 0 for `.not_evaluated.` ids and the demo marker.
 fn weight_of(finding: &Value) -> u64 {
@@ -119,7 +123,7 @@ fn weighed(mut findings: Vec<Value>) -> Vec<Value> {
 fn report_of(findings: Vec<Value>, dns: Value) -> Value {
     let findings = weighed(findings);
     let total: u64 = findings.iter().map(|f| f["weight"].as_u64().unwrap()).sum();
-    json!({"rule_set_id":"swarmail-html/8","findings":findings,"dns":dns,"total":total})
+    json!({"rule_set_id":"swarmail-html/9","findings":findings,"dns":dns,"arc":no_chain(),"total":total})
 }
 /// The `dns` member of such a report: the one name SPF asked for.
 fn x_io_dns() -> Value {
@@ -143,7 +147,7 @@ async fn report_rest_schema_and_refusals() {
     assert_eq!(stored, raw);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-html/8");
+    assert_eq!(first["rule_set_id"], "swarmail-html/9");
     // Six checklist findings, the demo marker, and the two real evaluations of a
     // mail from sender@x.io with nothing declared: DMARC finds no policy and SPF
     // no record (decision 0126).
@@ -186,7 +190,7 @@ async fn report_rest_schema_and_refusals() {
     );
     let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
     for text in [
-        "swarmail-html/8",
+        "swarmail-html/9",
         "warning",
         "demo.marker.v1",
         "x-swarmail-demo",
@@ -603,7 +607,28 @@ async fn report_served_docs_match_contract() {
     );
     assert_eq!(
         schemas["DeliverabilityReport"]["required"],
-        json!(["rule_set_id", "findings", "dns", "total"])
+        json!(["rule_set_id", "findings", "dns", "arc", "total"])
+    );
+    // The `arc` member is closed, with the state's four values and the instance
+    // range the RFC gives (decision 0133 section 2).
+    let arc = &schemas["ArcChain"];
+    assert_eq!(arc["additionalProperties"], false);
+    assert_eq!(
+        arc["required"],
+        json!(["state", "sets", "failing_instance", "reason"])
+    );
+    assert_eq!(
+        arc["properties"]["state"]["enum"],
+        json!(["none", "pass", "fail", "not_evaluated"])
+    );
+    assert_eq!(arc["properties"]["sets"]["minimum"], 0);
+    assert_eq!(
+        arc["properties"]["failing_instance"]["anyOf"],
+        json!([{"type":"integer","minimum":1,"maximum":50},{"type":"null"}])
+    );
+    assert_eq!(
+        schemas["DeliverabilityReport"]["properties"]["arc"]["$ref"],
+        "#/components/schemas/ArcChain"
     );
     assert_eq!(
         schemas["DeliverabilityFinding"]["required"],
@@ -666,7 +691,7 @@ async fn report_served_docs_match_contract() {
         "structuredContent under a closed outputSchema",
         "historical",
         "JSON in one text block",
-        "swarmail-html/8",
+        "swarmail-html/9",
         // Weight and total (decision 0122 §2): the table, the two zero cases, the
         // predicate rule and the bound a client reads.
         "### Weight and total",
@@ -1085,12 +1110,12 @@ async fn default_dns_policy_exact_json() {
         .map(|f| f["weight"].as_u64().unwrap())
         .sum();
     assert!(
-        text.starts_with(r#"{"rule_set_id":"swarmail-html/8","findings":["#),
+        text.starts_with(r#"{"rule_set_id":"swarmail-html/9","findings":["#),
         "{text}"
     );
     assert!(
         text.ends_with(&format!(
-            r#"],"dns":{{"source":"default","policy":{{"txt":[],"tempfail":[]}},{MAIL_LOOKUPS}}},"total":{total}}}"#
+            r#"],"dns":{{"source":"default","policy":{{"txt":[],"tempfail":[]}},{MAIL_LOOKUPS}}},"arc":{{"state":"none","sets":0,"failing_instance":null,"reason":null}},"total":{total}}}"#
         )),
         "{text}"
     );
@@ -1123,7 +1148,7 @@ async fn default_dns_policy_exact_json() {
     assert_eq!(body["dns"]["lookups"], mail_lookups());
     let mut keys: Vec<_> = body.as_object().unwrap().keys().cloned().collect();
     keys.sort();
-    assert_eq!(keys, ["dns", "findings", "rule_set_id", "total"]);
+    assert_eq!(keys, ["arc", "dns", "findings", "rule_set_id", "total"]);
     // A cache hit is byte-identical to the miss, and so is a fresh process of
     // the same mail in another inbox (0122 §2.3).
     assert_eq!(report_text(&srv, &id).await, text);
@@ -1700,7 +1725,7 @@ async fn link_rules_over_smtp_and_rest() {
     let expected = weighed(expected);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-html/8");
+    assert_eq!(first["rule_set_id"], "swarmail-html/9");
     let links = |report: &Value| -> Vec<Value> {
         report["findings"]
             .as_array()
@@ -1818,7 +1843,7 @@ async fn dkim_signed_mail_verifies_over_the_wire() {
     .await;
     let (status, report_good) = report(srv.http_addr, &good).await;
     assert_eq!(status, 200);
-    assert_eq!(report_good["rule_set_id"], "swarmail-html/8");
+    assert_eq!(report_good["rule_set_id"], "swarmail-html/9");
     assert_eq!(dkim_findings(&report_good), Vec::<Value>::new());
     assert_eq!(
         key_lookups(&report_good),
@@ -2834,5 +2859,397 @@ async fn the_agent_contract_is_in_the_guide_and_the_served_llms_txt() {
         .map(|i| i + heading + 5)
         .unwrap();
     assert!(heading < para && para < next);
+    srv.stop().await;
+}
+
+// ---- ARC chains over the wire (issue #256, proposed decision 0133) ----
+
+/// A TXT cache that answers every name with the one test key, so a chain can be
+/// sealed hop by hop by the real crate: each hop is sealed from the previous
+/// hop's own passing `verify_arc` output, exactly as a forwarder does. What the
+/// report later judges is not this cache but the inbox's declared policy.
+struct AnyKey;
+
+impl mail_auth::ResolverCache<Box<str>, mail_auth::TxtRecord> for AnyKey {
+    fn get<Q>(&self, _: &Q) -> Option<mail_auth::TxtRecord>
+    where
+        Box<str>: std::borrow::Borrow<Q>,
+        Q: std::hash::Hash + Eq + ?Sized,
+    {
+        use mail_auth::dns::TxtRecordParser;
+        let record = format!("v=DKIM1; k=ed25519; p={DKIM_PUBLIC}").into_bytes();
+        Some(mail_auth::dkim::DomainKey::parse_records(&[record]).into())
+    }
+    fn remove<Q>(&self, _: &Q) -> Option<mail_auth::TxtRecord>
+    where
+        Box<str>: std::borrow::Borrow<Q>,
+        Q: std::hash::Hash + Eq + ?Sized,
+    {
+        None
+    }
+    fn insert(&self, _: Box<str>, _: mail_auth::TxtRecord, _: std::time::Instant) {}
+}
+
+impl mail_auth::DnsCache for AnyKey {
+    type Txt = Self;
+    type Mx = mail_auth::NoCache;
+    type Ipv4 = mail_auth::NoCache;
+    type Ipv6 = mail_auth::NoCache;
+    type Ptr = mail_auth::NoCache;
+    fn txt(&self) -> Option<&Self::Txt> {
+        Some(self)
+    }
+    fn mx(&self) -> Option<&Self::Mx> {
+        None
+    }
+    fn ipv4(&self) -> Option<&Self::Ipv4> {
+        None
+    }
+    fn ipv6(&self) -> Option<&Self::Ipv6> {
+        None
+    }
+    fn ptr(&self) -> Option<&Self::Ptr> {
+        None
+    }
+}
+
+/// The selector and domain of each forwarder in these tests; the sealing key is
+/// the DKIM kit's one test key for all of them.
+const HOP_1: (&str, &str) = ("arc1", "fwd1.example");
+const HOP_2: (&str, &str) = ("arc2", "fwd2.example");
+
+fn hop_name((selector, domain): (&str, &str)) -> String {
+    format!("{selector}._domainkey.{domain}")
+}
+
+/// Seal one more hop in front of `raw`: the real crate's sealer, from the
+/// previous chain's verification (a resolver with no name servers, and the cache
+/// above, so nothing can reach a network).
+async fn seal_hop(raw: &[u8], (selector, domain): (&str, &str)) -> Vec<u8> {
+    use base64::Engine as _;
+    use mail_auth::hickory_resolver::config::{ResolverConfig, ResolverOpts};
+    use mail_auth::{
+        AuthenticatedMessage, AuthenticationResults, MessageAuthenticator, Parameters,
+        arc::ArcSealer, crypto::Ed25519Key, headers::HeaderWriter,
+    };
+    let authenticator = MessageAuthenticator::new(
+        ResolverConfig::from_parts(None, Vec::new(), Vec::new()),
+        ResolverOpts::default(),
+    )
+    .unwrap();
+    let message = AuthenticatedMessage::parse(raw).unwrap();
+    let previous = authenticator
+        .verify_arc(Parameters::new(&message).with_cache(&AnyKey))
+        .await;
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(DKIM_PRIVATE)
+        .unwrap();
+    let results = AuthenticationResults::new("mx.example.net");
+    let set = ArcSealer::from_key(Ed25519Key::from_pkcs8_maybe_unchecked_der(&der).unwrap())
+        .domain(domain)
+        .selector(selector)
+        .headers(["From", "To", "Subject", "Date"])
+        .seal(&message, &results, &previous)
+        .unwrap();
+    [set.to_header().as_bytes(), raw].concat()
+}
+
+fn key_record(public: &str) -> String {
+    format!("v=DKIM1; k=ed25519; p={public}")
+}
+
+/// The two hops' keys declared as sealed, or hop 1's key replaced by another
+/// key of the same type (published in RFC 8463).
+fn arc_policy(hop_1_public: &str) -> String {
+    declare(&[
+        (&hop_name(HOP_1), &key_record(hop_1_public)),
+        (&hop_name(HOP_2), &key_record(DKIM_PUBLIC)),
+    ])
+}
+
+const OTHER_PUBLIC: &str = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=";
+
+const SIGNATURE_MISMATCH_HINT: &str = "The field named in the finding is the newest signature or seal that does not verify against its declared key: a sealed header or an older ARC set changed after sealing, b= was made with another key, or p= is not the right public key (RFC 8617 section 5.2).";
+const BODY_HASH_HINT: &str = "The body differs from what the newest ARC-Message-Signature signed, so a hop changed it after sealing; seal after the last change, with the same c= (RFC 8617 section 5.2, RFC 6376 section 3.7).";
+
+fn arc_findings(report: &Value) -> Vec<Value> {
+    report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"].as_str().unwrap().starts_with("arc."))
+        .cloned()
+        .collect()
+}
+
+/// The report over REST, and the same report as MCP `structuredContent` on both
+/// modern revisions.
+async fn report_everywhere(srv: &swarmail::RunningServer, id: &str) -> Value {
+    let (status, rest) = report(srv.http_addr, id).await;
+    assert_eq!(status, 200);
+    for version in ["2025-06-18", "2025-11-25"] {
+        let modern = report_mcp_at(srv, Some(version), id).await;
+        assert_eq!(modern["result"]["structuredContent"], rest, "{version}");
+    }
+    rest
+}
+
+fn arc_member(state: &str, sets: u64, failing: Value, reason: Value) -> Value {
+    json!({"state":state,"sets":sets,"failing_instance":failing,"reason":reason})
+}
+
+/// A message sealed by one forwarder, then by a second: the chain a mailing list
+/// behind a forwarder produces.
+async fn two_hops() -> (Vec<u8>, Vec<u8>) {
+    let one = seal_hop(&plain_mail("Alice <alice@example.com>"), HOP_1).await;
+    let two = seal_hop(&one, HOP_2).await;
+    (one, two)
+}
+
+#[tokio::test]
+async fn arc_chains_over_the_wire() {
+    let srv = start().await;
+    for inbox in ["arc-pass", "arc-broken", "arc-body"] {
+        let public = if inbox == "arc-broken" {
+            OTHER_PUBLIC
+        } else {
+            DKIM_PUBLIC
+        };
+        assert_eq!(put_dns(&srv, inbox, &arc_policy(public)).await.0, 200);
+    }
+    let (one, two) = two_hops().await;
+
+    // A message with no ARC field: state none, no finding.
+    let plain = smtp_raw(srv.smtp_addr, "arc-pass", &plain_mail("a@example.com")).await;
+    let none = report_everywhere(&srv, &plain).await;
+    assert_eq!(none["arc"], arc_member("none", 0, Value::Null, Value::Null));
+    assert_eq!(arc_findings(&none), Vec::<Value>::new());
+
+    // A valid single hop and a valid two-hop chain: pass, and the keys it asked for.
+    let single = smtp_raw(srv.smtp_addr, "arc-pass", &one).await;
+    let report_one = report_everywhere(&srv, &single).await;
+    assert_eq!(
+        report_one["arc"],
+        arc_member("pass", 1, Value::Null, Value::Null)
+    );
+    assert_eq!(arc_findings(&report_one), Vec::<Value>::new());
+    let pass = smtp_raw(srv.smtp_addr, "arc-pass", &two).await;
+    let report_two = report_everywhere(&srv, &pass).await;
+    assert_eq!(
+        report_two["arc"],
+        arc_member("pass", 2, Value::Null, Value::Null)
+    );
+    assert_eq!(arc_findings(&report_two), Vec::<Value>::new());
+    let asked: Vec<&str> = report_two["dns"]["lookups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["name"].as_str().unwrap())
+        .filter(|name| name.contains("._domainkey."))
+        .collect();
+    assert_eq!(asked, [hop_name(HOP_1), hop_name(HOP_2)]);
+
+    // The same chain where the declared key for hop 1 is not the one it sealed
+    // with: the newer set verifies, so the seal at i=1 is the one named, at its
+    // place among the message's ARC-Seal fields.
+    let broken = smtp_raw(srv.smtp_addr, "arc-broken", &two).await;
+    let report_broken = report_everywhere(&srv, &broken).await;
+    assert_eq!(
+        report_broken["arc"],
+        arc_member("fail", 2, json!(1), json!("arc.signature_mismatch.v1"))
+    );
+    assert_eq!(
+        arc_findings(&report_broken),
+        vec![
+            json!({"rule_id":"arc.signature_mismatch.v1","severity":"error",
+            "location":{"kind":"header","name":"arc-seal","occurrence":1},
+            "fix_hint":SIGNATURE_MISMATCH_HINT,"weight":10})
+        ]
+    );
+
+    // A body modified after sealing: the newest signature's body hash.
+    let altered = String::from_utf8(two.clone())
+        .unwrap()
+        .replace("body", "b0dy")
+        .into_bytes();
+    let body = smtp_raw(srv.smtp_addr, "arc-body", &altered).await;
+    let report_body = report_everywhere(&srv, &body).await;
+    assert_eq!(
+        report_body["arc"],
+        arc_member("fail", 2, json!(2), json!("arc.body_hash_mismatch.v1"))
+    );
+    assert_eq!(
+        arc_findings(&report_body),
+        vec![
+            json!({"rule_id":"arc.body_hash_mismatch.v1","severity":"error",
+            "location":{"kind":"header","name":"arc-message-signature","occurrence":0},
+            "fix_hint":BODY_HASH_HINT,"weight":10})
+        ]
+    );
+
+    // The message page shows the evaluator's member, for the pass and the break.
+    for (id, line) in [
+        (&pass, "arc · pass · 2 sets"),
+        (&single, "arc · pass · 1 sets"),
+        (&plain, "arc · none · 0 sets"),
+        (
+            &broken,
+            "arc · fail · 2 sets · instance 1 · arc.signature_mismatch.v1",
+        ),
+        (
+            &body,
+            "arc · fail · 2 sets · instance 2 · arc.body_hash_mismatch.v1",
+        ),
+    ] {
+        let (status, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
+        assert_eq!(status, 200);
+        assert!(page.contains(line), "{line}: {page}");
+    }
+    srv.stop().await;
+}
+
+/// Accept == stored (decision 0001): an ARC-bearing message is queryable at the
+/// `250`, and reading its report changes neither the row nor the raw bytes.
+#[tokio::test]
+async fn an_arc_message_is_stored_before_its_report() {
+    let srv = start().await;
+    assert_eq!(
+        put_dns(&srv, "arc-stored", &arc_policy(DKIM_PUBLIC))
+            .await
+            .0,
+        200
+    );
+    let (_, two) = two_hops().await;
+    let id = smtp_raw(srv.smtp_addr, "arc-stored", &two).await;
+    // Nothing has asked for a report yet, and the mail is already there.
+    let (status, before) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, raw_before) =
+        http_bytes(srv.http_addr, &format!("/api/v1/messages/{id}/raw")).await;
+    assert_eq!(status, 200);
+    assert_eq!(raw_before, two);
+    let report = report_everywhere(&srv, &id).await;
+    assert_eq!(report["arc"]["state"], "pass");
+    let (_, after) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(after, before);
+    let (_, raw_after) = http_bytes(srv.http_addr, &format!("/api/v1/messages/{id}/raw")).await;
+    assert_eq!(raw_after, two);
+    srv.stop().await;
+}
+
+/// `no_findings_at_or_above=error` reads the `arc.*` findings like any other: a
+/// message whose chain broke is not counted by an exact assert or returned by
+/// an await, and giving a message that already qualified a valid chain does not
+/// stop it qualifying.
+#[tokio::test]
+async fn arc_findings_gate_assert_and_await() {
+    let srv = start().await;
+    let policy = {
+        let mut declared: Value = serde_json::from_str(&gate_policy()).unwrap();
+        let more: Value = serde_json::from_str(&arc_policy(DKIM_PUBLIC)).unwrap();
+        declared["txt"]
+            .as_array_mut()
+            .unwrap()
+            .extend(more["txt"].as_array().unwrap().iter().cloned());
+        declared.to_string()
+    };
+    assert_eq!(put_dns(&srv, "arc-gate", &policy).await.0, 200);
+    let direct = gate_mail("Hello Bob,\r\nsigned text.\r\n");
+    let forwarded = seal_hop(&seal_hop(&direct, HOP_1).await, HOP_2).await;
+    // The oldest seal's signature altered after the second hop sealed.
+    let tampered = {
+        let text = String::from_utf8(forwarded.clone()).unwrap();
+        let start = text.find("ARC-Seal: i=1;").unwrap();
+        let b = start + text[start..].find("\tb=").unwrap() + 3;
+        let flipped = if text.as_bytes()[b] == b'A' { "B" } else { "A" };
+        format!("{}{}{}", &text[..b], flipped, &text[b + 1..]).into_bytes()
+    };
+    let send = |raw: Vec<u8>| {
+        let addr = srv.smtp_addr;
+        async move {
+            smtp_as(
+                addr,
+                "arc-gate",
+                "mx.example.com",
+                "alice@example.com",
+                &raw,
+            )
+            .await
+        }
+    };
+    let direct_id = send(direct).await;
+    let forwarded_id = send(forwarded).await;
+    let tampered_id = send(tampered).await;
+
+    // Both messages without a broken chain pass every authentication check.
+    for id in [&direct_id, &forwarded_id] {
+        let report = report_everywhere(&srv, id).await;
+        assert_eq!(
+            auth_findings_at_warning(&report),
+            Vec::<String>::new(),
+            "{report}"
+        );
+        assert_eq!(arc_findings(&report), Vec::<Value>::new());
+    }
+    assert_eq!(
+        report_everywhere(&srv, &forwarded_id).await["arc"]["state"],
+        "pass"
+    );
+    let bad = report_everywhere(&srv, &tampered_id).await;
+    assert_eq!(
+        bad["arc"],
+        arc_member("fail", 2, json!(2), json!("arc.signature_mismatch.v1"))
+    );
+
+    // The exact assert counts the two that qualify and not the broken chain.
+    let (status, exact) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/arc-gate/assert?count=2&no_findings_at_or_above=error&limit=999",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{exact}");
+    assert_eq!(exact["matched"], 2);
+    let (status, three) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/arc-gate/assert?count=3&no_findings_at_or_above=error&limit=999",
+        None,
+    )
+    .await;
+    assert_ne!(status, 200, "{three}");
+    assert_eq!(three["matched"], 2);
+    // The await returns both, and never the broken chain.
+    let (status, awaited) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/arc-gate/await?count=2&timeout_ms=2000&no_findings_at_or_above=error",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{awaited}");
+    let mut ids: Vec<&str> = awaited["emails"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_str().unwrap())
+        .collect();
+    ids.sort_unstable();
+    let mut want = [direct_id.as_str(), forwarded_id.as_str()];
+    want.sort_unstable();
+    assert_eq!(ids, want);
     srv.stop().await;
 }

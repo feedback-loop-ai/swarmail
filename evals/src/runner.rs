@@ -2116,6 +2116,24 @@ fn identities(trial_id: &str, count: u8) -> Vec<Identity> {
         .collect()
 }
 
+/// The built `swarmail-evals` executable, for tests that run it as a child.
+/// Found by walking up from the test binary to the first ancestor holding a
+/// `swarmail-evals` file: cargo up to 1.99 puts unit-test binaries in
+/// `target/<profile>/deps/`, cargo 1.100 in
+/// `target/<profile>/build/<pkg>/<hash>/out/`. The final binary stays in
+/// `target/<profile>/` in both.
+#[cfg(test)]
+// Its callers are the Linux-only runner probes; macOS compiles it unused.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn built_evals_executable() -> PathBuf {
+    let me = std::env::current_exe().unwrap();
+    me.ancestors()
+        .skip(1)
+        .map(|dir| dir.join(env!("CARGO_PKG_NAME")))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| panic!("no built {} above {}", env!("CARGO_PKG_NAME"), me.display()))
+}
+
 /// The trial's resolved agent argv (built-ins run as our own child).
 fn evals_executable() -> Result<PathBuf, String> {
     #[cfg(test)]
@@ -3759,6 +3777,26 @@ mod test_probes {
             .is_some_and(|now| same_identity(want, &now) && !matches!(now.state, 'Z' | 'X'))
     }
 
+    /// Every path under `root`, relative, for a timeout diagnostic.
+    fn walkdir_names(root: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for e in rd.flatten() {
+                let p = e.path();
+                out.push(p.strip_prefix(root).unwrap_or(&p).display().to_string());
+                if p.is_dir() && out.len() < 400 {
+                    stack.push(p);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
     fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while !condition() {
@@ -4030,16 +4068,7 @@ mod test_probes {
             .env("EVAL_TEST_LIBRARY_DROP_DIR", dir.path())
             .env("EVAL_TEST_FINALIZE_HOLD_DIR", dir.path())
             .env(BIN_ENV, resolve_swarmail_bin().unwrap())
-            .env(
-                "EVAL_TEST_RUNNER_EXECUTABLE",
-                std::env::current_exe()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .join("swarmail-evals"),
-            )
+            .env("EVAL_TEST_RUNNER_EXECUTABLE", built_evals_executable())
             .stdout(output.try_clone().unwrap())
             .stderr(output);
         struct LibraryProbe(std::process::Child, PathBuf);
@@ -4576,16 +4605,7 @@ wait "$child"
         .env(CLEANUP_BUDGET_RELEASE_ENV, dir.join("release"))
         .env(CLEANUP_BUDGET_LOG_ENV, dir.join("cleanup-budgets.log"))
         .env(RUNNER_SIGNAL_LOG_ENV, dir.join("signals.log"))
-        .env(
-            "EVAL_TEST_RUNNER_EXECUTABLE",
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join(env!("CARGO_PKG_NAME")),
-        )
+        .env("EVAL_TEST_RUNNER_EXECUTABLE", built_evals_executable())
         .stdout(output)
         .stderr(stderr);
         match fault {
@@ -4673,10 +4693,14 @@ wait "$child"
             );
             probe.control = Some(CleanupControl::new(listener.accept().unwrap().0));
         }
-        eventually("the runner's agent readiness", || {
+        // Bounded like `eventually`, but a timeout reports what the probe
+        // printed: without it a runner that never launches the agent (a CI
+        // image change) fails with no cause.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
             probe.record_owned_from_tree();
             if pids.is_file() {
-                return true;
+                break;
             }
             if let Some(status) = probe.child.as_mut().unwrap().try_wait().unwrap() {
                 panic!(
@@ -4685,8 +4709,19 @@ wait "$child"
                     std::fs::read_to_string(dir.join("probe.stderr")).unwrap_or_default()
                 );
             }
-            false
-        });
+            if std::time::Instant::now() >= deadline {
+                // Where the trial stands: the probe directory's entries show
+                // whether the runner reached a cleanup hold instead.
+                let entries: Vec<String> = walkdir_names(dir);
+                panic!(
+                    "timed out waiting for the runner's agent readiness; stdout={}; stderr={}; runtime-env present={}; entries={entries:?}",
+                    std::fs::read_to_string(dir.join("probe.stdout")).unwrap_or_default(),
+                    std::fs::read_to_string(dir.join("probe.stderr")).unwrap_or_default(),
+                    dir.join("runtime-env").exists()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let ids: Vec<i32> = std::fs::read_to_string(&pids)
             .unwrap()
             .split_whitespace()
@@ -5292,16 +5327,7 @@ wait "$child"
             .env(PIDS_ENV, dir.path().join("agent-pids"))
             .env(BIN_ENV, &bin)
             .env(SWARMAIL_BIN_ENV, &bin)
-            .env(
-                "EVAL_TEST_RUNNER_EXECUTABLE",
-                std::env::current_exe()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .join(env!("CARGO_PKG_NAME")),
-            )
+            .env("EVAL_TEST_RUNNER_EXECUTABLE", built_evals_executable())
             .env(PRE_HANDLER_HOLD_ENV, &hold)
             .stdout(stdout)
             .stderr(std::process::Stdio::null());

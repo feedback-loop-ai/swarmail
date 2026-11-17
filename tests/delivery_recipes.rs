@@ -255,12 +255,13 @@ fn codex_authors_keep_their_base_charters_and_get_boxed_workspace_tools() {
 fn careful_work_keeps_the_directed_codex_efforts() {
     for (name, model, effort) in [
         ("codex-intake", "sol", "medium"),
-        ("codex-position-simplicity", "sol", "high"),
-        ("codex-position-robustness", "astra", "high"),
-        ("codex-chief-architect", "astra", "high"),
-        ("codex-implementer", "sol", "high"),
-        ("codex-careful-intake", "sol", "high"),
-        ("codex-careful-implementer", "sol", "xhigh"),
+        // Operator, 2026-11-16: every Sol 6.1 and Astra seat at medium.
+        ("codex-position-simplicity", "sol", "medium"),
+        ("codex-position-robustness", "astra", "medium"),
+        ("codex-chief-architect", "astra", "medium"),
+        ("codex-implementer", "sol", "medium"),
+        ("codex-careful-intake", "sol", "medium"),
+        ("codex-careful-implementer", "sol", "medium"),
     ] {
         let overlay = office(name);
         assert_eq!(overlay["models"], json!([model]), "{name}");
@@ -326,7 +327,8 @@ fn reviewers_keep_exact_models_charters_efforts_and_the_only_fallback() {
         assert_eq!(overlay["extends"], format!("review-{base}"));
         assert_eq!(overlay["models"], json!(models), "{name}");
         let efforts = match effort {
-            Some(model) => json!({model: "high"}),
+            // Operator, 2026-11-16: Fable and Opus seats run at medium.
+            Some(model) => json!({model: if model == "fable" { "medium" } else { "high" }}),
             None => json!({}),
         };
         assert_eq!(overlay["efforts"], efforts, "{name}");
@@ -353,7 +355,7 @@ fn reviewers_keep_exact_models_charters_efforts_and_the_only_fallback() {
     );
     assert_eq!(dsh["tool_permissions"], "unsupported");
     assert_eq!(dsh["mcp"], "unsupported");
-    assert_eq!(dsh["models"]["qwen-max"], "dashscope/qwen3.8-max");
+    assert_eq!(dsh["models"]["qwen-max"], "dashscope/qwen4-max");
     assert_eq!(dsh["models"]["flash"], "deepseek-flash");
     assert_eq!(dsh["credentials"]["deepseek-official"], "DEEPSEEK_API_KEY");
     assert_eq!(dsh["routes"]["deepseek-official"], "uncontracted");
@@ -1023,7 +1025,9 @@ fn mixed_work_route_violations(
         if overlay["extends"] != base["extends"] {
             bad.push(format!("{agent}: charter office"));
         }
-        if overlay["models"] != json!([model]) || overlay["efforts"] != json!({model: "high"}) {
+        // Operator, 2026-11-16: Opus at medium; Terra 6.1 keeps high.
+        let effort = if model == "opus" { "medium" } else { "high" };
+        if overlay["models"] != json!([model]) || overlay["efforts"] != json!({model: effort}) {
             bad.push(format!("{agent}: model or effort"));
         }
         if overlay["hands"] != base["hands"] {
@@ -1196,7 +1200,7 @@ const CLAUDE_CAREFUL_ROUTE: [RouteRow; 10] = [
         "claude",
         "opus",
         "claude-opus-5-5",
-        Some("high"),
+        Some("medium"),
         true,
     ),
     (
@@ -1216,7 +1220,7 @@ const CLAUDE_CAREFUL_ROUTE: [RouteRow; 10] = [
         "claude",
         "fable",
         "claude-fable-5-2",
-        Some("high"),
+        Some("medium"),
         true,
     ),
     (
@@ -1236,7 +1240,7 @@ const CLAUDE_CAREFUL_ROUTE: [RouteRow; 10] = [
         "claude",
         "fable",
         "claude-fable-5-2",
-        Some("high"),
+        Some("medium"),
         false,
     ),
     (
@@ -1276,7 +1280,7 @@ const CLAUDE_CAREFUL_ROUTE: [RouteRow; 10] = [
         "claude",
         "opus",
         "claude-opus-5-5",
-        Some("high"),
+        Some("medium"),
         false,
     ),
 ];
