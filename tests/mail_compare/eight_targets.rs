@@ -1920,6 +1920,11 @@ async fn checked_member_or_jar_mismatch_refuses_launch() {
         argv_template: vec![],
         ready_ns: 0,
         members: vec![(member.to_string_lossy().into_owned(), good_member.clone())],
+        leaf: None,
+        limits: None,
+        cpu_layout: None,
+        joined: None,
+        env_template: None,
     };
     let spec = mk(&good_member, &good_jar);
     assert!(targets::spec_unchanged(&spec, &launched));
@@ -2042,7 +2047,7 @@ async fn cleanup_reports_each_listener_and_conjunction() {
         .unwrap();
     // A foreign listener takes one declared address; the other stays free.
     let foreign = std::net::TcpListener::bind(smtp).expect("the reserved port was released");
-    let Some(LaunchError::NotReady(_, facts)) = task.await.unwrap() else {
+    let Some(LaunchError::NotReady(_, facts, _)) = task.await.unwrap() else {
         panic!("not ready expected")
     };
     drop(foreign);
@@ -2110,10 +2115,17 @@ async fn undeclared_listener_refused_and_cleaned() {
     )
     .await
     .expect("an exactly declared set launches");
+    let listen = owned
+        .pop3_listen
+        .expect("the declared pop3 listener is recorded");
     let facts = owned.shutdown().await;
     assert!(facts.proved() && facts.listeners_closed, "{facts:?}");
     let roles: Vec<Role> = facts.listeners.iter().map(|l| l.role).collect();
     assert_eq!(roles, [Role::Smtp, Role::Http, Role::Pop3]);
+    assert!(
+        listen.ip().is_loopback() && listen.port() != 0,
+        "the recorded pop3 listener is a bound loopback address: {listen}"
+    );
     assert!(facts.listeners.iter().all(|l| l.closed));
 }
 
@@ -4062,6 +4074,7 @@ fn loader_launch_execs_the_pinned_loader_with_the_binary_as_artifact() {
         exe.clone(),
         Some(root.clone()),
         pin,
+        None,
     )
     .unwrap();
     assert_eq!(spec.binary, root.join("lib/ld-musl-x86_64.so.1"));
@@ -4094,11 +4107,18 @@ fn loader_launch_execs_the_pinned_loader_with_the_binary_as_artifact() {
         PathBuf::from("/j.jar"),
         Some(root.clone()),
         g,
+        None,
     )
     .unwrap();
     assert_eq!(gs.binary, root.join("bin/java"));
     let s4 = lock.pin(TargetKind::Smtp4dev).unwrap();
-    let err = LaunchSpec::from_pin(TargetKind::Smtp4dev, PathBuf::from("/x"), Some(root), s4);
+    let err = LaunchSpec::from_pin(
+        TargetKind::Smtp4dev,
+        PathBuf::from("/x"),
+        Some(root),
+        s4,
+        None,
+    );
     assert!(err.unwrap_err().contains("its pin has no runtime"));
 }
 
@@ -4565,6 +4585,10 @@ fn frozen_v3_and_lock_v4_bytes_are_the_recorded_ones() {
     // a change is a new protocol version, never an edit.
     assert_eq!(sha(PROTOCOL_V3), FROZEN_PROTOCOL_V3_SHA);
     assert_eq!(sha(SOURCES_V4), FROZEN_LOCK_V4_SHA);
+    // The history copies are the frozen bytes, and so are the active files
+    // until the v4 freeze swaps them (decision 0132 §1.4).
+    assert_eq!(sha(ACTIVE_PROTOCOL), FROZEN_PROTOCOL_V3_SHA);
+    assert_eq!(sha(ACTIVE_SOURCES), FROZEN_LOCK_V4_SHA);
     // The history bytes keep their digests.
     assert_eq!(sha(PROTOCOL), V2_PROTOCOL_SHA);
     assert_eq!(sha(SOURCES), V3_LOCK_SHA);
@@ -4603,7 +4627,7 @@ fn real_spec(t: TargetKind) -> LaunchSpec {
                 .unwrap_or_else(|| panic!("{var} must name the pinned runtime's root directory")),
         )
     });
-    LaunchSpec::from_pin(t, binary.into(), runtime, pin).expect("a launch from the pin")
+    LaunchSpec::from_pin(t, binary.into(), runtime, pin, None).expect("a launch from the pin")
 }
 
 async fn real_launch(t: TargetKind, root: &Path) -> targets::Owned {
@@ -5155,7 +5179,7 @@ async fn real_mailslurper_official_does_not_start() {
     )
     .await
     {
-        Err(LaunchError::NotReady(_, facts)) => assert!(facts.proved(), "{facts:?}"),
+        Err(LaunchError::NotReady(_, facts, _)) => assert!(facts.proved(), "{facts:?}"),
         other => panic!(
             "the official executable must not launch: {:?}",
             other.map(|_| ())
