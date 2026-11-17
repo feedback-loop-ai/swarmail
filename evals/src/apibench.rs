@@ -328,7 +328,7 @@ fn id_of(a: &api::Authored) -> String {
 
 /// The scope of a future wait's own attempt: fresh per attempt (spec AC7).
 pub fn wait_scope(ordinal: u32, slot: u32) -> Scope {
-    Scope::new(&format!("apiwt{ordinal:01}{slot:04}x"))
+    api::wait_scope_of(ordinal, slot)
 }
 
 /// A wait's answer as summaries: Swarmail's `{emails}`, or the adapter's
@@ -1123,14 +1123,17 @@ async fn measure(
         surface,
         target: target.to_owned(),
         repetition,
-        fill: api::fill(smtp, &setup, (seed, &tag), fill, clock).await,
+        fill: api::FillRecord::default(),
         fixtures: 0,
         growth,
         capabilities,
         cells: Vec::new(),
         abandoned: None,
         store: api::store_label(setup.family).to_owned(),
+        ledger: Vec::new(),
     };
+    let (filled, background) = api::fill_ledger(smtp, &setup, (seed, &tag), fill, clock).await;
+    rec.fill = filled;
     let block = |why: &str, rec: &mut api::ApiRecord| {
         rec.cells = cells
             .iter()
@@ -1156,7 +1159,36 @@ async fn measure(
         seed,
         clock,
     };
-    let (recs, abandoned) = api::run_cells(&cells, &caps, &s, meter, clock, None).await?;
+    // Reads, waits and recipient-scoped destruction first; the one global
+    // clear, if any, after the complete batch ledger (spec AC6, R5).
+    let split = cells
+        .iter()
+        .position(|c| c.concurrency.is_none())
+        .unwrap_or(cells.len());
+    let (head, tail) = cells.split_at(split);
+    let (mut recs, mut abandoned) = api::run_cells(head, &caps, &s, meter, clock, None).await?;
+    if abandoned.is_none() {
+        // Untimed verification through the native API: not a measurement,
+        // and never a fallback for one.
+        let problems = api::final_ledger(
+            &s.verify,
+            (seed, &background.unwrap_or_default()),
+            &s.fixtures,
+            head,
+            &mut recs,
+        )
+        .await;
+        rec.ledger = problems;
+        let (more, ab) = api::run_cells(tail, &caps, &s, meter, clock, None).await?;
+        recs.extend(more);
+        abandoned = ab;
+    } else {
+        let why = abandoned.clone().unwrap_or_default();
+        recs.extend(
+            tail.iter()
+                .map(|c| api::CellRecord::blocked(c, &caps(c.operation), &why, clock.now_ns())),
+        );
+    }
     rec.cells = recs;
     rec.abandoned = abandoned;
     Ok(rec)

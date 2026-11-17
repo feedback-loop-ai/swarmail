@@ -358,86 +358,6 @@ pub fn check_record(rec: &ApiRecord, chunk: &Chunk) -> Result<(), String> {
     Ok(())
 }
 
-/// The batch ledger check before the global clear (spec AC6): the read set
-/// and the sentinel exactly as authored, and the background fill as filled.
-/// A mismatch invalidates every destructive success: what changed it cannot
-/// be told apart.
-pub async fn final_ledger(
-    native: &api::NativeSurface,
-    records: &mut [CellRecord],
-    fill: u32,
-) -> Vec<String> {
-    let c = &native.clients[0];
-    let deadline = Instant::now() + api::VERIFY_DEADLINE;
-    let mut spend = clients::Spend::default();
-    let mut problems = Vec::new();
-    let ids_of = |role| -> std::collections::BTreeSet<String> {
-        native
-            .fixtures
-            .iter()
-            .filter(|f| f.role == role)
-            .filter_map(|f| f.id.clone())
-            .collect()
-    };
-    for (role, scope) in [
-        (api::Role::Read, api::read_scope()),
-        (api::Role::Sentinel, api::sentinel_scope()),
-    ] {
-        let want = ids_of(role);
-        if want.is_empty() {
-            continue;
-        }
-        match c.list(&scope, deadline, &mut spend).await {
-            Ok(got)
-                if got
-                    .iter()
-                    .map(|s| s.id.clone())
-                    .collect::<std::collections::BTreeSet<_>>()
-                    == want => {}
-            Ok(got) => problems.push(format!(
-                "{} holds {} ids, not its {}",
-                scope.address,
-                got.len(),
-                want.len()
-            )),
-            Err(e) => problems.push(format!("{}: {}", scope.address, e.reason())),
-        }
-    }
-    // The background is what the store holds beside every fixture id: a
-    // shared store's whole listing minus the fixtures, or the inboxes and
-    // mailboxes the fill alone went to.
-    let background = match c.all_ids(deadline).await {
-        Ok(Some(all)) => {
-            let fixtures: std::collections::BTreeSet<&String> = native
-                .fixtures
-                .iter()
-                .filter_map(|f| f.id.as_ref())
-                .collect();
-            Ok(all.iter().filter(|id| !fixtures.contains(id)).count() as u64)
-        }
-        Ok(None) => api::background_count(c, deadline).await,
-        Err(e) => Err(e),
-    };
-    match background {
-        Ok(n) if n == u64::from(fill) => {}
-        Ok(n) => problems.push(format!("the background holds {n}, filled {fill}")),
-        Err(e) => problems.push(format!("background: {}", e.reason())),
-    }
-    if !problems.is_empty() {
-        for r in records.iter_mut().filter(|r| r.operation.destructive()) {
-            for row in r.measured.rows.iter_mut() {
-                if row.outcome == api::Outcome::Exact {
-                    row.outcome = api::Outcome::WrongResult {
-                        detail: "the final ledger check failed".into(),
-                    };
-                }
-            }
-            r.postcheck.extend(problems.iter().cloned());
-        }
-    }
-    problems
-}
-
 /// The seed and run tag the chunk's fill corpus derives from.
 fn run_tag(run: &str, target: TargetKind, rep: u32, fill: u32) -> String {
     format!("{}-{target}-r{rep}-f{fill}", &run[..run.len().min(16)])
@@ -512,6 +432,7 @@ pub async fn run(
         abandoned: None,
         store: api::store_label(clients::Family::of(target.name()).expect("a launched family"))
             .to_owned(),
+        ledger: Vec::new(),
     };
     let caps = |op: Operation| clients::capability(target.name(), surface, op);
     let not_measured = |why: &str,
@@ -706,7 +627,7 @@ async fn measure(
         .ok_or_else(|| format!("{target}: no API family"))?;
     // fill: untimed, outside every window, within its own bound.
     let tag = run_tag(run, target, rep, fill);
-    record.fill = api::fill(
+    let (filled, background) = api::fill_ledger(
         owned.smtp,
         &client,
         (cfg.protocol.corpus.seed, &tag),
@@ -714,6 +635,7 @@ async fn measure(
         api_clock,
     )
     .await;
+    record.fill = filled;
     if !record.fill.reached {
         failures.push(format!(
             "{target} f{fill}: fill_not_reached ({})",
@@ -781,11 +703,20 @@ async fn measure(
     let (head, tail) = cells.split_at(split);
     let (mut recs, mut abandoned) =
         api::run_cells(head, caps, &native, &meter, api_clock, Some(chunk_end)).await?;
-    if abandoned.is_none() && head.iter().any(|c| c.operation.destructive()) {
-        let problems = final_ledger(&native, &mut recs, fill).await;
-        if !problems.is_empty() {
-            failures.push(format!("{target} f{fill}: ledger: {}", problems.join("; ")));
-        }
+    // The complete batch ledger, before the global clear or at batch end
+    // (R6). An abandoned launch runs no ledger and no final clear: what an
+    // unknown mutation did cannot be told apart.
+    if abandoned.is_none() {
+        let background = background.unwrap_or_default();
+        let problems = api::final_ledger(
+            &native.clients[0],
+            (cfg.protocol.corpus.seed, &background),
+            &native.fixtures,
+            head,
+            &mut recs,
+        )
+        .await;
+        record.ledger = problems;
     }
     if let Some(why) = &abandoned {
         for c in tail {
@@ -909,6 +840,7 @@ fn blank_record(target: TargetKind, surface: Surface, rep: u32, fill: u32, seed:
         abandoned: None,
         store: api::store_label(clients::Family::of(target.name()).expect("a launched family"))
             .to_owned(),
+        ledger: Vec::new(),
     }
 }
 
@@ -944,6 +876,14 @@ fn seal(
     let mut failures = failures;
     failures.extend(row_failures(&record));
     failures.extend(window_failures(&resources));
+    if !record.ledger.is_empty() {
+        failures.push(format!(
+            "{} f{}: ledger: {}",
+            record.target,
+            record.fill.fill,
+            record.ledger.join("; ")
+        ));
+    }
     for launched in &life.launches {
         let same = cfg
             .specs

@@ -185,8 +185,9 @@ async fn every_mcp_cell_of_the_candidate_is_exact() {
     let (cells, rows) = api::plan_cells(Surface::Mcp, caps);
     assert!(rows.is_empty());
     let setup = clients::Client::new("swarmail", s.http).unwrap();
-    let fill = api::fill(s.smtp, &setup, (163, "mcp"), 1_000, clock).await;
+    let (fill, background) = api::fill_ledger(s.smtp, &setup, (163, "mcp"), 1_000, clock).await;
     assert!(fill.reached, "{fill:?}");
+    let background = background.unwrap();
     let mut fixtures = api::plan_fixtures(163, &cells);
     api::prepare(s.smtp, &setup, &mut fixtures).await.unwrap();
     let url = format!("http://{}/mcp", s.http);
@@ -209,10 +210,22 @@ async fn every_mcp_cell_of_the_candidate_is_exact() {
         seed: 163,
         clock,
     };
-    let (recs, abandoned) = api::run_cells(&cells, &caps, &surface, &api::NoMeter, clock, None)
+    let (mut recs, abandoned) = api::run_cells(&cells, &caps, &surface, &api::NoMeter, clock, None)
         .await
         .unwrap();
     assert_eq!(abandoned, None);
+    // The complete batch ledger (R5), read untimed through the native API —
+    // the same check the native surface runs — holds the whole store to the
+    // authored fixtures, the background and every acknowledged wait.
+    let problems = api::final_ledger(
+        &surface.verify,
+        (163, &background),
+        &surface.fixtures,
+        &cells,
+        &mut recs,
+    )
+    .await;
+    assert!(problems.is_empty(), "{problems:?}");
     // Swarmail's own MCP tool rate (1,024 calls a second) refuses part of
     // the 32-worker load: those are `rate_limited` failure rows, published,
     // never retried. A warmup it refuses blocks that cell. Nothing else may
@@ -275,6 +288,54 @@ async fn every_mcp_cell_of_the_candidate_is_exact() {
             assert_eq!(w.ack_to_return_ns, Some(w.return_ns as i64 - ack as i64));
             assert!(seen.insert((r.cell.clone(), row.index)));
         }
+    }
+    // Later losses the batch did not cause — one survivor, one acknowledged
+    // wait delivery: the ledger names each, and every destructive or wait
+    // success becomes a wrong result. (Extra deliveries are proved in the
+    // driver suite's ledger tests.)
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut spend = clients::Spend::default();
+    let survivor = surface
+        .fixtures
+        .iter()
+        .find(|f| f.role == api::Role::Survivor)
+        .and_then(|f| f.id.clone())
+        .unwrap();
+    clients::swarmail::delete(&setup.conn, &survivor, deadline, &mut spend)
+        .await
+        .unwrap();
+    let want = api::expected_ledger(163, &background, &surface.fixtures, &cells, &recs);
+    let acked = want.waits.iter().find(|w| w.2).unwrap().0.clone();
+    let gone = setup.list(&acked, deadline, &mut spend).await.unwrap();
+    clients::swarmail::delete(&setup.conn, &gone[0].id, deadline, &mut spend)
+        .await
+        .unwrap();
+    let problems = api::final_ledger(
+        &surface.verify,
+        (163, &background),
+        &surface.fixtures,
+        &cells,
+        &mut recs,
+    )
+    .await;
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(
+        problems.iter().any(|p| p.contains("missing")),
+        "{problems:?}"
+    );
+    assert!(
+        problems.iter().any(|p| p.contains(&acked.address)),
+        "{problems:?}"
+    );
+    for r in recs
+        .iter()
+        .filter(|r| r.operation.destructive() || r.operation == clients::Operation::Wait)
+    {
+        assert!(
+            r.measured.rows.iter().all(|x| x.outcome != Outcome::Exact),
+            "{}",
+            r.cell
+        );
     }
 }
 

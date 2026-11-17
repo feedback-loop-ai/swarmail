@@ -1024,34 +1024,53 @@ pub const VERIFY_DEADLINE: Duration = Duration::from_secs(120);
 /// a per-mailbox store sums the background mailboxes; a shared store is
 /// scanned whole.
 pub async fn background_count(client: &clients::Client, deadline: Instant) -> Result<u64, OpError> {
+    background_ids(client, deadline)
+        .await
+        .map(|ids| ids.len() as u64)
+}
+
+/// Swarmail's unauthenticated inbox, where the fill goes.
+pub fn default_inbox() -> Scope {
+    Scope {
+        address: String::new(),
+        inbox: "default".into(),
+    }
+}
+
+/// The ids the fill left (untimed, spec AC6): Swarmail's default inbox, a
+/// per-mailbox store's background mailboxes, or a shared store's whole
+/// listing — taken before any fixture exists, so every id is background.
+pub async fn background_ids(
+    client: &clients::Client,
+    deadline: Instant,
+) -> Result<BTreeSet<String>, OpError> {
     let mut spend = Spend::default();
+    let ids = |v: Vec<Summary>| v.into_iter().map(|s| s.id);
     match client.family {
-        Family::Swarmail => {
-            let default = Scope {
-                address: String::new(),
-                inbox: "default".into(),
-            };
-            Ok(
-                clients::swarmail::list(&client.conn, &default, None, deadline, &mut spend)
-                    .await?
-                    .len() as u64,
-            )
-        }
+        Family::Swarmail => Ok(ids(clients::swarmail::list(
+            &client.conn,
+            &default_inbox(),
+            None,
+            deadline,
+            &mut spend,
+        )
+        .await?)
+        .collect()),
         Family::Inbucket | Family::Greenmail => {
-            let mut n = 0;
+            let mut out = BTreeSet::new();
             for b in 0..BACKGROUND {
-                n += client
+                out.extend(ids(client
                     .list(&background_scope(b), deadline, &mut spend)
-                    .await?
-                    .len() as u64;
+                    .await?));
             }
-            Ok(n)
+            Ok(out)
         }
         _ => Ok(client
             .all_ids(deadline)
             .await?
-            .map(|ids| ids.len() as u64)
-            .unwrap_or(0)),
+            .unwrap_or_default()
+            .into_iter()
+            .collect()),
     }
 }
 
@@ -1068,6 +1087,19 @@ pub async fn fill(
     n: u32,
     clock: Clock,
 ) -> FillRecord {
+    fill_ledger(smtp, client, (seed, run_tag), n, clock).await.0
+}
+
+/// [`fill`], also handing back the background ids it confirmed, which the
+/// final ledger holds the store to (spec AC6, R6); `None` when the retained
+/// listing could not be read.
+pub async fn fill_ledger(
+    smtp: std::net::SocketAddr,
+    client: &clients::Client,
+    (seed, run_tag): (u64, &str),
+    n: u32,
+    clock: Clock,
+) -> (FillRecord, Option<BTreeSet<String>>) {
     let start = clock.now_ns();
     let deadline = Instant::now() + FILL_DEADLINE;
     let mut rec = FillRecord {
@@ -1129,10 +1161,16 @@ pub async fn fill(
         rec.failed += t[2];
         rec.ambiguous += t[3];
     }
-    match background_count(client, deadline).await {
-        Ok(c) => rec.retained = Some(c),
-        Err(e) => rec.detail = Some(format!("retained count unreadable: {}", e.reason())),
-    }
+    let ids = match background_ids(client, deadline).await {
+        Ok(ids) => {
+            rec.retained = Some(ids.len() as u64);
+            Some(ids)
+        }
+        Err(e) => {
+            rec.detail = Some(format!("retained count unreadable: {}", e.reason()));
+            None
+        }
+    };
     rec.reached = rec.accepted == u64::from(n) && rec.retained == Some(u64::from(n));
     if !rec.reached && rec.detail.is_none() {
         rec.detail = Some(format!(
@@ -1143,7 +1181,7 @@ pub async fn fill(
         ));
     }
     rec.elapsed_ns = clock.now_ns() - start;
-    rec
+    (rec, ids)
 }
 
 /// Send every fixture and resolve its id. Swarmail's fixtures go one AUTH
@@ -1320,6 +1358,11 @@ pub struct ApiRecord {
     /// The store layout the numbers come from (0132 §6.4): whether the fill
     /// shares the measured recipient's listing.
     pub store: String,
+    /// The complete batch ledger's problems (spec AC6, R5, R6): empty when
+    /// the store held exactly what the authored fixtures and terminal rows
+    /// say, or when no ledger ran (an abandoned launch).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ledger: Vec<String>,
 }
 
 /// How a family's store relates the fill to the measured recipient.
@@ -1708,4 +1751,278 @@ impl Surfacer for NativeSurface {
             }
         })
     }
+}
+
+// ============================================================================
+// The complete batch ledger (spec AC6, R5, R6)
+// ============================================================================
+
+/// What the store must hold at batch end, derived only from authored
+/// fixtures, the fill's confirmed background and the terminal rows — never
+/// from a fresh server answer. `kept` must all be present, `gone` all
+/// absent; `unsure` (a slot whose row is already a failure the postcheck
+/// named) is not held either way. `waits` is each future-wait attempt's
+/// scope, token and whether its delivery was acknowledged.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Expected {
+    pub kept: BTreeSet<String>,
+    pub gone: BTreeSet<String>,
+    pub unsure: BTreeSet<String>,
+    pub waits: Vec<(Scope, String, bool)>,
+}
+
+/// The row that ended slot `slot` of a cell, if it started: warmup rows hold
+/// slots `0..warmup`, measured row `i` holds `warmup + i`.
+fn slot_row(rec: &CellRecord, warmup: u32, slot: u32) -> Option<&OpRow> {
+    if slot < warmup {
+        rec.warmup.as_ref()?.rows.iter().find(|r| r.index == slot)
+    } else {
+        rec.measured.rows.iter().find(|r| r.index == slot - warmup)
+    }
+}
+
+/// Did the row's operation take effect, as far as the client knows? `Some`
+/// for an exact answer (yes) or a completed refusal (no); `None` when the
+/// row is already a wrong result or its effect is unknown.
+fn took_effect(op: Operation, r: Option<&OpRow>) -> Option<bool> {
+    match r.map(|r| &r.outcome) {
+        None => Some(false),
+        Some(Outcome::Exact) => Some(true),
+        Some(o @ Outcome::Failed { .. }) if !uncertain(op, o) => Some(false),
+        Some(_) => None,
+    }
+}
+
+/// The expected ledger of a batch (R6): background, the read set, every
+/// delete cell's victims (gone where the delete was exact, kept where it was
+/// refused or never started) and survivors, every recipient-clear slot's
+/// scope (empty where the clear was exact, intact otherwise), the external
+/// sentinel, and every future-wait attempt with its acknowledgement.
+pub fn expected_ledger(
+    seed: u64,
+    background: &BTreeSet<String>,
+    fixtures: &[Authored],
+    cells: &[PlannedCell],
+    recs: &[CellRecord],
+) -> Expected {
+    let mut e = Expected {
+        kept: background.clone(),
+        ..Expected::default()
+    };
+    let id = |a: &Authored| a.id.clone().unwrap_or_default();
+    let put = |e: &mut Expected, ids: Vec<String>, effect: Option<bool>| {
+        let into = match effect {
+            Some(true) => &mut e.gone,
+            Some(false) => &mut e.kept,
+            None => &mut e.unsure,
+        };
+        into.extend(ids);
+    };
+    for a in fixtures {
+        if matches!(a.role, Role::Read | Role::Survivor | Role::Sentinel) {
+            e.kept.insert(id(a));
+        }
+    }
+    for (cell, rec) in cells.iter().zip(recs) {
+        match cell.operation {
+            Operation::Delete => {
+                let scope = delete_scope(cell.ordinal);
+                let victims: Vec<&Authored> = fixtures
+                    .iter()
+                    .filter(|f| f.role == Role::Victim && f.scope == scope)
+                    .collect();
+                for (slot, v) in victims.iter().enumerate() {
+                    let r = slot_row(rec, cell.warmup, slot as u32);
+                    put(&mut e, vec![id(v)], took_effect(Operation::Delete, r));
+                }
+            }
+            Operation::Clear if cell.scope == Some(ClearScope::Recipient) => {
+                for slot in 0..cell.warmup + cell.planned {
+                    let scope = clear_scope(cell.ordinal, slot);
+                    let ids = fixtures
+                        .iter()
+                        .filter(|f| f.role == Role::ClearScope && f.scope == scope)
+                        .map(id)
+                        .collect();
+                    let r = slot_row(rec, cell.warmup, slot);
+                    put(&mut e, ids, took_effect(Operation::Clear, r));
+                }
+            }
+            Operation::Wait => {
+                for slot in 0..cell.warmup + cell.planned {
+                    let scope = wait_scope_of(cell.ordinal, slot);
+                    let token =
+                        author(seed, Role::Future, cell.ordinal * 1_000 + slot, &scope).token;
+                    let acked = slot_row(rec, cell.warmup, slot)
+                        .and_then(|r| r.wait.as_ref())
+                        .is_some_and(|w| w.ack_ns.is_some());
+                    e.waits.push((scope, token, acked));
+                }
+            }
+            _ => {}
+        }
+    }
+    // An id can only be in one place; a kept one wins over an unsure one.
+    let kept = e.kept.clone();
+    e.unsure.retain(|i| !kept.contains(i));
+    e
+}
+
+/// The scope of a future wait's attempt `slot` in wait cell `ordinal`: fresh
+/// per attempt (spec AC7), shared by both surfaces' ledgers.
+pub fn wait_scope_of(ordinal: u32, slot: u32) -> Scope {
+    Scope::new(&format!("apiwt{ordinal:01}{slot:04}x"))
+}
+
+/// Compare what the store holds against `want` (untimed): every kept id
+/// present, every gone id absent, no id that nothing accounts for, and
+/// every wait scope holding exactly its acknowledged delivery. On a
+/// per-mailbox store only the scopes the batch addressed can be listed.
+pub fn ledger_problems(
+    want: &Expected,
+    observed: &BTreeSet<String>,
+    waits: &[(Vec<Summary>, &(Scope, String, bool))],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let missing: Vec<&String> = want.kept.difference(observed).collect();
+    if !missing.is_empty() {
+        out.push(format!(
+            "{} expected id(s) missing, e.g. {}",
+            missing.len(),
+            missing[0]
+        ));
+    }
+    let lingering: Vec<&String> = want.gone.intersection(observed).collect();
+    if !lingering.is_empty() {
+        out.push(format!(
+            "{} deleted or cleared id(s) still present, e.g. {}",
+            lingering.len(),
+            lingering[0]
+        ));
+    }
+    let mut wait_ids = BTreeSet::new();
+    for (got, (scope, token, acked)) in waits {
+        let mine = got
+            .iter()
+            .filter(|s| s.subject.contains(token.as_str()))
+            .count();
+        let want_n = usize::from(*acked);
+        if mine != want_n || got.len() != want_n {
+            out.push(format!(
+                "{} holds {} message(s), {mine} of them its attempt's, not {want_n}",
+                scope.address,
+                got.len()
+            ));
+        }
+        wait_ids.extend(got.iter().map(|s| s.id.clone()));
+    }
+    let extra: Vec<&String> = observed
+        .iter()
+        .filter(|i| !want.kept.contains(*i) && !want.unsure.contains(*i) && !wait_ids.contains(*i))
+        .collect();
+    if !extra.is_empty() {
+        out.push(format!(
+            "{} unaccounted id(s), e.g. {}",
+            extra.len(),
+            extra[0]
+        ));
+    }
+    out
+}
+
+/// A mismatch cannot be attributed to one cell: every destructive or wait
+/// success of the batch becomes a wrong result, and every such cell names
+/// the problems (spec AC6).
+pub fn invalidate_batch(recs: &mut [CellRecord], problems: &[String]) {
+    if problems.is_empty() {
+        return;
+    }
+    for r in recs
+        .iter_mut()
+        .filter(|r| r.operation.destructive() || r.operation == Operation::Wait)
+    {
+        for ran in r.warmup.iter_mut().chain(std::iter::once(&mut r.measured)) {
+            for row in ran.rows.iter_mut() {
+                if row.outcome == Outcome::Exact {
+                    row.outcome = Outcome::WrongResult {
+                        detail: "the final ledger check failed".into(),
+                    };
+                }
+            }
+        }
+        r.postcheck.extend(problems.iter().cloned());
+    }
+}
+
+/// Every scope a batch addressed, for a store with no single listing.
+fn addressed_scopes(fixtures: &[Authored], want: &Expected, family: Family) -> Vec<Scope> {
+    let mut scopes: BTreeSet<Scope> = fixtures.iter().map(|f| f.scope.clone()).collect();
+    match family {
+        Family::Swarmail => {
+            scopes.insert(default_inbox());
+        }
+        _ => scopes.extend((0..BACKGROUND).map(background_scope)),
+    }
+    for (s, _, _) in &want.waits {
+        scopes.remove(s);
+    }
+    scopes.into_iter().collect()
+}
+
+/// The final batch check, the same on both surfaces (spec AC6, R5, R6):
+/// read the store untimed through the target's native API — never a
+/// measurement — derive what it must hold from the authored ledger and the
+/// terminal rows, and invalidate the batch's destructive and wait successes
+/// on any mismatch. Returns the problems.
+pub async fn final_ledger(
+    client: &clients::Client,
+    (seed, background): (u64, &BTreeSet<String>),
+    fixtures: &[Authored],
+    cells: &[PlannedCell],
+    recs: &mut [CellRecord],
+) -> Vec<String> {
+    let deadline = Instant::now() + VERIFY_DEADLINE;
+    let want = expected_ledger(seed, background, fixtures, cells, recs);
+    let mut spend = Spend::default();
+    let observed = match client.all_ids(deadline).await {
+        Ok(Some(all)) => Ok(all.into_iter().collect::<BTreeSet<_>>()),
+        Ok(None) => {
+            let mut all = BTreeSet::new();
+            let mut err = None;
+            for scope in addressed_scopes(fixtures, &want, client.family) {
+                let listed = if scope == default_inbox() {
+                    clients::swarmail::list(&client.conn, &scope, None, deadline, &mut spend).await
+                } else {
+                    client.list(&scope, deadline, &mut spend).await
+                };
+                match listed {
+                    Ok(v) => all.extend(v.into_iter().map(|s| s.id)),
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
+                }
+            }
+            err.map_or(Ok(all), Err)
+        }
+        Err(e) => Err(e),
+    };
+    let mut waits = Vec::new();
+    let mut problems = Vec::new();
+    for w in &want.waits {
+        match client.list(&w.0, deadline, &mut spend).await {
+            Ok(got) => waits.push((got, w)),
+            Err(e) => problems.push(format!("{}: {}", w.0.address, e.reason())),
+        }
+    }
+    match observed {
+        Ok(observed) => {
+            // A shared store's listing includes the wait deliveries; a
+            // per-mailbox one was not listed there above.
+            problems.extend(ledger_problems(&want, &observed, &waits));
+        }
+        Err(e) => problems.push(format!("ledger listing: {}", e.reason())),
+    }
+    invalidate_batch(recs, &problems);
+    problems
 }

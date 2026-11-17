@@ -1455,6 +1455,237 @@ fn a_clear_postcheck_proves_scopes_emptied_and_nothing_outside_touched() {
     assert!(r4.iter().all(|x| x.outcome != Outcome::Exact));
 }
 
+// ---- the complete batch ledger (R5, R6) -------------------------------------
+
+/// A batch of one delete cell and one recipient-clear cell, every fixture
+/// resolved to a distinct id, with the measured rows the test chooses.
+fn ledger_batch() -> (
+    Vec<PlannedCell>,
+    Vec<api::Authored>,
+    Vec<api::CellRecord>,
+    BTreeSet<String>,
+) {
+    let mut del = cell(Operation::Delete, 1);
+    del.ordinal = 0;
+    let mut clr = cell(Operation::Clear, 1);
+    clr.scope = Some(ClearScope::Recipient);
+    clr.ordinal = 0;
+    let cells = vec![del, clr];
+    let mut fixtures = api::plan_fixtures(5, &cells);
+    for (n, f) in fixtures.iter_mut().enumerate() {
+        f.id = Some(format!("id{n:05}"));
+    }
+    // Warmups all exact; delete measured 0..60 exact, the rest unstarted;
+    // clear measured 0..50 exact, 50 refused, the rest unstarted.
+    let mut recs = Vec::new();
+    for (c, (exact, refused)) in cells.iter().zip([(60, 0), (50, 1)]) {
+        let caps = clients::native_capability("swarmail", c.operation);
+        let mut r = api::CellRecord::new(c, &caps);
+        r.warmup = Some(api::Ran {
+            rows: rows(c.warmup, Phase::Warmup, Outcome::Exact),
+            planned: c.warmup,
+            started: c.warmup,
+            ..Default::default()
+        });
+        let mut m = rows(exact, Phase::Measured, Outcome::Exact);
+        m.extend(
+            rows(
+                exact + refused,
+                Phase::Measured,
+                Outcome::Failed {
+                    reason: "status_404".into(),
+                },
+            )
+            .into_iter()
+            .skip(exact as usize),
+        );
+        r.measured = api::Ran {
+            started: m.len() as u32,
+            unstarted: c.planned - m.len() as u32,
+            planned: c.planned,
+            rows: m,
+            ..Default::default()
+        };
+        recs.push(r);
+    }
+    let background: BTreeSet<String> = (0..30).map(|n| format!("bg{n}")).collect();
+    (cells, fixtures, recs, background)
+}
+
+/// What an intact store holds after `ledger_batch`.
+fn intact(want: &api::Expected) -> BTreeSet<String> {
+    want.kept.clone()
+}
+
+#[test]
+fn the_expected_ledger_follows_every_role_and_terminal_row() {
+    let (cells, fixtures, recs, background) = ledger_batch();
+    let want = api::expected_ledger(5, &background, &fixtures, &cells, &recs);
+    let id = |role: api::Role, nth: usize| {
+        fixtures
+            .iter()
+            .filter(|f| f.role == role)
+            .nth(nth)
+            .unwrap()
+            .id
+            .clone()
+            .unwrap()
+    };
+    // Exact deletes are gone, unstarted victims kept; survivors, the read
+    // set, the sentinel and the background kept.
+    assert!(want.gone.contains(&id(api::Role::Victim, 0)));
+    assert!(want.gone.contains(&id(api::Role::Victim, 79)));
+    assert!(want.kept.contains(&id(api::Role::Victim, 80)));
+    for role in [api::Role::Survivor, api::Role::Read, api::Role::Sentinel] {
+        assert!(want.kept.contains(&id(role, 0)), "{role:?}");
+    }
+    assert!(want.kept.is_superset(&background));
+    // Clear slot 69 (measured 49) exact: emptied; slot 70 refused and 71
+    // never started: intact.
+    let scope_ids = |slot| -> Vec<String> {
+        fixtures
+            .iter()
+            .filter(|f| f.scope == api::clear_scope(0, slot))
+            .map(|f| f.id.clone().unwrap())
+            .collect()
+    };
+    assert!(scope_ids(69).iter().all(|i| want.gone.contains(i)));
+    assert!(scope_ids(70).iter().all(|i| want.kept.contains(i)));
+    assert!(scope_ids(71).iter().all(|i| want.kept.contains(i)));
+    assert!(want.unsure.is_empty() && want.waits.is_empty());
+    // The intact store passes.
+    assert!(api::ledger_problems(&want, &intact(&want), &[]).is_empty());
+}
+
+#[test]
+fn the_ledger_catches_later_loss_partial_clears_and_substituted_ids() {
+    let (cells, fixtures, recs, background) = ledger_batch();
+    let want = api::expected_ledger(5, &background, &fixtures, &cells, &recs);
+    let find = |role: api::Role, nth: usize| {
+        fixtures
+            .iter()
+            .filter(|f| f.role == role)
+            .nth(nth)
+            .unwrap()
+            .id
+            .clone()
+            .unwrap()
+    };
+    let check = |store: BTreeSet<String>| api::ledger_problems(&want, &store, &[]);
+    // A survivor deleted by a later cell.
+    let mut s = intact(&want);
+    s.remove(&find(api::Role::Survivor, 3));
+    assert!(check(s)[0].contains("missing"));
+    // An unstarted victim deleted anyway.
+    let mut s = intact(&want);
+    s.remove(&find(api::Role::Victim, 100));
+    assert!(check(s)[0].contains("missing"));
+    // A scope the clear reported exact, only partly emptied.
+    let mut s = intact(&want);
+    let left = fixtures
+        .iter()
+        .find(|f| f.scope == api::clear_scope(0, 25))
+        .unwrap()
+        .id
+        .clone()
+        .unwrap();
+    s.insert(left);
+    assert!(check(s)[0].contains("still present"));
+    // A background message lost.
+    let mut s = intact(&want);
+    s.remove("bg7");
+    assert!(check(s)[0].contains("missing"));
+    // The sentinel replaced by the same number of other ids: equal counts,
+    // substituted ids — missing and unaccounted both named.
+    let mut s = intact(&want);
+    s.remove(&find(api::Role::Sentinel, 0));
+    s.insert("impostor".into());
+    let p = check(s);
+    assert_eq!(p.len(), 2, "{p:?}");
+    assert!(
+        p[0].contains("missing") && p[1].contains("unaccounted"),
+        "{p:?}"
+    );
+    // Any mismatch invalidates every destructive (and wait) success.
+    let mut recs2 = recs.clone();
+    api::invalidate_batch(&mut recs2, &p);
+    for r in &recs2 {
+        assert!(r.measured.rows.iter().all(|x| x.outcome != Outcome::Exact));
+        assert!(
+            r.warmup
+                .as_ref()
+                .unwrap()
+                .rows
+                .iter()
+                .all(|x| x.outcome != Outcome::Exact)
+        );
+        assert_eq!(r.postcheck, p);
+    }
+    let mut recs3 = recs.clone();
+    api::invalidate_batch(&mut recs3, &[]);
+    assert_eq!(recs3, recs);
+}
+
+#[test]
+fn the_ledger_holds_each_wait_scope_to_its_acknowledged_delivery() {
+    let mut w = cell(Operation::Wait, 1);
+    w.warmup = 1;
+    w.planned = 2;
+    let caps = clients::mcp_capability("swarmail", Operation::Wait);
+    let mut r = api::CellRecord::new(&w, &caps);
+    let times = |ack: Option<u64>| api::WaitTimes {
+        call_ns: 1,
+        send_ns: 2,
+        ack_ns: ack,
+        return_ns: 3,
+        ack_to_return_ns: ack.map(|a| 3 - a as i64),
+    };
+    let mut warm = rows(1, Phase::Warmup, Outcome::Exact);
+    warm[0].wait = Some(times(Some(2)));
+    r.warmup = Some(api::Ran {
+        started: 1,
+        planned: 1,
+        rows: warm,
+        ..Default::default()
+    });
+    // Measured 0 acknowledged; measured 1 refused before its terminator.
+    let mut m = rows(1, Phase::Measured, Outcome::Exact);
+    m[0].wait = Some(times(Some(2)));
+    let mut refused = rows(
+        2,
+        Phase::Measured,
+        Outcome::Failed {
+            reason: "fixture_refused".into(),
+        },
+    );
+    refused[1].wait = Some(times(None));
+    m.push(refused.remove(1));
+    r.measured = api::Ran {
+        started: 2,
+        planned: 2,
+        rows: m,
+        ..Default::default()
+    };
+    let want = api::expected_ledger(9, &BTreeSet::new(), &[], &[w.clone()], &[r]);
+    assert_eq!(
+        want.waits.iter().map(|x| x.2).collect::<Vec<_>>(),
+        [true, true, false]
+    );
+    let msg = |id: &str, slot: usize| {
+        let (scope, token, _) = &want.waits[slot];
+        summary(id, &scope.address, &format!("x {token} y"))
+    };
+    let ok = [vec![msg("a", 0)], vec![msg("b", 1)], vec![]];
+    let views: Vec<_> = ok.iter().cloned().zip(want.waits.iter()).collect();
+    let store: BTreeSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+    assert!(api::ledger_problems(&want, &store, &views).is_empty());
+    // A missing acknowledged delivery, and an extra one where none was sent.
+    let bad = [vec![], vec![msg("b", 1)], vec![msg("c", 2)]];
+    let views: Vec<_> = bad.iter().cloned().zip(want.waits.iter()).collect();
+    let p = api::ledger_problems(&want, &store, &views);
+    assert_eq!(p.len(), 3, "{p:?}");
+}
+
 // ---- plan, growth and admission (T4, T10) -----------------------------------
 
 #[test]
@@ -1607,6 +1838,7 @@ fn record_for(chunk: &runner::Chunk) -> api::ApiRecord {
             .collect(),
         abandoned: None,
         store: "test".into(),
+        ledger: Vec::new(),
     }
 }
 
@@ -1702,9 +1934,12 @@ async fn the_candidates_native_cells_are_exact_end_to_end() {
     let mut owned = launch_candidate(root.path()).await;
     let clock = api::Clock(std::time::Instant::now());
     let client = clients::Client::new("swarmail", owned.http_addr).unwrap();
-    let fill = api::fill(owned.smtp, &client, (163, "real"), 1_000, clock).await;
+    let (fill, background) =
+        api::fill_ledger(owned.smtp, &client, (163, "real"), 1_000, clock).await;
     assert!(fill.reached, "{fill:?}");
     assert_eq!((fill.accepted, fill.retained), (1_000, Some(1_000)));
+    let background = background.unwrap();
+    assert_eq!(background.len(), 1_000);
     let (cells, rows) = api::plan_cells(Surface::Native, |op| {
         clients::native_capability("swarmail", op)
     });
@@ -1726,11 +1961,15 @@ async fn the_candidates_native_cells_are_exact_end_to_end() {
         .await
         .unwrap();
     assert_eq!(abandoned, None);
-    assert!(
-        api_chunk::final_ledger(&native, &mut recs, 1_000)
-            .await
-            .is_empty()
-    );
+    let problems = api::final_ledger(
+        &native.clients[0],
+        (163, &background),
+        &native.fixtures,
+        &cells,
+        &mut recs,
+    )
+    .await;
+    assert!(problems.is_empty(), "{problems:?}");
     for r in &recs {
         let s = api::stats(&r.measured, None);
         assert_eq!(
@@ -1769,6 +2008,41 @@ async fn the_candidates_native_cells_are_exact_end_to_end() {
         .unwrap();
     let clr = recs.iter().find(|r| r.cell == "clear.c32").unwrap();
     assert_eq!(cleared.is_empty(), 25 < 20 + clr.measured.started);
+    // R6 on the real store: delete one survivor and one background message
+    // behind the batch's back. The same ledger now finds both and turns
+    // every destructive success into a wrong result.
+    let survivor = native
+        .fixtures
+        .iter()
+        .find(|f| f.role == api::Role::Survivor)
+        .and_then(|f| f.id.clone())
+        .unwrap();
+    let bg = background.iter().next().unwrap().clone();
+    for id in [&survivor, &bg] {
+        clients::swarmail::delete(&client.conn, id, deadline, &mut spend)
+            .await
+            .unwrap();
+    }
+    let problems = api::final_ledger(
+        &native.clients[0],
+        (163, &background),
+        &native.fixtures,
+        &cells,
+        &mut recs,
+    )
+    .await;
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].starts_with("2 expected id(s) missing"),
+        "{problems:?}"
+    );
+    for r in recs.iter().filter(|r| r.operation.destructive()) {
+        assert!(
+            r.measured.rows.iter().all(|x| x.outcome != Outcome::Exact),
+            "{}",
+            r.cell
+        );
+    }
     assert!(owned.shutdown().await.proved());
 }
 
