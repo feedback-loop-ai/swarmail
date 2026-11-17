@@ -596,8 +596,10 @@ case "$mode" in
       esac
       return 1
     }
+    # SIGKILL, not systemctl's default SIGTERM: a target that ignores SIGTERM
+    # would otherwise live until systemd's own stop timeout, past the sums.
     scope_end() {
-      timeout 3 systemctl --user kill "$1" >/dev/null 2>&1
+      timeout 3 systemctl --user kill --signal=KILL "$1" >/dev/null 2>&1
       timeout 3 systemctl --user stop "$1" >/dev/null 2>&1
     }
     # A chunk that sealed: systemd learns that a scope is empty after the

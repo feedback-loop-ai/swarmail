@@ -4016,6 +4016,23 @@ fn footprint_sizes_an_archive_row_from_its_extraction_root() {
 }
 
 #[test]
+fn footprint_refuses_an_archive_bin_reached_through_a_link() {
+    // The member is a link to the pinned bytes outside the root: the digest
+    // holds, but the walk would not count the executable.
+    let f = footprints();
+    let bin = f.bins[&TargetKind::Mailpit].clone();
+    let root = bin.parent().unwrap().to_path_buf();
+    let outside = root.parent().unwrap().join("mailpit-real");
+    std::fs::rename(&bin, &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &bin).unwrap();
+    let w = run_footprint(&f).unwrap_err();
+    assert!(
+        w.contains("mailpit") && w.contains("is not the member mailpit of its extraction root"),
+        "{w}"
+    );
+}
+
+#[test]
 fn footprint_lists_each_walked_tree_with_its_kind_and_digest() {
     let f = footprints();
     let v = run_footprint(&f).unwrap();
@@ -4614,6 +4631,8 @@ fn build_run(b: Build) -> Fixture {
         };
         let spec = &specs[&c.target()];
         let layout = adm_host(128).cpu_layout;
+        // The leaf the chunk's rows name (`res_rows`), so its receipt is theirs.
+        let leaf = format!("target-{:04}", c.repetition() + 1);
         let launch = targets::LaunchFacts {
             target: c.target(),
             executable_sha256: if is(b.other_digest) {
@@ -4631,7 +4650,7 @@ fn build_run(b: Build) -> Fixture {
                 .iter()
                 .map(|(p, s)| (p.to_string_lossy().into_owned(), s.clone()))
                 .collect(),
-            leaf: Some("target-0001".into()),
+            leaf: Some(leaf.clone()),
             limits: Some(resources::LimitsRead {
                 memory_max: "2147483648".into(),
                 memory_swap_max: "0".into(),
@@ -4641,7 +4660,7 @@ fn build_run(b: Build) -> Fixture {
             }),
             cpu_layout: Some(layout.clone()),
             joined: Some(resources::Joined {
-                cgroup: "target-0001".into(),
+                cgroup: leaf.clone(),
                 cpus_allowed: layout.target_cpus.clone(),
             }),
             env_template: Some(spec.extra.env.clone()),
@@ -4653,7 +4672,7 @@ fn build_run(b: Build) -> Fixture {
             cleanup.listeners_closed,
             cleanup.scratch_removed,
         ) = (true, true, true, true);
-        (cleanup.cgroup_removed, cleanup.leaf) = (Some(true), Some("target-0001".into()));
+        (cleanup.cgroup_removed, cleanup.leaf) = (Some(true), Some(leaf.clone()));
         let nothing = is(b.no_launch);
         let life = if nothing {
             runner::Lifecycle {
@@ -4933,6 +4952,22 @@ fn admit_v4_refuses_a_cleanup_without_its_launch_receipt() {
             ..Default::default()
         },
         "1 launch receipts, 2 cleanup receipts",
+    );
+}
+
+#[test]
+fn admit_v4_refuses_a_row_whose_launch_has_no_receipt() {
+    // Both receipt lists emptied: the counts still pair, but the chunk's
+    // windows and samples name a launch nothing proves.
+    refuses(
+        Build {
+            edit: Some(("cost.mailpit.r0", |r| {
+                r["launches"] = json!([]);
+                r["cleanups"] = json!([]);
+            })),
+            ..Default::default()
+        },
+        "which has no launch receipt",
     );
 }
 
@@ -6332,7 +6367,8 @@ fn collect_v4_stops_a_scope_that_stays_active_and_counts_two() {
     let kill = log
         .iter()
         .position(|l| {
-            l.starts_with("systemctl --user kill mail-compare-") && l.contains("cost.mailpit.r0")
+            l.starts_with("systemctl --user kill --signal=KILL mail-compare-")
+                && l.contains("cost.mailpit.r0")
         })
         .expect("the scope was killed");
     let stop = log
@@ -6903,6 +6939,18 @@ fn collect_v4_never_calls_an_unknown_scope_clean() {
             .map(|l| l.split(' ').nth(2).unwrap())
             .collect();
         assert_eq!(ends, ["kill", "stop"], "{answer}: {log:?}");
+        // The kill is SIGKILL: systemctl's default SIGTERM would leave a target
+        // that ignores it alive until systemd's stop timeout, past the sums.
+        let kills: Vec<&String> = log
+            .iter()
+            .filter(|l| l.starts_with("systemctl --user kill"))
+            .collect();
+        assert!(
+            kills
+                .iter()
+                .all(|l| l.starts_with("systemctl --user kill --signal=KILL ")),
+            "{answer}: {kills:?}"
+        );
         let last = rig.ledger().pop().unwrap();
         assert_eq!(
             (
@@ -7984,6 +8032,73 @@ mod chunk {
             (s[1].outcome.as_str(), s[1].reason.as_deref()),
             ("unstarted", Some("chunk deadline"))
         );
+    }
+
+    #[tokio::test]
+    async fn a_warmup_cut_in_a_leaf_with_an_oom_is_oom_killed_not_a_deadline() {
+        let rig = Rig::new(1, true);
+        let p = protocol(vec![profile("cost-a", 50, 6, 2)], 480_000);
+        let (cfg, _) = rig.config(&p, Path::new(env!("CARGO_BIN_EXE_swarmail")), "run-d4o");
+        let spec = &cfg.specs[&TargetKind::Swarmail];
+        let mut life = runner::Lifecycle {
+            launches: vec![],
+            cleanups: vec![],
+        };
+        let clock = wire::Clock(Instant::now());
+        let warm = runner::warmup(
+            spec,
+            &cfg,
+            &runner::limits(&p),
+            &clock,
+            &p.throughput[0],
+            1,
+            &mut life,
+            Some(Instant::now()),
+        )
+        .await
+        .unwrap();
+        let runner::Warm::NotMeasured(cause, _) = warm else {
+            panic!("the warmup was cut")
+        };
+        // V13: the leaf's OOM comes before the chunk deadline.
+        assert_eq!(cause, runner::Cause::OomKilled);
+    }
+
+    #[tokio::test]
+    async fn an_idle_window_never_opened_in_a_leaf_with_an_oom_is_oom_killed() {
+        let rig = Rig::new(1, true);
+        let p = protocol(vec![profile("cost-a", 0, 6, 2)], 480_000);
+        let (cfg, _) = rig.config(&p, Path::new(env!("CARGO_BIN_EXE_swarmail")), "run-d6o");
+        let spec = &cfg.specs[&TargetKind::Swarmail];
+        let clock = wire::Clock(Instant::now());
+        let scratch = rig.dir.path().join("scratch").join("leaf");
+        let mut owned =
+            targets::Owned::launch(spec, &scratch, &runner::limits(&p), &clock, &rig.keepers)
+                .await
+                .unwrap();
+        let leaf = owned.leaf.clone().unwrap();
+        let sink = sink_for(&cfg.manifest, &cfg.output);
+        let closing = runner::Closing {
+            run: "run-d6o",
+            launch: leaf.name(),
+            key: (TargetKind::Swarmail, "cost-a", 0),
+            leaf: &leaf,
+            proc_root: Path::new("/proc"),
+            target_cpus: &rig.target_cpus(),
+        };
+        let never = runner::idle_ready(
+            &closing,
+            (&owned, &scratch),
+            &sink,
+            &clock,
+            Some(Instant::now()),
+        )
+        .await
+        .unwrap();
+        // V13: the leaf's OOM comes before the chunk deadline.
+        assert_eq!(never.outcome, WindowOutcome::OomKilled);
+        assert!(never.counters().is_none(), "never opened");
+        assert!(owned.shutdown().await.proved());
     }
 
     #[tokio::test]

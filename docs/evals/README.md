@@ -973,7 +973,7 @@ after that (the two `cargo` builds, `targets`, `check`, `footprint`, each chunk
 and both admissions) runs under `timeout --kill-after=30 560 taskset -c
 0-<n-1>`: 560 s is the driver's `CHUNK_KILL_MS`, SIGTERM at 560 s and SIGKILL
 30 s later. Every `systemctl` call has its own `timeout` (1 s to ask, 3 s to
-kill, 3 s to stop), so the ten minutes of 0132 §11.1 hold as three sums: a
+kill with SIGKILL, 3 s to stop), so the ten minutes of 0132 §11.1 hold as three sums: a
 build, `targets`, `check`, `footprint` or an admission takes at most 560 + 30 =
 590 s; a chunk that failed, and the targets it left in its scope, at most 560 +
 30 + 1 + 3 + 3 = 597 s; a chunk that sealed at most 560 + 20 × (1 + 0.5) + 3 +

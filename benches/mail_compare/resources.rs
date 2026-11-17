@@ -1388,6 +1388,19 @@ pub fn footprint(
                 .as_deref()
                 .ok_or_else(|| format!("{t}: an archive pin names its member"))?;
             let root = extraction_root(measured, member).map_err(|e| format!("{t}: {e}"))?;
+            // The walk skips links, so the executable is counted only when
+            // it is the member itself under the resolved root: no link on
+            // the way to it, and no link in its place (V18).
+            let resolved = |p: &Path| {
+                std::fs::canonicalize(p).map_err(|e| format!("{t}: {}: {e}", p.display()))
+            };
+            if resolved(measured)? != resolved(&root)?.join(member) {
+                return Err(format!(
+                    "{t}: --bin {} is not the member {member} of its extraction root {}: a link on the way would leave the executable uncounted",
+                    measured.display(),
+                    root.display()
+                ));
+            }
             walk("archive", &root)?;
             if let Some(dir) = &runtime {
                 walk("runtime", dir)?;

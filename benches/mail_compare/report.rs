@@ -1357,6 +1357,21 @@ pub fn admit_chunk(
             ));
         }
     }
+    // Every launch a window or a sample names has its receipt here, so its
+    // limits, join, cap and removal were checked above (V20).
+    let receipted: std::collections::BTreeSet<&str> =
+        launches.iter().filter_map(|l| l["leaf"].as_str()).collect();
+    for r in &admitted.resources {
+        let (launch, what) = match r {
+            crate::records::ResourceRow::Sample(s) => (s.launch.as_str(), "a sample"),
+            crate::records::ResourceRow::Window(w) => (w.launch.as_str(), "a window"),
+        };
+        if launch != "none" && !receipted.contains(launch) {
+            return refuse(&format!(
+                "{what} names the launch {launch:?}, which has no launch receipt"
+            ));
+        }
+    }
     let groups = [&admitted.resources[..]];
     let fresh = serde_json::to_value(report_v4(
         a.protocol,

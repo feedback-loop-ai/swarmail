@@ -630,12 +630,15 @@ pub async fn warmup(
     let name = owned.leaf.as_ref().map(|l| l.name().to_owned());
     let facts = owned.shutdown().await;
     let proved = facts.proved();
+    // A cut warmup keeps V13's order from its cleanup receipt: an OOM in the
+    // leaf, then a leader that had exited, and only then the chunk deadline.
+    let cause = classify_not_ready(&facts, true).unwrap_or(Cause::ChunkDeadline);
     life.cleanups.push(facts);
     if !proved {
         return Err(format!("{}: warmup cleanup not proved", spec.kind));
     }
     Ok(if cut {
-        Warm::NotMeasured(Cause::ChunkDeadline, name.unwrap_or_else(|| "none".into()))
+        Warm::NotMeasured(cause, name.unwrap_or_else(|| "none".into()))
     } else {
         Warm::Done
     })
@@ -2075,13 +2078,19 @@ pub async fn idle_ready(
 ) -> Result<WindowRow, String> {
     let (run, target) = (closing.run, closing.key.0);
     if past(end) {
+        // Never opened: V13's order, as for the measure window.
+        let outcome = never_opened_outcome(
+            closing.leaf,
+            owned.has_exited(),
+            WindowOutcome::ChunkDeadline,
+        );
         return Ok(unopened_window(
             run,
             closing.launch,
             closing.key,
             WindowKind::IdleReady,
             clock.now_ns(),
-            WindowOutcome::ChunkDeadline,
+            outcome,
         ));
     }
     let a = bound(closing.leaf, run, target, clock, sink)?;
