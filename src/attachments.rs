@@ -101,27 +101,9 @@ fn calendar_shaped(part: &mail_parser::MessagePart<'_>) -> bool {
 /// scanned and the first-fit budget decides which keep their bytes; beyond
 /// them only the count grows.
 pub fn extract(message: &Message<'_>) -> AttachmentList {
-    // Sized to cover every listed id, so a list that named a part the
-    // parser did not keep could never index out of range.
-    let size = message
-        .attachments
-        .iter()
-        .map(|&id| id as usize + 1)
-        .fold(message.parts.len(), usize::max);
-    let mut listed = vec![false; size];
-    for &id in &message.attachments {
-        listed[id as usize] = true;
-    }
     let mut list = AttachmentList::default();
     let mut remaining = MAX_ATTACHMENT_STORED_BYTES;
-    for (id, part) in message.parts.iter().enumerate() {
-        let calendar = calendar_shaped(part);
-        // Bitwise, so the test is one decision: a container part is never a
-        // candidate, whatever name it carries.
-        let candidate = (listed[id] | calendar) & !matches!(part.body, PartType::Multipart(_));
-        if !candidate {
-            continue;
-        }
+    for (_, part, calendar) in candidates(message) {
         list.total += 1;
         if list.parts.len() == MAX_ATTACHMENTS {
             continue;
@@ -142,6 +124,38 @@ pub fn extract(message: &Message<'_>) -> AttachmentList {
         });
     }
     list
+}
+
+/// The outer message's candidate parts in part order, each with its part id
+/// and whether it is calendar-shaped (decision 0110 §1): a leaf in the parser's attachment
+/// list or any calendar-shaped leaf. The one walk ingest's [`extract`] and
+/// the UI preview's identity lookup (proposed 0135 §2) share, so the
+/// preview's candidate ordinals are ingest's by construction.
+pub(crate) fn candidates<'m, 'x>(
+    message: &'m Message<'x>,
+) -> impl Iterator<Item = (usize, &'m mail_parser::MessagePart<'x>, bool)> {
+    // Sized to cover every listed id, so a list that named a part the
+    // parser did not keep could never index out of range.
+    let size = message
+        .attachments
+        .iter()
+        .map(|&id| id as usize + 1)
+        .fold(message.parts.len(), usize::max);
+    let mut listed = vec![false; size];
+    for &id in &message.attachments {
+        listed[id as usize] = true;
+    }
+    message
+        .parts
+        .iter()
+        .enumerate()
+        .filter_map(move |(id, part)| {
+            let calendar = calendar_shaped(part);
+            // Bitwise, so the test is one decision: a container part is
+            // never a candidate, whatever name it carries.
+            ((listed[id] | calendar) & !matches!(part.body, PartType::Multipart(_)))
+                .then_some((id, part, calendar))
+        })
 }
 
 /// The first `VEVENT`'s key fields (decision 0110 §4), or `None` when the

@@ -211,3 +211,7 @@ console's delivery PR (#365) was ready. The read-only projection route, the
 two read-only fields and the amendments of 0110 §7, 0094 §2, 0126 §2 and
 0027 §2 take effect as written. Attachment bytes stay MCP-only. The dated
 pointers on those four records stand, each with an acceptance line.
+
+## Dated pointer — 2026-11-17 (proposed 0135)
+
+Proposed [0135](0135-preview-images.md) amends §3 of this record: "attachment bytes stay MCP-only" gains one exception, the run console's preview document `GET /ui/message/{id}/preview`, which may inline referenced, retained PNG, JPEG, GIF or WebP parts as `data:` URIs. The projection route keeps its exact shape and still serves no bytes and no hash. 0135 §6 also proposes adding `frame-src 'self'` to the console's resource policy so that the preview frame can load. It is a proposal until the operator accepts it; this record's ruling stands as written until then.

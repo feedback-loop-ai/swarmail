@@ -107,3 +107,39 @@ request/pixel/isolation evidence and full house gates. String tests cannot
 prove a working frame or browser isolation. Parsing, raster pixel decode and
 slow-client buffers still cost resources; two jobs is not a global memory or
 SMTP-latency guarantee. A committed proposal is not feature verification.
+
+## Implementation note — 2026-11-17 (delivery run, still proposed)
+
+The implementation follows §§1–7 and records these readings. None widens a
+ruling above; each is narrower or equal.
+
+- **Removal is a superset.** Every `<meta>` is removed, not only refresh,
+  because the response header carries the charset. Every `<link>` is removed
+  unless all its `rel` tokens are `stylesheet` or `alternate` and one is
+  `stylesheet`. `ping`, `referrerpolicy` (a per-element override of
+  `no-referrer`) and SMIL's `attributeName` are dropped from every element,
+  and `href`/`xlink:href` from `a` and `area`. A removed tag leaves `<!---->`,
+  so the text on either side cannot join into a new tag.
+- **Parser differential.** Any `<a`, `<area`, `<base`, `<link`, `<meta`,
+  `<set` or `<animate` opener that the scan does not read as a start tag —
+  inside a comment, raw text, CDATA or an attribute value — is written as
+  `&lt;name`. That text means the same in each of those contexts and can
+  never open a tag. A browser that tokenizes the source differently from the
+  scan therefore still meets no such tag the scan did not see. `noscript` is
+  markup, as in a document without scripts.
+- **Fallback trigger.** The fixed inert document answers when a tag is still
+  open at the end of the source. The unprocessed HTML is never served.
+- **Admission.** One two-permit semaphore per `ui::router()` (one per
+  service), taken with `try_acquire_owned` before the snapshot. The blocking
+  closure owns the permit and drops it after the render returns.
+- **Console.** The preview frame lives in its own slot and is hidden, not
+  removed, on another tab, so tab changes and enrichment never reload it.
+  Consent (`remoteFor`) resets whenever the selection changes. The
+  standalone `/ui/message/{id}` page frames the default route only.
+- **Browser proof outstanding.** The delivery box has no runnable browser
+  (the `firefox` binary there is a snap stub, and there is no Chromium or
+  network to install one). The browser evidence that AC10 and task T8
+  require has not been produced, and header and string tests do not
+  substitute for it. [The procedure](../../specs/preview-images/browser-proof.md)
+  lists what to run on a machine with a browser before verification.
+

@@ -66,3 +66,15 @@ bytes, plus at most about 2 MiB of recorded labels (250 entries of at most
 as before, there is no global ceiling.
 Mail stored by an earlier release, including a mail whose compact `attachments`
 were recorded before these tools, answers "unknown" and is never backfilled.
+
+**One display exception: the console's preview.** Attachment bytes are
+otherwise served only by the MCP attachment tools. The run console's HTML
+preview (`GET /ui/message/{id}/preview`, proposed decision 0135) is the one
+exception: it inlines stored bytes as `data:` URIs, and only for inline PNG,
+JPEG, GIF and WebP parts that the mail's HTML references with
+`<img src="cid:…">`. Each image must be at most 256 KiB, a preview inserts at
+most 2 MiB, and each part's type, size and SHA-256 must match its stored
+entry. It is a rendering, not a fetch route: no other attachment is served,
+an SVG or an unstored part stays broken, and the projection still carries no
+bytes. See [Threads and the live UI](threads-and-ui.md#the-html-preview-and-remote-content).
+
