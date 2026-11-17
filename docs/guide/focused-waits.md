@@ -48,7 +48,9 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
 - **History:** mail stored before decision 0094 keeps its `links`; its
   candidates carry `null` label, `rel` and `source` and are never
   re-extracted. Email reads, feeds and webhooks are unchanged — occurrence
-  metadata is reachable only through `swarmail_wait_for_link`.
+  metadata is reachable through `swarmail_wait_for_link` and, read-only and
+  capped, through `GET /api/v1/messages/{id}/projection` (proposed decision
+  [0134](../decisions/0134-ui-projection-route.md), held for the operator).
 
 - **Near misses on a timeout (decision [0111](../decisions/0111-near-miss-timeouts.md), proposed):**
   a timed-out `swarmail_wait_for_email`, `swarmail_wait_for_code` or

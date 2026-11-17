@@ -5,8 +5,11 @@
 `swarmail_list_attachments {id}` and `swarmail_get_attachment {id, index}`
 (decision [0110](../decisions/0110-attachments-and-ics.md), proposed) answer
 from what ingest recorded once, at `250`, the way links and codes are: nothing
-re-parses the raw message at query time. Both are read-only, MCP-only (no REST
-route, no change to any Email, feed, webhook or compat payload), and refuse a
+re-parses the raw message at query time. Both are read-only, MCP-only apart from one
+read-only REST projection that serves attachment labels and ICS fields to the
+web UI (`GET /api/v1/messages/{id}/projection`, proposed decision
+[0134](../decisions/0134-ui-projection-route.md)); no change to any Email,
+feed, webhook or compat payload, and refuse a
 malformed argument by name (`-32602`) before the store is read.
 
 ```
