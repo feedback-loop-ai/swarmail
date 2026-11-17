@@ -341,21 +341,73 @@ pub fn check_record(rec: &ApiRecord, chunk: &Chunk) -> Result<(), String> {
         ));
     }
     for (c, p) in rec.cells.iter().zip(&want) {
+        // The cell is the plan's (R10): its operation, concurrency and
+        // scope, and the method, routes and citations of its capability.
+        let cap = clients::capability(target.name(), *surface, p.operation);
+        let planned = CellRecord::new(p, &cap);
+        if (
+            c.operation,
+            c.concurrency,
+            c.scope,
+            c.method,
+            &c.routes,
+            &c.cites,
+        ) != (
+            planned.operation,
+            planned.concurrency,
+            planned.scope,
+            planned.method,
+            &planned.routes,
+            &planned.cites,
+        ) {
+            return Err(format!("api.json: cell {} is not the planned cell", c.cell));
+        }
         let m = &c.measured;
-        let mut seen = std::collections::BTreeSet::new();
-        let ok = m.planned == p.planned
-            && m.started + m.unstarted == m.planned
-            && m.started as usize == m.rows.len()
-            && m.rows
-                .iter()
-                .all(|r| r.index < m.planned && seen.insert(r.index))
-            && m.rows.iter().all(|r| r.phase == api::Phase::Measured)
+        let ok = adds_up(m, p.planned, api::Phase::Measured)
+            && (c.status == CellStatus::Measured) == c.blocked.is_none()
             && (c.status == CellStatus::Measured || m.started == 0);
         if !ok {
             return Err(format!("api.json: cell {} does not add up", c.cell));
         }
+        // Its warmup: none planned, none run; one run adds up on its own;
+        // a measured cell's warmup started every slot and none failed.
+        let warm_ok = match (&c.warmup, p.warmup) {
+            (None, 0) => true,
+            (Some(_), 0) => false,
+            (None, _) => c.status == CellStatus::Blocked,
+            (Some(w), n) => {
+                adds_up(w, n, api::Phase::Warmup)
+                    && (c.status == CellStatus::Blocked
+                        || (w.unstarted == 0
+                            && w.rows.iter().all(|r| {
+                                matches!(
+                                    r.outcome,
+                                    api::Outcome::Exact | api::Outcome::InexactFidelity { .. }
+                                )
+                            })))
+            }
+        };
+        if !warm_ok {
+            return Err(format!(
+                "api.json: cell {}'s warmup does not add up",
+                c.cell
+            ));
+        }
     }
     Ok(())
+}
+
+/// One phase's counts against its plan: planned is started plus
+/// unstarted, started is its rows, every row of this phase with a distinct
+/// index below the plan.
+fn adds_up(r: &api::Ran, planned: u32, phase: api::Phase) -> bool {
+    let mut seen = std::collections::BTreeSet::new();
+    r.planned == planned
+        && r.started.checked_add(r.unstarted) == Some(r.planned)
+        && r.started as usize == r.rows.len()
+        && r.rows
+            .iter()
+            .all(|x| x.index < planned && x.phase == phase && seen.insert(x.index))
 }
 
 /// The seed and run tag the chunk's fill corpus derives from.

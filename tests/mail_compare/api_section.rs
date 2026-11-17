@@ -1901,6 +1901,101 @@ fn record_for(chunk: &runner::Chunk) -> api::ApiRecord {
     }
 }
 
+fn warm(r: &mut api::ApiRecord) -> &mut api::Ran {
+    r.cells[0].warmup.as_mut().unwrap()
+}
+
+#[test]
+fn admission_holds_warmups_and_cell_identities_to_the_plan() {
+    let chunk = runner::Chunk::Api {
+        surface: Surface::Native,
+        target: TargetKind::Mailpit,
+        repetition: 0,
+        fill: 1000,
+    };
+    // A measured record: every cell's warmup and measured rows complete.
+    let mut rec = record_for(&chunk);
+    for (c, p) in rec
+        .cells
+        .iter_mut()
+        .zip(api_chunk::cells(TargetKind::Mailpit, Surface::Native))
+    {
+        c.status = api::CellStatus::Measured;
+        c.blocked = None;
+        c.warmup = (p.warmup > 0).then(|| api::Ran {
+            rows: rows(p.warmup, Phase::Warmup, Outcome::Exact),
+            planned: p.warmup,
+            started: p.warmup,
+            ..Default::default()
+        });
+        c.measured = api::Ran {
+            rows: rows(p.planned, Phase::Measured, Outcome::Exact),
+            planned: p.planned,
+            started: p.planned,
+            ..Default::default()
+        };
+    }
+    api_chunk::check_record(&rec, &chunk).unwrap();
+    // It survives its own bytes, and its report recomputes from them.
+    let back: api::ApiRecord = serde_json::from_slice(&serde_json::to_vec(&rec).unwrap()).unwrap();
+    assert_eq!(back, rec);
+    api_chunk::check_record(&back, &chunk).unwrap();
+    assert_eq!(
+        api_chunk::api_report(&back, &[]),
+        api_chunk::api_report(&rec, &[])
+    );
+    let refuse = |f: &dyn Fn(&mut api::ApiRecord), want: &str| {
+        let mut r = rec.clone();
+        f(&mut r);
+        let e = api_chunk::check_record(&r, &chunk).unwrap_err();
+        assert!(e.contains(want), "{e}");
+    };
+    // Warmup: a duplicate index, a count, an outcome, a phase, a missing or
+    // extra warmup.
+    refuse(&|r| warm(r).rows[1].index = 0, "warmup");
+    refuse(&|r| warm(r).started = 19, "warmup");
+    refuse(&|r| warm(r).planned = 21, "warmup");
+    refuse(&|r| warm(r).rows[4].outcome = Outcome::Timeout, "warmup");
+    refuse(
+        &|r| {
+            warm(r).rows[4].outcome = Outcome::Failed {
+                reason: "status_500".into(),
+            }
+        },
+        "warmup",
+    );
+    refuse(&|r| warm(r).rows[2].phase = Phase::Measured, "warmup");
+    refuse(&|r| r.cells[0].warmup = None, "warmup");
+    let last = rec.cells.len() - 1;
+    refuse(
+        &move |r| {
+            r.cells[last].warmup = Some(api::Ran::default());
+        },
+        "warmup",
+    );
+    // Identity: operation, concurrency, method, scope, routes, citations.
+    refuse(
+        &|r| r.cells[0].operation = Operation::Search,
+        "planned cell",
+    );
+    refuse(&|r| r.cells[0].concurrency = Some(8), "planned cell");
+    refuse(
+        &|r| r.cells[0].method = Some(clients::Method::Inbox),
+        "planned cell",
+    );
+    refuse(
+        &move |r| r.cells[last].scope = Some(ClearScope::Recipient),
+        "planned cell",
+    );
+    refuse(&|r| r.cells[0].routes.push("GET /x".into()), "planned cell");
+    refuse(&|r| r.cells[0].cites[0].push('x'), "planned cell");
+    // Status and cause agree.
+    refuse(
+        &|r| r.cells[0].blocked = Some("x".into()),
+        "does not add up",
+    );
+}
+
 #[test]
 fn api_json_admits_only_when_it_adds_up_against_the_plan() {
     let chunk = runner::Chunk::Api {
