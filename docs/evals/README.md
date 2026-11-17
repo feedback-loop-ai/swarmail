@@ -1194,6 +1194,20 @@ delegation), and `api_native_real` and `api_mcp_bridge_real`, which need a
 delegated cgroup v2 scope (and, for the second, `SWARMAIL_EVALS_BIN` and
 `MAIL_COMPARE_BIN`) and fail, never skip, without them.
 
+**The host run gates the merge, again.** The deterministic tests and the
+real-candidate runs above prove the clients, the scheduler, the checks and
+the bridge; they do not prove an API chunk under its leaf, the `api-v1`
+control loop between `api-mcp` and `hold`, or any competitor's routes against
+its pinned bytes (smtp4dev's route templates, GreenMail's REST folder,
+Inbucket's and MailSlurper's field names are the captured documents' and the
+v3 driver's, not yet exercised by this section). `api_native_real` and
+`api_mcp_bridge_real` therefore run on the delegated host, for the candidate
+and for each launched competitor's chunk, one at a time, and their passing
+output with the load before and after is attached to the pull request. The
+seat that built this story had no delegated scope: both proofs reached the
+refusal `resources: no delegated cgroup v2 (cpu memory pids)`, and
+`api_fill_100k_real` passed there (39.8 s; load 3.85 before, 4.49 after).
+
 ## What closes the remaining rows
 
 1. Build provenance for each executable needs genuine build evidence (an
