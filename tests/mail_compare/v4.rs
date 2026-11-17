@@ -9343,28 +9343,119 @@ mod chunk {
                 ("unstarted", Some("chunk deadline")),
             ]
         );
-        // A send whose QUIT hangs is cut too, never awaited.
-        let o = detached(smtp_stub("QUIT").await, http, &p);
-        // QUIT never answers, so the instant always cuts the send; 3 s only
-        // has to let the send begin on a loaded or instrumented build.
-        let end = Instant::now() + Duration::from_secs(3);
-        let out2 = dir.path().join("out2");
-        let sink = sink_for(&m, &out2);
+    }
+
+    /// One Mailpit wait profile of `n` instances against an SMTP stub that
+    /// hangs on `hang`, a search answering `mail`, cut `secs` from now.
+    async fn cut_waits(
+        n: (u32, u32, u32),
+        hang: &'static str,
+        mail: &[u32],
+        secs: u64,
+    ) -> Vec<Row> {
+        let mut p = wait_protocol(n, 400_000);
+        p.waits.truncate(1);
+        p.waits[0].observation[0].target = TargetKind::Mailpit;
+        let mail = mail
+            .iter()
+            .map(|i| (format!("m{i}"), subject_of(&p, "tag", *i)))
+            .collect();
+        let http = mailpit_http(mail, false).await;
+        let o = detached(smtp_stub(hang).await, http, &p);
+        let mut m = tiny_manifest(
+            &p,
+            "run-w5",
+            &runner::Chunk::Waits {
+                target: TargetKind::Mailpit,
+                repetition: 0,
+            },
+        );
+        m.planned_windows = None;
+        let dir = fixture();
+        let out = dir.path().join("out");
+        let sink = sink_for(&m, &out);
+        let end = Instant::now() + Duration::from_secs(secs);
         runner::waits(
             &o,
             &p,
             &p.waits[0],
-            ("tag", 0, "run-w3"),
+            ("tag", 0, "run-w5"),
             &sink,
             &wire::Clock(Instant::now()),
             (None, Some(end)),
         )
         .await
         .unwrap();
-        let rows = read_rows(&out2, &m, sink);
-        assert_eq!(rows[0].outcome, "send_failed");
-        assert_eq!(rows[0].reason.as_deref(), Some("send: chunk deadline"));
-        assert!(rows[1..].iter().all(|r| r.outcome == "unstarted"));
+        read_rows(&out, &m, sink)
+    }
+
+    // A send cut in its QUIT after the server's 250 keeps the 250: the mail
+    // was sent (0132 §7.3, §11.3). QUIT never answers, so the instant always
+    // cuts the session; 5 s only has to let the message itself be answered
+    // on a loaded or instrumented build.
+    #[tokio::test]
+    async fn a_present_send_cut_in_its_quit_keeps_its_acceptance() {
+        let rows = cut_waits((1, 1, 0), "QUIT", &[], 5).await;
+        let r = &rows[0];
+        assert_eq!(r.phase, Phase::Present);
+        assert_eq!(
+            (r.outcome.as_str(), r.reason.as_deref(), r.code),
+            ("error", Some("observe: chunk deadline"), Some(250))
+        );
+        assert!(r.start_ns.is_some() && r.ack_ns.is_some());
+        assert_eq!(rows[1].outcome, "unstarted");
+    }
+
+    #[tokio::test]
+    async fn a_future_send_cut_in_its_quit_keeps_its_acceptance_and_any_answer() {
+        // The search already holds the message: the observer answers before
+        // the cut, and its answer stands.
+        let future = 200_000;
+        let rows = cut_waits((0, 1, 0), "QUIT", &[future], 5).await;
+        let r = &rows[0];
+        assert_eq!(r.phase, Phase::Future);
+        assert_eq!(
+            (r.outcome.as_str(), r.code, r.expected, r.unrelated),
+            ("observed", Some(250), Some(1), Some(0))
+        );
+        assert!(r.ack_ns.is_some() && r.observed_ns.is_some());
+        // Nothing to find: accepted, and the wait has no answer.
+        let rows = cut_waits((0, 1, 0), "QUIT", &[], 5).await;
+        let r = &rows[0];
+        assert_eq!(
+            (r.outcome.as_str(), r.reason.as_deref(), r.code),
+            ("error", Some("observe: chunk deadline"), Some(250))
+        );
+        assert!(r.ack_ns.is_some());
+    }
+
+    // A message the server never answers is cut before its reply: not sent.
+    // The DATA command never answers, so no window has to be wide.
+    #[tokio::test]
+    async fn a_send_cut_before_its_reply_is_a_failed_send() {
+        let rows = cut_waits((1, 1, 0), "DATA", &[], 1).await;
+        let facts: Vec<_> = rows
+            .iter()
+            .map(|r| (r.phase, r.outcome.as_str(), r.reason.as_deref(), r.ack_ns))
+            .collect();
+        assert_eq!(
+            facts,
+            [
+                (
+                    Phase::Present,
+                    "send_failed",
+                    Some("send: chunk deadline"),
+                    None
+                ),
+                (Phase::Future, "unstarted", Some("chunk deadline"), None),
+            ]
+        );
+        let rows = cut_waits((0, 1, 0), "DATA", &[], 1).await;
+        assert_eq!(
+            (rows[0].outcome.as_str(), rows[0].reason.as_deref()),
+            ("send_failed", Some("send: chunk deadline"))
+        );
+        assert_eq!(rows[0].ack_ns, None);
     }
 }
 

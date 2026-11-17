@@ -481,8 +481,9 @@ Measurements use the controller's monotonic clock in nanoseconds:
   subscribing. *Empty*: a token that is never sent. Its expected outcome is
   a timeout, which is censored. A match first seen by a poll scan that
   ended after the cutoff is `late`: kept, but censored like a timeout. The
-  signed offset observed − ack is kept as is and is never clamped. An
-  answer carrying any other message is `unrelated`. *Native* (Swarmail's await) and *poll* (the common client
+  signed offset observed − ack is kept as is and is never clamped. A
+  timely answer carrying any other message is `unrelated`; a late one stays
+  `late` whatever it carried. *Native* (Swarmail's await) and *poll* (the common client
   path at a frozen interval) are separate profiles.
 - **Statistics.** Nearest-rank p50/p95/p99 over the successful samples,
   with sample and censored counts beside them. An empty set gives `null`.
@@ -1094,13 +1095,17 @@ older row carries these keys, and an older run that does is refused. The
 `wait_profiles` section of a v4 report (and `report-waits.json` of a sealed
 run) recomputes from the rows and the `measure` window, per repetition and per
 cell: accepted sends, timely returns, `missed` (no timely return: timeout,
-late, error, or an answer without the expected mail; censored), `duplicate`
+late whatever else the answer carried, error, or an answer without the
+expected mail; censored), `duplicate`
 and `unrelated` answers counted independently (and both), correct empty waits,
 the stream causes, the signed future `ack_to_return` (client return minus the
 SMTP 250, never clamped; a row without either timestamp is absent), present
 latency, and the target's CPU and peak memory over the profile's window.
 `admit-v4` refuses a wait row whose counts, return time or cause disagree with
-its outcome, and any figure that differs from that arithmetic, by path.
+its outcome, and any figure that differs from that arithmetic, by path. A send
+keeps the server's reply as soon as it has one: a send cut by the chunk instant
+in its `QUIT` after the 250 is a sent message (its wait an `error`, or a future
+wait's finished answer), and only a send cut before its reply is `send_failed`.
 
 **Chunks.** The plan adds one `waits.<target>.r<repetition>` chunk per launched
 target and repetition after that repetition's cost chunks (24 + 24 for the

@@ -1098,6 +1098,12 @@ pub async fn waits(
                 }
             }
             Some(false) => {}
+            // Cut in its QUIT after the server accepted the message: the
+            // mail was sent and the wait never began.
+            None if r.outcome == "accepted" => {
+                r.outcome = "error".into();
+                r.reason = Some("observe: chunk deadline".into());
+            }
             None => r.reason = Some("send: chunk deadline".into()),
         }
         fail(&r, "observed");
@@ -1146,25 +1152,24 @@ pub async fn waits(
         r.start_ns = send_row.start_ns;
         r.ack_ns = send_row.ack_ns;
         r.code = send_row.code;
+        r.requests = obs_row.requests;
+        // The observer sets an outcome only when it has finished.
+        let finished = obs_row.outcome != r.outcome;
+        let accepted = send_row.outcome == "accepted";
         match joined {
-            Some(true) => {
-                r.outcome = obs_row.outcome;
-                r.reason = obs_row.reason;
-                r.observed_ns = obs_row.observed_ns;
-                r.expected = obs_row.expected;
-                r.unrelated = obs_row.unrelated;
-                r.cause = obs_row.cause;
-            }
             Some(false) => r.reason = send_row.reason,
+            // Sent, and either both finished or the send was cut in its QUIT
+            // after the server's reply: the observer's answer stands.
+            Some(true) => answer(&mut r, obs_row),
+            None if accepted && finished => answer(&mut r, obs_row),
             // Cut in flight: whether the send was accepted is what the send
             // row says; the wait has no answer.
-            None if send_row.ack_ns.is_some() && send_row.outcome != "send_failed" => {
+            None if accepted => {
                 r.outcome = "error".into();
                 r.reason = Some("observe: chunk deadline".into());
             }
             None => r.reason = Some("send: chunk deadline".into()),
         }
-        r.requests = obs_row.requests;
         fail(&r, "observed");
         emit(sink, &r)?;
     }
@@ -1218,7 +1223,19 @@ pub async fn waits(
     Ok(failures)
 }
 
-/// One fresh session, one message; records start/ack/code on `r`.
+/// Carry a finished observation's answer onto the wait row.
+fn answer(r: &mut Row, obs: Row) {
+    r.outcome = obs.outcome;
+    r.reason = obs.reason;
+    r.observed_ns = obs.observed_ns;
+    r.expected = obs.expected;
+    r.unrelated = obs.unrelated;
+    r.cause = obs.cause;
+}
+
+/// One fresh session, one message; records start/ack/code on `r` as soon
+/// as the server has answered the message, before `QUIT`, so a send cut in
+/// its `QUIT` keeps the reply it had (0132 §7.3, §11.3).
 async fn send_one(
     owned: &Owned,
     msg: &Message,
@@ -1229,7 +1246,6 @@ async fn send_one(
     match Smtp::open(owned.smtp, step).await {
         Ok(mut s) => {
             let rec = s.send(msg, clock).await;
-            s.quit().await;
             r.start_ns = Some(rec.start_ns);
             r.ack_ns = rec.ack_ns;
             let ok = fill(r, &rec.disposition);
@@ -1241,6 +1257,7 @@ async fn send_one(
                 ));
                 r.outcome = "send_failed".into();
             }
+            s.quit().await;
             ok
         }
         Err((_, e)) => {
@@ -1279,8 +1296,8 @@ use crate::observe::Cause as ScanCause;
 /// Observe `token` within `deadline` of now; sets outcome, observed_ns and
 /// the request count on `r`, and on protocol 4 (`facts`) the answer's
 /// expected and unrelated counts and a stream answer's scan cause. An
-/// answer carrying any other message is `unrelated`, whatever else it
-/// carries; the counts keep both facts.
+/// answer after the cutoff is `late`, whatever it carries; a timely answer
+/// carrying any other message is `unrelated`; the counts keep both facts.
 #[allow(clippy::too_many_arguments)]
 async fn observe(
     owned: &Owned,
@@ -1349,10 +1366,13 @@ async fn observe(
         Ok(Some(a)) => {
             let expected = a.tokens.iter().filter(|t| *t == token).count() as u64;
             let unrelated = a.tokens.len() as u64 - expected;
-            r.outcome = if unrelated > 0 {
-                "unrelated"
-            } else if a.late {
+            // Lateness decides first: an answer after the cutoff is never
+            // timely, whatever else it carries (0132 §7.3); the counts keep
+            // the unrelated fact beside it.
+            r.outcome = if a.late {
                 "late"
+            } else if unrelated > 0 {
+                "unrelated"
             } else {
                 "observed"
             }

@@ -108,6 +108,28 @@ pub const LOCK_V4_SOURCE_DOCUMENTS: [(TargetKind, &str); 3] = [
     ),
 ];
 
+/// The captured wait evidence lock 5 added that is not a reviewed source
+/// body (0132 §1.2): licenses beside the bodies and the recursive trees the
+/// source paths are bound to. Lock 4 carries none of them.
+pub const LOCK_V5_WAIT_EVIDENCE: [(TargetKind, &str); 4] = [
+    (
+        TargetKind::Mailhog,
+        "sources/mailhog/mailhog-goose-license.md",
+    ),
+    (
+        TargetKind::Mailhog,
+        "sources/mailhog/mailhog-server-license.md",
+    ),
+    (
+        TargetKind::Inbucket,
+        "sources/inbucket/inbucket-tree-recursive.json",
+    ),
+    (
+        TargetKind::Smtp4dev,
+        "sources/smtp4dev/smtp4dev-tree-recursive.json",
+    ),
+];
+
 /// Upper bounds the validator holds every count and deadline to: a
 /// protocol is an input file, and an absurd value must refuse rather than
 /// schedule unbounded work.
@@ -4018,7 +4040,12 @@ fn refuse_v5_wait_documents(out: &mut Vec<String>, t: TargetKind, pin: &Pin, loc
         }
     }
     for d in &pin.documents {
-        if d.kind == DocKind::Source && !LOCK_V4_SOURCE_DOCUMENTS.contains(&(t, d.path.as_str())) {
+        let doc = (t, d.path.as_str());
+        let v5_only = match d.kind {
+            DocKind::Source => !LOCK_V4_SOURCE_DOCUMENTS.contains(&doc),
+            _ => LOCK_V5_WAIT_EVIDENCE.contains(&doc),
+        };
+        if v5_only {
             refuse(out, &d.path);
         }
     }

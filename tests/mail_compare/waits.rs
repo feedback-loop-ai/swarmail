@@ -1939,6 +1939,11 @@ mod profiles {
                 "alkemio-mailslurper",
                 "sources/alkemio-mailslurper/alkemio-setup-services-listener.go",
             ),
+            // Not only bodies: the licenses and trees lock 5 added too.
+            ("mailhog", "sources/mailhog/mailhog-goose-license.md"),
+            ("mailhog", "sources/mailhog/mailhog-server-license.md"),
+            ("inbucket", "sources/inbucket/inbucket-tree-recursive.json"),
+            ("smtp4dev", "sources/smtp4dev/smtp4dev-tree-recursive.json"),
         ] {
             let want = format!(
                 "{t}: lock_version 4 refuses the v5-only wait document {doc}; only lock_version 5 carries it (0132 §1.2)"
@@ -2715,6 +2720,14 @@ mod accounting {
                 Some(9_000_000),
             ),
             wait(Phase::Present, 3, "error", None),
+            // Late with other mail beside it: censored, the unrelated fact
+            // kept (0132 §7.3).
+            at(
+                wait(Phase::Present, 4, "late", Some((1, 1))),
+                0,
+                Some(5),
+                Some(9_500_000),
+            ),
             // Future: seen before the 250 (a negative offset, kept), after
             // it, by a backstop, with no ack timestamp (unavailable), and
             // an answer with the mail and other mail (both facts).
@@ -2756,6 +2769,12 @@ mod accounting {
                 Some(500),
                 None,
             ),
+            at(
+                wait(Phase::Future, 9, "late", Some((2, 1))),
+                10,
+                Some(500),
+                Some(9_000),
+            ),
             wait(Phase::Future, 7, "send_failed", None),
             wait(Phase::Future, 8, "unstarted", None),
             // Empty: a correct silence and an answer with foreign mail.
@@ -2778,21 +2797,25 @@ mod accounting {
         assert_eq!(reps.len(), 1);
         let r = &reps[0];
         assert_eq!((r.method, r.interval_ms), ("stream", None));
-        // 4 present + 7 future were sent; send_failed and unstarted were not.
-        assert_eq!(r.sent, 11);
+        // 5 present + 8 future were sent; send_failed and unstarted were not.
+        assert_eq!(r.sent, 13);
         assert_eq!(r.timely, 7, "present 0, 1 and future 0 to 4");
-        assert_eq!(r.missed, 4, "late, error, foreign-only answer, timeout");
-        assert_eq!(r.duplicate, 2, "present 1 and future 4");
-        assert_eq!(r.unrelated, 3, "future 4, future 5 and empty 1");
-        assert_eq!(r.duplicate_and_unrelated, 1);
+        assert_eq!(
+            r.missed, 6,
+            "late, two late with other mail, error, foreign-only answer, timeout"
+        );
+        assert_eq!(r.duplicate, 3, "present 1, future 4 and future 9");
+        assert_eq!(r.unrelated, 5, "present 4, future 4, 5 and 9, empty 1");
+        assert_eq!(r.duplicate_and_unrelated, 2, "future 4 and future 9");
         assert_eq!(r.empty_correct, 1);
         // Every answer of a stream names its cause; nothing else does.
         let causes: Vec<(&str, u64)> = r.causes.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-        assert_eq!(causes, [("backstop", 1), ("event", 9)]);
+        assert_eq!(causes, [("backstop", 1), ("event", 11)]);
         // Signed, never clamped; the ack-less row is unavailable, not zero;
         // the misses are censored.
+        // A late answer is never a sample, whatever else it carried.
         assert_eq!(r.ack_to_return.samples, 4);
-        assert_eq!(r.ack_to_return.censored, 2);
+        assert_eq!(r.ack_to_return.censored, 3);
         let p50 = r
             .ack_to_return
             .values
@@ -2809,17 +2832,17 @@ mod accounting {
         acks.sort();
         assert_eq!(acks[0], -100, "seen before the 250");
         assert_eq!(r.present_latency.samples, 2);
-        assert_eq!(r.present_latency.censored, 2);
+        assert_eq!(r.present_latency.censored, 3);
         // A never-opened window has no CPU: null, never zero.
         assert_eq!(r.window_outcome, Some(WindowOutcome::ChunkDeadline));
         assert_eq!(r.cpu_total_usec, None);
         let cells = report::wait_cells(&p, &rows, &reps);
         assert_eq!(cells.len(), 1);
         let c = &cells[0];
-        assert_eq!((c.sent, c.timely, c.missed), (11, 7, 4));
+        assert_eq!((c.sent, c.timely, c.missed), (13, 7, 6));
         assert_eq!(
             (c.duplicate, c.unrelated, c.duplicate_and_unrelated),
-            (2, 3, 1)
+            (3, 5, 2)
         );
         assert_eq!(c.ack_to_return.samples, 4);
         assert_eq!(c.cpu_total_usec, None);
@@ -2861,6 +2884,20 @@ mod accounting {
                 Box::new(|r| r.outcome = "unrelated".into()),
             ),
             (
+                "disagree with its outcome \"late\"",
+                Box::new(|r| {
+                    r.outcome = "late".into();
+                    r.expected = Some(0);
+                }),
+            ),
+            (
+                "disagree with its outcome \"late\"",
+                Box::new(|r| {
+                    r.outcome = "late".into();
+                    r.observed_ns = None;
+                }),
+            ),
+            (
                 "outcome \"vanished\" is not a wait outcome",
                 Box::new(|r| r.outcome = "vanished".into()),
             ),
@@ -2889,6 +2926,20 @@ mod accounting {
             assert!(e.contains(want), "{want}: {e}");
             assert!(e.starts_with("wait row mailhog wait-"), "{e}");
         }
+        // An answer without the time its latency is measured from.
+        let mut r = at(
+            wait(Phase::Future, 0, "observed", Some((1, 0))),
+            1,
+            Some(2),
+            Some(3),
+        );
+        r.start_ns = None;
+        let e = report::check_wait_rows(&p, &[r]).unwrap_err();
+        assert!(e.ends_with("an answer without its start_ns"), "{e}");
+        let mut r = wait(Phase::Present, 0, "late", Some((1, 1)));
+        (r.observed_ns, r.invoked_ns) = (Some(3), None);
+        let e = report::check_wait_rows(&p, &[r]).unwrap_err();
+        assert!(e.ends_with("an answer without its invoked_ns"), "{e}");
         // A poll's answer names no cause.
         let mut r = at(
             wait(Phase::Future, 0, "observed", Some((1, 0))),
@@ -2995,9 +3046,18 @@ mod real {
             e,
             "MAIL_COMPARE_MAILHOG must name the pinned mailhog executable (lock v5's digest is checked at launch)"
         );
-        // Lock v5's pin is MailHog's, with no cap placeholder to fill.
+        // Lock v5's MailHog pin has no cap placeholder to fill: named, it
+        // composes a launch at once (the digest is checked at launch).
         let lock = json(DRAFT_LOCK);
-        assert!(lock.to_string().contains("mailhog"));
+        let pin = lock["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["target"] == "mailhog")
+            .unwrap()["pin"]
+            .to_string();
+        assert!(!pin.contains(crate::protocol::CAP_PLACEHOLDER), "{pin}");
+        pinned_v5(TargetKind::Mailhog, Some("/nonexistent/mailhog".into())).unwrap();
     }
 
     /// The first complete scan, then a signal: what the proof sends after

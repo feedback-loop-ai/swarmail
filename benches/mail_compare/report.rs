@@ -2105,7 +2105,8 @@ fn figures_pooled(rows: &[Row], target: TargetKind, profile: &str) -> (Vec<i64>,
 /// What protocol 4 holds every wait row to (0132 §7.3), so a row whose facts
 /// disagree with its outcome is refused by name before anything is derived
 /// from it: an answer carries its counts and when it came, an observed
-/// answer holds the expected message and nothing else, a timeout holds
+/// answer holds the expected message and nothing else, a late answer holds
+/// something and is censored whatever it holds, a timeout holds
 /// nothing, a stream answer names its scan's cause and nothing else does,
 /// and a row that was not answered carries no counts.
 pub fn check_wait_rows(p: &Protocol, rows: &[Row]) -> Result<(), String> {
@@ -2126,9 +2127,10 @@ pub fn check_wait_rows(p: &Protocol, rows: &[Row]) -> Result<(), String> {
         }
         let counts = (r.expected, r.unrelated);
         let ok = match r.outcome.as_str() {
-            "observed" | "late" => {
-                matches!(counts, (Some(e), Some(0)) if e > 0) && r.observed_ns.is_some()
-            }
+            "observed" => matches!(counts, (Some(e), Some(0)) if e > 0) && r.observed_ns.is_some(),
+            // A late answer is censored whatever it carried, so it may hold
+            // other mail beside the expected message, or instead of it.
+            "late" => matches!(counts, (Some(e), Some(u)) if e + u > 0) && r.observed_ns.is_some(),
             "unrelated" => matches!(counts, (Some(_), Some(u)) if u > 0) && r.observed_ns.is_some(),
             "timeout" => counts == (Some(0), Some(0)) && r.observed_ns.is_none(),
             "error" | "send_failed" | "unstarted" => counts == (None, None) && r.cause.is_none(),
@@ -2141,6 +2143,16 @@ pub fn check_wait_rows(p: &Protocol, rows: &[Row]) -> Result<(), String> {
             ));
         }
         let answered = matches!(r.outcome.as_str(), "observed" | "late" | "unrelated");
+        // An answer's latency is measured from the send's start (future) or
+        // the wait's invocation (present, empty): without it a sample would
+        // silently drop out of the recomputed figures.
+        let (from, name) = match r.phase {
+            Phase::Future => (r.start_ns, "start_ns"),
+            _ => (r.invoked_ns, "invoked_ns"),
+        };
+        if answered && from.is_none() {
+            return Err(format!("{at}: an answer without its {name}"));
+        }
         match (&r.cause, m == "stream" && answered) {
             (Some(c), true) if crate::observe::Cause::parse(c).is_some() => {}
             (None, false) => {}
