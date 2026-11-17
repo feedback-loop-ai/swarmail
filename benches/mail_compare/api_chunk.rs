@@ -177,7 +177,7 @@ pub fn api_report(rec: &ApiRecord, resources: &[ResourceRow]) -> serde_json::Val
         .map(|c| {
             let profile = format!("api.{}", c.cell);
             let w = window(WindowKind::ApiCell, &profile);
-            let s = api::stats(&c.measured, cpu(w));
+            let s = cell_stats(c, cpu(w));
             serde_json::json!({
                 "cell": c.cell,
                 "operation": c.operation,
@@ -187,6 +187,11 @@ pub fn api_report(rec: &ApiRecord, resources: &[ResourceRow]) -> serde_json::Val
                 "method": c.method,
                 "scope": c.scope,
                 "stats": s,
+                // The global clear: one invocation, published as its own
+                // raw sample with no quantiles (spec AC9, R13).
+                "sample_ns": (c.concurrency.is_none())
+                    .then(|| c.measured.rows.first().map(|r| r.end_ns.saturating_sub(r.start_ns)))
+                    .flatten(),
                 "resource_window": w.map(|w| serde_json::json!({
                     "start_ns": w.start_ns,
                     "end_ns": w.end_ns,
@@ -237,6 +242,16 @@ pub fn api_report(rec: &ApiRecord, resources: &[ResourceRow]) -> serde_json::Val
         "idle_fill": idle_fill,
         "cells": cells,
     })
+}
+
+/// A cell's statistics as published: the global clear's single invocation
+/// carries no quantiles — one sample is not a distribution (R13).
+pub fn cell_stats(c: &CellRecord, cpu_usec: Option<u64>) -> api::CellStats {
+    let mut s = api::stats(&c.measured, cpu_usec);
+    if c.concurrency.is_none() {
+        (s.p50_ns, s.p95_ns, s.p99_ns) = (None, None, None);
+    }
+    s
 }
 
 /// Whether a cell stands at equal results (0132 §9.6, spec AC8, R4): it

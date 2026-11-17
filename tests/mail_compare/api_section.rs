@@ -1997,6 +1997,68 @@ fn admission_holds_warmups_and_cell_identities_to_the_plan() {
 }
 
 #[test]
+fn the_global_clear_is_one_raw_sample_with_no_quantiles() {
+    let chunk = runner::Chunk::Api {
+        surface: Surface::Native,
+        target: TargetKind::Mailpit,
+        repetition: 0,
+        fill: 0,
+    };
+    let mut rec = record_for(&chunk);
+    let last = rec.cells.len() - 1;
+    let clear = &mut rec.cells[last];
+    assert_eq!(
+        (
+            clear.cell.as_str(),
+            clear.concurrency,
+            clear.measured.planned
+        ),
+        ("clear.all", None, 1)
+    );
+    clear.status = api::CellStatus::Measured;
+    clear.blocked = None;
+    let mut one = rows(1, Phase::Measured, Outcome::Exact);
+    (one[0].start_ns, one[0].end_ns) = (1_000, 4_000);
+    clear.measured = api::Ran {
+        rows: one,
+        planned: 1,
+        started: 1,
+        start_ns: 900,
+        end_ns: 4_100,
+        ..Default::default()
+    };
+    api_chunk::check_record(&rec, &chunk).unwrap();
+    let report = api_chunk::api_report(&rec, &[]);
+    let c = &report["cells"][last];
+    assert_eq!(c["cell"], "clear.all");
+    assert_eq!(c["sample_ns"], json!(3_000));
+    for q in ["p50_ns", "p95_ns", "p99_ns"] {
+        assert_eq!(c["stats"][q], Value::Null, "{q}");
+    }
+    assert_eq!(
+        (c["stats"]["started"].clone(), c["stats"]["exact"].clone()),
+        (json!(1), json!(1))
+    );
+    // Every other cell keeps its quantiles and has no sample.
+    assert_eq!(report["cells"][0]["sample_ns"], Value::Null);
+    // A forged quantile is not what admission recomputes, so it refuses.
+    let mut forged = report.clone();
+    forged["cells"][last]["stats"]["p50_ns"] = json!(3_000);
+    assert_ne!(forged, api_chunk::api_report(&rec, &[]));
+    // No warmup and no second invocation: either is a record that does not
+    // add up.
+    let mut two = rec.clone();
+    let again = two.cells[last].measured.rows[0].clone();
+    two.cells[last].measured.rows.push(again);
+    two.cells[last].measured.rows[1].index = 1;
+    two.cells[last].measured.started = 2;
+    assert!(api_chunk::check_record(&two, &chunk).is_err());
+    let mut warmed = rec.clone();
+    warmed.cells[last].warmup = Some(api::Ran::default());
+    assert!(api_chunk::check_record(&warmed, &chunk).is_err());
+}
+
+#[test]
 fn api_json_admits_only_when_it_adds_up_against_the_plan() {
     let chunk = runner::Chunk::Api {
         surface: Surface::Native,
