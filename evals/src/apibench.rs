@@ -951,36 +951,26 @@ const RECEIPT_BOUND: std::time::Duration = std::time::Duration::from_secs(120);
 /// bound of a cut cell, and the line's round trip).
 pub const RECORD_MARGIN: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// What the chunk keeps after its last head cell for the complete batch
-/// ledger (spec AC6), which runs before the global clear.
-pub const LEDGER_RESERVE: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// The MCP chunk's two stopping points (spec AC5, R1), measured from an
-/// instant taken before the holder was spawned, so both fall no later than
-/// the holder's own chunk end: the cells' deadline, and the ledger's.
+/// The MCP chunk's last stopping point (spec AC5, R1), measured from an
+/// instant taken before the holder was spawned, so it falls no later than
+/// the holder's own chunk end less [`RECORD_MARGIN`]: no cell, ledger or
+/// postcheck runs past it, and [`api::stops`] divides the time before it.
 /// The protocol's `resources.chunk_deadline_ms` is required — the holder
 /// enforces it, so a chunk that does not know it cannot seal in time.
-pub fn mcp_chunk_ends(
+pub fn mcp_chunk_end(
     started: std::time::Instant,
     protocol: &Value,
-) -> Result<(tokio::time::Instant, tokio::time::Instant), String> {
+) -> Result<tokio::time::Instant, String> {
     let ms = protocol["resources"]["chunk_deadline_ms"]
         .as_u64()
         .filter(|ms| *ms > 0)
         .ok_or("--protocol has no resources.chunk_deadline_ms")?;
     let end = started + std::time::Duration::from_millis(ms);
-    let ledger = end
+    let last = end
         .checked_sub(RECORD_MARGIN)
         .unwrap_or(started)
         .max(started);
-    let cells = ledger
-        .checked_sub(LEDGER_RESERVE)
-        .unwrap_or(started)
-        .max(started);
-    Ok((
-        tokio::time::Instant::from_std(cells),
-        tokio::time::Instant::from_std(ledger),
-    ))
+    Ok(tokio::time::Instant::from_std(last))
 }
 
 /// Check the holder's cleanup receipt (spec AC8, R12): one JSON object whose
@@ -1048,7 +1038,7 @@ async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
     let seed = protocol["corpus"]["seed"]
         .as_u64()
         .ok_or("--protocol has no corpus seed")?;
-    let ends = mcp_chunk_ends(started, &protocol)?;
+    let ends = mcp_chunk_end(started, &protocol)?;
     // The capacity preflight, before any launch (spec AC6, 0132 §6.4): the
     // fill plus every fixture and wait stays below the cap.
     let (cells, _) = api::plan_cells(clients::Surface::Mcp, |op| {
@@ -1210,11 +1200,18 @@ async fn measure(
     (repetition, fill, seed): (u32, u32, u64),
     (smtp, http, url): (std::net::SocketAddr, std::net::SocketAddr, &str),
     meter: &ControlMeter,
-    (clock, (cell_end, ledger_end)): (api::Clock, (tokio::time::Instant, tokio::time::Instant)),
+    (clock, chunk_end): (api::Clock, tokio::time::Instant),
 ) -> Result<api::ApiRecord, String> {
     let surface = clients::Surface::Mcp;
     let caps = |op| clients::mcp_capability(target, op);
     let (cells, capabilities) = api::plan_cells(surface, caps);
+    // The head stops before the ledger's reserve, and the ledger before the
+    // global clear's, so the one clear always has its own time (AC6).
+    let stops = api::stops(
+        tokio::time::Instant::now(),
+        chunk_end,
+        cells.iter().any(|c| c.concurrency.is_none()),
+    );
     // Checked against the cap before the holder launched (api_mcp_inner).
     let growth = api::fixture_growth(seed, &cells);
     // Every worker initializes before any clock (spec AC5), each with its own
@@ -1264,7 +1261,7 @@ async fn measure(
     }
     meter.command(&json!({"cmd": "idle_fill"})).await?;
     let mut fixtures = api::plan_fixtures(seed, &cells);
-    if let Err(e) = api::prepare(smtp, &setup, &mut fixtures, Some(cell_end)).await {
+    if let Err(e) = api::prepare(smtp, &setup, &mut fixtures, Some(stops.head.cells)).await {
         // A preparation the chunk deadline cut leaves every cell cut (AC5).
         let why = if e == api::CHUNK_DEADLINE {
             e
@@ -1293,11 +1290,8 @@ async fn measure(
     // The chunk deadline is an independent stopping reason on this surface
     // as on the native one (spec AC5, R1): a cell it cuts or never starts is
     // a `chunk_deadline` row, and the record still reaches the holder.
-    let ends = Some(api::Ends {
-        cells: cell_end,
-        verify: ledger_end,
-    });
-    let (mut recs, mut abandoned) = api::run_cells(head, &caps, &s, meter, clock, ends).await?;
+    let (mut recs, mut abandoned) =
+        api::run_cells(head, &caps, &s, meter, clock, Some(stops.head)).await?;
     if abandoned.is_none() {
         // Untimed verification through the native API: not a measurement,
         // and never a fallback for one.
@@ -1307,11 +1301,11 @@ async fn measure(
             &s.fixtures,
             head,
             &mut recs,
-            Some(ledger_end),
+            Some(stops.ledger),
         )
         .await;
         rec.ledger = problems;
-        let (more, ab) = api::run_cells(tail, &caps, &s, meter, clock, ends).await?;
+        let (more, ab) = api::run_cells(tail, &caps, &s, meter, clock, Some(stops.tail)).await?;
         recs.extend(more);
         abandoned = ab;
     } else {

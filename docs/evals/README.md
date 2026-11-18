@@ -1161,15 +1161,22 @@ and no global clear run. A completed refusal is a known non-effect and
 abandons nothing. A failed read warmup blocks only its own cell. Every start
 is recorded before it runs, so a worker that does not return within five
 seconds of the deadline still leaves a `timeout` row and abandons the launch
-as unproved cancellation; no phase runs past the chunk deadline, and a
+as unproved cancellation, and the chunk is then incomplete — exit 2 and
+unsealed on both surfaces, never a measured failure; no phase runs past the
+chunk deadline, and a
 warmup it cuts (or that ends on it) makes its cell a `chunk_deadline` row,
 never a measured cell that started nothing. After each destructive cell an
 untimed batch postcheck checks its scope, within its own 120 s and never
-past the chunk's verification end (the chunk end natively; the ledger's end
-on MCP); a postcheck cut there turns that cell's exact rows into
-`postcheck_chunk_deadline` failures — unverified, not uncertain — instead of
-tearing the chunk down. Fixture preparation stops at the cells' end, and a
-preparation cut there makes every cell a `chunk_deadline` row. At batch end,
+past its stop's verification end; a postcheck cut there turns that cell's
+exact rows into `postcheck_chunk_deadline` failures — unverified, not
+uncertain — instead of tearing the chunk down. Both surfaces divide the
+chunk's end the same way (on MCP, the chunk end less a 10 s record margin):
+a plan with a global clear keeps the last 30 s for that clear and its
+postcheck, the batch ledger the 30 s before that, and fixtures and the head
+cells stop where the ledger's reserve begins, so a ledger that uses its
+whole reserve never leaves the clear a deadline already past. Fixture
+preparation stops at the head cells' end, and a preparation cut there makes
+every cell a `chunk_deadline` row. At batch end,
 before the global clear, both surfaces run the same complete ledger, read
 untimed through the native API: the store must hold, id for id, the
 background the fill confirmed, the read set, every survivor, every victim

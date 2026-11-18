@@ -1568,10 +1568,50 @@ pub const CHUNK_DEADLINE: &str = "chunk_deadline";
 /// A chunk's two stopping points for [`run_cells`] (spec AC5, AC8): no
 /// phase starts or runs past `cells`, and no untimed verification runs past
 /// `verify`, which is never earlier than `cells`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ends {
     pub cells: Instant,
     pub verify: Instant,
+}
+
+/// What a chunk keeps after its last head cell for the complete batch
+/// ledger (spec AC6), which runs before the global clear.
+pub const LEDGER_RESERVE: Duration = Duration::from_secs(30);
+
+/// What a chunk with a global clear keeps after the batch ledger for that
+/// one clear (spec AC6, R5): its measured call's own [`CELL_DEADLINE`] and
+/// the postcheck that proves the store empty, so a ledger that used its
+/// whole reserve never leaves the clear a deadline already past.
+pub const CLEAR_RESERVE: Duration = Duration::from_secs(30);
+
+/// A chunk's stopping points on either surface (spec AC5, AC6): the head
+/// cells' [`Ends`], the batch ledger's deadline, and the tail's — the one
+/// global clear after the ledger, which owns the time up to `end`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stops {
+    pub head: Ends,
+    pub ledger: Instant,
+    pub tail: Ends,
+}
+
+/// The [`Stops`] of a chunk measured from `start` whose last verification
+/// may run until `end`: the clear's reserve is kept only when the plan has
+/// a global clear (`clear`), and no stop falls before `start`.
+pub fn stops(start: Instant, end: Instant, clear: bool) -> Stops {
+    let at = |back: Duration| end.checked_sub(back).unwrap_or(start).max(start);
+    let reserve = if clear { CLEAR_RESERVE } else { Duration::ZERO };
+    let ledger = at(reserve);
+    Stops {
+        head: Ends {
+            cells: at(reserve + LEDGER_RESERVE),
+            verify: ledger,
+        },
+        ledger,
+        tail: Ends {
+            cells: end.max(start),
+            verify: end.max(start),
+        },
+    }
 }
 
 /// The deadline of one untimed verification step: its own bound, never

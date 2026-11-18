@@ -1272,6 +1272,196 @@ async fn a_worker_that_does_not_return_leaves_its_start_and_an_unproved_cancella
     assert!(why.contains("effect unknown") && ran.unresolved, "{why}");
 }
 
+#[test]
+fn a_chunk_keeps_the_ledger_and_the_global_clear_their_own_reserves() {
+    let start = tokio::time::Instant::now();
+    let end = start + Duration::from_secs(470);
+    // With a global clear: head, then the ledger, then the clear's reserve.
+    let s = api::stops(start, end, true);
+    assert_eq!(
+        s.tail,
+        api::Ends {
+            cells: end,
+            verify: end
+        }
+    );
+    assert_eq!(s.ledger, end - api::CLEAR_RESERVE);
+    assert_eq!(
+        s.head,
+        api::Ends {
+            cells: end - api::CLEAR_RESERVE - api::LEDGER_RESERVE,
+            verify: end - api::CLEAR_RESERVE,
+        }
+    );
+    // The clear's reserve holds its measured call and more.
+    assert!(api::CLEAR_RESERVE > api::CELL_DEADLINE);
+    // Without one, the ledger owns the time up to the end.
+    let s = api::stops(start, end, false);
+    assert_eq!(s.ledger, end);
+    assert_eq!(s.head.cells, end - api::LEDGER_RESERVE);
+    // A chunk shorter than its reserves stops everything at its start,
+    // never before it.
+    let short = start + Duration::from_secs(10);
+    let s = api::stops(start, short, true);
+    assert_eq!(
+        (s.head.cells, s.head.verify, s.ledger),
+        (start, start, start)
+    );
+    assert_eq!(s.tail.cells, short);
+    assert_eq!(api::stops(short, start, true).tail.cells, short);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_global_clear_still_measures_after_a_ledger_that_used_its_whole_reserve() {
+    // The producer path both drivers take (AC6): the head runs until its
+    // stop, the batch ledger takes its whole deadline — as a 100,000-message
+    // ledger may — and the one global clear after it still measures, because
+    // the tail owns the clear's reserve. With the head's stops reused for
+    // the tail, as before, the same clear is cut by the chunk deadline.
+    let start = tokio::time::Instant::now();
+    let end = start + Duration::from_secs(470);
+    let stops = api::stops(start, end, true);
+    let clear = PlannedCell {
+        operation: Operation::Clear,
+        concurrency: None,
+        warmup: 0,
+        planned: 1,
+        scope: Some(ClearScope::All),
+        ordinal: 0,
+    };
+    let exact: fn(Operation, Phase, u32) -> Option<Outcome> = |_, _, _| Some(Outcome::Exact);
+    tokio::time::sleep_until(stops.head.cells).await;
+    let (head, abandoned) =
+        run_scripted(&[cell(Operation::List, 1)], exact, Some(stops.head), false).await;
+    assert_eq!(abandoned, None);
+    assert_eq!(head[0].blocked.as_deref(), Some(api::CHUNK_DEADLINE));
+    // The ledger runs to its own verification deadline.
+    tokio::time::sleep_until(api::verify_deadline(Some(stops.ledger))).await;
+    assert_eq!(tokio::time::Instant::now(), stops.ledger);
+    let (tail, abandoned) =
+        run_scripted(std::slice::from_ref(&clear), exact, Some(stops.tail), false).await;
+    assert_eq!(abandoned, None);
+    assert_eq!(tail[0].status, api::CellStatus::Measured, "{:?}", tail[0]);
+    assert_eq!(
+        (tail[0].measured.started, tail[0].measured.unstarted),
+        (1, 0)
+    );
+    assert_eq!(tail[0].measured.rows[0].outcome, Outcome::Exact);
+    assert!(tail[0].postcheck.is_empty(), "{:?}", tail[0].postcheck);
+    // The head's stops reused for the tail cut the same clear.
+    let (cut, _) = run_scripted(std::slice::from_ref(&clear), exact, Some(stops.head), false).await;
+    assert_eq!(cut[0].blocked.as_deref(), Some(api::CHUNK_DEADLINE));
+}
+
+/// A surface whose first measured operation blocks its worker's thread, so
+/// the scheduler cannot drop it in time.
+struct Unyielding;
+
+impl api::Surfacer for Unyielding {
+    fn op(
+        &self,
+        _cell: &PlannedCell,
+        offset: u32,
+    ) -> Arc<dyn Fn(u32, u32, tokio::time::Instant) -> api::OpFuture + Send + Sync> {
+        Arc::new(move |_w, i, _d| {
+            Box::pin(async move {
+                if offset > 0 && i == 0 {
+                    // Past the cell's three seconds and the five-second
+                    // cancellation bound, on any host.
+                    std::thread::sleep(Duration::from_secs(10));
+                }
+                api::Done::of(Outcome::Exact, Spend::default())
+            }) as api::OpFuture
+        })
+    }
+
+    fn postcheck<'a>(
+        &'a self,
+        _cell: &'a PlannedCell,
+        _rows: &'a mut Vec<api::OpRow>,
+        _end: Option<tokio::time::Instant>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + 'a>>
+    {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unproved_cancellation_leaves_the_chunk_incomplete_on_both_surfaces() {
+    // The whole producer path short of the sealing I/O (AC5): the real
+    // scheduler marks the phase, every later cell is blocked by the
+    // abandonment, the record accounts — as the record line the MCP holder
+    // reads, too — and the seal's refusal makes it incomplete (exit 2,
+    // unsealed), not a measured workload failure (exit 1).
+    for surface in [Surface::Native, Surface::Mcp] {
+        let chunk = runner::Chunk::Api {
+            surface,
+            target: TargetKind::Mailpit,
+            repetition: 0,
+            fill: 0,
+        };
+        let cells = api_chunk::cells(TargetKind::Mailpit, surface);
+        let caps = |op| clients::capability("mailpit", surface, op);
+        let now = tokio::time::Instant::now();
+        let ends = api::Ends {
+            cells: now + Duration::from_secs(3),
+            verify: now + Duration::from_secs(3),
+        };
+        let (recs, abandoned) = api::run_cells(
+            &cells,
+            &caps,
+            &Unyielding,
+            &api::NoMeter,
+            clock(),
+            Some(ends),
+        )
+        .await
+        .unwrap();
+        let why = abandoned.clone().expect("the launch is abandoned");
+        assert!(why.contains("cancellation"), "{why}");
+        assert!(recs[0].measured.cancel_unproved, "{surface:?}");
+        assert!(
+            recs[1..]
+                .iter()
+                .all(|r| r.blocked.as_deref() == Some(why.as_str())),
+            "{surface:?}"
+        );
+        let mut rec = record_for(&chunk);
+        rec.fill.reached = true;
+        rec.cells = recs;
+        rec.abandoned = abandoned;
+        if surface == Surface::Mcp {
+            // The brackets the eval runner recorded around the one window.
+            rec.control = [("idle_fill", None), ("window_start", Some("list.c1"))]
+                .into_iter()
+                .chain([("window_end", Some("list.c1"))])
+                .enumerate()
+                .map(|(n, (cmd, id))| api::Bracket {
+                    cmd: cmd.into(),
+                    id: id.map(Into::into),
+                    sent_ns: 2 * n as u64,
+                    received_ns: 2 * n as u64 + 1,
+                    owner_t_ns: n as u64,
+                })
+                .collect();
+        }
+        let line: api::ApiRecord =
+            serde_json::from_slice(&serde_json::to_vec(&rec).unwrap()).unwrap();
+        for r in [&rec, &line] {
+            api_chunk::check_record(r, &chunk).unwrap();
+            let e = api_chunk::incomplete(r).expect("an incomplete chunk");
+            assert!(e.contains("list.c1") && e.contains("incomplete"), "{e}");
+        }
+        // The same record with its cancellation proved is a measured one.
+        let mut proved = rec.clone();
+        proved.cells[0].measured.cancel_unproved = false;
+        assert_eq!(api_chunk::incomplete(&proved), None);
+        let mut warm = proved.clone();
+        warm.cells[0].warmup.as_mut().unwrap().cancel_unproved = true;
+        assert!(api_chunk::incomplete(&warm).is_some());
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_native_surface_keeps_measuring_after_a_read_times_out() {
     // The producer path (R1): the real native surface over Mailpit's client,

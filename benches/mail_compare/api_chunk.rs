@@ -782,8 +782,16 @@ async fn measure(
     idle.window = WindowKind::IdleFill;
     emit_window(sink, idle)?;
     // fixtures: authored before the server sees them, resolved untimed.
+    // The native driver owns its chunk end, divided as on the MCP surface
+    // (AC5, AC6): fixtures and the head stop before the ledger's reserve and
+    // the ledger before the global clear's, so the clear has its own time.
+    let stops = api::stops(
+        Instant::now(),
+        chunk_end,
+        cells.iter().any(|c| c.concurrency.is_none()),
+    );
     let mut fixtures = api::plan_fixtures(cfg.protocol.corpus.seed, cells);
-    if let Err(e) = api::prepare(owned.smtp, &client, &mut fixtures, Some(chunk_end)).await {
+    if let Err(e) = api::prepare(owned.smtp, &client, &mut fixtures, Some(stops.head.cells)).await {
         // Cut by the chunk deadline: every cell is a cut cell (AC5).
         if e == api::CHUNK_DEADLINE {
             let outcome =
@@ -831,14 +839,8 @@ async fn measure(
         .position(|c| c.concurrency.is_none())
         .unwrap_or(cells.len());
     let (head, tail) = cells.split_at(split);
-    // The native driver owns its chunk end: cells and verification both
-    // stop there.
-    let ends = Some(api::Ends {
-        cells: chunk_end,
-        verify: chunk_end,
-    });
     let (mut recs, mut abandoned) =
-        api::run_cells(head, caps, &native, &meter, api_clock, ends).await?;
+        api::run_cells(head, caps, &native, &meter, api_clock, Some(stops.head)).await?;
     // The complete batch ledger, before the global clear or at batch end
     // (R6). An abandoned launch runs no ledger and no final clear: what an
     // unknown mutation did cannot be told apart.
@@ -850,7 +852,7 @@ async fn measure(
             &native.fixtures,
             head,
             &mut recs,
-            Some(chunk_end),
+            Some(stops.ledger),
         )
         .await;
         record.ledger = problems;
@@ -865,7 +867,8 @@ async fn measure(
             ));
         }
     } else {
-        let (more, ab) = api::run_cells(tail, caps, &native, &meter, api_clock, ends).await?;
+        let (more, ab) =
+            api::run_cells(tail, caps, &native, &meter, api_clock, Some(stops.tail)).await?;
         recs.extend(more);
         abandoned = ab;
     }
@@ -981,6 +984,23 @@ fn blank_record(target: TargetKind, surface: Surface, rep: u32, fill: u32, seed:
     }
 }
 
+/// Why an accounted record still cannot seal (spec AC5, R1): a phase whose
+/// local cancellation was not proved leaves the chunk incomplete — an
+/// infrastructure verdict, exit 2 and unsealed, on either surface — and
+/// never a measured workload failure. The MCP surface's record carries the
+/// same [`api::Ran::cancel_unproved`] its eval-side scheduler set.
+pub fn incomplete(rec: &ApiRecord) -> Option<String> {
+    rec.cells.iter().find_map(|c| {
+        let warm = c.warmup.as_ref().is_some_and(|w| w.cancel_unproved);
+        (warm || c.measured.cancel_unproved).then(|| {
+            format!(
+                "{} f{} {}: local cancellation was not proved; the chunk is incomplete",
+                rec.target, rec.fill.fill, c.cell
+            )
+        })
+    })
+}
+
 /// Write `api.json` and the report, then seal: only a proved cleanup seals.
 fn seal(
     sink: Sink,
@@ -998,6 +1018,9 @@ fn seal(
         .expect("sink lock");
     if let Err(e) = check_record(&record, chunk) {
         return infra(format!("accounting: {e}"), life);
+    }
+    if let Some(e) = incomplete(&record) {
+        return infra(e, life);
     }
     let bytes = serde_json::to_vec_pretty(&record).expect("the record serializes");
     if let Err(e) = dir.write_artifact("api.json", &bytes) {

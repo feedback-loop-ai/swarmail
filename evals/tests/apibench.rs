@@ -475,7 +475,7 @@ async fn the_chunk_deadline_blocks_mcp_cells_and_the_record_still_reaches_the_ho
         lines.display()
     );
     let driver = fake_holder(d.path(), &hold);
-    let ms = (apibench::RECORD_MARGIN + apibench::LEDGER_RESERVE).as_millis();
+    let ms = (apibench::RECORD_MARGIN + api::LEDGER_RESERVE).as_millis();
     let protocol = format!(r#"{{"corpus":{{"seed":5}},"resources":{{"chunk_deadline_ms":{ms}}}}}"#);
     let started = std::time::Instant::now();
     let code = apibench::api_mcp(&chunk_args(d.path(), &driver, &protocol)).await;
@@ -540,19 +540,17 @@ async fn an_mcp_chunk_over_the_cap_refuses_before_the_holder_starts() {
 }
 
 #[test]
-fn the_mcp_chunk_ends_keep_the_record_margin_and_the_ledger_reserve() {
+fn the_mcp_chunk_end_keeps_the_record_margin() {
     let t = std::time::Instant::now();
     let p = |ms: u64| json!({"resources": {"chunk_deadline_ms": ms}});
-    let (cells, ledger) = apibench::mcp_chunk_ends(t, &p(480_000)).unwrap();
-    assert_eq!(ledger.into_std() - t, std::time::Duration::from_secs(470));
-    assert_eq!(cells.into_std() - t, std::time::Duration::from_secs(440));
-    // A deadline shorter than the margins ends both at the start, never
-    // before it.
-    let (cells, ledger) = apibench::mcp_chunk_ends(t, &p(1)).unwrap();
-    assert_eq!((cells.into_std(), ledger.into_std()), (t, t));
-    let (cells, ledger) = apibench::mcp_chunk_ends(t, &p(25_000)).unwrap();
-    assert_eq!(
-        (cells.into_std(), ledger.into_std() - t),
-        (t, std::time::Duration::from_secs(15))
-    );
+    let end = apibench::mcp_chunk_end(t, &p(480_000)).unwrap();
+    assert_eq!(end.into_std() - t, std::time::Duration::from_secs(470));
+    // A deadline shorter than the margin ends at the start, never before it.
+    assert_eq!(apibench::mcp_chunk_end(t, &p(1)).unwrap().into_std(), t);
+    // The cells, ledger and clear divide what is left (api::stops): on this
+    // surface the head keeps the ledger's reserve before that end.
+    let end = apibench::mcp_chunk_end(t, &p(25_000)).unwrap();
+    assert_eq!(end.into_std() - t, std::time::Duration::from_secs(15));
+    let stops = api::stops(tokio::time::Instant::from_std(t), end, false);
+    assert_eq!((stops.head.cells.into_std(), stops.ledger), (t, end));
 }
