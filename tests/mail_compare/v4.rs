@@ -8067,6 +8067,17 @@ mod chunk {
                 target: TargetKind::Swarmail,
                 repetition: 0,
             };
+            self.config_of(p, binary, run, chunk)
+        }
+
+        /// The chunk `chunk` of `p` against `binary` as the candidate.
+        pub fn config_of(
+            &self,
+            p: &Protocol,
+            binary: &Path,
+            run: &str,
+            chunk: runner::Chunk,
+        ) -> (runner::Config, runner::Chunk) {
             let mut m = manifest(p, run);
             let (planned, windows) = runner::plan_chunk(p, &chunk);
             (m.planned, m.planned_windows, m.chunk) = (planned, Some(windows), Some(chunk.name()));
@@ -9717,6 +9728,112 @@ mod chunk {
             ("send_failed", Some("send: chunk deadline"))
         );
         assert_eq!(rows[0].ack_ns, None);
+    }
+
+    // ---- story B: an API chunk seals with no sink writer left ---------------
+    //
+    // The leaf hook carries a clone of the chunk's sink (its sampler writes
+    // through it). Both API producers seal by taking the sink back whole, so
+    // a spec that kept the hook past the launch made every sealing chunk
+    // panic "no sink clone outlives the chunk" — on the host's first run,
+    // every native proof.
+
+    fn api_chunk_of(surface: clients::Surface, fill: u32) -> runner::Chunk {
+        runner::Chunk::Api {
+            surface,
+            target: TargetKind::Swarmail,
+            repetition: 0,
+            fill,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_api_chunk_whose_target_never_comes_up_seals_on_both_surfaces() {
+        // The launch's failure path: the hook made the leaf's sampler, the
+        // target exited before readiness, and the chunk seals as the
+        // target's own failure (R4) — on the native surface and in `hold`.
+        for surface in [clients::Surface::Native, clients::Surface::Mcp] {
+            let rig = Rig::new(0, true);
+            let p = protocol(vec![profile("cost-a", 0, 2, 1)], 480_000);
+            let bin = exits_soon(rig.dir.path());
+            let (cfg, chunk) = rig.config_of(&p, &bin, "run-api-exit", api_chunk_of(surface, 0));
+            let manifest = cfg.manifest.clone();
+            let clock = wire::Clock(Instant::now());
+            let mut out = Vec::new();
+            let (verdict, life, sealed) = match surface {
+                clients::Surface::Native => api_chunk::run(cfg, chunk, clock).await,
+                clients::Surface::Mcp => {
+                    let input = tokio::io::BufReader::new(&b""[..]);
+                    api_chunk::hold_api(cfg, chunk, clock, input, &mut out).await
+                }
+            };
+            let runner::Verdict::WorkloadFailures(failures) = &verdict else {
+                panic!("{surface:?}: {verdict:?}")
+            };
+            assert!(
+                failures.iter().any(|f| f.contains("exited")),
+                "{surface:?}: {failures:?}"
+            );
+            assert_eq!(life.launches.len(), 1, "{surface:?}");
+            assert!(
+                life.cleanups.iter().all(targets::CleanupFacts::proved),
+                "{surface:?}"
+            );
+            let sealed = sealed.unwrap_or_else(|| panic!("{surface:?}: sealed"));
+            assert!(sealed.join("index.json").exists(), "{surface:?}");
+            let (_, res) = records::read_run(&sealed, &manifest).expect("every planned window");
+            assert!(
+                windows(&res)
+                    .iter()
+                    .all(|w| w.outcome != WindowOutcome::Measured),
+                "{surface:?}"
+            );
+            if surface == clients::Surface::Mcp {
+                // The holder's one line is its receipt.
+                let text = String::from_utf8(out).unwrap();
+                let receipt: Value = serde_json::from_str(text.trim_end()).unwrap();
+                assert_eq!(receipt["cleanup"]["cgroup_removed"], json!(true), "{text}");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_native_api_chunk_against_the_candidate_measures_and_seals() {
+        // The launch's success path, as `api_native_real_swarmail` runs it on
+        // the host but on a fixture scope: every planned cell, the sampler
+        // stopped and its clone gone before the seal, which then admits.
+        let rig = Rig::new(0, true);
+        let p = protocol(vec![profile("cost-a", 0, 2, 1)], 480_000);
+        let (cfg, chunk) = rig.config_of(
+            &p,
+            Path::new(env!("CARGO_BIN_EXE_swarmail")),
+            "run-api-native",
+            api_chunk_of(clients::Surface::Native, 0),
+        );
+        let (verdict, life, sealed) = api_chunk::run(cfg, chunk, wire::Clock(Instant::now())).await;
+        assert_eq!(verdict.exit_code(), 0, "{verdict:?}");
+        assert_eq!(life.launches.len(), 1);
+        assert!(life.cleanups.iter().all(targets::CleanupFacts::proved));
+        let sealed = sealed.expect("the chunk is sealed");
+        let admitted = records::admit(&sealed).expect("the sealed chunk admits");
+        assert!(
+            admitted
+                .resources
+                .iter()
+                .any(|r| matches!(r, ResourceRow::Sample(_))),
+            "the sampler wrote through the sink"
+        );
+        let rec: api::ApiRecord =
+            serde_json::from_slice(&std::fs::read(sealed.join("api.json")).unwrap()).unwrap();
+        let (cells, _) = api::plan_cells(clients::Surface::Native, |op| {
+            clients::capability("swarmail", clients::Surface::Native, op)
+        });
+        assert_eq!(rec.cells.len(), cells.len());
+        assert!(
+            rec.cells
+                .iter()
+                .all(|c| c.status == api::CellStatus::Measured)
+        );
     }
 }
 

@@ -579,13 +579,6 @@ pub async fn run(
     let interval = Duration::from_millis(p.resources.sample_interval_ms.unwrap_or(100));
     let sampler: Arc<Mutex<Option<crate::resources::Sampler>>> = Arc::default();
     let created: Arc<Mutex<Option<u64>>> = Arc::default();
-    let hook = crate::runner::sampler_hook(
-        (sampler.clone(), created.clone()),
-        crate::runner::sink_emit(&sink),
-        (run.clone(), target, clock, interval),
-    );
-    let mut spec = spec.clone();
-    spec.extra.on_leaf = Some(hook);
     let stop_sampler = || async {
         let s = sampler.lock().expect("sampler lock").take();
         match s {
@@ -593,8 +586,14 @@ pub async fn run(
             None => Ok(()),
         }
     };
-    let launched =
-        crate::targets::Owned::launch(&spec, &scratch, &limits, &clock, &cfg.keepers).await;
+    let launched = launch_sampled(
+        spec,
+        &sink,
+        (sampler.clone(), created.clone()),
+        (&run, target, clock, interval),
+        (&scratch, &limits, &cfg.keepers),
+    )
+    .await;
     let mut owned = match launched {
         Ok(o) => o,
         Err(e) => {
@@ -651,6 +650,36 @@ pub async fn run(
         return infra(e, life);
     }
     seal(sink, &cfg, &chunk, record, life, failures)
+}
+
+/// Launch `spec` with a sampler on its leaf, as the cost chunk's measured
+/// instance does: the sampler starts when the leaf is created, from inside
+/// the launch, and writes to `sink`.
+///
+/// The hook — and with it the sink clone its sampler writes through — lives
+/// only in a copy of the spec that this function drops once the launch
+/// returns: the hook runs inside the launch and nowhere else. After that
+/// the parked sampler is the sink's one other writer, and each caller stops
+/// it (awaiting its task, which drops its clone) before it seals; so the
+/// seal's "no sink clone outlives the chunk" holds on every path.
+async fn launch_sampled(
+    spec: &crate::targets::LaunchSpec,
+    sink: &Sink,
+    slot: crate::runner::SamplerSlot,
+    (run, target, clock, interval): (&str, TargetKind, Clock, Duration),
+    (scratch, limits, keepers): (
+        &std::path::Path,
+        &crate::targets::Limits,
+        &crate::targets::Keepers,
+    ),
+) -> Result<crate::targets::Owned, crate::targets::LaunchError> {
+    let mut spec = spec.clone();
+    spec.extra.on_leaf = Some(crate::runner::sampler_hook(
+        slot,
+        crate::runner::sink_emit(sink),
+        (run.to_owned(), target, clock, interval),
+    ));
+    crate::targets::Owned::launch(&spec, scratch, limits, &clock, keepers).await
 }
 
 type Caps<'a> = &'a dyn Fn(Operation) -> clients::Capability;
@@ -1343,12 +1372,6 @@ where
     let interval = Duration::from_millis(p.resources.sample_interval_ms.unwrap_or(100));
     let sampler: Arc<Mutex<Option<crate::resources::Sampler>>> = Arc::default();
     let created: Arc<Mutex<Option<u64>>> = Arc::default();
-    let mut spec = spec.clone();
-    spec.extra.on_leaf = Some(crate::runner::sampler_hook(
-        (sampler.clone(), created.clone()),
-        crate::runner::sink_emit(&sink),
-        (run.clone(), target, clock, interval),
-    ));
     let stop_sampler = || async {
         let s = sampler.lock().expect("sampler lock").take();
         match s {
@@ -1356,57 +1379,64 @@ where
             None => Ok(()),
         }
     };
-    let mut owned =
-        match crate::targets::Owned::launch(&spec, &scratch, &limits, &clock, &cfg.keepers).await {
-            Ok(o) => o,
-            Err(e) => {
-                let _ = stop_sampler().await;
-                // As on the native surface (R4): a target that crashed or was
-                // OOM-killed before readiness is its own measured failure —
-                // every window and cell blocked, sealed, exit 1 — and anything
-                // else (no delegation, a refused leaf) is infrastructure.
-                let step = match e {
-                    crate::targets::LaunchError::NotReady(why, facts, launch) => {
-                        let name = launch.as_ref().and_then(|l| l.leaf.clone());
-                        let cause = crate::runner::classify_not_ready(&facts, launch.is_some());
-                        life.cleanups.push(facts);
-                        life.launches.extend(launch.map(|l| *l));
-                        match cause {
-                            Some(cause) => {
-                                let mut record =
-                                    blank_record(target, Surface::Mcp, rep, fill, p.corpus.seed);
-                                let caps = |op: Operation| {
-                                    clients::capability(target.name(), Surface::Mcp, op)
-                                };
-                                never_measured(
-                                    (&sink, &run, name.as_deref().unwrap_or("none"), &clock),
-                                    (target, &profile, rep),
-                                    (&cells, &caps),
-                                    (cause.reason(), cause.outcome(), WindowKind::Ready),
-                                    &mut record,
-                                )
-                                .map(|()| (record, vec![format!("{target}: {}", cause.reason())]))
-                            }
-                            None => Err(format!("{target}: not ready ({why})")),
+    let launched = launch_sampled(
+        spec,
+        &sink,
+        (sampler.clone(), created.clone()),
+        (&run, target, clock, interval),
+        (&scratch, &limits, &cfg.keepers),
+    )
+    .await;
+    let mut owned = match launched {
+        Ok(o) => o,
+        Err(e) => {
+            let _ = stop_sampler().await;
+            // As on the native surface (R4): a target that crashed or was
+            // OOM-killed before readiness is its own measured failure —
+            // every window and cell blocked, sealed, exit 1 — and anything
+            // else (no delegation, a refused leaf) is infrastructure.
+            let step = match e {
+                crate::targets::LaunchError::NotReady(why, facts, launch) => {
+                    let name = launch.as_ref().and_then(|l| l.leaf.clone());
+                    let cause = crate::runner::classify_not_ready(&facts, launch.is_some());
+                    life.cleanups.push(facts);
+                    life.launches.extend(launch.map(|l| *l));
+                    match cause {
+                        Some(cause) => {
+                            let mut record =
+                                blank_record(target, Surface::Mcp, rep, fill, p.corpus.seed);
+                            let caps = |op: Operation| {
+                                clients::capability(target.name(), Surface::Mcp, op)
+                            };
+                            never_measured(
+                                (&sink, &run, name.as_deref().unwrap_or("none"), &clock),
+                                (target, &profile, rep),
+                                (&cells, &caps),
+                                (cause.reason(), cause.outcome(), WindowKind::Ready),
+                                &mut record,
+                            )
+                            .map(|()| (record, vec![format!("{target}: {}", cause.reason())]))
                         }
+                        None => Err(format!("{target}: not ready ({why})")),
                     }
-                    crate::targets::LaunchError::Leaf(why, facts) => {
-                        life.cleanups.extend(facts);
-                        Err(format!("{target}: {why}"))
-                    }
-                    other => Err(format!("{target} did not launch: {other:?}")),
-                };
-                let receipt = serde_json::json!({
-                    "launch": life.launches.last(),
-                    "cleanup": life.cleanups.last(),
-                });
-                let _ = writeln!(out, "{receipt}").and_then(|()| out.flush());
-                return match step {
-                    Ok((record, failures)) => seal(sink, &cfg, &chunk, record, life, failures),
-                    Err(e) => infra(e, life),
-                };
-            }
-        };
+                }
+                crate::targets::LaunchError::Leaf(why, facts) => {
+                    life.cleanups.extend(facts);
+                    Err(format!("{target}: {why}"))
+                }
+                other => Err(format!("{target} did not launch: {other:?}")),
+            };
+            let receipt = serde_json::json!({
+                "launch": life.launches.last(),
+                "cleanup": life.cleanups.last(),
+            });
+            let _ = writeln!(out, "{receipt}").and_then(|()| out.flush());
+            return match step {
+                Ok((record, failures)) => seal(sink, &cfg, &chunk, record, life, failures),
+                Err(e) => infra(e, life),
+            };
+        }
+    };
     life.launches.push(owned.facts.clone());
     // The holder enforces the chunk's lifetime itself (R12): a caller that
     // hangs or disappears cannot keep the target past it.
