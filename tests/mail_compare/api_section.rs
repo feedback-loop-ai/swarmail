@@ -3880,6 +3880,127 @@ fn documented_inexact(target: TargetKind, op: Operation, o: &Outcome) -> bool {
         )
 }
 
+/// Whether a target's own documents record that it acknowledges mail it
+/// then does not keep: README, "it acknowledges a mail before it stores it
+/// and lost some under SQLite lock contention" (both MailSlurper products
+/// the proofs launch). Only such a target may answer a host proof with
+/// `fill_not_reached`; for any other, a missed fill fails the proof.
+fn fill_shortfall_documented(target: TargetKind) -> bool {
+    matches!(
+        target,
+        TargetKind::MailslurperSourceBuild | TargetKind::AlkemioMailslurper
+    )
+}
+
+/// A `fill_not_reached` record held to 0132 §6.4 exactly: a target whose
+/// shortfall is documented, every send terminal and counted, the retained
+/// count read and short, the store read until the fill's 300 s bound, the
+/// shortfall named in the record's own words, and every planned cell
+/// blocked `fill_not_reached` with nothing started, no fixture, no ledger
+/// and nothing abandoned.
+fn fill_shortfall_exact(target: TargetKind, rec: &api::ApiRecord) -> Result<(), String> {
+    let f = &rec.fill;
+    let n = u64::from(f.fill);
+    if !fill_shortfall_documented(target) {
+        return Err(format!("{target} has no documented shortfall: {f:?}"));
+    }
+    if f.reached || f.accepted + f.refused + f.failed + f.ambiguous != n {
+        return Err(format!("not every send is counted: {f:?}"));
+    }
+    let Some(kept) = f.retained.filter(|r| *r < n) else {
+        return Err(format!("no retained count short of the fill: {f:?}"));
+    };
+    let named = format!(
+        "accepted {} retained Some({kept}) of {n} within {} s",
+        f.accepted,
+        api::FILL_DEADLINE.as_secs()
+    );
+    if f.detail.as_deref() != Some(named.as_str()) {
+        return Err(format!("the shortfall is not named as {named:?}: {f:?}"));
+    }
+    if f.accepted == n
+        && (f.elapsed_ns as u128) < (api::FILL_DEADLINE - api::SETTLE_POLL).as_nanos()
+    {
+        return Err(format!(
+            "the store was not read until the fill's bound: {f:?}"
+        ));
+    }
+    if rec.fixtures != 0 || !rec.ledger.is_empty() || rec.abandoned.is_some() {
+        return Err("a fixture, ledger or abandonment after a missed fill".into());
+    }
+    for c in &rec.cells {
+        let m = &c.measured;
+        let blocked = c.status == api::CellStatus::Blocked
+            && c.blocked.as_deref() == Some("fill_not_reached")
+            && c.warmup.is_none()
+            && m.rows.is_empty()
+            && m.started == 0
+            && m.unstarted == m.planned;
+        if !blocked {
+            return Err(format!("{} is not blocked fill_not_reached", c.cell));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_missed_fill_passes_a_host_proof_only_exactly_and_only_where_documented() {
+    // 0132 §6.4's documented outcome, as the host proofs accept it.
+    let chunk = runner::Chunk::Api {
+        surface: Surface::Native,
+        target: TargetKind::MailslurperSourceBuild,
+        repetition: 0,
+        fill: 1_000,
+    };
+    let mut rec = record_for(&chunk);
+    rec.fill = api::FillRecord {
+        fill: 1_000,
+        accepted: 1_000,
+        retained: Some(764),
+        reached: false,
+        elapsed_ns: 299_936_025_956,
+        detail: Some("accepted 1000 retained Some(764) of 1000 within 300 s".into()),
+        ..Default::default()
+    };
+    let ms = TargetKind::MailslurperSourceBuild;
+    assert_eq!(fill_shortfall_exact(ms, &rec), Ok(()));
+    assert_eq!(
+        fill_shortfall_exact(TargetKind::AlkemioMailslurper, &rec),
+        Ok(())
+    );
+    // Never for a target without a documented shortfall.
+    for t in [
+        TargetKind::Swarmail,
+        TargetKind::Mailpit,
+        TargetKind::Inbucket,
+    ] {
+        assert!(fill_shortfall_exact(t, &rec).is_err(), "{t}");
+    }
+    let refuses = |edit: &dyn Fn(&mut api::ApiRecord)| {
+        let mut r = rec.clone();
+        edit(&mut r);
+        fill_shortfall_exact(ms, &r).unwrap_err()
+    };
+    // The shortfall must be counted, short, named and read to the bound.
+    assert!(refuses(&|r| r.fill.retained = None).contains("retained"));
+    assert!(refuses(&|r| r.fill.retained = Some(1_000)).contains("retained"));
+    assert!(refuses(&|r| r.fill.accepted = 990).contains("counted"));
+    assert!(refuses(&|r| r.fill.reached = true).contains("counted"));
+    assert!(refuses(&|r| r.fill.detail = Some("short".into())).contains("named"));
+    assert!(refuses(&|r| r.fill.elapsed_ns = 2_000_000_000).contains("bound"));
+    // And nothing may have run after it.
+    assert!(refuses(&|r| r.fixtures = 4).contains("fixture"));
+    assert!(refuses(&|r| r.ledger = vec!["x".into()]).contains("ledger"));
+    assert!(refuses(&|r| r.cells[0].blocked = Some("warmup_failed".into())).contains("list.c1"));
+    assert!(refuses(&|r| r.cells[1].measured.started = 1).contains("list.c8"));
+    // A send refused, failed or cut ambiguous is a counted shortfall too.
+    let mut r = rec.clone();
+    (r.fill.accepted, r.fill.ambiguous, r.fill.retained) = (992, 8, Some(992));
+    r.fill.elapsed_ns = 1_000_000;
+    r.fill.detail = Some("accepted 992 retained Some(992) of 1000 within 300 s".into());
+    assert_eq!(fill_shortfall_exact(ms, &r), Ok(()));
+}
+
 /// The measured indices of `ran` that its cell's five-second bound cut (R1):
 /// a `timeout` row whose end is at the bound — not before it, and within
 /// the local cancellation bound after it — and that is the last row its
@@ -3975,7 +4096,10 @@ fn only_a_row_cut_at_its_cell_bound_is_a_host_proofs_timeout() {
     assert!(e.contains("started again"), "{e}");
 }
 
-fn assert_real_chunk(surface: Surface, target: TargetKind, c: &RealChunk) {
+/// Assert a real chunk is exact as the README defines it; `true` when its
+/// fill was reached and its cells measured, `false` for a documented
+/// `fill_not_reached` held to [`fill_shortfall_exact`].
+fn assert_real_chunk(surface: Surface, target: TargetKind, c: &RealChunk) -> bool {
     let ctx = format!("{} {target}", surface.name());
     let rec = &c.rec;
     // The plan's matrix: every planned cell in order, every unsupported
@@ -3990,7 +4114,10 @@ fn assert_real_chunk(surface: Surface, target: TargetKind, c: &RealChunk) {
         "{ctx}"
     );
     assert_eq!(rec.capabilities, caps, "{ctx}");
-    assert!(rec.fill.reached, "{ctx}: {:?}", rec.fill);
+    if !rec.fill.reached {
+        assert_fill_not_reached(&ctx, target, c);
+        return false;
+    }
     assert_eq!(rec.abandoned, None, "{ctx}");
     assert!(rec.ledger.is_empty(), "{ctx}: {:?}", rec.ledger);
     let ok = tolerated(surface, target);
@@ -4119,11 +4246,71 @@ fn assert_real_chunk(surface: Surface, target: TargetKind, c: &RealChunk) {
         api_chunk::api_report(rec, &c.admitted.resources),
         "{ctx}"
     );
+    true
+}
+
+/// A real chunk whose fill was not reached (0132 §6.4), exactly: the record
+/// by [`fill_shortfall_exact`]; exit 1 naming the shortfall; the readiness
+/// windows measured with counters, the idle-fill point and every planned
+/// cell's window published `fill_not_reached`, samples present, the cleanup
+/// proved and the report recomputed.
+fn assert_fill_not_reached(ctx: &str, target: TargetKind, c: &RealChunk) {
+    let rec = &c.rec;
+    fill_shortfall_exact(target, rec).unwrap_or_else(|e| panic!("{ctx}: {e}"));
+    assert_eq!(c.code, Some(1), "{ctx}: {}", c.text);
+    assert!(c.text.contains("fill_not_reached"), "{ctx}: {}", c.text);
+    let windows: Vec<&records::WindowRow> = c
+        .admitted
+        .resources
+        .iter()
+        .filter_map(|r| match r {
+            records::ResourceRow::Window(w) => Some(w),
+            records::ResourceRow::Sample(_) => None,
+        })
+        .collect();
+    use records::{WindowKind as K, WindowOutcome as O};
+    for kind in [K::Ready, K::IdleReady] {
+        let w: Vec<_> = windows.iter().filter(|w| w.window == kind).collect();
+        assert_eq!(w.len(), 1, "{ctx} {kind:?}");
+        assert_eq!(w[0].outcome, O::Measured, "{ctx} {kind:?}");
+        assert!(w[0].counters().is_some(), "{ctx} {kind:?}");
+    }
+    let idle_fill: Vec<_> = windows.iter().filter(|w| w.window == K::IdleFill).collect();
+    assert_eq!(idle_fill.len(), 1, "{ctx}");
+    assert_eq!(idle_fill[0].outcome, O::FillNotReached, "{ctx}");
+    for cell in &rec.cells {
+        let profile = format!("api.{}", cell.cell);
+        let w: Vec<_> = windows
+            .iter()
+            .filter(|w| w.window == K::ApiCell && w.profile == profile)
+            .collect();
+        assert_eq!(w.len(), 1, "{ctx} {}", cell.cell);
+        assert_eq!(w[0].outcome, O::FillNotReached, "{ctx} {}", cell.cell);
+    }
+    let sampled = c
+        .admitted
+        .resources
+        .iter()
+        .any(|r| matches!(r, records::ResourceRow::Sample(_)));
+    assert!(sampled, "{ctx}");
+    let cleanups = c.report["cleanups"].as_array().expect("cleanups");
+    assert!(!cleanups.is_empty(), "{ctx}");
+    assert!(
+        cleanups.iter().all(|x| x["cgroup_removed"] == json!(true)),
+        "{ctx}"
+    );
+    assert_eq!(
+        c.report["api"],
+        api_chunk::api_report(rec, &c.admitted.resources),
+        "{ctx}"
+    );
 }
 
 fn native_real(target: TargetKind) {
     let c = real_chunk(Surface::Native, target, 1_000);
-    assert_real_chunk(Surface::Native, target, &c);
+    if !assert_real_chunk(Surface::Native, target, &c) {
+        return;
+    }
     // Meaningful destruction where supported: some delete or clear landed.
     for cell in c.rec.cells.iter().filter(|x| x.operation.destructive()) {
         let landed = cell
@@ -4137,7 +4324,9 @@ fn native_real(target: TargetKind) {
 
 fn mcp_real(target: TargetKind) {
     let c = real_chunk(Surface::Mcp, target, 1_000);
-    assert_real_chunk(Surface::Mcp, target, &c);
+    if !assert_real_chunk(Surface::Mcp, target, &c) {
+        return;
+    }
     // The coordinated future wait ran and returned exactly its own message.
     let wait = c.rec.cells.iter().find(|x| x.cell == "wait.c1").unwrap();
     assert_eq!(wait.status, api::CellStatus::Measured, "{target}");
