@@ -322,6 +322,16 @@ pub fn row_failures(rec: &ApiRecord) -> Vec<String> {
                 rec.target, c.cell
             ));
         }
+        // A verification problem is a failure even when only warmup slots
+        // carried it and every measured row stayed exact.
+        if !c.postcheck.is_empty() {
+            out.push(format!(
+                "{} {}: postcheck: {}",
+                rec.target,
+                c.cell,
+                c.postcheck.join("; ")
+            ));
+        }
     }
     out
 }
@@ -417,7 +427,11 @@ pub fn check_record(rec: &ApiRecord, chunk: &Chunk) -> Result<(), String> {
             return Err(format!("api.json: cell {} does not add up", c.cell));
         }
         // Its warmup: none planned, none run; one run adds up on its own;
-        // a measured cell's warmup started every slot and none failed.
+        // a measured cell's warmup started every slot and none failed as it
+        // ran. A verification that named a problem (the cell's postcheck,
+        // which also carries the batch ledger's) may since have rewritten an
+        // exact warmup row to what it found — a wrong result, or a success
+        // its cut postcheck left unverified — and that record still seals.
         let warm_ok = match (&c.warmup, p.warmup) {
             (None, 0) => true,
             (Some(_), 0) => false,
@@ -426,12 +440,9 @@ pub fn check_record(rec: &ApiRecord, chunk: &Chunk) -> Result<(), String> {
                 adds_up(w, n, api::Phase::Warmup)
                     && (c.status == CellStatus::Blocked
                         || (w.unstarted == 0
-                            && w.rows.iter().all(|r| {
-                                matches!(
-                                    r.outcome,
-                                    api::Outcome::Exact | api::Outcome::InexactFidelity { .. }
-                                )
-                            })))
+                            && w.rows
+                                .iter()
+                                .all(|r| warmup_admitted(&r.outcome, &c.postcheck))))
             }
         };
         if !warm_ok {
@@ -442,6 +453,19 @@ pub fn check_record(rec: &ApiRecord, chunk: &Chunk) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Whether a measured cell's warmup row is admitted: it ran exact or
+/// inexact, or a verification that named a problem in `postcheck` rewrote
+/// its exact answer ([`api::postcheck_delete`], [`api::postcheck_clear`],
+/// [`api::invalidate_batch`], [`api::unverified`]).
+fn warmup_admitted(o: &api::Outcome, postcheck: &[String]) -> bool {
+    match o {
+        api::Outcome::Exact | api::Outcome::InexactFidelity { .. } => true,
+        api::Outcome::WrongResult { .. } => !postcheck.is_empty(),
+        api::Outcome::Failed { reason } => reason == api::POSTCHECK_CUT && !postcheck.is_empty(),
+        _ => false,
+    }
 }
 
 /// One phase's counts against its plan: planned is started plus

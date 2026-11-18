@@ -341,9 +341,32 @@ impl McpSurface {
 /// from the instants it can no longer move.
 pub const QUIT_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How far before the cell's cutoff a future wait ends on its own, so the
+/// scheduler never drops one still in flight and loses what it saw: the
+/// timer wheel's millisecond rounding stays well inside it.
+pub const WAIT_MARGIN: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// The least time an attempt must have left before its own end for its
+/// message to be sent at all: a delivery started closer to the cutoff could
+/// be cut before its `250` and leave its effect unknown. One with less is
+/// a known non-effect, `wait_no_time`: it sends nothing and holds its slot
+/// to the cell's cutoff.
+pub const WAIT_FLOOR: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// What a wait's sending side has seen: its send instant, then the
+/// delivery's answer (the `250`'s instant, or why there is none).
+type Seen = (Option<u64>, Option<Result<u64, &'static str>>);
+
 /// One future wait (spec AC7): the wait request is started first, then the
 /// attempt's own message is sent; no sleep orders them and no claim is made
 /// that the server registered the waiter. Exactly that message must return.
+///
+/// The wait owns its deadline (review finding 2): both sides end
+/// [`WAIT_MARGIN`] before `deadline`, so an attempt the cell's cutoff
+/// reaches is a terminal `timeout` row that keeps its send and any `250`
+/// already observed. An acknowledged delivery is a known effect — the
+/// ledger expects the message — and only a send not yet answered stays
+/// uncertain ([`api::unresolved`]).
 pub async fn wait_once(
     w: &Worker,
     (smtp, clock): (std::net::SocketAddr, api::Clock),
@@ -351,10 +374,13 @@ pub async fn wait_once(
     deadline: Instant,
 ) -> Done {
     let family = w.family();
-    let left_ms = deadline
+    let own = deadline.checked_sub(WAIT_MARGIN).unwrap_or(deadline);
+    // Never below the adapters' floor of one millisecond (finding 5).
+    let left_ms = (own
         .saturating_duration_since(Instant::now())
         .as_millis()
-        .min(20_000) as u64;
+        .min(20_000) as u64)
+        .max(1);
     let args = match family {
         Family::Swarmail => {
             json!({"inbox": a.scope.inbox, "subject": a.token, "timeout_ms": left_ms})
@@ -371,45 +397,84 @@ pub async fn wait_once(
     };
     let mut spend = Spend::default();
     let call_ns = clock.now_ns();
-    // The return is stamped inside the waiting future the instant the call
-    // returns (spec AC7, R3): whatever the sending side still does — the
-    // SMTP QUIT — cannot shift it.
-    let waiting = async {
-        let got = w.call(tool, args, deadline, &mut spend).await;
-        (got, clock.now_ns())
-    };
-    let sending = async {
-        // Started after the wait future's first poll: `join!` polls it first.
-        tokio::task::yield_now().await;
-        let send_ns = clock.now_ns();
-        let mut s = match clients::smtp::Session::open(smtp, api::SMTP_STEP).await {
-            Ok(s) => s,
-            Err(_) => return (send_ns, Err("fixture_not_sent")),
+    if own.saturating_duration_since(Instant::now()) < WAIT_FLOOR {
+        // The slot is held to the cell's cutoff, so the worker takes no
+        // further index this cell: one row, not a burst of them. The
+        // scheduler's cut at the same instant polls this future first, and
+        // its timer has fired with the cut's.
+        tokio::time::sleep_until(deadline).await;
+        let return_ns = clock.now_ns();
+        return Done {
+            outcome: Outcome::Failed {
+                reason: "wait_no_time".into(),
+            },
+            spend,
+            wait: Some(WaitTimes {
+                call_ns,
+                send_ns: call_ns,
+                ack_ns: None,
+                return_ns,
+                ack_to_return_ns: None,
+            }),
         };
-        if family == Family::Swarmail && s.auth(&a.scope.inbox).await.is_err() {
-            return (send_ns, Err("fixture_not_sent"));
-        }
-        let sent = s
-            .send(api::SENDER, &a.scope.address, &api::fixture_bytes(&a))
-            .await;
-        // The acknowledgement is stamped at the `250` itself, before QUIT.
-        let ack = match sent {
-            clients::smtp::Sent::Accepted => Ok(clock.now_ns()),
-            clients::smtp::Sent::Refused(_) | clients::smtp::Sent::Failed => Err("fixture_refused"),
-            clients::smtp::Sent::Ambiguous => Err("fixture_ambiguous"),
+    }
+    // What the sending side has seen so far, kept across a cut: the send
+    // instant and the delivery's answer once there is one.
+    let seen: std::sync::Mutex<Seen> = std::sync::Mutex::new((None, None));
+    let note = |f: &dyn Fn(&mut Seen)| f(&mut seen.lock().expect("wait state"));
+    let both = async {
+        // The return is stamped inside the waiting future the instant the
+        // call returns (spec AC7, R3): whatever the sending side still does
+        // — the SMTP QUIT — cannot shift it.
+        let waiting = async {
+            let got = w.call(tool, args, own, &mut spend).await;
+            (got, clock.now_ns())
         };
-        // QUIT is bounded on its own and never moves the instants above.
-        let _ = tokio::time::timeout(QUIT_BOUND, s.quit()).await;
-        (send_ns, ack)
+        let sending = async {
+            // Started after the wait future's first poll: `join!` polls it
+            // first.
+            tokio::task::yield_now().await;
+            let send_ns = clock.now_ns();
+            note(&|s| s.0 = Some(send_ns));
+            let mut s = match clients::smtp::Session::open(smtp, api::SMTP_STEP).await {
+                Ok(s) => s,
+                Err(_) => return note(&|s| s.1 = Some(Err("fixture_not_sent"))),
+            };
+            if family == Family::Swarmail && s.auth(&a.scope.inbox).await.is_err() {
+                return note(&|s| s.1 = Some(Err("fixture_not_sent")));
+            }
+            let sent = s
+                .send(api::SENDER, &a.scope.address, &api::fixture_bytes(&a))
+                .await;
+            // The acknowledgement is stamped at the `250` itself, before
+            // QUIT.
+            let ack = match sent {
+                clients::smtp::Sent::Accepted => Ok(clock.now_ns()),
+                clients::smtp::Sent::Refused(_) | clients::smtp::Sent::Failed => {
+                    Err("fixture_refused")
+                }
+                clients::smtp::Sent::Ambiguous => Err("fixture_ambiguous"),
+            };
+            note(&|s| s.1 = Some(ack));
+            // QUIT is bounded on its own and never moves the instants above.
+            let _ = tokio::time::timeout(QUIT_BOUND, s.quit()).await;
+        };
+        tokio::join!(waiting, sending).0
     };
-    let ((got, return_ns), (send_ns, ack)) = tokio::join!(waiting, sending);
-    let ack_ns = ack.ok();
-    let outcome = match (got, ack) {
+    let answered = tokio::time::timeout_at(own, both).await.ok();
+    let (sent_at, ack) = *seen.lock().expect("wait state");
+    let send_ns = sent_at.unwrap_or(call_ns);
+    let return_ns = answered.as_ref().map_or_else(|| clock.now_ns(), |a| a.1);
+    let ack_ns = ack.and_then(Result::ok);
+    let outcome = match (answered, ack) {
         // A delivery whose fate is unknown outranks the wait's own answer:
         // it is mutation uncertainty (R1).
-        (_, Err(why)) => Outcome::Failed { reason: why.into() },
-        (Err(e), _) => api::from_error(e),
-        (Ok(v), _) => match clients::wait_answer(family, &v) {
+        (_, Some(Err(why))) => Outcome::Failed { reason: why.into() },
+        // Cut, or answered while its send is still unanswered: a timeout
+        // with no acknowledgement, the one uncertain wait.
+        (None, _) | (Some(_), None) => Outcome::Timeout,
+        (Some((Err(e), _)), Some(Ok(_))) => api::from_error(e),
+        (Some((Ok(v), _)), Some(Ok(_))) => match clients::wait_answer(family, &v) {
             // The acknowledged message is in the store either way: a late
             // or empty answer is the wait's failure, not uncertainty.
             clients::WaitAnswer::Late => Outcome::Failed {

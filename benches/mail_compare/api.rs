@@ -508,6 +508,16 @@ pub fn uncertain(op: Operation, outcome: &Outcome) -> bool {
         }
 }
 
+/// Whether `row` of an `op` cell leaves its effect unknown: [`uncertain`],
+/// except that a future wait whose delivery's `250` was observed is a known
+/// effect however its wait side ended — cut at the cell's deadline, timed
+/// out or lost — since the ledger expects that message (review finding 2).
+/// Only a wait whose send went unanswered stays uncertain.
+pub fn unresolved(op: Operation, row: &OpRow) -> bool {
+    let acked = op == Operation::Wait && row.wait.as_ref().is_some_and(|w| w.ack_ns.is_some());
+    !acked && uncertain(op, &row.outcome)
+}
+
 /// A boxed operation future.
 pub type OpFuture = Pin<Box<dyn Future<Output = Done> + Send>>;
 
@@ -1707,10 +1717,10 @@ pub async fn run_cells(
 }
 
 /// Why a phase of `op` abandons the launch, if it does: it sets
-/// [`Ran::unresolved`] from its rows ([`uncertain`]), and an unproved local
+/// [`Ran::unresolved`] from its rows ([`unresolved`]), and an unproved local
 /// cancellation abandons whatever the operation.
 pub fn phase_verdict(ran: &mut Ran, op: Operation, what: &str, name: &str) -> Option<String> {
-    ran.unresolved = ran.rows.iter().any(|r| uncertain(op, &r.outcome));
+    ran.unresolved = ran.rows.iter().any(|r| unresolved(op, r));
     if ran.cancel_unproved {
         Some(format!(
             "{name}: local cancellation of a {what} call was not proved"

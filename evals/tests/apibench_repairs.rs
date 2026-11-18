@@ -126,6 +126,154 @@ async fn the_mcp_surface_keeps_measuring_after_a_read_times_out() {
     assert!(rows.iter().any(|r| r.outcome == Outcome::Exact));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_polled_wait_cell_cut_at_five_seconds_keeps_its_acks_and_the_next_cell_measures() {
+    // Review finding 2: an adapter's 0129 poll answers a wait started
+    // before its send only at the next 100 ms tick, so wait.c1's hundred
+    // measured attempts cannot fit its five seconds. The attempt in flight
+    // at the cutoff ends on its own just before it — a timeout row that
+    // keeps its observed 250 — so nothing is uncertain, the launch is not
+    // abandoned and wait.c8 after it still measures.
+    let smtp = scripted::smtp(SmtpScript {
+        hold_data_ack: None,
+        data_received: None,
+        quit_delay: Duration::ZERO,
+    })
+    .await;
+    let url = scripted::mcp(handler(move |tool, args, _| {
+        Box::pin(async move {
+            assert_eq!(tool, "swarmail_wait_for_email");
+            // The first scan misses; the poll interval answers.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let inbox = args["inbox"].as_str().unwrap().to_owned();
+            let subject = args["subject"].as_str().unwrap().to_owned();
+            Answer::Result(
+                json!({"emails": [{"id": format!("w-{subject}"), "subject": subject,
+                "to": [{"address": format!("{inbox}@{}", clients::DOMAIN)}]}]}),
+            )
+        })
+    }))
+    .await;
+    let surface = McpSurface {
+        workers: Arc::new(workers(&url, 8).await),
+        verify: clients::Client::new("swarmail", "127.0.0.1:9".parse().unwrap()).unwrap(),
+        fixtures: Arc::new(Vec::new()),
+        smtp,
+        seed: 7,
+        clock: clock(),
+    };
+    let caps = |op| clients::mcp_capability("swarmail", op);
+    let mut c8 = cell(Operation::Wait, 8);
+    c8.ordinal = 1;
+    let cells = [cell(Operation::Wait, 1), c8];
+    let (recs, abandoned) = api::run_cells(&cells, &caps, &surface, &api::NoMeter, clock(), None)
+        .await
+        .unwrap();
+    assert_eq!(abandoned, None, "{recs:?}");
+    let first = &recs[0];
+    assert_eq!(first.status, api::CellStatus::Measured);
+    let m = &first.measured;
+    assert!(!m.unresolved && !m.cancel_unproved, "{m:?}");
+    // Cut: some ran, not all; each 100 ms or more.
+    assert!(m.started > 0 && m.started <= 50, "{}", m.started);
+    // Every started row is exact up to the cut. After it at most two: the
+    // attempt the wait's own end took — a timeout that kept its 250 — and
+    // one that had too little time left to send at all. Neither leaves its
+    // effect unknown, and neither is the scheduler's drop.
+    let exact = m
+        .rows
+        .iter()
+        .take_while(|r| r.outcome == Outcome::Exact)
+        .count();
+    let tail = &m.rows[exact..];
+    assert!(exact > 0 && tail.len() <= 2, "{tail:?}");
+    for (n, r) in tail.iter().enumerate() {
+        let t = r.wait.as_ref().expect("the wait's own row");
+        match &r.outcome {
+            Outcome::Timeout => assert!(n == 0 && t.ack_ns.is_some(), "{r:?}"),
+            Outcome::Failed { reason } => {
+                assert_eq!(reason, "wait_no_time");
+                assert_eq!((n + 1, t.ack_ns), (tail.len(), None));
+            }
+            o => panic!("{o:?}"),
+        }
+        assert!(!api::unresolved(Operation::Wait, r));
+    }
+    assert!(m.rows.iter().all(|r| r.wait.is_some()));
+    // The next cell measured, every attempt answered.
+    assert_eq!(recs[1].status, api::CellStatus::Measured);
+    assert_eq!(recs[1].measured.started, api::MEASURED);
+    assert!(
+        recs[1]
+            .measured
+            .rows
+            .iter()
+            .all(|r| r.outcome == Outcome::Exact)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_wait_cut_before_its_send_is_answered_stays_uncertain_and_one_with_no_time_sends_nothing()
+{
+    // The other two sides of the rule: the SMTP 250 never comes before the
+    // wait's own end — the delivery's fate is unknown, so the row is the one
+    // uncertain wait — and an attempt started inside WAIT_FLOOR of its end
+    // sends nothing and is a known non-effect.
+    let release = Arc::new(tokio::sync::Notify::new());
+    let sent = Arc::new(tokio::sync::Semaphore::new(0));
+    let smtp = scripted::smtp(SmtpScript {
+        hold_data_ack: Some(release.clone()),
+        data_received: Some(sent.clone()),
+        quit_delay: Duration::ZERO,
+    })
+    .await;
+    let url = scripted::mcp(handler(move |_, _, _| {
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_secs(3_600)).await;
+            Answer::Result(json!({"emails": []}))
+        })
+    }))
+    .await;
+    let worker = workers(&url, 1).await.pop().unwrap();
+    let c = clock();
+    let a = api::author(7, Role::Future, 2, &apibench::wait_scope(0, 2));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let done = apibench::wait_once(&worker, (smtp, c), a, deadline).await;
+    // It ended on its own, before the scheduler's cutoff.
+    assert!(tokio::time::Instant::now() < deadline);
+    assert_eq!(sent.available_permits(), 2, "the message reached DATA");
+    assert_eq!(done.outcome, Outcome::Timeout);
+    let t = done.wait.clone().unwrap();
+    assert_eq!((t.ack_ns, t.ack_to_return_ns), (None, None));
+    assert!(t.send_ns >= t.call_ns && t.return_ns >= t.send_ns, "{t:?}");
+    let row = api::OpRow {
+        phase: api::Phase::Measured,
+        index: 0,
+        worker: 0,
+        start_ns: 0,
+        end_ns: 1,
+        outcome: done.outcome,
+        requests: done.spend.requests,
+        bytes: 0,
+        wait: done.wait,
+    };
+    assert!(api::unresolved(Operation::Wait, &row));
+    // No time to send: nothing reaches the SMTP side.
+    let a = api::author(7, Role::Future, 3, &apibench::wait_scope(0, 3));
+    let deadline = tokio::time::Instant::now() + apibench::WAIT_FLOOR;
+    let done = apibench::wait_once(&worker, (smtp, c), a, deadline).await;
+    assert_eq!(
+        done.outcome,
+        Outcome::Failed {
+            reason: "wait_no_time".into()
+        }
+    );
+    assert_eq!(done.spend.requests, 0);
+    assert_eq!(sent.available_permits(), 2, "no second message");
+    assert!(!api::uncertain(Operation::Wait, &done.outcome));
+    release.notify_waiters();
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn a_wait_answered_before_its_ack_keeps_a_negative_offset_and_quit_cannot_move_it() {
     // R3: the server answers the wait as soon as the message's terminator

@@ -1173,7 +1173,26 @@ was refused or never started, the sentinel, and each acknowledged wait
 delivery exactly once — and none of the ids an exact delete or clear
 removed, and nothing unaccounted for. Equal counts with substituted ids
 fail. A mismatch turns every destructive and wait success into a
-`wrong_result` and fails the chunk.
+`wrong_result` and fails the chunk. Those rewrites reach a measured cell's
+warmup rows too, and the record still seals: admission takes a warmup row
+rewritten to `wrong_result` or `postcheck_chunk_deadline` only on a cell
+whose postcheck names the problem, and a cell whose postcheck names one is
+the target's failure even when every measured row stayed exact.
+
+**A future wait at its cutoff.** A wait owns its deadline: both its sides
+end 10 ms before the cell's cutoff, so the attempt in flight there is a
+`timeout` row that keeps its send and any `250` already observed, and the
+scheduler never drops it. A wait whose delivery was acknowledged is a known
+effect however its wait side ended — the ledger expects that message — and
+only a send not yet answered (or answered ambiguously) leaves the effect
+unknown and abandons the launch. An attempt with under 250 ms left sends
+nothing: a `wait_no_time` failure that holds its slot to the cutoff. An
+adapter's 0129 poll answers a wait started before its send at its next
+100 ms tick, so an adapter's `wait.c1` normally fits about fifty of its
+hundred measured attempts in five seconds: it publishes those, one cut
+`timeout` (and possibly one `wait_no_time`) row, the rest unstarted, and the
+chunk exits 1 while `wait.c8`, `wait.c32` and the destructive cells after it
+still measure. The bridged host proofs expect exactly that shape.
 
 **Figures.** Per cell: planned = started + unstarted, started = exact +
 failures, nearest-rank p50/p95/p99 over exact successes only (null when there

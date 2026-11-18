@@ -754,6 +754,65 @@ fn only_a_mutation_left_unresolved_is_uncertain() {
 
 /// A surface whose operation closures are scripted per operation: `slow`
 /// indices sleep past any deadline, `fail` indices end in the given outcome.
+#[test]
+fn an_acknowledged_wait_is_resolved_however_its_wait_side_ended() {
+    // Review finding 2: a wait row whose delivery's 250 was observed is a
+    // known effect — the ledger expects the message — whether its wait side
+    // timed out or lost its transport; one with no acknowledgement (or none
+    // recorded, a row the scheduler dropped) stays uncertain. Other
+    // operations are ruled by their outcome alone.
+    let row = |op_out: Outcome, ack: Option<u64>, times: bool| api::OpRow {
+        phase: Phase::Measured,
+        index: 0,
+        worker: 0,
+        start_ns: 0,
+        end_ns: 1,
+        outcome: op_out,
+        requests: 1,
+        bytes: 0,
+        wait: times.then_some(api::WaitTimes {
+            call_ns: 0,
+            send_ns: 0,
+            ack_ns: ack,
+            return_ns: 1,
+            ack_to_return_ns: ack.map(|a| 1 - a as i64),
+        }),
+    };
+    let transport = Outcome::Failed {
+        reason: "transport".into(),
+    };
+    for o in [Outcome::Timeout, transport.clone()] {
+        assert!(!api::unresolved(
+            Operation::Wait,
+            &row(o.clone(), Some(0), true)
+        ));
+        assert!(api::unresolved(
+            Operation::Wait,
+            &row(o.clone(), None, true)
+        ));
+        assert!(api::unresolved(
+            Operation::Wait,
+            &row(o.clone(), None, false)
+        ));
+        // A delete or clear carries no wait times: its outcome rules.
+        for op in [Operation::Delete, Operation::Clear] {
+            assert!(api::unresolved(op, &row(o.clone(), Some(0), true)));
+        }
+        assert!(!api::unresolved(Operation::List, &row(o, None, false)));
+    }
+    let ambiguous = Outcome::Failed {
+        reason: "fixture_ambiguous".into(),
+    };
+    assert!(api::unresolved(
+        Operation::Wait,
+        &row(ambiguous, None, true)
+    ));
+    let no_time = Outcome::Failed {
+        reason: "wait_no_time".into(),
+    };
+    assert!(!api::unresolved(Operation::Wait, &row(no_time, None, true)));
+}
+
 struct Scripted {
     script: fn(Operation, Phase, u32) -> Option<Outcome>,
     phase_of: fn(u32) -> Phase,
@@ -2307,6 +2366,206 @@ fn admission_holds_warmups_and_cell_identities_to_the_plan() {
     );
 }
 
+/// A record of `chunk` whose every planned cell measured fully and exactly.
+fn measured_record(chunk: &runner::Chunk) -> api::ApiRecord {
+    let runner::Chunk::Api {
+        surface, target, ..
+    } = chunk
+    else {
+        panic!()
+    };
+    let mut rec = record_for(chunk);
+    for (c, p) in rec
+        .cells
+        .iter_mut()
+        .zip(api_chunk::cells(*target, *surface))
+    {
+        c.status = api::CellStatus::Measured;
+        c.blocked = None;
+        c.warmup = (p.warmup > 0).then(|| api::Ran {
+            rows: rows(p.warmup, Phase::Warmup, Outcome::Exact),
+            planned: p.warmup,
+            started: p.warmup,
+            ..Default::default()
+        });
+        c.measured = api::Ran {
+            rows: rows(p.planned, Phase::Measured, Outcome::Exact),
+            planned: p.planned,
+            started: p.planned,
+            ..Default::default()
+        };
+    }
+    if *surface == Surface::Mcp {
+        // The holder's brackets of every measured cell, in order.
+        let b = |cmd: &str, id: &str, at: u64| api::Bracket {
+            cmd: cmd.into(),
+            id: Some(id.to_owned()),
+            sent_ns: at,
+            received_ns: at + 5,
+            owner_t_ns: 1_000 * at,
+        };
+        let names: Vec<String> = rec.cells.iter().map(|c| c.cell.clone()).collect();
+        for (n, name) in names.iter().enumerate() {
+            let at = 100 * (n as u64 + 1);
+            rec.control.push(b("window_start", name, at));
+            rec.control.push(b("window_end", name, at + 50));
+        }
+    }
+    rec
+}
+
+/// The cell's warmup and measured rows in one slot space, then back.
+fn with_rows(c: &mut api::CellRecord, f: impl FnOnce(&mut Vec<api::OpRow>) -> Vec<String>) {
+    let mut all: Vec<api::OpRow> = c
+        .warmup
+        .iter()
+        .flat_map(|w| w.rows.clone())
+        .chain(c.measured.rows.clone())
+        .collect();
+    c.postcheck = f(&mut all);
+    let (w, m): (Vec<_>, Vec<_>) = all.into_iter().partition(|r| r.phase == Phase::Warmup);
+    if let Some(warm) = c.warmup.as_mut() {
+        warm.rows = w;
+    }
+    c.measured.rows = m;
+}
+
+#[test]
+fn a_record_its_verification_invalidated_still_admits_and_fails() {
+    // Review finding 1: every verification that rewrites a measured cell's
+    // exact warmup rows (a delete or clear postcheck, a cut postcheck, the
+    // batch ledger) leaves a record the seal, the holder's record arm and
+    // report admission — all three call check_record — admit, and whose
+    // rows the one verdict counts as the target's failure (exit 1), on both
+    // surfaces. The same rewritten rows with no named problem refuse.
+    for surface in [Surface::Native, Surface::Mcp] {
+        let chunk = runner::Chunk::Api {
+            surface,
+            target: TargetKind::Swarmail,
+            repetition: 0,
+            fill: 0,
+        };
+        let base = measured_record(&chunk);
+        api_chunk::check_record(&base, &chunk).unwrap();
+        assert!(api_chunk::row_failures(&base).is_empty());
+        let at = |r: &api::ApiRecord, op: Operation| {
+            r.cells
+                .iter()
+                .position(|c| c.operation == op && c.warmup.is_some())
+                .unwrap_or_else(|| panic!("{surface:?} plans a warmed {op:?} cell"))
+        };
+        let admits_and_fails = |r: &api::ApiRecord, cell: usize, what: &str| {
+            api_chunk::check_record(r, &chunk).unwrap_or_else(|e| panic!("{what}: {e}"));
+            let f = api_chunk::row_failures(r);
+            assert!(
+                f.iter().any(|f| f.contains(&r.cells[cell].cell)),
+                "{what}: {f:?}"
+            );
+            // Its bytes admit again: what report admission reads.
+            let back: api::ApiRecord =
+                serde_json::from_slice(&serde_json::to_vec(r).unwrap()).unwrap();
+            api_chunk::check_record(&back, &chunk).unwrap();
+        };
+        // A delete whose warmup victim is still retained: only warmup slot
+        // 0 is wrong, every measured row stays exact, and it still fails.
+        let mut r = base.clone();
+        let d = at(&r, Operation::Delete);
+        let warmup = r.cells[d].warmup.as_ref().unwrap().planned;
+        let total = warmup + r.cells[d].measured.planned;
+        let victims: Vec<String> = (0..total).map(|i| format!("v{i}")).collect();
+        let survivors: BTreeSet<String> = (0..10).map(|i| format!("s{i}")).collect();
+        let retained: BTreeSet<String> = survivors
+            .iter()
+            .cloned()
+            .chain(std::iter::once("v0".to_owned()))
+            .collect();
+        with_rows(&mut r.cells[d], |rows| {
+            api::postcheck_delete(&retained, &survivors, &victims, rows, warmup)
+        });
+        let w = &r.cells[d].warmup.as_ref().unwrap().rows;
+        assert!(matches!(w[0].outcome, Outcome::WrongResult { .. }));
+        assert!(
+            r.cells[d]
+                .measured
+                .rows
+                .iter()
+                .all(|x| x.outcome == Outcome::Exact)
+        );
+        admits_and_fails(&r, d, "delete survivor kept");
+        // A survivor lost: every success of the cell, warmup included.
+        let mut r = base.clone();
+        let mut lost = survivors.clone();
+        lost.remove("s0");
+        let gone: BTreeSet<String> = lost.into_iter().collect();
+        with_rows(&mut r.cells[d], |rows| {
+            api::postcheck_delete(&gone, &survivors, &victims, rows, warmup)
+        });
+        admits_and_fails(&r, d, "delete scope changed");
+        // A recipient clear whose cleared scope still holds mail.
+        let mut r = base.clone();
+        let c = at(&r, Operation::Clear);
+        let warmup = r.cells[c].warmup.as_ref().unwrap().planned;
+        let total = warmup + r.cells[c].measured.planned;
+        let mut counts = vec![0u64; total as usize];
+        counts[1] = 3;
+        with_rows(&mut r.cells[c], |rows| {
+            api::postcheck_clear(&counts, rows, warmup, true)
+        });
+        admits_and_fails(&r, c, "partial clear");
+        // A postcheck the chunk deadline cut.
+        let mut r = base.clone();
+        with_rows(&mut r.cells[d], |rows| {
+            api::unverified(rows);
+            vec![format!("delete: {}: timeout", api::POSTCHECK_CUT)]
+        });
+        admits_and_fails(&r, d, "cut postcheck");
+        // The batch ledger: a missing or extra wait delivery rewrites every
+        // destructive and wait cell's successes, warmup included.
+        let mut r = base.clone();
+        r.ledger = vec!["1 unaccounted id(s), e.g. x".into()];
+        api::invalidate_batch(&mut r.cells, &r.ledger.clone());
+        // Wait is planned on MCP only; natively the delete cell carries it.
+        let wt = at(
+            &r,
+            if surface == Surface::Mcp {
+                Operation::Wait
+            } else {
+                Operation::Delete
+            },
+        );
+        assert!(
+            r.cells[wt]
+                .warmup
+                .as_ref()
+                .unwrap()
+                .rows
+                .iter()
+                .all(|x| matches!(x.outcome, Outcome::WrongResult { .. }))
+        );
+        admits_and_fails(&r, wt, "ledger");
+        // The same rewrites with no problem named are not what any
+        // producer writes: refused.
+        let mut forged = r.clone();
+        forged.cells[wt].postcheck.clear();
+        let e = api_chunk::check_record(&forged, &chunk).unwrap_err();
+        assert!(e.contains("warmup"), "{e}");
+        let mut forged = base.clone();
+        forged.cells[d].warmup.as_mut().unwrap().rows[0].outcome = Outcome::Failed {
+            reason: api::POSTCHECK_CUT.into(),
+        };
+        assert!(api_chunk::check_record(&forged, &chunk).is_err());
+        // A named problem never admits a warmup row that failed as it ran.
+        let mut forged = base.clone();
+        forged.cells[d].postcheck = vec!["x".into()];
+        forged.cells[d].warmup.as_mut().unwrap().rows[0].outcome = Outcome::Timeout;
+        assert!(api_chunk::check_record(&forged, &chunk).is_err());
+        forged.cells[d].warmup.as_mut().unwrap().rows[0].outcome = Outcome::Failed {
+            reason: "status_500".into(),
+        };
+        assert!(api_chunk::check_record(&forged, &chunk).is_err());
+    }
+}
+
 #[test]
 fn the_global_clear_is_one_raw_sample_with_no_quantiles() {
     let chunk = runner::Chunk::Api {
@@ -2876,8 +3135,23 @@ fn assert_real_chunk(surface: Surface, target: TargetKind, c: &RealChunk) {
     assert_eq!(rec.abandoned, None, "{ctx}");
     assert!(rec.ledger.is_empty(), "{ctx}: {:?}", rec.ledger);
     let ok = tolerated(surface, target);
+    // A wait cell the five-second cutoff reached (an adapter's 0129 poll
+    // answers at its 100 ms tick, so wait.c1's hundred attempts do not
+    // fit): the attempt its own end took is a timeout that kept its 250,
+    // one with too little time left sent nothing (`wait_no_time`). Both
+    // are failure rows of a cell that still measured, never uncertainty.
+    let cut_wait = |r: &api::OpRow, op| {
+        op == Operation::Wait
+            && !api::unresolved(op, r)
+            && match &r.outcome {
+                Outcome::Timeout => r.wait.as_ref().is_some_and(|w| w.ack_ns.is_some()),
+                Outcome::Failed { reason } => reason == "wait_no_time",
+                _ => false,
+            }
+    };
     let fine = |r: &api::OpRow, op| match &r.outcome {
         Outcome::Exact => true,
+        _ if cut_wait(r, op) => true,
         Outcome::Failed { reason } => ok.contains(&reason.as_str()),
         o => documented_inexact(target, op, o),
     };
@@ -2910,7 +3184,10 @@ fn assert_real_chunk(surface: Surface, target: TargetKind, c: &RealChunk) {
         assert!(cell.measured.started > 0, "{ctx} {}", cell.cell);
         for r in &cell.measured.rows {
             assert!(fine(r, cell.operation), "{ctx} {}: {r:?}", cell.cell);
-            failures += usize::from(matches!(r.outcome, Outcome::Failed { .. }));
+            failures += usize::from(matches!(
+                r.outcome,
+                Outcome::Failed { .. } | Outcome::Timeout
+            ));
             if let (Some(w), Outcome::Exact) = (&r.wait, &r.outcome) {
                 let ack = w.ack_ns.expect("an exact wait was acknowledged");
                 assert!(w.call_ns <= w.send_ns, "{ctx} {r:?}");
