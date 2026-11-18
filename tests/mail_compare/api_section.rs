@@ -3247,16 +3247,25 @@ async fn preparation_refuses_when_the_target_does_not_answer() {
 // Each runs one chunk of the real driver (`MAIL_COMPARE_BIN`, the built
 // `mail_compare` bench executable) against the pinned executable named by
 // `MAIL_COMPARE_<TARGET>` (and `MAIL_COMPARE_JRE` / `MAIL_COMPARE_MUSL` for
-// GreenMail's and the Alkemio image's runtime roots), under a delegated
-// cgroup v2 scope, as the only process in it, one test at a time:
+// GreenMail's and the Alkemio image's runtime roots), one test at a time.
+// The driver must be the only process of a delegated cgroup v2 scope, and
+// on the MCP surface it is not the test's child but `swarmail-evals
+// api-mcp`'s: so the test does not run inside a scope itself. It places
+// the driver — the native chunk's `run`, the MCP chunk's `hold` — alone in
+// a scope of its own (`scoped_driver`, `systemd-run --user --scope -p
+// Delegate=yes`, which execs it in place), and the adapters stay ordinary
+// children of `api-mcp`. Run the test binary outside any scope:
 //
 //   bin=$(cargo test --locked --test mail_compare --no-run --message-format=json \
 //     | grep -o '"executable":"[^"]*mail_compare-[^"]*"' | tail -n1 | cut -d'"' -f4)
 //   cat /proc/loadavg
-//   timeout 600 taskset -c 0-31 systemd-run --user --scope --quiet -p Delegate=yes -- \
-//     env MAIL_COMPARE_BIN=… MAIL_COMPARE_MAILPIT=… "$bin" --ignored --exact \
-//     api_section::api_native_real_mailpit --test-threads=1
+//   timeout 600 taskset -c 0-31 env MAIL_COMPARE_BIN=… MAIL_COMPARE_MAILPIT=… \
+//     "$bin" --ignored --exact api_section::api_native_real_mailpit --test-threads=1
 //   cat /proc/loadavg
+//
+// Wrapping the test binary in the scope instead leaves it, and the eval
+// runner, beside the driver, which refuses: "the scope … holds 1 other
+// process(es); the driver must be its only process".
 //
 // Without a variable, or without delegation, each fails — never skips. A
 // pass is exact: every cell measured, every row exact or one of the
@@ -3300,9 +3309,29 @@ struct RealChunk {
     admitted: records::Admitted,
 }
 
+/// A driver path that runs `driver`'s resource-owning modes (`run`, `hold`)
+/// as the only process of a delegated scope of their own, and every other
+/// mode (an adapter) in place. `systemd-run --scope` execs the command, so
+/// the process the caller waits on and signals is the driver itself.
+fn scoped_driver(dir: &std::path::Path, driver: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let quoted = format!("'{}'", driver.replace('\'', r"'\''"));
+    let path = dir.join("scoped-driver");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  run|hold) exec systemd-run --user --scope --quiet \
+             -p Delegate=yes -- {quoted} \"$@\" ;;\nesac\nexec {quoted} \"$@\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
 fn real_chunk(surface: Surface, target: TargetKind, fill: u32) -> RealChunk {
     let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
-    let driver = env_path("MAIL_COMPARE_BIN");
+    let driver = scoped_driver(root.path(), &env_path("MAIL_COMPARE_BIN"));
     let chunk = format!("api.{}.{target}.r0.f{fill}", surface.name());
     let mut cmd = match surface {
         Surface::Native => {
@@ -3312,7 +3341,9 @@ fn real_chunk(surface: Surface, target: TargetKind, fill: u32) -> RealChunk {
         }
         Surface::Mcp => {
             let mut c = std::process::Command::new(env_path("SWARMAIL_EVALS_BIN"));
-            c.args(["api-mcp", "--driver", &driver, "--mode", "smoke"]);
+            c.args(["api-mcp", "--driver"])
+                .arg(&driver)
+                .args(["--mode", "smoke"]);
             c
         }
     };

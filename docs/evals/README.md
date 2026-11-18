@@ -1316,8 +1316,26 @@ proof per launchable target, `api_native_real_<target>` for `swarmail`,
 launch the real adapters behind the bridge. They need `MAIL_COMPARE_BIN`
 (the built driver), `SWARMAIL_EVALS_BIN` for MCP, `MAIL_COMPARE_<TARGET>`
 for a competitor's pinned bytes (`MAIL_COMPARE_JRE`, `MAIL_COMPARE_MUSL` for
-GreenMail's and the Alkemio image's roots) and a delegated cgroup v2 scope,
-and fail, never skip, without them. Each passes only exactly: the planned
+GreenMail's and the Alkemio image's roots) and cgroup v2 delegation, and fail,
+never skip, without them. The driver must be the only process of its scope,
+and on the MCP surface it is `api-mcp`'s child, not the test's; so the test
+binary runs outside any scope and places the driver's `run` or `hold` alone
+in a delegated scope of its own (`systemd-run --user --scope -p
+Delegate=yes`, which execs it in place), with the adapters left as ordinary
+children of `api-mcp`. Wrapping the test binary in the scope instead puts it
+beside the driver, which refuses (`the driver must be its only process`):
+
+```bash
+bin=$(cargo test --locked --test mail_compare --no-run --message-format=json \
+  | grep -o '"executable":"[^"]*mail_compare-[^"]*"' | tail -n1 | cut -d'"' -f4)
+cat /proc/loadavg
+timeout 600 taskset -c 0-31 env MAIL_COMPARE_BIN=… SWARMAIL_EVALS_BIN=… \
+  MAIL_COMPARE_MAILPIT=… "$bin" --ignored --exact \
+  api_section::api_mcp_bridge_real_mailpit --test-threads=1
+cat /proc/loadavg
+```
+
+Each passes only exactly: the planned
 matrix and capability rows, every row exact or a documented outcome (busy
 or rate refusals on MCP, MailSlurper's absent part), exit 0 exactly when
 nothing failed, an intact ledger, clean windows with counters, samples,
