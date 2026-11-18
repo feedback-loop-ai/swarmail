@@ -291,12 +291,16 @@ async fn a_real_loopback_websocket_exchanges_messages_pings_and_close() {
 
 #[tokio::test]
 async fn a_refused_connection_and_a_passed_deadline_are_named() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    drop(listener);
+    // A bound socket that never listens: it holds the port for the whole
+    // test, so no parallel test's socket can take it and accept, and the
+    // kernel refuses every connect to it.
+    let silent = tokio::net::TcpSocket::new_v4().unwrap();
+    silent.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = silent.local_addr().unwrap();
     let err = crate::stream::connect(addr, far()).await.unwrap_err();
     assert!(matches!(err, StreamError::Io { .. }), "{err}");
     assert!(!err.is_disconnect(), "a refused connect is not a lost one");
+    drop(silent);
     let past = Instant::now() - Duration::from_millis(1);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
