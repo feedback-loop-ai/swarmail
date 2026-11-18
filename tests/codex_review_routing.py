@@ -551,7 +551,7 @@ def claude_careful_route(engine, out, manifests):
             bad = copy.deepcopy(observed)
             row = bad[key]
             if mutation == 'model':
-                row['concrete'] = ['gpt-6.1-sol']
+                row['concrete'] = ['gpt-6.2-sol']
             elif mutation == 'provider':
                 row['provider'] = 'codex'
             elif mutation == 'concrete':
@@ -582,7 +582,7 @@ def claude_careful_route(engine, out, manifests):
         if mutation == 'codex-provider':
             bad['providers'] = sorted(bad['providers'] + ['codex'])
         elif mutation == 'gpt-pin':
-            bad['pins'] = sorted(bad['pins'] + ['gpt-6.1-sol'])
+            bad['pins'] = sorted(bad['pins'] + ['gpt-6.2-sol'])
         elif mutation == 'haiku-4.5':
             bad['intake']['concrete'] = ['claude-haiku-4-5-20251001']
         elif mutation == 'glm-effort':
@@ -590,7 +590,7 @@ def claude_careful_route(engine, out, manifests):
         elif mutation == 'codex-design':
             bad['design:positions:simplicity'].update(agent='codex-position-simplicity',
                 site_office='codex-position-simplicity', provider='codex', chain=['sol'],
-                model='sol', models=['sol'], efforts={'sol': 'high'}, concrete=['gpt-6.1-sol'])
+                model='sol', models=['sol'], efforts={'sol': 'high'}, concrete=['gpt-6.2-sol'])
         elif mutation == 'validator':
             bad['validator']['scripts/design-check.sh'] = '0' * 64
         elif mutation == 'implement-limit':

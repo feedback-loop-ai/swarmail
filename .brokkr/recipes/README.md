@@ -67,9 +67,9 @@ they are useful when the operator has already ruled that path necessary:
 +-----------+-----------------------+----------------------------+
 | Model key | Concrete model        | Provider                   |
 +-----------+-----------------------+----------------------------+
-| sol       | gpt-6.1-sol           | Codex CLI                  |
+| sol       | gpt-6.2-sol           | Codex CLI                  |
 | luna      | gpt-6-luna            | Codex CLI                  |
-| astra     | gpt-6-astra           | Codex CLI                  |
+| astra     | gpt-6.2-astra         | Codex CLI                  |
 | qwen-max  | dashscope/qwen4-max   | DashScope through dsh      |
 | opus      | claude-opus-5-5       | Claude CLI                 |
 | fable     | claude-fable-5-2      | Claude CLI                 |

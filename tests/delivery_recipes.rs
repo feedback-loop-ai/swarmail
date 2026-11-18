@@ -376,10 +376,10 @@ fn reviewers_keep_exact_models_charters_efforts_and_the_only_fallback() {
         assert_eq!(claude["models"][model], route);
         assert!(claude["judges"].as_array().unwrap().contains(&json!(model)));
     }
-    assert_eq!(
-        read_json(".brokkr/adapters/codex.json")["models"]["astra"],
-        "gpt-6-astra"
-    );
+    // Operator, 2026-11-17: Sol and Astra move to 6.2.
+    let codex = read_json(".brokkr/adapters/codex.json");
+    assert_eq!(codex["models"]["astra"], "gpt-6.2-astra");
+    assert_eq!(codex["models"]["sol"], "gpt-6.2-sol");
 }
 
 /// Proposed 0098: the two full-panel members that left Astra take exactly
@@ -1630,7 +1630,7 @@ fn claude_careful_routes_every_model_seat_without_codex() {
             a["models"]["haiku"] = json!("claude-haiku-5-5")
         }),
         ("codex", "Codex alias for opus", |a| {
-            a["models"]["opus"] = json!("gpt-6-astra")
+            a["models"]["opus"] = json!("gpt-6.2-astra")
         }),
         ("dsh", "DeepSeek Pro", |a| {
             a["models"]["flash"] = json!("deepseek-pro")
