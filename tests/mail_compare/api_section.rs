@@ -4082,6 +4082,83 @@ impl ApiRecordView<'_> {
     }
 }
 
+#[tokio::test]
+async fn the_record_line_is_bounded_as_a_record_whatever_its_member_order() {
+    use api_chunk::{Control, MAX_CONTROL_LINE, MAX_RECORD_LINE, parse_control};
+    // The record exactly as `swarmail-evals api-mcp` sends it: `json!` with
+    // serde_json's sorted map puts `api` before `cmd`, so the line does not
+    // start with `{"cmd":"record"` — the host's first MCP chunk refused it
+    // as "a control line of 210903 bytes exceeds 1024".
+    let chunk = runner::Chunk::Api {
+        surface: Surface::Mcp,
+        target: TargetKind::Swarmail,
+        repetition: 0,
+        fill: 1_000,
+    };
+    let rec = record_for(&chunk);
+    let sent = json!({"cmd": "record", "api": rec}).to_string();
+    assert!(sent.starts_with("{\"api\":"), "{}", &sent[..40]);
+    // Padded with insignificant whitespace to the host's real size.
+    const REAL: usize = 210_903;
+    let body = sent.strip_suffix('}').unwrap();
+    let pad = " ".repeat(REAL - sent.len());
+    let line = format!("{body}{pad}}}");
+    assert_eq!(line.len(), REAL);
+    match parse_control(line.as_bytes()).unwrap() {
+        Control::Record { api } => assert_eq!(*api, rec),
+        other => panic!("{other:?}"),
+    }
+    // Through the holder's reader too: the real-sized line reads whole.
+    let framed = format!("{line}\n").into_bytes();
+    let mut r = tokio::io::BufReader::new(framed.as_slice());
+    let end = std::time::Instant::now() + Duration::from_secs(30);
+    let read = api_chunk::next_control_line(&mut r, end).await.unwrap();
+    assert_eq!(read.as_deref(), Some(line.as_bytes()));
+    // A record over its own bound refuses, in either member order.
+    for first in [true, false] {
+        let pad = " ".repeat(MAX_RECORD_LINE + 1 - sent.len());
+        let api = serde_json::to_string(&rec).unwrap();
+        let huge = if first {
+            format!("{{\"cmd\":\"record\",{pad}\"api\":{api}}}")
+        } else {
+            format!("{{\"api\":{api},{pad}\"cmd\":\"record\"}}")
+        };
+        assert!(huge.len() > MAX_RECORD_LINE);
+        let e = parse_control(huge.as_bytes()).unwrap_err();
+        assert!(e.contains(&format!("exceeds {MAX_RECORD_LINE}")), "{e}");
+    }
+    // Any other command keeps the short bound, in either member order: the
+    // record's allowance is the record's alone.
+    for line in [
+        format!(
+            "{{\"id\":\"list.c1\",{}\"cmd\":\"window_start\"}}",
+            " ".repeat(MAX_CONTROL_LINE)
+        ),
+        format!(
+            "{{\"cmd\":\"window_end\",{}\"id\":\"list.c1\"}}",
+            " ".repeat(MAX_CONTROL_LINE)
+        ),
+        format!("{{\"cmd\":\"idle_fill\"{}}}", " ".repeat(MAX_CONTROL_LINE)),
+    ] {
+        let e = parse_control(line.as_bytes()).unwrap_err();
+        assert!(e.contains(&format!("exceeds {MAX_CONTROL_LINE}")), "{e}");
+    }
+    // At the short bound exactly, a command still parses.
+    let at = r#"{"id":"list.c1","cmd":"window_start"}"#;
+    let at = format!(
+        "{}{}}}",
+        at.strip_suffix('}').unwrap(),
+        " ".repeat(MAX_CONTROL_LINE - at.len())
+    );
+    assert_eq!(at.len(), MAX_CONTROL_LINE);
+    assert_eq!(
+        parse_control(at.as_bytes()).unwrap(),
+        Control::WindowStart {
+            id: "list.c1".into()
+        }
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn the_holder_ends_its_control_input_at_the_chunk_deadline() {
     // A caller that holds the control input open and silent cannot keep the

@@ -1198,9 +1198,12 @@ pub fn check_citations(
 // `hold --control api-v1`: the MCP chunk's resource owner (spec AC8, T7)
 // ============================================================================
 
-/// The longest control line but the record's.
+/// The longest control line but the record's: a `window_start` or
+/// `window_end` carries one planned cell's name (`clear.c32`, `wait.c1`),
+/// `idle_fill` nothing, so each is a few dozen bytes.
 pub const MAX_CONTROL_LINE: usize = 1024;
-/// The longest `record` line: every row of every cell of one chunk.
+/// The longest `record` line: every row of every cell of one chunk (a
+/// Swarmail MCP chunk at fill 1,000 sent 210,903 bytes on the host).
 pub const MAX_RECORD_LINE: usize = 64 << 20;
 
 /// One control command, closed: an unknown key or command refuses.
@@ -1224,20 +1227,22 @@ pub struct ControlState {
 }
 
 /// Parse one control line: bounded, closed and well-formed.
+///
+/// The bound is the command's, judged from the parsed command and never
+/// from the line's first bytes: a JSON object's members have no order, and
+/// the eval side's `record` arrives as `{"api":…,"cmd":"record"}`. Every
+/// line is first held to [`MAX_RECORD_LINE`] (the reader already stops
+/// there), then every command but the record to [`MAX_CONTROL_LINE`].
 pub fn parse_control(line: &[u8]) -> Result<Control, String> {
-    let is_record = line.starts_with(b"{\"cmd\":\"record\"");
-    let bound = if is_record {
-        MAX_RECORD_LINE
-    } else {
-        MAX_CONTROL_LINE
-    };
-    if line.len() > bound {
-        return Err(format!(
-            "a control line of {} bytes exceeds {bound}",
-            line.len()
-        ));
+    let over = |bound: usize| format!("a control line of {} bytes exceeds {bound}", line.len());
+    if line.len() > MAX_RECORD_LINE {
+        return Err(over(MAX_RECORD_LINE));
     }
-    serde_json::from_slice(line).map_err(|e| format!("control line: {e}"))
+    let c: Control = serde_json::from_slice(line).map_err(|e| format!("control line: {e}"))?;
+    if !matches!(c, Control::Record { .. }) && line.len() > MAX_CONTROL_LINE {
+        return Err(over(MAX_CONTROL_LINE));
+    }
+    Ok(c)
 }
 
 /// Check one command against the plan and the state before acting on it.
