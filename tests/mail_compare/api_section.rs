@@ -458,23 +458,28 @@ async fn a_response_over_its_bound_is_refused_before_it_is_buffered() {
 async fn responder(
     answer: impl Fn(&str) -> (u16, String) + Send + Sync + 'static,
 ) -> std::net::SocketAddr {
-    delaying_responder(answer, |_| None).await
+    holding_responder(answer, None).await.0
 }
 
-/// [`responder`], holding the `n`th request's answer (counted from 1 across
-/// all connections) for `delay(n)` when it names one.
-async fn delaying_responder(
+/// [`responder`], never answering the `hold`th request (counted from 1
+/// across all connections): its connection is held, without a timer, until
+/// the client closes it, and the receiver then reports the request's number.
+/// So a test learns from the event itself that the client discarded the
+/// connection, and nothing the responder does depends on the wall clock.
+async fn holding_responder(
     answer: impl Fn(&str) -> (u16, String) + Send + Sync + 'static,
-    delay: fn(u64) -> Option<Duration>,
-) -> std::net::SocketAddr {
+    hold: Option<u64>,
+) -> (std::net::SocketAddr, tokio::sync::oneshot::Receiver<u64>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let answer = Arc::new(answer);
+    let (closed_tx, closed) = tokio::sync::oneshot::channel();
+    let closed_tx = Arc::new(std::sync::Mutex::new(Some(closed_tx)));
     tokio::spawn(async move {
         while let Ok((mut s, _)) = listener.accept().await {
-            let (answer, count) = (answer.clone(), count.clone());
+            let (answer, count, closed_tx) = (answer.clone(), count.clone(), closed_tx.clone());
             tokio::spawn(async move {
                 let mut buf = Vec::new();
                 loop {
@@ -503,8 +508,18 @@ async fn delaying_responder(
                         buf.drain(..end + 4 + len);
                         let (status, body) = answer(&path);
                         let n = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-                        if let Some(d) = delay(n) {
-                            tokio::time::sleep(d).await;
+                        if hold == Some(n) {
+                            // Unanswered until the client's end closes
+                            // (EOF or reset); later bytes are not served.
+                            while let Ok(m) = s.read(&mut chunk).await {
+                                if m == 0 {
+                                    break;
+                                }
+                            }
+                            if let Some(tx) = closed_tx.lock().unwrap().take() {
+                                let _ = tx.send(n);
+                            }
+                            return;
                         }
                         let resp = format!(
                             "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
@@ -518,7 +533,7 @@ async fn delaying_responder(
             });
         }
     });
-    addr
+    (addr, closed)
 }
 
 fn page(start: u64, total: u64, ids: &[&str]) -> String {
@@ -1260,9 +1275,10 @@ async fn a_worker_that_does_not_return_leaves_its_start_and_an_unproved_cancella
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_native_surface_keeps_measuring_after_a_read_times_out() {
     // The producer path (R1): the real native surface over Mailpit's client,
-    // against a loopback server holding one measured list request past the
-    // cell's five-second deadline. That list is a timeout row; the next
-    // cell measures all of its operations; nothing is abandoned.
+    // against a loopback server that never answers one measured list
+    // request. That list is a timeout row at the cell's five-second
+    // deadline, its connection is discarded with it, the next cell measures
+    // (the dropped read's own client included), and nothing is abandoned.
     let reads: Vec<api::Authored> = (0..api::K)
         .map(|n| {
             let mut a = api::author(7, api::Role::Read, n, &api::read_scope());
@@ -1279,12 +1295,10 @@ async fn the_native_surface_keeps_measuring_after_a_read_times_out() {
             .collect();
         json!({"start": 0, "messages_count": items.len(), "messages": items}).to_string()
     };
-    // Request 1..20 are list.c1's warmup; 31 is its 11th measured call.
-    let addr = delaying_responder(
-        move |_| (200, body.clone()),
-        |n| (n == 31).then_some(Duration::from_secs(8)),
-    )
-    .await;
+    // Request 1..20 are list.c1's warmup; 31 is its 11th measured call. It
+    // is held until the client closes its connection, by no timer, so no
+    // answer from the first cell can arrive during the second.
+    let (addr, discarded) = holding_responder(move |_| (200, body.clone()), Some(31)).await;
     let surface = api::NativeSurface {
         clients: Arc::new(
             (0..8)
@@ -1294,7 +1308,15 @@ async fn the_native_surface_keeps_measuring_after_a_read_times_out() {
         fixtures: Arc::new(reads),
     };
     let caps = |op| clients::native_capability("mailpit", op);
-    let cells = [cell(Operation::List, 1), cell(Operation::List, 8)];
+    // The second cell is the production list.c8 without its warmup: whether
+    // twenty loopback calls all fit in a production five-second warmup on a
+    // loaded host is not this property, and a warmup's own timeout blocks a
+    // cell by design (`a_failed_read_warmup_blocks_only_its_own_cell`).
+    let next = PlannedCell {
+        warmup: 0,
+        ..cell(Operation::List, 8)
+    };
+    let cells = [cell(Operation::List, 1), next];
     let (recs, abandoned) = api::run_cells(&cells, &caps, &surface, &api::NoMeter, clock(), None)
         .await
         .unwrap();
@@ -1314,35 +1336,44 @@ async fn the_native_surface_keeps_measuring_after_a_read_times_out() {
     assert_eq!(first.rows[10].outcome, Outcome::Timeout);
     assert!(first.rows[..10].iter().all(|r| r.outcome == Outcome::Exact));
     assert!(!first.unresolved && !first.cancel_unproved);
+    // The dropped read took its connection with it: the server saw the
+    // client close the held request's connection (an event, awaited under a
+    // bound only so a regression fails instead of hanging).
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(30), discarded)
+            .await
+            .expect("the timed-out read's connection was never discarded")
+            .unwrap(),
+        31
+    );
     // The later cell measures. How many of its 100 fit in its five seconds
-    // is the host's business, not this property's.
+    // is the host's business, not this property's; that the dropped read's
+    // client (worker 0) answers exactly again is.
     let second = &recs[1];
     assert_eq!(
         second.status,
         api::CellStatus::Measured,
-        "{:?} {:?}",
-        second.blocked,
-        second
-            .warmup
-            .iter()
-            .flat_map(|w| w.rows.iter().map(|r| r.outcome.class()))
-            .collect::<Vec<_>>()
+        "{:?}",
+        second.blocked
     );
+    assert!(second.warmup.is_none());
+    let rows = &second.measured.rows;
     assert!(second.measured.started > 0);
     assert!(
-        second
-            .measured
-            .rows
-            .iter()
-            .all(|r| matches!(r.outcome, Outcome::Exact | Outcome::Timeout))
+        rows.iter()
+            .all(|r| matches!(r.outcome, Outcome::Exact | Outcome::Timeout)),
+        "{:?}",
+        rows.iter().map(|r| r.outcome.class()).collect::<Vec<_>>()
     );
     assert!(
-        second
-            .measured
-            .rows
-            .iter()
-            .any(|r| r.outcome == Outcome::Exact)
+        rows.iter()
+            .any(|r| r.worker == 0 && r.outcome == Outcome::Exact),
+        "{:?}",
+        rows.iter()
+            .map(|r| (r.worker, r.outcome.class()))
+            .collect::<Vec<_>>()
     );
+    assert!(!second.measured.unresolved && !second.measured.cancel_unproved);
 }
 
 #[test]
