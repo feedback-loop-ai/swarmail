@@ -1144,8 +1144,10 @@ pub fn unsettled(listed: &Result<usize, OpError>, want: usize) -> bool {
 
 /// Read `read` until it is settled ([`unsettled`]) or the next read could
 /// not begin [`SETTLE_POLL`] before `deadline`; the last answer stands.
-/// This is untimed setup, never a measurement: a send is never repeated,
-/// only the store is read again.
+/// A read again that `deadline` itself cuts (a `timeout`) is no answer of
+/// the store's, so then the answer before it stands: a store that kept
+/// 784 of 1,000 says so, not "timeout". This is untimed setup, never a
+/// measurement: a send is never repeated, only the store is read again.
 pub async fn settled<T, F, Fut>(
     deadline: Instant,
     want: usize,
@@ -1156,12 +1158,17 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, OpError>>,
 {
+    let mut before: Option<Result<T, OpError>> = None;
     loop {
-        let got = read().await;
+        let got = match (read().await, before.take()) {
+            (Err(OpError::Timeout), Some(earlier)) => return earlier,
+            (got, _) => got,
+        };
         let n = got.as_ref().map(&len).map_err(|e| *e);
         if !unsettled(&n, want) || Instant::now() + SETTLE_POLL >= deadline {
             return got;
         }
+        before = Some(got);
         tokio::time::sleep(SETTLE_POLL).await;
     }
 }

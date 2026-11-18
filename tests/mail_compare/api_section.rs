@@ -2550,6 +2550,27 @@ async fn a_store_that_never_shows_everything_is_answered_at_the_bound() {
         .await;
         assert_eq!((got, reads.get()), (answer, want));
     }
+    // A read again that the bound cuts is no answer: the one before stands.
+    // The first read's own timeout is the answer.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(1_000);
+    let reads = std::cell::Cell::new(0u32);
+    let got = api::settled(deadline, 2, Vec::len, || {
+        reads.set(reads.get() + 1);
+        let n = reads.get();
+        async move {
+            match n {
+                1 => Ok(vec![1u8]),
+                _ => Err(clients::OpError::Timeout),
+            }
+        }
+    })
+    .await;
+    assert_eq!((got, reads.get()), (Ok(vec![1]), 2));
+    let got = api::settled(deadline, 2, Vec::<u8>::len, || async {
+        Err(clients::OpError::Timeout)
+    })
+    .await;
+    assert_eq!(got, Err(clients::OpError::Timeout));
 }
 
 #[test]
