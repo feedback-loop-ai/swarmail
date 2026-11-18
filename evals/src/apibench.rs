@@ -753,6 +753,46 @@ fn first_string(v: &Value, key: &str) -> Result<Option<String>, OpError> {
 // `swarmail-evals api-mcp`: one MCP API chunk (0132 §11.1)
 // ============================================================================
 
+/// The longest line `mail_compare hold --control api-v1` writes. Its lines
+/// are the endpoints (a target, a leaf and three addresses), one reply per
+/// control command (a few dozen bytes) and the receipt: a launch record and
+/// a cleanup record, 1,035 bytes for Swarmail on the 128-CPU host, whose
+/// only parts that grow are the host's CPU lists and a runtime's member
+/// list. 256 KiB holds four CPU lists of 4,096 ids each beside a member
+/// list of a thousand files; anything longer is refused, never buffered.
+pub const MAX_HOLDER_LINE: usize = 256 << 10;
+
+/// One line from the holder, read within `within` and at most
+/// [`MAX_HOLDER_LINE`] bytes (house rule: every read bounded); `Ok(None)`
+/// at EOF. A line over the bound, one cut off without its newline, or no
+/// line in time is an error.
+pub async fn holder_line<R: tokio::io::AsyncBufRead + Unpin>(
+    r: &mut R,
+    within: std::time::Duration,
+) -> Result<Option<String>, String> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+    let mut line = Vec::new();
+    let mut bounded = (&mut *r).take(MAX_HOLDER_LINE as u64 + 1);
+    let n = tokio::time::timeout(within, bounded.read_until(b'\n', &mut line))
+        .await
+        .map_err(|_| "no line in time".to_owned())?
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if line.last() != Some(&b'\n') {
+        return Err(if line.len() > MAX_HOLDER_LINE {
+            format!("a holder line over {MAX_HOLDER_LINE} bytes")
+        } else {
+            "a holder line without its end".to_owned()
+        });
+    }
+    line.pop();
+    String::from_utf8(line)
+        .map(Some)
+        .map_err(|_| "a holder line that is not UTF-8".to_owned())
+}
+
 /// The held target's control pipe, as the meter of every cell's window: the
 /// window opens and closes on the holder's clock, never this process's.
 pub struct ControlMeter {
@@ -770,7 +810,7 @@ impl ControlMeter {
     /// Send one control line and read its one reply line: an `error` reply,
     /// or no reply, is a refusal.
     pub async fn command(&self, line: &Value) -> Result<Value, String> {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
         let mut p = self.pipe.lock().await;
         let sent = self.clock.now_ns();
         let mut bytes = line.to_string().into_bytes();
@@ -779,18 +819,13 @@ impl ControlMeter {
             .await
             .map_err(|e| format!("control: {e}"))?;
         p.0.flush().await.map_err(|e| format!("control: {e}"))?;
-        let mut reply = String::new();
-        let n = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            p.1.read_line(&mut reply),
-        )
-        .await
-        .map_err(|_| "control: no reply".to_owned())?
-        .map_err(|e| format!("control: {e}"))?;
+        let reply = holder_line(&mut p.1, std::time::Duration::from_secs(60))
+            .await
+            .map_err(|e| format!("control: {e}"))?;
         let got = self.clock.now_ns();
-        if n == 0 {
+        let Some(reply) = reply else {
             return Err("control: the holder ended".into());
-        }
+        };
         let v: Value = serde_json::from_str(&reply).map_err(|e| format!("control reply: {e}"))?;
         if v.get("ok").is_none() {
             return Err(format!("control refused: {}", v));
@@ -1024,7 +1059,6 @@ pub fn chunk_exit(
 }
 
 async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
-    use tokio::io::AsyncBufReadExt;
     // Before the holder exists: every deadline derived from it falls no
     // later than the holder's own.
     let started = std::time::Instant::now();
@@ -1071,16 +1105,16 @@ async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
     let mut first_line = None;
     let mut leaf = None;
     let ours: Result<(), String> = async {
-        let mut line = String::new();
         let read = {
             let mut p = meter.pipe.lock().await;
-            tokio::time::timeout(RECEIPT_BOUND, p.1.read_line(&mut line)).await
+            holder_line(&mut p.1, RECEIPT_BOUND).await
         };
         let endpoints: Value = match read {
-            Ok(Ok(n)) if n > 0 => {
+            Ok(Some(line)) => {
                 serde_json::from_str(&line).map_err(|e| format!("hold endpoints: {e}"))?
             }
-            _ => return Err("the holder ended before it announced".into()),
+            Ok(None) => return Err("the holder ended before it announced".into()),
+            Err(e) => return Err(format!("the holder did not announce: {e}")),
         };
         if endpoints.get("cleanup").is_some() {
             // It refused or its target did not come up: its first line is
@@ -1160,9 +1194,8 @@ async fn api_mcp_inner(args: &[String]) -> Result<i32, String> {
             // the line that carries a cleanup.
             let mut found = None;
             for _ in 0..4 {
-                let mut line = String::new();
-                match tokio::time::timeout(RECEIPT_BOUND, stdout.read_line(&mut line)).await {
-                    Ok(Ok(n)) if n > 0 => {
+                match holder_line(&mut stdout, RECEIPT_BOUND).await {
+                    Ok(Some(line)) => {
                         if let Ok(v) = serde_json::from_str::<Value>(&line)
                             && v.get("cleanup").is_some()
                         {

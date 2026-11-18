@@ -1118,3 +1118,50 @@ async fn an_mcp_scan_charges_every_page_to_one_operation_budget() {
     assert_eq!(spend.requests, 2);
     assert_eq!(sent.lock().unwrap()[6..], pages[..]);
 }
+
+/// The receipt the real holder wrote for Swarmail's MCP chunk on the
+/// 128-CPU host (2026-11-18), byte for byte.
+const HOST_RECEIPT: &str = r#"{"cleanup":{"cgroup_removed":true,"exited_early":false,"forced_kill":false,"group_gone":true,"leaf":"target-0001","listeners":[{"closed":true,"role":"smtp"},{"closed":true,"role":"http"}],"listeners_closed":true,"memory_peak_bytes":32190464,"oom_kills":0,"reaped":true,"scratch_removed":true,"target":"swarmail"},"launch":{"argv_template":["serve","--smtp-listen","{smtp_addr}","--pop3-listen","127.0.0.1:0","--http-listen","{http_addr}","--max-sessions","1000","--max-per-inbox","150000"],"cpu_layout":{"client_cpus":[2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31],"idle_siblings":[],"siblings_outside_set":[64,65],"target_cpus":[0,1]},"env_template":[],"executable_sha256":"2039e08db61cdacf81262ede1b6adac0ac9da03e9bd301b2a3af53a8ae78a23a","joined":{"cgroup":"target-0001","cpus_allowed":[0,1]},"leaf":"target-0001","limits":{"cpu_max":"200000 100000","memory_max":"2147483648","memory_oom_group":"1","memory_swap_max":"0","pids_max":"4096"},"members":[],"ready_ns":452669732,"target":"swarmail"}}"#;
+
+#[tokio::test]
+async fn a_holder_line_is_read_within_its_bound() {
+    use apibench::{MAX_HOLDER_LINE, holder_line};
+    let within = Duration::from_secs(60);
+    // The host's real receipt, and a line of exactly the bound, read whole.
+    let read = |bytes: Vec<u8>| async move {
+        let mut r = tokio::io::BufReader::new(bytes.as_slice());
+        holder_line(&mut r, within).await
+    };
+    let got = read(format!("{HOST_RECEIPT}\n").into_bytes())
+        .await
+        .unwrap();
+    let v: Value = serde_json::from_str(&got.unwrap()).unwrap();
+    assert_eq!(v["cleanup"]["target"], "swarmail");
+    let mut at = vec![b'x'; MAX_HOLDER_LINE];
+    at.push(b'\n');
+    assert_eq!(
+        read(at).await.unwrap().map(|l| l.len()),
+        Some(MAX_HOLDER_LINE)
+    );
+    // One byte over is refused before it is buffered past the bound.
+    let mut over = vec![b'x'; MAX_HOLDER_LINE + 1];
+    over.push(b'\n');
+    let e = read(over).await.unwrap_err();
+    assert!(e.contains(&format!("over {MAX_HOLDER_LINE}")), "{e}");
+    // A line cut off without its end, and EOF.
+    assert!(
+        read(b"{\"ok\":".to_vec())
+            .await
+            .unwrap_err()
+            .contains("without its end")
+    );
+    assert_eq!(read(Vec::new()).await.unwrap(), None);
+    // A holder that holds its output open and silent: refused at the bound
+    // (a real deadline, kept short).
+    let (_keep, quiet) = tokio::io::duplex(64);
+    let mut r = tokio::io::BufReader::new(quiet);
+    let e = holder_line(&mut r, Duration::from_millis(100))
+        .await
+        .unwrap_err();
+    assert!(e.contains("in time"), "{e}");
+}
