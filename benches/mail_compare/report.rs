@@ -3,7 +3,7 @@
 //! failures and unstarted work are counted beside every rate.
 
 use crate::protocol::{
-    Backend, Claim, Protocol, Provenance, ResourceProfile, StorageProfile, TargetKind,
+    Backend, Claim, Observation, Protocol, Provenance, ResourceProfile, StorageProfile, TargetKind,
 };
 use crate::records::{
     Manifest, Phase, ResourceRow, Row, SampleRow, WindowKind, WindowOutcome, WindowRow,
@@ -449,6 +449,7 @@ pub fn admit_run(
         );
     }
     let admitted = crate::records::admit(dir)?;
+    refuse_v4_row_facts(&admitted.rows)?;
     let m = &admitted.manifest;
     if m.protocol_sha256 != crate::targets::sha256_hex(protocol_bytes) {
         return Err("the manifest names a different protocol".into());
@@ -545,6 +546,8 @@ pub struct V4Report {
     pub headline: Headline,
     /// Needs the API section's fill levels (story B): owed, never a number.
     pub mib_per_1k_retained: Owed,
+    /// The wait section (0132 §7.3): every wait profile repetition and cell.
+    pub wait_profiles: WaitsSection,
 }
 
 #[derive(Debug, Serialize)]
@@ -1029,12 +1032,15 @@ pub fn report_v4(
     let mut r = report(p, m, rows, life);
     r.report_version = REPORT_VERSION_V4;
     let mut all = Figures::default();
+    let mut waits = Vec::new();
     for g in groups {
         let mut f = figures(&r.throughput, rows, g);
         all.cost.append(&mut f.cost);
         all.idle.append(&mut f.idle);
         all.startup.append(&mut f.startup);
+        waits.append(&mut wait_figures(p, rows, g));
     }
+    let wait_cells = wait_cells(p, rows, &waits);
     let cells = cost_cells(&all.cost);
     let idle = idle_cells(&all.idle);
     let startup = startup_cells(&all.startup);
@@ -1069,6 +1075,10 @@ pub fn report_v4(
             status: "owed",
             owed_by: "story B: the API section's fill levels (0132 §6.4)",
         },
+        wait_profiles: WaitsSection {
+            repetitions: waits,
+            cells: wait_cells,
+        },
     });
     r
 }
@@ -1079,13 +1089,14 @@ pub fn report_v4(
 
 /// The files `admit-v4 --seal` writes at the top of a run directory, each a
 /// pure function of the chunks, so verifying is recomputing and comparing.
-pub const SEALED_FILES: [&str; 6] = [
+pub const SEALED_FILES: [&str; 7] = [
     "manifest.json",
     "host.json",
     "chunks.json",
     "launches.json",
     "report.json",
     "report-cost.json",
+    "report-waits.json",
 ];
 pub const ADMISSION_VERSION: u32 = 1;
 
@@ -1278,7 +1289,7 @@ fn check_launch(
 }
 
 /// The keys of a chunk or run report that are recomputed from rows.
-const DERIVED: [&str; 9] = [
+const DERIVED: [&str; 10] = [
     "throughput",
     "waits",
     "blocked",
@@ -1288,6 +1299,7 @@ const DERIVED: [&str; 9] = [
     "startup",
     "headline",
     "mib_per_1k_retained",
+    "wait_profiles",
 ];
 
 fn no_life() -> Lifecycle {
@@ -1326,6 +1338,7 @@ pub fn admit_chunk(
             "its plan is not the protocol's plan for this chunk: a smaller denominator never admits",
         );
     }
+    check_wait_rows(a.protocol, &admitted.rows).map_err(|e| format!("chunk {name}: {e}"))?;
     let Some(host) = &m.host else {
         return refuse("its manifest states no host");
     };
@@ -1614,7 +1627,9 @@ pub fn admit_v4(dir: &std::path::Path, a: &Admission, seal: bool) -> Result<RunA
     // admit, and a run of nothing is not a run. No repetition is no chunk,
     // whatever else the protocol says.
     let empty = || Err("the protocol's chunk plan is empty: there is no chunk to admit".into());
-    if a.protocol.throughput.iter().all(|t| t.repetitions == 0) {
+    if a.protocol.throughput.iter().all(|t| t.repetitions == 0)
+        && a.protocol.waits.iter().all(|w| w.repetitions == 0)
+    {
         return empty();
     }
     // A malformed protocol is refused before its plan is computed: the
@@ -1820,6 +1835,17 @@ pub fn admit_v4(dir: &std::path::Path, a: &Admission, seal: bool) -> Result<RunA
             api_run_report(a.protocol, &plan, &admitted, &run_report),
         );
     }
+    files.insert(
+        "report-waits.json".to_owned(),
+        pick(&[
+            "report_version",
+            "run_id",
+            "protocol_id",
+            "protocol_sha256",
+            "wait_profiles",
+            "blocked",
+        ]),
+    );
     let out = RunAdmitted {
         run_id: first.run_id.clone(),
         chunks: admitted.len(),
@@ -1861,4 +1887,401 @@ pub fn admit_v4(dir: &std::path::Path, a: &Admission, seal: bool) -> Result<RunA
         );
     }
     Ok(out)
+}
+
+// ============================================================================
+// Protocol 4: the wait section (accepted decision 0132 §7.3)
+// ============================================================================
+
+/// One repetition of one wait profile of one target, recomputed from its
+/// rows and its `measure` window. Duplicate and unrelated answers are
+/// counted independently from the rows' counts (an answer can be both); a
+/// correct empty wait is not a miss; expected mail with no timely return is
+/// `missed` (censored), whatever the outcome that says why.
+#[derive(Debug, Clone, Serialize)]
+pub struct WaitRep {
+    pub target: TargetKind,
+    pub profile: String,
+    pub repetition: u32,
+    /// `native`, `poll` or `stream`: the profile's method for the target.
+    pub method: &'static str,
+    pub interval_ms: Option<u64>,
+    /// Rows by phase and outcome, every started instance kept.
+    pub outcomes: BTreeMap<String, BTreeMap<String, u64>>,
+    /// Present and future instances whose send was accepted.
+    pub sent: u64,
+    /// Of those, answered by the cutoff with the expected message.
+    pub timely: u64,
+    /// Of those, no timely return (timeout, late, error or an answer
+    /// without the expected message): censored.
+    pub missed: u64,
+    /// Answers that held the expected message more than once.
+    pub duplicate: u64,
+    /// Answers that held any other message.
+    pub unrelated: u64,
+    /// Answers that were both.
+    pub duplicate_and_unrelated: u64,
+    /// Empty instances answered with nothing by their cutoff (correct).
+    pub empty_correct: u64,
+    /// A stream answer's cause, by name.
+    pub causes: BTreeMap<String, u64>,
+    /// Future mail: signed client return minus the SMTP 250, never clamped;
+    /// a row without either timestamp is absent, and missed rows are
+    /// censored.
+    pub ack_to_return: Quantiles,
+    /// Present mail: return minus the wait's start.
+    pub present_latency: Quantiles,
+    pub requests: u64,
+    /// The `measure` window: absent when the instance had none.
+    pub window_outcome: Option<WindowOutcome>,
+    pub cpu_user_usec: Option<u64>,
+    pub cpu_system_usec: Option<u64>,
+    pub cpu_total_usec: Option<u64>,
+    pub peak_memory_bytes: Option<u64>,
+    pub peak_anon_bytes: Option<u64>,
+    pub nr_throttled: Option<u64>,
+}
+
+/// One wait profile of one target over its repetitions: the counts summed,
+/// the latencies pooled over every repetition's samples, the CPU and memory
+/// as a median with its extremes.
+#[derive(Debug, Clone, Serialize)]
+pub struct WaitProfileCell {
+    pub target: TargetKind,
+    pub profile: String,
+    pub method: &'static str,
+    pub repetitions: u32,
+    pub sent: u64,
+    pub timely: u64,
+    pub missed: u64,
+    pub duplicate: u64,
+    pub unrelated: u64,
+    pub duplicate_and_unrelated: u64,
+    pub empty_correct: u64,
+    pub causes: BTreeMap<String, u64>,
+    pub ack_to_return: Quantiles,
+    pub present_latency: Quantiles,
+    pub cpu_total_usec: Option<Spread>,
+    pub peak_memory_mib: Option<Spread>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WaitsSection {
+    pub repetitions: Vec<WaitRep>,
+    pub cells: Vec<WaitProfileCell>,
+}
+
+fn method(p: &Protocol, target: TargetKind, profile: &str) -> (&'static str, Option<u64>) {
+    p.waits
+        .iter()
+        .find(|w| w.name == profile)
+        .and_then(|w| w.observation.iter().find(|o| o.target == target))
+        .map_or(("unknown", None), |o| {
+            let m = match o.mode {
+                Observation::Native => "native",
+                Observation::Poll => "poll",
+                Observation::Stream => "stream",
+            };
+            (m, o.interval_ms)
+        })
+}
+
+/// Every protocol 4 wait repetition, from the rows and windows of one chunk.
+pub fn wait_figures(p: &Protocol, rows: &[Row], res: &[ResourceRow]) -> Vec<WaitRep> {
+    let qs = &p.statistics.quantiles;
+    let mut groups: BTreeMap<(TargetKind, String, u32), Vec<&Row>> = BTreeMap::new();
+    for r in rows
+        .iter()
+        .filter(|r| matches!(r.phase, Phase::Present | Phase::Future | Phase::Empty))
+    {
+        groups
+            .entry((r.target, r.profile.clone(), r.repetition))
+            .or_default()
+            .push(r);
+    }
+    // In the protocol's profile order, so a chunk's figures read as it ran.
+    let index = |name: &str| p.waits.iter().position(|w| w.name == name);
+    let mut groups: Vec<_> = groups.into_iter().collect();
+    groups.sort_by_key(|((t, profile, rep), _)| (index(profile), *t, *rep));
+    let mut out = Vec::new();
+    for ((target, profile, repetition), rs) in groups {
+        let window = res.iter().find_map(|x| match x {
+            ResourceRow::Window(w)
+                if w.target == target
+                    && w.profile == profile
+                    && w.repetition == repetition
+                    && w.window == WindowKind::Measure =>
+            {
+                Some(w)
+            }
+            _ => None,
+        });
+        // A run's figures are taken chunk by chunk: a repetition belongs to
+        // the chunk whose windows it has (every planned profile has its
+        // windows, opened or not).
+        let Some(window) = window else { continue };
+        let (m, interval_ms) = method(p, target, &profile);
+        let mut rep = WaitRep {
+            target,
+            profile: profile.clone(),
+            repetition,
+            method: m,
+            interval_ms,
+            outcomes: BTreeMap::new(),
+            sent: 0,
+            timely: 0,
+            missed: 0,
+            duplicate: 0,
+            unrelated: 0,
+            duplicate_and_unrelated: 0,
+            empty_correct: 0,
+            causes: BTreeMap::new(),
+            ack_to_return: quantiles(Vec::new(), 0, qs),
+            present_latency: quantiles(Vec::new(), 0, qs),
+            requests: 0,
+            window_outcome: None,
+            cpu_user_usec: None,
+            cpu_system_usec: None,
+            cpu_total_usec: None,
+            peak_memory_bytes: None,
+            peak_anon_bytes: None,
+            nr_throttled: None,
+        };
+        let (mut ack, mut present) = (Vec::new(), Vec::new());
+        let (mut ack_censored, mut present_censored) = (0, 0);
+        for r in &rs {
+            let phase = format!("{:?}", r.phase).to_lowercase();
+            *rep.outcomes
+                .entry(phase)
+                .or_default()
+                .entry(r.outcome.clone())
+                .or_default() += 1;
+            rep.requests += r.requests.unwrap_or(0);
+            let answered = matches!(r.outcome.as_str(), "observed" | "late" | "unrelated");
+            let (expected, other) = (r.expected.unwrap_or(0), r.unrelated.unwrap_or(0));
+            if answered {
+                rep.duplicate += u64::from(expected > 1);
+                rep.unrelated += u64::from(other > 0);
+                rep.duplicate_and_unrelated += u64::from(expected > 1 && other > 0);
+                if let Some(c) = &r.cause {
+                    *rep.causes.entry(c.clone()).or_default() += 1;
+                }
+            }
+            if r.phase == Phase::Empty {
+                rep.empty_correct += u64::from(r.outcome == "timeout");
+                continue;
+            }
+            if matches!(r.outcome.as_str(), "send_failed" | "unstarted") {
+                continue;
+            }
+            rep.sent += 1;
+            let timely = matches!(r.outcome.as_str(), "observed" | "unrelated") && expected > 0;
+            match (timely, r.phase) {
+                (true, Phase::Future) => {
+                    rep.timely += 1;
+                    ack.extend(diff(r.observed_ns, r.ack_ns));
+                }
+                (true, _) => {
+                    rep.timely += 1;
+                    present.extend(diff(r.observed_ns, r.invoked_ns));
+                }
+                (false, Phase::Future) => {
+                    rep.missed += 1;
+                    ack_censored += 1;
+                }
+                (false, _) => {
+                    rep.missed += 1;
+                    present_censored += 1;
+                }
+            }
+        }
+        rep.ack_to_return = quantiles(ack, ack_censored, qs);
+        rep.present_latency = quantiles(present, present_censored, qs);
+        {
+            let w = window;
+            rep.window_outcome = Some(w.outcome);
+            if let Some((a, b, ..)) = w.counters() {
+                let user = b.user_usec.saturating_sub(a.user_usec);
+                let system = b.system_usec.saturating_sub(a.system_usec);
+                rep.cpu_user_usec = Some(user);
+                rep.cpu_system_usec = Some(system);
+                rep.cpu_total_usec = Some(user + system);
+                rep.nr_throttled = Some(b.nr_throttled.saturating_sub(a.nr_throttled));
+                let inside = res.iter().filter_map(|x| match x {
+                    ResourceRow::Sample(s)
+                        if s.launch == w.launch
+                            && s.target == w.target
+                            && s.t_ns >= w.start_ns
+                            && s.t_ns <= w.end_ns =>
+                    {
+                        Some(s)
+                    }
+                    _ => None,
+                });
+                let (mut mem, mut anon) = (None, None::<u64>);
+                for s in inside {
+                    mem = Some(mem.map_or(s.memory_current, |m: u64| m.max(s.memory_current)));
+                    anon = Some(anon.map_or(s.anon, |m| m.max(s.anon)));
+                }
+                rep.peak_memory_bytes = mem;
+                rep.peak_anon_bytes = anon;
+            }
+        }
+        out.push(rep);
+    }
+    out
+}
+
+/// The wait cells over repetitions, in the order of first appearance.
+pub fn wait_cells(p: &Protocol, rows: &[Row], reps: &[WaitRep]) -> Vec<WaitProfileCell> {
+    let qs = &p.statistics.quantiles;
+    grouped(reps, |r| (r.target, r.profile.clone()))
+        .into_iter()
+        .map(|((target, profile), rs)| {
+            let sum = |f: fn(&WaitRep) -> u64| rs.iter().map(|r| f(r)).sum::<u64>();
+            let mut causes = BTreeMap::new();
+            for r in &rs {
+                for (c, n) in &r.causes {
+                    *causes.entry(c.clone()).or_default() += n;
+                }
+            }
+            // Pooled from the rows, so a cell is the same arithmetic as its
+            // repetitions'.
+            let pooled = figures_pooled(rows, target, &profile);
+            WaitProfileCell {
+                target,
+                method: rs[0].method,
+                repetitions: rs.len() as u32,
+                sent: sum(|r| r.sent),
+                timely: sum(|r| r.timely),
+                missed: sum(|r| r.missed),
+                duplicate: sum(|r| r.duplicate),
+                unrelated: sum(|r| r.unrelated),
+                duplicate_and_unrelated: sum(|r| r.duplicate_and_unrelated),
+                empty_correct: sum(|r| r.empty_correct),
+                causes,
+                ack_to_return: quantiles(
+                    pooled.0,
+                    sum(|r| r.ack_to_return.censored as u64) as usize,
+                    qs,
+                ),
+                present_latency: quantiles(
+                    pooled.1,
+                    sum(|r| r.present_latency.censored as u64) as usize,
+                    qs,
+                ),
+                cpu_total_usec: spread(
+                    &rs.iter()
+                        .filter_map(|r| r.cpu_total_usec.map(|c| c as f64))
+                        .collect::<Vec<_>>(),
+                ),
+                peak_memory_mib: spread(
+                    &rs.iter()
+                        .filter_map(|r| r.peak_memory_bytes.map(|b| b as f64 / MIB))
+                        .collect::<Vec<_>>(),
+                ),
+                profile,
+            }
+        })
+        .collect()
+}
+
+/// The timely future `ack_to_return` and present latency samples of one
+/// wait profile of one target, over every repetition.
+fn figures_pooled(rows: &[Row], target: TargetKind, profile: &str) -> (Vec<i64>, Vec<i64>) {
+    let (mut ack, mut present) = (Vec::new(), Vec::new());
+    for r in rows
+        .iter()
+        .filter(|r| r.target == target && r.profile == profile)
+    {
+        let timely =
+            matches!(r.outcome.as_str(), "observed" | "unrelated") && r.expected.unwrap_or(0) > 0;
+        match (timely, r.phase) {
+            (true, Phase::Future) => ack.extend(diff(r.observed_ns, r.ack_ns)),
+            (true, Phase::Present) => present.extend(diff(r.observed_ns, r.invoked_ns)),
+            _ => {}
+        }
+    }
+    (ack, present)
+}
+
+/// What protocol 4 holds every wait row to (0132 §7.3), so a row whose facts
+/// disagree with its outcome is refused by name before anything is derived
+/// from it: an answer carries its counts and when it came, an observed
+/// answer holds the expected message and nothing else, a late answer holds
+/// something and is censored whatever it holds, a timeout holds
+/// nothing, a stream answer names its scan's cause and nothing else does,
+/// and a row that was not answered carries no counts.
+pub fn check_wait_rows(p: &Protocol, rows: &[Row]) -> Result<(), String> {
+    for r in rows
+        .iter()
+        .filter(|r| matches!(r.phase, Phase::Present | Phase::Future | Phase::Empty))
+    {
+        let at = format!(
+            "wait row {} {} rep {} {:?} {}",
+            r.target, r.profile, r.repetition, r.phase, r.sample
+        );
+        let (m, _) = method(p, r.target, &r.profile);
+        if m == "unknown" {
+            return Err(format!(
+                "{at}: no wait profile observes {} by that name",
+                r.target
+            ));
+        }
+        let counts = (r.expected, r.unrelated);
+        let ok = match r.outcome.as_str() {
+            "observed" => matches!(counts, (Some(e), Some(0)) if e > 0) && r.observed_ns.is_some(),
+            // A late answer is censored whatever it carried, so it may hold
+            // other mail beside the expected message, or instead of it.
+            "late" => matches!(counts, (Some(e), Some(u)) if e + u > 0) && r.observed_ns.is_some(),
+            "unrelated" => matches!(counts, (Some(_), Some(u)) if u > 0) && r.observed_ns.is_some(),
+            "timeout" => counts == (Some(0), Some(0)) && r.observed_ns.is_none(),
+            "error" | "send_failed" | "unstarted" => counts == (None, None) && r.cause.is_none(),
+            other => return Err(format!("{at}: outcome {other:?} is not a wait outcome")),
+        };
+        if !ok {
+            return Err(format!(
+                "{at}: its counts {:?}/{:?} and return time disagree with its outcome {:?}",
+                r.expected, r.unrelated, r.outcome
+            ));
+        }
+        let answered = matches!(r.outcome.as_str(), "observed" | "late" | "unrelated");
+        // An answer's latency is measured from the send's start (future) or
+        // the wait's invocation (present, empty): without it a sample would
+        // silently drop out of the recomputed figures.
+        let (from, name) = match r.phase {
+            Phase::Future => (r.start_ns, "start_ns"),
+            _ => (r.invoked_ns, "invoked_ns"),
+        };
+        if answered && from.is_none() {
+            return Err(format!("{at}: an answer without its {name}"));
+        }
+        match (&r.cause, m == "stream" && answered) {
+            (Some(c), true) if crate::observe::Cause::parse(c).is_some() => {}
+            (None, false) => {}
+            (Some(c), true) => return Err(format!("{at}: cause {c:?} is not a scan cause")),
+            (None, true) => return Err(format!("{at}: a stream answer names no scan cause")),
+            (Some(c), false) => {
+                return Err(format!(
+                    "{at}: cause {c:?} on a row that is no stream answer"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Protocols 1 to 3 know none of protocol 4's wait row facts: a row that
+/// carries one is refused by name.
+pub fn refuse_v4_row_facts(rows: &[Row]) -> Result<(), String> {
+    match rows
+        .iter()
+        .find(|r| r.expected.is_some() || r.unrelated.is_some() || r.cause.is_some())
+    {
+        Some(r) => Err(format!(
+            "row {} {} rep {} {:?} {} carries protocol 4's wait facts (expected, unrelated, cause), which this protocol does not have",
+            r.target, r.profile, r.repetition, r.phase, r.sample
+        )),
+        None => Ok(()),
+    }
 }

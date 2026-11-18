@@ -286,6 +286,8 @@ full-panel correctness and guarantees members from Codex Astra to official
 DeepSeek Flash through dsh at high effort (security's route; offices and
 results stay separate) and gives the `codex`, `codex-careful` and `codex-fast`
 review seat a 14400 s deadline instead of 3600 s.
+On 2026-11-17 the operator moved the Codex roster to Sol 6.2 (`gpt-6.2-sol`)
+and Astra 6.2 (`gpt-6.2-astra`); their seats keep medium effort.
 On 2026-11-16 the operator set every Codex Sol 6.1 and Astra seat, and every
 Opus and Fable seat, to medium effort (Haiku, Sonnet, Terra, Luna, Flash and
 GLM keep theirs), and moved `qwen-max` from `dashscope/qwen3.8-max` to

@@ -1,7 +1,8 @@
 // Swarmail run console: declarative over the JSON API and the feed. The
 // server decides what a thread is; the browser only paints it. Mail-controlled
 // and client-controlled text reaches the page through textContent, and the
-// one HTML preview through the srcdoc of a bare-sandbox frame. Appearance is
+// one HTML preview is a separate same-origin document, framed by a
+// bare-sandbox iframe and governed by its own response headers. Appearance is
 // chosen by class from fixed tables, never from mail data, and the only link
 // this script builds points at a same-origin console route.
 const view = document.getElementById('view');
@@ -733,8 +734,23 @@ let readerMissing = false;
 let topZone = null;
 let tabStrip = null;
 let tabBody = null;
+// The preview frame lives in its own slot, hidden rather than removed while
+// another tab shows, so a tab change or new enrichment never reloads it.
+let previewSlot = null;
+let otherSlot = null;
+let previewFor = null;
+// The one mail whose preview may load remote content. Consent is per
+// selection and never stored: choosing another mail, or coming back to this
+// one later, starts with remote content off.
+let remoteFor = null;
+
+const PREVIEW_NOTE =
+  'Rendered in a sandbox with scripts, forms and navigation off; remote images, stylesheets and fonts are blocked. Inline images show only for PNG, JPEG, GIF or WebP parts referenced as cid: in an img src, kept at ingest, at most 256 KiB each and 2 MiB per preview. Missing or ambiguous Content-IDs, SVG and other types, parts marked as attachments, CSS or srcset references, unstored or mismatched bytes, and mail over 8 MiB stay broken. HTML over 2 MiB, or a preview over 4 MiB, is refused.';
+const REMOTE_WARNING =
+  "Loading contacts the sender's hosts. Your browser fetches the images, stylesheets and fonts itself: those hosts see your IP address and may receive cookies or credentials your browser holds for them, can redirect, and can be local or private addresses. Scripts, forms and navigation stay off.";
 
 function select(id, show) {
+  if (id !== selectedId) remoteFor = null;
   selectedId = id;
   fresh.delete(id);
   for (const [rowId, row] of rowButtons) {
@@ -931,17 +947,32 @@ function note(text) {
   return el('div', 'note', text);
 }
 
-function previewTab(email) {
+function previewSrc(id, remote) {
+  return '/ui/message/' + encodeURIComponent(id) + '/preview' + (remote ? '?remote=1' : '');
+}
+
+function previewTab(email, id) {
   if (!email.html) return [note('No HTML part.')];
-  // The bare sandbox: set before the frame has any content and before it is
+  // The bare sandbox: set before the frame has a source and before it is
   // attached, with no token added. Scripts, forms, popups and the page's own
-  // origin stay off.
+  // origin stay off; the document's own policy says the same again.
   const frame = document.createElement('iframe');
   frame.className = 'preview';
   frame.setAttribute('sandbox', '');
   frame.setAttribute('title', 'HTML preview, scripts disabled');
-  frame.srcdoc = email.html;
-  return [frame, note('Rendered in a sandbox with scripts off.')];
+  frame.src = previewSrc(id, remoteFor === id);
+  const load = button('btn', 'Load remote content', () => {
+    // A frame that no longer belongs to the open mail grants nothing.
+    if (selectedId !== id || previewFor !== id) return;
+    remoteFor = id;
+    load.disabled = true;
+    frame.src = previewSrc(id, true);
+  });
+  load.disabled = remoteFor === id;
+  const bar = el('div', 'preview-bar');
+  bar.appendChild(load);
+  bar.appendChild(el('span', 'note', REMOTE_WARNING));
+  return [bar, frame, note(PREVIEW_NOTE)];
 }
 
 function textTab(email) {
@@ -1019,12 +1050,18 @@ const TABS = [
 
 function paintTabBody() {
   const email = mailById.get(selectedId);
-  let nodes;
-  if (activeTab === 'preview') nodes = previewTab(email);
-  else if (activeTab === 'text') nodes = textTab(email);
+  const preview = activeTab === 'preview';
+  if (preview && previewFor !== selectedId) {
+    previewFor = selectedId;
+    previewSlot.replaceChildren(...previewTab(email, selectedId));
+  }
+  previewSlot.hidden = !preview;
+  otherSlot.hidden = preview;
+  let nodes = [];
+  if (activeTab === 'text') nodes = textTab(email);
   else if (activeTab === 'deliverability') nodes = deliverabilityTab(stateOf(selectedId, 'report'));
-  else nodes = testsTab(email, stateOf(selectedId, 'projection'));
-  tabBody.replaceChildren(...nodes);
+  else if (activeTab === 'tests') nodes = testsTab(email, stateOf(selectedId, 'projection'));
+  otherSlot.replaceChildren(...nodes);
   for (const tab of tabStrip.childNodes) tab.setAttribute('aria-selected', String(tab.dataset.key === activeTab));
 }
 
@@ -1066,6 +1103,11 @@ function paintReader() {
   box.appendChild(tabStrip);
   tabBody = el('div', 'tabpanel');
   tabBody.setAttribute('role', 'tabpanel');
+  previewSlot = el('div');
+  otherSlot = el('div');
+  previewFor = null;
+  tabBody.appendChild(previewSlot);
+  tabBody.appendChild(otherSlot);
   box.appendChild(tabBody);
   body.appendChild(box);
   paintTop();
@@ -1074,7 +1116,7 @@ function paintReader() {
 }
 
 // New enrichment for the open mail: repaint what depends on it. The preview
-// and text tabs do not, so their frame is not reloaded.
+// and text tabs do not, so the preview frame is never reloaded.
 function refreshReader() {
   const projection = stateOf(selectedId, 'projection');
   if (!topZone || (projection && projection.state === 'gone')) {

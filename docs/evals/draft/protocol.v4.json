@@ -65,7 +65,242 @@
       "verify_deadline_ms": 60000
     }
   ],
-  "waits": [],
+  "waits": [
+    {
+      "name": "wait-common",
+      "repetitions": 3,
+      "present": 100,
+      "future": 100,
+      "empty": 20,
+      "deadline_ms": 30000,
+      "empty_deadline_ms": 1000,
+      "observation": [
+        {
+          "target": "swarmail",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-common: the common 100 ms poll for every target, Swarmail included, so that the poll-versus-push difference is explicit (0132 §7.1). The common client path: the same search poll every target gets, at the interval frozen for the competitors."
+        },
+        {
+          "target": "mailpit",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-common: the common 100 ms poll for every target, Swarmail included, so that the poll-versus-push difference is explicit (0132 §7.1). Common-client polling over the captured API's search endpoint (/api/v1/search): a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (proposed decision 0093 §4), not the best available: the reviewed websocket source (sources.lock.json) establishes no lossless wait."
+        },
+        {
+          "target": "mailhog",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-common: the common 100 ms poll for every target, Swarmail included, so that the poll-versus-push difference is explicit (0132 §7.1). Common-client polling over the captured API's search endpoint (/api/v2/search?kind=containing): a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (proposed decision 0093 §4), not the best available: the reviewed websocket source (sources.lock.json) establishes no lossless wait."
+        },
+        {
+          "target": "mailslurper",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-common: the common 100 ms poll for every target, Swarmail included, so that the poll-versus-push difference is explicit (0132 §7.1). Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. MailSlurper's service API registers no wait or push route (its pinned source), and the official executable does not start (a published result), so this row is blocked, not measured. The method is labelled per row."
+        },
+        {
+          "target": "mailslurper-source-build",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-common: the common 100 ms poll for every target, Swarmail included, so that the poll-versus-push difference is explicit (0132 §7.1). Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. MailSlurper's service API registers no wait or push route (its pinned source). Each scan lists every message over its listing API and filters on the client by token. The method is labelled per row."
+        },
+        {
+          "target": "smtp4dev",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-common: the common 100 ms poll for every target, Swarmail included, so that the poll-versus-push difference is explicit (0132 §7.1). Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. smtp4dev's pinned API documentation lists no blocking wait; each scan lists every message over its paged API and filters on the client by token. The method is labelled per row."
+        },
+        {
+          "target": "inbucket",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-common: the common 100 ms poll for every target, Swarmail included, so that the poll-versus-push difference is explicit (0132 §7.1). Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. Inbucket's server-side wait, if any, was not inspected; each scan lists the one mailbox over its REST API and filters on the client by token. The method is labelled per row."
+        },
+        {
+          "target": "greenmail",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-common: the common 100 ms poll for every target, Swarmail included, so that the poll-versus-push difference is explicit (0132 §7.1). Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. GreenMail's pinned OpenAPI lists no wait route and POP3 has none; each scan reads the mailbox over POP3 with a fresh session and filters on the client by token, a per-scan cost labelled on the row. The method is labelled per row."
+        },
+        {
+          "target": "alkemio-mailslurper",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-common: the common 100 ms poll for every target, Swarmail included, so that the poll-versus-push difference is explicit (0132 §7.1). Common-client polling: a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (decision 0093 section 4), not the best available. The image's MailSlurper fork shows no wait route; each scan lists every message over its listing API and filters on the client by token. The method is labelled per row."
+        }
+      ]
+    },
+    {
+      "name": "wait-best",
+      "repetitions": 3,
+      "present": 100,
+      "future": 100,
+      "empty": 20,
+      "deadline_ms": 30000,
+      "empty_deadline_ms": 1000,
+      "observation": [
+        {
+          "target": "swarmail",
+          "mode": "native",
+          "interval_ms": null,
+          "justification": "wait-best: native: Swarmail's REST await (GET /api/v1/inboxes/{inbox}/await), a cited blocking server wait that subscribes before it checks (decision 0002); the highest-priority method of 0132 §7.2.",
+          "evidence": [
+            "repo:docs/decisions/0002-awaits-subscribe-before-checking.md"
+          ]
+        },
+        {
+          "target": "mailpit",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-best: poll, no documented wait: native_wait is not_supported (mailpit-server.go registers no blocking route). The api/events WebSocket is a cited push channel, but no readiness ordered after registration is evidenced from captured bytes: the first hub frame is the optional stats frame (mailpit-storage-notifications.go keeps at most one pending), and a pong comes from gorilla/websocket v1.5.3 (mailpit-go.mod), whose source is not in the tagged tree. A stream without cited readiness does not qualify (0132 §7.2.2), so the labelled common 100 ms poll observes it.",
+          "evidence": [
+            "sources/mailpit/mailpit-server.go",
+            "sources/mailpit/mailpit-storage-notifications.go",
+            "sources/mailpit/mailpit-go.mod"
+          ]
+        },
+        {
+          "target": "mailhog",
+          "mode": "stream",
+          "interval_ms": null,
+          "backstop_ms": 1000,
+          "justification": "wait-best: stream: native_wait is not_supported (mailhog-server-api-v1.go and -v2.go register no blocking route). The api/v2/websocket stream (route, producer, register handoff and a pong answered only by the read loop that starts after it, cited in the lock) is selected under 0132 §7.2.2: its real-binary proof (wait-best T10b) passed against the pinned executable on the dispatcher host on 2026-11-18. An event triggers a complete authoritative scan; the 1,000 ms backstop scan covers a lost event.",
+          "evidence": [
+            "sources/mailhog/mailhog-server-api-v1.go",
+            "sources/mailhog/mailhog-server-api-v2.go",
+            "sources/mailhog/mailhog-websockets-hub.go",
+            "sources/mailhog/mailhog-websockets-connection.go"
+          ]
+        },
+        {
+          "target": "mailslurper",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-best: poll, no documented wait: the reviewed route registrations (mailslurper-setup-services-listener.go) show no wait or push route. The official row does not start and is published blocked, with no number.",
+          "evidence": [
+            "sources/mailslurper/mailslurper-setup-services-listener.go"
+          ]
+        },
+        {
+          "target": "mailslurper-source-build",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-best: poll, no documented wait: the reviewed route registrations (mailslurper-setup-services-listener.go) show no wait or push route.",
+          "evidence": [
+            "sources/mailslurper-source-build/mailslurper-setup-services-listener.go"
+          ]
+        },
+        {
+          "target": "smtp4dev",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-best: poll, no documented wait: native_wait is not_supported (smtp4dev-messages-controller.cs). The /hubs/notifications SignalR hub is a cited push channel, but its registration, negotiation and hub-protocol framing are the ASP.NET Core SignalR framework's, shipped as assemblies and not in the tagged tree, and the singleton hub's broadcast is gated on a framework-set Clients (smtp4dev-notifications-hub.cs, smtp4dev-startup.cs). The envelope a minimal client needs cannot be evidenced from captured bytes, so the labelled common 100 ms poll observes it.",
+          "evidence": [
+            "sources/smtp4dev/smtp4dev-messages-controller.cs",
+            "sources/smtp4dev/smtp4dev-notifications-hub.cs",
+            "sources/smtp4dev/smtp4dev-startup.cs"
+          ]
+        },
+        {
+          "target": "inbucket",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-best: poll, no documented wait: native_wait is not_supported (inbucket-rest-routes.go). The api/v2/monitor/messages WebSocket is a cited push channel, but readiness is not evidenced from captured bytes: history playback (inbucket-msghub-hub.go) happens only when the ring is non-empty, and a pong comes from gorilla/websocket v1.5.3 (inbucket-go.mod), whose source is not in the tagged tree. A stream without cited readiness does not qualify (0132 §7.2.2), so the labelled common 100 ms poll observes it.",
+          "evidence": [
+            "sources/inbucket/inbucket-rest-routes.go",
+            "sources/inbucket/inbucket-rest-socket-controller.go",
+            "sources/inbucket/inbucket-msghub-hub.go",
+            "sources/inbucket/inbucket-go.mod"
+          ]
+        },
+        {
+          "target": "greenmail",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-best: poll, no documented wait: the pinned greenmail-openapi.yml lists no wait or push route, and POP3 and IMAP reads have none.",
+          "evidence": [
+            "sources/greenmail/greenmail-openapi.yml"
+          ]
+        },
+        {
+          "target": "alkemio-mailslurper",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "wait-best: poll, no documented wait: the service and UI route registrations (alkemio-setup-services-listener.go, alkemio-setup-admin-listener.go) show no blocking wait and no push channel.",
+          "evidence": [
+            "sources/alkemio-mailslurper/alkemio-setup-services-listener.go",
+            "sources/alkemio-mailslurper/alkemio-setup-admin-listener.go"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "wait-tight",
+      "repetitions": 3,
+      "present": 100,
+      "future": 100,
+      "empty": 20,
+      "deadline_ms": 30000,
+      "empty_deadline_ms": 1000,
+      "observation": [
+        {
+          "target": "swarmail",
+          "mode": "poll",
+          "interval_ms": 10,
+          "justification": "wait-tight: the same complete-scan poll at 10 ms for every target, labelled as no tool's documented method (0132 §7.1, acceptance answer 4); it shows what a faster poll buys and its CPU cost on the target."
+        },
+        {
+          "target": "mailpit",
+          "mode": "poll",
+          "interval_ms": 10,
+          "justification": "wait-tight: the same complete-scan poll at 10 ms for every target, labelled as no tool's documented method (0132 §7.1, acceptance answer 4); it shows what a faster poll buys and its CPU cost on the target."
+        },
+        {
+          "target": "mailhog",
+          "mode": "poll",
+          "interval_ms": 10,
+          "justification": "wait-tight: the same complete-scan poll at 10 ms for every target, labelled as no tool's documented method (0132 §7.1, acceptance answer 4); it shows what a faster poll buys and its CPU cost on the target."
+        },
+        {
+          "target": "mailslurper",
+          "mode": "poll",
+          "interval_ms": 10,
+          "justification": "wait-tight: the same complete-scan poll at 10 ms for every target, labelled as no tool's documented method (0132 §7.1, acceptance answer 4); it shows what a faster poll buys and its CPU cost on the target."
+        },
+        {
+          "target": "mailslurper-source-build",
+          "mode": "poll",
+          "interval_ms": 10,
+          "justification": "wait-tight: the same complete-scan poll at 10 ms for every target, labelled as no tool's documented method (0132 §7.1, acceptance answer 4); it shows what a faster poll buys and its CPU cost on the target."
+        },
+        {
+          "target": "smtp4dev",
+          "mode": "poll",
+          "interval_ms": 10,
+          "justification": "wait-tight: the same complete-scan poll at 10 ms for every target, labelled as no tool's documented method (0132 §7.1, acceptance answer 4); it shows what a faster poll buys and its CPU cost on the target."
+        },
+        {
+          "target": "inbucket",
+          "mode": "poll",
+          "interval_ms": 10,
+          "justification": "wait-tight: the same complete-scan poll at 10 ms for every target, labelled as no tool's documented method (0132 §7.1, acceptance answer 4); it shows what a faster poll buys and its CPU cost on the target."
+        },
+        {
+          "target": "greenmail",
+          "mode": "poll",
+          "interval_ms": 10,
+          "justification": "wait-tight: the same complete-scan poll at 10 ms for every target, labelled as no tool's documented method (0132 §7.1, acceptance answer 4); it shows what a faster poll buys and its CPU cost on the target."
+        },
+        {
+          "target": "alkemio-mailslurper",
+          "mode": "poll",
+          "interval_ms": 10,
+          "justification": "wait-tight: the same complete-scan poll at 10 ms for every target, labelled as no tool's documented method (0132 §7.1, acceptance answer 4); it shows what a faster poll buys and its CPU cost on the target."
+        }
+      ]
+    }
+  ],
   "resources": {
     "enforced": true,
     "cpus": 2,
@@ -267,7 +502,7 @@
   },
   "budgets": {
     "poll_interval_ms": 100,
-    "wait_operation_ms": 10000,
+    "wait_operation_ms": 40000,
     "adapter": {
       "operation_ms": 30000,
       "request_ms": 10000,
@@ -355,12 +590,10 @@
   },
   "unresolved": [
     "story B (0132 §6.3): API capability cells without captured evidence stay not_inspected: MailHog delete and clear (its APIv1.md is not captured) and MailSlurper clear (its prune codes are not captured)",
-    "story C (0132 §7): the wait-common, wait-best and wait-tight profiles and each target's wait-best method",
     "story D (0132 §8): the test-execution section",
     "story B to D: clients_sha256, one digest per client module",
     "story B (0132 §6.2, acceptance answer 8): the API section reads GreenMail over REST; the cost section's visibility check still reads it over POP3 as v3 does",
-    "story C (0132 §7): budgets.wait_operation_ms is 10000 here, the longest wait plus one request bound on a protocol with no wait profile, where v3 has 40000; story C restores it with its wait profiles",
-    "story B and C: every capability cell inspected (no not_inspected cell)",
+    "story B: every capability cell inspected (no not_inspected cell)",
     "story E: freeze, the chunk plan of all sections and the collection"
   ],
   "capabilities": [
@@ -390,8 +623,8 @@
         "cite": "sources/mailpit/mailpit-swagger.json"
       },
       "native_wait": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/mailpit/mailpit-server.go"
       },
       "retention_cap": {
         "status": "supported",
@@ -409,8 +642,8 @@
         "cite": "sources/mailhog/mailhog-swagger.json"
       },
       "native_wait": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/mailhog/mailhog-server-api-v1.go"
       },
       "retention_cap": {
         "status": "not_inspected",
@@ -466,8 +699,8 @@
         "cite": "sources/smtp4dev/smtp4dev-api.xml"
       },
       "native_wait": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/smtp4dev/smtp4dev-messages-controller.cs"
       },
       "retention_cap": {
         "status": "supported",
@@ -485,8 +718,8 @@
         "cite": null
       },
       "native_wait": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/inbucket/inbucket-rest-routes.go"
       },
       "retention_cap": {
         "status": "supported",
@@ -523,8 +756,8 @@
         "cite": "sources/alkemio-mailslurper/alkemio-service-controller.go"
       },
       "native_wait": {
-        "status": "not_inspected",
-        "cite": null
+        "status": "not_supported",
+        "cite": "sources/alkemio-mailslurper/alkemio-setup-services-listener.go"
       },
       "retention_cap": {
         "status": "not_inspected",

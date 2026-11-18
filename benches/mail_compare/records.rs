@@ -62,6 +62,18 @@ pub struct Row {
     pub occurrences: Option<u64>,
     pub fidelity_ok: Option<bool>,
     pub requests: Option<u64>,
+    /// Protocol 4 wait rows (0132 §7.3): how many messages of the answer
+    /// were the expected one and how many were other mail, counted before
+    /// any deduplication, so a duplicate and an unrelated answer are both
+    /// kept even in one answer. Absent from every older row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unrelated: Option<u64>,
+    /// Protocol 4 stream answers: the cause of the scan that produced the
+    /// answer (`initial_scan`, `event`, `reconnect` or `backstop`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<String>,
 }
 
 impl Row {

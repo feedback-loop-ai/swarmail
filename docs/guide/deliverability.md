@@ -1061,7 +1061,7 @@ field, `null` when absent, `1` when duplicated, else `0`.
 
 ## ARC (`swarmail-html/9`)
 
-Proposed decision 0133 (issue #256, the last story of epic #251) validates the
+Decision 0133 (accepted 2026-11-16; issue #256, the last story of epic #251) validates the
 ARC chain (RFC 8617) of a stored message and reports it. A forwarder that changes
 a message breaks its DKIM signature; ARC lets each forwarder record what it saw
 and seal that record, so the next receiver can check the chain of custody. A test
@@ -1134,7 +1134,7 @@ its own `t=`, is `arc.signature_expired.v1`. Any other `x=` on that field is
 the receipt second is not verified**, and reports an error, never a clean pass.
 The verifier reads the wall clock once and compares it with that `x=` only; the
 chain is handed to it only when that field has no `x=`, so the value it read is
-never compared. This is held for the operator (decision 0133 section 5). An `x=`
+never compared. The operator accepted this reading on 2026-11-16 (decision 0133 section 5). An `x=`
 on an older signature is nobody's expiry. A chain whose newest signature has an
 `x=` is decided at that step even if its instances or `cv=` values are also wrong.
 
@@ -1302,7 +1302,7 @@ bulk checklist's requirement level), so a large message can never flood the
 report. They arrived as `swarmail-spam/1`; with the link rules of decision 0121,
 the `dns` member of decision 0120, the DKIM rules of decision 0125, the SPF and
 DMARC rules of decision 0126, the weight and total of decision 0122 §2 and the
-ARC chain of proposed decision 0133 the report's `rule_set_id` is now
+ARC chain of decision 0133 the report's `rule_set_id` is now
 `swarmail-html/9`, so the rule-set version
 is recorded in every report and in the cache key. Every finding carries a
 `weight` and the report a `total` (see Weight and total below); the weights

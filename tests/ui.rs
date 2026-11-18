@@ -686,11 +686,20 @@ async fn message_view_renders_text_html_and_missing() {
     .await;
     assert_eq!(st, 200);
     assert!(page.contains("html mail"), "{page}");
+    // The HTML is never in the page: a bare-sandbox frame loads the preview
+    // document by its own route (decision 0135), default mode only.
+    assert!(!page.contains("<b>rich"), "the html stays out of the page");
     assert!(
-        page.contains("&lt;b&gt;rich&lt;/b&gt;"),
-        "html preview is escaped: {page}"
+        !page.contains("&lt;b&gt;rich"),
+        "the html stays out of the page"
     );
-    assert!(page.contains("sandbox"), "preview iframe must be sandboxed");
+    assert!(!page.contains("srcdoc"), "{page}");
+    let frame = format!(
+        r#"<iframe sandbox title="HTML preview, scripts disabled" src="/ui/message/{}/preview"></iframe>"#,
+        id_of("html mail")
+    );
+    assert!(page.contains(&frame), "{page}");
+    assert!(!page.contains("remote=1"), "{page}");
 
     // A missing message is a status 404 (issue #56) — never a 200 card a
     // client would treat as a rendered message.
@@ -983,7 +992,7 @@ async fn smtp_thread_headers_extract_ids_at_ingest() {
 // bytes the server hands out; what only a browser can show is listed in
 // `specs/web-ui-run-console/spec.md` under "Not gate-provable".
 
-const POLICY: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:";
+const POLICY: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-src 'self'";
 
 /// The three console routes for `inbox`, as `(path, served page)`. The
 /// thread route needs a real key, so the inbox must hold a mail.
@@ -1323,8 +1332,16 @@ async fn the_preview_frame_is_sandboxed_without_tokens() {
     let sandbox = script
         .find("setAttribute('sandbox', '')")
         .expect("a bare sandbox");
-    let srcdoc = script.find(".srcdoc =").expect("the srcdoc assignment");
-    assert!(sandbox < srcdoc, "the sandbox is set before the content");
+    let src = script.find("frame.src = ").expect("the src assignment");
+    assert!(sandbox < src, "the sandbox is set before the source");
+    assert!(
+        !script.contains("srcdoc"),
+        "mail HTML never rides the parent page"
+    );
+    assert!(
+        script.contains("'/ui/message/' + encodeURIComponent(id) + '/preview'"),
+        "the frame loads the preview route"
+    );
     let key = seeded_thread_key(srv.http_addr, "sand").await;
     for (path, page) in console_pages(srv.http_addr, "sand", &key).await {
         for token in [
@@ -1516,7 +1533,15 @@ async fn every_ui_route_ships_the_one_policy_byte_for_byte() {
 #[tokio::test]
 async fn the_console_loads_nothing_from_outside() {
     let srv = start().await;
+    // The one link a page carries is its same-origin tab icon.
+    let icon = r#"<link rel="icon" href="/favicon.svg" type="image/svg+xml">"#;
     for (path, page) in console_pages(srv.http_addr, "benign", "k").await {
+        assert_eq!(
+            page.matches("<link").count(),
+            1,
+            "{path}: only the icon link"
+        );
+        let page = page.replacen(icon, "", 1);
         for external in [
             "http://",
             "https://",
@@ -1685,4 +1710,489 @@ async fn the_bare_link_fallback_is_capped_and_waits_for_a_settled_projection() {
     assert!(script.contains("'Links unavailable — retrying'"));
     // An in-flight fetch is never queued a second time.
     assert!(script.contains("if (id === fetching) return;"));
+}
+
+/// The console has a tab icon: every page links /favicon.svg, which is
+/// served as SVG with no script, and /favicon.ico answers with the same mark.
+#[tokio::test]
+async fn every_page_links_a_served_favicon() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    for path in ["/", "/ui/inbox/icon"] {
+        let (status, page) = http_get_text(addr, path).await;
+        assert_eq!(status, 200, "{path}");
+        assert!(
+            page.contains(r#"<link rel="icon" href="/favicon.svg" type="image/svg+xml">"#),
+            "{path} links the icon"
+        );
+    }
+    for path in ["/favicon.svg", "/favicon.ico"] {
+        let (status, head) = http_head_text(addr, path).await;
+        assert_eq!(status, 200, "{path}");
+        let head = head.to_ascii_lowercase();
+        assert!(
+            head.contains("content-type: image/svg+xml"),
+            "{path}: {head}"
+        );
+        let (_, body) = http_get_text(addr, path).await;
+        assert!(body.starts_with("<svg"), "{path} is the SVG mark");
+        assert!(
+            !body.to_ascii_lowercase().contains("<script"),
+            "{path} carries no script"
+        );
+    }
+}
+
+// ---------- the preview document (issue #374, decision 0135) ----------
+
+const PREVIEW_CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox";
+const PREVIEW_REMOTE_CSP: &str = "default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline' https: http:; font-src https: http:; script-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox";
+
+/// One raw HTTP exchange: (status, head, body), any method and headers.
+async fn exchange(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[&str],
+) -> (u16, String, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut req = format!("{method} {path} HTTP/1.1\r\nConnection: close\r\n");
+    if !headers.iter().any(|h| h.starts_with("Host:")) {
+        req.push_str(&format!("Host: {addr}\r\n"));
+    }
+    for header in headers {
+        req.push_str(header);
+        req.push_str("\r\n");
+    }
+    req.push_str("Content-Length: 0\r\n\r\n");
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    tokio::time::timeout(common::HELPER_DEADLINE, stream.read_to_end(&mut buf))
+        .await
+        .expect("the server answers within the helper deadline")
+        .expect("the response reads to EOF");
+    let text = String::from_utf8(buf).expect("a UTF-8 response");
+    let (head, body) = text.split_once("\r\n\r\n").expect("a complete response");
+    let status = head.split(' ').nth(1).unwrap().parse().unwrap();
+    (status, head.to_string(), body.to_string())
+}
+
+/// The value of a response header, by case-insensitive name.
+fn header<'h>(head: &'h str, name: &str) -> Option<&'h str> {
+    head.lines().skip(1).find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.eq_ignore_ascii_case(name).then(|| value.trim())
+    })
+}
+
+/// The document headers every preview answer carries (AC2).
+fn assert_preview_headers(head: &str, policy: &str) {
+    for (name, value) in [
+        ("cache-control", "no-store"),
+        ("x-content-type-options", "nosniff"),
+        ("referrer-policy", "no-referrer"),
+        ("x-frame-options", "SAMEORIGIN"),
+        ("content-security-policy", policy),
+    ] {
+        assert_eq!(header(head, name), Some(value), "{name}: {head}");
+    }
+}
+
+/// Deliver `raw` over real SMTP into `inbox`; the stored id.
+async fn deliver(addr: std::net::SocketAddr, inbox: &str, raw: &str) -> String {
+    let mut conn = SmtpConn::connect(addr).await;
+    conn.send("EHLO preview-test").await;
+    conn.reply_multi().await;
+    let auth = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        format!("\0{inbox}\0x"),
+    );
+    conn.send(&format!("AUTH PLAIN {auth}")).await;
+    assert!(conn.reply().await.starts_with("235"));
+    for line in ["MAIL FROM:<s@x.io>", "RCPT TO:<r@x.io>"] {
+        conn.send(line).await;
+        assert!(conn.reply().await.starts_with("250"));
+    }
+    let accepted = conn.data(raw).await;
+    assert!(accepted.starts_with("250"), "{accepted}");
+    accepted.split_whitespace().last().unwrap().to_string()
+}
+
+fn b64(bytes: &[u8]) -> String {
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+}
+
+const PIXEL: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89\0\0\0\rIDATx\x9cc\xf8\xcf\xc0\xf0\x1f\0\x05\0\x01\xff\x89\x99=\x1d\0\0\0\0IEND\xaeB`\x82";
+
+/// A multipart/related mail: the HTML, then base64 parts with the headers
+/// given.
+fn related_mail(html: &str, parts: &[(&str, &[u8])]) -> String {
+    let mut raw = String::from(
+        "From: s@x.io\r\nTo: r@x.io\r\nSubject: preview\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/related; boundary=b\r\n\r\n\
+         --b\r\nContent-Type: text/html; charset=utf-8\r\n\r\n",
+    );
+    raw.push_str(html);
+    raw.push_str("\r\n");
+    for (headers, bytes) in parts {
+        raw.push_str(&format!(
+            "--b\r\n{headers}\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+            b64(bytes)
+        ));
+    }
+    raw.push_str("--b--\r\n");
+    raw
+}
+
+/// AC3–AC5 over the wire: a referenced inline PNG becomes a `data:` URI of
+/// exactly the bytes sent; SVG, an attachment-disposition part, a missing
+/// and an ambiguous ID, an unreferenced image and a remote image stay as
+/// sent, and nothing but the referenced raster is published.
+#[tokio::test]
+async fn the_preview_inlines_only_referenced_stored_raster_parts() {
+    let srv = start().await;
+    let html = "<p><img src=\"cid:logo@x\"><img src=\"cid:vector\"><img src=\"cid:filed\">\
+                <img src=\"cid:gone\"><img src=\"cid:twin\"><img src=\"https://tracker.example/p.gif\"></p>";
+    let unreferenced: &[u8] = b"GIF89a unreferenced bytes";
+    let raw = related_mail(
+        html,
+        &[
+            ("Content-Type: image/png\r\nContent-ID: <logo@x>", PIXEL),
+            (
+                "Content-Type: image/svg+xml\r\nContent-ID: <vector>",
+                b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+            ),
+            (
+                "Content-Type: image/png\r\nContent-ID: <filed>\r\nContent-Disposition: attachment; filename=f.png",
+                PIXEL,
+            ),
+            ("Content-Type: image/png\r\nContent-ID: <twin>", PIXEL),
+            ("Content-Type: image/gif\r\nContent-ID: <twin>", b"GIF89a"),
+            (
+                "Content-Type: image/gif\r\nContent-ID: <spare>",
+                unreferenced,
+            ),
+        ],
+    );
+    let id = deliver(srv.smtp_addr, "pv-inline", &raw).await;
+    let (status, head, body) = exchange(
+        srv.http_addr,
+        "GET",
+        &format!("/ui/message/{id}/preview"),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200, "{head}{body}");
+    assert_eq!(
+        header(&head, "content-type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert_preview_headers(&head, PREVIEW_CSP);
+    let inlined = format!("<img src=\"data:image/png;base64,{}\">", b64(PIXEL));
+    assert_eq!(
+        body,
+        html.replace("<img src=\"cid:logo@x\">", &inlined),
+        "only the referenced inline raster changes"
+    );
+    assert_eq!(body.matches("data:").count(), 1, "{body}");
+    assert!(
+        !body.contains(&b64(unreferenced)),
+        "an unreferenced image is never published"
+    );
+
+    // The stored record is untouched: the HTML and the projection read as
+    // they did, and the projection still carries no bytes.
+    let (_, email) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(email["html"].as_str().unwrap(), html);
+    let (_, projection) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}/projection"),
+        None,
+    )
+    .await;
+    assert_eq!(projection["attachments"]["total"], 6, "{projection}");
+    assert!(
+        !projection.to_string().contains(&b64(PIXEL)),
+        "{projection}"
+    );
+}
+
+/// AC3: the preview of a restored mail equals the preview before the
+/// restart — the identity lookup reads only what the store kept.
+#[tokio::test]
+async fn the_preview_survives_a_restart_byte_for_byte() {
+    let dir = tempfile::TempDir::with_prefix("swarmail-e2e-preview-").unwrap();
+    let db = dir.path().join("mail.db");
+    let serve = || {
+        let db = db.clone();
+        common::start_with(move |mut c| {
+            c.data_file = Some(db);
+            c
+        })
+    };
+    let srv = serve().await;
+    let raw = related_mail(
+        "<img src=cid:a>",
+        &[("Content-Type: image/png\r\nContent-ID: <a>", PIXEL)],
+    );
+    let id = deliver(srv.smtp_addr, "pv-restart", &raw).await;
+    let path = format!("/ui/message/{id}/preview");
+    let (_, _, before) = exchange(srv.http_addr, "GET", &path, &[]).await;
+    assert!(before.contains(&b64(PIXEL)), "{before}");
+    srv.stop().await;
+    let srv = serve().await;
+    let (status, _, after) = exchange(srv.http_addr, "GET", &path, &[]).await;
+    assert_eq!(status, 200);
+    assert_eq!(after, before);
+    srv.stop().await;
+}
+
+/// AC1–AC2: both policies, HEAD equal to GET without a body, and the
+/// remote toggle changing only the policy.
+#[tokio::test]
+async fn the_preview_serves_both_policies_and_head() {
+    let srv = start().await;
+    let raw = "From: s@x.io\r\nTo: r@x.io\r\nSubject: p\r\nContent-Type: text/html\r\n\r\n\
+               <link rel=stylesheet href=https://cdn.example/s.css><img src=https://cdn.example/i.png>\r\n";
+    let id = deliver(srv.smtp_addr, "pv-policy", raw).await;
+    let path = format!("/ui/message/{id}/preview");
+    let (status, get_head, off) = exchange(srv.http_addr, "GET", &path, &[]).await;
+    assert_eq!(status, 200);
+    assert_preview_headers(&get_head, PREVIEW_CSP);
+    let (status, remote_head, on) =
+        exchange(srv.http_addr, "GET", &format!("{path}?remote=1"), &[]).await;
+    assert_eq!(status, 200);
+    assert_preview_headers(&remote_head, PREVIEW_REMOTE_CSP);
+    assert_eq!(on, off, "the toggle changes the policy, not the document");
+    for (query, policy) in [("", PREVIEW_CSP), ("?remote=1", PREVIEW_REMOTE_CSP)] {
+        let (status, head, body) =
+            exchange(srv.http_addr, "HEAD", &format!("{path}{query}"), &[]).await;
+        assert_eq!(status, 200);
+        assert_eq!(body, "", "HEAD has no body");
+        assert_preview_headers(&head, policy);
+        assert_eq!(
+            header(&head, "content-type"),
+            Some("text/html; charset=utf-8")
+        );
+    }
+}
+
+/// AC1–AC2, AC6: every refusal is the JSON error the API uses, under the
+/// same document headers — a closed query, an unknown id, an unsupported
+/// method, and HTML over the source cap.
+#[tokio::test]
+async fn the_preview_refusals_keep_the_document_headers() {
+    let srv = start().await;
+    let big = format!(
+        "From: s@x.io\r\nTo: r@x.io\r\nSubject: big\r\nContent-Type: text/html\r\n\r\n{}\r\n",
+        "x".repeat(2 << 20)
+    );
+    let id = deliver(srv.smtp_addr, "pv-refuse", &big).await;
+    for (method, path, status, needle) in [
+        (
+            "GET",
+            format!("/ui/message/{id}/preview?remote=0"),
+            400,
+            "exactly remote=1",
+        ),
+        (
+            "GET",
+            format!("/ui/message/{id}/preview?remote=1&x=1"),
+            400,
+            "exactly remote=1",
+        ),
+        (
+            "GET",
+            "/ui/message/no-such-id/preview".into(),
+            404,
+            "message not found",
+        ),
+        (
+            "POST",
+            format!("/ui/message/{id}/preview"),
+            405,
+            "GET and HEAD only",
+        ),
+        (
+            "DELETE",
+            format!("/ui/message/{id}/preview"),
+            405,
+            "GET and HEAD only",
+        ),
+        (
+            "GET",
+            format!("/ui/message/{id}/preview"),
+            413,
+            "byte budget",
+        ),
+    ] {
+        let (st, head, body) = exchange(srv.http_addr, method, &path, &[]).await;
+        assert_eq!(st, status, "{method} {path}: {body}");
+        assert_eq!(
+            header(&head, "content-type"),
+            Some("application/json"),
+            "{path}"
+        );
+        let error: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            error["error"].as_str().unwrap().contains(needle),
+            "{path}: {body}"
+        );
+        assert_preview_headers(&head, PREVIEW_CSP);
+    }
+    let (_, head, _) = exchange(
+        srv.http_addr,
+        "PUT",
+        &format!("/ui/message/{id}/preview"),
+        &[],
+    )
+    .await;
+    assert_eq!(header(&head, "allow"), Some("GET,HEAD"), "{head}");
+}
+
+/// AC5: scripts and forms are refused by the policy in both modes, and the
+/// display transformation removes what CSP does not govern — clicked
+/// navigation, refresh, base URLs and resource hints.
+#[tokio::test]
+async fn the_preview_refuses_scripts_forms_and_navigation() {
+    let srv = start().await;
+    let html = "<base href=https://t.example/><meta http-equiv=refresh content=\"0;url=https://t.example/r\">\
+                <link rel=dns-prefetch href=//t.example><link rel=preconnect href=https://t.example>\
+                <script>parent.document.title='x'</script><img src=x onerror=alert(1)>\
+                <form action=https://t.example/f><input name=q><button>go</button></form>\
+                <a href=https://t.example/c ping=https://t.example/p target=_top>click</a>\
+                <iframe src=https://t.example/f></iframe><object data=https://t.example/o></object>";
+    let raw = format!(
+        "From: s@x.io\r\nTo: r@x.io\r\nSubject: h\r\nContent-Type: text/html\r\n\r\n{html}\r\n"
+    );
+    let id = deliver(srv.smtp_addr, "pv-hostile", &raw).await;
+    for query in ["", "?remote=1"] {
+        let (status, head, body) = exchange(
+            srv.http_addr,
+            "GET",
+            &format!("/ui/message/{id}/preview{query}"),
+            &[],
+        )
+        .await;
+        assert_eq!(status, 200);
+        let policy = header(&head, "content-security-policy").unwrap();
+        for directive in [
+            "script-src 'none'",
+            "form-action 'none'",
+            "object-src 'none'",
+            "frame-src 'none'",
+            "base-uri 'none'",
+        ] {
+            assert!(policy.split("; ").any(|d| d == directive), "{policy}");
+        }
+        assert!(policy.ends_with("; sandbox"), "a bare sandbox: {policy}");
+        assert!(!policy.contains("allow-"), "{policy}");
+        for gone in [
+            "<base",
+            "<meta",
+            "<link",
+            "href=https://t.example/c",
+            "ping=",
+        ] {
+            assert!(!body.contains(gone), "{gone} survived: {body}");
+        }
+        assert!(body.contains("<a   target=_top>click</a>"), "{body}");
+    }
+}
+
+/// AC2, AC10: the console and the legacy page keep DENY; the preview alone
+/// is SAMEORIGIN. The plane guard refuses a hostile Origin, `null` and a
+/// rebound Host before the route on every method, with its own envelope.
+#[tokio::test]
+async fn the_preview_sits_behind_the_guard_and_alone_admits_framing() {
+    let srv = start().await;
+    let id = deliver(
+        srv.smtp_addr,
+        "pv-guard",
+        "From: s@x.io\r\nTo: r@x.io\r\nSubject: g\r\nContent-Type: text/html\r\n\r\n<p>g</p>\r\n",
+    )
+    .await;
+    let path = format!("/ui/message/{id}/preview");
+    let port = srv.http_addr.port();
+    let hostile = format!("Origin: http://attacker.example:{port}");
+    let rebound = format!("Host: attacker.example:{port}");
+    let own = format!("Origin: http://127.0.0.1:{port}");
+    for method in ["GET", "HEAD", "POST"] {
+        for refused in [hostile.as_str(), rebound.as_str(), "Origin: null"] {
+            let (status, head, _) = exchange(srv.http_addr, method, &path, &[refused]).await;
+            assert_eq!(status, 403, "{method} {refused}: {head}");
+            assert_eq!(
+                header(&head, "content-security-policy"),
+                None,
+                "the guard's own envelope"
+            );
+        }
+    }
+    let (status, _, body) = exchange(srv.http_addr, "GET", &path, &[own.as_str()]).await;
+    assert_eq!(status, 200);
+    assert!(body.starts_with("<p>g</p>"), "{body}");
+    let (_, head, _) = exchange(srv.http_addr, "GET", &format!("/ui/message/{id}"), &[]).await;
+    assert_eq!(header(&head, "x-frame-options"), Some("DENY"));
+    let (_, head, _) = exchange(srv.http_addr, "GET", &path, &[]).await;
+    assert_eq!(header(&head, "x-frame-options"), Some("SAMEORIGIN"));
+}
+
+/// AC8–AC9 on the served bytes (no browser runs in a gate): the console's
+/// button and warning, consent reset on a new selection, the stale-click
+/// guard, the frame kept in its own slot, and the trusted note naming every
+/// omission class with the numbers the server enforces — the same text the
+/// legacy page carries.
+#[tokio::test]
+async fn the_console_offers_remote_content_per_selection_only() {
+    let srv = start().await;
+    let script = served_script(srv.http_addr).await;
+    for needle in [
+        "'Load remote content'",
+        "Loading contacts the sender's hosts.",
+        "if (id !== selectedId) remoteFor = null;",
+        "if (selectedId !== id || previewFor !== id) return;",
+        "load.disabled = true;",
+        "frame.src = previewSrc(id, true);",
+        "(remote ? '?remote=1' : '')",
+        "previewSlot.hidden = !preview;",
+    ] {
+        assert!(script.contains(needle), "the script lacks {needle}");
+    }
+    assert!(
+        !script.contains("remoteFor = localStorage"),
+        "no stored consent"
+    );
+    let note_at = script.find("const PREVIEW_NOTE =").unwrap();
+    let note = &script[note_at..];
+    let note = &note[note.find('\'').unwrap() + 1..];
+    let note = &note[..note.find('\'').unwrap()];
+    for needle in [
+        "PNG, JPEG, GIF or WebP",
+        "256 KiB each and 2 MiB per preview",
+        "Missing or ambiguous Content-IDs",
+        "SVG",
+        "parts marked as attachments",
+        "CSS or srcset",
+        "unstored or mismatched bytes",
+        "mail over 8 MiB",
+        "HTML over 2 MiB, or a preview over 4 MiB",
+    ] {
+        assert!(note.contains(needle), "the note lacks {needle}: {note}");
+    }
+    let id = deliver(
+        srv.smtp_addr,
+        "pv-note",
+        "From: s@x.io\r\nTo: r@x.io\r\nSubject: n\r\nContent-Type: text/html\r\n\r\n<p>n</p>\r\n",
+    )
+    .await;
+    let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
+    assert!(page.contains(note), "the legacy page carries the same note");
 }

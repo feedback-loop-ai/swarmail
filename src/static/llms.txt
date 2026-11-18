@@ -381,6 +381,18 @@ naming the target and the cause), and a shutdown's undelivered backlog in
   `emails_dropped_total` (the `/metrics` counters) and each
   `GET /api/v1/inboxes` item carries `last_received_ms`, the server's stamp of
   the inbox's most recently stored mail.
+- `GET /ui/message/{id}/preview[?remote=1]` — the run console's HTML preview
+  document (decision 0135), for humans, not agents: the stored HTML
+  as its own `text/html` page under its own CSP response header with a
+  token-free `sandbox` (no scripts, forms, popups, navigation or plugins),
+  `nosniff`, `no-referrer`, `no-store` and `SAMEORIGIN` framing. `cid:` images
+  in `img src` are inlined as `data:` URIs only for inline PNG/JPEG/GIF/WebP
+  parts kept at ingest (256 KiB each, 2 MiB per document); SVG and anything
+  else stays broken. Remote images, CSS and fonts load only with `remote=1`,
+  fetched by the viewer's browser, never the server. HEAD answers like GET;
+  any other query is 400, other methods 405, HTML over 2 MiB or a document
+  over 4 MiB 413, a third concurrent render 503. It is not an attachment
+  route: read attachment bytes with the MCP attachment tools.
 - Thread fields (`message_id`, `in_reply_to`, `references`) are extracted at
   ingest and stored on every email, so views never re-parse raw headers.
 
@@ -767,7 +779,7 @@ deliverability guide for each rule's hint, passing and failing fixture.
 
 ## ARC (`swarmail-html/9`)
 
-Proposed decision 0133 (issue #256): the ARC chain (RFC 8617) of a stored message is
+Decision 0133 (accepted; issue #256): the ARC chain (RFC 8617) of a stored message is
 validated lazily in the report, from the stored bytes, after the SMTP 250, on
 `mail-auth` with keys only from the declared DNS map (`<s>._domainkey.<d>` of each
 hop's `s=` and `d=`; real DNS is not supported). Every report carries a required
@@ -814,7 +826,7 @@ bulk checklist's requirement level), so a large message can never flood the
 report. They arrived as `swarmail-spam/1`; with the link rules of decision 0121,
 the `dns` member of decision 0120, the DKIM rules of decision 0125, the SPF and
 DMARC rules of decision 0126, the weight and total of decision 0122 §2 and the
-ARC chain of proposed decision 0133 the report's `rule_set_id` is now
+ARC chain of decision 0133 the report's `rule_set_id` is now
 `swarmail-html/9`, so the rule-set version
 is recorded in every report and in the cache key. Every finding carries a
 `weight` and the report a `total` (see Weight and total below); the weights

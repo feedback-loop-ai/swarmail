@@ -1,6 +1,6 @@
 [package]
 name = "swarmail"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "An SMTP mail mock built for a program waiting on mail: lossless bursts, per-test inboxes, wait_for assertions, chaos injection, MCP built in."
 license = "MIT OR Apache-2.0"
@@ -132,6 +132,11 @@ tokio = { version = "1", features = ["rt", "time", "process", "test-util"] }
 # MIT OR Apache-2.0; its tree (fastrand, rustix) is permissive and already
 # allowlisted.
 tempfile = "3"
+# The comparison bench's stream client (accepted decision 0132 §7, story C):
+# the RFC 6455 accept key's SHA-1 and the handshake key and frame masks'
+# randomness. Already locked through rustls (the same 0.17.14); this makes
+# it visible to the bench and its tests, and no new crate enters the tree.
+ring = { version = "0.17", default-features = false }
 
 [profile.release]
 opt-level = 3

@@ -45,9 +45,9 @@ pub const CHUNK_MARGIN_MS: u64 = 30_000;
 pub const V4_MAX_SESSIONS: u32 = 32;
 /// The sections of 0132 §11 this driver does not implement yet. A frozen
 /// protocol 4 is refused by name while any is owed, so a plan of the
-/// implemented sections can never be admitted as "v4"; stories B, C and D
-/// each remove their entry.
-pub const OWED_SECTIONS: [&str; 2] = ["waits", "testexec"];
+/// implemented sections can never be admitted as "v4"; story D removes its
+/// entry (story B removed `api`, story C removed `waits`).
+pub const OWED_SECTIONS: [&str; 1] = ["testexec"];
 /// The profile whose cells are the headline row (acceptance answer 3).
 pub const HEADLINE_PROFILE: &str = "cost-c8-reused";
 /// The cost section's four profiles (0132 §4.6): name, sessions, connection.
@@ -59,6 +59,76 @@ pub const COST_PROFILES: [(&str, u32, Connection); 4] = [
 ];
 /// Lock 5's launch placeholder for a target's retention cap.
 pub const CAP_PLACEHOLDER: &str = "{max_messages}";
+/// Protocol 4's three wait profiles (0132 §7.1), in this order: the common
+/// poll, each target's best evidenced wait and the labelled tight poll.
+pub const WAIT_COMMON: &str = "wait-common";
+pub const WAIT_TIGHT: &str = "wait-tight";
+pub const WAIT_PROFILES: [&str; 3] = [WAIT_COMMON, BEST_WAIT, WAIT_TIGHT];
+/// `wait-tight`'s poll interval: no tool's documented method (0132 §7.1,
+/// acceptance answer 4).
+pub const TIGHT_POLL_MS: u64 = 10;
+/// The stream observer's backstop scan interval (0132 §7.2, acceptance
+/// answer 5).
+pub const STREAM_BACKSTOP_MS: u64 = 1_000;
+/// Protocol 4's wait counts (0132 §7.1): present, future and empty
+/// instances per repetition; the repetitions; the regular and the empty
+/// deadline.
+pub const V4_WAIT_COUNTS: (u32, u32, u32) = (100, 100, 20);
+pub const V4_WAIT_REPETITIONS: u32 = 3;
+pub const V4_WAIT_DEADLINES_MS: (u64, u64) = (30_000, 1_000);
+/// The wait sources lock 4 froze, per target
+/// (`history/2026-11-07-sources.lock.v4.json`): every other reviewed wait
+/// source, and every other `source` document, is one of lock 5's captured
+/// wait documents (0132 §1.2), which only lock version 5 may carry.
+pub const LOCK_V4_WAIT_SOURCES: [(TargetKind, &str); 4] = [
+    (TargetKind::Mailpit, "server/websockets/hub.go"),
+    (TargetKind::Mailpit, "server/websockets/client.go"),
+    (
+        TargetKind::Mailhog,
+        "vendor/github.com/mailhog/MailHog-Server/websockets/hub.go",
+    ),
+    (
+        TargetKind::Mailhog,
+        "vendor/github.com/mailhog/MailHog-Server/websockets/connection.go",
+    ),
+];
+/// The `source` documents lock 4 froze, per target.
+pub const LOCK_V4_SOURCE_DOCUMENTS: [(TargetKind, &str); 3] = [
+    (
+        TargetKind::Mailpit,
+        "sources/mailpit/mailpit-websockets-hub.go",
+    ),
+    (
+        TargetKind::Mailslurper,
+        "sources/mailslurper/mailslurper-service-controller.go",
+    ),
+    (
+        TargetKind::MailslurperSourceBuild,
+        "sources/mailslurper-source-build/mailslurper-service-controller.go",
+    ),
+];
+
+/// The captured wait evidence lock 5 added that is not a reviewed source
+/// body (0132 §1.2): licenses beside the bodies and the recursive trees the
+/// source paths are bound to. Lock 4 carries none of them.
+pub const LOCK_V5_WAIT_EVIDENCE: [(TargetKind, &str); 4] = [
+    (
+        TargetKind::Mailhog,
+        "sources/mailhog/mailhog-goose-license.md",
+    ),
+    (
+        TargetKind::Mailhog,
+        "sources/mailhog/mailhog-server-license.md",
+    ),
+    (
+        TargetKind::Inbucket,
+        "sources/inbucket/inbucket-tree-recursive.json",
+    ),
+    (
+        TargetKind::Smtp4dev,
+        "sources/smtp4dev/smtp4dev-tree-recursive.json",
+    ),
+];
 
 /// Upper bounds the validator holds every count and deadline to: a
 /// protocol is an input file, and an absurd value must refuse rather than
@@ -216,12 +286,29 @@ pub enum Connection {
 /// How a wait profile observes a target. `Native` is a server's own
 /// blocking wait (Swarmail's await); `Poll` is the common client path at a
 /// frozen interval, the only shape a target without a source-verified wait
-/// facility gets.
+/// facility gets. `Stream` (protocol 4's `wait-best` only, 0132 §7.2) awaits
+/// a cited push channel's readiness, scans completely, and rescans after
+/// every event, every reconnect and on a backstop timer: the scan answers,
+/// an event only wakes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Observation {
     Native,
     Poll,
+    Stream,
+}
+
+/// The push channel a stream observation uses for a target, where the
+/// driver implements one: its WebSocket route. Only MailHog's has captured
+/// evidence of readiness ordered after registration (its vendored
+/// `conn.go` answers a ping only from the read loop, which starts after the
+/// register handoff); every other candidate's gap is stated in its lock
+/// pin, and it polls.
+pub fn stream_route(t: TargetKind) -> Option<&'static str> {
+    match t {
+        TargetKind::Mailhog => Some("/api/v2/websocket"),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -384,10 +471,20 @@ pub struct WaitProfile {
 pub struct TargetObservation {
     pub target: TargetKind,
     pub mode: Observation,
-    /// Poll interval; required for `poll`, refused for `native`.
+    /// Poll interval; required for `poll`, refused for `native` and
+    /// `stream`.
     pub interval_ms: Option<u64>,
     /// The source-backed reason this mode was chosen for this target.
     pub justification: String,
+    /// Version 4, `stream` only: the backstop scan interval, always
+    /// [`STREAM_BACKSTOP_MS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backstop_ms: Option<u64>,
+    /// Version 4, `wait-best` only: the documents of the target's pin (the
+    /// candidate's `repo:` paths) that justify the method; for a poll, the
+    /// cited absence or gap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -895,6 +992,42 @@ impl Protocol {
                         "{n}: no source-verified native wait is implemented for {t}"
                     )),
                     (Observation::Native, None) => {}
+                    (Observation::Stream, Some(_)) => {
+                        out.push(format!("{n}: {t} stream carries a poll interval"))
+                    }
+                    (Observation::Stream, None) => {}
+                }
+                match (o.mode, o.backstop_ms) {
+                    (Observation::Stream, Some(STREAM_BACKSTOP_MS)) => {}
+                    (Observation::Stream, other) => out.push(format!(
+                        "{n}: {t} stream's backstop_ms is {STREAM_BACKSTOP_MS}, not {other:?}"
+                    )),
+                    (_, Some(_)) => {
+                        out.push(format!("{n}: {t} carries a backstop but does not stream"))
+                    }
+                    (_, None) => {}
+                }
+                if o.mode == Observation::Stream {
+                    if !v4 || *n != BEST_WAIT {
+                        out.push(format!(
+                            "{n}: {t} streams, and only protocol {PROTOCOL_VERSION_4}'s {BEST_WAIT} may"
+                        ));
+                    }
+                    if stream_route(t).is_none() {
+                        out.push(format!(
+                            "{n}: no stream with evidenced readiness is implemented for {t}"
+                        ));
+                    }
+                }
+                if let Some(e) = &o.evidence {
+                    if e.is_empty() || e.iter().any(|c| c.trim().is_empty()) {
+                        out.push(format!("{n}: {t} cites an empty evidence list or entry"));
+                    }
+                    for (i, c) in e.iter().enumerate() {
+                        if e[..i].contains(c) {
+                            out.push(format!("{n}: {t} cites {c} twice"));
+                        }
+                    }
                 }
                 if o.justification.trim().is_empty() {
                     out.push(format!("{n}: {t} observation has no justification"));
@@ -910,9 +1043,6 @@ impl Protocol {
                     ));
                 }
             }
-        }
-        if v4 && !self.waits.is_empty() {
-            out.push("protocol 4 refuses wait profiles: the wait section is owed (0132 §7)".into());
         }
         let r = &self.resources;
         bounded(
@@ -1112,6 +1242,20 @@ impl Protocol {
             ("headline", self.headline.is_some()),
             ("clients_sha256", self.clients_sha256.is_some()),
             ("api", self.api.is_some()),
+            (
+                "waits[].observation[].backstop_ms",
+                self.waits
+                    .iter()
+                    .flat_map(|w| &w.observation)
+                    .any(|o| o.backstop_ms.is_some()),
+            ),
+            (
+                "waits[].observation[].evidence",
+                self.waits
+                    .iter()
+                    .flat_map(|w| &w.observation)
+                    .any(|o| o.evidence.is_some()),
+            ),
         ] {
             if present {
                 out.push(format!(
@@ -1238,6 +1382,7 @@ impl Protocol {
             )),
             Some(_) => {}
         }
+        self.validate_v4_waits(out);
         if self.status != Status::Frozen {
             return;
         }
@@ -1285,6 +1430,72 @@ impl Protocol {
                         "a frozen protocol 4 has no not_inspected capability, but {} {key} is",
                         c.target
                     ));
+                }
+            }
+        }
+    }
+
+    /// Protocol 4's wait section (0132 §7). Every wait profile is one of the
+    /// three, at most once: `wait-common` polls every target at the common
+    /// interval, `wait-tight` at [`TIGHT_POLL_MS`], and `wait-best` gives
+    /// Swarmail its native await and every competitor the common poll or an
+    /// implemented stream, each with its evidence. A frozen protocol 4 holds
+    /// exactly the three, in order, with the accepted counts and deadlines; a
+    /// draft (a smoke fixture) may hold fewer or smaller ones, as its cost
+    /// table may. The common interval itself is the budgets'.
+    fn validate_v4_waits(&self, out: &mut Vec<String>) {
+        let names: Vec<&str> = self.waits.iter().map(|w| w.name.as_str()).collect();
+        let frozen = self.status == Status::Frozen;
+        if frozen && names != WAIT_PROFILES {
+            out.push(format!(
+                "a frozen protocol 4's wait profiles are {WAIT_PROFILES:?} in that order, not {names:?}"
+            ));
+        }
+        for n in names.iter().filter(|n| !WAIT_PROFILES.contains(n)) {
+            out.push(format!(
+                "{n}: protocol 4's wait profiles are {WAIT_PROFILES:?}"
+            ));
+        }
+        let common = self.budgets.as_ref().map(|b| b.poll_interval_ms);
+        let (present, future, empty) = V4_WAIT_COUNTS;
+        let (deadline, empty_deadline) = V4_WAIT_DEADLINES_MS;
+        for w in &self.waits {
+            let n = &w.name;
+            if frozen
+                && ((w.repetitions, w.present, w.future, w.empty)
+                    != (V4_WAIT_REPETITIONS, present, future, empty)
+                    || (w.deadline_ms, w.empty_deadline_ms) != (deadline, empty_deadline))
+            {
+                out.push(format!(
+                    "{n}: a frozen protocol 4's wait profile is exact ({V4_WAIT_REPETITIONS} repetitions, {present} present, {future} future, {empty} empty, {deadline} ms, {empty_deadline} ms empty)"
+                ));
+            }
+            for o in &w.observation {
+                let t = o.target;
+                let poll_at = |want: Option<u64>| {
+                    want.is_some() && o.mode == Observation::Poll && o.interval_ms == want
+                };
+                let fits = match n.as_str() {
+                    WAIT_COMMON => poll_at(common),
+                    WAIT_TIGHT => poll_at(Some(TIGHT_POLL_MS)),
+                    BEST_WAIT if t == TargetKind::Swarmail => o.mode == Observation::Native,
+                    BEST_WAIT => poll_at(common) || o.mode == Observation::Stream,
+                    _ => true,
+                };
+                if !fits {
+                    out.push(format!(
+                        "{n}: {t} observes by {:?} at {:?} ms, which this profile does not allow",
+                        o.mode, o.interval_ms
+                    ));
+                }
+                match (n.as_str(), o.evidence.is_some()) {
+                    (BEST_WAIT, false) => {
+                        out.push(format!("{n}: {t} cites no evidence for its method"))
+                    }
+                    (BEST_WAIT, true) | (_, false) => {}
+                    (_, true) => out.push(format!(
+                        "{n}: {t} cites evidence, but only {BEST_WAIT} chooses a method"
+                    )),
                 }
             }
         }
@@ -1460,7 +1671,9 @@ impl Protocol {
     }
 
     fn validate_budgets(&self, b: &Budgets, out: &mut Vec<String>) {
-        for w in &self.waits {
+        // `wait-tight`'s interval is protocol 4's own, held by its wait rules.
+        let v4 = self.protocol_version == PROTOCOL_VERSION_4;
+        for w in self.waits.iter().filter(|w| !(v4 && w.name == WAIT_TIGHT)) {
             for o in &w.observation {
                 if o.mode == Observation::Poll && o.interval_ms != Some(b.poll_interval_ms) {
                     out.push(format!(
@@ -2698,7 +2911,9 @@ fn tag_chain(
     // Mailpit's and MailHog's captures) or by tree id, linked to the tagged
     // commit by a captured commit object whose `tree` names it. On the second
     // route the listing is rebuilt into git's tree object and hashed, so an
-    // edited entry cannot vouch for a blob (ruling 2026-11-07).
+    // edited entry cannot vouch for a blob (ruling 2026-11-07). A recursive
+    // listing on that route (lock v5's wait documents below the root) is
+    // rebuilt directory by directory up to the same root id.
     let commit_object = json.get(&DocKind::GitCommit);
     let route_ok = |tr: &serde_json::Value| match commit_object {
         None => s(tr, "/sha") == ts.commit,
@@ -2732,7 +2947,7 @@ fn tag_chain(
     };
     if commit_object.is_some()
         && let Some(listing) = json.get(&DocKind::GitTree)
-        && tree_object_id(tree).as_deref() != Some(s(listing, "/sha").as_str())
+        && listing_object_id(tree).as_deref() != Some(s(listing, "/sha").as_str())
     {
         out.push(format!(
             "{t}: the captured tree listing does not rebuild to its own id"
@@ -2768,6 +2983,42 @@ fn tag_chain(
             ));
         }
     }
+}
+
+/// Git's root tree object id of a listing that may be recursive (asked for
+/// with `?recursive=1`). Every directory listed together with its children
+/// is rebuilt from them and must equal the id its parent lists for it, so
+/// each listed entry, however deep, is bound to the root id. A directory
+/// listed without children stays opaque: a non-recursive listing is all
+/// opaque, and its id is then [`tree_object_id`]'s. `None` for a malformed
+/// entry, a path whose parent is not a listed directory, or a directory
+/// whose rebuilt id is not the one listed for it.
+pub fn listing_object_id(entries: &[serde_json::Value]) -> Option<String> {
+    use std::collections::HashMap;
+    let mut children: HashMap<&str, Vec<serde_json::Value>> = HashMap::new();
+    let mut dirs: HashMap<&str, &str> = HashMap::new();
+    for e in entries {
+        let path = e.get("path")?.as_str()?;
+        let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+        if name.is_empty() {
+            return None;
+        }
+        if e.get("type")?.as_str()? == "tree" {
+            dirs.insert(path, e.get("sha")?.as_str()?);
+        }
+        let mut own = e.clone();
+        own["path"] = serde_json::Value::from(name);
+        children.entry(parent).or_default().push(own);
+    }
+    for (dir, listed) in &children {
+        if dir.is_empty() {
+            continue;
+        }
+        if dirs.get(dir).copied() != Some(tree_object_id(listed)?.as_str()) {
+            return None;
+        }
+    }
+    tree_object_id(children.get("").map(Vec::as_slice).unwrap_or_default())
 }
 
 /// Git's tree object id of a non-recursive tree listing: SHA-1 over
@@ -3405,6 +3656,9 @@ fn validate_pending(out: &mut Vec<String>, t: TargetKind, p: &Pending) {
 fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin, lock: u32) {
     let v4 = lock >= LOCK_VERSION_4;
     if lock < LOCK_VERSION_5 {
+        refuse_v5_wait_documents(out, t, pin, lock);
+    }
+    if lock < LOCK_VERSION_5 {
         // The placeholder is lock 5's alone: an earlier lock's launch is
         // literal, and a brace is never a stand-in for a value there.
         let named = pin.launch.iter().any(|a| a.contains(CAP_PLACEHOLDER))
@@ -3828,6 +4082,35 @@ fn validate_pin(out: &mut Vec<String>, t: TargetKind, pin: &Pin, lock: u32) {
     }
 }
 
+/// Lock 5's captured wait documents (0132 §1.2) are its alone: an earlier
+/// lock carries only the wait sources and `source` documents lock 4 froze.
+/// Each refusal names the document, so a lock 5 downgraded to version 4
+/// (with its caps made literal or not) and a wait document inserted into a
+/// valid lock 4 are both refused for what they are, independently of the
+/// cap placeholder.
+fn refuse_v5_wait_documents(out: &mut Vec<String>, t: TargetKind, pin: &Pin, lock: u32) {
+    let refuse = |out: &mut Vec<String>, what: &str| {
+        out.push(format!(
+            "{t}: lock_version {lock} refuses the v5-only wait document {what}; only lock_version {LOCK_VERSION_5} carries it (0132 §1.2)"
+        ))
+    };
+    for r in &pin.wait.reviewed {
+        if !LOCK_V4_WAIT_SOURCES.contains(&(t, r.upstream_path.as_str())) {
+            refuse(out, &r.upstream_path);
+        }
+    }
+    for d in &pin.documents {
+        let doc = (t, d.path.as_str());
+        let v5_only = match d.kind {
+            DocKind::Source => !LOCK_V4_SOURCE_DOCUMENTS.contains(&doc),
+            _ => LOCK_V5_WAIT_EVIDENCE.contains(&doc),
+        };
+        if v5_only {
+            refuse(out, &d.path);
+        }
+    }
+}
+
 fn gap(out: &mut Vec<String>, t: TargetKind, what: &str, why: &str) {
     if why.trim().is_empty() {
         out.push(format!("{t}: {what} is unresolved without a reason"));
@@ -4079,6 +4362,55 @@ pub fn capabilities_match(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal
     }
 }
 
+/// Protocol 4's `wait-best` agrees with the lock: each cited document is
+/// one of the target's pin (the candidate's a `repo:` path), a resolved best
+/// wait names the mode the profile uses (`poll: …` polls, `stream: …`
+/// streams), and an unresolved one still polls at the common interval
+/// (collection refuses it by name).
+pub fn waits_match(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> {
+    let mut out = Vec::new();
+    for w in p.waits.iter().filter(|w| w.name == BEST_WAIT) {
+        for o in &w.observation {
+            let t = o.target;
+            let pin = lock.pin(t);
+            for c in o.evidence.iter().flatten() {
+                let known = match pin {
+                    None => t.provenance() == Provenance::Candidate && c.starts_with("repo:"),
+                    Some(pin) => pin.documents.iter().any(|d| d.path == *c),
+                };
+                if !known {
+                    out.push(format!(
+                        "{BEST_WAIT}: {t} cites {c:?}, which is no document of its pin"
+                    ));
+                }
+            }
+            let Some(pin) = pin else { continue };
+            let want = match &pin.wait.best_wait {
+                Fact::Observed(m) if m.starts_with("stream: ") => Observation::Stream,
+                Fact::Observed(m) if m.starts_with("poll: ") => Observation::Poll,
+                Fact::Observed(m) => {
+                    out.push(format!(
+                        "{t}: best wait {m:?} names neither a poll nor a stream"
+                    ));
+                    continue;
+                }
+                Fact::Unresolved(_) => Observation::Poll,
+            };
+            if want != o.mode {
+                out.push(format!(
+                    "{BEST_WAIT}: {t} observes by {:?}, but its pin's best wait is {want:?}",
+                    o.mode
+                ));
+            }
+        }
+    }
+    if out.is_empty() {
+        Ok(())
+    } else {
+        Err(Refusal(out))
+    }
+}
+
 /// The wait profile that claims each target's best available mechanism.
 /// It needs a resolved best wait per competitor; the common-client
 /// profile needs only the labelled poll (proposed decision 0093 §4).
@@ -4109,6 +4441,9 @@ pub fn collection_ready(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> 
         out.extend(r);
     }
     if let Err(Refusal(r)) = does_not_start_matches(p, lock) {
+        out.extend(r);
+    }
+    if let Err(Refusal(r)) = waits_match(p, lock) {
         out.extend(r);
     }
     if p.status != Status::Frozen {
