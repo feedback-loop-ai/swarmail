@@ -701,7 +701,11 @@ pub fn stats(ran: &Ran, cpu_usec: Option<u64>) -> CellStats {
     let mut inexact = Vec::new();
     let mut count = BTreeMap::<&str, u32>::new();
     for r in &ran.rows {
-        let d = r.end_ns.saturating_sub(r.start_ns);
+        // A future wait's latency ends at the wait call's return, stamped
+        // inside the waiting future: the SMTP QUIT the row's end still
+        // includes is not the operation measured (0132 §6.5, §7.3).
+        let end = r.wait.as_ref().map_or(r.end_ns, |w| w.return_ns);
+        let d = end.saturating_sub(r.start_ns);
         *count.entry(r.outcome.class()).or_default() += 1;
         match r.outcome {
             Outcome::Exact => exact.push(d),

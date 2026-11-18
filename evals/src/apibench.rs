@@ -422,13 +422,19 @@ pub async fn wait_once(
     // instant and the delivery's answer once there is one.
     let seen: std::sync::Mutex<Seen> = std::sync::Mutex::new((None, None));
     let note = |f: &dyn Fn(&mut Seen)| f(&mut seen.lock().expect("wait state"));
+    // The waiting side's answer and return instant, kept across a cut like
+    // the sending side's: a wait that has returned while its QUIT is still
+    // pending at `own` keeps the answer it got (spec AC7, R3).
+    let returned: std::sync::Mutex<Option<(Result<Value, OpError>, u64)>> =
+        std::sync::Mutex::new(None);
     let both = async {
         // The return is stamped inside the waiting future the instant the
         // call returns (spec AC7, R3): whatever the sending side still does
-        // — the SMTP QUIT — cannot shift it.
+        // — the SMTP QUIT — cannot shift it, and a cut during QUIT cannot
+        // discard it.
         let waiting = async {
             let got = w.call(tool, args, own, &mut spend).await;
-            (got, clock.now_ns())
+            *returned.lock().expect("wait state") = Some((got, clock.now_ns()));
         };
         let sending = async {
             // Started after the wait future's first poll: `join!` polls it
@@ -459,9 +465,10 @@ pub async fn wait_once(
             // QUIT is bounded on its own and never moves the instants above.
             let _ = tokio::time::timeout(QUIT_BOUND, s.quit()).await;
         };
-        tokio::join!(waiting, sending).0
+        tokio::join!(waiting, sending);
     };
-    let answered = tokio::time::timeout_at(own, both).await.ok();
+    let _ = tokio::time::timeout_at(own, both).await;
+    let answered = returned.into_inner().expect("wait state");
     let (sent_at, ack) = *seen.lock().expect("wait state");
     let send_ns = sent_at.unwrap_or(call_ns);
     let return_ns = answered.as_ref().map_or_else(|| clock.now_ns(), |a| a.1);

@@ -331,6 +331,60 @@ async fn a_wait_answered_before_its_ack_keeps_a_negative_offset_and_quit_cannot_
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_wait_that_returned_keeps_its_answer_when_its_quit_is_cut() {
+    // Review medium (AC7, R3): the wait answers and its `250` is observed,
+    // then the QUIT never completes and the attempt's own end (well inside
+    // QUIT_BOUND) cuts it. The row keeps the exact answer and the return
+    // instant stamped inside the waiting future, not the cut's.
+    assert!(Duration::from_secs(1) < apibench::QUIT_BOUND);
+    let sent = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let smtp = scripted::smtp(SmtpScript {
+        hold_data_ack: Some(release.clone()),
+        data_received: Some(sent.clone()),
+        quit_delay: Duration::from_secs(3_600),
+    })
+    .await;
+    let s2 = sent.clone();
+    let url = scripted::mcp(handler(move |_, args, _| {
+        let sent = s2.clone();
+        Box::pin(async move {
+            sent.acquire().await.unwrap().forget();
+            let inbox = args["inbox"].as_str().unwrap().to_owned();
+            let subject = args["subject"].as_str().unwrap().to_owned();
+            Answer::Result(json!({"emails": [{"id": "w1", "subject": subject,
+                "to": [{"address": format!("{inbox}@{}", clients::DOMAIN)}]}]}))
+        })
+    }))
+    .await;
+    let worker = Arc::new(workers(&url, 1).await.pop().unwrap());
+    let a = api::author(7, Role::Future, 1, &apibench::wait_scope(0, 1));
+    let w2 = worker.clone();
+    let gate = tokio::spawn(async move {
+        sent.acquire().await.unwrap().forget();
+        drop(w2.client.lock().await);
+        release.notify_one();
+    });
+    let c = clock();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let done = apibench::wait_once(&worker, (smtp, c), a, deadline).await;
+    gate.await.unwrap();
+    let after = c.now_ns();
+    // The QUIT never completes, so returning at all is the attempt's own
+    // cut, at its end and inside QUIT_BOUND.
+    let own = (Duration::from_secs(1) - apibench::WAIT_MARGIN).as_nanos() as u64;
+    assert!(after >= own, "{after}");
+    assert_eq!(done.outcome, Outcome::Exact);
+    let t = done.wait.unwrap();
+    let ack = t.ack_ns.expect("the delivery was acknowledged");
+    // The return predates the 250, which predates the cut: it is the
+    // waiting future's own stamp, not the cut's.
+    assert!(t.return_ns < ack && ack < after, "{t:?}");
+    assert_eq!(t.ack_to_return_ns, Some(t.return_ns as i64 - ack as i64));
+    assert!(!api::uncertain(Operation::Wait, &done.outcome));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_refused_or_ambiguous_delivery_is_classified_by_what_the_store_may_hold() {
     // A fixture the server refused is a known non-effect; one whose `250`
     // never came may have been kept, which is mutation uncertainty (R1).
@@ -667,7 +721,13 @@ async fn every_failure_after_the_holder_announced_closes_its_input_and_awaits_it
             "echo '{{\"target\":\"{target}\",\"leaf\":\"leaf-7\",\"smtp\":\"127.0.0.1:9\",\"http\":\"127.0.0.1:9\"}}'; cat >/dev/null; touch '{}'; echo '{r}'; exit 0",
             eof.display()
         );
-        let driver = fake_driver(d.path(), &hold, "exit 3");
+        // The adapter logs the command line it was spawned with (R2).
+        let argv = d.path().join("argv");
+        let driver = fake_driver(
+            d.path(),
+            &hold,
+            &format!("printf '%s\\n' \"$@\" > '{}'; exit 3", argv.display()),
+        );
         assert_eq!(run_api_mcp(d.path(), &driver, target).await, 2, "{target}");
         assert!(
             eof.exists(),
@@ -676,6 +736,14 @@ async fn every_failure_after_the_holder_announced_closes_its_input_and_awaits_it
         let calls = std::fs::read_to_string(d.path().join("calls")).unwrap();
         if target == "mailpit" {
             assert_eq!(calls, "hold\nmailpit-mcp\n");
+            // api_mcp forwarded the chunk's --sources and --documents to
+            // the spawned adapter, beside the held backend's endpoint.
+            assert_eq!(
+                std::fs::read_to_string(&argv).unwrap(),
+                "mailpit-mcp\n--sources\nlock.json\n--endpoint\nhttp://127.0.0.1:9\n--documents\ndocs\n"
+            );
+        } else {
+            assert!(!argv.exists(), "swarmail is served directly");
         }
     }
 }

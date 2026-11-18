@@ -1428,6 +1428,47 @@ fn statistics_are_nearest_rank_over_exact_successes_only() {
     assert_eq!(api::nearest_rank(&[5], 99), Some(5));
 }
 
+#[test]
+fn a_wait_rows_latency_ends_at_its_return_not_its_quit() {
+    // Review low (AC7/AC9): a future wait's row ends after its bounded
+    // SMTP QUIT; its latency is the waiting client's return.
+    let wait = |ret: u64| api::WaitTimes {
+        call_ns: 0,
+        send_ns: 1,
+        ack_ns: Some(5),
+        return_ns: ret,
+        ack_to_return_ns: Some(ret as i64 - 5),
+    };
+    let rows: Vec<api::OpRow> = (0..4u32)
+        .map(|i| api::OpRow {
+            phase: Phase::Measured,
+            index: i,
+            worker: 0,
+            start_ns: 0,
+            end_ns: 2_000_000_000,
+            outcome: Outcome::Exact,
+            requests: 1,
+            bytes: 0,
+            wait: Some(wait(u64::from(i + 1) * 100)),
+        })
+        .collect();
+    let ran = api::Ran {
+        rows,
+        planned: 4,
+        started: 4,
+        unstarted: 0,
+        start_ns: 0,
+        end_ns: 2_000_000_000,
+        unresolved: false,
+        cancel_unproved: false,
+    };
+    let s = api::stats(&ran, None);
+    assert_eq!(
+        (s.p50_ns, s.p95_ns, s.p99_ns),
+        (Some(200), Some(400), Some(400))
+    );
+}
+
 // ---- exactness (T3) ---------------------------------------------------------
 
 fn summary(id: &str, to: &str, subject: &str) -> clients::Summary {
@@ -3618,6 +3659,43 @@ fn every_adapter_serves_the_draft_lock_from_its_documents_root() {
     // No adapter for a target without one, whatever the lock says.
     let e = mcp::adapter_sources(TargetKind::Smtp4dev, &draft, Some(&docs)).unwrap_err();
     assert!(e.contains("has no MCP adapter"), "{e}");
+}
+
+#[test]
+fn an_adapter_mode_reads_its_documents_flag_from_its_command_line() {
+    // R2, the adapter side of the forwarding: the command line apibench
+    // builds (`--sources LOCK --endpoint URL --documents ROOT`) is the one
+    // the adapter mode reads, and its --documents is what serves the draft.
+    let draft = root().join("docs/evals/draft/sources.lock.v5.json");
+    let docs = root().join("docs/evals");
+    let argv = |extra: &[&str]| -> Vec<String> {
+        let mut v: Vec<String> = [
+            "--sources",
+            draft.to_str().unwrap(),
+            "--endpoint",
+            "http://127.0.0.1:4321",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        v.extend(extra.iter().map(|s| s.to_string()));
+        v
+    };
+    for kind in ADAPTED {
+        let (f, _) = mcp::adapter_flags(kind, &argv(&["--documents", docs.to_str().unwrap()]))
+            .unwrap_or_else(|e| panic!("{kind}: {e}"));
+        assert_eq!(f["documents"], vec![docs.display().to_string()]);
+    }
+    // Dropped, the draft lock's own directory holds no documents: refused.
+    let e = mcp::adapter_flags(TargetKind::Mailpit, &argv(&[])).unwrap_err();
+    assert!(e.starts_with("source documents:"), "{e}");
+    let e = mcp::adapter_flags(TargetKind::Mailpit, &argv(&["--bogus", "x"])).unwrap_err();
+    assert_eq!(e, "unknown flag --bogus");
+    let e =
+        mcp::adapter_flags(TargetKind::Mailpit, &["--endpoint".into(), "x".into()]).unwrap_err();
+    assert_eq!(e, "--sources is required");
+    let e = mcp::adapter_flags(TargetKind::Mailpit, &["--sources".into()]).unwrap_err();
+    assert!(!e.is_empty());
 }
 
 #[test]

@@ -478,23 +478,9 @@ fn adapter_mode<B: mcp::Backend>(mode: &str, args: &[String]) -> i32 {
         Launch(Box<targets::LaunchSpec>, PathBuf),
     }
     let ready = mcp::adapter_target(kind)
-        .and_then(|()| flags(args))
-        .and_then(|f| {
-            if let Some(k) = f.keys().find(|k| {
-                !["endpoint", "sources", "documents", "launch", "scratch"].contains(&k.as_str())
-            }) {
-                return Err(format!("unknown flag --{k}"));
-            }
-            // The documents are where `--documents` says, else beside the
-            // lock — the same contract as every other mode (R2) — and their
-            // bytes are rechecked here, before anything is served.
-            let documents = f
-                .get("documents")
-                .and_then(|v| v.first())
-                .map(PathBuf::from);
-            let s =
-                mcp::adapter_sources(kind, Path::new(one(&f, "sources")?), documents.as_deref())?;
-            match (f.contains_key("endpoint"), f.contains_key("launch")) {
+        .and_then(|()| mcp::adapter_flags(kind, args))
+        .and_then(
+            |(f, s)| match (f.contains_key("endpoint"), f.contains_key("launch")) {
                 (true, false) if !f.contains_key("scratch") => {
                     Ok(Via::Endpoint(mcp::parse_endpoint(one(&f, "endpoint")?)?))
                 }
@@ -509,8 +495,8 @@ fn adapter_mode<B: mcp::Backend>(mode: &str, args: &[String]) -> i32 {
                 _ => {
                     Err("give --endpoint URL, or --launch BIN with --scratch DIR, not both".into())
                 }
-            }
-        });
+            },
+        );
     let via = match ready {
         Ok(v) => v,
         Err(e) => {

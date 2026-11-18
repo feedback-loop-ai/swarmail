@@ -117,6 +117,38 @@ pub fn adapter_sources(
     Ok(s)
 }
 
+/// An adapter mode's command line, read and its lock checked (spec AC2,
+/// R2): only the adapter's own flags, `--sources` required, and the
+/// documents where `--documents` says, else beside the lock — the same
+/// contract as every other mode — their bytes rechecked before anything
+/// is served.
+pub fn adapter_flags(
+    kind: crate::protocol::TargetKind,
+    args: &[String],
+) -> Result<
+    (
+        std::collections::BTreeMap<String, Vec<String>>,
+        crate::protocol::SourceLock,
+    ),
+    String,
+> {
+    let f = crate::runner::flags(args)?;
+    if let Some(k) = f
+        .keys()
+        .find(|k| !["endpoint", "sources", "documents", "launch", "scratch"].contains(&k.as_str()))
+    {
+        return Err(format!("unknown flag --{k}"));
+    }
+    let first = |name: &str| {
+        f.get(name)
+            .and_then(|v| v.first())
+            .map(std::path::Path::new)
+    };
+    let sources = first("sources").ok_or("--sources is required")?;
+    let s = adapter_sources(kind, sources, first("documents"))?;
+    Ok((f, s))
+}
+
 /// The launch spec for `kind`'s adapter, from the lock's pin and the same
 /// builder the wire run uses (`LaunchSpec::from_pin`): the pin's listeners,
 /// environment and config file, and the executable digest checked at launch.
