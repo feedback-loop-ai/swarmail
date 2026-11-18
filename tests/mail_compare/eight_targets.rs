@@ -3508,17 +3508,24 @@ async fn a_declared_bind_that_arrives_after_readiness_is_waited_for() {
     )
     .await;
     assert_eq!(seen, targets::Bind::Absent);
-    // A foreign holder is reported at once, not waited out.
+    // A foreign holder is reported at once, not waited out. One probe walks
+    // /proc/net/tcp{,6} and every process's stat, which beside the other gate
+    // suites (their TIME_WAIT tables, thousands of processes) once took over
+    // 5 s; half the deadline still tells "at once" from "waited out".
     let foreign = std::net::TcpListener::bind(loopback).unwrap();
     let t0 = Instant::now();
     let seen = targets::bind_within(
         group,
         foreign.local_addr().unwrap(),
-        Instant::now() + Duration::from_secs(20),
+        Instant::now() + Duration::from_secs(60),
     )
     .await;
     assert_eq!(seen, targets::Bind::Foreign);
-    assert!(t0.elapsed() < Duration::from_secs(5));
+    let took = t0.elapsed();
+    assert!(
+        took < Duration::from_secs(30),
+        "a foreign holder was waited out: {took:?}"
+    );
     child.kill().unwrap();
     child.wait().unwrap();
 }

@@ -208,3 +208,13 @@ direction moved the dsh `qwen-max` alias from `dashscope/qwen3.8-max` to
 `dashscope/qwen4-max` (Qwen 4.0 Max). Efforts and the alias live in
 `.brokkr/agents/` and `.brokkr/adapters/dsh.json`; the text above is
 unchanged and is read with this pointer.
+
+
+## Addendum — 2026-11-17 (operator: Sol 6.2 and Astra 6.2)
+
+The operator directed on 2026-11-17 that the Codex `sol` alias resolve to
+`gpt-6.2-sol` and `astra` to `gpt-6.2-astra` (both answered a completion that
+day). Every seat keeps its effort (medium since 2026-11-16). The aliases live
+in `.brokkr/adapters/codex.json`; the text above is unchanged and is read with
+this pointer. The eval harness's measured `gpt-6.1-sol` (published baselines)
+is not a delivery seat and is unchanged.

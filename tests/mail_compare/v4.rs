@@ -9309,9 +9309,10 @@ mod chunk {
         let out = dir.path().join("out");
         let sink = sink_for(&m, &out);
         // The wait never completes (the stub has no mail), so the instant
-        // always cuts it in the observe step; 5 s only has to let the send
-        // finish first (at 300 ms an instrumented coverage build cut the send).
-        let end = Instant::now() + Duration::from_secs(5);
+        // always cuts it in the observe step; the window only has to let the
+        // send finish first (at 300 ms, and once at 5 s beside the other gates,
+        // an instrumented coverage build cut the send).
+        let end = Instant::now() + Duration::from_secs(CUT_AFTER_SEND_S);
         let failures = runner::waits(
             &o,
             &p,
@@ -9390,11 +9391,14 @@ mod chunk {
 
     // A send cut in its QUIT after the server's 250 keeps the 250: the mail
     // was sent (0132 §7.3, §11.3). QUIT never answers, so the instant always
-    // cuts the session; 5 s only has to let the message itself be answered
-    // on a loaded or instrumented build.
+    // cuts the session; the window only has to let the message itself be
+    // answered on a loaded or instrumented build (5 s once was not enough
+    // for the coverage build running beside the other gates).
+    const CUT_AFTER_SEND_S: u64 = 15;
+
     #[tokio::test]
     async fn a_present_send_cut_in_its_quit_keeps_its_acceptance() {
-        let rows = cut_waits((1, 1, 0), "QUIT", &[], 5).await;
+        let rows = cut_waits((1, 1, 0), "QUIT", &[], CUT_AFTER_SEND_S).await;
         let r = &rows[0];
         assert_eq!(r.phase, Phase::Present);
         assert_eq!(
@@ -9410,7 +9414,7 @@ mod chunk {
         // The search already holds the message: the observer answers before
         // the cut, and its answer stands.
         let future = 200_000;
-        let rows = cut_waits((0, 1, 0), "QUIT", &[future], 5).await;
+        let rows = cut_waits((0, 1, 0), "QUIT", &[future], CUT_AFTER_SEND_S).await;
         let r = &rows[0];
         assert_eq!(r.phase, Phase::Future);
         assert_eq!(
@@ -9419,7 +9423,7 @@ mod chunk {
         );
         assert!(r.ack_ns.is_some() && r.observed_ns.is_some());
         // Nothing to find: accepted, and the wait has no answer.
-        let rows = cut_waits((0, 1, 0), "QUIT", &[], 5).await;
+        let rows = cut_waits((0, 1, 0), "QUIT", &[], CUT_AFTER_SEND_S).await;
         let r = &rows[0];
         assert_eq!(
             (r.outcome.as_str(), r.reason.as_deref(), r.code),
