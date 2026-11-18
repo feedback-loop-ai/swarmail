@@ -1125,6 +1125,68 @@ pub async fn background_ids(
     }
 }
 
+/// The interval at which untimed setup reads a store again while it has not
+/// yet shown what it acknowledged: the protocol's common 100 ms poll.
+pub const SETTLE_POLL: Duration = Duration::from_millis(100);
+
+/// Whether a setup listing is still worth reading again: it held fewer than
+/// `want` messages, or its pages moved under the scan. A store that
+/// acknowledges before it stores (MailSlurper queues each message after
+/// its `250`, so its count grows for seconds after the last send) shows
+/// both while it catches up. Any other answer — enough messages, too many,
+/// a refusal, a malformed page — is final.
+pub fn unsettled(listed: &Result<usize, OpError>, want: usize) -> bool {
+    match listed {
+        Ok(n) => *n < want,
+        Err(e) => *e == OpError::Incomplete,
+    }
+}
+
+/// Read `read` until it is settled ([`unsettled`]) or the next read could
+/// not begin [`SETTLE_POLL`] before `deadline`; the last answer stands.
+/// This is untimed setup, never a measurement: a send is never repeated,
+/// only the store is read again.
+pub async fn settled<T, F, Fut>(
+    deadline: Instant,
+    want: usize,
+    len: impl Fn(&T) -> usize,
+    mut read: F,
+) -> Result<T, OpError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, OpError>>,
+{
+    loop {
+        let got = read().await;
+        let n = got.as_ref().map(&len).map_err(|e| *e);
+        if !unsettled(&n, want) || Instant::now() + SETTLE_POLL >= deadline {
+            return got;
+        }
+        tokio::time::sleep(SETTLE_POLL).await;
+    }
+}
+
+/// The fill's background ids, confirmed within the fill's own bound (0132
+/// §6.4: a level is not reached only when the count does not reach it
+/// within 300 s). With every send accepted (`want`), the store is read
+/// again while it shows fewer or is still moving; otherwise no read can
+/// make the level, and the first answer stands.
+async fn retained_within(
+    client: &clients::Client,
+    deadline: Instant,
+    want: Option<u64>,
+) -> Result<BTreeSet<String>, OpError> {
+    match want {
+        Some(n) => {
+            settled(deadline, n as usize, BTreeSet::len, || {
+                background_ids(client, deadline)
+            })
+            .await
+        }
+        None => background_ids(client, deadline).await,
+    }
+}
+
 /// Send `n` fill messages over [`FILL_SESSIONS`] reused sessions, round robin
 /// over the [`BACKGROUND`] recipients, then confirm the retained count, all
 /// within [`FILL_DEADLINE`]. A refused, failed or ambiguous send is never
@@ -1225,7 +1287,8 @@ pub async fn fill_within(
         rec.failed += t[2];
         rec.ambiguous += t[3];
     }
-    let ids = match background_ids(client, deadline).await {
+    let all_accepted = rec.accepted == u64::from(n);
+    let ids = match retained_within(client, deadline, all_accepted.then_some(u64::from(n))).await {
         Ok(ids) => {
             rec.retained = Some(ids.len() as u64);
             Some(ids)
@@ -1326,11 +1389,14 @@ async fn prepare_within(
     }
     for (scope, idx) in &by_scope {
         let deadline = verify_deadline(end);
-        let mut spend = Spend::default();
-        let listed = client
-            .list(scope, deadline, &mut spend)
-            .await
-            .map_err(|e| format!("resolving {}: {}", scope.address, e.reason()))?;
+        // Read again while the scope shows fewer than it was sent (a store
+        // that stores after its 250); each read has its own budget.
+        let listed = settled(deadline, idx.len(), Vec::len, || async {
+            let mut spend = Spend::default();
+            client.list(scope, deadline, &mut spend).await
+        })
+        .await
+        .map_err(|e| format!("resolving {}: {}", scope.address, e.reason()))?;
         if listed.len() != idx.len() {
             return Err(format!(
                 "{} holds {} messages, {} authored",

@@ -2317,7 +2317,10 @@ async fn a_fill_whose_store_keeps_less_than_it_accepted_is_not_reached() {
     // shorter success, never retried.
     let (smtp, seen) = fill_smtp(false).await;
     let client = clients::Client::new("mailpit", listing_of(99).await).unwrap();
-    let (rec, ids) = api::fill_ledger(smtp, &client, (163, "t"), 100, clock()).await;
+    // The store is read again until the bound (a store still storing
+    // would catch up), so a short bound keeps the test brief.
+    let bound = Duration::from_secs(2);
+    let (rec, ids) = api::fill_within(smtp, &client, (163, "t"), 100, clock(), bound).await;
     assert!(!rec.reached);
     assert_eq!((rec.accepted, rec.retained), (100, Some(99)));
     assert_eq!(ids.unwrap().len(), 99);
@@ -2431,6 +2434,122 @@ async fn a_per_mailbox_store_names_each_message_by_its_mailbox() {
         problems,
         [format!("1 expected id(s) missing, e.g. {sentinel}")]
     );
+}
+
+/// A Mailpit-shaped store that acknowledges before it stores: the `k`th
+/// listing request sees `shown(k)` of the `n` messages, and a request in
+/// the middle of a page sequence sees the count move.
+async fn catching_up(
+    n: u64,
+    shown: impl Fn(u64) -> u64 + Send + Sync + 'static,
+) -> clients::Client {
+    let reads = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let addr = responder(move |p| {
+        let k = reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let total = shown(k).min(n);
+        let s = start_of(p);
+        let ids: Vec<String> = (s..total.min(s + 250)).map(|i| format!("m{i}")).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        (200, page(s, total, &refs))
+    })
+    .await;
+    clients::Client::new("mailpit", addr).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fill_a_store_is_still_storing_is_confirmed_once_it_shows_every_message() {
+    // MailSlurper answers 250 and stores later: on the host its listing
+    // moved between pages right after the fill ("retained count
+    // unreadable: incomplete"), then held every message seconds later. The
+    // fill reads it again within its bound and never sends again.
+    let (smtp, seen) = fill_smtp(false).await;
+    // 400 messages in two 250-item pages; each request sees 60 more, so
+    // the first scans move under the pager and the later ones are short.
+    let client = catching_up(400, |k| 60 * (k + 1)).await;
+    let (rec, ids) = api::fill_ledger(smtp, &client, (163, "t"), 400, clock()).await;
+    assert!(rec.reached, "{rec:?}");
+    assert_eq!((rec.accepted, rec.retained), (400, Some(400)));
+    assert_eq!(ids.unwrap().len(), 400);
+    assert_eq!(seen.lock().unwrap().len(), 400, "nothing was sent again");
+    // A moving listing is read again; an answer that is enough, too many or
+    // a refusal is final.
+    assert!(api::unsettled(&Ok(3), 4));
+    assert!(api::unsettled(&Err(clients::OpError::Incomplete), 4));
+    for done in [
+        Ok(4),
+        Ok(5),
+        Err(clients::OpError::Malformed),
+        Err(clients::OpError::Status(500)),
+        Err(clients::OpError::Timeout),
+    ] {
+        assert!(!api::unsettled(&done, 4), "{done:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fixtures_a_store_is_still_storing_resolve_once_it_shows_them() {
+    // The same store behaviour at preparation: a fixture scope that shows
+    // its messages only on a later read still resolves every token, and
+    // one that never shows them all is refused at the bound.
+    let (smtp, seen) = fill_smtp(false).await;
+    let mut fixtures = vec![
+        api::author(5, api::Role::Read, 0, &api::read_scope()),
+        api::author(5, api::Role::Read, 1, &api::read_scope()),
+    ];
+    let subjects: Vec<String> = fixtures.iter().map(|f| f.subject.clone()).collect();
+    let reads = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let addr = responder(move |_| {
+        // The first two reads show one message, then both.
+        let k = reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let shown = if k < 2 { 1 } else { 2 };
+        let items: Vec<Value> = subjects[..shown]
+            .iter()
+            .enumerate()
+            .map(|(n, s)| json!({"id": (n + 1).to_string(), "to": [format!("<apiread00x@{}>", clients::DOMAIN)], "subject": s}))
+            .collect();
+        (200, Value::Array(items).to_string())
+    })
+    .await;
+    let client = clients::Client::new("inbucket", addr).unwrap();
+    api::prepare(smtp, &client, &mut fixtures, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        fixtures.iter().map(|f| f.id.clone()).collect::<Vec<_>>(),
+        [Some("1".into()), Some("2".into())]
+    );
+    assert_eq!(seen.lock().unwrap().len(), 2, "each fixture sent once");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_store_that_never_shows_everything_is_answered_at_the_bound() {
+    // The settling read on the paused clock: a listing that stays short is
+    // read every SETTLE_POLL until the next read could not begin before
+    // the bound, and its last answer stands; a final answer stops at once.
+    let start = tokio::time::Instant::now();
+    let deadline = start + Duration::from_millis(1_000);
+    let reads = std::cell::Cell::new(0u32);
+    let got = api::settled(deadline, 2, Vec::len, || {
+        reads.set(reads.get() + 1);
+        async { Ok(vec![1u8]) }
+    })
+    .await;
+    assert_eq!(got, Ok(vec![1]));
+    assert_eq!(reads.get(), 10);
+    assert_eq!(
+        tokio::time::Instant::now() - start,
+        Duration::from_millis(900)
+    );
+    for (answer, want) in [(Ok(vec![1u8, 2]), 1), (Err(clients::OpError::Malformed), 1)] {
+        let reads = std::cell::Cell::new(0u32);
+        let got = api::settled(deadline, 2, Vec::len, || {
+            reads.set(reads.get() + 1);
+            let a = answer.clone();
+            async move { a }
+        })
+        .await;
+        assert_eq!((got, reads.get()), (answer, want));
+    }
 }
 
 #[test]
