@@ -288,3 +288,9 @@ nothing beyond the acceptance.
 Proposed [0134](0134-ui-projection-route.md) §1 amends §7 of this record: "No REST route" becomes one REST route, `GET /api/v1/messages/{id}/projection`, that serves the attachment list's filenames, content types, sizes and calendar summary and times. It serves no bytes and no hash, and `Email.attachments` stays `#[serde(skip)]`. It is a proposal until the operator accepts it; this record's ruling stands as written until then.
 
 Accepted by the operator on 2026-11-16 ([0134](0134-ui-projection-route.md), acceptance note).
+
+## Dated pointer — 2026-11-17 (proposed 0135)
+
+Proposed [0135](0135-preview-images.md) amends §§2 and 7 of this record for one read-only UI surface, `GET /ui/message/{id}/preview`. §2 gains one exception: a bounded read-time parse of `raw` that only learns which retained entry carries which `Content-ID` and disposition, validated by type, size and SHA-256, and never serves freshly decoded bytes, recovers unstored content, re-extracts an answer or writes anything back. §7 gains one exception: that preview may carry referenced inline PNG, JPEG, GIF or WebP bytes as `data:` URIs. No REST attachment list or fetch is added, and `Email.attachments` stays `#[serde(skip)]`. It is a proposal until the operator accepts it; this record's ruling stands as written until then.
+
+Accepted by the operator on 2026-11-17 ([0135](0135-preview-images.md), acceptance note).

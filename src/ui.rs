@@ -6,7 +6,12 @@
 //! JSON API (`/api/v1/inboxes/{inbox}/threads[...]`, the per-message
 //! projection and deliverability report) and the SSE feed. All mail-controlled
 //! text is rendered with `textContent` in `static/ui.js` — never `innerHTML` —
-//! so nothing the SMTP peer sent can become markup here.
+//! so nothing the SMTP peer sent can become markup here. The one place mail
+//! HTML is displayed is a separate document, `/ui/message/{id}/preview`
+//! (decision 0135), framed by a bare-`sandbox` iframe and governed
+//! by its own response headers.
+
+mod preview;
 
 use crate::api::{
     ApiError, AppState, DEFAULT_LIST_LIMIT, InboxPageQuery, bad_request, inbox_page, parse_query,
@@ -14,10 +19,12 @@ use crate::api::{
 use crate::model::validate_inbox;
 use axum::Router;
 use axum::extract::{Path, RawQuery, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
-use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 /// The browser half of the live views, embedded at compile time. It contains
 /// no mail data — only wiring — and no `</script>` sequence, so it can be
@@ -27,6 +34,15 @@ const SCRIPT: &str = include_str!("static/ui.js");
 /// The stylesheet of every UI page, embedded at compile time: system font
 /// stacks, no `url(`, no `@import`, nothing that loads from outside.
 const CSS: &str = include_str!("static/ui.css");
+
+/// A path segment's escape set: everything but RFC 3986's unreserved
+/// characters, so a message id reads as the script's `encodeURIComponent`
+/// spells it.
+const SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
 
 /// The tab icon: a static rendering of the project mark (assets/logo.svg,
 /// without its animation), embedded at compile time and served same-origin,
@@ -46,11 +62,31 @@ fn esc(s: &str) -> String {
 /// The shell's resource policy (issue #56). Embedded inline script and style
 /// are allowed; `connect-src 'self'` permits same-origin SSE. Images may load
 /// from the same origin or data URLs, including same-origin image GETs.
-/// Other resource loads are refused by `default-src 'none'`. The sandboxed
-/// srcdoc mail preview inherits the policy, but CSP does not govern clicked
-/// link navigation: this is not a guarantee against beaconing mail contents.
-/// Every UI route uses this one policy string.
-const CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:";
+/// `frame-src 'self'` admits exactly one kind of frame, the same-origin
+/// preview document (decision 0135 §6): `default-src 'none'` would
+/// otherwise refuse it. Other resource loads are refused. Every UI route
+/// uses this one policy string.
+const CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-src 'self'";
+
+/// The preview document's policy (decision 0135 §5), sent as a
+/// response header: inline styles and `data:` images only, nothing remote,
+/// no scripts, plugins, frames, base URL or form target, framed only by its
+/// own origin, and a CSP `sandbox` without a single token — so the document
+/// runs in an opaque origin with scripts, forms, popups and top navigation
+/// off even when opened directly, outside the console's sandboxed frame.
+const PREVIEW_CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox";
+
+/// The same policy after the viewer asked to load remote content: images,
+/// stylesheets and fonts may come from any http(s) host. Nothing else moves.
+const PREVIEW_REMOTE_CSP: &str = "default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline' https: http:; font-src https: http:; script-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox";
+
+/// The one refusal of a preview query that is not empty or `remote=1`.
+const PREVIEW_QUERY_REFUSAL: &str =
+    "the preview query is empty or exactly remote=1; nothing else is accepted";
+
+/// The trusted note under every preview frame (0135 §7): what can stay
+/// broken and why, with the numeric bounds. Fixed text, never mail data.
+const PREVIEW_NOTE: &str = "Rendered in a sandbox with scripts, forms and navigation off; remote images, stylesheets and fonts are blocked. Inline images show only for PNG, JPEG, GIF or WebP parts referenced as cid: in an img src, kept at ingest, at most 256 KiB each and 2 MiB per preview. Missing or ambiguous Content-IDs, SVG and other types, parts marked as attachments, CSS or srcset references, unstored or mismatched bytes, and mail over 8 MiB stay broken. HTML over 2 MiB, or a preview over 4 MiB, is refused.";
 
 fn page(title: &str, body: String) -> Html<String> {
     let title = esc(title);
@@ -137,6 +173,27 @@ pub fn router() -> Router<AppState> {
         .route("/favicon.svg", get(favicon))
         .route("/favicon.ico", get(favicon))
         .layer(axum::middleware::map_response(refuse_framing))
+        // Merged after the DENY layer, so only the preview document may be
+        // framed — by its own origin (0135 §5).
+        .merge(preview_router(Arc::new(Semaphore::new(
+            preview::PREVIEW_JOBS,
+        ))))
+}
+
+/// The preview route with its admission: one semaphore per router, so per
+/// service, shared by every clone of it (0135 §4).
+fn preview_router(permits: Arc<Semaphore>) -> Router<AppState> {
+    Router::new()
+        .route(
+            "/ui/message/{id}/preview",
+            get(
+                move |State(state): State<AppState>, Path(id): Path<String>, raw: RawQuery| {
+                    message_preview(permits.clone(), state, id, raw.0)
+                },
+            )
+            .fallback(preview_method_not_allowed),
+        )
+        .layer(axum::middleware::map_response(preview_headers))
 }
 
 /// The tab icon, cacheable for a day: it changes only with a release.
@@ -161,6 +218,113 @@ async fn refuse_framing(mut res: Response) -> Response {
         axum::http::HeaderValue::from_static("DENY"),
     );
     res
+}
+
+/// Every preview response — the document and each refusal — carries the
+/// document headers (0135 §5): no caching, no sniffing, no referrer, framing
+/// by the same origin only, and the default policy unless the handler chose
+/// the remote one. Guard refusals answer before the router and keep their
+/// own envelope.
+async fn preview_headers(mut res: Response) -> Response {
+    let headers = res.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::X_FRAME_OPTIONS,
+        HeaderValue::from_static("SAMEORIGIN"),
+    );
+    headers
+        .entry(header::CONTENT_SECURITY_POLICY)
+        .or_insert(HeaderValue::from_static(PREVIEW_CSP));
+    res
+}
+
+/// The preview answers GET and HEAD; any other method is a JSON 405.
+async fn preview_method_not_allowed() -> Response {
+    let mut res = ApiError(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "the preview answers GET and HEAD only".into(),
+    )
+    .into_response();
+    res.headers_mut()
+        .insert(header::ALLOW, HeaderValue::from_static("GET,HEAD"));
+    res
+}
+
+/// `GET /ui/message/{id}/preview[?remote=1]` (decision 0135): the
+/// stored HTML as its own sandboxed document. The query is closed; a render
+/// slot is taken without waiting, before the snapshot, and moves into the
+/// blocking job; the mail is one `Arc` snapshot, so a prune after it cannot
+/// cut the render short and nothing holds the store meanwhile.
+async fn message_preview(
+    permits: Arc<Semaphore>,
+    state: AppState,
+    id: String,
+    query: Option<String>,
+) -> Response {
+    let remote = match query.as_deref() {
+        None | Some("") => false,
+        Some("remote=1") => true,
+        Some(_) => {
+            return ApiError(StatusCode::BAD_REQUEST, PREVIEW_QUERY_REFUSAL.into()).into_response();
+        }
+    };
+    let Ok(permit) = permits.try_acquire_owned() else {
+        return ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "preview busy; retry".into(),
+        )
+        .into_response();
+    };
+    let Some(email) = state.store.get(&id) else {
+        return ApiError(StatusCode::NOT_FOUND, "message not found".into()).into_response();
+    };
+    preview_response(
+        tokio::task::spawn_blocking(preview::job(permit, email)).await,
+        remote,
+    )
+}
+
+/// The answer for a finished (or failed) render. A worker that panicked is
+/// a fixed 500 that carries no mail text.
+fn preview_response(
+    joined: Result<preview::Rendered, tokio::task::JoinError>,
+    remote: bool,
+) -> Response {
+    match joined {
+        Ok(preview::Rendered::Document(html)) => {
+            let policy = if remote {
+                PREVIEW_REMOTE_CSP
+            } else {
+                PREVIEW_CSP
+            };
+            (
+                [
+                    (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                    (header::CONTENT_SECURITY_POLICY, policy),
+                ],
+                html,
+            )
+                .into_response()
+        }
+        Ok(preview::Rendered::TooLarge) => ApiError(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "the preview exceeds its byte budget: 2 MiB of HTML, 4 MiB rendered".into(),
+        )
+        .into_response(),
+        Err(_) => ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "preview rendering failed".into(),
+        )
+        .into_response(),
+    }
 }
 
 /// The console on `/`, paged like `/api/v1/inboxes` (decision 0044 §3, issue
@@ -314,12 +478,18 @@ fn render_message(
     report: Result<&crate::deliverability::Report, &crate::deliverability::AnalysisError>,
 ) -> Response {
     let report_section = report_section(report);
-    // The html preview renders in a sandboxed iframe (no scripts), its
-    // markup escaped into the srcdoc attribute.
+    // The html preview is its own document (decision 0135), framed
+    // by a bare sandbox. This page offers no remote toggle: the default
+    // route only, with the same trusted note as the console.
     let html_body = email
         .html
-        .as_deref()
-        .map(|h| format!(r#"<iframe sandbox srcdoc="{}"></iframe>"#, esc(h)))
+        .as_ref()
+        .map(|_| {
+            let id = utf8_percent_encode(&email.id, SEGMENT);
+            format!(
+                r#"<iframe sandbox title="HTML preview, scripts disabled" src="/ui/message/{id}/preview"></iframe><div class="muted">{PREVIEW_NOTE}</div>"#
+            )
+        })
         .unwrap_or_default();
     let text_block = email
         .text
@@ -367,6 +537,189 @@ fn render_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn preview_state() -> AppState {
+        AppState {
+            store: Arc::new(crate::store::Store::new(10)),
+            chaos: Arc::new(crate::chaos::Chaos::default()),
+            webhooks: Arc::new(crate::webhook::Webhooks::default()),
+            started: std::time::Instant::now(),
+            shutdown: tokio::sync::watch::channel(false).1,
+            smtp_degraded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            pop3_degraded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            http_origin_guard: None,
+            route_domain: None,
+        }
+    }
+
+    fn stored(state: &AppState, html: &str) -> String {
+        let raw =
+            format!("From: s@x.io\r\nTo: r@x.io\r\nContent-Type: text/html\r\n\r\n{html}\r\n");
+        let email =
+            crate::smtp::build_email(raw.as_bytes(), "pv", &["r@x.io".into()], "s@x.io".into());
+        state.store.insert(email).unwrap().id.clone()
+    }
+
+    async fn status_and_body(res: Response) -> (StatusCode, String) {
+        let status = res.status();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    /// Two renders hold both slots; a third is refused without waiting, and
+    /// a freed slot admits again. The slots are the router's own: another
+    /// router's are untouched (0135 §4).
+    #[tokio::test]
+    async fn the_preview_admits_two_renders_and_refuses_a_third() {
+        let state = preview_state();
+        let id = stored(&state, "<p>hi</p>");
+        let permits = Arc::new(Semaphore::new(preview::PREVIEW_JOBS));
+        let first = permits.clone().try_acquire_owned().unwrap();
+        let _second = permits.clone().try_acquire_owned().unwrap();
+        let (status, body) = status_and_body(
+            message_preview(permits.clone(), state.clone(), id.clone(), None).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body.contains("preview busy; retry"), "{body}");
+        let other = Arc::new(Semaphore::new(preview::PREVIEW_JOBS));
+        let (status, _) =
+            status_and_body(message_preview(other, state.clone(), id.clone(), None).await).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "another service's slots are its own"
+        );
+        drop(first);
+        let (status, body) =
+            status_and_body(message_preview(permits.clone(), state, id, None).await).await;
+        assert_eq!((status, body.as_str()), (StatusCode::OK, "<p>hi</p>\r\n"));
+        assert_eq!(
+            permits.available_permits(),
+            1,
+            "the render gave its slot back"
+        );
+    }
+
+    /// The query is closed: absent, empty or exactly `remote=1`.
+    #[tokio::test]
+    async fn the_preview_query_is_closed() {
+        let state = preview_state();
+        let id = stored(&state, "<p>q</p>");
+        let permits = Arc::new(Semaphore::new(preview::PREVIEW_JOBS));
+        for query in [None, Some(""), Some("remote=1")] {
+            let res = message_preview(
+                permits.clone(),
+                state.clone(),
+                id.clone(),
+                query.map(String::from),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK, "{query:?}");
+        }
+        for query in [
+            "remote=0",
+            "remote",
+            "remote=",
+            "remote=1&remote=1",
+            "x=1",
+            "remote=%31",
+            "remote=1&x",
+        ] {
+            let (status, body) = status_and_body(
+                message_preview(
+                    permits.clone(),
+                    state.clone(),
+                    id.clone(),
+                    Some(query.into()),
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+            assert!(body.contains(PREVIEW_QUERY_REFUSAL), "{query}: {body}");
+        }
+    }
+
+    /// A snapshot taken before a prune renders to the end; a lookup after
+    /// it is a 404. Nothing reserves the mail against eviction.
+    #[tokio::test]
+    async fn a_snapshot_outlives_a_prune_and_a_later_lookup_is_gone() {
+        let state = preview_state();
+        let id = stored(&state, "<p>kept</p>");
+        let permits = Arc::new(Semaphore::new(preview::PREVIEW_JOBS));
+        let snapshot = state.store.get(&id).unwrap();
+        state.store.clear("pv").unwrap();
+        let permit = permits.clone().try_acquire_owned().unwrap();
+        let joined = tokio::task::spawn_blocking(preview::job(permit, snapshot)).await;
+        let (status, body) = status_and_body(preview_response(joined, false)).await;
+        assert_eq!((status, body.as_str()), (StatusCode::OK, "<p>kept</p>\r\n"));
+        let (status, body) = status_and_body(message_preview(permits, state, id, None).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.contains("message not found"), "{body}");
+    }
+
+    /// Each render outcome's status, type and policy; a worker that failed
+    /// is a fixed 500 that names nothing from the mail.
+    #[tokio::test]
+    async fn every_render_outcome_has_its_answer() {
+        let document = || Ok(preview::Rendered::Document("<p>".into()));
+        for (remote, policy) in [(false, PREVIEW_CSP), (true, PREVIEW_REMOTE_CSP)] {
+            let res = preview_response(document(), remote);
+            assert_eq!(res.status(), StatusCode::OK);
+            assert_eq!(res.headers()[header::CONTENT_SECURITY_POLICY], policy);
+            assert_eq!(
+                res.headers()[header::CONTENT_TYPE],
+                "text/html; charset=utf-8"
+            );
+        }
+        let (status, body) =
+            status_and_body(preview_response(Ok(preview::Rendered::TooLarge), false)).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(body.contains("byte budget"), "{body}");
+        let failed = tokio::spawn(async { panic!("mail text that must not leak") })
+            .await
+            .unwrap_err();
+        let (status, body) = status_and_body(preview_response(Err(failed), true)).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body, r#"{"error":"preview rendering failed"}"#);
+    }
+
+    /// Both policies refuse scripts, plugins, frames, form targets and base
+    /// URLs, sandbox without a token, and differ only in what remote mode
+    /// widens: images, stylesheets and fonts over http(s).
+    #[test]
+    fn the_preview_policies_differ_only_in_remote_loads() {
+        for policy in [PREVIEW_CSP, PREVIEW_REMOTE_CSP] {
+            let directives: Vec<&str> = policy.split("; ").collect();
+            for directive in [
+                "default-src 'none'",
+                "script-src 'none'",
+                "object-src 'none'",
+                "frame-src 'none'",
+                "base-uri 'none'",
+                "form-action 'none'",
+                "frame-ancestors 'self'",
+                "sandbox",
+            ] {
+                assert!(
+                    directives.contains(&directive),
+                    "{policy} lacks {directive}"
+                );
+            }
+            assert!(!policy.contains("allow-"), "{policy}");
+        }
+        let widened = PREVIEW_CSP
+            .replace("img-src data:", "img-src data: https: http:")
+            .replace(
+                "style-src 'unsafe-inline';",
+                "style-src 'unsafe-inline' https: http:; font-src https: http:;",
+            );
+        assert_eq!(widened, PREVIEW_REMOTE_CSP);
+        assert!(CSP.ends_with("; frame-src 'self'"));
+    }
 
     #[test]
     fn report_ui_escapes_every_provider_field_and_keeps_locators_inactive() {

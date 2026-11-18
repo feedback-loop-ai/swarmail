@@ -168,6 +168,8 @@ body.app { height: 100%; display: grid; grid-template-rows: auto 1fr; overflow: 
 .tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
 .tabpanel { padding: 14px; }
 .preview { width: 100%; height: 360px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.preview-bar { display: flex; align-items: center; gap: 10px; margin-block-end: 8px; }
+.preview-bar .btn:disabled { opacity: .6; cursor: default; }
 pre.text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; }
 .findings { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .finding { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; padding: 10px 12px; border-radius: 7px; background: var(--bg); border: 1px solid var(--line); }

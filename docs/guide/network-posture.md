@@ -75,6 +75,19 @@ dropped probe's lookup runs on until the OS gives up; the per-`Service` caps
 bound it and it costs latency, never a `250`. The bounds are in
 [Deliverability reports](deliverability.md#opt-in-reachability).
 
+**The UI preview's remote content is the viewer's browser, not the server.**
+The run console's HTML preview (`GET /ui/message/{id}/preview`, proposed
+decision 0135) blocks remote images, stylesheets and fonts by default. After
+a click on **Load remote content**, the preview's policy admits them over
+`http:` and `https:` for that one mail. The *browser* then fetches them
+directly from the sender's hosts. Swarmail makes no request, runs no proxy and
+applies no address policy. Those hosts see the viewer's IP address and may
+receive cookies or credentials the browser holds for them. They may also
+redirect, including to local or private addresses the browser can reach.
+Scripts, forms, plugins, frames and navigation stay refused in both modes,
+and the preview route sits behind the same Host/Origin guard as every other
+route.
+
 **Forwarded ports refuse on a loopback bind.** `ssh -L 9000:localhost:8025`,
 VS Code and devcontainer port forwarding and GitHub Codespaces all
 deliver the browser's `Host: localhost:9000` (or a forwarding hostname)
