@@ -2318,8 +2318,10 @@ async fn a_fill_whose_store_keeps_less_than_it_accepted_is_not_reached() {
     let (smtp, seen) = fill_smtp(false).await;
     let client = clients::Client::new("mailpit", listing_of(99).await).unwrap();
     // The store is read again until the bound (a store still storing
-    // would catch up), so a short bound keeps the test brief.
-    let bound = Duration::from_secs(2);
+    // would catch up), so a bound shorter than FILL_DEADLINE keeps the test
+    // brief; it also holds the 100 sends and the first read, so it leaves
+    // room for a loaded parallel suite.
+    let bound = Duration::from_secs(10);
     let (rec, ids) = api::fill_within(smtp, &client, (163, "t"), 100, clock(), bound).await;
     assert!(!rec.reached);
     assert_eq!((rec.accepted, rec.retained), (100, Some(99)));
