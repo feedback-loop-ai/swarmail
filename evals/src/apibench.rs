@@ -592,17 +592,11 @@ impl api::Surfacer for McpSurface {
                         }
                         clients::Operation::ExtractCode => {
                             let f = wk.get(&id, d, &mut spend).await;
-                            api::check_value(
-                                f.map(|f| clients::answer_code(wk.family(), &f)),
-                                &a.code,
-                            )
+                            api::check_extract(wk.family(), f, op, &a.code)
                         }
                         _ => {
                             let f = wk.get(&id, d, &mut spend).await;
-                            api::check_value(
-                                f.map(|f| clients::answer_link(wk.family(), &f, api::LINK_LABEL)),
-                                &a.link,
-                            )
+                            api::check_extract(wk.family(), f, op, &a.link)
                         }
                     };
                     Done::of(outcome, spend)

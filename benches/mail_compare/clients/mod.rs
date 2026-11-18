@@ -936,33 +936,6 @@ impl Client {
         Ok(f)
     }
 
-    /// The six-digit code of one message: Swarmail's ingest field (0005), or
-    /// the frozen oracle extractor over the text the client read.
-    pub async fn extract_code(
-        &self,
-        scope: &Scope,
-        id: &str,
-        deadline: Instant,
-        spend: &mut Spend,
-    ) -> Result<Option<String>, OpError> {
-        let f = self.get(scope, id, deadline, spend).await?;
-        Ok(answer_code(self.family, &f))
-    }
-
-    /// The URL under `label` of one message: Swarmail's ingest links, or the
-    /// frozen oracle extractor over the text the client read.
-    pub async fn extract_link(
-        &self,
-        scope: &Scope,
-        id: &str,
-        label: &str,
-        deadline: Instant,
-        spend: &mut Spend,
-    ) -> Result<Option<String>, OpError> {
-        let f = self.get(scope, id, deadline, spend).await?;
-        Ok(answer_link(self.family, &f, label))
-    }
-
     /// Delete one message by id.
     pub async fn delete(
         &self,
@@ -1017,18 +990,74 @@ impl Client {
     }
 }
 
+/// Whether `f` is a MailSlurper answer that kept only a multipart's HTML
+/// part: no text part, an HTML one (operator ruling 2026-11-18, under v3's
+/// record that MailSlurper keeps one decoded body).
+pub fn from_kept_html(family: Family, f: &Fetched) -> bool {
+    family == Family::Mailslurper
+        && f.text.as_deref().is_none_or(|t| t.trim().is_empty())
+        && f.html.as_deref().is_some_and(|h| !h.trim().is_empty())
+}
+
+/// What the frozen extractors read: the text part, or, for an answer that
+/// kept only the HTML part ([`from_kept_html`]), that HTML as text.
+fn extractor_text(family: Family, f: &Fetched) -> Option<String> {
+    if from_kept_html(family, f) {
+        return f.html.as_deref().map(html_text);
+    }
+    f.text.clone()
+}
+
+/// An HTML body as the text it shows: a paragraph, line break, division,
+/// list item, table row or heading tag ends a line, every other tag is
+/// dropped, and the five XML entities are decoded. The frozen extractors
+/// then read it unchanged, so a code or a labelled link in the kept HTML is
+/// found as it would be on its text line.
+pub fn html_text(html: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    while let Some(lt) = rest.find('<') {
+        out.push_str(&rest[..lt]);
+        let Some(gt) = rest[lt..].find('>') else {
+            out.push_str(&rest[lt..]);
+            rest = "";
+            break;
+        };
+        let name: String = rest[lt + 1..lt + gt]
+            .trim_start_matches('/')
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .collect::<String>()
+            .to_ascii_lowercase();
+        let block = matches!(
+            name.as_str(),
+            "p" | "br" | "div" | "li" | "tr" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
+        );
+        if block && !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        rest = &rest[lt + gt + 1..];
+    }
+    out.push_str(rest);
+    out.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
 /// The code answer of a read message: Swarmail's first ingest code, or the
-/// frozen extractor over the text part.
+/// frozen extractor over the text part (or the kept HTML, as text).
 pub fn answer_code(family: Family, f: &Fetched) -> Option<String> {
     match family {
         Family::Swarmail => f.codes.as_ref()?.first().cloned(),
-        _ => f.text.as_deref().and_then(extract::six_digit_code),
+        _ => extractor_text(family, f).and_then(|t| extract::six_digit_code(&t)),
     }
 }
 
 /// The link answer of a read message: Swarmail's one distinct ingest link
 /// (several distinct links are no single answer), or the frozen extractor
-/// over the text part under `label`.
+/// over the text part (or the kept HTML, as text) under `label`.
 pub fn answer_link(family: Family, f: &Fetched, label: &str) -> Option<String> {
     match family {
         Family::Swarmail => {
@@ -1037,10 +1066,7 @@ pub fn answer_link(family: Family, f: &Fetched, label: &str) -> Option<String> {
             links.dedup();
             (links.len() == 1).then(|| links.remove(0))
         }
-        _ => f
-            .text
-            .as_deref()
-            .and_then(|t| extract::labelled_url(t, label)),
+        _ => extractor_text(family, f).and_then(|t| extract::labelled_url(&t, label)),
     }
 }
 

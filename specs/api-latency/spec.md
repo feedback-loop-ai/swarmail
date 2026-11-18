@@ -77,3 +77,16 @@ restarts; possible remote read tails remain disclosed. No criterion is
 relaxed to match unfinished code. R1–R18 remain open, including the security
 hold; a design commit cannot discharge them. Delegated-host execution remains
 open separately from implementation of its ignored proofs.
+
+## Operator rulings, 2026-11-18
+
+Recorded in [decision 0132's addendum of 2026-11-18](../../docs/decisions/0132-mail-comparison-protocol-v4.md).
+
+- **MailSlurper's single body (AC3, R7).** A MailSlurper answer that keeps
+  only a multipart's HTML part, with `rel="nofollow"` added to its anchors,
+  is `inexact_fidelity` on `get` (`api::check_get`, `api::mailslurper_unrewritten`);
+  `extract_code` and `extract_link` read that HTML as text with the frozen
+  extractors and are `inexact_fidelity` when they find the authored value
+  (`api::check_extract`, `clients::from_kept_html`, `clients::html_text`).
+  Any other mismatch, and any other family's HTML-only answer, stays
+  `wrong_result`.

@@ -729,3 +729,20 @@ Story C no longer waits: with acceptance, stories A to D are all admissible
 work, and the pointer addenda on 0093 and 0130 are added with this note.
 Story E (freeze and collection) stays operator-run after A to D merge, and
 the README headline stays a separate operator ruling (§13).
+
+## Addendum 2026-11-18 (operator ruling): host findings of story B
+
+The first delegated-host runs of story B's real proofs raised two questions
+the accepted text did not answer. The operator ruled on both on 2026-11-18;
+the text above is unchanged.
+
+- **MailSlurper's rewritten single body is `inexact_fidelity`.** Under v3's
+  record that MailSlurper "keeps one decoded body" and that its "body
+  fidelity is reported per message, not exact": for the MailSlurper family,
+  a multipart message answered with one body (the HTML part, possibly with
+  attributes such as `rel="nofollow"` added) and the other part absent is
+  `inexact_fidelity`. Its latency is kept, and the cell is not at equal
+  results. The ruling is family-specific and otherwise exact: a wrong
+  subject, sender or recipient, or a body that is not the sent HTML apart
+  from the documented attribute rewrite, stays `wrong_result`. The frozen
+  extractors read the kept HTML, as text.

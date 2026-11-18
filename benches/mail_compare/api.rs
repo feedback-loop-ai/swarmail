@@ -797,11 +797,29 @@ pub fn documented_discrepancy(family: Family, field: &str) -> bool {
     family == Family::Mailslurper && matches!(field, "text" | "html")
 }
 
+/// The one rewrite MailSlurper's kept HTML body is documented to carry
+/// (operator ruling 2026-11-18): each anchor gains `rel="nofollow"`. The
+/// body with that attribute taken back out of each `<a …>` tag, and
+/// nothing else touched.
+pub fn mailslurper_unrewritten(html: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    while let Some(at) = rest.find("<a ") {
+        let end = rest[at..].find('>').map_or(rest.len(), |e| at + e + 1);
+        out.push_str(&rest[..at]);
+        out.push_str(&rest[at..end].replacen(" rel=\"nofollow\"", "", 1));
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// `get`: subject, from, to, text and HTML as authored (0132 §6.1). Only a
 /// documented discrepancy alone — one absent MailSlurper body part, the
-/// other part present and exact — is `inexact_fidelity`; a present but
-/// wrong part, both parts absent, or any other mismatch beside it is a
-/// `wrong_result` (R7).
+/// other part present and exact, MailSlurper's HTML exact but for its
+/// documented `rel="nofollow"` rewrite (operator ruling 2026-11-18) — is
+/// `inexact_fidelity`; a present but otherwise wrong part, both parts
+/// absent, or any other mismatch beside it is a `wrong_result` (R7).
 pub fn check_get(family: Family, got: Result<Fetched, OpError>, a: &Authored) -> Outcome {
     let f = match got {
         Ok(f) => f,
@@ -809,6 +827,7 @@ pub fn check_get(family: Family, got: Result<Fetched, OpError>, a: &Authored) ->
     };
     let mut wrong = Vec::new();
     let mut absent = Vec::new();
+    let mut rewritten = false;
     if f.subject.as_deref() != Some(a.subject.as_str()) {
         wrong.push("subject");
     }
@@ -829,17 +848,26 @@ pub fn check_get(family: Family, got: Result<Fetched, OpError>, a: &Authored) ->
         if same_body(Some(authored), observed) {
             continue;
         }
+        let kept = |o: &str| same_body(Some(authored), Some(&mailslurper_unrewritten(o)));
+        if field == "html" && family == Family::Mailslurper && observed.is_some_and(kept) {
+            rewritten = true;
+            continue;
+        }
         if observed.is_none_or(|o| o.trim().is_empty()) {
             absent.push(field);
         } else {
             wrong.push(field);
         }
     }
-    if wrong.is_empty() && absent.is_empty() {
+    if wrong.is_empty() && absent.is_empty() && !rewritten {
         Outcome::Exact
     } else if wrong.is_empty() && absent.len() == 1 && documented_discrepancy(family, absent[0]) {
         Outcome::InexactFidelity {
             detail: format!("{} absent", absent[0]),
+        }
+    } else if wrong.is_empty() && absent.is_empty() {
+        Outcome::InexactFidelity {
+            detail: "html rewritten".into(),
         }
     } else {
         let mut detail: Vec<String> = wrong.iter().map(|w| (*w).to_owned()).collect();
@@ -847,6 +875,33 @@ pub fn check_get(family: Family, got: Result<Fetched, OpError>, a: &Authored) ->
         Outcome::WrongResult {
             detail: detail.join(","),
         }
+    }
+}
+
+/// `extract_code` and `extract_link` over a message the client read: the
+/// family's answer ([`clients::answer_code`], [`clients::answer_link`])
+/// checked by [`check_value`]. A MailSlurper answer that kept only the HTML
+/// part yields the authored value as `inexact_fidelity` (the text part is
+/// absent; operator ruling 2026-11-18), never `exact`.
+pub fn check_extract(
+    family: Family,
+    got: Result<clients::Fetched, OpError>,
+    op: Operation,
+    want: &str,
+) -> Outcome {
+    let f = match got {
+        Ok(f) => f,
+        Err(e) => return from_error(e),
+    };
+    let value = match op {
+        Operation::ExtractCode => clients::answer_code(family, &f),
+        _ => clients::answer_link(family, &f, LINK_LABEL),
+    };
+    match check_value(Ok(value), want) {
+        Outcome::Exact if clients::from_kept_html(family, &f) => Outcome::InexactFidelity {
+            detail: "text absent".into(),
+        },
+        o => o,
     }
 }
 
@@ -1912,7 +1967,6 @@ impl Surfacer for NativeSurface {
     ) -> Arc<dyn Fn(u32, u32, Instant) -> OpFuture + Send + Sync> {
         let clients = self.clients.clone();
         let reads = self.reads();
-        let label = LINK_LABEL;
         match cell.operation {
             Operation::List => {
                 let expected: BTreeSet<String> = reads.iter().map(id_of).collect();
@@ -1944,12 +1998,16 @@ impl Surfacer for NativeSurface {
                             Operation::Get => {
                                 check_get(c.family, c.get(&a.scope, &id, d, &mut spend).await, a)
                             }
-                            Operation::ExtractCode => check_value(
-                                c.extract_code(&a.scope, &id, d, &mut spend).await,
+                            Operation::ExtractCode => check_extract(
+                                c.family,
+                                c.get(&a.scope, &id, d, &mut spend).await,
+                                op,
                                 &a.code,
                             ),
-                            _ => check_value(
-                                c.extract_link(&a.scope, &id, label, d, &mut spend).await,
+                            _ => check_extract(
+                                c.family,
+                                c.get(&a.scope, &id, d, &mut spend).await,
+                                op,
                                 &a.link,
                             ),
                         };

@@ -1756,6 +1756,98 @@ fn fetched_from(a: &api::Authored) -> clients::Fetched {
 }
 
 #[test]
+fn mailslurpers_rewritten_single_body_is_inexact_and_nothing_else_is() {
+    // Operator ruling 2026-11-18: a MailSlurper answer that kept only the
+    // multipart's HTML part, with `rel="nofollow"` added to its anchor (the
+    // host's bytes), is inexact_fidelity; the extractors read the kept HTML
+    // and their right answers are inexact too. Nothing else moves.
+    let a = api::author(5, api::Role::Read, 0, &api::read_scope());
+    let kept_html = a.html.replace("\">", "\" rel=\"nofollow\">");
+    assert_ne!(kept_html, a.html, "the fixture has an anchor");
+    assert_eq!(api::mailslurper_unrewritten(&kept_html), a.html);
+    let kept = clients::Fetched {
+        text: None,
+        html: Some(kept_html.clone()),
+        ..fetched_from(&a)
+    };
+    let inexact = |d: &str| Outcome::InexactFidelity { detail: d.into() };
+    let get = |family, f: &clients::Fetched| api::check_get(family, Ok(f.clone()), &a);
+    assert_eq!(get(Family::Mailslurper, &kept), inexact("text absent"));
+    for op in [Operation::ExtractCode, Operation::ExtractLink] {
+        let want = if op == Operation::ExtractCode {
+            &a.code
+        } else {
+            &a.link
+        };
+        let got = api::check_extract(Family::Mailslurper, Ok(kept.clone()), op, want);
+        assert_eq!(got, inexact("text absent"), "{op:?}");
+        // A wrong value read from the kept HTML is still wrong.
+        let got = api::check_extract(Family::Mailslurper, Ok(kept.clone()), op, "999999");
+        assert!(
+            matches!(got, Outcome::WrongResult { .. }),
+            "{op:?}: {got:?}"
+        );
+        // Another family's HTML-only answer gets no such reading.
+        let got = api::check_extract(Family::Mailpit, Ok(kept.clone()), op, want);
+        assert_eq!(
+            got,
+            Outcome::WrongResult {
+                detail: "no value".into()
+            },
+            "{op:?}"
+        );
+        // A text part is read as ever, and exactly.
+        let full = fetched_from(&a);
+        assert_eq!(
+            api::check_extract(Family::Mailslurper, Ok(full), op, want),
+            Outcome::Exact
+        );
+    }
+    // The rewrite is MailSlurper's alone; a family that rewrote would be wrong.
+    assert!(matches!(
+        get(Family::Mailpit, &kept),
+        Outcome::WrongResult { .. }
+    ));
+    // Any other change to the kept HTML, another attribute or another text,
+    // and any header mismatch beside the rewrite, stays wrong_result.
+    for html in [
+        a.html.replace("\">", "\" rel=\"noopener\">"),
+        kept_html.replace("Hello", "Hi"),
+    ] {
+        let f = clients::Fetched {
+            html: Some(html.clone()),
+            ..kept.clone()
+        };
+        assert!(
+            matches!(get(Family::Mailslurper, &f), Outcome::WrongResult { .. }),
+            "{html}"
+        );
+    }
+    let wrong_subject = clients::Fetched {
+        subject: Some("other".into()),
+        ..kept.clone()
+    };
+    assert!(matches!(
+        get(Family::Mailslurper, &wrong_subject),
+        Outcome::WrongResult { .. }
+    ));
+    // Both parts, the HTML rewritten: inexact, and named so.
+    let both = clients::Fetched {
+        html: Some(kept_html),
+        ..fetched_from(&a)
+    };
+    assert_eq!(get(Family::Mailslurper, &both), inexact("html rewritten"));
+    // The kept HTML as text: lines at block tags, tags dropped, entities read.
+    assert_eq!(
+        clients::html_text(
+            "<p>a &amp; b</p><p>Confirm: <a href=\"x\">http://x</a></p>tail<br/>end"
+        ),
+        "a & b\nConfirm: http://x\ntail\nend"
+    );
+    assert_eq!(clients::html_text("x < y"), "x < y");
+}
+
+#[test]
 fn get_is_exact_inexact_only_where_v3_documents_it_and_otherwise_wrong() {
     let a = api::author(163, api::Role::Read, 3, &api::read_scope());
     let f = fetched_from(&a);
