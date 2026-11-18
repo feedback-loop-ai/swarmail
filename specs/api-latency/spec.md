@@ -90,3 +90,10 @@ Recorded in [decision 0132's addendum of 2026-11-18](../../docs/decisions/0132-m
   (`api::check_extract`, `clients::from_kept_html`, `clients::html_text`).
   Any other mismatch, and any other family's HTML-only answer, stays
   `wrong_result`.
+- **MCP rate window (AC5, AC7).** Before each MCP cell, `api::run_cells`
+  idles for the surface's `cell_gap` (`api::MCP_CELL_GAP`, one second; zero
+  on the native surface), before the warmup and outside every window, and
+  never past the chunk's cell deadline, where the cell is blocked
+  `chunk_deadline`. Each MCP cell then starts in a fresh Swarmail rate
+  window; `rate_limited` stays a published failure row of the cell's own
+  load.

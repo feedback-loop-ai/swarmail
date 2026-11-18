@@ -1273,9 +1273,12 @@ disjoint range, initialization included, so 32 of them share one bridge;
 the bridge's and the adapters' admission limits stay as they are, and a
 refusal is a failure row by source, never retried: `busy_bridge` (the
 bridge's 16 slots), `busy_adapter` (an adapter's queue), `rate_limited`
-(Swarmail's own MCP tool rate, 1,024 calls a second, a product limit the
-frozen launch does not raise, which refuses part of a 32-worker cell and
-whose window carries into the next cell).
+(Swarmail's own MCP tool rate, a fixed window of 1,024 calls a second, a
+product limit the frozen launch does not raise). The MCP surface idles one
+second before each cell, before its warmup and outside every resource
+window, within the chunk's deadline (`api::MCP_CELL_GAP`, operator ruling of
+2026-11-18 in 0132's addendum), so every cell starts in a fresh window and
+any `rate_limited` row is the cell's own load, never an earlier cell's.
 
 **Commands.** The wrapper's `collect-v4` runs the 96 native chunks
 (`api.native.<target>.r<n>.f<fill>`) as `mail_compare run` and the 48 MCP

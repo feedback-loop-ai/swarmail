@@ -532,6 +532,11 @@ pub async fn wait_once(
 }
 
 impl api::Surfacer for McpSurface {
+    /// A fresh rate window for every cell (operator ruling 2026-11-18).
+    fn cell_gap(&self) -> std::time::Duration {
+        api::MCP_CELL_GAP
+    }
+
     fn op(&self, cell: &PlannedCell, offset: u32) -> Op {
         let workers = self.workers.clone();
         let reads = Arc::new(self.of(Role::Read, None));

@@ -229,10 +229,10 @@ async fn every_mcp_cell_of_the_candidate_is_exact() {
     )
     .await;
     assert!(problems.is_empty(), "{problems:?}");
-    // Swarmail's own MCP tool rate (1,024 calls a second) refuses part of
-    // the 32-worker load: those are `rate_limited` failure rows, published,
-    // never retried. A warmup it refuses blocks that cell. Nothing else may
-    // fail, and no answer may be wrong.
+    // Swarmail's own MCP tool rate (1,024 calls a second) would refuse with
+    // `rate_limited` failure rows, published, never retried, and a warmup it
+    // refused would block that cell. Nothing else may fail, and no answer
+    // may be wrong.
     let limited = |r: &api::OpRow| matches!(&r.outcome, Outcome::Failed { reason } if reason == "rate_limited");
     for r in &recs {
         let warm = r.warmup.iter().flat_map(|w| w.rows.iter());
@@ -262,20 +262,26 @@ async fn every_mcp_cell_of_the_candidate_is_exact() {
                 .find(|x| x.outcome != Outcome::Exact && !limited(x))
         );
     }
-    // The limiter's window carries from one cell into the next, so only the
-    // first cell is free of earlier load: it is exact throughout.
-    let first = &recs[0];
-    let st = api::stats(&first.measured, None);
-    assert_eq!(
-        (first.cell.as_str(), first.status, st.exact),
-        ("list.c1", api::CellStatus::Measured, st.started)
-    );
-    assert!(
-        recs.iter()
-            .filter(|r| r.status == api::CellStatus::Measured)
-            .count()
-            >= 3
-    );
+    // The MCP surface idles a second before each cell (operator ruling
+    // 2026-11-18), so every cell starts in a fresh window, and no cell's
+    // 120 calls reach the limit: every cell is measured and exact.
+    for r in &recs {
+        let st = api::stats(&r.measured, None);
+        assert_eq!(
+            (r.status, st.exact),
+            (api::CellStatus::Measured, st.started),
+            "{}",
+            r.cell
+        );
+        assert!(
+            r.warmup
+                .iter()
+                .flat_map(|w| w.rows.iter())
+                .all(|x| !limited(x)),
+            "{}",
+            r.cell
+        );
+    }
     // Every wait row carries its instants on one clock, the return after the
     // call, and a signed offset from the 250.
     let waits = recs

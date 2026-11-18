@@ -1709,7 +1709,19 @@ pub trait Surfacer: Send + Sync {
         rows: &'a mut Vec<OpRow>,
         end: Option<Instant>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>>;
+    /// How long the surface idles before each cell's warmup, outside every
+    /// window: none by default. The MCP surface gives [`MCP_CELL_GAP`].
+    fn cell_gap(&self) -> Duration {
+        Duration::ZERO
+    }
 }
+
+/// The MCP surface's idle time before each cell (operator ruling
+/// 2026-11-18): Swarmail's MCP tool rate is a fixed window of 1,024 calls
+/// a second, so a second with no call starts every cell in a fresh window,
+/// and a cell's own refusals are its own. It is outside the warmup and
+/// every resource window, and the chunk's deadline bounds it.
+pub const MCP_CELL_GAP: Duration = Duration::from_secs(1);
 
 /// The blocked reason of a cell the chunk deadline cut or never started.
 pub const CHUNK_DEADLINE: &str = "chunk_deadline";
@@ -1829,6 +1841,22 @@ pub async fn run_cells(
                 clock.now_ns(),
             ));
             continue;
+        }
+        // The surface's idle gap, before the warmup and outside every window,
+        // never past the chunk's deadline: a cell it reaches is cut.
+        let gap = surface.cell_gap();
+        if !gap.is_zero() {
+            let until = Instant::now() + gap;
+            tokio::time::sleep_until(deadline.map_or(until, |d| until.min(d))).await;
+            if past(deadline) {
+                out.push(CellRecord::blocked(
+                    cell,
+                    &cap,
+                    CHUNK_DEADLINE,
+                    clock.now_ns(),
+                ));
+                continue;
+            }
         }
         let workers = cell.concurrency.unwrap_or(1);
         let name = cell.name();

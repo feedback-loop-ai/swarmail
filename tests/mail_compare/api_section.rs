@@ -955,6 +955,133 @@ async fn run_scripted(
         .unwrap()
 }
 
+/// A surface with the MCP surface's idle gap that logs, on the paused
+/// clock, each operation's start and each window bound.
+#[derive(Default)]
+struct Gapped {
+    log: Arc<std::sync::Mutex<Vec<(String, tokio::time::Instant)>>>,
+}
+
+impl api::Surfacer for Gapped {
+    fn op(
+        &self,
+        cell: &PlannedCell,
+        offset: u32,
+    ) -> Arc<dyn Fn(u32, u32, tokio::time::Instant) -> api::OpFuture + Send + Sync> {
+        let tag = format!(
+            "{} {}",
+            cell.name(),
+            if offset == 0 { "warmup" } else { "measured" }
+        );
+        let log = self.log.clone();
+        Arc::new(move |_w, _i, _d| {
+            log.lock()
+                .unwrap()
+                .push((tag.clone(), tokio::time::Instant::now()));
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_millis(7)).await;
+                api::Done::of(Outcome::Exact, Spend::default())
+            }) as api::OpFuture
+        })
+    }
+
+    fn postcheck<'a>(
+        &'a self,
+        _cell: &'a PlannedCell,
+        _rows: &'a mut Vec<api::OpRow>,
+        _end: Option<tokio::time::Instant>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + 'a>>
+    {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn cell_gap(&self) -> Duration {
+        api::MCP_CELL_GAP
+    }
+}
+
+impl api::Meter for Gapped {
+    fn open<'a>(&'a self, cell: &'a str) -> api::MeterFuture<'a> {
+        let now = tokio::time::Instant::now();
+        self.log.lock().unwrap().push((format!("{cell} open"), now));
+        Box::pin(async { Ok(()) })
+    }
+    fn close<'a>(&'a self, cell: &'a str) -> api::MeterFuture<'a> {
+        let now = tokio::time::Instant::now();
+        self.log
+            .lock()
+            .unwrap()
+            .push((format!("{cell} close"), now));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_mcp_surface_idles_a_second_before_each_cell_outside_its_windows() {
+    // Operator ruling 2026-11-18: before each MCP cell, a second with no
+    // call, before the warmup and outside every window, so each cell starts
+    // in a fresh rate window; the chunk's deadline bounds it.
+    let cells = [cell(Operation::List, 1), cell(Operation::Get, 8)];
+    let caps = |op| clients::mcp_capability("swarmail", op);
+    let g = Gapped::default();
+    let start = tokio::time::Instant::now();
+    let (recs, abandoned) = api::run_cells(&cells, &caps, &g, &g, clock(), None)
+        .await
+        .unwrap();
+    assert_eq!(abandoned, None);
+    assert!(recs.iter().all(|r| r.status == api::CellStatus::Measured));
+    let log = g.log.lock().unwrap().clone();
+    let first = |tag: &str| log.iter().find(|(t, _)| t == tag).unwrap().1;
+    let last = |prefix: &str| {
+        log.iter()
+            .rev()
+            .find(|(t, _)| t.starts_with(prefix))
+            .unwrap()
+            .1
+    };
+    // The first cell's first call comes a full gap after the start.
+    assert_eq!(first("list.c1 warmup") - start, api::MCP_CELL_GAP);
+    // The second's comes a full gap after the first cell's window closed:
+    // nothing ran in between, and the gap is in no window.
+    let closed = first("list.c1 close");
+    assert!(last("list.c1 measured") <= closed);
+    assert_eq!(first("get.c8 warmup") - closed, api::MCP_CELL_GAP);
+    assert!(first("get.c8 open") > first("get.c8 warmup"));
+    // Each window opens after its warmup and holds only measured calls.
+    for c in ["list.c1", "get.c8"] {
+        let (open, close) = (first(&format!("{c} open")), first(&format!("{c} close")));
+        assert!(last(&format!("{c} warmup")) < open);
+        assert!(
+            log.iter()
+                .filter(|(_, at)| *at > open && *at < close)
+                .all(|(t, _)| t == &format!("{c} measured"))
+        );
+    }
+    // A gap the chunk's deadline cuts: the cell is cut, never started.
+    let g = Gapped::default();
+    let end = tokio::time::Instant::now() + Duration::from_millis(400);
+    let ends = api::Ends {
+        cells: end,
+        verify: end,
+    };
+    let (recs, _) = api::run_cells(&cells, &caps, &g, &g, clock(), Some(ends))
+        .await
+        .unwrap();
+    assert!(
+        recs.iter()
+            .all(|r| r.blocked.as_deref() == Some(api::CHUNK_DEADLINE) && r.warmup.is_none())
+    );
+    assert!(g.log.lock().unwrap().is_empty(), "no call, no window");
+    assert_eq!(tokio::time::Instant::now(), end);
+    // A surface without a gap starts its first cell at once.
+    let s = Scripted {
+        script: |_, _, _| Some(Outcome::Exact),
+        phase_of: |_| Phase::Warmup,
+        postcheck_hangs: false,
+    };
+    assert_eq!(api::Surfacer::cell_gap(&s), Duration::ZERO);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_read_in_flight_at_the_deadline_times_out_and_later_cells_still_measure() {
     // list.c1: measured index 37 never answers; at the five-second deadline

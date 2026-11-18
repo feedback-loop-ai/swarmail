@@ -746,3 +746,11 @@ the text above is unchanged.
   subject, sender or recipient, or a body that is not the sent HTML apart
   from the documented attribute rewrite, stays `wrong_result`. The frozen
   extractors read the kept HTML, as text.
+- **An idle gap before each MCP cell.** Swarmail's MCP tool rate is a fixed
+  window of 1,024 calls a second, and on the host a fast chunk filled one
+  window within a second and every later cell's warmup was refused in it.
+  Before each MCP cell the surface now idles at least one second, outside
+  the warmup and every measured or resource window, and within the chunk's
+  deadline (a cell the deadline reaches during the gap is cut, never
+  started). Every cell therefore starts in a fresh window, and a refusal it
+  shows is its own load's. The native surface has no such limit and no gap.
