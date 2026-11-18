@@ -2352,6 +2352,87 @@ async fn a_fill_that_runs_out_of_time_is_not_reached_and_says_how_far_it_got() {
     assert!(rec.elapsed_ns >= 500_000_000);
 }
 
+/// An Inbucket-shaped store: mailbox `<local>` lists `held(local)` messages,
+/// numbered `1`, `2`, … in each mailbox, as the pinned Inbucket numbers
+/// them.
+async fn per_mailbox_store(held: impl Fn(&str) -> u32 + Send + Sync + 'static) -> clients::Client {
+    let addr = responder(move |p| {
+        let local = p.strip_prefix("/api/v1/mailbox/").unwrap_or_default();
+        let items: Vec<Value> = (1..=held(local))
+            .map(|n| {
+                json!({
+                    "id": n.to_string(),
+                    "to": [format!("<{local}@{}>", clients::DOMAIN)],
+                    "subject": format!("{local} {n}"),
+                })
+            })
+            .collect();
+        (200, Value::Array(items).to_string())
+    })
+    .await;
+    clients::Client::new("inbucket", addr).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_per_mailbox_store_names_each_message_by_its_mailbox() {
+    // Inbucket's ids (and GreenMail's UIDs) restart at 1 in every mailbox:
+    // on the host, the fill's 1,000 messages in 100 mailboxes read back as
+    // 10 ids. The ledger names each by its mailbox, so the fill counts
+    // every one and a fixture's loss is not hidden by another mailbox's
+    // message of the same number.
+    assert!(api::ids_per_mailbox(Family::Inbucket) && api::ids_per_mailbox(Family::Greenmail));
+    for f in [
+        Family::Swarmail,
+        Family::Mailpit,
+        Family::Mailhog,
+        Family::Mailslurper,
+        Family::Smtp4dev,
+    ] {
+        assert!(!api::ids_per_mailbox(f), "{f:?}");
+        assert_eq!(api::ledger_key(f, &api::read_scope(), "7"), "7");
+    }
+    let (smtp, _) = fill_smtp(false).await;
+    let client = per_mailbox_store(|l| u32::from(l.starts_with("apibg")) * 2).await;
+    let (rec, ids) = api::fill_ledger(smtp, &client, (163, "t"), 200, clock()).await;
+    assert!(rec.reached, "{rec:?}");
+    assert_eq!((rec.accepted, rec.retained), (200, Some(200)));
+    let background = ids.unwrap();
+    let first = format!("{}/1", api::background_scope(0).address);
+    assert!(background.contains(&first), "{background:?}");
+    // The final ledger: a read fixture and a sentinel, each its mailbox's
+    // `1`, beside the background's own `1`s.
+    let mut fixtures = vec![
+        api::author(5, api::Role::Read, 0, &api::read_scope()),
+        api::author(5, api::Role::Sentinel, 0, &api::sentinel_scope()),
+    ];
+    for f in &mut fixtures {
+        f.id = Some("1".into());
+    }
+    let read = api::read_scope().inbox;
+    let intact = per_mailbox_store(move |l| match l {
+        _ if l.starts_with("apibg") => 2,
+        _ => 1,
+    })
+    .await;
+    let problems =
+        api::final_ledger(&intact, (5, &background), &fixtures, &[], &mut [], None).await;
+    assert!(problems.is_empty(), "{problems:?}");
+    // The sentinel's mailbox lost its message: `1` is still in every other
+    // mailbox, and the ledger still names the loss.
+    let lost = per_mailbox_store(move |l| match l {
+        _ if l.starts_with("apibg") => 2,
+        _ if l == read => 1,
+        _ => 0,
+    })
+    .await;
+    let problems = api::final_ledger(&lost, (5, &background), &fixtures, &[], &mut [], None).await;
+    let sentinel = format!("{}/1", api::sentinel_scope().address);
+    assert_eq!(
+        problems,
+        [format!("1 expected id(s) missing, e.g. {sentinel}")]
+    );
+}
+
 #[test]
 fn a_fill_not_reached_blocks_every_cell_and_admits() {
     // What both producers publish for it: every planned cell blocked by

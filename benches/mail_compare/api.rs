@@ -1067,6 +1067,27 @@ pub fn default_inbox() -> Scope {
     }
 }
 
+/// Whether `family` numbers its messages per mailbox: Inbucket's ids and
+/// GreenMail's IMAP UIDs both count `1`, `2`, … in every mailbox (the
+/// pinned bytes on the host, 2026-11-18), so such an id names a message
+/// only within the mailbox it was listed in.
+pub fn ids_per_mailbox(family: Family) -> bool {
+    matches!(family, Family::Inbucket | Family::Greenmail)
+}
+
+/// The ledger's name for message `id`, listed in `scope`: the id itself
+/// where the store's ids are its own, `<address>/<id>` where they are a
+/// mailbox's ([`ids_per_mailbox`]). The fill's background, the authored
+/// fixtures and the final listing all name a message this way, so one
+/// mailbox's `1` is never another's.
+pub fn ledger_key(family: Family, scope: &Scope, id: &str) -> String {
+    if ids_per_mailbox(family) {
+        format!("{}/{id}", scope.address)
+    } else {
+        id.to_owned()
+    }
+}
+
 /// The ids the fill left (untimed, spec AC6): Swarmail's default inbox, a
 /// per-mailbox store's background mailboxes, or a shared store's whole
 /// listing — taken before any fixture exists, so every id is background.
@@ -1089,9 +1110,9 @@ pub async fn background_ids(
         Family::Inbucket | Family::Greenmail => {
             let mut out = BTreeSet::new();
             for b in 0..BACKGROUND {
-                out.extend(ids(client
-                    .list(&background_scope(b), deadline, &mut spend)
-                    .await?));
+                let scope = background_scope(b);
+                let listed = client.list(&scope, deadline, &mut spend).await?;
+                out.extend(ids(listed).map(|id| ledger_key(client.family, &scope, &id)));
             }
             Ok(out)
         }
@@ -2223,7 +2244,17 @@ pub async fn final_ledger(
     // Its own bound, and never past the chunk's end (AC5): the chunk
     // deadline is a stopping reason for verification too.
     let deadline = verify_deadline(chunk_end);
-    let want = expected_ledger(seed, background, fixtures, cells, recs);
+    let family = client.family;
+    // Every id under its ledger name: the fixtures' resolved ids, each
+    // listing's ids and each wait scope's (the background already is).
+    let keyed: Vec<Authored> = fixtures
+        .iter()
+        .map(|a| Authored {
+            id: a.id.as_deref().map(|id| ledger_key(family, &a.scope, id)),
+            ..a.clone()
+        })
+        .collect();
+    let want = expected_ledger(seed, background, &keyed, cells, recs);
     let mut spend = Spend::default();
     let observed = match client.all_ids(deadline).await {
         Ok(Some(all)) => Ok(all.into_iter().collect::<BTreeSet<_>>()),
@@ -2237,7 +2268,7 @@ pub async fn final_ledger(
                     client.list(&scope, deadline, &mut spend).await
                 };
                 match listed {
-                    Ok(v) => all.extend(v.into_iter().map(|s| s.id)),
+                    Ok(v) => all.extend(v.iter().map(|s| ledger_key(family, &scope, &s.id))),
                     Err(e) => {
                         err = Some(e);
                         break;
@@ -2252,7 +2283,16 @@ pub async fn final_ledger(
     let mut problems = Vec::new();
     for w in &want.waits {
         match client.list(&w.0, deadline, &mut spend).await {
-            Ok(got) => waits.push((got, w)),
+            Ok(got) => {
+                let got = got
+                    .into_iter()
+                    .map(|s| Summary {
+                        id: ledger_key(family, &w.0, &s.id),
+                        ..s
+                    })
+                    .collect();
+                waits.push((got, w));
+            }
             Err(e) => problems.push(format!("{}: {}", w.0.address, e.reason())),
         }
     }
