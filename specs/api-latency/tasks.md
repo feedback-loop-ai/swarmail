@@ -82,3 +82,11 @@ Lows still tracked debt after R26: a page refused by the operation bound returns
 - [x] R28 — An unproved local cancellation leaves the chunk incomplete (correctness finding 2, MEDIUM; AC5, AC8). `api_chunk::incomplete` refuses, in the one `seal` both surfaces take (native `run` and the MCP holder's record arm), any record whose warmup or measured phase carries `cancel_unproved`: the verdict is `Infrastructure` (exit 2), nothing seals, and no workload failure is reported. Proof: `an_unproved_cancellation_leaves_the_chunk_incomplete_on_both_surfaces` drives the real `run_cells` over the full Mailpit native and MCP plans with an operation that blocks its thread past the bound, and shows the record accounts (`check_record`, also after its JSON round trip as the holder reads it) and is refused as incomplete, while the same record with the cancellation proved is not. The `seal` I/O glue itself is exercised only by the host proofs.
 
 Lows still tracked debt after R28: the seventh return's lows (correctness 3–12, guarantees 1–5, independent 1–4, tests 1) are recorded in that return's notes and stay open: IdleReady and final-ledger deadline cuts labelled as target failures; the postcheck after an abandoning phase; the host proof's read-timeout rejection; check_record's unbounded fill/capability/fixture/growth/WaitTimes fields (a forged return_ns now moves quantiles); the refused page's missing spend; exact_per_second's QUIT tail undisclosed; `mib_per_1k_retained`'s owed_by label; prepare's deadline tie; the clients_sha256 table's module set; stale comments in scripts/compare-mail.sh and clients/swarmail.rs; the draft claim scope; admit_v4's untested report-api.json insertion. R9's delegated-host proofs and R18's host inventory remain open on the dispatcher host.
+
+Lows resolved on 2026-11-18: the host proofs' read-timeout rejection. A
+measured row that its cell's five-second bound cut (R1's design: the call in
+flight at the bound is dropped and ends as one `timeout` row) is accepted by
+`assert_real_chunk` through `cell_bound_cuts`: at most one per worker, ending
+at the bound and within the cancellation bound after it, and the last row its
+worker started; every other timeout is still refused
+(`only_a_row_cut_at_its_cell_bound_is_a_host_proofs_timeout`).

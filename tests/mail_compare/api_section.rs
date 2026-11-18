@@ -3880,6 +3880,101 @@ fn documented_inexact(target: TargetKind, op: Operation, o: &Outcome) -> bool {
         )
 }
 
+/// The measured indices of `ran` that its cell's five-second bound cut (R1):
+/// a `timeout` row whose end is at the bound — not before it, and within
+/// the local cancellation bound after it — and that is the last row its
+/// worker started. Each worker has at most one. Any other `timeout` is not
+/// in the set, and two cuts on one worker, or a cut its worker started
+/// after, is an error.
+fn cell_bound_cuts(ran: &api::Ran) -> Result<BTreeSet<u32>, String> {
+    let bound = ran.start_ns + api::CELL_DEADLINE.as_nanos() as u64;
+    let late = bound + api::CANCEL_BOUND.as_nanos() as u64;
+    let mut cuts = BTreeSet::new();
+    let mut workers = BTreeSet::new();
+    for r in &ran.rows {
+        if r.outcome != Outcome::Timeout || r.end_ns < bound || r.end_ns > late {
+            continue;
+        }
+        if !workers.insert(r.worker) {
+            return Err(format!("worker {} has two rows cut at the bound", r.worker));
+        }
+        let after = ran
+            .rows
+            .iter()
+            .any(|x| x.worker == r.worker && x.start_ns > r.start_ns);
+        if after {
+            return Err(format!(
+                "worker {} started again after its row {} was cut",
+                r.worker, r.index
+            ));
+        }
+        cuts.insert(r.index);
+    }
+    Ok(cuts)
+}
+
+#[test]
+fn only_a_row_cut_at_its_cell_bound_is_a_host_proofs_timeout() {
+    // The host proof's acceptance of R1's read timeout: one row per worker,
+    // ending at the cell's bound, the last its worker started. A timeout
+    // before the bound, long after it, a second on one worker, or one its
+    // worker started after, is not.
+    let s = 1_000_000_000u64;
+    let bound = s + api::CELL_DEADLINE.as_nanos() as u64;
+    let row = |index, worker, start_ns, end_ns, outcome| api::OpRow {
+        phase: Phase::Measured,
+        index,
+        worker,
+        start_ns,
+        end_ns,
+        outcome,
+        requests: 1,
+        bytes: 0,
+        wait: None,
+    };
+    let ran = |rows: Vec<api::OpRow>| api::Ran {
+        planned: 100,
+        started: rows.len() as u32,
+        unstarted: 100 - rows.len() as u32,
+        rows,
+        start_ns: s,
+        end_ns: bound + 1_000,
+        ..api::Ran::default()
+    };
+    let cut = |index, worker| {
+        row(
+            index,
+            worker,
+            bound - 50_000_000,
+            bound + 1_000,
+            Outcome::Timeout,
+        )
+    };
+    let done = |index, worker, at| row(index, worker, at, at + 1_000, Outcome::Exact);
+    // Two workers, each cut once at the bound: both indices.
+    let ok = ran(vec![done(0, 0, s), done(1, 1, s), cut(2, 0), cut(3, 1)]);
+    assert_eq!(cell_bound_cuts(&ok), Ok([2, 3].into()));
+    // A timeout well before the bound, or past the cancellation bound, is
+    // not a cut: it stays a rejected row.
+    let early = row(0, 0, s, bound - 1, Outcome::Timeout);
+    let late = row(
+        0,
+        0,
+        s,
+        bound + api::CANCEL_BOUND.as_nanos() as u64 + 1,
+        Outcome::Timeout,
+    );
+    for r in [early, late] {
+        assert_eq!(cell_bound_cuts(&ran(vec![r])), Ok(BTreeSet::new()));
+    }
+    // Two on one worker, or a row its worker started after the cut.
+    assert!(cell_bound_cuts(&ran(vec![cut(0, 0), cut(1, 0)])).is_err());
+    let mut again = cut(0, 0);
+    again.start_ns = s;
+    let e = cell_bound_cuts(&ran(vec![again, done(1, 0, s + 10)])).unwrap_err();
+    assert!(e.contains("started again"), "{e}");
+}
+
 fn assert_real_chunk(surface: Surface, target: TargetKind, c: &RealChunk) {
     let ctx = format!("{} {target}", surface.name());
     let rec = &c.rec;
@@ -3946,8 +4041,14 @@ fn assert_real_chunk(surface: Surface, target: TargetKind, c: &RealChunk) {
             cell.postcheck
         );
         assert!(cell.measured.started > 0, "{ctx} {}", cell.cell);
+        let cuts =
+            cell_bound_cuts(&cell.measured).unwrap_or_else(|e| panic!("{ctx} {}: {e}", cell.cell));
         for r in &cell.measured.rows {
-            assert!(fine(r, cell.operation), "{ctx} {}: {r:?}", cell.cell);
+            assert!(
+                fine(r, cell.operation) || cuts.contains(&r.index),
+                "{ctx} {}: {r:?}",
+                cell.cell
+            );
             failures += usize::from(matches!(
                 r.outcome,
                 Outcome::Failed { .. } | Outcome::Timeout
