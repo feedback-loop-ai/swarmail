@@ -1899,7 +1899,16 @@ fn mailslurpers_rewritten_single_body_is_inexact_and_nothing_else_is() {
     };
     let inexact = |d: &str| Outcome::InexactFidelity { detail: d.into() };
     let get = |family, f: &clients::Fetched| api::check_get(family, Ok(f.clone()), &a);
-    assert_eq!(get(Family::Mailslurper, &kept), inexact("text absent"));
+    assert_eq!(
+        get(Family::Mailslurper, &kept),
+        inexact("html rewritten, text absent")
+    );
+    // The single body unrewritten keeps the plain detail.
+    let plain = clients::Fetched {
+        html: Some(a.html.clone()),
+        ..kept.clone()
+    };
+    assert_eq!(get(Family::Mailslurper, &plain), inexact("text absent"));
     for op in [Operation::ExtractCode, Operation::ExtractLink] {
         let want = if op == Operation::ExtractCode {
             &a.code
@@ -1958,12 +1967,18 @@ fn mailslurpers_rewritten_single_body_is_inexact_and_nothing_else_is() {
         get(Family::Mailslurper, &wrong_subject),
         Outcome::WrongResult { .. }
     ));
-    // Both parts, the HTML rewritten: inexact, and named so.
+    // Both parts, the HTML rewritten: the ruling covers the single body
+    // only, so a rewrite beside a kept text part is a wrong HTML part.
     let both = clients::Fetched {
         html: Some(kept_html),
         ..fetched_from(&a)
     };
-    assert_eq!(get(Family::Mailslurper, &both), inexact("html rewritten"));
+    assert_eq!(
+        get(Family::Mailslurper, &both),
+        Outcome::WrongResult {
+            detail: "html".into()
+        }
+    );
     // The kept HTML as text: lines at block tags, tags dropped, entities read.
     assert_eq!(
         clients::html_text(
@@ -3882,14 +3897,14 @@ fn documented_inexact(target: TargetKind, op: Operation, o: &Outcome) -> bool {
 
 /// Whether a target's own documents record that it acknowledges mail it
 /// then does not keep: README, "it acknowledges a mail before it stores it
-/// and lost some under SQLite lock contention" (both MailSlurper products
-/// the proofs launch). Only such a target may answer a host proof with
-/// `fill_not_reached`; for any other, a missed fill fails the proof.
+/// and lost some under SQLite lock contention" — the source-built
+/// MailSlurper only. Accepted 0130 records that Alkemio's fork left
+/// `loses_under_burst` (seven of seven 600/600 burst runs), so its family
+/// sentence documents no shortfall of its own. Only a documented target may
+/// answer a host proof with `fill_not_reached`; for any other, a missed
+/// fill fails the proof.
 fn fill_shortfall_documented(target: TargetKind) -> bool {
-    matches!(
-        target,
-        TargetKind::MailslurperSourceBuild | TargetKind::AlkemioMailslurper
-    )
+    target == TargetKind::MailslurperSourceBuild
 }
 
 /// A `fill_not_reached` record held to 0132 §6.4 exactly: a target whose
@@ -3964,12 +3979,10 @@ fn a_missed_fill_passes_a_host_proof_only_exactly_and_only_where_documented() {
     };
     let ms = TargetKind::MailslurperSourceBuild;
     assert_eq!(fill_shortfall_exact(ms, &rec), Ok(()));
-    assert_eq!(
-        fill_shortfall_exact(TargetKind::AlkemioMailslurper, &rec),
-        Ok(())
-    );
-    // Never for a target without a documented shortfall.
+    // Never for a target without a documented shortfall, Alkemio's fork
+    // included (0130: it left loses_under_burst).
     for t in [
+        TargetKind::AlkemioMailslurper,
         TargetKind::Swarmail,
         TargetKind::Mailpit,
         TargetKind::Inbucket,
@@ -4005,8 +4018,8 @@ fn a_missed_fill_passes_a_host_proof_only_exactly_and_only_where_documented() {
 /// a `timeout` row whose end is at the bound — not before it, and within
 /// the local cancellation bound after it — and that is the last row its
 /// worker started. Each worker has at most one. Any other `timeout` is not
-/// in the set, and two cuts on one worker, or a cut its worker started
-/// after, is an error.
+/// in the set, and two cuts on one worker, a cut its worker started after,
+/// or cuts in a cell with no exact row, is an error.
 fn cell_bound_cuts(ran: &api::Ran) -> Result<BTreeSet<u32>, String> {
     let bound = ran.start_ns + api::CELL_DEADLINE.as_nanos() as u64;
     let late = bound + api::CANCEL_BOUND.as_nanos() as u64;
@@ -4030,6 +4043,16 @@ fn cell_bound_cuts(ran: &api::Ran) -> Result<BTreeSet<u32>, String> {
             ));
         }
         cuts.insert(r.index);
+    }
+    // A cut is the bound reaching a call in flight, never the cell's whole
+    // answer: a cell the bound cut must also have measured something
+    // exactly, so a route that hangs on every worker cannot pass (R1, R9).
+    if !cuts.is_empty() && !ran.rows.iter().any(|r| r.outcome == Outcome::Exact) {
+        return Err(format!(
+            "{} of {} started rows cut at the bound and none exact",
+            cuts.len(),
+            ran.started
+        ));
     }
     Ok(cuts)
 }
@@ -4094,6 +4117,28 @@ fn only_a_row_cut_at_its_cell_bound_is_a_host_proofs_timeout() {
     again.start_ns = s;
     let e = cell_bound_cuts(&ran(vec![again, done(1, 0, s + 10)])).unwrap_err();
     assert!(e.contains("started again"), "{e}");
+    // A cell whose every started row the bound cut — one worker, or every
+    // worker of c32 — measured nothing exact and is refused.
+    let e = cell_bound_cuts(&ran(vec![cut(0, 0)])).unwrap_err();
+    assert_eq!(e, "1 of 1 started rows cut at the bound and none exact");
+    let all = ran((0..32).map(|w| cut(w, w)).collect());
+    let e = cell_bound_cuts(&all).unwrap_err();
+    assert_eq!(e, "32 of 32 started rows cut at the bound and none exact");
+    // Cuts beside only non-exact rows are refused too; one exact row admits.
+    let refused = row(
+        0,
+        0,
+        s,
+        s + 1_000,
+        Outcome::Failed {
+            reason: "busy".into(),
+        },
+    );
+    assert!(cell_bound_cuts(&ran(vec![refused.clone(), cut(1, 1)])).is_err());
+    assert_eq!(
+        cell_bound_cuts(&ran(vec![refused, done(1, 1, s), cut(2, 1)])),
+        Ok([2].into())
+    );
 }
 
 /// Assert a real chunk is exact as the README defines it; `true` when its
@@ -4306,9 +4351,17 @@ fn assert_fill_not_reached(ctx: &str, target: TargetKind, c: &RealChunk) {
     );
 }
 
+/// The line a host proof prints when it passed on 0132 §6.4's documented
+/// `fill_not_reached` rather than on measured cells: such a pass proves the
+/// shortfall exactly and nothing of the target's routes, waits or matrix,
+/// so its receipt must say which it was.
+const FILL_NOT_REACHED_PASS: &str =
+    "host proof passed on fill_not_reached (0132 §6.4): no cell measured, routes not exercised:";
+
 fn native_real(target: TargetKind) {
     let c = real_chunk(Surface::Native, target, 1_000);
     if !assert_real_chunk(Surface::Native, target, &c) {
+        eprintln!("{FILL_NOT_REACHED_PASS} native {target}");
         return;
     }
     // Meaningful destruction where supported: some delete or clear landed.
@@ -4325,6 +4378,7 @@ fn native_real(target: TargetKind) {
 fn mcp_real(target: TargetKind) {
     let c = real_chunk(Surface::Mcp, target, 1_000);
     if !assert_real_chunk(Surface::Mcp, target, &c) {
+        eprintln!("{FILL_NOT_REACHED_PASS} mcp {target}");
         return;
     }
     // The coordinated future wait ran and returned exactly its own message.

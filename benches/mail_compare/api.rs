@@ -816,9 +816,11 @@ pub fn mailslurper_unrewritten(html: &str) -> String {
 
 /// `get`: subject, from, to, text and HTML as authored (0132 §6.1). Only a
 /// documented discrepancy alone — one absent MailSlurper body part, the
-/// other part present and exact, MailSlurper's HTML exact but for its
-/// documented `rel="nofollow"` rewrite (operator ruling 2026-11-18) — is
-/// `inexact_fidelity`; a present but otherwise wrong part, both parts
+/// other part present and exact, or, with the text part absent, the one
+/// kept HTML body exact but for its documented `rel="nofollow"` rewrite
+/// (operator ruling 2026-11-18, named `html rewritten, text absent`) — is
+/// `inexact_fidelity`; a present but otherwise wrong part, a rewritten HTML
+/// beside a text part (the ruling covers the single body only), both parts
 /// absent, or any other mismatch beside it is a `wrong_result` (R7).
 pub fn check_get(family: Family, got: Result<Fetched, OpError>, a: &Authored) -> Outcome {
     let f = match got {
@@ -849,7 +851,9 @@ pub fn check_get(family: Family, got: Result<Fetched, OpError>, a: &Authored) ->
             continue;
         }
         let kept = |o: &str| same_body(Some(authored), Some(&mailslurper_unrewritten(o)));
-        if field == "html" && family == Family::Mailslurper && observed.is_some_and(kept) {
+        let single = f.text.as_deref().is_none_or(|t| t.trim().is_empty());
+        if field == "html" && family == Family::Mailslurper && single && observed.is_some_and(kept)
+        {
             rewritten = true;
             continue;
         }
@@ -862,15 +866,17 @@ pub fn check_get(family: Family, got: Result<Fetched, OpError>, a: &Authored) ->
     if wrong.is_empty() && absent.is_empty() && !rewritten {
         Outcome::Exact
     } else if wrong.is_empty() && absent.len() == 1 && documented_discrepancy(family, absent[0]) {
+        let rw = if rewritten { "html rewritten, " } else { "" };
         Outcome::InexactFidelity {
-            detail: format!("{} absent", absent[0]),
-        }
-    } else if wrong.is_empty() && absent.is_empty() {
-        Outcome::InexactFidelity {
-            detail: "html rewritten".into(),
+            detail: format!("{rw}{} absent", absent[0]),
         }
     } else {
         let mut detail: Vec<String> = wrong.iter().map(|w| (*w).to_owned()).collect();
+        if rewritten && absent.is_empty() {
+            // Only an empty authored text reaches here: a rewrite with
+            // nothing absent is no documented discrepancy.
+            detail.push("html rewritten".into());
+        }
         detail.extend(absent.iter().map(|w| format!("{w} absent")));
         Outcome::WrongResult {
             detail: detail.join(","),

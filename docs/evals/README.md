@@ -990,7 +990,13 @@ child: `api-mcp` runs under the same bound with no scope, and its
 `--driver` is a shim beside the chunk's scratch that execs `<driver> hold …`
 as that `systemd-run --user --scope -p Delegate=yes --unit=…` and any other
 mode (an adapter) in place, so the holder is its scope's only process and
-the scope is judged as every other. A scope is judged from the word `systemctl --user is-active`
+the scope is judged as every other. That judgement covers the holder's scope
+only, a disclosed limit: `api-mcp`, the bridge and the adapters run outside
+any scope, their cleanup resting on `timeout`'s signal to the process group
+they share (TERM, then KILL 30 s later) and on `api-mcp`'s own kill paths,
+and no wrapper check would notice an adapter that survived both; an MCP
+chunk's ledger line shows the `api-mcp` command, the scope being in the
+shim. A scope is judged from the word `systemctl --user is-active`
 prints, and it is clean only when that word is `inactive` or `failed`; no
 output, a failed or slow query or any other word is not known to be gone. After
 a chunk that sealed it asks up to twenty times, half a second apart, and the
@@ -1096,9 +1102,13 @@ never published as `not_supported`. What the captured documents establish:
   only delete route prunes by date); clear is `not_inspected`, because the
   prune codes are not captured. Its one decoded body is v3's documented
   fidelity discrepancy, so exactly one absent body part, with everything
-  else exact, is `inexact_fidelity`; a part it returns but gets wrong, both
-  parts absent, or an absent part beside any other mismatch is a
-  `wrong_result`.
+  else exact, is `inexact_fidelity`; under the operator's 2026-11-18 ruling
+  (0132's addendum) that includes the one kept HTML body with
+  `rel="nofollow"` added to its anchors and the text part absent (`html
+  rewritten, text absent`), and the extractors then read that kept HTML as
+  text, their right answers `inexact_fidelity` too. A part it returns but
+  gets otherwise wrong, a rewritten HTML beside a text part, both parts
+  absent, or an absent part beside any other mismatch is a `wrong_result`.
 - **smtp4dev** (`Rnwood.Smtp4dev.xml`): the file documents controller members,
   not route templates. Each citation binds the member (`GetSummaries` with
   `searchTerms`, `GetMessageSourceRaw`, `Delete`, `DeleteAll`); the templates
@@ -1339,16 +1349,25 @@ bin=$(cargo test --locked --test mail_compare --no-run --message-format=json \
 cat /proc/loadavg
 timeout 600 taskset -c 0-31 env MAIL_COMPARE_BIN=… SWARMAIL_EVALS_BIN=… \
   MAIL_COMPARE_MAILPIT=… "$bin" --ignored --exact \
-  api_section::api_mcp_bridge_real_mailpit --test-threads=1
+  api_section::api_mcp_bridge_real_mailpit --test-threads=1 --nocapture
 cat /proc/loadavg
 ```
 
 Each passes only exactly: the planned
 matrix and capability rows, every row exact or a documented outcome (busy
-or rate refusals on MCP, MailSlurper's absent part), exit 0 exactly when
+or rate refusals on MCP, MailSlurper's absent part, or a row its cell's
+five-second bound cut — at most one per worker, the last it started, in a
+cell that still has an exact row), exit 0 exactly when
 nothing failed, an intact ledger, clean windows with counters, samples,
 proved cgroup removal and the recomputed report; exit 0-or-1 or a few
-measured cells is not a pass.
+measured cells is not a pass. One other pass is accepted, and only for the
+source-built MailSlurper, whose README records that it acknowledges mail
+before storing it: 0132 §6.4's `fill_not_reached`, held exactly (every send
+counted, the retained count short and read to the fill's 300 s bound, every
+cell blocked with nothing started, exit 1). Such a pass proves the shortfall
+and nothing of the route's operations or waits; the proof prints `host proof
+passed on fill_not_reached` (shown under `--nocapture`), so the receipt
+says which kind of pass it was.
 
 **The host run gates the merge, again.** The deterministic tests and the
 real-candidate runs above prove the clients, the scheduler, the checks and

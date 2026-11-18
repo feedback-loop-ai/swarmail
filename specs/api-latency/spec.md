@@ -97,3 +97,14 @@ Recorded in [decision 0132's addendum of 2026-11-18](../../docs/decisions/0132-m
   `chunk_deadline`. Each MCP cell then starts in a fresh Swarmail rate
   window; `rate_limited` stays a published failure row of the cell's own
   load.
+
+## Status, 2026-11-19
+
+The design paragraph above that calls delegated-host execution open was
+written before any host run. Since then the 13 host proofs exited 0 on the
+dispatcher host at b5bd573; eleven measured, and the native and bridged
+source-built MailSlurper proofs passed on the documented `fill_not_reached`,
+which exercises none of their routes. Those two rows of AC10/R9 stay open,
+as `tasks.md` R9 records. The rewritten-body ruling is applied to the single
+kept body only (`html rewritten, text absent`); a rewritten HTML beside a
+text part stays `wrong_result`.
