@@ -138,7 +138,11 @@ pub async fn all(c: &Conn, deadline: Instant, spend: &mut Spend) -> Result<Vec<S
 }
 
 /// One stored item: its decoded fields. `TextBody` and `HTMLBody` where the
-/// server filled them, else the one `body` under its content type.
+/// server filled them, else the one `body`, filed by what it is: a
+/// `text/html` message's body is HTML, and so is a multipart's kept body
+/// when it is markup — the pinned builds answer a `multipart/alternative`
+/// with its HTML part alone in `body` and both named fields empty (host
+/// probe, 2026-11-18). Any other body is text.
 pub fn decode_message(v: &Value) -> Option<Fetched> {
     let s = |k: &str| v.get(k).and_then(Value::as_str).filter(|x| !x.is_empty());
     let (ctype, _) = mime::content_type(s("contentType").unwrap_or("text/plain"));
@@ -148,8 +152,10 @@ pub fn decode_message(v: &Value) -> Option<Fetched> {
         s("HTMLBody").map(str::to_owned),
     );
     if text.is_none() && html.is_none() {
+        let markup = body.trim_start().starts_with('<');
         match ctype.as_str() {
             "text/html" => html = Some(body),
+            c if c.starts_with("multipart/") && markup => html = Some(body),
             _ => text = Some(body),
         }
     }

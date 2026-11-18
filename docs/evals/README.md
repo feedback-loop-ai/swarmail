@@ -1056,7 +1056,7 @@ table equal to the files):
 | `swarmail.rs` | `f2dca32df491471bdcd0509f4bcb0266d34385e86661c7daaa1b1f038bd3e143` |
 | `mailpit.rs` | `d852e93846009002f589d01516bd6104e398be892f05cf5b31926088d198801b` |
 | `mailhog.rs` | `3613f7f31277724083abca93b42e363f6bcaa888ba71aff99f9950967fa63702` |
-| `mailslurper.rs` | `5a4b9bb1dce0c3f601d9c3ec704537e537b82c3caad5d8f5e4cf68e548fc0cfe` |
+| `mailslurper.rs` | `cdee28bf7a4b67414e69424ab07328ec52c129ff83fb88615efd55bae25bc6f5` |
 | `smtp4dev.rs` | `122ca842737d847470fcfa713e16eb5b38944ce5b2e57c5e12a1297ef7496f9e` |
 | `inbucket.rs` | `77f5026c806aac85629160b6d02b9ddcef6d96ff9b0aa96c5be2ac0dc4a6b62c` |
 | `greenmail.rs` | `9fd00f29b47a020c582c1ef5f434ed2900f638f945815209e1fc5c76bd06e85d` |

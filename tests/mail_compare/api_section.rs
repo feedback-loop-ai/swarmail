@@ -221,6 +221,35 @@ fn decoders_read_the_real_wire_corpus_exactly() {
         (f.text.as_deref(), f.html.as_deref()),
         (None, Some("<p>code 123456</p>"))
     );
+    // The pinned builds leave both named fields empty and keep the HTML
+    // part in `body` (host probe, 2026-11-18): it is filed as HTML, by what
+    // it is. A plain body, or a multipart body that is not markup, is text.
+    let mut live = corpus("mailslurper/read-multipart.json");
+    let kept = r#"<p>code 123456 <a href="https://example.test/a" rel="nofollow">go</a></p>"#;
+    live["body"] = json!(kept);
+    live["HTMLBody"] = json!("");
+    let f = clients::mailslurper::decode_message(&live).unwrap();
+    assert_eq!((f.text.as_deref(), f.html.as_deref()), (None, Some(kept)));
+    for (ctype, body) in [
+        ("text/plain; charset=utf-8", "<not html> code 123456"),
+        ("multipart/alternative; boundary=\"b1\"", "code 123456"),
+    ] {
+        live["contentType"] = json!(ctype);
+        live["body"] = json!(body);
+        let f = clients::mailslurper::decode_message(&live).unwrap();
+        assert_eq!(
+            (f.text.as_deref(), f.html.as_deref()),
+            (Some(body), None),
+            "{ctype}"
+        );
+    }
+    live["contentType"] = json!("text/html");
+    live["body"] = json!("<p>x</p>");
+    let f = clients::mailslurper::decode_message(&live).unwrap();
+    assert_eq!(
+        (f.text.as_deref(), f.html.as_deref()),
+        (None, Some("<p>x</p>"))
+    );
     // MailHog's raw multipart, quoted-printable, through the shared reader.
     let hog = corpus("mailhog/list.json");
     let item = hog["items"]
