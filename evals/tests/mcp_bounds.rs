@@ -8,6 +8,9 @@
 //! (declared lengths and chunked streams). It is not a target: it provokes
 //! the refusals no real target can be made to send.
 
+#[path = "scripted/mod.rs"]
+mod scripted;
+
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -205,21 +208,45 @@ fn only_tools(huge: Reply) -> fn(&str) -> Reply {
 
 #[tokio::test]
 async fn a_legitimate_reply_is_admitted_and_charged_to_the_operation() {
-    let (addr, _) = responder(only_tools(Reply::Ok)).await;
-    let mut c = McpClient::connect(&url(addr)).await.unwrap();
+    // The charge is the reply body's bytes exactly, as the server sent them:
+    // a constant or approximate charge would void the aggregate bound.
+    let (url, sent) = scripted::mcp_recording(std::sync::Arc::new(|_, args, n| {
+        Box::pin(async move { scripted::Answer::Result(json!({"n": n, "pad": args["pad"]})) })
+    }))
+    .await;
+    let mut c = McpClient::connect(&url).await.unwrap();
     let mut spent = 0;
     let v = c
-        .call_spending("t", json!({}), None, &mut spent)
+        .call_spending("t", json!({"pad": "x"}), None, &mut spent)
         .await
         .unwrap();
-    assert_eq!(v, json!({"n": 1}));
-    let one = spent;
-    assert!(one > 0);
-    // A second call of the same operation charges the same budget.
-    c.call_spending("t", json!({}), None, &mut spent)
+    assert_eq!(v, json!({"n": 1, "pad": "x"}));
+    assert_eq!(spent, sent.lock().unwrap()[0]);
+    // A second call of the same operation, with a longer reply, charges the
+    // same budget with its own exact length.
+    c.call_spending("t", json!({"pad": "x".repeat(1000)}), None, &mut spent)
         .await
         .unwrap();
-    assert_eq!(spent, 2 * one);
+    let replies = sent.lock().unwrap().clone();
+    assert_eq!(replies.len(), 2);
+    assert_eq!(replies[1], replies[0] + 999, "{replies:?}");
+    assert_eq!(spent, replies[0] + replies[1]);
+}
+
+#[test]
+fn the_mcp_bounds_are_the_native_clients_bounds() {
+    // R11's values, pinned: 16 MiB a reply and 1 GiB an operation, the same
+    // on both surfaces.
+    assert_eq!(mcp::MAX_REPLY_BYTES, 16 * 1024 * 1024);
+    assert_eq!(mcp::MAX_OPERATION_BYTES, 1024 * 1024 * 1024);
+    assert_eq!(
+        mcp::MAX_REPLY_BYTES,
+        swarmail_evals::clients::MAX_RESPONSE_BYTES
+    );
+    assert_eq!(
+        mcp::MAX_OPERATION_BYTES,
+        swarmail_evals::clients::MAX_OPERATION_BYTES
+    );
 }
 
 #[tokio::test]

@@ -239,8 +239,11 @@ async fn a_wait_cut_before_its_send_is_answered_stays_uncertain_and_one_with_no_
     let a = api::author(7, Role::Future, 2, &apibench::wait_scope(0, 2));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
     let done = apibench::wait_once(&worker, (smtp, c), a, deadline).await;
-    // It ended on its own, before the scheduler's cutoff.
-    assert!(tokio::time::Instant::now() < deadline);
+    // It ended on its own end, WAIT_MARGIN before the cutoff: no outer
+    // timeout bounds this call, and it held until then (the read and the
+    // 250 never came). Load can only make it later, never earlier, so the
+    // bound is safe in that direction; the outcome below carries the rest.
+    assert!(tokio::time::Instant::now() >= deadline - apibench::WAIT_MARGIN);
     assert_eq!(sent.available_permits(), 2, "the message reached DATA");
     assert_eq!(done.outcome, Outcome::Timeout);
     let t = done.wait.clone().unwrap();
@@ -1048,4 +1051,70 @@ async fn a_fill_the_store_did_not_keep_blocks_every_mcp_cell_and_exits_one() {
     }
     assert!(rec.control.is_empty());
     api::check_brackets(&rec).unwrap();
+}
+
+/// R11's one budget across nested calls: every page of an MCP scan charges
+/// the operation's shared byte budget, exactly the bytes of each reply, and
+/// a page that would carry the operation past 1 GiB is refused even though
+/// it fits on its own — a per-page budget would admit it.
+#[tokio::test]
+async fn an_mcp_scan_charges_every_page_to_one_operation_budget() {
+    const N: usize = 600; // pages of 250, 250 and 100
+    let to = "pages@api.mail-compare.invalid";
+    let items: Arc<Vec<(String, String, String)>> = Arc::new(
+        (0..N)
+            .map(|i| (format!("m{i}"), to.to_owned(), format!("s{i}")))
+            .collect(),
+    );
+    let h = handler(move |tool, args, _| {
+        let items = items.clone();
+        Box::pin(async move {
+            assert_eq!(tool, "swarmail_search_emails");
+            let off = args["offset"].as_u64().unwrap() as usize;
+            let lim = args["limit"].as_u64().unwrap() as usize;
+            let mut v = scripted::swarmail_page(&items[off.min(N)..(off + lim).min(N)]);
+            v["total"] = json!(N);
+            Answer::Result(v)
+        })
+    });
+    let (url, sent) = scripted::mcp_recording(h).await;
+    let scope = clients::Scope::new("pages");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    // Each run is a fresh worker on the same id range, so its replies carry
+    // the same ids and so the same bytes.
+    let run = |pre: u64| {
+        let (url, scope) = (url.clone(), scope.clone());
+        async move {
+            let w = workers(&url, 1).await.pop().unwrap();
+            let mut spend = clients::Spend {
+                bytes: pre,
+                requests: 0,
+            };
+            let r = w.list(&scope, deadline, &mut spend).await;
+            (r, spend)
+        }
+    };
+    let (r, spend) = run(0).await;
+    assert_eq!(r.unwrap().len(), N);
+    let pages = sent.lock().unwrap().clone();
+    assert_eq!(pages.len(), 3);
+    let total: u64 = pages.iter().sum();
+    assert_eq!(spend.bytes, total, "every page's reply bytes, exactly");
+    assert_eq!(spend.requests, 3);
+    // Pre-spent to exactly the room the scan needs: admitted, to the byte.
+    let max = swarmail_evals::mcp::MAX_OPERATION_BYTES;
+    let (r, spend) = run(max - total).await;
+    assert_eq!(r.unwrap().len(), N);
+    assert_eq!(spend.bytes, max);
+    assert_eq!(sent.lock().unwrap()[3..], pages[..]);
+    // One byte less room: the first two pages are admitted, the third is
+    // refused for what the earlier pages already spent, and nothing past
+    // the second page is charged. The third request was sent (the server
+    // recorded it) but, refused, it returns no spend: the operation's
+    // count stays at the two admitted pages (tracked in tasks.md).
+    let (r, spend) = run(max - total + 1).await;
+    assert!(matches!(r, Err(clients::OpError::Oversized)), "{r:?}");
+    assert_eq!(spend.bytes, max - pages[2] + 1);
+    assert_eq!(spend.requests, 2);
+    assert_eq!(sent.lock().unwrap()[6..], pages[..]);
 }

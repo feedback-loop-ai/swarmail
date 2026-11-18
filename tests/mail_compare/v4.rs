@@ -354,11 +354,27 @@ fn v2_and_v3_history_bytes_round_trip_unchanged() {
 
 // ---- T1.3 ------------------------------------------------------------------
 
+/// What still keeps every frozen protocol 4 from freezing once nothing is
+/// owed: the API operation cells no captured document states (0132 §6.3,
+/// §10), read from the client modules' tables. Lock v5's capture of
+/// MailHog's APIv1.md and MailSlurper's prune codes (story E) empties it.
+const API_NOT_INSPECTED: [&str; 4] = [
+    "a frozen protocol 4 has no not_inspected api cell, but mailhog native delete is: MailHog's APIv1.md, which its README names for delete, is not captured in lock v5",
+    "a frozen protocol 4 has no not_inspected api cell, but mailhog native clear is: MailHog's APIv1.md, which its README names for delete, is not captured in lock v5",
+    "a frozen protocol 4 has no not_inspected api cell, but mailslurper-source-build native clear is: the prune codes that would clear every message are not in a captured document",
+    "a frozen protocol 4 has no not_inspected api cell, but alkemio-mailslurper native clear is: the prune codes that would clear every message are not in a captured document",
+];
+
 #[test]
 fn frozen_v4_cost_table_is_exact() {
-    p4(frozen_ready())
-        .validate_owing(&[])
-        .expect("a ready frozen v4 validates");
+    // Ready except for the API cells, and refused for exactly those.
+    assert_eq!(
+        p4(frozen_ready())
+            .validate_owing(&[])
+            .expect_err("the api cells refuse")
+            .0,
+        API_NOT_INSPECTED
+    );
     let check = |v: Value, expect: &str| {
         let w = refusals(p4(v).validate_owing(&[]));
         assert!(w.contains(expect), "{expect}: {w}");
@@ -587,6 +603,58 @@ fn with_nothing_owed_a_frozen_v4_still_needs_resolved_clients_and_inspected_capa
         v,
         "has no not_inspected capability, but mailpit native_wait is",
     );
+}
+
+#[test]
+fn a_frozen_v4_reads_its_api_cells_from_the_client_tables() {
+    // Every not_inspected cell of the tables, on every surface the section
+    // names, is refused by target, surface and operation; nothing else is.
+    let mut want = Vec::new();
+    let p = p4(frozen_ready());
+    for surface in [clients::Surface::Native, clients::Surface::Mcp] {
+        for t in &p.targets {
+            for op in clients::Operation::ALL {
+                if clients::capability(t.name(), surface, op).status() == "not_inspected" {
+                    want.push(format!("{} {} {}", t.name(), surface.name(), op.name()));
+                }
+            }
+        }
+    }
+    assert_eq!(
+        want,
+        [
+            "mailhog native delete",
+            "mailhog native clear",
+            "mailslurper-source-build native clear",
+            "alkemio-mailslurper native clear",
+        ]
+    );
+    for (line, cell) in API_NOT_INSPECTED.iter().zip(&want) {
+        assert!(line.contains(&format!("but {cell} is: ")), "{line}");
+    }
+    // A target outside the protocol is not read: without MailHog only the
+    // MailSlurper builds' clear remain.
+    let mut v = frozen_ready();
+    v["targets"] = json!(
+        v["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| *t != "mailhog")
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    let w = refusals(p4(v).validate_owing(&[]));
+    assert!(!w.contains("but mailhog native"), "{w}");
+    assert!(w.contains(API_NOT_INSPECTED[2]), "{w}");
+    // A draft is not refused for its api cells: they block only freezing.
+    p4(draft()).validate_owing(&[]).unwrap();
+    // A surface the section does not name is not read.
+    let mut v = frozen_ready();
+    v["api"]["surfaces"] = json!(["mcp"]);
+    let w = refusals(p4(v).validate_owing(&[]));
+    assert!(!w.contains("api cell"), "{w}");
+    assert!(w.contains("api: protocol 4's api section is 0132's"), "{w}");
 }
 
 #[test]
@@ -997,6 +1065,79 @@ impl Wrapped for Value {
     }
 }
 
+/// Story C's wait evidence added to each pinned lock 4 entry, as (kind,
+/// file name under `sources/<target>/`), and the pin keys lock 5 moves.
+/// Nothing else in a lock 5 pin may differ from lock 4's.
+#[allow(clippy::type_complexity)]
+const LOCK5_MOVES: [(&str, &[(&str, &str)], &[&str]); 8] = [
+    (
+        "mailpit",
+        &[
+            ("source", "mailpit-server.go"),
+            ("source", "mailpit-storage-messages.go"),
+            ("source", "mailpit-storage-notifications.go"),
+            ("source", "mailpit-cors.go"),
+            ("source", "mailpit-go.mod"),
+        ],
+        &["documents", "launch", "storage", "wait"],
+    ),
+    (
+        "mailhog",
+        &[
+            ("license", "mailhog-server-license.md"),
+            ("source", "mailhog-server-api.go"),
+            ("source", "mailhog-server-api-v1.go"),
+            ("source", "mailhog-server-api-v2.go"),
+            ("source", "mailhog-websockets-hub.go"),
+            ("source", "mailhog-websockets-connection.go"),
+            ("source", "mailhog-smtp-session.go"),
+            ("license", "mailhog-goose-license.md"),
+            ("source", "mailhog-goose.go"),
+        ],
+        &["documents", "wait"],
+    ),
+    ("mailslurper", &[], &["wait"]),
+    ("mailslurper-source-build", &[], &["wait"]),
+    (
+        "smtp4dev",
+        &[
+            ("git_tree", "smtp4dev-tree-recursive.json"),
+            ("source", "smtp4dev-notifications-hub.cs"),
+            ("source", "smtp4dev-startup.cs"),
+            ("source", "smtp4dev-server.cs"),
+            ("source", "smtp4dev-task-queue.cs"),
+            ("source", "smtp4dev-messages-controller.cs"),
+            ("source", "smtp4dev-hub-connection-manager.ts"),
+        ],
+        &["documents", "launch", "storage", "wait"],
+    ),
+    (
+        "inbucket",
+        &[
+            ("git_tree", "inbucket-tree-recursive.json"),
+            ("source", "inbucket-rest-routes.go"),
+            ("source", "inbucket-rest-socket-controller.go"),
+            ("source", "inbucket-rest-socketv1-controller.go"),
+            ("source", "inbucket-rest-socketv2-controller.go"),
+            ("source", "inbucket-msghub-hub.go"),
+            ("source", "inbucket-message-manager.go"),
+            ("source", "inbucket-extension-async-broker.go"),
+            ("source", "inbucket-server-lifecycle.go"),
+            ("source", "inbucket-go.mod"),
+        ],
+        &["documents", "launch_env", "storage", "wait"],
+    ),
+    ("greenmail", &[], &["wait"]),
+    (
+        "alkemio-mailslurper",
+        &[
+            ("source", "alkemio-setup-services-listener.go"),
+            ("source", "alkemio-setup-admin-listener.go"),
+        ],
+        &["documents", "wait"],
+    ),
+];
+
 #[test]
 fn lock_v5_differs_from_lock_v4_only_in_version_caps_launches_and_wait_evidence() {
     let (l5, l4) = (lock5(), json(SOURCES_V4));
@@ -1046,6 +1187,36 @@ fn lock_v5_differs_from_lock_v4_only_in_version_caps_launches_and_wait_evidence(
                     .ends_with("-tree-recursive.json")
             );
         }
+        // What lock 5 adds is exactly the table's, by kind and path, in
+        // order; each added file's bytes are bound by its sha256 through
+        // `verify_files` (lock_v5_verifies_its_documents_and_pairs_with_the_draft).
+        let (_, added, moved) = LOCK5_MOVES
+            .iter()
+            .find(|(name, ..)| *name == t)
+            .unwrap_or_else(|| panic!("{t} has no LOCK5_MOVES row"));
+        let got: Vec<(String, String)> = docs5
+            .iter()
+            .filter(|d| !docs4.contains(d))
+            .map(|d| {
+                (
+                    d["kind"].as_str().unwrap().to_owned(),
+                    d["path"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let want: Vec<(String, String)> = added
+            .iter()
+            .map(|(kind, file)| ((*kind).to_owned(), format!("sources/{t}/{file}")))
+            .collect();
+        assert_eq!(got, want, "{t}: lock 5's added documents");
+        let (p5, p4) = (a["pin"].as_object().unwrap(), b["pin"].as_object().unwrap());
+        let keys: BTreeSet<&String> = p5.keys().chain(p4.keys()).collect();
+        let got: Vec<&str> = keys
+            .into_iter()
+            .filter(|k| p5.get(*k) != p4.get(*k))
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(got, *moved, "{t}: the pin keys lock 5 moves");
         let (mut a, mut b) = (a.clone(), b.clone());
         for e in [&mut a, &mut b] {
             let pin = e["pin"].as_object_mut().unwrap();
@@ -1064,6 +1235,14 @@ fn lock_v5_differs_from_lock_v4_only_in_version_caps_launches_and_wait_evidence(
             "{t}: only its launch, cap, basis and wait evidence moved"
         );
     }
+    // Every table row names a pinned lock 4 target, so none is stale.
+    let pinned: Vec<&str> = e4
+        .iter()
+        .filter(|e| !e["pin"].is_null())
+        .map(|e| e["target"].as_str().unwrap())
+        .collect();
+    let rows: Vec<&str> = LOCK5_MOVES.iter().map(|(t, ..)| *t).collect();
+    assert_eq!(rows, pinned);
     let mut l = l5.clone();
     for t in ["mailpit", "smtp4dev", "inbucket"] {
         let pin = pin_of(&mut l, t);

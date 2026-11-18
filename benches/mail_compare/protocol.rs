@@ -1433,6 +1433,31 @@ impl Protocol {
                 }
             }
         }
+        // The API operation cells (0132 §6.3, §10) are the client modules'
+        // tables, not the protocol's: the freeze reads them from there, so a
+        // cell no captured document states keeps protocol 4 from freezing
+        // however the prose `unresolved` list reads.
+        if let Some(a) = &self.api {
+            for surface in a
+                .surfaces
+                .iter()
+                .filter_map(|s| crate::clients::Surface::parse(s))
+            {
+                for t in &self.targets {
+                    for op in crate::clients::Operation::ALL {
+                        if let crate::clients::Capability::NotInspected { why } =
+                            crate::clients::capability(t.name(), surface, op)
+                        {
+                            out.push(format!(
+                                "a frozen protocol 4 has no not_inspected api cell, but {t} {} {} is: {why}",
+                                surface.name(),
+                                op.name()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Protocol 4's wait section (0132 §7). Every wait profile is one of the

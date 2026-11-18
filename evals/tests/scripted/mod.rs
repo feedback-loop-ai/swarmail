@@ -31,12 +31,20 @@ pub type Handler =
 /// protocol requires, every `tools/call` by `handler(tool, arguments, n)`
 /// where `n` counts calls from 1. Returns the `/mcp` URL.
 pub async fn mcp(handler: Handler) -> String {
+    mcp_recording(handler).await.0
+}
+
+/// [`mcp`], also recording the body length of every `tools/call` reply in
+/// the order sent: the bytes a client's per-operation budget must charge.
+pub async fn mcp_recording(handler: Handler) -> (String, Arc<std::sync::Mutex<Vec<u64>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let calls = Arc::new(AtomicU64::new(0));
+    let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let record = sent.clone();
     tokio::spawn(async move {
         while let Ok((mut s, _)) = listener.accept().await {
-            let (handler, calls) = (handler.clone(), calls.clone());
+            let (handler, calls, record) = (handler.clone(), calls.clone(), record.clone());
             tokio::spawn(async move {
                 let mut buf = Vec::new();
                 loop {
@@ -69,7 +77,8 @@ pub async fn mcp(handler: Handler) -> String {
                             }
                             continue;
                         };
-                        let reply = match req["method"].as_str().unwrap_or_default() {
+                        let method = req["method"].as_str().unwrap_or_default().to_owned();
+                        let reply = match method.as_str() {
                             "initialize" => json!({"jsonrpc": "2.0", "id": id, "result": {
                                 "protocolVersion": "2025-03-26"}}),
                             _ => {
@@ -86,6 +95,9 @@ pub async fn mcp(handler: Handler) -> String {
                             }
                         }
                         .to_string();
+                        if method == "tools/call" {
+                            record.lock().unwrap().push(reply.len() as u64);
+                        }
                         let resp = format!(
                             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{reply}",
                             reply.len()
@@ -98,7 +110,7 @@ pub async fn mcp(handler: Handler) -> String {
             });
         }
     });
-    format!("http://{addr}/mcp")
+    (format!("http://{addr}/mcp"), sent)
 }
 
 /// The ten read fixtures' listing in Swarmail's `{total, emails}` shape.
