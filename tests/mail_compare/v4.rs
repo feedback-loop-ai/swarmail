@@ -6117,7 +6117,16 @@ case "$1" in
       *" --seal "*) exit "${FAKE_SEAL_EXIT:-${FAKE_ADMIT_EXIT:-0}}" ;;
       *) exit "${FAKE_VERIFY_EXIT:-${FAKE_ADMIT_EXIT:-0}}" ;;
     esac ;;
-  run|api-mcp)
+  api-mcp)
+    # The eval crate's api-mcp: it runs its --driver's `hold`, as the real
+    # one spawns the holder, and ends with it.
+    drv='' args=()
+    shift
+    while [ $# -gt 0 ]; do
+      case "$1" in --driver) drv="$2"; shift 2 ;; *) args+=("$1"); shift ;; esac
+    done
+    exec "$drv" hold "${args[@]}" ;;
+  run|hold)
     out='' chunk=''
     while [ $# -gt 0 ]; do
       case "$1" in --output) out="$2" ;; --chunk) chunk="$2" ;; esac
@@ -6441,6 +6450,49 @@ fn collect_v4_dispatches_api_chunks_to_run_and_to_api_mcp() {
     let mcp = line("api.mcp.mailslurper-source-build.r0.f0");
     assert!(mcp.starts_with("driver api-mcp --driver "), "{mcp}");
     assert!(mcp.contains("--bin mailslurper-source-build="), "{mcp}");
+    // api-mcp is under the bound with no scope of its own; the holder it
+    // runs is alone in the chunk's scope, through the shim it was given.
+    for coord in [
+        "api.mcp.mailslurper-source-build.r0.f0",
+        "api.mcp.swarmail.r1.f100000",
+    ] {
+        let at = |l: &&String| l.contains(&format!("--chunk {coord} "));
+        assert!(
+            log.iter()
+                .filter(at)
+                .any(|l| l.starts_with("taskset -c 0-7 ")
+                    && l.contains(" api-mcp --driver ")
+                    && !l.contains("systemd-run")),
+            "{coord}: {log:?}"
+        );
+        let scoped: Vec<&String> = log
+            .iter()
+            .filter(|l| l.starts_with("systemd-run ") && at(l))
+            .collect();
+        assert_eq!(scoped.len(), 1, "{coord}: {log:?}");
+        assert!(
+            scoped[0]
+                .starts_with("systemd-run --user --scope -p Delegate=yes --unit=mail-compare-")
+                && scoped[0].contains(" hold --mode collect ")
+                && !scoped[0].contains("api-mcp"),
+            "{}",
+            scoped[0]
+        );
+        assert!(
+            log.iter().any(|l| l.starts_with("driver hold ") && at(&l)),
+            "{coord}: {log:?}"
+        );
+    }
+    // Each shim is gone once its chunk ended.
+    let scratch = std::path::PathBuf::from(format!("{}.scratch", rig.out().display()));
+    let shims: Vec<_> = std::fs::read_dir(&scratch)
+        .map(|d| {
+            d.flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x == "hold"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(shims.is_empty(), "{shims:?}");
     let sw = line("api.mcp.swarmail.r1.f100000");
     assert!(
         sw.contains("--bin swarmail=") && sw.contains("--mode collect"),

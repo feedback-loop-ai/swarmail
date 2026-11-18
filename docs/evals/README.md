@@ -985,7 +985,12 @@ build, `targets`, `check`, `footprint` or an admission takes at most 560 + 30 =
 30 + 1 + 3 + 3 = 597 s; a chunk that sealed at most 560 + 20 × (1 + 0.5) + 3 +
 3 = 596 s. Each chunk is one driver in its own scope: `timeout --kill-after=30
 560 taskset -c 0-<n-1> systemd-run --user --scope -p Delegate=yes --unit=… --
-<driver> run …`. A scope is judged from the word `systemctl --user is-active`
+<driver> run …`. On an MCP chunk the driver is the holder, `api-mcp`'s
+child: `api-mcp` runs under the same bound with no scope, and its
+`--driver` is a shim beside the chunk's scratch that execs `<driver> hold …`
+as that `systemd-run --user --scope -p Delegate=yes --unit=…` and any other
+mode (an adapter) in place, so the holder is its scope's only process and
+the scope is judged as every other. A scope is judged from the word `systemctl --user is-active`
 prints, and it is clean only when that word is `inactive` or `failed`; no
 output, a failed or slow query or any other word is not known to be gone. After
 a chunk that sealed it asks up to twenty times, half a second apart, and the

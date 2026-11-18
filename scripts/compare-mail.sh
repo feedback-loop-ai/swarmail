@@ -727,8 +727,14 @@ case "$mode" in
     # (the driver's `run`) or api.mcp.<target>.r<n>.f<fill> (the eval crate's
     # `api-mcp`, which drives `hold --control api-v1` and, for an adapter
     # target, the bridge; story B of 0132). Every one takes the same flags.
+    # On an MCP chunk the holder, not api-mcp, is the chunk's driver: it owns
+    # the target's leaf and must be its scope's only process. So api-mcp runs
+    # under the bound with no scope of its own, and its --driver is a shim
+    # (`hold_shim`, written just before the chunk runs) that execs the
+    # driver's `hold` as the chunk's scope and every other mode (an adapter)
+    # in place.
     chunk_command() {
-      local coord="$1" target rest unit w program
+      local coord="$1" target rest unit w program scope
       case "$coord" in
         api.*)
           rest="${coord#api.*.}"
@@ -739,13 +745,19 @@ case "$mode" in
           target="${rest%.*}"
           ;;
       esac
-      program=("$driver" run)
-      case "$coord" in
-        api.mcp.*) program=("$evals_bin" api-mcp --driver "$driver") ;;
-      esac
       unit="mail-compare-$run_token-$(printf '%s' "$coord" | tr -c 'A-Za-z0-9_.\n-' '_')"
       chunk_unit="$unit"
-      chunk_cmd=(systemd-run --user --scope -p Delegate=yes "--unit=$unit" --
+      program=("$driver" run)
+      scope=(systemd-run --user --scope -p Delegate=yes "--unit=$unit" --)
+      hold_shim=''
+      case "$coord" in
+        api.mcp.*)
+          hold_shim="$scratch_root/$coord.hold"
+          program=("$evals_bin" api-mcp --driver "$hold_shim")
+          scope=()
+          ;;
+      esac
+      chunk_cmd=(${scope[@]+"${scope[@]}"}
         "${program[@]}" --mode collect --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"}
         --output "$output/chunks/$coord" --scratch "$scratch_root/$coord" --run-id "$run_id"
         --chunk "$coord" --systemd "$systemd_version")
@@ -756,6 +768,17 @@ case "$mode" in
         [ -z "$(runtime_for "$target")" ] || chunk_cmd+=(--runtime "$target=$(runtime_for "$target")")
       fi
       [ -z "$commit" ] || chunk_cmd+=(--commit "$commit" --dirty false)
+    }
+
+    # The MCP chunk's driver shim: `hold` alone in the chunk's own delegated
+    # scope, any other mode in place.
+    write_hold_shim() {
+      {
+        printf '#!/bin/bash\n'
+        printf 'case "$1" in hold) exec systemd-run --user --scope -p Delegate=yes %q -- %q "$@" ;; esac\n' \
+          "--unit=$chunk_unit" "$driver"
+        printf 'exec %q "$@"\n' "$driver"
+      } >"$hold_shim" && chmod +x "$hold_shim"
     }
 
     if [ "$dry_run" = 1 ]; then
@@ -793,6 +816,7 @@ case "$mode" in
     for coord in $plan; do
       [ "$interrupted" = 0 ] || interrupt_exit
       chunk_command "$coord"
+      [ -z "$hold_shim" ] || write_hold_shim || blocked prerequisites "cannot write $hold_shim"
       # The chunk is owned from before it starts until its ledger entry is
       # written: a signal in between never abandons it.
       owned="$coord" owned_unit="$chunk_unit.scope"
@@ -800,6 +824,7 @@ case "$mode" in
       started=$(date +%s)
       run_step '' "${chunk_cmd[@]}"
       status=$step_status
+      [ -z "$hold_shim" ] || rm -f "$hold_shim"
       wall_ms=$((($(date +%s) - started) * 1000))
       load_after=$(cat /proc/loadavg 2>/dev/null || echo unavailable)
       # A timeout (124), a kill (137) or any status above 2 is an
