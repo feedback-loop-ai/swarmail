@@ -875,16 +875,7 @@ impl Client {
         deadline: Instant,
         spend: &mut Spend,
     ) -> Result<Vec<Summary>, OpError> {
-        let c = &self.conn;
-        let all = match self.family {
-            Family::Swarmail => swarmail::list(c, scope, None, deadline, spend).await?,
-            Family::Mailpit => mailpit::all(c, deadline, spend).await?,
-            Family::Mailhog => mailhog::to(c, scope, deadline, spend).await?,
-            Family::Mailslurper => mailslurper::to(c, scope, deadline, spend).await?,
-            Family::Smtp4dev => smtp4dev::search(c, &scope.address, deadline, spend).await?,
-            Family::Inbucket => inbucket::list(c, scope, deadline, spend).await?,
-            Family::Greenmail => greenmail::list(c, scope, deadline, spend).await?,
-        };
+        let all = self.candidates(scope, None, deadline, spend).await?;
         Ok(exactly_to(all, &scope.address))
     }
 
@@ -897,20 +888,56 @@ impl Client {
         deadline: Instant,
         spend: &mut Spend,
     ) -> Result<Vec<Summary>, OpError> {
-        let c = &self.conn;
-        let hits = match self.family {
-            Family::Swarmail => swarmail::list(c, scope, Some(token), deadline, spend).await?,
-            Family::Mailpit => mailpit::search(c, token, deadline, spend).await?,
-            Family::Mailhog => mailhog::to(c, scope, deadline, spend).await?,
-            Family::Mailslurper => mailslurper::to(c, scope, deadline, spend).await?,
-            Family::Smtp4dev => smtp4dev::search(c, token, deadline, spend).await?,
-            Family::Inbucket => inbucket::list(c, scope, deadline, spend).await?,
-            Family::Greenmail => greenmail::list(c, scope, deadline, spend).await?,
-        };
+        let hits = self.candidates(scope, Some(token), deadline, spend).await?;
         Ok(exactly_to(hits, &scope.address)
             .into_iter()
             .filter(|s| s.subject.contains(token))
             .collect())
+    }
+
+    /// What the family's documented listing returns for `scope` — with the
+    /// subject `token`, its search — complete, before the exact match that
+    /// [`list`](Self::list) and [`search`](Self::search) apply. This is the
+    /// boundary where the reference suite counts other tests' mail that the
+    /// tool's own filter let through (0132 §8.5, `foreign_seen`).
+    pub async fn candidates(
+        &self,
+        scope: &Scope,
+        token: Option<&str>,
+        deadline: Instant,
+        spend: &mut Spend,
+    ) -> Result<Vec<Summary>, OpError> {
+        let c = &self.conn;
+        Ok(match (self.family, token) {
+            (Family::Swarmail, t) => swarmail::list(c, scope, t, deadline, spend).await?,
+            (Family::Mailpit, None) => mailpit::all(c, deadline, spend).await?,
+            (Family::Mailpit, Some(t)) => mailpit::search(c, t, deadline, spend).await?,
+            (Family::Mailhog, _) => mailhog::to(c, scope, deadline, spend).await?,
+            (Family::Mailslurper, _) => mailslurper::to(c, scope, deadline, spend).await?,
+            (Family::Smtp4dev, None) => {
+                smtp4dev::search(c, &scope.address, deadline, spend).await?
+            }
+            (Family::Smtp4dev, Some(t)) => smtp4dev::search(c, t, deadline, spend).await?,
+            (Family::Inbucket, _) => inbucket::list(c, scope, deadline, spend).await?,
+            (Family::Greenmail, _) => greenmail::list(c, scope, deadline, spend).await?,
+        })
+    }
+
+    /// Whether [`candidates`](Self::candidates) answers the same for every
+    /// recipient scope: a store-wide listing or a subject search that takes
+    /// no recipient. Then one call serves every address a test owns.
+    pub fn scope_free(&self, token: Option<&str>) -> bool {
+        matches!(
+            (self.family, token),
+            (Family::Mailpit, _) | (Family::Smtp4dev, Some(_))
+        )
+    }
+
+    /// Whether ids are local to a mailbox (Inbucket's and GreenMail's
+    /// per-recipient stores): a message is then named by its mailbox and
+    /// its id together.
+    pub fn mailbox_local_ids(&self) -> bool {
+        matches!(self.family, Family::Inbucket | Family::Greenmail)
     }
 
     /// One message by id. `scope` is the mailbox the id lives in: only the

@@ -1521,6 +1521,211 @@ lock is therefore `stream: …` and its `wait-best` row `stream` with
 `unresolved` list no longer names it. Default tests do not discharge the
 proof; rerun it after any change to the stream client or the pin.
 
+## Protocol v4: test execution at parallelism 1, 8 and 32 (story D, #362)
+
+This section makes no comparison claim and collects nothing. It records
+what story D of accepted decision
+[0132](../decisions/0132-mail-comparison-protocol-v4.md) §8 built: the
+reference suite, the `testexec` subcommand, and the two real runs the
+dispatcher still owes.
+
+**The suite.** One `testexec.<target>.p<parallelism>.r<repetition>` chunk is
+one freshly launched target, held under its enforced leaf by `mail_compare
+hold --control testexec-v1`, and 100 tests drawn by 1, 8 or 32 workers from
+one queue. The tests are the existing fixture flows, twenty each:
+`otp-backlog`, `recipient-crowd`, `digest-lookalike`, `reset-login` and
+`magic-login`. In each, the fixture app sends through its existing
+`prepare` trigger, the oracle's existing scripted solution
+(`oracle::solve_suite`, the same bodies Swarmail's MCP oracle runs) waits,
+reads, asserts and acts on the app's public plane, the fixture's app-state
+scorer judges the real snapshot, and the test cleans up. No scenario code
+is new. The plan (`benches/mail_compare/suite.rs`, compiled into the driver
+and, by `#[path]`, into the eval crate) is a function of the protocol's
+corpus seed alone. Trial `i` of `0..100` has id `100 + i` and flow
+`FLOWS[i % 5]`. Trials are claimed in ascending SHA-256 order over the
+ASCII `testexec/<seed>/<id>`, ties by id, and the digest's first eight
+bytes, big-endian, are the trial's public seed. The whole digest is its
+fixture seed, and `2026-11-16T00:00:00Z` its fixture time. So the queue,
+the trial numbers and every scenario input are equal across targets,
+parallelisms and repetitions, and scheduling cannot change them. The
+fixture's tokens stay private. The draft protocol carries the section
+value for value (`testexec`); the validator refuses any other value, a
+protocol before 4 that carries it, and a frozen protocol 4 without it.
+
+**Isolation.** Swarmail gets each test's own inbox through the fixture's
+SMTP AUTH username `test-<n>` (0004). The shared stores get the frozen
+recipients `test-100@suite.invalid` to `test-199@suite.invalid`, with `n`
+unpadded. A `recipient-crowd` test owns its primary and its four aliases
+(`.team`, `-old`, a trailing `2`, `old.`), and the whole address plan is
+checked pairwise disjoint (address, mailbox local part, inbox) before
+anything is sent. Numbering from 100 is what keeps the `…2` alias clear: at
+id 1 it would be trial 12's primary, and that plan refuses. Each worker
+owns one fixture station, its listener pair bound before the suite clock.
+Each claim installs fresh private state on it. Every connection is pinned
+to the generation installed when it was accepted, a connection between
+generations is closed unanswered, and a generation is retired by closing
+its admission and draining its handlers within 5 s. A station that cannot
+drain cuts the suite: the next trial is never installed beside a live
+handler. The app client is confined to the station's origin and follows no
+redirect.
+
+**Waits and reads.** Each test waits with its target's `wait-best` row of
+the protocol (story C): Swarmail's REST await in its inbox; MailHog's
+WebSocket, through the shared stream observer (readiness, an authoritative
+complete scan, rescans on event and reconnect, the 1,000 ms backstop); every
+other target the 100 ms complete-scan poll. Each scan is the shared client's
+own (`benches/mail_compare/clients/`). The one change there is
+`Client::candidates`, the family's documented listing or search before the
+exact recipient match, which `list` and `search` now apply on top of it.
+That boundary is where the source (`evals/src/native_source.rs`) splits
+what the target's filter returned into the test's own mail and other
+tests'. The others are `foreign_seen`, counted once per distinct message
+however often they are seen. A per-mailbox store (Inbucket, GreenMail)
+keys a message by its mailbox and id together. Every fetch reads from the
+message's own mailbox and is rechecked against the recipients its listing
+showed. The source answers only the subject, scope and count the oracle
+asks for, and keeps no cache, prefetch, index or hint. A partial page, a
+malformed fetch or a contradictory identity is an operation failure with
+its own cause, never an answer.
+
+**Cleanup**, the narrowest documented policy, fixed from the capability
+table before the first claim and recorded:
+
+| Target | Policy |
+|---|---|
+| swarmail | `inbox_clear`: the test's own inbox |
+| mailpit, smtp4dev, inbucket | `delete_by_id`: every message the test owns, recovered from a fresh complete listing (decoys and a failed flow's leftovers included), deleted from its own mailbox, then verified gone |
+| greenmail | only a global purge: `global_clear_per_test` at 1; at 8 and 32 `global_clear_after_suite`, once, after every worker settled and after the suite window |
+| mailhog, mailslurper-source-build, alkemio-mailslurper | `unavailable`: no captured document establishes a delete or clear (the API section's `not_inspected` and `not_supported` cells), so nothing is removed and every row says so |
+
+A failed narrow mutation stops there and never authorizes a broader one.
+The suite's global clear does not run while a worker is unsettled.
+
+**Rows and outcomes.** Every claim reserves its row when it is made, and
+ends in exactly one outcome. `pass` is a scored pass with its cleanup proved
+under the policy. `timeout` is the test's deadline. `wrong_message` is an
+oracle assertion, a contradictory identity or a scorer failure.
+`interference` needs causal evidence: own mail a scan returned and a later
+scan did not, while another test's mutation that could reach it ran.
+Missing mail alone is a `timeout`. `harness` is a fixture, transport or
+operation fault, or a scored pass whose cleanup failed; the cleanup's own
+disposition is kept beside it. Each row keeps its worker, claim and end,
+`foreign_seen`, its wait's call and return, and its signed `ack_to_return`.
+That is the return minus the final DATA `250` that completed the required
+set: the 12th acceptance for `otp-backlog`, the 5th for `recipient-crowd`,
+read by the fixture's SMTP client before its `QUIT`. A missing observation
+is absent with its reason. Budgets are absolute: no claim at or after 540 s
+from the first claim, or at the chunk's own end (`resources.chunk_deadline_ms`
+less a 10 s record margin and a 30 s reserve for the global clear). Every
+test, cleanup included, ends by the earlier of that cutoff and 30 s from its
+claim. Every planned id unclaimed when claims stop is `unstarted` with its
+reason: `suite_deadline`, `chunk_deadline` or `suite_cut: …`. The client's
+CPU (`RUSAGE_SELF`, fixtures included) is read at the suite's bookends, and
+the eval process is pinned to the holder's client CPUs before any worker
+starts. Story D has no fill, so 0132 §6.4's `fill_not_reached` never
+arises here. A target that acknowledges mail it does not keep (the
+source-built MailSlurper's README) shows as `timeout` rows, never as a
+documented blocked setup.
+
+**The holder and the record.** `swarmail-evals testexec --driver PATH` takes
+`api-mcp`'s chunk flags. It refuses before it spawns anything: a malformed
+or unplanned coordinate, a parallelism other than 1, 8 or 32, a repetition
+outside 0–2, a `--bin` that names another target or no file, a protocol
+whose `testexec` section is not 0132's, an existing `--output`, or an
+address plan that is not disjoint. The holder takes `ready` and
+`idle_ready`, then prints its endpoints and `client_cpus`. It opens the
+`suite` window before the first claim and closes it after the last trial's
+end; both control round trips are kept apart from the suite's wall time.
+The `record` line comes last. The holder checks the record against the
+plan, the protocol's seed and `wait-best` row, its own window instants and
+the policy. It writes `testexec.json`, recomputes the report's `testexec`
+key (the class counts and their denominators, `foreign_seen`, the suite,
+trial, wait and `ack_to_return` figures, client CPU, and the target's CPU,
+throttling, OOM counts and sampled peak and mean memory over the window),
+and seals. `admit_chunk` rechecks that record and recomputes the same key.
+Exit 0 is a hundred scored passes with cleanup proved. Every other trial
+outcome, an unproved cleanup, an unstarted trial, a failed suite clear, or
+an OOM or exit in the window is the target's measured loss: sealed, exit 1.
+Infrastructure, a refused control line, interruption or an unproved
+teardown receipt (`cgroup_removed` included) exits 2 unsealed.
+`collect-v4` does not run these chunks yet: `runner::plan_testexec` plans
+the 72 beside the collected plan, and story E adds them to it and to the
+wrapper. `testexec` stays among `OWED_SECTIONS`, so protocol 4 still cannot
+freeze.
+
+**Local proof.** `cd evals && SWARMAIL_BIN=… cargo test --locked --test
+testexec` (about 5 s) runs ten trials of all five flows against the real
+candidate at 8 workers, and the whole subcommand twice. The subcommand runs
+behind a scripted holder: 100 trials at 8 workers with the record checked,
+and a holder's exit 1 kept. The other tests use scripted loopback stores
+speaking real SMTP and the documented Mailpit, Inbucket and GreenMail
+shapes. They cover foreign mail counted once across pages and rescans,
+delayed mail, mailbox-local ids, a partial page, a contradictory identity,
+delete-by-id that removes only owned mail, a refused delete that never
+escalates, the per-test purge and the single after-suite purge, the
+chunk and suite cutoffs with every id unstarted, and an undrainable
+fixture that cuts the suite with no purge. A held handler finishes against
+its own trial, never the next. The subcommand's refusals spawn nothing.
+`cargo test --locked --test mail_compare suite_section` checks the golden
+plan, the 1/12 refusal, the coordinate and its owner, the section, the
+control lines, every record field corrupted one at a time, the verdict and
+the recomputed figures.
+`api_section::the_testexec_host_proofs_are_discovered_and_refuse_without_their_bytes`
+lists both host proofs and runs each alone with its variables removed, so
+each fails naming them. `api_section::only_the_holder_enters_the_delegated_scope`
+runs the real `scoped_driver` against a recording `systemd-run`: only
+`hold` is wrapped (`--user --scope --quiet -p Delegate=yes --`), and an
+adapter mode runs in place.
+
+**The two real runs are open.** `api_section::testexec_real_swarmail`
+(the candidate, parallelism 1) and `api_section::testexec_real_mailpit`
+(the lock-pinned Mailpit, parallelism 8) run one full, bounded coordinate
+each on the delegated dispatcher host. Each passes only exactly: exit 0,
+100 of 100 scored passes with cleanup proved, the chunk sealed and admitted
+by `admit_chunk` (the executable rechecked by digest, the report recomputed),
+the suite window measured with its counters, and every cleanup receipt
+proving `cgroup_removed`. They need `MAIL_COMPARE_BIN` (the built driver),
+`SWARMAIL_EVALS_BIN` (the built eval binary) and, for the second,
+`MAIL_COMPARE_MAILPIT` (the pinned executable). The candidate is Cargo's own
+`swarmail`, which `pinned_args` supplies. Without them each fails naming
+them. Only `scoped_driver` puts the driver's `hold` in a delegated scope;
+Cargo, the test binary and the eval client stay outside it. The seat that
+built this story had no delegated scope: the Swarmail proof failed naming
+the missing user bus, and the holder alone refused with `resources: no
+delegated cgroup v2 (cpu memory pids)`. Neither run has executed on the
+host. The dispatcher runs each alone and attaches its output, exit and load
+before and after to the pull request before merge:
+
+```bash
+cargo build --locked --bin swarmail
+drv=$(cargo build --locked --bench mail_compare --message-format=json \
+  | grep -o '"executable":"[^"]*mail_compare-[^"]*"' | tail -n1 | cut -d'"' -f4)
+(cd evals && cargo build --locked --bin swarmail-evals)
+bin=$(cargo test --locked --test mail_compare --no-run --message-format=json \
+  | grep -o '"executable":"[^"]*mail_compare-[^"]*"' | tail -n1 | cut -d'"' -f4)
+export MAIL_COMPARE_BIN="$drv" SWARMAIL_EVALS_BIN="$PWD/evals/target/debug/swarmail-evals"
+export MAIL_COMPARE_MAILPIT=/path/to/the/pinned/mailpit
+# record the candidate's digest; the pinned Mailpit must match lock v5
+sha256sum target/debug/swarmail
+test "$(sha256sum "$MAIL_COMPARE_MAILPIT" | cut -d' ' -f1)" = \
+  "$(jq -r '.entries[] | select(.target=="mailpit") | .pin.artifact.executable_sha256' \
+     docs/evals/draft/sources.lock.v5.json)" || exit 2
+run_one() (
+  cat /proc/loadavg || exit 2
+  rc=0
+  timeout 600 taskset -c 0-31 "$bin" --ignored --exact "$1" --test-threads=1 --nocapture || rc=$?
+  cat /proc/loadavg || exit 2
+  exit "$rc"
+)
+run_one api_section::testexec_real_swarmail
+# a separate dispatcher invocation
+run_one api_section::testexec_real_mailpit
+```
+
+A passing run prints `host proof passed: testexec.<target>.p<n>.r0: 100 of
+100 pass, …` with its `foreign_seen`, suite wall time, target CPU, peak
+memory and client CPU.
+
 ## What closes the remaining rows
 
 1. Build provenance for each executable needs genuine build evidence (an

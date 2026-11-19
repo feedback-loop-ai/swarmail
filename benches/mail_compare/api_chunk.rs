@@ -662,7 +662,7 @@ pub async fn run(
 /// the parked sampler is the sink's one other writer, and each caller stops
 /// it (awaiting its task, which drops its clone) before it seals; so the
 /// seal's "no sink clone outlives the chunk" holds on every path.
-async fn launch_sampled(
+pub async fn launch_sampled(
     spec: &crate::targets::LaunchSpec,
     sink: &Sink,
     slot: crate::runner::SamplerSlot,

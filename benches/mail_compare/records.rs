@@ -165,6 +165,9 @@ pub enum WindowKind {
     IdleFill,
     /// API section: one cell's measured operations (0132 §4.2).
     ApiCell,
+    /// Test-execution section (story D): the suite, from before the first
+    /// claim to after the last trial's end (0132 §4.2, §8.6).
+    Suite,
 }
 
 /// How a window ended. `OomKilled` is a rise of `oom_kill` over the window

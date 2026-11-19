@@ -49,6 +49,7 @@ fn copy_shared(actual: &Path, root: &Path) {
     let to = root.join("benches/mail_compare");
     copy_tree(&from.join("clients"), &to.join("clients"));
     std::fs::copy(from.join("api.rs"), to.join("api.rs")).unwrap();
+    std::fs::copy(from.join("suite.rs"), to.join("suite.rs")).unwrap();
 }
 fn build(root: &Path, target: &Path) -> PathBuf {
     let out = Command::new("cargo")

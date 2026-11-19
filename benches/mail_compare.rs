@@ -66,9 +66,16 @@ mod resources;
 mod runner;
 #[path = "mail_compare/stats.rs"]
 mod stats;
+// The test-execution section (decision 0132 §8, story D): the plan and the
+// record are shared with the eval crate, which runs the suite.
 #[allow(dead_code)]
 #[path = "mail_compare/clients/stream.rs"]
 mod stream;
+#[allow(dead_code)]
+#[path = "mail_compare/suite.rs"]
+mod suite;
+#[path = "mail_compare/suite_chunk.rs"]
+mod suite_chunk;
 #[path = "mail_compare/targets.rs"]
 mod targets;
 #[path = "mail_compare/wire.rs"]
@@ -619,7 +626,7 @@ fn run(args: &[String]) -> i32 {
 /// Everything that can refuse before a single process starts: inputs,
 /// pins, binaries, output and scratch.
 fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf, Option<runner::Chunk>), String> {
-    prepare_for(clients::Surface::Native, args)
+    prepare_for(runner::Owner::Run, args)
 }
 
 /// `hold --control api-v1 --mode M --chunk api.mcp.TARGET.rN.fF ...` with
@@ -638,14 +645,20 @@ fn hold_api_mode(args: &[String]) -> i32 {
             rest.push(a.clone());
         }
     }
-    if control.as_deref() != Some("api-v1") {
-        eprintln!("mail_compare hold: refused before launch: --control takes api-v1");
-        return 2;
-    }
-    let (cfg, scratch, chunk) = match prepare_for(clients::Surface::Mcp, &rest) {
+    let owner = match control.as_deref() {
+        Some("api-v1") => runner::Owner::HoldApi,
+        Some("testexec-v1") => runner::Owner::HoldSuite,
+        _ => {
+            eprintln!(
+                "mail_compare hold: refused before launch: --control takes api-v1 or testexec-v1"
+            );
+            return 2;
+        }
+    };
+    let (cfg, scratch, chunk) = match prepare_for(owner, &rest) {
         Ok((cfg, scratch, Some(chunk))) => (cfg, scratch, chunk),
         Ok(_) => {
-            eprintln!("mail_compare hold: refused before launch: --control api-v1 needs --chunk");
+            eprintln!("mail_compare hold: refused before launch: --control needs --chunk");
             return 2;
         }
         Err(e) => {
@@ -679,7 +692,14 @@ fn hold_api_mode(args: &[String]) -> i32 {
         let input = tokio::io::BufReader::new(tokio::io::stdin());
         let mut out = std::io::stdout();
         tokio::select! {
-            r = api_chunk::hold_api(cfg, chunk, clock, input, &mut out) => Some(r),
+            r = async {
+                match owner {
+                    runner::Owner::HoldSuite => {
+                        suite_chunk::hold_suite(cfg, chunk, clock, input, &mut out).await
+                    }
+                    _ => api_chunk::hold_api(cfg, chunk, clock, input, &mut out).await,
+                }
+            } => Some(r),
             _ = tokio::signal::ctrl_c() => None,
             _ = term => None,
         }
@@ -720,7 +740,7 @@ fn hold_api_mode(args: &[String]) -> i32 {
 }
 
 fn prepare_for(
-    owner: clients::Surface,
+    owner: runner::Owner,
     args: &[String],
 ) -> Result<(runner::Config, PathBuf, Option<runner::Chunk>), String> {
     let f = runner::flags(args)?;
@@ -755,7 +775,7 @@ fn prepare_for(
         Some("false") => Some(false),
         Some(_) => return Err("--dirty takes true or false".into()),
     };
-    let chunk = runner::v4_preflight_for(
+    let chunk = runner::v4_preflight_owner(
         owner,
         &p,
         mode,
