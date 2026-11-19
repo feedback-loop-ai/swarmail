@@ -5233,14 +5233,30 @@ fn real_suite(target: TargetKind, parallelism: u32) {
     );
 }
 
+// One reason per platform: a second `ignore` would be an unused attribute.
 #[test]
-#[ignore = "host proof: MAIL_COMPARE_BIN, SWARMAIL_EVALS_BIN, a delegated scope; run alone under timeout 600 taskset -c 0-31"]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "host proof: MAIL_COMPARE_BIN, SWARMAIL_EVALS_BIN, a delegated scope; run alone under timeout 600 taskset -c 0-31"
+)]
 fn testexec_real_swarmail() {
     real_suite(TargetKind::Swarmail, 1)
 }
 
+// One reason per platform: a second `ignore` would be an unused attribute.
 #[test]
-#[ignore = "host proof: MAIL_COMPARE_BIN, SWARMAIL_EVALS_BIN, MAIL_COMPARE_MAILPIT, a delegated scope; run alone under timeout 600 taskset -c 0-31"]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "host proof: MAIL_COMPARE_BIN, SWARMAIL_EVALS_BIN, MAIL_COMPARE_MAILPIT, a delegated scope; run alone under timeout 600 taskset -c 0-31"
+)]
 fn testexec_real_mailpit() {
     real_suite(TargetKind::Mailpit, 8)
 }

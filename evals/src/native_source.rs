@@ -30,6 +30,10 @@ use tokio::time::Instant;
 /// cutoff, a reconnect attempt, Swarmail's await answering its timeout).
 pub const REQUEST_BOUND: Duration = Duration::from_secs(2);
 
+/// The pause between cleanup's readings of a store-wide listing that other
+/// tests' churn moved while it was read ([`NativeSource::owned_listing`]).
+pub const RESCAN_PAUSE: Duration = Duration::from_millis(10);
+
 /// Why the source has no answer, typed apart from the oracle's string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
@@ -129,6 +133,9 @@ pub struct NativeSource<'a> {
     pub timing: Option<Timing>,
     pub failure: Option<Failure>,
     calls: u32,
+    /// Whether other tests run beside this one on the same store (a suite
+    /// at parallelism above 1).
+    neighbours: bool,
 }
 
 fn local(address: &str) -> String {
@@ -163,7 +170,15 @@ impl<'a> NativeSource<'a> {
             timing: None,
             failure: None,
             calls: 0,
+            neighbours: false,
         }
+    }
+
+    /// Mark that other tests share the store with this one (`workers > 1`):
+    /// only then may cleanup read a moving store-wide listing again.
+    pub fn beside_neighbours(mut self, yes: bool) -> Self {
+        self.neighbours = yes;
+        self
     }
 
     fn acct(&self) -> std::sync::MutexGuard<'_, Acct> {
@@ -250,18 +265,30 @@ impl<'a> NativeSource<'a> {
         }
     }
 
-    /// One complete, authoritative scan of this test's scopes.
+    /// One complete, authoritative scan of this test's scopes, noting own
+    /// mail an earlier scan returned and this one did not (cleanup's own
+    /// listings, [`owned_listing`](Self::owned_listing), never do).
     async fn scan(&self, token: Option<&str>) -> Result<Vec<(Scope, Summary)>, Failure> {
-        self.scan_tracked(token, true).await
+        let out = self.collect(token).await.map_err(|e| op("scan", e))?;
+        // Own mail an earlier scan returned and this one did not.
+        let now = self.clock.now_ns();
+        let keys: BTreeSet<Key> = out.keys().cloned().collect();
+        let mut a = self.acct();
+        let gone: Vec<Key> = a.last_scan.difference(&keys).cloned().collect();
+        for k in gone {
+            let seen = a.first_seen.get(&k).copied().unwrap_or(now);
+            a.vanished.entry(k).or_insert((seen, now));
+        }
+        a.last_scan = keys;
+        Ok(out.into_values().collect())
     }
 
-    /// [`scan`](Self::scan); `track` notes own mail an earlier tracked scan
-    /// returned and this one did not (cleanup's own listings never do).
-    async fn scan_tracked(
+    /// One complete reading of this test's scopes, folded; the pager's own
+    /// error when a page is not.
+    async fn collect(
         &self,
         token: Option<&str>,
-        track: bool,
-    ) -> Result<Vec<(Scope, Summary)>, Failure> {
+    ) -> Result<BTreeMap<Key, (Scope, Summary)>, OpError> {
         let mut out = BTreeMap::new();
         let scopes = self.scopes();
         let take = if self.client.scope_free(token) {
@@ -274,24 +301,47 @@ impl<'a> NativeSource<'a> {
             let items = self
                 .client
                 .candidates(scope, token, self.deadline, &mut spend)
-                .await
-                .map_err(|e| op("scan", e))?;
+                .await?;
             self.fold(scope, items, token, &mut out);
         }
-        if !track {
-            return Ok(out.into_values().collect());
+        Ok(out)
+    }
+
+    /// Cleanup's reading of every message this test owns, decoys and
+    /// leftovers included. Where the listing spans other tests' mail
+    /// (Mailpit's, store-wide: no recipient filter is cited) and other
+    /// workers deliver and delete beside this test, their churn can move the
+    /// stated count between pages or inside one answer, and the pager then
+    /// refuses the listing as incomplete. That refusal is right, and it is
+    /// kept: a moving listing is not an answer. It is read again,
+    /// [`RESCAN_PAUSE`] apart, until one listing is complete, and only inside
+    /// this test's own cleanup deadline. Any other failure, a listing still
+    /// moving at the deadline, and a moving listing with no neighbours to
+    /// move it (parallelism 1, or a store this test's scopes alone can read)
+    /// fail at once, as before. Only reading repeats: no mutation is ever
+    /// authorized by a failed one.
+    async fn owned_listing(&self) -> Result<Vec<(Scope, Summary)>, Failure> {
+        let retry = self.neighbours && self.client.scope_free(None);
+        let mut moved = 0u32;
+        loop {
+            match self.collect(None).await {
+                Ok(out) => return Ok(out.into_values().collect()),
+                Err(OpError::Incomplete)
+                    if retry && Instant::now() + RESCAN_PAUSE < self.deadline =>
+                {
+                    moved += 1;
+                    tokio::time::sleep(RESCAN_PAUSE).await;
+                }
+                // The listing never settled: say so, whatever ended the last.
+                Err(e) if moved > 0 => {
+                    return Err(Failure::Operation(format!(
+                        "scan: incomplete ({moved} listing(s) moved while read, then {})",
+                        e.reason()
+                    )));
+                }
+                Err(e) => return Err(op("scan", e)),
+            }
         }
-        // Own mail an earlier scan returned and this one did not.
-        let now = self.clock.now_ns();
-        let keys: BTreeSet<Key> = out.keys().cloned().collect();
-        let mut a = self.acct();
-        let gone: Vec<Key> = a.last_scan.difference(&keys).cloned().collect();
-        for k in gone {
-            let seen = a.first_seen.get(&k).copied().unwrap_or(now);
-            a.vanished.entry(k).or_insert((seen, now));
-        }
-        a.last_scan = keys;
-        Ok(out.into_values().collect())
     }
 
     async fn poll(
@@ -583,7 +633,10 @@ impl NativeSource<'_> {
     /// included) and deletes exactly those ids from their own mailboxes; a
     /// failed narrow operation stops there and never authorizes a broader
     /// one. Each mutation is logged for the suite's causal evidence, and
-    /// the scope is verified empty afterwards.
+    /// the scope is verified empty afterwards. Both readings are
+    /// [`owned_listing`](Self::owned_listing)'s: beside other workers, a
+    /// store-wide listing their churn moved is read again until one is
+    /// complete, inside this deadline.
     pub async fn cleanup(&self, policy: Policy, log: &Mutations) -> Cleanup {
         let failed = |reason: String| Cleanup::Failed { reason };
         let start_ns = self.clock.now_ns();
@@ -591,7 +644,7 @@ impl NativeSource<'_> {
             Policy::GlobalClearAfterSuite => return Cleanup::Deferred,
             Policy::Unavailable => return Cleanup::NotAvailable,
             Policy::InboxClear | Policy::GlobalClearPerTest => {
-                let before = match self.scan_tracked(None, false).await {
+                let before = match self.owned_listing().await {
                     Ok(v) => v.len() as u64,
                     Err(f) => return failed(format!("recover: {}", f.text())),
                 };
@@ -614,7 +667,7 @@ impl NativeSource<'_> {
                 before
             }
             Policy::DeleteById => {
-                let owned = match self.scan_tracked(None, false).await {
+                let owned = match self.owned_listing().await {
                     Ok(v) => v,
                     Err(f) => return failed(format!("recover: {}", f.text())),
                 };
@@ -639,7 +692,7 @@ impl NativeSource<'_> {
                 n
             }
         };
-        match self.scan_tracked(None, false).await {
+        match self.owned_listing().await {
             Ok(left) if left.is_empty() => Cleanup::Done { removed },
             Ok(left) => failed(format!(
                 "{} owned message(s) remain after cleanup",

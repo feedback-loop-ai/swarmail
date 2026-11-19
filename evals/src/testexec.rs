@@ -354,7 +354,8 @@ async fn run_trial(
         cfg.method,
         trial,
         (deadline, cfg.clock),
-    );
+    )
+    .beside_neighbours(cfg.coord.parallelism > 1);
     match steps.await {
         Err(Harness(e)) => ran.harness = Some(e),
         Ok(()) => {

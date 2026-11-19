@@ -1596,11 +1596,29 @@ table before the first claim and recorded:
 | Target | Policy |
 |---|---|
 | swarmail | `inbox_clear`: the test's own inbox |
-| mailpit, smtp4dev, inbucket | `delete_by_id`: every message the test owns, recovered from a fresh complete listing (decoys and a failed flow's leftovers included), deleted from its own mailbox, then verified gone |
+| mailpit, smtp4dev, inbucket | `delete_by_id`: every message the test owns, recovered from a fresh complete listing (decoys and a failed flow's leftovers included), deleted from its own mailbox, then verified gone; Mailpit's store-wide listing is read again while other workers move it (below) |
 | greenmail | only a global purge: `global_clear_per_test` at 1; at 8 and 32 `global_clear_after_suite`, once, after every worker settled and after the suite window |
 | mailhog, mailslurper-source-build, alkemio-mailslurper | `unavailable`: no captured document establishes a delete or clear (the API section's `not_inspected` and `not_supported` cells), so nothing is removed and every row says so |
 
 A failed narrow mutation stops there and never authorizes a broader one.
+
+Mailpit's recovery and its check read the whole store, because no
+recipient filter is cited (its query syntax is behind a link the lock does
+not capture). At 8 and 32 workers the other tests deliver and delete while
+that listing is read, so its stated total can move between pages or within
+one answer. The shared pager then refuses the listing as incomplete, and
+that refusal stands: a moving listing is not an answer. Instead, the cleanup
+reads the listing again, 10 ms apart (`RESCAN_PAUSE`), until one listing is
+complete. It stops at the test's own cleanup deadline. If the listing is
+still moving then, the cleanup fails with
+`scan: incomplete (<n> listing(s) moved while read, then <cause>)`. Only
+reading repeats, and nothing is deleted on a refused listing. At one worker
+nothing else can move the store, so a moving listing fails at once. The
+other targets read only the test's own scopes, so their cleanup never
+re-reads. Inbucket keeps a mailbox per recipient, smtp4dev searches by the
+recipient, and GreenMail purges per test only at one worker. Before this, a Mailpit
+row at 8 workers whose flow had passed could become `harness` with
+`recover: operation: scan: incomplete` (four of four host runs).
 The suite's global clear does not run while a worker is unsettled.
 
 **Rows and outcomes.** Every claim reserves its row when it is made, and

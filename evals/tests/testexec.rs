@@ -67,6 +67,13 @@ struct Store {
     /// Messages to store once `scans` reaches the key (a delayed delivery,
     /// ordered after the scans that preceded it).
     later: BTreeMap<u32, Vec<Msg>>,
+    /// Store-wide listings' first pages (`GET /api/v1/messages`, start 0)
+    /// served so far.
+    first_pages: u32,
+    /// The first pages (by ordinal, from 1) right after which another
+    /// worker's delivery lands: the listing's stated total moves before its
+    /// next page, as it does when neighbours deliver beside a cleanup.
+    move_on: BTreeSet<u32>,
 }
 
 type Shared = Arc<Mutex<Store>>;
@@ -226,7 +233,17 @@ fn mailpit_routes(store: Shared) -> Router {
             "/api/v1/messages",
             get(
                 |State(s): State<Shared>, Query(q): Query<PageQ>| async move {
-                    axum::Json(mailpit_page(&mut s.lock().unwrap(), &q, None))
+                    let mut s = s.lock().unwrap();
+                    let page = mailpit_page(&mut s, &q, None);
+                    if q.start.unwrap_or(0) == 0 {
+                        s.first_pages += 1;
+                        let n = s.first_pages;
+                        if s.move_on.remove(&n) {
+                            let to = suite::primary(190);
+                            s.add(Kind::Mailpit, &to, raw(&to, "Neighbour", "delivered"));
+                        }
+                    }
+                    axum::Json(page)
                 },
             )
             .delete(|State(s): State<Shared>, body: String| async move {
@@ -616,6 +633,46 @@ async fn a_shared_store_suite_sees_foreign_mail_and_deletes_only_its_own() {
     assert!(!st.mutations.iter().any(|m| m == "all"));
 }
 
+/// `n` other tests' mail under a subject no flow waits for: enough for a
+/// store-wide listing of two pages.
+fn neighbours(st: &mut Store, n: u32) {
+    for i in 0..n {
+        let to = suite::primary(150 + i % 40);
+        st.add(Kind::Mailpit, &to, raw(&to, "Neighbour", "noise"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parallel_suites_cleanup_reads_a_listing_its_neighbours_moved_again() {
+    // Mailpit's cleanup reads the whole store (no recipient filter is
+    // cited). Beside seven other workers its stated total moves between
+    // pages; the first ten listings here do, then the store is still.
+    let s = scripted(Kind::Mailpit).await;
+    {
+        let mut st = s.store.lock().unwrap();
+        neighbours(&mut st, 260);
+        st.move_on = (1..=10).collect();
+    }
+    let rec = run(
+        "mailpit",
+        (s.smtp, s.http),
+        8,
+        ten(),
+        (WaitMethod::Poll { interval_ms: 100 }, generous()),
+    )
+    .await;
+    assert_eq!(rec.policy, Policy::DeleteById);
+    // Every row is a pass with its cleanup proved, none `harness`.
+    passed(&rec);
+    let st = s.store.lock().unwrap();
+    assert!(st.move_on.is_empty(), "every moving listing was served");
+    // Every trial deleted exactly its own: the 260 and the ten deliveries
+    // that moved the listings are all still there, and nothing cleared.
+    assert_eq!(st.msgs.len(), 270);
+    assert!(st.msgs.iter().all(|m| m.subject == "Neighbour"));
+    assert!(!st.mutations.iter().any(|m| m == "all"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_global_clear_only_store_clears_per_test_alone_and_once_after_a_parallel_suite() {
     // One worker: the global purge runs after each test, inside its budget.
@@ -681,6 +738,10 @@ fn msg(kind: Kind, id: &str, to: &str, subject: &str) -> Msg {
         raw: raw(to, subject, &format!("Hi {to}")),
     }
 }
+
+/// How far past its deadline a bounded operation may be seen to return on
+/// a loaded host: scheduling, not a budget.
+const REQUEST_SLACK: Duration = Duration::from_secs(1);
 
 fn soon() -> (Instant, Clock) {
     (
@@ -914,6 +975,92 @@ async fn delete_by_id_removes_only_owned_mail_and_a_failed_delete_never_escalate
             .filter(|m| m.to.starts_with("test-15"))
             .count(),
         2
+    );
+}
+
+#[tokio::test]
+async fn a_moving_store_wide_listing_is_reread_only_beside_neighbours_and_only_in_the_deadline() {
+    let me = crowd();
+    let s = scripted(Kind::Mailpit).await;
+    let own = |st: &mut Store| {
+        for a in suite::owned(&me.flow, me.id) {
+            st.add(Kind::Mailpit, &a, raw(&a, "Confirm your account", "mine"));
+        }
+        let p = suite::primary(me.id);
+        st.add(Kind::Mailpit, &p, raw(&p, "Reminder", "left over"));
+    };
+    {
+        let mut st = s.store.lock().unwrap();
+        neighbours(&mut st, 260);
+        own(&mut st);
+        // The recovery's first listing and the verification's first both
+        // move between their two pages.
+        st.move_on = [1, 3].into();
+    }
+    let client = clients::Client::new("mailpit", s.http).unwrap();
+    let log = Mutations::default();
+    let source = |deadline: (Instant, Clock), beside: bool| {
+        NativeSource::new(
+            &client,
+            s.http,
+            WaitMethod::Poll { interval_ms: 20 },
+            &me,
+            deadline,
+        )
+        .beside_neighbours(beside)
+    };
+    // Beside other workers: each moved listing is read again, and the
+    // complete ones recover, delete and verify exactly this test's six.
+    let c = source(soon(), true).cleanup(Policy::DeleteById, &log).await;
+    assert_eq!(c, Cleanup::Done { removed: 6 });
+    {
+        let st = s.store.lock().unwrap();
+        assert_eq!(st.first_pages, 4);
+        assert_eq!(st.msgs.len(), 262);
+        assert!(st.msgs.iter().all(|m| m.subject == "Neighbour"));
+        assert_eq!(st.mutations.len(), 6);
+    }
+    // Alone on the store (parallelism 1) nothing else can move it: the
+    // moving listing is a failure at once, and nothing is deleted.
+    {
+        let mut st = s.store.lock().unwrap();
+        own(&mut st);
+        st.mutations.clear();
+        st.move_on = [st.first_pages + 1].into();
+    }
+    let c = source(soon(), false)
+        .cleanup(Policy::DeleteById, &log)
+        .await;
+    assert_eq!(
+        c,
+        Cleanup::Failed {
+            reason: "recover: operation: scan: incomplete".into()
+        }
+    );
+    assert!(s.store.lock().unwrap().mutations.is_empty());
+    // A listing that never settles ends inside the cleanup's own deadline,
+    // failed, and authorizes no mutation at all.
+    {
+        let mut st = s.store.lock().unwrap();
+        let from = st.first_pages + 1;
+        st.move_on = (from..from + 10_000).collect();
+    }
+    let started = Instant::now();
+    let by = started + Duration::from_millis(300);
+    let c = source((by, Clock(std::time::Instant::now())), true)
+        .cleanup(Policy::DeleteById, &log)
+        .await;
+    assert!(Instant::now() <= by + REQUEST_SLACK, "{c:?}");
+    assert!(
+        matches!(&c, Cleanup::Failed { reason }
+            if reason.starts_with("recover: operation: scan: incomplete (")),
+        "{c:?}"
+    );
+    let st = s.store.lock().unwrap();
+    assert!(st.mutations.is_empty(), "{:?}", st.mutations);
+    assert_eq!(
+        st.msgs.iter().filter(|m| m.subject != "Neighbour").count(),
+        6
     );
 }
 
