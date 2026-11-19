@@ -984,7 +984,10 @@ kill with SIGKILL, 3 s to stop), so the ten minutes of 0132 §11.1 hold as three
 build, `targets`, `check`, `footprint` or an admission takes at most 560 + 30 =
 590 s; a chunk that failed, and the targets it left in its scope, at most 560 +
 30 + 1 + 3 + 3 = 597 s; a chunk that sealed at most 560 + 20 × (1 + 0.5) + 3 +
-3 = 596 s. Each chunk is one driver in its own scope: `timeout --kill-after=30
+3 = 596 s. An MCP chunk adds its client scope's judgment (4 s) and, when that
+is not clean, the client scope's kill and stop (3 + 3), so every step after a
+chunk's command is also clipped to one monotonic 600 s from the chunk's start
+(#385). Each chunk is one driver in its own scope: `timeout --kill-after=30
 560 taskset -c 0-<n-1> systemd-run --user --scope -p Delegate=yes --unit=… --
 <driver> run …`. On an MCP chunk the driver is the holder, `api-mcp`'s
 child: `api-mcp` runs under the same bound with no scope, and its
@@ -992,12 +995,11 @@ child: `api-mcp` runs under the same bound with no scope, and its
 as that `systemd-run --user --scope -p Delegate=yes --unit=…` and any other
 mode (an adapter) in place, so the holder is its scope's only process and
 the scope is judged as every other. That judgement covers the holder's scope
-only, a disclosed limit: `api-mcp`, the bridge and the adapters run outside
-any scope, their cleanup resting on `timeout`'s signal to the process group
-they share (TERM, then KILL 30 s later) and on `api-mcp`'s own kill paths,
-and no wrapper check would notice an adapter that survived both; an MCP
-chunk's ledger line shows the `api-mcp` command, the scope being in the
-shim. A scope is judged from the word `systemctl --user is-active`
+only; `api-mcp`, the in-process bridge and every adapter are proved by a
+second, sibling scope (issue #385, the 0132 addendum of 2026-11-19, below
+under "MCP chunk cleanup"). An MCP chunk's ledger line shows the client
+scope's `systemd-run` and the `api-mcp` command, the holder's scope being
+in the shim. A scope is judged from the word `systemctl --user is-active`
 prints, and it is clean only when that word is `inactive` or `failed`; no
 output, a failed or slow query or any other word is not known to be gone. After
 a chunk that sealed it asks up to twenty times, half a second apart, and the
@@ -1388,6 +1390,130 @@ That evidence is of the earlier tree. On 2026-11-17 the review's repairs
 (R1–R18 in `specs/api-latency/tasks.md`) replaced those two proofs with the
 per-route proofs above; none of them has yet run on the delegated host, so
 every API host log is still owed before merge.
+
+### MCP chunk cleanup: the client scope (#385)
+
+Until #385 the holder's `scope_clean` was the only cleanup an MCP chunk
+proved; `api-mcp`, its bridge and the adapters rested on `timeout`'s
+process-group signal and on `api-mcp`'s own kill paths, and nothing would
+have noticed an adapter, or an adapter's `setsid` child, that survived both.
+The operator ruled on 2026-11-19 that this is proved, not excepted. Now:
+
+- **A sibling scope.** `collect-v4` starts every MCP chunk's `api-mcp` in a
+  fresh, non-delegated scope of its own, `mail-compare-<token>-<coordinate>-client.scope`
+  (`systemd-run --user --scope --quiet --unit=…-client --`). Its first
+  process is the driver's `client-enter`, which reads `/proc/self/cgroup`,
+  writes the unified path to a new, owner-only handshake file, refuses
+  unless that path ends in its own unit, and only then execs `api-mcp` in
+  place. The bridge runs inside `api-mcp`; every adapter and every
+  descendant inherits the scope across fork, exec, `setsid` and
+  reparenting, which a process-tree walk would lose. The holder's shim
+  moves `hold` out into the chunk's delegated scope, so it is still that
+  scope's only process (`only_the_holder_enters_the_delegated_scope`). A
+  sibling scope was chosen over a check from the chunk's own process tree
+  because cgroup membership is the kernel's and survives reparenting, and a
+  second signal to a process group proves nothing about who was in it.
+- **One bounded judgment, first.** The moment the chunk's command ends
+  (exit, failure, timeout, kill or a handled interrupt), before the
+  holder's scope is asked or anything killed, the driver's `client-judge`
+  reads the handshake, checks the mount is cgroup v2 (`statfs`), and reads
+  the client cgroup's `cgroup.events`: `populated 0`, or the cgroup removed,
+  is clean; `populated 1` at that first look is a survivor, however soon it
+  empties; anything else (no handshake, another unit, a malformed or
+  unreadable file) is unknown, with its reason. A survivor's members are
+  then named, breadth first, with their `comm` escaped (at most 64 members,
+  64 cgroups, depth 8, 64 KiB a file; a pid gone before it was named is
+  noted as an identity race). The whole judgment has one deadline: 3 s by
+  default, 5 s at most, under a `timeout` of 4 s, and never past what is
+  left of the chunk's 600 s. A survivor is reported at that deadline, never
+  waited out.
+- **A survivor is an infrastructure failure.** Clean is `client-judge`'s
+  exit 0 with a receipt that says clean. A survivor, or no evidence, is exit
+  2: the ledger entry is written with the receipt as its `client` field (the
+  unit, the cgroup, the verdict, the observation, the members, whether the
+  list is complete, and notes), the client scope is killed and stopped after
+  the receipt exists so nothing can erase it, the holder's scope is judged
+  as a failed chunk's, no later coordinate runs, nothing is retried, sealed
+  or published, and the refusal names the coordinate, `client scope:
+  survivor` (or `unknown`) and the ledger file. Admission (`admit-v4`)
+  requires on every MCP entry a `client` receipt for exactly the unit its
+  run id and coordinate name, with a cgroup ending in that unit, verdict
+  clean, no members and complete; every other coordinate carries none.
+- **The sums.** Every step after a chunk's command, the client judgment
+  included, is clipped to one monotonic 600 s from the chunk's start
+  (`/proc/uptime`), so a chunk cut at 590 s still ends within ten minutes;
+  a known survivor is contained before the holder's scope is asked.
+
+Proofs that run everywhere (`cargo test --locked --test mail_compare`):
+`client_section::*` drives the production judgment against a real fake
+adapter whose TERM-ignoring child outlives the stop signal (named by pid
+while it still lives) and its reaped control (clean), against file trees
+standing for the mount (nested members, the caps, a vanished pid, missing,
+mismatched, malformed and unreadable evidence, a mount that is not cgroup
+v2), and on a paused clock (a stalled read is cut at its deadline, at most
+five seconds, in no real time). In `v4::*`,
+`collect_v4_names_an_adapter_child_that_outlives_its_mcp_chunk_and_stops`
+and `collect_v4_seals_an_mcp_chunk_whose_adapter_child_was_reaped` run the
+pair through the collector with an event-ordered fake adapter,
+`collect_v4_counts_a_client_judgment_without_evidence_as_two` the unknowns,
+`collect_v4_fits_a_worst_case_mcp_chunk_and_both_judgments_in_ten_minutes`
+the sums on a controlled clock, and
+`admission_binds_an_mcp_chunks_client_receipt_to_its_run_coordinate_and_verdict`
+the admission. On any platform but Linux the client modes refuse before a
+workload is spawned (`every_other_platform_refuses_before_a_workload_is_spawned`),
+as `collect-v4` itself does.
+
+**The host proofs, open.** `api_mcp_real_swarmail` and
+`api_mcp_bridge_real_{mailpit,mailhog,mailslurper_source_build}` now run
+`api-mcp` in a client scope made exactly so, judge it with the driver's
+`client-judge` the moment it ends, and assert the receipt clean and placed
+before any other assertion, the MailSlurper `fill_not_reached` pass
+included; a passing run prints `host proof client scope clean: mcp <target>`.
+`the_mcp_host_proofs_are_discovered_and_refuse_without_their_bytes` proves
+locally that all four are discovered and that each, with any one of its
+variables unset, fails naming it. None has run on the delegated host: the
+seat that built #385 had no user manager to delegate. The dispatcher runs
+each alone, on verified bytes, and attaches its complete output, exit and
+load before and after to the pull request before merge; story E's
+collection waits for them. Every proof needs `MAIL_COMPARE_BIN` (the built
+driver) and `SWARMAIL_EVALS_BIN` (the built eval binary); the bridged ones
+also `MAIL_COMPARE_MAILPIT`, `MAIL_COMPARE_MAILHOG` or
+`MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD`; the candidate is Cargo's own
+`swarmail`:
+
+```bash
+cargo build --locked --bin swarmail
+drv=$(cargo build --locked --bench mail_compare --message-format=json \
+  | grep -o '"executable":"[^"]*mail_compare-[^"]*"' | tail -n1 | cut -d'"' -f4)
+(cd evals && cargo build --locked --bin swarmail-evals)
+bin=$(cargo test --locked --test mail_compare --no-run --message-format=json \
+  | grep -o '"executable":"[^"]*mail_compare-[^"]*"' | tail -n1 | cut -d'"' -f4)
+export MAIL_COMPARE_BIN="$drv" SWARMAIL_EVALS_BIN="$PWD/evals/target/debug/swarmail-evals"
+sha256sum target/debug/swarmail "$drv" "$SWARMAIL_EVALS_BIN"
+# each pinned competitor must match lock v5 before its proof runs
+pinned() {
+  test "$(sha256sum "$2" | cut -d' ' -f1)" = \
+    "$(jq -r --arg t "$1" '.entries[] | select(.target==$t) | .pin.artifact.executable_sha256' \
+       docs/evals/draft/sources.lock.v5.json)" || exit 2
+}
+run_one_mcp() (
+  cat /proc/loadavg || exit 2
+  rc=0
+  timeout 600 taskset -c 0-31 "$bin" --ignored --exact "$1" --test-threads=1 --nocapture || rc=$?
+  cat /proc/loadavg || exit 2
+  echo "exit $rc"
+  exit "$rc"
+)
+run_one_mcp api_section::api_mcp_real_swarmail
+# a separate dispatcher invocation each:
+export MAIL_COMPARE_MAILPIT=/path/to/the/pinned/mailpit; pinned mailpit "$MAIL_COMPARE_MAILPIT"
+run_one_mcp api_section::api_mcp_bridge_real_mailpit
+export MAIL_COMPARE_MAILHOG=/path/to/the/pinned/mailhog; pinned mailhog "$MAIL_COMPARE_MAILHOG"
+run_one_mcp api_section::api_mcp_bridge_real_mailhog
+export MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD=/path/to/the/pinned/mailslurper
+pinned mailslurper-source-build "$MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD"
+run_one_mcp api_section::api_mcp_bridge_real_mailslurper_source_build
+```
 
 ## Protocol v4 waits: `wait-best` beside `wait-common` and `wait-tight` (story C, #361)
 

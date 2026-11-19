@@ -3797,6 +3797,9 @@ struct RealChunk {
     rec: api::ApiRecord,
     report: Value,
     admitted: records::Admitted,
+    /// An MCP chunk's client scope receipt (issue #385), judged the moment
+    /// its command ended, and the unit it was for.
+    client: Option<(String, client_scope::Receipt)>,
 }
 
 /// A driver path that runs `driver`'s resource-owning modes (`run`, `hold`)
@@ -3819,10 +3822,57 @@ fn scoped_driver(dir: &std::path::Path, driver: &str) -> std::path::PathBuf {
     path
 }
 
+/// The client scope of an MCP host proof, as the collector makes it (issue
+/// #385): a fresh, non-delegated scope unit whose first process is the
+/// driver's `client-enter`, which records its membership and execs
+/// `api-mcp` in place. Returns the command and the unit.
+fn client_scoped(dir: &Path, chunk: &str) -> (std::process::Command, String) {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let name = format!(
+        "mail-compare-hostproof-{}-{nanos}-{chunk}-client",
+        std::process::id()
+    );
+    let unit = format!("{name}.scope");
+    let mut c = std::process::Command::new("systemd-run");
+    c.args(["--user", "--scope", "--quiet"])
+        .arg(format!("--unit={name}"))
+        .arg("--")
+        .arg(env_path("MAIL_COMPARE_BIN"))
+        .args(["client-enter", "--unit", &unit, "--handshake"])
+        .arg(dir.join("client-handshake.json"))
+        .arg("--")
+        .arg(env_path("SWARMAIL_EVALS_BIN"));
+    (c, unit)
+}
+
+/// Judge an MCP host proof's client scope with the driver's own
+/// `client-judge`, the collector's judgment.
+fn judge_client(dir: &Path, unit: &str) -> client_scope::Receipt {
+    let out = dir.join("client-receipt.json");
+    let judged = std::process::Command::new(env_path("MAIL_COMPARE_BIN"))
+        .args(["client-judge", "--unit", unit, "--handshake"])
+        .arg(dir.join("client-handshake.json"))
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .unwrap();
+    let bytes = std::fs::read(&out).unwrap_or_else(|e| {
+        panic!(
+            "client-judge left no receipt ({e}): {}",
+            String::from_utf8_lossy(&judged.stderr)
+        )
+    });
+    serde_json::from_slice(&bytes).unwrap()
+}
+
 fn real_chunk(surface: Surface, target: TargetKind, fill: u32) -> RealChunk {
     let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
     let driver = scoped_driver(root.path(), &env_path("MAIL_COMPARE_BIN"));
     let chunk = format!("api.{}.{target}.r0.f{fill}", surface.name());
+    let mut client_unit = None;
     let mut cmd = match surface {
         Surface::Native => {
             let mut c = std::process::Command::new(&driver);
@@ -3830,7 +3880,8 @@ fn real_chunk(surface: Surface, target: TargetKind, fill: u32) -> RealChunk {
             c
         }
         Surface::Mcp => {
-            let mut c = std::process::Command::new(env_path("SWARMAIL_EVALS_BIN"));
+            let (mut c, unit) = client_scoped(root.path(), &chunk);
+            client_unit = Some(unit);
             c.args(["api-mcp", "--driver"])
                 .arg(&driver)
                 .args(["--mode", "smoke"]);
@@ -3854,11 +3905,19 @@ fn real_chunk(surface: Surface, target: TargetKind, fill: u32) -> RealChunk {
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .unwrap();
+    // The client scope first, at once, as the collector judges it.
+    let client = client_unit.map(|u| {
+        let r = judge_client(root.path(), &u);
+        (u, r)
+    });
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    if let Some((_, r)) = &client {
+        eprintln!("host proof {chunk}: {}", r.summary());
+    }
     let dir = root.path().join("out");
     let admitted =
         records::admit(&dir).unwrap_or_else(|e| panic!("{chunk} must admit: {e}\n{text}"));
@@ -3870,6 +3929,7 @@ fn real_chunk(surface: Surface, target: TargetKind, fill: u32) -> RealChunk {
         rec,
         report,
         admitted,
+        client,
     }
 }
 
@@ -4379,8 +4439,51 @@ fn native_real(target: TargetKind) {
     }
 }
 
+/// The prerequisites of an MCP host proof.
+fn mcp_vars(target: TargetKind) -> Vec<String> {
+    let mut v = vec![
+        "MAIL_COMPARE_BIN".to_owned(),
+        "SWARMAIL_EVALS_BIN".to_owned(),
+    ];
+    if target != TargetKind::Swarmail {
+        v.push(format!(
+            "MAIL_COMPARE_{}",
+            target.name().to_uppercase().replace('-', "_")
+        ));
+    }
+    v
+}
+
+/// The client scope of a real MCP chunk was judged, and clean: no process
+/// `api-mcp` started (the bridge, an adapter, a descendant) outlived it,
+/// and the kernel placed the workload in that scope, not in the holder's.
+/// The holder is still its own delegated scope's only process: `hold`
+/// refuses otherwise, and the chunk was admitted.
+fn assert_client_clean(target: TargetKind, c: &RealChunk) {
+    let (unit, r) = c.client.as_ref().expect("the client scope was judged");
+    r.proves_clean(unit)
+        .unwrap_or_else(|e| panic!("mcp {target}: {e}\n{}", c.text));
+    let cgroup = r.cgroup.as_deref().unwrap();
+    assert!(
+        cgroup.ends_with(&format!("/{unit}")),
+        "mcp {target}: {cgroup}"
+    );
+    eprintln!(
+        "host proof client scope clean: mcp {target}: {}",
+        r.summary()
+    );
+}
+
 fn mcp_real(target: TargetKind) {
+    need(
+        &mcp_vars(target)
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
     let c = real_chunk(Surface::Mcp, target, 1_000);
+    // Before any other assertion, the documented fill shortfall included.
+    assert_client_clean(target, &c);
     if !assert_real_chunk(Surface::Mcp, target, &c) {
         eprintln!("{FILL_NOT_REACHED_PASS} mcp {target}");
         return;
@@ -5312,6 +5415,70 @@ fn the_testexec_host_proofs_are_discovered_and_refuse_without_their_bytes() {
         assert!(text.contains("1 failed"), "{name}: {text}");
         let named = format!("host proof prerequisites missing: {}", vars.join(", "));
         assert!(text.contains(&named), "{name}: {text}");
+    }
+}
+
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+fn the_mcp_host_proofs_are_discovered_and_refuse_without_their_bytes() {
+    // Issue #385: each MCP host proof judges its client scope, and runs on
+    // the dispatcher alone. Locally: discovered, and with any one of its
+    // prerequisites unset, one named failure, never a skip or a launch.
+    let me = std::env::current_exe().unwrap();
+    let listed = std::process::Command::new(&me)
+        .args(["--list", "--ignored"])
+        .output()
+        .unwrap();
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    let readme =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/evals/README.md"))
+            .unwrap();
+    let proofs = [
+        ("api_section::api_mcp_real_swarmail", TargetKind::Swarmail),
+        (
+            "api_section::api_mcp_bridge_real_mailpit",
+            TargetKind::Mailpit,
+        ),
+        (
+            "api_section::api_mcp_bridge_real_mailhog",
+            TargetKind::Mailhog,
+        ),
+        (
+            "api_section::api_mcp_bridge_real_mailslurper_source_build",
+            TargetKind::MailslurperSourceBuild,
+        ),
+    ];
+    for (name, target) in proofs {
+        assert!(
+            listed.lines().any(|l| l == format!("{name}: test")),
+            "{name} is not discovered:\n{listed}"
+        );
+        assert!(
+            readme.lines().any(|l| l == format!("run_one_mcp {name}")),
+            "docs/evals/README.md must run {name} alone"
+        );
+        let vars = mcp_vars(target);
+        for unset in &vars {
+            let mut cmd = std::process::Command::new(&me);
+            cmd.args(["--ignored", "--exact", name, "--test-threads=1"]);
+            for v in &vars {
+                cmd.env(v, "/nonexistent/pinned-bytes");
+            }
+            cmd.env_remove(unset);
+            let out = cmd.output().unwrap();
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_ne!(out.status.code(), Some(0), "{name} without {unset}: {text}");
+            assert!(text.contains("1 failed"), "{name} without {unset}: {text}");
+            let named = format!("host proof prerequisites missing: {unset} must name");
+            assert!(text.contains(&named), "{name} without {unset}: {text}");
+        }
     }
 }
 
