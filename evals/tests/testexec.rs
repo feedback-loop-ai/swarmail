@@ -61,6 +61,9 @@ struct Store {
     inflate: bool,
     /// Answer every read with this recipient instead of the stored one.
     lie_to: Option<String>,
+    /// Answer every subject search with no hits (the mail is stored and
+    /// listed, but the filtered wait never finds it).
+    blind_search: bool,
     /// Messages to store once `scans` reaches the key (a delayed delivery,
     /// ordered after the scans that preceded it).
     later: BTreeMap<u32, Vec<Msg>>,
@@ -251,8 +254,12 @@ fn mailpit_routes(store: Shared) -> Router {
             "/api/v1/search",
             get(
                 |State(s): State<Shared>, Query(q): Query<PageQ>| async move {
-                    let f = q.query.clone().unwrap_or_default();
-                    axum::Json(mailpit_page(&mut s.lock().unwrap(), &q, Some(&f)))
+                    let mut s = s.lock().unwrap();
+                    let f = match s.blind_search {
+                        true => "\u{0}never".to_owned(),
+                        false => q.query.clone().unwrap_or_default(),
+                    };
+                    axum::Json(mailpit_page(&mut s, &q, Some(&f)))
                 },
             ),
         )
@@ -1093,6 +1100,9 @@ async fn claims_stop_at_the_chunks_end_and_the_suites_cutoff_with_every_id_unsta
         "{:?}",
         rec.unstarted
     );
+    // Nothing could be claimed, so the window was never opened: the
+    // holder's rule for a suite that started nothing, sealed as its loss.
+    assert!(rec.window_start.is_none() && rec.window_end.is_none());
     let cut = Bounds {
         test: Duration::from_secs(30),
         suite: Duration::ZERO,
@@ -1109,6 +1119,7 @@ async fn claims_stop_at_the_chunks_end_and_the_suites_cutoff_with_every_id_unsta
     assert!(rec.rows.is_empty());
     assert_eq!(rec.unstarted.len(), 10);
     assert!(rec.unstarted.iter().all(|u| u.reason == "suite_deadline"));
+    assert!(rec.window_start.is_none() && rec.window_end.is_none());
     // The figures still say what was planned, started and why not.
     let r = suite::report(&rec);
     assert_eq!(
@@ -1119,6 +1130,47 @@ async fn claims_stop_at_the_chunks_end_and_the_suites_cutoff_with_every_id_unsta
         ),
         (json!(10), json!(0), json!(10))
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_poll_wait_that_times_out_is_a_timeout_row_that_still_removes_its_leftovers() {
+    // A delete-by-id poll store whose subject search never finds the mail
+    // the fixture delivered: the wait exhausts its deadline. The row is the
+    // target's `timeout` (never `harness` from a scoring step that ran out
+    // of time), and the reserved tail still recovers the delivered mail
+    // from a complete listing and deletes it, within the test's bound.
+    let s = scripted(Kind::Mailpit).await;
+    s.store.lock().unwrap().blind_search = true;
+    let test = testexec::CLAIM_FLOOR + Duration::from_secs(1);
+    let b = Bounds {
+        test,
+        suite: Duration::from_secs(60),
+        work_end: Instant::now() + Duration::from_secs(60),
+    };
+    let plan = suite::plan_ids(163, [100, 101]);
+    let rec = run(
+        "mailpit",
+        (s.smtp, s.http),
+        1,
+        plan,
+        (WaitMethod::Poll { interval_ms: 100 }, b),
+    )
+    .await;
+    assert_eq!(rec.rows.len(), 2, "{:?}", rec.unstarted);
+    for r in &rec.rows {
+        assert_eq!(r.outcome, Outcome::Timeout, "{r:?}");
+        assert!(r.cause.as_deref().unwrap().starts_with("timeout:"), "{r:?}");
+        assert!(r.wait.is_none() && r.wait_absent.is_some(), "{r:?}");
+        assert!(
+            matches!(r.cleanup, Cleanup::Done { removed } if removed >= 1),
+            "{r:?}"
+        );
+        assert!(r.end_ns - r.claim_ns <= test.as_nanos() as u64, "{r:?}");
+    }
+    // Every delivered message went, by id; nothing store-wide ran.
+    let st = s.store.lock().unwrap();
+    assert!(st.msgs.is_empty(), "{:?}", st.msgs);
+    assert!(!st.mutations.is_empty() && !st.mutations.iter().any(|m| m == "all"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

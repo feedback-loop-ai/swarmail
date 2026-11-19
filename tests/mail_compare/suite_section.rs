@@ -405,6 +405,54 @@ fn a_record_is_checked_whole_and_refused_one_corrupted_field_at_a_time() {
         r.window_start.as_mut().unwrap().received_ns = 10_000
     });
     refuse("without the client's CPU", &|r| r.client_cpu = None);
+    // The budgets are absolute: 30 s from a claim, and no claim or end at
+    // or after the suite cutoff, 540 s from the first claim.
+    let ms = 1_000_000;
+    refuse("trial 129: runs past its test deadline", &|r| {
+        r.rows[0].end_ns = r.rows[0].claim_ns + suite::TEST_DEADLINE_MS * ms + 1;
+        r.last_end_ns = r.rows.iter().map(|x| x.end_ns).max();
+    });
+    // The last row moved, its wait with it, to a claim `at` lasting `len`.
+    let late = |r: &mut SuiteRecord, at: u64, len: u64| {
+        let row = r.rows.last_mut().unwrap();
+        let shift = at - row.claim_ns;
+        let w = row.wait.as_mut().unwrap();
+        w.call_ns = at;
+        w.return_ns = at + len;
+        w.ack_ns = Some(at);
+        w.ack_to_return_ns = Some(len as i64);
+        (row.claim_ns, row.end_ns) = (at, at + len);
+        r.last_end_ns = Some(at + len);
+        r.window_end.as_mut().unwrap().sent_ns += shift;
+    };
+    let cutoff = 100 + suite::SUITE_DEADLINE_MS * ms;
+    refuse("trial 192: runs past the suite cutoff", &|r| {
+        late(r, cutoff, 900)
+    });
+    refuse("trial 192: runs past the suite cutoff", &|r| {
+        late(r, cutoff - 10, 20)
+    });
+    let mut r = rec.clone();
+    late(&mut r, cutoff - 20, 20);
+    suite::check_record(&r, &c).unwrap();
+    // A trial ending exactly on its bound is inside it.
+    let mut r = rec.clone();
+    r.rows[0].end_ns = r.rows[0].claim_ns + suite::TEST_DEADLINE_MS * ms;
+    r.last_end_ns = r.rows.iter().map(|x| x.end_ns).max();
+    r.window_end.as_mut().unwrap().sent_ns = r.last_end_ns.unwrap();
+    suite::check_record(&r, &c).unwrap();
+    // A suite that claimed nothing never opened its window.
+    refuse("started nothing opened its window", &|r| {
+        let ids: Vec<u32> = r.rows.drain(..).map(|x| x.id).collect();
+        r.unstarted = ids
+            .into_iter()
+            .map(|id| Unstarted {
+                id,
+                reason: "chunk_deadline".into(),
+            })
+            .collect();
+        (r.first_claim_ns, r.last_end_ns, r.window_end) = (None, None, None);
+    });
     refuse("a final clear under delete_by_id", &|r| {
         r.final_cleanup = Some(FinalCleanup {
             start_ns: 0,
@@ -447,6 +495,37 @@ fn a_record_is_checked_whole_and_refused_one_corrupted_field_at_a_time() {
             .unwrap_err()
             .contains("did not follow the suite window")
     );
+}
+
+#[test]
+fn an_unavailable_cleanup_policy_seals_rows_that_record_no_cleanup() {
+    // MailHog documents no narrow delete and no clear the suite may use:
+    // every row records the capability as unavailable, which is its
+    // policy's proof, and no suite clear is owed.
+    for par in [1, 8, 32] {
+        let c = coord("mailhog", par);
+        let rec = clean(&c);
+        assert_eq!(rec.policy, Policy::Unavailable);
+        assert!(rec.rows.iter().all(|r| r.cleanup == Cleanup::NotAvailable));
+        suite::check_record(&rec, &c).unwrap();
+        suite::cleanup_proved(&rec).unwrap();
+        assert!(suite::failures(&rec).is_empty());
+        let chunk = runner::Chunk::parse(&c.name(), &draft()).unwrap();
+        suite_chunk::check_against(&rec, &chunk, &draft()).unwrap();
+        // Any other disposition is refused under it.
+        for other in [
+            Cleanup::Deferred,
+            Cleanup::Done { removed: 1 },
+            Cleanup::Failed { reason: "x".into() },
+        ] {
+            let mut r = rec.clone();
+            r.rows[0].outcome = Outcome::Timeout;
+            r.rows[0].cause = Some("timeout: waited".into());
+            r.rows[0].cleanup = other.clone();
+            let e = suite::check_record(&r, &c).unwrap_err();
+            assert!(e.contains("under unavailable"), "{other:?}: {e}");
+        }
+    }
 }
 
 #[test]
@@ -663,6 +742,26 @@ fn the_holders_control_lines_are_closed_ordered_and_bound_to_its_window() {
     assert!(windows_agree(&st, &blocked).is_err());
     windows_agree(&ControlState::default(), &blocked).unwrap();
     assert!(windows_agree(&ControlState::default(), &rec).is_err());
+    // So does a suite whose cutoff came before its first claim: every id
+    // unstarted with its reason, no window, a sealed loss (exit 1), never
+    // a refusal (exit 2).
+    let mut none = SuiteRecord::new(&c, 163, WaitMethod::Poll { interval_ms: 100 });
+    none.unstarted = none
+        .plan
+        .iter()
+        .map(|t| Unstarted {
+            id: t.id,
+            reason: "chunk_deadline".into(),
+        })
+        .collect();
+    windows_agree(&ControlState::default(), &none).unwrap();
+    let chunk = runner::Chunk::parse(&c.name(), &draft()).unwrap();
+    suite_chunk::check_against(&none, &chunk, &draft()).unwrap();
+    suite::cleanup_proved(&none).unwrap();
+    assert_eq!(
+        suite::failures(&none),
+        ["testexec.mailpit.p8.r0: 100 trial(s) unstarted: chunk_deadline"]
+    );
     st.record = Some(rec);
     assert!(
         admit_control(&end, &st)

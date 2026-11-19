@@ -15,9 +15,13 @@
 //! private generation, drained before the next. Every claim yields exactly
 //! one row and one outcome; every planned id unclaimed when claims stop is
 //! `unstarted` with its reason. Budgets are absolute: no claim at or after
-//! the suite cutoff (540 s from the first claim, or the chunk's own end),
-//! and every test, cleanup included, inside the earlier of that cutoff and
-//! 30 s from its claim.
+//! the suite cutoff (540 s from the suite's start, which precedes the first
+//! claim, or the chunk's own end), and every test, cleanup included, ends
+//! inside the earlier of that cutoff and 30 s from its claim: its work stops
+//! [`CLEANUP_RESERVE`] before its cleanup deadline, which is itself
+//! [`SETTLE_GRACE`] before the trial's cancellation, [`CANCEL_MARGIN`]
+//! inside the bound. A suite that can claim nothing never opens its window
+//! (the holder's rule, `benches/mail_compare/suite_chunk.rs`).
 
 use crate::api::Clock;
 use crate::clients::{self, Client};
@@ -36,9 +40,20 @@ use tokio::time::Instant;
 /// How long a retired fixture generation gets to finish its handlers
 /// before the station is cut (and the suite with it).
 pub const DRAIN_BOUND: Duration = Duration::from_secs(5);
-/// What a worker gets past its trial's own deadline to come back: a trial
-/// that does not is cancelled there, its row a timeout, and its worker cut.
-pub const SETTLE_GRACE: Duration = Duration::from_secs(5);
+/// How far inside a test's bound (the earlier of 30 s from its claim and the
+/// suite cutoff) a trial still running is cancelled, its row a timeout: the
+/// row's end then lies inside the bound however late the timer fires.
+pub const CANCEL_MARGIN: Duration = Duration::from_secs(1);
+/// What a trial gets between its cleanup deadline and its cancellation to
+/// come back with its row.
+pub const SETTLE_GRACE: Duration = Duration::from_millis(500);
+/// The tail of every test kept for its own cleanup: the work (delivery,
+/// wait, solution, scoring) stops this long before the cleanup deadline, so
+/// a test that timed out still recovers and removes its leftovers.
+pub const CLEANUP_RESERVE: Duration = Duration::from_secs(3);
+/// No claim with less than this left before the suite cutoff: a claim
+/// always has its margins and some work before the bound.
+pub const CLAIM_FLOOR: Duration = Duration::from_secs(6);
 /// The chunk's tail kept for the suite's one global clear and its check.
 pub const FINAL_RESERVE: Duration = Duration::from_secs(30);
 /// The holder's one window id (`benches/mail_compare/suite_chunk.rs`).
@@ -262,7 +277,7 @@ async fn run_trial(
     trial: &PlannedTrial,
     policy: Policy,
     log: &Mutations,
-    deadline: Instant,
+    (deadline, cleanup_by): (Instant, Instant),
     acks: Arc<Mutex<Vec<Ack>>>,
 ) -> Ran {
     let mut ran = Ran {
@@ -354,9 +369,10 @@ async fn run_trial(
             .await
         }
     }
-    // Cleanup runs whatever happened after the install, inside the test's
-    // own deadline: delete-by-id recovers leftovers of a failed flow too.
-    ran.cleanup = if Instant::now() < deadline {
+    // Cleanup runs whatever happened after the install, in the test's
+    // reserved tail: delete-by-id recovers leftovers of a failed flow too.
+    source.extend_deadline(cleanup_by);
+    ran.cleanup = if Instant::now() < cleanup_by {
         source.cleanup(policy, log).await
     } else {
         Cleanup::NotRun {
@@ -421,7 +437,10 @@ async fn solve(
             ran.scored = Some(v.outcome == crate::tasks::Outcome::Pass);
             ran.verdict = v.failure_class.map(|c| format!("{c:?}"));
         }
-        Err(Harness(e)) => ran.harness = Some(e),
+        // A solution that already failed is classified by its own typed
+        // failure: a scoring step that then ran out of time is no harness.
+        Err(Harness(e)) if matches!(ran.oracle, Some(Ok(()))) => ran.harness = Some(e),
+        Err(Harness(e)) => ran.verdict = Some(format!("not judged: {e}")),
     }
 }
 
@@ -504,7 +523,7 @@ fn classify(
 fn row_of(
     cfg: &SuiteConfig,
     trial: &PlannedTrial,
-    (worker, claim_ns): (u32, u64),
+    (worker, claim_ns, end_ns): (u32, u64, u64),
     ran: Ran,
     acks: &[Ack],
     (policy, log): (Policy, &Mutations),
@@ -535,7 +554,7 @@ fn row_of(
         seed: trial.seed,
         worker,
         claim_ns,
-        end_ns: cfg.clock.now_ns(),
+        end_ns,
         outcome,
         cause,
         evidence,
@@ -595,6 +614,17 @@ impl Board {
     }
 }
 
+/// A claim's bounds from `now`: its cancellation, its cleanup deadline and
+/// its work deadline, each inside the earlier of the test deadline and the
+/// suite cutoff (0132 §8.2).
+fn trial_bounds(now: Instant, cfg: &SuiteConfig, cut_at: Instant) -> (Instant, Instant, Instant) {
+    let bound = (now + cfg.test_deadline).min(cut_at);
+    let back = |t: Instant, d: Duration| t.checked_sub(d).unwrap_or(now).max(now);
+    let cancel_at = back(bound, CANCEL_MARGIN);
+    let cleanup_by = back(cancel_at, SETTLE_GRACE);
+    (cancel_at, cleanup_by, back(cleanup_by, CLEANUP_RESERVE))
+}
+
 /// One worker: claim the next index until the queue is empty, the suite
 /// cutoff comes, or the suite is cut; one active trial at a time.
 async fn worker(
@@ -609,7 +639,9 @@ async fn worker(
             break;
         }
         let i = board.next.fetch_add(1, Ordering::SeqCst);
-        if i >= cfg.plan.len() || Instant::now() >= cut_at {
+        // The first claim was admitted by `run_suite` before it opened the
+        // window: a window once opened always holds a trial.
+        if i >= cfg.plan.len() || (i > 0 && Instant::now() + CLAIM_FLOOR >= cut_at) {
             break;
         }
         let trial = &cfg.plan[i];
@@ -617,29 +649,38 @@ async fn worker(
         // this worker, the trial is accounted for as started.
         let claim_ns = cfg.clock.now_ns();
         board.claims.lock().unwrap_or_else(|e| e.into_inner())[i] = Some((w, claim_ns));
-        let deadline = (Instant::now() + cfg.test_deadline).min(cut_at);
+        let (cancel_at, cleanup_by, work_by) = trial_bounds(Instant::now(), &cfg, cut_at);
         let acks: Arc<Mutex<Vec<Ack>>> = Arc::default();
         let ran = tokio::time::timeout_at(
-            deadline + SETTLE_GRACE,
+            cancel_at,
             run_trial(
                 &cfg,
                 &mut kit,
                 trial,
                 policy,
                 &board.log,
-                deadline,
+                (work_by, cleanup_by),
                 acks.clone(),
             ),
         )
         .await;
+        // The test ends here: the fixture's drain is the worker's, after it.
+        let end_ns = cfg.clock.now_ns();
         let retired = kit.station.retire(DRAIN_BOUND).await;
         let acks = acks.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let mut row = match ran {
-            Ok(ran) => row_of(&cfg, trial, (w, claim_ns), ran, &acks, (policy, &board.log)),
+            Ok(ran) => row_of(
+                &cfg,
+                trial,
+                (w, claim_ns, end_ns),
+                ran,
+                &acks,
+                (policy, &board.log),
+            ),
             Err(_) => lost_row(
                 trial,
                 (w, claim_ns),
-                cfg.clock.now_ns(),
+                end_ns,
                 "the trial did not return by its deadline",
                 true,
             ),
@@ -675,14 +716,48 @@ pub async fn run_suite<M: SuiteMeter>(
             cfg.coord.parallelism
         ));
     }
+    if cfg.test_deadline <= CLAIM_FLOOR {
+        return Err(format!(
+            "a test deadline of {:?} leaves no work past the claim floor",
+            cfg.test_deadline
+        ));
+    }
     let mut rec = SuiteRecord::new(&cfg.coord, cfg.seed, cfg.method);
     rec.plan = cfg.plan.clone();
     let policy = rec.policy;
+    let work_end = cfg.work_end;
+    let cutoff_reason = move |by_suite: Instant| {
+        if by_suite <= work_end {
+            "suite_deadline"
+        } else {
+            "chunk_deadline"
+        }
+    };
+    // The first claim is admitted before the window opens: a suite that can
+    // claim nothing never opens it, and every planned id is unstarted.
+    let now = Instant::now();
+    if cfg.plan.is_empty() || now + CLAIM_FLOOR >= (now + cfg.suite_deadline).min(cfg.work_end) {
+        let reason = cutoff_reason(now + cfg.suite_deadline);
+        rec.unstarted = cfg
+            .plan
+            .iter()
+            .map(|t| Unstarted {
+                id: t.id,
+                reason: reason.into(),
+            })
+            .collect();
+        return Ok(rec);
+    }
     let cpu0 = rusage();
     rec.window_start = Some(meter.window("window_start").await?);
     let start = Instant::now();
     let by_suite = start + cfg.suite_deadline;
     let cut_at = by_suite.min(cfg.work_end);
+    if start + CLAIM_FLOOR >= cut_at {
+        // The holder's own round trip ate the admitted claim's margin: the
+        // window is open with nothing to hold, which only it can explain.
+        return Err("the suite window opened too late for its first claim".into());
+    }
     let n = cfg.plan.len();
     let board = Arc::new(Board {
         next: AtomicUsize::new(0),
@@ -702,9 +777,10 @@ pub async fn run_suite<M: SuiteMeter>(
             (cut_at, policy),
         ));
     }
-    // Every trial ends by its deadline (at most the cutoff) plus the settle
-    // grace and the drain bound; a worker still running then is lost.
-    let settle_by = cut_at + SETTLE_GRACE + DRAIN_BOUND + Duration::from_secs(1);
+    // Every trial is cancelled inside its bound (at most the cutoff), and
+    // its fixture drains within the drain bound; a worker still running
+    // then is lost.
+    let settle_by = cut_at + DRAIN_BOUND + Duration::from_secs(1);
     let mut kits = Vec::new();
     let mut lost = 0;
     loop {
@@ -731,13 +807,7 @@ pub async fn run_suite<M: SuiteMeter>(
     let reason = cut
         .clone()
         .map(|c| format!("suite_cut: {c}"))
-        .unwrap_or_else(|| {
-            if by_suite <= cfg.work_end {
-                "suite_deadline".into()
-            } else {
-                "chunk_deadline".into()
-            }
-        });
+        .unwrap_or_else(|| cutoff_reason(by_suite).into());
     for (i, t) in cfg.plan.iter().enumerate() {
         match (claims[i], rows[i].take()) {
             (_, Some(row)) => rec.rows.push(row),

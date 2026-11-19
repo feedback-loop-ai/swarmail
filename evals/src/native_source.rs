@@ -300,12 +300,18 @@ impl<'a> NativeSource<'a> {
         count: usize,
         interval: Duration,
     ) -> Result<(Vec<(Scope, Summary)>, String), Failure> {
+        // The same reserved tail as the await and the stream: the wait ends
+        // REQUEST_BOUND before the test's work deadline, whatever its method.
+        let ends = self
+            .deadline
+            .checked_sub(REQUEST_BOUND)
+            .unwrap_or(self.deadline);
         loop {
             let found = self.scan(token).await?;
             if found.len() >= count {
                 return Ok((found, "poll".into()));
             }
-            if Instant::now() + interval >= self.deadline {
+            if Instant::now() + interval >= ends {
                 return Err(Failure::Timeout(format!(
                     "waited for {count} mail(s) matching {token:?}; saw {}",
                     found.len()
@@ -565,6 +571,12 @@ impl MailSource for NativeSource<'_> {
 }
 
 impl NativeSource<'_> {
+    /// Move the source's deadline to the test's cleanup deadline, the
+    /// reserved tail after its work deadline; never earlier.
+    pub fn extend_deadline(&mut self, to: Instant) {
+        self.deadline = self.deadline.max(to);
+    }
+
     /// This test's own cleanup under `policy` (0132 §8.4), inside the
     /// test's deadline. Delete-by-id recovers every message this test owns
     /// from a fresh complete listing (decoys and leftovers of a failed flow

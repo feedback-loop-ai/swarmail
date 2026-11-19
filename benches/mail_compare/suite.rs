@@ -624,6 +624,23 @@ pub fn check_record(rec: &SuiteRecord, coord: &Coord) -> Result<(), String> {
     if (rec.first_claim_ns, rec.last_end_ns) != (first, last) {
         return Err("the suite interval is not the rows' first claim and last end".into());
     }
+    if first.is_none() && (rec.window_start.is_some() || rec.window_end.is_some()) {
+        return Err("a suite that started nothing opened its window".into());
+    }
+    if let Some(first) = first {
+        // The budgets are absolute (0132 §8.2): no claim at or after the
+        // suite cutoff, and no test past the earlier of that cutoff and its
+        // own 30 s.
+        let cutoff = first + SUITE_DEADLINE_MS * 1_000_000;
+        for r in &rec.rows {
+            if r.claim_ns >= cutoff || r.end_ns > cutoff {
+                return Err(format!("trial {}: runs past the suite cutoff", r.id));
+            }
+            if r.end_ns - r.claim_ns > TEST_DEADLINE_MS * 1_000_000 {
+                return Err(format!("trial {}: runs past its test deadline", r.id));
+            }
+        }
+    }
     if let (Some(first), Some(last)) = (first, last) {
         let (Some(a), Some(b)) = (&rec.window_start, &rec.window_end) else {
             return Err("trials ran without a suite window".into());

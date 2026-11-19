@@ -811,8 +811,9 @@ and the tests that mean "v3" read those copies, so the v4 freeze (story E) is a
 replacement of two files. The protocol v4 draft
 ([`draft/protocol.v4.json`](draft/protocol.v4.json)) and source lock v5
 ([`draft/sources.lock.v5.json`](draft/sources.lock.v5.json)) are a draft: this
-driver refuses a *frozen* protocol 4 while the `testexec` section is owed
-(stories B and C built `api` and `waits`, below), and `collect-v4` refuses a
+driver refuses a *frozen* protocol 4 while `testexec` stays among its owed
+sections (stories B, C and D built `api`, `waits` and `testexec`, below; the
+two `testexec` host proofs have not yet run), and `collect-v4` refuses a
 draft at `check`, so nothing can
 be collected for a v4 yet. `admit-v4` admits a directory against the protocol it
 is given, a draft included, and the sealed run manifest carries the protocol's
@@ -1299,8 +1300,9 @@ any `rate_limited` row is the cell's own load, never an earlier cell's.
 (`api.native.<target>.r<n>.f<fill>`) as `mail_compare run` and the 48 MCP
 chunks (`api.mcp.<target>.r<n>.f<fill>`) as `swarmail-evals api-mcp`, each in
 its own scope under the same bound, after the 24 cost and 24 waits chunks.
-The full v4 collection still refuses: the `testexec` section is owed (story
-D), and the draft lists every unresolved item, including the
+The full v4 collection still refuses: story D built the `testexec` section,
+but its two host proofs are open and story E adds its chunks, and the draft
+lists every unresolved item, including the
 `not_inspected` API cells above. An adapter serves the draft lock from its
 documents root exactly as the chunk passes it:
 
@@ -1607,7 +1609,13 @@ under the policy. `timeout` is the test's deadline. `wrong_message` is an
 oracle assertion, a contradictory identity or a scorer failure.
 `interference` needs causal evidence: own mail a scan returned and a later
 scan did not, while another test's mutation that could reach it ran.
-Missing mail alone is a `timeout`. `harness` is a fixture, transport or
+Under the suite's own policies no such mutation exists: deletes and inbox
+clears touch only the deleting test's addresses, which the disjoint plan
+keeps apart, a per-test global clear runs only at 1 worker, and the
+after-suite clear follows every row. So the class is 0 by construction in
+a real suite, and the published count is that 0, stated rather than
+omitted. A timed-out wait is classified by its typed failure before any
+scoring step that then ran out of time. Missing mail alone is a `timeout`. `harness` is a fixture, transport or
 operation fault, or a scored pass whose cleanup failed; the cleanup's own
 disposition is kept beside it. Each row keeps its worker, claim and end,
 `foreign_seen`, its wait's call and return, and its signed `ack_to_return`.
@@ -1615,11 +1623,25 @@ That is the return minus the final DATA `250` that completed the required
 set: the 12th acceptance for `otp-backlog`, the 5th for `recipient-crowd`,
 read by the fixture's SMTP client before its `QUIT`. A missing observation
 is absent with its reason. Budgets are absolute: no claim at or after 540 s
-from the first claim, or at the chunk's own end (`resources.chunk_deadline_ms`
-less a 10 s record margin and a 30 s reserve for the global clear). Every
-test, cleanup included, ends by the earlier of that cutoff and 30 s from its
-claim. Every planned id unclaimed when claims stop is `unstarted` with its
-reason: `suite_deadline`, `chunk_deadline` or `suite_cut: …`. The client's
+from the suite's start (just before the first claim), or at the chunk's own
+end (`resources.chunk_deadline_ms` less a 10 s record margin and a 30 s
+reserve for the global clear), and none with less than `CLAIM_FLOOR` (6 s)
+left before that cutoff. Every test, cleanup included, ends by the earlier of
+that cutoff and 30 s from its claim: a trial still running 1 s before that
+bound is cancelled (`CANCEL_MARGIN`, a `timeout` row), its cleanup must end
+0.5 s before the cancellation, and its work (delivery, wait, solution,
+scoring) stops 3 s before that (`CLEANUP_RESERVE`), so a test that timed out
+still recovers and removes its leftovers. Every `wait-best` method ends its
+wait one 2 s request bound before the work deadline, the poll included. A
+row ends when its trial does; the fixture's drain follows it. The holder
+refuses a row longer than 30 s, a claim at or after 540 s from the first
+claim and an end past it. Every planned id unclaimed when claims stop is `unstarted` with
+its reason: `suite_deadline`, `chunk_deadline` or `suite_cut: …`. A suite
+that can claim nothing never opens its window: its record is every id
+unstarted, sealed as the target's loss (exit 1). The protocol's 540 s suite
+deadline cannot bind inside a real chunk: the draft's 480 s
+`chunk_deadline_ms` ends claims first, at about 440 s less launch and
+`idle_ready`, with the reason `chunk_deadline`. The client's
 CPU (`RUSAGE_SELF`, fixtures included) is read at the suite's bookends, and
 the eval process is pinned to the holder's client CPUs before any worker
 starts. Story D has no fill, so 0132 §6.4's `fill_not_reached` never
