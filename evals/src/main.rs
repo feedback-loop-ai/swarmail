@@ -34,6 +34,15 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
+    /// Protocol 4's API section on the MCP surface (accepted decision 0132
+    /// §6.2, story B): one `api.mcp.<target>.r<n>.f<fill>` chunk against a
+    /// target held by `mail_compare hold --control api-v1`, through the
+    /// bridge for an adapter. Takes `mail_compare run`'s chunk flags plus
+    /// `--driver PATH`.
+    ApiMcp {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Run fresh controls before the approved paid baseline. Paid admission
     /// currently refuses: locally evidenced CLI/auth contracts are incomplete.
     Baseline {
@@ -711,6 +720,9 @@ fn main() -> ExitCode {
         Err(_) => return fail("runtime unavailable"),
     };
     match cli.command {
+        Cmd::ApiMcp { args } => {
+            ExitCode::from(rt.block_on(swarmail_evals::apibench::api_mcp(&args)) as u8)
+        }
         Cmd::Baseline {
             config,
             output,

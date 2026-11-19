@@ -1520,16 +1520,32 @@ pub enum Chunk {
     /// All of one target's cost profiles of one repetition (0-based, as the
     /// rows number them).
     Cost { target: TargetKind, repetition: u32 },
+    /// One fresh instance of one target at one fill level, every API cell of
+    /// one surface (0132 §6, §11.1). The native surface is the driver's; the
+    /// MCP surface is the eval crate's `api-mcp`, against a held target.
+    Api {
+        surface: crate::clients::Surface,
+        target: TargetKind,
+        repetition: u32,
+        fill: u32,
+    },
     /// All of one target's wait profiles of one repetition (0132 §11.1:
     /// `(waits, target, repetition)`), each on a fresh instance.
     Waits { target: TargetKind, repetition: u32 },
 }
 
 impl Chunk {
-    /// `cost.<target>.r<repetition>` or `waits.<target>.r<repetition>`.
+    /// `cost.<target>.r<repetition>`, `waits.<target>.r<repetition>` or
+    /// `api.<surface>.<target>.r<repetition>.f<fill>`.
     pub fn name(&self) -> String {
         match self {
             Chunk::Cost { target, repetition } => format!("cost.{target}.r{repetition}"),
+            Chunk::Api {
+                surface,
+                target,
+                repetition,
+                fill,
+            } => format!("api.{}.{target}.r{repetition}.f{fill}", surface.name()),
             Chunk::Waits { target, repetition } => format!("waits.{target}.r{repetition}"),
         }
     }
@@ -1539,23 +1555,37 @@ impl Chunk {
     /// refused by name.
     pub fn parse(text: &str, p: &Protocol) -> Result<Chunk, String> {
         let parts: Vec<&str> = text.split('.').collect();
-        let [section, target, rep] = parts.as_slice() else {
-            return Err(format!("{text:?} is not a chunk coordinate"));
+        let number = |s: &str, prefix: char, what: &str| {
+            s.strip_prefix(prefix)
+                .filter(|n| !n.starts_with('0') || *n == "0")
+                .and_then(|n| n.parse::<u32>().ok())
+                .ok_or_else(|| format!("chunk {text:?}: {s:?} is not {prefix}<{what}>"))
         };
-        if !matches!(*section, "cost" | "waits") {
-            return Err(format!(
-                "chunk {text:?}: section {section:?} is not implemented (only cost and waits)"
-            ));
-        }
-        let target = TargetKind::parse(target)
-            .ok_or_else(|| format!("chunk {text:?}: unknown target {target:?}"))?;
-        let repetition: u32 = rep
-            .strip_prefix('r')
-            .and_then(|n| n.parse().ok())
-            .ok_or_else(|| format!("chunk {text:?}: {rep:?} is not r<repetition>"))?;
-        let chunk = match *section {
-            "cost" => Chunk::Cost { target, repetition },
-            _ => Chunk::Waits { target, repetition },
+        let target_of = |t: &str| {
+            TargetKind::parse(t).ok_or_else(|| format!("chunk {text:?}: unknown target {t:?}"))
+        };
+        let chunk = match parts.as_slice() {
+            ["cost", target, rep] => Chunk::Cost {
+                target: target_of(target)?,
+                repetition: number(rep, 'r', "repetition")?,
+            },
+            ["waits", target, rep] => Chunk::Waits {
+                target: target_of(target)?,
+                repetition: number(rep, 'r', "repetition")?,
+            },
+            ["api", surface, target, rep, fill] => Chunk::Api {
+                surface: crate::clients::Surface::parse(surface)
+                    .ok_or_else(|| format!("chunk {text:?}: unknown surface {surface:?}"))?,
+                target: target_of(target)?,
+                repetition: number(rep, 'r', "repetition")?,
+                fill: number(fill, 'f', "fill")?,
+            },
+            [section, _, ..] if !["cost", "waits", "api"].contains(section) => {
+                return Err(format!(
+                    "chunk {text:?}: section {section:?} is not implemented (only cost, waits and api)"
+                ));
+            }
+            _ => return Err(format!("{text:?} is not a chunk coordinate")),
         };
         if !plan_v4(p).contains(&chunk) {
             return Err(format!("chunk {text:?} is not in the protocol's plan"));
@@ -1565,19 +1595,24 @@ impl Chunk {
 
     pub fn target(&self) -> TargetKind {
         match self {
-            Chunk::Cost { target, .. } | Chunk::Waits { target, .. } => *target,
+            Chunk::Cost { target, .. }
+            | Chunk::Api { target, .. }
+            | Chunk::Waits { target, .. } => *target,
         }
     }
 
     pub fn repetition(&self) -> u32 {
         match self {
-            Chunk::Cost { repetition, .. } | Chunk::Waits { repetition, .. } => *repetition,
+            Chunk::Cost { repetition, .. }
+            | Chunk::Api { repetition, .. }
+            | Chunk::Waits { repetition, .. } => *repetition,
         }
     }
 
     /// The profiles the chunk measures, in protocol order, each with the
     /// index its tokens are tagged with (cost profiles first, then waits, so
-    /// no two profiles of a run share a tag).
+    /// no two profiles of a run share a tag). An API chunk measures no
+    /// throughput or wait profile: its cells are planned by `api_chunk`.
     pub fn profiles<'a>(&self, p: &'a Protocol) -> Vec<(usize, Profile<'a>)> {
         let rep = self.repetition();
         match self {
@@ -1595,6 +1630,7 @@ impl Chunk {
                 .filter(|(_, w)| w.repetitions > rep)
                 .map(|(i, w)| (p.throughput.len() + i, Profile::Wait(w)))
                 .collect(),
+            Chunk::Api { .. } => Vec::new(),
         }
     }
 }
@@ -1602,7 +1638,7 @@ impl Chunk {
 /// The chunk plan, derived from the protocol and never computed by the
 /// wrapper: for each repetition, for each launched target in that
 /// repetition's rotation, one cost chunk, then, in the same rotation, one
-/// waits chunk.
+/// waits chunk; after every repetition of those, the API section's chunks.
 pub fn plan_v4(p: &Protocol) -> Vec<Chunk> {
     let cost = p
         .throughput
@@ -1629,6 +1665,34 @@ pub fn plan_v4(p: &Protocol) -> Vec<Chunk> {
             );
         }
     }
+    // The API section (story B): per surface, repetition, target in that
+    // repetition's rotation and fill level, one chunk. The MCP surface has
+    // only the targets that have one (0132 §6.2); the others publish
+    // `no MCP surface` rows and launch nothing.
+    if let Some(api) = &p.api {
+        for surface in [
+            crate::clients::Surface::Native,
+            crate::clients::Surface::Mcp,
+        ] {
+            for repetition in 0..api.repetitions {
+                for target in p.launch_order(repetition) {
+                    if surface == crate::clients::Surface::Mcp
+                        && !crate::clients::has_mcp_surface(target.name())
+                    {
+                        continue;
+                    }
+                    for &fill in &api.fills {
+                        out.push(Chunk::Api {
+                            surface,
+                            target,
+                            repetition,
+                            fill,
+                        });
+                    }
+                }
+            }
+        }
+    }
     out
 }
 
@@ -1636,6 +1700,12 @@ pub fn plan_v4(p: &Protocol) -> Vec<Chunk> {
 /// of its repetition, and the three windows of each.
 pub fn plan_chunk(p: &Protocol, chunk: &Chunk) -> (Vec<Planned>, Vec<PlannedWindow>) {
     let (target, rep) = (chunk.target(), chunk.repetition());
+    if let Chunk::Api { surface, fill, .. } = chunk {
+        return (
+            Vec::new(),
+            crate::api_chunk::planned_windows(target, rep, *surface, *fill),
+        );
+    }
     let mut planned = Vec::new();
     let mut windows = Vec::new();
     for (_, profile) in chunk.profiles(p) {
@@ -1681,7 +1751,29 @@ pub fn plan_chunk(p: &Protocol, chunk: &Chunk) -> (Vec<Planned>, Vec<PlannedWind
 /// a dirty tree, by name (0132 §2.3: the 2026-10-30 v2 collection was admitted
 /// as raw measurement only because its tree was dirty; v4 makes that a
 /// refusal).
+#[allow(dead_code)] // the tests' entry; the driver calls v4_preflight_for
 pub fn v4_preflight(
+    p: &Protocol,
+    mode: &str,
+    chunk: Option<&str>,
+    commit: Option<&str>,
+    dirty: Option<bool>,
+) -> Result<Option<Chunk>, String> {
+    v4_preflight_for(
+        crate::clients::Surface::Native,
+        p,
+        mode,
+        chunk,
+        commit,
+        dirty,
+    )
+}
+
+/// [`v4_preflight`] for the process that owns `surface`'s chunks: `run` owns
+/// the native API chunks, `hold --control api-v1` the MCP ones; each refuses
+/// the other's.
+pub fn v4_preflight_for(
+    owner: crate::clients::Surface,
     p: &Protocol,
     mode: &str,
     chunk: Option<&str>,
@@ -1699,11 +1791,37 @@ pub fn v4_preflight(
     }
     let Some(text) = chunk else {
         return Err(
-            "protocol 4 needs --chunk cost.<target>.r<repetition> or waits.<target>.r<repetition>"
+            "protocol 4 needs --chunk cost.<target>.r<repetition>, waits.<target>.r<repetition> or api.native.<target>.r<repetition>.f<fill>"
                 .into(),
         );
     };
     let chunk = Chunk::parse(text, p)?;
+    match (&chunk, owner) {
+        (
+            Chunk::Api {
+                surface: crate::clients::Surface::Mcp,
+                ..
+            },
+            crate::clients::Surface::Native,
+        ) => {
+            return Err(format!(
+                "chunk {text}: the mcp surface is measured by the eval crate's api-mcp against a held target, not by run"
+            ));
+        }
+        (
+            Chunk::Api {
+                surface: crate::clients::Surface::Mcp,
+                ..
+            },
+            _,
+        ) => {}
+        (_, crate::clients::Surface::Mcp) => {
+            return Err(format!(
+                "chunk {text}: hold --control api-v1 holds api.mcp chunks only"
+            ));
+        }
+        _ => {}
+    }
     if mode == "collect" {
         if commit.is_none() {
             return Err("a v4 collection needs the candidate's commit: --commit SHA".into());
@@ -1854,7 +1972,7 @@ impl Probe {
 /// One bound of a window: the counters, then a `sample` row, so that the
 /// sample's time is the bound and no window is empty of samples. The
 /// returned snapshot carries the sample's time.
-fn bound(
+pub fn bound(
     leaf: &Leaf,
     run: &str,
     target: TargetKind,
@@ -1987,7 +2105,7 @@ impl Closing<'_> {
     }
 }
 
-fn emit_window(sink: &Sink, w: WindowRow) -> Result<(), String> {
+pub fn emit_window(sink: &Sink, w: WindowRow) -> Result<(), String> {
     sink.lock()
         .expect("sink lock")
         .append_resource(&ResourceRow::Window(w))
@@ -2474,7 +2592,7 @@ pub type SamplerSlot = (Arc<Mutex<Option<Sampler>>>, Arc<Mutex<Option<u64>>>);
 /// notes when the leaf was made. Used by the measured instance and by `hold`.
 /// Where a chunk's sampler writes: its sample rows, in the chunk's resource
 /// file.
-fn sink_emit(sink: &Sink) -> crate::resources::Emit {
+pub fn sink_emit(sink: &Sink) -> crate::resources::Emit {
     let sink = sink.clone();
     Arc::new(move |row| {
         sink.lock()

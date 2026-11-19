@@ -573,11 +573,26 @@
   "headline": {
     "profile": "cost-c8-reused"
   },
+  "api": {
+    "repetitions": 3,
+    "fills": [0, 1000, 10000, 100000],
+    "concurrency": [1, 8, 32],
+    "warmup": 20,
+    "measured": 100,
+    "cell_deadline_ms": 5000,
+    "fill_deadline_ms": 300000,
+    "fill_sessions": 8,
+    "background_recipients": 100,
+    "recipient_messages": 10,
+    "link_label": "Confirm your account:",
+    "surfaces": ["native", "mcp"],
+    "mcp_revision": "2025-03-26"
+  },
   "unresolved": [
-    "story B (0132 §6): the api section, its operation, surface and fill-level rows, and its clients",
+    "story B (0132 §6.3): API capability cells without captured evidence stay not_inspected: MailHog delete and clear (its APIv1.md is not captured) and MailSlurper clear (its prune codes are not captured)",
     "story D (0132 §8): the test-execution section",
     "story B to D: clients_sha256, one digest per client module",
-    "story B (0132 §6.2, acceptance answer 8): GreenMail's read path is REST in v4, and this draft still reads it over POP3 as v3 does; story B owes the change and its capture",
+    "story B (0132 §6.2, acceptance answer 8): the API section reads GreenMail over REST; the cost section's visibility check still reads it over POP3 as v3 does",
     "story B: every capability cell inspected (no not_inspected cell)",
     "story E: freeze, the chunk plan of all sections and the collection"
   ],

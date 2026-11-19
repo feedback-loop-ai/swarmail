@@ -1,0 +1,110 @@
+# API latency: native and MCP
+
+Created: 2026-11-17. Status: draft implementation specification.
+Backlog: issue #360, story B of #349/#351. Base: story A, 9ac77db.
+
+## Authority and purpose
+
+Implement accepted [0132](../../docs/decisions/0132-mail-comparison-protocol-v4.md), especially §§4, 6, 7.4, 9–11 and Implementation B, including its acceptance note. Measure the cost of an exact requested result; publish failed, unsupported and inexact answers alongside successful latency. Native and MCP are separate surfaces, with bridge overhead included in MCP time.
+
+This implements an existing ruling without amending it or changing a server public contract; no new decision is proposed. Preserve [0001](../../docs/decisions/0001-synchronous-insert-lossless.md), [0002](../../docs/decisions/0002-awaits-subscribe-before-checking.md), [0003](../../docs/decisions/0003-oldest-only-pruning.md), [0005](../../docs/decisions/0005-extraction-at-ingest.md) and [0129](../../docs/decisions/0129-agent-suite-comparison.md). No server src/ changes, new packages in either lock, deny.toml changes, adapter tools or frozen historical byte changes. Stream waits, test execution, freeze, collection and headline publication remain C–E.
+
+## Panel synthesis
+
+Adopt simplicity's seven concrete API-family modules shared by #[path], narrow transport reuse and single launch owner. Reject plugin machinery, duplicate clients, a second supervisor, speculative retries and sweeping legacy observer refactoring: they add maintenance without required capability.
+
+Adopt robustness's authored fixture ledger, strict pagination, destructive scheduling, finite deadline accounting and globally distinct MCP IDs. Reject timing successful status codes or repeatedly deleting/clearing empty state. The losing simplicity choice costs fixture setup, typed records and concurrency proofs; these are necessary to measure equal results.
+
+Reconcile resource ownership through existing hold, adding only an opt-in window-control boundary. Reject arbitrary endpoints lacking enforced launch evidence. Reject robustness campaigns outside this measurement boundary: no server, durability, TLS, webhook or chaos campaign. Preserve all existing house proofs.
+
+## Acceptance Criteria
+
+1. **Clients and evidence.** Add seven API-family modules under benches/mail_compare/clients/: Swarmail, Mailpit, MailHog, MailSlurper, smtp4dev, Inbucket and GreenMail, with typed results. Preserve distinct product identities for official, source-build and Alkemio MailSlurper; share behavior only where captured evidence agrees. Evals compiles the same modules by #[path], using packages already available in both locks. Every invoked route, paging rule, filter and scope cites a lock-v5 document rechecked for path, size and digest. GreenMail v4 reads REST, not legacy POP3. Missing evidence refuses preflight, never invents unsupported capability.
+2. **Matrix.** Native measures list, search, get, extract_code, extract_link, delete and clear. MCP measures supported operations plus future wait using revision 2025-03-26: Swarmail's native POST /mcp and the existing Mailpit, MailHog and MailSlurper-source-build adapters through the bridge. smtp4dev, Inbucket, GreenMail and Alkemio publish `no MCP surface`; official MailSlurper publishes blocked `does_not_start` without launch. Adapter delete/clear are cited `not_supported`. Distinguish unavailable native filters from supported client-filtered complete scans and narrowest global clear; label scope, inbox isolation, ingest extraction and polling. Runtime errors cannot change capabilities. Adapter CLI accepts the existing optional --documents contract (explicit root, otherwise lock parent), and api-mcp forwards the validated root; the documented draft-lock command must run all three adapter routes without relocating or weakening source evidence.
+3. **Exactness.** Author expected bytes, subject, from, to, text, HTML, code and labelled URL independently of responses. Setup resolves server IDs without learning expected contents from the server. List equals precisely the measured recipient's ten IDs after full paging and exact filtering; search recipient AND subject equals one ID. Reject duplicates, missing/extra IDs, repeated/incomplete pages and absent required fields. Get follows v3 fidelity: only previously documented discrepancies are `inexact_fidelity`, retaining latency but unranked; new wrong/partial results are `wrong_result`. MailSlurper’s exception covers only the documented absent body part; any present-but-wrong body or additional unexplained mismatch is `wrong_result`. Code and link must equal the authored six-digit code and fixed labelled URL. Swarmail reads ingest fields; competitors read through the measured surface and run the unchanged oracle extractors inside elapsed time. No native HTTP fallback in MCP measurements.
+4. **Fill.** Each surface/target/repetition/fill chunk owns a fresh instance. Fills 0/1,000/10,000/100,000 use seeded v3 corpus, eight reused SMTP sessions and 100 round-robin background recipients outside measured scopes. Setup and verification are untimed. Within 300 seconds establish accepted and confirmed retained counts; otherwise publish `fill_not_reached`, count reached, and blocked cells. Never reduce fill or retry ambiguous sends. Before measured fixtures record idle_fill_N: five idle seconds, last two sampled, plus allocated disk bytes. Label measured-inbox versus shared-store differences and preserve the 150,000 cap.
+5. **Cells.** Ordinary cells use 1/8/32 closed-loop workers with independent keep-alive connections. Initialize before warmup. Twenty warmups are a cell total, followed by a shared queue of 100 measured operations or an absolute five-second deadline, whichever first. Include paging/filtering/decoding/extraction/bridge time; no cache, prefetch, index or expected-ID hints. Every nested call uses remaining budget. Stop assigning at cutoff, retain one terminal row per started operation (including timeout/cancellation), and count only untouched slots as unstarted. Warmup is separately bounded to five seconds; failed warmup blocks measurement. A started read still in flight at cutoff has a terminal `timeout` failure; only never-dispatched slots are `unstarted`. This applies 0132 §6.5’s bound to further starts without erasing observed starts. List/search/get/code/link timeouts do not abandon the launch. Cancel and join client work, discard affected connections, and continue later cells; no detached paging or retry. Failed read warmup blocks only its own measurement. For delete, clear, or future wait (which includes SMTP delivery), unresolved effects after timeout or transport loss retain failure and mutation uncertainty, block subsequent cells and force owner teardown, with no final global clear. A completed refusal alone is not mutation uncertainty. Chunk deadline and target death remain independent stopping reasons. Client cancellation cannot prove a remote read stopped; disclose possible remote resource tails. Local cancellation/connection disposal has a five-second bound outside measurement; failure to prove local termination leaves the chunk incomplete and forces teardown.
+6. **Destructive operations.** Read cells precede destructive cells and use a stable ten-message set. Each delete concurrency cell preallocates 120 distinct victims (20 warmup, 100 measured) and ten survivors in its own scope. Each recipient-clear concurrency cell preallocates 120 disjoint ten-message scopes (20 warmup, 100 measured), plus an external ten-message sentinel scope. Preparation is before warmup, never inside a measured window. Keep survivors, unstarted fixtures and background fill until final global clear. Untimed postchecks compare the complete expected retained ledger as a batch, proving victims removed and other mail, especially outside recipient scopes, preserved. Both surfaces run the same complete batch check immediately before global clear, or at batch end without global clear. Expected IDs, ownership and required fidelity derive from authored fixtures and observed terminal outcomes: background, read set, warmup/measured/unstarted delete victims, survivors, cleared/uncleared scopes, external sentinels and acknowledged wait deliveries. Equal counts with substituted IDs fail. Mismatches invalidate affected successes as wrong_result (conservatively all destructive successes if attribution is uncertain); uncertainty never becomes exact success. Global clear is one invocation per surface/fill/repetition, last, with no destructive warmup, no concurrency replication and no quantiles; verify complete emptiness afterward. Compute total fixture growth, including waits, before launch and require fill plus fixtures below 150,000; never work around pruning.
+7. **MCP and wait.** Benchmark clients have globally disjoint request IDs, including initialization, across one shared bridge/adapter. Preserve bridge/adapter admission limits and classify busy refusals by source; no serialization workaround or retries. Preserve busy_bridge, busy_adapter and rate_limited through the published row. MCP HTTP refuses redirects, streams with a 16 MiB response bound and a 1 GiB aggregate operation bound, retaining finite paging and absolute deadlines; enforce limits before unbounded allocation, including initialization and error replies, with checked accounting before appending and one shared budget across nested calls. Encode dots as well as separators in target-supplied path segments; refuse an ID if URL construction normalizes it into another route. Prove the actual wire request target for dot-only and encoded-looking IDs, not merely the encoder output. Future wait uses fresh recipient/subject per attempt, starting the wait request before coordinating SMTP dispatch without sleep or a claim of server registration. Check exactly that message. Record send, acknowledgment, wait call/return on one monotonic clock with signed ack-to-return offsets. Stamp wait return inside the waiting future immediately upon its return, DATA acknowledgment at receipt of 250, and bounded SMTP QUIT separately; a delayed QUIT cannot shift return time. A producer-level controlled return-before-ack test must retain a negative offset. Adapter waits stay labelled polls. Ordinary cell budgets apply; one coordinated sender/waiter is one logical worker, at most 32 attempts concurrently. No fixture exists before its own attempt.
+8. **Resources and lifecycle.** Reuse story A's enforced 2 CPU/2 GiB/no-swap/4096-task leaf, CPU placement and 100 ms sampler. Each window retains start/end cpu.stat, memory.events, attributed samples and raw deltas; setup, warmup and postchecks are outside it. MCP requires the hold launch and actual final cleanup receipt including cgroup_removed, plus bridge/adapter cleanup. OOM/target exit are measured failures, never retried. Infrastructure/interruption/uncertain cleanup leaves the run incomplete. Target failure exits 1, infrastructure failure exits 2; no resume, overwrite or fabricated seal. Native and MCP share these exit rules: wrong_result, failed or timeout measured attempts cannot exit clean; capability-only rows are not execution failures. Ready, IdleReady, IdleFill and ApiCell outcomes and final exit/OOM checks affect the verdict. `at_equal_results` additionally requires a clean corresponding resource window. MCP NotReady due to target exit/OOM produces measured blocked rows and exit 1, matching native; absent delegation remains exit 2. Every path after holder acquisition, including adapter/bridge startup failure, closes control input and awaits bounded cleanup. Parse the actual receipt and validate its launch identity and cgroup_removed; missing/invalid receipt cannot seal. The holder independently enforces the protocol chunk deadline even if its caller hangs or disappears.
+9. **Reports and admission.** Each terminal row identifies run/launch/chunk, product, surface, repetition, fill, operation, concurrency, worker/index, timestamps, outcome, exactness, citation and scope. Planned = started + unstarted; started = exact successes + failures (including inexact). Quantiles are nearest-rank over exact successes only, null when none; inexact latencies remain separate. Achieved ops/s = exact successes / measured client-window seconds. Target CPU microseconds/op = raw resource-window CPU delta / started operations, explicitly labelled started, null for zero. Retain raw denominators and both window intervals for recomputation. Global clear publishes an individual sample with null p50/p95/p99. Persist eval-side control send/receive brackets bound to command/window IDs beside owner-clock windows; validate local ordering without subtracting clocks. Validate warmup indices/counts/outcomes and measured row operation, concurrency, method, scope and citations against the plan/capability. Official MailSlurper’s nonlaunchable report-api rows carry the v3 failure-document citation. Extend planning, wrapper dispatch and admission for 96 native and 48 MCP API chunks (three repetitions, four fills), preserving rotations and cost chunks. Publish nonlaunchable rows without invented receipts. Admission rejects missing/duplicate coordinates and tampered counts/statistics/resource evidence. B leaves C/D unresolved and cannot claim full v4 freeze/collection.
+10. **Proof.** Deterministic tests cover exactness, paging, fidelity/extractor parity, scope preservation, counts/deadlines, null statistics and admission. Ignored real native and bridged MCP proofs use pinned targets and enforced resources, meaningful destructive operations and concurrent bridged requests. Native proofs assert exact results on all launchable pinned target routes, with explicitly cited expected inexact/unsupported outcomes. The bridged proof must launch actual competitor adapters (all three routes across individually bounded invocations), not only Swarmail /mcp. Assert the planned operation matrix, exactness, source-specific expected refusals, waits, resource evidence, seal/admit and cleanup; exit 0-or-1 or a few measured cells alone is insufficient. Keep Swarmail MCP coverage, honestly naming rate-limit-blocked cells without tuning frozen limits. Producer tests exercise fill_not_reached, accepted/retained disagreement and uncertain-mutation teardown, not merely constructed record validation. Successful logs for native, bridged and 100k host proofs remain owed merge requirements. Fail without bytes/delegation; run individually under timeout 600 taskset -c 0-31 with load recorded before/after. All gates in [house rules](../../docs/house-rules.md#gates--part-of-every-change), locked root/eval commands, exact coverage/selftest, publish/seal proofs, recipe compilation, license/native-tls proof and decision inventory remain implementation requirements. This design claims no benchmark result or implementation-gate success.
+
+## Clarification — 2026-11-17 review return
+
+This revises the same design after review of 3da520c under accepted
+[0102](../../docs/decisions/0102-review-residuals-rework.md). The earlier design
+commit remains history. Accepted 0132 §§6.4–6.5 is the authority for correcting
+blanket read-timeout abandonment: a slow shared-store scan must not censor all
+later operations. No accepted ruling or public server contract changes, so no
+new decision is declared. All other sound acceptance requirements remain.
+
+Adopt both positions’ effect-specific cutoff correction and existing-owner
+repairs. Simplicity wins against new supervisors, generic policy frameworks,
+retries and unrelated server campaigns; robustness wins against count-only
+ledgers, exit-code-only cleanup and weak host smoke assertions. The cost of
+those smaller shortcuts would be undetected deletion, dead targets ranked as
+exact, and unproved routes. Accept instead full untimed ledger scans, explicit
+failure paths, bounded local cleanup and actual delegated-host execution.
+Reject indefinite read drainage or restarting a target per slow cell: retain
+remote-tail uncertainty visibly without changing the experiment. The positions
+agree on these boundaries; there is no justification for averaging down the
+proof requirements. This revision does not claim fixes or successful host runs.
+
+## Continuation synthesis — 2026-11-17, ac9a4a59
+
+Continue the existing api-latency design at 02d3a33; this is a handoff
+clarification, not a replacement design or evidence of implemented repairs.
+The dispatch reports a subsequent security hold in run
+issue-360-comparison-protocol-v4-d06b4818. No context.returned_from verdict
+is supplied in this run; use the dispatch's R1–R18 obligations and the existing
+repair map without inventing additional panel findings.
+
+Adopt both current positions' priority: R11 first, then R1, R2, R3, then
+the remaining repairs in checklist order. Adopt simplicity's repairs within
+the existing clients, scheduler, ledger and holder, with no new dependencies
+or supervisors. Adopt robustness's requirement that R11 cover every reply
+path and actual URL construction: escaping '.' alone is insufficient if the
+URL parser normalizes percent-encoded dot segments. Reject encoder-only
+proofs; the cost is a real transport regression and refusal of IDs that cannot
+be represented safely. Preserve all existing acceptance criteria.
+
+The positions agree on the remaining boundaries. Full retained-ID scans,
+actual cleanup receipts and producer-path proofs prevail over count-only
+checks or exit-code smoke tests despite their setup and test cost. Bounded
+local read cancellation prevails over indefinite drainage or per-cell
+restarts; possible remote read tails remain disclosed. No criterion is
+relaxed to match unfinished code. R1–R18 remain open, including the security
+hold; a design commit cannot discharge them. Delegated-host execution remains
+open separately from implementation of its ignored proofs.
+
+## Operator rulings, 2026-11-18
+
+Recorded in [decision 0132's addendum of 2026-11-18](../../docs/decisions/0132-mail-comparison-protocol-v4.md).
+
+- **MailSlurper's single body (AC3, R7).** A MailSlurper answer that keeps
+  only a multipart's HTML part, with `rel="nofollow"` added to its anchors,
+  is `inexact_fidelity` on `get` (`api::check_get`, `api::mailslurper_unrewritten`);
+  `extract_code` and `extract_link` read that HTML as text with the frozen
+  extractors and are `inexact_fidelity` when they find the authored value
+  (`api::check_extract`, `clients::from_kept_html`, `clients::html_text`).
+  Any other mismatch, and any other family's HTML-only answer, stays
+  `wrong_result`.
+- **MCP rate window (AC5, AC7).** Before each MCP cell, `api::run_cells`
+  idles for the surface's `cell_gap` (`api::MCP_CELL_GAP`, one second; zero
+  on the native surface), before the warmup and outside every window, and
+  never past the chunk's cell deadline, where the cell is blocked
+  `chunk_deadline`. Each MCP cell then starts in a fresh Swarmail rate
+  window; `rate_limited` stays a published failure row of the cell's own
+  load.
+
+## Status, 2026-11-19
+
+The design paragraph above that calls delegated-host execution open was
+written before any host run. Since then the 13 host proofs exited 0 on the
+dispatcher host at b5bd573; eleven measured, and the native and bridged
+source-built MailSlurper proofs passed on the documented `fill_not_reached`,
+which exercises none of their routes. Those two rows of AC10/R9 stay open,
+as `tasks.md` R9 records. The rewritten-body ruling is applied to the single
+kept body only (`html rewritten, text absent`); a rewritten HTML beside a
+text part stays `wrong_result`.

@@ -45,9 +45,9 @@ pub const CHUNK_MARGIN_MS: u64 = 30_000;
 pub const V4_MAX_SESSIONS: u32 = 32;
 /// The sections of 0132 §11 this driver does not implement yet. A frozen
 /// protocol 4 is refused by name while any is owed, so a plan of the
-/// implemented sections can never be admitted as "v4"; stories B and D each
-/// remove their entry (story C removed `waits`).
-pub const OWED_SECTIONS: [&str; 2] = ["api", "testexec"];
+/// implemented sections can never be admitted as "v4"; story D removes its
+/// entry (story B removed `api`, story C removed `waits`).
+pub const OWED_SECTIONS: [&str; 1] = ["testexec"];
 /// The profile whose cells are the headline row (acceptance answer 3).
 pub const HEADLINE_PROFILE: &str = "cost-c8-reused";
 /// The cost section's four profiles (0132 §4.6): name, sessions, connection.
@@ -355,10 +355,56 @@ pub struct Protocol {
     /// collection (0132 §9.2). Name to 64 hex digits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clients_sha256: Option<std::collections::BTreeMap<String, String>>,
+    /// Version 4: the API section (0132 §6, story B). Required by protocol
+    /// 4, refused before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<ApiSection>,
     /// Every value the method still lacks, by name. Collection refuses
     /// while one remains; the list is how a draft says what it is missing
     /// instead of carrying a placeholder that looks like a value.
     pub unresolved: Vec<String>,
+}
+
+/// Protocol 4's API section (accepted decision 0132 §6.4, §6.5, §7.4): every
+/// value is the record's own, and the validator holds each to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiSection {
+    pub repetitions: u32,
+    pub fills: Vec<u32>,
+    pub concurrency: Vec<u32>,
+    pub warmup: u32,
+    pub measured: u32,
+    pub cell_deadline_ms: u64,
+    pub fill_deadline_ms: u64,
+    pub fill_sessions: u32,
+    pub background_recipients: u32,
+    pub recipient_messages: u32,
+    pub link_label: String,
+    pub surfaces: Vec<String>,
+    /// The MCP revision every MCP surface speaks (0132 §6.2).
+    pub mcp_revision: String,
+}
+
+impl ApiSection {
+    /// The section 0132 specifies, value for value.
+    pub fn specified() -> ApiSection {
+        ApiSection {
+            repetitions: 3,
+            fills: crate::api::FILLS.to_vec(),
+            concurrency: crate::api::CONCURRENCY.to_vec(),
+            warmup: crate::api::WARMUP,
+            measured: crate::api::MEASURED,
+            cell_deadline_ms: crate::api::CELL_DEADLINE.as_millis() as u64,
+            fill_deadline_ms: crate::api::FILL_DEADLINE.as_millis() as u64,
+            fill_sessions: crate::api::FILL_SESSIONS as u32,
+            background_recipients: crate::api::BACKGROUND,
+            recipient_messages: crate::api::K,
+            link_label: crate::api::LINK_LABEL.into(),
+            surfaces: vec!["native".into(), "mcp".into()],
+            mcp_revision: "2025-03-26".into(),
+        }
+    }
 }
 
 /// The cost profile whose cells are the headline row.
@@ -1195,6 +1241,7 @@ impl Protocol {
             ("resources.chunk_deadline_ms", r.chunk_deadline_ms.is_some()),
             ("headline", self.headline.is_some()),
             ("clients_sha256", self.clients_sha256.is_some()),
+            ("api", self.api.is_some()),
             (
                 "waits[].observation[].backstop_ms",
                 self.waits
@@ -1322,6 +1369,19 @@ impl Protocol {
         if !self.does_not_start(TargetKind::Mailslurper) {
             out.push("protocol 4 publishes the official mailslurper row as does_not_start".into());
         }
+        match &self.api {
+            // A draft may omit the section, and then plans no API chunk; a
+            // frozen protocol 4 always carries it.
+            None if self.status == Status::Frozen => {
+                out.push("a frozen protocol 4 needs its api section (0132 §6)".into())
+            }
+            None => {}
+            Some(a) if *a != ApiSection::specified() => out.push(format!(
+                "api: protocol 4's api section is 0132's, {:?}, not {a:?}",
+                ApiSection::specified()
+            )),
+            Some(_) => {}
+        }
         self.validate_v4_waits(out);
         if self.status != Status::Frozen {
             return;
@@ -1370,6 +1430,31 @@ impl Protocol {
                         "a frozen protocol 4 has no not_inspected capability, but {} {key} is",
                         c.target
                     ));
+                }
+            }
+        }
+        // The API operation cells (0132 §6.3, §10) are the client modules'
+        // tables, not the protocol's: the freeze reads them from there, so a
+        // cell no captured document states keeps protocol 4 from freezing
+        // however the prose `unresolved` list reads.
+        if let Some(a) = &self.api {
+            for surface in a
+                .surfaces
+                .iter()
+                .filter_map(|s| crate::clients::Surface::parse(s))
+            {
+                for t in &self.targets {
+                    for op in crate::clients::Operation::ALL {
+                        if let crate::clients::Capability::NotInspected { why } =
+                            crate::clients::capability(t.name(), surface, op)
+                        {
+                            out.push(format!(
+                                "a frozen protocol 4 has no not_inspected api cell, but {t} {} {} is: {why}",
+                                surface.name(),
+                                op.name()
+                            ));
+                        }
+                    }
                 }
             }
         }

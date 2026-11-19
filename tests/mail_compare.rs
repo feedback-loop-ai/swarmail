@@ -11,6 +11,15 @@
 // The driver's own modules, compiled into this test crate. Some items serve
 // only the driver binary (its CLI), so dead-code analysis here is partial.
 #[allow(dead_code)]
+#[path = "../benches/mail_compare/api.rs"]
+mod api;
+#[allow(dead_code)]
+#[path = "../benches/mail_compare/api_chunk.rs"]
+mod api_chunk;
+#[allow(dead_code)]
+#[path = "../benches/mail_compare/clients/mod.rs"]
+mod clients;
+#[allow(dead_code)]
 #[path = "../benches/mail_compare/mailhog_mcp.rs"]
 mod mailhog_mcp;
 #[allow(dead_code)]
@@ -59,6 +68,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+#[path = "mail_compare/api_section.rs"]
+mod api_section;
 #[path = "mail_compare/eight_targets.rs"]
 mod eight_targets;
 #[path = "mail_compare/v4.rs"]
@@ -3862,6 +3873,195 @@ async fn cancellation_eof_queue_and_output_bounds_hold() {
 /// `n` distinct summaries `prefix0..`, enough to fill a scan page.
 fn many(prefix: &str, n: usize) -> Vec<String> {
     (0..n).map(|i| format!("{prefix}{i}")).collect()
+}
+
+/// One adapter wait answer, read the way the MCP surface reads it.
+async fn adapter_wait(
+    family: clients::Family,
+    hit: bool,
+) -> (serde_json::Value, clients::WaitAnswer) {
+    let to = "w1-0@api.test";
+    let subject = "wait w1-0 token";
+    let addr = responder(Box::new(move |t: &str| {
+        let none = t.contains("none");
+        Some((
+            200,
+            match family {
+                clients::Family::Mailpit => {
+                    let msgs: Vec<serde_json::Value> = if none {
+                        vec![]
+                    } else {
+                        vec![serde_json::json!({"ID": "m1", "Subject": subject,
+                            "To": [{"Name": "", "Address": to}]})]
+                    };
+                    serde_json::json!({"total": 9, "unread": 0, "count": msgs.len(),
+                        "messages_count": msgs.len(), "start": 0, "tags": [],
+                        "messages": msgs})
+                }
+                clients::Family::Mailhog => {
+                    let items: Vec<serde_json::Value> = if none {
+                        vec![]
+                    } else {
+                        vec![serde_json::json!({"ID": "h1", "Content": {"Headers":
+                            {"To": [to], "Subject": [subject]}}})]
+                    };
+                    serde_json::json!({"total": items.len(), "count": items.len(),
+                        "start": 0, "items": items})
+                }
+                _ => {
+                    let items: Vec<serde_json::Value> = if none {
+                        vec![]
+                    } else {
+                        vec![serde_json::json!({"id": "s1", "subject": subject,
+                            "toAddresses": [to]})]
+                    };
+                    serde_json::json!({"totalRecords": items.len(), "totalPages": 1,
+                        "mailItems": items})
+                }
+            }
+            .to_string(),
+        ))
+    }))
+    .await;
+    let bounds = mailpit_mcp::Bounds {
+        request: Duration::from_secs(20),
+        operation: Duration::from_secs(60),
+        poll_interval: Duration::from_millis(50),
+        ..mailpit_mcp::Bounds::default()
+    };
+    let http = wire::Http::new(addr, bounds.request, bounds.max_body);
+    let query = if hit { "token" } else { "none" };
+    // An empty answer is a timeout at the pole: no scan can ever match.
+    let timeout_ms = if hit { 20_000 } else { 300 };
+    let now = tokio::time::Instant::now();
+    let v = match family {
+        clients::Family::Mailpit => {
+            let call = mailpit_mcp::Call::Wait {
+                query: query.into(),
+                timeout_ms,
+            };
+            mailpit_mcp::run_call(&http, &bounds, &call, now).await
+        }
+        clients::Family::Mailhog => {
+            let call = mailhog_mcp::Call::Wait {
+                kind: mailhog_mcp::Kind::Containing,
+                query: query.into(),
+                timeout_ms,
+            };
+            mailhog_mcp::run_call(&http, &bounds, &call, now).await
+        }
+        _ => {
+            let call = mailslurper_mcp::Call::Wait {
+                filter: mailslurper_mcp::Filter {
+                    to: Some(if hit {
+                        to.into()
+                    } else {
+                        "none@api.test".into()
+                    }),
+                    from: None,
+                    message: None,
+                },
+                timeout_ms,
+            };
+            mailslurper_mcp::run_call(&http, &bounds, &call, now).await
+        }
+    }
+    .unwrap();
+    let got = clients::wait_answer(family, &v);
+    (v, got)
+}
+
+#[tokio::test]
+async fn every_adapter_wait_envelope_reads_as_its_own_message() {
+    // The adapters' poll answers `{status, messages_count, messages, ...}`,
+    // not a native page: the MCP surface must read each family's actual
+    // envelope, found and timed out, as the adapter itself produces it.
+    for family in [
+        clients::Family::Mailpit,
+        clients::Family::Mailhog,
+        clients::Family::Mailslurper,
+    ] {
+        let (v, got) = adapter_wait(family, true).await;
+        assert_eq!(v["status"], "found", "{family:?} {v}");
+        let id = match family {
+            clients::Family::Mailpit => "m1",
+            clients::Family::Mailhog => "h1",
+            _ => "s1",
+        };
+        assert_eq!(
+            got,
+            clients::WaitAnswer::Found(vec![clients::Summary {
+                id: id.into(),
+                to: vec!["w1-0@api.test".into()],
+                subject: "wait w1-0 token".into(),
+            }]),
+            "{family:?} {v}"
+        );
+        let (v, got) = adapter_wait(family, false).await;
+        assert_eq!(v["status"], "timeout", "{family:?} {v}");
+        assert_eq!(got, clients::WaitAnswer::TimedOut, "{family:?} {v}");
+    }
+}
+
+#[test]
+fn a_wait_envelope_is_read_by_status_and_shape() {
+    use clients::{Family, WaitAnswer};
+    use serde_json::json;
+    let item = json!({"ID": "m1", "Subject": "s", "To": [{"Address": "a@b"}]});
+    let env = |status: &str, count: u64, msgs: serde_json::Value| {
+        json!({"status": status, "messages_count": count, "messages": msgs,
+            "scans": 1, "requests": 1, "method": "client-side poll"})
+    };
+    assert_eq!(
+        clients::wait_answer(Family::Mailpit, &env("late", 1, json!([item]))),
+        WaitAnswer::Late
+    );
+    // A count that disagrees with the messages, an unknown status, a
+    // missing field or an undecodable item is no answer.
+    for bad in [
+        env("found", 2, json!([item])),
+        env("found", 1, json!([{"ID": "m1"}])),
+        env("pending", 1, json!([item])),
+        json!({"status": "found", "messages": [item]}),
+        json!({"status": "found", "messages_count": 1}),
+    ] {
+        assert_eq!(
+            clients::wait_answer(Family::Mailpit, &bad),
+            WaitAnswer::Malformed,
+            "{bad}"
+        );
+    }
+    // A family with no MCP surface has no wait envelope.
+    assert_eq!(
+        clients::wait_answer(Family::Smtp4dev, &env("found", 1, json!([item]))),
+        WaitAnswer::Malformed
+    );
+    // Swarmail: `{emails}`, or `{timed_out: true}`.
+    assert_eq!(
+        clients::wait_answer(
+            Family::Swarmail,
+            &json!({"matched": 0, "total": 0, "timed_out": true})
+        ),
+        WaitAnswer::TimedOut
+    );
+    assert_eq!(
+        clients::wait_answer(
+            Family::Swarmail,
+            &json!({"emails": [{"id": "w", "subject": "s", "to": [{"address": "a@b"}]}]})
+        ),
+        WaitAnswer::Found(vec![clients::Summary {
+            id: "w".into(),
+            to: vec!["a@b".into()],
+            subject: "s".into(),
+        }])
+    );
+    for bad in [json!({"matched": 0}), json!({"emails": [{"subject": "s"}]})] {
+        assert_eq!(
+            clients::wait_answer(Family::Swarmail, &bad),
+            WaitAnswer::Malformed,
+            "{bad}"
+        );
+    }
 }
 
 #[tokio::test]

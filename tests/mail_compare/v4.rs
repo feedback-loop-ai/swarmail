@@ -354,11 +354,27 @@ fn v2_and_v3_history_bytes_round_trip_unchanged() {
 
 // ---- T1.3 ------------------------------------------------------------------
 
+/// What still keeps every frozen protocol 4 from freezing once nothing is
+/// owed: the API operation cells no captured document states (0132 §6.3,
+/// §10), read from the client modules' tables. Lock v5's capture of
+/// MailHog's APIv1.md and MailSlurper's prune codes (story E) empties it.
+const API_NOT_INSPECTED: [&str; 4] = [
+    "a frozen protocol 4 has no not_inspected api cell, but mailhog native delete is: MailHog's APIv1.md, which its README names for delete, is not captured in lock v5",
+    "a frozen protocol 4 has no not_inspected api cell, but mailhog native clear is: MailHog's APIv1.md, which its README names for delete, is not captured in lock v5",
+    "a frozen protocol 4 has no not_inspected api cell, but mailslurper-source-build native clear is: the prune codes that would clear every message are not in a captured document",
+    "a frozen protocol 4 has no not_inspected api cell, but alkemio-mailslurper native clear is: the prune codes that would clear every message are not in a captured document",
+];
+
 #[test]
 fn frozen_v4_cost_table_is_exact() {
-    p4(frozen_ready())
-        .validate_owing(&[])
-        .expect("a ready frozen v4 validates");
+    // Ready except for the API cells, and refused for exactly those.
+    assert_eq!(
+        p4(frozen_ready())
+            .validate_owing(&[])
+            .expect_err("the api cells refuse")
+            .0,
+        API_NOT_INSPECTED
+    );
     let check = |v: Value, expect: &str| {
         let w = refusals(p4(v).validate_owing(&[]));
         assert!(w.contains(expect), "{expect}: {w}");
@@ -553,11 +569,12 @@ fn a_v4_swarmail_spec_is_never_built_uncapped() {
 fn this_driver_refuses_a_frozen_v4_naming_the_owed_sections() {
     let w = refusals(p4(frozen_ready()).validate());
     assert!(
-        w.contains("this driver cannot freeze protocol 4: the api, testexec section(s) are owed"),
+        w.contains("this driver cannot freeze protocol 4: the testexec section(s) are owed"),
         "{w}"
     );
-    // Story C built the waits section: only B's and D's remain owed.
-    assert_eq!(protocol::OWED_SECTIONS, ["api", "testexec"]);
+    // Story B built the api section and story C the waits section: only D's
+    // remains owed.
+    assert_eq!(protocol::OWED_SECTIONS, ["testexec"]);
     // A draft is not refused for it.
     p4(draft()).validate().unwrap();
 }
@@ -586,6 +603,58 @@ fn with_nothing_owed_a_frozen_v4_still_needs_resolved_clients_and_inspected_capa
         v,
         "has no not_inspected capability, but mailpit native_wait is",
     );
+}
+
+#[test]
+fn a_frozen_v4_reads_its_api_cells_from_the_client_tables() {
+    // Every not_inspected cell of the tables, on every surface the section
+    // names, is refused by target, surface and operation; nothing else is.
+    let mut want = Vec::new();
+    let p = p4(frozen_ready());
+    for surface in [clients::Surface::Native, clients::Surface::Mcp] {
+        for t in &p.targets {
+            for op in clients::Operation::ALL {
+                if clients::capability(t.name(), surface, op).status() == "not_inspected" {
+                    want.push(format!("{} {} {}", t.name(), surface.name(), op.name()));
+                }
+            }
+        }
+    }
+    assert_eq!(
+        want,
+        [
+            "mailhog native delete",
+            "mailhog native clear",
+            "mailslurper-source-build native clear",
+            "alkemio-mailslurper native clear",
+        ]
+    );
+    for (line, cell) in API_NOT_INSPECTED.iter().zip(&want) {
+        assert!(line.contains(&format!("but {cell} is: ")), "{line}");
+    }
+    // A target outside the protocol is not read: without MailHog only the
+    // MailSlurper builds' clear remain.
+    let mut v = frozen_ready();
+    v["targets"] = json!(
+        v["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| *t != "mailhog")
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    let w = refusals(p4(v).validate_owing(&[]));
+    assert!(!w.contains("but mailhog native"), "{w}");
+    assert!(w.contains(API_NOT_INSPECTED[2]), "{w}");
+    // A draft is not refused for its api cells: they block only freezing.
+    p4(draft()).validate_owing(&[]).unwrap();
+    // A surface the section does not name is not read.
+    let mut v = frozen_ready();
+    v["api"]["surfaces"] = json!(["mcp"]);
+    let w = refusals(p4(v).validate_owing(&[]));
+    assert!(!w.contains("api cell"), "{w}");
+    assert!(w.contains("api: protocol 4's api section is 0132's"), "{w}");
 }
 
 #[test]
@@ -851,6 +920,7 @@ fn the_v4_draft_differs_from_v3_only_where_0132_says() {
         "claim",
         "budgets",
         "headline",
+        "api",
         "unresolved",
         "capabilities",
     ];
@@ -995,6 +1065,79 @@ impl Wrapped for Value {
     }
 }
 
+/// Story C's wait evidence added to each pinned lock 4 entry, as (kind,
+/// file name under `sources/<target>/`), and the pin keys lock 5 moves.
+/// Nothing else in a lock 5 pin may differ from lock 4's.
+#[allow(clippy::type_complexity)]
+const LOCK5_MOVES: [(&str, &[(&str, &str)], &[&str]); 8] = [
+    (
+        "mailpit",
+        &[
+            ("source", "mailpit-server.go"),
+            ("source", "mailpit-storage-messages.go"),
+            ("source", "mailpit-storage-notifications.go"),
+            ("source", "mailpit-cors.go"),
+            ("source", "mailpit-go.mod"),
+        ],
+        &["documents", "launch", "storage", "wait"],
+    ),
+    (
+        "mailhog",
+        &[
+            ("license", "mailhog-server-license.md"),
+            ("source", "mailhog-server-api.go"),
+            ("source", "mailhog-server-api-v1.go"),
+            ("source", "mailhog-server-api-v2.go"),
+            ("source", "mailhog-websockets-hub.go"),
+            ("source", "mailhog-websockets-connection.go"),
+            ("source", "mailhog-smtp-session.go"),
+            ("license", "mailhog-goose-license.md"),
+            ("source", "mailhog-goose.go"),
+        ],
+        &["documents", "wait"],
+    ),
+    ("mailslurper", &[], &["wait"]),
+    ("mailslurper-source-build", &[], &["wait"]),
+    (
+        "smtp4dev",
+        &[
+            ("git_tree", "smtp4dev-tree-recursive.json"),
+            ("source", "smtp4dev-notifications-hub.cs"),
+            ("source", "smtp4dev-startup.cs"),
+            ("source", "smtp4dev-server.cs"),
+            ("source", "smtp4dev-task-queue.cs"),
+            ("source", "smtp4dev-messages-controller.cs"),
+            ("source", "smtp4dev-hub-connection-manager.ts"),
+        ],
+        &["documents", "launch", "storage", "wait"],
+    ),
+    (
+        "inbucket",
+        &[
+            ("git_tree", "inbucket-tree-recursive.json"),
+            ("source", "inbucket-rest-routes.go"),
+            ("source", "inbucket-rest-socket-controller.go"),
+            ("source", "inbucket-rest-socketv1-controller.go"),
+            ("source", "inbucket-rest-socketv2-controller.go"),
+            ("source", "inbucket-msghub-hub.go"),
+            ("source", "inbucket-message-manager.go"),
+            ("source", "inbucket-extension-async-broker.go"),
+            ("source", "inbucket-server-lifecycle.go"),
+            ("source", "inbucket-go.mod"),
+        ],
+        &["documents", "launch_env", "storage", "wait"],
+    ),
+    ("greenmail", &[], &["wait"]),
+    (
+        "alkemio-mailslurper",
+        &[
+            ("source", "alkemio-setup-services-listener.go"),
+            ("source", "alkemio-setup-admin-listener.go"),
+        ],
+        &["documents", "wait"],
+    ),
+];
+
 #[test]
 fn lock_v5_differs_from_lock_v4_only_in_version_caps_launches_and_wait_evidence() {
     let (l5, l4) = (lock5(), json(SOURCES_V4));
@@ -1044,6 +1187,36 @@ fn lock_v5_differs_from_lock_v4_only_in_version_caps_launches_and_wait_evidence(
                     .ends_with("-tree-recursive.json")
             );
         }
+        // What lock 5 adds is exactly the table's, by kind and path, in
+        // order; each added file's bytes are bound by its sha256 through
+        // `verify_files` (lock_v5_verifies_its_documents_and_pairs_with_the_draft).
+        let (_, added, moved) = LOCK5_MOVES
+            .iter()
+            .find(|(name, ..)| *name == t)
+            .unwrap_or_else(|| panic!("{t} has no LOCK5_MOVES row"));
+        let got: Vec<(String, String)> = docs5
+            .iter()
+            .filter(|d| !docs4.contains(d))
+            .map(|d| {
+                (
+                    d["kind"].as_str().unwrap().to_owned(),
+                    d["path"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let want: Vec<(String, String)> = added
+            .iter()
+            .map(|(kind, file)| ((*kind).to_owned(), format!("sources/{t}/{file}")))
+            .collect();
+        assert_eq!(got, want, "{t}: lock 5's added documents");
+        let (p5, p4) = (a["pin"].as_object().unwrap(), b["pin"].as_object().unwrap());
+        let keys: BTreeSet<&String> = p5.keys().chain(p4.keys()).collect();
+        let got: Vec<&str> = keys
+            .into_iter()
+            .filter(|k| p5.get(*k) != p4.get(*k))
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(got, *moved, "{t}: the pin keys lock 5 moves");
         let (mut a, mut b) = (a.clone(), b.clone());
         for e in [&mut a, &mut b] {
             let pin = e["pin"].as_object_mut().unwrap();
@@ -1062,6 +1235,14 @@ fn lock_v5_differs_from_lock_v4_only_in_version_caps_launches_and_wait_evidence(
             "{t}: only its launch, cap, basis and wait evidence moved"
         );
     }
+    // Every table row names a pinned lock 4 target, so none is stale.
+    let pinned: Vec<&str> = e4
+        .iter()
+        .filter(|e| !e["pin"].is_null())
+        .map(|e| e["target"].as_str().unwrap())
+        .collect();
+    let rows: Vec<&str> = LOCK5_MOVES.iter().map(|(t, ..)| *t).collect();
+    assert_eq!(rows, pinned);
     let mut l = l5.clone();
     for t in ["mailpit", "smtp4dev", "inbucket"] {
         let pin = pin_of(&mut l, t);
@@ -2378,7 +2559,16 @@ async fn the_sampler_writes_a_row_per_tick_and_one_at_each_bound() {
 #[test]
 fn the_draft_plans_24_cost_and_24_waits_chunks_in_rotation_order() {
     let p = p4(draft());
-    let plan = runner::plan_v4(&p);
+    let all = runner::plan_v4(&p);
+    // Story B's API chunks follow the cost and waits chunks (0132 §11.2: 24
+    // cost, 24 waits, 96 native, 48 mcp), so the cost-and-waits plan is the
+    // first 48, unchanged.
+    assert_eq!(all.len(), 48 + 96 + 48);
+    let plan: Vec<runner::Chunk> = all[..48].to_vec();
+    assert!(
+        plan.iter()
+            .all(|c| matches!(c, runner::Chunk::Cost { .. } | runner::Chunk::Waits { .. }))
+    );
     assert_eq!(plan.len(), 48);
     let mut want = Vec::new();
     for rep in 0..3u32 {
@@ -2435,7 +2625,14 @@ fn chunk_names_round_trip_and_unknown_ones_refuse() {
         ("cost.mailslurper.r0", "not in the protocol's plan"),
         ("cost.mailpit.r3", "not in the protocol's plan"),
         ("cost.nobody.r0", "unknown target"),
-        ("api.mailpit.r0", "is not implemented"),
+        ("testexec.mailpit.r0", "is not implemented"),
+        ("api.mailpit.r0", "not a chunk coordinate"),
+        ("api.native.mailpit.r0.f5", "not in the protocol's plan"),
+        ("api.mcp.inbucket.r0.f0", "not in the protocol's plan"),
+        ("api.native.mailslurper.r0.f0", "not in the protocol's plan"),
+        ("api.web.mailpit.r0.f0", "unknown surface"),
+        ("api.native.mailpit.r0.f01000", "is not f<fill>"),
+        ("api.native.mailpit.r00.f0", "is not r<repetition>"),
         ("waits.mailslurper.r0", "not in the protocol's plan"),
         ("waits.mailpit.r3", "not in the protocol's plan"),
         ("cost.mailpit", "not a chunk coordinate"),
@@ -4680,6 +4877,9 @@ fn adm_protocol() -> (Protocol, Vec<u8>) {
 /// The admission fixture's protocol over `reps` repetitions.
 fn adm_protocol_n(reps: u32) -> (Protocol, Vec<u8>) {
     let mut v = draft();
+    // The cost section's admission: a draft without the API section plans
+    // only cost chunks (the API chunk's admission is proved in `api.rs`).
+    v.as_object_mut().unwrap().remove("api");
     let mut prof = v["throughput"][1].clone();
     prof["repetitions"] = json!(reps);
     prof["messages"] = json!(4);
@@ -5245,6 +5445,7 @@ fn admit_v4_refuses_a_row_whose_launch_has_no_receipt() {
 fn admit_v4_refuses_an_empty_plan_without_panicking() {
     let mut v = draft();
     v["throughput"] = json!([]);
+    v.as_object_mut().unwrap().remove("api");
     v["waits"] = json!([]);
     v["budgets"]["wait_operation_ms"] = json!(10_000);
     let p = p4(v);
@@ -5916,7 +6117,16 @@ case "$1" in
       *" --seal "*) exit "${FAKE_SEAL_EXIT:-${FAKE_ADMIT_EXIT:-0}}" ;;
       *) exit "${FAKE_VERIFY_EXIT:-${FAKE_ADMIT_EXIT:-0}}" ;;
     esac ;;
-  run)
+  api-mcp)
+    # The eval crate's api-mcp: it runs its --driver's `hold`, as the real
+    # one spawns the holder, and ends with it.
+    drv='' args=()
+    shift
+    while [ $# -gt 0 ]; do
+      case "$1" in --driver) drv="$2"; shift 2 ;; *) args+=("$1"); shift ;; esac
+    done
+    exec "$drv" hold "${args[@]}" ;;
+  run|hold)
     out='' chunk=''
     while [ $# -gt 0 ]; do
       case "$1" in --output) out="$2" ;; --chunk) chunk="$2" ;; esac
@@ -6018,6 +6228,7 @@ impl V4Rig {
             .env("FAKE_PLAN", self.file("plan"))
             .env("FAKE_TARGETS", self.file("targets"))
             .env("COMPARE_MAIL_DRIVER_BIN", self.file("fake/driver"))
+            .env("COMPARE_MAIL_EVALS_BIN", self.file("fake/driver"))
             .env("COMPARE_MAIL_SWARMAIL_BIN", self.file("fake/candidate"))
             .env("COMPARE_MAIL_BIN_DIR", self.file("frozen"))
             .envs(env.iter().copied());
@@ -6080,12 +6291,21 @@ fn real_sleep() -> String {
 /// The rig, built while `ambient` is in the environment of the commands it
 /// runs (so a test can show that an ambient git configuration is ignored).
 fn v4_rig_with(ambient: &[(&str, &str)]) -> V4Rig {
-    let root = fixture();
-    let r = root.path();
+    // The cost and waits rig: the plan's 24 cost and 24 waits chunks. The API
+    // chunks' dispatch is proved by
+    // `collect_v4_dispatches_api_chunks_to_run_and_to_api_mcp`.
     let plan: Vec<String> = runner::plan_v4(&p4(draft()))
         .iter()
+        .filter(|c| matches!(c, runner::Chunk::Cost { .. } | runner::Chunk::Waits { .. }))
         .map(runner::Chunk::name)
         .collect();
+    v4_rig_planned(ambient, plan)
+}
+
+/// The rig with the fake driver answering `plan`.
+fn v4_rig_planned(ambient: &[(&str, &str)], plan: Vec<String>) -> V4Rig {
+    let root = fixture();
+    let r = root.path();
     for d in ["repo/scripts", "repo/docs/evals/draft", "fake", "tools"] {
         std::fs::create_dir_all(r.join(d)).unwrap();
     }
@@ -6196,6 +6416,96 @@ fn v4_rig_with(ambient: &[(&str, &str)]) -> V4Rig {
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "fixture"]);
     V4Rig { root, plan }
+}
+
+#[test]
+fn collect_v4_dispatches_api_chunks_to_run_and_to_api_mcp() {
+    let plan: Vec<String> = [
+        "cost.swarmail.r0",
+        "api.native.mailslurper-source-build.r0.f1000",
+        "api.mcp.mailslurper-source-build.r0.f0",
+        "api.mcp.swarmail.r1.f100000",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect();
+    let rig = v4_rig_planned(&[], plan);
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 0, "{text}");
+    let log = rig.log();
+    let line = |coord: &str| {
+        log.iter()
+            .find(|l| l.starts_with("driver ") && l.contains(&format!("--chunk {coord} ")))
+            .unwrap_or_else(|| panic!("{coord}: {log:?}"))
+            .clone()
+    };
+    // A native API chunk is the driver's own run, with its target's bytes.
+    let native = line("api.native.mailslurper-source-build.r0.f1000");
+    assert!(native.starts_with("driver run --mode collect"), "{native}");
+    assert!(
+        native.contains("--bin mailslurper-source-build=") && !native.contains("--bin swarmail="),
+        "{native}"
+    );
+    // An MCP chunk is the eval crate's api-mcp, given the driver to hold with.
+    let mcp = line("api.mcp.mailslurper-source-build.r0.f0");
+    assert!(mcp.starts_with("driver api-mcp --driver "), "{mcp}");
+    assert!(mcp.contains("--bin mailslurper-source-build="), "{mcp}");
+    // api-mcp is under the bound with no scope of its own; the holder it
+    // runs is alone in the chunk's scope, through the shim it was given.
+    for coord in [
+        "api.mcp.mailslurper-source-build.r0.f0",
+        "api.mcp.swarmail.r1.f100000",
+    ] {
+        let at = |l: &&String| l.contains(&format!("--chunk {coord} "));
+        assert!(
+            log.iter()
+                .filter(at)
+                .any(|l| l.starts_with("taskset -c 0-7 ")
+                    && l.contains(" api-mcp --driver ")
+                    && !l.contains("systemd-run")),
+            "{coord}: {log:?}"
+        );
+        let scoped: Vec<&String> = log
+            .iter()
+            .filter(|l| l.starts_with("systemd-run ") && at(l))
+            .collect();
+        assert_eq!(scoped.len(), 1, "{coord}: {log:?}");
+        assert!(
+            scoped[0]
+                .starts_with("systemd-run --user --scope -p Delegate=yes --unit=mail-compare-")
+                && scoped[0].contains(" hold --mode collect ")
+                && !scoped[0].contains("api-mcp"),
+            "{}",
+            scoped[0]
+        );
+        assert!(
+            log.iter().any(|l| l.starts_with("driver hold ") && at(&l)),
+            "{coord}: {log:?}"
+        );
+    }
+    // Each shim is gone once its chunk ended.
+    let scratch = std::path::PathBuf::from(format!("{}.scratch", rig.out().display()));
+    let shims: Vec<_> = std::fs::read_dir(&scratch)
+        .map(|d| {
+            d.flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x == "hold"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(shims.is_empty(), "{shims:?}");
+    let sw = line("api.mcp.swarmail.r1.f100000");
+    assert!(
+        sw.contains("--bin swarmail=") && sw.contains("--mode collect"),
+        "{sw}"
+    );
+    // Each in its own scope, under the one bound.
+    let units: std::collections::BTreeSet<&str> = log
+        .iter()
+        .filter(|l| l.starts_with("systemd-run "))
+        .map(|l| l.split(' ').find(|w| w.starts_with("--unit=")).unwrap())
+        .collect();
+    assert_eq!(units.len(), 4);
+    assert!(text.contains("(4 chunks)"), "{text}");
 }
 
 #[test]
@@ -7809,6 +8119,17 @@ mod chunk {
                 target: TargetKind::Swarmail,
                 repetition: 0,
             };
+            self.config_of(p, binary, run, chunk)
+        }
+
+        /// The chunk `chunk` of `p` against `binary` as the candidate.
+        pub fn config_of(
+            &self,
+            p: &Protocol,
+            binary: &Path,
+            run: &str,
+            chunk: runner::Chunk,
+        ) -> (runner::Config, runner::Chunk) {
             let mut m = manifest(p, run);
             let (planned, windows) = runner::plan_chunk(p, &chunk);
             (m.planned, m.planned_windows, m.chunk) = (planned, Some(windows), Some(chunk.name()));
@@ -9459,6 +9780,112 @@ mod chunk {
             ("send_failed", Some("send: chunk deadline"))
         );
         assert_eq!(rows[0].ack_ns, None);
+    }
+
+    // ---- story B: an API chunk seals with no sink writer left ---------------
+    //
+    // The leaf hook carries a clone of the chunk's sink (its sampler writes
+    // through it). Both API producers seal by taking the sink back whole, so
+    // a spec that kept the hook past the launch made every sealing chunk
+    // panic "no sink clone outlives the chunk" — on the host's first run,
+    // every native proof.
+
+    fn api_chunk_of(surface: clients::Surface, fill: u32) -> runner::Chunk {
+        runner::Chunk::Api {
+            surface,
+            target: TargetKind::Swarmail,
+            repetition: 0,
+            fill,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_api_chunk_whose_target_never_comes_up_seals_on_both_surfaces() {
+        // The launch's failure path: the hook made the leaf's sampler, the
+        // target exited before readiness, and the chunk seals as the
+        // target's own failure (R4) — on the native surface and in `hold`.
+        for surface in [clients::Surface::Native, clients::Surface::Mcp] {
+            let rig = Rig::new(0, true);
+            let p = protocol(vec![profile("cost-a", 0, 2, 1)], 480_000);
+            let bin = exits_soon(rig.dir.path());
+            let (cfg, chunk) = rig.config_of(&p, &bin, "run-api-exit", api_chunk_of(surface, 0));
+            let manifest = cfg.manifest.clone();
+            let clock = wire::Clock(Instant::now());
+            let mut out = Vec::new();
+            let (verdict, life, sealed) = match surface {
+                clients::Surface::Native => api_chunk::run(cfg, chunk, clock).await,
+                clients::Surface::Mcp => {
+                    let input = tokio::io::BufReader::new(&b""[..]);
+                    api_chunk::hold_api(cfg, chunk, clock, input, &mut out).await
+                }
+            };
+            let runner::Verdict::WorkloadFailures(failures) = &verdict else {
+                panic!("{surface:?}: {verdict:?}")
+            };
+            assert!(
+                failures.iter().any(|f| f.contains("exited")),
+                "{surface:?}: {failures:?}"
+            );
+            assert_eq!(life.launches.len(), 1, "{surface:?}");
+            assert!(
+                life.cleanups.iter().all(targets::CleanupFacts::proved),
+                "{surface:?}"
+            );
+            let sealed = sealed.unwrap_or_else(|| panic!("{surface:?}: sealed"));
+            assert!(sealed.join("index.json").exists(), "{surface:?}");
+            let (_, res) = records::read_run(&sealed, &manifest).expect("every planned window");
+            assert!(
+                windows(&res)
+                    .iter()
+                    .all(|w| w.outcome != WindowOutcome::Measured),
+                "{surface:?}"
+            );
+            if surface == clients::Surface::Mcp {
+                // The holder's one line is its receipt.
+                let text = String::from_utf8(out).unwrap();
+                let receipt: Value = serde_json::from_str(text.trim_end()).unwrap();
+                assert_eq!(receipt["cleanup"]["cgroup_removed"], json!(true), "{text}");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_native_api_chunk_against_the_candidate_measures_and_seals() {
+        // The launch's success path, as `api_native_real_swarmail` runs it on
+        // the host but on a fixture scope: every planned cell, the sampler
+        // stopped and its clone gone before the seal, which then admits.
+        let rig = Rig::new(0, true);
+        let p = protocol(vec![profile("cost-a", 0, 2, 1)], 480_000);
+        let (cfg, chunk) = rig.config_of(
+            &p,
+            Path::new(env!("CARGO_BIN_EXE_swarmail")),
+            "run-api-native",
+            api_chunk_of(clients::Surface::Native, 0),
+        );
+        let (verdict, life, sealed) = api_chunk::run(cfg, chunk, wire::Clock(Instant::now())).await;
+        assert_eq!(verdict.exit_code(), 0, "{verdict:?}");
+        assert_eq!(life.launches.len(), 1);
+        assert!(life.cleanups.iter().all(targets::CleanupFacts::proved));
+        let sealed = sealed.expect("the chunk is sealed");
+        let admitted = records::admit(&sealed).expect("the sealed chunk admits");
+        assert!(
+            admitted
+                .resources
+                .iter()
+                .any(|r| matches!(r, ResourceRow::Sample(_))),
+            "the sampler wrote through the sink"
+        );
+        let rec: api::ApiRecord =
+            serde_json::from_slice(&std::fs::read(sealed.join("api.json")).unwrap()).unwrap();
+        let (cells, _) = api::plan_cells(clients::Surface::Native, |op| {
+            clients::capability("swarmail", clients::Surface::Native, op)
+        });
+        assert_eq!(rec.cells.len(), cells.len());
+        assert!(
+            rec.cells
+                .iter()
+                .all(|c| c.status == api::CellStatus::Measured)
+        );
     }
 }
 

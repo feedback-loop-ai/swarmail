@@ -88,6 +88,67 @@ pub fn adapter_target(kind: crate::protocol::TargetKind) -> Result<(), String> {
     }
 }
 
+/// The lock an adapter serves, its documents rechecked (spec AC2, R2): the
+/// lock at `sources`, its documents under `documents` when given (a draft
+/// lock whose documents live elsewhere), else beside the lock — the same
+/// contract as every other mode. A missing, resized, altered or escaping
+/// document, or a lock that pins no `kind`, refuses before anything serves.
+pub fn adapter_sources(
+    kind: crate::protocol::TargetKind,
+    sources: &std::path::Path,
+    documents: Option<&std::path::Path>,
+) -> Result<crate::protocol::SourceLock, String> {
+    adapter_target(kind)?;
+    let s = crate::protocol::SourceLock::parse(
+        &std::fs::read(sources).map_err(|e| format!("sources: {e}"))?,
+    )
+    .map_err(|r| r.to_string())?;
+    s.validate().map_err(|r| r.to_string())?;
+    let dir = documents.unwrap_or_else(|| {
+        sources
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."))
+    });
+    s.verify_files(dir)
+        .map_err(|r| format!("source documents: {r}"))?;
+    s.pin(kind)
+        .ok_or_else(|| format!("the source lock pins no {kind}"))?;
+    Ok(s)
+}
+
+/// An adapter mode's command line, read and its lock checked (spec AC2,
+/// R2): only the adapter's own flags, `--sources` required, and the
+/// documents where `--documents` says, else beside the lock — the same
+/// contract as every other mode — their bytes rechecked before anything
+/// is served.
+pub fn adapter_flags(
+    kind: crate::protocol::TargetKind,
+    args: &[String],
+) -> Result<
+    (
+        std::collections::BTreeMap<String, Vec<String>>,
+        crate::protocol::SourceLock,
+    ),
+    String,
+> {
+    let f = crate::runner::flags(args)?;
+    if let Some(k) = f
+        .keys()
+        .find(|k| !["endpoint", "sources", "documents", "launch", "scratch"].contains(&k.as_str()))
+    {
+        return Err(format!("unknown flag --{k}"));
+    }
+    let first = |name: &str| {
+        f.get(name)
+            .and_then(|v| v.first())
+            .map(std::path::Path::new)
+    };
+    let sources = first("sources").ok_or("--sources is required")?;
+    let s = adapter_sources(kind, sources, first("documents"))?;
+    Ok((f, s))
+}
+
 /// The launch spec for `kind`'s adapter, from the lock's pin and the same
 /// builder the wire run uses (`LaunchSpec::from_pin`): the pin's listeners,
 /// environment and config file, and the executable digest checked at launch.

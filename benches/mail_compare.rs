@@ -15,7 +15,7 @@
 //!       [--chunk cost.TARGET.rN --systemd VERSION]     (protocol 4)
 //!   mail_compare targets --protocol P --plan v4
 //!   mail_compare admit DIR
-//!   mail_compare mailpit-mcp|mailhog-mcp|mailslurper-mcp --sources S
+//!   mail_compare mailpit-mcp|mailhog-mcp|mailslurper-mcp --sources S [--documents DIR]
 //!       (--endpoint http://127.0.0.1:PORT | --launch BIN --scratch DIR)
 //!
 //!   mail_compare hold --protocol P --sources S [--documents DIR]
@@ -30,6 +30,16 @@
 //! Exit 2: prerequisite, operational, interrupt, cleanup or accounting
 //! failure — it dominates, and its output is never sealed.
 
+// The API section and its clients are shared with the eval crate and the
+// tests (accepted decision 0132 §9.2): some items serve only those.
+#[allow(dead_code)]
+#[path = "mail_compare/api.rs"]
+mod api;
+#[path = "mail_compare/api_chunk.rs"]
+mod api_chunk;
+#[allow(dead_code)]
+#[path = "mail_compare/clients/mod.rs"]
+mod clients;
 // The stream wake-up transports and their observer (decision 0132 §7, story
 // C). The SSE reader and the observer's test trace have no driver caller (no
 // selected row uses an event stream), so those parts compile unused.
@@ -352,6 +362,9 @@ fn admit_v4_mode(args: &[String]) -> i32 {
 /// or SIGINT it tears down and prints the receipts as one JSON line. It exits
 /// 0 only when cleanup is proved.
 fn hold_mode(args: &[String]) -> i32 {
+    if args.iter().any(|a| a == "--control") {
+        return hold_api_mode(args);
+    }
     let prepared = runner::hold_args(args).and_then(|h| {
         let mut f = BTreeMap::new();
         f.insert(
@@ -465,26 +478,9 @@ fn adapter_mode<B: mcp::Backend>(mode: &str, args: &[String]) -> i32 {
         Launch(Box<targets::LaunchSpec>, PathBuf),
     }
     let ready = mcp::adapter_target(kind)
-        .and_then(|()| flags(args))
-        .and_then(|f| {
-            if let Some(k) = f
-                .keys()
-                .find(|k| !["endpoint", "sources", "launch", "scratch"].contains(&k.as_str()))
-            {
-                return Err(format!("unknown flag --{k}"));
-            }
-            let path = one(&f, "sources")?;
-            let s = SourceLock::parse(&std::fs::read(path).map_err(|e| format!("sources: {e}"))?)
-                .map_err(|r| r.to_string())?;
-            s.validate().map_err(|r| r.to_string())?;
-            let dir = Path::new(path)
-                .parent()
-                .filter(|d| !d.as_os_str().is_empty());
-            s.verify_files(dir.unwrap_or(Path::new(".")))
-                .map_err(|r| format!("source documents: {r}"))?;
-            s.pin(kind)
-                .ok_or_else(|| format!("the source lock pins no {kind}"))?;
-            match (f.contains_key("endpoint"), f.contains_key("launch")) {
+        .and_then(|()| mcp::adapter_flags(kind, args))
+        .and_then(
+            |(f, s)| match (f.contains_key("endpoint"), f.contains_key("launch")) {
                 (true, false) if !f.contains_key("scratch") => {
                     Ok(Via::Endpoint(mcp::parse_endpoint(one(&f, "endpoint")?)?))
                 }
@@ -499,8 +495,8 @@ fn adapter_mode<B: mcp::Backend>(mode: &str, args: &[String]) -> i32 {
                 _ => {
                     Err("give --endpoint URL, or --launch BIN with --scratch DIR, not both".into())
                 }
-            }
-        });
+            },
+        );
     let via = match ready {
         Ok(v) => v,
         Err(e) => {
@@ -623,6 +619,110 @@ fn run(args: &[String]) -> i32 {
 /// Everything that can refuse before a single process starts: inputs,
 /// pins, binaries, output and scratch.
 fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf, Option<runner::Chunk>), String> {
+    prepare_for(clients::Surface::Native, args)
+}
+
+/// `hold --control api-v1 --mode M --chunk api.mcp.TARGET.rN.fF ...` with
+/// `run`'s other flags: the MCP API chunk's owner. It launches the target
+/// under the budget, prints its endpoints, obeys the eval crate's `api-v1`
+/// window lines on stdin and seals the chunk from the record sent last
+/// (accepted decision 0132 §6.2, story B). The receipt line follows teardown.
+fn hold_api_mode(args: &[String]) -> i32 {
+    let mut rest = Vec::new();
+    let mut it = args.iter();
+    let mut control = None;
+    while let Some(a) = it.next() {
+        if a == "--control" {
+            control = it.next().cloned();
+        } else {
+            rest.push(a.clone());
+        }
+    }
+    if control.as_deref() != Some("api-v1") {
+        eprintln!("mail_compare hold: refused before launch: --control takes api-v1");
+        return 2;
+    }
+    let (cfg, scratch, chunk) = match prepare_for(clients::Surface::Mcp, &rest) {
+        Ok((cfg, scratch, Some(chunk))) => (cfg, scratch, chunk),
+        Ok(_) => {
+            eprintln!("mail_compare hold: refused before launch: --control api-v1 needs --chunk");
+            return 2;
+        }
+        Err(e) => {
+            eprintln!("mail_compare hold: refused before launch: {e}");
+            return 2;
+        }
+    };
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("mail_compare hold: runtime: {e}");
+            return 2;
+        }
+    };
+    let clock = wire::Clock(std::time::Instant::now());
+    let keepers = cfg.keepers.clone();
+    let cleanup_bound = runner::limits(&cfg.protocol).cleanup;
+    let output = cfg.output.clone();
+    let outcome = rt.block_on(async {
+        let mut term =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+        let term = async {
+            match term.as_mut() {
+                Some(t) => t.recv().await,
+                None => std::future::pending().await,
+            }
+        };
+        let input = tokio::io::BufReader::new(tokio::io::stdin());
+        let mut out = std::io::stdout();
+        tokio::select! {
+            r = api_chunk::hold_api(cfg, chunk, clock, input, &mut out) => Some(r),
+            _ = tokio::signal::ctrl_c() => None,
+            _ = term => None,
+        }
+    });
+    rt.block_on(keepers.settle(cleanup_bound * 2));
+    let gone = std::fs::remove_dir(&scratch).is_ok();
+    match outcome {
+        None => {
+            eprintln!(
+                "mail_compare hold: interrupted; {} stays unsealed",
+                output.display()
+            );
+            2
+        }
+        Some((runner::Verdict::Infrastructure(e), _, _)) => {
+            eprintln!(
+                "mail_compare hold: infrastructure failure: {e}; {} is incomplete",
+                output.display()
+            );
+            2
+        }
+        Some(_) if !gone => {
+            eprintln!("mail_compare hold: scratch was not empty after cleanup");
+            2
+        }
+        Some((verdict, _, sealed)) => {
+            if let runner::Verdict::WorkloadFailures(f) = &verdict {
+                for line in f {
+                    eprintln!("workload failure: {line}");
+                }
+            }
+            if let Some(p) = sealed {
+                eprintln!("sealed {}", p.display());
+            }
+            verdict.exit_code()
+        }
+    }
+}
+
+fn prepare_for(
+    owner: clients::Surface,
+    args: &[String],
+) -> Result<(runner::Config, PathBuf, Option<runner::Chunk>), String> {
     let f = runner::flags(args)?;
     let known = [
         "mode",
@@ -655,7 +755,8 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf, Option<runner::C
         Some("false") => Some(false),
         Some(_) => return Err("--dirty takes true or false".into()),
     };
-    let chunk = runner::v4_preflight(
+    let chunk = runner::v4_preflight_for(
+        owner,
         &p,
         mode,
         f.get("chunk").and_then(|v| v.first()).map(String::as_str),
@@ -687,6 +788,19 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf, Option<runner::C
         Some(c) => runner::launch_specs_of(&p, &s, bins, runtimes, &[c.target()])?,
         None => runner::launch_specs(&p, &s, bins, runtimes)?,
     };
+    // An API chunk rechecks every route citation of its target against the
+    // documents just verified (accepted decision 0132 §6.2, story B).
+    if let Some(c @ runner::Chunk::Api { .. }) = &chunk {
+        let dir = match f.get("documents").and_then(|v| v.first()) {
+            Some(d) => PathBuf::from(d),
+            None => Path::new(one(&f, "sources")?)
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_default(),
+        };
+        api_chunk::check_citations(c.target(), &s, &dir, Path::new("."))
+            .map_err(|w| format!("api citations: {}", w.join("; ")))?;
+    }
     let output = PathBuf::from(one(&f, "output")?);
     if output.exists() {
         return Err("--output already exists; runs are never overwritten or resumed".into());
@@ -788,6 +902,7 @@ fn execute(cfg: runner::Config, scratch: PathBuf, chunk: Option<runner::Chunk>) 
         tokio::select! {
             r = async {
                 match chunk {
+                    Some(c @ runner::Chunk::Api { .. }) => api_chunk::run(cfg, c, clock).await,
                     Some(c) => runner::run_chunk(cfg, c, clock).await,
                     None => runner::run(cfg, clock).await,
                 }
