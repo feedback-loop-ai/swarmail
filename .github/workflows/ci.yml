@@ -102,9 +102,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    # Finite: a wedged test fails in half an hour, not GitHub's 360-minute
-    # default (issue #104).
-    timeout-minutes: 30
+    # Finite: a wedged test fails in 45 minutes, not GitHub's 360-minute
+    # default (issue #104). Raised from 30 on 2026-11-19 (operator): the job
+    # had reached about 27 minutes on main.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
