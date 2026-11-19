@@ -837,10 +837,13 @@ case "$mode" in
       chunk_unit="$unit"
       program=("$driver" run)
       scope=(systemd-run --user --scope -p Delegate=yes "--unit=$unit" --)
-      hold_shim='' client_unit=''
+      hold_shim='' client_unit='' chunk_out="$output/chunks/$coord"
       case "$coord" in
         api.mcp.*)
           hold_shim="$scratch_root/$coord.hold"
+          # Written privately, beside the scratch, and published under
+          # chunks/ only once both scopes are judged clean (issue #385).
+          chunk_out="$scratch_root/$coord.pending"
           client_unit="$unit-client.scope"
           client_handshake="$scratch_root/$coord.client-handshake.json"
           client_receipt="$scratch_root/$coord.client-receipt.json"
@@ -852,7 +855,7 @@ case "$mode" in
       esac
       chunk_cmd=(${scope[@]+"${scope[@]}"}
         "${program[@]}" --mode collect --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"}
-        --output "$output/chunks/$coord" --scratch "$scratch_root/$coord" --run-id "$run_id"
+        --output "$chunk_out" --scratch "$scratch_root/$coord" --run-id "$run_id"
         --chunk "$coord" --systemd "$systemd_version")
       if [ "$target" = swarmail ]; then
         chunk_cmd+=(--bin "swarmail=$candidate")
@@ -943,7 +946,7 @@ case "$mode" in
       # that was interrupted. A chunk that counts as 2 has failed; any other
       # has sealed.
       case "$status" in
-        0|1) [ -f "$output/chunks/$coord/index.json" ] || status=2 ;;
+        0|1) [ -f "$chunk_out/index.json" ] || status=2 ;;
         *) status=2 ;;
       esac
       [ "$interrupted" = 0 ] || status=2
@@ -967,6 +970,18 @@ case "$mode" in
           || blocked ledger "cannot write the ledger entry of $coord"
       }
       write_entry
+      # An MCP chunk's directory is published only now, after its ledger
+      # entry: one rename(2) onto a name that does not exist, so a reader of
+      # chunks/ sees all of it or none, and never one whose client scope was
+      # not proved clean. A failed chunk's rows stay where they were written.
+      if [ -n "$client_unit" ] && [ "$status" -ne 2 ]; then
+        if [ "$interrupted" != 0 ] || [ -e "$output/chunks/$coord" ] \
+          || ! mv -T -n "$chunk_out" "$output/chunks/$coord" 2>/dev/null \
+          || [ ! -f "$output/chunks/$coord/index.json" ] || [ -e "$chunk_out" ]; then
+          status=2
+          write_entry
+        fi
+      fi
       # The chunk is let go first and the interrupt read after: a signal
       # while it was still owned was only recorded, and is seen here, so the
       # entry is written again, with 2; one after it was let go ends the mode
@@ -978,7 +993,7 @@ case "$mode" in
       fi
       if [ "$status" -eq 2 ]; then
         # Nothing is resumed, overwritten or removed: the run is incomplete.
-        blocked "chunk-$coord" "the chunk ended in an infrastructure failure (interrupted: $interrupted, scope clean: $scope_clean${client_unit:+, client scope: $client_verdict, see $output/ledger/$coord.json}); $output is incomplete and is never resumed"
+        blocked "chunk-$coord" "the chunk ended in an infrastructure failure (interrupted: $interrupted, scope clean: $scope_clean${client_unit:+, client scope: $client_verdict, see $output/ledger/$coord.json; unpublished rows in $chunk_out}); $output is incomplete and is never resumed"
       fi
       [ -z "$client_unit" ] || rm -f "$client_handshake" "$client_receipt"
       [ "$status" -eq 0 ] || any_failed=1

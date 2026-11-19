@@ -6355,6 +6355,8 @@ case "$1" in
       case "$1" in --driver) drv="$2"; shift 2 ;; *) args+=("$1"); shift ;; esac
     done
     unit=${FAKE_CLIENT_UNIT:-none}
+    # FAKE_SQUAT: a directory that takes the chunk's published name first.
+    [ -z "${FAKE_SQUAT:-}" ] || mkdir -p "$FAKE_SQUAT"
     case "${FAKE_ADAPTER:-}" in
       survivor)
         (
@@ -6900,6 +6902,14 @@ fn collect_v4_names_an_adapter_child_that_outlives_its_mcp_chunk_and_stops() {
     assert!(chunk_lines(&log, "driver run").is_empty(), "{log:?}");
     assert!(chunk_lines(&log, "driver admit-v4").is_empty(), "{log:?}");
     assert!(!rig.out().join("reproduce.txt").exists());
+    // No index is published: the chunk's rows stay unpublished in scratch.
+    assert!(!rig.out().join("chunks/api.mcp.mailpit.r0.f0").exists());
+    let pending = PathBuf::from(format!(
+        "{}.scratch/api.mcp.mailpit.r0.f0.pending",
+        rig.out().display()
+    ));
+    assert!(pending.join("index.json").exists(), "{text}");
+    assert!(text.contains("unpublished rows in"), "{text}");
     // The receipt came first, then the client scope was killed and stopped.
     let judged = log
         .iter()
@@ -6940,6 +6950,13 @@ fn collect_v4_seals_an_mcp_chunk_whose_adapter_child_was_reaped() {
     let r = entry.client.unwrap();
     assert!(r.unit.ends_with("-api.mcp.mailpit.r0.f0-client.scope"));
     r.proves_clean(&r.unit).unwrap();
+    // Published under chunks/ only after its judgment, whole, by rename.
+    assert!(
+        rig.out()
+            .join("chunks/api.mcp.mailpit.r0.f0/index.json")
+            .exists()
+    );
+    assert!(!PathBuf::from(format!("{}.scratch", rig.out().display())).exists());
     let log = rig.log();
     assert_eq!(
         chunk_lines(&log, "driver admit-v4").len(),
@@ -6950,6 +6967,21 @@ fn collect_v4_seals_an_mcp_chunk_whose_adapter_child_was_reaped() {
         !log.iter().any(|l| l.starts_with("systemctl --user kill")),
         "{log:?}"
     );
+}
+
+#[test]
+fn collect_v4_never_publishes_an_mcp_chunk_over_a_name_already_taken() {
+    let rig = client_rig();
+    let squat = rig.out().join("chunks/api.mcp.mailpit.r0.f0");
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[("FAKE_SQUAT", squat.to_str().unwrap())]);
+    assert_eq!(code, 2, "{text}");
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 1);
+    // Clean scopes, and still no publication: the entry says 2.
+    assert_eq!(ledger[0]["client"]["verdict"], "clean");
+    assert_eq!(ledger[0]["exit"], 2);
+    assert_eq!(std::fs::read_dir(&squat).unwrap().count(), 0, "untouched");
+    assert!(chunk_lines(&rig.log(), "driver run").is_empty());
 }
 
 #[test]
