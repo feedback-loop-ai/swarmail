@@ -1,0 +1,42 @@
+# Plan for MCP chunk cleanup
+
+## Technical context and constitution check
+
+Use the existing Linux cgroup v2 user manager, Bash collector and Rust comparison harness. The accepted 0132 addendum already requires exit 2 and an unsealed chunk on cleanup failure. This design implements that ruling without a new decision. Keep the existing target receipt, measurement windows, idle gaps and fidelity/fill outcomes. Product paths for 0001–0005 stay outside the change. Reuse the shared clients and their eval #[path] build. Use existing packages common to both locks, with no license change.
+
+## Research and panel ruling
+
+Adopt both positions’ sibling scope. It costs a user-manager launch and an identity handshake per MCP chunk. A post-exit PPID walk loses reparented descendants, and a second process-group signal supplies no membership evidence. The bridge in evals/src/bridge.rs runs inside api-mcp, so its lifetime is covered by observing the containing process. Retain evals/src/apibench.rs’s existing orderly bridge shutdown, adapter reap and holder receipt validation.
+
+Adopt robustness’s external witness, recursive observation and durable failure diagnostics. Choose simplicity’s private pending index over staging and moving the entire artifact directory. This preserves the existing path for partial rows and diagnostics, at the cost of splitting index preparation from publication. A holder-published index followed by deletion would briefly admit a failed chunk. A persistent supervisor or adapter registry would duplicate ownership without improving the cgroup proof.
+
+## Project structure and execution
+
+1. Factor the MCP launch/judgment path in scripts/compare-mail.sh into a single callable chunk operation shared with tests/mail_compare/api_section.rs. The collector and host-test parent stay outside both units. Give the client scope a fresh invocation-specific unit and keep the existing exec-only hold shim with Delegate=yes. Adapter invocations exec in place. Before exec of api-mcp, a minimal entry shim records its unified kernel membership to an exclusive private handshake file. Match the expected unit, invocation and cgroup v2 mount to this path. Acquire ownership before launch, reject collisions and avoid looking up arbitrary unit names supplied by a workload.
+2. Wait on the direct command with bounded execution and file-backed output. At command exit or forced cutoff inspect the established client cgroup immediately, before polling the holder or issuing corrective cleanup. Read cgroup.events populated recursively (the kernel’s subtree count); verify disappearance via the captured identity under a readable, verified mount. Treat lookup failures other than confirmed removal as unknown. For population, sample owned subtree members and /proc names with caps on entries, depth, bytes and time. Escape names for both ledger and console. Persist the verdict before bounded kill/stop of the owned units. Preserve the interrupt trap across launch and both judgments.
+3. Use one absolute monotonic cutoff from chunk start. Reserve time even for the current 560 s TERM plus 30 s KILL path. Give client evidence up to five seconds from judgment start, clipping every probe and diagnostic to the remaining allowance. Clip holder polling and both units’ containment to the same overall deadline, reserving time for recording failure. Never add both old scope_end budgets sequentially to 590 s. An exhausted sub-budget records unknown or preserves a previously observed survivor. Update the wrapper’s worst-case sums and exercise them under controlled time.
+4. In benches/mail_compare/api_chunk.rs and records.rs reuse RunDir’s artifact validation, hashes and index serialization. For a checked MCP launch, pass an explicit private same-filesystem destination for the prepared index outside the listed artifacts. Have the external owner persist the matched successful judgments and ledger entry before installing the complete index atomically and without replacement. Use that publication as the ownership commit point, serializing cancellation with it. Refuse duplicate publication, write errors, interrupted preparation or an unexpected existing destination. Untouched callers keep their current finalize path. Check evals/src/apibench.rs and the hold argument forwarding end to end.
+5. Extend benches/mail_compare/report.rs’s v4 ledger reader and admission. Keep scope_clean specific to the delegated holder. Bind the client result to the run, coordinate and expected unit. Represent clean (empty or verified removed), survivor (population and bounded member detail), and unknown (reason). Require affirmative matching evidence for every MCP entry and surface it in the report. Failed runs retain the ledger and diagnostic even when no aggregate report exists. Preserve the previous field contract for other coordinates.
+6. Extend tests/mail_compare/v4.rs at the collector boundary and tests/mail_compare/api_section.rs at the real host boundary. In ordinary CI use the existing command fixtures and a controlled membership source driven by the actual adapter descendant’s readiness and liveness. Exercise the production classifier, reporting, publication and stop decision. Reserve kernel-to-systemd placement proof for the dispatcher. Apply `#[cfg_attr(not(target_os = "linux"), ignore = "bind ownership is read from /proc (Linux)")]` to binary, /proc and cgroup tests. Exercise unsupported-platform refusal without launching a process. Check expired deadlines before any connect; bound readiness, process waits and fixture teardown.
+7. Update docs/evals/README.md’s collector and host-proof sections and append R30 to specs/api-latency/tasks.md for R29 independent 4. Preserve dated findings and distinguish implementation/discovery from dispatcher execution. Record the scope choice, rationale and observed durations per changed test binary in the delivery ledger.
+
+## Quickstart and dispatcher handoff
+
+Use cargo test --locked --test mail_compare for focused collector and placement tests. Build the test executable with --no-run --message-format=json, select Cargo’s mail_compare test artifact, and check its --ignored --list output. The dispatcher runs each row separately from the repository root. Set MAIL_COMPARE_BIN to the built driver and SWARMAIL_EVALS_BIN to the built eval binary for all rows. Verify the target bytes against the draft source lock and record candidate identities.
+
+| Exact test | Additional pinned executable |
+|---|---|
+| api_section::api_mcp_bridge_real_mailpit | MAIL_COMPARE_MAILPIT |
+| api_section::api_mcp_bridge_real_mailhog | MAIL_COMPARE_MAILHOG |
+| api_section::api_mcp_bridge_real_mailslurper_source_build | MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD |
+| api_section::api_mcp_real_swarmail | Candidate from Cargo’s CARGO_BIN_EXE_swarmail |
+
+In the README expand each row into an individual invocation of `timeout 600 taskset -c 0-31 "$bin" --ignored --exact "$test" --test-threads=1 --nocapture`, with exact environment and digest preflight. Record /proc/loadavg before and after, exit status and complete output per proof. The dispatcher attaches logs to the PR before merge. Locally, explicitly unset a required variable per proof and assert the named refusal and one failed test; a filter matching zero tests is a false pass.
+
+## Risks
+
+- A fresh nonexistent unit also looks inactive. Require positive placement before accepting teardown. Recursive population covers nested children when the root process list is empty.
+- A process can vanish during diagnostics. Preserve the observed unit population, record the identity race and never signal a rediscovered PID by name. The pinned programs and user manager are trusted; intentional migration by privileged code is outside the measurement model.
+- A fixture child inheriting stderr can hang output collection. Use files, bounded event acknowledgments and unconditional bounded fixture teardown. The surviving child stays blocked on a fixture event until the failure has been witnessed.
+- A stale or half-written index could admit incomplete evidence. Keep scratch evidence outside the artifact listing, publish through a single no-clobber operation and refuse resumption. Kill or I/O failure before completion leaves an incomplete run.
+- Shared-host latency can exceed polling expectations. Use controlled events or paused time for CI, assert mechanism and status, and retain real systemd checks as individual dispatcher obligations.
