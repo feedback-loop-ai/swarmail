@@ -3015,16 +3015,22 @@ mod parse_gate_tests {
         let running = Arc::new(AtomicUsize::new(0));
         let high_water = Arc::new(AtomicUsize::new(0));
         let finished = Arc::new(AtomicUsize::new(0));
+        // Parks on the latch: a running parse counts here under the latch's
+        // lock, just before it waits, so the latch opens only on parses that
+        // are actually parked (a loaded host can otherwise open it before
+        // either has reached its wait).
+        let parked = Arc::new(AtomicUsize::new(0));
         let open: Latch = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let latch = OpenOnDrop(open.clone());
 
         let mut sessions = Vec::new();
         for _ in 0..8 {
-            let (store, running, high_water, finished, open) = (
+            let (store, running, high_water, finished, parked, open) = (
                 store.clone(),
                 running.clone(),
                 high_water.clone(),
                 finished.clone(),
+                parked.clone(),
                 open.clone(),
             );
             sessions.push(tokio::spawn(async move {
@@ -3036,6 +3042,7 @@ mod parse_gate_tests {
                     let (flag, signal) = &*open;
                     let mut released = flag.lock().unwrap();
                     while !*released {
+                        parked.fetch_add(1, Ordering::SeqCst);
                         released = signal.wait(released).unwrap();
                     }
                     drop(released);
@@ -3046,8 +3053,14 @@ mod parse_gate_tests {
             }));
         }
 
-        until("two parses running and six sessions waiting", || {
-            running.load(Ordering::SeqCst) == 2 && store.parse_waits_for_test() == 6
+        // At least two parks: a spurious wakeup re-parks a parse and counts again.
+        // `&`, not `&&`: a short-circuit is a branch whose sides depend on the
+        // scheduler, and the exact coverage gate would count the side a run
+        // happened not to take.
+        until("two parses parked and six sessions waiting", || {
+            (running.load(Ordering::SeqCst) == 2)
+                & (parked.load(Ordering::SeqCst) >= 2)
+                & (store.parse_waits_for_test() == 6)
         })
         .await;
         assert_eq!(high_water.load(Ordering::SeqCst), 2);

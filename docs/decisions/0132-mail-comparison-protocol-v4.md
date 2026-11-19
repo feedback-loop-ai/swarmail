@@ -754,3 +754,28 @@ the text above is unchanged.
   deadline (a cell the deadline reaches during the gap is cut, never
   started). Every cell therefore starts in a fresh window, and a refusal it
   shows is its own load's. The native surface has no such limit and no gap.
+
+## Addendum 2026-11-19 (operator ruling): story B's open host rows and MCP cleanup
+
+Story B's final host run (PR #383, 13 proofs at 050b522) left two questions
+the accepted text did not settle. The operator ruled on both on 2026-11-19;
+the text above is unchanged.
+
+- **The source-built MailSlurper's API routes report `fill_not_reached`.**
+  At §6.4's 1,000-message fill, the source-built MailSlurper never shows
+  every message it accepted within 300 s, natively or through its bridge.
+  That is §6.4's documented outcome, and it is these two routes' result at
+  the protocol fill. The fill is not lowered for one tool. A lower level
+  would no longer measure what every other target is measured on. The
+  routes' operation matrix, exactness and waits are therefore unmeasured,
+  and the report says so. The native and bridged host proofs pass exactly
+  on that outcome, and on nothing weaker. A run that reaches the fill is
+  still measured and judged like any other.
+- **An MCP chunk's bridge and adapter cleanup is proved, not excepted.**
+  collect-v4 keeps the holder as the only process of its chunk's delegated
+  scope. `api-mcp`, the bridge and the adapters run outside it, and their
+  cleanup today rests on `timeout`'s process-group signal. Before story E's
+  collection, a bounded check after every MCP chunk proves that no process
+  the chunk started survives it. A survivor is an infrastructure failure
+  (exit 2, unsealed). The work is #385. Until it lands, no MCP chunk is
+  collected.
