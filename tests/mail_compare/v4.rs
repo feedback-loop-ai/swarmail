@@ -5139,6 +5139,7 @@ fn build_run(b: Build) -> Fixture {
             load_after: "0.15 0.20 0.30 1/200 99".into(),
             scope_clean: true,
             driver: "/driver/mail_compare".into(),
+            client: None,
         };
         if let Some((who, edit)) = b.ledger
             && who == name
@@ -5625,6 +5626,144 @@ fn admit_v4_refuses_an_unclean_scope() {
     );
 }
 
+/// A ledger entry of `coordinate` with `client`.
+fn client_entry(coordinate: &str, client: Option<client_scope::Receipt>) -> report::LedgerEntry {
+    report::LedgerEntry {
+        coordinate: coordinate.into(),
+        command: "timeout --kill-after=30 560 taskset -c 0-7 systemd-run …".into(),
+        exit: 0,
+        wall_ms: 1,
+        load_before: "0".into(),
+        load_after: "0".into(),
+        scope_clean: true,
+        driver: "/driver/mail_compare".into(),
+        client,
+    }
+}
+
+fn clean_receipt(unit: &str) -> client_scope::Receipt {
+    client_scope::Receipt {
+        unit: unit.into(),
+        cgroup: Some(format!(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/{unit}"
+        )),
+        verdict: client_scope::Verdict::Clean,
+        observation: "removed".into(),
+        members: vec![],
+        complete: true,
+        notes: vec![],
+    }
+}
+
+#[test]
+fn admission_binds_an_mcp_chunks_client_receipt_to_its_run_coordinate_and_verdict() {
+    use client_scope::Verdict;
+    let mcp = runner::Chunk::Api {
+        surface: clients::Surface::Mcp,
+        target: TargetKind::Mailpit,
+        repetition: 0,
+        fill: 0,
+    };
+    let native = runner::Chunk::Api {
+        surface: clients::Surface::Native,
+        target: TargetKind::Mailpit,
+        repetition: 0,
+        fill: 0,
+    };
+    let run = "collect-v4-20261120T000000Z-42";
+    let unit = report::client_unit(run, &mcp.name()).unwrap();
+    assert_eq!(
+        unit,
+        "mail-compare-20261120T000000Z-42-api.mcp.mailpit.r0.f0-client.scope"
+    );
+    let check = |c: &runner::Chunk, r: Option<client_scope::Receipt>| {
+        report::check_client(c, run, &client_entry(&c.name(), r))
+    };
+    check(&mcp, Some(clean_receipt(&unit))).unwrap();
+    // An empty scope is as clean as a removed one.
+    let mut empty = clean_receipt(&unit);
+    empty.observation = "empty".into();
+    check(&mcp, Some(empty)).unwrap();
+    // Each part of the evidence, mutated alone, refuses.
+    type Mutation = (&'static str, fn(&mut client_scope::Receipt), &'static str);
+    let mutations: [Mutation; 7] = [
+        (
+            "another run's unit",
+            |r| r.unit = r.unit.replace("-42-", "-43-"),
+            "is for",
+        ),
+        (
+            "another coordinate's",
+            |r| r.unit = r.unit.replace("r0.f0", "r1.f0"),
+            "is for",
+        ),
+        (
+            "a foreign cgroup",
+            |r| r.cgroup = Some("/user.slice/other.scope".into()),
+            "cgroup",
+        ),
+        ("no cgroup", |r| r.cgroup = None, "cgroup"),
+        (
+            "a survivor",
+            |r| r.verdict = Verdict::Survivor,
+            "not proved clean",
+        ),
+        (
+            "an unknown",
+            |r| r.verdict = Verdict::Unknown,
+            "not proved clean",
+        ),
+        (
+            "a named member",
+            |r| {
+                r.members.push(client_scope::Member {
+                    pid: 7,
+                    name: Some("mailpit-mcp".into()),
+                    cgroup: "/".into(),
+                })
+            },
+            "not proved clean",
+        ),
+    ];
+    for (what, edit, want) in mutations {
+        let mut r = clean_receipt(&unit);
+        edit(&mut r);
+        let e = check(&mcp, Some(r)).expect_err(what);
+        assert!(
+            e.contains(want) && e.contains("api.mcp.mailpit.r0.f0"),
+            "{what}: {e}"
+        );
+    }
+    let mut partial = clean_receipt(&unit);
+    partial.complete = false;
+    assert!(check(&mcp, Some(partial)).is_err());
+    let e = check(&mcp, None).unwrap_err();
+    assert!(e.contains("no client receipt"), "{e}");
+    // A run id that is not collect-v4's names no client scope.
+    let e = report::check_client(
+        &mcp,
+        "api-real",
+        &client_entry(&mcp.name(), Some(clean_receipt(&unit))),
+    )
+    .unwrap_err();
+    assert!(e.contains("names no collect-v4 client scope"), "{e}");
+    // Every other coordinate keeps the previous field contract: none.
+    check(&native, None).unwrap();
+    let e = check(&native, Some(clean_receipt(&unit))).unwrap_err();
+    assert!(e.contains("only an MCP chunk"), "{e}");
+    // The field is absent from a native entry's bytes, and round-trips.
+    let bytes = serde_json::to_vec(&client_entry("cost.mailpit.r0", None)).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("client"));
+    let with = client_entry(&mcp.name(), Some(clean_receipt(&unit)));
+    let back: report::LedgerEntry =
+        serde_json::from_slice(&serde_json::to_vec(&with).unwrap()).unwrap();
+    assert_eq!(back, with);
+    // An unknown member of the receipt is refused, not ignored.
+    let mut v = serde_json::to_value(&with).unwrap();
+    v["client"]["extra"] = json!(1);
+    assert!(serde_json::from_value::<report::LedgerEntry>(v).is_err());
+}
+
 #[test]
 fn admit_v4_refuses_a_second_seal() {
     let f = build_run(Build::default());
@@ -6032,8 +6171,17 @@ fn admit_run_still_refuses_a_protocol_4_directory() {
 
 const FAKE_UNAME: &str = "#!/bin/sh\nif [ \"$1\" = -s ]; then echo \"${FAKE_UNAME:-Linux}\"; else echo \"${FAKE_UNAME:-Linux}\"; fi\n";
 const FAKE_NPROC: &str = "#!/bin/sh\nif [ \"$1\" = --all ]; then echo \"${FAKE_NPROC_ALL:-${FAKE_NPROC:-32}}\"; else echo \"${FAKE_NPROC:-32}\"; fi\n";
-/// A `sleep` that returns at once: the wrapper's polls take no time.
-const FAKE_SLEEP: &str = "#!/bin/sh\nexit 0\n";
+/// A `sleep` that returns at once: the wrapper's polls take no time. Under
+/// FAKE_WORST it advances the controlled clock by what it was asked.
+const FAKE_SLEEP: &str = r#"#!/bin/bash
+if [ -n "${FAKE_WORST:-}" ]; then
+  case "$1" in *.*) b=${1%.*}${1#*.} ;; *) b=${1}00 ;; esac
+  read -r up _ < "$COMPARE_MAIL_UPTIME"
+  cs=$(( ${up%.*}${up#*.} + 10#$b ))
+  printf '%d.%02d 0\n' $((cs / 100)) $((cs % 100)) > "$COMPARE_MAIL_UPTIME"
+fi
+exit 0
+"#;
 /// A `cargo` that logs, and leaves what the wrapper looks for.
 const FAKE_CARGO: &str = r#"#!/bin/bash
 echo "cargo $*" >> "$FAKE_LOG"
@@ -6053,6 +6201,22 @@ const FAKE_TASKSET: &str =
 const FAKE_SYSTEMD_RUN: &str = "#!/bin/bash\necho \"systemd-run $*\" >> \"$FAKE_LOG\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n";
 const FAKE_TIMEOUT: &str = r#"#!/bin/bash
 echo "timeout $*" >> "$FAKE_LOG"
+# FAKE_WORST: every bounded call takes its whole bound on the controlled
+# clock (COMPARE_MAIL_UPTIME, in seconds with hundredths).
+if [ -n "${FAKE_WORST:-}" ]; then
+  case "$1" in
+    --kill-after=*) b=$(( ${1#--kill-after=} + $2 ))00; shift 2 ;;
+    *.*) b=${1%.*}${1#*.}; shift 1 ;;
+    *) b=${1}00; shift 1 ;;
+  esac
+  case "$*" in *"--chunk "*) read -r up _ < "$COMPARE_MAIL_UPTIME"; echo "chunk-start $up" >> "$FAKE_LOG" ;; esac
+  "$@"
+  st=$?
+  read -r up _ < "$COMPARE_MAIL_UPTIME"
+  cs=$(( ${up%.*}${up#*.} + 10#$b ))
+  printf '%d.%02d 0\n' $((cs / 100)) $((cs % 100)) > "$COMPARE_MAIL_UPTIME"
+  exit $st
+fi
 case "$1" in --kill-after=*) shift 2 ;; *) shift 1 ;; esac
 if [ -s "${FAKE_TIMEOUTS:-/dev/null}" ]; then
   while read -r coord; do
@@ -6124,14 +6288,90 @@ case "$1" in
       *" --seal "*) exit "${FAKE_SEAL_EXIT:-${FAKE_ADMIT_EXIT:-0}}" ;;
       *) exit "${FAKE_VERIFY_EXIT:-${FAKE_ADMIT_EXIT:-0}}" ;;
     esac ;;
+  client-enter)
+    # The handshake from inside the client scope, then the workload in
+    # place. The fake scope's membership is a file every process that
+    # enters it appends its pid to (FAKE_DIR/members.<unit>): the kernel's
+    # inheritance, done by hand.
+    unit='' hs=''
+    shift
+    while [ "$1" != -- ]; do
+      case "$1" in --unit) unit="$2" ;; --handshake) hs="$2" ;; esac
+      shift 2
+    done
+    shift
+    [ ! -e "$hs" ] || exit 2
+    printf '{"unit":"%s","cgroup":"/user.slice/%s","pid":%s}' "$unit" "$unit" $$ > "$hs"
+    echo $$ >> "$FAKE_DIR/members.$unit"
+    FAKE_CLIENT_UNIT=$unit exec "$@" ;;
+  client-judge)
+    # FAKE_CLIENT: lines `<coordinate> <how>`; how is `none` (no receipt,
+    # status 2) or `unknown`. Otherwise the fake scope is judged by its
+    # members' liveness: any alive is a survivor, named by pid and comm.
+    unit='' hs='' out=''
+    shift
+    while [ $# -gt 0 ]; do
+      case "$1" in --unit) unit="$2" ;; --handshake) hs="$2" ;; --out) out="$2" ;; esac
+      shift 2
+    done
+    how=''
+    if [ -s "${FAKE_CLIENT:-/dev/null}" ]; then
+      while read -r coord h; do
+        case "$unit" in *"-$coord-client.scope") how="$h" ;; esac
+      done < "$FAKE_CLIENT"
+    fi
+    case "$how" in
+      none) exit 2 ;;
+      unknown)
+        printf '{"unit":"%s","cgroup":null,"verdict":"unknown","observation":"the first observation was cut at the judgment'"'"'s deadline","members":[],"complete":false,"notes":[]}' "$unit" > "$out"
+        exit 2 ;;
+    esac
+    if [ ! -s "$hs" ]; then
+      printf '{"unit":"%s","cgroup":null,"verdict":"unknown","observation":"no handshake: the workload never entered its client scope","members":[],"complete":false,"notes":[]}' "$unit" > "$out"
+      exit 2
+    fi
+    members=''
+    while read -r pid; do
+      if kill -0 "$pid" 2>/dev/null; then
+        name=$(tr -dc 'a-z0-9-' < "/proc/$pid/comm" 2>/dev/null)
+        members="$members${members:+,}{\"pid\":$pid,\"name\":\"$name\",\"cgroup\":\"/\"}"
+      fi
+    done < "$FAKE_DIR/members.$unit"
+    if [ -n "$members" ]; then
+      printf '{"unit":"%s","cgroup":"/user.slice/%s","verdict":"survivor","observation":"populated","members":[%s],"complete":true,"notes":[]}' "$unit" "$unit" "$members" > "$out"
+      exit 2
+    fi
+    printf '{"unit":"%s","cgroup":"/user.slice/%s","verdict":"clean","observation":"removed","members":[],"complete":true,"notes":[]}' "$unit" "$unit" > "$out"
+    exit 0 ;;
   api-mcp)
     # The eval crate's api-mcp: it runs its --driver's `hold`, as the real
-    # one spawns the holder, and ends with it.
+    # one spawns the holder, and ends with it. With FAKE_ADAPTER set it
+    # first starts an adapter whose child ignores TERM and lives on, blocked
+    # on the fixture's FIFO, after it acknowledged its readiness (`survivor`);
+    # or one the adapter reaps before it exits (`reaped`).
     drv='' args=()
     shift
     while [ $# -gt 0 ]; do
       case "$1" in --driver) drv="$2"; shift 2 ;; *) args+=("$1"); shift ;; esac
     done
+    unit=${FAKE_CLIENT_UNIT:-none}
+    case "${FAKE_ADAPTER:-}" in
+      survivor)
+        (
+          trap '' TERM
+          echo "$BASHPID" >> "$FAKE_DIR/members.$unit"
+          echo "$BASHPID" > "$FAKE_ADAPTER_ACK"
+          read -r _ < "$FAKE_ADAPTER_FIFO"
+        ) </dev/null >/dev/null 2>&1 &
+        n=0
+        until [ -s "$FAKE_ADAPTER_ACK" ] || [ "$n" -ge 500 ]; do command -p sleep 0.01; n=$((n + 1)); done ;;
+      reaped)
+        (
+          echo "$BASHPID" >> "$FAKE_DIR/members.$unit"
+          echo "$BASHPID" > "$FAKE_ADAPTER_ACK"
+        ) </dev/null >/dev/null 2>&1 &
+        wait $! ;;
+    esac
     exec "$drv" hold "${args[@]}" ;;
   run|hold)
     out='' chunk=''
@@ -6442,7 +6682,11 @@ fn collect_v4_dispatches_api_chunks_to_run_and_to_api_mcp() {
     let log = rig.log();
     let line = |coord: &str| {
         log.iter()
-            .find(|l| l.starts_with("driver ") && l.contains(&format!("--chunk {coord} ")))
+            .find(|l| {
+                l.starts_with("driver ")
+                    && !l.starts_with("driver client-")
+                    && l.contains(&format!("--chunk {coord} "))
+            })
             .unwrap_or_else(|| panic!("{coord}: {log:?}"))
             .clone()
     };
@@ -6457,33 +6701,65 @@ fn collect_v4_dispatches_api_chunks_to_run_and_to_api_mcp() {
     let mcp = line("api.mcp.mailslurper-source-build.r0.f0");
     assert!(mcp.starts_with("driver api-mcp --driver "), "{mcp}");
     assert!(mcp.contains("--bin mailslurper-source-build="), "{mcp}");
-    // api-mcp is under the bound with no scope of its own; the holder it
-    // runs is alone in the chunk's scope, through the shim it was given.
+    // api-mcp is under the bound in a fresh client scope of its own, not
+    // delegated, entered through the driver's handshake (issue #385); the
+    // holder it runs is alone in the chunk's delegated scope, through the
+    // shim it was given.
     for coord in [
         "api.mcp.mailslurper-source-build.r0.f0",
         "api.mcp.swarmail.r1.f100000",
     ] {
         let at = |l: &&String| l.contains(&format!("--chunk {coord} "));
+        let client = format!("-{coord}-client");
         assert!(
-            log.iter()
-                .filter(at)
-                .any(|l| l.starts_with("taskset -c 0-7 ")
-                    && l.contains(" api-mcp --driver ")
-                    && !l.contains("systemd-run")),
+            log.iter().filter(at).any(|l| l.starts_with(&format!(
+                "taskset -c 0-7 systemd-run --user --scope --quiet --unit=mail-compare-"
+            )) && l.contains(&format!("{client} -- "))
+                && l.contains(&format!(" client-enter --unit mail-compare-"))
+                && l.contains(" api-mcp --driver ")
+                && !l.contains("Delegate")),
             "{coord}: {log:?}"
         );
         let scoped: Vec<&String> = log
             .iter()
             .filter(|l| l.starts_with("systemd-run ") && at(l))
             .collect();
-        assert_eq!(scoped.len(), 1, "{coord}: {log:?}");
+        assert_eq!(scoped.len(), 2, "{coord}: {log:?}");
         assert!(
-            scoped[0]
-                .starts_with("systemd-run --user --scope -p Delegate=yes --unit=mail-compare-")
-                && scoped[0].contains(" hold --mode collect ")
-                && !scoped[0].contains("api-mcp"),
+            scoped[0].starts_with("systemd-run --user --scope --quiet --unit=mail-compare-")
+                && scoped[0].contains(&format!("{client} -- "))
+                && !scoped[0].contains("Delegate"),
             "{}",
             scoped[0]
+        );
+        assert!(
+            scoped[1]
+                .starts_with("systemd-run --user --scope -p Delegate=yes --unit=mail-compare-")
+                && scoped[1].contains(" hold --mode collect ")
+                && !scoped[1].contains("api-mcp")
+                && !scoped[1].contains("client"),
+            "{}",
+            scoped[1]
+        );
+        // The judgment ran on the client unit the handshake names, and the
+        // ledger carries its clean receipt beside the holder's scope.
+        assert!(
+            log.iter().any(
+                |l| l.starts_with("driver client-judge --unit mail-compare-")
+                    && l.contains(&format!("{client}.scope "))
+            ),
+            "{coord}: {log:?}"
+        );
+        let entry =
+            json(&std::fs::read(rig.out().join("ledger").join(format!("{coord}.json"))).unwrap());
+        assert_eq!(entry["scope_clean"], true, "{entry}");
+        assert_eq!(entry["client"]["verdict"], "clean", "{entry}");
+        assert!(
+            entry["client"]["unit"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!("{client}.scope")),
+            "{entry}"
         );
         assert!(
             log.iter().any(|l| l.starts_with("driver hold ") && at(&l)),
@@ -6505,14 +6781,259 @@ fn collect_v4_dispatches_api_chunks_to_run_and_to_api_mcp() {
         sw.contains("--bin swarmail=") && sw.contains("--mode collect"),
         "{sw}"
     );
-    // Each in its own scope, under the one bound.
-    let units: std::collections::BTreeSet<&str> = log
+    // Each in its own scope, under the one bound: the two MCP chunks' client
+    // scopes are two more, and no unit is used twice.
+    let units: Vec<&str> = log
         .iter()
         .filter(|l| l.starts_with("systemd-run "))
         .map(|l| l.split(' ').find(|w| w.starts_with("--unit=")).unwrap())
         .collect();
-    assert_eq!(units.len(), 4);
+    let distinct: std::collections::BTreeSet<&&str> = units.iter().collect();
+    assert_eq!((units.len(), distinct.len()), (6, 6), "{units:?}");
+    // Only an MCP coordinate carries a client receipt.
+    for coord in [
+        "cost.swarmail.r0",
+        "api.native.mailslurper-source-build.r0.f1000",
+    ] {
+        let entry =
+            json(&std::fs::read(rig.out().join("ledger").join(format!("{coord}.json"))).unwrap());
+        assert!(entry.get("client").is_none(), "{entry}");
+    }
     assert!(text.contains("(4 chunks)"), "{text}");
+}
+
+/// An MCP chunk and the chunk after it: the rig of the client scope's
+/// collector proofs (issue #385).
+fn client_rig() -> V4Rig {
+    v4_rig_planned(
+        &[],
+        vec![
+            "api.mcp.mailpit.r0.f0".to_owned(),
+            "cost.swarmail.r0".to_owned(),
+        ],
+    )
+}
+
+/// A FIFO the fixture's surviving adapter child blocks on, and the file it
+/// acknowledges its readiness in.
+fn adapter_fixture(rig: &V4Rig) -> (PathBuf, PathBuf) {
+    let fifo = rig.file("adapter.fifo");
+    let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    // SAFETY: a valid NUL-terminated path; mkfifo only creates it.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    (fifo, rig.file("adapter.ack"))
+}
+
+/// Let the fixture's surviving child go and wait, bounded, until it is gone.
+/// Opening the FIFO without blocking fails at once when it has no reader.
+fn release_survivor(fifo: &Path, pid: i32) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Ok(mut w) = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(fifo)
+    {
+        let _ = w.write_all(b"go\n");
+    }
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // SAFETY: signal 0 only asks whether the process exists.
+    while unsafe { libc::kill(pid, 0) } == 0 && std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // SAFETY: as above; a fixture child still alive here is killed.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+}
+
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+fn collect_v4_names_an_adapter_child_that_outlives_its_mcp_chunk_and_stops() {
+    let rig = client_rig();
+    let (fifo, ack) = adapter_fixture(&rig);
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[
+            ("FAKE_ADAPTER", "survivor"),
+            ("FAKE_ADAPTER_FIFO", fifo.to_str().unwrap()),
+            ("FAKE_ADAPTER_ACK", ack.to_str().unwrap()),
+        ],
+    );
+    let pid: i32 = std::fs::read_to_string(&ack)
+        .expect("the adapter's child acknowledged its readiness")
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: signal 0 only asks whether the process exists.
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    release_survivor(&fifo, pid);
+    assert!(
+        alive,
+        "the child was still alive when the failure was reported"
+    );
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("blocked at phase \"chunk-api.mcp.mailpit.r0.f0\"")
+            && text.contains("client scope: survivor"),
+        "{text}"
+    );
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 1, "no next coordinate: {ledger:?}");
+    let e = &ledger[0];
+    assert_eq!(e["exit"], 2, "{e}");
+    assert_eq!(e["client"]["verdict"], "survivor", "{e}");
+    assert_eq!(e["client"]["observation"], "populated", "{e}");
+    let members = e["client"]["members"].as_array().unwrap();
+    assert!(
+        members.iter().any(|m| m["pid"] == json!(pid)),
+        "the survivor is named by its pid: {e}"
+    );
+    // The entry is the typed receipt admission reads, and it refuses it.
+    let entry: report::LedgerEntry = serde_json::from_value(e.clone()).unwrap();
+    let unit = entry.client.as_ref().unwrap().unit.clone();
+    assert!(entry.client.unwrap().proves_clean(&unit).is_err());
+    let log = rig.log();
+    // One attempt, no retry, nothing later, nothing sealed or published.
+    assert_eq!(chunk_lines(&log, "driver api-mcp").len(), 1, "{log:?}");
+    assert!(chunk_lines(&log, "driver run").is_empty(), "{log:?}");
+    assert!(chunk_lines(&log, "driver admit-v4").is_empty(), "{log:?}");
+    assert!(!rig.out().join("reproduce.txt").exists());
+    // The receipt came first, then the client scope was killed and stopped.
+    let judged = log
+        .iter()
+        .position(|l| l.starts_with("driver client-judge "))
+        .unwrap();
+    let killed = log
+        .iter()
+        .position(|l| l.starts_with("systemctl --user kill --signal=KILL") && l.contains(&unit))
+        .expect("the client scope was killed");
+    let stopped = log
+        .iter()
+        .position(|l| l.starts_with("systemctl --user stop") && l.contains(&unit))
+        .expect("and stopped");
+    assert!(judged < killed && killed < stopped, "{log:?}");
+}
+
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+fn collect_v4_seals_an_mcp_chunk_whose_adapter_child_was_reaped() {
+    let rig = client_rig();
+    let (_, ack) = adapter_fixture(&rig);
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[
+            ("FAKE_ADAPTER", "reaped"),
+            ("FAKE_ADAPTER_ACK", ack.to_str().unwrap()),
+        ],
+    );
+    assert_eq!(code, 0, "{text}");
+    assert!(ack.exists(), "the control's child ran");
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 2, "{ledger:?}");
+    assert_eq!(ledger[0]["client"]["verdict"], "clean", "{:?}", ledger[0]);
+    let entry: report::LedgerEntry = serde_json::from_value(ledger[0].clone()).unwrap();
+    let r = entry.client.unwrap();
+    assert!(r.unit.ends_with("-api.mcp.mailpit.r0.f0-client.scope"));
+    r.proves_clean(&r.unit).unwrap();
+    let log = rig.log();
+    assert_eq!(
+        chunk_lines(&log, "driver admit-v4").len(),
+        2,
+        "sealed and verified"
+    );
+    assert!(
+        !log.iter().any(|l| l.starts_with("systemctl --user kill")),
+        "{log:?}"
+    );
+}
+
+#[test]
+fn collect_v4_counts_a_client_judgment_without_evidence_as_two() {
+    for how in ["none", "unknown"] {
+        let rig = client_rig();
+        std::fs::write(rig.file("client"), format!("api.mcp.mailpit.r0.f0 {how}\n")).unwrap();
+        let (code, text) = rig.run(
+            &DRAFT_ROUTE,
+            &[("FAKE_CLIENT", rig.file("client").to_str().unwrap())],
+        );
+        assert_eq!(code, 2, "{how}: {text}");
+        assert!(text.contains("client scope: unknown"), "{how}: {text}");
+        let ledger = rig.ledger();
+        assert_eq!(ledger.len(), 1, "{how}");
+        assert_eq!(ledger[0]["client"]["verdict"], "unknown", "{how}");
+        let observation = ledger[0]["client"]["observation"].as_str().unwrap();
+        let want = if how == "none" {
+            "the judgment ended with status 2 and left no receipt"
+        } else {
+            "cut at the judgment's deadline"
+        };
+        assert!(observation.contains(want), "{how}: {observation}");
+        assert!(chunk_lines(&rig.log(), "driver run").is_empty(), "{how}");
+    }
+}
+
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+fn collect_v4_fits_a_worst_case_mcp_chunk_and_both_judgments_in_ten_minutes() {
+    // Every bounded call takes its whole bound on a controlled clock: the
+    // chunk its 560 + 30, the client judgment, the holder's query, kill and
+    // stop, and the client scope's kill and stop. Unclipped that is 590 + 4
+    // + 1 + 3 + 3 + 3 + 3; clipped, it ends within the chunk's 600 s.
+    let rig = client_rig();
+    let (fifo, ack) = adapter_fixture(&rig);
+    std::fs::write(rig.file("uptime"), "1000.00 0\n").unwrap();
+    std::fs::write(rig.file("scope"), "api.mcp.mailpit.r0.f0 active\n").unwrap();
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[
+            ("FAKE_WORST", "1"),
+            ("COMPARE_MAIL_UPTIME", rig.file("uptime").to_str().unwrap()),
+            ("FAKE_SCOPE", rig.file("scope").to_str().unwrap()),
+            ("FAKE_ADAPTER", "survivor"),
+            ("FAKE_ADAPTER_FIFO", fifo.to_str().unwrap()),
+            ("FAKE_ADAPTER_ACK", ack.to_str().unwrap()),
+        ],
+    );
+    if let Ok(pid) = std::fs::read_to_string(&ack) {
+        release_survivor(&fifo, pid.trim().parse().unwrap());
+    }
+    assert_eq!(code, 2, "{text}");
+    let log = rig.log();
+    let start: f64 = log
+        .iter()
+        .find_map(|l| l.strip_prefix("chunk-start "))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let end: f64 = std::fs::read_to_string(rig.file("uptime"))
+        .unwrap()
+        .split(' ')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(end - start <= 600.0, "{} s: {log:?}", end - start);
+    // The client judgment came first after the chunk, at its full 4 s.
+    let chunk = log
+        .iter()
+        .position(|l| l.starts_with("timeout --kill-after=30 560 ") && l.contains("--chunk "))
+        .unwrap();
+    assert!(
+        log[chunk + 1..]
+            .iter()
+            .find(|l| l.starts_with("timeout "))
+            .is_some_and(|l| l.starts_with("timeout 4 ") && l.contains(" client-judge ")),
+        "{log:?}"
+    );
+    assert!(end - start > 597.0, "the clipped steps used what was left");
 }
 
 #[test]

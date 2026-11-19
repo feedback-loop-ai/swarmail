@@ -24,6 +24,9 @@
 //!       --bin TARGET=PATH... [--runtime TARGET=DIR...]
 //!   mail_compare admit-v4 [--seal] DIR PROTOCOL --sources S [--documents DIR]
 //!       [--bin TARGET=PATH...]
+//!   mail_compare client-enter --unit U.scope --handshake FILE -- CMD...
+//!   mail_compare client-judge --unit U.scope --handshake FILE --out FILE [--budget-ms N]
+//!       (an MCP chunk's client scope, issue #385; Linux only)
 //!
 //! Exit 0: the mode completed its declared checks. Exit 1: a complete,
 //! sealed run whose workload failed somewhere (the report says where).
@@ -40,6 +43,10 @@ mod api_chunk;
 #[allow(dead_code)]
 #[path = "mail_compare/clients/mod.rs"]
 mod clients;
+// The MCP chunk's client scope (issue #385): its handshake and judgment.
+#[allow(dead_code)]
+#[path = "mail_compare/client_scope.rs"]
+mod client_scope;
 // The stream wake-up transports and their observer (decision 0132 §7, story
 // C). The SSE reader and the observer's test trace have no driver caller (no
 // selected row uses an event stream), so those parts compile unused.
@@ -88,7 +95,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: mail_compare check|targets|run|admit|hold|footprint|admit-v4|mailpit-mcp|mailhog-mcp|mailslurper-mcp … (see scripts/compare-mail.sh)";
+const USAGE: &str = "usage: mail_compare check|targets|run|admit|hold|footprint|admit-v4|client-enter|client-judge|mailpit-mcp|mailhog-mcp|mailslurper-mcp … (see scripts/compare-mail.sh)";
 
 fn main() -> ExitCode {
     // cargo bench appends `--bench`; it selects nothing here.
@@ -108,6 +115,8 @@ fn main() -> ExitCode {
         Some("hold") => hold_mode(&args[1..]),
         Some("footprint") => footprint_mode(&args[1..]),
         Some("admit-v4") => admit_v4_mode(&args[1..]),
+        Some("client-enter") => client_enter_mode(&args[1..]),
+        Some("client-judge") => client_judge_mode(&args[1..]),
         Some("mailpit-mcp") => adapter_mode::<mailpit_mcp::Mailpit>("mailpit-mcp", &args[1..]),
         Some("mailhog-mcp") => adapter_mode::<mailhog_mcp::Mailhog>("mailhog-mcp", &args[1..]),
         Some("mailslurper-mcp") => {
@@ -280,6 +289,85 @@ fn docs_dir(f: &BTreeMap<String, Vec<String>>) -> Result<PathBuf, String> {
 
 /// `mail_compare footprint`: the fixed facts of 0132 §4.5, printed as one
 /// JSON document. Nothing is launched and every digest relied on is rechecked.
+/// `mail_compare client-enter`: run inside an MCP chunk's fresh client
+/// scope, before its workload exists. It records the kernel's word on this
+/// process's membership in a new handshake file, then execs the workload in
+/// place, so every process the chunk starts inherits the scope (issue
+/// #385). Nothing is exec'd unless the handshake is written.
+fn client_enter_mode(args: &[String]) -> i32 {
+    let res = client_scope::platform(std::env::consts::OS)
+        .and_then(|()| client_scope::parse_args(args, true))
+        .and_then(|a| {
+            let text = std::fs::read_to_string("/proc/self/cgroup")
+                .map_err(|e| format!("/proc/self/cgroup: {e}"))?;
+            let hs = client_scope::own_handshake(&a.unit, &text)?;
+            let bytes = serde_json::to_vec(&hs).map_err(|e| e.to_string())?;
+            client_scope::write_exclusive(&a.handshake, &bytes)?;
+            Ok(a)
+        });
+    let a = match res {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("mail_compare client-enter: {e}; nothing was started");
+            return 2;
+        }
+    };
+    use std::os::unix::process::CommandExt;
+    let e = std::process::Command::new(&a.command[0])
+        .args(&a.command[1..])
+        .exec();
+    eprintln!(
+        "mail_compare client-enter: cannot exec {}: {e}",
+        a.command[0]
+    );
+    2
+}
+
+/// `mail_compare client-judge`: judge an MCP chunk's client scope the
+/// moment its workload has ended, within one deadline, and write the
+/// receipt the collector puts into the chunk's ledger entry. Exit 0 only
+/// for affirmative clean evidence; a survivor or an unknown is 2.
+fn client_judge_mode(args: &[String]) -> i32 {
+    let a = match client_scope::platform(std::env::consts::OS)
+        .and_then(|()| client_scope::parse_args(args, false))
+    {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("mail_compare client-judge: {e}");
+            return 2;
+        }
+    };
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("mail_compare client-judge: runtime: {e}");
+            return 2;
+        }
+    };
+    let probe = client_scope::Kernel::new(&a.handshake);
+    let receipt = rt.block_on(client_scope::judge(&probe, &a.unit, a.budget));
+    // A read the deadline cut may still sit on a blocking thread: the
+    // runtime is let go without waiting for it.
+    rt.shutdown_background();
+    eprintln!("mail_compare client-judge: {}", receipt.summary());
+    let out = a.out.expect("parse_args requires --out");
+    let written = serde_json::to_vec(&receipt)
+        .map_err(|e| e.to_string())
+        .and_then(|b| client_scope::write_exclusive(&out, &b));
+    if let Err(e) = written {
+        eprintln!("mail_compare client-judge: the receipt: {e}");
+        return 2;
+    }
+    if receipt.verdict == client_scope::Verdict::Clean {
+        0
+    } else {
+        2
+    }
+}
+
 fn footprint_mode(args: &[String]) -> i32 {
     let res = flags(args).and_then(|f| {
         let known = ["protocol", "sources", "documents", "bin", "runtime"];

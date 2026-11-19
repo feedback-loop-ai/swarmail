@@ -16,6 +16,8 @@ mod api;
 #[allow(dead_code)]
 #[path = "../benches/mail_compare/api_chunk.rs"]
 mod api_chunk;
+#[path = "../benches/mail_compare/client_scope.rs"]
+mod client_scope;
 #[allow(dead_code)]
 #[path = "../benches/mail_compare/clients/mod.rs"]
 mod clients;

@@ -1112,9 +1112,67 @@ pub struct LedgerEntry {
     pub wall_ms: u64,
     pub load_before: String,
     pub load_after: String,
-    /// The chunk's scope held nothing when the chunk ended.
+    /// The chunk's scope held nothing when the chunk ended. On an MCP
+    /// chunk that is the holder's delegated scope only.
     pub scope_clean: bool,
     pub driver: String,
+    /// An MCP chunk's client scope receipt (issue #385): the judgment that
+    /// no process `api-mcp` started (the bridge, an adapter, a descendant)
+    /// survived. Absent on every other coordinate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<crate::client_scope::Receipt>,
+}
+
+/// The client scope unit the collector creates for MCP chunk `coordinate`
+/// of run `run_id` (`collect-v4-<token>`), as `scripts/compare-mail.sh`
+/// names it: `mail-compare-<token>-<coordinate>-client.scope`.
+pub fn client_unit(run_id: &str, coordinate: &str) -> Option<String> {
+    let token = run_id.strip_prefix("collect-v4-")?;
+    let coord: String = coordinate
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "_.-".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    Some(format!("mail-compare-{token}-{coord}-client.scope"))
+}
+
+/// The ledger's client evidence for chunk `c` of run `run_id`: an MCP
+/// chunk needs a receipt that affirmatively proves its own client scope
+/// clean; any other coordinate carries none.
+pub fn check_client(
+    c: &crate::runner::Chunk,
+    run_id: &str,
+    entry: &LedgerEntry,
+) -> Result<(), String> {
+    let mcp = matches!(
+        c,
+        crate::runner::Chunk::Api {
+            surface: crate::clients::Surface::Mcp,
+            ..
+        }
+    );
+    let name = c.name();
+    match (&entry.client, mcp) {
+        (None, false) => Ok(()),
+        (Some(_), false) => Err(format!(
+            "chunk {name}: its ledger entry carries a client receipt, and only an MCP chunk has a client scope"
+        )),
+        (None, true) => Err(format!(
+            "chunk {name}: no client receipt: nothing proves that no process the MCP chunk started survived it"
+        )),
+        (Some(r), true) => {
+            let unit = client_unit(run_id, &name).ok_or_else(|| {
+                format!("chunk {name}: run id {run_id} names no collect-v4 client scope")
+            })?;
+            r.proves_clean(&unit)
+                .map_err(|e| format!("chunk {name}: {e}"))
+        }
+    }
 }
 
 /// What admission checks a run against.
@@ -1703,8 +1761,10 @@ pub fn admit_v4(dir: &std::path::Path, a: &Admission, seal: bool) -> Result<RunA
                 "chunk {name}: its scope was not clean when the chunk ended"
             ));
         }
+        let chunk = admit_chunk(&dir.join("chunks").join(&name), c, a)?;
+        check_client(c, &chunk.manifest.run_id, &entry)?;
         ledger.push(entry);
-        admitted.push(admit_chunk(&dir.join("chunks").join(&name), c, a)?);
+        admitted.push(chunk);
     }
     let first = admitted[0].manifest.clone();
     let mut digests: std::collections::BTreeMap<String, (String, String)> =
