@@ -157,6 +157,12 @@ fn io_error(e: std::io::Error) -> StreamError {
 
 /// One TCP connection to a declared endpoint, bounded by `deadline`.
 pub async fn connect(addr: SocketAddr, deadline: Instant) -> Result<TcpStream, StreamError> {
+    // `timeout_at` polls the connect before it reads the clock, and a
+    // loopback connect can complete on that first poll (macOS does): a
+    // passed deadline is refused before any connect starts.
+    if Instant::now() >= deadline {
+        return Err(StreamError::Deadline);
+    }
     match timeout_at(deadline, TcpStream::connect(addr)).await {
         Err(_) => Err(StreamError::Deadline),
         Ok(Err(e)) => Err(io_error(e)),
