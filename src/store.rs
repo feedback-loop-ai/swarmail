@@ -3054,10 +3054,13 @@ mod parse_gate_tests {
         }
 
         // At least two parks: a spurious wakeup re-parks a parse and counts again.
+        // `&`, not `&&`: a short-circuit is a branch whose sides depend on the
+        // scheduler, and the exact coverage gate would count the side a run
+        // happened not to take.
         until("two parses parked and six sessions waiting", || {
-            running.load(Ordering::SeqCst) == 2
-                && parked.load(Ordering::SeqCst) >= 2
-                && store.parse_waits_for_test() == 6
+            (running.load(Ordering::SeqCst) == 2)
+                & (parked.load(Ordering::SeqCst) >= 2)
+                & (store.parse_waits_for_test() == 6)
         })
         .await;
         assert_eq!(high_water.load(Ordering::SeqCst), 2);
