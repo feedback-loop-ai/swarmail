@@ -3,7 +3,7 @@
   "id": "fair-mail-comparison-v4",
   "status": "draft",
   "supersedes": "fair-mail-comparison-v3",
-  "change_reason": "Protocol v4 (accepted decision 0132, issues #349 and #351, part of #163) adds what a user of a mail mock pays to operate it. It keeps protocol v3's nine targets, products, corpus, statistics and capabilities, and replaces the unenforced local budget with an enforced one: every target runs in a driver-owned cgroup v2 leaf limited to 2 CPUs, 2048 MiB, no swap and 4096 tasks, pinned to two cores by affinity, sampled every 100 ms and removed with cgroup.kill. Story A of 0132 builds the cost section (four profiles at 1, 8 and 32 sessions); the API, wait and test-execution sections are owed by later stories and listed under unresolved, so this draft cannot freeze. Every capped target is launched with the same 150,000 cap. It is a separate run with a separate denominator: no table or statistic merges a v4 cell with a v2 or v3 cell, and v3 stays as frozen.",
+  "change_reason": "Protocol v4 (accepted decision 0132, issues #349 and #351, part of #163) adds what a user of a mail mock pays to operate it. It keeps protocol v3's nine targets, products, corpus, statistics and capabilities, and replaces the unenforced local budget with an enforced one: every target runs in a driver-owned cgroup v2 leaf limited to 2 CPUs, 2048 MiB, no swap and 4096 tasks, pinned to two cores by affinity, sampled every 100 ms and removed with cgroup.kill. Story A of 0132 builds the cost section (four profiles at 1, 8 and 32 sessions); stories B, C and D built the API, wait and test-execution sections; what remains of them (the test-execution host proofs among it) and the freeze are listed under unresolved, so this draft cannot freeze. Every capped target is launched with the same 150,000 cap. It is a separate run with a separate denominator: no table or statistic merges a v4 cell with a v2 or v3 cell, and v3 stays as frozen.",
   "targets": [
     "swarmail",
     "mailpit",
@@ -588,9 +588,22 @@
     "surfaces": ["native", "mcp"],
     "mcp_revision": "2025-03-26"
   },
+  "testexec": {
+    "trials": 100,
+    "first_id": 100,
+    "flows": ["otp-backlog", "recipient-crowd", "digest-lookalike", "reset-login", "magic-login"],
+    "parallelism": [1, 8, 32],
+    "repetitions": 3,
+    "test_deadline_ms": 30000,
+    "suite_deadline_ms": 540000,
+    "recipient_scheme": "test-<n>@suite.invalid",
+    "order": "ascending sha256(\"testexec/<seed>/<id>\"), ties by id",
+    "fixture_time": "2026-11-16T00:00:00Z",
+    "wait_profile": "wait-best"
+  },
   "unresolved": [
     "story B (0132 §6.3): API capability cells without captured evidence stay not_inspected: MailHog delete and clear (its APIv1.md is not captured) and MailSlurper clear (its prune codes are not captured)",
-    "story D (0132 §8): the test-execution section",
+    "story D (0132 §8): the test-execution section's two host proofs (testexec_real_swarmail, testexec_real_mailpit) have not yet run on the delegated host; story E adds its 72 chunks to the collected plan and the wrapper",
     "story B to D: clients_sha256, one digest per client module",
     "story B (0132 §6.2, acceptance answer 8): the API section reads GreenMail over REST; the cost section's visibility check still reads it over POP3 as v3 does",
     "story B: every capability cell inspected (no not_inspected cell)",

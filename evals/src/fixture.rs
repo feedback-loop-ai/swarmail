@@ -1334,7 +1334,24 @@ struct Shared {
     swarmail_http: Option<SocketAddr>,
     reports: reqwest::Client,
     admin_secret: String,
+    /// Told every final DATA reply as it is read, before `QUIT` (the
+    /// reference suite's `ack_to_return`); never consulted by the app.
+    ack: Option<AckHook>,
 }
+
+/// One final DATA reply the fixture read: which delivery, to whom, the
+/// reply's code and the instant it was read.
+#[derive(Debug, Clone)]
+pub struct Ack {
+    pub seq: u64,
+    pub to: String,
+    pub code: u16,
+    pub delivered: bool,
+    pub at: Instant,
+}
+
+/// Where a fixture reports each final DATA reply.
+pub type AckHook = Arc<dyn Fn(Ack) + Send + Sync>;
 
 /// How long one report read may take, and the most body it may return.
 const REPORT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1389,13 +1406,25 @@ impl Shared {
                 stored.push(None);
                 continue;
             };
-            let (result, id) = mail::send_stored(
+            let observe = |r: &SendResult| {
+                if let Some(hook) = &self.ack {
+                    hook(Ack {
+                        seq,
+                        to: out.to.clone(),
+                        code: r.attempt().code,
+                        delivered: matches!(r, SendResult::Delivered(_)),
+                        at: Instant::now(),
+                    });
+                }
+            };
+            let (result, id) = mail::send_observed(
                 self.smtp,
                 self.smtp_auth,
                 &out.smtp_identity,
                 FROM,
                 &out.to,
                 &out.data,
+                Some(&observe),
             )
             .await;
             let mut p = self.lock();
@@ -2422,7 +2451,35 @@ pub async fn start(cfg: FixtureConfig) -> std::io::Result<Running> {
         swarmail_http: cfg.swarmail_http,
         reports,
         admin_secret: cfg.admin_secret,
+        ack: None,
     });
+    let (public_router, admin_router) = routers(shared, newsletter);
+    let (stop, rx) = tokio::sync::watch::channel(false);
+    let serve = |listener: tokio::net::TcpListener,
+                 router: Router,
+                 mut rx: tokio::sync::watch::Receiver<bool>| {
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    let _ = rx.wait_for(|stopped| *stopped).await;
+                })
+                .await;
+        })
+    };
+    let tasks = vec![
+        serve(public_listener, public_router, rx.clone()),
+        serve(admin_listener, admin_router, rx),
+    ];
+    Ok(Running {
+        public,
+        admin,
+        stop,
+        tasks,
+    })
+}
+
+/// Both planes' routers over one trial's shared state.
+fn routers(shared: AppState, newsletter: bool) -> (Router, Router) {
     let mut public_router = Router::new()
         .route("/", get(index))
         .route("/a/{token}", get(follow_link))
@@ -2449,28 +2506,226 @@ pub async fn start(cfg: FixtureConfig) -> std::io::Result<Running> {
         .route("/admin/snapshot", get(admin_snapshot))
         .route("/admin/state/{flow}", get(admin_flow_state))
         .with_state(shared);
-    let (stop, rx) = tokio::sync::watch::channel(false);
-    let serve = |listener: tokio::net::TcpListener,
-                 router: Router,
-                 mut rx: tokio::sync::watch::Receiver<bool>| {
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router)
-                .with_graceful_shutdown(async move {
-                    let _ = rx.wait_for(|stopped| *stopped).await;
+    (public_router, admin_router)
+}
+
+// ---- the reference suite's per-worker fixture (decision 0132 §8.2) ----
+
+/// One accepted connection, handed to the generation that owns it.
+type Conn = (tokio::net::TcpStream, SocketAddr);
+
+/// A listener fed by the station's acceptor: the generation it serves only
+/// ever sees connections accepted while it was installed.
+struct Feed {
+    rx: tokio::sync::mpsc::UnboundedReceiver<Conn>,
+    addr: SocketAddr,
+}
+
+impl axum::serve::Listener for Feed {
+    type Io = tokio::net::TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> Conn {
+        match self.rx.recv().await {
+            Some(c) => c,
+            // The station retired this generation: no connection will come,
+            // and graceful shutdown ends the serve.
+            None => std::future::pending().await,
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        Ok(self.addr)
+    }
+}
+
+type Route = Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<Conn>>>>;
+
+/// One trial's private state as served by a station.
+struct Generation {
+    stop: tokio::sync::watch::Sender<bool>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+/// What a station installs for one trial.
+pub struct TrialConfig {
+    pub task: Task,
+    pub trial_id: String,
+    pub admin_secret: String,
+    pub inputs: crate::provenance::FixtureInputs,
+    pub ack: Option<AckHook>,
+}
+
+/// A worker's fixture app (0132 §8.2): one listener pair bound before the
+/// suite clock and kept for the whole suite, serving one trial at a time
+/// with fresh private state. Every connection is pinned to the generation
+/// that was installed when it was accepted, so a late request can only
+/// reach its own (by then frozen) trial; between generations a connection
+/// is closed unanswered. A generation is retired by closing its admission
+/// and draining its handlers, within a bound, before the next is installed.
+pub struct Station {
+    pub public: SocketAddr,
+    pub admin: SocketAddr,
+    smtp: SocketAddr,
+    smtp_auth: mail::SmtpAuth,
+    routes: [Route; 2],
+    acceptors: Vec<tokio::task::JoinHandle<()>>,
+    current: Option<Generation>,
+}
+
+impl Station {
+    /// Bind both planes on loopback port zero; serve nothing yet.
+    pub async fn bind(smtp: SocketAddr, smtp_auth: mail::SmtpAuth) -> std::io::Result<Station> {
+        let public = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let admin = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addrs = (public.local_addr()?, admin.local_addr()?);
+        let routes: [Route; 2] = [Arc::default(), Arc::default()];
+        let acceptors = [public, admin]
+            .into_iter()
+            .zip(routes.clone())
+            .map(|(listener, route)| {
+                tokio::spawn(async move {
+                    while let Ok(conn) = listener.accept().await {
+                        let to = route.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                        // No generation installed: the connection is dropped,
+                        // closed without a byte, never queued for the next.
+                        if let Some(to) = to {
+                            let _ = to.send(conn);
+                        }
+                    }
                 })
-                .await;
+            })
+            .collect();
+        Ok(Station {
+            public: addrs.0,
+            admin: addrs.1,
+            smtp,
+            smtp_auth,
+            routes,
+            acceptors,
+            current: None,
         })
-    };
-    let tasks = vec![
-        serve(public_listener, public_router, rx.clone()),
-        serve(admin_listener, admin_router, rx),
-    ];
-    Ok(Running {
-        public,
-        admin,
-        stop,
-        tasks,
-    })
+    }
+
+    /// The app's base URL, the same for every trial of the station.
+    pub fn app_url(&self) -> String {
+        format!("http://{}", self.public)
+    }
+
+    /// Install fresh private state for one trial. A station serves one
+    /// generation at a time: the previous one must have been retired.
+    pub fn install(&mut self, cfg: TrialConfig) -> Result<(), String> {
+        if self.current.is_some() {
+            return Err("a fixture generation is still installed".into());
+        }
+        let reports = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(REPORT_TIMEOUT)
+            .build()
+            .map_err(|e| e.to_string())?;
+        let newsletter = cfg.task.scenario == Scenario::NewsletterFindings;
+        let shared = Arc::new(Shared {
+            private: Mutex::new(Private::with_inputs(
+                &cfg.trial_id,
+                cfg.task,
+                &self.app_url(),
+                Arc::new(Instant::now),
+                cfg.inputs,
+            )),
+            smtp: self.smtp,
+            smtp_auth: self.smtp_auth,
+            swarmail_http: None,
+            reports,
+            admin_secret: cfg.admin_secret,
+            ack: cfg.ack,
+        });
+        let (public_router, admin_router) = routers(shared, newsletter);
+        let (stop, rx) = tokio::sync::watch::channel(false);
+        let mut tasks = Vec::new();
+        for ((route, router), addr) in self
+            .routes
+            .iter()
+            .zip([public_router, admin_router])
+            .zip([self.public, self.admin])
+        {
+            let (tx, feed) = tokio::sync::mpsc::unbounded_channel();
+            *route.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+            let mut rx = rx.clone();
+            tasks.push(tokio::spawn(async move {
+                let _ = axum::serve(Feed { rx: feed, addr }, router)
+                    .with_graceful_shutdown(async move {
+                        let _ = rx.wait_for(|stopped| *stopped).await;
+                    })
+                    .await;
+            }));
+        }
+        self.current = Some(Generation { stop, tasks });
+        Ok(())
+    }
+
+    /// Retire the installed generation: close its admission to new
+    /// connections, then let every request in flight finish against its own
+    /// state, within `bound`. A generation that does not drain in time is an
+    /// error, and the station stays unusable (the caller cuts the suite):
+    /// the next trial is never installed beside a live handler.
+    pub async fn retire(&mut self, bound: Duration) -> Result<(), String> {
+        for route in &self.routes {
+            *route.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+        let Some(g) = self.current.as_mut() else {
+            return Ok(());
+        };
+        let _ = g.stop.send(true);
+        // A plane that finished is dropped from the list at once, so a
+        // later stop never awaits a handle twice.
+        let drained = tokio::time::timeout(bound, async {
+            while let Some(t) = g.tasks.first_mut() {
+                let _ = t.await;
+                g.tasks.remove(0);
+            }
+        })
+        .await;
+        match drained {
+            Ok(()) => {
+                self.current = None;
+                Ok(())
+            }
+            Err(_) => Err("the fixture's handlers did not drain within their bound".into()),
+        }
+    }
+
+    /// Stop the acceptors and abort whatever a failed drain left.
+    pub async fn stop(mut self) {
+        self.halt();
+        for a in self.acceptors.drain(..) {
+            let _ = a.await;
+        }
+        if let Some(g) = self.current.take() {
+            for t in g.tasks {
+                let _ = t.await;
+            }
+        }
+    }
+
+    fn halt(&mut self) {
+        for a in &self.acceptors {
+            a.abort();
+        }
+        if let Some(g) = &self.current {
+            let _ = g.stop.send(true);
+            for t in &g.tasks {
+                t.abort();
+            }
+        }
+    }
+}
+
+impl Drop for Station {
+    /// A station dropped without [`Station::stop`] (its worker was lost)
+    /// still closes its listeners and every handler it served.
+    fn drop(&mut self) {
+        self.halt();
+    }
 }
 
 /// The `fixture` subcommand: start, announce both addresses on one stdout
@@ -2920,6 +3175,7 @@ mod newsletter_verdict_tests {
             swarmail_http: addr,
             reports: reqwest::Client::builder().no_proxy().build().unwrap(),
             admin_secret: "s".into(),
+            ack: None,
         }
     }
 
@@ -3022,6 +3278,7 @@ mod publication_proofs {
             swarmail_http: None,
             reports: reqwest::Client::new(),
             admin_secret: "test-bearer".into(),
+            ack: None,
         });
         let router = Router::new()
             .route("/admin/snapshot", get(admin_snapshot))
@@ -3387,6 +3644,7 @@ mod hard_layout_proofs {
             swarmail_http: None,
             reports: reqwest::Client::new(),
             admin_secret: "secret".into(),
+            ack: None,
         })
     }
 

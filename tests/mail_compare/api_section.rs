@@ -5096,3 +5096,296 @@ fn the_run_report_publishes_every_coordinate_that_launches_nothing() {
     let pin = lock.pin(TargetKind::Mailslurper).unwrap();
     assert!(pin.documents.iter().any(|d| d.path == cite));
 }
+
+// ---- test execution host proofs (story D, 0132 §8) --------------------------
+//
+// One real `testexec` chunk each, the reference suite of 100 scored fixture
+// trials, run by the eval crate (`SWARMAIL_EVALS_BIN`) against a target held
+// by the driver (`MAIL_COMPARE_BIN`) under its enforced leaf. As for the MCP
+// proofs, the test binary and the eval client run outside any scope and the
+// driver's `hold` alone enters a delegated scope of its own (`scoped_driver`).
+// Run each alone, the load read before and after:
+//
+//   timeout 600 taskset -c 0-31 "$bin" --ignored --exact \
+//     api_section::testexec_real_swarmail --test-threads=1 --nocapture
+//
+// A pass is exact: exit 0, all 100 planned trials started and scored
+// `pass` with their cleanup proved, the chunk sealed and admitted (its
+// executable rechecked by digest, its report recomputed from testexec.json
+// and the suite window), the suite window measured with its counters, and
+// every launch's cleanup receipt proving its leaf removed.
+
+/// The prerequisites a suite host proof names, all at once, when absent.
+fn need(vars: &[&str]) {
+    let missing: Vec<&str> = vars
+        .iter()
+        .copied()
+        .filter(|v| std::env::var_os(v).is_none())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "host proof prerequisites missing: {} must name their built or pinned bytes",
+        missing.join(", ")
+    );
+}
+
+fn suite_vars(target: TargetKind) -> Vec<String> {
+    let mut v = vec![
+        "MAIL_COMPARE_BIN".to_owned(),
+        "SWARMAIL_EVALS_BIN".to_owned(),
+    ];
+    if target != TargetKind::Swarmail {
+        v.push(format!(
+            "MAIL_COMPARE_{}",
+            target.name().to_uppercase().replace('-', "_")
+        ));
+    }
+    v
+}
+
+fn real_suite(target: TargetKind, parallelism: u32) {
+    let vars = suite_vars(target);
+    need(&vars.iter().map(String::as_str).collect::<Vec<_>>());
+    let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let driver = scoped_driver(root.path(), &env_path("MAIL_COMPARE_BIN"));
+    let chunk = format!("testexec.{target}.p{parallelism}.r0");
+    let pinned = pinned_args(target);
+    let out = std::process::Command::new(env_path("SWARMAIL_EVALS_BIN"))
+        .arg("testexec")
+        .arg("--driver")
+        .arg(&driver)
+        .args(["--mode", "smoke"])
+        .args(["--protocol", "docs/evals/draft/protocol.v4.json"])
+        .args([
+            "--sources",
+            "docs/evals/draft/sources.lock.v5.json",
+            "--documents",
+            "docs/evals",
+        ])
+        .args(["--chunk", &chunk, "--run-id", "testexec-real"])
+        .args(&pinned)
+        .arg("--output")
+        .arg(root.path().join("out"))
+        .arg("--scratch")
+        .arg(root.path().join("scratch"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let dir = root.path().join("out");
+    let p = Protocol::parse(DRAFT_V4).unwrap();
+    let lock = SourceLock::parse(LOCK_V5).unwrap();
+    let c = runner::Chunk::parse(&chunk, &p).unwrap();
+    // The launched executable is rechecked by digest from its file: the
+    // candidate Cargo built, or the lock-pinned competitor.
+    let bin = pinned[1].split_once('=').unwrap().1.to_owned();
+    let bins = std::collections::BTreeMap::from([(target, PathBuf::from(bin))]);
+    let a = report::Admission {
+        protocol: &p,
+        protocol_bytes: DRAFT_V4,
+        lock: &lock,
+        lock_bytes: LOCK_V5,
+        bins: &bins,
+    };
+    let admitted = report::admit_chunk(&dir, &c, &a)
+        .unwrap_or_else(|e| panic!("{chunk} must admit: {e}\n{text}"));
+    let rec: suite::SuiteRecord =
+        serde_json::from_slice(&std::fs::read(dir.join("testexec.json")).unwrap()).unwrap();
+    suite_chunk::check_against(&rec, &c, &p).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{chunk}: {text}");
+    assert_eq!(rec.rows.len(), 100, "{chunk}: {:?}", rec.unstarted);
+    for r in &rec.rows {
+        assert_eq!(r.outcome, suite::Outcome::Pass, "{chunk}: {r:?}");
+    }
+    assert!(
+        suite::failures(&rec).is_empty(),
+        "{:?}",
+        suite::failures(&rec)
+    );
+    suite::cleanup_proved(&rec).unwrap();
+    let window = admitted.resources.iter().find_map(|r| match r {
+        records::ResourceRow::Window(w) if w.window == records::WindowKind::Suite => Some(w),
+        _ => None,
+    });
+    let window = window.unwrap_or_else(|| panic!("{chunk}: no suite window"));
+    assert_eq!(window.outcome, records::WindowOutcome::Measured, "{chunk}");
+    assert!(window.counters().is_some(), "{chunk}");
+    let cleanups = admitted.report["cleanups"].as_array().expect("cleanups");
+    assert!(!cleanups.is_empty());
+    assert!(
+        cleanups.iter().all(|x| x["cgroup_removed"] == json!(true)),
+        "{chunk}"
+    );
+    let r = &admitted.report[suite::SECTION];
+    eprintln!(
+        "host proof passed: {chunk}: {} of {} pass, foreign_seen {}, suite wall {} ns, target cpu {} usec, peak memory {} bytes, client cpu {} usec",
+        r["by_class"]["pass"],
+        r["planned"],
+        r["foreign_seen"],
+        r["suite_wall_ns"],
+        r["resources"]["target"]["usage_usec"],
+        r["resources"]["peak_memory_current"],
+        r["client_cpu_usec"]
+    );
+}
+
+// One reason per platform: a second `ignore` would be an unused attribute.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "host proof: MAIL_COMPARE_BIN, SWARMAIL_EVALS_BIN, a delegated scope; run alone under timeout 600 taskset -c 0-31"
+)]
+fn testexec_real_swarmail() {
+    real_suite(TargetKind::Swarmail, 1)
+}
+
+// One reason per platform: a second `ignore` would be an unused attribute.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "host proof: MAIL_COMPARE_BIN, SWARMAIL_EVALS_BIN, MAIL_COMPARE_MAILPIT, a delegated scope; run alone under timeout 600 taskset -c 0-31"
+)]
+fn testexec_real_mailpit() {
+    real_suite(TargetKind::Mailpit, 8)
+}
+
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+fn the_testexec_host_proofs_are_discovered_and_refuse_without_their_bytes() {
+    let me = std::env::current_exe().unwrap();
+    let listed = std::process::Command::new(&me)
+        .args(["--list", "--ignored"])
+        .output()
+        .unwrap();
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    let proofs = [
+        ("api_section::testexec_real_swarmail", TargetKind::Swarmail),
+        ("api_section::testexec_real_mailpit", TargetKind::Mailpit),
+    ];
+    // The dispatcher's documented commands name exactly these proofs, run
+    // alone through the bounded wrapper.
+    let readme =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/evals/README.md"))
+            .unwrap();
+    assert!(readme.contains(
+        "timeout 600 taskset -c 0-31 \"$bin\" --ignored --exact \"$1\" --test-threads=1 --nocapture"
+    ));
+    for (name, target) in proofs {
+        assert!(
+            readme.lines().any(|l| l == format!("run_one {name}")),
+            "docs/evals/README.md must run {name} alone"
+        );
+        assert!(
+            listed.lines().any(|l| l == format!("{name}: test")),
+            "{name} is not discovered:\n{listed}"
+        );
+        // Run alone with every prerequisite removed: a named failure, never
+        // a skip and never a launch.
+        let vars = suite_vars(target);
+        let mut cmd = std::process::Command::new(&me);
+        cmd.args(["--ignored", "--exact", name, "--test-threads=1"]);
+        for v in &vars {
+            cmd.env_remove(v);
+        }
+        let out = cmd.output().unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_ne!(out.status.code(), Some(0), "{name}: {text}");
+        assert!(text.contains("1 failed"), "{name}: {text}");
+        let named = format!("host proof prerequisites missing: {}", vars.join(", "));
+        assert!(text.contains(&named), "{name}: {text}");
+    }
+}
+
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+fn only_the_holder_enters_the_delegated_scope() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let fake = root.path().join("bin");
+    std::fs::create_dir(&fake).unwrap();
+    let log = root.path().join("log");
+    std::fs::create_dir(&log).unwrap();
+    // A systemd-run that records its argv and execs the command after `--`,
+    // as the real one does with --scope; a driver that records its own.
+    let script = |path: &Path, body: &str| {
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    script(
+        &fake.join("systemd-run"),
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$LOG/scope\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+    );
+    let driver = root.path().join("driver");
+    script(
+        &driver,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$LOG/driver-$1\"\n",
+    );
+    let scoped = scoped_driver(root.path(), driver.to_str().unwrap());
+    let path = format!(
+        "{}:{}",
+        fake.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let run = |args: &[&str]| {
+        let st = std::process::Command::new(&scoped)
+            .args(args)
+            .env("PATH", &path)
+            .env("LOG", &log)
+            .status()
+            .unwrap();
+        assert!(st.success());
+    };
+    let lines = |name: &str| -> Vec<String> {
+        std::fs::read_to_string(log.join(name))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    };
+    let hold = [
+        "hold",
+        "--control",
+        "testexec-v1",
+        "--chunk",
+        "testexec.mailpit.p8.r0",
+    ];
+    run(&hold);
+    let mut want: Vec<String> = ["--user", "--scope", "--quiet", "-p", "Delegate=yes", "--"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    want.push(driver.display().to_string());
+    want.extend(hold.iter().map(|s| (*s).to_owned()));
+    assert_eq!(lines("scope"), want);
+    assert_eq!(lines("driver-hold"), hold);
+    // An adapter (any other mode) runs in place: no scope.
+    std::fs::remove_file(log.join("scope")).unwrap();
+    run(&["mailpit-mcp", "--sources", "x"]);
+    assert!(!log.join("scope").exists());
+    assert_eq!(
+        lines("driver-mailpit-mcp"),
+        ["mailpit-mcp", "--sources", "x"]
+    );
+}

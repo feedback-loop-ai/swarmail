@@ -43,6 +43,14 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Protocol 4's test execution (accepted decision 0132 §8, story D): one
+    /// `testexec.<target>.p<parallelism>.r<repetition>` chunk, the reference
+    /// suite of 100 scored fixture trials, against a target held by
+    /// `mail_compare hold --control testexec-v1`. Takes `api-mcp`'s flags.
+    Testexec {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Run fresh controls before the approved paid baseline. Paid admission
     /// currently refuses: locally evidenced CLI/auth contracts are incomplete.
     Baseline {
@@ -722,6 +730,9 @@ fn main() -> ExitCode {
     match cli.command {
         Cmd::ApiMcp { args } => {
             ExitCode::from(rt.block_on(swarmail_evals::apibench::api_mcp(&args)) as u8)
+        }
+        Cmd::Testexec { args } => {
+            ExitCode::from(rt.block_on(swarmail_evals::testexec::testexec(&args)) as u8)
         }
         Cmd::Baseline {
             config,

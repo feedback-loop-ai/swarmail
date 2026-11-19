@@ -56,6 +56,12 @@ mod stats;
 #[path = "../benches/mail_compare/clients/stream.rs"]
 mod stream;
 #[allow(dead_code)]
+#[path = "../benches/mail_compare/suite.rs"]
+mod suite;
+#[allow(dead_code)]
+#[path = "../benches/mail_compare/suite_chunk.rs"]
+mod suite_chunk;
+#[allow(dead_code)]
 #[path = "../benches/mail_compare/targets.rs"]
 mod targets;
 #[allow(dead_code)]
@@ -72,6 +78,8 @@ use std::time::{Duration, Instant};
 mod api_section;
 #[path = "mail_compare/eight_targets.rs"]
 mod eight_targets;
+#[path = "mail_compare/suite_section.rs"]
+mod suite_section;
 #[path = "mail_compare/v4.rs"]
 mod v4;
 #[path = "mail_compare/waits.rs"]

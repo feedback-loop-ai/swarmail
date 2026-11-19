@@ -921,6 +921,8 @@ fn the_v4_draft_differs_from_v3_only_where_0132_says() {
         "budgets",
         "headline",
         "api",
+        // Story D's test-execution section (0132 §8).
+        "testexec",
         "unresolved",
         "capabilities",
     ];
@@ -2625,7 +2627,12 @@ fn chunk_names_round_trip_and_unknown_ones_refuse() {
         ("cost.mailslurper.r0", "not in the protocol's plan"),
         ("cost.mailpit.r3", "not in the protocol's plan"),
         ("cost.nobody.r0", "unknown target"),
-        ("testexec.mailpit.r0", "is not implemented"),
+        (
+            "testexec.mailpit.r0",
+            "is not a testexec.<target>.p<parallelism>.r<repetition> chunk",
+        ),
+        ("testexec.mailpit.p4.r0", "is not one of 1, 8, 32"),
+        ("footprint.mailpit.r0", "is not implemented"),
         ("api.mailpit.r0", "not a chunk coordinate"),
         ("api.native.mailpit.r0.f5", "not in the protocol's plan"),
         ("api.mcp.inbucket.r0.f0", "not in the protocol's plan"),

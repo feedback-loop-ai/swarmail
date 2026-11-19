@@ -201,6 +201,24 @@ pub async fn send_stored(
     to: &str,
     data: &[u8],
 ) -> (SendResult, Option<String>) {
+    send_observed(smtp, auth, smtp_identity, from, to, data, None).await
+}
+
+/// Called with the final DATA reply's result the moment it is read, before
+/// `QUIT` (0132 §8.6's `ack_to_return` reads the 250 here, so a slow or
+/// lost `QUIT` never moves it). Only a reply that was read is observed.
+pub type ReplyObserver<'a> = &'a (dyn Fn(&SendResult) + Send + Sync);
+
+/// As [`send_stored`], telling `observe` the final DATA reply before `QUIT`.
+pub async fn send_observed(
+    smtp: SocketAddr,
+    auth: SmtpAuth,
+    smtp_identity: &str,
+    from: &str,
+    to: &str,
+    data: &[u8],
+    observe: Option<ReplyObserver<'_>>,
+) -> (SendResult, Option<String>) {
     let attempt = |stage: &str, code: u16| Attempt {
         stage: stage.to_string(),
         code,
@@ -251,6 +269,11 @@ pub async fn send_stored(
         Ok((code, _)) => (classify("dot", code), None),
         Err(_) => (SendResult::Transport(attempt("dot", 0)), None),
     };
+    if let Some(observe) = observe
+        && !matches!(result, SendResult::Transport(_))
+    {
+        observe(&result);
+    }
     let _ = s.command("QUIT").await;
     (result, id)
 }

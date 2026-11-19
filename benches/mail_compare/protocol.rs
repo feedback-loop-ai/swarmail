@@ -359,6 +359,10 @@ pub struct Protocol {
     /// 4, refused before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api: Option<ApiSection>,
+    /// Version 4: the test-execution section (0132 §8, story D). Refused
+    /// before protocol 4; a frozen protocol 4 needs it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub testexec: Option<crate::suite::Section>,
     /// Every value the method still lacks, by name. Collection refuses
     /// while one remains; the list is how a draft says what it is missing
     /// instead of carrying a placeholder that looks like a value.
@@ -1242,6 +1246,7 @@ impl Protocol {
             ("headline", self.headline.is_some()),
             ("clients_sha256", self.clients_sha256.is_some()),
             ("api", self.api.is_some()),
+            ("testexec", self.testexec.is_some()),
             (
                 "waits[].observation[].backstop_ms",
                 self.waits
@@ -1379,6 +1384,17 @@ impl Protocol {
             Some(a) if *a != ApiSection::specified() => out.push(format!(
                 "api: protocol 4's api section is 0132's, {:?}, not {a:?}",
                 ApiSection::specified()
+            )),
+            Some(_) => {}
+        }
+        match &self.testexec {
+            None if self.status == Status::Frozen => {
+                out.push("a frozen protocol 4 needs its testexec section (0132 §8)".into())
+            }
+            None => {}
+            Some(t) if *t != crate::suite::Section::specified() => out.push(format!(
+                "testexec: protocol 4's testexec section is 0132's, {:?}, not {t:?}",
+                crate::suite::Section::specified()
             )),
             Some(_) => {}
         }

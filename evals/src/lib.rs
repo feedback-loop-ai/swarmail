@@ -22,12 +22,23 @@ pub mod isolation;
 pub mod mail;
 pub mod mailsource;
 pub mod mcp;
+pub mod native_source;
+// Story C's wait-best observer and its stream transport, and story D's
+// suite plan and record: the driver's modules, compiled here by path so the
+// reference suite waits and accounts exactly as the driver checks.
+#[path = "../../benches/mail_compare/clients/observe.rs"]
+pub mod observe;
 pub mod oracle;
 pub mod report;
 pub mod runner;
 pub mod state;
+#[path = "../../benches/mail_compare/clients/stream.rs"]
+pub mod stream;
+#[path = "../../benches/mail_compare/suite.rs"]
+pub mod suite;
 pub mod target;
 pub mod tasks;
+pub mod testexec;
 
 pub mod artifacts;
 pub mod identity;

@@ -1418,6 +1418,18 @@ pub fn admit_chunk(
         fresh["api"] = crate::api_chunk::api_report(&rec, &admitted.resources);
         keys.push("api");
     }
+    if let crate::runner::Chunk::Testexec { .. } = chunk {
+        // The suite's record is an indexed artifact; it is checked against
+        // the plan and the protocol, and its figures recomputed (0132 §12).
+        let bytes = std::fs::read(dir.join("testexec.json"))
+            .map_err(|e| format!("chunk {name}: testexec.json: {e}"))?;
+        let rec: crate::suite::SuiteRecord = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("chunk {name}: testexec.json: {e}"))?;
+        crate::suite_chunk::check_against(&rec, chunk, a.protocol)
+            .map_err(|e| format!("chunk {name}: {e}"))?;
+        fresh[crate::suite::SECTION] = crate::suite_chunk::suite_report(&rec, &admitted.resources);
+        keys.push(crate::suite::SECTION);
+    }
     for key in keys {
         if let Some((at, rep, rows)) = first_difference(key, &on_disk[key], &fresh[key]) {
             return Err(format!(

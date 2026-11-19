@@ -1532,6 +1532,15 @@ pub enum Chunk {
     /// All of one target's wait profiles of one repetition (0132 §11.1:
     /// `(waits, target, repetition)`), each on a fresh instance.
     Waits { target: TargetKind, repetition: u32 },
+    /// One fresh instance of one target running the reference suite at one
+    /// parallelism (0132 §8, §11.1: `(testexec, target, parallelism,
+    /// repetition)`): the eval crate's `testexec` drives it against a target
+    /// held by `hold --control testexec-v1`.
+    Testexec {
+        target: TargetKind,
+        parallelism: u32,
+        repetition: u32,
+    },
 }
 
 impl Chunk {
@@ -1547,6 +1556,11 @@ impl Chunk {
                 fill,
             } => format!("api.{}.{target}.r{repetition}.f{fill}", surface.name()),
             Chunk::Waits { target, repetition } => format!("waits.{target}.r{repetition}"),
+            Chunk::Testexec {
+                target,
+                parallelism,
+                repetition,
+            } => format!("testexec.{target}.p{parallelism}.r{repetition}"),
         }
     }
 
@@ -1580,9 +1594,23 @@ impl Chunk {
                 repetition: number(rep, 'r', "repetition")?,
                 fill: number(fill, 'f', "fill")?,
             },
+            ["testexec", ..] => {
+                let c = crate::suite::Coord::parse(text)?;
+                let chunk = Chunk::Testexec {
+                    target: target_of(&c.target)?,
+                    parallelism: c.parallelism,
+                    repetition: c.repetition,
+                };
+                // The suite's chunks are planned beside the collected plan,
+                // which story E extends (0132 §11.2's 72 testexec chunks).
+                if !plan_testexec(p).contains(&chunk) {
+                    return Err(format!("chunk {text:?} is not in the protocol's plan"));
+                }
+                return Ok(chunk);
+            }
             [section, _, ..] if !["cost", "waits", "api"].contains(section) => {
                 return Err(format!(
-                    "chunk {text:?}: section {section:?} is not implemented (only cost, waits and api)"
+                    "chunk {text:?}: section {section:?} is not implemented (only cost, waits, api and testexec)"
                 ));
             }
             _ => return Err(format!("{text:?} is not a chunk coordinate")),
@@ -1597,7 +1625,8 @@ impl Chunk {
         match self {
             Chunk::Cost { target, .. }
             | Chunk::Api { target, .. }
-            | Chunk::Waits { target, .. } => *target,
+            | Chunk::Waits { target, .. }
+            | Chunk::Testexec { target, .. } => *target,
         }
     }
 
@@ -1605,7 +1634,8 @@ impl Chunk {
         match self {
             Chunk::Cost { repetition, .. }
             | Chunk::Api { repetition, .. }
-            | Chunk::Waits { repetition, .. } => *repetition,
+            | Chunk::Waits { repetition, .. }
+            | Chunk::Testexec { repetition, .. } => *repetition,
         }
     }
 
@@ -1630,9 +1660,38 @@ impl Chunk {
                 .filter(|(_, w)| w.repetitions > rep)
                 .map(|(i, w)| (p.throughput.len() + i, Profile::Wait(w)))
                 .collect(),
-            Chunk::Api { .. } => Vec::new(),
+            Chunk::Api { .. } | Chunk::Testexec { .. } => Vec::new(),
         }
     }
+}
+
+/// The test-execution section's chunks (0132 §8.2, §11.1): per repetition,
+/// per launched target in that repetition's rotation, one chunk at each of
+/// the section's parallelisms. A protocol without the section plans none.
+/// Kept apart from [`plan_v4`], the plan `collect-v4` runs, until story E
+/// adds the suite to the collection (and the wrapper to its dispatch).
+pub fn plan_testexec(p: &Protocol) -> Vec<Chunk> {
+    let Some(t) = &p.testexec else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for repetition in 0..t.repetitions {
+        for target in p.launch_order(repetition) {
+            for &parallelism in &t.parallelism {
+                out.push(Chunk::Testexec {
+                    target,
+                    parallelism,
+                    repetition,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The window profile of a suite chunk: `testexec.p<parallelism>`.
+pub fn suite_profile(parallelism: u32) -> String {
+    format!("testexec.p{parallelism}")
 }
 
 /// The chunk plan, derived from the protocol and never computed by the
@@ -1705,6 +1764,19 @@ pub fn plan_chunk(p: &Protocol, chunk: &Chunk) -> (Vec<Planned>, Vec<PlannedWind
             Vec::new(),
             crate::api_chunk::planned_windows(target, rep, *surface, *fill),
         );
+    }
+    if let Chunk::Testexec { parallelism, .. } = chunk {
+        let profile = suite_profile(*parallelism);
+        let windows = [WindowKind::Ready, WindowKind::IdleReady, WindowKind::Suite]
+            .into_iter()
+            .map(|window| PlannedWindow {
+                target,
+                profile: profile.clone(),
+                repetition: rep,
+                window,
+            })
+            .collect();
+        return (Vec::new(), windows);
     }
     let mut planned = Vec::new();
     let mut windows = Vec::new();
@@ -1780,6 +1852,33 @@ pub fn v4_preflight_for(
     commit: Option<&str>,
     dirty: Option<bool>,
 ) -> Result<Option<Chunk>, String> {
+    let owner = match owner {
+        crate::clients::Surface::Native => Owner::Run,
+        crate::clients::Surface::Mcp => Owner::HoldApi,
+    };
+    v4_preflight_owner(owner, p, mode, chunk, commit, dirty)
+}
+
+/// The process that owns a protocol 4 chunk: `run` the cost, waits and
+/// native API chunks; `hold --control api-v1` the MCP API chunks; `hold
+/// --control testexec-v1` the test-execution chunks. Each refuses the
+/// others' coordinates before anything launches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owner {
+    Run,
+    HoldApi,
+    HoldSuite,
+}
+
+/// [`v4_preflight_for`] for any [`Owner`].
+pub fn v4_preflight_owner(
+    owner: Owner,
+    p: &Protocol,
+    mode: &str,
+    chunk: Option<&str>,
+    commit: Option<&str>,
+    dirty: Option<bool>,
+) -> Result<Option<Chunk>, String> {
     if p.protocol_version != crate::protocol::PROTOCOL_VERSION_4 {
         return match chunk {
             Some(c) => Err(format!(
@@ -1796,28 +1895,33 @@ pub fn v4_preflight_for(
         );
     };
     let chunk = Chunk::parse(text, p)?;
-    match (&chunk, owner) {
-        (
-            Chunk::Api {
-                surface: crate::clients::Surface::Mcp,
-                ..
-            },
-            crate::clients::Surface::Native,
-        ) => {
+    let mcp = matches!(
+        chunk,
+        Chunk::Api {
+            surface: crate::clients::Surface::Mcp,
+            ..
+        }
+    );
+    let suite = matches!(chunk, Chunk::Testexec { .. });
+    match owner {
+        Owner::Run if mcp => {
             return Err(format!(
                 "chunk {text}: the mcp surface is measured by the eval crate's api-mcp against a held target, not by run"
             ));
         }
-        (
-            Chunk::Api {
-                surface: crate::clients::Surface::Mcp,
-                ..
-            },
-            _,
-        ) => {}
-        (_, crate::clients::Surface::Mcp) => {
+        Owner::Run if suite => {
+            return Err(format!(
+                "chunk {text}: the test suite is run by the eval crate's testexec against a held target, not by run"
+            ));
+        }
+        Owner::HoldApi if !mcp => {
             return Err(format!(
                 "chunk {text}: hold --control api-v1 holds api.mcp chunks only"
+            ));
+        }
+        Owner::HoldSuite if !suite => {
+            return Err(format!(
+                "chunk {text}: hold --control testexec-v1 holds testexec chunks only"
             ));
         }
         _ => {}

@@ -69,6 +69,10 @@ pub struct App {
     identity: String,
     /// Requests sent to the application: the oracle's app cost.
     requests: AtomicU32,
+    /// Confined to `base`'s origin: an absolute URL elsewhere is refused
+    /// before any request, and no redirect is followed, so the identity
+    /// header never leaves the trial's own fixture (the reference suite).
+    confined: bool,
 }
 
 impl App {
@@ -82,7 +86,44 @@ impl App {
             base: base.trim_end_matches('/').to_string(),
             identity: identity.to_string(),
             requests: AtomicU32::new(0),
+            confined: false,
         })
+    }
+
+    /// An app client confined to `base`'s origin, every request bounded by
+    /// `timeout`: an emailed link to any other origin is refused unsent, and
+    /// a redirect is an answer, never followed.
+    pub fn confined(base: &str, identity: &str, timeout: Duration) -> Result<App, String> {
+        Ok(App {
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(timeout)
+                .build()
+                .map_err(|e| e.to_string())?,
+            base: base.trim_end_matches('/').to_string(),
+            identity: identity.to_string(),
+            requests: AtomicU32::new(0),
+            confined: true,
+        })
+    }
+
+    /// The URL a path or emailed link names, refused when the client is
+    /// confined and it leaves the fixture's origin.
+    fn target(&self, path_or_url: &str) -> Result<String, String> {
+        let url = self.url(path_or_url);
+        if self.confined {
+            let same = url
+                .strip_prefix(&self.base)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '?']));
+            if !same {
+                return Err(format!(
+                    "{url} is outside the fixture's origin {}",
+                    self.base
+                ));
+            }
+        }
+        Ok(url)
     }
 
     /// The HTTP requests this client has sent to the application.
@@ -100,7 +141,7 @@ impl App {
 
     /// GET with the identity header; returns status and body bytes.
     pub async fn get_raw(&self, path_or_url: &str) -> Result<(u16, Vec<u8>), String> {
-        let url = self.url(path_or_url);
+        let url = self.target(path_or_url)?;
         self.requests.fetch_add(1, Ordering::Relaxed);
         let resp = self
             .http
@@ -125,7 +166,7 @@ impl App {
     }
 
     pub async fn post(&self, path: &str, body: Value) -> Result<(u16, Value), String> {
-        let url = self.url(path);
+        let url = self.target(path)?;
         self.requests.fetch_add(1, Ordering::Relaxed);
         let resp = self
             .http
@@ -642,6 +683,73 @@ pub async fn solve_hard<S: MailSource>(
     }
 }
 
+/// The reference suite's five flows (accepted decision 0132 §8.1) over any
+/// mail source: the hard tier's scripted solutions and the reset and magic
+/// sign-in solutions, the same bodies Swarmail's MCP oracle runs.
+pub async fn solve_suite<S: MailSource>(
+    env: &AgentEnv,
+    app: &App,
+    source: &mut S,
+) -> Result<(), String> {
+    match env.task.as_str() {
+        "recipient-crowd" | "otp-backlog" | "digest-lookalike" => {
+            solve_hard(env, app, source).await
+        }
+        "reset-login" => reset_login(env, app, source).await,
+        "magic-login" => magic_login(app, source).await,
+        other => Err(format!("{other} is not a reference-suite flow")),
+    }
+}
+
+/// `magic-login`: follow the labelled sign-in link of the one mail.
+async fn magic_login<S: MailSource>(app: &App, source: &mut S) -> Result<(), String> {
+    let mail = source.wait_emails(Some("Your sign-in link"), 1).await?;
+    let link =
+        labelled_url(&text_of(&mail[0]), "Sign in to your account:").ok_or("no sign-in link")?;
+    ok("magic login", app.get(&link).await?)?;
+    Ok(())
+}
+
+/// `reset-login` (and `reset-reuse`, which also proves the replayed token
+/// is refused): open the reset link, set a password, sign in with it.
+async fn reset_login<S: MailSource>(
+    env: &AgentEnv,
+    app: &App,
+    source: &mut S,
+) -> Result<(), String> {
+    let mail = source.wait_emails(Some("Reset your password"), 1).await?;
+    let link = labelled_url(&text_of(&mail[0]), "Reset your password:").ok_or("no reset link")?;
+    ok("reset page", app.get(&link).await?)?;
+    let token = last_segment(&link);
+    let password = "correct horse battery staple";
+    ok(
+        "reset",
+        app.post(
+            "/reset/complete",
+            json!({ "token": token, "password": password }),
+        )
+        .await?,
+    )?;
+    if env.task == "reset-reuse" {
+        let (status, body) = app
+            .post(
+                "/reset/complete",
+                json!({ "token": token, "password": "a second password" }),
+            )
+            .await?;
+        if status != 410 {
+            return Err(format!(
+                "the replayed reset was not refused: {status} {body}"
+            ));
+        }
+    }
+    ok(
+        "login",
+        app.post("/login", json!({ "password": password })).await?,
+    )?;
+    Ok(())
+}
+
 async fn solve(env: &AgentEnv, app: &App, mcp: &mut McpClient) -> Result<(), String> {
     let inbox = env.inbox.as_str();
     match env.task.as_str() {
@@ -714,13 +822,7 @@ async fn solve(env: &AgentEnv, app: &App, mcp: &mut McpClient) -> Result<(), Str
             )?;
             Ok(())
         }
-        "magic-login" => {
-            let mail = mcp.wait_emails(inbox, Some("Your sign-in link"), 1).await?;
-            let link = labelled_url(&text_of(&mail[0]), "Sign in to your account:")
-                .ok_or("no sign-in link")?;
-            ok("magic login", app.get(&link).await?)?;
-            Ok(())
-        }
+        "magic-login" => magic_login(app, &mut SwarmailSource { mcp, inbox }).await,
         "entity-url" => {
             let mail = mcp.wait_emails(inbox, Some("Autumn sale"), 1).await?;
             let html = mail[0]["html"].as_str().ok_or("no HTML body")?;
@@ -749,40 +851,7 @@ async fn solve(env: &AgentEnv, app: &App, mcp: &mut McpClient) -> Result<(), Str
             Ok(())
         }
         "reset-login" | "reset-reuse" => {
-            let mail = mcp
-                .wait_emails(inbox, Some("Reset your password"), 1)
-                .await?;
-            let link =
-                labelled_url(&text_of(&mail[0]), "Reset your password:").ok_or("no reset link")?;
-            ok("reset page", app.get(&link).await?)?;
-            let token = last_segment(&link);
-            let password = "correct horse battery staple";
-            ok(
-                "reset",
-                app.post(
-                    "/reset/complete",
-                    json!({ "token": token, "password": password }),
-                )
-                .await?,
-            )?;
-            if env.task == "reset-reuse" {
-                let (status, body) = app
-                    .post(
-                        "/reset/complete",
-                        json!({ "token": token, "password": "a second password" }),
-                    )
-                    .await?;
-                if status != 410 {
-                    return Err(format!(
-                        "the replayed reset was not refused: {status} {body}"
-                    ));
-                }
-            }
-            ok(
-                "login",
-                app.post("/login", json!({ "password": password })).await?,
-            )?;
-            Ok(())
+            reset_login(env, app, &mut SwarmailSource { mcp, inbox }).await
         }
         "invite-time" => {
             let mail = mcp.wait_emails(inbox, Some("Invitation:"), 1).await?;
