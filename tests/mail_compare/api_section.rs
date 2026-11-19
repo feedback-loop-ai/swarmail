@@ -3576,6 +3576,10 @@ async fn launch_candidate(root: &Path) -> targets::Owned {
 /// exact checks and the destructive postchecks. Resource windows are the
 /// leaf's and are proved by the ignored chunk proof; here no meter is held.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
 async fn the_candidates_native_cells_are_exact_end_to_end() {
     let root = tempfile::tempdir().unwrap();
     let mut owned = launch_candidate(root.path()).await;

@@ -897,7 +897,7 @@ async fn busy_refusals_reach_the_published_rows_by_source() {
 
 /// Swarmail's HTTP shape, just enough: `POST /mcp` initializes, and the
 /// default inbox lists `kept` distinct ids, paged.
-async fn short_store(kept: u64) -> std::net::SocketAddr {
+async fn listing_store(kept: u64) -> std::net::SocketAddr {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -972,9 +972,14 @@ async fn short_store(kept: u64) -> std::net::SocketAddr {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fill_the_store_did_not_keep_blocks_every_mcp_cell_and_exits_one() {
-    // The holder announces a store that keeps 99 of 100 accepted messages.
-    // api-mcp fills, finds the disagreement, blocks every planned cell as
+async fn a_fill_the_store_disagrees_with_blocks_every_mcp_cell_and_exits_one() {
+    // The holder announces a store that lists 101 after 100 accepted
+    // messages: one it was never sent. A store showing fewer is read again
+    // to the fill's 300 s bound (0132 §6.4), which this suite cannot spend;
+    // that reread and its bound are pinned on a paused clock in
+    // tests/mail_compare/api_section.rs. A count over the level is settled
+    // at once and is not the level either, so the producer's half is the
+    // same: api-mcp fills, finds the disagreement, blocks every planned cell as
     // fill_not_reached, sends that record, closes its input and takes the
     // holder's exit 1 with a proved receipt. Nothing is retried.
     let d = tempfile::tempdir().unwrap();
@@ -984,7 +989,7 @@ async fn a_fill_the_store_did_not_keep_blocks_every_mcp_cell_and_exits_one() {
         quit_delay: Duration::ZERO,
     })
     .await;
-    let http = short_store(99).await;
+    let http = listing_store(101).await;
     let lines = d.path().join("lines");
     let r = receipt("swarmail", "leaf-3").to_string();
     let hold = format!(
@@ -1035,7 +1040,7 @@ async fn a_fill_the_store_did_not_keep_blocks_every_mcp_cell_and_exits_one() {
     assert!(!rec.fill.reached);
     assert_eq!(
         (rec.fill.fill, rec.fill.accepted, rec.fill.retained),
-        (100, 100, Some(99))
+        (100, 100, Some(101))
     );
     let (cells, _) = api::plan_cells(clients::Surface::Mcp, |op| {
         clients::mcp_capability("swarmail", op)
