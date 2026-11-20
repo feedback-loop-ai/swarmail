@@ -333,3 +333,53 @@ pub async fn serve(inputs: Inputs) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, Write};
+
+    const CALL: &[u8] =
+        br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"eval_http","arguments": {"path":"/"}}}"#;
+
+    #[test]
+    fn an_observer_reports_each_call_and_a_lost_one_steps_aside() {
+        // No socket: nothing is observed and the call goes ahead.
+        assert!(!Observer::connect(None).start(CALL));
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!Observer::connect(Some(&dir.path().join("absent"))).start(CALL));
+
+        let (ours, runner) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut observer = Observer { stream: Some(ours) };
+        let mut lines = std::io::BufReader::new(runner.try_clone().unwrap());
+        let mut acked = runner;
+        let mut frame = || {
+            let mut line = String::new();
+            lines.read_line(&mut line).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()
+        };
+        // Not a call, not JSON: nothing is sent.
+        assert!(!observer.start(br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#));
+        assert!(!observer.start(b"nope"));
+        // A call: its exact argument bytes, then its end.
+        acked.write_all(b"kkk").unwrap();
+        assert!(observer.start(CALL));
+        assert_eq!(
+            frame(),
+            json!({"op": "start", "tool": "eval_http", "arguments": "{\"path\":\"/\"}"})
+        );
+        observer.end();
+        assert_eq!(frame(), json!({"op": "end"}));
+        // A call whose arguments cannot be read is reported as such.
+        assert!(observer.start(br#"{"method":"tools/call","id":2,"params":{"name":"eval_http"}}"#));
+        assert_eq!(frame(), json!({"op": "unreadable"}));
+        // The runner goes away: the next frame finds no acknowledgement and
+        // the observer steps aside at once, with no retry.
+        drop(acked);
+        drop(lines);
+        assert!(observer.start(CALL));
+        assert!(observer.stream.is_none());
+        assert!(!observer.start(CALL));
+        observer.end();
+    }
+}

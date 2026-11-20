@@ -437,6 +437,13 @@ fn mcp_bodies_are_scanned_in_order_including_batches() {
     };
     assert_eq!(calls[0].argument_bytes, br#"{ "id" : "1" }"#.len() as u64);
     assert_eq!(calls[0].value, r#"{"id":"1"}"#);
+    // Two calls in one batch overlap: the trial is withheld.
+    let c = Capture::new(catalogue());
+    let two = br#"[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"swarmail_get_email","arguments":{"id":"1"}}},{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"swarmail_get_email","arguments":{"id":"2"}}}]"#;
+    let started = c.observe_mcp_body(two);
+    assert_eq!(started.len(), 2);
+    drop(started);
+    assert_eq!(reason(&seal_one(&c)), Some(Refusal::BindingMismatch));
     // Not a call, not JSON: ignored.
     let c = Capture::new(catalogue());
     assert!(c.observe_mcp_body(b"garbage").is_empty());
@@ -612,8 +619,14 @@ fn cells_are_escaped_and_figures_never_dash() {
     let page = render_page(&json!({"groups":[
         {"task":"signup","agent":"a|b","attempts":1,"passes":0,"fails":1,"harness_errors":0,"scored":1,"tool_surfaces":[{"kind":"wrapper"}]},
         {"task":"signup","agent":"c","attempts":1,"passes":1,"fails":0,"harness_errors":0,"scored":1,"tool_surfaces":[{"kind":"wrapper"}],
-         "journal":{"tokens_per_success":10.0,"tokens":{"cached":{"sum":7}}}}
+         "journal":{"tokens_per_success":10.0,"tokens":{"cached":{"sum":7}}}},
+        {"task":"signup","agent":"d","attempts":2,"passes":2,"fails":0,"harness_errors":0,"scored":2,"tool_surfaces":[{"kind":"wrapper"}],
+         "journal":{"tokens_per_success":null,"tokens_per_success_reason":"sum_overflow"}}
     ]}));
+    assert!(
+        page.contains("| signup | d | 2 | 2 | 0 | 0 | null (sum\\_overflow) | null |"),
+        "{page}"
+    );
     assert!(
         page.contains("| signup | a\\|b | 1 | 0 | 1 | 0 | null (incomplete\\_join) | null |"),
         "{page}"

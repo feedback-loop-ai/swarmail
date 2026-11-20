@@ -1216,7 +1216,8 @@ fn main() -> ExitCode {
 }
 
 /// Write the rendered page to a fresh path: exclusive creation, mode 0600,
-/// never a replacement of an existing file.
+/// never a replacement of an existing file. A page that cannot be written
+/// whole is removed (the file is this call's own), never left partial.
 fn write_page(path: &std::path::Path, report: &serde_json::Value) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut f = std::fs::OpenOptions::new()
@@ -1225,8 +1226,13 @@ fn write_page(path: &std::path::Path, report: &serde_json::Value) -> std::io::Re
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
-    f.write_all(swarmail_evals::toolvalues::render_page(report).as_bytes())?;
-    f.sync_all()
+    let written = f
+        .write_all(swarmail_evals::toolvalues::render_page(report).as_bytes())
+        .and_then(|()| f.sync_all());
+    if written.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    written
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]

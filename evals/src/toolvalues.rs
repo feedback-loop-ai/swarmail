@@ -872,6 +872,9 @@ impl Capture {
     /// Scan one JSON-RPC body sent to Swarmail's `/mcp` and observe every
     /// `tools/call` in it, in order. A body that does not parse strictly but
     /// names `tools/call` cannot be read faithfully and refuses the trial.
+    /// A batch holding two or more calls is in flight all at once, so the
+    /// second overlaps the first and the trial is withheld
+    /// (`binding_mismatch`): its calls' order is not the agent's to prove.
     pub fn observe_mcp_body(&self, body: &[u8]) -> Vec<Started> {
         let Ok(root) = parse(body) else {
             if body.windows(10).any(|w| w == b"tools/call") {
