@@ -1449,9 +1449,11 @@ The operator ruled on 2026-11-19 that this is proved, not excepted. Now:
   directory beside the scratch (`<output>.scratch/<coordinate>.pending`).
   Only once its holder and client scopes are judged clean and its ledger
   entry is written is it published as `chunks/<coordinate>`, by one
-  `rename(2)` onto a name that must not exist (`mv -T -n`); a name already
-  taken, a failed rename or an interrupt before it is exit 2 with the entry
-  rewritten. A failed chunk's rows and receipts stay unpublished where they
+  `rename(2)` onto a name that must not exist (GNU `mv -T -n`; an `mv`
+  without `-T`, such as the BSD one macOS CI's fake-uname rig runs, gets
+  `-n` alone); a name already taken, a failed rename, a chunk that landed
+  inside a name taken during the rename, or an interrupt before it is exit 2
+  with the entry rewritten. A failed chunk's rows and receipts stay unpublished where they
   were written, and the refusal names that directory. The private index the
   plan described was not needed: the holder, `api-mcp` and the eval crate
   are unchanged, and publishing the directory whole gives the same

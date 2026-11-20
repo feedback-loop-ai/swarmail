@@ -535,6 +535,15 @@ case "$mode" in
     bound=(timeout --kill-after=30 560 taskset -c "0-$((chunk_cpus - 1))")
     scope_polls=20 scope_poll_interval=0.5 scope_poll_cs=50
     chunk_budget_cs=60000 chunk_end_cs=60000 client_judge_cs=400
+    # An MCP chunk's publication is one no-clobber rename. GNU mv's -T makes
+    # it refuse a destination that is a directory instead of moving into it;
+    # an mv without -T (the BSD one a portable rig runs) gets -n alone, and
+    # the check after it refuses a chunk that landed inside a taken name.
+    if mv --version >/dev/null 2>&1; then
+      publish_mv=(mv -T -n)
+    else
+      publish_mv=(mv -n)
+    fi
     # The chunk's clock, in hundredths of a second: /proc/uptime, which is
     # monotonic. COMPARE_MAIL_UPTIME names another file for the wrapper's own
     # proof of its sums under a controlled clock; it changes when a bound
@@ -546,7 +555,8 @@ case "$mode" in
       [ "$frac" != "$up" ] || frac=0
       frac="${frac}00"
       frac=${frac:0:2}
-      case "$int$frac" in ''|*[!0-9]*) echo 0; return ;; esac
+      case "$int" in ''|*[!0-9]*) echo 0; return ;; esac
+      case "$frac" in *[!0-9]*) echo 0; return ;; esac
       echo $((10#$int * 100 + 10#$frac))
     }
     # At most CS hundredths, and no more than what is left of the chunk's
@@ -693,8 +703,8 @@ case "$mode" in
     # The scope is judged the moment the chunk's command has ended, before
     # the holder's scope is asked or anything is killed: the driver's
     # `client-judge` reads the kernel's cgroup of the unit the workload's
-    # handshake names, within one deadline (at most 4 s here, its own half a
-    # second inside that, and never past the chunk's ten minutes), and writes
+    # handshake names, within one deadline (3.5 s, inside a `timeout` of 4 s
+    # here, and never past the chunk's ten minutes), and writes
     # its receipt. Clean is its exit 0 with a receipt that says clean; a
     # survivor, or no evidence at all, is an infrastructure failure. The
     # receipt is written before the scope is killed and stopped, so nothing
@@ -976,8 +986,9 @@ case "$mode" in
       # not proved clean. A failed chunk's rows stay where they were written.
       if [ -n "$client_unit" ] && [ "$status" -ne 2 ]; then
         if [ "$interrupted" != 0 ] || [ -e "$output/chunks/$coord" ] \
-          || ! mv -T -n "$chunk_out" "$output/chunks/$coord" 2>/dev/null \
-          || [ ! -f "$output/chunks/$coord/index.json" ] || [ -e "$chunk_out" ]; then
+          || ! "${publish_mv[@]}" "$chunk_out" "$output/chunks/$coord" 2>/dev/null \
+          || [ ! -f "$output/chunks/$coord/index.json" ] || [ -e "$chunk_out" ] \
+          || [ -e "$output/chunks/$coord/${chunk_out##*/}" ]; then
           status=2
           write_entry
         fi

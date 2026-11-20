@@ -68,3 +68,16 @@ The panel returned five residual verdicts, all low or info. This pass fixes both
 - Other seams: `COMPARE_MAIL_UPTIME` is honoured in production, a receipt is cut off at 64 KiB, a host proof's `.output()` can wait on a survivor's inherited pipe, and `Kernel::children` silently stops at 256 entries.
 
 Elapsed: `client_section::*`, now 17 tests, takes 0.02 s.
+
+## Rework after review 2 (implement, 2026-11-20)
+
+The panel returned one medium and lows. This pass fixes the medium and two cheap lows; the rest stay tracked debt as listed above.
+
+**Fixed:**
+- **GNU-only `mv -T` (independent 1, medium).** The collector's MCP publication used `mv -T -n`, which BSD `mv` rejects, so the ungated `collect_v4_dispatches_api_chunks_to_run_and_to_api_mcp` would exit 2 on macOS CI, and the ungated squat test passed there for the wrong reason. The collector now probes `mv --version` once: GNU keeps `-T -n`; any other `mv` gets `-n` alone, and a new post-check refuses a chunk that landed inside a name taken during the rename (`chunks/<coordinate>/<coordinate>.pending`). Production (Linux, GNU coreutils) is unchanged. collect-v4 itself still refuses a real non-Linux host by name (`collect_v4_names_each_preflight_refusal`); this only keeps the fake-uname rig portable, so the dispatch and squat tests stay ungated and test the right thing on macOS. Proofs, on Linux with a fake BSD `mv` that rejects `--version` and `-T`: `v4::collect_v4_publishes_an_mcp_chunk_with_an_mv_that_has_no_dash_t` (exit 0, published whole) and `v4::collect_v4_refuses_an_mcp_chunk_that_lands_inside_a_name_taken_during_its_rename` (the fake `mv` takes the destination first; exit 2, no `index.json` at the taken name). Both fail against the previous script.
+- **Unreadable clock (independent 2).** `mono_cs` checks the integer part on its own, so an unreadable or empty clock reads as 0 rather than raising bash's `10#` arithmetic error and failing every bound. Proof: `v4::collect_v4_reads_an_unreadable_clock_as_zero_and_still_runs` (fails against the previous script).
+- **Deadline wording (correctness 5, guarantees 2, independent 6).** R30 and the script comment now state 3.5 s inside a 4 s `timeout`, as the collector passes it (default 3 s, at most 5 s).
+
+**Still tracked debt (low):** admit_v4's call to `check_client` reached by no local MCP fixture; the real `client-judge` receipt bytes never fed to the script's classifier; no real-kernel survivor proof; a receipt over 64 KiB replaced by a synthetic unknown (still exit 2, unsealed); the R29 historical sentence's wording; plan step 4's stale description (the deviation is recorded above).
+
+Elapsed: the three new rig tests take 0.44 s together.

@@ -6984,6 +6984,70 @@ fn collect_v4_never_publishes_an_mcp_chunk_over_a_name_already_taken() {
     assert!(chunk_lines(&rig.log(), "driver run").is_empty());
 }
 
+/// Replace the rig's `mv` with one that, like BSD's, knows neither
+/// `--version` nor `-T`; with `FAKE_MV_RACE` set it first takes the
+/// chunk's destination itself, as a racing writer would between the collector's
+/// existence check and its rename.
+fn bsd_mv(rig: &V4Rig) {
+    let tools = rig.root.path().join("tools");
+    let real = std::fs::read_link(tools.join("mv")).expect("the rig links a real mv");
+    std::fs::remove_file(tools.join("mv")).unwrap();
+    let body = format!(
+        "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --version|-T) echo \"mv: illegal option -- $a\" >&2; exit 64 ;; esac; done\nfor last in \"$@\"; do :; done\ncase \"$FAKE_MV_RACE:$last\" in 1:*/chunks/*) mkdir \"$last\" || exit 1 ;; esac\nexec {} \"$@\"\n",
+        real.display()
+    );
+    std::fs::write(tools.join("mv"), body).unwrap();
+    std::fs::set_permissions(tools.join("mv"), std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn collect_v4_publishes_an_mcp_chunk_with_an_mv_that_has_no_dash_t() {
+    let rig = client_rig();
+    bsd_mv(&rig);
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[]);
+    assert_eq!(code, 0, "{text}");
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 2, "{ledger:?}");
+    assert_eq!(ledger[0]["client"]["verdict"], "clean", "{:?}", ledger[0]);
+    assert_eq!(ledger[0]["exit"], 0);
+    assert!(
+        rig.out()
+            .join("chunks/api.mcp.mailpit.r0.f0/index.json")
+            .is_file()
+    );
+}
+
+#[test]
+fn collect_v4_refuses_an_mcp_chunk_that_lands_inside_a_name_taken_during_its_rename() {
+    let rig = client_rig();
+    bsd_mv(&rig);
+    let (code, text) = rig.run(&DRAFT_ROUTE, &[("FAKE_MV_RACE", "1")]);
+    assert_eq!(code, 2, "{text}");
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 1, "{ledger:?}");
+    assert_eq!(ledger[0]["client"]["verdict"], "clean");
+    assert_eq!(ledger[0]["exit"], 2);
+    let taken = rig.out().join("chunks/api.mcp.mailpit.r0.f0");
+    assert!(taken.is_dir());
+    assert!(!taken.join("index.json").exists(), "never published whole");
+}
+
+#[test]
+fn collect_v4_reads_an_unreadable_clock_as_zero_and_still_runs() {
+    let rig = client_rig();
+    let missing = rig.file("no-uptime");
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[("COMPARE_MAIL_UPTIME", missing.to_str().unwrap())],
+    );
+    assert_eq!(code, 0, "{text}");
+    assert!(!text.contains("syntax error"), "{text}");
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 2, "{ledger:?}");
+    assert_eq!(ledger[0]["client"]["verdict"], "clean", "{:?}", ledger[0]);
+    assert_eq!(ledger[1]["exit"], 0);
+}
+
 #[test]
 fn collect_v4_counts_a_client_judgment_without_evidence_as_two() {
     for how in ["none", "unknown"] {
