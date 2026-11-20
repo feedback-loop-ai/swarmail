@@ -49,14 +49,15 @@ Everything below is the short version. The detail lives in
 - **Await, don't poll.** `await` blocks until the mail arrives. It
   subscribes before it checks, and the links and codes are already
   extracted.
-- **Built for AI agents.** Agents drive the same store over MCP, on HTTP or
-  stdio: wait for a mail, take the newest code or the one link, seed a
-  fixture, break SMTP on purpose.
+- **Agents over MCP.** Agents drive the same store over MCP, on HTTP or
+  stdio. The setup, the tests that prove it and the published eval runs are
+  under [For AI agents](#for-ai-agents).
 - **Drop-in for MailHog, Mailpit and MailSlurper.** Existing clients work
   through the [shims](docs/guide/compat-shims.md): MailHog and Mailpit on the
   HTTP port, MailSlurper's service API on an opt-in listener of its own.
 
-Eighteen MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
+Eighteen MCP tools (counted against the served list by
+[`tests/mcp_revisions/focused.rs`](tests/mcp_revisions/focused.rs)), one REST API, two wire protocols in (SMTP, POP3), one
 compatibility layer (MailHog/Mailpit/MailSlurper), one observability story
 (`/metrics`, `/healthz`, `/openapi.json`, `/llms.txt`) — and a web UI with
 zero frontend dependencies. More in the [overview](docs/guide/overview.md).
@@ -94,7 +95,7 @@ per inbox, and how to stop the server gracefully.
 | SMTP `:1025` | AUTH username = inbox, STARTTLS, a 50 MiB cap, exact DATA boundaries | [smtp.md](docs/guide/smtp.md) |
 | REST API `:8025` | `await`, exact-count `assert`, threads, SSE feed, seed fixtures | [rest-api.md](docs/guide/rest-api.md) |
 | Client fixtures | Playwright and pytest: `waitForCode()`, `wait_for_link()` | [client-fixtures.md](docs/guide/client-fixtures.md) |
-| MCP | eighteen tools over HTTP `POST /mcp` and the stdio bridge | [mcp.md](docs/guide/mcp.md) |
+| MCP | the tool catalogue over HTTP `POST /mcp` and the stdio bridge | [mcp.md](docs/guide/mcp.md) |
 | Focused waits | the newest code, or the one matching link, as a decision | [focused-waits.md](docs/guide/focused-waits.md) |
 | Attachments | list them, fetch one, read a calendar invite | [attachments.md](docs/guide/attachments.md) |
 | POP3 `:1110` | the same store over RFC 1939 | [pop3.md](docs/guide/pop3.md) |
@@ -103,18 +104,41 @@ per inbox, and how to stop the server gracefully.
 | Webhooks | every accepted mail POSTed to your sink, with retries | [webhooks.md](docs/guide/webhooks.md) |
 | Chaos | per-stage SMTP failures and delays, on purpose | [chaos.md](docs/guide/chaos.md) |
 | Persistence | an SQLite restart copy, one server per data file | [persistence.md](docs/guide/persistence.md) |
-| Recipient routing | one sending identity, a private inbox per agent | [recipient-routing.md](docs/guide/recipient-routing.md) |
+| Recipient routing | one sending identity, an inbox per agent address | [recipient-routing.md](docs/guide/recipient-routing.md) |
 | Deliverability reports | per-mail findings: the bulk-sender checklist, HTML client rules, per-link `link.*` rules, offline DKIM verification (`dkim.*`) and SPF and DMARC (`spf.*`, `dmarc.*`) against declared records | [deliverability.md](docs/guide/deliverability.md) |
 | Network posture and limits | loopback by default, Origin checks, `/metrics`, bounded pages | [network-posture.md](docs/guide/network-posture.md) |
 | Benchmarks | ingest microbenchmarks and the 5000/5000 proof | [benchmarks.md](docs/guide/benchmarks.md) |
 
 ## For AI agents
 
-Wire Claude Code, Codex, Cursor or dsh with the copy-paste
-[agent setup guide](docs/agents/setup.md); the tools are on the [MCP page](docs/guide/mcp.md).
+The [agent setup guide](docs/agents/setup.md) has copy-paste wiring for
+Claude Code, Codex, Cursor and dsh; the tools are on the [MCP page](docs/guide/mcp.md).
 The wiring snippets in `docs/agents/setup.md` are written into a fresh project
 and driven against the real binary by `tests/agent_setup_docs.rs` in CI;
-install commands are marked not-executed.
+install commands are marked not-executed. The proof is
+[`tests/agent_setup_docs.rs`](tests/agent_setup_docs.rs), and the MCP
+interface itself is driven over HTTP by [`tests/mcp.rs`](tests/mcp.rs) and
+over stdio by [`tests/stdio.rs`](tests/stdio.rs).
+
+The published eval runs measure models doing the suite's tasks against
+swarmail. On main [`a4f552d`](docs/evals/baseline-2026-11-01.md),
+claude-opus, claude-sonnet, codex-sol, codex-luna and glm-spark each ran the
+[16](docs/evals/baseline-2026-11-01.md) default-tier tasks five times, and
+[395 of 400](docs/evals/baseline-2026-11-01.md) trials passed; a sixth model,
+glm-dashscope, passed [80 of 80](docs/evals/baseline-2026-11-01-glm-dashscope.md)
+on the same executables, for [475 of 480](docs/evals/baseline-2026-11-01-glm-dashscope.md)
+across the six. On the hard tier, on main [`8732445`](docs/evals/hard-2026-11-03.md),
+the first five models passed [74 of 75 scored trials](docs/evals/hard-2026-11-03.md).
+On the hard and expert tiers together, on main [`c95386e`](docs/evals/expert-2026-11-07.md),
+claude-opus, claude-sonnet, codex-sol and codex-luna passed
+[151/160](docs/evals/expert-2026-11-07.md) with no GLM model, and codex-luna
+scored [0/5](docs/evals/expert-2026-11-07.md) on `otp-late`, every time with
+`stale_code`. Five trials per cell give wide intervals (the
+[95%](docs/evals/baseline-2026-11-01.md#success-by-task-and-by-model) interval
+for a [5/5](docs/evals/baseline-2026-11-01.md#success-by-task-and-by-model) cell
+is [`[0.57, 1.0]`](docs/evals/baseline-2026-11-01.md#success-by-task-and-by-model)),
+tokens per success and transcripts are not measured (#391), no client matrix
+has been measured (#392), and the [eval index](docs/evals/README.md) has the rest.
 
 ## The guarantees
 
