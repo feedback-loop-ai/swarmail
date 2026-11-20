@@ -317,7 +317,10 @@ fn values_are_redacted_bound_and_never_scored() {
         "caf\u{e9} \u{2713} [REDACTED] [REDACTED]"
     );
     assert_eq!(entries[1]["value"]["subject"], "\"quoted\" [REDACTED]");
-    assert_eq!(entries[2]["value"]["path"], "/?t=[REDACTED]");
+    assert_eq!(
+        entries[2]["value"]["path"],
+        "/?t=[REDACTED]&e=[REDACTED]%zz&d=[REDACTED]"
+    );
     assert_eq!(entries[3]["value"]["body"]["password"], "[REDACTED]");
     assert_eq!(entries[3]["value"]["body"]["note"], "\u{2713}\t");
 
@@ -360,12 +363,16 @@ fn values_are_redacted_bound_and_never_scored() {
         "{page_text}"
     );
 
-    // No canary in any written byte or stream, private intermediates included.
+    // No canary in any written byte or stream, private intermediates
+    // included; each literal's tail catches its encoded spellings too.
     let canaries = [
         probe_bearer.as_str(),
         planted_bearer.as_str(),
         sentinel.as_str(),
         number.as_str(),
+        &probe_bearer[1..],
+        &planted_bearer[1..],
+        &sentinel[1..],
     ];
     let searched = assert_clean(
         &[&realm, &out],

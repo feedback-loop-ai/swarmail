@@ -2171,6 +2171,20 @@ async fn tool_values(planted: bool) -> i32 {
     // Swarmail: initialize through the client, then raw tools/call bodies.
     let _session = McpClient::connect(&env.mcp_url).await.unwrap();
     let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let own_origin = env.mcp_url.trim_end_matches("/mcp");
+    assert!(own_origin.starts_with("http://127.0.0.1:"), "{own_origin}");
+    // Any other origin is passed through for Swarmail's guard to refuse,
+    // exactly as a direct request would be (no tools/call: not observed).
+    let foreign = http
+        .post(&env.mcp_url)
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("origin", "http://evil.example")
+        .body(r#"{"jsonrpc":"2.0","id":99,"method":"ping"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), reqwest::StatusCode::FORBIDDEN);
     let mcp_args = [
         format!(
             "{{ \"inbox\" :\"{}\",\n \"subject\": \"caf\\u00e9 \u{2713} {bearer} {sentinel}\" }}",
@@ -2190,15 +2204,18 @@ async fn tool_values(planted: bool) -> i32 {
             "{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"tools/call\",\"params\":{{\"name\":\"swarmail_search_emails\",\"arguments\":{args}}}}}",
             100 + i
         );
-        let reply = http
+        let mut request = http
             .post(&env.mcp_url)
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream")
-            .header("mcp-protocol-version", "2025-03-26")
-            .body(body)
-            .send()
-            .await
-            .unwrap();
+            .header("mcp-protocol-version", "2025-03-26");
+        if i == 0 {
+            // A browser-shaped client names the origin it was served from:
+            // the forwarder's own. Swarmail's guard (0043) admits it only
+            // once the forwarder has respelled it for Swarmail's port.
+            request = request.header("origin", own_origin);
+        }
+        let reply = request.body(body).send().await.unwrap();
         assert!(reply.status().is_success(), "{}", reply.status());
         let reply: Value = serde_json::from_slice(&reply.bytes().await.unwrap()).unwrap();
         assert_eq!(reply["id"], 100 + i, "the forwarder keeps the reply");
@@ -2230,7 +2247,15 @@ async fn tool_values(planted: bool) -> i32 {
     let init = rpc(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}"#.into());
     assert!(init["result"].is_object(), "{init}");
     let http_args = [
-        format!("{{\"method\":\"GET\",\"path\":\"/?t={bearer}\"}}"),
+        // Plain, then percent-encoded beside a malformed escape, then
+        // double-encoded: every spelling must be redacted.
+        format!(
+            "{{\"method\":\"GET\",\"path\":\"/?t={bearer}&e=%{:02X}{}%zz&d=%25{:02X}{}\"}}",
+            bearer.as_bytes()[0],
+            &bearer[1..],
+            sentinel.as_bytes()[0],
+            &sentinel[1..]
+        ),
         format!(
             "{{ \"method\" : \"POST\", \"path\": \"/login\", \"body\": {{\"email\": \"caf\\u00e9@x\", \"password\": \"{sentinel}\", \"note\": \"\u{2713}\\t\"}} }}"
         ),
