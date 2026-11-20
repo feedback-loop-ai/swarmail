@@ -485,10 +485,15 @@ impl Registry {
     }
 
     /// One string's redacted form: a string that is itself a JSON container
-    /// is redacted structurally and re-encoded; a string whose percent
-    /// decoding reveals a literal is redacted in its decoded form; otherwise
-    /// the literal text is masked.
+    /// is redacted structurally and re-encoded; a string that only reveals a
+    /// literal once its percent escapes are undone (to a fixed point, each
+    /// valid escape wherever it stands) is redacted in that decoded form;
+    /// otherwise the literal text is masked. A string that already spells
+    /// [`MASK`] is refused: a reader could not tell it from a redaction.
     fn redact_str(&self, s: &str, depth: usize) -> Result<String, Refusal> {
+        if s.contains(MASK) {
+            return Err(Refusal::InvalidArgumentEncoding);
+        }
         let trimmed = s.trim_start();
         if (trimmed.starts_with('{') || trimmed.starts_with('['))
             && let Ok(nested) = parse(s.as_bytes())
@@ -502,12 +507,20 @@ impl Registry {
             encode(&redacted, &mut out);
             return Ok(out);
         }
-        if let Some(decoded) = percent_decoded(s)
-            && self.found_in(decoded.as_bytes())
-        {
-            return Ok(self.mask(&decoded));
+        let plain = self.mask(s);
+        if !plain.contains('%') || !self.found_in_layers(&plain) {
+            return Ok(plain);
         }
-        Ok(self.mask(s))
+        // A decoding that never settles or is not UTF-8 cannot be masked as
+        // text: refused, never published with its encoded literal.
+        match percent_fixed(s) {
+            Some(decoded) if decoded.contains(MASK) => Err(Refusal::InvalidArgumentEncoding),
+            Some(decoded) if self.found_in(decoded.as_bytes()) => Ok(self.mask(&decoded)),
+            // Another layer (a percent-encoded JSON escape, say) holds it:
+            // the final residual check refuses the value.
+            Some(_) => Ok(plain),
+            None => Err(Refusal::InvalidArgumentEncoding),
+        }
     }
 
     fn redact_node(&self, v: &Json, depth: usize) -> Result<Json, Refusal> {
@@ -543,9 +556,7 @@ impl Registry {
     /// spellings.
     fn residual(&self, v: &Json, depth: usize) -> bool {
         let text = |s: &str| {
-            self.found_in(s.as_bytes())
-                || self.found_unescaped(s)
-                || percent_decoded(s).is_some_and(|d| self.found_in(d.as_bytes()))
+            self.found_in_layers(s)
                 || (depth < DEPTH_LIMIT
                     && parse(s.as_bytes()).is_ok_and(|n| self.residual(&n.value, depth + 1)))
         };
@@ -589,14 +600,21 @@ impl Registry {
 }
 
 impl Registry {
-    /// Whether a literal appears once JSON escapes in plain text are undone,
-    /// at any nesting: text that only looks like a nested document (one too
-    /// deep to parse, say) cannot hide an escaped literal.
-    fn found_unescaped(&self, s: &str) -> bool {
-        let mut current = s.to_string();
+    /// Whether a literal appears in the text or in any layer reached by
+    /// undoing JSON escapes and percent escapes, both leniently (a complete
+    /// escape is decoded wherever it stands; anything else stays as written)
+    /// and alternately, to a fixed point. Text whose layers do not settle
+    /// within [`DEPTH_LIMIT`] rounds cannot be proven clean and counts as
+    /// holding one. Every layer is searched as bytes, UTF-8 or not.
+    fn found_in_layers(&self, s: &str) -> bool {
+        let mut current = s.as_bytes().to_vec();
+        if self.found_in(&current) {
+            return true;
+        }
         for _ in 0..DEPTH_LIMIT {
-            let next = unescape_lenient(&current);
-            if self.found_in(next.as_bytes()) {
+            let unescaped = unescape_bytes(&current);
+            let next = percent_lenient(&unescaped);
+            if self.found_in(&unescaped) || self.found_in(&next) {
                 return true;
             }
             if next == current {
@@ -610,86 +628,112 @@ impl Registry {
 
 /// Undo JSON string escapes wherever they appear in text, leaving anything
 /// that is not a complete escape as written.
+#[cfg(test)]
 fn unescape_lenient(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find('\\') {
-        out.push_str(&rest[..i]);
-        let tail = &rest[i..];
-        let hex = |t: &str| {
-            t.get(2..6)
-                .filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))
-                .and_then(|h| u32::from_str_radix(h, 16).ok())
-        };
-        let simple = match tail.as_bytes().get(1) {
-            Some(b'"') => Some('"'),
-            Some(b'\\') => Some('\\'),
-            Some(b'/') => Some('/'),
-            Some(b'n') => Some('\n'),
-            Some(b't') => Some('\t'),
-            Some(b'r') => Some('\r'),
-            Some(b'b') => Some('\u{8}'),
-            Some(b'f') => Some('\u{c}'),
+    String::from_utf8(unescape_bytes(s.as_bytes())).expect("UTF-8 in, UTF-8 out")
+}
+
+/// [`unescape_lenient`] over bytes, so a layer that is not UTF-8 (a
+/// percent decoding part-way through, say) is searched as it stands.
+fn unescape_bytes(b: &[u8]) -> Vec<u8> {
+    let hex = |t: &[u8]| {
+        t.get(2..6)
+            .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u32::from_str_radix(h, 16).ok())
+    };
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    let push =
+        |out: &mut Vec<u8>, c: char| out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+    while i < b.len() {
+        let tail = &b[i..];
+        if tail[0] != b'\\' {
+            out.push(tail[0]);
+            i += 1;
+            continue;
+        }
+        let simple = match tail.get(1) {
+            Some(b'"') => Some(b'"'),
+            Some(b'\\') => Some(b'\\'),
+            Some(b'/') => Some(b'/'),
+            Some(b'n') => Some(b'\n'),
+            Some(b't') => Some(b'\t'),
+            Some(b'r') => Some(b'\r'),
+            Some(b'b') => Some(8),
+            Some(b'f') => Some(12),
             _ => None,
         };
         if let Some(c) = simple {
             out.push(c);
-            rest = &tail[2..];
-        } else if let Some(hi) = hex(tail).filter(|_| tail.as_bytes().get(1) == Some(&b'u')) {
+            i += 2;
+        } else if let Some(hi) = hex(tail).filter(|_| tail.get(1) == Some(&b'u')) {
             let pair = (0xD800..0xDC00)
                 .contains(&hi)
                 .then(|| tail.get(6..))
                 .flatten()
-                .filter(|t| t.starts_with("\\u"))
+                .filter(|t| t.starts_with(b"\\u"))
                 .and_then(hex)
                 .filter(|lo| (0xDC00..0xE000).contains(lo));
             match pair {
                 Some(lo) => {
-                    out.extend(char::from_u32(
-                        0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00),
-                    ));
-                    rest = &tail[12..];
+                    let c = char::from_u32(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00));
+                    push(&mut out, c.expect("a paired surrogate is a scalar"));
+                    i += 12;
                 }
                 None => {
                     match char::from_u32(hi) {
-                        Some(c) => out.push(c),
-                        None => out.push_str(&tail[..6]),
+                        Some(c) => push(&mut out, c),
+                        None => out.extend_from_slice(&tail[..6]),
                     }
-                    rest = &tail[6..];
+                    i += 6;
                 }
             }
         } else {
-            out.push('\\');
-            rest = &tail[1..];
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-fn percent_decoded(s: &str) -> Option<String> {
-    if !s.contains('%') {
-        return None;
-    }
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' {
-            let h = b.get(i + 1..i + 3)?;
-            if !h.iter().all(u8::is_ascii_hexdigit) {
-                return None;
-            }
-            out.push(h.iter().fold(0u8, |acc, c| {
-                acc * 16 + (*c as char).to_digit(16).expect("a hex digit") as u8
-            }));
-            i += 3;
-        } else {
-            out.push(b[i]);
+            out.push(b'\\');
             i += 1;
         }
     }
-    String::from_utf8(out).ok()
+    out
+}
+
+/// Decode every complete `%XX` escape in `b`, one layer, leaving a `%` that
+/// does not start one as written.
+fn percent_lenient(b: &[u8]) -> Vec<u8> {
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match (
+            b[i],
+            b.get(i + 1).copied().and_then(hex),
+            b.get(i + 2).copied().and_then(hex),
+        ) {
+            (b'%', Some(hi), Some(lo)) => {
+                out.push(hi * 16 + lo);
+                i += 3;
+            }
+            (c, _, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// A string's percent decoding taken to its fixed point, or `None` when it
+/// does not settle within [`DEPTH_LIMIT`] layers or is not UTF-8.
+fn percent_fixed(s: &str) -> Option<String> {
+    let mut current = s.as_bytes().to_vec();
+    for _ in 0..DEPTH_LIMIT {
+        let next = percent_lenient(&current);
+        if next == current {
+            return String::from_utf8(current).ok();
+        }
+        current = next;
+    }
+    None
 }
 
 /// Build a trial's registry: the fixture admin bearer and the sentinels in

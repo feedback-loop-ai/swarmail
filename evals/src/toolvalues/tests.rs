@@ -93,6 +93,27 @@ fn redaction_masks_every_occurrence_in_every_form() {
         (r#"{"s":"[1, 2]"}"#.into(), r#"{"s":"[1, 2]"}"#),
         // Bad percent escapes are text.
         (r#"{"s":"100%zz"}"#.into(), r#"{"s":"100%zz"}"#),
+        // A malformed escape beside an encoded literal does not hide it:
+        // each valid escape is decoded wherever it stands.
+        (
+            format!(r#"{{"path":"/%42{}%zz"}}"#, &BEARER[1..]),
+            r#"{"path":"/[REDACTED]%zz"}"#,
+        ),
+        // Double and triple encodings are followed to their fixed point.
+        (
+            format!(r#"{{"path":"/%2542{}"}}"#, &BEARER[1..]),
+            r#"{"path":"/[REDACTED]"}"#,
+        ),
+        (
+            "{\"path\":\"/a/sentinel-canary-%252525C3%25BF-42?x=%\"}".into(),
+            r#"{"path":"/a/[REDACTED]?x=%"}"#,
+        ),
+        // A literal in plain text beside a benign undecodable escape is
+        // masked as text.
+        (
+            format!(r#"{{"s":"{BEARER} 100%FF"}}"#),
+            r#"{"s":"[REDACTED] 100%FF"}"#,
+        ),
     ];
     for (input, want) in cases {
         assert_eq!(r.redact(input.as_bytes()).as_deref(), Ok(want), "{input}");
@@ -129,6 +150,66 @@ fn values_that_cannot_be_proven_redacted_refuse_by_reason() {
         syntax.redact(br#"{"a":true}"#),
         Err(Refusal::ResidualSecret)
     );
+    // A value that already spells the mask could not be told from a
+    // redaction, in any of its decoded forms.
+    for spelled in [
+        &br#"{"a":"x [REDACTED] y"}"#[..],
+        br#"{"a":"x \u005bREDACTED] y"}"#,
+        br#"{"[REDACTED]":1}"#,
+        br#"{"a":"{\"b\":\"[REDACTED]\"}"}"#,
+    ] {
+        assert_eq!(
+            r.redact(spelled),
+            Err(Refusal::InvalidArgumentEncoding),
+            "{}",
+            String::from_utf8_lossy(spelled)
+        );
+    }
+    let collides = format!(r#"{{"a":"%42{} %5BREDACTED%5D"}}"#, &BEARER[1..]);
+    assert_eq!(
+        r.redact(collides.as_bytes()),
+        Err(Refusal::InvalidArgumentEncoding)
+    );
+    // A percent decoding that is not UTF-8 or never settles cannot be
+    // masked as text.
+    let not_utf8 = format!(r#"{{"a":"%FF%42{}"}}"#, &BEARER[1..]);
+    assert_eq!(
+        r.redact(not_utf8.as_bytes()),
+        Err(Refusal::InvalidArgumentEncoding)
+    );
+    let unsettled = format!(
+        r#"{{"a":"%{}42{}"}}"#,
+        "25".repeat(DEPTH_LIMIT + 1),
+        &BEARER[1..]
+    );
+    assert_eq!(
+        r.redact(unsettled.as_bytes()),
+        Err(Refusal::InvalidArgumentEncoding)
+    );
+    // Text whose layers never settle cannot be proven clean, literal or not.
+    let benign = format!(r#"{{"a":"%{}41"}}"#, "25".repeat(DEPTH_LIMIT + 1));
+    assert_eq!(
+        r.redact(benign.as_bytes()),
+        Err(Refusal::InvalidArgumentEncoding)
+    );
+    // The same without a percent sign: a JSON-escaped one starts the chain.
+    let escaped = format!(r#"{{"a":"\\u0025{}41"}}"#, "25".repeat(DEPTH_LIMIT + 1));
+    assert_eq!(r.redact(escaped.as_bytes()), Err(Refusal::ResidualSecret));
+    let settles = format!(r#"{{"a":"\\u0025{}41"}}"#, "25".repeat(DEPTH_LIMIT - 2));
+    assert!(r.redact(settles.as_bytes()).is_ok());
+    // A percent-encoded JSON escape: the literal is in no single decoding,
+    // only in the alternation, and is refused rather than published.
+    let mixed = format!(r#"{{"a":"%5Cu0042{}"}}"#, &BEARER[1..]);
+    assert_eq!(r.redact(mixed.as_bytes()), Err(Refusal::ResidualSecret));
+    // A literal hiding behind a malformed escape in a member name.
+    let key = format!(r#"{{"%42{}%zz":1,"b":2}}"#, &BEARER[1..]);
+    assert_eq!(
+        r.redact(key.as_bytes()).as_deref(),
+        Ok(r#"{"[REDACTED]%zz":1,"b":2}"#)
+    );
+    assert_eq!(percent_lenient(b"%4%41%g1%"), b"%4A%g1%");
+    assert_eq!(percent_fixed("%2541").as_deref(), Some("A"));
+    assert_eq!(percent_fixed("%FF"), None);
     // Two names that collide once masked are ambiguous.
     assert_eq!(
         r.redact(format!(r#"{{"{BEARER}":1,"{SENTINEL}":2}}"#).as_bytes()),
