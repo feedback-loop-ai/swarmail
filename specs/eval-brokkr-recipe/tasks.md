@@ -326,3 +326,28 @@ T36 to T38 change it. Each task names the finding it answers (plan.md,
   `N`. `git status --porcelain` is empty. The PR body (T33's paragraph)
   gains one sentence: the gate agrees with the row by the agreement table,
   and a `fail/budget` trial is recorded as data.
+
+## #391 (part): value-bearing evidence, transcripts and the page (0119 §4)
+
+Delivered by run `issue-391-record-tool-calls-toke-caff20b7`; spec, plan and
+tasks in `specs/trial-evidence/`. Part of #391, not its close.
+
+- [x] **T43 Value-bearing mode (0119 §4, accepted 2026-11-06).**
+  `matrix --capture-tool-values ROOT --tool-sentinels FILE` captures the
+  argument values of Swarmail's MCP tools and `eval_http` in the trial,
+  redacts them against the sealed registry (fixture admin bearer and every
+  sentinel) and writes a redacted record or a typed refusal;
+  `report --tool-values-from ROOT` binds them by digest to the structural
+  record. Default outputs are pinned byte for byte
+  (`tests/report.rs::the_default_report_is_byte_identical_to_the_pre_change_contract`).
+- [x] **T44 Transcripts.** Up to three per failing class, by class count then
+  trial id, bounded; model text and reasoning are not retained (0075 §1).
+- [x] **T45 Typed accounting on the page.** `report --page` gives every paid
+  group a figure or `null` with its reason, journal or not.
+- [x] **T46 Proposed 0136** for the token source and the reference run.
+- [ ] **T47 Operator: the first authenticated via-brokkr smoke per family**
+  (`evals/README.md`, "The first authenticated via-brokkr smoke, per family"),
+  recorded by dated addenda in 0119 §5 (F2) and §6 (F1) and in the F1/F2/F5
+  table of `implementation.md` (T31). Operator-owned; not run by a seat.
+- [ ] **T48 Operator: rule on 0136.** The direct-launch usage reader stays
+  unbuilt until accepted (0045 §8).

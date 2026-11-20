@@ -730,8 +730,87 @@ class, byte lengths and SHA-256 digests of each call's arguments and result,
 capped at 64 KiB and cut at a whole call with `"truncated": true` and
 `"retained": N`. A trial without tool rows gets no file and a typed
 `absent` reason. **No argument or result bytes
-are ever copied** (accepted 0075 §4). A value-bearing mode is authorized by
-0119 §4, which the operator accepted on 2026-11-06, and is not built yet.
+are ever copied** into that record (accepted 0075 §4). The value-bearing mode
+0119 §4 authorizes (accepted 2026-11-06) is a separate, opt-in record, below.
+**Value-bearing evidence (#391; accepted 0119 §4, built).** Two opt-in flags, independent of each other and of every default output:
+
+```bash
+# capture during the trials: a fresh private root (it must not exist) and the
+# sentinel literals (a JSON array of strings) redacted beside each trial's
+# fixture admin bearer
+$E matrix --brokkr "$B" --tasks signup --agents agents.json --trials 1 \
+  --artifacts-dir "$PWD/art" --capture-tool-values "$PWD/captures" \
+  --tool-sentinels "$PWD/sentinels.json" > rows.jsonl
+# consume them in the report: per-trial tool-values.json beside tool-calls.json,
+# the transcripts/ section, and a private Markdown page
+$E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence" \
+  --tool-values-from "$PWD/captures" --page "$PWD/report.md"
+```
+
+- **What is kept.** The argument values of Swarmail's MCP `tools/call`s and of
+  the fixture's `eval_http`, nothing else: no result bytes, no prompt, no raw
+  CLI output, no model text and no reasoning. Calls to any other tool (a CLI's
+  built-ins) stay structural, with `"value": null`.
+- **Where it is captured.** In the trial, while the harness still holds the
+  secrets. Agents reach Swarmail through a trial-local loopback forwarder that
+  passes requests and replies unchanged (the runner's own provisioning calls
+  go straight to Swarmail); the `eval_http` helper reports each call before
+  dispatch and its end after the reply over an acknowledged private socket.
+  Once every agent is reaped the registry is sealed: the trial's admin bearer
+  and every sentinel. Every string and member name is masked
+  (`[REDACTED]`), including escaped, percent-encoded and nested-JSON
+  spellings; the re-encoding is re-parsed and searched again. Only the
+  redacted record, or a closed refusal, is written to
+  `captures/<trial_id>/capture.json` (0600 under 0700, bound by `manifest.json`).
+  Original bytes never reach a disk.
+- **How it binds.** The report pairs each journal call whose name denotes a
+  harness-owned tool (`mcp__swarmail__*`, `mcp__fixture__eval_http`, and the
+  `server.tool`/`server/tool`/`server:tool` spellings) with the next captured
+  call: same server, tool, argument length and SHA-256 of the original bytes.
+  One mismatch, a missing or extra call, or an ambiguous order (a call that
+  started while another was in flight) withholds the whole trial. The
+  companion carries the structural record's ordinals, lengths and digests and
+  the structural file's own binding.
+- **Fail-closed, whole-trial.** A present tool-call fact without a published
+  companion is `absent` with exactly one reason, checked in this order:
+  `capture_missing`, `registry_unavailable`, `unknown_tool`, `value_too_large`
+  (one argument over 8192 bytes, original or redacted), `trial_too_large` (over
+  256 calls or 65536 original bytes, a companion over 65536 bytes, or a cut
+  structural record), `invalid_argument_encoding` (not strict UTF-8 JSON,
+  duplicate or mask-colliding names, nesting over 32), `residual_secret`, `binding_mismatch`,
+  `evidence_write_failed`. A trial the journal has no tool rows for keeps its
+  upstream reason (`builtin_agent`, `journal_missing`, `journal_ambiguous`,
+  `journal_has_no_accounting`). There is never a prefix, a placeholder or an
+  empty file. The group's `journal.tool_values` indexes every trial.
+- **Transcripts.** `evidence/transcripts/index.json` counts the failing rows
+  (harness errors included) per failure class before any evidence filter,
+  visits classes by decreasing count then name, and takes trial ids in
+  ascending order until three trials with a verified companion and a row the
+  trial's live registry approved are written (each leaf at most 128 KiB; one
+  over is skipped as `leaf_too_large` and the next takes its place). A leaf
+  holds the row, the class and the redacted call sequence. **Model text and
+  reasoning are not retained** (0075 §1): a transcript shows which tools were
+  called with which redacted arguments, never why. #151's "three transcripts
+  per dominant class, redacted to the fixture's synthetic data" is met in that
+  narrower sense only.
+- **Never scored.** Values feed no verdict, row, outcome or accounting figure;
+  the value report minus `tool_values` equals the default report byte for
+  byte, and `check --matrix` replays the same.
+- **The page.** `--page PATH` (any report, with or without a journal or the
+  value mode) writes a private Markdown table, exclusively created at 0600,
+  with every group's tokens per success: the figure, or `null (<reason>)` —
+  `incomplete_join`, `no_passes` or `sum_overflow` from the journal summary;
+  without a journal a paid group is `null (incomplete_join)`, an empty scored
+  population `null (no_passes)`, a built-in `null (builtin_agent)`. Never a
+  dash, a blank or a zero.
+- **What it cannot do yet.** The pinned engine's journal hashes the argument
+  representation the CLI reported; until a real engine run shows those are
+  the bytes the agent sent, a paid trial's values are expected to be
+  `binding_mismatch`. Paid via-brokkr trials still refuse
+  `driver_contract_unknown` (below), so no paid transcript exists today.
+  The offline proof (`tests/tool_values.rs`) runs the stand-in with the oracle,
+  the null control and a scripted agent that leaks the bearer and sentinels.
+
 
 **Admission posture.** The trial's own advisory admission lock lives in the
 shared `/tmp`. If brokkr's exec box gives the trial seat a private `/tmp`, that
@@ -757,8 +836,63 @@ brokkr facts F1, F2 and F5; a follow-up change that forwards the observed
 channel through the four seams under 0119 section 6 (an exception to accepted
 0075 section 1, accepted with 0119 on 2026-11-06, that lands once the observed
 channel is recorded) and declares the binds; and then the paid matrix.
-Structural tool-call records land now; value-bearing records are authorized by
-0119 section 4 and not built.
+Structural tool-call records landed with #316; value-bearing records and
+transcripts landed with #391 (above) and need no paid session, but a paid
+trial has none until the via-brokkr route exists.
+
+## The first authenticated via-brokkr smoke, per family (operator-owned)
+
+**Not run by any delivery seat.** It needs authenticated paid hands, which no
+seat holds. It is the observation 0119 §§5–6 wait for, and nothing in the
+code may guess its result (0119 ruling 4): `--via-brokkr` keeps refusing
+`driver_contract_unknown` before any launch until §5 carries the dated
+addendum, and via-brokkr tokens stay `null` until §6 carries one.
+
+Set absolute paths first: `E` the candidate's `swarmail-evals`
+(`evals/target/debug/swarmail-evals` after `cargo build --locked`), `B` the
+digest-verified pinned brokkr (`.brokkr/recipes/self/tooling.json` names its
+version and digest), `controls` a JSON agents file holding only
+`{"label":"oracle","argv":[]}` and `{"label":"null","argv":[]}`, `DB` the
+journal (`.brokkr/state/forge.db`), and `W` a fresh private work directory
+inside the workspace (`mkdir -m 700`).
+
+1. **Free preflight.** From the repository root:
+   `"$E" matrix --brokkr "$B" --tasks signup --agents "$controls" --trials 1 --artifacts-dir "$W/free" > "$W/free.rows"`.
+   Expect two rows: oracle `pass`, null `fail`/`gave_up`, and each slot's
+   `score.json` business verdict matching its row. Stop here if it does not:
+   the engine itself is then the gap, not the family.
+2. **Discover the invocation (F2).** For each pinned family (`claude`,
+   `codex`, `dsh`): read `"$B" driver --help` and `"$B" driver "$family" --help`.
+   From that installation resolve the executable the driver launches, how the
+   goal is passed (argument, stdin or file), the supported flags and the
+   authenticated setup it expects. If any of these is undocumented or
+   unreachable, stop and record the gap. Otherwise, in a private operator exec
+   seat holding the intended paid hands, run exactly one minimal synthetic goal
+   with the discovered argv. The production wrapper still refuses, so this probe
+   is run by hand. Record only the argv's shape (flags, positions, transport),
+   never raw output or credential contents.
+3. **Observe hands and accounting (F5, F1).** For that seat verify that the
+   selected executable, its install, config and auth files, the slot and the
+   required network posture were each reachable. Record roles and outcomes,
+   not contents (F5). Then read `"$B" export --db "$DB"` through a private
+   projection of finite fields for that run and its trial seat: confirm the
+   seat is linked to the run and whether typed input, output and cached token
+   units are present, or record that they are unavailable (F1). Trace the
+   channel that carried them through every seam (`trial.sh`'s `env -i`, the
+   runner's clean environment, the wrapper's `env_clear`, the driver's stream
+   disposal; `wrappers.md`). A count whose channel cannot be traced does not
+   establish one.
+4. **Record, by dated addendum.** The sanitized argv shape and goal
+   transport (F2) go to 0119 §5. The accounting channel actually observed, or
+   the upstream gap (F1), goes to 0119 §6. The family, CLI and brokkr
+   versions, verified hands or gaps, and the seat linkage go to the F1/F2/F5
+   table in `specs/eval-brokkr-recipe/implementation.md` (T31).
+
+Forwarding the observed channel, declaring the paid binds, lifting the
+refusal and the next comparable paid matrix are separate, operator-dependent
+work. Which source counts paid tokens, and which run is the "30% below the
+baseline" reference, are proposed decision
+[0136](../docs/decisions/0136-paid-token-reference.md)'s questions.
 
 ## Honest limits
 
