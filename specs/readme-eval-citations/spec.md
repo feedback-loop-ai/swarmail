@@ -4,7 +4,7 @@ Issue #394 supplies the README citations for epic #164’s Published criterion. 
 
 ## Acceptance Criteria
 
-1. Under the unique “For AI agents” heading, one paragraph of three to five sentences names the models and tiers, links every quoted figure to its own published page, and links the [eval index](../../docs/evals/README.md) for details. Use plain house prose without superlatives. The paragraph covers all four observations below.
+1. Under the unique “For AI agents” heading, one paragraph of three to five sentences names the models and tiers, quotes every figure in a sentence that links its own published page, and links the [eval index](../../docs/evals/README.md) for details. Use plain house prose without superlatives. The paragraph covers all four observations below.
 
    | Run | Population and result to attribute |
    |---|---|
@@ -19,3 +19,7 @@ Issue #394 supplies the README citations for epic #164’s Published criterion. 
 5. Above the current statuses in the eval index, insert a dated line naming the README and the newly cited pages. The existing status entries compare byte-for-byte with their pre-change text.
 6. A locked, file-only Rust test checks every eval link occurrence in the agent section, including any fragment, and compares every quoted figure verbatim with its attributed page. Deleting a required citation, introducing an unsupported link form, or citing a different real page for a count fails. The test also detects a missing or duplicate section. The same check passes on valid temporary files and diagnoses deliberately damaged copies without modifying repository sources. The test executes in under one second without launching a child process or requiring a macOS ignore marker.
 7. The implementation passes the full house gate inventory with exact production coverage. Scope is README prose, the eval index and the citation test. Report “Closes #394” in the PR handoff.
+
+## Dispatcher amendment, 2026-11-20
+
+Criterion 1 first read "links every quoted figure to its own published page", and the delivery made each figure a link label of its own. That put 13 links into one paragraph, including "[16]" and "[95%]". The dispatcher changed the rule: a figure must sit in a sentence that links the page pinned as its source, that page must still state it verbatim, and any other number in the sentence is refused as uncited. Issue references are clickable links to the tracker, `[#N](https://github.com/feedback-loop-ai/swarmail/issues/N)`, with the same N in label and destination. The negative cases keep their meaning: a deleted figure, a figure whose page no longer states it, a figure cited by another real page, a figure moved into a sentence without its page, and unsupported link forms all still fail.

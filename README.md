@@ -56,8 +56,7 @@ Everything below is the short version. The detail lives in
   through the [shims](docs/guide/compat-shims.md): MailHog and Mailpit on the
   HTTP port, MailSlurper's service API on an opt-in listener of its own.
 
-Eighteen MCP tools (counted against the served list by
-[`tests/mcp_revisions/focused.rs`](tests/mcp_revisions/focused.rs)), one REST API, two wire protocols in (SMTP, POP3), one
+Eighteen MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
 compatibility layer (MailHog/Mailpit/MailSlurper), one observability story
 (`/metrics`, `/healthz`, `/openapi.json`, `/llms.txt`) — and a web UI with
 zero frontend dependencies. More in the [overview](docs/guide/overview.md).
@@ -115,30 +114,27 @@ The [agent setup guide](docs/agents/setup.md) has copy-paste wiring for
 Claude Code, Codex, Cursor and dsh; the tools are on the [MCP page](docs/guide/mcp.md).
 The wiring snippets in `docs/agents/setup.md` are written into a fresh project
 and driven against the real binary by `tests/agent_setup_docs.rs` in CI;
-install commands are marked not-executed. The proof is
-[`tests/agent_setup_docs.rs`](tests/agent_setup_docs.rs), and the MCP
-interface itself is driven over HTTP by [`tests/mcp.rs`](tests/mcp.rs) and
-over stdio by [`tests/stdio.rs`](tests/stdio.rs).
+install commands are marked not-executed. The MCP interface itself is driven
+over HTTP by [`tests/mcp.rs`](tests/mcp.rs) and over stdio by
+[`tests/stdio.rs`](tests/stdio.rs).
 
 The published eval runs measure models doing the suite's tasks against
-swarmail. On main [`a4f552d`](docs/evals/baseline-2026-11-01.md),
-claude-opus, claude-sonnet, codex-sol, codex-luna and glm-spark each ran the
-[16](docs/evals/baseline-2026-11-01.md) default-tier tasks five times, and
-[395 of 400](docs/evals/baseline-2026-11-01.md) trials passed; a sixth model,
-glm-dashscope, passed [80 of 80](docs/evals/baseline-2026-11-01-glm-dashscope.md)
-on the same executables, for [475 of 480](docs/evals/baseline-2026-11-01-glm-dashscope.md)
-across the six. On the hard tier, on main [`8732445`](docs/evals/hard-2026-11-03.md),
-the first five models passed [74 of 75 scored trials](docs/evals/hard-2026-11-03.md).
-On the hard and expert tiers together, on main [`c95386e`](docs/evals/expert-2026-11-07.md),
-claude-opus, claude-sonnet, codex-sol and codex-luna passed
-[151/160](docs/evals/expert-2026-11-07.md) with no GLM model, and codex-luna
-scored [0/5](docs/evals/expert-2026-11-07.md) on `otp-late`, every time with
-`stale_code`. Five trials per cell give wide intervals (the
-[95%](docs/evals/baseline-2026-11-01.md#success-by-task-and-by-model) interval
-for a [5/5](docs/evals/baseline-2026-11-01.md#success-by-task-and-by-model) cell
-is [`[0.57, 1.0]`](docs/evals/baseline-2026-11-01.md#success-by-task-and-by-model)),
-tokens per success and transcripts are not measured (#391), no client matrix
-has been measured (#392), and the [eval index](docs/evals/README.md) has the rest.
+swarmail. In the [default-tier baseline](docs/evals/baseline-2026-11-01.md)
+on main `a4f552d`, claude-opus, claude-sonnet, codex-sol, codex-luna and
+glm-spark each ran the 16 default-tier tasks five times, and together they
+passed 395 of 400 trials; its [DashScope GLM cell](docs/evals/baseline-2026-11-01-glm-dashscope.md)
+added glm-dashscope at 80 of 80, for 475 of 480 across six models. On the
+[hard tier](docs/evals/hard-2026-11-03.md) (main `8732445`) the first five
+models passed 74 of 75 scored trials, and on the
+[hard and expert tiers](docs/evals/expert-2026-11-07.md) (main `c95386e`, no
+GLM model) claude-opus, claude-sonnet, codex-sol and codex-luna passed
+151/160, with codex-luna at 0/5 on `otp-late`, every time `stale_code`. Five
+trials per cell give wide intervals: the
+[95% interval for a 5/5 cell](docs/evals/baseline-2026-11-01.md#success-by-task-and-by-model)
+is `[0.57, 1.0]`. Tokens per success and transcripts
+([#391](https://github.com/feedback-loop-ai/swarmail/issues/391)) and a client
+matrix ([#392](https://github.com/feedback-loop-ai/swarmail/issues/392)) are
+not measured yet; the [eval index](docs/evals/README.md) has the rest.
 
 ## The guarantees
 

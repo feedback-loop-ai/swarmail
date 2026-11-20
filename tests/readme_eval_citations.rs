@@ -1,8 +1,8 @@
 //! The README's agent section cites the published eval runs (#394).
 //!
 //! Every link in `## For AI agents` must resolve, every figure it quotes
-//! must be a link to the page that states it, and that page must still
-//! state it verbatim. The section is read with a small inline grammar —
+//! must sit in a sentence that links the page pinned as its source, and
+//! that page must still state it verbatim. The section is read with a small inline grammar —
 //! text, code spans and `[label](destination)` links — and anything else
 //! (reference links, images, HTML, bare URLs, escapes, fences) is refused,
 //! so a citation cannot slip past the check in a form it does not read.
@@ -69,11 +69,32 @@ struct Link {
     dest: String,
 }
 
+/// One sentence of a paragraph: its text as a reader sees it (link labels
+/// and code span contents inline, issue references left out) and the eval
+/// pages it links.
+#[derive(Debug, Default)]
+struct Sentence {
+    text: String,
+    pages: Vec<String>,
+}
+
 #[derive(Debug, Default)]
 struct Parsed {
     links: Vec<Link>,
     /// The prose as read: labels inline, each code span as `code`.
     prose: String,
+    sentences: Vec<Sentence>,
+}
+
+/// The issue tracker's prefix: `[#391](ISSUES391)` is a pointer, not a
+/// measurement, and the only absolute destination the section may carry.
+const ISSUES: &str = "https://github.com/feedback-loop-ai/swarmail/issues/";
+
+/// `[#N](ISSUES + N)`, with the same N in label and destination.
+fn is_issue(link: &Link) -> bool {
+    link.dest.strip_prefix(ISSUES).is_some_and(|n| {
+        !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && link.label == format!("#{n}")
+    })
 }
 
 fn squash(text: &str) -> String {
@@ -158,9 +179,12 @@ fn refused(text: &str, i: usize) -> Option<&'static str> {
     }
 }
 
-/// Parse one paragraph of the section with the restricted grammar.
+/// Parse one paragraph of the section with the restricted grammar, split
+/// into sentences at `.`, `!` or `?` followed by whitespace or the end.
+/// Code spans and links never split a sentence.
 fn parse(text: &str) -> Result<Parsed, String> {
     let mut out = Parsed::default();
+    let mut cur = Sentence::default();
     let mut i = 0;
     while i < text.len() {
         if let Some(what) = refused(text, i) {
@@ -173,16 +197,21 @@ fn parse(text: &str) -> Result<Parsed, String> {
                 if code.contains("docs/evals") {
                     return Err(format!("unsupported syntax, a bare eval path: `{code}`"));
                 }
-                if code.bytes().any(|b| b.is_ascii_digit()) {
-                    return Err(format!("uncited figure in a code span: `{code}`"));
-                }
                 out.prose.push_str("code");
+                cur.text.push_str(&code);
                 i = next;
             }
             ']' => return Err(format!("a stray `]`: {:?}", &text[i..])),
             '[' => {
                 let (link, next) = link(text, i)?;
                 out.prose.push_str(&link.label);
+                if !is_issue(&link) {
+                    cur.text.push_str(&link.label);
+                }
+                let page = page_of(&link);
+                if EVAL_PAGES.contains(&page) {
+                    cur.pages.push(page.to_string());
+                }
                 out.links.push(link);
                 i = next;
             }
@@ -192,14 +221,19 @@ fn parse(text: &str) -> Result<Parsed, String> {
                 out.prose.push_str(&text[i..i + 1 + digits]);
                 i += 1 + digits;
             }
-            d if d.is_ascii_digit() => {
-                return Err(format!("uncited figure: {:?}", &text[i..]));
-            }
             _ => {
                 out.prose.push(c);
+                cur.text.push(c);
                 i += c.len_utf8();
+                let ends = text[i..].chars().next().is_none_or(char::is_whitespace);
+                if ".!?".contains(c) && ends {
+                    out.sentences.push(std::mem::take(&mut cur));
+                }
             }
         }
+    }
+    if !cur.text.trim().is_empty() {
+        out.sentences.push(cur);
     }
     out.prose = squash(&out.prose);
     Ok(out)
@@ -285,26 +319,80 @@ fn anchors(page: &str) -> Vec<Option<String>> {
     out
 }
 
+/// Where `figure` occurs in `text` not as part of a longer number or word.
+fn matches(text: &str, figure: &str) -> Vec<usize> {
+    text.match_indices(figure)
+        .filter(|&(at, _)| {
+            let before = text[..at].chars().next_back();
+            let mut after = text[at + figure.len()..].chars();
+            let next = after.next();
+            let joined = |c: char| c.is_ascii_alphanumeric() || c == '/';
+            !before.is_some_and(|c| joined(c) || c == '.')
+                && !next.is_some_and(joined)
+                && !(next == Some('.') && after.next().is_some_and(|c| c.is_ascii_digit()))
+        })
+        .map(|(at, _)| at)
+        .collect()
+}
+
 /// `figure` occurs in `page` not as part of a longer number or word.
 fn states(page: &str, figure: &str) -> bool {
-    page.match_indices(figure).any(|(at, _)| {
-        let before = page[..at].chars().next_back();
-        let rest = &page[at + figure.len()..];
-        let mut after = rest.chars();
-        let next = after.next();
-        let joined = |c: char| c.is_ascii_alphanumeric() || c == '/';
-        !before.is_some_and(|c| joined(c) || c == '.')
-            && !next.is_some_and(joined)
-            && !(next == Some('.') && after.next().is_some_and(|c| c.is_ascii_digit()))
-    })
+    !matches(page, figure).is_empty()
+}
+
+/// Check one sentence's figures: each pinned figure it quotes needs its
+/// own page linked in the same sentence, and that page must still state
+/// it; any other number left in the sentence is uncited. Records each
+/// pinned figure found in `seen`.
+fn check_figures(
+    root: &Path,
+    sentence: &Sentence,
+    seen: &mut Vec<&'static str>,
+) -> Result<(), String> {
+    let mut mask = squash(&sentence.text);
+    let mut cited = CITED.to_vec();
+    // Longest first, so a figure inside a longer one is taken with it.
+    cited.sort_by_key(|(figure, _)| std::cmp::Reverse(figure.len()));
+    for (figure, page) in cited {
+        let at = matches(&mask, figure);
+        if at.is_empty() {
+            continue;
+        }
+        if !sentence.pages.iter().any(|p| p == page) {
+            return Err(format!(
+                "figure {figure:?} is not cited in its sentence: link {page} there"
+            ));
+        }
+        if !states(&squash(&read(root, page)?), figure) {
+            return Err(format!("figure {figure:?} no longer appears on {page}"));
+        }
+        for start in at.into_iter().rev() {
+            mask.replace_range(start..start + figure.len(), &" ".repeat(figure.len()));
+        }
+        seen.push(figure);
+    }
+    if let Some(word) = mask
+        .split_whitespace()
+        .find(|w| w.bytes().any(|b| b.is_ascii_digit()))
+    {
+        let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        return Err(format!(
+            "uncited figure {word:?} in: {}",
+            squash(&sentence.text)
+        ));
+    }
+    Ok(())
 }
 
 fn read(root: &Path, path: &str) -> Result<String, String> {
     std::fs::read_to_string(root.join(path)).map_err(|e| format!("{path} does not resolve: {e}"))
 }
 
-/// Check one link: its destination, its fragment, and any figure it quotes.
+/// Check one link: its destination and its fragment.
 fn check_link(root: &Path, link: &Link) -> Result<(), String> {
+    if is_issue(link) {
+        return Ok(());
+    }
     let dest = &link.dest;
     if dest.contains(['%', '\\', '?', '<', '>', ':']) {
         return Err(format!("an unsupported destination form: {dest}"));
@@ -334,30 +422,7 @@ fn check_link(root: &Path, link: &Link) -> Result<(), String> {
             _ => return Err(format!("#{fragment} is ambiguous on {path}")),
         }
     }
-    if link.label.bytes().any(|b| b.is_ascii_digit()) {
-        if !CITED.contains(&(link.label.as_str(), path)) {
-            return Err(format!(
-                "figure {:?} is not pinned to {path}: cite the page that states it",
-                link.label
-            ));
-        }
-        if !states(&squash(&raw), &link.label) {
-            return Err(format!(
-                "figure {:?} no longer appears on {path}",
-                link.label
-            ));
-        }
-    }
     Ok(())
-}
-
-/// Number of sentences in a paragraph's prose.
-fn sentences(prose: &str) -> usize {
-    let bytes = prose.as_bytes();
-    (0..bytes.len())
-        .filter(|&n| b".!?".contains(&bytes[n]))
-        .filter(|&n| bytes.get(n + 1).is_none_or(|b| b.is_ascii_whitespace()))
-        .count()
 }
 
 fn page_of(link: &Link) -> &str {
@@ -372,6 +437,7 @@ fn check(root: &Path) -> Result<(), String> {
         return Err("README.md cites docs/evals outside the agent section".into());
     }
     let mut links = Vec::new();
+    let mut seen = Vec::new();
     let mut eval_paragraphs = Vec::new();
     for paragraph in body.split("\n\n").filter(|p| !p.trim().is_empty()) {
         for line in paragraph.lines() {
@@ -392,31 +458,31 @@ fn check(root: &Path) -> Result<(), String> {
             .iter()
             .any(|l| EVAL_PAGES.contains(&page_of(l)))
         {
-            eval_paragraphs.push(parsed.prose.clone());
+            eval_paragraphs.push(parsed.sentences.len());
+        }
+        for link in &parsed.links {
+            check_link(root, link)?;
+        }
+        for sentence in &parsed.sentences {
+            check_figures(root, sentence, &mut seen)?;
         }
         links.extend(parsed.links);
     }
-    for link in &links {
-        check_link(root, link)?;
-    }
     for (figure, page) in CITED {
-        if !links
-            .iter()
-            .any(|l| l.label == figure && page_of(l) == page)
-        {
+        if !seen.contains(&figure) {
             return Err(format!("required citation {figure:?} → {page} is missing"));
         }
     }
     if !links.iter().any(|l| l.dest == INDEX) {
         return Err(format!("the agent section does not link {INDEX}"));
     }
-    let [paragraph] = eval_paragraphs.as_slice() else {
+    let [n] = eval_paragraphs.as_slice() else {
         return Err(format!(
             "the eval runs must be cited in one paragraph, found {}",
             eval_paragraphs.len()
         ));
     };
-    let n = sentences(paragraph);
+    let n = *n;
     if !(3..=5).contains(&n) {
         return Err(format!("the eval paragraph has {n} sentences, not 3 to 5"));
     }
@@ -485,8 +551,8 @@ fn a_supported_fragment_passes_and_an_absent_one_is_refused() {
     let dir = fixture();
     edit(&dir, "README.md", |s| {
         s.replacen(
-            "[0/5](docs/evals/expert-2026-11-07.md)",
-            "[0/5](docs/evals/expert-2026-11-07.md#stale_code-codex-luna-on-otp-late)",
+            "[hard and expert tiers](docs/evals/expert-2026-11-07.md)",
+            "[hard and expert tiers](docs/evals/expert-2026-11-07.md#stale_code-codex-luna-on-otp-late)",
             1,
         )
     });
@@ -540,10 +606,7 @@ fn a_missing_or_duplicate_section_is_refused() {
 #[test]
 fn a_deleted_citation_is_refused() {
     red(
-        &broken_readme(
-            "scored [0/5](docs/evals/expert-2026-11-07.md) on",
-            "failed on",
-        ),
+        &broken_readme("at 0/5 on", "failing on"),
         "required citation \"0/5\" → docs/evals/expert-2026-11-07.md is missing",
     );
     red(
@@ -572,38 +635,48 @@ fn a_figure_its_page_no_longer_states_is_refused() {
 fn a_figure_without_a_citation_is_refused() {
     red(
         &broken_readme("has the rest.", "has the rest. It took 12 hours."),
-        "uncited figure: \"12 hours.",
+        "uncited figure \"12\"",
     );
     red(
         &broken_readme("on `otp-late`", "on `otp-late` (`48 s`)"),
-        "uncited figure in a code span: `48 s`",
+        "uncited figure \"48\"",
     );
 }
 
 #[test]
 fn a_figure_citing_another_real_page_is_refused() {
-    // The DashScope page states "16" too; the pin still names the baseline.
+    // The DashScope page states "16" and "395 of 400" too; the pins still
+    // name the baseline, so its link must stay in the sentence.
     red(
         &broken_readme(
-            "[16](docs/evals/baseline-2026-11-01.md)",
-            "[16](docs/evals/baseline-2026-11-01-glm-dashscope.md)",
+            "[default-tier baseline](docs/evals/baseline-2026-11-01.md)",
+            "[default-tier baseline](docs/evals/baseline-2026-11-01-glm-dashscope.md)",
         ),
-        "figure \"16\" is not pinned to docs/evals/baseline-2026-11-01-glm-dashscope.md",
+        "figure \"395 of 400\" is not cited in its sentence: link docs/evals/baseline-2026-11-01.md there",
     );
-    // The hard page restates the baseline's total; it is not its source.
+    // The expert page is linked in the same sentence, but it is not the
+    // hard tier's source.
     red(
         &broken_readme(
-            "[395 of 400](docs/evals/baseline-2026-11-01.md)",
-            "[395/400](docs/evals/hard-2026-11-03.md)",
+            "[hard tier](docs/evals/hard-2026-11-03.md)",
+            "[hard tier](docs/evals/expert-2026-11-07.md)",
         ),
-        "figure \"395/400\" is not pinned to docs/evals/hard-2026-11-03.md",
+        "figure \"74 of 75 scored trials\" is not cited in its sentence: link docs/evals/hard-2026-11-03.md there",
+    );
+    // A figure is checked in its own sentence, not anywhere in the paragraph.
+    red(
+        &broken_readme(
+            "Five\ntrials per cell",
+            "It held 74 of 75 scored trials. Five\ntrials per cell",
+        ),
+        "figure \"74 of 75 scored trials\" is not cited in its sentence",
     );
 }
 
 #[test]
 fn unsupported_link_forms_beside_good_links_are_refused() {
     let index = "](docs/evals/README.md)";
-    let hard = "[74 of 75 scored trials](docs/evals/hard-2026-11-03.md)";
+    let hard = "[hard tier](docs/evals/hard-2026-11-03.md)";
     let end = "has the rest.";
     let cases = [
         (
@@ -657,17 +730,27 @@ fn unsupported_link_forms_beside_good_links_are_refused() {
         ),
         (
             hard,
-            "[74 of 75 scored trials](docs/evals/../evals/hard-2026-11-03.md)",
+            "[hard tier](docs/evals/../evals/hard-2026-11-03.md)",
             "an absolute or traversing",
         ),
         (
             hard,
-            "[74 of 75 scored trials](docs/evals/hard%2D2026-11-03.md)",
+            "[hard tier](docs/evals/hard%2D2026-11-03.md)",
             "an unsupported destination form",
         ),
         (
             index,
             "](https://github.com/x/y/blob/main/docs/evals/README.md)",
+            "an unsupported destination form",
+        ),
+        (
+            "](https://github.com/feedback-loop-ai/swarmail/issues/391)",
+            "](https://github.com/other/repo/issues/391)",
+            "an unsupported destination form",
+        ),
+        (
+            "[#391](https://github.com/feedback-loop-ai/swarmail/issues/391)",
+            "[#391](https://github.com/feedback-loop-ai/swarmail/issues/392)",
             "an unsupported destination form",
         ),
         (
@@ -708,7 +791,7 @@ fn the_paragraph_stays_short_single_and_plain() {
         "a superlative in the agent section: \"best\"",
     );
     red(
-        &broken_readme("On the hard tier, on main", "\n\nOn the hard tier, on main"),
+        &broken_readme("On the\n[hard tier]", "\n\nOn the\n[hard tier]"),
         "the eval runs must be cited in one paragraph, found 2",
     );
 }
