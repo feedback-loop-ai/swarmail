@@ -1525,11 +1525,15 @@ collection waits for them. Every proof needs `MAIL_COMPARE_BIN` (the built
 driver) and `SWARMAIL_EVALS_BIN` (the built eval binary); the bridged ones
 also `MAIL_COMPARE_MAILPIT`, `MAIL_COMPARE_MAILHOG` or
 `MAIL_COMPARE_MAILSLURPER_SOURCE_BUILD`; the candidate is Cargo's own
-`swarmail`:
+`swarmail`. The driver is built as `collect-v4` builds it, with `cargo bench
+--no-run` (optimized): the adapters run inside the driver, and a debug build
+is slow enough that Mailpit's bridged `list.c1` warmup (twenty lists of the
+1,000-message store, about 270 ms each unoptimized) runs past the five-second
+cell deadline and blocks the cell, which the proof rightly refuses:
 
 ```bash
 cargo build --locked --bin swarmail
-drv=$(cargo build --locked --bench mail_compare --message-format=json \
+drv=$(cargo bench --locked --no-run --bench mail_compare --message-format=json \
   | grep -o '"executable":"[^"]*mail_compare-[^"]*"' | tail -n1 | cut -d'"' -f4)
 (cd evals && cargo build --locked --bin swarmail-evals)
 bin=$(cargo test --locked --test mail_compare --no-run --message-format=json \
@@ -1947,13 +1951,14 @@ driver's `hold` in a delegated scope; Cargo, the test binary and the eval
 client stay outside it. The seat that built story D had no delegated
 scope: the Swarmail proof failed naming the missing user bus, and the
 holder alone refused with `resources: no delegated cgroup v2 (cpu memory
-pids)`. The dispatcher runs each alone,
+pids)`. The driver is built as `collect-v4` builds it (`cargo bench
+--no-run`, optimized). The dispatcher runs each alone,
 with at most 32 workers and 600 s, and attaches its output, exit and load
 before and after to the pull request before merge:
 
 ```bash
 cargo build --locked --bin swarmail
-drv=$(cargo build --locked --bench mail_compare --message-format=json \
+drv=$(cargo bench --locked --no-run --bench mail_compare --message-format=json \
   | grep -o '"executable":"[^"]*mail_compare-[^"]*"' | tail -n1 | cut -d'"' -f4)
 (cd evals && cargo build --locked --bin swarmail-evals)
 bin=$(cargo test --locked --test mail_compare --no-run --message-format=json \
