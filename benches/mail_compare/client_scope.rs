@@ -506,7 +506,9 @@ async fn diagnose<P: Probe>(p: &P, root: &str) -> (Vec<Member>, bool, Vec<String
                 }
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                notes.push(format!("{here}: removed while it was being read"));
+                notes.push(format!(
+                    "{here}: removed before its members were listed (an identity race)"
+                ));
                 continue;
             }
             Err(e) => {
@@ -523,7 +525,14 @@ async fn diagnose<P: Probe>(p: &P, root: &str) -> (Vec<Member>, bool, Vec<String
             Ok(names) => {
                 queue.extend(names.into_iter().map(|n| (format!("{rel}/{n}"), depth + 1)));
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            // A cgroup the kernel removed held no process and no child at
+            // its removal, so nothing is missing from the list; the race is
+            // still recorded.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                notes.push(format!(
+                    "{here}: removed before its children were listed (an identity race)"
+                ));
+            }
             Err(e) => {
                 complete = false;
                 notes.push(format!("{here}: children: {e}"));

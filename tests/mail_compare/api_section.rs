@@ -3849,23 +3849,32 @@ fn client_scoped(dir: &Path, chunk: &str) -> (std::process::Command, String) {
 }
 
 /// Judge an MCP host proof's client scope with the driver's own
-/// `client-judge`, the collector's judgment.
-fn judge_client(dir: &Path, unit: &str) -> client_scope::Receipt {
+/// `client-judge`, as the collector does: 3.5 s inside a `timeout` of 4 s,
+/// its output in a file (a survivor holding an inherited pipe cannot delay
+/// it), and clean only with exit 0 as well as a receipt that says so.
+fn judge_client(dir: &Path, unit: &str) -> (Option<i32>, client_scope::Receipt) {
     let out = dir.join("client-receipt.json");
-    let judged = std::process::Command::new(env_path("MAIL_COMPARE_BIN"))
+    let log = dir.join("client-judge.log");
+    let judged = std::process::Command::new("timeout")
+        .arg("4")
+        .arg(env_path("MAIL_COMPARE_BIN"))
         .args(["client-judge", "--unit", unit, "--handshake"])
         .arg(dir.join("client-handshake.json"))
         .arg("--out")
         .arg(&out)
-        .output()
+        .args(["--budget-ms", "3500"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .status()
         .unwrap();
     let bytes = std::fs::read(&out).unwrap_or_else(|e| {
         panic!(
-            "client-judge left no receipt ({e}): {}",
-            String::from_utf8_lossy(&judged.stderr)
+            "client-judge ended with {judged} and left no receipt ({e}): {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
         )
     });
-    serde_json::from_slice(&bytes).unwrap()
+    (judged.code(), serde_json::from_slice(&bytes).unwrap())
 }
 
 fn real_chunk(surface: Surface, target: TargetKind, fill: u32) -> RealChunk {
@@ -3888,7 +3897,11 @@ fn real_chunk(surface: Surface, target: TargetKind, fill: u32) -> RealChunk {
             c
         }
     };
-    let out = cmd
+    // The chunk's output goes to files, never pipes: a survivor that
+    // inherited them would hold a pipe open, and the proof would wait for
+    // its EOF instead of judging at the command's exit.
+    let (stdout, stderr) = (root.path().join("stdout"), root.path().join("stderr"));
+    let status = cmd
         .args(["--protocol", "docs/evals/draft/protocol.v4.json"])
         .args([
             "--sources",
@@ -3903,28 +3916,40 @@ fn real_chunk(surface: Surface, target: TargetKind, fill: u32) -> RealChunk {
         .arg("--scratch")
         .arg(root.path().join("scratch"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::fs::File::create(&stdout).unwrap())
+        .stderr(std::fs::File::create(&stderr).unwrap())
+        .status()
         .unwrap();
     // The client scope first, at once, as the collector judges it.
     let client = client_unit.map(|u| {
-        let r = judge_client(root.path(), &u);
-        (u, r)
+        let (code, r) = judge_client(root.path(), &u);
+        (u, code, r)
     });
     let text = format!(
         "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        std::fs::read_to_string(&stdout).unwrap_or_default(),
+        std::fs::read_to_string(&stderr).unwrap_or_default()
     );
-    if let Some((_, r)) = &client {
-        eprintln!("host proof {chunk}: {}", r.summary());
-    }
+    // Clean before anything else is read: the admission, the records and
+    // the documented fill shortfall come after it.
+    let client = client.map(|(unit, code, r)| {
+        eprintln!(
+            "host proof {chunk}: client-judge exit {code:?}: {}",
+            r.summary()
+        );
+        assert_eq!(code, Some(0), "{chunk}: client-judge must exit 0\n{text}");
+        r.proves_clean(&unit)
+            .unwrap_or_else(|e| panic!("{chunk}: {e}\n{text}"));
+        (unit, r)
+    });
     let dir = root.path().join("out");
     let admitted =
         records::admit(&dir).unwrap_or_else(|e| panic!("{chunk} must admit: {e}\n{text}"));
     let rec = serde_json::from_slice(&std::fs::read(dir.join("api.json")).unwrap()).unwrap();
     let report = serde_json::from_slice(&std::fs::read(dir.join("report.json")).unwrap()).unwrap();
     RealChunk {
-        code: out.status.code(),
+        code: status.code(),
         text,
         rec,
         report,

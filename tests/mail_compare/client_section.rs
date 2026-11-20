@@ -545,6 +545,53 @@ impl Probe for Stalled {
     }
 }
 
+/// A populated scope whose child cgroups vanish while they are walked:
+/// `a` before its members are listed, `b` before its children are.
+struct Vanishing;
+
+impl Probe for Vanishing {
+    async fn handshake(&self) -> io::Result<Vec<u8>> {
+        Ok(handshake_bytes(UNIT, CGROUP))
+    }
+    async fn mount(&self) -> Result<(), String> {
+        Ok(())
+    }
+    async fn events(&self, _: &str) -> io::Result<String> {
+        Ok("populated 1\nfrozen 0\n".to_owned())
+    }
+    async fn procs(&self, cgroup: &str) -> io::Result<String> {
+        if cgroup.ends_with("/a") {
+            Err(io::ErrorKind::NotFound.into())
+        } else {
+            Ok(String::new())
+        }
+    }
+    async fn children(&self, cgroup: &str) -> io::Result<Vec<String>> {
+        if cgroup.ends_with("/b") {
+            Err(io::ErrorKind::NotFound.into())
+        } else {
+            Ok(vec!["a".into(), "b".into()])
+        }
+    }
+    async fn comm(&self, _: u32) -> io::Result<Vec<u8>> {
+        unreachable!("no member is listed")
+    }
+}
+
+#[test]
+fn a_child_cgroup_removed_during_the_walk_is_a_noted_identity_race() {
+    let r = judge_now(&Vanishing);
+    // The first observation said populated: the verdict stays survivor.
+    assert_eq!(r.verdict, Verdict::Survivor, "{r:?}");
+    assert!(r.members.is_empty(), "{r:?}");
+    for want in [
+        "/a: removed before its members were listed (an identity race)",
+        "/b: removed before its children were listed (an identity race)",
+    ] {
+        assert!(r.notes.iter().any(|n| n == want), "{want}: {r:?}");
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_stalled_observation_is_unknown_at_the_deadline_and_never_later() {
     for (stall, want) in [
