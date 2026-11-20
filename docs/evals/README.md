@@ -1423,9 +1423,9 @@ The operator ruled on 2026-11-19 that this is proved, not excepted. Now:
   unreadable file) is unknown, with its reason. A survivor's members are
   then named, breadth first, with their `comm` escaped (at most 64 members,
   64 cgroups, depth 8, 64 KiB a file; a pid gone before it was named is
-  noted as an identity race). The whole judgment has one deadline: 3 s by
-  default, 5 s at most, under a `timeout` of 4 s, and never past what is
-  left of the chunk's 600 s. A survivor is reported at that deadline, never
+  noted as an identity race). The whole judgment has one deadline: the
+  collector gives it 3.5 s inside a `timeout` of 4 s (the mode's default is
+  3 s, its cap 5 s), never past what is left of the chunk's 600 s. A survivor is reported at that deadline, never
   waited out.
 - **A survivor is an infrastructure failure.** Clean is `client-judge`'s
   exit 0 with a receipt that says clean. A survivor, or no evidence, is exit
