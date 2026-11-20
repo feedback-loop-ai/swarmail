@@ -5389,6 +5389,51 @@ fn testexec_real_mailpit() {
     real_suite(TargetKind::Mailpit, 8)
 }
 
+// Issue #388: the protocol's ceiling, where a subject search moves most often.
+// One reason per platform: a second `ignore` would be an unused attribute.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "host proof: MAIL_COMPARE_BIN, SWARMAIL_EVALS_BIN, MAIL_COMPARE_MAILPIT, a delegated scope; run alone under timeout 600 taskset -c 0-31"
+)]
+fn testexec_real_mailpit_p32() {
+    real_suite(TargetKind::Mailpit, 32)
+}
+
+// Issue #388: smtp4dev's subject search is store-wide too (lock v5's pin).
+// One reason per platform: a second `ignore` would be an unused attribute.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "host proof: MAIL_COMPARE_BIN, SWARMAIL_EVALS_BIN, MAIL_COMPARE_SMTP4DEV, a delegated scope; run alone under timeout 600 taskset -c 0-31"
+)]
+fn testexec_real_smtp4dev_p8() {
+    real_suite(TargetKind::Smtp4dev, 8)
+}
+
+// Issue #388: smtp4dev at the protocol's ceiling.
+// One reason per platform: a second `ignore` would be an unused attribute.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "host proof: MAIL_COMPARE_BIN, SWARMAIL_EVALS_BIN, MAIL_COMPARE_SMTP4DEV, a delegated scope; run alone under timeout 600 taskset -c 0-31"
+)]
+fn testexec_real_smtp4dev_p32() {
+    real_suite(TargetKind::Smtp4dev, 32)
+}
+
 #[test]
 #[cfg_attr(
     not(target_os = "linux"),
@@ -5404,6 +5449,18 @@ fn the_testexec_host_proofs_are_discovered_and_refuse_without_their_bytes() {
     let proofs = [
         ("api_section::testexec_real_swarmail", TargetKind::Swarmail),
         ("api_section::testexec_real_mailpit", TargetKind::Mailpit),
+        (
+            "api_section::testexec_real_mailpit_p32",
+            TargetKind::Mailpit,
+        ),
+        (
+            "api_section::testexec_real_smtp4dev_p8",
+            TargetKind::Smtp4dev,
+        ),
+        (
+            "api_section::testexec_real_smtp4dev_p32",
+            TargetKind::Smtp4dev,
+        ),
     ];
     // The dispatcher's documented commands name exactly these proofs, run
     // alone through the bounded wrapper.

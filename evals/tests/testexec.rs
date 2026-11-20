@@ -5,9 +5,11 @@
 //! id), Inbucket (mailbox-local ids) and GreenMail (only a global purge).
 //! Every flow is the existing fixture flow solved by the existing oracle and
 //! judged by the existing scorer; nothing here is mocked between them. The
-//! held, enforced chunks are the host proofs
-//! `api_section::testexec_real_swarmail` and
-//! `api_section::testexec_real_mailpit` in the driver's suite.
+//! held, enforced chunks are the `api_section::testexec_real_*` host proofs
+//! in the driver's suite (story D's two and issue #388's three). The
+//! authoritative list is
+//! `api_section::the_testexec_host_proofs_are_discovered_and_refuse_without_their_bytes`,
+//! and `docs/evals/README.md` gives the command for each.
 
 mod common;
 
@@ -74,6 +76,22 @@ struct Store {
     /// worker's delivery lands: the listing's stated total moves before its
     /// next page, as it does when neighbours deliver beside a cleanup.
     move_on: BTreeSet<u32>,
+    /// Subject searches' first pages (`GET /api/v1/search`, start 0) served
+    /// so far, and every search page's offset, in request order.
+    search_firsts: u32,
+    search_starts: Vec<u64>,
+    /// The search first pages (by ordinal, from 1) inside whose handler,
+    /// after the page is taken, another test's mail under the searched
+    /// subject lands: the search's total moves before its next page.
+    move_search_on: BTreeSet<u32>,
+    /// Search first pages answered 500, and search first pages that never
+    /// answer (a re-read in flight at the wait's cutoff).
+    fail_search_on: BTreeSet<u32>,
+    stall_search_on: BTreeSet<u32>,
+    /// Same-subject deliveries `move_search_on` made.
+    search_moves: u32,
+    /// Message reads (`GET /api/v1/message/{id}`) served.
+    fetches: u32,
 }
 
 type Shared = Arc<Mutex<Store>>;
@@ -271,12 +289,37 @@ fn mailpit_routes(store: Shared) -> Router {
             "/api/v1/search",
             get(
                 |State(s): State<Shared>, Query(q): Query<PageQ>| async move {
-                    let mut s = s.lock().unwrap();
-                    let f = match s.blind_search {
-                        true => "\u{0}never".to_owned(),
-                        false => q.query.clone().unwrap_or_default(),
+                    let (page, stall) = {
+                        let mut s = s.lock().unwrap();
+                        let f = match s.blind_search {
+                            true => "\u{0}never".to_owned(),
+                            false => q.query.clone().unwrap_or_default(),
+                        };
+                        let start = q.start.unwrap_or(0);
+                        s.search_starts.push(start);
+                        let n = match start {
+                            0 => {
+                                s.search_firsts += 1;
+                                s.search_firsts
+                            }
+                            _ => 0,
+                        };
+                        if s.fail_search_on.remove(&n) {
+                            return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                        }
+                        // The page is taken before the neighbour's delivery.
+                        let page = mailpit_page(&mut s, &q, Some(&f));
+                        if s.move_search_on.remove(&n) {
+                            s.search_moves += 1;
+                            let to = suite::primary(190);
+                            s.add(Kind::Mailpit, &to, raw(&to, &f, "neighbour"));
+                        }
+                        (page, s.stall_search_on.remove(&n))
                     };
-                    axum::Json(mailpit_page(&mut s, &q, Some(&f)))
+                    if stall {
+                        std::future::pending::<()>().await;
+                    }
+                    Ok(axum::Json(page))
                 },
             ),
         )
@@ -284,7 +327,8 @@ fn mailpit_routes(store: Shared) -> Router {
             "/api/v1/message/{id}",
             get(
                 |State(s): State<Shared>, Path(id): Path<String>| async move {
-                    let s = s.lock().unwrap();
+                    let mut s = s.lock().unwrap();
+                    s.fetches += 1;
                     let Some(m) = s.msgs.iter().find(|m| m.id == id) else {
                         return (axum::http::StatusCode::NOT_FOUND, axum::Json(Value::Null));
                     };
@@ -1062,6 +1106,304 @@ async fn a_moving_store_wide_listing_is_reread_only_beside_neighbours_and_only_i
         st.msgs.iter().filter(|m| m.subject != "Neighbour").count(),
         6
     );
+}
+
+/// A Mailpit store whose subject search for this test's confirmations
+/// spans two pages: 260 other tests' confirmations, then this test's five.
+async fn crowded_search(me: &suite::PlannedTrial) -> Scripted {
+    let s = scripted(Kind::Mailpit).await;
+    {
+        let mut st = s.store.lock().unwrap();
+        for i in 0..260u32 {
+            let to = suite::primary(110 + i % 80);
+            st.add(Kind::Mailpit, &to, raw(&to, CONFIRM, "noise"));
+        }
+        for a in suite::owned(&me.flow, me.id) {
+            st.add(Kind::Mailpit, &a, raw(&a, CONFIRM, "mine"));
+        }
+    }
+    s
+}
+
+const CONFIRM: &str = "Confirm your account";
+
+fn searcher<'a>(
+    client: &'a clients::Client,
+    s: &Scripted,
+    me: &suite::PlannedTrial,
+    deadline: (Instant, Clock),
+    beside: bool,
+) -> NativeSource<'a> {
+    NativeSource::new(
+        client,
+        s.http,
+        WaitMethod::Poll { interval_ms: 20 },
+        me,
+        deadline,
+    )
+    .beside_neighbours(beside)
+}
+
+/// A deadline leaving the poll `wait` before its reserved request tail.
+fn waiting(wait: Duration) -> (Instant, Clock) {
+    (
+        Instant::now() + swarmail_evals::native_source::REQUEST_BOUND + wait,
+        Clock(std::time::Instant::now()),
+    )
+}
+
+#[tokio::test]
+async fn a_subject_search_a_neighbour_moved_is_polled_again_only_beside_neighbours() {
+    let me = crowd();
+    let owned: BTreeSet<String> = suite::owned(&me.flow, me.id).into_iter().collect();
+    // Beside other workers: a neighbour's confirmation lands inside the
+    // search's first page, so its stated total moves before the second.
+    // That listing is not an answer; the next poll's is.
+    let s = crowded_search(&me).await;
+    s.store.lock().unwrap().move_search_on = [1].into();
+    let client = clients::Client::new("mailpit", s.http).unwrap();
+    let mut src = searcher(&client, &s, &me, soon(), true);
+    let got = tokio::time::timeout(Duration::from_secs(15), src.wait_emails(Some(CONFIRM), 5))
+        .await
+        .expect("the wait returns inside its bound")
+        .unwrap();
+    let to: BTreeSet<String> = got
+        .iter()
+        .map(|m| m["to"][0]["address"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(to, owned);
+    {
+        let st = s.store.lock().unwrap();
+        // Not vacuous: the move happened, the refused listing was two pages
+        // and so was the complete one that answered.
+        assert_eq!(st.search_moves, 1);
+        assert_eq!(st.search_starts, [0, 250, 0, 250]);
+        assert_eq!(st.fetches, 5);
+        assert!(st.mutations.is_empty());
+    }
+    // 260 others and the one that moved the search, each counted once.
+    assert_eq!(src.foreign_seen(), 261);
+    assert_eq!(src.owned_seen(), 5);
+    assert!(src.vanished().is_empty());
+    assert_eq!(src.timing.as_ref().unwrap().cause, "poll");
+    // Alone on the store (parallelism 1) nothing else can move it: the
+    // same move is the scan's operation failure at once, nothing fetched.
+    let s = crowded_search(&me).await;
+    s.store.lock().unwrap().move_search_on = [1].into();
+    let client = clients::Client::new("mailpit", s.http).unwrap();
+    let mut src = searcher(&client, &s, &me, soon(), false);
+    let e = tokio::time::timeout(Duration::from_secs(15), src.wait_emails(Some(CONFIRM), 5))
+        .await
+        .expect("the wait returns inside its bound")
+        .unwrap_err();
+    assert_eq!(e, "operation: scan: incomplete");
+    assert!(matches!(src.failure, Some(Failure::Operation(_))));
+    let st = s.store.lock().unwrap();
+    assert_eq!(st.search_moves, 1);
+    assert_eq!(st.search_starts, [0, 250]);
+    assert_eq!(st.fetches, 0);
+    assert!(st.mutations.is_empty());
+    assert_eq!(src.owned_seen(), 0);
+}
+
+/// The poll time the cutoff proofs below leave before the reserved tail.
+/// Generous on purpose: every outcome is ordered by request ordinal (a
+/// stalled first page, never a count of scans that fit), so the budget
+/// only has to hold a few two-page scans on a loaded host, and a passing
+/// test pays it once per stall that holds the wait to its cutoff.
+const CUTOFF_BUDGET: Duration = Duration::from_secs(2);
+
+/// A source polling every `interval_ms`, `budget` before its reserved tail,
+/// and that cutoff.
+fn polling<'a>(
+    client: &'a clients::Client,
+    s: &Scripted,
+    me: &suite::PlannedTrial,
+    interval_ms: u64,
+    budget: Duration,
+) -> (NativeSource<'a>, Instant) {
+    let deadline = waiting(budget);
+    let ends = deadline.0 - swarmail_evals::native_source::REQUEST_BOUND;
+    let src = NativeSource::new(
+        client,
+        s.http,
+        WaitMethod::Poll { interval_ms },
+        me,
+        deadline,
+    )
+    .beside_neighbours(true);
+    (src, ends)
+}
+
+#[tokio::test]
+async fn a_subject_search_that_never_settles_ends_on_the_waits_deadline_untouched() {
+    let me = crowd();
+    // A cadence longer than the whole budget: one moved listing, and the
+    // wait ends at once as the moving timeout, with no second request.
+    let s = crowded_search(&me).await;
+    s.store.lock().unwrap().move_search_on = (1..10_000).collect();
+    let client = clients::Client::new("mailpit", s.http).unwrap();
+    let (mut src, _) = polling(&client, &s, &me, 60_000, CUTOFF_BUDGET);
+    let e = wait(&mut src, 5).await.unwrap_err();
+    assert!(e.starts_with("timeout: "), "{e}");
+    assert!(
+        e.contains("the subject listing kept moving (1 consecutive"),
+        "{e}"
+    );
+    {
+        let st = s.store.lock().unwrap();
+        assert_eq!((st.search_moves, st.search_firsts), (1, 1), "{e}");
+        assert_eq!(st.search_starts, [0, 250]);
+        assert_eq!(st.fetches, 0);
+    }
+    // Every first page moves, and the third attempt's is still in flight
+    // at the cutoff: exactly three attempts, however fast the host is.
+    let s = crowded_search(&me).await;
+    {
+        let mut st = s.store.lock().unwrap();
+        st.move_search_on = (1..10_000).collect();
+        st.stall_search_on = [3].into();
+    }
+    let client = clients::Client::new("mailpit", s.http).unwrap();
+    let log = Mutations::default();
+    let (mut src, ends) = polling(&client, &s, &me, 20, CUTOFF_BUDGET);
+    let e = wait(&mut src, 5).await.unwrap_err();
+    // The wait's own cutoff, never past it, and a timeout that says why.
+    assert!(Instant::now() <= ends + REQUEST_SLACK, "{e}");
+    assert!(e.starts_with("timeout: "), "{e}");
+    assert!(
+        e.contains("the subject listing kept moving (2 consecutive"),
+        "{e}"
+    );
+    match &src.failure {
+        Some(Failure::Timeout(w)) => assert!(w.contains("kept moving"), "{w}"),
+        f => panic!("{f:?}"),
+    }
+    let st = s.store.lock().unwrap();
+    assert!(
+        st.stall_search_on.is_empty(),
+        "the cutoff came before the third attempt; widen CUTOFF_BUDGET: {e}"
+    );
+    // Every attempt moved, every one was read again from its first page,
+    // and none authorized a read of a message or any mutation.
+    assert_eq!((st.search_moves, st.search_firsts), (3, 3));
+    assert_eq!(st.search_starts, [0, 250, 0, 250, 0]);
+    assert_eq!(st.fetches, 0);
+    assert!(st.mutations.is_empty());
+    assert!(log.foreign_reaching(me.id, &[], 0, u64::MAX).is_empty());
+    assert!(src.vanished().is_empty());
+}
+
+async fn wait(src: &mut NativeSource<'_>, count: usize) -> Result<Vec<Value>, String> {
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        src.wait_emails(Some(CONFIRM), count),
+    )
+    .await
+    .expect("the wait returns inside its bound")
+}
+
+#[tokio::test]
+async fn a_moving_search_keeps_every_other_cause_and_never_reads_past_the_cutoff() {
+    let me = crowd();
+    // A wait with no time left before its tail issues no request at all.
+    let s = crowded_search(&me).await;
+    let client = clients::Client::new("mailpit", s.http).unwrap();
+    let mut src = searcher(
+        &client,
+        &s,
+        &me,
+        (
+            Instant::now() + Duration::from_millis(500),
+            Clock(std::time::Instant::now()),
+        ),
+        true,
+    );
+    let e = wait(&mut src, 5).await.unwrap_err();
+    assert!(e.starts_with("timeout: no time left"), "{e}");
+    assert!(s.store.lock().unwrap().search_starts.is_empty());
+    // A move, then an independent 500: the status failure, as before.
+    s.store.lock().unwrap().move_search_on = [1].into();
+    s.store.lock().unwrap().fail_search_on = [2].into();
+    let mut src = searcher(&client, &s, &me, soon(), true);
+    assert_eq!(
+        wait(&mut src, 5).await.unwrap_err(),
+        "operation: scan: status_500"
+    );
+    assert!(matches!(src.failure, Some(Failure::Operation(_))));
+    // A move, then a re-read still in flight at the cutoff: the wait ends
+    // there, still moving, and no late answer is taken.
+    let s = crowded_search(&me).await;
+    {
+        let mut st = s.store.lock().unwrap();
+        st.move_search_on = [1].into();
+        st.stall_search_on = [2].into();
+    }
+    let client = clients::Client::new("mailpit", s.http).unwrap();
+    let (mut src, ends) = polling(&client, &s, &me, 20, CUTOFF_BUDGET);
+    let e = wait(&mut src, 5).await.unwrap_err();
+    assert!(Instant::now() <= ends + REQUEST_SLACK, "{e}");
+    assert!(e.contains("the subject listing kept moving (1 "), "{e}");
+    let st = s.store.lock().unwrap();
+    assert!(
+        st.stall_search_on.is_empty(),
+        "the cutoff came before the stalled re-read; widen CUTOFF_BUDGET: {e}"
+    );
+    assert_eq!(st.search_starts, [0, 250, 0]);
+    assert_eq!(st.fetches, 0);
+    assert!(st.mutations.is_empty());
+    assert_eq!(src.owned_seen(), 0);
+}
+
+#[tokio::test]
+async fn a_scan_the_cutoff_cancels_ends_as_the_waits_timeout_saying_what_it_last_saw() {
+    let me = crowd();
+    // Nothing complete yet: the first scan's first page is still in flight
+    // at the cutoff. The wait's timeout, not the scan's budget.
+    let s = crowded_search(&me).await;
+    s.store.lock().unwrap().stall_search_on = [1].into();
+    let client = clients::Client::new("mailpit", s.http).unwrap();
+    let (mut src, ends) = polling(&client, &s, &me, 20, CUTOFF_BUDGET);
+    let e = wait(&mut src, 5).await.unwrap_err();
+    assert!(Instant::now() <= ends + REQUEST_SLACK, "{e}");
+    assert!(e.starts_with("timeout: no time left to poll"), "{e}");
+    assert!(matches!(src.failure, Some(Failure::Timeout(_))));
+    {
+        let st = s.store.lock().unwrap();
+        assert!(st.stall_search_on.is_empty());
+        assert_eq!(st.search_starts, [0]);
+        assert_eq!(st.fetches, 0);
+    }
+    assert_eq!(src.owned_seen(), 0);
+    // A complete short answer, a move, a complete short answer again, and
+    // then a scan the cutoff cancels: the ordinary count timeout, and the
+    // earlier complete scans' evidence survives the refused one.
+    let s = crowded_search(&me).await;
+    {
+        let mut st = s.store.lock().unwrap();
+        st.move_search_on = [2].into();
+        st.stall_search_on = [4].into();
+    }
+    let client = clients::Client::new("mailpit", s.http).unwrap();
+    let (mut src, ends) = polling(&client, &s, &me, 20, CUTOFF_BUDGET);
+    let e = wait(&mut src, 6).await.unwrap_err();
+    assert!(Instant::now() <= ends + REQUEST_SLACK, "{e}");
+    assert!(e.starts_with("timeout: waited for 6 mail(s)"), "{e}");
+    assert!(e.ends_with("; saw 5"), "{e}");
+    assert!(matches!(src.failure, Some(Failure::Timeout(_))));
+    {
+        let st = s.store.lock().unwrap();
+        assert!(
+            st.stall_search_on.is_empty(),
+            "the cutoff came before the fourth scan; widen CUTOFF_BUDGET: {e}"
+        );
+        assert_eq!(st.search_moves, 1);
+        assert_eq!(st.search_starts, [0, 250, 0, 250, 0, 250, 0]);
+        assert_eq!(st.fetches, 0);
+        assert!(st.mutations.is_empty());
+    }
+    assert!(src.vanished().is_empty());
+    assert_eq!(src.owned_seen(), 5);
 }
 
 // ---- the station: one listener pair, one generation at a time -------------
