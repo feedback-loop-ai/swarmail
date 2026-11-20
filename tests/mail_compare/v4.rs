@@ -6714,10 +6714,10 @@ fn collect_v4_dispatches_api_chunks_to_run_and_to_api_mcp() {
         let at = |l: &&String| l.contains(&format!("--chunk {coord} "));
         let client = format!("-{coord}-client");
         assert!(
-            log.iter().filter(at).any(|l| l.starts_with(&format!(
+            log.iter().filter(at).any(|l| l.starts_with(
                 "taskset -c 0-7 systemd-run --user --scope --quiet --unit=mail-compare-"
-            )) && l.contains(&format!("{client} -- "))
-                && l.contains(&format!(" client-enter --unit mail-compare-"))
+            ) && l.contains(&format!("{client} -- "))
+                && l.contains(" client-enter --unit mail-compare-")
                 && l.contains(" api-mcp --driver ")
                 && !l.contains("Delegate")),
             "{coord}: {log:?}"
