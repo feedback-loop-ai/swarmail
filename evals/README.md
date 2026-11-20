@@ -825,9 +825,10 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   value mode) writes a private Markdown table, exclusively created at 0600,
   with every group's tokens per success: the figure, or `null (<reason>)` —
   `incomplete_join`, `no_passes` or `sum_overflow` from the journal summary;
-  without a journal a paid group is `null (incomplete_join)`, an empty scored
-  population `null (no_passes)`, a built-in `null (builtin_agent)`. Never a
-  dash, a blank or a zero.
+  without a journal a paid group is `null (incomplete_join)` and an empty
+  scored population `null (no_passes)`. A built-in group is
+  `null (builtin_agent)` with or without a journal. Never a dash, a blank or
+  a zero.
 - **What it cannot do yet.** The pinned engine's journal hashes the argument
   representation the CLI reported; until a real engine run shows those are
   the bytes the agent sent, a paid trial's values are expected to be

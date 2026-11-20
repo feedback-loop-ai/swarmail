@@ -544,6 +544,11 @@ fn the_page_gives_every_paid_group_a_figure_or_its_reason() {
         line(&page, "only-fails").contains("null (incomplete\\_join)"),
         "{page}"
     );
+    // A built-in group keeps its own reason with a journal joined too.
+    assert!(
+        line(&page, "oracle").ends_with("| null (builtin\\_agent) | null |"),
+        "{page}"
+    );
     for l in page.lines().filter(|l| l.starts_with("| signup |")) {
         assert!(!l.contains("| - |") && !l.contains("|  |"), "{l}");
     }

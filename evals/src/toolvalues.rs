@@ -1395,9 +1395,17 @@ pub fn escape_cell(s: &str) -> String {
 
 /// One group's tokens-per-success figure: the number, or `null` and why.
 /// Never a dash, a blank or a zero standing for an unavailable figure.
-/// Without a journal, a paid group with scored rows is `incomplete_join`
-/// (no fact was joined) and an empty scored population is `no_passes`.
+/// A built-in agent launches no driver and has no accounting, so its group
+/// is `builtin_agent`, journal or not. Without a journal, a paid group with
+/// scored rows is `incomplete_join` (no fact was joined) and an empty
+/// scored population is `no_passes`.
 pub fn tokens_figure(group: &Value) -> (Option<f64>, &'static str) {
+    let builtin = group["tool_surfaces"]
+        .as_array()
+        .is_some_and(|s| s.iter().all(|x| x["kind"] == "builtin_not_applicable"));
+    if builtin {
+        return (None, "builtin_agent");
+    }
     if let Some(journal) = group.get("journal") {
         let reason = match journal["tokens_per_success_reason"].as_str() {
             Some("no_passes") => "no_passes",
@@ -1409,12 +1417,7 @@ pub fn tokens_figure(group: &Value) -> (Option<f64>, &'static str) {
             None => (None, reason),
         };
     }
-    let builtin = group["tool_surfaces"]
-        .as_array()
-        .is_some_and(|s| s.iter().all(|x| x["kind"] == "builtin_not_applicable"));
-    if builtin {
-        (None, "builtin_agent")
-    } else if group["scored"].as_u64() == Some(0) {
+    if group["scored"].as_u64() == Some(0) {
         (None, "no_passes")
     } else {
         (None, "incomplete_join")

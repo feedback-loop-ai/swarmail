@@ -640,6 +640,11 @@ fn cells_are_escaped_and_figures_never_dash() {
     assert_eq!(tokens_figure(&empty), (None, "no_passes"));
     let builtin = json!({"tool_surfaces":[{"kind":"builtin_not_applicable"}],"scored":2});
     assert_eq!(tokens_figure(&builtin), (None, "builtin_agent"));
+    // A journal joined beside a built-in group does not turn it into a
+    // missing join: it never had accounting to join.
+    let joined = json!({"tool_surfaces":[{"kind":"builtin_not_applicable"}],"scored":2,
+        "journal":{"tokens_per_success":null,"tokens_per_success_reason":"incomplete_join"}});
+    assert_eq!(tokens_figure(&joined), (None, "builtin_agent"));
     for (j, want) in [
         (json!({"tokens_per_success": 12.5}), (Some(12.5), "")),
         (
