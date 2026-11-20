@@ -42,6 +42,64 @@ design commit). Part of #391; this delivery does not close it.
    (`tool_capture_write_failed` on stderr), leaves the row untouched and the
    report says `capture_missing`.
 
+## Review return 1 (decision 0102), fixes
+
+Every finding above low and every security finding, by member:
+
+- **Percent-decoding fail-open (medium, security; correctness, guarantees,
+  security, independent).** Fixed in `toolvalues.rs`: each complete `%XX`
+  escape is decoded wherever it stands, JSON and percent layers alternate
+  over bytes to a fixed point (bounded at 32 rounds; unsettled text counts
+  as holding a literal), the final residual check uses the same layers, and
+  a percent decoding that never settles or is not UTF-8 is refused
+  (`invalid_argument_encoding`). The reviewer's probes (`%53…%zz`, `%2573…`)
+  and mixed/non-UTF-8/unsettled cases are unit tests; the probe agent now
+  sends a malformed-escape and a double-encoded spelling end to end, and
+  the canary search also looks for each literal's tail.
+- **Capture socket reachable by the agent (medium, guarantees; low,
+  security: unbounded `open` and accept loop).** Answered and hardened. The
+  path must reach the helper through the agent's own MCP configuration, so
+  no CLI-launched helper can hold a secret the agent cannot read; the spec's
+  "no interface to declare trusted tools" holds because a frame can only
+  report `eval_http` (`Server::Fixture` admits that one name; the catalogue
+  is never reachable through the socket), and every published value must
+  match the journal's digest for the agent's real call, so a forged frame
+  only withholds the trial. Now bounded: one open call per connection, at
+  most 16 connections per trial (`HELPER_LIMIT`); either excess latches
+  `binding_mismatch`. Stated in `capture.rs` and `evals/README.md`; unit
+  tests in `capture::tests`.
+- **Mask collision in values (low, security).** Fixed: a string that already
+  spells `[REDACTED]`, directly, JSON-escaped, nested or in its percent
+  decoding, is refused (`invalid_argument_encoding`).
+- **`respell_origin` never executed (medium, tests).** Unit cases in
+  `capture::tests`, and on the wire: the probe sends the forwarder's own
+  origin (Swarmail answers only once it is respelled; mutating the
+  respelling to a pass-through turns the test red with `403 Forbidden`,
+  checked) and a foreign origin, which Swarmail refuses.
+
+Lows also closed: multi-call batches are documented and tested as
+`binding_mismatch`; the lost observer and the `unreadable` frame are tested
+(`fixture_http::tests`); a `sum_overflow` page cell is tested; a page write
+that fails part-way removes its own file; the decision index no longer calls
+the mode unbuilt. Lows left as tracked debt are named in `tasks.md` (items
+2, 3, 4, 7, 8), plus the observer's bounded 2 s acknowledgement wait (now
+stated in `capture.rs`), the four untested fail-closed diagnostics
+(`capture_requires_swarmail_target`, `capture_root_unavailable`,
+`tool_capture_write_failed`, `eval_capture_socket_invalid`), the coarse
+`capture_missing` for a private write failure, and the CI-time overrun below.
+
+Time added by this return: `tests/tool_values.rs` 10.1–10.4 s (unchanged:
+no new trial), new unit tests under 0.01 s each.
+
+Gates after this return (`--locked`, this seat, 2026-11-20): root fmt,
+clippy, test (37 suites ok), `cargo build --locked --bin swarmail`; evals
+fmt, clippy and `SWARMAIL_BIN=<artifact record> cargo test --locked` (590
+passed, 0 failed, 23 min); coverage gate exact 100/100/100 and its selftest;
+publish-guard and seal-branch proofs; `cargo deny check licenses`;
+native-tls absent in both trees: all 0. `brokkr compile` over every recipe:
+not run, no pinned brokkr is reachable from this seat; `.brokkr/` is
+unchanged.
+
 ## Held paths
 
 None touched: `git diff --stat 0d4839f -- Cargo.toml Cargo.lock evals/Cargo.toml evals/Cargo.lock deny.toml scripts .github .brokkr src tests` is empty. No dependency or feature was added.
