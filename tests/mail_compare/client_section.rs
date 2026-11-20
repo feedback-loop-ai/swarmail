@@ -326,6 +326,10 @@ fn a_nested_member_makes_the_scope_a_survivor_and_a_vanished_pid_is_a_noted_race
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
 fn the_member_list_is_capped_and_says_so() {
     let t = Tree::new();
     t.events("", "1");
@@ -336,6 +340,77 @@ fn the_member_list_is_capped_and_says_so() {
     assert_eq!(r.members.len(), client_scope::MAX_MEMBERS);
     assert!(!r.complete);
     assert!(r.notes.iter().any(|n| n.contains("stopped at 64")), "{r:?}");
+}
+
+#[test]
+fn a_removed_client_cgroup_whose_parent_the_mount_lacks_is_unknown() {
+    // The handshake names a path this mount never held (a cgroup
+    // namespace, or a bind-mounted subtree): not the scope ended.
+    let t = Tree::new();
+    std::fs::remove_dir_all(t.mount().join("user.slice")).unwrap();
+    let r = t.judge();
+    assert_eq!(r.verdict, Verdict::Unknown, "{r:?}");
+    assert!(
+        r.observation.contains(
+            "nor its parent /user.slice/user-1000.slice/user@1000.service/app.slice is under the mount"
+        ),
+        "{}",
+        r.observation
+    );
+    assert!(r.proves_clean(UNIT).is_err());
+    // A scope directly under the mount's root has the root for a parent.
+    let top = format!("/{UNIT}");
+    std::fs::write(t.handshake(), handshake_bytes(UNIT, &top)).unwrap();
+    let r = t.judge();
+    assert_eq!(
+        (r.verdict, r.observation.as_str()),
+        (Verdict::Clean, "removed"),
+        "{r:?}"
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+fn a_child_cgroup_name_is_escaped_in_the_receipt_and_its_summary() {
+    let t = Tree::new();
+    t.events("", "1");
+    t.procs("", &[]);
+    t.procs("/in\nner\x1b[2J", &[std::process::id()]);
+    let r = t.judge();
+    assert_eq!(r.verdict, Verdict::Survivor, "{r:?}");
+    assert_eq!(r.members.len(), 1, "{r:?}");
+    assert_eq!(r.members[0].cgroup, "/in\\x0aner\\x1b[2J");
+    let line = r.summary();
+    assert!(!line.chars().any(char::is_control), "{line:?}");
+    assert!(line.contains("in /in\\x0aner\\x1b[2J"), "{line}");
+    // A receipt read back with raw control characters still prints as one
+    // line.
+    let mut forged = r.clone();
+    forged.notes.push("a\nforged line\r".into());
+    forged.observation = "pop\x07ulated".into();
+    let line = forged.summary();
+    assert!(!line.chars().any(char::is_control), "{line:?}");
+    assert!(line.contains("a\\x0aforged line\\x0d"), "{line}");
+    assert!(line.contains("pop\\x07ulated"), "{line}");
+}
+
+#[test]
+fn client_enter_confirms_its_pid_through_the_mount() {
+    let t = Tree::new();
+    let pid = std::process::id();
+    // Missing: the mount does not show the client scope at all.
+    let e = client_scope::confirm_member(&t.mount(), CGROUP, pid).unwrap_err();
+    assert!(e.contains("is not visible under the mount"), "{e}");
+    // Present, but this pid is not listed.
+    t.procs("", &[1, pid + 1]);
+    let e = client_scope::confirm_member(&t.mount(), CGROUP, pid).unwrap_err();
+    assert!(e.contains(&format!("pid {pid} is not listed")), "{e}");
+    // Listed.
+    t.procs("", &[1, pid]);
+    client_scope::confirm_member(&t.mount(), CGROUP, pid).unwrap();
 }
 
 #[test]
@@ -488,6 +563,72 @@ async fn a_stalled_observation_is_unknown_at_the_deadline_and_never_later() {
     let r = client_scope::judge(&Stalled { stall: "events" }, UNIT, Duration::from_secs(60)).await;
     assert_eq!(t0.elapsed(), client_scope::JUDGE_MAX);
     assert_eq!(r.verdict, Verdict::Unknown);
+}
+
+/// A probe whose client cgroup is removed and whose parent check fails
+/// with `parent`, or stalls when it is `None` (the parent vanishing or
+/// turning unreadable between the two reads is a race no file tree holds).
+struct Removed {
+    parent: Option<io::ErrorKind>,
+}
+
+impl Probe for Removed {
+    async fn handshake(&self) -> io::Result<Vec<u8>> {
+        Ok(handshake_bytes(UNIT, CGROUP))
+    }
+    async fn mount(&self) -> Result<(), String> {
+        Ok(())
+    }
+    async fn events(&self, _: &str) -> io::Result<String> {
+        Err(io::ErrorKind::NotFound.into())
+    }
+    async fn procs(&self, _: &str) -> io::Result<String> {
+        unreachable!("a removed scope is not walked")
+    }
+    async fn children(&self, _: &str) -> io::Result<Vec<String>> {
+        match self.parent {
+            Some(kind) => Err(kind.into()),
+            None => std::future::pending().await,
+        }
+    }
+    async fn comm(&self, _: u32) -> io::Result<Vec<u8>> {
+        unreachable!("a removed scope is not walked")
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_removed_scope_whose_parent_check_fails_or_stalls_is_unknown_within_the_deadline() {
+    let t0 = tokio::time::Instant::now();
+    let r = client_scope::judge(&Removed { parent: None }, UNIT, Duration::from_secs(3)).await;
+    assert_eq!(t0.elapsed(), Duration::from_secs(3));
+    assert_eq!(r.verdict, Verdict::Unknown, "{r:?}");
+    assert!(
+        r.observation
+            .contains("the removed scope's parent check was cut"),
+        "{}",
+        r.observation
+    );
+    for (kind, want) in [
+        (
+            io::ErrorKind::PermissionDenied,
+            "the removed scope's parent is unreadable",
+        ),
+        (
+            io::ErrorKind::NotFound,
+            "observer cannot see the client scope",
+        ),
+    ] {
+        let t0 = tokio::time::Instant::now();
+        let r = client_scope::judge(
+            &Removed { parent: Some(kind) },
+            UNIT,
+            Duration::from_secs(3),
+        )
+        .await;
+        assert_eq!(t0.elapsed(), Duration::ZERO, "{kind:?}");
+        assert_eq!(r.verdict, Verdict::Unknown, "{kind:?}: {r:?}");
+        assert!(r.observation.contains(want), "{kind:?}: {}", r.observation);
+    }
 }
 
 #[tokio::test(start_paused = true)]

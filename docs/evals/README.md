@@ -990,7 +990,8 @@ chunk's command is also clipped to one monotonic 600 s from the chunk's start
 (#385). Each chunk is one driver in its own scope: `timeout --kill-after=30
 560 taskset -c 0-<n-1> systemd-run --user --scope -p Delegate=yes --unit=… --
 <driver> run …`. On an MCP chunk the driver is the holder, `api-mcp`'s
-child: `api-mcp` runs under the same bound with no scope, and its
+child: `api-mcp` runs under the same bound in a sibling client scope of
+its own (not delegated; below), and its
 `--driver` is a shim beside the chunk's scratch that execs `<driver> hold …`
 as that `systemd-run --user --scope -p Delegate=yes --unit=…` and any other
 mode (an adapter) in place, so the holder is its scope's only process and
@@ -1403,9 +1404,11 @@ The operator ruled on 2026-11-19 that this is proved, not excepted. Now:
   fresh, non-delegated scope of its own, `mail-compare-<token>-<coordinate>-client.scope`
   (`systemd-run --user --scope --quiet --unit=…-client --`). Its first
   process is the driver's `client-enter`, which reads `/proc/self/cgroup`,
-  writes the unified path to a new, owner-only handshake file, refuses
-  unless that path ends in its own unit, and only then execs `api-mcp` in
-  place. The bridge runs inside `api-mcp`; every adapter and every
+  refuses unless that unified path ends in its own unit and its own pid is
+  listed in that cgroup's `cgroup.procs` under `/sys/fs/cgroup` (the mount
+  the observer reads, so a cgroup namespace or a bind-mounted subtree that
+  hides the scope refuses here), writes the path to a new, owner-only
+  handshake file, and only then execs `api-mcp` in place. The bridge runs inside `api-mcp`; every adapter and every
   descendant inherits the scope across fork, exec, `setsid` and
   reparenting, which a process-tree walk would lose. The holder's shim
   moves `hold` out into the chunk's delegated scope, so it is still that
@@ -1417,11 +1420,14 @@ The operator ruled on 2026-11-19 that this is proved, not excepted. Now:
   (exit, failure, timeout, kill or a handled interrupt), before the
   holder's scope is asked or anything killed, the driver's `client-judge`
   reads the handshake, checks the mount is cgroup v2 (`statfs`), and reads
-  the client cgroup's `cgroup.events`: `populated 0`, or the cgroup removed,
-  is clean; `populated 1` at that first look is a survivor, however soon it
+  the client cgroup's `cgroup.events`: `populated 0` is clean, and so is the
+  cgroup removed, but only while its parent cgroup is still under the
+  mount (otherwise the observer cannot see the scope, and that is unknown); `populated 1` at that first look is a survivor, however soon it
   empties; anything else (no handshake, another unit, a malformed or
   unreadable file) is unknown, with its reason. A survivor's members are
-  then named, breadth first, with their `comm` escaped (at most 64 members,
+  then named, breadth first, with their `comm` and their child cgroup's
+  name escaped (the receipt's one-line summary escapes every control
+  character too) (at most 64 members,
   64 cgroups, depth 8, 64 KiB a file; a pid gone before it was named is
   noted as an identity race). The whole judgment has one deadline: the
   collector gives it 3.5 s inside a `timeout` of 4 s (the mode's default is

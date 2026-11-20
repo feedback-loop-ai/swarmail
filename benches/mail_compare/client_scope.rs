@@ -160,7 +160,16 @@ impl Receipt {
         for n in &self.notes {
             s.push_str(&format!("; {n}"));
         }
-        s
+        // A receipt read back may carry anything: the line stays one line.
+        s.chars()
+            .map(|c| {
+                if c.is_control() {
+                    format!("\\x{:02x}", u32::from(c))
+                } else {
+                    c.to_string()
+                }
+            })
+            .collect()
     }
 
     /// Whether this receipt affirmatively proves `unit` clean (admission).
@@ -248,6 +257,33 @@ pub fn own_handshake(unit: &str, proc_cgroup: &str) -> Result<Handshake, String>
         cgroup: cgroup.to_owned(),
         pid: std::process::id(),
     })
+}
+
+/// Confirm, through the cgroup v2 mount at `mount`, that `pid` is listed
+/// in `cgroup`'s `cgroup.procs`: the handshake's path is one the mount the
+/// observer reads actually holds, not only the kernel's name for it.
+pub fn confirm_member(mount: &Path, cgroup: &str, pid: u32) -> Result<(), String> {
+    use std::io::Read;
+    let path = mount
+        .join(cgroup.trim_start_matches('/'))
+        .join("cgroup.procs");
+    let mut text = String::new();
+    std::fs::File::open(&path)
+        .and_then(|f| f.take(MAX_READ).read_to_string(&mut text))
+        .map_err(|e| {
+            format!(
+                "{}: {e}: the client scope is not visible under the mount",
+                path.display()
+            )
+        })?;
+    if text.lines().any(|l| l.trim() == pid.to_string()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "pid {pid} is not listed in {}: the mount does not show this process in its client scope",
+            path.display()
+        ))
+    }
 }
 
 /// Write `bytes` to `path`, which must not exist yet (owner-only, synced).
@@ -340,10 +376,13 @@ pub async fn judge<P: Probe>(p: &P, unit: &str, budget: Duration) -> Receipt {
     }
     let events = match tokio::time::timeout_at(deadline, p.events(&hs.cgroup)).await {
         Err(_) => return Receipt::unknown(unit, cg, cut("the first observation")),
-        // The handshake proved the placement, so a removed cgroup is the
-        // scope ended, not a unit that never existed.
+        // The handshake proved the placement and `client-enter` saw itself
+        // listed there through this mount, so a removed cgroup is the scope
+        // ended, not a unit that never existed: provided the observer's
+        // mount still holds the parent, which a cgroup namespace or a
+        // bind-mounted subtree would not.
         Ok(Err(e)) if e.kind() == io::ErrorKind::NotFound => {
-            return Receipt::clean(unit, cg, "removed");
+            return removed(p, unit, cg, &hs.cgroup, deadline).await;
         }
         Ok(Err(e)) => {
             return Receipt::unknown(unit, cg, format!("cgroup.events is unreadable: {e}"));
@@ -381,6 +420,38 @@ pub async fn judge<P: Probe>(p: &P, unit: &str, budget: Duration) -> Receipt {
     }
 }
 
+/// The verdict on a client cgroup this mount no longer holds: clean only
+/// when its parent is still there, so the path is one the observer sees.
+async fn removed<P: Probe>(
+    p: &P,
+    unit: &str,
+    cg: Option<String>,
+    cgroup: &str,
+    deadline: tokio::time::Instant,
+) -> Receipt {
+    let parent = match cgroup.rsplit_once('/') {
+        Some(("", _)) | None => "/",
+        Some((parent, _)) => parent,
+    };
+    match tokio::time::timeout_at(deadline, p.children(parent)).await {
+        Err(_) => Receipt::unknown(unit, cg, cut("the removed scope's parent check")),
+        Ok(Ok(_)) => Receipt::clean(unit, cg, "removed"),
+        Ok(Err(e)) if e.kind() == io::ErrorKind::NotFound => Receipt::unknown(
+            unit,
+            cg,
+            format!(
+                "neither the client cgroup nor its parent {} is under the mount: the observer cannot see the client scope",
+                escape(parent.as_bytes())
+            ),
+        ),
+        Ok(Err(e)) => Receipt::unknown(
+            unit,
+            cg,
+            format!("the removed scope's parent is unreadable: {e}"),
+        ),
+    }
+}
+
 /// Name a populated scope's members, breadth first, within the caps. It
 /// only reads: nothing is signalled here, and never a pid by its name.
 async fn diagnose<P: Probe>(p: &P, root: &str) -> (Vec<Member>, bool, Vec<String>) {
@@ -394,10 +465,12 @@ async fn diagnose<P: Probe>(p: &P, root: &str) -> (Vec<Member>, bool, Vec<String
             break;
         }
         walked += 1;
+        // Child cgroup names are anyone's: they are escaped before they
+        // reach a receipt, a note or the console.
         let here = if rel.is_empty() {
             "/".to_owned()
         } else {
-            rel.clone()
+            escape(rel.as_bytes())
         };
         let path = format!("{root}{rel}");
         match p.procs(&path).await {

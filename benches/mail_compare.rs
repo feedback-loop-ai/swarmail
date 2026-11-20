@@ -301,6 +301,11 @@ fn client_enter_mode(args: &[String]) -> i32 {
             let text = std::fs::read_to_string("/proc/self/cgroup")
                 .map_err(|e| format!("/proc/self/cgroup: {e}"))?;
             let hs = client_scope::own_handshake(&a.unit, &text)?;
+            client_scope::confirm_member(
+                Path::new(client_scope::CGROUP_MOUNT),
+                &hs.cgroup,
+                hs.pid,
+            )?;
             let bytes = serde_json::to_vec(&hs).map_err(|e| e.to_string())?;
             client_scope::write_exclusive(&a.handshake, &bytes)?;
             Ok(a)

@@ -815,7 +815,7 @@ case "$mode" in
     # target, the bridge; story B of 0132). Every one takes the same flags.
     # On an MCP chunk the holder, not api-mcp, is the chunk's driver: it owns
     # the target's leaf and must be its scope's only process. So api-mcp runs
-    # under the bound with no scope of its own, and its --driver is a shim
+    # under the bound outside that scope, and its --driver is a shim
     # (`hold_shim`, written just before the chunk runs) that execs the
     # driver's `hold` as the chunk's scope and every other mode (an adapter)
     # in place. api-mcp itself runs in its chunk's client scope (issue #385):
