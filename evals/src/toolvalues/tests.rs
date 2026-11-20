@@ -365,6 +365,40 @@ fn a_numeric_sentinel_is_found_by_value_in_any_spelling() {
 }
 
 #[test]
+fn a_form_encoded_space_never_hides_a_sentinel() {
+    let mut r = reg();
+    r.register("my secret");
+    // The '+' reading of a form or query value: in a path, a query, a
+    // form body, a nested JSON body, and percent-encoded on top.
+    for doc in [
+        r#"{"method":"GET","path":"/files/my+secret/x"}"#,
+        r#"{"method":"GET","path":"/search?q=my+secret&page=2"}"#,
+        r#"{"method":"POST","path":"/login","body":"user=a&pass=my+secret"}"#,
+        r#"{"method":"POST","path":"/","body":"{\"q\":\"my+secret\"}"}"#,
+        r#"{"method":"GET","path":"/?q=my%2Bsecret"}"#,
+        r#"{"method":"GET","path":"/?q=my%252Bsecret"}"#,
+        r#"{"my+secret":1}"#,
+    ] {
+        assert_eq!(
+            r.redact(doc.as_bytes()),
+            Err(Refusal::ResidualSecret),
+            "{doc}"
+        );
+    }
+    // The literal and its %20 spelling are masked as before; a '+' that
+    // reveals nothing is kept.
+    assert_eq!(
+        r.redact(br#"{"path":"/?q=my%20secret&r=my secret"}"#)
+            .as_deref(),
+        Ok(r#"{"path":"/?q=[REDACTED]&r=[REDACTED]"}"#)
+    );
+    let kept = r#"{"path":"/?q=a+b&c=1+1"}"#;
+    assert_eq!(r.redact(kept.as_bytes()).as_deref(), Ok(kept));
+    // A row with the form spelling is not approved for a transcript.
+    assert!(r.found_in_document(br#"{"agent":"my+secret"}"#));
+}
+
+#[test]
 fn the_registry_is_bounded_and_fails_closed() {
     let mut r = Registry::new();
     r.register("");

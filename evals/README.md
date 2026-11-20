@@ -760,7 +760,9 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   and every sentinel. Every string and member name is masked
   (`[REDACTED]`), including escaped, percent-encoded and nested-JSON
   spellings: each complete `%XX` escape is decoded wherever it stands (a
-  malformed one beside it hides nothing), and JSON and percent layers are
+  malformed one beside it hides nothing), `+` is also read as a space (form
+  encoding; both readings are searched, and the `+` reading is refused as
+  `residual_secret`, not masked), and JSON and percent layers are
   undone alternately, over bytes, to a fixed point; a percent decoding that
   never settles within 32 layers or is not UTF-8 is refused, never masked.
   The re-encoding is re-parsed and every layer searched again. An original
@@ -771,7 +773,12 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   also found by value: a JSON number of equal value in any spelling
   (`1.5e2`, `15.0e1`), or a decimal number of equal value anywhere in a
   string, in any of those layers, is refused (`residual_secret`), since
-  only the registered spelling can be masked as text. Only the
+  only the registered spelling can be masked as text. **These are the only
+  spellings searched:** raw, JSON-escaped, `%XX` (with `+` as a space) and
+  nested JSON, plus a numeric sentinel's value. Base64, HTML entities, other
+  character encodings, case changes and any other transformation are not
+  decoded, so a sentinel spelled that way is published. Choose sentinels an
+  agent would only send in a supported spelling. Only the
   redacted record, or a closed refusal, is written to
   `captures/<trial_id>/capture.json` (0600 under 0700, bound by `manifest.json`).
   Original bytes never reach a disk.

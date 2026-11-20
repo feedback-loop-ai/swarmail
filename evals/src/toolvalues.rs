@@ -754,16 +754,36 @@ impl Decimal {
 /// Search `s` and every layer reached by undoing JSON escapes and percent
 /// escapes, both leniently (a complete escape is decoded wherever it
 /// stands; anything else stays as written) and alternately, to a fixed
-/// point, as bytes, UTF-8 or not. `None` when the layers do not settle
-/// within [`DEPTH_LIMIT`] rounds.
+/// point, as bytes, UTF-8 or not. The URL layer is read twice: once with
+/// `+` kept and once with `+` as a space (form encoding), and a hit in
+/// either reading is a hit. `None` when the layers do not settle within
+/// [`DEPTH_LIMIT`] rounds.
 fn search_layers(s: &str, found: impl Fn(&[u8]) -> bool) -> Option<bool> {
+    match (
+        search_reading(s, &found, false),
+        search_reading(s, &found, true),
+    ) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (Some(false), Some(false)) => Some(false),
+        _ => None,
+    }
+}
+
+/// One reading of [`search_layers`]: `plus` reads `+` as a space wherever
+/// the URL layer is undone.
+fn search_reading(s: &str, found: &impl Fn(&[u8]) -> bool, plus: bool) -> Option<bool> {
     let mut current = s.as_bytes().to_vec();
     if found(&current) {
         return Some(true);
     }
     for _ in 0..DEPTH_LIMIT {
         let unescaped = unescape_bytes(&current);
-        let next = percent_lenient(&unescaped);
+        let mut next = percent_lenient(&unescaped);
+        if plus {
+            next.iter_mut()
+                .filter(|c| **c == b'+')
+                .for_each(|c| *c = b' ');
+        }
         if found(&unescaped) || found(&next) {
             return Some(true);
         }
