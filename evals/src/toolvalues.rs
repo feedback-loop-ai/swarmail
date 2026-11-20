@@ -179,7 +179,7 @@ impl Reader<'_> {
         }
     }
     fn value(&mut self, depth: usize) -> Result<Node, ()> {
-        if depth > DEPTH_LIMIT {
+        if depth >= DEPTH_LIMIT {
             return Err(());
         }
         self.ws();
@@ -544,6 +544,7 @@ impl Registry {
     fn residual(&self, v: &Json, depth: usize) -> bool {
         let text = |s: &str| {
             self.found_in(s.as_bytes())
+                || self.found_unescaped(s)
                 || percent_decoded(s).is_some_and(|d| self.found_in(d.as_bytes()))
                 || (depth < DEPTH_LIMIT
                     && parse(s.as_bytes()).is_ok_and(|n| self.residual(&n.value, depth + 1)))
@@ -585,6 +586,85 @@ impl Registry {
         }
         Ok(out)
     }
+}
+
+impl Registry {
+    /// Whether a literal appears once JSON escapes in plain text are undone,
+    /// at any nesting: text that only looks like a nested document (one too
+    /// deep to parse, say) cannot hide an escaped literal.
+    fn found_unescaped(&self, s: &str) -> bool {
+        let mut current = s.to_string();
+        for _ in 0..DEPTH_LIMIT {
+            let next = unescape_lenient(&current);
+            if self.found_in(next.as_bytes()) {
+                return true;
+            }
+            if next == current {
+                return false;
+            }
+            current = next;
+        }
+        true
+    }
+}
+
+/// Undo JSON string escapes wherever they appear in text, leaving anything
+/// that is not a complete escape as written.
+fn unescape_lenient(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('\\') {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        let hex = |t: &str| {
+            t.get(2..6)
+                .filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))
+                .and_then(|h| u32::from_str_radix(h, 16).ok())
+        };
+        let simple = match tail.as_bytes().get(1) {
+            Some(b'"') => Some('"'),
+            Some(b'\\') => Some('\\'),
+            Some(b'/') => Some('/'),
+            Some(b'n') => Some('\n'),
+            Some(b't') => Some('\t'),
+            Some(b'r') => Some('\r'),
+            Some(b'b') => Some('\u{8}'),
+            Some(b'f') => Some('\u{c}'),
+            _ => None,
+        };
+        if let Some(c) = simple {
+            out.push(c);
+            rest = &tail[2..];
+        } else if let Some(hi) = hex(tail).filter(|_| tail.as_bytes().get(1) == Some(&b'u')) {
+            let pair = (0xD800..0xDC00)
+                .contains(&hi)
+                .then(|| tail.get(6..))
+                .flatten()
+                .filter(|t| t.starts_with("\\u"))
+                .and_then(hex)
+                .filter(|lo| (0xDC00..0xE000).contains(lo));
+            match pair {
+                Some(lo) => {
+                    out.extend(char::from_u32(
+                        0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00),
+                    ));
+                    rest = &tail[12..];
+                }
+                None => {
+                    match char::from_u32(hi) {
+                        Some(c) => out.push(c),
+                        None => out.push_str(&tail[..6]),
+                    }
+                    rest = &tail[6..];
+                }
+            }
+        } else {
+            out.push('\\');
+            rest = &tail[1..];
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn percent_decoded(s: &str) -> Option<String> {
