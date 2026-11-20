@@ -5626,6 +5626,24 @@ fn admit_v4_refuses_an_unclean_scope() {
     );
 }
 
+#[test]
+fn admit_v4_reads_every_entrys_client_evidence() {
+    // admit_v4 itself asks each entry's client evidence (issue #385): a
+    // cost chunk's entry that carries a client receipt refuses, so the
+    // check cannot be dropped from admission while its own tests stay green.
+    refuses(
+        Build {
+            ledger: Some(("cost.mailpit.r0", |e| {
+                e.client = Some(clean_receipt(
+                    "mail-compare-20261120T000000Z-42-cost.mailpit.r0-client.scope",
+                ))
+            })),
+            ..Default::default()
+        },
+        "chunk cost.mailpit.r0: its ledger entry carries a client receipt, and only an MCP chunk has a client scope",
+    );
+}
+
 /// A ledger entry of `coordinate` with `client`.
 fn client_entry(coordinate: &str, client: Option<client_scope::Receipt>) -> report::LedgerEntry {
     report::LedgerEntry {
@@ -6306,7 +6324,7 @@ case "$1" in
     FAKE_CLIENT_UNIT=$unit exec "$@" ;;
   client-judge)
     # FAKE_CLIENT: lines `<coordinate> <how>`; how is `none` (no receipt,
-    # status 2) or `unknown`. Otherwise the fake scope is judged by its
+    # status 2), `unknown` or `huge` (a survivor receipt past 64 KiB). Otherwise the fake scope is judged by its
     # members' liveness: any alive is a survivor, named by pid and comm.
     unit='' hs='' out=''
     shift
@@ -6324,6 +6342,10 @@ case "$1" in
       none) exit 2 ;;
       unknown)
         printf '{"unit":"%s","cgroup":null,"verdict":"unknown","observation":"the first observation was cut at the judgment'"'"'s deadline","members":[],"complete":false,"notes":[]}' "$unit" > "$out"
+        exit 2 ;;
+      huge)
+        pad=$(head -c 70000 /dev/zero | tr '\0' x)
+        printf '{"unit":"%s","cgroup":null,"verdict":"survivor","observation":"%s","members":[],"complete":false,"notes":[]}' "$unit" "$pad" > "$out"
         exit 2 ;;
     esac
     if [ ! -s "$hs" ]; then
@@ -6986,14 +7008,15 @@ fn collect_v4_never_publishes_an_mcp_chunk_over_a_name_already_taken() {
 
 /// Replace the rig's `mv` with one that, like BSD's, knows neither
 /// `--version` nor `-T`; with `FAKE_MV_RACE` set it first takes the
-/// chunk's destination itself, as a racing writer would between the collector's
-/// existence check and its rename.
+/// chunk's destination itself, with an `index.json` of its own (so only
+/// the check for a chunk landed inside it can refuse), as a racing writer
+/// would between the collector's existence check and its rename.
 fn bsd_mv(rig: &V4Rig) {
     let tools = rig.root.path().join("tools");
     let real = std::fs::read_link(tools.join("mv")).expect("the rig links a real mv");
     std::fs::remove_file(tools.join("mv")).unwrap();
     let body = format!(
-        "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --version|-T) echo \"mv: illegal option -- $a\" >&2; exit 64 ;; esac; done\nfor last in \"$@\"; do :; done\ncase \"$FAKE_MV_RACE:$last\" in 1:*/chunks/*) mkdir \"$last\" || exit 1 ;; esac\nexec {} \"$@\"\n",
+        "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --version|-T) echo \"mv: illegal option -- $a\" >&2; exit 64 ;; esac; done\nfor last in \"$@\"; do :; done\ncase \"$FAKE_MV_RACE:$last\" in 1:*/chunks/*) mkdir \"$last\" && echo racer > \"$last/index.json\" || exit 1 ;; esac\nexec {} \"$@\"\n",
         real.display()
     );
     std::fs::write(tools.join("mv"), body).unwrap();
@@ -7028,8 +7051,17 @@ fn collect_v4_refuses_an_mcp_chunk_that_lands_inside_a_name_taken_during_its_ren
     assert_eq!(ledger[0]["client"]["verdict"], "clean");
     assert_eq!(ledger[0]["exit"], 2);
     let taken = rig.out().join("chunks/api.mcp.mailpit.r0.f0");
-    assert!(taken.is_dir());
-    assert!(!taken.join("index.json").exists(), "never published whole");
+    // The racer's index stands, so the index check alone would have passed;
+    // the chunk landed inside the taken name, and that is what refused.
+    assert_eq!(
+        std::fs::read_to_string(taken.join("index.json")).unwrap(),
+        "racer\n"
+    );
+    assert!(
+        taken
+            .join("api.mcp.mailpit.r0.f0.pending/index.json")
+            .is_file()
+    );
 }
 
 #[test]
@@ -7074,15 +7106,45 @@ fn collect_v4_counts_a_client_judgment_without_evidence_as_two() {
 }
 
 #[test]
+fn collect_v4_records_a_client_receipt_past_64_kib_as_truncated() {
+    let rig = client_rig();
+    std::fs::write(rig.file("client"), "api.mcp.mailpit.r0.f0 huge\n").unwrap();
+    let (code, text) = rig.run(
+        &DRAFT_ROUTE,
+        &[("FAKE_CLIENT", rig.file("client").to_str().unwrap())],
+    );
+    assert_eq!(code, 2, "{text}");
+    let ledger = rig.ledger();
+    assert_eq!(ledger.len(), 1);
+    let client = &ledger[0]["client"];
+    assert_eq!(client["verdict"], "unknown", "{client}");
+    let observation = client["observation"].as_str().unwrap();
+    assert!(
+        observation.contains("exceeds 64 KiB: truncated, not read")
+            && observation.contains("client-receipt.json"),
+        "{observation}"
+    );
+    // The whole receipt stays where the ledger points.
+    let receipt = PathBuf::from(format!(
+        "{}.scratch/api.mcp.mailpit.r0.f0.client-receipt.json",
+        rig.out().display()
+    ));
+    assert!(std::fs::metadata(&receipt).unwrap().len() > 65_536);
+    let entry: report::LedgerEntry = serde_json::from_value(ledger[0].clone()).unwrap();
+    assert!(entry.client.is_some());
+}
+
+#[test]
 #[cfg_attr(
     not(target_os = "linux"),
     ignore = "bind ownership is read from /proc (Linux)"
 )]
 fn collect_v4_fits_a_worst_case_mcp_chunk_and_both_judgments_in_ten_minutes() {
     // Every bounded call takes its whole bound on a controlled clock: the
-    // chunk its 560 + 30, the client judgment, the holder's query, kill and
-    // stop, and the client scope's kill and stop. Unclipped that is 590 + 4
-    // + 1 + 3 + 3 + 3 + 3; clipped, it ends within the chunk's 600 s.
+    // chunk its 560 + 30, the client judgment, the holder's query, and the
+    // one kill and one stop of both scopes. Unclipped that is 590 + 4 + 1 +
+    // 3 + 3; clipped, it ends within the chunk's 600 s, and what yields is
+    // the holder's query, never either scope's containment.
     let rig = client_rig();
     let (fifo, ack) = adapter_fixture(&rig);
     std::fs::write(rig.file("uptime"), "1000.00 0\n").unwrap();
@@ -7130,6 +7192,30 @@ fn collect_v4_fits_a_worst_case_mcp_chunk_and_both_judgments_in_ten_minutes() {
         "{log:?}"
     );
     assert!(end - start > 597.0, "the clipped steps used what was left");
+    // Both scopes were killed and stopped, each at its full 3 s, after the
+    // judgment: the holder's query is what the clip skipped.
+    let unit = |suffix: &str| format!("-api.mcp.mailpit.r0.f0{suffix}");
+    let (holder, client) = (unit(".scope"), unit("-client.scope"));
+    for verb in ["kill --signal=KILL", "stop"] {
+        let at = log
+            .iter()
+            .position(|l| {
+                l.starts_with(&format!("systemctl --user {verb} "))
+                    & l.contains(&holder)
+                    & l.contains(&client)
+            })
+            .unwrap_or_else(|| panic!("both scopes get one {verb}: {log:?}"));
+        assert!(at > chunk, "{log:?}");
+        assert!(
+            log[at - 1].starts_with("timeout 3 systemctl --user "),
+            "{verb} at its full bound: {log:?}"
+        );
+    }
+    assert!(
+        !log.iter()
+            .any(|l| l.starts_with("systemctl --user is-active") && l.contains(&holder)),
+        "the holder's query yielded to the containment: {log:?}"
+    );
 }
 
 #[test]
