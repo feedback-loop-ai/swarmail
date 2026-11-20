@@ -315,6 +315,17 @@ enum Cmd {
         /// (requires --journal).
         #[arg(long)]
         evidence_dir: Option<PathBuf>,
+        /// The value-bearing mode (decision 0119 §4): read the redacted
+        /// captures `matrix --capture-tool-values` left under this root and
+        /// write each bound `tool-values.json` and the `transcripts/`
+        /// section beside the structural records (requires --journal and
+        /// --evidence-dir). Never read by scoring.
+        #[arg(long, requires = "journal", requires = "evidence_dir")]
+        tool_values_from: Option<PathBuf>,
+        /// Also render the report's groups as a private Markdown page at
+        /// this fresh path, tokens per success with its reason per group.
+        #[arg(long)]
+        page: Option<PathBuf>,
     },
 }
 
@@ -1086,6 +1097,8 @@ fn main() -> ExitCode {
             input,
             journal,
             evidence_dir,
+            tool_values_from,
+            page,
         } => {
             if evidence_dir.is_some() && journal.is_none() {
                 eprintln!("swarmail-evals: harness error: evidence_requires_journal");
@@ -1110,6 +1123,17 @@ fn main() -> ExitCode {
                         Some(Ok(mut joined)) => {
                             if let Some(dir) = &evidence_dir {
                                 swarmail_evals::journal::write_evidence(dir, &mut joined);
+                                if let Some(captures) = &tool_values_from
+                                    && let Err(category) = swarmail_evals::journal::write_values(
+                                        dir,
+                                        captures,
+                                        &rows,
+                                        &mut joined,
+                                    )
+                                {
+                                    eprintln!("swarmail-evals: harness error: {category}");
+                                    return ExitCode::from(2);
+                                }
                             }
                             Some(joined)
                         }
@@ -1118,7 +1142,14 @@ fn main() -> ExitCode {
                             return ExitCode::from(2);
                         }
                     };
-                    print_line(&report::report_with_journal(&rows, joined.as_ref()));
+                    let report = report::report_with_journal(&rows, joined.as_ref());
+                    if let Some(path) = &page
+                        && write_page(path, &report).is_err()
+                    {
+                        eprintln!("swarmail-evals: harness error: page_write_failed");
+                        return ExitCode::from(2);
+                    }
+                    print_line(&report);
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -1135,6 +1166,20 @@ fn main() -> ExitCode {
             }
         }
     }
+}
+
+/// Write the rendered page to a fresh path: exclusive creation, mode 0600,
+/// never a replacement of an existing file.
+fn write_page(path: &std::path::Path, report: &serde_json::Value) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    f.write_all(swarmail_evals::toolvalues::render_page(report).as_bytes())?;
+    f.sync_all()
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
