@@ -450,6 +450,15 @@ impl Registry {
             .iter()
             .any(|l| bytes.windows(l.len()).any(|w| w == l.as_bytes()))
     }
+    /// Whether a literal survives anywhere in a JSON document: in its bytes,
+    /// or in any decoded name, string or number through the same layers a
+    /// value is checked with, so a literal the serializer escaped (a quote,
+    /// a backslash, a control character) or that is percent-encoded is
+    /// found. A document that does not parse strictly cannot be checked
+    /// and counts as holding one.
+    pub fn found_in_document(&self, bytes: &[u8]) -> bool {
+        self.found_in(bytes) || parse(bytes).map_or(true, |n| self.residual(&n.value, 0))
+    }
     /// Replace every maximal run of bytes covered by any (possibly
     /// overlapping) occurrence of a literal with one [`MASK`].
     fn mask(&self, s: &str) -> String {
@@ -932,11 +941,13 @@ impl Capture {
     }
 
     /// Seal the capture against `registry` and produce the private record.
-    /// The row is checked against the same live registry: a row that holds
-    /// a literal can never be copied into a transcript.
+    /// The row is checked against the same live registry, through every
+    /// decoding a value is checked through: a row that holds a literal, in
+    /// any spelling, can never be copied into a transcript.
     pub fn seal(&self, trial_id: &str, registry: &Registry, row: &[u8]) -> CaptureRecord {
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let row_sha256 = (registry.is_complete() && !registry.found_in(row)).then(|| sha256(row));
+        let row_sha256 =
+            (registry.is_complete() && !registry.found_in_document(row)).then(|| sha256(row));
         let record = |outcome| CaptureRecord {
             schema_version: 1,
             trial_id: trial_id.to_string(),

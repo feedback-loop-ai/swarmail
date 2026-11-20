@@ -838,6 +838,57 @@ fn transcript_selection_is_deterministic_bounded_and_refills() {
 }
 
 #[test]
+fn a_row_holding_an_escaped_or_encoded_literal_never_reaches_a_transcript() {
+    // A sentinel the row's serializer escapes (quote, backslash, control
+    // character) is not in the row's bytes as written, and neither is a
+    // percent-encoded one: the decoded check finds both.
+    let escaped = "sen\"ti\\nel\u{7}-q";
+    let mut registry = reg();
+    registry.register(escaped);
+    let labelled = |n: u32, label: &str| {
+        let mut r = row(n, Some(FailureClass::GaveUp));
+        r.agent = Some(label.to_string());
+        r
+    };
+    let rows = vec![
+        labelled(1, &format!("agent {escaped}")),
+        labelled(2, "agent sentinel-canary-%C3%BF-42"),
+        labelled(3, "agent clean"),
+    ];
+    assert!(!registry.found_in(&row_bytes(&rows[0])), "escaped in bytes");
+    assert!(!registry.found_in(&row_bytes(&rows[1])), "encoded in bytes");
+    let mut comps = BTreeMap::new();
+    for r in &rows {
+        let c = Capture::new(catalogue());
+        http(&c, b"{}");
+        let rec = c.seal(&r.trial_id, &registry, &row_bytes(r));
+        let CaptureOutcome::Complete { calls } = &rec.outcome else {
+            panic!("{rec:?}")
+        };
+        assert_eq!(calls.len(), 1, "the values themselves are clean");
+        let mut companion = companion(r, 1, "v");
+        companion.row_sha256 = rec.row_sha256;
+        comps.insert(r.trial_id.clone(), companion);
+    }
+    assert_eq!(comps[&id(1)].row_sha256, None);
+    assert_eq!(comps[&id(2)].row_sha256, None);
+    assert!(comps[&id(3)].row_sha256.is_some());
+    let dir = tempfile::tempdir().unwrap();
+    let root = artifacts::resolve_root(dir.path()).unwrap();
+    write_transcripts(&root, &rows, &comps).unwrap();
+    let written = tree(&root.join(TRANSCRIPTS_DIR));
+    let index: Value = serde_json::from_slice(&written["index.json"]).unwrap();
+    assert_eq!(index["classes"][0]["skipped"], json!({"row_unverified": 2}));
+    assert_eq!(
+        written.keys().cloned().collect::<Vec<_>>(),
+        [format!("{}.json", id(3)), "index.json".to_string()]
+    );
+    // A row that is not one strict JSON document cannot be checked.
+    assert!(registry.found_in_document(b"{\"a\":1,\"a\":2}"));
+    assert!(!registry.found_in_document(b"{\"a\":1}"));
+}
+
+#[test]
 fn a_companion_is_published_whole_or_absent_with_its_reason() {
     let dir = tempfile::tempdir().unwrap();
     let root = artifacts::resolve_root(dir.path()).unwrap();

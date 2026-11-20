@@ -806,7 +806,8 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   (harness errors included) per failure class before any evidence filter,
   visits classes by decreasing count then name, and takes trial ids in
   ascending order until three trials with a verified companion and a row the
-  trial's live registry approved are written (each leaf at most 128 KiB; one
+  trial's live registry approved (no literal in its bytes or in any decoded
+  name or string, the same layers a value is searched through) are written (each leaf at most 128 KiB; one
   over is skipped as `leaf_too_large` and the next takes its place). A leaf
   holds the row, the class and the redacted call sequence. **Model text and
   reasoning are not retained** (0075 §1): a transcript shows which tools were
