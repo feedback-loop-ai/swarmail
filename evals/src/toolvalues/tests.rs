@@ -542,3 +542,275 @@ fn cells_are_escaped_and_figures_never_dash() {
         "{page}"
     );
 }
+
+/// One real row, cloned per trial: building each from scratch hashes the
+/// harness executable every time.
+fn template() -> &'static TrialResult {
+    static ROW: std::sync::OnceLock<TrialResult> = std::sync::OnceLock::new();
+    ROW.get_or_init(|| {
+        let req = crate::runner::TrialRequest {
+            task: Some("signup".into()),
+            agent: Some("agent".into()),
+            argv: vec!["/bin/agent".into()],
+            ..Default::default()
+        };
+        crate::runner::refused_row(&req, &id(0))
+    })
+}
+
+fn row(n: u32, class: Option<FailureClass>) -> TrialResult {
+    let mut row = template().clone();
+    row.trial_id = id(n);
+    match class {
+        None => {
+            row.outcome = Outcome::Pass;
+            row.failure_class = None;
+            row.agent_exit_status = Some(0);
+        }
+        Some(FailureClass::HarnessError) => {}
+        Some(c) => {
+            row.outcome = Outcome::Fail;
+            row.failure_class = Some(c);
+            row.agent_exit_status = Some(0);
+        }
+    }
+    row
+}
+
+fn companion(r: &TrialResult, calls: usize, value: &str) -> Companion {
+    Companion {
+        trial_id: r.trial_id.clone(),
+        row_sha256: Some(sha256(&row_bytes(r))),
+        calls: (0..calls)
+            .map(|i| json!({"ordinal": i + 1, "value": value}))
+            .collect(),
+    }
+}
+
+fn tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    let mut out = BTreeMap::new();
+    for e in std::fs::read_dir(root).unwrap() {
+        let p = e.unwrap().path();
+        out.insert(
+            p.file_name().unwrap().to_str().unwrap().to_string(),
+            std::fs::read(&p).unwrap(),
+        );
+    }
+    out
+}
+
+#[test]
+fn transcript_selection_is_deterministic_bounded_and_refills() {
+    use FailureClass::*;
+    // gave_up and wrong_link tie at four; harness errors count; passes never.
+    let spec = [
+        (1, Some(GaveUp)),
+        (2, Some(GaveUp)),
+        (3, Some(GaveUp)),
+        (4, Some(GaveUp)),
+        (5, Some(WrongLink)),
+        (6, Some(WrongLink)),
+        (7, Some(WrongLink)),
+        (8, Some(WrongLink)),
+        (9, Some(HarnessError)),
+        (10, Some(Budget)),
+        (11, None),
+    ];
+    let rows: Vec<TrialResult> = spec.iter().map(|(n, c)| row(*n, *c)).collect();
+    let mut comps = BTreeMap::new();
+    for r in &rows {
+        comps.insert(r.trial_id.clone(), companion(r, 2, "v"));
+    }
+    comps.remove(&id(2)); // no verified companion: not eligible
+    comps.get_mut(&id(3)).unwrap().row_sha256 = None; // row not approved
+    // One leaf too large: it is skipped by size and the class refills.
+    comps.insert(id(5), companion(&rows[4], 40, &"x".repeat(4000)));
+    comps.remove(&id(10)); // budget: counted, nothing eligible
+    let run = |rows: &[TrialResult]| {
+        let dir = tempfile::tempdir().unwrap();
+        let root = artifacts::resolve_root(dir.path()).unwrap();
+        write_transcripts(&root, rows, &comps).unwrap();
+        (dir, tree(&root.join(TRANSCRIPTS_DIR)))
+    };
+    let (_a, forward) = run(&rows);
+    let mut shuffled = rows.clone();
+    shuffled.reverse();
+    shuffled.rotate_left(4);
+    let (_b, backward) = run(&shuffled);
+    assert_eq!(forward, backward, "a permutation yields the same bytes");
+    let index: Value = serde_json::from_slice(&forward["index.json"]).unwrap();
+    assert!(forward["index.json"].len() <= INDEX_LIMIT);
+    let classes = index["classes"].as_array().unwrap();
+    let names: Vec<&str> = classes
+        .iter()
+        .map(|c| c["class"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["gave_up", "wrong_link", "budget", "harness_error"]);
+    let picked = |i: usize| -> Vec<String> {
+        classes[i]["transcripts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["trial_id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(classes[0]["total"], 4);
+    assert_eq!(classes[0]["eligible"], 2);
+    assert_eq!(classes[0]["skipped"], json!({"row_unverified": 1}));
+    assert_eq!(picked(0), [id(1), id(4)]);
+    assert_eq!(classes[1]["eligible"], 4);
+    assert_eq!(classes[1]["skipped"], json!({"leaf_too_large": 1}));
+    assert_eq!(
+        picked(1),
+        [id(6), id(7), id(8)],
+        "refilled past the oversized leaf"
+    );
+    assert_eq!(
+        (classes[2]["total"].clone(), classes[2]["selected"].clone()),
+        (json!(1), json!(0))
+    );
+    assert_eq!(picked(3), [id(9)]);
+    assert_eq!(forward.len(), 1 + 2 + 3 + 1);
+    for (name, bytes) in &forward {
+        assert!(bytes.len() <= LEAF_LIMIT, "{name}");
+    }
+    let leaf: Value = serde_json::from_slice(&forward[&format!("{}.json", id(6))]).unwrap();
+    assert_eq!(leaf["failure_class"], "wrong_link");
+    assert_eq!(leaf["model_text"], "not_retained");
+    assert_eq!(leaf["row"], serde_json::to_value(&rows[5]).unwrap());
+    // At most three per class, so at most 24 leaves over the eight classes.
+    let many: Vec<TrialResult> = (1..=40)
+        .map(|n| row(n, Some(FailureClass::ALL[n as usize % 7])))
+        .collect();
+    let all: BTreeMap<String, Companion> = many
+        .iter()
+        .map(|r| (r.trial_id.clone(), companion(r, 1, "v")))
+        .collect();
+    let dir = tempfile::tempdir().unwrap();
+    let root = artifacts::resolve_root(dir.path()).unwrap();
+    write_transcripts(&root, &many, &all).unwrap();
+    assert_eq!(tree(&root.join(TRANSCRIPTS_DIR)).len(), 7 * PER_CLASS + 1);
+    // Zero eligible rows still yields the class counts; an existing section
+    // is never replaced.
+    let empty = tempfile::tempdir().unwrap();
+    let root = artifacts::resolve_root(empty.path()).unwrap();
+    write_transcripts(&root, &rows, &BTreeMap::new()).unwrap();
+    let index: Value =
+        serde_json::from_slice(&tree(&root.join(TRANSCRIPTS_DIR))["index.json"]).unwrap();
+    assert_eq!(index["classes"][0]["total"], 4);
+    assert_eq!(index["classes"][0]["selected"], 0);
+    assert!(write_transcripts(&root, &rows, &BTreeMap::new()).is_err());
+}
+
+#[test]
+fn a_companion_is_published_whole_or_absent_with_its_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = artifacts::resolve_root(dir.path()).unwrap();
+    let ev = root.join("ev");
+    let caps = root.join("caps");
+    std::fs::create_dir(&ev).unwrap();
+    std::fs::create_dir(&caps).unwrap();
+    let args = br#"{"method":"GET","path":"/"}"#;
+    let facts = |n: u32, calls: Vec<ToolCall>| journal::TrialFacts {
+        trial_id: id(n),
+        run_id: format!("run-{n}"),
+        seat: "trial".into(),
+        tokens: Fact::Present {
+            value: journal::Tokens {
+                input: 1,
+                output: 1,
+                cached: 0,
+            },
+        },
+        turns: Fact::Present { value: 1 },
+        wall_time_ms: Fact::Present { value: 1 },
+        deadline_killed: Fact::Present { value: false },
+        tool_calls: Fact::Present { value: calls },
+    };
+    let setup = |n: u32, structural: &[u8], values: &[&[u8]]| {
+        let leaf = artifacts::create_private_dir(&ev, &id(n)).unwrap();
+        artifacts::publish(&leaf, "tool-calls.json", structural).unwrap();
+        let c = Capture::new(catalogue());
+        for v in values {
+            http(&c, v);
+        }
+        write_capture(&caps, &c.seal(&id(n), &reg(), b"{}")).unwrap();
+        leaf
+    };
+    let whole = br#"{"truncated":false}"#;
+    let entry = json!({"path": "x"});
+    // Published, and bound.
+    setup(1, whole, &[args]);
+    let d = publish_companion(
+        &ev,
+        &caps,
+        &facts(1, vec![call(1, "eval_http", args)]),
+        &entry,
+    );
+    assert!(
+        matches!(&d, Disposition::Published(b, _) if b.path == format!("{}/{COMPANION_FILE}", id(1)))
+    );
+    assert_eq!(
+        d.index_entry()["length"],
+        std::fs::read(ev.join(id(1)).join(COMPANION_FILE))
+            .unwrap()
+            .len()
+    );
+    let reason = |d: Disposition| match d {
+        Disposition::Absent(r) => r,
+        Disposition::Published(..) => panic!("published"),
+    };
+    // A companion that would already exist is never replaced.
+    let again = publish_companion(
+        &ev,
+        &caps,
+        &facts(1, vec![call(1, "eval_http", args)]),
+        &entry,
+    );
+    assert_eq!(reason(again), "evidence_write_failed");
+    // No capture at all.
+    let none = publish_companion(&ev, &caps, &facts(9, vec![]), &entry);
+    assert_eq!(reason(none), "capture_missing");
+    // A structural record that is cut, or absent, carries no companion.
+    setup(2, br#"{"truncated":true}"#, &[args]);
+    let cut = publish_companion(
+        &ev,
+        &caps,
+        &facts(2, vec![call(1, "eval_http", args)]),
+        &entry,
+    );
+    assert_eq!(reason(cut), "trial_too_large");
+    setup(3, whole, &[args]);
+    let gone = json!({"absent": "evidence_write_failed"});
+    let absent = publish_companion(
+        &ev,
+        &caps,
+        &facts(3, vec![call(1, "eval_http", args)]),
+        &gone,
+    );
+    assert_eq!(reason(absent), "evidence_write_failed");
+    // Values that fit one by one but not as one companion.
+    let big = format!(r#"{{"s":"{}"}}"#, "y".repeat(8000));
+    let bigs: Vec<&[u8]> = (0..8).map(|_| big.as_bytes()).collect();
+    setup(4, whole, &bigs);
+    let calls: Vec<ToolCall> = (1..=8)
+        .map(|i| call(i, "eval_http", big.as_bytes()))
+        .collect();
+    let over = publish_companion(&ev, &caps, &facts(4, calls), &entry);
+    assert_eq!(reason(over), "trial_too_large");
+    // An unavailable fact is the caller's upstream absence, never values.
+    let mut f = facts(5, vec![]);
+    f.tool_calls = Fact::Unavailable {
+        reason: journal::Reason::JournalAmbiguous,
+    };
+    assert_eq!(
+        reason(publish_companion(&ev, &caps, &f, &entry)),
+        "capture_missing"
+    );
+    for n in [2, 3, 4] {
+        assert!(
+            !ev.join(id(n)).join(COMPANION_FILE).exists(),
+            "no partial file"
+        );
+    }
+}

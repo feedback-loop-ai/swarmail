@@ -455,3 +455,147 @@ fn values_are_redacted_bound_and_never_scored() {
         started.elapsed().as_secs_f64()
     );
 }
+
+#[test]
+fn the_page_gives_every_paid_group_a_figure_or_its_reason() {
+    let dir = tempdir();
+    let id = |n: u32| format!("{n:032x}");
+    let rows: Vec<TrialResult> = [
+        ("claude-a", true, Outcome::Pass, 3),
+        ("claude-a", true, Outcome::Pass, 4),
+        ("claude-a", true, Outcome::Fail, 5),
+        ("codex-b", true, Outcome::Pass, 6),
+        ("codex-b", true, Outcome::Fail, 7),
+        ("oracle", false, Outcome::Pass, 1),
+        ("only-errors", true, Outcome::HarnessError, 20),
+        ("only-fails", true, Outcome::Fail, 21),
+    ]
+    .into_iter()
+    .map(|(agent, external, outcome, n)| {
+        synthetic_row("signup", agent, external, outcome, 1000, &id(n))
+    })
+    .chain([synthetic_row(
+        "otp",
+        "codex-b",
+        true,
+        Outcome::Pass,
+        1000,
+        &id(8),
+    )])
+    .collect();
+    let rows_path = dir.path().join("rows.jsonl");
+    let text: String = rows
+        .iter()
+        .map(|r| format!("{}\n", serde_json::to_string(r).unwrap()))
+        .collect();
+    std::fs::write(&rows_path, text).unwrap();
+    let line = |page: &str, agent: &str| -> String {
+        page.lines()
+            .find(|l| l.starts_with(&format!("| signup | {} |", agent.replace('-', "\\-"))))
+            .unwrap_or_else(|| panic!("{agent}\n{page}"))
+            .to_string()
+    };
+    // Without a journal: no fact was joined, so every paid figure is null
+    // with incomplete_join, an empty scored population is no_passes.
+    let bare = dir.path().join("bare.md");
+    let out = report(&rows_path, &["--page".as_ref(), bare.as_os_str()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let page = std::fs::read_to_string(&bare).unwrap();
+    assert!(line(&page, "claude-a").ends_with("| null (incomplete\\_join) | null |"));
+    assert!(line(&page, "only-errors").ends_with("| 0 | 0 | 1 | null (no\\_passes) | null |"));
+    assert!(line(&page, "oracle").ends_with("| null (builtin\\_agent) | null |"));
+    // The stdout report is the same bytes as without the page.
+    assert_eq!(out.stdout, report(&rows_path, &[]).stdout);
+    // With the golden journal: a number with its cached count, and reasons.
+    let facts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/journal-facts-golden.json");
+    let joined = dir.path().join("joined.md");
+    let out = report(
+        &rows_path,
+        &[
+            "--journal".as_ref(),
+            facts.as_os_str(),
+            "--page".as_ref(),
+            joined.as_os_str(),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let page = std::fs::read_to_string(&joined).unwrap();
+    assert!(
+        line(&page, "claude-a").ends_with("| 3600 | 12000 |"),
+        "{page}"
+    );
+    assert!(
+        line(&page, "codex-b").ends_with("| null (incomplete\\_join) | 0 |"),
+        "{page}"
+    );
+    assert!(
+        line(&page, "only-errors").contains("null (no\\_passes)"),
+        "{page}"
+    );
+    assert!(
+        line(&page, "only-fails").contains("null (incomplete\\_join)"),
+        "{page}"
+    );
+    for l in page.lines().filter(|l| l.starts_with("| signup |")) {
+        assert!(!l.contains("| - |") && !l.contains("|  |"), "{l}");
+    }
+    // A page is never written over an existing file.
+    let again = report(&rows_path, &["--page".as_ref(), joined.as_os_str()]);
+    assert_eq!(again.status.code(), Some(2));
+    assert!(stderr(&again).contains("page_write_failed"));
+    assert!(again.stdout.is_empty());
+    // The value mode needs its journal and its evidence directory.
+    let refused = report(
+        &rows_path,
+        &["--tool-values-from".as_ref(), dir.path().as_os_str()],
+    );
+    assert_eq!(refused.status.code(), Some(2));
+}
+
+#[test]
+fn matrix_capture_refuses_before_any_trial() {
+    let dir = tempdir();
+    let agents = dir.path().join("agents.json");
+    std::fs::write(&agents, r#"[{"label":"oracle","argv":[]}]"#).unwrap();
+    let sentinels = dir.path().join("s.json");
+    std::fs::write(&sentinels, r#"["canary"]"#).unwrap();
+    let existing = dir.path().join("exists");
+    std::fs::create_dir(&existing).unwrap();
+    let run = |root: &Path, sentinels: &Path, extra: &[&str]| {
+        cli()
+            .args(["matrix", "--tasks", "signup", "--trials", "1", "--agents"])
+            .arg(&agents)
+            .arg("--capture-tool-values")
+            .arg(root)
+            .arg("--tool-sentinels")
+            .arg(sentinels)
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let fresh = dir.path().join("fresh");
+    for (out, category) in [
+        (run(&existing, &sentinels, &[]), "capture_root_exists"),
+        (
+            run(&fresh, &dir.path().join("absent.json"), &[]),
+            "tool_sentinels_unreadable",
+        ),
+        (run(&fresh, &agents, &[]), "tool_sentinels_unreadable"),
+    ] {
+        assert_eq!(out.status.code(), Some(2), "{category}");
+        assert!(out.stdout.is_empty());
+        assert!(stderr(&out).contains(category), "{}", stderr(&out));
+    }
+    assert!(!fresh.exists(), "a refusal creates no root");
+    // The capture flags come as a pair.
+    let lone = cli()
+        .args(["matrix", "--tasks", "signup", "--trials", "1", "--agents"])
+        .arg(&agents)
+        .arg("--capture-tool-values")
+        .arg(&fresh)
+        .output()
+        .unwrap();
+    assert_eq!(lone.status.code(), Some(2));
+    assert!(!fresh.exists());
+}
