@@ -16,6 +16,8 @@ mod api;
 #[allow(dead_code)]
 #[path = "../benches/mail_compare/api_chunk.rs"]
 mod api_chunk;
+#[path = "../benches/mail_compare/client_scope.rs"]
+mod client_scope;
 #[allow(dead_code)]
 #[path = "../benches/mail_compare/clients/mod.rs"]
 mod clients;
@@ -76,6 +78,8 @@ use std::time::{Duration, Instant};
 
 #[path = "mail_compare/api_section.rs"]
 mod api_section;
+#[path = "mail_compare/client_section.rs"]
+mod client_section;
 #[path = "mail_compare/eight_targets.rs"]
 mod eight_targets;
 #[path = "mail_compare/suite_section.rs"]

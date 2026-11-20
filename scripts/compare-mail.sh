@@ -525,8 +525,71 @@ case "$mode" in
     #   a build, `targets`, `check`, `footprint` or an admission: 560 + 30
     #   a chunk that failed: 560 + 30 + 1 (one query) + 3 (kill) + 3 (stop)
     #   a chunk that sealed: 560 + 20 x (1 + 0.5) (the polls) + 3 + 3
+    # An MCP chunk adds its client scope's judgment (4, issue #385); a client
+    # scope not proved clean is killed and stopped in the same two calls as
+    # the holder's scope, so its containment adds nothing:
+    #   an MCP chunk that failed: 560 + 30 + 4 + 1 + 3 + 3 = 601, clipped
+    # So that no sum can pass ten minutes, every step after a chunk's command
+    # is also clipped to what is left of one monotonic 600 s from the chunk's
+    # start (`budget_cs`): a call with nothing left is not made, and a poll
+    # with nothing left is not slept. A query or a poll also leaves the kill
+    # and the stop their 6 s (`contain_cs`): what yields at the clip is the
+    # asking, never the containment (a scope not asked is not known gone, so
+    # it is killed).
     bound=(timeout --kill-after=30 560 taskset -c "0-$((chunk_cpus - 1))")
-    scope_polls=20 scope_poll_interval=0.5
+    scope_polls=20 scope_poll_interval=0.5 scope_poll_cs=50
+    chunk_budget_cs=60000 chunk_end_cs=60000 client_judge_cs=400 contain_cs=600
+    # An MCP chunk's publication is one no-clobber rename. GNU mv's -T makes
+    # it refuse a destination that is a directory instead of moving into it;
+    # an mv without -T (the BSD one a portable rig runs) gets -n alone, and
+    # the check after it refuses a chunk that landed inside a taken name.
+    if mv --version >/dev/null 2>&1; then
+      publish_mv=(mv -T -n)
+    else
+      publish_mv=(mv -n)
+    fi
+    # The chunk's clock, in hundredths of a second: /proc/uptime, which is
+    # monotonic. COMPARE_MAIL_UPTIME names another file for the wrapper's own
+    # proof of its sums under a controlled clock; it changes when a bound
+    # runs out, never what a judgment checks.
+    mono_cs() {
+      local up='' int frac
+      read -r up _ <"${COMPARE_MAIL_UPTIME:-/proc/uptime}" 2>/dev/null
+      int=${up%%.*} frac=${up#*.}
+      [ "$frac" != "$up" ] || frac=0
+      frac="${frac}00"
+      frac=${frac:0:2}
+      case "$int" in ''|*[!0-9]*) echo 0; return ;; esac
+      case "$frac" in *[!0-9]*) echo 0; return ;; esac
+      echo $((10#$int * 100 + 10#$frac))
+    }
+    # At most CS hundredths, and no more than what is left of the chunk's
+    # ten minutes less RESERVE (none when not given); fails when nothing is
+    # left.
+    budget_cs() {
+      local n="$1" left
+      left=$((chunk_end_cs - $(mono_cs) - ${2:-0}))
+      [ "$left" -ge "$n" ] || n=$left
+      [ "$n" -gt 0 ] || return 1
+      printf '%s' "$n"
+    }
+    # Hundredths as the seconds `timeout` takes: 100 is `1`, 250 is `2.50`.
+    secs() {
+      if [ $(($1 % 100)) -eq 0 ]; then
+        printf '%s' "$(($1 / 100))"
+      else
+        printf '%s.%02d' "$(($1 / 100))" "$(($1 % 100))"
+      fi
+    }
+    # Run a command under `timeout`, at most CS hundredths and never past the
+    # chunk's ten minutes less RESERVE; 124 without running it when nothing
+    # is left.
+    bounded() {
+      local cs
+      cs=$(budget_cs "$1" "$2") || return 124
+      shift 2
+      timeout "$(secs "$cs")" "$@"
+    }
     interrupted=0 step_pid='' step_starting='' step_status=0 owned='' owned_unit='' scope_clean=true
     interrupt_exit() {
       printf 'compare-mail: blocked at phase "interrupt": collect-v4 was interrupted; %s is incomplete and is never resumed\n' "$output" >&2
@@ -591,8 +654,9 @@ case "$mode" in
       [ "$interrupted" = 0 ] || interrupt_exit
     }
     # What systemd says of a scope: the word `is-active` prints, or nothing.
+    # The asking leaves the scope's containment its time.
     scope_state() {
-      timeout 1 systemctl --user is-active "$1" 2>/dev/null | head -n1
+      bounded 100 "$contain_cs" systemctl --user is-active "$1" 2>/dev/null | head -n1
     }
     # Only `inactive` and `failed` mean that a scope holds no process; any
     # other answer, none, a failed query or a cut one, is not known to be gone.
@@ -604,9 +668,10 @@ case "$mode" in
     }
     # SIGKILL, not systemctl's default SIGTERM: a target that ignores SIGTERM
     # would otherwise live until systemd's own stop timeout, past the sums.
+    # Every unit named is killed in one call and stopped in one call.
     scope_end() {
-      timeout 3 systemctl --user kill --signal=KILL "$1" >/dev/null 2>&1
-      timeout 3 systemctl --user stop "$1" >/dev/null 2>&1
+      bounded 300 0 systemctl --user kill --signal=KILL "$@" >/dev/null 2>&1
+      bounded 300 0 systemctl --user stop "$@" >/dev/null 2>&1
     }
     # A chunk that sealed: systemd learns that a scope is empty after the
     # driver has exited, so it is asked up to $scope_polls times, half a
@@ -624,19 +689,73 @@ case "$mode" in
         fi
         tries=$((tries + 1))
         [ "$interrupted" = 0 ] || break
-        [ "$tries" -ge "$scope_polls" ] || sleep "$scope_poll_interval"
+        [ "$tries" -lt "$scope_polls" ] || break
+        budget_cs "$scope_poll_cs" "$contain_cs" >/dev/null || break
+        sleep "$scope_poll_interval"
       done
       scope_end "$1"
     }
     # A chunk that failed: the run is already stopped, so the scope is asked
     # once and not waited for; unless it is gone it is killed and stopped.
+    # Any further unit (an MCP chunk's client scope not proved clean) is
+    # killed and stopped in the same calls, whatever the answer.
     judge_failed() {
-      if scope_gone "$(scope_state "$1")"; then
+      local unit="$1"
+      shift
+      if scope_gone "$(scope_state "$unit")"; then
         scope_clean=true
+        [ $# -eq 0 ] || scope_end "$@"
       else
         scope_clean=false
-        scope_end "$1"
+        scope_end "$unit" "$@"
       fi
+    }
+    # An MCP chunk's client scope (issue #385, 0132's 2026-11-19 addendum):
+    # api-mcp, its bridge and every adapter it starts run in a fresh,
+    # non-delegated scope of their own, beside the holder's delegated one.
+    # The scope is judged the moment the chunk's command has ended, before
+    # the holder's scope is asked or anything is killed: the driver's
+    # `client-judge` reads the kernel's cgroup of the unit the workload's
+    # handshake names, within one deadline (3.5 s, inside a `timeout` of 4 s
+    # here, and never into the last 6 s of the chunk's ten minutes, which
+    # stay the containment's), and writes its receipt. Clean is its exit 0 with a receipt that says clean; a
+    # survivor, or no evidence at all, is an infrastructure failure. The
+    # receipt is written before the scope is killed and stopped, so nothing
+    # done after can erase what was found.
+    judge_client() {
+      local cs st=124 body=''
+      client_verdict=unknown
+      if cs=$(budget_cs "$client_judge_cs" "$contain_cs"); then
+        local inner=$(((cs - 50) * 10))
+        [ "$inner" -ge 0 ] || inner=0
+        timeout "$(secs "$cs")" "$driver" client-judge --unit "$client_unit" \
+          --handshake "$client_handshake" --out "$client_receipt" --budget-ms "$inner"
+        st=$?
+      fi
+      local size=0 why
+      [ ! -s "$client_receipt" ] || size=$(wc -c <"$client_receipt" 2>/dev/null) || size=0
+      size=${size//[!0-9]/}
+      why="the judgment ended with status $st and left no receipt"
+      # A receipt past 64 KiB is not read: the ledger says it was truncated
+      # and where the whole one stays, and the verdict is unknown (exit 2).
+      if [ "${size:-0}" -gt 65536 ]; then
+        why="the judgment ended with status $st and its receipt ($size bytes) exceeds 64 KiB: truncated, not read; the whole receipt is $client_receipt"
+      elif [ "${size:-0}" -gt 0 ]; then
+        body=$(head -c 65536 "$client_receipt")
+      fi
+      case "$body" in
+        *[[:cntrl:]]*) body='' ;;
+      esac
+      case "$st:$body" in
+        0:'{'*'"verdict":"clean"'*'}') client_verdict=clean ;;
+        *:'{'*'"verdict":"survivor"'*'}') client_verdict=survivor ;;
+        *:'{'*'"verdict":"unknown"'*'}') ;;
+        *)
+          body=$(printf '{"unit":"%s","cgroup":null,"verdict":"unknown","observation":"%s","members":[],"complete":false,"notes":[]}' \
+            "$(json_text "$client_unit")" "$(json_text "$why")")
+          ;;
+      esac
+      client_json=$body
     }
     commit=$(git rev-parse HEAD 2>/dev/null || true)
     if [ "$dry_run" != 1 ]; then
@@ -729,10 +848,12 @@ case "$mode" in
     # target, the bridge; story B of 0132). Every one takes the same flags.
     # On an MCP chunk the holder, not api-mcp, is the chunk's driver: it owns
     # the target's leaf and must be its scope's only process. So api-mcp runs
-    # under the bound with no scope of its own, and its --driver is a shim
+    # under the bound outside that scope, and its --driver is a shim
     # (`hold_shim`, written just before the chunk runs) that execs the
     # driver's `hold` as the chunk's scope and every other mode (an adapter)
-    # in place.
+    # in place. api-mcp itself runs in its chunk's client scope (issue #385):
+    # `systemd-run --scope` makes the unit, and the driver's `client-enter`
+    # records the membership from inside it before it execs api-mcp in place.
     chunk_command() {
       local coord="$1" target rest unit w program scope
       case "$coord" in
@@ -749,17 +870,25 @@ case "$mode" in
       chunk_unit="$unit"
       program=("$driver" run)
       scope=(systemd-run --user --scope -p Delegate=yes "--unit=$unit" --)
-      hold_shim=''
+      hold_shim='' client_unit='' chunk_out="$output/chunks/$coord"
       case "$coord" in
         api.mcp.*)
           hold_shim="$scratch_root/$coord.hold"
-          program=("$evals_bin" api-mcp --driver "$hold_shim")
+          # Written privately, beside the scratch, and published under
+          # chunks/ only once both scopes are judged clean (issue #385).
+          chunk_out="$scratch_root/$coord.pending"
+          client_unit="$unit-client.scope"
+          client_handshake="$scratch_root/$coord.client-handshake.json"
+          client_receipt="$scratch_root/$coord.client-receipt.json"
+          program=(systemd-run --user --scope --quiet "--unit=$unit-client" --
+            "$driver" client-enter --unit "$client_unit" --handshake "$client_handshake" --
+            "$evals_bin" api-mcp --driver "$hold_shim")
           scope=()
           ;;
       esac
       chunk_cmd=(${scope[@]+"${scope[@]}"}
         "${program[@]}" --mode collect --protocol "$protocol" --sources "$sources" ${doc_args[@]+"${doc_args[@]}"}
-        --output "$output/chunks/$coord" --scratch "$scratch_root/$coord" --run-id "$run_id"
+        --output "$chunk_out" --scratch "$scratch_root/$coord" --run-id "$run_id"
         --chunk "$coord" --systemd "$systemd_version")
       if [ "$target" = swarmail ]; then
         chunk_cmd+=(--bin "swarmail=$candidate")
@@ -817,13 +946,31 @@ case "$mode" in
       [ "$interrupted" = 0 ] || interrupt_exit
       chunk_command "$coord"
       [ -z "$hold_shim" ] || write_hold_shim || blocked prerequisites "cannot write $hold_shim"
+      client_verdict='' client_json=''
+      if [ -n "$client_unit" ]; then
+        # A fresh handshake and receipt: nothing an earlier attempt left can
+        # stand for this chunk's evidence.
+        [ ! -e "$client_handshake" ] && [ ! -e "$client_receipt" ] \
+          || blocked prerequisites "the client scope files of $coord already exist; runs are never resumed"
+      fi
       # The chunk is owned from before it starts until its ledger entry is
       # written: a signal in between never abandons it.
       owned="$coord" owned_unit="$chunk_unit.scope"
       load_before=$(cat /proc/loadavg 2>/dev/null || echo unavailable)
       started=$(date +%s)
+      chunk_end_cs=$(($(mono_cs) + chunk_budget_cs))
       run_step '' "${chunk_cmd[@]}"
       status=$step_status
+      # The client scope first, at once: nothing waits before it is read.
+      # Whatever was found is already in its receipt; a scope not proved
+      # clean is then killed and stopped with the holder's (below), in the
+      # same two calls, which the holder's query leaves their 6 s, so neither
+      # scope's containment is ever skipped at the ten-minute clip.
+      client_end=()
+      if [ -n "$client_unit" ]; then
+        judge_client
+        [ "$client_verdict" = clean ] || client_end=("$client_unit")
+      fi
       [ -z "$hold_shim" ] || rm -f "$hold_shim"
       wall_ms=$((($(date +%s) - started) * 1000))
       load_after=$(cat /proc/loadavg 2>/dev/null || echo unavailable)
@@ -833,26 +980,43 @@ case "$mode" in
       # that was interrupted. A chunk that counts as 2 has failed; any other
       # has sealed.
       case "$status" in
-        0|1) [ -f "$output/chunks/$coord/index.json" ] || status=2 ;;
+        0|1) [ -f "$chunk_out/index.json" ] || status=2 ;;
         *) status=2 ;;
       esac
       [ "$interrupted" = 0 ] || status=2
+      # A client scope that is not proved clean is an infrastructure failure.
+      [ -z "$client_unit" ] || [ "$client_verdict" = clean ] || status=2
       if [ "$status" -eq 2 ]; then
-        judge_failed "$owned_unit"
+        judge_failed "$owned_unit" ${client_end[@]+"${client_end[@]}"}
       else
         judge_sealed "$owned_unit"
         [ "$scope_clean" = true ] || status=2
       fi
       # A signal during the judgement: the entry is still written, with 2.
       [ "$interrupted" = 0 ] || status=2
+      client_field=''
+      [ -z "$client_unit" ] || client_field=",\"client\":$client_json"
       write_entry() {
-        printf '{"coordinate":"%s","command":"%s","exit":%s,"wall_ms":%s,"load_before":"%s","load_after":"%s","scope_clean":%s,"driver":"%s"}\n' \
+        printf '{"coordinate":"%s","command":"%s","exit":%s,"wall_ms":%s,"load_before":"%s","load_after":"%s","scope_clean":%s,"driver":"%s"%s}\n' \
           "$(json_text "$coord")" "$(json_text "$(printf '%q ' "${bound[@]}" "${chunk_cmd[@]}")")" "$status" "$wall_ms" \
-          "$(json_text "$load_before")" "$(json_text "$load_after")" "$scope_clean" "$(json_text "$driver")" \
+          "$(json_text "$load_before")" "$(json_text "$load_after")" "$scope_clean" "$(json_text "$driver")" "$client_field" \
           >"$output/ledger/$coord.json" \
           || blocked ledger "cannot write the ledger entry of $coord"
       }
       write_entry
+      # An MCP chunk's directory is published only now, after its ledger
+      # entry: one rename(2) onto a name that does not exist, so a reader of
+      # chunks/ sees all of it or none, and never one whose client scope was
+      # not proved clean. A failed chunk's rows stay where they were written.
+      if [ -n "$client_unit" ] && [ "$status" -ne 2 ]; then
+        if [ "$interrupted" != 0 ] || [ -e "$output/chunks/$coord" ] \
+          || ! "${publish_mv[@]}" "$chunk_out" "$output/chunks/$coord" 2>/dev/null \
+          || [ ! -f "$output/chunks/$coord/index.json" ] || [ -e "$chunk_out" ] \
+          || [ -e "$output/chunks/$coord/${chunk_out##*/}" ]; then
+          status=2
+          write_entry
+        fi
+      fi
       # The chunk is let go first and the interrupt read after: a signal
       # while it was still owned was only recorded, and is seen here, so the
       # entry is written again, with 2; one after it was let go ends the mode
@@ -864,8 +1028,9 @@ case "$mode" in
       fi
       if [ "$status" -eq 2 ]; then
         # Nothing is resumed, overwritten or removed: the run is incomplete.
-        blocked "chunk-$coord" "the chunk ended in an infrastructure failure (interrupted: $interrupted, scope clean: $scope_clean); $output is incomplete and is never resumed"
+        blocked "chunk-$coord" "the chunk ended in an infrastructure failure (interrupted: $interrupted, scope clean: $scope_clean${client_unit:+, client scope: $client_verdict, see $output/ledger/$coord.json; unpublished rows in $chunk_out}); $output is incomplete and is never resumed"
       fi
+      [ -z "$client_unit" ] || rm -f "$client_handshake" "$client_receipt"
       [ "$status" -eq 0 ] || any_failed=1
     done
     [ "$interrupted" = 0 ] || interrupt_exit
