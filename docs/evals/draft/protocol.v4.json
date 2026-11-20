@@ -603,7 +603,8 @@
   },
   "unresolved": [
     "story B (0132 §6.3): API capability cells without captured evidence stay not_inspected: MailHog delete and clear (its APIv1.md is not captured) and MailSlurper clear (its prune codes are not captured)",
-    "story D (0132 §8): the test-execution section's two host proofs (testexec_real_swarmail, testexec_real_mailpit) have not yet run on the delegated host; story E adds its 72 chunks to the collected plan and the wrapper",
+    "story D (0132 §8): story E adds the test-execution section's 72 chunks to the collected plan and the wrapper; story D's two host proofs (testexec_real_swarmail, testexec_real_mailpit) passed 100 of 100 each on the delegated host at eb9e34c (PR #384)",
+    "issue #388 (0132 §8): the three testexec host proofs testexec_real_mailpit_p32, testexec_real_smtp4dev_p8 and testexec_real_smtp4dev_p32 passed on the dispatcher host at 57a54ec; open: dispatcher run at the final head owed",
     "story B to D: clients_sha256, one digest per client module",
     "story B (0132 §6.2, acceptance answer 8): the API section reads GreenMail over REST; the cost section's visibility check still reads it over POP3 as v3 does",
     "story B: every capability cell inspected (no not_inspected cell)",

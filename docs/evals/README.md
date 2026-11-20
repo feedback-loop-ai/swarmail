@@ -1718,9 +1718,14 @@ mail (one move, page offsets `0, 250, 0, 250`). Alone, the same move is
 `operation: scan: incomplete` at once (offsets `0, 250`). A search that
 never settles ends on the wait's cutoff as a timeout saying the subject
 listing kept moving, with no fetch and no mutation. An expired wait sends
-no request, a 500 after a move keeps its status failure, a short complete
-answer keeps the count timeout, and a re-read stalled at the cutoff is the
-moving timeout with no late answer.
+no request, and a 500 after a move keeps its status failure. The cutoff
+proofs are ordered by request ordinal too: a first page that never answers
+holds the wait to its cutoff, so the outcome never depends on how many
+scans fit in the budget. A re-read stalled at the cutoff is the moving
+timeout with no late answer. A short complete answer, a move, a short
+complete answer again and a stalled scan keep the ordinary count timeout
+(`saw 5`), and a first scan stalled at the cutoff says there was no time
+left to poll. Only those stalls wait out a budget (2 s each).
 `cargo test --locked --test mail_compare suite_section` checks the golden
 plan, the 1/12 refusal, the coordinate and its owner, the section, the
 control lines, every record field corrupted one at a time, the verdict and
@@ -1745,10 +1750,17 @@ lock v5, at 8 and 32 workers). Both targets' subject searches are
 store-wide, and twenty trials share each subject. Before #388, a search
 that moved between its pages ended the wait as a harness loss. The poll
 now reads it again inside the wait's cutoff, only beside neighbours. All
-three have yet to run on the dispatcher host. This change's sandbox has
-no delegated scope and no pinned bytes. Each passes only exactly, like
-story D's two runs, or the dispatcher reports the documented outcome it
-saw verbatim: its denominator, reason, exit and teardown evidence. Each passes only exactly: exit 0,
+three passed on the dispatcher host at `57a54ec`; they stay open until the
+dispatcher's run at the final head, whose receipts it attaches to the pull
+request. The poll's cutoff is the work deadline less `REQUEST_BOUND`, and
+since #388 it also bounds every page of every poll scan. The native
+await's HTTP call and the stream's scans are still bounded by the full
+work deadline. So a poll answer still in flight at the cutoff is refused,
+where an await's arriving then would be taken: one window, one scan wide.
+The moving-search design's acceptance criterion 3 requires it, so it is
+stated here and not changed. Each proof passes only exactly, or the
+dispatcher reports the documented outcome it saw verbatim: its
+denominator, reason, exit and teardown evidence. Exactly means exit 0,
 100 of 100 scored passes with cleanup proved, the chunk sealed and admitted
 by `admit_chunk` (the executable rechecked by digest, the report recomputed),
 the suite window measured with its counters, and every cleanup receipt
@@ -1758,11 +1770,15 @@ proving `cgroup_removed`. They need `MAIL_COMPARE_BIN` (the built driver),
 Mailpit's `mailpit`, smtp4dev's `Rnwood.Smtp4dev` member of the lock's
 archive). The candidate is Cargo's own
 `swarmail`, which `pinned_args` supplies. Without them each fails naming
-them. Only `scoped_driver` puts the driver's `hold` in a delegated scope;
-Cargo, the test binary and the eval client stay outside it. The seat that
-built story D had no delegated scope: the Swarmail proof failed naming
-the missing user bus, and the holder alone refused with `resources: no
-delegated cgroup v2 (cpu memory pids)`. The dispatcher runs each alone,
+them. A proof reads only its own competitor's variable, but the block
+below exports and checks both, so as written it needs both pinned
+executables; a dispatcher running only one competitor's proofs drops the
+other's `export` and `pinned` lines. Only `scoped_driver` puts the
+driver's `hold` in a delegated scope; Cargo, the test binary and the eval
+client stay outside it. The seat that built story D had no delegated
+scope: the Swarmail proof failed naming the missing user bus, and the
+holder alone refused with `resources: no delegated cgroup v2 (cpu memory
+pids)`. The dispatcher runs each alone,
 with at most 32 workers and 600 s, and attaches its output, exit and load
 before and after to the pull request before merge:
 
