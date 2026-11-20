@@ -295,6 +295,76 @@ fn a_decoded_mask_is_refused_without_a_literal() {
 }
 
 #[test]
+fn a_numeric_sentinel_is_found_by_value_in_any_spelling() {
+    let mut r = reg();
+    r.register("150");
+    // As a JSON number, nested or not, and in a nested JSON string.
+    for spelling in [
+        "150", "1.5e2", "1.50e2", "15.0e1", "150.0", "1500e-1", "0.15E3", "1.5e+2",
+    ] {
+        for doc in [
+            format!(r#"{{"n":{spelling}}}"#),
+            format!(r#"{{"a":[{{"n":{spelling}}}]}}"#),
+            format!(r#"{{"s":"{{\"n\":{spelling}}}"}}"#),
+            // In text: the decision is that a numeric sentinel is found by
+            // value in any string, in any layer, and refused; where its own
+            // spelling stands in the text it is masked as usual.
+            format!(r#"{{"s":"limit={spelling}&x"}}"#),
+        ] {
+            let got = r.redact(doc.as_bytes());
+            if spelling.contains("150") && doc.contains("limit=") {
+                // The registered spelling inside another one is masked.
+                let masked = doc.replace("150", MASK);
+                assert_eq!(got.as_deref(), Ok(masked.as_str()));
+            } else {
+                assert_eq!(got, Err(Refusal::ResidualSecret), "{doc}");
+            }
+        }
+    }
+    // Percent-encoded and with a sign written before it in text.
+    for doc in [r#"{"s":"%31.5e2"}"#, r#"{"s":"id-1.5e2"}"#] {
+        assert_eq!(
+            r.redact(doc.as_bytes()),
+            Err(Refusal::ResidualSecret),
+            "{doc}"
+        );
+    }
+    // Other values are kept, whatever their spelling.
+    for doc in [
+        r#"{"n":151}"#,
+        r#"{"n":1.5e1}"#,
+        r#"{"n":-1.5e2}"#,
+        r#"{"n":0}"#,
+        r#"{"s":"1.5e1 or 11.5e2"}"#,
+    ] {
+        assert_eq!(r.redact(doc.as_bytes()).as_deref(), Ok(doc), "{doc}");
+    }
+    // A negative sentinel, and zero in any sign.
+    let mut n = Registry::new();
+    n.register("-2.5");
+    n.register("0");
+    assert_eq!(n.redact(br#"{"n":-25e-1}"#), Err(Refusal::ResidualSecret));
+    assert_eq!(n.redact(br#"{"n":-0.0e5}"#), Err(Refusal::ResidualSecret));
+    assert_eq!(n.redact(br#"{"n":2.5}"#).as_deref(), Ok(r#"{"n":2.5}"#));
+    // A literal that is not one JSON number is matched by spelling only.
+    let mut t = Registry::new();
+    t.register("0150");
+    t.register(" 7");
+    assert_eq!(t.redact(br#"{"n":150}"#).as_deref(), Ok(r#"{"n":150}"#));
+    assert_eq!(t.redact(br#"{"n":7}"#).as_deref(), Ok(r#"{"n":7}"#));
+    // The row is checked by value too.
+    assert!(r.found_in_document(br#"{"wall_time_ms":1.5e2}"#));
+    assert_eq!(
+        Decimal::of(b"1e99999999999999999999"),
+        Decimal::of(b"1e99999999999999999998"),
+        "a saturated exponent can only make values equal"
+    );
+    for bad in [&b""[..], b"-", b"1.", b".5", b"1e", b"1e+", b"1x", b"--1"] {
+        assert_eq!(Decimal::of(bad), None, "{:?}", String::from_utf8_lossy(bad));
+    }
+}
+
+#[test]
 fn the_registry_is_bounded_and_fails_closed() {
     let mut r = Registry::new();
     r.register("");

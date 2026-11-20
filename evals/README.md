@@ -767,7 +767,11 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   value or name that already spells `[REDACTED]`, directly or in any of
   those decodings (`%5BREDACTED%5D`, double-encoded, inside a nested JSON
   string), is refused whether or not a literal is also in it, so a mask
-  always means a redaction. Only the
+  always means a redaction. A sentinel that is a JSON number (`150`) is
+  also found by value: a JSON number of equal value in any spelling
+  (`1.5e2`, `15.0e1`), or a decimal number of equal value anywhere in a
+  string, in any of those layers, is refused (`residual_secret`), since
+  only the registered spelling can be masked as text. Only the
   redacted record, or a closed refusal, is written to
   `captures/<trial_id>/capture.json` (0600 under 0700, bound by `manifest.json`).
   Original bytes never reach a disk.

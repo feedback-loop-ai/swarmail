@@ -390,6 +390,9 @@ fn encode(node: &Json, out: &mut String) {
 #[derive(Clone)]
 pub struct Registry {
     literals: Vec<String>,
+    /// The exact values of the literals that are JSON numbers: a number
+    /// is found by value as well as by spelling.
+    numbers: Vec<Decimal>,
     bytes: usize,
     complete: bool,
 }
@@ -414,6 +417,7 @@ impl Registry {
     pub fn new() -> Self {
         Self {
             literals: Vec::new(),
+            numbers: Vec::new(),
             bytes: 0,
             complete: true,
         }
@@ -430,6 +434,11 @@ impl Registry {
         }
         self.bytes += literal.len();
         self.literals.push(literal.to_string());
+        if matches!(parse(literal.as_bytes()), Ok(Node { value: Json::Num(n), .. }) if n == literal)
+            && let Some(value) = Decimal::of(literal.as_bytes())
+        {
+            self.numbers.push(value);
+        }
     }
     /// Mark the registry unusable (a source could not be read whole).
     pub fn poison(&mut self) {
@@ -572,7 +581,7 @@ impl Registry {
         };
         match v {
             Json::Null | Json::Bool(_) => false,
-            Json::Num(n) => self.found_in(n.as_bytes()),
+            Json::Num(n) => self.found_in(n.as_bytes()) || self.number_found(n.as_bytes()),
             Json::Str(s) => text(s),
             Json::Arr(items) => items.iter().any(|i| self.residual(&i.value, depth)),
             Json::Obj(members) => members
@@ -615,7 +624,130 @@ impl Registry {
     /// [`DEPTH_LIMIT`] rounds cannot be proven clean and counts as holding
     /// one.
     fn found_in_layers(&self, s: &str) -> bool {
-        search_layers(s, |b| self.found_in(b)).unwrap_or(true)
+        search_layers(s, |b| self.found_in(b) || self.number_in_text(b)).unwrap_or(true)
+    }
+}
+
+impl Registry {
+    /// Whether one number's spelling has the value of a numeric literal.
+    fn number_found(&self, spelling: &[u8]) -> bool {
+        !self.numbers.is_empty() && Decimal::of(spelling).is_some_and(|v| self.numbers.contains(&v))
+    }
+    /// Whether text holds a decimal number, in any spelling, whose value is
+    /// a numeric literal's. Every maximal run that starts at a digit not
+    /// preceded by one (digits, an optional fraction, an optional exponent)
+    /// is read, with and without a `-` written before it.
+    fn number_in_text(&self, b: &[u8]) -> bool {
+        if self.numbers.is_empty() {
+            return false;
+        }
+        let digits = |mut i: usize| {
+            while b.get(i).is_some_and(u8::is_ascii_digit) {
+                i += 1;
+            }
+            i
+        };
+        let mut i = 0;
+        while i < b.len() {
+            if !b[i].is_ascii_digit() || (i > 0 && b[i - 1].is_ascii_digit()) {
+                i += 1;
+                continue;
+            }
+            let mut end = digits(i);
+            if b.get(end) == Some(&b'.') && b.get(end + 1).is_some_and(u8::is_ascii_digit) {
+                end = digits(end + 1);
+            }
+            if matches!(b.get(end), Some(b'e' | b'E')) {
+                let sign = usize::from(matches!(b.get(end + 1), Some(b'+' | b'-')));
+                if b.get(end + 1 + sign).is_some_and(u8::is_ascii_digit) {
+                    end = digits(end + 1 + sign);
+                }
+            }
+            let token = &b[i..end];
+            let signed = (i > 0 && b[i - 1] == b'-').then(|| &b[i - 1..end]);
+            if self.number_found(token) || signed.is_some_and(|t| self.number_found(t)) {
+                return true;
+            }
+            i = end;
+        }
+        false
+    }
+}
+
+/// A decimal number's exact value: its sign, its significant digits and
+/// the power of ten they are scaled by, so `150`, `1.5e2`, `1.50e2` and
+/// `15.0e1` are one value. Zero has one form whatever its sign. Leading
+/// zeros are read (text may spell a number with them); an exponent too
+/// large to hold saturates, which can only make two values equal, never
+/// unequal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Decimal {
+    negative: bool,
+    digits: Vec<u8>,
+    exponent: i64,
+}
+
+impl Decimal {
+    /// Read one whole number: `-`? digits (`.` digits)? (`e`|`E` sign? digits)?.
+    fn of(b: &[u8]) -> Option<Self> {
+        let negative = b.first() == Some(&b'-');
+        let rest = &b[usize::from(negative)..];
+        let int_len = rest.iter().take_while(|c| c.is_ascii_digit()).count();
+        if int_len == 0 {
+            return None;
+        }
+        let (int, mut rest) = rest.split_at(int_len);
+        let mut frac: &[u8] = &[];
+        if let Some(after) = rest.strip_prefix(b".") {
+            let n = after.iter().take_while(|c| c.is_ascii_digit()).count();
+            if n == 0 {
+                return None;
+            }
+            (frac, rest) = after.split_at(n);
+        }
+        let mut exponent: i64 = 0;
+        if let Some(after) = rest.strip_prefix(b"e").or_else(|| rest.strip_prefix(b"E")) {
+            let (minus, after) = match after.first() {
+                Some(b'-') => (true, &after[1..]),
+                Some(b'+') => (false, &after[1..]),
+                _ => (false, after),
+            };
+            if after.is_empty() || !after.iter().all(u8::is_ascii_digit) {
+                return None;
+            }
+            for d in after {
+                exponent = exponent
+                    .saturating_mul(10)
+                    .saturating_add(i64::from(d - b'0'));
+            }
+            if minus {
+                exponent = -exponent;
+            }
+            rest = &[];
+        }
+        if !rest.is_empty() {
+            return None;
+        }
+        let mut digits: Vec<u8> = int.iter().chain(frac).copied().collect();
+        exponent = exponent.saturating_sub(frac.len() as i64);
+        let lead = digits.iter().take_while(|d| **d == b'0').count();
+        digits.drain(..lead);
+        if digits.is_empty() {
+            return Some(Self {
+                negative: false,
+                digits,
+                exponent: 0,
+            });
+        }
+        while digits.last() == Some(&b'0') {
+            digits.pop();
+            exponent = exponent.saturating_add(1);
+        }
+        Some(Self {
+            negative,
+            digits,
+            exponent,
+        })
     }
 }
 
