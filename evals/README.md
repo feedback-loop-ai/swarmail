@@ -759,16 +759,32 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   Once every agent is reaped the registry is sealed: the trial's admin bearer
   and every sentinel. Every string and member name is masked
   (`[REDACTED]`), including escaped, percent-encoded and nested-JSON
-  spellings; the re-encoding is re-parsed and searched again. Only the
+  spellings: each complete `%XX` escape is decoded wherever it stands (a
+  malformed one beside it hides nothing), and JSON and percent layers are
+  undone alternately, over bytes, to a fixed point; a percent decoding that
+  never settles within 32 layers or is not UTF-8 is refused, never masked.
+  The re-encoding is re-parsed and every layer searched again. An original
+  value that already spells `[REDACTED]` is refused, so a mask always means
+  a redaction. Only the
   redacted record, or a closed refusal, is written to
   `captures/<trial_id>/capture.json` (0600 under 0700, bound by `manifest.json`).
   Original bytes never reach a disk.
+- **The socket's trust boundary.** The helper learns the socket's path from
+  the agent's own MCP configuration, so an unconfined same-uid agent can
+  reach it too: nothing a CLI launches can hold a secret the agent cannot
+  read. A connection can only report `eval_http` calls (the runner fixes the
+  owned tools), holds at most one open call, and a trial accepts at most 16
+  connections; anything else withholds the trial. A forged frame cannot
+  publish a value, because every value must match the digest the engine's
+  journal recorded for the agent's real call. The worst an agent can do is
+  withhold its own trial's evidence.
 - **How it binds.** The report pairs each journal call whose name denotes a
   harness-owned tool (`mcp__swarmail__*`, `mcp__fixture__eval_http`, and the
   `server.tool`/`server/tool`/`server:tool` spellings) with the next captured
   call: same server, tool, argument length and SHA-256 of the original bytes.
   One mismatch, a missing or extra call, or an ambiguous order (a call that
-  started while another was in flight) withholds the whole trial. The
+  started while another was in flight, which includes a JSON-RPC batch with
+  two or more `tools/call`s) withholds the whole trial. The
   companion carries the structural record's ordinals, lengths and digests and
   the structural file's own binding.
 - **Fail-closed, whole-trial.** A present tool-call fact without a published
@@ -777,7 +793,9 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   (one argument over 8192 bytes, original or redacted), `trial_too_large` (over
   256 calls or 65536 original bytes, a companion over 65536 bytes, or a cut
   structural record), `invalid_argument_encoding` (not strict UTF-8 JSON,
-  duplicate or mask-colliding names, nesting over 32), `residual_secret`, `binding_mismatch`,
+  duplicate or mask-colliding names, a value already spelling the mask, a
+  percent decoding that never settles or is not UTF-8, nesting over 32),
+  `residual_secret`, `binding_mismatch`,
   `evidence_write_failed`. A trial the journal has no tool rows for keeps its
   upstream reason (`builtin_agent`, `journal_missing`, `journal_ambiguous`,
   `journal_has_no_accounting`). There is never a prefix, a placeholder or an
