@@ -510,6 +510,10 @@ async fn helper(mode: &str) -> i32 {
     if mode == "cross_trial_probe" {
         return cross_trial_probe().await;
     }
+    #[cfg(target_os = "linux")]
+    if mode == "tool_values" || mode == "tool_values_planted" {
+        return tool_values(mode == "tool_values_planted").await;
+    }
     let env = AgentEnv::from_env().expect("the agent environment");
     let app = App::new(&env.app_url, &env.identity).unwrap();
     match mode {
@@ -2120,6 +2124,135 @@ fn victim_from_argv() -> Result<Victim, String> {
 /// completes the victim's signup through the real MCP and the real fixture.
 /// Exit 0 means the leak is real; a nonzero code names the step that failed.
 #[cfg(target_os = "linux")]
+/// The value-capture probe agent (decision 0119 §4). It plays an agent that
+/// leaks: it reads the trial's fixture admin bearer from the fixture
+/// process's environment (same uid, Linux /proc) and sends it, the test's
+/// sentinel, whitespace, escapes and multibyte text through both
+/// harness-owned tools: Swarmail's MCP endpoint (raw bodies, so the exact
+/// argument bytes are known) and the `eval_http` helper over stdio. Every
+/// call's tool, length and digest go to `<marker>.calls`, the bearer to
+/// `<marker>.bearer`: the test's own journal stand-in and canary. In
+/// `tool_values_planted` one argument holds the numeric sentinel in a
+/// number's spelling, which no mask can redact.
+#[cfg(target_os = "linux")]
+async fn tool_values(planted: bool) -> i32 {
+    use std::io::{BufRead, Write};
+    use swarmail_evals::provenance::sha256;
+    let marker = marker().unwrap();
+    // An agent's output is never retained: a failure is left for the test.
+    let failure = marker.with_extension("failure");
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = std::fs::write(&failure, info.to_string());
+    }));
+    let env = AgentEnv::from_env().unwrap();
+    let runner: i32 = std::env::var("EVAL_TEST_RUNNER_PID")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let bearer = process_descendants(runner)
+        .into_iter()
+        .find_map(|p| {
+            let raw = std::fs::read(format!("/proc/{}/environ", p.pid)).ok()?;
+            raw.split(|b| *b == 0).find_map(|e| {
+                let text = std::str::from_utf8(e).ok()?;
+                text.strip_prefix("EVAL_FIXTURE_ADMIN_SECRET=")
+                    .map(str::to_string)
+            })
+        })
+        .expect("the fixture's admin bearer");
+    let sentinel = std::env::var("EVAL_TEST_SENTINEL").unwrap();
+    let number = std::env::var("EVAL_TEST_SENTINEL_NUMBER").unwrap();
+    std::fs::write(marker.with_extension("bearer"), &bearer).unwrap();
+    let mut calls = Vec::new();
+    let mut log = |tool: &str, args: &[u8]| {
+        calls.push(json!({"tool": tool, "bytes": args.len(), "sha256": sha256(args)}));
+    };
+
+    // Swarmail: initialize through the client, then raw tools/call bodies.
+    let _session = McpClient::connect(&env.mcp_url).await.unwrap();
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mcp_args = [
+        format!(
+            "{{ \"inbox\" :\"{}\",\n \"subject\": \"caf\\u00e9 \u{2713} {bearer} {sentinel}\" }}",
+            env.inbox
+        ),
+        if planted {
+            format!("{{\"inbox\":\"{}\",\"limit\":{number}0}}", env.inbox)
+        } else {
+            format!(
+                "{{\"inbox\":\"{}\",\"subject\":\"\\\"quoted\\\" {sentinel}\"}}",
+                env.inbox
+            )
+        },
+    ];
+    for (i, args) in mcp_args.iter().enumerate() {
+        let body = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"tools/call\",\"params\":{{\"name\":\"swarmail_search_emails\",\"arguments\":{args}}}}}",
+            100 + i
+        );
+        let reply = http
+            .post(&env.mcp_url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-protocol-version", "2025-03-26")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert!(reply.status().is_success(), "{}", reply.status());
+        let reply: Value = serde_json::from_slice(&reply.bytes().await.unwrap()).unwrap();
+        assert_eq!(reply["id"], 100 + i, "the forwarder keeps the reply");
+        log("mcp__swarmail__swarmail_search_emails", args.as_bytes());
+    }
+
+    // eval_http through the real helper, over its stdio.
+    let mut child = Command::new(exe())
+        .arg("fixture-http")
+        .env_clear()
+        .envs(
+            std::env::vars()
+                .filter(|(k, _)| k.starts_with("EVAL_") && !k.starts_with("EVAL_TEST_")),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut rpc = |line: String| {
+        stdin.write_all(line.as_bytes()).unwrap();
+        stdin.write_all(b"\n").unwrap();
+        stdin.flush().unwrap();
+        let mut reply = String::new();
+        stdout.read_line(&mut reply).unwrap();
+        serde_json::from_str::<Value>(&reply).unwrap()
+    };
+    let init = rpc(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}"#.into());
+    assert!(init["result"].is_object(), "{init}");
+    let http_args = [
+        format!("{{\"method\":\"GET\",\"path\":\"/?t={bearer}\"}}"),
+        format!(
+            "{{ \"method\" : \"POST\", \"path\": \"/login\", \"body\": {{\"email\": \"caf\\u00e9@x\", \"password\": \"{sentinel}\", \"note\": \"\u{2713}\\t\"}} }}"
+        ),
+    ];
+    for (i, args) in http_args.iter().enumerate() {
+        let reply = rpc(format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"tools/call\",\"params\":{{\"name\":\"eval_http\",\"arguments\":{args}}}}}",
+            10 + i
+        ));
+        assert_eq!(reply["id"], 10 + i, "{reply}");
+        log("mcp__fixture__eval_http", args.as_bytes());
+    }
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    std::fs::write(
+        marker.with_extension("calls"),
+        serde_json::to_vec(&calls).unwrap(),
+    )
+    .unwrap();
+    0
+}
+
 async fn leak_signup() -> i32 {
     let Some(runner) = std::env::args()
         .find_map(|a| a.strip_prefix(VICTIM_RUNNER_ARG).map(str::to_string))
