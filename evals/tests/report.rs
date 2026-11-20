@@ -6,6 +6,7 @@ mod common;
 
 use common::*;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::Stdio;
 use swarmail_evals::runner::TrialResult;
@@ -2606,4 +2607,65 @@ fn comparison_citations_key_on_target_agent_and_task() {
             .unwrap_err()
             .contains("twice")
     );
+}
+
+// ---- The pre-#391 default contract, pinned as bytes ----------------------
+//
+// `tests/data/default-contract/` was produced by the 68c3839 binary (the
+// tree before value-bearing evidence existed) from the committed rows and
+// the golden journal facts. Every default mode must keep producing exactly
+// these bytes: the report's stdout with and without a journal, and the
+// structural evidence tree, file names and absences included.
+
+fn contract_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/default-contract")
+}
+
+fn tree(root: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
+    let mut out = BTreeMap::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let rel = path.strip_prefix(root).unwrap().to_str().unwrap().to_string();
+                out.insert(rel, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn the_default_report_is_byte_identical_to_the_pre_change_contract() {
+    let data = contract_dir();
+    let rows = data.join("rows.jsonl");
+    let facts = golden_facts();
+    let plain = run_report(&rows, &[]);
+    assert!(plain.status.success(), "{}", stderr(&plain));
+    assert_eq!(plain.stdout, std::fs::read(data.join("report.json")).unwrap());
+    let joined = run_report(&rows, &["--journal".as_ref(), facts.as_os_str()]);
+    assert_eq!(
+        joined.stdout,
+        std::fs::read(data.join("report-journal.json")).unwrap()
+    );
+    let dir = tempdir();
+    let ev = dir.path().join("ev");
+    let evidence = run_report(
+        &rows,
+        &[
+            "--journal".as_ref(),
+            facts.as_os_str(),
+            "--evidence-dir".as_ref(),
+            ev.as_os_str(),
+        ],
+    );
+    assert!(evidence.status.success(), "{}", stderr(&evidence));
+    assert_eq!(
+        evidence.stdout,
+        std::fs::read(data.join("report-evidence.json")).unwrap()
+    );
+    assert_eq!(tree(&ev), tree(&data.join("evidence")));
 }
