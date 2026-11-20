@@ -181,7 +181,15 @@ fn values_are_redacted_bound_and_never_scored() {
         ("EVAL_TEST_SENTINEL", sentinel.as_str()),
         ("EVAL_TEST_SENTINEL_NUMBER", number.as_str()),
     ];
-    let probe = agent("probe", "tool_values", &private, &env);
+    // The probe runs last and, mid-trial, rewrites the sentinel file to
+    // hold only a late sentinel: the one registered at start must still be
+    // redacted and the late one honoured.
+    let late = format!("late-{}", swarmail_evals::runner::new_trial_id());
+    let sentinels_text = sentinels.display().to_string();
+    let mut probe_env = env.to_vec();
+    probe_env.push(("EVAL_TEST_SENTINELS_FILE", sentinels_text.as_str()));
+    probe_env.push(("EVAL_TEST_LATE_SENTINEL", late.as_str()));
+    let probe = agent("probe", "tool_values", &private, &probe_env);
     let planted = agent("planted", "tool_values_planted", &private, &env);
     let agents = private.join("agents.json");
     std::fs::write(
@@ -189,8 +197,8 @@ fn values_are_redacted_bound_and_never_scored() {
         json!([
             {"label": "oracle", "argv": []},
             {"label": "null", "argv": []},
-            {"label": probe.label, "argv": [probe.wrapper]},
             {"label": planted.label, "argv": [planted.wrapper]},
+            {"label": probe.label, "argv": [probe.wrapper]},
         ])
         .to_string(),
     )
@@ -316,7 +324,15 @@ fn values_are_redacted_bound_and_never_scored() {
         entries[0]["value"]["subject"],
         "caf\u{e9} \u{2713} [REDACTED] [REDACTED]"
     );
-    assert_eq!(entries[1]["value"]["subject"], "\"quoted\" [REDACTED]");
+    assert_eq!(
+        entries[1]["value"]["subject"], "\"quoted\" [REDACTED] [REDACTED]",
+        "a removed sentinel and a late one are both redacted"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&sentinels).unwrap(),
+        json!([late]).to_string(),
+        "the probe did rewrite the file"
+    );
     assert_eq!(
         entries[2]["value"]["path"],
         "/?t=[REDACTED]&e=[REDACTED]%zz&d=[REDACTED]"
@@ -370,6 +386,7 @@ fn values_are_redacted_bound_and_never_scored() {
         planted_bearer.as_str(),
         sentinel.as_str(),
         number.as_str(),
+        late.as_str(),
         &probe_bearer[1..],
         &planted_bearer[1..],
         &sentinel[1..],

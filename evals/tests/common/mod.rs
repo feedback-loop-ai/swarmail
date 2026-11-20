@@ -2133,7 +2133,11 @@ fn victim_from_argv() -> Result<Victim, String> {
 /// call's tool, length and digest go to `<marker>.calls`, the bearer to
 /// `<marker>.bearer`: the test's own journal stand-in and canary. In
 /// `tool_values_planted` one argument holds the numeric sentinel in a
-/// number's spelling, which no mask can redact.
+/// number's spelling, which no mask can redact. With
+/// `EVAL_TEST_SENTINELS_FILE` and `EVAL_TEST_LATE_SENTINEL` set, the probe
+/// first rewrites the operator's sentinel file to hold only the late
+/// sentinel (removing the ones registered at trial start) and then sends
+/// both: the registry must only grow.
 #[cfg(target_os = "linux")]
 async fn tool_values(planted: bool) -> i32 {
     use std::io::{BufRead, Write};
@@ -2162,6 +2166,16 @@ async fn tool_values(planted: bool) -> i32 {
         .expect("the fixture's admin bearer");
     let sentinel = std::env::var("EVAL_TEST_SENTINEL").unwrap();
     let number = std::env::var("EVAL_TEST_SENTINEL_NUMBER").unwrap();
+    let late = match (
+        std::env::var_os("EVAL_TEST_SENTINELS_FILE"),
+        std::env::var("EVAL_TEST_LATE_SENTINEL"),
+    ) {
+        (Some(file), Ok(late)) => {
+            std::fs::write(file, json!([late]).to_string()).unwrap();
+            format!(" {late}")
+        }
+        _ => String::new(),
+    };
     std::fs::write(marker.with_extension("bearer"), &bearer).unwrap();
     let mut calls = Vec::new();
     let mut log = |tool: &str, args: &[u8]| {
@@ -2194,7 +2208,7 @@ async fn tool_values(planted: bool) -> i32 {
             format!("{{\"inbox\":\"{}\",\"limit\":{number}0}}", env.inbox)
         } else {
             format!(
-                "{{\"inbox\":\"{}\",\"subject\":\"\\\"quoted\\\" {sentinel}\"}}",
+                "{{\"inbox\":\"{}\",\"subject\":\"\\\"quoted\\\" {sentinel}{late}\"}}",
                 env.inbox
             )
         },

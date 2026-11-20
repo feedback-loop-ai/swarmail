@@ -2763,15 +2763,22 @@ async fn run_body(
     // Value capture (0119 §4) stands only in front of a Swarmail target. A
     // capture that cannot start leaves the trial exactly as it would run
     // without one, and the report then names it `capture_missing`.
+    // The sentinel file is read once here, before any agent runs: the
+    // registry sealed at the end is this snapshot united with the file as
+    // it is then, so nothing done during the trial can shrink it.
     let capture = match (&trial.capture, http) {
-        (Some(_), Some(http)) if competitor.is_none() => {
-            crate::capture::start(&mcp_url, http, scratch).await.ok()
+        (Some((plan, _)), Some(http)) if competitor.is_none() => {
+            let snapshot = crate::toolvalues::read_sentinels(&plan.sentinels).ok();
+            crate::capture::start(&mcp_url, http, scratch)
+                .await
+                .ok()
+                .map(|running| (running, snapshot))
         }
         _ => None,
     };
     let agent_mcp_url = capture
         .as_ref()
-        .map_or_else(|| mcp_url.clone(), |c| c.mcp_url.clone());
+        .map_or_else(|| mcp_url.clone(), |(c, _)| c.mcp_url.clone());
 
     // Provision, then the scenario's barriers — all before any agent.
     let ids = identities(trial_id, task.agent_count);
@@ -2863,7 +2870,7 @@ async fn run_body(
             .env(ENV_PROMPT_FILE, &prompt_file)
             .env(ENV_DEADLINE_MS, task.deadline_ms.to_string())
             .env("PWD", &workdir);
-        if let Some(c) = &capture {
+        if let Some((c, _)) = &capture {
             cmd.env(crate::toolvalues::ENV_CAPTURE_SOCKET, &c.socket);
         }
         if let (Some(plan), Some((server, tools))) = (competitor, &surface) {
@@ -2949,8 +2956,14 @@ async fn run_body(
     // Every agent group is reaped: no request of the trial is still to come.
     // Seal the registry now, with every literal issued, and leave it beside
     // the observations for the runner to write once the row is final.
-    if let (Some(running), Some((plan, sink))) = (capture, &trial.capture) {
-        let registry = crate::toolvalues::registry(&admin.secret, Some(&plan.sentinels));
+    if let (Some((running, snapshot)), Some((plan, sink))) = (capture, &trial.capture) {
+        let (registry, went_unreadable) =
+            crate::toolvalues::sealed_registry(&admin.secret, snapshot.as_deref(), &plan.sentinels);
+        if went_unreadable {
+            eprintln!(
+                "swarmail-evals: tool_sentinels_unreadable_at_seal: the trial-start snapshot is kept"
+            );
+        }
         *sink.lock().unwrap_or_else(|e| e.into_inner()) = Some((running.stop(), registry));
     }
     if spawn_failed {

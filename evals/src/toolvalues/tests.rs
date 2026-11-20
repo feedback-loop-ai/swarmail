@@ -425,18 +425,62 @@ fn the_registry_is_bounded_and_fails_closed() {
     let dir = tempfile::tempdir().unwrap();
     let good = dir.path().join("s.json");
     std::fs::write(&good, serde_json::to_vec(&[SENTINEL]).unwrap()).unwrap();
-    let built = registry(BEARER, Some(&good));
+    let snapshot = read_sentinels(&good).ok();
+    let (built, _) = sealed_registry(BEARER, snapshot.as_deref(), &good);
     assert!(built.is_complete() && built.len() == 2);
+    // A file that cannot be read when the trial starts: no snapshot, so
+    // the registry is unusable.
     for bad in [&b"[\"\"]"[..], b"{}", b"nope"] {
         std::fs::write(&good, bad).unwrap();
-        assert!(!registry(BEARER, Some(&good)).is_complete());
+        assert_eq!(read_sentinels(&good), Err(Invalid));
+        assert!(!sealed_registry(BEARER, None, &good).0.is_complete());
     }
     let many: Vec<String> = (0..=REGISTRY_LITERALS).map(|i| format!("s{i}")).collect();
     std::fs::write(&good, serde_json::to_vec(&many).unwrap()).unwrap();
-    assert!(!registry(BEARER, Some(&good)).is_complete());
-    assert!(!registry(BEARER, Some(&dir.path().join("absent"))).is_complete());
+    assert!(read_sentinels(&good).is_err());
+    assert!(read_sentinels(&dir.path().join("absent")).is_err());
     assert!(read_sentinels(Path::new("/")).is_err());
-    assert!(registry(BEARER, None).is_complete());
+}
+
+#[test]
+fn the_registry_only_grows_during_a_trial() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("s.json");
+    std::fs::write(&file, serde_json::to_vec(&[SENTINEL]).unwrap()).unwrap();
+    let snapshot = read_sentinels(&file).unwrap();
+    let leak = format!(r#"{{"a":"{SENTINEL}","b":"late-canary-7"}}"#);
+    let masked = r#"{"a":"[REDACTED]","b":"late-canary-7"}"#;
+    // Rewritten to [] before seal: the snapshot keeps the sentinel.
+    std::fs::write(&file, b"[]").unwrap();
+    let (r, unreadable) = sealed_registry(BEARER, Some(&snapshot), &file);
+    assert!(!unreadable && r.is_complete() && r.len() == 2);
+    assert_eq!(r.redact(leak.as_bytes()).as_deref(), Ok(masked));
+    // A sentinel registered mid-trial is honoured beside the snapshot.
+    std::fs::write(&file, br#"["late-canary-7"]"#).unwrap();
+    let (r, _) = sealed_registry(BEARER, Some(&snapshot), &file);
+    assert_eq!(r.len(), 3);
+    assert_eq!(
+        r.redact(leak.as_bytes()).as_deref(),
+        Ok(r#"{"a":"[REDACTED]","b":"[REDACTED]"}"#)
+    );
+    // Unreadable or malformed at seal: the snapshot is kept, and said so.
+    for broken in [&b"nope"[..], b"[1]", b"[\"\"]"] {
+        std::fs::write(&file, broken).unwrap();
+        let (r, unreadable) = sealed_registry(BEARER, Some(&snapshot), &file);
+        assert!(unreadable && r.is_complete() && r.len() == 2);
+        assert_eq!(r.redact(leak.as_bytes()).as_deref(), Ok(masked));
+    }
+    std::fs::remove_file(&file).unwrap();
+    let (r, unreadable) = sealed_registry(BEARER, Some(&snapshot), &file);
+    assert!(unreadable && r.len() == 2);
+    // The union is still capped: past it the registry is unusable.
+    let many: Vec<String> = (0..REGISTRY_LITERALS).map(|i| format!("s{i}")).collect();
+    std::fs::write(&file, serde_json::to_vec(&many).unwrap()).unwrap();
+    assert!(
+        !sealed_registry(BEARER, Some(&snapshot), &file)
+            .0
+            .is_complete()
+    );
 }
 
 fn id(n: u32) -> String {
