@@ -100,6 +100,57 @@ native-tls absent in both trees: all 0. `brokkr compile` over every recipe:
 not run, no pinned brokkr is reachable from this seat; `.brokkr/` is
 unchanged.
 
+## Review return 2 (decision 0102), fixes
+
+Five members (correctness, guarantees, independent, security, tests)
+returned on `6e6be3a`. Each finding below is fixed with a test that turns
+red when the fix is reverted (each was checked by reverting it):
+
+| Finding | Fix | Commit | Test |
+|---|---|---|---|
+| Decoded mask collision (low, security; correctness, guarantees, security): `%5BREDACTED%5D`, `x %5BREDACTED%5D y`, `%255BREDACTED%255D`, a nested `{"b":"%5BREDACTED%5D"}` passed unchanged unless a literal was also present | Every string and name is searched for the mask through the JSON-escape, percent and nested-JSON layers before masking; refused `invalid_argument_encoding`, literal or not | `18b4a74b` | `toolvalues::tests::a_decoded_mask_is_refused_without_a_literal` (each spelling as a value, a name and a nested element) |
+| Row approved by a raw byte search (low, security; all three security-relevant members): an escaped or percent-encoded sentinel reached a transcript | `Registry::found_in_document`: the parsed row's names, strings and numbers through the same layers; an unparsable row is not approved | `4bf7471a` | `toolvalues::tests::a_row_holding_an_escaped_or_encoded_literal_never_reaches_a_transcript` (a sentinel with a quote, a backslash and a control character, and a percent-encoded one: both rows skipped `row_unverified`, no leaf) |
+| Forwarder without connection or request cap (low, security) | At most 32 connections open at once (`CONNECTION_LIMIT`; one more is closed unserved), at most 512 requests observed per trial (`REQUEST_LIMIT`; later ones forwarded unread, so the trial runs on). Either latches the existing `trial_too_large`; no new reason. A capture whose socket bind fails now stops its forwarder (review info 6d) | `c7c0aaff` | `capture::tests::the_forwarder_serves_a_bounded_number_of_connections`, `::the_forwarder_observes_a_bounded_number_of_requests` (real loopback sockets, at the cap kept, one over refused, ordered by replies and closes, no sleep) |
+| Built-in group printed `null (incomplete_join)` with a journal (low) | `tokens_figure` reads the built-in surface before the journal | `ed7c605a` | `toolvalues::tests::cells_are_escaped_and_figures_never_dash`, `tests/tool_values.rs::the_page_gives_every_paid_group_a_figure_or_its_reason` (journal-present oracle cell) |
+| Unexecuted diagnostics and page removal; no published zero-call envelope (low, tests) | Tests only | `ece77539` | `capture_admission_tests::value_capture_admits_only_a_swarmail_target_and_a_creatable_root` (`capture_requires_swarmail_target`, `capture_root_unavailable`); `tests/tool_values.rs::matrix_capture_refuses_before_any_trial` (`capture_root_unavailable` on the CLI); `::a_capture_that_cannot_be_written_leaves_the_row_and_says_so` (`tool_capture_write_failed`, the oracle row still `pass`); `tests/wrappers.rs::exact_eight_input_admission_and_literal_values` (`eval_capture_socket_invalid`); `::a_page_cut_short_is_removed` (a 64-byte file-size limit cuts the page; the file is gone); `toolvalues::tests::a_companion_is_published_whole_or_absent_with_its_reason` (zero-call envelope through `publish_companion`) |
+| Operator runbook built the wrong workspace (info) | `--manifest-path evals/Cargo.toml` | `92548131` | — |
+| Ledger counts 590 vs 586 (info) | Corrected in the gate table above | this commit | — |
+
+Not changed here, and why:
+
+- The 0075 and 0119 decision bodies still say the value mode is unbuilt
+  (guarantees info 4). Only the operator annotates a decision; the index
+  rows already say built.
+- Still tracked as debt in `tasks.md`: no capture-off control compared call
+  by call, no separate late-sentinel case, no contaminated-metadata case,
+  `check --matrix` replay compared by exit status and line count, no
+  report-CLI zero-call or swapped-capture case, `read_capture`'s deep
+  validation arms, the `transcripts_write_failed` CLI arm, and
+  `write_value_capture`'s capture-never-started arm. Also the info items
+  `bind()` re-parsing the checked value, the whole-string percent decoding
+  on a literal hit, and `trial --isolated --capture-tool-values` ending in
+  `capture_missing`.
+- The real-engine journal digest join stays unobserved until the operator's
+  smoke.
+
+Time added by this return, measured inside the test binaries at load
+average 17–42: the two forwarder tests 0.3 s together, the new unit tests
+under 0.1 s, `a_page_cut_short_is_removed` 0.2 s, and
+`a_capture_that_cannot_be_written_leaves_the_row_and_says_so` 2.2 s (one
+oracle trial). About 3 s in all. `tests/tool_values.rs` is now 14.1 s, of
+which 10–12 s is the existing end-to-end proof.
+
+Gates after this return (`--locked`, this seat, 2026-11-20, tree
+`92548131` plus this ledger): root `cargo fmt --all -- --check` 0; evals
+`cargo fmt --all -- --check` 0; evals `cargo clippy --all-targets --locked
+-- -D warnings` 0; evals `SWARMAIL_BIN=<artifact record of cargo build
+--locked --bin swarmail> cargo test --locked` 0, 597 passed, 0 failed, 7
+ignored, 1601 s wall. No test failed, so none was rerun. Root clippy, root
+test, coverage gate and its selftest, publish-guard and seal-branch proofs,
+`cargo deny` and `brokkr compile` were not rerun by this return. It touched
+only `evals/` and `specs/trial-evidence/`, outside the root build and
+coverage denominator. CI and the verify seat own them.
+
 ## Held paths
 
 None touched: `git diff --stat 0d4839f -- Cargo.toml Cargo.lock evals/Cargo.toml evals/Cargo.lock deny.toml scripts .github .brokkr src tests` is empty. No dependency or feature was added.
@@ -125,7 +176,7 @@ None touched: `git diff --stat 0d4839f -- Cargo.toml Cargo.lock evals/Cargo.toml
 | `cargo build --locked --bin swarmail` | 0 |
 | `cd evals && cargo fmt --all -- --check` | 0 |
 | `cd evals && cargo clippy --all-targets --locked -- -D warnings` | 0 |
-| `cd evals && SWARMAIL_BIN=<candidate> cargo test --locked` | 0 (586 passed, 23 min wall) |
+| `cd evals && SWARMAIL_BIN=<candidate> cargo test --locked` | 0 (590 passed, 23 min wall; review return 1). This row said 586, a stale count from before that return's last tests; 590 is the count the return's own gate paragraph recorded. Review return 2: 597 passed, 0 failed, 7 ignored, 1601 s wall (below) |
 | `brokkr compile` over `.brokkr/recipes/*/` | **not run: no pinned brokkr binary is reachable from this seat.** `.brokkr/` is unchanged; the verify seat and CI's `brokkr bundle (pinned)` run it |
 | `bash scripts/coverage-gate.sh` | 0, exact 100/100/100 on the second run. The first run failed one root test, `mail_compare::api_section::preparation_refuses_when_the_target_does_not_answer` ("smtp read: Connection reset by peer"), at load average 16. The test frees a port and expects a refused connect, so another process can take the port meanwhile. Root code is untouched here, and the test passed in the plain root run |
 | `bash scripts/coverage-gate.sh selftest` | 0 |
