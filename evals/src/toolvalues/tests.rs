@@ -989,6 +989,20 @@ fn a_companion_is_published_whole_or_absent_with_its_reason() {
         .collect();
     let over = publish_companion(&ev, &caps, &facts(4, calls), &entry);
     assert_eq!(reason(over), "trial_too_large");
+    // A present, verified zero-call sequence: a nonempty envelope, bound.
+    setup(6, whole, &[]);
+    let zero = publish_companion(&ev, &caps, &facts(6, vec![]), &entry);
+    let Disposition::Published(binding, _) = &zero else {
+        panic!("{zero:?}")
+    };
+    let bytes = std::fs::read(ev.join(id(6)).join(COMPANION_FILE)).unwrap();
+    assert_eq!(binding.length, bytes.len() as u64);
+    assert_eq!(binding.sha256, sha256(&bytes));
+    let envelope: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(envelope["tool_calls"], json!([]));
+    assert_eq!(envelope["trial_id"], id(6));
+    assert_eq!(envelope["structural"], entry);
+    assert_eq!(envelope["model_text"], "not_retained");
     // An unavailable fact is the caller's upstream absence, never values.
     let mut f = facts(5, vec![]);
     f.tool_calls = Fact::Unavailable {

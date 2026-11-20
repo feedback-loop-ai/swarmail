@@ -5530,6 +5530,38 @@ while :; do :; done
 }
 
 #[cfg(test)]
+mod capture_admission_tests {
+    use super::prepare_capture;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn value_capture_admits_only_a_swarmail_target_and_a_creatable_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let sentinels = dir.path().join("s.json");
+        std::fs::write(&sentinels, br#"["canary"]"#).unwrap();
+        let root = dir.path().join("captures");
+        // A competitor target's endpoint is the runner's bridge, which the
+        // capture does not observe: refused before any root is made.
+        assert_eq!(
+            prepare_capture(&root, &sentinels, Some("mailpit")),
+            Err("capture_requires_swarmail_target")
+        );
+        assert!(!root.exists());
+        // A root whose parent is missing cannot be created.
+        let orphan = dir.path().join("absent").join("captures");
+        assert_eq!(
+            prepare_capture(&orphan, &sentinels, None),
+            Err("capture_root_unavailable")
+        );
+        assert!(!orphan.exists());
+        // Swarmail, named or by default: a fresh private root.
+        let (made, _) = prepare_capture(&root, &sentinels, Some("swarmail")).unwrap();
+        let mode = std::fs::metadata(&made).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+}
+
+#[cfg(test)]
 mod privacy_tests {
     async fn bounded_stdout<R: tokio::io::AsyncRead + Unpin>(reader: R) -> Option<Vec<u8>> {
         let captured = super::capture_stdout(reader).await.ok()?;

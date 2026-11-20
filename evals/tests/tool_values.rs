@@ -587,8 +587,10 @@ fn matrix_capture_refuses_before_any_trial() {
             .unwrap()
     };
     let fresh = dir.path().join("fresh");
+    let orphan = dir.path().join("absent").join("fresh");
     for (out, category) in [
         (run(&existing, &sentinels, &[]), "capture_root_exists"),
+        (run(&orphan, &sentinels, &[]), "capture_root_unavailable"),
         (
             run(&fresh, &dir.path().join("absent.json"), &[]),
             "tool_sentinels_unreadable",
@@ -600,6 +602,7 @@ fn matrix_capture_refuses_before_any_trial() {
         assert!(stderr(&out).contains(category), "{}", stderr(&out));
     }
     assert!(!fresh.exists(), "a refusal creates no root");
+    assert!(!orphan.exists());
     // The capture flags come as a pair.
     let lone = cli()
         .args(["matrix", "--tasks", "signup", "--trials", "1", "--agents"])
@@ -610,4 +613,88 @@ fn matrix_capture_refuses_before_any_trial() {
         .unwrap();
     assert_eq!(lone.status.code(), Some(2));
     assert!(!fresh.exists());
+}
+
+#[test]
+fn a_capture_that_cannot_be_written_leaves_the_row_and_says_so() {
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    // An existing root that is not a directory: the trial runs, its
+    // record cannot be written.
+    let root = dir.path().join("not-a-directory");
+    std::fs::write(&root, b"x").unwrap();
+    let sentinels = dir.path().join("s.json");
+    std::fs::write(&sentinels, r#"["canary"]"#).unwrap();
+    let mut command = cli();
+    command
+        .args(["trial", "--task", "signup", "--agent", "oracle"])
+        .arg("--capture-tool-values")
+        .arg(&root)
+        .arg("--tool-sentinels")
+        .arg(&sentinels);
+    let out = bounded(command, ISOLATED_CLI_BOUND).wait_with_output();
+    let row = one_row(&out);
+    assert_eq!(row.outcome, Outcome::Pass, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("swarmail-evals: harness error: tool_capture_write_failed"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(std::fs::read(&root).unwrap(), b"x");
+}
+
+#[test]
+fn a_page_cut_short_is_removed() {
+    use std::os::unix::process::CommandExt;
+    let dir = tempdir();
+    let rows = dir.path().join("rows.jsonl");
+    let row = synthetic_row(
+        "signup",
+        "claude-a",
+        true,
+        Outcome::Pass,
+        1000,
+        &"3".repeat(32),
+    );
+    std::fs::write(&rows, format!("{}\n", serde_json::to_string(&row).unwrap())).unwrap();
+    let page = dir.path().join("report.md");
+    let mut command = cli();
+    command
+        .args(["report", "--input"])
+        .arg(&rows)
+        .arg("--page")
+        .arg(&page);
+    // The child may write 64 bytes to any file: the page is created, cut
+    // part-way, and its write fails (EFBIG, the signal ignored).
+    unsafe {
+        command.pre_exec(|| {
+            if libc::signal(libc::SIGXFSZ, libc::SIG_IGN) == libc::SIG_ERR {
+                return Err(std::io::Error::last_os_error());
+            }
+            let limit = libc::rlimit {
+                rlim_cur: 64,
+                rlim_max: 64,
+            };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let out = command.output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("page_write_failed"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(out.stdout.is_empty());
+    assert!(
+        std::fs::symlink_metadata(&page).is_err(),
+        "the partial page is removed"
+    );
+    // The same command without the limit writes the page whole.
+    let whole = report(&rows, &["--page".as_ref(), page.as_os_str()]);
+    assert!(whole.status.success(), "{}", stderr(&whole));
+    assert!(std::fs::metadata(&page).unwrap().len() > 64);
 }
