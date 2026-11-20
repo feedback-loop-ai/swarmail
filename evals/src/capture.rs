@@ -8,7 +8,13 @@
 //!   port, so Swarmail's own guard (decision 0043) rules exactly as it would
 //!   for a direct request. Replies, errors and statuses come back unchanged.
 //!   Each `tools/call` in a body is observed before it is forwarded, and its
-//!   in-flight span ends once Swarmail has answered.
+//!   in-flight span ends once Swarmail has answered. The forwarder is as
+//!   reachable by the agent as Swarmail is, so it is bounded: at most
+//!   [`CONNECTION_LIMIT`] connections open at once (a further one is closed
+//!   unserved), each holding one HTTP/1.1 request of at most the reply
+//!   bound, and at most [`REQUEST_LIMIT`] requests observed per trial (past
+//!   it requests are passed through unread). Exceeding either withholds the
+//!   trial's values as `trial_too_large`.
 //! * A private Unix socket in the runner's runtime directory receives the
 //!   `eval_http` helper's observations: `start` before a call is
 //!   dispatched, `end` after its reply, each acknowledged so the order the
@@ -33,8 +39,10 @@
 //! value is redacted whatever its source; scoring never reads any of it.
 //! A connection holds at most one open call, and a trial accepts at most
 //! [`HELPER_LIMIT`] connections, so the socket cannot grow the runner's
-//! memory. The worst a hostile agent can do is withhold its own trial's
-//! evidence, which it can already do by calling two tools at once.
+//! memory; nor can the forwarder, within [`CONNECTION_LIMIT`] and
+//! [`REQUEST_LIMIT`]. The worst a hostile agent can do is withhold its own
+//! trial's evidence, which it can already do by calling two tools at once,
+//! and, past the connection cap, have its own excess connections refused.
 
 use crate::toolvalues::{Capture, Refusal, Server, Started};
 use axum::body::{Body, Bytes};
@@ -44,8 +52,12 @@ use axum::response::{IntoResponse, Response};
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Context, Poll};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 
 /// The largest request body forwarded, the replies' own bound.
@@ -57,6 +69,17 @@ const FRAME_LIMIT: u64 = 3 * crate::fixture_http::INPUT_LIMIT as u64;
 /// process, with room for an isolation task's identities. A further
 /// connection withholds the trial and closes the socket.
 pub const HELPER_LIMIT: usize = 16;
+/// The most forwarder connections open at once. Each serves one HTTP/1.1
+/// request at a time, so this bounds what the forwarder buffers to this
+/// many request bodies and replies of at most `BODY_LIMIT` each. A further
+/// connection is closed unserved and withholds the trial's values.
+pub const CONNECTION_LIMIT: usize = 32;
+/// The most requests the forwarder observes in one trial: room for every
+/// call the value record can keep ([`crate::toolvalues::CALL_LIMIT`]) and
+/// each session's own initialize, notification and list requests. Past it
+/// the trial's values are withheld and requests are forwarded unread, so
+/// the trial runs on as it would without capture.
+pub const REQUEST_LIMIT: usize = 2 * crate::toolvalues::CALL_LIMIT;
 
 /// A running capture: the forwarder's URL for the agents, the socket path
 /// for the helper, and the tasks to stop once the agents have exited.
@@ -90,6 +113,7 @@ struct Forward {
     upstream_addr: SocketAddr,
     own_port: u16,
     capture: Capture,
+    requests: AtomicUsize,
 }
 
 /// Read the Swarmail catalogue the capture admits, then start both owners.
@@ -110,6 +134,36 @@ pub async fn start(
         return Err("tool_catalogue_unavailable".into());
     }
     let capture = Capture::new(catalogue);
+    let (own, server) = forwarder(mcp_url, upstream_addr, capture.clone()).await?;
+    // From here an early return stops the forwarder it would leave behind.
+    let stop = |e: &str| {
+        server.abort();
+        e.to_string()
+    };
+    let socket = runtime.join("tool-capture.sock");
+    let unix = tokio::net::UnixListener::bind(&socket).map_err(|_| stop("capture_socket_bind"))?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
+            .map_err(|_| stop("capture_socket_bind"))?;
+    }
+    let accept = tokio::spawn(accept_helpers(unix, capture.clone()));
+    Ok(Running {
+        capture,
+        mcp_url: format!("http://{own}/mcp"),
+        socket,
+        tasks: vec![server, accept],
+    })
+}
+
+/// Serve the loopback forwarder in front of `upstream` (Swarmail's `/mcp`)
+/// for one trial's `capture`, within [`CONNECTION_LIMIT`] and
+/// [`REQUEST_LIMIT`].
+async fn forwarder(
+    upstream: &str,
+    upstream_addr: SocketAddr,
+    capture: Capture,
+) -> Result<(SocketAddr, JoinHandle<()>), String> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|_| "capture_forwarder_bind")?;
@@ -123,32 +177,99 @@ pub async fn start(
         .map_err(|_| "capture_forwarder_client")?;
     let state = Arc::new(Forward {
         http,
-        upstream: mcp_url.to_string(),
+        upstream: upstream.to_string(),
         upstream_addr,
         own_port: own.port(),
         capture: capture.clone(),
+        requests: AtomicUsize::new(0),
     });
     let app = axum::Router::new()
         .route("/mcp", axum::routing::any(forward))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .with_state(state);
-    let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
-    let socket = runtime.join("tool-capture.sock");
-    let unix = tokio::net::UnixListener::bind(&socket).map_err(|_| "capture_socket_bind")?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
-            .map_err(|_| "capture_socket_bind")?;
-    }
-    let accept = tokio::spawn(accept_helpers(unix, capture.clone()));
-    Ok(Running {
+    let bounded = Bounded {
+        inner: listener,
+        slots: Arc::new(Semaphore::new(CONNECTION_LIMIT)),
         capture,
-        mcp_url: format!("http://{own}/mcp"),
-        socket,
-        tasks: vec![server, accept],
-    })
+    };
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(bounded, app).await;
+    });
+    Ok((own, server))
+}
+
+/// The forwarder's listener: a connection is served only while it holds
+/// one of [`CONNECTION_LIMIT`] slots, released when the connection ends.
+/// One accepted with no slot free is closed unserved, after the trial's
+/// values are withheld.
+struct Bounded {
+    inner: tokio::net::TcpListener,
+    slots: Arc<Semaphore>,
+    capture: Capture,
+}
+
+impl axum::serve::Listener for Bounded {
+    type Io = Held;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Held, SocketAddr) {
+        loop {
+            let (io, addr) = axum::serve::Listener::accept(&mut self.inner).await;
+            match self.slots.clone().try_acquire_owned() {
+                Ok(slot) => return (Held { _slot: slot, io }, addr),
+                Err(_) => {
+                    self.capture.refuse(Refusal::TrialTooLarge);
+                    drop(io);
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.inner.local_addr()
+    }
+}
+
+/// A served connection and the slot it holds.
+struct Held {
+    _slot: OwnedSemaphorePermit,
+    io: tokio::net::TcpStream,
+}
+
+impl AsyncRead for Held {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Held {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write_vectored(cx, bufs)
+    }
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_shutdown(cx)
+    }
 }
 
 /// Serve up to [`HELPER_LIMIT`] helper connections; one more latches
@@ -256,7 +377,12 @@ async fn forward(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let observed = if method == Method::POST {
+    // Past the request cap the trial's values are withheld and the body is
+    // forwarded unread: the trial runs on exactly as without capture.
+    let observed = if st.requests.fetch_add(1, Ordering::Relaxed) >= REQUEST_LIMIT {
+        st.capture.refuse(Refusal::TrialTooLarge);
+        Vec::new()
+    } else if method == Method::POST {
         st.capture.observe_mcp_body(&body)
     } else {
         Vec::new()
@@ -395,6 +521,89 @@ mod tests {
             assert_eq!(frames(&c, &[bad]).await, 0, "{bad}");
             assert_eq!(reason(&c), Some(Refusal::InvalidArgumentEncoding), "{bad}");
         }
+    }
+
+    /// A stand-in for Swarmail's `/mcp` that answers `ok` and counts.
+    async fn upstream() -> (SocketAddr, Arc<AtomicUsize>) {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = hits.clone();
+        let app = axum::Router::new().route(
+            "/mcp",
+            axum::routing::any(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+                async { "ok" }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (addr, hits)
+    }
+
+    /// One keep-alive request on a raw connection: `true` once the whole
+    /// reply has been read, `false` when the forwarder closes it instead.
+    async fn exchange(stream: &mut tokio::net::TcpStream) -> bool {
+        // A write into a connection already closed fails; the read says so.
+        let _ = stream
+            .write_all(b"GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await;
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        while !got.ends_with(b"\r\n\r\nok") {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut buf))
+                .await
+                .expect("the forwarder answers or closes")
+            {
+                Ok(0) | Err(_) => return false,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+            }
+        }
+        true
+    }
+
+    async fn bounded_forwarder() -> (Capture, SocketAddr, Arc<AtomicUsize>) {
+        let (up, hits) = upstream().await;
+        let c = Capture::new(BTreeSet::from(["t".to_string()]));
+        let (own, _server) = forwarder(&format!("http://{up}/mcp"), up, c.clone())
+            .await
+            .unwrap();
+        (c, own, hits)
+    }
+
+    #[tokio::test]
+    async fn the_forwarder_serves_a_bounded_number_of_connections() {
+        let (c, own, hits) = bounded_forwarder().await;
+        // Exactly at the cap: every connection is served and kept open.
+        let mut held = Vec::new();
+        for _ in 0..CONNECTION_LIMIT {
+            let mut s = tokio::net::TcpStream::connect(own).await.unwrap();
+            assert!(exchange(&mut s).await);
+            held.push(s);
+        }
+        assert_eq!(reason(&c), None);
+        // One over: closed unserved, never forwarded, the trial withheld.
+        let mut over = tokio::net::TcpStream::connect(own).await.unwrap();
+        assert!(!exchange(&mut over).await, "closed unserved");
+        assert_eq!(reason(&c), Some(Refusal::TrialTooLarge));
+        assert_eq!(hits.load(Ordering::SeqCst), CONNECTION_LIMIT);
+        // The connections already held are served on as before.
+        assert!(exchange(&mut held[0]).await);
+        assert_eq!(hits.load(Ordering::SeqCst), CONNECTION_LIMIT + 1);
+    }
+
+    #[tokio::test]
+    async fn the_forwarder_observes_a_bounded_number_of_requests() {
+        let (c, own, hits) = bounded_forwarder().await;
+        let mut s = tokio::net::TcpStream::connect(own).await.unwrap();
+        // Exactly at the cap: every request observed, the record kept.
+        for _ in 0..REQUEST_LIMIT {
+            assert!(exchange(&mut s).await);
+        }
+        assert_eq!(reason(&c), None);
+        // One over: still forwarded and answered, but the trial is withheld.
+        assert!(exchange(&mut s).await);
+        assert_eq!(hits.load(Ordering::SeqCst), REQUEST_LIMIT + 1);
+        assert_eq!(reason(&c), Some(Refusal::TrialTooLarge));
     }
 
     #[tokio::test]

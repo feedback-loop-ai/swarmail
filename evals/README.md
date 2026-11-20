@@ -776,7 +776,11 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   reach it too: nothing a CLI launches can hold a secret the agent cannot
   read. A connection can only report `eval_http` calls (the runner fixes the
   owned tools), holds at most one open call, and a trial accepts at most 16
-  connections; anything else withholds the trial. A forged frame cannot
+  connections; anything else withholds the trial. The Swarmail forwarder is
+  bounded the same way: at most 32 connections open at once (one more is
+  closed unserved) and 512 requests observed per trial (later ones are
+  forwarded unread); exceeding either withholds the trial as
+  `trial_too_large`. A forged frame cannot
   publish a value, because every value must match the digest the engine's
   journal recorded for the agent's real call. The worst an agent can do is
   withhold its own trial's evidence.
@@ -793,8 +797,8 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   companion is `absent` with exactly one reason, checked in this order:
   `capture_missing`, `registry_unavailable`, `unknown_tool`, `value_too_large`
   (one argument over 8192 bytes, original or redacted), `trial_too_large` (over
-  256 calls or 65536 original bytes, a companion over 65536 bytes, or a cut
-  structural record), `invalid_argument_encoding` (not strict UTF-8 JSON,
+  256 calls or 65536 original bytes, a companion over 65536 bytes, a cut
+  structural record, or the forwarder's connection or request cap exceeded), `invalid_argument_encoding` (not strict UTF-8 JSON,
   duplicate or mask-colliding names, a value already spelling the mask, a
   percent decoding that never settles or is not UTF-8, nesting over 32),
   `residual_secret`, `binding_mismatch`,
