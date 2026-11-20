@@ -151,6 +151,46 @@ test, coverage gate and its selftest, publish-guard and seal-branch proofs,
 only `evals/` and `specs/trial-evidence/`, outside the root build and
 coverage denominator. CI and the verify seat own them.
 
+## Review return 3 (decision 0102), fixes
+
+The second panel returned on `1453f9f` with lows only, two of them
+security-relevant. Each is fixed with a test that turns red when the fix is
+reverted (each was checked by reverting it):
+
+| Finding | Fix | Commit | Test |
+|---|---|---|---|
+| A numeric sentinel in another spelling was published (low, security): `150` passed as `1.5e2`, `1.50e2`, `15.0e1` | A literal that is one JSON number is also kept as an exact decimal value (sign, significant digits, power of ten; no floating point). A JSON number of equal value, or a decimal number of equal value in any string and any decoded layer, is refused as `residual_secret`. **The choice for strings:** the registered spelling is masked as text as before, and any other spelling of the value is refused. A literal that is not exactly one JSON number (`0150`, ` 7`) is matched by spelling only | `61f276eb` | `toolvalues::tests::a_numeric_sentinel_is_found_by_value_in_any_spelling` (eight spellings as a number, nested, in a nested JSON string and in text; percent-encoded; a sign before it; negative and zero sentinels; near misses kept). Red with value matching off, and again with only the text check off |
+| A form-encoded space hid a sentinel (low, security): `?q=my+secret` was published for `my secret` | The layer search runs a second reading with `+` as a space after each percent pass; a hit in either reading is a hit, so the form spelling is refused as `residual_secret` | `be8a3a2f` | `toolvalues::tests::a_form_encoded_space_never_hides_a_sentinel` (a path, a query, a form body, a nested JSON body, `%2B` and `%252B`, a key; `%20` and the literal still masked; a benign `+` kept; a row) |
+| Other encodings were undocumented as unsupported | The README and spec AC3 now name the closed set: raw, JSON-escaped, `%XX` with `+` as space, and nested JSON, plus a numeric sentinel's value. Base64, HTML entities and other transformations are not decoded, and operators choose sentinels accordingly | `be8a3a2f` | — (documentation) |
+| The registry could shrink during a trial (low, security): the sentinel file was read only at seal, so rewriting it to `[]` removed a sentinel and the shrunk registry approved the value and the row | The file is read once when the trial's capture starts, before any agent. The sealed registry is that snapshot united with the file at seal (`toolvalues::sealed_registry`), so it only grows. A file unreadable or malformed at seal keeps the snapshot and prints `tool_sentinels_unreadable_at_seal` on stderr; one unreadable at start leaves the trial `registry_unavailable` as before | `b5e94304` | `toolvalues::tests::the_registry_only_grows_during_a_trial` (rewritten to `[]`, a late addition, malformed, removed, the union's cap), and end to end in `tests/tool_values.rs::values_are_redacted_bound_and_never_scored`: the probe, now the matrix's last trial, rewrites the file mid-trial to hold only a late sentinel and sends both. The removed and the late sentinel are both `[REDACTED]`, and the late one is in the canary search. Red with the snapshot dropped, and red with the file at seal ignored |
+
+The late-sentinel debt in `tasks.md` is closed by the last row.
+
+Not changed here, and why:
+
+- The unreadable-at-seal record is a stderr diagnostic, not a field of
+  `capture.json`. Adding one would change the private record's schema for
+  a case that never shrinks the registry.
+- Over-refusal is the price of failing closed. `%2B` is also read as a
+  space, and a numeric sentinel refuses every equal number in text, such as
+  a count that happens to equal it. Both withhold evidence and never publish
+  a secret.
+- The remaining debt in `tasks.md` (capture-off control, contaminated
+  metadata, replay row by row, report-CLI swap cases) is unchanged.
+
+Time added by this return: the three new unit tests under 0.01 s each. The
+end-to-end proof adds no trial; `tests/tool_values.rs` is 13.6 s (was 14.1 s,
+host noise).
+
+Gates after this return (`--locked`, this seat, 2026-11-20, tree
+`b5e94304`, load average 13–17 at start): root `cargo fmt --all -- --check`
+0; evals `cargo fmt --all -- --check` 0; evals `cargo clippy --all-targets
+--locked -- -D warnings` 0; evals `SWARMAIL_BIN=<artifact record of cargo
+build --locked --bin swarmail> cargo test --locked` 0, 600 passed, 0 failed,
+7 ignored, 1550 s wall. No test failed, so none was rerun. As in return 2,
+the root-only gates and `brokkr compile` were not rerun: nothing outside
+`evals/` and `specs/trial-evidence/` changed.
+
 ## Held paths
 
 None touched: `git diff --stat 0d4839f -- Cargo.toml Cargo.lock evals/Cargo.toml evals/Cargo.lock deny.toml scripts .github .brokkr src tests` is empty. No dependency or feature was added.
