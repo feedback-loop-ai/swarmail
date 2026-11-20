@@ -984,10 +984,14 @@ kill with SIGKILL, 3 s to stop), so the ten minutes of 0132 §11.1 hold as three
 build, `targets`, `check`, `footprint` or an admission takes at most 560 + 30 =
 590 s; a chunk that failed, and the targets it left in its scope, at most 560 +
 30 + 1 + 3 + 3 = 597 s; a chunk that sealed at most 560 + 20 × (1 + 0.5) + 3 +
-3 = 596 s. An MCP chunk adds its client scope's judgment (4 s) and, when that
-is not clean, the client scope's kill and stop (3 + 3), so every step after a
-chunk's command is also clipped to one monotonic 600 s from the chunk's start
-(#385). Each chunk is one driver in its own scope: `timeout --kill-after=30
+3 = 596 s. An MCP chunk adds its client scope's judgment (4 s); a client
+scope not proved clean is killed and stopped in the same two `systemctl`
+calls as the holder's scope, so a failed MCP chunk sums 560 + 30 + 4 + 1 + 3 +
+3 = 601 s. Every step after a chunk's command is therefore clipped to one
+monotonic 600 s from the chunk's start, and every query, poll and the client
+judgment also leave the last 6 s to the kill and the stop (#385): at the clip
+what yields is the asking, never either scope's containment (a scope not
+asked is not known gone, so it is killed). Each chunk is one driver in its own scope: `timeout --kill-after=30
 560 taskset -c 0-<n-1> systemd-run --user --scope -p Delegate=yes --unit=… --
 <driver> run …`. On an MCP chunk the driver is the holder, `api-mcp`'s
 child: `api-mcp` runs under the same bound in a sibling client scope of
@@ -1454,40 +1458,60 @@ The operator ruled on 2026-11-19 that this is proved, not excepted. Now:
   `-n` alone); a name already taken, a failed rename, a chunk that landed
   inside a name taken during the rename, or an interrupt before it is exit 2
   with the entry rewritten. A failed chunk's rows and receipts stay unpublished where they
-  were written, and the refusal names that directory. The private index the
+  were written, and the refusal names that directory (in the one case of a
+  name taken during the rename, the rows landed inside the taken directory as
+  `chunks/<coordinate>/<coordinate>.pending`, with no index of the chunk's
+  own at its top, and admission refuses the run). The private index the
   plan described was not needed: the holder, `api-mcp` and the eval crate
   are unchanged, and publishing the directory whole gives the same
   all-or-nothing view of `chunks/`.
 - **The sums.** Every step after a chunk's command, the client judgment
   included, is clipped to one monotonic 600 s from the chunk's start
-  (`/proc/uptime`), so a chunk cut at 590 s still ends within ten minutes;
-  a known survivor is contained before the holder's scope is asked.
+  (`/proc/uptime`), so a chunk cut at 590 s still ends within ten minutes.
+  The judgment, the holder's query and its polls leave the last 6 s to the
+  containment: a client scope not proved clean is killed and stopped in the
+  same one kill and one stop as the holder's, each at its full 3 s, so a
+  chunk cut at 590 s whose client scope holds a survivor has both scopes
+  killed (the holder's query is what the clip skips, and an unasked scope is
+  not clean).
+- **A receipt too large to read.** A receipt past 64 KiB is not read: the
+  ledger's `client` is unknown, its observation says the receipt was
+  truncated and names the file where the whole one stays.
 
-Proofs that run everywhere (`cargo test --locked --test mail_compare`):
-`client_section::*` drives the production judgment against a real fake
+Proofs under `cargo test --locked --test mail_compare` (Linux; the ones that
+launch a fake adapter, read /proc or build a fake cgroup tree carry the
+Linux `cfg_attr` ignore on macOS, where only the portable refusal and the
+`mv` tests run): `client_section::*` drives the production judgment against a real fake
 adapter whose TERM-ignoring child outlives the stop signal (named by pid
 while it still lives) and its reaped control (clean), against file trees
 standing for the mount (nested members, the caps, a vanished pid, missing,
 mismatched, malformed and unreadable evidence, a mount that is not cgroup
-v2), and on a paused clock (a stalled read is cut at its deadline, at most
+v2, a child cgroup removed during the walk as a noted identity race), and on
+a paused clock (a stalled read is cut at its deadline, at most
 five seconds, in no real time). In `v4::*`,
 `collect_v4_names_an_adapter_child_that_outlives_its_mcp_chunk_and_stops`
 and `collect_v4_seals_an_mcp_chunk_whose_adapter_child_was_reaped` run the
 pair through the collector with an event-ordered fake adapter,
 `collect_v4_counts_a_client_judgment_without_evidence_as_two` the unknowns,
 `collect_v4_fits_a_worst_case_mcp_chunk_and_both_judgments_in_ten_minutes`
-the sums on a controlled clock, and
+the sums on a controlled clock (both scopes killed and stopped at their full
+bounds), `collect_v4_records_a_client_receipt_past_64_kib_as_truncated` the
+oversized receipt, `collect_v4_refuses_an_mcp_chunk_that_lands_inside_a_name_taken_during_its_rename`
+the rename race (the racer's own `index.json` in place, so only the
+landed-inside check refuses), and
 `admission_binds_an_mcp_chunks_client_receipt_to_its_run_coordinate_and_verdict`
-the admission. On any platform but Linux the client modes refuse before a
+with `admit_v4_reads_every_entrys_client_evidence` the admission. On any platform but Linux the client modes refuse before a
 workload is spawned (`every_other_platform_refuses_before_a_workload_is_spawned`),
 as `collect-v4` itself does.
 
 **The host proofs, open.** `api_mcp_real_swarmail` and
 `api_mcp_bridge_real_{mailpit,mailhog,mailslurper_source_build}` now run
 `api-mcp` in a client scope made exactly so, judge it with the driver's
-`client-judge` the moment it ends, and assert the receipt clean and placed
-before any other assertion, the MailSlurper `fill_not_reached` pass
-included; a passing run prints `host proof client scope clean: mcp <target>`.
+`client-judge` the moment it ends (under `timeout 4`, as the collector
+does; the chunk's and the judgment's output go to files, so a survivor
+holding an inherited pipe cannot delay the judgment), and require its exit 0
+and a receipt clean and placed before the chunk is admitted or any record
+read, the MailSlurper `fill_not_reached` pass included; a passing run prints `host proof client scope clean: mcp <target>`.
 `the_mcp_host_proofs_are_discovered_and_refuse_without_their_bytes` proves
 locally that all four are discovered and that each, with any one of its
 variables unset, fails naming it. None has run on the delegated host: the

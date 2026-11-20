@@ -81,3 +81,24 @@ The panel returned one medium and lows. This pass fixes the medium and two cheap
 **Still tracked debt (low):** admit_v4's call to `check_client` reached by no local MCP fixture; the real `client-judge` receipt bytes never fed to the script's classifier; no real-kernel survivor proof; a receipt over 64 KiB replaced by a synthetic unknown (still exit 2, unsealed); the R29 historical sentence's wording; plan step 4's stale description (the deviation is recorded above).
 
 Elapsed: the three new rig tests take 0.44 s together.
+
+## Rework after review 3 (implement, 2026-11-20)
+
+The panel returned one medium (guarantees 1) and lows. This pass fixes the medium and most of the lows.
+
+**Fixed:**
+- **Containment skipped at the 600 s clip (guarantees 1, medium; independent 2).** A failed MCP chunk's worst case was 590 + 4 + (3 + 3 client) + (1 + 3 + 3 holder) s. With every step clipped to the chunk's 600 s, the holder's scope was never asked, killed or stopped. Now the client judgment, every `is-active` query and every poll leave the last 6 s to containment (`contain_cs`). A client scope that is not proved clean is killed and stopped in the same `systemctl kill` and `systemctl stop` calls as the holder's scope (`judge_failed <holder> <client>`). At the clip, the holder's query is what gets skipped. A scope that was not asked is not known gone, so it is killed and counts as unclean. `v4::collect_v4_fits_a_worst_case_mcp_chunk_and_both_judgments_in_ten_minutes` now asserts one kill and one stop naming both units, each at `timeout 3`, after the chunk, and no holder query. It fails against the previous script (only the client scope was killed).
+- **Inherited pipes and the judgment's exit in the host proofs (guarantees 2, correctness 6).** `real_chunk` now sends the chunk's stdout and stderr to files and waits only for its exit status. `judge_client` runs `client-judge` under `timeout 4` with `--budget-ms 3500`, as the collector does, with its output in files, and the proof requires exit 0.
+- **"Before any other assertion" (guarantees 3, independent 4).** `real_chunk` now requires the client receipt clean, with exit 0, before `records::admit` or any record is read. The README and R30 wording now say exactly that.
+- **Proofs that run everywhere (guarantees 4).** The README now says which proofs carry the Linux ignore on macOS.
+- **admit_v4's call to check_client (correctness 1, independent 1).** `v4::admit_v4_reads_every_entrys_client_evidence` gives a cost chunk's ledger entry a client receipt, and `admit_v4` must refuse it by name. Deleting the call site turns the test red. The MCP arm's unit binding stays proved at the `check_client` level.
+- **A child cgroup removed mid-walk (correctness 2).** Both `NotFound` arms of `diagnose` now record "removed before its members/children were listed (an identity race)". `complete` stays true, like a vanished pid's race. A cgroup the kernel removed held no process and no child at its removal, so no member is missing from the list, and the first observation keeps the verdict a survivor. Proof: `client_section::a_child_cgroup_removed_during_the_walk_is_a_noted_identity_race`.
+- **An over-cap receipt (correctness 3).** A receipt larger than 64 KiB is not read. The ledger's `client` is unknown, and its observation says the receipt was truncated, gives its size and names the file that keeps it whole. Proof: `v4::collect_v4_records_a_client_receipt_past_64_kib_as_truncated`.
+- **The rename-race test (correctness 4).** The fake `mv` now plants the racer's own `index.json` in the destination it takes, so only the landed-inside check can refuse. The test fails with that check removed (verified).
+- **Wording (correctness 10).** The README now names where a taken-name race leaves the rows.
+
+**Still tracked debt (low):** the driver's `client-enter`/`client-judge` CLI wiring runs only in the open host proofs (bench target). There is no real-kernel survivor proof. No collector-level test drives an interrupted MCP chunk. The budget-exhausted arms of `judge_client` (an inner budget of 0, a synthesized 124) have no test. `mono_cs` reads a malformed clock as 0. The `mv` probe tests `--version`, not `-T`.
+
+**Elapsed:** `client_section::*`, now 18 tests: 0.02 s. The 51 `collect_v4_*` tests: 11.9 s together. The new admission test: 0.05 s. The full `mail_compare` test binary: 54 s (621 passed, 49 ignored). No new test waits out a bound in real time.
+
+**Gates on this head:** fmt, clippy, `cargo test --workspace --locked`, `cargo build --locked --bin swarmail`, the evals fmt, clippy and tests against that binary, `coverage-gate.sh` (exact 100/100/100) and its selftest, `publish-guard-test.sh`, `seal-branch-test.sh` and `cargo deny check licenses` are all clean. `brokkr compile` did not run in this seat: no brokkr binary is installed here, and this diff changes nothing under `.brokkr/`. The pinned compile is the verify seat's.
