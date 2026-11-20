@@ -489,9 +489,10 @@ impl Registry {
     /// literal once its percent escapes are undone (to a fixed point, each
     /// valid escape wherever it stands) is redacted in that decoded form;
     /// otherwise the literal text is masked. A string that already spells
-    /// [`MASK`] is refused: a reader could not tell it from a redaction.
+    /// [`MASK`] in any supported decoding ([`spells_mask`]) is refused,
+    /// literal or not: a reader could not tell it from a redaction.
     fn redact_str(&self, s: &str, depth: usize) -> Result<String, Refusal> {
-        if s.contains(MASK) {
+        if spells_mask(s, depth) {
             return Err(Refusal::InvalidArgumentEncoding);
         }
         let trimmed = s.trim_start();
@@ -600,30 +601,59 @@ impl Registry {
 }
 
 impl Registry {
-    /// Whether a literal appears in the text or in any layer reached by
-    /// undoing JSON escapes and percent escapes, both leniently (a complete
-    /// escape is decoded wherever it stands; anything else stays as written)
-    /// and alternately, to a fixed point. Text whose layers do not settle
-    /// within [`DEPTH_LIMIT`] rounds cannot be proven clean and counts as
-    /// holding one. Every layer is searched as bytes, UTF-8 or not.
+    /// Whether a literal appears in the text or in any layer
+    /// [`search_layers`] reaches. Text whose layers do not settle within
+    /// [`DEPTH_LIMIT`] rounds cannot be proven clean and counts as holding
+    /// one.
     fn found_in_layers(&self, s: &str) -> bool {
-        let mut current = s.as_bytes().to_vec();
-        if self.found_in(&current) {
-            return true;
-        }
-        for _ in 0..DEPTH_LIMIT {
-            let unescaped = unescape_bytes(&current);
-            let next = percent_lenient(&unescaped);
-            if self.found_in(&unescaped) || self.found_in(&next) {
-                return true;
-            }
-            if next == current {
-                return false;
-            }
-            current = next;
-        }
-        true
+        search_layers(s, |b| self.found_in(b)).unwrap_or(true)
     }
+}
+
+/// Search `s` and every layer reached by undoing JSON escapes and percent
+/// escapes, both leniently (a complete escape is decoded wherever it
+/// stands; anything else stays as written) and alternately, to a fixed
+/// point, as bytes, UTF-8 or not. `None` when the layers do not settle
+/// within [`DEPTH_LIMIT`] rounds.
+fn search_layers(s: &str, found: impl Fn(&[u8]) -> bool) -> Option<bool> {
+    let mut current = s.as_bytes().to_vec();
+    if found(&current) {
+        return Some(true);
+    }
+    for _ in 0..DEPTH_LIMIT {
+        let unescaped = unescape_bytes(&current);
+        let next = percent_lenient(&unescaped);
+        if found(&unescaped) || found(&next) {
+            return Some(true);
+        }
+        if next == current {
+            return Some(false);
+        }
+        current = next;
+    }
+    None
+}
+
+/// Whether text spells [`MASK`] in any supported decoding: as written, in
+/// any layer [`search_layers`] reaches, or in any name or string of a JSON
+/// document the text holds (nested to [`DEPTH_LIMIT`]). Such text is
+/// refused whether or not a registered literal is also in it. Text whose
+/// layers never settle is not read for the mask here: the literal search
+/// counts it as holding a literal, so it is refused either way.
+fn spells_mask(s: &str, depth: usize) -> bool {
+    fn within(v: &Json, depth: usize) -> bool {
+        match v {
+            Json::Null | Json::Bool(_) | Json::Num(_) => false,
+            Json::Str(s) => spells_mask(s, depth),
+            Json::Arr(items) => items.iter().any(|i| within(&i.value, depth)),
+            Json::Obj(members) => members
+                .iter()
+                .any(|(k, v)| spells_mask(k, depth) || within(&v.value, depth)),
+        }
+    }
+    let mask = |b: &[u8]| b.windows(MASK.len()).any(|w| w == MASK.as_bytes());
+    search_layers(s, mask).unwrap_or(false)
+        || (depth < DEPTH_LIMIT && parse(s.as_bytes()).is_ok_and(|n| within(&n.value, depth + 1)))
 }
 
 /// Undo JSON string escapes wherever they appear in text, leaving anything

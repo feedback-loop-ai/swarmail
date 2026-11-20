@@ -254,6 +254,47 @@ fn values_that_cannot_be_proven_redacted_refuse_by_reason() {
 }
 
 #[test]
+fn a_decoded_mask_is_refused_without_a_literal() {
+    // No registered literal anywhere: the mask alone, in any supported
+    // decoding, in a value or in a member name, refuses the value.
+    let r = reg();
+    let spellings = [
+        "%5BREDACTED%5D",
+        "x %5BREDACTED%5D y",
+        "%255BREDACTED%255D",
+        "%5bREDACTED%5d",
+        "\\u005bREDACTED\\u005d",
+        "%5Cu005bREDACTED]",
+        r#"{"b":"%5BREDACTED%5D"}"#,
+        r#"[{"%5BREDACTED%5D":1}]"#,
+    ];
+    for spelled in spellings {
+        let quoted = quote(spelled);
+        for doc in [
+            format!(r#"{{"a":{quoted}}}"#),
+            format!(r#"{{{quoted}:1}}"#),
+            format!(r#"{{"n":{{"k":[{quoted}]}}}}"#),
+        ] {
+            assert_eq!(
+                r.redact(doc.as_bytes()),
+                Err(Refusal::InvalidArgumentEncoding),
+                "{doc}"
+            );
+        }
+    }
+    // Near misses are ordinary text and pass through unchanged.
+    for plain in [
+        "%5BREDACTED",
+        "[REDACTE D]",
+        "%5BRED%ACTED%5D",
+        "[redacted]",
+    ] {
+        let doc = format!(r#"{{"a":{}}}"#, quote(plain));
+        assert_eq!(r.redact(doc.as_bytes()).as_deref(), Ok(doc.as_str()));
+    }
+}
+
+#[test]
 fn the_registry_is_bounded_and_fails_closed() {
     let mut r = Registry::new();
     r.register("");

@@ -764,8 +764,10 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   undone alternately, over bytes, to a fixed point; a percent decoding that
   never settles within 32 layers or is not UTF-8 is refused, never masked.
   The re-encoding is re-parsed and every layer searched again. An original
-  value that already spells `[REDACTED]` is refused, so a mask always means
-  a redaction. Only the
+  value or name that already spells `[REDACTED]`, directly or in any of
+  those decodings (`%5BREDACTED%5D`, double-encoded, inside a nested JSON
+  string), is refused whether or not a literal is also in it, so a mask
+  always means a redaction. Only the
   redacted record, or a closed refusal, is written to
   `captures/<trial_id>/capture.json` (0600 under 0700, bound by `manifest.json`).
   Original bytes never reach a disk.
