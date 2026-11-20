@@ -813,7 +813,9 @@ replacement of two files. The protocol v4 draft
 ([`draft/sources.lock.v5.json`](draft/sources.lock.v5.json)) are a draft: this
 driver refuses a *frozen* protocol 4 while `testexec` stays among its owed
 sections (stories B, C and D built `api`, `waits` and `testexec`, below; the
-two `testexec` host proofs have not yet run), and `collect-v4` refuses a
+dispatcher ran story D's two `testexec` host proofs alone at `eb9e34c`, both
+100 of 100, recorded on PR #384, and issue #388's three are open), and
+`collect-v4` refuses a
 draft at `check`, so nothing can
 be collected for a v4 yet. `admit-v4` admits a directory against the protocol it
 is given, a draft included, and the sealed run manifest carries the protocol's
@@ -1301,7 +1303,8 @@ any `rate_limited` row is the cell's own load, never an earlier cell's.
 chunks (`api.mcp.<target>.r<n>.f<fill>`) as `swarmail-evals api-mcp`, each in
 its own scope under the same bound, after the 24 cost and 24 waits chunks.
 The full v4 collection still refuses: story D built the `testexec` section,
-but its two host proofs are open and story E adds its chunks, and the draft
+story D's two host proofs passed on the dispatcher (PR #384), issue #388's
+three are open, and story E adds its chunks, and the draft
 lists every unresolved item, including the
 `not_inspected` API cells above. An adapter serves the draft lock from its
 documents root exactly as the chunk passes it:
@@ -1528,8 +1531,9 @@ proof; rerun it after any change to the stream client or the pin.
 This section makes no comparison claim and collects nothing. It records
 what story D of accepted decision
 [0132](../decisions/0132-mail-comparison-protocol-v4.md) §8 built: the
-reference suite, the `testexec` subcommand, and the two real runs the
-dispatcher still owes.
+reference suite, the `testexec` subcommand, story D's two real runs (passed
+on the dispatcher, PR #384), and issue #388's three, which the dispatcher
+still owes.
 
 **The suite.** One `testexec.<target>.p<parallelism>.r<repetition>` chunk is
 one freshly launched target, held under its enforced leaf by `mail_compare
@@ -1706,34 +1710,76 @@ escalates, the per-test purge and the single after-suite purge, the
 chunk and suite cutoffs with every id unstarted, and an undrainable
 fixture that cuts the suite with no purge. A held handler finishes against
 its own trial, never the next. The subcommand's refusals spawn nothing.
+A subject search a neighbour moved between its pages (issue #388) is
+scripted by request ordinal: the delivery lands inside the search's first
+page handler, after the page is taken. Beside neighbours the poll reads it
+again from page one on its cadence and answers with exactly this test's
+mail (one move, page offsets `0, 250, 0, 250`). Alone, the same move is
+`operation: scan: incomplete` at once (offsets `0, 250`). A search that
+never settles ends on the wait's cutoff as a timeout saying the subject
+listing kept moving, with no fetch and no mutation. An expired wait sends
+no request, and a 500 after a move keeps its status failure. The cutoff
+proofs are ordered by request ordinal too: a first page that never answers
+holds the wait to its cutoff, so the outcome never depends on how many
+scans fit in the budget. A re-read stalled at the cutoff is the moving
+timeout with no late answer. A short complete answer, a move, a short
+complete answer again and a stalled scan keep the ordinary count timeout
+(`saw 5`), and a first scan stalled at the cutoff says there was no time
+left to poll. Only those stalls wait out a budget (2 s each).
 `cargo test --locked --test mail_compare suite_section` checks the golden
 plan, the 1/12 refusal, the coordinate and its owner, the section, the
 control lines, every record field corrupted one at a time, the verdict and
 the recomputed figures.
 `api_section::the_testexec_host_proofs_are_discovered_and_refuse_without_their_bytes`
-lists both host proofs and runs each alone with its variables removed, so
+lists all five host proofs and runs each alone with its variables removed, so
 each fails naming them. `api_section::only_the_holder_enters_the_delegated_scope`
 runs the real `scoped_driver` against a recording `systemd-run`: only
 `hold` is wrapped (`--user --scope --quiet -p Delegate=yes --`), and an
 adapter mode runs in place.
 
-**The two real runs are open.** `api_section::testexec_real_swarmail`
-(the candidate, parallelism 1) and `api_section::testexec_real_mailpit`
-(the lock-pinned Mailpit, parallelism 8) run one full, bounded coordinate
-each on the delegated dispatcher host. Each passes only exactly: exit 0,
+**Story D's two real runs passed; issue #388's three are open.**
+`api_section::testexec_real_swarmail` (the candidate, parallelism 1) and
+`api_section::testexec_real_mailpit` (the lock-pinned Mailpit, parallelism
+8) run one full, bounded coordinate each on the delegated dispatcher host.
+The dispatcher ran both alone at `eb9e34c`, and both passed 100 of 100. Its
+output is in PR #384's comments. Issue #388 adds
+`api_section::testexec_real_mailpit_p32` (Mailpit at parallelism 32, the
+protocol's ceiling), `api_section::testexec_real_smtp4dev_p8` and
+`api_section::testexec_real_smtp4dev_p32` (smtp4dev 3.16.1 as pinned in
+lock v5, at 8 and 32 workers). Both targets' subject searches are
+store-wide, and twenty trials share each subject. Before #388, a search
+that moved between its pages ended the wait as a harness loss. The poll
+now reads it again inside the wait's cutoff, only beside neighbours. All
+three passed on the dispatcher host at `57a54ec`; they stay open until the
+dispatcher's run at the final head, whose receipts it attaches to the pull
+request. The poll's cutoff is the work deadline less `REQUEST_BOUND`, and
+since #388 it also bounds every page of every poll scan. The native
+await's HTTP call and the stream's scans are still bounded by the full
+work deadline. So a poll answer still in flight at the cutoff is refused,
+where an await's arriving then would be taken: one window, one scan wide.
+The moving-search design's acceptance criterion 3 requires it, so it is
+stated here and not changed. Each proof passes only exactly, or the
+dispatcher reports the documented outcome it saw verbatim: its
+denominator, reason, exit and teardown evidence. Exactly means exit 0,
 100 of 100 scored passes with cleanup proved, the chunk sealed and admitted
 by `admit_chunk` (the executable rechecked by digest, the report recomputed),
 the suite window measured with its counters, and every cleanup receipt
 proving `cgroup_removed`. They need `MAIL_COMPARE_BIN` (the built driver),
-`SWARMAIL_EVALS_BIN` (the built eval binary) and, for the second,
-`MAIL_COMPARE_MAILPIT` (the pinned executable). The candidate is Cargo's own
+`SWARMAIL_EVALS_BIN` (the built eval binary) and, for a competitor,
+`MAIL_COMPARE_MAILPIT` or `MAIL_COMPARE_SMTP4DEV` (the pinned executable:
+Mailpit's `mailpit`, smtp4dev's `Rnwood.Smtp4dev` member of the lock's
+archive). The candidate is Cargo's own
 `swarmail`, which `pinned_args` supplies. Without them each fails naming
-them. Only `scoped_driver` puts the driver's `hold` in a delegated scope;
-Cargo, the test binary and the eval client stay outside it. The seat that
-built this story had no delegated scope: the Swarmail proof failed naming
-the missing user bus, and the holder alone refused with `resources: no
-delegated cgroup v2 (cpu memory pids)`. Neither run has executed on the
-host. The dispatcher runs each alone and attaches its output, exit and load
+them. A proof reads only its own competitor's variable, but the block
+below exports and checks both, so as written it needs both pinned
+executables; a dispatcher running only one competitor's proofs drops the
+other's `export` and `pinned` lines. Only `scoped_driver` puts the
+driver's `hold` in a delegated scope; Cargo, the test binary and the eval
+client stay outside it. The seat that built story D had no delegated
+scope: the Swarmail proof failed naming the missing user bus, and the
+holder alone refused with `resources: no delegated cgroup v2 (cpu memory
+pids)`. The dispatcher runs each alone,
+with at most 32 workers and 600 s, and attaches its output, exit and load
 before and after to the pull request before merge:
 
 ```bash
@@ -1745,11 +1791,16 @@ bin=$(cargo test --locked --test mail_compare --no-run --message-format=json \
   | grep -o '"executable":"[^"]*mail_compare-[^"]*"' | tail -n1 | cut -d'"' -f4)
 export MAIL_COMPARE_BIN="$drv" SWARMAIL_EVALS_BIN="$PWD/evals/target/debug/swarmail-evals"
 export MAIL_COMPARE_MAILPIT=/path/to/the/pinned/mailpit
-# record the candidate's digest; the pinned Mailpit must match lock v5
+export MAIL_COMPARE_SMTP4DEV=/path/to/the/pinned/Rnwood.Smtp4dev
+# record the candidate's digest; each pinned competitor must match lock v5
 sha256sum target/debug/swarmail
-test "$(sha256sum "$MAIL_COMPARE_MAILPIT" | cut -d' ' -f1)" = \
-  "$(jq -r '.entries[] | select(.target=="mailpit") | .pin.artifact.executable_sha256' \
-     docs/evals/draft/sources.lock.v5.json)" || exit 2
+pinned() {
+  test "$(sha256sum "$2" | cut -d' ' -f1)" = \
+    "$(jq -r --arg t "$1" '.entries[] | select(.target==$t) | .pin.artifact.executable_sha256' \
+       docs/evals/draft/sources.lock.v5.json)"
+}
+pinned mailpit "$MAIL_COMPARE_MAILPIT" || exit 2
+pinned smtp4dev "$MAIL_COMPARE_SMTP4DEV" || exit 2
 run_one() (
   cat /proc/loadavg || exit 2
   rc=0
@@ -1760,6 +1811,10 @@ run_one() (
 run_one api_section::testexec_real_swarmail
 # a separate dispatcher invocation
 run_one api_section::testexec_real_mailpit
+# issue #388: each in a separate dispatcher invocation, each open
+run_one api_section::testexec_real_mailpit_p32
+run_one api_section::testexec_real_smtp4dev_p8
+run_one api_section::testexec_real_smtp4dev_p32
 ```
 
 A passing run prints `host proof passed: testexec.<target>.p<n>.r0: 100 of

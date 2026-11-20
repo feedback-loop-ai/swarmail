@@ -269,7 +269,20 @@ impl<'a> NativeSource<'a> {
     /// mail an earlier scan returned and this one did not (cleanup's own
     /// listings, [`owned_listing`](Self::owned_listing), never do).
     async fn scan(&self, token: Option<&str>) -> Result<Vec<(Scope, Summary)>, Failure> {
-        let out = self.collect(token).await.map_err(|e| op("scan", e))?;
+        self.scan_by(token, self.deadline)
+            .await
+            .map_err(|e| op("scan", e))
+    }
+
+    /// [`scan`](Self::scan) with every page inside `by`, the pager's own
+    /// error kept typed. Only a complete reading reaches the accounting: a
+    /// refused one folds nothing and marks nothing missing.
+    async fn scan_by(
+        &self,
+        token: Option<&str>,
+        by: Instant,
+    ) -> Result<Vec<(Scope, Summary)>, OpError> {
+        let out = self.collect(token, by).await?;
         // Own mail an earlier scan returned and this one did not.
         let now = self.clock.now_ns();
         let keys: BTreeSet<Key> = out.keys().cloned().collect();
@@ -288,6 +301,7 @@ impl<'a> NativeSource<'a> {
     async fn collect(
         &self,
         token: Option<&str>,
+        by: Instant,
     ) -> Result<BTreeMap<Key, (Scope, Summary)>, OpError> {
         let mut out = BTreeMap::new();
         let scopes = self.scopes();
@@ -298,13 +312,19 @@ impl<'a> NativeSource<'a> {
         };
         for scope in scopes.iter().take(take) {
             let mut spend = Spend::default();
-            let items = self
-                .client
-                .candidates(scope, token, self.deadline, &mut spend)
-                .await?;
+            let items = self.client.candidates(scope, token, by, &mut spend).await?;
             self.fold(scope, items, token, &mut out);
         }
         Ok(out)
+    }
+
+    /// Whether a listing under `token` that moved while it was read may be
+    /// read again: only one that spans other tests' mail (store-wide, or a
+    /// subject search that takes no recipient) and only while other tests
+    /// share the store and so can move it. Alone on the store, a moving
+    /// listing has no innocent cause and stays a failure.
+    fn rereads(&self, token: Option<&str>) -> bool {
+        self.neighbours && self.client.scope_free(token)
     }
 
     /// Cleanup's reading of every message this test owns, decoys and
@@ -321,10 +341,10 @@ impl<'a> NativeSource<'a> {
     /// fail at once, as before. Only reading repeats: no mutation is ever
     /// authorized by a failed one.
     async fn owned_listing(&self) -> Result<Vec<(Scope, Summary)>, Failure> {
-        let retry = self.neighbours && self.client.scope_free(None);
+        let retry = self.rereads(None);
         let mut moved = 0u32;
         loop {
-            match self.collect(None).await {
+            match self.collect(None, self.deadline).await {
                 Ok(out) => return Ok(out.into_values().collect()),
                 Err(OpError::Incomplete)
                     if retry && Instant::now() + RESCAN_PAUSE < self.deadline =>
@@ -344,6 +364,29 @@ impl<'a> NativeSource<'a> {
         }
     }
 
+    /// The poll wait (§7.2): complete scans on the target's cadence until
+    /// the required count matches, inside one cutoff, the test's work
+    /// deadline less [`REQUEST_BOUND`] (the tail the fetch needs). An
+    /// already-expired wait, or a wake past the cutoff, issues no request;
+    /// every page of every scan is bounded by the cutoff.
+    ///
+    /// A subject search that spans other tests' mail (Mailpit's and
+    /// smtp4dev's search take no recipient) moves when a neighbour delivers
+    /// under the same subject between its pages, and the pager refuses it as
+    /// incomplete (issue #388). Beside neighbours that refusal is "not
+    /// answered yet": nothing is folded, fetched or mutated, and the wait
+    /// polls again on its own cadence. A wait whose cutoff comes while the
+    /// listing is still moving is the wait's timeout, saying so; one whose
+    /// cutoff cancels a scan after a short complete answer keeps the
+    /// ordinary count diagnostic. Alone on the store, an unfiltered or a
+    /// recipient-scoped listing, and every other error keep their typed
+    /// failure, as before.
+    ///
+    /// The page bound is the poll's alone: the native await's HTTP call and
+    /// the stream's scans are still bounded by the full work deadline. So a
+    /// poll answer still in flight at the cutoff is refused where an
+    /// await's arriving then would be taken, a window one scan wide. Spec
+    /// AC3 (issue #388) requires it; it is stated, not an oversight.
     async fn poll(
         &self,
         token: Option<&str>,
@@ -356,19 +399,62 @@ impl<'a> NativeSource<'a> {
             .deadline
             .checked_sub(REQUEST_BOUND)
             .unwrap_or(self.deadline);
+        let reread = token.is_some() && self.rereads(token);
+        // What the last attempt said: nothing yet, a short complete answer,
+        // or this many consecutive listings that moved while read.
+        let mut last = Unanswered::Nothing;
         loop {
-            let found = self.scan(token).await?;
-            if found.len() >= count {
-                return Ok((found, "poll".into()));
+            if Instant::now() >= ends {
+                return Err(last.timeout(count, token));
+            }
+            match self.scan_by(token, ends).await {
+                Ok(found) if found.len() >= count => return Ok((found, "poll".into())),
+                Ok(found) => last = Unanswered::Short(found.len()),
+                Err(OpError::Incomplete) if reread => last = last.moved(),
+                // Every page is bounded by `ends`, so the pager's timeout is
+                // this wait's own cutoff, never an independent cause: the
+                // wait's timeout, saying what the last attempt saw (still
+                // moving, a short count, or nothing complete yet).
+                Err(OpError::Timeout) => return Err(last.timeout(count, token)),
+                Err(e) => return Err(op("scan", e)),
             }
             if Instant::now() + interval >= ends {
-                return Err(Failure::Timeout(format!(
-                    "waited for {count} mail(s) matching {token:?}; saw {}",
-                    found.len()
-                )));
+                return Err(last.timeout(count, token));
             }
             tokio::time::sleep(interval).await;
         }
+    }
+}
+
+/// Why a poll wait has no answer yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unanswered {
+    Nothing,
+    Short(usize),
+    Moving(u32),
+}
+
+impl Unanswered {
+    fn moved(self) -> Self {
+        match self {
+            Unanswered::Moving(n) => Unanswered::Moving(n + 1),
+            _ => Unanswered::Moving(1),
+        }
+    }
+
+    fn timeout(self, count: usize, token: Option<&str>) -> Failure {
+        Failure::Timeout(match self {
+            Unanswered::Nothing => {
+                format!("no time left to poll for {count} mail(s) matching {token:?}")
+            }
+            Unanswered::Short(n) => {
+                format!("waited for {count} mail(s) matching {token:?}; saw {n}")
+            }
+            Unanswered::Moving(n) => format!(
+                "waited for {count} mail(s) matching {token:?}; the subject listing kept moving \
+                 ({n} consecutive listing(s) moved while read)"
+            ),
+        })
     }
 }
 
