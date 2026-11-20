@@ -164,6 +164,14 @@ enum Cmd {
         /// One more absolute regular file bound read-only into the boundary.
         #[arg(long, hide = true, requires = "isolated")]
         isolated_expose: Vec<PathBuf>,
+        /// Keep the redacted argument values of Swarmail's MCP tools and
+        /// eval_http under this private root (decision 0119 §4; never scored).
+        #[arg(long, requires = "tool_sentinels")]
+        capture_tool_values: Option<PathBuf>,
+        /// A JSON array of sentinel literals redacted beside the fixture
+        /// admin bearer (requires --capture-tool-values).
+        #[arg(long, requires = "capture_tool_values")]
+        tool_sentinels: Option<PathBuf>,
         /// The external agent's program and literal arguments (no shell).
         #[arg(last = true)]
         argv: Vec<OsString>,
@@ -217,6 +225,16 @@ enum Cmd {
         /// The frozen product record.
         #[arg(long, requires = "target")]
         product: Option<PathBuf>,
+        /// Value capture (decision 0119 §4): a fresh private root (it must
+        /// not exist) for every trial's redacted argument values of
+        /// Swarmail's MCP tools and eval_http. Never scored; read only by
+        /// `report --tool-values-from`.
+        #[arg(long, requires = "tool_sentinels")]
+        capture_tool_values: Option<PathBuf>,
+        /// A JSON array of sentinel literals redacted beside each trial's
+        /// fixture admin bearer.
+        #[arg(long, requires = "capture_tool_values")]
+        tool_sentinels: Option<PathBuf>,
     },
     /// Probe one target's MCP contract and write it as JSON (free).
     ComparisonContract {
@@ -366,6 +384,8 @@ fn trial_request(cmd: &Cmd) -> Result<TrialRequest, ExitCode> {
         public_argv,
         wrapper_profile,
         worker_context,
+        capture_tool_values,
+        tool_sentinels,
         ..
     } = cmd
     else {
@@ -408,6 +428,10 @@ fn trial_request(cmd: &Cmd) -> Result<TrialRequest, ExitCode> {
         agent_config_id: agent_config_id.clone(),
         public_argv: *public_argv,
         wrapper_profile: *wrapper_profile,
+        capture: capture_tool_values
+            .clone()
+            .zip(tool_sentinels.clone())
+            .map(|(root, sentinels)| runner::CapturePlan { root, sentinels }),
         ..Default::default()
     };
     if let Some(context) = worker_context {
@@ -511,6 +535,8 @@ fn inner_args(cmd: &Cmd, request: &isolation::Request) -> Vec<OsString> {
         worker_context,
         isolated: _,
         isolated_expose: _,
+        capture_tool_values,
+        tool_sentinels,
         argv,
     } = cmd
     else {
@@ -547,6 +573,14 @@ fn inner_args(cmd: &Cmd, request: &isolation::Request) -> Vec<OsString> {
         }),
     );
     flag("worker-context", worker_context.clone().map(OsString::from));
+    flag(
+        "capture-tool-values",
+        capture_tool_values.clone().map(PathBuf::into_os_string),
+    );
+    flag(
+        "tool-sentinels",
+        tool_sentinels.clone().map(PathBuf::into_os_string),
+    );
     if *public_argv {
         args.push("--public-argv".into());
     }
@@ -861,6 +895,8 @@ fn main() -> ExitCode {
             target_bin,
             sources,
             product,
+            capture_tool_values,
+            tool_sentinels,
         } => {
             if concurrency != 1 {
                 eprintln!("swarmail-evals: harness error: concurrency_unsupported");
@@ -901,6 +937,17 @@ fn main() -> ExitCode {
                     Some(bound)
                 }
             };
+            if let Some((root, sentinels)) = capture_tool_values.zip(tool_sentinels) {
+                match prepare_capture(&root, &sentinels, target.as_deref()) {
+                    Ok(plan) => {
+                        let _ = MATRIX_CAPTURE.set(plan);
+                    }
+                    Err(category) => {
+                        eprintln!("swarmail-evals: harness error: {category}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
             if let Some(bin) = &brokkr
                 && let Err(category) = brokkr_mode_admissible(
                     bin,
@@ -1896,6 +1943,37 @@ fn signal_trial(pid: u32) -> Result<(), String> {
     }
 }
 
+/// The matrix's value-capture plan (decision 0119 §4), set once before any
+/// trial: the fresh private root and the sentinel file, both absolute.
+static MATRIX_CAPTURE: std::sync::OnceLock<(PathBuf, PathBuf)> = std::sync::OnceLock::new();
+
+/// Admit `matrix --capture-tool-values`: a Swarmail target only, a readable
+/// sentinel file, and a root that does not exist yet, created here 0700.
+fn prepare_capture(
+    root: &std::path::Path,
+    sentinels: &std::path::Path,
+    target: Option<&str>,
+) -> Result<(PathBuf, PathBuf), &'static str> {
+    if target.is_some_and(|t| t != "swarmail") {
+        return Err("capture_requires_swarmail_target");
+    }
+    let sentinels = std::fs::canonicalize(sentinels).map_err(|_| "tool_sentinels_unreadable")?;
+    swarmail_evals::toolvalues::read_sentinels(&sentinels)
+        .map_err(|_| "tool_sentinels_unreadable")?;
+    if std::fs::symlink_metadata(root).is_ok() {
+        return Err("capture_root_exists");
+    }
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(root)
+        .map_err(|_| "capture_root_unavailable")?;
+    std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| "capture_root_unavailable")?;
+    let root = std::fs::canonicalize(root).map_err(|_| "capture_root_unavailable")?;
+    Ok((root, sentinels))
+}
+
 /// The one argument list (after the `trial` subcommand) a `swarmail-evals trial` worker is given, whether
 /// the matrix spawns it directly or writes it into a brokkr slot's request.
 fn trial_args(
@@ -1912,6 +1990,14 @@ fn trial_args(
         .into_iter()
         .map(OsString::from)
         .collect();
+    if let Some((root, sentinels)) = MATRIX_CAPTURE.get() {
+        args.extend([
+            "--capture-tool-values".into(),
+            root.into(),
+            "--tool-sentinels".into(),
+            sentinels.into(),
+        ]);
+    }
     if let Some(ms) = deadline_ms {
         args.extend(["--deadline-ms".into(), ms.to_string().into()]);
     }

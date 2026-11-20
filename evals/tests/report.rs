@@ -2630,7 +2630,12 @@ fn tree(root: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
             if path.is_dir() {
                 stack.push(path);
             } else {
-                let rel = path.strip_prefix(root).unwrap().to_str().unwrap().to_string();
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string();
                 out.insert(rel, std::fs::read(&path).unwrap());
             }
         }
@@ -2645,7 +2650,10 @@ fn the_default_report_is_byte_identical_to_the_pre_change_contract() {
     let facts = golden_facts();
     let plain = run_report(&rows, &[]);
     assert!(plain.status.success(), "{}", stderr(&plain));
-    assert_eq!(plain.stdout, std::fs::read(data.join("report.json")).unwrap());
+    assert_eq!(
+        plain.stdout,
+        std::fs::read(data.join("report.json")).unwrap()
+    );
     let joined = run_report(&rows, &["--journal".as_ref(), facts.as_os_str()]);
     assert_eq!(
         joined.stdout,

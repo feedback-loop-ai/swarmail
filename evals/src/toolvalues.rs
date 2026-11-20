@@ -329,14 +329,18 @@ impl Reader<'_> {
     }
 }
 
+/// A document [`parse`] refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Invalid;
+
 /// Parse one whole JSON document strictly.
-pub fn parse(bytes: &[u8]) -> Result<Node, ()> {
-    std::str::from_utf8(bytes).map_err(|_| ())?;
+pub fn parse(bytes: &[u8]) -> Result<Node, Invalid> {
+    std::str::from_utf8(bytes).map_err(|_| Invalid)?;
     let mut r = Reader { b: bytes, i: 0 };
-    let node = r.value(0)?;
+    let node = r.value(0).map_err(|_| Invalid)?;
     r.ws();
     if r.i != bytes.len() {
-        return Err(());
+        return Err(Invalid);
     }
     Ok(node)
 }
@@ -420,8 +424,7 @@ impl Registry {
         if literal.is_empty() || self.literals.iter().any(|l| l == literal) {
             return;
         }
-        if self.literals.len() >= REGISTRY_LITERALS || literal.len() > REGISTRY_BYTES - self.bytes
-        {
+        if self.literals.len() >= REGISTRY_LITERALS || literal.len() > REGISTRY_BYTES - self.bytes {
             self.complete = false;
             return;
         }
@@ -618,21 +621,21 @@ pub fn registry(bearer: &str, sentinels: Option<&Path>) -> Registry {
     match sentinels.map(read_sentinels) {
         None => {}
         Some(Ok(list)) => list.iter().for_each(|s| r.register(s)),
-        Some(Err(())) => r.poison(),
+        Some(Err(_)) => r.poison(),
     }
     r
 }
 
 /// Read a sentinel file: a JSON array of at most [`REGISTRY_LITERALS`]
 /// nonempty strings within [`REGISTRY_BYTES`] of file.
-pub fn read_sentinels(path: &Path) -> Result<Vec<String>, ()> {
-    let dir = path.parent().ok_or(())?;
-    let name = path.file_name().and_then(|n| n.to_str()).ok_or(())?;
-    let dir = artifacts::resolve_root(dir).map_err(|_| ())?;
-    let bytes = artifacts::read_file(&dir, name, REGISTRY_BYTES).map_err(|_| ())?;
-    let list: Vec<String> = serde_json::from_slice(&bytes).map_err(|_| ())?;
+pub fn read_sentinels(path: &Path) -> Result<Vec<String>, Invalid> {
+    let dir = path.parent().ok_or(Invalid)?;
+    let name = path.file_name().and_then(|n| n.to_str()).ok_or(Invalid)?;
+    let dir = artifacts::resolve_root(dir).map_err(|_| Invalid)?;
+    let bytes = artifacts::read_file(&dir, name, REGISTRY_BYTES).map_err(|_| Invalid)?;
+    let list: Vec<String> = serde_json::from_slice(&bytes).map_err(|_| Invalid)?;
     if list.len() > REGISTRY_LITERALS || list.iter().any(String::is_empty) {
-        return Err(());
+        return Err(Invalid);
     }
     Ok(list)
 }
@@ -1036,7 +1039,9 @@ impl Disposition {
     /// The trial's entry in the value index.
     pub fn index_entry(&self) -> Value {
         match self {
-            Self::Published(b, _) => json!({"path": b.path, "length": b.length, "sha256": b.sha256}),
+            Self::Published(b, _) => {
+                json!({"path": b.path, "length": b.length, "sha256": b.sha256})
+            }
             Self::Absent(reason) => json!({"absent": reason}),
         }
     }
@@ -1168,7 +1173,8 @@ pub fn write_transcripts(
                 *skipped.entry("leaf_too_large").or_default() += 1;
                 continue;
             };
-            let binding = artifacts::publish(&tdir, &format!("{}.json", row.trial_id), &leaf_bytes)?;
+            let binding =
+                artifacts::publish(&tdir, &format!("{}.json", row.trial_id), &leaf_bytes)?;
             selected.push(json!({
                 "trial_id": row.trial_id,
                 "path": format!("{TRANSCRIPTS_DIR}/{}", binding.path),

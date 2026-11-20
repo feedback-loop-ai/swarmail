@@ -249,7 +249,69 @@ fn line(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
+/// The helper's side of value capture (decision 0119 §4): before a
+/// `tools/call` is dispatched, its tool name and the exact bytes of its
+/// `arguments` are sent to the runner's private socket, and its end after
+/// the reply. A lost observer never blocks, retries or alters a call: the
+/// runner then lacks the observation and withholds the trial's values.
+pub struct Observer {
+    stream: Option<std::os::unix::net::UnixStream>,
+}
+
+impl Observer {
+    pub fn connect(path: Option<&std::path::Path>) -> Self {
+        let stream = path
+            .and_then(|p| std::os::unix::net::UnixStream::connect(p).ok())
+            .inspect(|s| {
+                let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
+                let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+            });
+        Self { stream }
+    }
+    fn send(&mut self, frame: &Value) {
+        if let Some(stream) = &mut self.stream {
+            let mut line = frame.to_string().into_bytes();
+            line.push(b'\n');
+            // The runner acknowledges each frame once recorded, so the
+            // capture's order is the order the calls happened in. A missing
+            // acknowledgement drops the observer; the call goes ahead.
+            let mut ack = [0u8; 1];
+            if stream.write_all(&line).is_err()
+                || std::io::Read::read_exact(stream, &mut ack).is_err()
+            {
+                self.stream = None;
+            }
+        }
+    }
+    /// Observe one input line before its dispatch: every `tools/call` in it.
+    pub fn start(&mut self, line: &[u8]) -> bool {
+        if self.stream.is_none() {
+            return false;
+        }
+        let Ok(message) = crate::toolvalues::parse(line) else {
+            return false;
+        };
+        if message.get("method").map(|m| &m.value)
+            != Some(&crate::toolvalues::Json::Str("tools/call".into()))
+        {
+            return false;
+        }
+        match crate::toolvalues::call_parts(&message) {
+            Some((name, span)) => {
+                let arguments = String::from_utf8_lossy(&line[span]).into_owned();
+                self.send(&json!({"op": "start", "tool": name, "arguments": arguments}));
+            }
+            None => self.send(&json!({"op": "unreadable"})),
+        }
+        true
+    }
+    pub fn end(&mut self) {
+        self.send(&json!({"op": "end"}));
+    }
+}
+
 pub async fn serve(inputs: Inputs) -> Result<(), String> {
+    let mut observer = Observer::connect(inputs.capture_socket.as_deref());
     let helper = Helper::new(inputs)?;
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
@@ -257,7 +319,12 @@ pub async fn serve(inputs: Inputs) -> Result<(), String> {
     let mut out = stdout.lock();
     while let Some(bytes) = line(&mut reader)? {
         let message: Value = serde_json::from_slice(&bytes).map_err(|_| "helper_json_invalid")?;
-        if let Some(reply) = helper.rpc(message).await {
+        let observed = observer.start(&bytes);
+        let reply = helper.rpc(message).await;
+        if observed {
+            observer.end();
+        }
+        if let Some(reply) = reply {
             serde_json::to_writer(&mut out, &reply).map_err(|_| "helper_output_failed")?;
             out.write_all(b"\n")
                 .and_then(|_| out.flush())
