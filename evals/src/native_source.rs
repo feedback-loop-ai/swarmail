@@ -376,9 +376,17 @@ impl<'a> NativeSource<'a> {
     /// incomplete (issue #388). Beside neighbours that refusal is "not
     /// answered yet": nothing is folded, fetched or mutated, and the wait
     /// polls again on its own cadence. A wait whose cutoff comes while the
-    /// listing is still moving is the wait's timeout, saying so. Alone on
-    /// the store, an unfiltered or a recipient-scoped listing, and every
-    /// other error keep their typed failure, as before.
+    /// listing is still moving is the wait's timeout, saying so; one whose
+    /// cutoff cancels a scan after a short complete answer keeps the
+    /// ordinary count diagnostic. Alone on the store, an unfiltered or a
+    /// recipient-scoped listing, and every other error keep their typed
+    /// failure, as before.
+    ///
+    /// The page bound is the poll's alone: the native await's HTTP call and
+    /// the stream's scans are still bounded by the full work deadline. So a
+    /// poll answer still in flight at the cutoff is refused where an
+    /// await's arriving then would be taken, a window one scan wide. Spec
+    /// AC3 (issue #388) requires it; it is stated, not an oversight.
     async fn poll(
         &self,
         token: Option<&str>,
@@ -403,10 +411,11 @@ impl<'a> NativeSource<'a> {
                 Ok(found) if found.len() >= count => return Ok((found, "poll".into())),
                 Ok(found) => last = Unanswered::Short(found.len()),
                 Err(OpError::Incomplete) if reread => last = last.moved(),
-                // The cutoff cancelled a re-read of a moving listing.
-                Err(OpError::Timeout) if matches!(last, Unanswered::Moving(_)) => {
-                    return Err(last.timeout(count, token));
-                }
+                // Every page is bounded by `ends`, so the pager's timeout is
+                // this wait's own cutoff, never an independent cause: the
+                // wait's timeout, saying what the last attempt saw (still
+                // moving, a short count, or nothing complete yet).
+                Err(OpError::Timeout) => return Err(last.timeout(count, token)),
                 Err(e) => return Err(op("scan", e)),
             }
             if Instant::now() + interval >= ends {

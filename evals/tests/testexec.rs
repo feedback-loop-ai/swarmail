@@ -5,9 +5,11 @@
 //! id), Inbucket (mailbox-local ids) and GreenMail (only a global purge).
 //! Every flow is the existing fixture flow solved by the existing oracle and
 //! judged by the existing scorer; nothing here is mocked between them. The
-//! held, enforced chunks are the host proofs
-//! `api_section::testexec_real_swarmail` and
-//! `api_section::testexec_real_mailpit` in the driver's suite.
+//! held, enforced chunks are the `api_section::testexec_real_*` host proofs
+//! in the driver's suite (story D's two and issue #388's three). The
+//! authoritative list is
+//! `api_section::the_testexec_host_proofs_are_discovered_and_refuse_without_their_bytes`,
+//! and `docs/evals/README.md` gives the command for each.
 
 mod common;
 
@@ -1204,37 +1206,88 @@ async fn a_subject_search_a_neighbour_moved_is_polled_again_only_beside_neighbou
     assert_eq!(src.owned_seen(), 0);
 }
 
+/// The poll time the cutoff proofs below leave before the reserved tail.
+/// Generous on purpose: every outcome is ordered by request ordinal (a
+/// stalled first page, never a count of scans that fit), so the budget
+/// only has to hold a few two-page scans on a loaded host, and a passing
+/// test pays it once per stall that holds the wait to its cutoff.
+const CUTOFF_BUDGET: Duration = Duration::from_secs(2);
+
+/// A source polling every `interval_ms`, `budget` before its reserved tail,
+/// and that cutoff.
+fn polling<'a>(
+    client: &'a clients::Client,
+    s: &Scripted,
+    me: &suite::PlannedTrial,
+    interval_ms: u64,
+    budget: Duration,
+) -> (NativeSource<'a>, Instant) {
+    let deadline = waiting(budget);
+    let ends = deadline.0 - swarmail_evals::native_source::REQUEST_BOUND;
+    let src = NativeSource::new(
+        client,
+        s.http,
+        WaitMethod::Poll { interval_ms },
+        me,
+        deadline,
+    )
+    .beside_neighbours(true);
+    (src, ends)
+}
+
 #[tokio::test]
 async fn a_subject_search_that_never_settles_ends_on_the_waits_deadline_untouched() {
     let me = crowd();
+    // A cadence longer than the whole budget: one moved listing, and the
+    // wait ends at once as the moving timeout, with no second request.
     let s = crowded_search(&me).await;
     s.store.lock().unwrap().move_search_on = (1..10_000).collect();
     let client = clients::Client::new("mailpit", s.http).unwrap();
+    let (mut src, _) = polling(&client, &s, &me, 60_000, CUTOFF_BUDGET);
+    let e = wait(&mut src, 5).await.unwrap_err();
+    assert!(e.starts_with("timeout: "), "{e}");
+    assert!(
+        e.contains("the subject listing kept moving (1 consecutive"),
+        "{e}"
+    );
+    {
+        let st = s.store.lock().unwrap();
+        assert_eq!((st.search_moves, st.search_firsts), (1, 1), "{e}");
+        assert_eq!(st.search_starts, [0, 250]);
+        assert_eq!(st.fetches, 0);
+    }
+    // Every first page moves, and the third attempt's is still in flight
+    // at the cutoff: exactly three attempts, however fast the host is.
+    let s = crowded_search(&me).await;
+    {
+        let mut st = s.store.lock().unwrap();
+        st.move_search_on = (1..10_000).collect();
+        st.stall_search_on = [3].into();
+    }
+    let client = clients::Client::new("mailpit", s.http).unwrap();
     let log = Mutations::default();
-    let deadline = waiting(Duration::from_millis(300));
-    let ends = deadline.0 - swarmail_evals::native_source::REQUEST_BOUND;
-    let mut src = searcher(&client, &s, &me, deadline, true);
-    let e = tokio::time::timeout(Duration::from_secs(10), src.wait_emails(Some(CONFIRM), 5))
-        .await
-        .expect("the wait returns inside its bound")
-        .unwrap_err();
+    let (mut src, ends) = polling(&client, &s, &me, 20, CUTOFF_BUDGET);
+    let e = wait(&mut src, 5).await.unwrap_err();
     // The wait's own cutoff, never past it, and a timeout that says why.
     assert!(Instant::now() <= ends + REQUEST_SLACK, "{e}");
     assert!(e.starts_with("timeout: "), "{e}");
-    assert!(e.contains("the subject listing kept moving"), "{e}");
+    assert!(
+        e.contains("the subject listing kept moving (2 consecutive"),
+        "{e}"
+    );
     match &src.failure {
         Some(Failure::Timeout(w)) => assert!(w.contains("kept moving"), "{w}"),
         f => panic!("{f:?}"),
     }
     let st = s.store.lock().unwrap();
+    assert!(
+        st.stall_search_on.is_empty(),
+        "the cutoff came before the third attempt; widen CUTOFF_BUDGET: {e}"
+    );
     // Every attempt moved, every one was read again from its first page,
     // and none authorized a read of a message or any mutation.
-    assert!(st.search_moves >= 2, "{}", st.search_moves);
-    assert_eq!(st.search_firsts, st.search_moves);
-    assert_eq!(
-        st.search_starts.iter().filter(|&&o| o == 0).count() as u32,
-        st.search_moves
-    );
+    assert_eq!((st.search_moves, st.search_firsts), (3, 3));
+    assert_eq!(st.search_starts, [0, 250, 0, 250, 0]);
     assert_eq!(st.fetches, 0);
     assert!(st.mutations.is_empty());
     assert!(log.foreign_reaching(me.id, &[], 0, u64::MAX).is_empty());
@@ -1243,7 +1296,7 @@ async fn a_subject_search_that_never_settles_ends_on_the_waits_deadline_untouche
 
 async fn wait(src: &mut NativeSource<'_>, count: usize) -> Result<Vec<Value>, String> {
     tokio::time::timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(20),
         src.wait_emails(Some(CONFIRM), count),
     )
     .await
@@ -1278,40 +1331,79 @@ async fn a_moving_search_keeps_every_other_cause_and_never_reads_past_the_cutoff
         "operation: scan: status_500"
     );
     assert!(matches!(src.failure, Some(Failure::Operation(_))));
-    // A complete short answer, then a move, then complete short answers
-    // until the cutoff: the ordinary count timeout, and the earlier
-    // complete scan's evidence survives the refused one.
-    {
-        let mut st = s.store.lock().unwrap();
-        st.move_search_on = [st.search_firsts + 2].into();
-    }
-    let mut src = searcher(&client, &s, &me, waiting(Duration::from_millis(300)), true);
-    let e = wait(&mut src, 6).await.unwrap_err();
-    assert!(e.ends_with("; saw 5"), "{e}");
-    assert!(src.vanished().is_empty());
-    assert_eq!(src.owned_seen(), 5);
-    assert_eq!(s.store.lock().unwrap().move_search_on.len(), 0);
     // A move, then a re-read still in flight at the cutoff: the wait ends
     // there, still moving, and no late answer is taken.
+    let s = crowded_search(&me).await;
     {
         let mut st = s.store.lock().unwrap();
-        st.move_search_on = [st.search_firsts + 1].into();
-        st.stall_search_on = [st.search_firsts + 2].into();
+        st.move_search_on = [1].into();
+        st.stall_search_on = [2].into();
     }
-    let deadline = waiting(Duration::from_millis(300));
-    let ends = deadline.0 - swarmail_evals::native_source::REQUEST_BOUND;
-    let mut src = searcher(&client, &s, &me, deadline, true);
+    let client = clients::Client::new("mailpit", s.http).unwrap();
+    let (mut src, ends) = polling(&client, &s, &me, 20, CUTOFF_BUDGET);
     let e = wait(&mut src, 5).await.unwrap_err();
     assert!(Instant::now() <= ends + REQUEST_SLACK, "{e}");
     assert!(e.contains("the subject listing kept moving (1 "), "{e}");
     let st = s.store.lock().unwrap();
     assert!(
         st.stall_search_on.is_empty(),
-        "the stalled re-read was made"
+        "the cutoff came before the stalled re-read; widen CUTOFF_BUDGET: {e}"
     );
+    assert_eq!(st.search_starts, [0, 250, 0]);
     assert_eq!(st.fetches, 0);
     assert!(st.mutations.is_empty());
     assert_eq!(src.owned_seen(), 0);
+}
+
+#[tokio::test]
+async fn a_scan_the_cutoff_cancels_ends_as_the_waits_timeout_saying_what_it_last_saw() {
+    let me = crowd();
+    // Nothing complete yet: the first scan's first page is still in flight
+    // at the cutoff. The wait's timeout, not the scan's budget.
+    let s = crowded_search(&me).await;
+    s.store.lock().unwrap().stall_search_on = [1].into();
+    let client = clients::Client::new("mailpit", s.http).unwrap();
+    let (mut src, ends) = polling(&client, &s, &me, 20, CUTOFF_BUDGET);
+    let e = wait(&mut src, 5).await.unwrap_err();
+    assert!(Instant::now() <= ends + REQUEST_SLACK, "{e}");
+    assert!(e.starts_with("timeout: no time left to poll"), "{e}");
+    assert!(matches!(src.failure, Some(Failure::Timeout(_))));
+    {
+        let st = s.store.lock().unwrap();
+        assert!(st.stall_search_on.is_empty());
+        assert_eq!(st.search_starts, [0]);
+        assert_eq!(st.fetches, 0);
+    }
+    assert_eq!(src.owned_seen(), 0);
+    // A complete short answer, a move, a complete short answer again, and
+    // then a scan the cutoff cancels: the ordinary count timeout, and the
+    // earlier complete scans' evidence survives the refused one.
+    let s = crowded_search(&me).await;
+    {
+        let mut st = s.store.lock().unwrap();
+        st.move_search_on = [2].into();
+        st.stall_search_on = [4].into();
+    }
+    let client = clients::Client::new("mailpit", s.http).unwrap();
+    let (mut src, ends) = polling(&client, &s, &me, 20, CUTOFF_BUDGET);
+    let e = wait(&mut src, 6).await.unwrap_err();
+    assert!(Instant::now() <= ends + REQUEST_SLACK, "{e}");
+    assert!(e.starts_with("timeout: waited for 6 mail(s)"), "{e}");
+    assert!(e.ends_with("; saw 5"), "{e}");
+    assert!(matches!(src.failure, Some(Failure::Timeout(_))));
+    {
+        let st = s.store.lock().unwrap();
+        assert!(
+            st.stall_search_on.is_empty(),
+            "the cutoff came before the fourth scan; widen CUTOFF_BUDGET: {e}"
+        );
+        assert_eq!(st.search_moves, 1);
+        assert_eq!(st.search_starts, [0, 250, 0, 250, 0, 250, 0]);
+        assert_eq!(st.fetches, 0);
+        assert!(st.mutations.is_empty());
+    }
+    assert!(src.vanished().is_empty());
+    assert_eq!(src.owned_seen(), 5);
 }
 
 // ---- the station: one listener pair, one generation at a time -------------
