@@ -875,7 +875,10 @@ code may guess its result (0119 ruling 4): `--via-brokkr` keeps refusing
 addendum, and via-brokkr tokens stay `null` until §6 carries one.
 
 Set absolute paths first: `E` the candidate's `swarmail-evals`
-(`evals/target/debug/swarmail-evals` after `cargo build --locked`), `B` the
+(`evals/target/debug/swarmail-evals` after
+`cargo build --locked --manifest-path evals/Cargo.toml` from the repository
+root; `evals/` is its own workspace, so a plain root `cargo build` does not
+build it), `B` the
 digest-verified pinned brokkr (`.brokkr/recipes/self/tooling.json` names its
 version and digest), `controls` a JSON agents file holding only
 `{"label":"oracle","argv":[]}` and `{"label":"null","argv":[]}`, `DB` the
