@@ -1749,12 +1749,15 @@ pub fn write_transcripts(
 // ---- The rendered page --------------------------------------------------
 
 /// Escape untrusted text for a Markdown table cell: every ASCII punctuation
-/// mark is backslash-escaped and control characters become U+FFFD, so a
-/// label can neither end a cell nor open markup.
+/// mark is backslash-escaped, and control characters and the Unicode line
+/// and paragraph separators become U+FFFD, so a label can neither end a
+/// cell or a row nor open markup.
 pub fn escape_cell(s: &str) -> String {
     let mut out = String::new();
     for ch in s.chars() {
-        if ch.is_control() {
+        // U+2028 and U+2029 are line breaks a renderer may honour though
+        // they are not control characters.
+        if ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}') {
             out.push('\u{fffd}');
         } else {
             if ch.is_ascii_punctuation() {

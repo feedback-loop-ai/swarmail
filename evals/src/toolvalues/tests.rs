@@ -1283,6 +1283,7 @@ fn every_reason_has_its_name_in_check_order() {
 #[test]
 fn cells_are_escaped_and_figures_never_dash() {
     assert_eq!(escape_cell("a|b*c\n"), "a\\|b\\*c\u{fffd}");
+    assert_eq!(escape_cell("a\u{2028}b\u{2029}c"), "a\u{fffd}b\u{fffd}c");
     let paid = json!({"tool_surfaces":[{"kind":"wrapper"}],"scored":2});
     assert_eq!(tokens_figure(&paid), (None, "incomplete_join"));
     let empty = json!({"tool_surfaces":[{"kind":"wrapper"}],"scored":0});
