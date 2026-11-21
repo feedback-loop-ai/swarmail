@@ -768,8 +768,12 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
 
   **Deny by default** (operator ruling, 2026-11-21): a value is published only when it is provably plain, and
   the whole trial's record is withheld otherwise. Over-refusal is the
-  accepted cost: the mode may withhold evidence, and it must never publish
-  the bearer or a registered sentinel in any spelling. In order:
+  accepted cost: the mode may withhold evidence. The guarantee is exact
+  (operator ruling 2026-11-21, review 5): the bearer and every registered
+  sentinel are refused, never published, in their raw, ASCII-case-folded,
+  JSON-escaped, `%XX` (with `+` as a space), nested-JSON, numeric-value,
+  base64, base64url, base32, hex (joined by any separators) and
+  quoted-printable spellings. In order:
   - **Masking.** Every registered literal is masked (`[REDACTED]`) in
     every string and member name, in its raw, JSON-escaped, `%XX` (each
     complete escape wherever it stands, to a fixed point; `+` also read as a
@@ -782,20 +786,29 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
     character, and no non-ASCII letter such as a fullwidth or look-alike
     one that could stand for an ASCII character). It must hold no
     backslash (so no `\u` or `\x` escape survives decoding), no complete
-    `%XX` escape, no `&...;` HTML or XML entity, and no run of 37 or more
-    of `A-Z a-z 0-9 + - _`. A path or URL separator (`/ ? & = # .`) and
-    every other character breaks a run, so the fixture's own routes
-    publish (`/invite/<24-character token>/event.ics`, its full
-    `ics_url`). Anything else is `invalid_argument_encoding`. The run
+    `%XX` escape, no `&...;` HTML or XML entity, no two quoted-printable
+    escapes in a row (`=73=65`), no run of 37 or more of `A-Z a-z 0-9 + -
+    _ =`, and no 64 hex digits in one run once every character that is not
+    a letter or digit is deleted. A path or URL separator (`/ ? & # .`)
+    and every other character breaks an opaque run, so the fixture's own
+    routes publish (`/invite/<24-character token>/event.ics`, its full
+    `ics_url`; `token=<24 characters>` is 30). A letter that is not a hex
+    digit breaks a hex run, so prose publishes, while hex of a literal
+    joined by any separator (`73:65`, `73 65`, `73/65`) is refused; two
+    UUIDs side by side are 64 hex digits and are refused too, an accepted
+    over-refusal. A lone `=XX` is kept: it is the shape of every
+    `key=value` whose value starts with two hex digits. Anything else is
+    `invalid_argument_encoding`. The run
     limit of 37 is the least that still publishes the fixture's own opaque
     data: a Swarmail message id (a UUID) runs to 36, mailed tokens to 24,
     passwords to 16 and codes to 6. Every base64, base64url, base32 or hex
     encoding of a sentinel of 32 bytes or more still holds one unbroken run
-    of at least 40 (base64: 4 * floor((32 - 2) / 3)): `=` is only
-    padding at the end, base64url's `-` and `_` count, and standard base64
+    of at least 40 (base64: 4 * floor((32 - 2) / 3)): base64url's `-` and
+    `_` and the `=` padding count, and standard base64
     writes `/` only for a `?`, DEL or non-ASCII byte, which a sentinel may
     not hold. The admin bearer is 32 alphanumerics.
-  - **Residual literals.** No literal may survive in any decoded layer,
+  - **Residual literals.** No literal may survive in any decoded layer
+    (quoted-printable, its soft line breaks included, is one of them),
     compared ignoring ASCII case, so an upper- or mixed-case bearer is
     `residual_secret`. Every literal that reads as a decimal number
     (after trimming surrounding whitespace, a leading `+` and leading
@@ -809,11 +822,13 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
     be caught; any other sentinel makes the file unusable
     (`tool_sentinels_unreadable` before the matrix, `registry_unavailable`
     in a trial).
-  - **What no check can see.** A literal split across fields or calls, or
-    re-encoded into ordinary-looking text (one character per word, say), is
-    not detected by any shape check. The mode's protection there rests on
-    accepted 0075 §9, which leaves hostile same-user activity out of the
-    privacy boundary.
+  - **What no check can see.** ROT13 and other letter substitutions, a
+    reversal, ascii85 and other alphabets not listed above, a decimal or
+    other code list (`115,101,...`, `0x73,0x65,...`), and a literal split
+    across fields or calls or re-encoded into ordinary-looking text are not
+    detected by any check. That is the boundary of accepted 0075 §9, which
+    leaves hostile same-user activity out of the privacy boundary, as the
+    operator accepted it (ruling 2026-11-21, review 5).
 
   Only the redacted record, or a closed refusal, is written to
   `captures/<trial_id>/capture.json` (0600 under 0700, bound by `manifest.json`).
