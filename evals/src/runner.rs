@@ -5433,6 +5433,34 @@ wait "$child"
 }
 
 #[cfg(test)]
+mod capture_write_tests {
+    use super::*;
+
+    #[test]
+    fn a_capture_that_never_started_leaves_no_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::artifacts::resolve_root(dir.path()).unwrap();
+        let plan = CapturePlan {
+            root: root.clone(),
+            sentinels: root.join("absent.json"),
+        };
+        let row = refused_row(&TrialRequest::default(), &"1".repeat(32));
+        // The sink is empty when the capture never started: nothing is
+        // written, and the report then names the trial capture_missing.
+        let never: CaptureSink = Arc::default();
+        write_value_capture(&plan, &never, &row);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        // A started one leaves its record under the root.
+        let started: CaptureSink = Arc::new(Mutex::new(Some((
+            crate::toolvalues::Capture::new(Default::default()),
+            crate::toolvalues::Registry::new(),
+        ))));
+        write_value_capture(&plan, &started, &row);
+        assert!(crate::toolvalues::read_capture(&root, &row.trial_id).is_some());
+    }
+}
+
+#[cfg(test)]
 mod privacy_tests {
     use super::{
         ARTIFACT_DIRECTORY_MODE, ARTIFACT_FILE_MODE, CARGO_RECORD_LIMIT, CallerEnv,

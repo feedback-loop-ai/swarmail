@@ -724,6 +724,45 @@ fn the_page_gives_every_paid_group_a_figure_or_its_reason() {
     for l in page.lines().filter(|l| l.starts_with("| signup |")) {
         assert!(!l.contains("| - |") && !l.contains("|  |"), "{l}");
     }
+    // A page name that is not UTF-8 cannot be published: refused whole.
+    use std::os::unix::ffi::OsStrExt;
+    let odd = dir
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"page-\xff.md"));
+    let out = report(&rows_path, &["--page".as_ref(), odd.as_os_str()]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("page_write_failed"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(out.stdout.is_empty());
+    assert!(std::fs::symlink_metadata(&odd).is_err());
+    // A transcript section that cannot be written fails the value report
+    // by name: here one is already there.
+    let evidence = dir.path().join("evidence");
+    std::fs::create_dir(&evidence).unwrap();
+    std::fs::create_dir(evidence.join("transcripts")).unwrap();
+    let captures = dir.path().join("no-captures");
+    std::fs::create_dir(&captures).unwrap();
+    let out = report(
+        &rows_path,
+        &[
+            "--journal".as_ref(),
+            facts.as_os_str(),
+            "--evidence-dir".as_ref(),
+            evidence.as_os_str(),
+            "--tool-values-from".as_ref(),
+            captures.as_os_str(),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("harness error: transcripts_write_failed"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(out.stdout.is_empty());
     // A page is never written over an existing file.
     let again = report(&rows_path, &["--page".as_ref(), joined.as_os_str()]);
     assert_eq!(again.status.code(), Some(2));

@@ -2041,7 +2041,26 @@ fn create_capture_root_with(
     root: &std::path::Path,
     resolve: Resolve,
 ) -> Result<PathBuf, &'static str> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    create_capture_root_finished_by(root, resolve, finish_capture_root)
+}
+
+/// Finish a just-created capture root: mode 0700, checked by
+/// [`artifacts::safe_root`], and its absolute real path, the one a worker
+/// is handed (a brokkr trial seat's working directory is not the matrix's).
+fn finish_capture_root(path: &std::path::Path) -> Result<PathBuf, &'static str> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| "capture_root_unavailable")?;
+    artifacts::safe_root(path).map_err(|_| "capture_root_unavailable")?;
+    std::fs::canonicalize(path).map_err(|_| "capture_root_unavailable")
+}
+
+fn create_capture_root_finished_by(
+    root: &std::path::Path,
+    resolve: Resolve,
+    finish: fn(&std::path::Path) -> Result<PathBuf, &'static str>,
+) -> Result<PathBuf, &'static str> {
+    use std::os::unix::fs::DirBuilderExt;
     let parent = capture_parent_with(root, resolve)?;
     let name = root.file_name().ok_or("capture_root_unavailable")?;
     let path = parent.join(name);
@@ -2052,12 +2071,7 @@ fn create_capture_root_with(
             std::io::ErrorKind::AlreadyExists => "capture_root_exists",
             _ => "capture_root_unavailable",
         })?;
-    // The root a worker is handed is absolute: a brokkr trial seat's
-    // working directory is not the matrix's.
-    let finished = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
-        .map_err(|_| "capture_root_unavailable")
-        .and_then(|()| artifacts::safe_root(&path).map_err(|_| "capture_root_unavailable"))
-        .and_then(|()| std::fs::canonicalize(&path).map_err(|_| "capture_root_unavailable"));
+    let finished = finish(&path);
     if finished.is_err() {
         let _ = std::fs::remove_dir(&path);
     }
@@ -5616,8 +5630,8 @@ while :; do :; done
 #[cfg(test)]
 mod capture_admission_tests {
     use super::{
-        admit_capture, capture_parent_with, create_capture_root, create_capture_root_with,
-        write_page_with,
+        admit_capture, capture_parent_with, create_capture_root, create_capture_root_finished_by,
+        create_capture_root_with, write_page_with,
     };
     use std::os::unix::fs::PermissionsExt;
 
@@ -5664,6 +5678,23 @@ mod capture_admission_tests {
             admit_capture(&root, &sentinels, None),
             Err("capture_root_exists")
         );
+    }
+
+    #[test]
+    fn a_capture_root_that_cannot_be_finished_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        let root = real.join("captures");
+        // Its mode, the safe_root check or the canonical path failing after
+        // the directory is made: the directory is removed again.
+        let failed = |_: &std::path::Path| Err("capture_root_unavailable");
+        assert_eq!(
+            create_capture_root_finished_by(&root, follow_links, failed),
+            Err("capture_root_unavailable")
+        );
+        assert!(!root.exists(), "no half-made root is left");
+        // And the same path is then created whole.
+        assert_eq!(create_capture_root(&root), Ok(root.clone()));
     }
 
     /// Stands in for macOS's root-owned `/var` -> `/private/var`: a
