@@ -350,8 +350,11 @@ change. It would withhold those form and token values.
 in AC3's boundary, including per-byte code lists with a letter prefix
 (`0x73,0x65`): the `x` breaks the hex count. The digit-string asymmetry
 (the review's info 2: a numeric sentinel with a leading zero, written
-inside a string between other digits) is unchanged and is not claimed by
-the docs. The earlier tracked debt in `tasks.md` is unchanged.
+inside a string between other digits) was left unchanged here, and this
+ledger wrongly said the docs did not claim it: AC3 and the README do
+claim digit-string matching for every literal that reads as a decimal
+number. Review return 7 closes it (`935a61c4`). The earlier tracked debt
+in `tasks.md` is unchanged.
 
 Time added by this return: the new unit test runs in under 0.1 s, and the
 extended encoding test in about 1.5 s with the lib harness. The `joined`
@@ -366,6 +369,45 @@ build --locked --bin swarmail> cargo test --locked` 0, 604 passed, 0
 failed, 7 ignored, 1605 s wall. No test failed, so none was rerun. The
 root-only gates and `brokkr compile` were not rerun: nothing outside
 `evals/` and `specs/trial-evidence/` changed.
+
+## Review return 7 (decision 0102), fixes
+
+The sixth panel returned on `9fa09b6`: no spec defect, the lone-`=XX`
+deviation accepted, one low security residual and a few lows. Each fix
+has a test that turns red when it is reverted (each was checked by
+reverting it):
+
+| Finding | Fix | Commit | Test |
+|---|---|---|---|
+| A numeric sentinel's digits leaked inside text (low, security): `"id 3<31 digits>9"` for a `0` + 31-digit sentinel | `number_in_text` checks every number it reads by digit string as well as by value, with and without a `-` before it | `935a61c4` | `a_numeric_sentinel_is_found_by_value_in_any_spelling`: the sentinel's digits embedded with a prefix, a suffix, both, signed with a fraction, and inside an exponent spelling. Red with the digit check removed from the scanner |
+| The capture root was made before brokkr admission, by a bare `DirBuilder` (low) | Admission (`admit_capture`) touches nothing and requires an existing parent that `artifacts::safe_root` admits; `create_capture_root` makes the 0700 root only after every other admission and checks it with the same rule | `820cee3c` | `capture_admission_tests::value_capture_admits_only_a_swarmail_target_and_a_creatable_root` (missing and symlinked parents, admission creates nothing, no second creation). `tests/tool_values.rs::matrix_capture_refuses_before_any_trial`: a matrix refused by brokkr admission leaves no root, and its retry with the same path runs (one oracle trial, 0700 root, one capture leaf). Red with the root created during admission |
+| `--page` written in place (low) | Published through `artifacts::publish`: staged whole in a 0600 temporary beside it, moved with no clobber | `820cee3c` | `a_page_cut_short_is_removed`: after a write error nothing but the input is left. A writer killed by SIGXFSZ mid-write leaves no page at the name, and the published page is 0600. Red with the old in-place writer (the killed write left a partial page) |
+| A 256-entry sentinel file poisoned every trial (info) | The file holds at most 255 sentinels (`SENTINEL_LIMIT`); the bearer takes the 256th slot | `691af87e` | `the_registry_is_bounded_and_fails_closed`: 255 read and sealed complete with exactly 256 literals, 256 refused. Red at the old cap |
+| `EVAL_TOOL_CAPTURE_SOCKET` named nowhere (low) | Named in `evals/README.md`'s agent input table and socket section: harness-generated, a path and never a secret, only in capture mode, a ninth agent-visible input awaiting the operator's dated 0075 §1 addendum. `docs/evals/README.md` lists no agent inputs, so it is unchanged | `cb4f2d8e` | — |
+| U+2028/U+2029 in page cells (low) | `escape_cell` turns them into U+FFFD | `cb4f2d8e` | `cells_are_escaped_and_figures_never_dash`. Red without the change |
+
+Also corrected: the return-6 ledger paragraph said the docs did not
+claim digit-string matching inside text. They do; that paragraph now
+says so and points here.
+
+**Not done.** Decision bodies are untouched. The ninth input and the
+stale "not built" acceptance notes in 0075 and 0119 await the operator's
+dated addenda. The tracked proof debt in `tasks.md` is unchanged.
+
+Time added by this return: the retried matrix in
+`matrix_capture_refuses_before_any_trial` is one oracle trial (about 2 s);
+the killed-page case is under 0.1 s. `tests/tool_values.rs` took 22.3 s
+in the gate run at load average 29–40, against 20.0 s before.
+
+Gates after this return (`--locked`, this seat, 2026-11-21, tree
+`cb4f2d8e`): root `cargo fmt --all -- --check` 0; evals `cargo fmt --all --
+--check` 0; evals `cargo clippy --all-targets --locked -- -D warnings` 0;
+evals `SWARMAIL_BIN=<artifact record of cargo build --locked --bin
+swarmail> cargo test --locked` 0, 604 passed, 0 failed, 7 ignored, 1593 s
+wall. The count is unchanged: this return extended existing tests and
+added none. No test failed, so none was rerun. The root-only gates and
+`brokkr compile` were not rerun: nothing outside `evals/` and
+`specs/trial-evidence/` changed.
 
 ## Held paths
 
