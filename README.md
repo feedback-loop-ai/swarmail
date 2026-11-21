@@ -49,9 +49,9 @@ Everything below is the short version. The detail lives in
 - **Await, don't poll.** `await` blocks until the mail arrives. It
   subscribes before it checks, and the links and codes are already
   extracted.
-- **Built for AI agents.** Agents drive the same store over MCP, on HTTP or
-  stdio: wait for a mail, take the newest code or the one link, seed a
-  fixture, break SMTP on purpose.
+- **Agents over MCP.** Agents drive the same store over MCP, on HTTP or
+  stdio. The setup, the tests that prove it and the published eval runs are
+  under [For AI agents](#for-ai-agents).
 - **Drop-in for MailHog, Mailpit and MailSlurper.** Existing clients work
   through the [shims](docs/guide/compat-shims.md): MailHog and Mailpit on the
   HTTP port, MailSlurper's service API on an opt-in listener of its own.
@@ -94,7 +94,7 @@ per inbox, and how to stop the server gracefully.
 | SMTP `:1025` | AUTH username = inbox, STARTTLS, a 50 MiB cap, exact DATA boundaries | [smtp.md](docs/guide/smtp.md) |
 | REST API `:8025` | `await`, exact-count `assert`, threads, SSE feed, seed fixtures | [rest-api.md](docs/guide/rest-api.md) |
 | Client fixtures | Playwright and pytest: `waitForCode()`, `wait_for_link()` | [client-fixtures.md](docs/guide/client-fixtures.md) |
-| MCP | eighteen tools over HTTP `POST /mcp` and the stdio bridge | [mcp.md](docs/guide/mcp.md) |
+| MCP | the tool catalogue over HTTP `POST /mcp` and the stdio bridge | [mcp.md](docs/guide/mcp.md) |
 | Focused waits | the newest code, or the one matching link, as a decision | [focused-waits.md](docs/guide/focused-waits.md) |
 | Attachments | list them, fetch one, read a calendar invite | [attachments.md](docs/guide/attachments.md) |
 | POP3 `:1110` | the same store over RFC 1939 | [pop3.md](docs/guide/pop3.md) |
@@ -103,18 +103,38 @@ per inbox, and how to stop the server gracefully.
 | Webhooks | every accepted mail POSTed to your sink, with retries | [webhooks.md](docs/guide/webhooks.md) |
 | Chaos | per-stage SMTP failures and delays, on purpose | [chaos.md](docs/guide/chaos.md) |
 | Persistence | an SQLite restart copy, one server per data file | [persistence.md](docs/guide/persistence.md) |
-| Recipient routing | one sending identity, a private inbox per agent | [recipient-routing.md](docs/guide/recipient-routing.md) |
+| Recipient routing | one sending identity, an inbox per agent address | [recipient-routing.md](docs/guide/recipient-routing.md) |
 | Deliverability reports | per-mail findings: the bulk-sender checklist, HTML client rules, per-link `link.*` rules, offline DKIM verification (`dkim.*`) and SPF and DMARC (`spf.*`, `dmarc.*`) against declared records | [deliverability.md](docs/guide/deliverability.md) |
 | Network posture and limits | loopback by default, Origin checks, `/metrics`, bounded pages | [network-posture.md](docs/guide/network-posture.md) |
 | Benchmarks | ingest microbenchmarks and the 5000/5000 proof | [benchmarks.md](docs/guide/benchmarks.md) |
 
 ## For AI agents
 
-Wire Claude Code, Codex, Cursor or dsh with the copy-paste
-[agent setup guide](docs/agents/setup.md); the tools are on the [MCP page](docs/guide/mcp.md).
+The [agent setup guide](docs/agents/setup.md) has copy-paste wiring for
+Claude Code, Codex, Cursor and dsh; the tools are on the [MCP page](docs/guide/mcp.md).
 The wiring snippets in `docs/agents/setup.md` are written into a fresh project
 and driven against the real binary by `tests/agent_setup_docs.rs` in CI;
-install commands are marked not-executed.
+install commands are marked not-executed. The MCP interface itself is driven
+over HTTP by [`tests/mcp.rs`](tests/mcp.rs) and over stdio by
+[`tests/stdio.rs`](tests/stdio.rs).
+
+The published eval runs measure models doing the suite's tasks against
+swarmail. In the [default-tier baseline](docs/evals/baseline-2026-11-01.md)
+on main `a4f552d`, claude-opus, claude-sonnet, codex-sol, codex-luna and
+glm-spark each ran the 16 default-tier tasks five times, and together they
+passed 395 of 400 trials; its [DashScope GLM cell](docs/evals/baseline-2026-11-01-glm-dashscope.md)
+added glm-dashscope at 80 of 80, for 475 of 480 across six models. On the
+[hard tier](docs/evals/hard-2026-11-03.md) (main `8732445`) the first five
+models passed 74 of 75 scored trials, and on the
+[hard and expert tiers](docs/evals/expert-2026-11-07.md) (main `c95386e`, no
+GLM model) claude-opus, claude-sonnet, codex-sol and codex-luna passed
+151/160, with codex-luna at 0/5 on `otp-late`, every time `stale_code`. Five
+trials per cell give wide intervals: the
+[95% interval for a 5/5 cell](docs/evals/baseline-2026-11-01.md#success-by-task-and-by-model)
+is `[0.57, 1.0]`. Tokens per success and transcripts
+([#391](https://github.com/feedback-loop-ai/swarmail/issues/391)) and a client
+matrix ([#392](https://github.com/feedback-loop-ai/swarmail/issues/392)) are
+not measured yet; the [eval index](docs/evals/README.md) has the rest.
 
 ## The guarantees
 
