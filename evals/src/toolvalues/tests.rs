@@ -1436,7 +1436,11 @@ fn cells_are_escaped_and_figures_never_dash() {
         {"task":"signup","agent":"c","attempts":1,"passes":1,"fails":0,"harness_errors":0,"scored":1,"tool_surfaces":[{"kind":"wrapper"}],
          "journal":{"tokens_per_success":10.0,"tokens":{"cached":{"sum":7}}}},
         {"task":"signup","agent":"d","attempts":2,"passes":2,"fails":0,"harness_errors":0,"scored":2,"tool_surfaces":[{"kind":"wrapper"}],
-         "journal":{"tokens_per_success":null,"tokens_per_success_reason":"sum_overflow"}}
+         "journal":{"tokens_per_success":null,"tokens_per_success_reason":"sum_overflow"}},
+        {"task":"signup","agent":"e","attempts":2,"passes":2,"fails":0,"harness_errors":0,"scored":2,"tool_surfaces":[{"kind":"wrapper"}],
+         "journal":{"tokens_per_success":null,"tokens_per_success_reason":"sum_overflow","tokens":{"cached":{"sum":7}}}},
+        {"task":"signup","agent":"f","attempts":2,"passes":1,"fails":1,"harness_errors":0,"scored":2,"tool_surfaces":[{"kind":"wrapper"}],
+         "journal":{"tokens_per_success":null,"tokens_per_success_reason":"incomplete_join","tokens":{"cached":{"sum":3}}}}
     ]}));
     assert!(
         page.contains(
@@ -1447,6 +1451,18 @@ fn cells_are_escaped_and_figures_never_dash() {
     assert!(
         page.contains(
             "| signup | a\\|b | 1 | 0 | 1 | 0 | null (incomplete\\_join) | null (incomplete\\_join) |"
+        ),
+        "{page}"
+    );
+    // An overflowed total keeps its separate cached count; a partial one
+    // beside incomplete_join is withheld with that reason.
+    assert!(
+        page.contains("| signup | e | 2 | 2 | 0 | 0 | null (sum\\_overflow) | 7 |"),
+        "{page}"
+    );
+    assert!(
+        page.contains(
+            "| signup | f | 2 | 1 | 1 | 0 | null (incomplete\\_join) | null (incomplete\\_join) |"
         ),
         "{page}"
     );

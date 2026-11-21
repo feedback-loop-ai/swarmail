@@ -915,9 +915,11 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   without a journal a paid group is `null (incomplete_join)` and an empty
   scored population `null (no_passes)`. A built-in group is
   `null (builtin_agent)` with or without a journal. The cached-tokens cell
-  shows the group's cached sum only when its token facts were joined whole
-  (a figure, or `no_passes` with a journal); otherwise it is `null` with the
-  same reason as the figure, never a partial sum or a bare `null`. Never a
+  shows the journal's cached sum whenever it holds one, beside a figure,
+  `no_passes` or `sum_overflow` (cached tokens are never added to the total
+  that overflowed). Beside `incomplete_join` the sum would be partial, so
+  the cell is `null (incomplete_join)`; with no sum it is `null` with the
+  figure's own reason. Never a partial sum or a bare `null`. Never a
   dash, a blank or a zero.
 - **What it cannot do yet.** The pinned engine's journal hashes the argument
   representation the CLI reported; until a real engine run shows those are

@@ -617,6 +617,19 @@ fn the_page_gives_every_paid_group_a_figure_or_its_reason() {
         &id(8),
     )])
     .collect();
+    // A group whose input plus output total overflows a u64 (1025 passes
+    // at the per-fact cap, as the journal's own overflow test), with a
+    // small cached count that does not.
+    let overflow_template =
+        synthetic_row("signup", "overflow", true, Outcome::Pass, 1000, &id(1000));
+    let rows: Vec<TrialResult> = rows
+        .into_iter()
+        .chain((1000..2025).map(|n| {
+            let mut r = overflow_template.clone();
+            r.trial_id = id(n);
+            r
+        }))
+        .collect();
     let rows_path = dir.path().join("rows.jsonl");
     let text: String = rows
         .iter()
@@ -649,8 +662,25 @@ fn the_page_gives_every_paid_group_a_figure_or_its_reason() {
     // The stdout report is the same bytes as without the page.
     assert_eq!(out.stdout, report(&rows_path, &[]).stdout);
     // With the golden journal: a number with its cached count, and reasons.
-    let facts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data/journal-facts-golden.json");
+    let mut doc: Value = serde_json::from_slice(&std::fs::read(&golden).unwrap()).unwrap();
+    let cap = 9_007_199_254_740_991u64;
+    let trials = doc["trials"].as_array_mut().unwrap();
+    for n in 1000..2025u32 {
+        trials.push(json!({
+            "trial_id": id(n),
+            "run_id": format!("run-{n}"),
+            "seat": "trial",
+            "tokens": {"status": "present", "value": {"input": cap, "output": cap, "cached": 1}},
+            "turns": {"status": "present", "value": 1},
+            "wall_time_ms": {"status": "present", "value": 1000},
+            "deadline_killed": {"status": "present", "value": false},
+            "tool_calls": {"status": "present", "value": []},
+        }));
+    }
+    let facts = dir.path().join("facts.json");
+    std::fs::write(&facts, doc.to_string()).unwrap();
     let joined = dir.path().join("joined.md");
     let out = report(
         &rows_path,
@@ -671,8 +701,15 @@ fn the_page_gives_every_paid_group_a_figure_or_its_reason() {
         line(&page, "codex-b").ends_with("| null (incomplete\\_join) | null (incomplete\\_join) |"),
         "{page}"
     );
+    // Only harness errors: no token facts were joined, so the cached cell
+    // carries the figure's own reason.
     assert!(
-        line(&page, "only-errors").contains("null (no\\_passes)"),
+        line(&page, "only-errors").ends_with("| null (no\\_passes) | null (no\\_passes) |"),
+        "{page}"
+    );
+    // The overflowed total keeps its separate, whole cached count.
+    assert!(
+        line(&page, "overflow").ends_with("| null (sum\\_overflow) | 1025 |"),
         "{page}"
     );
     assert!(
