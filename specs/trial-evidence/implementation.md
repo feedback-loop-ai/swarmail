@@ -409,6 +409,39 @@ added none. No test failed, so none was rerun. The root-only gates and
 `brokkr compile` were not rerun: nothing outside `evals/` and
 `specs/trial-evidence/` changed.
 
+## Review return 8 (decision 0102), fixes
+
+The seventh panel returned on `0616dac`: no security residual and no spec
+defect, but one medium and some lows. Each fix has a test that turns red
+when it is reverted (each was checked by reverting it):
+
+| Finding | Fix | Commit | Test |
+|---|---|---|---|
+| A unit test would fail on the required macos-latest check (medium): `capture_parent` and `write_page` judged the parent as given, so macOS's `/var` -> `/private/var` was refused | Both parents are resolved with `artifacts::resolve_root` before `safe_root`, as `--artifacts-dir` and `--evidence-dir` are, so a root-owned symlinked ancestor is followed and any other is refused. A capture root that cannot be finished is removed again | `875ac2e2` | `capture_admission_tests::a_resolved_symlinked_ancestor_is_admitted_for_the_capture_root_and_the_page`. It follows a link under a temporary directory with a resolver standing in for the root-owned `/var` (the production rule rightly refuses a same-uid link); the capture root and the page land in the target. Red with the resolve removed from either function. The grep of this branch's tests found no other raw temporary path reaching `safe_root` unresolved: the rest resolve first or bind sockets only |
+| A matrix refused after its root was made left the root (low) | When the matrix ends refused (exit 2), the root it created is removed if still empty; a root holding a record is kept | `1e1d5a1d` | `tests/tool_values.rs::matrix_capture_refuses_before_any_trial`: `--trials 0` and an unparsable agents file each leave no root, and the retry with the same path runs. Red without the removal. A half-made root is the first row's fix |
+| `read_sentinels` refused a bare relative name (low) | An empty parent is the working directory | `622dbb72` | `tests/tool_values.rs::a_trial_reads_its_capture_paths_relative_to_its_working_directory`: one oracle trial with `captures` and `sentinels.json` as bare names seals complete with two literals. Red as `registry_unavailable` without the fix |
+| The page's cached-tokens cell (low) | The cached sum is shown only when the group's token facts were joined whole (a figure, or `no_passes` with a journal); otherwise `null` with the same reason as the figure beside it | `02179b00` | `cells_are_escaped_and_figures_never_dash` and the CLI page test, whose `\| 0 \|` partial sum is now `null (incomplete_join)`. Red with the old bare `null` |
+| A short-significand numeric sentinel refused nearly everything (info) | The option taken is a refusal at read time, not a README warning: a sentinel that reads as a decimal number needs at least 16 significant digits (`NUMERIC_SENTINEL_DIGITS`) | `dab5ea50` | `the_registry_is_bounded_and_fails_closed`: thirty-one zeros and a one, and 15 digits padded with spaces, refused; 16 digits zero- or space-padded admitted. Red without the check |
+
+Left as they were, as asked: the CI time of `tests/tool_values.rs` and the
+tracked proof debt in `tasks.md`. The review's other lows (no pre-change
+matrix-row golden; no multibyte argument end to end, which production now
+withholds) are recorded here and not addressed in this return.
+
+Time added by this return: one more oracle trial
+(`a_trial_reads_its_capture_paths_relative_to_its_working_directory`,
+about 2 s); the two new refusal runs are under 0.2 s. `tests/tool_values.rs`
+took 25.0 s in the gate run at load average 21–24, against 22.3 s before.
+
+Gates after this return (`--locked`, this seat, 2026-11-21, tree
+`dab5ea50`): root `cargo fmt --all -- --check` 0; evals `cargo fmt --all --
+--check` 0; evals `cargo clippy --all-targets --locked -- -D warnings` 0;
+evals `SWARMAIL_BIN=<artifact record of cargo build --locked --bin
+swarmail> cargo test --locked` 0, 606 passed, 0 failed, 7 ignored, 1623 s
+wall. No test failed, so none was rerun. The macOS suite is CI's; this
+seat runs Linux only. The root-only gates and `brokkr compile` were not
+rerun: nothing outside `evals/` and `specs/trial-evidence/` changed.
+
 ## Held paths
 
 None touched: `git diff --stat 0d4839f -- Cargo.toml Cargo.lock evals/Cargo.toml evals/Cargo.lock deny.toml scripts .github .brokkr src tests` is empty. No dependency or feature was added.
