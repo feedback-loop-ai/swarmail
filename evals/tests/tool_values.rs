@@ -39,7 +39,8 @@ fn files_under(root: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// The encoded spellings of each literal the canary search also looks for:
-/// base64 (padded and not), base64url, hex, decimal and hex HTML entities.
+/// base64 (padded and not), base64url, hex, decimal and hex HTML entities,
+/// quoted-printable, and hex joined by `:`, ` `, `/`, `,` and a newline.
 /// Case-folded spellings are caught by the search itself, which ignores
 /// ASCII case.
 fn spellings_of(literals: &[&str]) -> Vec<String> {
@@ -53,6 +54,15 @@ fn spellings_of(literals: &[&str]) -> Vec<String> {
         out.push(l.bytes().map(|b| format!("{b:02x}")).collect());
         out.push(l.bytes().map(|b| format!("&#{b};")).collect());
         out.push(l.bytes().map(|b| format!("&#x{b:x};")).collect());
+        out.push(l.bytes().map(|b| format!("={b:02X}")).collect());
+        for sep in [":", " ", "/", ",", "\n"] {
+            out.push(
+                l.bytes()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(sep),
+            );
+        }
     }
     out
 }
@@ -225,6 +235,7 @@ fn values_are_redacted_bound_and_never_scored() {
     let probe = agent("probe", "tool_values", &private, &probe_env);
     let planted = agent("planted", "tool_values_planted", &private, &env);
     let encoded = agent("encoded", "tool_values_encoded", &private, &env);
+    let joined = agent("joined", "tool_values_joined", &private, &env);
     let agents = private.join("agents.json");
     std::fs::write(
         &agents,
@@ -233,6 +244,7 @@ fn values_are_redacted_bound_and_never_scored() {
             {"label": "null", "argv": []},
             {"label": planted.label, "argv": [planted.wrapper]},
             {"label": encoded.label, "argv": [encoded.wrapper]},
+            {"label": joined.label, "argv": [joined.wrapper]},
             {"label": probe.label, "argv": [probe.wrapper]},
         ])
         .to_string(),
@@ -251,7 +263,7 @@ fn values_are_redacted_bound_and_never_scored() {
         .unwrap();
     let rows = swarmail_evals::report::parse_rows(&String::from_utf8_lossy(&matrix.stdout))
         .unwrap_or_else(|e| panic!("{e}\n{}", stderr(&matrix)));
-    assert_eq!(rows.len(), 5, "{}", stderr(&matrix));
+    assert_eq!(rows.len(), 6, "{}", stderr(&matrix));
     let by = |label: &str| {
         rows.iter()
             .find(|r| r.agent.as_deref() == Some(label))
@@ -260,7 +272,7 @@ fn values_are_redacted_bound_and_never_scored() {
     // The controls keep their verdicts with capture on; the probe makes
     // calls and solves nothing.
     assert_eq!(by("oracle").outcome, Outcome::Pass);
-    for label in ["null", "probe", "planted", "encoded"] {
+    for label in ["null", "probe", "planted", "encoded", "joined"] {
         assert_eq!(
             by(label).outcome,
             Outcome::Fail,
@@ -274,8 +286,12 @@ fn values_are_redacted_bound_and_never_scored() {
         serde_json::from_slice(&std::fs::read(a.marker.with_extension("calls")).unwrap()).unwrap()
     };
     let bearer = |a: &Agent| std::fs::read_to_string(a.marker.with_extension("bearer")).unwrap();
-    let (probe_bearer, planted_bearer, encoded_bearer) =
-        (bearer(&probe), bearer(&planted), bearer(&encoded));
+    let (probe_bearer, planted_bearer, encoded_bearer, joined_bearer) = (
+        bearer(&probe),
+        bearer(&planted),
+        bearer(&encoded),
+        bearer(&joined),
+    );
     assert_ne!(
         probe_bearer, planted_bearer,
         "each trial has its own bearer"
@@ -302,6 +318,7 @@ fn values_are_redacted_bound_and_never_scored() {
             facts_for(by("probe"), &calls(&probe)),
             facts_for(by("planted"), &calls(&planted)),
             facts_for(by("encoded"), &calls(&encoded)),
+            facts_for(by("joined"), &calls(&joined)),
         ],
     );
 
@@ -349,7 +366,11 @@ fn values_are_redacted_bound_and_never_scored() {
         index[&id("encoded")],
         json!({"absent": "invalid_argument_encoding"})
     );
-    for label in ["planted", "encoded"] {
+    assert_eq!(
+        index[&id("joined")],
+        json!({"absent": "invalid_argument_encoding"})
+    );
+    for label in ["planted", "encoded", "joined"] {
         assert!(!e2.join(id(label)).join("tool-values.json").exists());
     }
 
@@ -403,7 +424,7 @@ fn values_are_redacted_bound_and_never_scored() {
     let classes = tindex["classes"].as_array().unwrap();
     let total: u64 = classes.iter().map(|c| c["total"].as_u64().unwrap()).sum();
     assert_eq!(
-        total, 4,
+        total, 5,
         "every failing row is counted before the evidence filter"
     );
     let picked: Vec<&Value> = classes
@@ -429,7 +450,7 @@ fn values_are_redacted_bound_and_never_scored() {
             .lines()
             .filter(|l| l.starts_with("| signup |"))
             .count(),
-        5
+        6
     );
     assert!(
         page_text.contains("| probe | 1 | 0 | 1 | 0 | null (no\\_passes) | 5 |"),
@@ -442,6 +463,7 @@ fn values_are_redacted_bound_and_never_scored() {
         probe_bearer.as_str(),
         planted_bearer.as_str(),
         encoded_bearer.as_str(),
+        joined_bearer.as_str(),
         sentinel.as_str(),
         number.as_str(),
         late.as_str(),
@@ -452,6 +474,7 @@ fn values_are_redacted_bound_and_never_scored() {
         &probe_bearer[1..],
         &planted_bearer[1..],
         &encoded_bearer[1..],
+        &joined_bearer[1..],
         &sentinel[1..],
     ]);
     canaries.extend(spellings.iter().map(String::as_str));
@@ -485,7 +508,7 @@ fn values_are_redacted_bound_and_never_scored() {
         .output()
         .unwrap();
     assert_eq!(replay.status.code(), Some(1), "{}", stderr(&replay));
-    assert_eq!(String::from_utf8_lossy(&replay.stdout).lines().count(), 5);
+    assert_eq!(String::from_utf8_lossy(&replay.stdout).lines().count(), 6);
 
     // Corrupt, missing and mismatched inputs change only the value index.
     let rerun = |name: &str, facts: &Path| {
