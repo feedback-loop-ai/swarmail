@@ -2127,7 +2127,8 @@ fn victim_from_argv() -> Result<Victim, String> {
 /// The value-capture probe agent (decision 0119 §4). It plays an agent that
 /// leaks: it reads the trial's fixture admin bearer from the fixture
 /// process's environment (same uid, Linux /proc) and sends it, the test's
-/// sentinel, whitespace, escapes and multibyte text through both
+/// sentinel, whitespace and escapes (plain ASCII once decoded: the value
+/// mode publishes nothing else) through both
 /// harness-owned tools: Swarmail's MCP endpoint (raw bodies, so the exact
 /// argument bytes are known) and the `eval_http` helper over stdio. Every
 /// call's tool, length and digest go to `<marker>.calls`, the bearer to
@@ -2201,7 +2202,7 @@ async fn tool_values(planted: bool) -> i32 {
     assert_eq!(foreign.status(), reqwest::StatusCode::FORBIDDEN);
     let mcp_args = [
         format!(
-            "{{ \"inbox\" :\"{}\",\n \"subject\": \"caf\\u00e9 \u{2713} {bearer} {sentinel}\" }}",
+            "{{ \"inbox\" :\"{}\",\n \"subject\": \"caf\\u0065 ok {bearer} {sentinel}\" }}",
             env.inbox
         ),
         if planted {
@@ -2271,7 +2272,7 @@ async fn tool_values(planted: bool) -> i32 {
             &sentinel[1..]
         ),
         format!(
-            "{{ \"method\" : \"POST\", \"path\": \"/login\", \"body\": {{\"email\": \"caf\\u00e9@x\", \"password\": \"{sentinel}\", \"note\": \"\u{2713}\\t\"}} }}"
+            "{{ \"method\" : \"POST\", \"path\": \"/login\", \"body\": {{\"email\": \"caf\\u0065@x\", \"password\": \"{sentinel}\", \"note\": \"ok\\u0021\"}} }}"
         ),
     ];
     for (i, args) in http_args.iter().enumerate() {

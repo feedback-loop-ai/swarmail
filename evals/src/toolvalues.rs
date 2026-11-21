@@ -58,6 +58,18 @@ pub const INDEX_LIMIT: usize = 64 * 1024;
 pub const PER_CLASS: usize = 3;
 /// What a registered literal is replaced by.
 pub const MASK: &str = "[REDACTED]";
+/// The shortest run of base64, base64url, base32 or hex alphabet
+/// characters (`A-Z a-z 0-9 + / = _ -`) a published string or number is
+/// refused for. Every such encoding of a literal of [`SENTINEL_MIN_BYTES`]
+/// or more (the 32-character admin bearer included) holds a run of at
+/// least 40 (base64: 4 * floor((32 - 2) / 3)), while the fixture's own
+/// opaque data runs to at most 36 (a Swarmail message id, a UUID; mailed
+/// tokens are 24, passwords 16, codes 6), so 37 is the least threshold
+/// that still publishes that data.
+pub const OPAQUE_RUN_LIMIT: usize = 37;
+/// The shortest sentinel the operator's file may register: long enough
+/// that every encoding [`OPAQUE_RUN_LIMIT`] stands guard over is caught.
+pub const SENTINEL_MIN_BYTES: usize = 32;
 /// The capture's private intermediate file names.
 pub const CAPTURE_FILE: &str = "capture.json";
 pub const MANIFEST_FILE: &str = "manifest.json";
@@ -393,6 +405,11 @@ pub struct Registry {
     /// The exact values of the literals that are JSON numbers: a number
     /// is found by value as well as by spelling.
     numbers: Vec<Decimal>,
+    /// Each literal ASCII-lowercased, for the case-insensitive search.
+    folded: Vec<Vec<u8>>,
+    /// The digits of each numeric literal as written: a number whose own
+    /// digits contain them is refused, whatever its value.
+    digit_strings: Vec<Vec<u8>>,
     bytes: usize,
     complete: bool,
 }
@@ -418,6 +435,8 @@ impl Registry {
         Self {
             literals: Vec::new(),
             numbers: Vec::new(),
+            folded: Vec::new(),
+            digit_strings: Vec::new(),
             bytes: 0,
             complete: true,
         }
@@ -434,10 +453,13 @@ impl Registry {
         }
         self.bytes += literal.len();
         self.literals.push(literal.to_string());
+        self.folded.push(literal.as_bytes().to_ascii_lowercase());
         if matches!(parse(literal.as_bytes()), Ok(Node { value: Json::Num(n), .. }) if n == literal)
             && let Some(value) = Decimal::of(literal.as_bytes())
         {
             self.numbers.push(value);
+            self.digit_strings
+                .push(literal.bytes().filter(u8::is_ascii_digit).collect());
         }
     }
     /// Mark the registry unusable (a source could not be read whole).
@@ -459,6 +481,26 @@ impl Registry {
             .iter()
             .any(|l| bytes.windows(l.len()).any(|w| w == l.as_bytes()))
     }
+    /// Whether any registered literal occurs in `bytes` ignoring ASCII case:
+    /// what a published value is checked with, so an upper- or mixed-case
+    /// spelling of a literal is refused, never published.
+    pub fn found_folded(&self, bytes: &[u8]) -> bool {
+        let lower = bytes.to_ascii_lowercase();
+        self.folded
+            .iter()
+            .any(|l| lower.windows(l.len()).any(|w| w == l.as_slice()))
+    }
+    /// Whether a number's digits, as written, contain a numeric literal's.
+    fn digits_contain(&self, spelling: &[u8]) -> bool {
+        let digits: Vec<u8> = spelling
+            .iter()
+            .copied()
+            .filter(u8::is_ascii_digit)
+            .collect();
+        self.digit_strings
+            .iter()
+            .any(|d| digits.windows(d.len()).any(|w| w == d.as_slice()))
+    }
     /// Whether a literal survives anywhere in a JSON document: in its bytes,
     /// or in any decoded name, string or number through the same layers a
     /// value is checked with, so a literal the serializer escaped (a quote,
@@ -466,7 +508,7 @@ impl Registry {
     /// found. A document that does not parse strictly cannot be checked
     /// and counts as holding one.
     pub fn found_in_document(&self, bytes: &[u8]) -> bool {
-        self.found_in(bytes) || parse(bytes).map_or(true, |n| self.residual(&n.value, 0))
+        self.found_folded(bytes) || parse(bytes).map_or(true, |n| self.residual(&n.value, 0))
     }
     /// Replace every maximal run of bytes covered by any (possibly
     /// overlapping) occurrence of a literal with one [`MASK`].
@@ -581,7 +623,10 @@ impl Registry {
         };
         match v {
             Json::Null | Json::Bool(_) => false,
-            Json::Num(n) => self.found_in(n.as_bytes()) || self.number_found(n.as_bytes()),
+            Json::Num(n) => {
+                let n = n.as_bytes();
+                self.found_folded(n) || self.number_found(n) || self.digits_contain(n)
+            }
             Json::Str(s) => text(s),
             Json::Arr(items) => items.iter().any(|i| self.residual(&i.value, depth)),
             Json::Obj(members) => members
@@ -611,7 +656,11 @@ impl Registry {
         if again != out {
             return Err(Refusal::InvalidArgumentEncoding);
         }
-        if self.found_in(out.as_bytes()) || self.residual(&back.value, 0) {
+        // Deny by default: only a provably plain value is published.
+        if !plain_value(&back.value) {
+            return Err(Refusal::InvalidArgumentEncoding);
+        }
+        if self.found_folded(out.as_bytes()) || self.residual(&back.value, 0) {
             return Err(Refusal::ResidualSecret);
         }
         Ok(out)
@@ -624,7 +673,7 @@ impl Registry {
     /// [`DEPTH_LIMIT`] rounds cannot be proven clean and counts as holding
     /// one.
     fn found_in_layers(&self, s: &str) -> bool {
-        search_layers(s, |b| self.found_in(b) || self.number_in_text(b)).unwrap_or(true)
+        search_layers(s, |b| self.found_folded(b) || self.number_in_text(b)).unwrap_or(true)
     }
 }
 
@@ -634,9 +683,11 @@ impl Registry {
         !self.numbers.is_empty() && Decimal::of(spelling).is_some_and(|v| self.numbers.contains(&v))
     }
     /// Whether text holds a decimal number, in any spelling, whose value is
-    /// a numeric literal's. Every maximal run that starts at a digit not
-    /// preceded by one (digits, an optional fraction, an optional exponent)
-    /// is read, with and without a `-` written before it.
+    /// a numeric literal's. A number is read from every position that
+    /// starts one (a digit, or a `.` before a digit), overlapping or not,
+    /// as the longest run of digits, an optional fraction (`5.`, `.5`,
+    /// `5.5`) and an optional exponent, with and without a `-` written
+    /// before it.
     fn number_in_text(&self, b: &[u8]) -> bool {
         if self.numbers.is_empty() {
             return false;
@@ -647,15 +698,17 @@ impl Registry {
             }
             i
         };
-        let mut i = 0;
-        while i < b.len() {
-            if !b[i].is_ascii_digit() || (i > 0 && b[i - 1].is_ascii_digit()) {
-                i += 1;
+        for i in 0..b.len() {
+            let dot_start = b[i] == b'.' && b.get(i + 1).is_some_and(u8::is_ascii_digit);
+            if !b[i].is_ascii_digit() && !dot_start {
                 continue;
             }
             let mut end = digits(i);
-            if b.get(end) == Some(&b'.') && b.get(end + 1).is_some_and(u8::is_ascii_digit) {
-                end = digits(end + 1);
+            if b.get(end) == Some(&b'.') {
+                let after = digits(end + 1);
+                if after > end + 1 || end > i {
+                    end = after;
+                }
             }
             if matches!(b.get(end), Some(b'e' | b'E')) {
                 let sign = usize::from(matches!(b.get(end + 1), Some(b'+' | b'-')));
@@ -668,7 +721,6 @@ impl Registry {
             if self.number_found(token) || signed.is_some_and(|t| self.number_found(t)) {
                 return true;
             }
-            i = end;
         }
         false
     }
@@ -688,22 +740,20 @@ struct Decimal {
 }
 
 impl Decimal {
-    /// Read one whole number: `-`? digits (`.` digits)? (`e`|`E` sign? digits)?.
+    /// Read one whole number: `-`? (digits (`.` digits?)? | `.` digits)
+    /// (`e`|`E` sign? digits)?, so `5.`, `.5` and `.5e1` are read too.
     fn of(b: &[u8]) -> Option<Self> {
         let negative = b.first() == Some(&b'-');
         let rest = &b[usize::from(negative)..];
         let int_len = rest.iter().take_while(|c| c.is_ascii_digit()).count();
-        if int_len == 0 {
-            return None;
-        }
         let (int, mut rest) = rest.split_at(int_len);
         let mut frac: &[u8] = &[];
         if let Some(after) = rest.strip_prefix(b".") {
             let n = after.iter().take_while(|c| c.is_ascii_digit()).count();
-            if n == 0 {
-                return None;
-            }
             (frac, rest) = after.split_at(n);
+        }
+        if int.is_empty() && frac.is_empty() {
+            return None;
         }
         let mut exponent: i64 = 0;
         if let Some(after) = rest.strip_prefix(b"e").or_else(|| rest.strip_prefix(b"E")) {
@@ -748,6 +798,55 @@ impl Decimal {
             digits,
             exponent,
         })
+    }
+}
+
+/// Whether a published string, name or number spelling is provably plain:
+/// printable ASCII only (no control character, no non-ASCII letter that
+/// could stand for an ASCII one), no backslash (so no `\u` or `\x` escape
+/// survives decoding), no complete `%XX` escape, no `&...;` HTML or XML
+/// entity, and no run of [`OPAQUE_RUN_LIMIT`] or more base64, base64url,
+/// base32 or hex alphabet characters. Anything else is withheld: a shape
+/// the redactor cannot read may be any spelling of a secret.
+pub fn plain(s: &str) -> bool {
+    let b = s.as_bytes();
+    if !b.iter().all(|c| (0x20..=0x7e).contains(c)) || b.contains(&b'\\') {
+        return false;
+    }
+    let percent = b
+        .windows(3)
+        .any(|w| w[0] == b'%' && w[1].is_ascii_hexdigit() && w[2].is_ascii_hexdigit());
+    let entity = b.iter().enumerate().any(|(i, c)| {
+        let rest = &b[i + 1..];
+        let n = rest
+            .iter()
+            .take_while(|c| c.is_ascii_alphanumeric() || **c == b'#')
+            .count();
+        *c == b'&' && n > 0 && rest.get(n) == Some(&b';')
+    });
+    let mut run = 0usize;
+    let mut opaque = false;
+    for c in b {
+        if c.is_ascii_alphanumeric() || b"+/=_-".contains(c) {
+            run += 1;
+            opaque |= run >= OPAQUE_RUN_LIMIT;
+        } else {
+            run = 0;
+        }
+    }
+    !(percent || entity || opaque)
+}
+
+/// [`plain`] over every name, string and number spelling of a value.
+fn plain_value(v: &Json) -> bool {
+    match v {
+        Json::Null | Json::Bool(_) => true,
+        Json::Num(n) => plain(n),
+        Json::Str(s) => plain(s),
+        Json::Arr(items) => items.iter().all(|i| plain_value(&i.value)),
+        Json::Obj(members) => members
+            .iter()
+            .all(|(k, v)| plain(k) && plain_value(&v.value)),
     }
 }
 
@@ -948,14 +1047,15 @@ pub fn sealed_registry(bearer: &str, snapshot: Option<&[String]>, sentinels: &Pa
 }
 
 /// Read a sentinel file: a JSON array of at most [`REGISTRY_LITERALS`]
-/// nonempty strings within [`REGISTRY_BYTES`] of file.
+/// strings of at least [`SENTINEL_MIN_BYTES`] each, within
+/// [`REGISTRY_BYTES`] of file.
 pub fn read_sentinels(path: &Path) -> Result<Vec<String>, Invalid> {
     let dir = path.parent().ok_or(Invalid)?;
     let name = path.file_name().and_then(|n| n.to_str()).ok_or(Invalid)?;
     let dir = artifacts::resolve_root(dir).map_err(|_| Invalid)?;
     let bytes = artifacts::read_file(&dir, name, REGISTRY_BYTES).map_err(|_| Invalid)?;
     let list: Vec<String> = serde_json::from_slice(&bytes).map_err(|_| Invalid)?;
-    if list.len() > REGISTRY_LITERALS || list.iter().any(String::is_empty) {
+    if list.len() > REGISTRY_LITERALS || list.iter().any(|s| s.len() < SENTINEL_MIN_BYTES) {
         return Err(Invalid);
     }
     Ok(list)

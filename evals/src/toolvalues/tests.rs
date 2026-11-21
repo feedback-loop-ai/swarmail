@@ -3,6 +3,13 @@ use crate::journal::ToolOutcome;
 
 const BEARER: &str = "BearerCanary0123456789abcdefXYZ";
 const SENTINEL: &str = "sentinel-canary-ÿ-42";
+/// Sentinels read from a file are at least [`SENTINEL_MIN_BYTES`] long.
+const FILE_SENTINEL: &str = "file sentinel canary 0123456789abcdef";
+const LATE_SENTINEL: &str = "late sentinel canary 0123456789abcdef";
+
+fn long(i: usize) -> String {
+    format!("sentinel {i:032}")
+}
 
 fn reg() -> Registry {
     let mut r = Registry::new();
@@ -84,10 +91,11 @@ fn redaction_masks_every_occurrence_in_every_form() {
             format!(r#"{{"body":"{{\"k\":\"{BEARER}\",\"n\":[1, 2]}}"}}"#),
             r#"{"body":"{\"k\":\"[REDACTED]\",\"n\":[1,2]}"}"#,
         ),
-        // Whitespace and multibyte text without a literal keep their values.
+        // Whitespace, and JSON escapes that decode to plain text, keep
+        // their values.
         (
-            "{ \"q\" : \"héllo ✓\" , \"n\" : 1.50 }".into(),
-            r#"{"q":"héllo ✓","n":1.50}"#,
+            "{ \"q\" : \"h\\u0065llo \\\"x\\\"\" , \"n\" : 1.50 }".into(),
+            r#"{"q":"hello \"x\"","n":1.50}"#,
         ),
         // A nested-looking string without a literal is left as written.
         (r#"{"s":"[1, 2]"}"#.into(), r#"{"s":"[1, 2]"}"#),
@@ -107,12 +115,6 @@ fn redaction_masks_every_occurrence_in_every_form() {
         (
             "{\"path\":\"/a/sentinel-canary-%252525C3%25BF-42?x=%\"}".into(),
             r#"{"path":"/a/[REDACTED]?x=%"}"#,
-        ),
-        // A literal in plain text beside a benign undecodable escape is
-        // masked as text.
-        (
-            format!(r#"{{"s":"{BEARER} 100%FF"}}"#),
-            r#"{"s":"[REDACTED] 100%FF"}"#,
         ),
     ];
     for (input, want) in cases {
@@ -193,14 +195,26 @@ fn values_that_cannot_be_proven_redacted_refuse_by_reason() {
         Err(Refusal::InvalidArgumentEncoding)
     );
     // The same without a percent sign: a JSON-escaped one starts the chain.
-    let escaped = format!(r#"{{"a":"\\u0025{}41"}}"#, "25".repeat(DEPTH_LIMIT + 1));
-    assert_eq!(r.redact(escaped.as_bytes()), Err(Refusal::ResidualSecret));
-    let settles = format!(r#"{{"a":"\\u0025{}41"}}"#, "25".repeat(DEPTH_LIMIT - 2));
-    assert!(r.redact(settles.as_bytes()).is_ok());
-    // A percent-encoded JSON escape: the literal is in no single decoding,
-    // only in the alternation, and is refused rather than published.
+    // Text that still holds a backslash is not plain, settled or not.
+    for n in [DEPTH_LIMIT + 1, DEPTH_LIMIT - 2] {
+        let escaped = format!(r#"{{"a":"\\u0025{}41"}}"#, "25".repeat(n));
+        assert_eq!(
+            r.redact(escaped.as_bytes()),
+            Err(Refusal::InvalidArgumentEncoding)
+        );
+    }
+    // A percent-encoded JSON escape: not plain either.
     let mixed = format!(r#"{{"a":"%5Cu0042{}"}}"#, &BEARER[1..]);
-    assert_eq!(r.redact(mixed.as_bytes()), Err(Refusal::ResidualSecret));
+    assert_eq!(
+        r.redact(mixed.as_bytes()),
+        Err(Refusal::InvalidArgumentEncoding)
+    );
+    // A literal in text beside an undecodable %FF: masked, but a complete
+    // escape left in the published text is not plain.
+    assert_eq!(
+        r.redact(format!(r#"{{"s":"{BEARER} 100%FF"}}"#).as_bytes()),
+        Err(Refusal::InvalidArgumentEncoding)
+    );
     // A literal hiding behind a malformed escape in a member name.
     let key = format!(r#"{{"%42{}%zz":1,"b":2}}"#, &BEARER[1..]);
     assert_eq!(
@@ -223,10 +237,10 @@ fn values_that_cannot_be_proven_redacted_refuse_by_reason() {
         assert_eq!(r.redact(bad), Err(Refusal::InvalidArgumentEncoding));
     }
     // Exactly at the cap is kept; one byte over is refused.
-    let at = format!(r#"{{"s":"{}"}}"#, "a".repeat(VALUE_LIMIT - 8));
+    let at = format!(r#"{{"s":"{}"}}"#, "a ".repeat((VALUE_LIMIT - 8) / 2));
     assert_eq!(at.len(), VALUE_LIMIT);
     assert!(r.redact(at.as_bytes()).is_ok());
-    let over = format!(r#"{{"s":"{}"}}"#, "a".repeat(VALUE_LIMIT - 7));
+    let over = format!(r#"{{"s":"{}a"}}"#, "a ".repeat((VALUE_LIMIT - 8) / 2));
     assert_eq!(r.redact(over.as_bytes()), Err(Refusal::ValueTooLarge));
     // A redacted encoding over the cap: a short literal under a long mask.
     let mut short = Registry::new();
@@ -243,7 +257,10 @@ fn values_that_cannot_be_proven_redacted_refuse_by_reason() {
         escaped,
         "]".repeat(DEPTH_LIMIT)
     );
-    assert_eq!(r.redact(deep.as_bytes()), Err(Refusal::ResidualSecret));
+    assert_eq!(
+        r.redact(deep.as_bytes()),
+        Err(Refusal::InvalidArgumentEncoding)
+    );
     // Shallow enough to parse: redacted structurally instead.
     let shallow = deep.replacen('[', "", 2).replacen(']', "", 2);
     assert!(r.redact(shallow.as_bytes()).unwrap().contains(MASK));
@@ -283,12 +300,7 @@ fn a_decoded_mask_is_refused_without_a_literal() {
         }
     }
     // Near misses are ordinary text and pass through unchanged.
-    for plain in [
-        "%5BREDACTED",
-        "[REDACTE D]",
-        "%5BRED%ACTED%5D",
-        "[redacted]",
-    ] {
+    for plain in ["[REDACTE D]", "[redacted]", "REDACTED"] {
         let doc = format!(r#"{{"a":{}}}"#, quote(plain));
         assert_eq!(r.redact(doc.as_bytes()).as_deref(), Ok(doc.as_str()));
     }
@@ -321,21 +333,23 @@ fn a_numeric_sentinel_is_found_by_value_in_any_spelling() {
             }
         }
     }
-    // Percent-encoded and with a sign written before it in text.
-    for doc in [r#"{"s":"%31.5e2"}"#, r#"{"s":"id-1.5e2"}"#] {
-        assert_eq!(
-            r.redact(doc.as_bytes()),
-            Err(Refusal::ResidualSecret),
-            "{doc}"
-        );
-    }
+    // With a sign written before it in text, and percent-encoded (not
+    // plain, so refused before the value is even read).
+    assert_eq!(
+        r.redact(br#"{"s":"id-1.5e2"}"#),
+        Err(Refusal::ResidualSecret)
+    );
+    assert_eq!(
+        r.redact(br#"{"s":"%31.5e2"}"#),
+        Err(Refusal::InvalidArgumentEncoding)
+    );
     // Other values are kept, whatever their spelling.
     for doc in [
         r#"{"n":151}"#,
         r#"{"n":1.5e1}"#,
         r#"{"n":-1.5e2}"#,
         r#"{"n":0}"#,
-        r#"{"s":"1.5e1 or 11.5e2"}"#,
+        r#"{"s":"1.5e1 or 151"}"#,
     ] {
         assert_eq!(r.redact(doc.as_bytes()).as_deref(), Ok(doc), "{doc}");
     }
@@ -345,7 +359,28 @@ fn a_numeric_sentinel_is_found_by_value_in_any_spelling() {
     n.register("0");
     assert_eq!(n.redact(br#"{"n":-25e-1}"#), Err(Refusal::ResidualSecret));
     assert_eq!(n.redact(br#"{"n":-0.0e5}"#), Err(Refusal::ResidualSecret));
-    assert_eq!(n.redact(br#"{"n":2.5}"#).as_deref(), Ok(r#"{"n":2.5}"#));
+    assert_eq!(n.redact(br#"{"n":3.5}"#).as_deref(), Ok(r#"{"n":3.5}"#));
+    // A number whose digits hold a numeric sentinel's is refused whatever
+    // its value: no spelling question remains.
+    let mut d = Registry::new();
+    d.register("1.5");
+    for doc in [&br#"{"n":2.15}"#[..], br#"{"n":-1150e9}"#, br#"{"n":15}"#] {
+        assert_eq!(d.redact(doc), Err(Refusal::ResidualSecret));
+    }
+    assert_eq!(d.redact(br#"{"n":1.6}"#).as_deref(), Ok(r#"{"n":1.6}"#));
+    // A leading or trailing dot is read in text: 0.5 as .5, -.5, .5e1 (5,
+    // not 0.5, so kept apart), 5.e-1, and after another fraction.
+    let mut h = Registry::new();
+    h.register("0.5");
+    for text in [".5", "x -.5", "5.e-1", "7.1.5", "id=.05e1"] {
+        let doc = format!(r#"{{"s":"{text}"}}"#);
+        assert_eq!(
+            h.redact(doc.as_bytes()),
+            Err(Refusal::ResidualSecret),
+            "{doc}"
+        );
+    }
+    assert!(h.redact(br#"{"s":".6"}"#).is_ok());
     // A literal that is not one JSON number is matched by spelling only.
     let mut t = Registry::new();
     t.register("0150");
@@ -359,7 +394,9 @@ fn a_numeric_sentinel_is_found_by_value_in_any_spelling() {
         Decimal::of(b"1e99999999999999999998"),
         "a saturated exponent can only make values equal"
     );
-    for bad in [&b""[..], b"-", b"1.", b".5", b"1e", b"1e+", b"1x", b"--1"] {
+    assert_eq!(Decimal::of(b".5e1"), Decimal::of(b"5"));
+    assert_eq!(Decimal::of(b"5.e-1"), Decimal::of(b"0.5"));
+    for bad in [&b""[..], b"-", b".", b".e1", b"1e", b"1e+", b"1x", b"--1"] {
         assert_eq!(Decimal::of(bad), None, "{:?}", String::from_utf8_lossy(bad));
     }
 }
@@ -375,13 +412,22 @@ fn a_form_encoded_space_never_hides_a_sentinel() {
         r#"{"method":"GET","path":"/search?q=my+secret&page=2"}"#,
         r#"{"method":"POST","path":"/login","body":"user=a&pass=my+secret"}"#,
         r#"{"method":"POST","path":"/","body":"{\"q\":\"my+secret\"}"}"#,
-        r#"{"method":"GET","path":"/?q=my%2Bsecret"}"#,
-        r#"{"method":"GET","path":"/?q=my%252Bsecret"}"#,
         r#"{"my+secret":1}"#,
     ] {
         assert_eq!(
             r.redact(doc.as_bytes()),
             Err(Refusal::ResidualSecret),
+            "{doc}"
+        );
+    }
+    // Percent-encoded on top: a %XX left in published text is not plain.
+    for doc in [
+        r#"{"method":"GET","path":"/?q=my%2Bsecret"}"#,
+        r#"{"method":"GET","path":"/?q=my%252Bsecret"}"#,
+    ] {
+        assert_eq!(
+            r.redact(doc.as_bytes()),
+            Err(Refusal::InvalidArgumentEncoding),
             "{doc}"
         );
     }
@@ -396,6 +442,132 @@ fn a_form_encoded_space_never_hides_a_sentinel() {
     assert_eq!(r.redact(kept.as_bytes()).as_deref(), Ok(kept));
     // A row with the form spelling is not approved for a transcript.
     assert!(r.found_in_document(br#"{"agent":"my+secret"}"#));
+}
+
+/// A trial-shaped bearer (32 alphanumerics) and a file-length sentinel.
+const TRIAL_BEARER: &str = "Qz7pL2mXv9KdR4tYw8NcB1sHf6JgU3eA";
+
+fn every_spelling(literal: &str) -> Vec<(&'static str, String)> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+    let decimal: String = literal.bytes().map(|b| format!("&#{b};")).collect();
+    let hex: String = literal.bytes().map(|b| format!("&#x{b:x};")).collect();
+    let mixed: String = literal
+        .chars()
+        .enumerate()
+        .map(|(i, c)| {
+            if i % 2 == 0 {
+                c.to_ascii_uppercase()
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect();
+    let escaped: String = literal.bytes().map(|b| format!("\\\\u{b:04x}")).collect();
+    vec![
+        ("base64", STANDARD.encode(literal)),
+        (
+            "base64 in text",
+            format!("Basic {}", STANDARD.encode(format!("u:{literal}"))),
+        ),
+        ("base64url", URL_SAFE_NO_PAD.encode(literal)),
+        ("hex", literal.bytes().map(|b| format!("{b:02x}")).collect()),
+        ("named entity", format!("&lt;{literal}&gt;")),
+        ("decimal entity", decimal),
+        ("hex entity", hex),
+        ("upper case", literal.to_ascii_uppercase()),
+        ("lower case", literal.to_ascii_lowercase()),
+        ("mixed case", mixed),
+        ("text-level \\u escape", escaped),
+        (
+            "fullwidth",
+            literal
+                .chars()
+                .map(|c| char::from_u32(c as u32 + 0xFEE0).unwrap_or(c))
+                .collect(),
+        ),
+    ]
+}
+
+#[test]
+fn deny_by_default_refuses_every_unreadable_spelling() {
+    let mut r = Registry::new();
+    r.register(TRIAL_BEARER);
+    r.register(FILE_SENTINEL);
+    for literal in [TRIAL_BEARER, FILE_SENTINEL] {
+        for (how, spelled) in every_spelling(literal) {
+            for doc in [
+                json!({"path": format!("/?t={spelled}")}),
+                json!({"body": {"note": spelled}}),
+                json!({ spelled.clone(): 1 }),
+            ] {
+                let bytes = doc.to_string();
+                let got = r.redact(bytes.as_bytes());
+                // A spelling that is the literal itself is masked; every
+                // other one is refused.
+                let ok = match &got {
+                    Err(Refusal::InvalidArgumentEncoding | Refusal::ResidualSecret) => true,
+                    Ok(out) => spelled == literal && !r.found_folded(out.as_bytes()),
+                    Err(_) => false,
+                };
+                assert!(ok, "{how} of {literal:?} was {got:?}");
+            }
+        }
+    }
+    // The case-folded spelling is a residual literal, not a shape.
+    let upper = json!({"q": TRIAL_BEARER.to_ascii_uppercase()}).to_string();
+    assert_eq!(r.redact(upper.as_bytes()), Err(Refusal::ResidualSecret));
+    // A leading-dot numeric spelling of a numeric sentinel.
+    let mut n = Registry::new();
+    n.register("0.5");
+    assert_eq!(
+        n.redact(br#"{"s":"ratio .5e0"}"#),
+        Err(Refusal::ResidualSecret)
+    );
+    // Each shape rule on its own, with no literal in sight.
+    for bad in [
+        "caf\u{e9}",
+        "tab\there",
+        "\u{2713}",
+        "a\\u0041",
+        "a\\x41",
+        "100%41",
+        "&amp;",
+        "&#65;",
+        "&#x41;",
+        &"A".repeat(OPAQUE_RUN_LIMIT),
+        &format!("{}+/=", "a".repeat(OPAQUE_RUN_LIMIT - 3)),
+    ] {
+        assert!(!plain(bad), "{bad:?}");
+        let doc = json!({ "s": bad }).to_string();
+        assert_eq!(
+            r.redact(doc.as_bytes()),
+            Err(Refusal::InvalidArgumentEncoding),
+            "{bad:?}"
+        );
+    }
+    // The fixture's synthetic data is plain and publishes unchanged: an
+    // inbox, a subject, a mailed link's 24-character token, a Swarmail
+    // message id (a UUID, the longest run: 36), a code, a 16-character
+    // password, a form body, a query with '&' that is no entity.
+    let synthetic = json!({
+        "inbox": "ada.b57b4@example.test",
+        "subject": "Invitation: [Ticket #4821] Autumn sale!",
+        "path": "/a/Xk3P9qLm2Vn8RtY4Wz6Bc1Df",
+        "link": "http://127.0.0.1:41235/a/Xk3P9qLm2Vn8RtY4Wz6Bc1Df",
+        "id": "0193a5f4-1c2b-7def-8abc-0123456789ab",
+        "code": "482913",
+        "password": "Hq4ZtP8mWc2LxN7v",
+        "body": {"token": "Xk3P9qLm2Vn8RtY4Wz6Bc1Df", "uid": 3, "start": 0.5},
+        "form": "user=ada&pass=hunter2",
+        "reply": "The export button does nothing when I click it."
+    })
+    .to_string();
+    assert_eq!(
+        r.redact(synthetic.as_bytes()).as_deref(),
+        Ok(synthetic.as_str())
+    );
+    assert!(plain(&"A".repeat(OPAQUE_RUN_LIMIT - 1)));
 }
 
 #[test]
@@ -424,7 +596,7 @@ fn the_registry_is_bounded_and_fails_closed() {
 
     let dir = tempfile::tempdir().unwrap();
     let good = dir.path().join("s.json");
-    std::fs::write(&good, serde_json::to_vec(&[SENTINEL]).unwrap()).unwrap();
+    std::fs::write(&good, serde_json::to_vec(&[FILE_SENTINEL]).unwrap()).unwrap();
     let snapshot = read_sentinels(&good).ok();
     let built = sealed_registry(BEARER, snapshot.as_deref(), &good);
     assert!(built.is_complete() && built.len() == 2);
@@ -435,9 +607,16 @@ fn the_registry_is_bounded_and_fails_closed() {
         assert_eq!(read_sentinels(&good), Err(Invalid));
         assert!(!sealed_registry(BEARER, None, &good).is_complete());
     }
-    let many: Vec<String> = (0..=REGISTRY_LITERALS).map(|i| format!("s{i}")).collect();
+    let many: Vec<String> = (0..=REGISTRY_LITERALS).map(long).collect();
     std::fs::write(&good, serde_json::to_vec(&many).unwrap()).unwrap();
     assert!(read_sentinels(&good).is_err());
+    // A sentinel shorter than the minimum is refused with the file: its
+    // base64 spelling would be too short to be told from fixture data.
+    let short = "x".repeat(SENTINEL_MIN_BYTES - 1);
+    std::fs::write(&good, serde_json::to_vec(&[short]).unwrap()).unwrap();
+    assert!(read_sentinels(&good).is_err());
+    std::fs::write(&good, serde_json::to_vec(&[long(1)]).unwrap()).unwrap();
+    assert_eq!(read_sentinels(&good), Ok(vec![long(1)]));
     assert!(read_sentinels(&dir.path().join("absent")).is_err());
     assert!(read_sentinels(Path::new("/")).is_err());
 }
@@ -446,17 +625,17 @@ fn the_registry_is_bounded_and_fails_closed() {
 fn the_registry_only_grows_during_a_trial() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("s.json");
-    std::fs::write(&file, serde_json::to_vec(&[SENTINEL]).unwrap()).unwrap();
+    std::fs::write(&file, serde_json::to_vec(&[FILE_SENTINEL]).unwrap()).unwrap();
     let snapshot = read_sentinels(&file).unwrap();
-    let late = "late-canary-7";
-    let leak = format!(r#"{{"a":"{SENTINEL}","b":"{late}"}}"#);
+    let late = LATE_SENTINEL;
+    let leak = format!(r#"{{"a":"{FILE_SENTINEL}","b":"{late}"}}"#);
     // Rewritten to [] before seal: the snapshot keeps the sentinel.
     std::fs::write(&file, b"[]").unwrap();
     let r = sealed_registry(BEARER, Some(&snapshot), &file);
     assert!(r.is_complete() && r.len() == 2);
     assert_eq!(
         r.redact(leak.as_bytes()).as_deref(),
-        Ok(r#"{"a":"[REDACTED]","b":"late-canary-7"}"#)
+        Ok(format!(r#"{{"a":"[REDACTED]","b":"{late}"}}"#).as_str())
     );
     // A sentinel registered mid-trial is honoured beside the snapshot.
     std::fs::write(&file, serde_json::to_vec(&[late]).unwrap()).unwrap();
@@ -486,10 +665,10 @@ fn the_registry_only_grows_during_a_trial() {
     std::fs::remove_file(&file).unwrap();
     assert!(!sealed_registry(BEARER, Some(&snapshot), &file).is_complete());
     // No snapshot at trial start: unusable whatever the file holds now.
-    std::fs::write(&file, serde_json::to_vec(&[SENTINEL]).unwrap()).unwrap();
+    std::fs::write(&file, serde_json::to_vec(&[FILE_SENTINEL]).unwrap()).unwrap();
     assert!(!sealed_registry(BEARER, None, &file).is_complete());
     // The union is still capped: past it the registry is unusable.
-    let many: Vec<String> = (0..REGISTRY_LITERALS).map(|i| format!("s{i}")).collect();
+    let many: Vec<String> = (0..REGISTRY_LITERALS).map(long).collect();
     std::fs::write(&file, serde_json::to_vec(&many).unwrap()).unwrap();
     assert!(!sealed_registry(BEARER, Some(&snapshot), &file).is_complete());
 }
@@ -1140,7 +1319,7 @@ fn a_companion_is_published_whole_or_absent_with_its_reason() {
     );
     assert_eq!(reason(absent), "evidence_write_failed");
     // Values that fit one by one but not as one companion.
-    let big = format!(r#"{{"s":"{}"}}"#, "y".repeat(8000));
+    let big = format!(r#"{{"s":"{}"}}"#, "y ".repeat(4000));
     let bigs: Vec<&[u8]> = (0..8).map(|_| big.as_bytes()).collect();
     setup(4, whole, &bigs);
     let calls: Vec<ToolCall> = (1..=8)

@@ -5538,7 +5538,11 @@ mod capture_admission_tests {
     fn value_capture_admits_only_a_swarmail_target_and_a_creatable_root() {
         let dir = tempfile::tempdir().unwrap();
         let sentinels = dir.path().join("s.json");
-        std::fs::write(&sentinels, br#"["canary"]"#).unwrap();
+        std::fs::write(
+            &sentinels,
+            br#"["a sentinel long enough to register 0123456789"]"#,
+        )
+        .unwrap();
         let root = dir.path().join("captures");
         // A competitor target's endpoint is the runner's bridge, which the
         // capture does not observe: refused before any root is made.

@@ -14,6 +14,10 @@ use std::path::{Path, PathBuf};
 use swarmail_evals::runner::TrialResult;
 use swarmail_evals::tasks::Outcome;
 
+/// A sentinel file the capture admits: every sentinel is at least
+/// `toolvalues::SENTINEL_MIN_BYTES` long.
+const LONG_SENTINELS: &str = r#"["a sentinel long enough to register 0123456789"]"#;
+
 #[test]
 fn helper_agent() {
     maybe_run_helper();
@@ -172,9 +176,15 @@ fn values_are_redacted_bound_and_never_scored() {
     let captures = realm.join("captures");
     let nonce = swarmail_evals::runner::new_trial_id();
     let sentinel = format!("sentinel-{nonce}");
-    let number = (u64::from_str_radix(&nonce[..12], 16).unwrap() % 900_000_000_000
-        + 100_000_000_000)
-        .to_string();
+    // A numeric sentinel of the minimum length: 32 digits drawn from the
+    // nonce, never starting with a zero.
+    let number: String = std::iter::once('9')
+        .chain(
+            nonce[1..]
+                .chars()
+                .map(|c| char::from_digit(c.to_digit(16).unwrap() % 10, 10).unwrap()),
+        )
+        .collect();
     let sentinels = private.join("sentinels.json");
     std::fs::write(&sentinels, json!([sentinel, number]).to_string()).unwrap();
     let env = [
@@ -322,7 +332,7 @@ fn values_are_redacted_bound_and_never_scored() {
     }
     assert_eq!(
         entries[0]["value"]["subject"],
-        "caf\u{e9} \u{2713} [REDACTED] [REDACTED]"
+        "cafe ok [REDACTED] [REDACTED]"
     );
     assert_eq!(
         entries[1]["value"]["subject"], "\"quoted\" [REDACTED] [REDACTED]",
@@ -338,7 +348,8 @@ fn values_are_redacted_bound_and_never_scored() {
         "/?t=[REDACTED]&e=[REDACTED]%zz&d=[REDACTED]"
     );
     assert_eq!(entries[3]["value"]["body"]["password"], "[REDACTED]");
-    assert_eq!(entries[3]["value"]["body"]["note"], "\u{2713}\t");
+    assert_eq!(entries[3]["value"]["body"]["note"], "ok!");
+    assert_eq!(entries[3]["value"]["body"]["email"], "cafe@x");
 
     // Transcripts: failing rows per class, the probe's verified sequence.
     let tindex: Value =
@@ -588,7 +599,7 @@ fn matrix_capture_refuses_before_any_trial() {
     let agents = dir.path().join("agents.json");
     std::fs::write(&agents, r#"[{"label":"oracle","argv":[]}]"#).unwrap();
     let sentinels = dir.path().join("s.json");
-    std::fs::write(&sentinels, r#"["canary"]"#).unwrap();
+    std::fs::write(&sentinels, LONG_SENTINELS).unwrap();
     let existing = dir.path().join("exists");
     std::fs::create_dir(&existing).unwrap();
     let run = |root: &Path, sentinels: &Path, extra: &[&str]| {
@@ -641,7 +652,7 @@ fn a_capture_that_cannot_be_written_leaves_the_row_and_says_so() {
     let root = dir.path().join("not-a-directory");
     std::fs::write(&root, b"x").unwrap();
     let sentinels = dir.path().join("s.json");
-    std::fs::write(&sentinels, r#"["canary"]"#).unwrap();
+    std::fs::write(&sentinels, LONG_SENTINELS).unwrap();
     let mut command = cli();
     command
         .args(["trial", "--task", "signup", "--agent", "oracle"])
