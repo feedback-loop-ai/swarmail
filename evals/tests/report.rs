@@ -2644,6 +2644,22 @@ fn tree(root: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
 }
 
 #[test]
+fn the_default_rows_serialize_byte_identically_to_the_pre_change_contract() {
+    // The fixture's rows were written by the 68c3839 binary. Each reads
+    // back and serializes to the same bytes, so a change to the row's
+    // fields, their order or their spelling turns this red.
+    let text = std::fs::read_to_string(contract_dir().join("rows.jsonl")).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 8);
+    for line in lines {
+        let row: swarmail_evals::runner::TrialResult = serde_json::from_str(line).unwrap();
+        row.validate().unwrap();
+        assert_eq!(serde_json::to_string(&row).unwrap(), line);
+        assert_eq!(swarmail_evals::toolvalues::row_bytes(&row), line.as_bytes());
+    }
+}
+
+#[test]
 fn the_default_report_is_byte_identical_to_the_pre_change_contract() {
     let data = contract_dir();
     let rows = data.join("rows.jsonl");
