@@ -191,6 +191,78 @@ build --locked --bin swarmail> cargo test --locked` 0, 600 passed, 0 failed,
 the root-only gates and `brokkr compile` were not rerun: nothing outside
 `evals/` and `specs/trial-evidence/` changed.
 
+## Review return 4 (decision 0102), fixes
+
+The third panel returned on `9a5f153` with lows only, and with a spec
+defect. AC3 both required rejecting unsupported encodings and said a
+sentinel spelled in base64, HTML entities or another case is published.
+The operator ruled on 2026-11-21: redesign the value mode as deny by
+default. Each fix has a test that turns red when it is reverted (each was
+checked by reverting it):
+
+| Finding | Fix | Commit | Test |
+|---|---|---|---|
+| Spec defect: the bearer, which no operator chooses, published base64, entity or case-changed (low, security; correctness, guarantees) | Deny by default (decision below). After masking, every published name, string and number spelling must be printable ASCII with no backslash, no complete `%XX`, no `&...;` entity and no run of 37+ base64/base64url/base32/hex alphabet characters, else `invalid_argument_encoding`. Literals are searched ignoring ASCII case (`residual_secret`). Sentinels must be at least 32 bytes. No new reason | `760b0720` | `toolvalues::tests::deny_by_default_refuses_every_unreadable_spelling` covers the bearer and a sentinel as base64, base64 in text, base64url, hex, named/decimal/hex entities, upper/lower/mixed case, text-level `\u`, and fullwidth, each in a path, a body and a key; each shape rule alone; the fixture's synthetic data published unchanged. Red with the shape gate off, and red with case folding off |
+| Numeric sentinel missed with a leading dot (low, security; correctness, security) | `Decimal` reads `.5`, `5.` and `.5e1`; numbers in text are read from every start, overlapping; a number whose digits contain a numeric sentinel's is refused | `760b0720` | `a_numeric_sentinel_is_found_by_value_in_any_spelling` (`.5`, `-.5`, `5.e-1`, `7.1.5`, `.05e1`, digit strings). Red with the leading-dot reading off |
+| Registry fell back to the snapshot when the file broke at seal (low, security; correctness) | A file unreadable or malformed at seal poisons the registry (`registry_unavailable`); the snapshot ∪ file union stays for the readable case | `b684ed2a` | `the_registry_only_grows_during_a_trial`, now with a late sentinel in each of four malformed files: the seal is `registry_unavailable` with no row approval. Red with the fallback restored |
+| Journal free text copied verbatim (low, security; independent) | Non-owned tool names published as `sha256:<hex>`; the run id published only when plain, else `null` | `854365a2` | `binding_follows_the_structural_sequence_exactly`, `a_companion_is_published_whole_or_absent_with_its_reason`. Red with either reverted |
+| The canary search looked for raw spellings only (spec defect, tests) | The search ignores ASCII case and also looks for each literal's base64 (padded and not), base64url, hex and entity spellings. A new `encoded` agent sends the bearer and sentinel base64, base64url and entity-encoded; `planted` adds an upper- and mixed-case bearer; the oracle's captured arguments are checked to pass the plain shape whole; the probe's companion still publishes | `f2f28b55` | `tests/tool_values.rs::values_are_redacted_bound_and_never_scored`. With the shape gate off it is red at the `encoded` index entry, and the widened canary search alone is red too (checked by moving it ahead of the other assertions) |
+| AC3 and the README | AC3 rewritten as the operator ruled, with a dated note; the review-return-3 sentence that published unsupported spellings is gone. The README states the deny-by-default rule, the charset and run limit with their reasons, the 32-byte minimum, the journal rule, over-refusal as the accepted cost, and what no shape check can see | `c6d30039` | — |
+
+**The decisions, and why.**
+
+- **Charset: printable ASCII, 0x20 to 0x7E.** Every fixture identifier,
+  inbox, subject, code, token, link and the oracle's real arguments fall
+  in it; the end-to-end test checks the oracle's captured arguments.
+  Non-ASCII would admit fullwidth and look-alike letters, and invisible
+  separators, that spell a literal past a case-insensitive search. Control
+  characters would admit terminal and table injection. Backslashes are
+  refused outright, so no `\u` or `\x` escape survives decoding.
+- **Run limit: 37.** The fixture's longest opaque datum is a Swarmail
+  message id, a UUID of 36 characters from the base64url alphabet. Mailed
+  tokens are 24, passwords 16, codes 6. Any base64, base64url, base32 or
+  hex spelling of a literal of 32 bytes or more holds a run of at least 40
+  (base64 4 * floor((32 - 2) / 3); hex 64; base32 40). 37 is the least
+  limit that publishes the fixture's data, and every literal is at least
+  32 bytes: the bearer is 32 alphanumerics, and the sentinel file now
+  refuses anything shorter. A run limit tied to the shortest sentinel (the
+  ruling's example, min(sentinel length, 16)) would have refused every
+  mailed token and message id, and so every trial that touches a link.
+- **Leading dot.** The simpler fail-closed option was to read the dot,
+  not to refuse every near-equal token.
+- **Journal free text.** Digests for non-owned tool names, which need no
+  registry, and the shape check for the run id, as ruled.
+
+**Not done, and why.**
+
+- A literal split across fields or calls, or re-encoded into
+  ordinary-looking text, cannot be detected by any shape check. That
+  boundary is accepted 0075 §9 (hostile same-user activity), stated in AC3
+  and the README.
+- The other review items stay as they were: `write_page`'s in-place write
+  and U+2028/U+2029 in table cells, the capture root created before
+  brokkr admission, `trial --isolated --capture-tool-values`, and the
+  eval_http socket through the production wrapper. So does the tracked
+  debt in `tasks.md`: no capture-off control, replay not row by row, and
+  report-CLI zero-call and swap cases. Decision bodies are untouched.
+- The fixture data that publishes is the data checked. A future task whose
+  arguments carry longer opaque runs, non-ASCII text or entities will be
+  withheld, the accepted cost.
+
+Time added by this return: the new unit test runs in under 0.01 s. The
+`encoded` agent is one more stand-in trial: `tests/tool_values.rs` took
+16.5 s in the gate run at load average 35–39, against 13.6 s before; the
+end-to-end proof alone takes 14.1 s, against 11.9 s.
+
+Gates after this return (`--locked`, this seat, 2026-11-21, tree
+`c6d30039`): root `cargo fmt --all -- --check` 0; evals `cargo fmt --all --
+--check` 0; evals `cargo clippy --all-targets --locked -- -D warnings` 0;
+evals `SWARMAIL_BIN=<artifact record of cargo build --locked --bin
+swarmail> cargo test --locked` 0, 601 passed, 0 failed, 7 ignored, 1592 s
+wall. No test failed, so none was rerun. The root-only gates and `brokkr
+compile` were not rerun: nothing outside `evals/` and
+`specs/trial-evidence/` changed.
+
 ## Held paths
 
 None touched: `git diff --stat 0d4839f -- Cargo.toml Cargo.lock evals/Cargo.toml evals/Cargo.lock deny.toml scripts .github .brokkr src tests` is empty. No dependency or feature was added.
