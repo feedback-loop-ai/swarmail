@@ -506,6 +506,41 @@ wall. No test failed, so none was rerun. The root-only gates and `brokkr
 compile` were not rerun: nothing outside `evals/` and
 `specs/trial-evidence/` changed.
 
+## Review return 11 (decision 0102), fixes
+
+The tenth panel returned on `d23e805` with one low security residual,
+reported by every security-relevant member, and some lows and infos.
+Each fix has a test that turns red when it is reverted (each was checked
+by reverting it):
+
+| Finding | Fix | Commit | Test |
+|---|---|---|---|
+| The checked value was not the published value (low, security): `bind` re-parsed the checked string into a `serde_json::Value`, and serializing it re-spelled numbers through u64/i64/f64 and reordered members. With the admitted sentinel `00000000000000001234567890123457`, the checked `{"n":1234567890123456.99}` was published as `{"n":1234567890123457.0}` | No serde_json feature added. Each published call object is written by hand with the checked string appended as its `value`. The companion and each transcript leaf are serialized with a placeholder into which the verbatim calls, and the row's own checked bytes, are spliced. `bind` reads a value only to inspect it. The SHA-256 of each checked string is recorded at seal (`value_sha256` in the private capture record); `bind` refuses a stored value that no longer hashes to it. **Backstop:** once the companion's and each leaf's final bytes exist, they are read back with the strict reader and every value span must hash to its recorded digest, or the trial is withheld (`binding_mismatch`; a leaf is skipped as `value_unverified`). **Overflowing numbers:** a number no double can hold (`1e999`) is refused at seal (`invalid_argument_encoding`), so every published file reads in ordinary JSON parsers | `5995f27f` | `toolvalues::tests::a_published_value_is_the_checked_bytes`. The reproduced case publishes `1234567890123456.99` as written, and the sentinel's value appears nowhere. `1.50e2`, member order, a 30-digit integer and `-0.0` are kept. A re-spelled fragment does not verify. A stored value tampered after seal is `binding_mismatch`. `1e999` and `-1e999` are refused and `1.7e308` is kept. The transcript leaf carries the same value bytes and the row's own. End to end, `values_are_redacted_bound_and_never_scored` compares every published value span, in the companion and the transcript leaf, with the capture's checked strings. Red with values re-encoded through serde: withheld by the backstop when it is on, and the bytes differ when it is off. End to end, it was red at the member order |
+| tasks.md listed a CLI `sum_overflow` cell as open (info) | Marked done (return 9) | `9d07c696` | — |
+| README said "byte for byte" where the test compares parsed JSON and the replay's verdict (info) | Reworded to what the test proves | `9d07c696` | — |
+| AC3 omitted the 16-significant-digit rule (info) | Added | `9d07c696` | — |
+
+Not changed here: the other carried lows (`read_capture`'s deep
+validation arms, a capture-off control, the replay compared row by row,
+report-CLI zero-call and swap cases, the isolated capture path, parallel
+calls latching `binding_mismatch`, plain-shape checks on operator row
+metadata), the decoding cost with 256 literals (info, measured by the
+review), and CI time.
+
+Time added by this return: the new unit test runs in 0.24 s. The
+end-to-end test adds two span comparisons and no trial;
+`tests/tool_values.rs` took 25.2 s in the gate run at load average 28–32,
+against 25.4 s before.
+
+Gates after this return (`--locked`, this seat, 2026-11-21, tree
+`9d07c696`): root `cargo fmt --all -- --check` 0; evals `cargo fmt --all --
+--check` 0; evals `cargo clippy --all-targets --locked -- -D warnings` 0;
+evals `SWARMAIL_BIN=<artifact record of cargo build --locked --bin
+swarmail> cargo test --locked` 0, 612 passed, 0 failed, 7 ignored, 1584 s
+wall. No test failed, so none was rerun. The root-only gates and `brokkr
+compile` were not rerun: nothing outside `evals/` and
+`specs/trial-evidence/` changed.
+
 ## Held paths
 
 None touched: `git diff --stat 0d4839f -- Cargo.toml Cargo.lock evals/Cargo.toml evals/Cargo.lock deny.toml scripts .github .brokkr src tests` is empty. No dependency or feature was added.
