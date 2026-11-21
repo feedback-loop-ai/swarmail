@@ -414,6 +414,21 @@ fn a_numeric_sentinel_is_found_by_value_in_any_spelling() {
             "{doc}"
         );
     }
+    // Embedded in a longer number in text, with digits before and after:
+    // the digit string is checked there too, signed and unsigned.
+    for doc in [
+        format!(r#"{{"s":"id 3{bare}9"}}"#),
+        format!(r#"{{"s":"id 3{bare}"}}"#),
+        format!(r#"{{"s":"id {bare}9"}}"#),
+        format!(r#"{{"s":"id -3{bare}9.5"}}"#),
+        format!(r#"{{"s":"n=7.{bare}e3"}}"#),
+    ] {
+        assert_eq!(
+            z.redact(doc.as_bytes()),
+            Err(Refusal::ResidualSecret),
+            "{doc}"
+        );
+    }
     // Text that is not a number is matched by spelling only.
     let mut w = Registry::new();
     w.register("15 apples");

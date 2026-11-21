@@ -698,7 +698,8 @@ impl Registry {
         !self.numbers.is_empty() && Decimal::of(spelling).is_some_and(|v| self.numbers.contains(&v))
     }
     /// Whether text holds a decimal number, in any spelling, whose value is
-    /// a numeric literal's. A number is read from every position that
+    /// a numeric literal's or whose digits contain a numeric literal's
+    /// significant digits. A number is read from every position that
     /// starts one (a digit, or a `.` before a digit), overlapping or not,
     /// as the longest run of digits, an optional fraction (`5.`, `.5`,
     /// `5.5`) and an optional exponent, with and without a `-` written
@@ -733,7 +734,10 @@ impl Registry {
             }
             let token = &b[i..end];
             let signed = (i > 0 && b[i - 1] == b'-').then(|| &b[i - 1..end]);
-            if self.number_found(token) || signed.is_some_and(|t| self.number_found(t)) {
+            // By value and by digit string, the token as read and with the
+            // `-` before it: the same two checks a JSON number gets.
+            let hit = |t: &[u8]| self.number_found(t) || self.digits_contain(t);
+            if hit(token) || signed.is_some_and(hit) {
                 return true;
             }
         }
