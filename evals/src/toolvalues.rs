@@ -58,14 +58,21 @@ pub const INDEX_LIMIT: usize = 64 * 1024;
 pub const PER_CLASS: usize = 3;
 /// What a registered literal is replaced by.
 pub const MASK: &str = "[REDACTED]";
-/// The shortest run of base64, base64url, base32 or hex alphabet
-/// characters (`A-Z a-z 0-9 + / = _ -`) a published string or number is
-/// refused for. Every such encoding of a literal of [`SENTINEL_MIN_BYTES`]
-/// or more (the 32-character admin bearer included) holds a run of at
-/// least 40 (base64: 4 * floor((32 - 2) / 3)), while the fixture's own
-/// opaque data runs to at most 36 (a Swarmail message id, a UUID; mailed
-/// tokens are 24, passwords 16, codes 6), so 37 is the least threshold
-/// that still publishes that data.
+/// The shortest run a published string or number is refused for, counting
+/// the characters `A-Z a-z 0-9 + - _`. A path or URL separator (`/ ? & =
+/// # .`) and every other character breaks a run, so the fixture's own
+/// routes (`/invite/<24-character token>/event.ics`) publish. Every
+/// base64, base64url, base32 or hex encoding of a sentinel of
+/// [`SENTINEL_MIN_BYTES`] or more (the 32-character admin bearer
+/// included) still holds one unbroken run of at least 40: the characters
+/// its bytes alone decide number at least 4 * floor((32 - 2) / 3) in
+/// base64, 8 * floor((32 - 4) / 5) in base32 and 64 in hex. None of them
+/// is a separator: `=` is only padding, at the end; base64url's `-` and
+/// `_` count; and standard base64 writes `/` only for a byte `?`, DEL or
+/// one over 0x7E in the third place of a group, which a sentinel may not
+/// hold ([`read_sentinels`]). The fixture's own opaque data runs to at
+/// most 36 (a Swarmail message id, a UUID; mailed tokens are 24,
+/// passwords 16, codes 6), so 37 is the least threshold that publishes it.
 pub const OPAQUE_RUN_LIMIT: usize = 37;
 /// The shortest sentinel the operator's file may register: long enough
 /// that every encoding [`OPAQUE_RUN_LIMIT`] stands guard over is caught.
@@ -827,9 +834,9 @@ impl Decimal {
 /// printable ASCII only (no control character, no non-ASCII letter that
 /// could stand for an ASCII one), no backslash (so no `\u` or `\x` escape
 /// survives decoding), no complete `%XX` escape, no `&...;` HTML or XML
-/// entity, and no run of [`OPAQUE_RUN_LIMIT`] or more base64, base64url,
-/// base32 or hex alphabet characters. Anything else is withheld: a shape
-/// the redactor cannot read may be any spelling of a secret.
+/// entity, and no run of [`OPAQUE_RUN_LIMIT`] or more of `A-Z a-z 0-9 + -
+/// _` (a separator breaks a run). Anything else is withheld: a shape the
+/// redactor cannot read may be any spelling of a secret.
 pub fn plain(s: &str) -> bool {
     let b = s.as_bytes();
     if !b.iter().all(|c| (0x20..=0x7e).contains(c)) || b.contains(&b'\\') {
@@ -849,7 +856,7 @@ pub fn plain(s: &str) -> bool {
     let mut run = 0usize;
     let mut opaque = false;
     for c in b {
-        if c.is_ascii_alphanumeric() || b"+/=_-".contains(c) {
+        if c.is_ascii_alphanumeric() || b"+_-".contains(c) {
             run += 1;
             opaque |= run >= OPAQUE_RUN_LIMIT;
         } else {
@@ -1069,15 +1076,20 @@ pub fn sealed_registry(bearer: &str, snapshot: Option<&[String]>, sentinels: &Pa
 }
 
 /// Read a sentinel file: a JSON array of at most [`REGISTRY_LITERALS`]
-/// strings of at least [`SENTINEL_MIN_BYTES`] each, within
-/// [`REGISTRY_BYTES`] of file.
+/// strings of at least [`SENTINEL_MIN_BYTES`] each, every byte printable
+/// ASCII other than `?` (a `?` or a non-ASCII byte can make standard
+/// base64 write a `/`, which breaks the run [`OPAQUE_RUN_LIMIT`] counts),
+/// within [`REGISTRY_BYTES`] of file.
 pub fn read_sentinels(path: &Path) -> Result<Vec<String>, Invalid> {
     let dir = path.parent().ok_or(Invalid)?;
     let name = path.file_name().and_then(|n| n.to_str()).ok_or(Invalid)?;
     let dir = artifacts::resolve_root(dir).map_err(|_| Invalid)?;
     let bytes = artifacts::read_file(&dir, name, REGISTRY_BYTES).map_err(|_| Invalid)?;
     let list: Vec<String> = serde_json::from_slice(&bytes).map_err(|_| Invalid)?;
-    if list.len() > REGISTRY_LITERALS || list.iter().any(|s| s.len() < SENTINEL_MIN_BYTES) {
+    let admitted = |s: &String| {
+        s.len() >= SENTINEL_MIN_BYTES && s.bytes().all(|b| (0x20..=0x7e).contains(&b) && b != b'?')
+    };
+    if list.len() > REGISTRY_LITERALS || !list.iter().all(admitted) {
         return Err(Invalid);
     }
     Ok(list)

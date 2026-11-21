@@ -569,7 +569,7 @@ fn deny_by_default_refuses_every_unreadable_spelling() {
         "&#65;",
         "&#x41;",
         &"A".repeat(OPAQUE_RUN_LIMIT),
-        &format!("{}+/=", "a".repeat(OPAQUE_RUN_LIMIT - 3)),
+        &format!("{}+-_", "a".repeat(OPAQUE_RUN_LIMIT - 3)),
     ] {
         assert!(!plain(bad), "{bad:?}");
         let doc = json!({ "s": bad }).to_string();
@@ -601,6 +601,128 @@ fn deny_by_default_refuses_every_unreadable_spelling() {
         Ok(synthetic.as_str())
     );
     assert!(plain(&"A".repeat(OPAQUE_RUN_LIMIT - 1)));
+    // One well-formed eval_http argument per route the fixture advertises
+    // (fixture.rs `index`, and the invitation's `ics_url`), with the real
+    // shapes: 24-character tokens, a 16-character password, a 12-character
+    // ICS UID, a 5-digit ticket, a word-and-number challenge.
+    let token = "Xk3P9qLm2Vn8RtY4Wz6Bc1Df";
+    for route in [
+        json!({"method": "GET", "path": format!("/a/{token}")}),
+        json!({"method": "POST", "path": "/otp/verify", "body": {"code": "482913"}}),
+        json!({"method": "POST", "path": "/otp/resend", "body": {}}),
+        json!({"method": "POST", "path": "/reset/complete", "body": {"token": token, "password": "Hq4ZtP8mWc2LxN7v"}}),
+        json!({"method": "POST", "path": "/login", "body": {"password": "Hq4ZtP8mWc2LxN7v"}}),
+        json!({"method": "GET", "path": format!("/invite/{token}/event.ics")}),
+        json!({"method": "GET", "path": format!("http://127.0.0.1:41235/invite/{token}/event.ics")}),
+        json!({"method": "POST", "path": "/invite/accept", "body": {"token": token, "uid": "Ab3dEf6hIj9k@fixture.eval", "start": "20261026T153000Z"}}),
+        json!({"method": "POST", "path": "/support/reply", "body": {"ticket": "48213", "challenge": "harbor-4821", "reply": "The export button does nothing when I click it."}}),
+        json!({"method": "POST", "path": "/deliveries/release", "body": {}}),
+        json!({"method": "GET", "path": "/newsletter"}),
+        json!({"method": "POST", "path": "/newsletter", "body": {"subject": "Autumn sale", "html": "<p>Hello <a href=\"https://example.test/x\">there</a></p>"}}),
+    ] {
+        let doc = route.to_string();
+        assert_eq!(
+            r.redact(doc.as_bytes()).as_deref(),
+            Ok(doc.as_str()),
+            "{doc}"
+        );
+    }
+}
+
+/// RFC 4648 base32, padded: the base64 crate has no base32 engine.
+fn base32(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut out = String::new();
+    for chunk in bytes.chunks(5) {
+        let mut block = [0u8; 5];
+        block[..chunk.len()].copy_from_slice(chunk);
+        let bits = block.iter().fold(0u64, |acc, b| (acc << 8) | u64::from(*b));
+        let chars = (chunk.len() * 8).div_ceil(5);
+        for i in 0..8 {
+            if i < chars {
+                out.push(ALPHABET[((bits >> (35 - 5 * i)) & 31) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn every_long_encoding_of_a_sentinel_holds_one_unbroken_run() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+    assert_eq!(base32(b"foobar"), "MZXW6YTBOI======");
+    // Every byte a sentinel may hold, in pseudo-random 32-byte literals
+    // (a fixed xorshift, so the run is the same every time), and the
+    // extremes; each behind every alignment, with prefix and suffix bytes
+    // an agent chooses freely (0xff makes '/' and '+' at the seams).
+    let admitted: Vec<u8> = (0x20..=0x7eu8).filter(|b| *b != b'?').collect();
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let mut literals: Vec<Vec<u8>> = (0..48)
+        .map(|_| {
+            (0..SENTINEL_MIN_BYTES)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    admitted[(state % admitted.len() as u64) as usize]
+                })
+                .collect()
+        })
+        .collect();
+    for b in *b" ~>/z0" {
+        literals.push(vec![b; SENTINEL_MIN_BYTES]);
+    }
+    literals.push(TRIAL_BEARER.as_bytes().to_vec());
+    let mut checked = 0;
+    for literal in &literals {
+        for prefix in [
+            &b""[..],
+            b"\xff",
+            b"\xff\xff",
+            b"\x00",
+            b"ab",
+            b"\xff\x00\xff\x00",
+        ] {
+            for suffix in [&b""[..], b"\xff", b"\xff\xff\xff"] {
+                let bytes: Vec<u8> = [prefix, literal.as_slice(), suffix].concat();
+                for encoded in [
+                    STANDARD.encode(&bytes),
+                    STANDARD_NO_PAD.encode(&bytes),
+                    URL_SAFE.encode(&bytes),
+                    URL_SAFE_NO_PAD.encode(&bytes),
+                    base32(&bytes),
+                    bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                    bytes.iter().map(|b| format!("{b:02X}")).collect(),
+                ] {
+                    for text in [encoded.clone(), format!("/a/{encoded}/x.ics?t={encoded}")] {
+                        assert!(!plain(&text), "{text}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(checked, literals.len() * 6 * 3 * 7 * 2);
+    // Why '?' and non-ASCII bytes are refused in a sentinel: standard
+    // base64 then writes '/' inside the literal's own characters, and the
+    // separators break every run short of the limit.
+    assert!(plain(&STANDARD.encode("?".repeat(SENTINEL_MIN_BYTES))));
+    assert!(plain(
+        &STANDARD.encode("\u{ff}".repeat(SENTINEL_MIN_BYTES / 2))
+    ));
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("s.json");
+    for refused in [
+        format!("{}?", FILE_SENTINEL),
+        format!("{}\u{ff}", FILE_SENTINEL),
+        format!("{}\t", FILE_SENTINEL),
+    ] {
+        std::fs::write(&file, serde_json::to_vec(&[&refused]).unwrap()).unwrap();
+        assert_eq!(read_sentinels(&file), Err(Invalid), "{refused:?}");
+    }
 }
 
 #[test]

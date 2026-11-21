@@ -783,13 +783,18 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
     one that could stand for an ASCII character). It must hold no
     backslash (so no `\u` or `\x` escape survives decoding), no complete
     `%XX` escape, no `&...;` HTML or XML entity, and no run of 37 or more
-    base64, base64url, base32 or hex alphabet characters (`A-Z a-z 0-9 +
-    / = _ -`). Anything else is `invalid_argument_encoding`. The run limit
-    of 37 is the least that still publishes the fixture's own opaque data:
-    a Swarmail message id (a UUID) runs to 36, mailed tokens to 24,
-    passwords to 16 and codes to 6. Any such encoding of a literal of 32
-    bytes or more holds a run of at least 40 (base64: 4 * floor((32 - 2) /
-    3)), and the admin bearer is 32 characters.
+    of `A-Z a-z 0-9 + - _`. A path or URL separator (`/ ? & = # .`) and
+    every other character breaks a run, so the fixture's own routes
+    publish (`/invite/<24-character token>/event.ics`, its full
+    `ics_url`). Anything else is `invalid_argument_encoding`. The run
+    limit of 37 is the least that still publishes the fixture's own opaque
+    data: a Swarmail message id (a UUID) runs to 36, mailed tokens to 24,
+    passwords to 16 and codes to 6. Every base64, base64url, base32 or hex
+    encoding of a sentinel of 32 bytes or more still holds one unbroken run
+    of at least 40 (base64: 4 * floor((32 - 2) / 3)): `=` is only
+    padding at the end, base64url's `-` and `_` count, and standard base64
+    writes `/` only for a `?`, DEL or non-ASCII byte, which a sentinel may
+    not hold. The admin bearer is 32 alphanumerics.
   - **Residual literals.** No literal may survive in any decoded layer,
     compared ignoring ASCII case, so an upper- or mixed-case bearer is
     `residual_secret`. Every literal that reads as a decimal number
@@ -799,16 +804,18 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
     in a value or anywhere in a string, is refused, and so is a number whose
     digits contain the sentinel's digits.
   - **Sentinels.** `--tool-sentinels` must hold sentinels of at least 32
-    bytes each, so every encoding the run limit guards is long enough to be
-    caught; a shorter one makes the file unusable (`tool_sentinels_unreadable`
-    before the matrix, `registry_unavailable` in a trial).
+    bytes each, every byte printable ASCII other than `?`, so every
+    encoding the run limit guards is long enough, and unbroken enough, to
+    be caught; any other sentinel makes the file unusable
+    (`tool_sentinels_unreadable` before the matrix, `registry_unavailable`
+    in a trial).
   - **What no check can see.** A literal split across fields or calls, or
     re-encoded into ordinary-looking text (one character per word, say), is
     not detected by any shape check. The mode's protection there rests on
     accepted 0075 §9, which leaves hostile same-user activity out of the
     privacy boundary.
-  Only the Only the
-  redacted record, or a closed refusal, is written to
+
+  Only the redacted record, or a closed refusal, is written to
   `captures/<trial_id>/capture.json` (0600 under 0700, bound by `manifest.json`).
   Original bytes never reach a disk.
 - **The socket's trust boundary.** The helper learns the socket's path from
