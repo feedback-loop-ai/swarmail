@@ -917,8 +917,10 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   per dominant class, redacted to the fixture's synthetic data" is met in that
   narrower sense only.
 - **Never scored.** Values feed no verdict, row, outcome or accounting figure;
-  the value report minus `tool_values` equals the default report byte for
-  byte, and `check --matrix` replays the same.
+  the value report minus `tool_values` is the same JSON as the default
+  report, and `check --matrix` replays the matrix with the same verdict and
+  row count (the test compares parsed JSON and the replay's exit status and
+  line count, not bytes or rows one by one).
 - **The page.** `--page PATH` (any report, with or without a journal or the
   value mode) writes a private Markdown table (staged whole in a 0600 temporary
   beside it and moved to its name with no clobber, so the page is complete
