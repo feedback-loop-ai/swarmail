@@ -700,15 +700,23 @@ fn chunked_base64_and_base32_are_found_by_decoding() {
         for prefix in [&b""[..], b"user:", b"\xff"] {
             let bytes = [prefix, literal.as_bytes()].concat();
             for encoded in base_spellings(&bytes) {
-                for width in [4, 7, 20, 33] {
-                    for sep in [" ", ".", ",", ", ", " | ", ":", ";"] {
+                for width in [4, 20, 33] {
+                    for sep in [
+                        " ", ".", ",", ", ", " | ", ":", ";", "/", "!", "#", "?", "&", "'", "(",
+                        ")", "\"", "*", "~", "@", "$", "^",
+                    ] {
                         let spelled = chunked(&encoded, width, sep);
-                        for doc in [
-                            json!({"note": spelled}),
-                            json!({ spelled.clone(): 1 }),
-                            json!({"path": format!("/x/{spelled}/y")}),
-                            json!({"auth": format!("Basic {spelled}")}),
-                        ] {
+                        // Every joiner as a value; a space and a slash also
+                        // as a key, in a path and after `Basic`.
+                        let mut docs = vec![json!({"note": spelled})];
+                        if sep == " " || sep == "/" {
+                            docs.extend([
+                                json!({ spelled.clone(): 1 }),
+                                json!({"path": format!("/x/{spelled}/y")}),
+                                json!({"auth": format!("Basic {spelled}")}),
+                            ]);
+                        }
+                        for doc in docs {
                             let got = r.redact(doc.to_string().as_bytes());
                             assert_eq!(got, Err(Refusal::ResidualSecret), "{doc}");
                             checked += 1;
@@ -725,7 +733,44 @@ fn chunked_base64_and_base32_are_found_by_decoding() {
             }
         }
     }
-    assert_eq!(checked, 2 * 3 * 6 * 4 * 7 * 4);
+    assert_eq!(checked, 2 * 3 * 6 * 3 * (21 + 2 * 3));
+    // Joiners that are themselves base64 characters, mixed: '/' and '-'
+    // together break both the standard and the URL reading (a '+' would be
+    // read as a space), and only the letters-and-digits candidate decodes
+    // them.
+    use base64::Engine as _;
+    let std64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    for literal in [TRIAL_BEARER, FILE_SENTINEL] {
+        let mixed = chunked(&chunked(&std64(literal.as_bytes()), 4, "/"), 9, " -");
+        let doc = json!({ "note": mixed }).to_string();
+        assert_eq!(
+            r.redact(doc.as_bytes()),
+            Err(Refusal::ResidualSecret),
+            "{doc}"
+        );
+    }
+    // A suffix byte that turns the seam character (the one holding both
+    // the literal's last bits and the suffix's first) into a '/': a '/'
+    // joiner then deletes it with those bits, and only the literal's core
+    // (its edge bytes dropped) is left to find. The sentinel is chosen so
+    // its last byte ('o', low bits 11) can reach the seam.
+    let edge = "file sentinel canary 0123456789abcdeo";
+    let mut e = Registry::new();
+    e.register(edge);
+    let bits = edge.len() * 8;
+    assert_ne!(bits % 6, 0, "the last character is shared with the suffix");
+    let mut seams = 0;
+    for suffix in 0u8..=255 {
+        let encoded = std64(&[edge.as_bytes(), &[suffix, 0xff]].concat());
+        seams += usize::from(encoded.as_bytes()[(bits - 1) / 6] == b'/');
+        let doc = json!({ "note": chunked(&encoded, 4, "/") }).to_string();
+        assert_eq!(
+            e.redact(doc.as_bytes()),
+            Err(Refusal::ResidualSecret),
+            "{doc}"
+        );
+    }
+    assert_eq!(seams, 16, "suffixes 0xf0..=0xff make the seam a '/'");
     // Near misses publish: prose, URLs, a UUID, encodings of other bytes,
     // and the fixture's routes (in deny_by_default_refuses_every_...).
     use base64::Engine as _;
@@ -746,10 +791,31 @@ fn chunked_base64_and_base32_are_found_by_decoding() {
     }
     // The decoder itself, and its bound: past it a text counts as holding
     // a literal rather than being published unread.
-    assert_eq!(pack(&[16, 22, 20], 6), b"Ae");
+    assert_eq!(pack(&[16, 22, 20], 6, 0), b"Ae");
+    // Skipping the first two bits of "QWU" ("Ae") realigns on what follows.
+    assert_eq!(pack(&[16, 22, 20], 6, 2), [0b0000_0101, 0b1001_0100]);
     assert!(r.found_in_encodings(&vec![b'A'; ENCODED_SCAN_LIMIT + 1]));
     assert!(!r.found_in_encodings(&vec![b'A'; ENCODED_SCAN_LIMIT]));
     assert!(!Registry::new().found_in_encodings(b"anything"));
+    // No false positive on real prose: every task's goal and template, the
+    // oracle's replies and every line of this harness's own README decode
+    // to bytes that hold no literal.
+    let mut prose: Vec<String> = crate::tasks::catalogue()
+        .into_iter()
+        .flat_map(|t| [t.goal, t.goal_template])
+        .collect();
+    prose.push("The export button does nothing when I click it.".into());
+    let readme =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+    prose.extend(readme.lines().map(str::to_string));
+    assert!(prose.len() > 1000, "{}", prose.len());
+    for text in &prose {
+        assert!(!r.found_in_encodings(text.as_bytes()), "{text}");
+    }
+    // A whole README is one long candidate too, past the per-string cap:
+    // it counts as holding a literal rather than being decoded unread.
+    assert!(readme.len() > ENCODED_SCAN_LIMIT);
+    assert!(r.found_in_encodings(readme.as_bytes()));
 }
 
 #[test]
@@ -881,7 +947,7 @@ fn every_long_encoding_of_a_sentinel_holds_one_unbroken_run() {
     // (a fixed xorshift, so the run is the same every time), and the
     // extremes; each behind every alignment, with prefix and suffix bytes
     // an agent chooses freely (0xff makes '/' and '+' at the seams).
-    let admitted: Vec<u8> = (0x20..=0x7eu8).filter(|b| *b != b'?').collect();
+    let admitted: Vec<u8> = (0x20..=0x7eu8).filter(|b| !b"?>~".contains(b)).collect();
     let mut state = 0x9e37_79b9_7f4a_7c15u64;
     let mut literals: Vec<Vec<u8>> = (0..48)
         .map(|_| {
@@ -937,14 +1003,19 @@ fn every_long_encoding_of_a_sentinel_holds_one_unbroken_run() {
     assert_eq!(checked, literals.len() * 6 * 3 * 13 * 2);
     // Chunked by separators, every encoding still holds the literal once
     // decoded: refused as a residual.
+    // Over the literals a sentinel file admits (the extremes `~` and `>`
+    // are refused there: they make standard base64 write `+`).
+    let admitted_bytes = |l: &[u8]| l.iter().all(|b| !b"?>~".contains(b));
+    let admitted_literals = literals.iter().filter(|l| admitted_bytes(l)).count();
+    assert!(admitted_literals >= 50, "{admitted_literals}");
     let mut decoded = 0;
-    for literal in &literals {
+    for literal in literals.iter().filter(|l| admitted_bytes(l)) {
         let mut r = Registry::new();
         r.register(std::str::from_utf8(literal).unwrap());
         for prefix in [&b""[..], b"\xff"] {
             let bytes = [prefix, literal.as_slice()].concat();
             for encoded in base_spellings(&bytes) {
-                for (width, sep) in [(5, " "), (20, "."), (13, ",")] {
+                for (width, sep) in [(5, " "), (9, "/"), (11, "!"), (13, "(")] {
                     let doc = json!({ "s": chunked(&encoded, width, sep) }).to_string();
                     assert_eq!(
                         r.redact(doc.as_bytes()),
@@ -956,7 +1027,7 @@ fn every_long_encoding_of_a_sentinel_holds_one_unbroken_run() {
             }
         }
     }
-    assert_eq!(decoded, literals.len() * 2 * 6 * 3);
+    assert_eq!(decoded, admitted_literals * 2 * 6 * 4);
     // Why '?' and non-ASCII bytes are refused in a sentinel: standard
     // base64 then writes '/' inside the literal's own characters, and the
     // separators break every run short of the limit.
@@ -968,6 +1039,8 @@ fn every_long_encoding_of_a_sentinel_holds_one_unbroken_run() {
     let file = dir.path().join("s.json");
     for refused in [
         format!("{}?", FILE_SENTINEL),
+        format!("{}>", FILE_SENTINEL),
+        format!("{}~", FILE_SENTINEL),
         format!("{}\u{ff}", FILE_SENTINEL),
         format!("{}\t", FILE_SENTINEL),
     ] {

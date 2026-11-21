@@ -781,8 +781,8 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   (operator ruling 2026-11-21, review 5): the bearer and every registered
   sentinel are refused, never published, in their raw, ASCII-case-folded,
   JSON-escaped, `%XX` (with `+` as a space), nested-JSON, numeric-value,
-  base64, base64url and base32 (including when split into chunks by
-  separators), hex (joined by any separators) and quoted-printable
+  base64, base64url and base32 (joined by any separators), hex (joined by
+  any separators) and quoted-printable
   spellings. In order:
   - **Masking.** Every registered literal is masked (`[REDACTED]`) in
     every string and member name, in its raw, JSON-escaped, `%XX` (each
@@ -815,13 +815,16 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
     encoding of a sentinel of 32 bytes or more still holds one unbroken run
     of at least 40 (base64: 4 * floor((32 - 2) / 3)): base64url's `-` and
     `_` and the `=` padding count, and standard base64
-    writes `/` only for a `?`, DEL or non-ASCII byte, which a sentinel may
-    not hold. The admin bearer is 32 alphanumerics.
+    writes `/` or `+` only for a `?`, `>`, `~`, DEL or non-ASCII byte,
+    which a sentinel may not hold. The admin bearer is 32 alphanumerics.
   - **Residual literals.** No literal may survive in any decoded layer
     (quoted-printable, its soft line breaks included, is one of them; so
-    are base64, base64url and base32 of every run of 40 or more alphabet
-    characters once chunk separators, whitespace and `.` `,` `:` `;` `|`,
-    are removed, decoded at every alignment),
+    are base64, base64url and base32 of the text once every character
+    outside the alphabet is deleted, so any joiner between chunks (`/`,
+    `!`, `#`, `?`, `&`, quotes, brackets, whitespace ...) goes, decoded at
+    every bit alignment once 40 characters remain; a literal of 32 bytes or
+    more is found without its edge bytes, which a deleted seam character
+    can cost),
     compared ignoring ASCII case, so an upper- or mixed-case bearer is
     `residual_secret`. Every literal that reads as a decimal number
     (after trimming surrounding whitespace, a leading `+` and leading
@@ -834,7 +837,7 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
     bytes (one that reads as a decimal number with at least 16 significant
     digits, leading and trailing zeros not counted, so `1.` and thirty
     zeros, the value 1, is refused: its digits are refused inside every number, so a sentinel such
-    as `000...0001` would withhold every value holding a `1`), every byte printable ASCII other than `?`, so every
+    as `000...0001` would withhold every value holding a `1`), every byte printable ASCII other than `?`, `>` and `~`, so every
     encoding the run limit guards is long enough, and unbroken enough, to
     be caught; any other sentinel makes the file unusable
     (`tool_sentinels_unreadable` before the matrix, `registry_unavailable`

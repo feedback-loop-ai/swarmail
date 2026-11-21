@@ -79,7 +79,8 @@ pub const MASK: &str = "[REDACTED]";
 /// 4 * floor((32 - 2) / 3) in base64, 8 * floor((32 - 4) / 5) in base32
 /// and 64 in hex. None of them is a separator: base64url's `-` and `_`
 /// count, and standard base64 writes `/` only for a byte `?`, DEL or one
-/// over 0x7E in the third place of a group, which a sentinel may not hold
+/// over 0x7E in the third place of a group (`+` for `>` or `~`), which a
+/// sentinel may not hold
 /// ([`read_sentinels`]). Hex joined by separators is [`HEX_RUN_LIMIT`]'s. The fixture's own opaque data runs to at
 /// most 36 (a Swarmail message id, a UUID; mailed tokens are 24,
 /// passwords 16, codes 6), so 37 is the least threshold that publishes it.
@@ -715,21 +716,14 @@ impl Registry {
     }
 }
 
-/// The fewest alphabet characters a run must hold, separators removed,
-/// before it is decoded as base64, base64url or base32: every such
-/// encoding of a literal of [`SENTINEL_MIN_BYTES`] holds at least 40.
+/// The fewest alphabet characters a candidate must hold before it is
+/// decoded as base64, base64url or base32: every such encoding of a
+/// literal of [`SENTINEL_MIN_BYTES`] holds at least 40.
 const ENCODED_RUN_MIN: usize = 40;
 /// The most alphabet characters one search decodes. A value is at most
 /// [`VALUE_LIMIT`] bytes, so only a longer text (a row) can pass it, and
 /// such a text counts as holding a literal: it is never published unread.
 const ENCODED_SCAN_LIMIT: usize = 2 * VALUE_LIMIT;
-
-/// A separator that may sit between the chunks of an encoding without
-/// ending it: whitespace and `.` `,` `:` `;` `|`. None is a character of
-/// any alphabet decoded here.
-fn chunk_separator(c: u8) -> bool {
-    c.is_ascii_whitespace() || b".,:;|".contains(&c)
-}
 
 /// A base64 or base64url character's six bits: both alphabets at once.
 fn sextet(c: u8) -> Option<u8> {
@@ -753,18 +747,24 @@ fn quintet(c: u8) -> Option<u8> {
     }
 }
 
-/// Pack `bits`-wide values into bytes, most significant first, dropping a
-/// final partial byte.
-fn pack(values: &[u8], bits: u32) -> Vec<u8> {
+/// Pack `bits`-wide values into bytes, most significant first, after
+/// skipping the first `skip` bits, dropping a final partial byte. Every
+/// skip from 0 to 7 is every byte alignment of the stream, so a deleted
+/// character anywhere before a literal costs it no byte after the seam.
+fn pack(values: &[u8], bits: u32, skip: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity(values.len() * bits as usize / 8);
-    let (mut acc, mut held) = (0u32, 0u32);
+    let (mut acc, mut held, mut skip) = (0u32, 0u32, skip);
     for v in values {
         acc = (acc << bits) | u32::from(*v);
         held += bits;
-        if held >= 8 {
+        let dropped = skip.min(held);
+        held -= dropped;
+        skip -= dropped;
+        acc &= (1u32 << held) - 1;
+        while held >= 8 {
             held -= 8;
             out.push((acc >> held) as u8);
-            acc &= (1 << held) - 1;
+            acc &= (1u32 << held) - 1;
         }
     }
     out
@@ -772,46 +772,60 @@ fn pack(values: &[u8], bits: u32) -> Vec<u8> {
 
 impl Registry {
     /// Whether a literal is in a base64, base64url or base32 decoding of
-    /// the text, chunked or not: every run of alphabet characters (and
-    /// `=` padding), with [`chunk_separator`]s removed and any other
-    /// character ending it, is decoded at every alignment once it holds
-    /// [`ENCODED_RUN_MIN`] characters, and the bytes are searched ignoring
-    /// ASCII case. Decoding ordinary text yields bytes that hold no
-    /// literal, so prose is unaffected.
+    /// the text, however its chunks are joined: as the hex rule does, each
+    /// candidate is built by deleting every byte outside an alphabet, so
+    /// any joiner (whitespace, `. , : ; | / ! # ? & ' ( )` ...) is removed,
+    /// and is decoded at every bit alignment once it holds
+    /// [`ENCODED_RUN_MIN`] characters; the bytes are searched ignoring
+    /// ASCII case. The candidates: letters and digits alone (a sentinel's
+    /// own base64 and base64url characters are only these, since it holds
+    /// no `?`, `>`, `~` or non-ASCII byte, and the bearer is alphanumeric),
+    /// the standard alphabet with `+` `/`, the URL alphabet with `-` `_`,
+    /// and base32's alphabet. Decoding ordinary text yields bytes that hold
+    /// no literal, so prose is unaffected.
     fn found_in_encodings(&self, b: &[u8]) -> bool {
         if self.literals.is_empty() {
             return false;
         }
-        let alphabet = |c: u8| c.is_ascii_alphanumeric() || b"+/-_=".contains(&c);
-        if b.iter().filter(|c| alphabet(**c)).count() > ENCODED_SCAN_LIMIT {
+        let keep = |extra: &[u8]| -> Vec<u8> {
+            b.iter()
+                .copied()
+                .filter(|c| c.is_ascii_alphanumeric() || extra.contains(c))
+                .collect()
+        };
+        let alnum = keep(b"");
+        if alnum.len() > ENCODED_SCAN_LIMIT {
             return true;
         }
-        let mut run = Vec::new();
-        for &c in b.iter().chain(std::iter::once(&b'"')) {
-            if alphabet(c) {
-                run.push(c);
-            } else if !chunk_separator(c) {
-                if run.len() >= ENCODED_RUN_MIN && self.decoded_hit(&run) {
-                    return true;
-                }
-                run.clear();
-            }
+        let base64 = |candidate: Vec<u8>| {
+            let sextets: Vec<u8> = candidate.iter().filter_map(|c| sextet(*c)).collect();
+            sextets.len() >= ENCODED_RUN_MIN
+                && (0..8).any(|skip| self.found_decoded(&pack(&sextets, 6, skip)))
+        };
+        if base64(alnum) || base64(keep(b"+/")) || base64(keep(b"-_")) {
+            return true;
         }
-        false
+        let quintets: Vec<u8> = b.iter().filter_map(|c| quintet(*c)).collect();
+        quintets.len() >= ENCODED_RUN_MIN
+            && (0..8).any(|skip| self.found_decoded(&pack(&quintets, 5, skip)))
     }
 
-    fn decoded_hit(&self, run: &[u8]) -> bool {
-        // base64 and base64url, padding dropped, at each of 4 alignments.
-        let sextets: Vec<u8> = run.iter().filter_map(|c| sextet(*c)).collect();
-        if (0..4.min(sextets.len())).any(|k| self.found_folded(&pack(&sextets[k..], 6))) {
-            return true;
-        }
-        // base32 over each stretch of its alphabet, at each of 8.
-        run.split(|c| quintet(*c).is_none() && *c != b'=')
-            .any(|part| {
-                let q: Vec<u8> = part.iter().filter_map(|c| quintet(*c)).collect();
-                q.len() >= ENCODED_RUN_MIN && (0..8).any(|k| self.found_folded(&pack(&q[k..], 5)))
-            })
+    /// Whether decoded bytes hold a literal, ignoring ASCII case. A literal
+    /// of [`SENTINEL_MIN_BYTES`] or more is looked for without its first and
+    /// last byte: deleting a joiner can also delete an encoding character at
+    /// a seam (a `/` that a prefix byte produced), which costs at most the
+    /// literal's edge byte at either end, and thirty bytes of a literal are
+    /// as specific as all of it.
+    fn found_decoded(&self, bytes: &[u8]) -> bool {
+        let lower = bytes.to_ascii_lowercase();
+        self.folded.iter().any(|l| {
+            let core = if l.len() >= SENTINEL_MIN_BYTES {
+                &l[1..l.len() - 1]
+            } else {
+                l.as_slice()
+            };
+            lower.windows(core.len()).any(|w| w == core)
+        })
     }
 }
 
@@ -1273,10 +1287,12 @@ pub fn sealed_registry(bearer: &str, snapshot: Option<&[String]>, sentinels: &Pa
 /// Read a sentinel file: a JSON array of at most [`SENTINEL_LIMIT`]
 /// strings of at least [`SENTINEL_MIN_BYTES`] each (one that reads as a
 /// decimal number with at least [`NUMERIC_SENTINEL_DIGITS`] significant
-/// digits), every byte printable
-/// ASCII other than `?` (a `?` or a non-ASCII byte can make standard
-/// base64 write a `/`, which breaks the run [`OPAQUE_RUN_LIMIT`] counts),
-/// within [`REGISTRY_BYTES`] of file.
+/// digits), every byte printable ASCII other than `?`, `>` and `~`,
+/// within [`REGISTRY_BYTES`] of file. Standard base64 writes `/` or `+`
+/// only for those bytes (or DEL or a non-ASCII one), so a sentinel's own
+/// base64 and base64url characters are letters and digits alone: the run
+/// [`OPAQUE_RUN_LIMIT`] counts is unbroken, and the decoding search finds
+/// it whatever joins its chunks.
 pub fn read_sentinels(path: &Path) -> Result<Vec<String>, Invalid> {
     // A bare file name is in the working directory.
     let dir = match path.parent() {
@@ -1290,7 +1306,7 @@ pub fn read_sentinels(path: &Path) -> Result<Vec<String>, Invalid> {
     let list: Vec<String> = serde_json::from_slice(&bytes).map_err(|_| Invalid)?;
     let admitted = |s: &String| {
         s.len() >= SENTINEL_MIN_BYTES
-            && s.bytes().all(|b| (0x20..=0x7e).contains(&b) && b != b'?')
+            && s.bytes().all(|b| (0x20..=0x7e).contains(&b) && !b"?>~".contains(&b))
             // Significant digits as the value has them, leading and
             // trailing zeros dropped: `1.000...0` is the value 1.
             && numeric_reading(s).is_none_or(|(v, _)| v.digits.len() >= NUMERIC_SENTINEL_DIGITS)

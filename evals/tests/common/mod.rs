@@ -2324,9 +2324,9 @@ async fn tool_values(variant: &str) -> i32 {
         } else if encoded {
             let entity: String = bearer.bytes().map(|b| format!("&#x{b:x};")).collect();
             // And chunked: base64 split by spaces, base32 by dots.
-            let (spaced, dotted) = chunked_spellings(&bearer, &sentinel);
+            let (spaced, dotted, slashed) = chunked_spellings(&bearer, &sentinel);
             format!(
-                "{{\"method\":\"POST\",\"path\":\"/login\",\"body\":{{\"password\":\"{entity}\",\"note\":\"{spaced}\",\"ref\":\"{dotted}\"}}}}"
+                "{{\"method\":\"POST\",\"path\":\"/x/{slashed}\",\"body\":{{\"password\":\"{entity}\",\"note\":\"{spaced}\",\"ref\":\"{dotted}\"}}}}"
             )
         } else {
             format!(
@@ -2354,8 +2354,9 @@ async fn tool_values(variant: &str) -> i32 {
 
 /// The chunked spellings the `tool_values_encoded` agent sends and the
 /// canary search looks for: the bearer in base64 split by a space every 20
-/// characters, and the sentinel in RFC 4648 base32 split by a dot every 8.
-pub fn chunked_spellings(bearer: &str, sentinel: &str) -> (String, String) {
+/// characters, the sentinel in RFC 4648 base32 split by a dot every 8, and
+/// the sentinel in base64url split by a '/' every 10 (a path's shape).
+pub fn chunked_spellings(bearer: &str, sentinel: &str) -> (String, String, String) {
     use base64::Engine as _;
     const B32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
     let chunk = |s: &str, width: usize, sep: &str| {
@@ -2381,6 +2382,11 @@ pub fn chunked_spellings(bearer: &str, sentinel: &str) -> (String, String) {
             " ",
         ),
         chunk(&base32, 8, "."),
+        chunk(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sentinel),
+            10,
+            "/",
+        ),
     )
 }
 
