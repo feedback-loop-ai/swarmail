@@ -818,7 +818,8 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
     also found by value: a number of equal value in any spelling (`1.5e2`, `.5`, `5.e-1`),
     in a value or anywhere in a string, is refused, and so is a number whose
     digits contain the sentinel's digits.
-  - **Sentinels.** `--tool-sentinels` must hold sentinels of at least 32
+  - **Sentinels.** `--tool-sentinels` must hold at most 255 sentinels
+    (the trial's bearer takes the registry's 256th slot), each of at least 32
     bytes each, every byte printable ASCII other than `?`, so every
     encoding the run limit guards is long enough, and unbroken enough, to
     be caught; any other sentinel makes the file unusable

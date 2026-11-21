@@ -906,7 +906,16 @@ fn the_registry_is_bounded_and_fails_closed() {
         assert_eq!(read_sentinels(&good), Err(Invalid));
         assert!(!sealed_registry(BEARER, None, &good).is_complete());
     }
-    let many: Vec<String> = (0..=REGISTRY_LITERALS).map(long).collect();
+    // The file holds at most 255 sentinels: with the bearer that fills the
+    // registry exactly, and a trial still seals complete. 256 are refused.
+    let full: Vec<String> = (0..SENTINEL_LIMIT).map(long).collect();
+    std::fs::write(&good, serde_json::to_vec(&full).unwrap()).unwrap();
+    let at = read_sentinels(&good).unwrap();
+    assert_eq!(at.len(), 255);
+    let sealed = sealed_registry(BEARER, Some(&at), &good);
+    assert!(sealed.is_complete() && sealed.len() == REGISTRY_LITERALS);
+    let many: Vec<String> = (0..=SENTINEL_LIMIT).map(long).collect();
+    assert_eq!(many.len(), 256);
     std::fs::write(&good, serde_json::to_vec(&many).unwrap()).unwrap();
     assert!(read_sentinels(&good).is_err());
     // A sentinel shorter than the minimum is refused with the file: its
@@ -967,7 +976,7 @@ fn the_registry_only_grows_during_a_trial() {
     std::fs::write(&file, serde_json::to_vec(&[FILE_SENTINEL]).unwrap()).unwrap();
     assert!(!sealed_registry(BEARER, None, &file).is_complete());
     // The union is still capped: past it the registry is unusable.
-    let many: Vec<String> = (0..REGISTRY_LITERALS).map(long).collect();
+    let many: Vec<String> = (0..SENTINEL_LIMIT).map(long).collect();
     std::fs::write(&file, serde_json::to_vec(&many).unwrap()).unwrap();
     assert!(!sealed_registry(BEARER, Some(&snapshot), &file).is_complete());
 }

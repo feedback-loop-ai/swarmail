@@ -49,6 +49,10 @@ pub const COMPANION_LIMIT: usize = 65536;
 /// The sealed registry's caps: bytes over all literals and distinct literals.
 pub const REGISTRY_BYTES: usize = 65536;
 pub const REGISTRY_LITERALS: usize = 256;
+/// The most sentinels an operator's file may hold: one fewer than the
+/// registry's literals, since the trial's admin bearer takes a slot. A
+/// file of [`REGISTRY_LITERALS`] would otherwise poison every trial.
+pub const SENTINEL_LIMIT: usize = REGISTRY_LITERALS - 1;
 /// The deepest JSON nesting a value may have.
 pub const DEPTH_LIMIT: usize = 32;
 /// One transcript leaf's cap and the transcript index's cap, inclusive.
@@ -1142,7 +1146,7 @@ pub fn sealed_registry(bearer: &str, snapshot: Option<&[String]>, sentinels: &Pa
     r
 }
 
-/// Read a sentinel file: a JSON array of at most [`REGISTRY_LITERALS`]
+/// Read a sentinel file: a JSON array of at most [`SENTINEL_LIMIT`]
 /// strings of at least [`SENTINEL_MIN_BYTES`] each, every byte printable
 /// ASCII other than `?` (a `?` or a non-ASCII byte can make standard
 /// base64 write a `/`, which breaks the run [`OPAQUE_RUN_LIMIT`] counts),
@@ -1156,7 +1160,7 @@ pub fn read_sentinels(path: &Path) -> Result<Vec<String>, Invalid> {
     let admitted = |s: &String| {
         s.len() >= SENTINEL_MIN_BYTES && s.bytes().all(|b| (0x20..=0x7e).contains(&b) && b != b'?')
     };
-    if list.len() > REGISTRY_LITERALS || !list.iter().all(admitted) {
+    if list.len() > SENTINEL_LIMIT || !list.iter().all(admitted) {
         return Err(Invalid);
     }
     Ok(list)
