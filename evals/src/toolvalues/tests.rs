@@ -237,10 +237,10 @@ fn values_that_cannot_be_proven_redacted_refuse_by_reason() {
         assert_eq!(r.redact(bad), Err(Refusal::InvalidArgumentEncoding));
     }
     // Exactly at the cap is kept; one byte over is refused.
-    let at = format!(r#"{{"s":"{}"}}"#, "a ".repeat((VALUE_LIMIT - 8) / 2));
+    let at = format!(r#"{{"s":"{}"}}"#, "x ".repeat((VALUE_LIMIT - 8) / 2));
     assert_eq!(at.len(), VALUE_LIMIT);
     assert!(r.redact(at.as_bytes()).is_ok());
-    let over = format!(r#"{{"s":"{}a"}}"#, "a ".repeat((VALUE_LIMIT - 8) / 2));
+    let over = format!(r#"{{"s":"{}x"}}"#, "x ".repeat((VALUE_LIMIT - 8) / 2));
     assert_eq!(r.redact(over.as_bytes()), Err(Refusal::ValueTooLarge));
     // A redacted encoding over the cap: a short literal under a long mask.
     let mut short = Registry::new();
@@ -629,6 +629,129 @@ fn deny_by_default_refuses_every_unreadable_spelling() {
     }
 }
 
+/// Quoted-printable, every byte escaped (`=73=65...`), in either case.
+fn qp_all(bytes: &[u8], upper: bool) -> String {
+    bytes
+        .iter()
+        .map(|b| {
+            if upper {
+                format!("={b:02X}")
+            } else {
+                format!("={b:02x}")
+            }
+        })
+        .collect()
+}
+
+/// Hex pairs joined by `sep`.
+fn hex_joined(bytes: &[u8], sep: &str) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+#[test]
+fn quoted_printable_and_separator_joined_hex_are_refused() {
+    let mut r = Registry::new();
+    r.register(TRIAL_BEARER);
+    r.register(FILE_SENTINEL);
+    for literal in [TRIAL_BEARER, FILE_SENTINEL] {
+        let b = literal.as_bytes();
+        let mut spellings = vec![
+            ("qp", qp_all(b, true)),
+            ("qp lower", qp_all(b, false)),
+            (
+                "qp soft breaks",
+                qp_all(b, true)
+                    .as_bytes()
+                    .chunks(12)
+                    .map(|c| String::from_utf8_lossy(c).into_owned())
+                    .collect::<Vec<_>>()
+                    .join("=\n"),
+            ),
+        ];
+        for sep in ["/", ":", " ", ",", "\n", "-", ".", "=", ", "] {
+            spellings.push(("hex joined", hex_joined(b, sep)));
+            spellings.push(("HEX joined", hex_joined(b, sep).to_ascii_uppercase()));
+        }
+        for (how, spelled) in spellings {
+            for doc in [
+                json!({"note": spelled}),
+                json!({ spelled.clone(): 1 }),
+                json!({"path": format!("/x/{spelled}/y")}),
+            ] {
+                let got = r.redact(doc.to_string().as_bytes());
+                assert!(
+                    matches!(
+                        got,
+                        Err(Refusal::InvalidArgumentEncoding | Refusal::ResidualSecret)
+                    ),
+                    "{how} {spelled:?} of {literal:?}: {got:?}"
+                );
+            }
+        }
+    }
+    // Each rule on its own, where no other one would catch the spelling.
+    // The '=' counts in a run: base64-like text joined by one '='.
+    let joined = "abcdefghijklmnopqr=stuvwxyzGHIJKLMNOP";
+    assert_eq!(joined.len(), OPAQUE_RUN_LIMIT);
+    assert!(!plain(joined));
+    // Two quoted-printable escapes in a row.
+    assert!(!plain("x=41=42y"));
+    // Separator-joined hex: 64 digits refused, 63 kept, a non-hex letter
+    // breaks the count.
+    let digits = "0123456789abcdef".repeat(4);
+    let spaced = |d: &str| {
+        d.as_bytes()
+            .chunks(2)
+            .map(|c| String::from_utf8_lossy(c).into_owned())
+            .collect::<Vec<_>>()
+            .join(":")
+    };
+    assert!(!plain(&spaced(&digits)));
+    assert!(plain(&spaced(&digits[..63])));
+    assert!(plain(&format!(
+        "{} g {}",
+        spaced(&digits[..40]),
+        spaced(&digits[..40])
+    )));
+    // A sparse quoted-printable escape inside a sentinel with spaces: no
+    // shape rule sees it; the quoted-printable decoding finds the literal.
+    let sparse = FILE_SENTINEL.replacen("canary", "=63anary", 1);
+    assert!(plain(&sparse));
+    assert_eq!(
+        r.redact(json!({"s": sparse}).to_string().as_bytes()),
+        Err(Refusal::ResidualSecret)
+    );
+    assert_eq!(quoted_printable_lenient(b"a=41=\nb=\r\nc=zz"), b"aAbc=zz");
+    // Near misses publish: one UUID, a form with a value that starts with
+    // two hex digits, a token query, prose of hex-letter words.
+    for kept in [
+        json!({"id": "0193a5f4-1c2b-7def-8abc-0123456789ab"}),
+        json!({"path": "/search?page=10&start=20261026T153000Z"}),
+        json!({"path": "/a/?token=4BXk3P9qLm2Vn8RtY4Wz6Bc1"}),
+        json!({"form": "token=4BXk3P9qLm2Vn8RtY4Wz6Bc1&code=482913"}),
+        json!({"reply": "deadbeef cafe is a fine name; add a bead to the face of a babe"}),
+        json!({"digits": spaced(&digits[..63])}),
+    ] {
+        let doc = kept.to_string();
+        assert_eq!(
+            r.redact(doc.as_bytes()).as_deref(),
+            Ok(doc.as_str()),
+            "{doc}"
+        );
+    }
+    // Two UUIDs side by side are 64 hex digits: refused, the accepted cost.
+    let two =
+        json!({"ids": "0193a5f4-1c2b-7def-8abc-0123456789ab 0193a5f4-1c2b-7def-8abc-0123456789ab"});
+    assert_eq!(
+        r.redact(two.to_string().as_bytes()),
+        Err(Refusal::InvalidArgumentEncoding)
+    );
+}
+
 /// RFC 4648 base32, padded: the base64 crate has no base32 engine.
 fn base32(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -696,6 +819,12 @@ fn every_long_encoding_of_a_sentinel_holds_one_unbroken_run() {
                     base32(&bytes),
                     bytes.iter().map(|b| format!("{b:02x}")).collect(),
                     bytes.iter().map(|b| format!("{b:02X}")).collect(),
+                    qp_all(&bytes, true),
+                    qp_all(&bytes, false),
+                    hex_joined(&bytes, ":"),
+                    hex_joined(&bytes, "/"),
+                    hex_joined(&bytes, " "),
+                    hex_joined(&bytes, ","),
                 ] {
                     for text in [encoded.clone(), format!("/a/{encoded}/x.ics?t={encoded}")] {
                         assert!(!plain(&text), "{text}");
@@ -705,7 +834,7 @@ fn every_long_encoding_of_a_sentinel_holds_one_unbroken_run() {
             }
         }
     }
-    assert_eq!(checked, literals.len() * 6 * 3 * 7 * 2);
+    assert_eq!(checked, literals.len() * 6 * 3 * 13 * 2);
     // Why '?' and non-ASCII bytes are refused in a sentinel: standard
     // base64 then writes '/' inside the literal's own characters, and the
     // separators break every run short of the limit.

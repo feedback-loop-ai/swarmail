@@ -59,21 +59,30 @@ pub const PER_CLASS: usize = 3;
 /// What a registered literal is replaced by.
 pub const MASK: &str = "[REDACTED]";
 /// The shortest run a published string or number is refused for, counting
-/// the characters `A-Z a-z 0-9 + - _`. A path or URL separator (`/ ? & =
+/// the characters `A-Z a-z 0-9 + - _ =`. A path or URL separator (`/ ? &
 /// # .`) and every other character breaks a run, so the fixture's own
-/// routes (`/invite/<24-character token>/event.ics`) publish. Every
-/// base64, base64url, base32 or hex encoding of a sentinel of
-/// [`SENTINEL_MIN_BYTES`] or more (the 32-character admin bearer
-/// included) still holds one unbroken run of at least 40: the characters
-/// its bytes alone decide number at least 4 * floor((32 - 2) / 3) in
-/// base64, 8 * floor((32 - 4) / 5) in base32 and 64 in hex. None of them
-/// is a separator: `=` is only padding, at the end; base64url's `-` and
-/// `_` count; and standard base64 writes `/` only for a byte `?`, DEL or
-/// one over 0x7E in the third place of a group, which a sentinel may not
-/// hold ([`read_sentinels`]). The fixture's own opaque data runs to at
+/// routes (`/invite/<24-character token>/event.ics`) publish; `=` counts,
+/// so a quoted-printable spelling (`=73=65...`) is one long run, while
+/// `token=<24 characters>` is 30. Every base64, base64url, base32 or hex
+/// encoding of a sentinel of [`SENTINEL_MIN_BYTES`] or more (the
+/// 32-character admin bearer included) still holds one unbroken run of at
+/// least 40: the characters its bytes alone decide number at least
+/// 4 * floor((32 - 2) / 3) in base64, 8 * floor((32 - 4) / 5) in base32
+/// and 64 in hex. None of them is a separator: base64url's `-` and `_`
+/// count, and standard base64 writes `/` only for a byte `?`, DEL or one
+/// over 0x7E in the third place of a group, which a sentinel may not hold
+/// ([`read_sentinels`]). Hex joined by separators is [`HEX_RUN_LIMIT`]'s. The fixture's own opaque data runs to at
 /// most 36 (a Swarmail message id, a UUID; mailed tokens are 24,
 /// passwords 16, codes 6), so 37 is the least threshold that publishes it.
 pub const OPAQUE_RUN_LIMIT: usize = 37;
+/// The fewest hex digits a published string may not hold in one run once
+/// every character that is not a letter or digit is deleted: 64, the hex
+/// spelling of [`SENTINEL_MIN_BYTES`] bytes. A letter that is not a hex
+/// digit breaks the run, so prose is unaffected, while hex of a literal
+/// joined by any separator (`73:65`, `73 65`, `73/65`, `73,65`, `=73=65`)
+/// is refused. A single UUID or mailed token is far below it; two UUIDs
+/// side by side are refused, an accepted over-refusal.
+pub const HEX_RUN_LIMIT: usize = 64;
 /// The shortest sentinel the operator's file may register: long enough
 /// that every encoding [`OPAQUE_RUN_LIMIT`] stands guard over is caught.
 pub const SENTINEL_MIN_BYTES: usize = 32;
@@ -834,9 +843,11 @@ impl Decimal {
 /// printable ASCII only (no control character, no non-ASCII letter that
 /// could stand for an ASCII one), no backslash (so no `\u` or `\x` escape
 /// survives decoding), no complete `%XX` escape, no `&...;` HTML or XML
-/// entity, and no run of [`OPAQUE_RUN_LIMIT`] or more of `A-Z a-z 0-9 + -
-/// _` (a separator breaks a run). Anything else is withheld: a shape the
-/// redactor cannot read may be any spelling of a secret.
+/// entity, no two quoted-printable escapes in a row (`=73=65`), no run of
+/// [`OPAQUE_RUN_LIMIT`] or more of `A-Z a-z 0-9 + - _ =` (a separator
+/// breaks a run), and no [`HEX_RUN_LIMIT`] hex digits joined only by
+/// separators. Anything else is withheld: a shape the redactor cannot
+/// read may be any spelling of a secret.
 pub fn plain(s: &str) -> bool {
     let b = s.as_bytes();
     if !b.iter().all(|c| (0x20..=0x7e).contains(c)) || b.contains(&b'\\') {
@@ -853,17 +864,32 @@ pub fn plain(s: &str) -> bool {
             .count();
         *c == b'&' && n > 0 && rest.get(n) == Some(&b';')
     });
-    let mut run = 0usize;
-    let mut opaque = false;
+    // A lone `=XX` is the shape of every `key=value` whose value starts
+    // with two hex digits (`page=10`, a token); two in a row are
+    // quoted-printable, which no fixture argument writes.
+    let qp = |i: usize| {
+        b.get(i) == Some(&b'=')
+            && b.get(i + 1).is_some_and(u8::is_ascii_hexdigit)
+            && b.get(i + 2).is_some_and(u8::is_ascii_hexdigit)
+    };
+    let quoted_printable = (0..b.len()).any(|i| qp(i) && qp(i + 3));
+    let (mut run, mut hex) = (0usize, 0usize);
+    let (mut opaque, mut hex_run) = (false, false);
     for c in b {
-        if c.is_ascii_alphanumeric() || b"+_-".contains(c) {
+        if c.is_ascii_alphanumeric() || b"+_-=".contains(c) {
             run += 1;
             opaque |= run >= OPAQUE_RUN_LIMIT;
         } else {
             run = 0;
         }
+        if c.is_ascii_hexdigit() {
+            hex += 1;
+            hex_run |= hex >= HEX_RUN_LIMIT;
+        } else if c.is_ascii_alphanumeric() {
+            hex = 0;
+        }
     }
-    !(percent || entity || opaque)
+    !(percent || entity || quoted_printable || opaque || hex_run)
 }
 
 /// [`plain`] over every name, string and number spelling of a value.
@@ -887,19 +913,21 @@ fn plain_value(v: &Json) -> bool {
 /// either reading is a hit. `None` when the layers do not settle within
 /// [`DEPTH_LIMIT`] rounds.
 fn search_layers(s: &str, found: impl Fn(&[u8]) -> bool) -> Option<bool> {
-    match (
-        search_reading(s, &found, false),
-        search_reading(s, &found, true),
-    ) {
-        (Some(true), _) | (_, Some(true)) => Some(true),
-        (Some(false), Some(false)) => Some(false),
-        _ => None,
+    let readings = [(false, false), (true, false), (false, true), (true, true)]
+        .map(|(plus, qp)| search_reading(s, &found, plus, qp));
+    if readings.contains(&Some(true)) {
+        Some(true)
+    } else if readings.contains(&None) {
+        None
+    } else {
+        Some(false)
     }
 }
 
 /// One reading of [`search_layers`]: `plus` reads `+` as a space wherever
-/// the URL layer is undone.
-fn search_reading(s: &str, found: &impl Fn(&[u8]) -> bool, plus: bool) -> Option<bool> {
+/// the URL layer is undone, and `qp` also undoes quoted-printable there
+/// (each complete `=XX` escape, and `=` before a line break, a soft break).
+fn search_reading(s: &str, found: &impl Fn(&[u8]) -> bool, plus: bool, qp: bool) -> Option<bool> {
     let mut current = s.as_bytes().to_vec();
     if found(&current) {
         return Some(true);
@@ -907,6 +935,9 @@ fn search_reading(s: &str, found: &impl Fn(&[u8]) -> bool, plus: bool) -> Option
     for _ in 0..DEPTH_LIMIT {
         let unescaped = unescape_bytes(&current);
         let mut next = percent_lenient(&unescaped);
+        if qp {
+            next = quoted_printable_lenient(&next);
+        }
         if plus {
             next.iter_mut()
                 .filter(|c| **c == b'+')
@@ -1037,6 +1068,38 @@ fn percent_lenient(b: &[u8]) -> Vec<u8> {
                 i += 1;
             }
         }
+    }
+    out
+}
+
+/// Undo one quoted-printable layer: each complete `=XX` escape (either
+/// case) becomes its byte, and a soft line break (`=` before CR LF or LF)
+/// is removed. Anything else stays as written.
+fn quoted_printable_lenient(b: &[u8]) -> Vec<u8> {
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'=' {
+            if let (Some(hi), Some(lo)) = (
+                b.get(i + 1).copied().and_then(hex),
+                b.get(i + 2).copied().and_then(hex),
+            ) {
+                out.push(hi * 16 + lo);
+                i += 3;
+                continue;
+            }
+            if b[i + 1..].starts_with(b"\r\n") {
+                i += 3;
+                continue;
+            }
+            if b.get(i + 1) == Some(&b'\n') {
+                i += 2;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
     }
     out
 }
