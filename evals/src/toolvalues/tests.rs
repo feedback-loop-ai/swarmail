@@ -925,6 +925,18 @@ fn the_registry_is_bounded_and_fails_closed() {
     assert!(read_sentinels(&good).is_err());
     std::fs::write(&good, serde_json::to_vec(&[long(1)]).unwrap()).unwrap();
     assert_eq!(read_sentinels(&good), Ok(vec![long(1)]));
+    // A numeric sentinel needs 16 significant digits: one digit padded
+    // with zeros, or 15 padded with spaces, is refused; 16 are admitted.
+    for (sentinel, ok) in [
+        (format!("{}1", "0".repeat(31)), false),
+        (format!("{:>32}", "123456789012345"), false),
+        (format!("{}1234567890123456", "0".repeat(16)), true),
+        (format!("{:>32}", "1234567890123456"), true),
+    ] {
+        assert_eq!(sentinel.len(), SENTINEL_MIN_BYTES);
+        std::fs::write(&good, serde_json::to_vec(&[&sentinel]).unwrap()).unwrap();
+        assert_eq!(read_sentinels(&good).is_ok(), ok, "{sentinel:?}");
+    }
     assert!(read_sentinels(&dir.path().join("absent")).is_err());
     assert!(read_sentinels(Path::new("/")).is_err());
 }

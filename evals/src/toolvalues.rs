@@ -90,6 +90,12 @@ pub const HEX_RUN_LIMIT: usize = 64;
 /// The shortest sentinel the operator's file may register: long enough
 /// that every encoding [`OPAQUE_RUN_LIMIT`] stands guard over is caught.
 pub const SENTINEL_MIN_BYTES: usize = 32;
+/// The fewest significant digits a sentinel that reads as a decimal
+/// number may have. Its digits are refused inside every number, so a
+/// sentinel of one or a few significant digits (`000...0001`, or a short
+/// number padded with spaces) would withhold every value holding that
+/// digit; such a sentinel is refused when the file is read instead.
+pub const NUMERIC_SENTINEL_DIGITS: usize = 16;
 /// The capture's private intermediate file names.
 pub const CAPTURE_FILE: &str = "capture.json";
 pub const MANIFEST_FILE: &str = "manifest.json";
@@ -1147,7 +1153,9 @@ pub fn sealed_registry(bearer: &str, snapshot: Option<&[String]>, sentinels: &Pa
 }
 
 /// Read a sentinel file: a JSON array of at most [`SENTINEL_LIMIT`]
-/// strings of at least [`SENTINEL_MIN_BYTES`] each, every byte printable
+/// strings of at least [`SENTINEL_MIN_BYTES`] each (one that reads as a
+/// decimal number with at least [`NUMERIC_SENTINEL_DIGITS`] significant
+/// digits), every byte printable
 /// ASCII other than `?` (a `?` or a non-ASCII byte can make standard
 /// base64 write a `/`, which breaks the run [`OPAQUE_RUN_LIMIT`] counts),
 /// within [`REGISTRY_BYTES`] of file.
@@ -1163,7 +1171,9 @@ pub fn read_sentinels(path: &Path) -> Result<Vec<String>, Invalid> {
     let bytes = artifacts::read_file(&dir, name, REGISTRY_BYTES).map_err(|_| Invalid)?;
     let list: Vec<String> = serde_json::from_slice(&bytes).map_err(|_| Invalid)?;
     let admitted = |s: &String| {
-        s.len() >= SENTINEL_MIN_BYTES && s.bytes().all(|b| (0x20..=0x7e).contains(&b) && b != b'?')
+        s.len() >= SENTINEL_MIN_BYTES
+            && s.bytes().all(|b| (0x20..=0x7e).contains(&b) && b != b'?')
+            && numeric_reading(s).is_none_or(|(_, d)| d.len() >= NUMERIC_SENTINEL_DIGITS)
     };
     if list.len() > SENTINEL_LIMIT || !list.iter().all(admitted) {
         return Err(Invalid);
