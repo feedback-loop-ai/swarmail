@@ -164,6 +164,14 @@ enum Cmd {
         /// One more absolute regular file bound read-only into the boundary.
         #[arg(long, hide = true, requires = "isolated")]
         isolated_expose: Vec<PathBuf>,
+        /// Keep the redacted argument values of Swarmail's MCP tools and
+        /// eval_http under this private root (decision 0119 §4; never scored).
+        #[arg(long, requires = "tool_sentinels")]
+        capture_tool_values: Option<PathBuf>,
+        /// A JSON array of sentinel literals redacted beside the fixture
+        /// admin bearer (requires --capture-tool-values).
+        #[arg(long, requires = "capture_tool_values")]
+        tool_sentinels: Option<PathBuf>,
         /// The external agent's program and literal arguments (no shell).
         #[arg(last = true)]
         argv: Vec<OsString>,
@@ -217,6 +225,16 @@ enum Cmd {
         /// The frozen product record.
         #[arg(long, requires = "target")]
         product: Option<PathBuf>,
+        /// Value capture (decision 0119 §4): a fresh private root (it must
+        /// not exist) for every trial's redacted argument values of
+        /// Swarmail's MCP tools and eval_http. Never scored; read only by
+        /// `report --tool-values-from`.
+        #[arg(long, requires = "tool_sentinels")]
+        capture_tool_values: Option<PathBuf>,
+        /// A JSON array of sentinel literals redacted beside each trial's
+        /// fixture admin bearer.
+        #[arg(long, requires = "capture_tool_values")]
+        tool_sentinels: Option<PathBuf>,
     },
     /// Probe one target's MCP contract and write it as JSON (free).
     ComparisonContract {
@@ -315,6 +333,17 @@ enum Cmd {
         /// (requires --journal).
         #[arg(long)]
         evidence_dir: Option<PathBuf>,
+        /// The value-bearing mode (decision 0119 §4): read the redacted
+        /// captures `matrix --capture-tool-values` left under this root and
+        /// write each bound `tool-values.json` and the `transcripts/`
+        /// section beside the structural records (requires --journal and
+        /// --evidence-dir). Never read by scoring.
+        #[arg(long, requires = "journal", requires = "evidence_dir")]
+        tool_values_from: Option<PathBuf>,
+        /// Also render the report's groups as a private Markdown page at
+        /// this fresh path, tokens per success with its reason per group.
+        #[arg(long)]
+        page: Option<PathBuf>,
     },
 }
 
@@ -355,6 +384,8 @@ fn trial_request(cmd: &Cmd) -> Result<TrialRequest, ExitCode> {
         public_argv,
         wrapper_profile,
         worker_context,
+        capture_tool_values,
+        tool_sentinels,
         ..
     } = cmd
     else {
@@ -397,6 +428,10 @@ fn trial_request(cmd: &Cmd) -> Result<TrialRequest, ExitCode> {
         agent_config_id: agent_config_id.clone(),
         public_argv: *public_argv,
         wrapper_profile: *wrapper_profile,
+        capture: capture_tool_values
+            .clone()
+            .zip(tool_sentinels.clone())
+            .map(|(root, sentinels)| runner::CapturePlan { root, sentinels }),
         ..Default::default()
     };
     if let Some(context) = worker_context {
@@ -500,6 +535,8 @@ fn inner_args(cmd: &Cmd, request: &isolation::Request) -> Vec<OsString> {
         worker_context,
         isolated: _,
         isolated_expose: _,
+        capture_tool_values,
+        tool_sentinels,
         argv,
     } = cmd
     else {
@@ -536,6 +573,14 @@ fn inner_args(cmd: &Cmd, request: &isolation::Request) -> Vec<OsString> {
         }),
     );
     flag("worker-context", worker_context.clone().map(OsString::from));
+    flag(
+        "capture-tool-values",
+        capture_tool_values.clone().map(PathBuf::into_os_string),
+    );
+    flag(
+        "tool-sentinels",
+        tool_sentinels.clone().map(PathBuf::into_os_string),
+    );
     if *public_argv {
         args.push("--public-argv".into());
     }
@@ -850,6 +895,8 @@ fn main() -> ExitCode {
             target_bin,
             sources,
             product,
+            capture_tool_values,
+            tool_sentinels,
         } => {
             if concurrency != 1 {
                 eprintln!("swarmail-evals: harness error: concurrency_unsupported");
@@ -890,6 +937,20 @@ fn main() -> ExitCode {
                     Some(bound)
                 }
             };
+            // The capture is admitted first and its root created last, after
+            // every other admission: a refused matrix leaves no root behind.
+            let capture = match capture_tool_values.zip(tool_sentinels) {
+                None => None,
+                Some((root, sentinels)) => {
+                    match admit_capture(&root, &sentinels, target.as_deref()) {
+                        Ok(sentinels) => Some((root, sentinels)),
+                        Err(category) => {
+                            eprintln!("swarmail-evals: harness error: {category}");
+                            return ExitCode::from(2);
+                        }
+                    }
+                }
+            };
             if let Some(bin) = &brokkr
                 && let Err(category) = brokkr_mode_admissible(
                     bin,
@@ -902,7 +963,20 @@ fn main() -> ExitCode {
                 eprintln!("swarmail-evals: harness error: {category}");
                 return ExitCode::from(2);
             }
-            rt.block_on(matrix_with_target(
+            let mut created = None;
+            if let Some((root, sentinels)) = capture {
+                match create_capture_root(&root) {
+                    Ok(root) => {
+                        created = Some(root.clone());
+                        let _ = MATRIX_CAPTURE.set((root, sentinels));
+                    }
+                    Err(category) => {
+                        eprintln!("swarmail-evals: harness error: {category}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            let code = rt.block_on(matrix_with_target(
                 ids,
                 agents,
                 trials,
@@ -911,7 +985,17 @@ fn main() -> ExitCode {
                 artifacts_dir,
                 brokkr,
                 comparison,
-            ))
+            ));
+            // A matrix refused before any trial left a record (`--trials 0`,
+            // an unusable agents file, a later admission) leaves no root, so
+            // the same path can be retried. `remove_dir` removes only an
+            // empty directory: a root that holds a record is kept.
+            if let Some(root) = created
+                && code == ExitCode::from(2)
+            {
+                let _ = std::fs::remove_dir(&root);
+            }
+            code
         }
         Cmd::ComparisonContract {
             target,
@@ -1086,6 +1170,8 @@ fn main() -> ExitCode {
             input,
             journal,
             evidence_dir,
+            tool_values_from,
+            page,
         } => {
             if evidence_dir.is_some() && journal.is_none() {
                 eprintln!("swarmail-evals: harness error: evidence_requires_journal");
@@ -1110,6 +1196,17 @@ fn main() -> ExitCode {
                         Some(Ok(mut joined)) => {
                             if let Some(dir) = &evidence_dir {
                                 swarmail_evals::journal::write_evidence(dir, &mut joined);
+                                if let Some(captures) = &tool_values_from
+                                    && let Err(category) = swarmail_evals::journal::write_values(
+                                        dir,
+                                        captures,
+                                        &rows,
+                                        &mut joined,
+                                    )
+                                {
+                                    eprintln!("swarmail-evals: harness error: {category}");
+                                    return ExitCode::from(2);
+                                }
                             }
                             Some(joined)
                         }
@@ -1118,7 +1215,14 @@ fn main() -> ExitCode {
                             return ExitCode::from(2);
                         }
                     };
-                    print_line(&report::report_with_journal(&rows, joined.as_ref()));
+                    let report = report::report_with_journal(&rows, joined.as_ref());
+                    if let Some(path) = &page
+                        && write_page(path, &report).is_err()
+                    {
+                        eprintln!("swarmail-evals: harness error: page_write_failed");
+                        return ExitCode::from(2);
+                    }
+                    print_line(&report);
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -1135,6 +1239,42 @@ fn main() -> ExitCode {
             }
         }
     }
+}
+
+/// How an output path's parent is resolved before any primitive checks it:
+/// [`artifacts::resolve_root`] in production, as for `--artifacts-dir`
+/// and `--evidence-dir`, so a root-owned symlinked ancestor (macOS's
+/// `/var`, `/tmp`) is followed and anything else refused.
+type Resolve = fn(&std::path::Path) -> Result<PathBuf, String>;
+
+/// A path's parent, `.` for a bare name.
+fn parent_or_dot(path: &std::path::Path) -> &std::path::Path {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => std::path::Path::new("."),
+    }
+}
+
+/// Write the rendered page through the artifact publication primitive:
+/// staged whole in a private (0600) temporary in the page's resolved
+/// directory, then moved to its name with no clobber. The page is complete
+/// or absent, never partial, and an existing file is never replaced.
+fn write_page(path: &std::path::Path, report: &serde_json::Value) -> Result<(), String> {
+    write_page_with(path, report, artifacts::resolve_root)
+}
+
+fn write_page_with(
+    path: &std::path::Path,
+    report: &serde_json::Value,
+    resolve: Resolve,
+) -> Result<(), String> {
+    let dir = resolve(parent_or_dot(path))?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("page_name_invalid")?;
+    let page = swarmail_evals::toolvalues::render_page(report);
+    artifacts::publish(&dir, name, page.as_bytes()).map(|_| ())
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -1851,6 +1991,93 @@ fn signal_trial(pid: u32) -> Result<(), String> {
     }
 }
 
+/// The matrix's value-capture plan (decision 0119 §4), set once before any
+/// trial: the fresh private root and the sentinel file, both absolute.
+static MATRIX_CAPTURE: std::sync::OnceLock<(PathBuf, PathBuf)> = std::sync::OnceLock::new();
+
+/// Admit `matrix --capture-tool-values` without touching the disk: a
+/// Swarmail target only, a readable sentinel file (returned canonical), and
+/// a root that does not exist yet under a parent the artifact rules admit
+/// (an existing directory, no symlinked component).
+fn admit_capture(
+    root: &std::path::Path,
+    sentinels: &std::path::Path,
+    target: Option<&str>,
+) -> Result<PathBuf, &'static str> {
+    if target.is_some_and(|t| t != "swarmail") {
+        return Err("capture_requires_swarmail_target");
+    }
+    let sentinels = std::fs::canonicalize(sentinels).map_err(|_| "tool_sentinels_unreadable")?;
+    swarmail_evals::toolvalues::read_sentinels(&sentinels)
+        .map_err(|_| "tool_sentinels_unreadable")?;
+    if std::fs::symlink_metadata(root).is_ok() {
+        return Err("capture_root_exists");
+    }
+    capture_parent(root)?;
+    Ok(sentinels)
+}
+
+/// The real parent a capture root is created in: resolved as an artifact
+/// root is ([`Resolve`]), then checked by [`artifacts::safe_root`].
+fn capture_parent(root: &std::path::Path) -> Result<PathBuf, &'static str> {
+    capture_parent_with(root, artifacts::resolve_root)
+}
+
+fn capture_parent_with(root: &std::path::Path, resolve: Resolve) -> Result<PathBuf, &'static str> {
+    let parent = resolve(parent_or_dot(root)).map_err(|_| "capture_root_unavailable")?;
+    artifacts::safe_root(&parent).map_err(|_| "capture_root_unavailable")?;
+    Ok(parent)
+}
+
+/// Create the admitted capture root, once every other admission has
+/// passed: one new 0700 directory in its real parent, never an existing
+/// one, then checked again by [`artifacts::safe_root`]. A root that cannot
+/// be finished is removed again, never left half made.
+fn create_capture_root(root: &std::path::Path) -> Result<PathBuf, &'static str> {
+    create_capture_root_with(root, artifacts::resolve_root)
+}
+
+fn create_capture_root_with(
+    root: &std::path::Path,
+    resolve: Resolve,
+) -> Result<PathBuf, &'static str> {
+    create_capture_root_finished_by(root, resolve, finish_capture_root)
+}
+
+/// Finish a just-created capture root: mode 0700, checked by
+/// [`artifacts::safe_root`], and its absolute real path, the one a worker
+/// is handed (a brokkr trial seat's working directory is not the matrix's).
+fn finish_capture_root(path: &std::path::Path) -> Result<PathBuf, &'static str> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| "capture_root_unavailable")?;
+    artifacts::safe_root(path).map_err(|_| "capture_root_unavailable")?;
+    std::fs::canonicalize(path).map_err(|_| "capture_root_unavailable")
+}
+
+fn create_capture_root_finished_by(
+    root: &std::path::Path,
+    resolve: Resolve,
+    finish: fn(&std::path::Path) -> Result<PathBuf, &'static str>,
+) -> Result<PathBuf, &'static str> {
+    use std::os::unix::fs::DirBuilderExt;
+    let parent = capture_parent_with(root, resolve)?;
+    let name = root.file_name().ok_or("capture_root_unavailable")?;
+    let path = parent.join(name);
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&path)
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => "capture_root_exists",
+            _ => "capture_root_unavailable",
+        })?;
+    let finished = finish(&path);
+    if finished.is_err() {
+        let _ = std::fs::remove_dir(&path);
+    }
+    finished
+}
+
 /// The one argument list (after the `trial` subcommand) a `swarmail-evals trial` worker is given, whether
 /// the matrix spawns it directly or writes it into a brokkr slot's request.
 fn trial_args(
@@ -1867,6 +2094,14 @@ fn trial_args(
         .into_iter()
         .map(OsString::from)
         .collect();
+    if let Some((root, sentinels)) = MATRIX_CAPTURE.get() {
+        args.extend([
+            "--capture-tool-values".into(),
+            root.into(),
+            "--tool-sentinels".into(),
+            sentinels.into(),
+        ]);
+    }
     if let Some(ms) = deadline_ms {
         args.extend(["--deadline-ms".into(), ms.to_string().into()]);
     }
@@ -5389,6 +5624,113 @@ while :; do :; done
             assert!(output.overflow);
             assert_eq!(output.bytes.len(), MATRIX_OUTPUT_LIMIT);
         });
+    }
+}
+
+#[cfg(test)]
+mod capture_admission_tests {
+    use super::{
+        admit_capture, capture_parent_with, create_capture_root, create_capture_root_finished_by,
+        create_capture_root_with, write_page_with,
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn value_capture_admits_only_a_swarmail_target_and_a_creatable_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let sentinels = dir.path().join("s.json");
+        std::fs::write(
+            &sentinels,
+            br#"["a sentinel long enough to register 0123456789"]"#,
+        )
+        .unwrap();
+        let root = dir.path().join("captures");
+        // A competitor target's endpoint is the runner's bridge, which the
+        // capture does not observe: refused before any root is made.
+        assert_eq!(
+            admit_capture(&root, &sentinels, Some("mailpit")),
+            Err("capture_requires_swarmail_target")
+        );
+        assert!(!root.exists());
+        // A root whose parent is missing, or reached through a symlink, is
+        // refused before anything is created.
+        let orphan = dir.path().join("absent").join("captures");
+        assert_eq!(
+            admit_capture(&orphan, &sentinels, None),
+            Err("capture_root_unavailable")
+        );
+        assert!(!orphan.exists());
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+        assert_eq!(
+            admit_capture(&link.join("captures"), &sentinels, None),
+            Err("capture_root_unavailable")
+        );
+        // Swarmail, named or by default: admitted without touching the
+        // disk, then created fresh and private, and never twice.
+        assert!(admit_capture(&root, &sentinels, Some("swarmail")).is_ok());
+        assert!(!root.exists(), "admission creates nothing");
+        let made = create_capture_root(&root).unwrap();
+        let mode = std::fs::metadata(&made).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        assert_eq!(create_capture_root(&root), Err("capture_root_exists"));
+        assert_eq!(
+            admit_capture(&root, &sentinels, None),
+            Err("capture_root_exists")
+        );
+    }
+
+    #[test]
+    fn a_capture_root_that_cannot_be_finished_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        let root = real.join("captures");
+        // Its mode, the safe_root check or the canonical path failing after
+        // the directory is made: the directory is removed again.
+        let failed = |_: &std::path::Path| Err("capture_root_unavailable");
+        assert_eq!(
+            create_capture_root_finished_by(&root, follow_links, failed),
+            Err("capture_root_unavailable")
+        );
+        assert!(!root.exists(), "no half-made root is left");
+        // And the same path is then created whole.
+        assert_eq!(create_capture_root(&root), Ok(root.clone()));
+    }
+
+    /// Stands in for macOS's root-owned `/var` -> `/private/var`: a
+    /// resolver that follows the test's own (same-uid) link, which the
+    /// production rule rightly refuses. What is proven is that the parent
+    /// is resolved before `safe_root` judges it.
+    fn follow_links(p: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        std::fs::canonicalize(p).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_resolved_symlinked_ancestor_is_admitted_for_the_capture_root_and_the_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let var = dir.path().join("var");
+        std::os::unix::fs::symlink(&real, &var).unwrap();
+        // The capture root under the link: created in the link's target.
+        let root = var.join("captures");
+        assert_eq!(capture_parent_with(&root, follow_links), Ok(real.clone()));
+        let made = create_capture_root_with(&root, follow_links).unwrap();
+        assert_eq!(made, real.join("captures"));
+        assert!(made.is_dir());
+        // The page under the link: published in the link's target, 0600.
+        let page = var.join("report.md");
+        write_page_with(&page, &serde_json::json!({"groups": []}), follow_links).unwrap();
+        let meta = std::fs::metadata(real.join("report.md")).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        // Without a resolve the link itself reaches safe_root and is
+        // refused: the same paths fail.
+        let raw = |p: &std::path::Path| Ok(p.to_path_buf());
+        assert_eq!(
+            capture_parent_with(&var.join("other"), raw),
+            Err("capture_root_unavailable")
+        );
+        assert!(write_page_with(&var.join("other.md"), &serde_json::json!({}), raw).is_err());
     }
 }
 

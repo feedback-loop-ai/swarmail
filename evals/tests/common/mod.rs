@@ -510,6 +510,10 @@ async fn helper(mode: &str) -> i32 {
     if mode == "cross_trial_probe" {
         return cross_trial_probe().await;
     }
+    #[cfg(target_os = "linux")]
+    if let Some(variant) = mode.strip_prefix("tool_values") {
+        return tool_values(variant).await;
+    }
     let env = AgentEnv::from_env().expect("the agent environment");
     let app = App::new(&env.app_url, &env.identity).unwrap();
     match mode {
@@ -2112,6 +2116,272 @@ fn victim_from_argv() -> Result<Victim, String> {
         agent: agent.ok_or("victim-agent is missing")?,
         vars,
     })
+}
+
+/// The value-capture probe agent (decision 0119 §4). It plays an agent that
+/// leaks: it reads the trial's fixture admin bearer from the fixture
+/// process's environment (same uid, Linux /proc) and sends it, the test's
+/// sentinel, whitespace and escapes (plain ASCII once decoded: the value
+/// mode publishes nothing else) through both
+/// harness-owned tools: Swarmail's MCP endpoint (raw bodies, so the exact
+/// argument bytes are known) and the `eval_http` helper over stdio. Every
+/// call's tool, length and digest go to `<marker>.calls`, the bearer to
+/// `<marker>.bearer`: the test's own journal stand-in and canary. In
+/// `tool_values_planted` one argument holds the numeric sentinel in a
+/// number's spelling, which no mask can redact, and another the bearer in
+/// upper and mixed case (`residual_secret`). In `tool_values_encoded` the
+/// bearer and the sentinel go base64, base64url and entity-encoded
+/// (`invalid_argument_encoding`); in `tool_values_joined` they go
+/// quoted-printable and as hex joined by separators, and nothing else. With
+/// `EVAL_TEST_SENTINELS_FILE` and `EVAL_TEST_LATE_SENTINEL` set, the probe
+/// first rewrites the operator's sentinel file to hold only the late
+/// sentinel (removing the ones registered at trial start) and then sends
+/// both: the registry must only grow.
+#[cfg(target_os = "linux")]
+async fn tool_values(variant: &str) -> i32 {
+    let planted = variant == "_planted";
+    let encoded = variant == "_encoded";
+    let joined = variant == "_joined";
+    let hex_joined = |s: &str, sep: &str| {
+        s.bytes()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(sep)
+    };
+    use std::io::{BufRead, Write};
+    use swarmail_evals::provenance::sha256;
+    let marker = marker().unwrap();
+    // An agent's output is never retained: a failure is left for the test.
+    let failure = marker.with_extension("failure");
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = std::fs::write(&failure, info.to_string());
+    }));
+    let env = AgentEnv::from_env().unwrap();
+    let runner: i32 = std::env::var("EVAL_TEST_RUNNER_PID")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let bearer = process_descendants(runner)
+        .into_iter()
+        .find_map(|p| {
+            let raw = std::fs::read(format!("/proc/{}/environ", p.pid)).ok()?;
+            raw.split(|b| *b == 0).find_map(|e| {
+                let text = std::str::from_utf8(e).ok()?;
+                text.strip_prefix("EVAL_FIXTURE_ADMIN_SECRET=")
+                    .map(str::to_string)
+            })
+        })
+        .expect("the fixture's admin bearer");
+    let sentinel = std::env::var("EVAL_TEST_SENTINEL").unwrap();
+    let number = std::env::var("EVAL_TEST_SENTINEL_NUMBER").unwrap();
+    let late = match (
+        std::env::var_os("EVAL_TEST_SENTINELS_FILE"),
+        std::env::var("EVAL_TEST_LATE_SENTINEL"),
+    ) {
+        (Some(file), Ok(late)) => {
+            std::fs::write(file, json!([late]).to_string()).unwrap();
+            format!(" {late}")
+        }
+        _ => String::new(),
+    };
+    std::fs::write(marker.with_extension("bearer"), &bearer).unwrap();
+    let mut calls = Vec::new();
+    let mut log = |tool: &str, args: &[u8]| {
+        calls.push(json!({"tool": tool, "bytes": args.len(), "sha256": sha256(args)}));
+    };
+
+    // Swarmail: initialize through the client, then raw tools/call bodies.
+    let _session = McpClient::connect(&env.mcp_url).await.unwrap();
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let own_origin = env.mcp_url.trim_end_matches("/mcp");
+    assert!(own_origin.starts_with("http://127.0.0.1:"), "{own_origin}");
+    // Any other origin is passed through for Swarmail's guard to refuse,
+    // exactly as a direct request would be (no tools/call: not observed).
+    let foreign = http
+        .post(&env.mcp_url)
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("origin", "http://evil.example")
+        .body(r#"{"jsonrpc":"2.0","id":99,"method":"ping"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), reqwest::StatusCode::FORBIDDEN);
+    let mcp_args = [
+        format!(
+            "{{ \"inbox\" :\"{}\",\n \"subject\": \"caf\\u0065 ok {bearer} {sentinel}\" }}",
+            env.inbox
+        ),
+        if planted {
+            let mixed: String = bearer
+                .chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    if i % 2 == 0 {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c.to_ascii_lowercase()
+                    }
+                })
+                .collect();
+            format!(
+                "{{\"inbox\":\"{}\",\"limit\":{number}0,\"subject\":\"{} {mixed}\"}}",
+                env.inbox,
+                bearer.to_ascii_uppercase()
+            )
+        } else if joined {
+            let qp: String = bearer.bytes().map(|b| format!("={b:02X}")).collect();
+            format!(
+                "{{\"inbox\":\"{}\",\"subject\":\"{qp} {}\"}}",
+                env.inbox,
+                hex_joined(&sentinel, " ")
+            )
+        } else if encoded {
+            use base64::Engine as _;
+            use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+            format!(
+                "{{\"inbox\":\"{}\",\"subject\":\"{} {}\"}}",
+                env.inbox,
+                STANDARD.encode(&bearer),
+                URL_SAFE_NO_PAD.encode(&sentinel)
+            )
+        } else {
+            format!(
+                "{{\"inbox\":\"{}\",\"subject\":\"\\\"quoted\\\" {sentinel}{late}\"}}",
+                env.inbox
+            )
+        },
+    ];
+    for (i, args) in mcp_args.iter().enumerate() {
+        let body = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"tools/call\",\"params\":{{\"name\":\"swarmail_search_emails\",\"arguments\":{args}}}}}",
+            100 + i
+        );
+        let mut request = http
+            .post(&env.mcp_url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-protocol-version", "2025-03-26");
+        if i == 0 {
+            // A browser-shaped client names the origin it was served from:
+            // the forwarder's own. Swarmail's guard (0043) admits it only
+            // once the forwarder has respelled it for Swarmail's port.
+            request = request.header("origin", own_origin);
+        }
+        let reply = request.body(body).send().await.unwrap();
+        assert!(reply.status().is_success(), "{}", reply.status());
+        let reply: Value = serde_json::from_slice(&reply.bytes().await.unwrap()).unwrap();
+        assert_eq!(reply["id"], 100 + i, "the forwarder keeps the reply");
+        log("mcp__swarmail__swarmail_search_emails", args.as_bytes());
+    }
+
+    // eval_http through the real helper, over its stdio.
+    let mut child = Command::new(exe())
+        .arg("fixture-http")
+        .env_clear()
+        .envs(
+            std::env::vars()
+                .filter(|(k, _)| k.starts_with("EVAL_") && !k.starts_with("EVAL_TEST_")),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut rpc = |line: String| {
+        stdin.write_all(line.as_bytes()).unwrap();
+        stdin.write_all(b"\n").unwrap();
+        stdin.flush().unwrap();
+        let mut reply = String::new();
+        stdout.read_line(&mut reply).unwrap();
+        serde_json::from_str::<Value>(&reply).unwrap()
+    };
+    let init = rpc(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}"#.into());
+    assert!(init["result"].is_object(), "{init}");
+    let http_args = [
+        // Plain, then percent-encoded beside a malformed escape, then
+        // double-encoded: every spelling must be redacted.
+        format!(
+            "{{\"method\":\"GET\",\"path\":\"/?t={bearer}&e=%{:02X}{}%zz&d=%25{:02X}{}\"}}",
+            bearer.as_bytes()[0],
+            &bearer[1..],
+            sentinel.as_bytes()[0],
+            &sentinel[1..]
+        ),
+        if joined {
+            format!(
+                "{{\"method\":\"GET\",\"path\":\"/x/{}\",\"body\":{{\"note\":\"{}\"}}}}",
+                hex_joined(&sentinel, "/"),
+                hex_joined(&bearer, ":")
+            )
+        } else if encoded {
+            let entity: String = bearer.bytes().map(|b| format!("&#x{b:x};")).collect();
+            // And chunked: base64 split by spaces, base32 by dots.
+            let (spaced, dotted, slashed) = chunked_spellings(&bearer, &sentinel);
+            format!(
+                "{{\"method\":\"POST\",\"path\":\"/x/{slashed}\",\"body\":{{\"password\":\"{entity}\",\"note\":\"{spaced}\",\"ref\":\"{dotted}\"}}}}"
+            )
+        } else {
+            format!(
+                "{{ \"method\" : \"POST\", \"path\": \"/login\", \"body\": {{\"email\": \"caf\\u0065@x\", \"password\": \"{sentinel}\", \"note\": \"ok\\u0021\"}} }}"
+            )
+        },
+    ];
+    for (i, args) in http_args.iter().enumerate() {
+        let reply = rpc(format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"tools/call\",\"params\":{{\"name\":\"eval_http\",\"arguments\":{args}}}}}",
+            10 + i
+        ));
+        assert_eq!(reply["id"], 10 + i, "{reply}");
+        log("mcp__fixture__eval_http", args.as_bytes());
+    }
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    std::fs::write(
+        marker.with_extension("calls"),
+        serde_json::to_vec(&calls).unwrap(),
+    )
+    .unwrap();
+    0
+}
+
+/// The chunked spellings the `tool_values_encoded` agent sends and the
+/// canary search looks for: the bearer in base64 split by a space every 20
+/// characters, the sentinel in RFC 4648 base32 split by a dot every 8, and
+/// the sentinel in base64url split by a '/' every 10 (a path's shape).
+pub fn chunked_spellings(bearer: &str, sentinel: &str) -> (String, String, String) {
+    use base64::Engine as _;
+    const B32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let chunk = |s: &str, width: usize, sep: &str| {
+        s.as_bytes()
+            .chunks(width)
+            .map(|c| String::from_utf8_lossy(c).into_owned())
+            .collect::<Vec<_>>()
+            .join(sep)
+    };
+    let mut base32 = String::new();
+    for block in sentinel.as_bytes().chunks(5) {
+        let mut five = [0u8; 5];
+        five[..block.len()].copy_from_slice(block);
+        let bits = five.iter().fold(0u64, |a, b| (a << 8) | u64::from(*b));
+        for i in 0..(block.len() * 8).div_ceil(5) {
+            base32.push(B32[((bits >> (35 - 5 * i)) & 31) as usize] as char);
+        }
+    }
+    (
+        chunk(
+            &base64::engine::general_purpose::STANDARD.encode(bearer),
+            20,
+            " ",
+        ),
+        chunk(&base32, 8, "."),
+        chunk(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sentinel),
+            10,
+            "/",
+        ),
+    )
 }
 
 /// AC-S1's bare helper. Given only the victim runner's PID (and nothing

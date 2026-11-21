@@ -26,6 +26,10 @@ pub struct Inputs {
     pub goal: String,
     pub prompt_file: PathBuf,
     pub deadline_ms: u64,
+    /// The trial's private observation socket when value capture is on
+    /// (decision 0119 §4): a path inside the runner's private runtime, never
+    /// a secret. Absent in every default trial.
+    pub capture_socket: Option<PathBuf>,
 }
 
 pub fn endpoint(value: &str, path: &str) -> Result<Url, String> {
@@ -85,6 +89,13 @@ impl Inputs {
         if !prompt_file.is_absolute() || read_prompt(&prompt_file)? != goal.as_bytes() {
             return Err("eval_prompt_mismatch".into());
         }
+        let capture_socket = match values.get(crate::toolvalues::ENV_CAPTURE_SOCKET) {
+            None => None,
+            Some(path) if Path::new(path).is_absolute() && !path.contains('\0') => {
+                Some(PathBuf::from(path))
+            }
+            Some(_) => return Err("eval_capture_socket_invalid".into()),
+        };
         Ok(Self {
             task,
             app,
@@ -94,6 +105,7 @@ impl Inputs {
             goal,
             prompt_file,
             deadline_ms,
+            capture_socket,
         })
     }
     pub fn environment() -> Result<Self, String> {
@@ -104,7 +116,11 @@ impl Inputs {
                     .map(|v| (key.to_string(), v))
                     .map_err(|_| "eval_input_missing".to_string())
             })
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let mut values = values;
+        if let Ok(path) = std::env::var(crate::toolvalues::ENV_CAPTURE_SOCKET) {
+            values.insert(crate::toolvalues::ENV_CAPTURE_SOCKET.to_string(), path);
+        }
         Self::read(&values)
     }
 }
@@ -522,6 +538,12 @@ fn helper_env(inputs: &Inputs, map: &BTreeMap<OsString, OsString>) -> BTreeMap<S
         ),
         (INPUTS[7].into(), inputs.deadline_ms.to_string()),
     ]);
+    if let Some(socket) = inputs.capture_socket.as_ref().and_then(|p| p.to_str()) {
+        out.insert(
+            crate::toolvalues::ENV_CAPTURE_SOCKET.into(),
+            socket.to_string(),
+        );
+    }
     out
 }
 /// A finite TOML value encoder: JSON strings need TOML's \uXXXX control escapes.

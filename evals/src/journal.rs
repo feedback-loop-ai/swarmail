@@ -223,6 +223,8 @@ pub struct Joined {
     source: Source,
     trials: BTreeMap<String, JoinedTrial>,
     evidence: BTreeMap<String, Value>,
+    /// The value-bearing index (0119 §4), only when that mode was asked for.
+    values: Option<BTreeMap<String, Value>>,
 }
 
 /// Join facts to rows. A facts entry for a trial id in no row, or two entries
@@ -256,6 +258,7 @@ pub fn join(rows: &[TrialResult], facts: &Facts) -> Result<Joined, String> {
         source: facts.source.clone(),
         trials,
         evidence: BTreeMap::new(),
+        values: None,
     })
 }
 
@@ -263,6 +266,47 @@ impl Joined {
     pub fn source(&self) -> &Source {
         &self.source
     }
+}
+
+/// The value-bearing mode (accepted 0119 §4): after [`write_evidence`], write
+/// `DIR/<trial_id>/tool-values.json` for every joined trial whose tool-call
+/// fact is present and whose capture under `captures` binds to it, index
+/// every trial (a binding, or `absent` with one typed reason), and write the
+/// bounded `DIR/transcripts/` section. Upstream absence (built-in agent, no
+/// journal entry, an unavailable tool-call fact) is propagated first. Only
+/// the transcript index's own failure fails the call.
+pub fn write_values(
+    dir: &Path,
+    captures: &Path,
+    rows: &[TrialResult],
+    joined: &mut Joined,
+) -> Result<artifacts::Binding, String> {
+    use crate::toolvalues::{self, Disposition};
+    let captures = artifacts::resolve_root(captures).unwrap_or_else(|_| captures.to_path_buf());
+    let root = artifacts::resolve_root(dir).map_err(|_| "evidence_write_failed")?;
+    let mut index = BTreeMap::new();
+    let mut companions = BTreeMap::new();
+    for (id, trial) in &joined.trials {
+        let disposition = match trial {
+            JoinedTrial::Absent(reason) => Disposition::Absent(reason.as_str().into()),
+            JoinedTrial::Entry(facts) => match &facts.tool_calls {
+                Fact::Unavailable { reason } => Disposition::Absent(reason.as_str().into()),
+                Fact::Present { .. } => toolvalues::publish_companion(
+                    &root,
+                    &captures,
+                    facts,
+                    joined.evidence.get(id).unwrap_or(&Value::Null),
+                ),
+            },
+        };
+        index.insert(id.clone(), disposition.index_entry());
+        if let Disposition::Published(_, companion) = disposition {
+            companions.insert(id.clone(), *companion);
+        }
+    }
+    joined.values = Some(index);
+    toolvalues::write_transcripts(&root, rows, &companions)
+        .map_err(|_| "transcripts_write_failed".to_string())
 }
 
 /// A tool name safe to print and to use as a key: at most 128 bytes of
@@ -517,6 +561,7 @@ pub fn summarize(group: &[&TrialResult], joined: &Joined) -> Value {
     };
     let mut runs = Map::new();
     let mut evidence = Map::new();
+    let mut values = Map::new();
     for row in group {
         // Only a run the journal accounted names a run id: an ambiguous or
         // accounting-free entry has no run worth citing.
@@ -527,6 +572,9 @@ pub fn summarize(group: &[&TrialResult], joined: &Joined) -> Value {
         }
         if let Some(entry) = joined.evidence.get(&row.trial_id) {
             evidence.insert(row.trial_id.clone(), entry.clone());
+        }
+        if let Some(entry) = joined.values.as_ref().and_then(|v| v.get(&row.trial_id)) {
+            values.insert(row.trial_id.clone(), entry.clone());
         }
     }
     let (tool_calls, tool_calls_reason) = if calls_incomplete {
@@ -546,7 +594,7 @@ pub fn summarize(group: &[&TrialResult], joined: &Joined) -> Value {
     } else {
         (json!(killed), Value::Null)
     };
-    json!({
+    let mut out = json!({
         "joined": joined_count,
         "scored": scored.len(),
         "excluded_harness_errors": group.len() - scored.len(),
@@ -562,7 +610,12 @@ pub fn summarize(group: &[&TrialResult], joined: &Joined) -> Value {
         "deadline_killed_reason": deadline_killed_reason,
         "runs": runs,
         "evidence": evidence,
-    })
+    });
+    // Present only in the value-bearing mode, so every default byte stays.
+    if joined.values.is_some() {
+        out["tool_values"] = Value::Object(values);
+    }
+    out
 }
 
 #[cfg(test)]

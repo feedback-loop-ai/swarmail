@@ -107,6 +107,24 @@ fn exact_eight_input_admission_and_literal_values() {
         }
     }
     assert!(wrappers::endpoint("http://[::1]:12345/", "/").is_ok());
+    // The capture socket's path: absent by default, absolute when given.
+    assert_eq!(inputs.capture_socket, None);
+    let socket = swarmail_evals::toolvalues::ENV_CAPTURE_SOCKET;
+    for bad in ["relative/tool-capture.sock", "/run/a\0b.sock", ""] {
+        let mut v = values.clone();
+        v.insert(socket.into(), bad.into());
+        assert_eq!(
+            Inputs::read(&v).err().as_deref(),
+            Some("eval_capture_socket_invalid"),
+            "{bad:?}"
+        );
+    }
+    let mut v = values.clone();
+    v.insert(socket.into(), "/run/tool-capture.sock".into());
+    assert_eq!(
+        Inputs::read(&v).unwrap().capture_socket.as_deref(),
+        Some(Path::new("/run/tool-capture.sock"))
+    );
     let mut v = values.clone();
     v.insert(INPUTS[5].into(), "mismatch".into());
     assert!(Inputs::read(&v).is_err());

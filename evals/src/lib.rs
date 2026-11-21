@@ -14,6 +14,7 @@ mod admission;
 pub mod api;
 pub mod apibench;
 pub mod bridge;
+pub mod capture;
 #[path = "../../benches/mail_compare/clients/mod.rs"]
 pub mod clients;
 pub mod comparison;
@@ -53,4 +54,5 @@ pub(crate) mod test_support;
 pub mod baseline;
 pub mod fixture_http;
 pub mod journal;
+pub mod toolvalues;
 pub mod wrappers;

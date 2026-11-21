@@ -435,7 +435,23 @@ pub struct TrialRequest {
     /// A competitor target (proposed decision 0129 §4): the runner owns its
     /// adapter instead of a Swarmail server. `None` is Swarmail, unchanged.
     pub competitor: Option<CompetitorPlan>,
+    /// Value capture (decision 0119 §4), only when asked for. `None` runs the
+    /// trial exactly as before.
+    pub capture: Option<CapturePlan>,
 }
+
+/// Where a trial's redacted value capture goes and which sentinels its
+/// registry holds beside the fixture admin bearer.
+#[derive(Debug, Clone)]
+pub struct CapturePlan {
+    pub root: PathBuf,
+    pub sentinels: PathBuf,
+}
+
+/// The sealed capture a trial body leaves for the runner to write once the
+/// row is final: the observations and the registry they are redacted with.
+pub(crate) type CaptureSink =
+    Arc<Mutex<Option<(crate::toolvalues::Capture, crate::toolvalues::Registry)>>>;
 
 /// What a competitor trial needs beyond Swarmail's: the adapter and backend
 /// executables, the lock that binds them, and the two facts of the frozen
@@ -2020,6 +2036,8 @@ struct Trial {
     diagnostics: Vec<String>,
     /// A competitor trial's bridge, kept until the orderly stop.
     bridge: Option<crate::bridge::Bridge>,
+    /// Value capture's plan and the slot its sealed result is left in.
+    capture: Option<(CapturePlan, CaptureSink)>,
 }
 
 /// How long a competitor adapter gets, after its stdin closes, to clean up
@@ -2513,6 +2531,7 @@ pub async fn probe_contract(
         agents: Arc::new(Mutex::new(Vec::new())),
         diagnostics: Vec::new(),
         bridge: None,
+        capture: None,
     };
     let probed = probe_contract_body(target, swarmail, plan, scratch.path(), &mut trial).await;
     let stopped = trial.stop_servers().await;
@@ -2741,6 +2760,25 @@ async fn run_body(
         base: format!("http://{admin_addr}"),
         secret,
     };
+    // Value capture (0119 §4) stands only in front of a Swarmail target. A
+    // capture that cannot start leaves the trial exactly as it would run
+    // without one, and the report then names it `capture_missing`.
+    // The sentinel file is read once here, before any agent runs: the
+    // registry sealed at the end is this snapshot united with the file as
+    // it is then, so nothing done during the trial can shrink it.
+    let capture = match (&trial.capture, http) {
+        (Some((plan, _)), Some(http)) if competitor.is_none() => {
+            let snapshot = crate::toolvalues::read_sentinels(&plan.sentinels).ok();
+            crate::capture::start(&mcp_url, http, scratch)
+                .await
+                .ok()
+                .map(|running| (running, snapshot))
+        }
+        _ => None,
+    };
+    let agent_mcp_url = capture
+        .as_ref()
+        .map_or_else(|| mcp_url.clone(), |(c, _)| c.mcp_url.clone());
 
     // Provision, then the scenario's barriers — all before any agent.
     let ids = identities(trial_id, task.agent_count);
@@ -2803,7 +2841,7 @@ async fn run_body(
     for (index, id) in ids.iter().enumerate() {
         let vars = PromptVars {
             app_url: &app_url,
-            mcp_url: &mcp_url,
+            mcp_url: &agent_mcp_url,
             identity: &id.identity,
             inbox: &id.inbox,
         };
@@ -2825,13 +2863,16 @@ async fn run_body(
         dirs.apply(&mut cmd);
         cmd.env(ENV_TASK, &task.id)
             .env(ENV_APP_URL, &app_url)
-            .env(ENV_MCP_URL, &mcp_url)
+            .env(ENV_MCP_URL, &agent_mcp_url)
             .env(ENV_IDENTITY, &id.identity)
             .env(ENV_INBOX, &id.inbox)
             .env(ENV_GOAL, &prompt)
             .env(ENV_PROMPT_FILE, &prompt_file)
             .env(ENV_DEADLINE_MS, task.deadline_ms.to_string())
             .env("PWD", &workdir);
+        if let Some((c, _)) = &capture {
+            cmd.env(crate::toolvalues::ENV_CAPTURE_SOCKET, &c.socket);
+        }
         if let (Some(plan), Some((server, tools))) = (competitor, &surface) {
             cmd.env(crate::wrappers::ENV_MCP_SERVER, server)
                 .env(crate::wrappers::ENV_MCP_TOOLS, tools)
@@ -2912,6 +2953,16 @@ async fn run_body(
         .zip(&statuses)
         .map(|(id, s)| exit_of(&id.identity, *s))
         .collect();
+    // Every agent group is reaped: no request of the trial is still to come.
+    // Seal the registry now, with every literal issued, and leave it beside
+    // the observations for the runner to write once the row is final.
+    if let (Some((running, snapshot)), Some((plan, sink))) = (capture, &trial.capture) {
+        // A sentinel file unreadable at either end poisons the registry:
+        // the trial's values are then absent (`registry_unavailable`).
+        let registry =
+            crate::toolvalues::sealed_registry(&admin.secret, snapshot.as_deref(), &plan.sentinels);
+        *sink.lock().unwrap_or_else(|e| e.into_inner()) = Some((running.stop(), registry));
+    }
     if spawn_failed {
         return Err("agent_spawn".into());
     }
@@ -3145,7 +3196,9 @@ async fn run_admitted_trial(
         "swarmail-evals: seed={} fixture_time={}",
         req.fixture.seed, req.fixture.fixture_time
     );
-    let (mut row, snap) = execute_trial(&mut req, swarmail_bin, id, admission.clone()).await;
+    let sink: Option<CaptureSink> = req.capture.as_ref().map(|_| Arc::default());
+    let (mut row, snap) =
+        execute_trial(&mut req, swarmail_bin, id, admission.clone(), sink.clone()).await;
     if req
         .target_build
         .as_ref()
@@ -3155,6 +3208,9 @@ async fn run_admitted_trial(
         row.failure_class = Some(FailureClass::HarnessError);
     }
     let row = finalize(&req, row, snap.as_ref());
+    if let (Some(plan), Some(sink)) = (&req.capture, &sink) {
+        write_value_capture(plan, sink, &row);
+    }
     #[cfg(test)]
     if let Some(dir) = std::env::var_os("EVAL_TEST_FINALIZE_HOLD_DIR").map(PathBuf::from) {
         std::fs::write(dir.join("finalized"), &row.trial_id).unwrap();
@@ -3163,6 +3219,25 @@ async fn run_admitted_trial(
         }
     }
     row
+}
+
+/// Seal the trial's capture against its registry and the final row, and
+/// leave the private record under the plan's root. A trial whose capture
+/// never started leaves nothing: the report names it `capture_missing`. A
+/// failed write is a diagnostic and never changes the row (0119 §4: values
+/// are never scored).
+fn write_value_capture(plan: &CapturePlan, sink: &CaptureSink, row: &TrialResult) {
+    let sealed = sink.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let Some((capture, registry)) = sealed else {
+        return;
+    };
+    let record = capture.seal(&row.trial_id, &registry, &crate::toolvalues::row_bytes(row));
+    if crate::artifacts::resolve_root(&plan.root)
+        .and_then(|root| crate::toolvalues::write_capture(&root, &record))
+        .is_err()
+    {
+        eprintln!("swarmail-evals: harness error: tool_capture_write_failed");
+    }
 }
 
 pub fn finalize(req: &TrialRequest, mut row: TrialResult, snap: Option<&Snapshot>) -> TrialResult {
@@ -3189,6 +3264,7 @@ async fn execute_trial(
     swarmail_bin: Option<PathBuf>,
     trial_id: String,
     admission: Arc<crate::admission::Admission>,
+    sink: Option<CaptureSink>,
 ) -> (TrialResult, Option<Snapshot>) {
     let (task, label) = match validate_request(req) {
         Ok(v) => v,
@@ -3252,6 +3328,7 @@ async fn execute_trial(
         let started = started.clone();
         let target_capture = target_capture.clone();
         let provenance = captured.clone();
+        let capture_owner = req.capture.clone().zip(sink.clone());
         let (task, label, argv, trial_id, scratch_owner, groups, agents) = (
             task.clone(),
             label.clone(),
@@ -3269,6 +3346,7 @@ async fn execute_trial(
                 agents,
                 diagnostics: Vec::new(),
                 bridge: None,
+                capture: capture_owner,
             };
             let mut exits = Vec::new();
             let mut snap = None;
@@ -5351,6 +5429,34 @@ wait "$child"
         assert_eq!(status.signal(), Some(libc::SIGTERM));
         assert!(!dir.path().join("agent-pids").exists());
         assert!(probe.finish().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod capture_write_tests {
+    use super::*;
+
+    #[test]
+    fn a_capture_that_never_started_leaves_no_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::artifacts::resolve_root(dir.path()).unwrap();
+        let plan = CapturePlan {
+            root: root.clone(),
+            sentinels: root.join("absent.json"),
+        };
+        let row = refused_row(&TrialRequest::default(), &"1".repeat(32));
+        // The sink is empty when the capture never started: nothing is
+        // written, and the report then names the trial capture_missing.
+        let never: CaptureSink = Arc::default();
+        write_value_capture(&plan, &never, &row);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        // A started one leaves its record under the root.
+        let started: CaptureSink = Arc::new(Mutex::new(Some((
+            crate::toolvalues::Capture::new(Default::default()),
+            crate::toolvalues::Registry::new(),
+        ))));
+        write_value_capture(&plan, &started, &row);
+        assert!(crate::toolvalues::read_capture(&root, &row.trial_id).is_some());
     }
 }
 
