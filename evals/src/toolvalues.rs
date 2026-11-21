@@ -930,30 +930,21 @@ fn percent_fixed(s: &str) -> Option<String> {
 /// The registry a trial seals with: the fixture admin bearer, the
 /// sentinels `snapshot` read from the operator's file when the trial's
 /// capture started, and every sentinel the file holds now. It only grows
-/// during a trial: a sentinel removed from the file stays registered, one
-/// added is honoured, and a file that has become unreadable or malformed
-/// keeps the snapshot (the second value is then `true`, for the caller to
-/// record). A snapshot that could not be taken leaves the registry unusable
-/// (`registry_unavailable`).
-pub fn sealed_registry(
-    bearer: &str,
-    snapshot: Option<&[String]>,
-    sentinels: &Path,
-) -> (Registry, bool) {
+/// during a trial: a sentinel removed from the file stays registered and
+/// one added is honoured. It fails closed: a snapshot that could not be
+/// taken, or a file that has become unreadable or malformed by seal (a
+/// late sentinel may be in it), leaves the registry unusable and the
+/// trial's values absent (`registry_unavailable`).
+pub fn sealed_registry(bearer: &str, snapshot: Option<&[String]>, sentinels: &Path) -> Registry {
     let mut r = Registry::new();
     r.register(bearer);
-    let Some(snapshot) = snapshot else {
-        r.poison();
-        return (r, false);
-    };
-    snapshot.iter().for_each(|s| r.register(s));
-    match read_sentinels(sentinels) {
-        Ok(now) => {
-            now.iter().for_each(|s| r.register(s));
-            (r, false)
+    match (snapshot, read_sentinels(sentinels)) {
+        (Some(snapshot), Ok(now)) => {
+            snapshot.iter().chain(&now).for_each(|s| r.register(s));
         }
-        Err(_) => (r, true),
+        _ => r.poison(),
     }
+    r
 }
 
 /// Read a sentinel file: a JSON array of at most [`REGISTRY_LITERALS`]

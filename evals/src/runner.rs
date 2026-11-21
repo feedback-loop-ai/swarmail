@@ -2957,13 +2957,10 @@ async fn run_body(
     // Seal the registry now, with every literal issued, and leave it beside
     // the observations for the runner to write once the row is final.
     if let (Some((running, snapshot)), Some((plan, sink))) = (capture, &trial.capture) {
-        let (registry, went_unreadable) =
+        // A sentinel file unreadable at either end poisons the registry:
+        // the trial's values are then absent (`registry_unavailable`).
+        let registry =
             crate::toolvalues::sealed_registry(&admin.secret, snapshot.as_deref(), &plan.sentinels);
-        if went_unreadable {
-            eprintln!(
-                "swarmail-evals: tool_sentinels_unreadable_at_seal: the trial-start snapshot is kept"
-            );
-        }
         *sink.lock().unwrap_or_else(|e| e.into_inner()) = Some((running.stop(), registry));
     }
     if spawn_failed {

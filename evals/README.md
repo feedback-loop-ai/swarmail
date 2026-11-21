@@ -760,9 +760,9 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   the sentinels read from `--tool-sentinels` when the trial's capture started,
   and every sentinel the file holds at seal. The registry only grows: a
   sentinel removed from the file during the trial stays registered, one added
-  is honoured, and a file that has become unreadable or malformed by then
-  keeps the start snapshot (stderr says `tool_sentinels_unreadable_at_seal`).
-  A file unreadable at trial start leaves the trial `registry_unavailable`. Every string and member name is masked
+  is honoured. It fails closed: a file unreadable or malformed at trial
+  start or at seal (a late sentinel may be in the broken file) leaves the
+  trial `registry_unavailable`, never the snapshot alone. Every string and member name is masked
   (`[REDACTED]`), including escaped, percent-encoded and nested-JSON
   spellings: each complete `%XX` escape is decoded wherever it stands (a
   malformed one beside it hides nothing), `+` is also read as a space (form
