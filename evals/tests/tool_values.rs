@@ -38,7 +38,27 @@ fn files_under(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Every written byte under `roots`, plus `streams`, holds none of `canaries`.
+/// The encoded spellings of each literal the canary search also looks for:
+/// base64 (padded and not), base64url, hex, decimal and hex HTML entities.
+/// Case-folded spellings are caught by the search itself, which ignores
+/// ASCII case.
+fn spellings_of(literals: &[&str]) -> Vec<String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE_NO_PAD};
+    let mut out = Vec::new();
+    for l in literals {
+        out.push(STANDARD.encode(l));
+        out.push(STANDARD_NO_PAD.encode(l));
+        out.push(URL_SAFE_NO_PAD.encode(l));
+        out.push(l.bytes().map(|b| format!("{b:02x}")).collect());
+        out.push(l.bytes().map(|b| format!("&#{b};")).collect());
+        out.push(l.bytes().map(|b| format!("&#x{b:x};")).collect());
+    }
+    out
+}
+
+/// Every written byte under `roots`, plus `streams`, holds none of
+/// `canaries`, compared ignoring ASCII case.
 fn assert_clean(roots: &[&Path], streams: &[&[u8]], canaries: &[&str]) -> usize {
     let mut files = Vec::new();
     for root in roots {
@@ -48,7 +68,10 @@ fn assert_clean(roots: &[&Path], streams: &[&[u8]], canaries: &[&str]) -> usize 
             files_under(root, &mut files);
         }
     }
-    let found = |bytes: &[u8], c: &str| bytes.windows(c.len()).any(|w| w == c.as_bytes());
+    let found = |bytes: &[u8], c: &str| {
+        let (bytes, c) = (bytes.to_ascii_lowercase(), c.to_ascii_lowercase());
+        bytes.windows(c.len()).any(|w| w == c.as_bytes())
+    };
     for file in &files {
         let bytes = std::fs::read(file).unwrap();
         for c in canaries {
@@ -201,6 +224,7 @@ fn values_are_redacted_bound_and_never_scored() {
     probe_env.push(("EVAL_TEST_LATE_SENTINEL", late.as_str()));
     let probe = agent("probe", "tool_values", &private, &probe_env);
     let planted = agent("planted", "tool_values_planted", &private, &env);
+    let encoded = agent("encoded", "tool_values_encoded", &private, &env);
     let agents = private.join("agents.json");
     std::fs::write(
         &agents,
@@ -208,6 +232,7 @@ fn values_are_redacted_bound_and_never_scored() {
             {"label": "oracle", "argv": []},
             {"label": "null", "argv": []},
             {"label": planted.label, "argv": [planted.wrapper]},
+            {"label": encoded.label, "argv": [encoded.wrapper]},
             {"label": probe.label, "argv": [probe.wrapper]},
         ])
         .to_string(),
@@ -226,7 +251,7 @@ fn values_are_redacted_bound_and_never_scored() {
         .unwrap();
     let rows = swarmail_evals::report::parse_rows(&String::from_utf8_lossy(&matrix.stdout))
         .unwrap_or_else(|e| panic!("{e}\n{}", stderr(&matrix)));
-    assert_eq!(rows.len(), 4, "{}", stderr(&matrix));
+    assert_eq!(rows.len(), 5, "{}", stderr(&matrix));
     let by = |label: &str| {
         rows.iter()
             .find(|r| r.agent.as_deref() == Some(label))
@@ -235,7 +260,7 @@ fn values_are_redacted_bound_and_never_scored() {
     // The controls keep their verdicts with capture on; the probe makes
     // calls and solves nothing.
     assert_eq!(by("oracle").outcome, Outcome::Pass);
-    for label in ["null", "probe", "planted"] {
+    for label in ["null", "probe", "planted", "encoded"] {
         assert_eq!(
             by(label).outcome,
             Outcome::Fail,
@@ -249,11 +274,25 @@ fn values_are_redacted_bound_and_never_scored() {
         serde_json::from_slice(&std::fs::read(a.marker.with_extension("calls")).unwrap()).unwrap()
     };
     let bearer = |a: &Agent| std::fs::read_to_string(a.marker.with_extension("bearer")).unwrap();
-    let (probe_bearer, planted_bearer) = (bearer(&probe), bearer(&planted));
+    let (probe_bearer, planted_bearer, encoded_bearer) =
+        (bearer(&probe), bearer(&planted), bearer(&encoded));
     assert_ne!(
         probe_bearer, planted_bearer,
         "each trial has its own bearer"
     );
+    // Deny by default still yields evidence: the oracle's own synthetic
+    // arguments (its real MCP calls) pass the plain-shape check whole.
+    let oracle_capture =
+        swarmail_evals::toolvalues::read_capture(&captures, &by("oracle").trial_id).unwrap();
+    match &oracle_capture.outcome {
+        swarmail_evals::toolvalues::CaptureOutcome::Complete { calls } => {
+            assert!(!calls.is_empty(), "the oracle made calls");
+            for c in calls {
+                assert!(swarmail_evals::toolvalues::plain(&c.value), "{}", c.value);
+            }
+        }
+        other => panic!("the oracle's arguments were withheld: {other:?}"),
+    }
     let rows_path = out.join("rows.jsonl");
     std::fs::write(&rows_path, &matrix.stdout).unwrap();
     let facts = facts_file(
@@ -262,6 +301,7 @@ fn values_are_redacted_bound_and_never_scored() {
         vec![
             facts_for(by("probe"), &calls(&probe)),
             facts_for(by("planted"), &calls(&planted)),
+            facts_for(by("encoded"), &calls(&encoded)),
         ],
     );
 
@@ -305,7 +345,13 @@ fn values_are_redacted_bound_and_never_scored() {
     assert_eq!(index[&id("oracle")], json!({"absent": "builtin_agent"}));
     assert_eq!(index[&id("null")], json!({"absent": "builtin_agent"}));
     assert_eq!(index[&id("planted")], json!({"absent": "residual_secret"}));
-    assert!(!e2.join(id("planted")).join("tool-values.json").exists());
+    assert_eq!(
+        index[&id("encoded")],
+        json!({"absent": "invalid_argument_encoding"})
+    );
+    for label in ["planted", "encoded"] {
+        assert!(!e2.join(id(label)).join("tool-values.json").exists());
+    }
 
     // The probe's companion: whole, ordered, redacted and bound.
     let leaf = e2.join(id("probe"));
@@ -357,7 +403,7 @@ fn values_are_redacted_bound_and_never_scored() {
     let classes = tindex["classes"].as_array().unwrap();
     let total: u64 = classes.iter().map(|c| c["total"].as_u64().unwrap()).sum();
     assert_eq!(
-        total, 3,
+        total, 4,
         "every failing row is counted before the evidence filter"
     );
     let picked: Vec<&Value> = classes
@@ -383,7 +429,7 @@ fn values_are_redacted_bound_and_never_scored() {
             .lines()
             .filter(|l| l.starts_with("| signup |"))
             .count(),
-        4
+        5
     );
     assert!(
         page_text.contains("| probe | 1 | 0 | 1 | 0 | null (no\\_passes) | 5 |"),
@@ -392,16 +438,23 @@ fn values_are_redacted_bound_and_never_scored() {
 
     // No canary in any written byte or stream, private intermediates
     // included; each literal's tail catches its encoded spellings too.
-    let canaries = [
+    let literals = [
         probe_bearer.as_str(),
         planted_bearer.as_str(),
+        encoded_bearer.as_str(),
         sentinel.as_str(),
         number.as_str(),
         late.as_str(),
+    ];
+    let spellings = spellings_of(&literals);
+    let mut canaries: Vec<&str> = literals.to_vec();
+    canaries.extend([
         &probe_bearer[1..],
         &planted_bearer[1..],
+        &encoded_bearer[1..],
         &sentinel[1..],
-    ];
+    ]);
+    canaries.extend(spellings.iter().map(String::as_str));
     let searched = assert_clean(
         &[&realm, &out],
         &[
@@ -432,7 +485,7 @@ fn values_are_redacted_bound_and_never_scored() {
         .output()
         .unwrap();
     assert_eq!(replay.status.code(), Some(1), "{}", stderr(&replay));
-    assert_eq!(String::from_utf8_lossy(&replay.stdout).lines().count(), 4);
+    assert_eq!(String::from_utf8_lossy(&replay.stdout).lines().count(), 5);
 
     // Corrupt, missing and mismatched inputs change only the value index.
     let rerun = |name: &str, facts: &Path| {

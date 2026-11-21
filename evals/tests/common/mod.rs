@@ -511,8 +511,8 @@ async fn helper(mode: &str) -> i32 {
         return cross_trial_probe().await;
     }
     #[cfg(target_os = "linux")]
-    if mode == "tool_values" || mode == "tool_values_planted" {
-        return tool_values(mode == "tool_values_planted").await;
+    if let Some(variant) = mode.strip_prefix("tool_values") {
+        return tool_values(variant).await;
     }
     let env = AgentEnv::from_env().expect("the agent environment");
     let app = App::new(&env.app_url, &env.identity).unwrap();
@@ -2134,13 +2134,18 @@ fn victim_from_argv() -> Result<Victim, String> {
 /// call's tool, length and digest go to `<marker>.calls`, the bearer to
 /// `<marker>.bearer`: the test's own journal stand-in and canary. In
 /// `tool_values_planted` one argument holds the numeric sentinel in a
-/// number's spelling, which no mask can redact. With
+/// number's spelling, which no mask can redact, and another the bearer in
+/// upper and mixed case (`residual_secret`). In `tool_values_encoded` the
+/// bearer and the sentinel go base64, base64url and entity-encoded
+/// (`invalid_argument_encoding`). With
 /// `EVAL_TEST_SENTINELS_FILE` and `EVAL_TEST_LATE_SENTINEL` set, the probe
 /// first rewrites the operator's sentinel file to hold only the late
 /// sentinel (removing the ones registered at trial start) and then sends
 /// both: the registry must only grow.
 #[cfg(target_os = "linux")]
-async fn tool_values(planted: bool) -> i32 {
+async fn tool_values(variant: &str) -> i32 {
+    let planted = variant == "_planted";
+    let encoded = variant == "_encoded";
     use std::io::{BufRead, Write};
     use swarmail_evals::provenance::sha256;
     let marker = marker().unwrap();
@@ -2206,7 +2211,31 @@ async fn tool_values(planted: bool) -> i32 {
             env.inbox
         ),
         if planted {
-            format!("{{\"inbox\":\"{}\",\"limit\":{number}0}}", env.inbox)
+            let mixed: String = bearer
+                .chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    if i % 2 == 0 {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c.to_ascii_lowercase()
+                    }
+                })
+                .collect();
+            format!(
+                "{{\"inbox\":\"{}\",\"limit\":{number}0,\"subject\":\"{} {mixed}\"}}",
+                env.inbox,
+                bearer.to_ascii_uppercase()
+            )
+        } else if encoded {
+            use base64::Engine as _;
+            use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+            format!(
+                "{{\"inbox\":\"{}\",\"subject\":\"{} {}\"}}",
+                env.inbox,
+                STANDARD.encode(&bearer),
+                URL_SAFE_NO_PAD.encode(&sentinel)
+            )
         } else {
             format!(
                 "{{\"inbox\":\"{}\",\"subject\":\"\\\"quoted\\\" {sentinel}{late}\"}}",
@@ -2271,9 +2300,16 @@ async fn tool_values(planted: bool) -> i32 {
             sentinel.as_bytes()[0],
             &sentinel[1..]
         ),
-        format!(
-            "{{ \"method\" : \"POST\", \"path\": \"/login\", \"body\": {{\"email\": \"caf\\u0065@x\", \"password\": \"{sentinel}\", \"note\": \"ok\\u0021\"}} }}"
-        ),
+        if encoded {
+            let entity: String = bearer.bytes().map(|b| format!("&#x{b:x};")).collect();
+            format!(
+                "{{\"method\":\"POST\",\"path\":\"/login\",\"body\":{{\"password\":\"{entity}\"}}}}"
+            )
+        } else {
+            format!(
+                "{{ \"method\" : \"POST\", \"path\": \"/login\", \"body\": {{\"email\": \"caf\\u0065@x\", \"password\": \"{sentinel}\", \"note\": \"ok\\u0021\"}} }}"
+            )
+        },
     ];
     for (i, args) in http_args.iter().enumerate() {
         let reply = rpc(format!(
