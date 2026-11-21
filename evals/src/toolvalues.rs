@@ -1808,17 +1808,22 @@ pub fn tokens_figure(group: &Value) -> (Option<f64>, &'static str) {
 /// The private Markdown page rendered from the report's group objects.
 pub fn render_page(report: &Value) -> String {
     let mut out = String::from(
-        "# Eval report\n\nTokens per success is the scored attempts' input plus output tokens over their passes (decision 0119 §3); cached tokens are reported beside it, never added. A figure that cannot be computed is `null` with its reason, never a dash or a zero.\n\n| task | agent | attempts | passes | fails | harness errors | tokens per success | cached tokens |\n|---|---|---|---|---|---|---|---|\n",
+        "# Eval report\n\nTokens per success is the scored attempts' input plus output tokens over their passes (decision 0119 §3); cached tokens are reported beside it, never added. A figure that cannot be computed is `null` with its reason, never a dash or a zero; the cached count carries the same reason, and is shown only when the group's token facts were joined whole.\n\n| task | agent | attempts | passes | fails | harness errors | tokens per success | cached tokens |\n|---|---|---|---|---|---|---|---|\n",
     );
     for g in report["groups"].as_array().into_iter().flatten() {
         let text = |v: &Value| escape_cell(v.as_str().unwrap_or("(none)"));
-        let figure = match tokens_figure(g) {
-            (Some(v), _) => format!("{v}"),
-            (None, reason) => format!("null ({})", escape_cell(reason)),
-        };
+        let (value, reason) = tokens_figure(g);
+        let null = |reason: &str| format!("null ({})", escape_cell(reason));
+        let figure = value.map_or_else(|| null(reason), |v| format!("{v}"));
+        // The cached sum is shown only when the group's token facts were
+        // joined whole: a figure, or `no_passes` with a journal. Otherwise
+        // it is `null` with the same reason as the figure beside it, never
+        // a partial sum and never a bare `null`.
+        let whole = g.get("journal").is_some() && (value.is_some() || reason == "no_passes");
         let cached = match g["journal"]["tokens"]["cached"]["sum"].as_u64() {
-            Some(n) => n.to_string(),
-            None => "null".into(),
+            Some(n) if whole => n.to_string(),
+            _ if whole => null("incomplete_join"),
+            _ => null(reason),
         };
         out.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} | {} | {} |\n",

@@ -612,9 +612,17 @@ fn the_page_gives_every_paid_group_a_figure_or_its_reason() {
     let out = report(&rows_path, &["--page".as_ref(), bare.as_os_str()]);
     assert!(out.status.success(), "{}", stderr(&out));
     let page = std::fs::read_to_string(&bare).unwrap();
-    assert!(line(&page, "claude-a").ends_with("| null (incomplete\\_join) | null |"));
-    assert!(line(&page, "only-errors").ends_with("| 0 | 0 | 1 | null (no\\_passes) | null |"));
-    assert!(line(&page, "oracle").ends_with("| null (builtin\\_agent) | null |"));
+    // The cached cell carries the same reason: without a journal nothing
+    // was joined, so no cached count either.
+    assert!(
+        line(&page, "claude-a")
+            .ends_with("| null (incomplete\\_join) | null (incomplete\\_join) |")
+    );
+    assert!(
+        line(&page, "only-errors")
+            .ends_with("| 0 | 0 | 1 | null (no\\_passes) | null (no\\_passes) |")
+    );
+    assert!(line(&page, "oracle").ends_with("| null (builtin\\_agent) | null (builtin\\_agent) |"));
     // The stdout report is the same bytes as without the page.
     assert_eq!(out.stdout, report(&rows_path, &[]).stdout);
     // With the golden journal: a number with its cached count, and reasons.
@@ -637,7 +645,7 @@ fn the_page_gives_every_paid_group_a_figure_or_its_reason() {
         "{page}"
     );
     assert!(
-        line(&page, "codex-b").ends_with("| null (incomplete\\_join) | 0 |"),
+        line(&page, "codex-b").ends_with("| null (incomplete\\_join) | null (incomplete\\_join) |"),
         "{page}"
     );
     assert!(
@@ -650,7 +658,7 @@ fn the_page_gives_every_paid_group_a_figure_or_its_reason() {
     );
     // A built-in group keeps its own reason with a journal joined too.
     assert!(
-        line(&page, "oracle").ends_with("| null (builtin\\_agent) | null |"),
+        line(&page, "oracle").ends_with("| null (builtin\\_agent) | null (builtin\\_agent) |"),
         "{page}"
     );
     for l in page.lines().filter(|l| l.starts_with("| signup |")) {

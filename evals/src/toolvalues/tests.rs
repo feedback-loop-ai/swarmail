@@ -1320,11 +1320,15 @@ fn cells_are_escaped_and_figures_never_dash() {
          "journal":{"tokens_per_success":null,"tokens_per_success_reason":"sum_overflow"}}
     ]}));
     assert!(
-        page.contains("| signup | d | 2 | 2 | 0 | 0 | null (sum\\_overflow) | null |"),
+        page.contains(
+            "| signup | d | 2 | 2 | 0 | 0 | null (sum\\_overflow) | null (sum\\_overflow) |"
+        ),
         "{page}"
     );
     assert!(
-        page.contains("| signup | a\\|b | 1 | 0 | 1 | 0 | null (incomplete\\_join) | null |"),
+        page.contains(
+            "| signup | a\\|b | 1 | 0 | 1 | 0 | null (incomplete\\_join) | null (incomplete\\_join) |"
+        ),
         "{page}"
     );
     assert!(
