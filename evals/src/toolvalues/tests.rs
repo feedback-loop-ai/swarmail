@@ -910,6 +910,9 @@ fn binding_follows_the_structural_sequence_exactly() {
     assert_eq!(comp.calls.len(), 3);
     assert_eq!(comp.calls[1]["value"], Value::Null);
     assert_eq!(comp.calls[1]["owned"], false);
+    // A name the journal alone supplies is published only as its digest.
+    assert_eq!(comp.calls[1]["tool"], format!("sha256:{}", sha256(b"Bash")));
+    assert_eq!(comp.calls[0]["tool"], "mcp__swarmail__swarmail_get_email");
     assert_eq!(comp.calls[2]["value"]["path"], "/");
     // Order, count, digest, length and identity each refuse.
     let mut bad: Vec<Vec<ToolCall>> = vec![
@@ -1327,6 +1330,25 @@ fn a_companion_is_published_whole_or_absent_with_its_reason() {
         .collect();
     let over = publish_companion(&ev, &caps, &facts(4, calls), &entry);
     assert_eq!(reason(over), "trial_too_large");
+    assert_eq!(
+        serde_json::from_slice::<Value>(
+            &std::fs::read(ev.join(id(1)).join(COMPANION_FILE)).unwrap()
+        )
+        .unwrap()["run_id"],
+        "run-1"
+    );
+    // A run id that is not plain is withheld, the companion kept.
+    setup(7, whole, &[args]);
+    let mut odd = facts(7, vec![call(1, "eval_http", args)]);
+    odd.run_id = format!("run-{}", "Q".repeat(OPAQUE_RUN_LIMIT));
+    assert!(matches!(
+        publish_companion(&ev, &caps, &odd, &entry),
+        Disposition::Published(..)
+    ));
+    let published: Value =
+        serde_json::from_slice(&std::fs::read(ev.join(id(7)).join(COMPANION_FILE)).unwrap())
+            .unwrap();
+    assert_eq!(published["run_id"], Value::Null);
     // A present, verified zero-call sequence: a nonempty envelope, bound.
     setup(6, whole, &[]);
     let zero = publish_companion(&ev, &caps, &facts(6, vec![]), &entry);

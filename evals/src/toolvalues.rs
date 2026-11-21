@@ -1406,7 +1406,11 @@ pub struct Companion {
 /// Bind a capture to the journal's structural sequence. Every journal call
 /// a harness-owned name denotes must meet the next captured call with the
 /// same server, tool, length and digest, and no captured call may be left
-/// over. A call to any other tool is kept structural, with a `null` value.
+/// over. A call to any other tool is kept structural, with a `null` value
+/// and its name published only as `sha256:<hex>`: the name is the
+/// journal's free text, which no live registry checked. An owned name is
+/// published as written: a fixed server prefix and separator around a tool
+/// the runner's catalogue (or `eval_http`) names.
 pub fn bind(structural: &[ToolCall], record: &CaptureRecord) -> Result<Companion, Refusal> {
     let calls = match &record.outcome {
         CaptureOutcome::Refused { reason } => return Err(*reason),
@@ -1433,7 +1437,10 @@ pub fn bind(structural: &[ToolCall], record: &CaptureRecord) -> Result<Companion
         out.push(
             serde_json::to_value(CompanionCall {
                 ordinal: call.ordinal,
-                tool: journal::bounded_tool_name(&call.tool),
+                tool: match owned {
+                    Some(_) => journal::bounded_tool_name(&call.tool),
+                    None => format!("sha256:{}", sha256(call.tool.as_bytes())),
+                },
                 owned: owned.is_some(),
                 argument_bytes: call.argument_bytes,
                 argument_sha256: &call.argument_sha256,
@@ -1510,10 +1517,13 @@ pub fn publish_companion(
         Some(false) => return absent(Refusal::TrialTooLarge),
         None => return absent(Refusal::EvidenceWriteFailed),
     }
+    // The run id is the journal's free text: published only when plain,
+    // otherwise withheld as `null`.
+    let run_id = plain(&facts.run_id).then_some(facts.run_id.as_str());
     let doc = json!({
         "schema_version": 1,
         "trial_id": facts.trial_id,
-        "run_id": facts.run_id,
+        "run_id": run_id,
         "structural": structural,
         "redaction": {"mask": MASK, "registry_literals": record.registry_literals},
         "model_text": "not_retained",
