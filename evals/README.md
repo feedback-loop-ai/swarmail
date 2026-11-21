@@ -736,8 +736,8 @@ are ever copied** into that record (accepted 0075 §4). The value-bearing mode
 
 ```bash
 # capture during the trials: a fresh private root (it must not exist) and the
-# sentinel literals (a JSON array of strings) redacted beside each trial's
-# fixture admin bearer
+# sentinel literals (a JSON array of strings, each at least 32 bytes) redacted
+# beside each trial's fixture admin bearer
 $E matrix --brokkr "$B" --tasks signup --agents agents.json --trials 1 \
   --artifacts-dir "$PWD/art" --capture-tool-values "$PWD/captures" \
   --tool-sentinels "$PWD/sentinels.json" > rows.jsonl
@@ -750,7 +750,9 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
 - **What is kept.** The argument values of Swarmail's MCP `tools/call`s and of
   the fixture's `eval_http`, nothing else: no result bytes, no prompt, no raw
   CLI output, no model text and no reasoning. Calls to any other tool (a CLI's
-  built-ins) stay structural, with `"value": null`.
+  built-ins) stay structural, with `"value": null`, and their names, which
+  only the journal supplies, are published as `sha256:<hex>`. The run id is
+  published only when it has the plain shape below, otherwise as `null`.
 - **Where it is captured.** In the trial, while the harness still holds the
   secrets. Agents reach Swarmail through a trial-local loopback forwarder that
   passes requests and replies unchanged (the runner's own provisioning calls
@@ -762,28 +764,48 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   sentinel removed from the file during the trial stays registered, one added
   is honoured. It fails closed: a file unreadable or malformed at trial
   start or at seal (a late sentinel may be in the broken file) leaves the
-  trial `registry_unavailable`, never the snapshot alone. Every string and member name is masked
-  (`[REDACTED]`), including escaped, percent-encoded and nested-JSON
-  spellings: each complete `%XX` escape is decoded wherever it stands (a
-  malformed one beside it hides nothing), `+` is also read as a space (form
-  encoding; both readings are searched, and the `+` reading is refused as
-  `residual_secret`, not masked), and JSON and percent layers are
-  undone alternately, over bytes, to a fixed point; a percent decoding that
-  never settles within 32 layers or is not UTF-8 is refused, never masked.
-  The re-encoding is re-parsed and every layer searched again. An original
-  value or name that already spells `[REDACTED]`, directly or in any of
-  those decodings (`%5BREDACTED%5D`, double-encoded, inside a nested JSON
-  string), is refused whether or not a literal is also in it, so a mask
-  always means a redaction. A sentinel that is a JSON number (`150`) is
-  also found by value: a JSON number of equal value in any spelling
-  (`1.5e2`, `15.0e1`), or a decimal number of equal value anywhere in a
-  string, in any of those layers, is refused (`residual_secret`), since
-  only the registered spelling can be masked as text. **These are the only
-  spellings searched:** raw, JSON-escaped, `%XX` (with `+` as a space) and
-  nested JSON, plus a numeric sentinel's value. Base64, HTML entities, other
-  character encodings, case changes and any other transformation are not
-  decoded, so a sentinel spelled that way is published. Choose sentinels an
-  agent would only send in a supported spelling. Only the
+  trial `registry_unavailable`, never the snapshot alone.
+
+  **Deny by default** (operator ruling, 2026-11-21): a value is published only when it is provably plain, and
+  the whole trial's record is withheld otherwise. Over-refusal is the
+  accepted cost: the mode may withhold evidence, and it must never publish
+  the bearer or a registered sentinel in any spelling. In order:
+  - **Masking.** Every registered literal is masked (`[REDACTED]`) in
+    every string and member name, in its raw, JSON-escaped, `%XX` (each
+    complete escape wherever it stands, to a fixed point; `+` also read as a
+    space) and nested-JSON spellings. A percent decoding that never settles
+    within 32 layers or is not UTF-8 is refused. An original value or name
+    that already spells `[REDACTED]` in any of those decodings is refused,
+    so a mask always means a redaction.
+  - **The plain shape.** After masking, every published name, string and
+    number spelling must be printable ASCII (0x20 to 0x7E: no control
+    character, and no non-ASCII letter such as a fullwidth or look-alike
+    one that could stand for an ASCII character). It must hold no
+    backslash (so no `\u` or `\x` escape survives decoding), no complete
+    `%XX` escape, no `&...;` HTML or XML entity, and no run of 37 or more
+    base64, base64url, base32 or hex alphabet characters (`A-Z a-z 0-9 +
+    / = _ -`). Anything else is `invalid_argument_encoding`. The run limit
+    of 37 is the least that still publishes the fixture's own opaque data:
+    a Swarmail message id (a UUID) runs to 36, mailed tokens to 24,
+    passwords to 16 and codes to 6. Any such encoding of a literal of 32
+    bytes or more holds a run of at least 40 (base64: 4 * floor((32 - 2) /
+    3)), and the admin bearer is 32 characters.
+  - **Residual literals.** No literal may survive in any decoded layer,
+    compared ignoring ASCII case, so an upper- or mixed-case bearer is
+    `residual_secret`. A sentinel that is a JSON number is also found by
+    value: a number of equal value in any spelling (`1.5e2`, `.5`, `5.e-1`),
+    in a value or anywhere in a string, is refused, and so is a number whose
+    digits contain the sentinel's digits.
+  - **Sentinels.** `--tool-sentinels` must hold sentinels of at least 32
+    bytes each, so every encoding the run limit guards is long enough to be
+    caught; a shorter one makes the file unusable (`tool_sentinels_unreadable`
+    before the matrix, `registry_unavailable` in a trial).
+  - **What no check can see.** A literal split across fields or calls, or
+    re-encoded into ordinary-looking text (one character per word, say), is
+    not detected by any shape check. The mode's protection there rests on
+    accepted 0075 §9, which leaves hostile same-user activity out of the
+    privacy boundary.
+  Only the Only the
   redacted record, or a closed refusal, is written to
   `captures/<trial_id>/capture.json` (0600 under 0700, bound by `manifest.json`).
   Original bytes never reach a disk.
@@ -816,7 +838,8 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   256 calls or 65536 original bytes, a companion over 65536 bytes, a cut
   structural record, or the forwarder's connection or request cap exceeded), `invalid_argument_encoding` (not strict UTF-8 JSON,
   duplicate or mask-colliding names, a value already spelling the mask, a
-  percent decoding that never settles or is not UTF-8, nesting over 32),
+  percent decoding that never settles or is not UTF-8, nesting over 32, a
+  published name, string or number that is not plain),
   `residual_secret`, `binding_mismatch`,
   `evidence_write_failed`. A trial the journal has no tool rows for keeps its
   upstream reason (`builtin_agent`, `journal_missing`, `journal_ambiguous`,
@@ -851,7 +874,11 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   `binding_mismatch`. Paid via-brokkr trials still refuse
   `driver_contract_unknown` (below), so no paid transcript exists today.
   The offline proof (`tests/tool_values.rs`) runs the stand-in with the oracle,
-  the null control and a scripted agent that leaks the bearer and sentinels.
+  the null control, a scripted agent that leaks the bearer and sentinels in
+  spellings the mask covers (its companion publishes), one that plants a
+  number and a case-changed bearer (`residual_secret`), and one that sends
+  them base64, base64url and entity-encoded (`invalid_argument_encoding`).
+  The oracle's own captured arguments pass the plain shape whole.
 
 
 **Admission posture.** The trial's own advisory admission lock lives in the
