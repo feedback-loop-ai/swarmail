@@ -2118,12 +2118,6 @@ fn victim_from_argv() -> Result<Victim, String> {
     })
 }
 
-/// AC-S1's bare helper. Given only the victim runner's PID (and nothing
-/// from the victim's own side), it finds the victim agent among that
-/// runner's descendants, reads its `EVAL_*` environment from `/proc`, and
-/// completes the victim's signup through the real MCP and the real fixture.
-/// Exit 0 means the leak is real; a nonzero code names the step that failed.
-#[cfg(target_os = "linux")]
 /// The value-capture probe agent (decision 0119 §4). It plays an agent that
 /// leaks: it reads the trial's fixture admin bearer from the fixture
 /// process's environment (same uid, Linux /proc) and sends it, the test's
@@ -2390,6 +2384,12 @@ pub fn chunked_spellings(bearer: &str, sentinel: &str) -> (String, String, Strin
     )
 }
 
+/// AC-S1's bare helper. Given only the victim runner's PID (and nothing
+/// from the victim's own side), it finds the victim agent among that
+/// runner's descendants, reads its `EVAL_*` environment from `/proc`, and
+/// completes the victim's signup through the real MCP and the real fixture.
+/// Exit 0 means the leak is real; a nonzero code names the step that failed.
+#[cfg(target_os = "linux")]
 async fn leak_signup() -> i32 {
     let Some(runner) = std::env::args()
         .find_map(|a| a.strip_prefix(VICTIM_RUNNER_ARG).map(str::to_string))
