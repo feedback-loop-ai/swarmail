@@ -773,7 +773,6 @@ fn chunked_base64_and_base32_are_found_by_decoding() {
     assert_eq!(seams, 16, "suffixes 0xf0..=0xff make the seam a '/'");
     // Near misses publish: prose, URLs, a UUID, encodings of other bytes,
     // and the fixture's routes (in deny_by_default_refuses_every_...).
-    use base64::Engine as _;
     let other = base64::engine::general_purpose::STANDARD.encode([7u8; 48]);
     for kept in [
         json!({"reply": "The export button does nothing when I click it, and the settings page never finishes loading either."}),
