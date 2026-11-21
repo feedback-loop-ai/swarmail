@@ -832,7 +832,8 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   - **Sentinels.** `--tool-sentinels` must hold at most 255 sentinels
     (the trial's bearer takes the registry's 256th slot), each of at least 32
     bytes (one that reads as a decimal number with at least 16 significant
-    digits: its digits are refused inside every number, so a sentinel such
+    digits, leading and trailing zeros not counted, so `1.` and thirty
+    zeros, the value 1, is refused: its digits are refused inside every number, so a sentinel such
     as `000...0001` would withhold every value holding a `1`), every byte printable ASCII other than `?`, so every
     encoding the run limit guards is long enough, and unbroken enough, to
     be caught; any other sentinel makes the file unusable

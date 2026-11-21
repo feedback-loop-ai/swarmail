@@ -1037,6 +1037,9 @@ fn the_registry_is_bounded_and_fails_closed() {
     for (sentinel, ok) in [
         (format!("{}1", "0".repeat(31)), false),
         (format!("{:>32}", "123456789012345"), false),
+        // Trailing zeros are not significant: the value is 1.
+        (format!("1.{}", "0".repeat(30)), false),
+        (format!("{}0000000000000000", "1234567890123456"), true),
         (format!("{}1234567890123456", "0".repeat(16)), true),
         (format!("{:>32}", "1234567890123456"), true),
     ] {

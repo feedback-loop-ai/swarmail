@@ -1276,7 +1276,9 @@ pub fn read_sentinels(path: &Path) -> Result<Vec<String>, Invalid> {
     let admitted = |s: &String| {
         s.len() >= SENTINEL_MIN_BYTES
             && s.bytes().all(|b| (0x20..=0x7e).contains(&b) && b != b'?')
-            && numeric_reading(s).is_none_or(|(_, d)| d.len() >= NUMERIC_SENTINEL_DIGITS)
+            // Significant digits as the value has them, leading and
+            // trailing zeros dropped: `1.000...0` is the value 1.
+            && numeric_reading(s).is_none_or(|(v, _)| v.digits.len() >= NUMERIC_SENTINEL_DIGITS)
     };
     if list.len() > SENTINEL_LIMIT || !list.iter().all(admitted) {
         return Err(Invalid);
