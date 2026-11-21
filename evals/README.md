@@ -880,7 +880,14 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   started while another was in flight, which includes a JSON-RPC batch with
   two or more `tools/call`s) withholds the whole trial. The
   companion carries the structural record's ordinals, lengths and digests and
-  the structural file's own binding.
+  the structural file's own binding. **What is published is what was
+  checked:** each value is the checked string spliced in byte for byte,
+  never parsed and re-encoded (so `1.50e2` stays `1.50e2`, member order and
+  integers past 64 bits are kept), and the SHA-256 of each checked string is
+  recorded at seal. After the companion's and each transcript leaf's bytes
+  are produced they are read back, and every published value must hash to
+  its recorded digest, or the trial is withheld (`binding_mismatch`; a
+  transcript leaf is skipped as `value_unverified`).
 - **Fail-closed, whole-trial.** A present tool-call fact without a published
   companion is `absent` with exactly one reason, checked in this order:
   `capture_missing`, `registry_unavailable`, `unknown_tool`, `value_too_large`
@@ -889,8 +896,9 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   structural record, or the forwarder's connection or request cap exceeded), `invalid_argument_encoding` (not strict UTF-8 JSON,
   duplicate or mask-colliding names, a value already spelling the mask, a
   percent decoding that never settles or is not UTF-8, nesting over 32, an
-  object of more than 4096 members, a published name, string or number
-  that is not plain),
+  object of more than 4096 members, a number no double can hold (`1e999`,
+  refused at seal so every published file reads in ordinary JSON parsers), a
+  published name, string or number that is not plain),
   `residual_secret`, `binding_mismatch`,
   `evidence_write_failed`. A trial the journal has no tool rows for keeps its
   upstream reason (`builtin_agent`, `journal_missing`, `journal_ambiguous`,

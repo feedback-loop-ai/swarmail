@@ -199,6 +199,7 @@ impl Node {
 struct Reader<'a> {
     b: &'a [u8],
     i: usize,
+    depth_limit: usize,
 }
 
 impl Reader<'_> {
@@ -224,7 +225,7 @@ impl Reader<'_> {
         }
     }
     fn value(&mut self, depth: usize) -> Result<Node, ()> {
-        if depth >= DEPTH_LIMIT {
+        if depth >= self.depth_limit {
             return Err(());
         }
         self.ws();
@@ -384,8 +385,18 @@ pub struct Invalid;
 
 /// Parse one whole JSON document strictly.
 pub fn parse(bytes: &[u8]) -> Result<Node, Invalid> {
+    parse_within(bytes, DEPTH_LIMIT)
+}
+
+/// [`parse`] with a nesting limit of its own: a published envelope holds a
+/// value of up to [`DEPTH_LIMIT`] levels a few levels down.
+fn parse_within(bytes: &[u8], depth_limit: usize) -> Result<Node, Invalid> {
     std::str::from_utf8(bytes).map_err(|_| Invalid)?;
-    let mut r = Reader { b: bytes, i: 0 };
+    let mut r = Reader {
+        b: bytes,
+        i: 0,
+        depth_limit,
+    };
     let node = r.value(0).map_err(|_| Invalid)?;
     r.ws();
     if r.i != bytes.len() {
@@ -692,8 +703,11 @@ impl Registry {
         if again != out {
             return Err(Refusal::InvalidArgumentEncoding);
         }
-        // Deny by default: only a provably plain value is published.
-        if !plain_value(&back.value) {
+        // Deny by default: only a provably plain value is published. A
+        // number no reader can hold (it overflows a double, `1e999`) is
+        // refused here, at seal: what is published is read by ordinary
+        // JSON parsers.
+        if !plain_value(&back.value) || !finite_numbers(&back.value) {
             return Err(Refusal::InvalidArgumentEncoding);
         }
         if self.found_folded(out.as_bytes()) || self.residual(&back.value, 0) {
@@ -1036,6 +1050,16 @@ pub fn plain(s: &str) -> bool {
         }
     }
     !(percent || entity || quoted_printable || opaque || hex_run)
+}
+
+/// Whether every number in a value is finite as a double.
+fn finite_numbers(v: &Json) -> bool {
+    match v {
+        Json::Num(n) => n.parse::<f64>().is_ok_and(f64::is_finite),
+        Json::Null | Json::Bool(_) | Json::Str(_) => true,
+        Json::Arr(items) => items.iter().all(|i| finite_numbers(&i.value)),
+        Json::Obj(members) => members.iter().all(|(_, v)| finite_numbers(&v.value)),
+    }
 }
 
 /// [`plain`] over every name, string and number spelling of a value.
@@ -1486,6 +1510,7 @@ impl Capture {
                     tool: c.tool.clone(),
                     argument_bytes: c.original.len() as u64,
                     argument_sha256: sha256(&c.original),
+                    value_sha256: sha256(value.as_bytes()),
                     value,
                 }),
                 Err(r) => worst = Some(worst.map_or(r, |w| w.min(r))),
@@ -1514,8 +1539,12 @@ pub struct CapturedCall {
     pub tool: String,
     pub argument_bytes: u64,
     pub argument_sha256: String,
-    /// The redacted, checked, canonically encoded JSON value.
+    /// The redacted, checked, canonically encoded JSON value: the exact
+    /// bytes that are published.
     pub value: String,
+    /// The SHA-256 of `value`, recorded when it was checked. A published
+    /// value must hash to it, byte for byte.
+    pub value_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1576,6 +1605,7 @@ fn valid_call(c: &CapturedCall) -> bool {
     !c.tool.is_empty()
         && c.tool.len() <= 128
         && is_hash(&c.argument_sha256)
+        && is_hash(&c.value_sha256)
         && c.argument_bytes <= VALUE_LIMIT as u64
         && c.value.len() <= VALUE_LIMIT
         && parse(c.value.as_bytes()).is_ok()
@@ -1638,6 +1668,8 @@ pub fn owned_tool(name: &str) -> Option<(Server, &str)> {
     None
 }
 
+/// A published call's harness-owned fields; its `value` is appended as the
+/// checked string itself, never re-encoded.
 #[derive(Serialize)]
 struct CompanionCall<'a> {
     ordinal: u64,
@@ -1647,7 +1679,6 @@ struct CompanionCall<'a> {
     argument_sha256: &'a str,
     result_bytes: u64,
     result_sha256: &'a str,
-    value: Value,
 }
 
 /// A verified companion, kept in memory for transcript selection.
@@ -1655,8 +1686,50 @@ struct CompanionCall<'a> {
 pub struct Companion {
     pub trial_id: String,
     pub row_sha256: Option<String>,
-    /// The ordered calls as published: structural fields plus `value`.
-    pub calls: Vec<Value>,
+    /// The ordered calls as published: each one JSON object, its `value`
+    /// the checked string byte for byte (`null` for a structural call).
+    pub calls: Vec<String>,
+    /// Each call's checked-value digest, `None` for a structural call.
+    pub digests: Vec<Option<String>>,
+}
+
+/// The placeholder a published document is serialized with where a
+/// checked fragment is then spliced in, verbatim.
+const FRAGMENT: &str = "@@toolvalues-checked-fragment@@";
+
+/// Serialize `doc` and replace its one `FRAGMENT` string with `fragment`.
+fn splice(doc: &Value, fragment: &str) -> Option<String> {
+    let text = serde_json::to_string(doc).ok()?;
+    let token = quote(FRAGMENT);
+    (text.matches(&token).count() == 1).then(|| text.replacen(&token, fragment, 1))
+}
+
+/// Whether a published document's `tool_calls` carry exactly the checked
+/// values: read back with the strict reader, each call's `value` span is
+/// the bytes whose digest was recorded at seal (or `null` for a structural
+/// call). The backstop after the bytes are produced, needing no registry.
+fn fragments_verified(doc: &[u8], digests: &[Option<String>]) -> bool {
+    let Ok(root) = parse_within(doc, DEPTH_LIMIT + 8) else {
+        return false;
+    };
+    let Some(Node {
+        value: Json::Arr(calls),
+        ..
+    }) = root.get("tool_calls")
+    else {
+        return false;
+    };
+    calls.len() == digests.len()
+        && calls.iter().zip(digests).all(|(call, digest)| {
+            let Some(value) = call.get("value") else {
+                return false;
+            };
+            let bytes = &doc[value.span.clone()];
+            match digest {
+                Some(d) => sha256(bytes) == *d,
+                None => bytes == b"null",
+            }
+        })
 }
 
 /// Bind a capture to the journal's structural sequence. Every journal call
@@ -1674,38 +1747,46 @@ pub fn bind(structural: &[ToolCall], record: &CaptureRecord) -> Result<Companion
     };
     let mut captured = calls.iter();
     let mut out = Vec::new();
+    let mut digests = Vec::new();
     for call in structural {
         let owned = owned_tool(&call.tool);
-        let value = match owned {
-            None => Value::Null,
+        // The checked string is published as it is. It is read here only to
+        // inspect it, and its digest must be the one recorded at seal.
+        let (fragment, digest) = match owned {
+            None => ("null", None),
             Some((server, tool)) => {
                 let c = captured.next().ok_or(Refusal::BindingMismatch)?;
                 if c.server != server
                     || c.tool != tool
                     || c.argument_bytes != call.argument_bytes
                     || c.argument_sha256 != call.argument_sha256
+                    || sha256(c.value.as_bytes()) != c.value_sha256
                 {
                     return Err(Refusal::BindingMismatch);
                 }
-                serde_json::from_str(&c.value).map_err(|_| Refusal::InvalidArgumentEncoding)?
+                parse(c.value.as_bytes()).map_err(|_| Refusal::InvalidArgumentEncoding)?;
+                (c.value.as_str(), Some(c.value_sha256.clone()))
             }
         };
-        out.push(
-            serde_json::to_value(CompanionCall {
-                ordinal: call.ordinal,
-                tool: match owned {
-                    Some(_) => journal::bounded_tool_name(&call.tool),
-                    None => format!("sha256:{}", sha256(call.tool.as_bytes())),
-                },
-                owned: owned.is_some(),
-                argument_bytes: call.argument_bytes,
-                argument_sha256: &call.argument_sha256,
-                result_bytes: call.result_bytes,
-                result_sha256: &call.result_sha256,
-                value,
-            })
-            .expect("a call serializes"),
-        );
+        let mut object = serde_json::to_string(&CompanionCall {
+            ordinal: call.ordinal,
+            tool: match owned {
+                Some(_) => journal::bounded_tool_name(&call.tool),
+                None => format!("sha256:{}", sha256(call.tool.as_bytes())),
+            },
+            owned: owned.is_some(),
+            argument_bytes: call.argument_bytes,
+            argument_sha256: &call.argument_sha256,
+            result_bytes: call.result_bytes,
+            result_sha256: &call.result_sha256,
+        })
+        .expect("a call serializes");
+        object.pop();
+        object.push_str(",\"value\":");
+        object.push_str(fragment);
+        object.push('}');
+        out.push(object);
+        digests.push(digest);
     }
     if captured.next().is_some() {
         return Err(Refusal::BindingMismatch);
@@ -1714,6 +1795,7 @@ pub fn bind(structural: &[ToolCall], record: &CaptureRecord) -> Result<Companion
         trial_id: record.trial_id.clone(),
         row_sha256: record.row_sha256.clone(),
         calls: out,
+        digests,
     })
 }
 
@@ -1783,11 +1865,20 @@ pub fn publish_companion(
         "structural": structural,
         "redaction": {"mask": MASK, "registry_literals": record.registry_literals},
         "model_text": "not_retained",
-        "tool_calls": companion.calls,
+        "tool_calls": FRAGMENT,
     });
-    let Ok(bytes) = artifacts::encode(&doc, COMPANION_LIMIT) else {
-        return absent(Refusal::TrialTooLarge);
+    let Some(text) = splice(&doc, &format!("[{}]", companion.calls.join(","))) else {
+        return absent(Refusal::EvidenceWriteFailed);
     };
+    let bytes = text.into_bytes();
+    if bytes.len() > COMPANION_LIMIT {
+        return absent(Refusal::TrialTooLarge);
+    }
+    // The backstop: the bytes about to be published carry exactly the
+    // checked values, or the whole trial is withheld.
+    if !fragments_verified(&bytes, &companion.digests) {
+        return absent(Refusal::BindingMismatch);
+    }
     match artifacts::publish(&leaf, COMPANION_FILE, &bytes) {
         Ok(binding) => Disposition::Published(
             Binding {
@@ -1851,20 +1942,38 @@ pub fn write_transcripts(
             if selected.len() == PER_CLASS {
                 continue;
             }
-            let row_value: Value = serde_json::from_slice(&bytes).expect("a row is JSON");
+            // The row's own checked bytes and the companion's verbatim
+            // calls are spliced in: nothing is re-encoded.
             let leaf = json!({
                 "schema_version": 1,
                 "trial_id": row.trial_id,
                 "failure_class": class,
                 "outcome": row.outcome,
                 "model_text": "not_retained",
-                "row": row_value,
-                "tool_calls": c.calls,
+                "row": "@@row@@",
+                "tool_calls": FRAGMENT,
             });
-            let Ok(leaf_bytes) = artifacts::encode(&leaf, LEAF_LIMIT) else {
-                *skipped.entry("leaf_too_large").or_default() += 1;
+            let row_text = std::str::from_utf8(&bytes).ok();
+            let row_token = quote("@@row@@");
+            let Some(leaf_text) =
+                splice(&leaf, &format!("[{}]", c.calls.join(","))).and_then(|t| {
+                    let row_text = row_text?;
+                    (t.matches(&row_token).count() == 1)
+                        .then(|| t.replacen(&row_token, row_text, 1))
+                })
+            else {
+                *skipped.entry("value_unverified").or_default() += 1;
                 continue;
             };
+            let leaf_bytes = leaf_text.into_bytes();
+            if leaf_bytes.len() > LEAF_LIMIT {
+                *skipped.entry("leaf_too_large").or_default() += 1;
+                continue;
+            }
+            if !fragments_verified(&leaf_bytes, &c.digests) {
+                *skipped.entry("value_unverified").or_default() += 1;
+                continue;
+            }
             let binding =
                 artifacts::publish(&tdir, &format!("{}.json", row.trial_id), &leaf_bytes)?;
             selected.push(json!({

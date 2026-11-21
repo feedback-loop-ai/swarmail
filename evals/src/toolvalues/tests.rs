@@ -1466,12 +1466,22 @@ fn binding_follows_the_structural_sequence_exactly() {
     ];
     let comp = bind(&structural, &rec).unwrap();
     assert_eq!(comp.calls.len(), 3);
-    assert_eq!(comp.calls[1]["value"], Value::Null);
-    assert_eq!(comp.calls[1]["owned"], false);
+    let calls: Vec<Value> = comp
+        .calls
+        .iter()
+        .map(|c| serde_json::from_str(c).unwrap())
+        .collect();
+    assert_eq!(calls[1]["value"], Value::Null);
+    assert_eq!(calls[1]["owned"], false);
     // A name the journal alone supplies is published only as its digest.
-    assert_eq!(comp.calls[1]["tool"], format!("sha256:{}", sha256(b"Bash")));
-    assert_eq!(comp.calls[0]["tool"], "mcp__swarmail__swarmail_get_email");
-    assert_eq!(comp.calls[2]["value"]["path"], "/");
+    assert_eq!(calls[1]["tool"], format!("sha256:{}", sha256(b"Bash")));
+    assert_eq!(calls[0]["tool"], "mcp__swarmail__swarmail_get_email");
+    assert_eq!(calls[2]["value"]["path"], "/");
+    assert_eq!(comp.digests[1], None);
+    assert_eq!(
+        comp.digests[2],
+        Some(sha256(br#"{"method":"GET","path":"/"}"#))
+    );
     // Order, count, digest, length and identity each refuse.
     let mut bad: Vec<Vec<ToolCall>> = vec![
         vec![structural[2].clone(), structural[0].clone()],
@@ -1638,12 +1648,14 @@ fn row(n: u32, class: Option<FailureClass>) -> TrialResult {
 }
 
 fn companion(r: &TrialResult, calls: usize, value: &str) -> Companion {
+    let fragment = quote(value);
     Companion {
         trial_id: r.trial_id.clone(),
         row_sha256: Some(sha256(&row_bytes(r))),
         calls: (0..calls)
-            .map(|i| json!({"ordinal": i + 1, "value": value}))
+            .map(|i| format!(r#"{{"ordinal":{},"value":{fragment}}}"#, i + 1))
             .collect(),
+        digests: vec![Some(sha256(fragment.as_bytes())); calls],
     }
 }
 
@@ -1811,6 +1823,152 @@ fn a_row_holding_an_escaped_or_encoded_literal_never_reaches_a_transcript() {
     // A row that is not one strict JSON document cannot be checked.
     assert!(registry.found_in_document(b"{\"a\":1,\"a\":2}"));
     assert!(!registry.found_in_document(b"{\"a\":1}"));
+}
+
+/// Seal `values` as one trial's `eval_http` calls against `registry`,
+/// publish the companion, and return its disposition and bytes.
+fn publish_values(
+    registry: &Registry,
+    values: &[&[u8]],
+) -> (Disposition, Option<Vec<u8>>, CaptureRecord) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = artifacts::resolve_root(dir.path()).unwrap();
+    let (ev, caps) = (root.join("ev"), root.join("caps"));
+    std::fs::create_dir(&ev).unwrap();
+    std::fs::create_dir(&caps).unwrap();
+    let leaf = artifacts::create_private_dir(&ev, &id(1)).unwrap();
+    artifacts::publish(&leaf, "tool-calls.json", br#"{"truncated":false}"#).unwrap();
+    let c = Capture::new(catalogue());
+    for v in values {
+        http(&c, v);
+    }
+    let record = c.seal(&id(1), registry, b"{}");
+    write_capture(&caps, &record).unwrap();
+    let facts = journal::TrialFacts {
+        trial_id: id(1),
+        run_id: "run-1".into(),
+        seat: "trial".into(),
+        tokens: Fact::Present {
+            value: journal::Tokens {
+                input: 1,
+                output: 1,
+                cached: 0,
+            },
+        },
+        turns: Fact::Present { value: 1 },
+        wall_time_ms: Fact::Present { value: 1 },
+        deadline_killed: Fact::Present { value: false },
+        tool_calls: Fact::Present {
+            value: values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| call(i as u64 + 1, "eval_http", v))
+                .collect(),
+        },
+    };
+    let d = publish_companion(&ev, &caps, &facts, &json!({"path": "x"}));
+    let bytes = std::fs::read(leaf.join(COMPANION_FILE)).ok();
+    (d, bytes, record)
+}
+
+fn checked_values(record: &CaptureRecord) -> Vec<String> {
+    match &record.outcome {
+        CaptureOutcome::Complete { calls } => calls.iter().map(|c| c.value.clone()).collect(),
+        CaptureOutcome::Refused { reason } => panic!("{reason:?}"),
+    }
+}
+
+#[test]
+fn a_published_value_is_the_checked_bytes() {
+    // The admitted sentinel whose value a double would round to: the
+    // checked spelling 1234567890123456.99 is not it, and is what is
+    // published, never re-spelled as 1234567890123457.0.
+    let mut r = Registry::new();
+    r.register("00000000000000001234567890123457");
+    let close = br#"{"n":1234567890123456.99}"#;
+    assert_eq!(
+        r.redact(close).as_deref(),
+        Ok(r#"{"n":1234567890123456.99}"#)
+    );
+    // A number's spelling, the member order and an integer past u64 are
+    // kept as written.
+    let kept = br#"{"z":1.50e2,"a":123456789012345678901234567890,"m":-0.0}"#;
+    let (d, bytes, record) = publish_values(&r, &[close, kept]);
+    assert!(matches!(d, Disposition::Published(..)), "{d:?}");
+    let bytes = bytes.unwrap();
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    let checked = checked_values(&record);
+    assert_eq!(
+        checked[1],
+        r#"{"z":1.50e2,"a":123456789012345678901234567890,"m":-0.0}"#
+    );
+    for value in &checked {
+        assert!(text.contains(&format!(r#""value":{value}}}"#)), "{text}");
+    }
+    assert!(!text.contains("1234567890123457"), "{text}");
+    // Each published value's own bytes hash to the digest recorded at seal.
+    let CaptureOutcome::Complete { calls } = &record.outcome else {
+        unreachable!()
+    };
+    let digests: Vec<Option<String>> = calls.iter().map(|c| Some(c.value_sha256.clone())).collect();
+    assert!(fragments_verified(&bytes, &digests));
+    // A fragment that differs from its checked bytes, even by its spelling
+    // alone, does not verify.
+    let respelled = text.replacen("1234567890123456.99", "1234567890123457.0", 1);
+    assert!(!fragments_verified(respelled.as_bytes(), &digests));
+    assert!(!fragments_verified(bytes.as_slice(), &digests[..1]));
+    // A capture whose stored value no longer matches the digest recorded
+    // at seal is withheld whole.
+    let c = Capture::new(catalogue());
+    http(&c, close);
+    let mut tampered = c.seal(&id(1), &r, b"{}");
+    if let CaptureOutcome::Complete { calls } = &mut tampered.outcome {
+        calls[0].value = r#"{"n":1234567890123457}"#.into();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let root = artifacts::resolve_root(dir.path()).unwrap();
+    write_capture(&root, &tampered).unwrap();
+    let back = read_capture(&root, &id(1)).unwrap();
+    assert_eq!(
+        bind(&[call(1, "eval_http", close)], &back).unwrap_err(),
+        Refusal::BindingMismatch
+    );
+    // A number no double can hold is refused at seal, never left for a
+    // reader to fail on; the largest finite one is kept.
+    assert_eq!(
+        r.redact(br#"{"n":1e999}"#),
+        Err(Refusal::InvalidArgumentEncoding)
+    );
+    assert_eq!(
+        r.redact(br#"{"n":-1e999}"#),
+        Err(Refusal::InvalidArgumentEncoding)
+    );
+    assert!(r.redact(br#"{"n":1.7e308}"#).is_ok());
+    // The transcript leaf carries the same bytes, and the row's own.
+    let Disposition::Published(_, companion) = d else {
+        unreachable!()
+    };
+    let mut row = row(1, Some(FailureClass::GaveUp));
+    row.trial_id = id(1);
+    let companion = Companion {
+        row_sha256: Some(sha256(&row_bytes(&row))),
+        ..*companion
+    };
+    let tdir = tempfile::tempdir().unwrap();
+    let troot = artifacts::resolve_root(tdir.path()).unwrap();
+    write_transcripts(
+        &troot,
+        &[row.clone()],
+        &BTreeMap::from([(id(1), companion)]),
+    )
+    .unwrap();
+    let leaf = std::fs::read(troot.join(TRANSCRIPTS_DIR).join(format!("{}.json", id(1)))).unwrap();
+    let leaf = String::from_utf8(leaf).unwrap();
+    for value in &checked {
+        assert!(leaf.contains(&format!(r#""value":{value}}}"#)), "{leaf}");
+    }
+    let row_text = String::from_utf8(row_bytes(&row)).unwrap();
+    assert!(leaf.contains(&format!(r#""row":{row_text}"#)));
 }
 
 #[test]

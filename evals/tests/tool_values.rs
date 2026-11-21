@@ -38,6 +38,19 @@ fn files_under(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The exact bytes of every `tool_calls[].value` in a published document.
+fn published_values(doc: &[u8]) -> Vec<String> {
+    use swarmail_evals::toolvalues::{Json, parse};
+    let root = parse(doc).unwrap();
+    let Json::Arr(calls) = &root.get("tool_calls").unwrap().value else {
+        panic!("tool_calls is a list")
+    };
+    calls
+        .iter()
+        .map(|c| String::from_utf8(doc[c.get("value").unwrap().span.clone()].to_vec()).unwrap())
+        .collect()
+}
+
 /// The encoded spellings of each literal the canary search also looks for:
 /// base64 (padded and not), base64url, hex, decimal and hex HTML entities,
 /// quoted-printable, and hex joined by `:`, ` `, `/`, `,` and a newline.
@@ -404,6 +417,19 @@ fn values_are_redacted_bound_and_never_scored() {
     );
     assert_eq!(index[&id("probe")]["length"], bytes.len());
     let companion: Value = serde_json::from_slice(&bytes).unwrap();
+    // Every published value is the capture's checked string, byte for
+    // byte: read with the strict span-keeping reader, never re-encoded.
+    let checked: Vec<String> =
+        match swarmail_evals::toolvalues::read_capture(&captures, &id("probe"))
+            .unwrap()
+            .outcome
+        {
+            swarmail_evals::toolvalues::CaptureOutcome::Complete { calls } => {
+                calls.into_iter().map(|c| c.value).collect()
+            }
+            other => panic!("{other:?}"),
+        };
+    assert_eq!(published_values(&bytes), checked);
     let structural = std::fs::read(leaf.join("tool-calls.json")).unwrap();
     assert_eq!(
         companion["structural"]["sha256"],
@@ -463,6 +489,8 @@ fn values_are_redacted_bound_and_never_scored() {
         serde_json::to_value(by("probe")).unwrap()
     );
     assert_eq!(transcript["tool_calls"], companion["tool_calls"]);
+    let leaf_bytes = std::fs::read(e2.join(picked[0]["path"].as_str().unwrap())).unwrap();
+    assert_eq!(published_values(&leaf_bytes), checked);
 
     // The page names a figure or a reason for every group.
     let page_text = std::fs::read_to_string(&page).unwrap();
