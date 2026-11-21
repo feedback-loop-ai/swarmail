@@ -667,6 +667,91 @@ fn hex_joined(bytes: &[u8], sep: &str) -> String {
         .join(sep)
 }
 
+/// `text` cut into chunks of `width` characters joined by `sep`.
+fn chunked(text: &str, width: usize, sep: &str) -> String {
+    text.as_bytes()
+        .chunks(width)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+/// The base64, base64url and base32 spellings a chunked search decodes.
+fn base_spellings(bytes: &[u8]) -> Vec<String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+    vec![
+        STANDARD.encode(bytes),
+        STANDARD_NO_PAD.encode(bytes),
+        URL_SAFE.encode(bytes),
+        URL_SAFE_NO_PAD.encode(bytes),
+        base32(bytes),
+        base32(bytes).to_ascii_lowercase(),
+    ]
+}
+
+#[test]
+fn chunked_base64_and_base32_are_found_by_decoding() {
+    let mut r = Registry::new();
+    r.register(TRIAL_BEARER);
+    r.register(FILE_SENTINEL);
+    let mut checked = 0;
+    for literal in [TRIAL_BEARER, FILE_SENTINEL] {
+        for prefix in [&b""[..], b"user:", b"\xff"] {
+            let bytes = [prefix, literal.as_bytes()].concat();
+            for encoded in base_spellings(&bytes) {
+                for width in [4, 7, 20, 33] {
+                    for sep in [" ", ".", ",", ", ", " | ", ":", ";"] {
+                        let spelled = chunked(&encoded, width, sep);
+                        for doc in [
+                            json!({"note": spelled}),
+                            json!({ spelled.clone(): 1 }),
+                            json!({"path": format!("/x/{spelled}/y")}),
+                            json!({"auth": format!("Basic {spelled}")}),
+                        ] {
+                            let got = r.redact(doc.to_string().as_bytes());
+                            assert_eq!(got, Err(Refusal::ResidualSecret), "{doc}");
+                            checked += 1;
+                        }
+                    }
+                    // A newline between chunks is a control character: not
+                    // plain, refused before the decoding is even read.
+                    let lines = chunked(&encoded, width, "\n");
+                    assert_eq!(
+                        r.redact(json!({"note": lines}).to_string().as_bytes()),
+                        Err(Refusal::InvalidArgumentEncoding)
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 2 * 3 * 6 * 4 * 7 * 4);
+    // Near misses publish: prose, URLs, a UUID, encodings of other bytes,
+    // and the fixture's routes (in deny_by_default_refuses_every_...).
+    use base64::Engine as _;
+    let other = base64::engine::general_purpose::STANDARD.encode([7u8; 48]);
+    for kept in [
+        json!({"reply": "The export button does nothing when I click it, and the settings page never finishes loading either."}),
+        json!({"link": "http://127.0.0.1:41235/a/Xk3P9qLm2Vn8RtY4Wz6Bc1Df"}),
+        json!({"id": "0193a5f4-1c2b-7def-8abc-0123456789ab"}),
+        json!({"note": chunked(&other, 20, " ")}),
+        json!({"note": chunked(&base32(&[7u8; 40]), 8, ".")}),
+    ] {
+        let doc = kept.to_string();
+        assert_eq!(
+            r.redact(doc.as_bytes()).as_deref(),
+            Ok(doc.as_str()),
+            "{doc}"
+        );
+    }
+    // The decoder itself, and its bound: past it a text counts as holding
+    // a literal rather than being published unread.
+    assert_eq!(pack(&[16, 22, 20], 6), b"Ae");
+    assert!(r.found_in_encodings(&vec![b'A'; ENCODED_SCAN_LIMIT + 1]));
+    assert!(!r.found_in_encodings(&vec![b'A'; ENCODED_SCAN_LIMIT]));
+    assert!(!Registry::new().found_in_encodings(b"anything"));
+}
+
 #[test]
 fn quoted_printable_and_separator_joined_hex_are_refused() {
     let mut r = Registry::new();
@@ -850,6 +935,28 @@ fn every_long_encoding_of_a_sentinel_holds_one_unbroken_run() {
         }
     }
     assert_eq!(checked, literals.len() * 6 * 3 * 13 * 2);
+    // Chunked by separators, every encoding still holds the literal once
+    // decoded: refused as a residual.
+    let mut decoded = 0;
+    for literal in &literals {
+        let mut r = Registry::new();
+        r.register(std::str::from_utf8(literal).unwrap());
+        for prefix in [&b""[..], b"\xff"] {
+            let bytes = [prefix, literal.as_slice()].concat();
+            for encoded in base_spellings(&bytes) {
+                for (width, sep) in [(5, " "), (20, "."), (13, ",")] {
+                    let doc = json!({ "s": chunked(&encoded, width, sep) }).to_string();
+                    assert_eq!(
+                        r.redact(doc.as_bytes()),
+                        Err(Refusal::ResidualSecret),
+                        "{doc}"
+                    );
+                    decoded += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(decoded, literals.len() * 2 * 6 * 3);
     // Why '?' and non-ASCII bytes are refused in a sentinel: standard
     // base64 then writes '/' inside the literal's own characters, and the
     // separators break every run short of the limit.

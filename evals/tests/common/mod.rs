@@ -2323,8 +2323,10 @@ async fn tool_values(variant: &str) -> i32 {
             )
         } else if encoded {
             let entity: String = bearer.bytes().map(|b| format!("&#x{b:x};")).collect();
+            // And chunked: base64 split by spaces, base32 by dots.
+            let (spaced, dotted) = chunked_spellings(&bearer, &sentinel);
             format!(
-                "{{\"method\":\"POST\",\"path\":\"/login\",\"body\":{{\"password\":\"{entity}\"}}}}"
+                "{{\"method\":\"POST\",\"path\":\"/login\",\"body\":{{\"password\":\"{entity}\",\"note\":\"{spaced}\",\"ref\":\"{dotted}\"}}}}"
             )
         } else {
             format!(
@@ -2348,6 +2350,38 @@ async fn tool_values(variant: &str) -> i32 {
     )
     .unwrap();
     0
+}
+
+/// The chunked spellings the `tool_values_encoded` agent sends and the
+/// canary search looks for: the bearer in base64 split by a space every 20
+/// characters, and the sentinel in RFC 4648 base32 split by a dot every 8.
+pub fn chunked_spellings(bearer: &str, sentinel: &str) -> (String, String) {
+    use base64::Engine as _;
+    const B32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let chunk = |s: &str, width: usize, sep: &str| {
+        s.as_bytes()
+            .chunks(width)
+            .map(|c| String::from_utf8_lossy(c).into_owned())
+            .collect::<Vec<_>>()
+            .join(sep)
+    };
+    let mut base32 = String::new();
+    for block in sentinel.as_bytes().chunks(5) {
+        let mut five = [0u8; 5];
+        five[..block.len()].copy_from_slice(block);
+        let bits = five.iter().fold(0u64, |a, b| (a << 8) | u64::from(*b));
+        for i in 0..(block.len() * 8).div_ceil(5) {
+            base32.push(B32[((bits >> (35 - 5 * i)) & 31) as usize] as char);
+        }
+    }
+    (
+        chunk(
+            &base64::engine::general_purpose::STANDARD.encode(bearer),
+            20,
+            " ",
+        ),
+        chunk(&base32, 8, "."),
+    )
 }
 
 async fn leak_signup() -> i32 {

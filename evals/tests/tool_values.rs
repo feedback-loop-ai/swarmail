@@ -468,7 +468,9 @@ fn values_are_redacted_bound_and_never_scored() {
         number.as_str(),
         late.as_str(),
     ];
-    let spellings = spellings_of(&literals);
+    let mut spellings = spellings_of(&literals);
+    let (spaced, dotted) = chunked_spellings(&encoded_bearer, &sentinel);
+    spellings.extend([spaced, dotted]);
     let mut canaries: Vec<&str> = literals.to_vec();
     canaries.extend([
         &probe_bearer[1..],

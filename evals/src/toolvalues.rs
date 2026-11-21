@@ -698,7 +698,110 @@ impl Registry {
     /// [`DEPTH_LIMIT`] rounds cannot be proven clean and counts as holding
     /// one.
     fn found_in_layers(&self, s: &str) -> bool {
-        search_layers(s, |b| self.found_folded(b) || self.number_in_text(b)).unwrap_or(true)
+        search_layers(s, |b| {
+            self.found_folded(b) || self.number_in_text(b) || self.found_in_encodings(b)
+        })
+        .unwrap_or(true)
+    }
+}
+
+/// The fewest alphabet characters a run must hold, separators removed,
+/// before it is decoded as base64, base64url or base32: every such
+/// encoding of a literal of [`SENTINEL_MIN_BYTES`] holds at least 40.
+const ENCODED_RUN_MIN: usize = 40;
+/// The most alphabet characters one search decodes. A value is at most
+/// [`VALUE_LIMIT`] bytes, so only a longer text (a row) can pass it, and
+/// such a text counts as holding a literal: it is never published unread.
+const ENCODED_SCAN_LIMIT: usize = 2 * VALUE_LIMIT;
+
+/// A separator that may sit between the chunks of an encoding without
+/// ending it: whitespace and `.` `,` `:` `;` `|`. None is a character of
+/// any alphabet decoded here.
+fn chunk_separator(c: u8) -> bool {
+    c.is_ascii_whitespace() || b".,:;|".contains(&c)
+}
+
+/// A base64 or base64url character's six bits: both alphabets at once.
+fn sextet(c: u8) -> Option<u8> {
+    match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' | b'-' => Some(62),
+        b'/' | b'_' => Some(63),
+        _ => None,
+    }
+}
+
+/// An RFC 4648 base32 character's five bits, either case.
+fn quintet(c: u8) -> Option<u8> {
+    match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a'),
+        b'2'..=b'7' => Some(c - b'2' + 26),
+        _ => None,
+    }
+}
+
+/// Pack `bits`-wide values into bytes, most significant first, dropping a
+/// final partial byte.
+fn pack(values: &[u8], bits: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(values.len() * bits as usize / 8);
+    let (mut acc, mut held) = (0u32, 0u32);
+    for v in values {
+        acc = (acc << bits) | u32::from(*v);
+        held += bits;
+        if held >= 8 {
+            held -= 8;
+            out.push((acc >> held) as u8);
+            acc &= (1 << held) - 1;
+        }
+    }
+    out
+}
+
+impl Registry {
+    /// Whether a literal is in a base64, base64url or base32 decoding of
+    /// the text, chunked or not: every run of alphabet characters (and
+    /// `=` padding), with [`chunk_separator`]s removed and any other
+    /// character ending it, is decoded at every alignment once it holds
+    /// [`ENCODED_RUN_MIN`] characters, and the bytes are searched ignoring
+    /// ASCII case. Decoding ordinary text yields bytes that hold no
+    /// literal, so prose is unaffected.
+    fn found_in_encodings(&self, b: &[u8]) -> bool {
+        if self.literals.is_empty() {
+            return false;
+        }
+        let alphabet = |c: u8| c.is_ascii_alphanumeric() || b"+/-_=".contains(&c);
+        if b.iter().filter(|c| alphabet(**c)).count() > ENCODED_SCAN_LIMIT {
+            return true;
+        }
+        let mut run = Vec::new();
+        for &c in b.iter().chain(std::iter::once(&b'"')) {
+            if alphabet(c) {
+                run.push(c);
+            } else if !chunk_separator(c) {
+                if run.len() >= ENCODED_RUN_MIN && self.decoded_hit(&run) {
+                    return true;
+                }
+                run.clear();
+            }
+        }
+        false
+    }
+
+    fn decoded_hit(&self, run: &[u8]) -> bool {
+        // base64 and base64url, padding dropped, at each of 4 alignments.
+        let sextets: Vec<u8> = run.iter().filter_map(|c| sextet(*c)).collect();
+        if (0..4.min(sextets.len())).any(|k| self.found_folded(&pack(&sextets[k..], 6))) {
+            return true;
+        }
+        // base32 over each stretch of its alphabet, at each of 8.
+        run.split(|c| quintet(*c).is_none() && *c != b'=')
+            .any(|part| {
+                let q: Vec<u8> = part.iter().filter_map(|c| quintet(*c)).collect();
+                q.len() >= ENCODED_RUN_MIN && (0..8).any(|k| self.found_folded(&pack(&q[k..], 5)))
+            })
     }
 }
 

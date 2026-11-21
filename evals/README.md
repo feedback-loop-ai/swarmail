@@ -781,8 +781,9 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   (operator ruling 2026-11-21, review 5): the bearer and every registered
   sentinel are refused, never published, in their raw, ASCII-case-folded,
   JSON-escaped, `%XX` (with `+` as a space), nested-JSON, numeric-value,
-  base64, base64url, base32, hex (joined by any separators) and
-  quoted-printable spellings. In order:
+  base64, base64url and base32 (including when split into chunks by
+  separators), hex (joined by any separators) and quoted-printable
+  spellings. In order:
   - **Masking.** Every registered literal is masked (`[REDACTED]`) in
     every string and member name, in its raw, JSON-escaped, `%XX` (each
     complete escape wherever it stands, to a fixed point; `+` also read as a
@@ -817,7 +818,10 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
     writes `/` only for a `?`, DEL or non-ASCII byte, which a sentinel may
     not hold. The admin bearer is 32 alphanumerics.
   - **Residual literals.** No literal may survive in any decoded layer
-    (quoted-printable, its soft line breaks included, is one of them),
+    (quoted-printable, its soft line breaks included, is one of them; so
+    are base64, base64url and base32 of every run of 40 or more alphabet
+    characters once chunk separators, whitespace and `.` `,` `:` `;` `|`,
+    are removed, decoded at every alignment),
     compared ignoring ASCII case, so an upper- or mixed-case bearer is
     `residual_secret`. Every literal that reads as a decimal number
     (after trimming surrounding whitespace, a leading `+` and leading
