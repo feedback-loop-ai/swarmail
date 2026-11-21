@@ -1152,7 +1152,12 @@ pub fn sealed_registry(bearer: &str, snapshot: Option<&[String]>, sentinels: &Pa
 /// base64 write a `/`, which breaks the run [`OPAQUE_RUN_LIMIT`] counts),
 /// within [`REGISTRY_BYTES`] of file.
 pub fn read_sentinels(path: &Path) -> Result<Vec<String>, Invalid> {
-    let dir = path.parent().ok_or(Invalid)?;
+    // A bare file name is in the working directory.
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        Some(_) => Path::new("."),
+        None => return Err(Invalid),
+    };
     let name = path.file_name().and_then(|n| n.to_str()).ok_or(Invalid)?;
     let dir = artifacts::resolve_root(dir).map_err(|_| Invalid)?;
     let bytes = artifacts::read_file(&dir, name, REGISTRY_BYTES).map_err(|_| Invalid)?;

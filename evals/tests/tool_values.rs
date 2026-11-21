@@ -790,6 +790,36 @@ fn a_capture_that_cannot_be_written_leaves_the_row_and_says_so() {
 }
 
 #[test]
+fn a_trial_reads_its_capture_paths_relative_to_its_working_directory() {
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    std::fs::create_dir(dir.path().join("captures")).unwrap();
+    std::fs::write(dir.path().join("sentinels.json"), LONG_SENTINELS).unwrap();
+    // Bare names: the sentinel file's parent is the empty path.
+    let mut command = cli();
+    command
+        .current_dir(dir.path())
+        .args(["trial", "--task", "signup", "--agent", "oracle"])
+        .args(["--capture-tool-values", "captures"])
+        .args(["--tool-sentinels", "sentinels.json"]);
+    let out = bounded(command, ISOLATED_CLI_BOUND).wait_with_output();
+    let row = one_row(&out);
+    assert_eq!(row.outcome, Outcome::Pass, "{}", stderr(&out));
+    let record =
+        swarmail_evals::toolvalues::read_capture(&dir.path().join("captures"), &row.trial_id)
+            .expect("the capture record");
+    assert!(
+        matches!(
+            record.outcome,
+            swarmail_evals::toolvalues::CaptureOutcome::Complete { .. }
+        ),
+        "the sentinel file was read: {:?}",
+        record.outcome
+    );
+    assert_eq!(record.registry_literals, 2, "the bearer and the sentinel");
+}
+
+#[test]
 fn a_page_cut_short_is_removed() {
     use std::os::unix::process::CommandExt;
     let dir = tempdir();
