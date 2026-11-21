@@ -668,7 +668,7 @@ mod tests {
         );
         assert_eq!(hits.load(Ordering::SeqCst), 1, "never forwarded");
         assert_eq!(reason(&c), None, "a refused body is not a call");
-        assert!(REQUEST_BODY_LIMIT < BODY_LIMIT);
+        const { assert!(REQUEST_BODY_LIMIT < BODY_LIMIT) };
     }
 
     #[tokio::test]
