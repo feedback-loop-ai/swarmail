@@ -263,6 +263,54 @@ wall. No test failed, so none was rerun. The root-only gates and `brokkr
 compile` were not rerun: nothing outside `evals/` and
 `specs/trial-evidence/` changed.
 
+## Review return 5 (decision 0102), fixes
+
+The fourth panel returned on `af98ac3`: no spec defect, the
+deny-by-default mode judged sound, and the lows below. Each fix has a test
+that turns red when it is reverted (each was checked by reverting it):
+
+| Finding | Fix | Commit | Test |
+|---|---|---|---|
+| A numeric sentinel with a leading zero, `+`, spaces or a trailing dot matched by spelling only (low, security) | Every literal that reads as a decimal number after trimming surrounding whitespace, one leading `+` and leading zeros (a leading or trailing dot allowed) is matched by value and by its significant digits. AC3 and the README say "every literal that reads as a decimal number" | `7549ce0a` | `a_numeric_sentinel_is_found_by_value_in_any_spelling`: `0150`, ` 7`, `+42`, `5.`, and a 32-byte all-digit sentinel with a leading zero caught spelled without it, as a number and in text. Red with strict-JSON-only registration |
+| Forwarded request bodies bounded at the 16 MiB reply bound; the doc's worst-case claim was false (low, security) | Request bodies are capped at 2 MiB (`REQUEST_BODY_LIMIT`), mirroring Swarmail's `MCP_BODY_LIMIT` in the root `src/api.rs`, not imported from it; replies stay at 16 MiB. The module doc and the README state the real bound: 32 x (2 + 16) MiB for the trial's length | `f986b38c`, `0901fe86` (the first left a run-time constant assertion clippy refuses; the second makes it a const assertion) | `capture::tests::the_forwarder_bounds_a_request_body_at_swarmails_own_limit`, on a real socket: a body exactly at the limit is forwarded (200, upstream hit once). A body one byte over, declaring four times the limit and never sent whole, is answered 413 with no upstream hit. Red at the old cap (the read times out, bounded at 10 s) |
+| The fixture's own `/invite/<token>/event.ics` ran to 38 and withheld every invite trial (low, correctness) | A run counts only `A-Z a-z 0-9 + - _`; `/ ? & = # .` and every other character break it. Every base64, base64url, base32 and hex spelling of a sentinel still holds an unbroken run of 40: `=` is only trailing padding, base64url's `-` and `_` count, and standard base64 writes `/` only for a `?`, DEL or non-ASCII byte in a group's third place. So sentinels are now printable ASCII other than `?` | `e91adcea` | `every_long_encoding_of_a_sentinel_holds_one_unbroken_run` (48 seeded literals over every admitted byte plus extremes and the bearer, six prefixes and three suffixes, padded and unpadded base64 and base64url, base32, both cases of hex, bare and inside a path: 3276 spellings, each refused; why `?` and non-ASCII are refused). `deny_by_default_refuses_every_unreadable_spelling` now redacts one well-formed argument per advertised fixture route, the invite ICS path and its full `ics_url` included. Red with `/` and `=` as run characters, red with `-` and `_` as separators, red with `?` admitted |
+| "Only the Only the" (README) | Fixed | `e91adcea` | — |
+
+**Not done, and why.**
+
+- An invite trial end to end is not run. No scripted agent reads the
+  invitation and downloads the calendar, and adding one is a new agent
+  and a new trial. The route is proven at unit level with its real shape.
+- The other review notes stay as they were: `check --matrix` replay is
+  compared by exit status and line count only, and there is no capture-off
+  control run. Non-owned tool names are hashed only in the value files;
+  the default-pinned structural `tool-calls.json` keeps them as written,
+  unchanged by this mode. Ordinary-looking transforms (ROT13, a reversed
+  bearer, decimal code lists) are the 0075 §9 boundary AC3 names.
+
+**A host-load note.** The first gate run failed one root-build test,
+`tests/runner.rs::automatic_build_uses_a_cleared_named_preparation_map`
+(`swarmail_unavailable`), and failed again when rerun alone. Both failures
+fell in the minutes when the shared `/tmp` tmpfs briefly reported ENOSPC
+(other sessions hold several GB there); this seat's own tools failed to
+start for the same reason. The test builds Swarmail with cargo into a
+`/tmp` target directory and touches no code this return changed. Once
+space returned, it passed alone (35.5 s), and the full rerun below passed
+whole. The test is unchanged.
+
+Time added by this return: `every_long_encoding_of_a_sentinel_holds_one_unbroken_run`
+about 1 s (debug build, loaded host); the request-body test under 0.1 s.
+`tests/tool_values.rs` 16.8 s in the gate run (unchanged, no new trial).
+
+Gates after this return (`--locked`, this seat, 2026-11-21, tree
+`e91adcea`): root `cargo fmt --all -- --check` 0; evals `cargo fmt --all --
+--check` 0; evals `cargo clippy --all-targets --locked -- -D warnings` 0;
+evals `SWARMAIL_BIN=<artifact record of cargo build --locked --bin
+swarmail> cargo test --locked` 0, 603 passed, 0 failed, 7 ignored, 1594 s
+wall (the rerun; the first run is in the note above). The root-only gates
+and `brokkr compile` were not rerun: nothing outside `evals/` and
+`specs/trial-evidence/` changed.
+
 ## Held paths
 
 None touched: `git diff --stat 0d4839f -- Cargo.toml Cargo.lock evals/Cargo.toml evals/Cargo.lock deny.toml scripts .github .brokkr src tests` is empty. No dependency or feature was added.
