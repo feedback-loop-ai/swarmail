@@ -1229,21 +1229,40 @@ fn main() -> ExitCode {
     }
 }
 
-/// Write the rendered page through the artifact publication primitive:
-/// staged whole in a private (0600) temporary in the page's directory, then
-/// moved to its name with no clobber. The page is complete or absent, never
-/// partial, and an existing file is never replaced.
-fn write_page(path: &std::path::Path, report: &serde_json::Value) -> Result<(), String> {
-    let dir = match path.parent() {
+/// How an output path's parent is resolved before any primitive checks it:
+/// [`artifacts::resolve_root`] in production, as for `--artifacts-dir`
+/// and `--evidence-dir`, so a root-owned symlinked ancestor (macOS's
+/// `/var`, `/tmp`) is followed and anything else refused.
+type Resolve = fn(&std::path::Path) -> Result<PathBuf, String>;
+
+/// A path's parent, `.` for a bare name.
+fn parent_or_dot(path: &std::path::Path) -> &std::path::Path {
+    match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => std::path::Path::new("."),
-    };
+    }
+}
+
+/// Write the rendered page through the artifact publication primitive:
+/// staged whole in a private (0600) temporary in the page's resolved
+/// directory, then moved to its name with no clobber. The page is complete
+/// or absent, never partial, and an existing file is never replaced.
+fn write_page(path: &std::path::Path, report: &serde_json::Value) -> Result<(), String> {
+    write_page_with(path, report, artifacts::resolve_root)
+}
+
+fn write_page_with(
+    path: &std::path::Path,
+    report: &serde_json::Value,
+    resolve: Resolve,
+) -> Result<(), String> {
+    let dir = resolve(parent_or_dot(path))?;
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or("page_name_invalid")?;
     let page = swarmail_evals::toolvalues::render_page(report);
-    artifacts::publish(dir, name, page.as_bytes()).map(|_| ())
+    artifacts::publish(&dir, name, page.as_bytes()).map(|_| ())
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -1986,34 +2005,49 @@ fn admit_capture(
     Ok(sentinels)
 }
 
-/// The parent a capture root is created in, checked by the artifact
-/// primitive [`artifacts::safe_root`].
-fn capture_parent(root: &std::path::Path) -> Result<&std::path::Path, &'static str> {
-    let parent = match root.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => std::path::Path::new("."),
-    };
-    artifacts::safe_root(parent).map_err(|_| "capture_root_unavailable")?;
+/// The real parent a capture root is created in: resolved as an artifact
+/// root is ([`Resolve`]), then checked by [`artifacts::safe_root`].
+fn capture_parent(root: &std::path::Path) -> Result<PathBuf, &'static str> {
+    capture_parent_with(root, artifacts::resolve_root)
+}
+
+fn capture_parent_with(root: &std::path::Path, resolve: Resolve) -> Result<PathBuf, &'static str> {
+    let parent = resolve(parent_or_dot(root)).map_err(|_| "capture_root_unavailable")?;
+    artifacts::safe_root(&parent).map_err(|_| "capture_root_unavailable")?;
     Ok(parent)
 }
 
 /// Create the admitted capture root, once every other admission has
-/// passed: one new 0700 directory in a parent [`artifacts::safe_root`]
-/// admits, never an existing one, then checked again by the same rule.
+/// passed: one new 0700 directory in its real parent, never an existing
+/// one, then checked again by [`artifacts::safe_root`]. A root that cannot
+/// be finished is removed again, never left half made.
 fn create_capture_root(root: &std::path::Path) -> Result<PathBuf, &'static str> {
+    create_capture_root_with(root, artifacts::resolve_root)
+}
+
+fn create_capture_root_with(
+    root: &std::path::Path,
+    resolve: Resolve,
+) -> Result<PathBuf, &'static str> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    capture_parent(root)?;
+    let parent = capture_parent_with(root, resolve)?;
+    let name = root.file_name().ok_or("capture_root_unavailable")?;
+    let path = parent.join(name);
     std::fs::DirBuilder::new()
         .mode(0o700)
-        .create(root)
+        .create(&path)
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::AlreadyExists => "capture_root_exists",
             _ => "capture_root_unavailable",
         })?;
-    std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
-        .map_err(|_| "capture_root_unavailable")?;
-    artifacts::safe_root(root).map_err(|_| "capture_root_unavailable")?;
-    std::fs::canonicalize(root).map_err(|_| "capture_root_unavailable")
+    let finished = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| "capture_root_unavailable")
+        .and_then(|()| artifacts::safe_root(&path).map_err(|_| "capture_root_unavailable"));
+    if let Err(category) = finished {
+        let _ = std::fs::remove_dir(&path);
+        return Err(category);
+    }
+    Ok(path)
 }
 
 /// The one argument list (after the `trial` subcommand) a `swarmail-evals trial` worker is given, whether
@@ -5567,7 +5601,10 @@ while :; do :; done
 
 #[cfg(test)]
 mod capture_admission_tests {
-    use super::{admit_capture, create_capture_root};
+    use super::{
+        admit_capture, capture_parent_with, create_capture_root, create_capture_root_with,
+        write_page_with,
+    };
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -5613,6 +5650,42 @@ mod capture_admission_tests {
             admit_capture(&root, &sentinels, None),
             Err("capture_root_exists")
         );
+    }
+
+    /// Stands in for macOS's root-owned `/var` -> `/private/var`: a
+    /// resolver that follows the test's own (same-uid) link, which the
+    /// production rule rightly refuses. What is proven is that the parent
+    /// is resolved before `safe_root` judges it.
+    fn follow_links(p: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        std::fs::canonicalize(p).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_resolved_symlinked_ancestor_is_admitted_for_the_capture_root_and_the_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let var = dir.path().join("var");
+        std::os::unix::fs::symlink(&real, &var).unwrap();
+        // The capture root under the link: created in the link's target.
+        let root = var.join("captures");
+        assert_eq!(capture_parent_with(&root, follow_links), Ok(real.clone()));
+        let made = create_capture_root_with(&root, follow_links).unwrap();
+        assert_eq!(made, real.join("captures"));
+        assert!(made.is_dir());
+        // The page under the link: published in the link's target, 0600.
+        let page = var.join("report.md");
+        write_page_with(&page, &serde_json::json!({"groups": []}), follow_links).unwrap();
+        let meta = std::fs::metadata(real.join("report.md")).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        // Without a resolve the link itself reaches safe_root and is
+        // refused: the same paths fail.
+        let raw = |p: &std::path::Path| Ok(p.to_path_buf());
+        assert_eq!(
+            capture_parent_with(&var.join("other"), raw),
+            Err("capture_root_unavailable")
+        );
+        assert!(write_page_with(&var.join("other.md"), &serde_json::json!({}), raw).is_err());
     }
 }
 
