@@ -727,6 +727,30 @@ fn matrix_capture_refuses_before_any_trial() {
         stderr(&refused)
     );
     assert!(!fresh.exists(), "a later refusal leaves no root behind");
+    // Refusals after the root is made, by the matrix's own validation:
+    // zero trials, and an agents file that does not parse. Each leaves no
+    // root either.
+    let bad_agents = dir.path().join("bad-agents.json");
+    std::fs::write(&bad_agents, "not an agents file").unwrap();
+    for (trials, agents_file) in [("0", agents.as_path()), ("1", bad_agents.as_path())] {
+        let out = cli()
+            .args([
+                "matrix", "--tasks", "signup", "--trials", trials, "--agents",
+            ])
+            .arg(agents_file)
+            .arg("--capture-tool-values")
+            .arg(&fresh)
+            .arg("--tool-sentinels")
+            .arg(&sentinels)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+        assert!(out.stdout.is_empty());
+        assert!(
+            !fresh.exists(),
+            "trials {trials}: a refused matrix leaves no root"
+        );
+    }
     let _trial_scope = trial_scope();
     let retried = run(&fresh, &sentinels, &[]);
     assert!(retried.status.success(), "{}", stderr(&retried));

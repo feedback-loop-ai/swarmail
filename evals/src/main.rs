@@ -963,9 +963,11 @@ fn main() -> ExitCode {
                 eprintln!("swarmail-evals: harness error: {category}");
                 return ExitCode::from(2);
             }
+            let mut created = None;
             if let Some((root, sentinels)) = capture {
                 match create_capture_root(&root) {
                     Ok(root) => {
+                        created = Some(root.clone());
                         let _ = MATRIX_CAPTURE.set((root, sentinels));
                     }
                     Err(category) => {
@@ -974,7 +976,7 @@ fn main() -> ExitCode {
                     }
                 }
             }
-            rt.block_on(matrix_with_target(
+            let code = rt.block_on(matrix_with_target(
                 ids,
                 agents,
                 trials,
@@ -983,7 +985,17 @@ fn main() -> ExitCode {
                 artifacts_dir,
                 brokkr,
                 comparison,
-            ))
+            ));
+            // A matrix refused before any trial left a record (`--trials 0`,
+            // an unusable agents file, a later admission) leaves no root, so
+            // the same path can be retried. `remove_dir` removes only an
+            // empty directory: a root that holds a record is kept.
+            if let Some(root) = created
+                && code == ExitCode::from(2)
+            {
+                let _ = std::fs::remove_dir(&root);
+            }
+            code
         }
         Cmd::ComparisonContract {
             target,

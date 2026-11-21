@@ -742,7 +742,8 @@ are ever copied** into that record (accepted 0075 §4). The value-bearing mode
 
 ```bash
 # capture during the trials: a fresh private root (it must not exist; it is
-# created 0700 only after every other admission, so a refused matrix leaves
+# created 0700 only after every other admission and removed again if the
+# matrix is refused before any record is written, so a refused matrix leaves
 # nothing and can be retried with the same path) and the
 # sentinel literals (a JSON array of strings, each at least 32 bytes) redacted
 # beside each trial's fixture admin bearer
