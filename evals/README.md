@@ -885,8 +885,9 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   256 calls or 65536 original bytes, a companion over 65536 bytes, a cut
   structural record, or the forwarder's connection or request cap exceeded), `invalid_argument_encoding` (not strict UTF-8 JSON,
   duplicate or mask-colliding names, a value already spelling the mask, a
-  percent decoding that never settles or is not UTF-8, nesting over 32, a
-  published name, string or number that is not plain),
+  percent decoding that never settles or is not UTF-8, nesting over 32, an
+  object of more than 4096 members, a published name, string or number
+  that is not plain),
   `residual_secret`, `binding_mismatch`,
   `evidence_write_failed`. A trial the journal has no tool rows for keeps its
   upstream reason (`builtin_agent`, `journal_missing`, `journal_ambiguous`,

@@ -55,6 +55,11 @@ pub const REGISTRY_LITERALS: usize = 256;
 pub const SENTINEL_LIMIT: usize = REGISTRY_LITERALS - 1;
 /// The deepest JSON nesting a value may have.
 pub const DEPTH_LIMIT: usize = 32;
+/// The most members one JSON object may have. The strict reader runs on
+/// every body the forwarder observes (up to 2 MiB), so its work must stay
+/// linear: duplicates are found with a set, and an object past this many
+/// members is refused before it is read further.
+pub const MEMBER_LIMIT: usize = 4096;
 /// One transcript leaf's cap and the transcript index's cap, inclusive.
 pub const LEAF_LIMIT: usize = 128 * 1024;
 pub const INDEX_LIMIT: usize = 64 * 1024;
@@ -155,8 +160,9 @@ impl Refusal {
 // ---- A strict JSON reader that keeps byte spans -------------------------
 
 /// A JSON value as written: numbers keep their spelling, objects their
-/// member order. Duplicate member names, depth over [`DEPTH_LIMIT`],
-/// non-UTF-8 bytes and lone surrogate escapes are refused.
+/// member order. Duplicate member names, depth over [`DEPTH_LIMIT`], an
+/// object of more than [`MEMBER_LIMIT`] members, non-UTF-8 bytes and lone
+/// surrogate escapes are refused. Reading is linear in the input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Json {
     Null,
@@ -247,12 +253,16 @@ impl Reader<'_> {
             b'{' => {
                 self.i += 1;
                 let mut members: Vec<(String, Node)> = Vec::new();
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 self.ws();
                 if self.eat(b'}').is_err() {
                     loop {
                         self.ws();
+                        if members.len() == MEMBER_LIMIT {
+                            return Err(());
+                        }
                         let key = self.string()?;
-                        if members.iter().any(|(k, _)| *k == key) {
+                        if !seen.insert(key.clone()) {
                             return Err(());
                         }
                         self.ws();
@@ -813,10 +823,10 @@ impl Registry {
     /// Whether text holds a decimal number, in any spelling, whose value is
     /// a numeric literal's or whose digits contain a numeric literal's
     /// significant digits. A number is read from every position that
-    /// starts one (a digit, or a `.` before a digit), overlapping or not,
-    /// as the longest run of digits, an optional fraction (`5.`, `.5`,
-    /// `5.5`) and an optional exponent, with and without a `-` written
-    /// before it.
+    /// starts one (a digit or a `.` before a digit, not preceded by a
+    /// digit), as the longest run of digits, an optional fraction (`5.`,
+    /// `.5`, `5.5`) and an optional exponent, with and without a `-`
+    /// written before it.
     fn number_in_text(&self, b: &[u8]) -> bool {
         if self.numbers.is_empty() {
             return false;
@@ -828,8 +838,13 @@ impl Registry {
             i
         };
         for i in 0..b.len() {
+            // A number starts where a digit run (or a dot before one)
+            // begins, never inside a run: each run is read once, so the
+            // scan stays linear. A number written inside a longer one is
+            // still caught by its digits (`digits_contain`).
             let dot_start = b[i] == b'.' && b.get(i + 1).is_some_and(u8::is_ascii_digit);
-            if !b[i].is_ascii_digit() && !dot_start {
+            let inside_run = i > 0 && b[i - 1].is_ascii_digit();
+            if (!b[i].is_ascii_digit() && !dot_start) || inside_run {
                 continue;
             }
             let mut end = digits(i);

@@ -1233,6 +1233,62 @@ fn capture_latches_one_reason_and_keeps_nothing_after_it() {
     assert_eq!(c.seal(&id(1), &reg(), BEARER.as_bytes()).row_sha256, None);
 }
 
+/// An object of `n` distinct members, `{"k0":0,"k1":0,...}`.
+fn wide_object(n: usize) -> String {
+    let members: Vec<String> = (0..n).map(|i| format!(r#""k{i}":0"#)).collect();
+    format!("{{{}}}", members.join(","))
+}
+
+#[test]
+fn a_wide_or_long_body_is_read_in_linear_time() {
+    // At the member cap an object is read; one member more is refused.
+    assert!(parse(wide_object(MEMBER_LIMIT).as_bytes()).is_ok());
+    assert_eq!(
+        parse(wide_object(MEMBER_LIMIT + 1).as_bytes()),
+        Err(Invalid)
+    );
+    // A duplicate name is still refused, found by the set.
+    assert_eq!(parse(br#"{"a":1,"b":2,"a":3}"#), Err(Invalid));
+    // A body near the forwarder's 2 MiB limit holding one object of some
+    // 180 000 members, as a tools/call's arguments: refused as soon as the
+    // cap is passed. The quadratic duplicate scan this replaces took 47.7 s
+    // in a release build on such a body. The bound below is generous (a
+    // debug build on a loaded shared host) and exists only to fail rather
+    // than hang if the read ever turns quadratic again; the assertions
+    // are on the results.
+    let started = std::time::Instant::now();
+    let wide = wide_object(180_000);
+    assert!(
+        wide.len() > 1_900_000 && wide.len() <= 2_097_152,
+        "{}",
+        wide.len()
+    );
+    let call = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"swarmail_get_email","arguments":{wide}}}}}"#
+    );
+    let c = Capture::new(catalogue());
+    assert!(c.observe_mcp_body(call.as_bytes()).is_empty());
+    assert_eq!(
+        reason(&seal_one(&c)),
+        Some(Refusal::InvalidArgumentEncoding)
+    );
+    // The same width without a tools/call is not a call: ignored.
+    let c = Capture::new(catalogue());
+    assert!(c.observe_mcp_body(wide.as_bytes()).is_empty());
+    assert_eq!(reason(&seal_one(&c)), None);
+    // A 200 000-digit run through the residual search, with a numeric
+    // sentinel registered: the number scanner reads the run once (it once
+    // started a number at every digit), and a text that long counts as
+    // holding a literal rather than being decoded whole.
+    let mut r = reg();
+    r.register("1234567890123456");
+    let digits = format!(r#"{{"s":"{}"}}"#, "7".repeat(200_000));
+    assert!(r.found_in_document(digits.as_bytes()));
+    assert!(!r.number_in_text("7".repeat(200_000).as_bytes()));
+    let elapsed = started.elapsed();
+    assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
+}
+
 #[test]
 fn mcp_bodies_are_scanned_in_order_including_batches() {
     let c = Capture::new(catalogue());
