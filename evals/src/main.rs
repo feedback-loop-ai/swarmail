@@ -937,17 +937,20 @@ fn main() -> ExitCode {
                     Some(bound)
                 }
             };
-            if let Some((root, sentinels)) = capture_tool_values.zip(tool_sentinels) {
-                match prepare_capture(&root, &sentinels, target.as_deref()) {
-                    Ok(plan) => {
-                        let _ = MATRIX_CAPTURE.set(plan);
-                    }
-                    Err(category) => {
-                        eprintln!("swarmail-evals: harness error: {category}");
-                        return ExitCode::from(2);
+            // The capture is admitted first and its root created last, after
+            // every other admission: a refused matrix leaves no root behind.
+            let capture = match capture_tool_values.zip(tool_sentinels) {
+                None => None,
+                Some((root, sentinels)) => {
+                    match admit_capture(&root, &sentinels, target.as_deref()) {
+                        Ok(sentinels) => Some((root, sentinels)),
+                        Err(category) => {
+                            eprintln!("swarmail-evals: harness error: {category}");
+                            return ExitCode::from(2);
+                        }
                     }
                 }
-            }
+            };
             if let Some(bin) = &brokkr
                 && let Err(category) = brokkr_mode_admissible(
                     bin,
@@ -959,6 +962,17 @@ fn main() -> ExitCode {
             {
                 eprintln!("swarmail-evals: harness error: {category}");
                 return ExitCode::from(2);
+            }
+            if let Some((root, sentinels)) = capture {
+                match create_capture_root(&root) {
+                    Ok(root) => {
+                        let _ = MATRIX_CAPTURE.set((root, sentinels));
+                    }
+                    Err(category) => {
+                        eprintln!("swarmail-evals: harness error: {category}");
+                        return ExitCode::from(2);
+                    }
+                }
             }
             rt.block_on(matrix_with_target(
                 ids,
@@ -1215,24 +1229,21 @@ fn main() -> ExitCode {
     }
 }
 
-/// Write the rendered page to a fresh path: exclusive creation, mode 0600,
-/// never a replacement of an existing file. A page that cannot be written
-/// whole is removed (the file is this call's own), never left partial.
-fn write_page(path: &std::path::Path, report: &serde_json::Value) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    let written = f
-        .write_all(swarmail_evals::toolvalues::render_page(report).as_bytes())
-        .and_then(|()| f.sync_all());
-    if written.is_err() {
-        let _ = std::fs::remove_file(path);
-    }
-    written
+/// Write the rendered page through the artifact publication primitive:
+/// staged whole in a private (0600) temporary in the page's directory, then
+/// moved to its name with no clobber. The page is complete or absent, never
+/// partial, and an existing file is never replaced.
+fn write_page(path: &std::path::Path, report: &serde_json::Value) -> Result<(), String> {
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => std::path::Path::new("."),
+    };
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("page_name_invalid")?;
+    let page = swarmail_evals::toolvalues::render_page(report);
+    artifacts::publish(dir, name, page.as_bytes()).map(|_| ())
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -1953,13 +1964,15 @@ fn signal_trial(pid: u32) -> Result<(), String> {
 /// trial: the fresh private root and the sentinel file, both absolute.
 static MATRIX_CAPTURE: std::sync::OnceLock<(PathBuf, PathBuf)> = std::sync::OnceLock::new();
 
-/// Admit `matrix --capture-tool-values`: a Swarmail target only, a readable
-/// sentinel file, and a root that does not exist yet, created here 0700.
-fn prepare_capture(
+/// Admit `matrix --capture-tool-values` without touching the disk: a
+/// Swarmail target only, a readable sentinel file (returned canonical), and
+/// a root that does not exist yet under a parent the artifact rules admit
+/// (an existing directory, no symlinked component).
+fn admit_capture(
     root: &std::path::Path,
     sentinels: &std::path::Path,
     target: Option<&str>,
-) -> Result<(PathBuf, PathBuf), &'static str> {
+) -> Result<PathBuf, &'static str> {
     if target.is_some_and(|t| t != "swarmail") {
         return Err("capture_requires_swarmail_target");
     }
@@ -1969,15 +1982,38 @@ fn prepare_capture(
     if std::fs::symlink_metadata(root).is_ok() {
         return Err("capture_root_exists");
     }
+    capture_parent(root)?;
+    Ok(sentinels)
+}
+
+/// The parent a capture root is created in, checked by the artifact
+/// primitive [`artifacts::safe_root`].
+fn capture_parent(root: &std::path::Path) -> Result<&std::path::Path, &'static str> {
+    let parent = match root.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => std::path::Path::new("."),
+    };
+    artifacts::safe_root(parent).map_err(|_| "capture_root_unavailable")?;
+    Ok(parent)
+}
+
+/// Create the admitted capture root, once every other admission has
+/// passed: one new 0700 directory in a parent [`artifacts::safe_root`]
+/// admits, never an existing one, then checked again by the same rule.
+fn create_capture_root(root: &std::path::Path) -> Result<PathBuf, &'static str> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    capture_parent(root)?;
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(root)
-        .map_err(|_| "capture_root_unavailable")?;
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => "capture_root_exists",
+            _ => "capture_root_unavailable",
+        })?;
     std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
         .map_err(|_| "capture_root_unavailable")?;
-    let root = std::fs::canonicalize(root).map_err(|_| "capture_root_unavailable")?;
-    Ok((root, sentinels))
+    artifacts::safe_root(root).map_err(|_| "capture_root_unavailable")?;
+    std::fs::canonicalize(root).map_err(|_| "capture_root_unavailable")
 }
 
 /// The one argument list (after the `trial` subcommand) a `swarmail-evals trial` worker is given, whether
@@ -5531,7 +5567,7 @@ while :; do :; done
 
 #[cfg(test)]
 mod capture_admission_tests {
-    use super::prepare_capture;
+    use super::{admit_capture, create_capture_root};
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -5547,21 +5583,36 @@ mod capture_admission_tests {
         // A competitor target's endpoint is the runner's bridge, which the
         // capture does not observe: refused before any root is made.
         assert_eq!(
-            prepare_capture(&root, &sentinels, Some("mailpit")),
+            admit_capture(&root, &sentinels, Some("mailpit")),
             Err("capture_requires_swarmail_target")
         );
         assert!(!root.exists());
-        // A root whose parent is missing cannot be created.
+        // A root whose parent is missing, or reached through a symlink, is
+        // refused before anything is created.
         let orphan = dir.path().join("absent").join("captures");
         assert_eq!(
-            prepare_capture(&orphan, &sentinels, None),
+            admit_capture(&orphan, &sentinels, None),
             Err("capture_root_unavailable")
         );
         assert!(!orphan.exists());
-        // Swarmail, named or by default: a fresh private root.
-        let (made, _) = prepare_capture(&root, &sentinels, Some("swarmail")).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+        assert_eq!(
+            admit_capture(&link.join("captures"), &sentinels, None),
+            Err("capture_root_unavailable")
+        );
+        // Swarmail, named or by default: admitted without touching the
+        // disk, then created fresh and private, and never twice.
+        assert!(admit_capture(&root, &sentinels, Some("swarmail")).is_ok());
+        assert!(!root.exists(), "admission creates nothing");
+        let made = create_capture_root(&root).unwrap();
         let mode = std::fs::metadata(&made).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
+        assert_eq!(create_capture_root(&root), Err("capture_root_exists"));
+        assert_eq!(
+            admit_capture(&root, &sentinels, None),
+            Err("capture_root_exists")
+        );
     }
 }
 

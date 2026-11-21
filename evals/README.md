@@ -735,7 +735,9 @@ are ever copied** into that record (accepted 0075 §4). The value-bearing mode
 **Value-bearing evidence (#391; accepted 0119 §4, built).** Two opt-in flags, independent of each other and of every default output:
 
 ```bash
-# capture during the trials: a fresh private root (it must not exist) and the
+# capture during the trials: a fresh private root (it must not exist; it is
+# created 0700 only after every other admission, so a refused matrix leaves
+# nothing and can be retried with the same path) and the
 # sentinel literals (a JSON array of strings, each at least 32 bytes) redacted
 # beside each trial's fixture admin bearer
 $E matrix --brokkr "$B" --tasks signup --agents agents.json --trials 1 \
@@ -889,7 +891,9 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   the value report minus `tool_values` equals the default report byte for
   byte, and `check --matrix` replays the same.
 - **The page.** `--page PATH` (any report, with or without a journal or the
-  value mode) writes a private Markdown table, exclusively created at 0600,
+  value mode) writes a private Markdown table (staged whole in a 0600 temporary
+  beside it and moved to its name with no clobber, so the page is complete
+  or absent and never replaces a file),
   with every group's tokens per success: the figure, or `null (<reason>)` —
   `incomplete_join`, `no_passes` or `sum_overflow` from the journal summary;
   without a journal a paid group is `null (incomplete_join)` and an empty

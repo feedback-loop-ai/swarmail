@@ -717,6 +717,24 @@ fn matrix_capture_refuses_before_any_trial() {
         .unwrap();
     assert_eq!(lone.status.code(), Some(2));
     assert!(!fresh.exists());
+    // A matrix refused by a later admission (here brokkr mode without an
+    // artifacts root) leaves no capture root, so the same path is retried.
+    let refused = run(&fresh, &sentinels, &["--brokkr", "/nonexistent/brokkr"]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(
+        stderr(&refused).contains("brokkr_requires_artifacts"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(!fresh.exists(), "a later refusal leaves no root behind");
+    let _trial_scope = trial_scope();
+    let retried = run(&fresh, &sentinels, &[]);
+    assert!(retried.status.success(), "{}", stderr(&retried));
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&fresh).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o700);
+    let leaves: Vec<_> = std::fs::read_dir(&fresh).unwrap().collect();
+    assert_eq!(leaves.len(), 1, "the oracle's capture record");
 }
 
 #[test]
@@ -797,8 +815,61 @@ fn a_page_cut_short_is_removed() {
         std::fs::symlink_metadata(&page).is_err(),
         "the partial page is removed"
     );
-    // The same command without the limit writes the page whole.
+    // Nothing else is left either: the page was staged in a private
+    // temporary, which is gone with the failed write.
+    let names = |dir: &Path| -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(names(dir.path()), ["rows.jsonl"]);
+    // Killed mid-write (the kernel's SIGXFSZ, left at its default), the
+    // writer has no chance to clean up: the page's name still never holds
+    // a partial page. Only the private temporary may remain.
+    let mut killed = cli();
+    killed
+        .args(["report", "--input"])
+        .arg(&rows)
+        .arg("--page")
+        .arg(&page);
+    unsafe {
+        killed.pre_exec(|| {
+            if libc::signal(libc::SIGXFSZ, libc::SIG_DFL) == libc::SIG_ERR {
+                return Err(std::io::Error::last_os_error());
+            }
+            let limit = libc::rlimit {
+                rlim_cur: 64,
+                rlim_max: 64,
+            };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let out = killed.output().unwrap();
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(out.status.signal(), Some(libc::SIGXFSZ), "{}", stderr(&out));
+    assert!(
+        std::fs::symlink_metadata(&page).is_err(),
+        "a killed write leaves no page"
+    );
+    for name in names(dir.path()) {
+        if name != "rows.jsonl" {
+            std::fs::remove_file(dir.path().join(name)).unwrap();
+        }
+    }
+    // The same command without the limit writes the page whole, private.
     let whole = report(&rows, &["--page".as_ref(), page.as_os_str()]);
     assert!(whole.status.success(), "{}", stderr(&whole));
     assert!(std::fs::metadata(&page).unwrap().len() > 64);
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&page).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(names(dir.path()), ["report.md", "rows.jsonl"]);
 }
