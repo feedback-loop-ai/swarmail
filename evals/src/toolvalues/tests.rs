@@ -381,12 +381,45 @@ fn a_numeric_sentinel_is_found_by_value_in_any_spelling() {
         );
     }
     assert!(h.redact(br#"{"s":".6"}"#).is_ok());
-    // A literal that is not one JSON number is matched by spelling only.
-    let mut t = Registry::new();
-    t.register("0150");
-    t.register(" 7");
-    assert_eq!(t.redact(br#"{"n":150}"#).as_deref(), Ok(r#"{"n":150}"#));
-    assert_eq!(t.redact(br#"{"n":7}"#).as_deref(), Ok(r#"{"n":7}"#));
+    // Every literal that reads as a decimal number is matched by value
+    // and digit string, not only a strict JSON number: leading zeros,
+    // surrounding whitespace, a leading '+' and a trailing dot.
+    for (literal, doc) in [
+        ("0150", &br#"{"n":150}"#[..]),
+        ("0150", br#"{"s":"limit 1.5e2"}"#),
+        (" 7", br#"{"n":7.0}"#),
+        ("+42", br#"{"n":4.2e1}"#),
+        ("5.", br#"{"n":5}"#),
+        ("0150", br#"{"n":31500}"#),
+    ] {
+        let mut t = Registry::new();
+        t.register(literal);
+        assert_eq!(t.redact(doc), Err(Refusal::ResidualSecret), "{literal:?}");
+    }
+    // A sentinel of the file minimum, all digits with a leading zero, is
+    // caught spelled without it, as a number and in text.
+    let zeroed = format!("0{}", "1234567890".repeat(4).get(..31).unwrap());
+    assert_eq!(zeroed.len(), SENTINEL_MIN_BYTES);
+    let mut z = Registry::new();
+    z.register(&zeroed);
+    let bare = &zeroed[1..];
+    for doc in [
+        format!(r#"{{"n":{bare}}}"#),
+        format!(r#"{{"s":"id {bare}"}}"#),
+        format!(r#"{{"n":{bare}.0}}"#),
+    ] {
+        assert_eq!(
+            z.redact(doc.as_bytes()),
+            Err(Refusal::ResidualSecret),
+            "{doc}"
+        );
+    }
+    // Text that is not a number is matched by spelling only.
+    let mut w = Registry::new();
+    w.register("15 apples");
+    assert_eq!(w.redact(br#"{"n":15}"#).as_deref(), Ok(r#"{"n":15}"#));
+    assert_eq!(numeric_reading("  "), None);
+    assert_eq!(numeric_reading("0").map(|(_, d)| d), Some(b"0".to_vec()));
     // The row is checked by value too.
     assert!(r.found_in_document(br#"{"wall_time_ms":1.5e2}"#));
     assert_eq!(

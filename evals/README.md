@@ -792,8 +792,10 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
     3)), and the admin bearer is 32 characters.
   - **Residual literals.** No literal may survive in any decoded layer,
     compared ignoring ASCII case, so an upper- or mixed-case bearer is
-    `residual_secret`. A sentinel that is a JSON number is also found by
-    value: a number of equal value in any spelling (`1.5e2`, `.5`, `5.e-1`),
+    `residual_secret`. Every literal that reads as a decimal number
+    (after trimming surrounding whitespace, a leading `+` and leading
+    zeros; a leading or trailing dot allowed: `0150`, ` 7`, `+42`, `5.`) is
+    also found by value: a number of equal value in any spelling (`1.5e2`, `.5`, `5.e-1`),
     in a value or anywhere in a string, is refused, and so is a number whose
     digits contain the sentinel's digits.
   - **Sentinels.** `--tool-sentinels` must hold sentinels of at least 32

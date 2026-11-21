@@ -402,13 +402,15 @@ fn encode(node: &Json, out: &mut String) {
 #[derive(Clone)]
 pub struct Registry {
     literals: Vec<String>,
-    /// The exact values of the literals that are JSON numbers: a number
-    /// is found by value as well as by spelling.
+    /// The exact values of the literals that read as decimal numbers
+    /// ([`numeric_reading`]): a number is found by value as well as by
+    /// spelling.
     numbers: Vec<Decimal>,
     /// Each literal ASCII-lowercased, for the case-insensitive search.
     folded: Vec<Vec<u8>>,
-    /// The digits of each numeric literal as written: a number whose own
-    /// digits contain them is refused, whatever its value.
+    /// The significant digits of each numeric literal (leading zeros
+    /// dropped): a number whose own digits contain them is refused,
+    /// whatever its value.
     digit_strings: Vec<Vec<u8>>,
     bytes: usize,
     complete: bool,
@@ -454,12 +456,9 @@ impl Registry {
         self.bytes += literal.len();
         self.literals.push(literal.to_string());
         self.folded.push(literal.as_bytes().to_ascii_lowercase());
-        if matches!(parse(literal.as_bytes()), Ok(Node { value: Json::Num(n), .. }) if n == literal)
-            && let Some(value) = Decimal::of(literal.as_bytes())
-        {
+        if let Some((value, digits)) = numeric_reading(literal) {
             self.numbers.push(value);
-            self.digit_strings
-                .push(literal.bytes().filter(u8::is_ascii_digit).collect());
+            self.digit_strings.push(digits);
         }
     }
     /// Mark the registry unusable (a source could not be read whole).
@@ -724,6 +723,29 @@ impl Registry {
         }
         false
     }
+}
+
+/// How a literal reads as a decimal number, if it does: after trimming
+/// surrounding whitespace, one leading `+` and leading zeros, with a
+/// leading or trailing dot and an exponent allowed (`0150`, ` 7`, `+42`,
+/// `5.`, `.5`, `1e3`). The value, and the significant digits as written
+/// with leading zeros dropped. Every such literal is matched by value and
+/// by digit string, not only one spelled as a strict JSON number.
+fn numeric_reading(literal: &str) -> Option<(Decimal, Vec<u8>)> {
+    let t = literal.trim();
+    let t = t.strip_prefix('+').unwrap_or(t);
+    let value = Decimal::of(t.as_bytes())?;
+    let digits: Vec<u8> = t
+        .bytes()
+        .take_while(|b| !matches!(b, b'e' | b'E'))
+        .filter(u8::is_ascii_digit)
+        .collect();
+    let lead = digits
+        .iter()
+        .take_while(|d| **d == b'0')
+        .count()
+        .min(digits.len().saturating_sub(1));
+    Some((value, digits[lead..].to_vec()))
 }
 
 /// A decimal number's exact value: its sign, its significant digits and
