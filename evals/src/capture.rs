@@ -39,10 +39,15 @@
 //! value is redacted whatever its source; scoring never reads any of it.
 //! A connection holds at most one open call, and a trial accepts at most
 //! [`HELPER_LIMIT`] connections, so the socket cannot grow the runner's
-//! memory; nor can the forwarder, within [`CONNECTION_LIMIT`] and
-//! [`REQUEST_LIMIT`]. The worst a hostile agent can do is withhold its own
-//! trial's evidence, which it can already do by calling two tools at once,
-//! and, past the connection cap, have its own excess connections refused.
+//! memory. The forwarder is bounded, not free: at most [`CONNECTION_LIMIT`]
+//! connections at once, each holding one request body of at most
+//! [`REQUEST_BODY_LIMIT`] (2 MiB) and one reply of at most the MCP reply
+//! bound (16 MiB), so at most 32 x 18 MiB (576 MiB) for the trial's
+//! length, and [`REQUEST_LIMIT`] requests observed. Within those bounds a
+//! hostile agent can withhold its own trial's evidence (which it can
+//! already do by calling two tools at once), have its own excess
+//! connections or oversized bodies refused, and hold that much runner
+//! memory while its trial runs; it cannot reach another trial.
 
 use crate::toolvalues::{Capture, Refusal, Server, Started};
 use axum::body::{Body, Bytes};
@@ -60,8 +65,14 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 
-/// The largest request body forwarded, the replies' own bound.
+/// The largest reply forwarded: the MCP client's own reply bound.
 const BODY_LIMIT: usize = crate::mcp::MAX_REPLY_BYTES as usize;
+/// The largest request body forwarded: Swarmail's own `POST /mcp` limit
+/// (`MCP_BODY_LIMIT` in the root `src/api.rs`, 2 MiB), mirrored here
+/// because the harness is a separate crate. A body over it is refused
+/// (413) as soon as its first byte over the limit arrives, never read to
+/// its end, exactly as Swarmail itself would refuse it.
+pub const REQUEST_BODY_LIMIT: usize = 2_097_152;
 /// The largest observation frame the socket reads: the helper's line bound
 /// plus its framing.
 const FRAME_LIMIT: u64 = 3 * crate::fixture_http::INPUT_LIMIT as u64;
@@ -71,8 +82,9 @@ const FRAME_LIMIT: u64 = 3 * crate::fixture_http::INPUT_LIMIT as u64;
 pub const HELPER_LIMIT: usize = 16;
 /// The most forwarder connections open at once. Each serves one HTTP/1.1
 /// request at a time, so this bounds what the forwarder buffers to this
-/// many request bodies and replies of at most `BODY_LIMIT` each. A further
-/// connection is closed unserved and withholds the trial's values.
+/// many request bodies of at most [`REQUEST_BODY_LIMIT`] and replies of at
+/// most `BODY_LIMIT` each. A further connection is closed unserved and
+/// withholds the trial's values.
 pub const CONNECTION_LIMIT: usize = 32;
 /// The most requests the forwarder observes in one trial: room for every
 /// call the value record can keep ([`crate::toolvalues::CALL_LIMIT`]) and
@@ -185,7 +197,7 @@ async fn forwarder(
     });
     let app = axum::Router::new()
         .route("/mcp", axum::routing::any(forward))
-        .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        .layer(DefaultBodyLimit::max(REQUEST_BODY_LIMIT))
         .with_state(state);
     let bounded = Bounded {
         inner: listener,
@@ -604,6 +616,59 @@ mod tests {
         assert!(exchange(&mut s).await);
         assert_eq!(hits.load(Ordering::SeqCst), REQUEST_LIMIT + 1);
         assert_eq!(reason(&c), Some(Refusal::TrialTooLarge));
+    }
+
+    /// Read one reply's status line and headers, or `None` if the
+    /// connection closes first.
+    async fn status(stream: &mut tokio::net::TcpStream) -> Option<String> {
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut buf))
+                .await
+                .expect("the forwarder answers or closes")
+            {
+                Ok(0) | Err(_) => return None,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+            }
+        }
+        let text = String::from_utf8_lossy(&got);
+        text.lines().next().map(str::to_string)
+    }
+
+    #[tokio::test]
+    async fn the_forwarder_bounds_a_request_body_at_swarmails_own_limit() {
+        let (c, own, hits) = bounded_forwarder().await;
+        let post = |length: usize| {
+            format!(
+                "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\ncontent-type: application/json\r\ncontent-length: {length}\r\n\r\n"
+            )
+        };
+        // Exactly at the limit: read whole and forwarded.
+        let mut s = tokio::net::TcpStream::connect(own).await.unwrap();
+        s.write_all(post(REQUEST_BODY_LIMIT).as_bytes())
+            .await
+            .unwrap();
+        s.write_all(&vec![b' '; REQUEST_BODY_LIMIT]).await.unwrap();
+        assert_eq!(status(&mut s).await.as_deref(), Some("HTTP/1.1 200 OK"));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        // One byte over, of a body that declares four times the limit: the
+        // forwarder answers 413 once that byte arrives and never waits for
+        // the rest of the body, which is never sent.
+        let mut s = tokio::net::TcpStream::connect(own).await.unwrap();
+        s.write_all(post(4 * REQUEST_BODY_LIMIT).as_bytes())
+            .await
+            .unwrap();
+        s.write_all(&vec![b' '; REQUEST_BODY_LIMIT + 1])
+            .await
+            .unwrap();
+        assert_eq!(
+            status(&mut s).await.as_deref(),
+            Some("HTTP/1.1 413 Payload Too Large")
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "never forwarded");
+        assert_eq!(reason(&c), None, "a refused body is not a call");
+        assert!(REQUEST_BODY_LIMIT < BODY_LIMIT);
     }
 
     #[tokio::test]

@@ -820,10 +820,14 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   bounded the same way: at most 32 connections open at once (one more is
   closed unserved) and 512 requests observed per trial (later ones are
   forwarded unread); exceeding either withholds the trial as
-  `trial_too_large`. A forged frame cannot
+  `trial_too_large`. A request body over Swarmail's own `POST /mcp` limit,
+  2 MiB, is refused (413) as its first byte over the limit arrives, never
+  read to its end; replies are bounded at 16 MiB. A forged frame cannot
   publish a value, because every value must match the digest the engine's
-  journal recorded for the agent's real call. The worst an agent can do is
-  withhold its own trial's evidence.
+  journal recorded for the agent's real call. Within these bounds an agent
+  can withhold its own trial's evidence, have its own excess connections or
+  oversized bodies refused, and hold at most 32 x (2 + 16) MiB of runner
+  memory while its trial runs; it cannot reach another trial.
 - **How it binds.** The report pairs each journal call whose name denotes a
   harness-owned tool (`mcp__swarmail__*`, `mcp__fixture__eval_http`, and the
   `server.tool`/`server/tool`/`server:tool` spellings) with the next captured
