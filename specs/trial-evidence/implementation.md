@@ -311,6 +311,62 @@ wall (the rerun; the first run is in the note above). The root-only gates
 and `brokkr compile` were not rerun: nothing outside `evals/` and
 `specs/trial-evidence/` changed.
 
+## Review return 6 (decision 0102), fixes
+
+The fifth panel returned on `b449d42` with a regression from `e91adcea`.
+With `=` and `/` breaking an opaque run, a quoted-printable spelling of a
+32-byte literal (`=73=65...`) and hex pairs joined by `/` were published,
+as `:`- and space-joined hex already were after return 4. It also flagged
+a spec defect: AC3's "never in any spelling" claimed more than any shape
+check delivers. The operator ruled on 2026-11-21 (review 5). Each fix has
+a test that turns red when it is reverted (each was checked by reverting
+it):
+
+| Finding | Fix | Commit | Test |
+|---|---|---|---|
+| Quoted-printable of a literal published (low, security) | `=` counts in an opaque run again; two quoted-printable escapes in a row are refused; quoted-printable (`=XX` and soft line breaks) is a decoded layer of the residual search | `2f8ad27e` | `toolvalues::tests::quoted_printable_and_separator_joined_hex_are_refused`: the bearer and a 32-byte sentinel, quoted-printable in either case and with soft breaks, as a value, a key and in a path. Each rule has a case only it catches: a 37-run joined by one `=`, `x=41=42y`, and a sparse escape inside a sentinel with spaces. Red with each of the three reverted alone |
+| Hex joined by any separator published (low, security) | Within a string, 64 or more hex digits joined only by characters that are not letters or digits are refused (`HEX_RUN_LIMIT`); a non-hex letter breaks the count | `2f8ad27e` | the same test: hex of both literals joined by `/ : space , newline - . = ", "`, in both cases, refused; 64 joined digits refused, 63 kept, a non-hex letter between two runs kept. Red with the rule off |
+| Near misses must publish | — | `2f8ad27e` | the same test: one UUID, `/search?page=10&start=20261026T153000Z`, `token=4B<22>` in a path and a form, prose of hex-letter words ("deadbeef cafe ..."), 63 joined hex digits; two UUIDs side by side are refused (the accepted cost). `deny_by_default_refuses_every_unreadable_spelling` still publishes every fixture route and the full `ics_url` |
+| The encoding test | Extended with quoted-printable (both cases) and hex joined by `:`, `/`, space and `,` | `2f8ad27e` | `every_long_encoding_of_a_sentinel_holds_one_unbroken_run`: 55 literals, now 25 740 spellings, each refused |
+| End to end | A `joined` agent sends only the bearer quoted-printable and the bearer and sentinel as joined hex. It is withheld as `invalid_argument_encoding`, and was published under the previous shape. The canary search adds each literal's quoted-printable spelling and its hex joined by `:`, space, `/`, `,` and a newline | `87badc47` | `tests/tool_values.rs::values_are_redacted_bound_and_never_scored`. With `toolvalues.rs` from before `2f8ad27e` it is red at the `joined` index entry, and the widened canary search alone is red too (it finds the bearer in `capture.json`) |
+| AC3 and the README promised "never ... in any spelling" (spec defect) | Both now state the exact guarantee: the bearer and every sentinel are refused in raw, ASCII-case-folded, JSON-escaped, `%XX`/`+`, nested-JSON, numeric-value, base64, base64url, base32, hex (any separators) and quoted-printable spellings. Both name what no check sees as the accepted 0075 §9 boundary: ROT13 and other letter substitutions, reversal, ascii85 and other unlisted alphabets, decimal or other code lists, literals split across fields or calls. The dated note "operator ruling 2026-11-21 (review 5)" is in both | `fae84cb0` | — |
+
+**One deviation from the ruling, and why.** The ruling said to refuse any
+complete `=XX` hex escape. A lone `=XX` is the shape of every `key=value`
+whose value starts with two hex digits: `page=10`, `start=2026...`, and
+about one random 24-character token in eight (`token=4B...`). The ruling
+itself requires `token=<24>` to publish. So a lone `=XX` is kept, and
+quoted-printable is caught three other ways, any one of which suffices:
+
+- two escapes in a row are refused;
+- the `=`-counting run catches a fully escaped literal (96 characters);
+- quoted-printable decoding in the residual search finds any spelling of
+  a literal, sparse escapes and soft line breaks included.
+
+If the operator wants every lone `=XX` refused anyway, it is a one-line
+change. It would withhold those form and token values.
+
+**Not done.** As ruled, no check sees the alphabets and transforms named
+in AC3's boundary, including per-byte code lists with a letter prefix
+(`0x73,0x65`): the `x` breaks the hex count. The digit-string asymmetry
+(the review's info 2: a numeric sentinel with a leading zero, written
+inside a string between other digits) is unchanged and is not claimed by
+the docs. The earlier tracked debt in `tasks.md` is unchanged.
+
+Time added by this return: the new unit test runs in under 0.1 s, and the
+extended encoding test in about 1.5 s with the lib harness. The `joined`
+agent is one more stand-in trial: `tests/tool_values.rs` took 20.0 s in
+the gate run, against 16.8 s before.
+
+Gates after this return (`--locked`, this seat, 2026-11-21, tree
+`fae84cb0`, load average 7–13): root `cargo fmt --all -- --check` 0;
+evals `cargo fmt --all -- --check` 0; evals `cargo clippy --all-targets
+--locked -- -D warnings` 0; evals `SWARMAIL_BIN=<artifact record of cargo
+build --locked --bin swarmail> cargo test --locked` 0, 604 passed, 0
+failed, 7 ignored, 1605 s wall. No test failed, so none was rerun. The
+root-only gates and `brokkr compile` were not rerun: nothing outside
+`evals/` and `specs/trial-evidence/` changed.
+
 ## Held paths
 
 None touched: `git diff --stat 0d4839f -- Cargo.toml Cargo.lock evals/Cargo.toml evals/Cargo.lock deny.toml scripts .github .brokkr src tests` is empty. No dependency or feature was added.
