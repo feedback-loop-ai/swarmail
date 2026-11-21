@@ -2052,14 +2052,16 @@ fn create_capture_root_with(
             std::io::ErrorKind::AlreadyExists => "capture_root_exists",
             _ => "capture_root_unavailable",
         })?;
+    // The root a worker is handed is absolute: a brokkr trial seat's
+    // working directory is not the matrix's.
     let finished = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
         .map_err(|_| "capture_root_unavailable")
-        .and_then(|()| artifacts::safe_root(&path).map_err(|_| "capture_root_unavailable"));
-    if let Err(category) = finished {
+        .and_then(|()| artifacts::safe_root(&path).map_err(|_| "capture_root_unavailable"))
+        .and_then(|()| std::fs::canonicalize(&path).map_err(|_| "capture_root_unavailable"));
+    if finished.is_err() {
         let _ = std::fs::remove_dir(&path);
-        return Err(category);
     }
-    Ok(path)
+    finished
 }
 
 /// The one argument list (after the `trial` subcommand) a `swarmail-evals trial` worker is given, whether

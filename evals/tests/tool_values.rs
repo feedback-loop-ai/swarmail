@@ -255,15 +255,36 @@ fn values_are_redacted_bound_and_never_scored() {
         .arg(&agents)
         .args(["--trials", "1", "--artifacts-dir"])
         .arg(&root)
-        .arg("--capture-tool-values")
-        .arg(&captures)
+        // Relative to the matrix's working directory (the realm): every
+        // slot's request must carry it absolute, since a real trial seat
+        // runs elsewhere.
+        .args(["--capture-tool-values", "captures"])
         .arg("--tool-sentinels")
         .arg(&sentinels)
         .output()
         .unwrap();
+    let real_captures = std::fs::canonicalize(&captures).unwrap();
+    let mut requests = 0;
+    for matrix_dir in std::fs::read_dir(&root).unwrap() {
+        let slots = matrix_dir.unwrap().path().join("slots");
+        for slot in std::fs::read_dir(&slots).into_iter().flatten() {
+            let request: Value = serde_json::from_slice(
+                &std::fs::read(slot.unwrap().path().join("request.json")).unwrap(),
+            )
+            .unwrap();
+            let args = request["args"].as_array().unwrap();
+            let at = args
+                .iter()
+                .position(|a| a == "--capture-tool-values")
+                .expect("the capture flag");
+            assert_eq!(args[at + 1], json!(real_captures.to_str().unwrap()));
+            requests += 1;
+        }
+    }
     let rows = swarmail_evals::report::parse_rows(&String::from_utf8_lossy(&matrix.stdout))
         .unwrap_or_else(|e| panic!("{e}\n{}", stderr(&matrix)));
     assert_eq!(rows.len(), 6, "{}", stderr(&matrix));
+    assert_eq!(requests, 6, "one request per brokkr slot");
     let by = |label: &str| {
         rows.iter()
             .find(|r| r.agent.as_deref() == Some(label))
