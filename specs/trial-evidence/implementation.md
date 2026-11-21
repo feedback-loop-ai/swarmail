@@ -473,6 +473,39 @@ wall. No test failed, so none was rerun. The root-only gates and `brokkr
 compile` were not rerun: nothing outside `evals/` and
 `specs/trial-evidence/` changed.
 
+## Review return 10 (decision 0102), fixes
+
+The ninth panel returned on `576b943`: no spec defect, one medium and
+lows; the cached-cell exception was accepted. Each fix has a test that
+turns red when it is reverted (each was checked by reverting it, except
+where noted):
+
+| Finding | Fix | Commit | Test |
+|---|---|---|---|
+| The strict reader's duplicate-name check was quadratic, and the forwarder runs it on every POST body: 47.7 s on a 2 MiB object of 180 000 members (medium, availability) | Names are checked with a hash set; an object of more than `MEMBER_LIMIT` (4096) members is refused (`invalid_argument_encoding`, now listed) as soon as the cap is passed; nesting was already capped at 32. A second super-linear path in the hot path was found and bounded: the text number scanner started a number at every digit, quadratic in a long digit run, and now starts only where a run (or a dot before one) begins; a number inside a longer one is still caught by its digits. Chunk decoding is linear: each candidate is one pass and eight packings per string, capped at `2 x VALUE_LIMIT` alphabet characters | `80b55d51` | `a_wide_or_long_body_is_read_in_linear_time`: exactly 4096 members read and 4097 refused; a near-2 MiB `tools/call` of 180 000 members refused, and the same width without a call ignored; a 200 000-digit run through the residual search with a numeric sentinel registered. It asserts on results, plus a 10 s ceiling, generous for a debug build on a loaded shared host, that exists only to fail rather than hang if a read turns quadratic again. It takes 0.5 s. Red with the member cap removed. The quadratic forms were not re-run: they would hang the test rather than fail it |
+| Chunked base64 joined by `! ' * ( ) ~ @ $ ^ # ? &` or split by `/` published (low, security) | As the hex rule does, each decoding candidate is built by deleting every byte outside an alphabet: letters and digits alone, the standard alphabet with `+ /`, the URL alphabet with `- _`, and base32's. Each is decoded at every bit alignment, since a deleted character shifts the stream by any number of bits. A literal of 32 bytes or more is looked for without its edge bytes, which a deleted seam character can cost. Sentinels may no longer hold `>` or `~`: with `?` they are the bytes that make standard base64 write `+` or `/`, so a sentinel's own encoded characters are letters and digits only | `36660dcb`, `fa710da8` (the first left an unused import clippy refuses) | `chunked_base64_and_base32_are_found_by_decoding`, now 21 joiners (`/ ! # ? & ' ( ) " * ~ @ $ ^` among them) over two literals, three prefixes, six encodings and three widths (2916 spellings). A `/` and `-` mix is decoded only by the letters-and-digits candidate. A sentinel whose last byte meets an attacker's suffix in a seam `/` (16 suffixes) is found only by its core. Every task's goal and template, the oracle's reply and every one of the README's lines (over 1000 texts of prose) decode to nothing. The sweep adds `/ ! (` chunkings over the admitted literals. Red with the bit alignments reduced to one, red without the letters-and-digits candidate, and red with the full literal instead of its core |
+| Unexecuted arms (low) | Tests only; the capture root's finishing step is now a separate function a test can make fail | `60fa6b33` | `capture_write_tests::a_capture_that_never_started_leaves_no_record`; `transcripts_write_failed` and `page_name_invalid` (a non-UTF-8 `--page`) through the CLI in `the_page_gives_every_paid_group_a_figure_or_its_reason`; `a_capture_root_that_cannot_be_finished_is_removed` (red without the removal) |
+| No matrix-row golden (low) | The default contract's rows, written by the 68c3839 binary, each read back and serialize to the same bytes, through serde and `row_bytes` | `07216feb` | `tests/report.rs::the_default_rows_serialize_byte_identically_to_the_pre_change_contract`. Red with two row fields swapped |
+
+AC3 and the README now say base64, base64url and base32 are refused
+"joined by any separators".
+
+Left as they were, as asked: CI time and the tracked proof debt.
+
+Time added by this return: the linear-time test 0.5 s, the chunked test
+about 1.1 s and the sweep about 1.9 s (debug builds), the new unit
+tests under 0.3 s, and the two CLI arms about 0.5 s. `tests/tool_values.rs`
+took 25.4 s in the gate run at load average 33–79, against 25.3 s before.
+
+Gates after this return (`--locked`, this seat, 2026-11-21, tree
+`07216feb`): root `cargo fmt --all -- --check` 0; evals `cargo fmt --all --
+--check` 0; evals `cargo clippy --all-targets --locked -- -D warnings` 0;
+evals `SWARMAIL_BIN=<artifact record of cargo build --locked --bin
+swarmail> cargo test --locked` 0, 611 passed, 0 failed, 7 ignored, 1597 s
+wall. No test failed, so none was rerun. The root-only gates and `brokkr
+compile` were not rerun: nothing outside `evals/` and
+`specs/trial-evidence/` changed.
+
 ## Held paths
 
 None touched: `git diff --stat 0d4839f -- Cargo.toml Cargo.lock evals/Cargo.toml evals/Cargo.lock deny.toml scripts .github .brokkr src tests` is empty. No dependency or feature was added.
