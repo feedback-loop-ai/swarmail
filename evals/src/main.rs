@@ -51,19 +51,43 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Run fresh controls before the approved paid baseline. Paid admission
-    /// currently refuses: locally evidenced CLI/auth contracts are incomplete.
+    /// Run the paid baseline product with one operator command (proposed
+    /// 0137): print the plan, verify every family's pinned CLI contract, run
+    /// fresh controls, then task-major paid chunks, each started only while
+    /// its credential has the freshness margin left. Spends only with
+    /// `--authorized-product` naming the printed product id.
     Baseline {
+        /// The private version-2 wrapper selection (evals/wrappers.md).
         #[arg(long)]
         config: PathBuf,
+        /// A fresh private run directory, or the run to continue with --resume.
         #[arg(long)]
         output: PathBuf,
+        /// Print the plan and spend nothing: no file read, created or launched.
         #[arg(long)]
         dry_run: bool,
         /// Plan one tier instead of the approved default-tier product
-        /// (`straight`, `traps`, `multi_step`, `hard` or `expert`).
+        /// (`straight`, `traps`, `multi_step`, `hard`, `expert` or
+        /// `deliverability`).
         #[arg(long)]
         tier: Option<tasks::Tier>,
+        /// The product id the plan printed; anything else refuses by name.
+        #[arg(long)]
+        authorized_product: Option<String>,
+        /// Continue the run already in --output: committed scores are kept and
+        /// only outstanding slots run.
+        #[arg(long)]
+        resume: bool,
+        /// Minutes of validity a credential needs left before its chunk starts.
+        #[arg(long, default_value_t = baseline::FRESHNESS_MINUTES, value_parser = clap::value_parser!(u64).range(1..=10080))]
+        freshness_minutes: u64,
+        /// Seconds between credential rereads while every chunk is deferred.
+        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=3600))]
+        renewal_poll_seconds: u64,
+        /// An interrupted attempt whose owned cleanup was not proved, after the
+        /// operator checked for surviving agent processes (repeatable).
+        #[arg(long)]
+        confirm_cleanup: Vec<String>,
     },
     /// Launch Claude with private selected OAuth authentication.
     AgentClaude {
@@ -784,7 +808,22 @@ fn main() -> ExitCode {
             output,
             dry_run,
             tier,
-        } => rt.block_on(run_baseline(config, output, dry_run, tier)),
+            authorized_product,
+            resume,
+            freshness_minutes,
+            renewal_poll_seconds,
+            confirm_cleanup,
+        } => rt.block_on(run_baseline(BaselineArgs {
+            config,
+            output,
+            dry_run,
+            tier,
+            authorized_product,
+            resume,
+            freshness_minutes,
+            poll: Duration::from_secs(renewal_poll_seconds),
+            confirm_cleanup,
+        })),
         Cmd::AgentClaude {
             model,
             config,
@@ -3125,6 +3164,8 @@ async fn matrix_with_target(
             retention,
             brokkr,
             comparison,
+            matrix_id: None,
+            cli: Vec::new(),
         },
         &mut resources,
     )
@@ -3142,6 +3183,10 @@ struct MatrixInvocation {
     /// A comparison target: the rows are schema 3, and a competitor's
     /// executables ride in each worker's context.
     comparison: Option<comparison::MatrixTarget>,
+    /// A caller-assigned matrix id (a paid-baseline attempt), else fresh.
+    matrix_id: Option<String>,
+    /// Per declaration, the verified CLI binding every row of it carries.
+    cli: Vec<Option<provenance::CliIdentity>>,
 }
 #[derive(Default)]
 struct MatrixResources {
@@ -3161,6 +3206,8 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
         retention,
         brokkr,
         comparison,
+        matrix_id: assigned_matrix_id,
+        cli,
     } = invocation;
     if trials == 0
         || ids.is_empty()
@@ -3187,7 +3234,7 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
         "swarmail-evals: seed={} fixture_time={}",
         master.seed, master.fixture_time
     );
-    let matrix_id = runner::new_trial_id();
+    let matrix_id = assigned_matrix_id.unwrap_or_else(runner::new_trial_id);
     let planned = retention.as_ref().map(|_| artifacts::MatrixPlan {
         schema_version: 1,
         matrix_id: matrix_id.clone(),
@@ -3215,11 +3262,14 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
     let harness_identity = identity::harness();
     let agent_identities: Vec<_> = specs
         .iter()
-        .map(|spec| {
+        .enumerate()
+        .map(|(index, spec)| {
             let cell = assigned_cell(&ids, &specs, trials, 0, &master, &matrix_id, deadline_ms);
             let mut req = cell_request(&cell, spec, None);
             req.agent = Some(spec.label.clone());
-            runner::make_provenance(&req, None, None).agent
+            let mut agent = runner::make_provenance(&req, None, None).agent;
+            agent.cli = cli.get(index).cloned().flatten();
+            agent
         })
         .collect();
     let cell_at = |i: usize| {
@@ -3571,168 +3621,721 @@ fn baseline_leaf(output: &std::path::Path) -> Result<PathBuf, String> {
         .map_err(|_| "baseline_output_permissions")?;
     Ok(path)
 }
-fn baseline_stream(root: &std::path::Path, name: &str) -> Result<std::fs::File, String> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(root.join(name))
-        .map_err(|_| "baseline_stream_unavailable")?;
-    f.set_permissions(std::fs::Permissions::from_mode(0o600))
-        .map_err(|_| "baseline_stream_permissions")?;
-    Ok(f)
-}
-
-async fn run_baseline(
+struct BaselineArgs {
     config: PathBuf,
     output: PathBuf,
     dry_run: bool,
     tier: Option<tasks::Tier>,
-) -> ExitCode {
-    let plan = baseline::Plan::for_tier(tier, &output);
-    if !config.is_absolute() {
+    authorized_product: Option<String>,
+    resume: bool,
+    freshness_minutes: u64,
+    poll: Duration,
+    confirm_cleanup: Vec<String>,
+}
+
+async fn run_baseline(args: BaselineArgs) -> ExitCode {
+    let plan = baseline::Plan::with_margin(args.tier, &args.output, args.freshness_minutes);
+    if !args.config.is_absolute() {
         return fail("baseline_config_locator_invalid");
     }
-    if dry_run {
-        // Before credential reads, output creation, random fixture resolution,
-        // signal setup, preparation, trial or provider process launch.
-        print_line(&plan);
+    // The plan comes first, before any authority, credential or output check;
+    // a dry run stops here having read, created and launched nothing.
+    print_line(&plan);
+    if args.dry_run {
         return ExitCode::SUCCESS;
     }
-    match baseline_execute(&config, &output, &plan).await {
+    let refusal = match args.authorized_product.as_deref() {
+        None => Some("authorization_missing"),
+        Some(id) if id != plan.product_id => Some("authorization_mismatch"),
+        Some(_) => None,
+    };
+    if let Some(refusal) = refusal {
+        eprintln!(
+            "swarmail-evals: baseline refused: {refusal}; review the plan, then pass --authorized-product with its product_id"
+        );
+        return ExitCode::from(2);
+    }
+    match baseline_execute(&args, &plan).await {
         Ok(code) => ExitCode::from(code),
-        Err(_) => {
-            eprintln!("swarmail-evals: baseline refused; evidence kept; see evals/wrappers.md");
+        Err(e) => {
+            eprintln!("swarmail-evals: baseline refused: {e}; evidence kept; see evals/README.md");
             ExitCode::from(2)
         }
     }
 }
 
-async fn baseline_execute(
-    config: &std::path::Path,
-    output: &std::path::Path,
+/// What a run binds before its first slot: a resume must reproduce it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BaselineManifest {
+    schema_version: u32,
+    product_id: String,
+    tier: Option<tasks::Tier>,
+    tasks: Vec<String>,
+    agents: Vec<String>,
+    margin_minutes: u64,
+    harness: provenance::HarnessIdentity,
+    target: provenance::ExecutableIdentity,
+    contracts: Vec<wrappers::Contract>,
+}
+/// Published before a chunk's matrix starts: which nominal repetitions of
+/// which task × model this attempt's cells stand for.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Assignment {
+    schema_version: u32,
+    attempt_id: String,
+    product_id: String,
+    task: String,
+    agent: String,
+    repetitions: Vec<u32>,
+}
+/// Published once an attempt's owned cleanup returned, or once the operator
+/// confirmed cleanup of an attempt whose coordinator died.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Closure {
+    schema_version: u32,
+    attempt_id: String,
+    cause: String,
+}
+type SlotKey = (String, String, u32);
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+fn jsonl(rows: &[TrialResult]) -> Vec<u8> {
+    rows.iter()
+        .flat_map(|r| {
+            let mut b = serde_json::to_vec(r).expect("typed row");
+            b.push(b'\n');
+            b
+        })
+        .collect()
+}
+/// Derived output is published once, privately and without clobbering; an
+/// existing file must already hold exactly the regenerated bytes.
+fn publish_or_verify(root: &std::path::Path, name: &str, bytes: &[u8]) -> Result<(), String> {
+    match std::fs::symlink_metadata(root.join(name)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            artifacts::publish(root, name, bytes).map(|_| ())
+        }
+        _ => {
+            let existing = artifacts::read_file(root, name, 4096 * provenance::RESULT_LIMIT)
+                .map_err(|_| format!("output_conflict {name}"))?;
+            if existing == bytes {
+                Ok(())
+            } else {
+                Err(format!("output_conflict {name}"))
+            }
+        }
+    }
+}
+fn private_dir_ok(path: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::symlink_metadata(path).map_err(|_| "baseline_output_unavailable")?;
+    if !m.file_type().is_dir() || m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o777 != 0o700
+    {
+        return Err("baseline_output_unsafe".into());
+    }
+    Ok(())
+}
+fn baseline_reopen(output: &std::path::Path) -> Result<PathBuf, String> {
+    let path = artifacts::resolve_root(output)?;
+    artifacts::safe_root(&path)?;
+    private_dir_ok(&path)?;
+    Ok(path)
+}
+fn ensure_private_dir(path: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::DirBuilderExt;
+    match std::fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err("baseline_output_unavailable".into()),
+    }
+    private_dir_ok(path)
+}
+/// One writer owns a run until it exits: a second process refuses before it
+/// reads evidence or starts a slot.
+fn baseline_writer(root: &std::path::Path) -> Result<std::fs::File, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root.join("run.lock"))
+        .map_err(|_| "run_writer_unavailable")?;
+    f.try_lock().map_err(|e| match e {
+        std::fs::TryLockError::WouldBlock => "run_writer_busy",
+        std::fs::TryLockError::Error(_) => "run_writer_unavailable",
+    })?;
+    Ok(f)
+}
+fn names(dir: &std::path::Path) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    match std::fs::read_dir(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(_) => return Err("evidence_unreadable".into()),
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.map_err(|_| "evidence_unreadable")?;
+                out.push(
+                    entry
+                        .file_name()
+                        .into_string()
+                        .map_err(|_| "evidence_unexpected")?,
+                );
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+fn sink() -> Result<std::fs::File, String> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/null")
+        .map_err(|_| "baseline_sink_unavailable".into())
+}
+
+/// The retained control matrix in `dir`, validated as a complete gate.
+fn retained_controls(
+    dir: &std::path::Path,
     plan: &baseline::Plan,
-) -> Result<u8, String> {
-    let signals = install_matrix_signals().map_err(|_| "baseline_signals_unavailable")?;
-    let root = baseline_leaf(output)?;
+    status: u8,
+    harness: &provenance::HarnessIdentity,
+    target: &provenance::ExecutableIdentity,
+) -> Result<Vec<TrialResult>, String> {
+    let matrix: artifacts::MatrixPlan = provenance::decode(&artifacts::read_file(
+        dir,
+        "matrix-plan.json",
+        artifacts::PLAN_LIMIT,
+    )?)
+    .map_err(|_| "baseline_control_plan_invalid")?;
+    let rows: Vec<_> = artifacts::matrix(dir)
+        .map_err(|_| "baseline_control_retention_invalid")?
+        .into_iter()
+        .map(|r| r.original_result)
+        .collect();
+    baseline::validate_controls(&rows, &matrix, plan, status, harness, target)?;
+    Ok(rows)
+}
+
+/// Every committed score of the run, keyed by its nominal slot, rebuilt from
+/// retained evidence alone. Unscored attempts stay as evidence and consume
+/// nothing; anything unexpected, duplicated or inconsistent refuses.
+struct Ledger<'a> {
+    root: &'a std::path::Path,
+    plan: &'a baseline::Plan,
+    agents: &'a [report::AgentSpec],
+    harness: &'a provenance::HarnessIdentity,
+    target: &'a provenance::ExecutableIdentity,
+    contracts: &'a [wrappers::Contract],
+}
+impl Ledger<'_> {
+    fn read(
+        &self,
+        confirm: &[String],
+    ) -> Result<std::collections::BTreeMap<SlotKey, TrialResult>, String> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let attempts_dir = self.root.join("attempts");
+        let paid = self.root.join("paid");
+        let mut assignments: BTreeMap<String, Assignment> = BTreeMap::new();
+        let mut closed = BTreeSet::new();
+        for name in names(&attempts_dir)? {
+            let bytes = artifacts::read_file(&attempts_dir, &name, artifacts::PLAN_LIMIT)
+                .map_err(|_| "attempt_evidence_invalid")?;
+            if let Some(id) = name.strip_suffix(".json") {
+                let a: Assignment =
+                    provenance::decode(&bytes).map_err(|_| "attempt_evidence_invalid")?;
+                let declared = self
+                    .plan
+                    .chunks
+                    .iter()
+                    .any(|c| c.task == a.task && c.agent == a.agent);
+                if a.schema_version != 1
+                    || a.attempt_id != id
+                    || !artifacts::generated_id(id)
+                    || a.product_id != self.plan.product_id
+                    || !declared
+                    || a.repetitions.is_empty()
+                    || a.repetitions.windows(2).any(|w| w[0] >= w[1])
+                    || a.repetitions
+                        .iter()
+                        .any(|r| *r >= self.plan.paid_repetitions)
+                {
+                    return Err(format!("attempt {id}: assignment_invalid"));
+                }
+                assignments.insert(id.to_string(), a);
+            } else if let Some(id) = name.strip_suffix(".closed") {
+                let c: Closure =
+                    provenance::decode(&bytes).map_err(|_| "attempt_evidence_invalid")?;
+                if c.schema_version != 1 || c.attempt_id != id {
+                    return Err(format!("attempt {id}: closure_invalid"));
+                }
+                closed.insert(id.to_string());
+            } else {
+                return Err("attempt_evidence_unexpected".into());
+            }
+        }
+        if let Some(id) = closed.iter().find(|id| !assignments.contains_key(*id)) {
+            return Err(format!("attempt {id}: closure_without_assignment"));
+        }
+        if let Some(id) = confirm.iter().find(|id| !assignments.contains_key(*id)) {
+            return Err(format!("confirm_cleanup_unknown {id}"));
+        }
+        let paid_names = names(&paid)?;
+        if let Some(name) = paid_names.iter().find(|n| !assignments.contains_key(*n)) {
+            return Err(format!("paid_evidence_unexpected {name}"));
+        }
+        let mut ledger = BTreeMap::new();
+        for (id, a) in &assignments {
+            if !closed.contains(id) {
+                if !confirm.contains(id) {
+                    return Err(format!(
+                        "attempt {id} has no proof of owned cleanup; check for surviving agent processes, then resume with --confirm-cleanup {id}"
+                    ));
+                }
+                // A confirmation never overrides a live owner.
+                if !swarmail_evals::admission::idle() {
+                    return Err(format!("attempt {id}: trial admission is still held"));
+                }
+                publish_closure(&attempts_dir, id, "operator_confirmed")?;
+                eprintln!(
+                    "swarmail-evals: baseline attempt {id}: operator-confirmed cleanup recorded"
+                );
+            }
+            if paid_names.contains(id) {
+                self.attempt(&paid.join(id), id, a, &mut ledger)?;
+            }
+        }
+        Ok(ledger)
+    }
+
+    fn attempt(
+        &self,
+        dir: &std::path::Path,
+        id: &str,
+        a: &Assignment,
+        ledger: &mut std::collections::BTreeMap<SlotKey, TrialResult>,
+    ) -> Result<(), String> {
+        artifacts::safe_root(dir)?;
+        let trial_names = names(&dir.join("trials"))?;
+        let matrix: artifacts::MatrixPlan =
+            match artifacts::read_file(dir, "matrix-plan.json", artifacts::PLAN_LIMIT) {
+                Ok(bytes) => provenance::decode(&bytes)
+                    .map_err(|_| format!("attempt {id}: matrix_plan_invalid"))?,
+                // Initialization died before the plan: no cell can have run.
+                Err(_) if trial_names.is_empty() => return Ok(()),
+                Err(_) => return Err(format!("attempt {id}: matrix_plan_missing")),
+            };
+        artifacts::validate_plan(&matrix)
+            .map_err(|_| format!("attempt {id}: matrix_plan_invalid"))?;
+        if matrix.matrix_id != id
+            || matrix.tasks != [a.task.clone()]
+            || matrix.agents != [a.agent.clone()]
+            || matrix.repetitions as usize != a.repetitions.len()
+            || matrix.cells.len() != a.repetitions.len()
+        {
+            return Err(format!("attempt {id}: matrix_plan_inconsistent"));
+        }
+        if let Some(n) = trial_names
+            .iter()
+            .find(|n| !matrix.cells.iter().any(|c| &c.trial_id == *n))
+        {
+            return Err(format!("attempt {id}: trial_unexpected {n}"));
+        }
+        let spec = self
+            .agents
+            .iter()
+            .find(|s| s.label == a.agent)
+            .ok_or("baseline_agent_unknown")?;
+        let family = spec
+            .wrapper_profile
+            .ok_or("baseline_agent_unknown")?
+            .family();
+        let cli = &self
+            .contracts
+            .iter()
+            .find(|c| c.family == family)
+            .ok_or("baseline_contract_missing")?
+            .cli;
+        for (cell, repetition) in matrix.cells.iter().zip(&a.repetitions) {
+            if !trial_names.contains(&cell.trial_id) {
+                continue;
+            }
+            let invalid = || format!("attempt {id}: trial_invalid {}", cell.trial_id);
+            let retained = artifacts::trial(&dir.join("trials").join(&cell.trial_id))
+                .map_err(|_| invalid())?;
+            if retained.row.outcome == Outcome::HarnessError {
+                // Evidence of an unscored attempt: kept, consumes no slot.
+                artifacts::matches_cell(&retained.row, cell).map_err(|_| invalid())?;
+                continue;
+            }
+            baseline::validate_row(
+                &retained.row,
+                cell,
+                spec,
+                self.harness,
+                self.target,
+                Some(cli),
+            )
+            .map_err(|e| format!("attempt {id}: {e}"))?;
+            let key = (a.task.clone(), a.agent.clone(), *repetition);
+            if ledger.insert(key, retained.row).is_some() {
+                return Err(format!("attempt {id}: slot_scored_twice"));
+            }
+        }
+        Ok(())
+    }
+}
+fn publish_closure(dir: &std::path::Path, id: &str, cause: &str) -> Result<(), String> {
+    artifacts::publish(
+        dir,
+        &format!("{id}.closed"),
+        &artifacts::encode(
+            &Closure {
+                schema_version: 1,
+                attempt_id: id.into(),
+                cause: cause.into(),
+            },
+            artifacts::PLAN_LIMIT,
+        )?,
+    )
+    .map(|_| ())
+}
+/// The outstanding nominal repetitions of every chunk, in plan order.
+fn outstanding(
+    plan: &baseline::Plan,
+    ledger: &std::collections::BTreeMap<SlotKey, TrialResult>,
+) -> Vec<baseline::Chunk> {
+    plan.chunks
+        .iter()
+        .filter_map(|c| {
+            let repetitions: Vec<u32> = c
+                .repetitions
+                .iter()
+                .copied()
+                .filter(|r| !ledger.contains_key(&(c.task.clone(), c.agent.clone(), *r)))
+                .collect();
+            (!repetitions.is_empty()).then(|| baseline::Chunk {
+                repetitions,
+                ..c.clone()
+            })
+        })
+        .collect()
+}
+
+async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<u8, String> {
+    let config = args.config.as_path();
+    let families = plan.families();
+    // Every planned family's local contract and credential shape is checked
+    // before anything spends or any output exists.
+    let contracts =
+        wrappers::paid_contracts(config, &families).map_err(|e| format!("contract {e}"))?;
+    let keys: Vec<String> = plan
+        .freshness
+        .rules
+        .iter()
+        .map(|r| r.credential.clone())
+        .collect();
+    let validity = |key: &str| {
+        wrappers::valid_until(config, key).map_err(|e| format!("credential {key}: {e}"))
+    };
+    for key in &keys {
+        validity(key)?;
+    }
+    let (mut term, mut int) =
+        install_matrix_signals().map_err(|_| "baseline_signals_unavailable")?;
+    let root = if args.resume {
+        baseline_reopen(&args.output)?
+    } else {
+        baseline_leaf(&args.output)?
+    };
+    let _writer = baseline_writer(&root)?;
+    let mut interrupted = false;
+    let resolved = resolve_matrix_bin(&mut term, &mut int, &mut interrupted)
+        .await?
+        .ok_or("baseline_interrupted")?;
+    let harness = identity::harness();
+    let target = resolved.1.identity.clone();
+    let manifest = artifacts::encode(
+        &BaselineManifest {
+            schema_version: 1,
+            product_id: plan.product_id.clone(),
+            tier: plan.tier,
+            tasks: plan.tasks.clone(),
+            agents: plan.agents.iter().map(|a| a.label.clone()).collect(),
+            margin_minutes: plan.freshness.margin_minutes,
+            harness: harness.clone(),
+            target: target.clone(),
+            contracts: contracts.clone(),
+        },
+        artifacts::PLAN_LIMIT,
+    )?;
+    if args.resume {
+        let recorded = artifacts::read_file(&root, "manifest.json", artifacts::PLAN_LIMIT)
+            .map_err(|_| "manifest_missing")?;
+        if recorded != manifest {
+            return Err("manifest_drift: product, margin, harness, target or CLI contract differs from the run".into());
+        }
+    } else {
+        artifacts::publish(&root, "manifest.json", &manifest)?;
+    }
     let mut resources = MatrixResources {
-        signals: Some(signals),
+        signals: Some((term, int)),
+        resolved: Some(resolved.clone()),
         ..Default::default()
     };
-    let master = provenance::FixtureInputs::default();
-    resources.writer = Some(start_output_writer_to(Some(baseline_stream(
+    // Controls: reuse only this run's complete, validated gate; otherwise
+    // run them fresh. Incomplete control matrices stay as evidence.
+    let controls_root = root.join("controls");
+    let complete: Vec<_> = names(&controls_root)?
+        .into_iter()
+        .filter(|n| controls_root.join(n).join("matrix.json").exists())
+        .collect();
+    let controls = match complete.as_slice() {
+        [] => {
+            resources.writer = Some(start_output_writer_to(Some(sink()?)));
+            let status = numeric_status(
+                matrix_run(
+                    MatrixInvocation {
+                        ids: plan.tasks.clone(),
+                        specs: plan.control_agents.clone(),
+                        trials: 1,
+                        deadline_ms: Some(plan.deadline_ms),
+                        master: provenance::FixtureInputs::default(),
+                        retention: Some(controls_root.clone()),
+                        brokkr: None,
+                        comparison: None,
+                        matrix_id: None,
+                        cli: Vec::new(),
+                    },
+                    &mut resources,
+                )
+                .await,
+            );
+            if resources.interrupted {
+                return Err("baseline_interrupted during controls".into());
+            }
+            let id = resources
+                .plan
+                .as_ref()
+                .ok_or("baseline_control_plan_missing")?
+                .matrix_id
+                .clone();
+            retained_controls(&controls_root.join(id), plan, status, &harness, &target)?
+        }
+        [one] => retained_controls(&controls_root.join(one), plan, 1, &harness, &target)?,
+        _ => return Err("controls_ambiguous".into()),
+    };
+    publish_or_verify(&root, "controls.jsonl", &jsonl(&controls))?;
+    baseline_transition(&mut resources).await?;
+    let agents = plan.effective_agents(&resolved.0, config)?;
+    let attempts = root.join("attempts");
+    ensure_private_dir(&attempts)?;
+    let ledger = Ledger {
+        root: &root,
+        plan,
+        agents: &agents,
+        harness: &harness,
+        target: &target,
+        contracts: &contracts,
+    };
+    let mut said: Option<(Vec<String>, bool)> = None;
+    let committed = loop {
+        let committed = ledger.read(&args.confirm_cleanup)?;
+        let outstanding = outstanding(plan, &committed);
+        if outstanding.is_empty() {
+            break committed;
+        }
+        {
+            let (term, int) = resources
+                .signals
+                .as_mut()
+                .ok_or("baseline_signals_missing")?;
+            if pending_matrix_signal(term, int).await.is_some() {
+                resources.interrupted = true;
+            }
+        }
+        if resources.interrupted {
+            eprintln!(
+                "swarmail-evals: baseline interrupted; committed scores kept; continue with --resume"
+            );
+            return Ok(2);
+        }
+        // The pinned installations must not have changed since the manifest.
+        let current =
+            wrappers::paid_contracts(config, &families).map_err(|e| format!("contract {e}"))?;
+        if current != contracts {
+            return Err("contract_drift".into());
+        }
+        let now = unix_now();
+        let mut fresh = std::collections::BTreeMap::new();
+        for key in &keys {
+            let until = validity(key)?;
+            fresh.insert(
+                key.clone(),
+                baseline::fresh_enough(until, now, plan.freshness.margin_minutes),
+            );
+        }
+        let blocked: Vec<String> = keys
+            .iter()
+            .filter(|k| !fresh[*k] && outstanding.iter().any(|c| &c.credential == *k))
+            .cloned()
+            .collect();
+        let next = baseline::next_chunk(&outstanding, |k| fresh[k]).cloned();
+        let state = (blocked.clone(), next.is_none());
+        if said.as_ref() != Some(&state) {
+            for key in &blocked {
+                eprintln!(
+                    "swarmail-evals: baseline deferring {key}: less than {} minutes of validity left; renew that login",
+                    plan.freshness.margin_minutes
+                );
+            }
+            if next.is_none() {
+                eprintln!(
+                    "swarmail-evals: baseline waiting: no chunk can start; blocked: {}; rereading every {} s",
+                    blocked.join(", "),
+                    args.poll.as_secs()
+                );
+            }
+            said = Some(state);
+        }
+        let Some(chunk) = next else {
+            let (term, int) = resources
+                .signals
+                .as_mut()
+                .ok_or("baseline_signals_missing")?;
+            tokio::select! {
+                _ = tokio::time::sleep(args.poll) => {}
+                _ = term.recv() => resources.interrupted = true,
+                _ = int.recv() => resources.interrupted = true,
+            }
+            continue;
+        };
+        if !baseline_chunk(&ledger, &mut resources, &chunk, &agents, &contracts).await? {
+            return Ok(2);
+        }
+    };
+    let rows: Vec<TrialResult> = plan
+        .chunks
+        .iter()
+        .flat_map(|c| {
+            c.repetitions
+                .iter()
+                .map(|r| committed[&(c.task.clone(), c.agent.clone(), *r)].clone())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    publish_or_verify(&root, "paid.jsonl", &jsonl(&rows))?;
+    publish_or_verify(
         &root,
-        "controls.jsonl",
-    )?)));
+        "report.json",
+        &artifacts::encode(&report::report(&rows), artifacts::PLAN_LIMIT)?,
+    )?;
+    Ok(baseline::status(
+        0,
+        rows.len() == plan.paid_rows,
+        true,
+        &rows,
+    ))
+}
+
+/// One chunk attempt: bind it, run its cells through the existing assigned
+/// matrix path, then record owned cleanup. False stops the run (interrupted,
+/// or a terminal harness error left a slot unscored).
+async fn baseline_chunk(
+    ledger: &Ledger<'_>,
+    resources: &mut MatrixResources,
+    chunk: &baseline::Chunk,
+    agents: &[report::AgentSpec],
+    contracts: &[wrappers::Contract],
+) -> Result<bool, String> {
+    let plan = ledger.plan;
+    let attempts = ledger.root.join("attempts");
+    let index = plan
+        .agents
+        .iter()
+        .position(|a| a.label == chunk.agent)
+        .ok_or("baseline_agent_unknown")?;
+    let cli = contracts
+        .iter()
+        .find(|c| c.family == chunk.family)
+        .ok_or("baseline_contract_missing")?
+        .cli
+        .clone();
+    let attempt = runner::new_trial_id();
+    artifacts::publish(
+        &attempts,
+        &format!("{attempt}.json"),
+        &artifacts::encode(
+            &Assignment {
+                schema_version: 1,
+                attempt_id: attempt.clone(),
+                product_id: plan.product_id.clone(),
+                task: chunk.task.clone(),
+                agent: chunk.agent.clone(),
+                repetitions: chunk.repetitions.clone(),
+            },
+            artifacts::PLAN_LIMIT,
+        )?,
+    )?;
+    eprintln!(
+        "swarmail-evals: baseline chunk start task={} agent={} repetitions={:?} attempt={attempt}",
+        chunk.task, chunk.agent, chunk.repetitions
+    );
+    resources.writer = Some(start_output_writer_to(Some(sink()?)));
     let status = numeric_status(
         matrix_run(
             MatrixInvocation {
-                ids: plan.tasks.clone(),
-                specs: plan.control_agents.clone(),
-                trials: 1,
+                ids: vec![chunk.task.clone()],
+                specs: vec![agents[index].clone()],
+                trials: chunk.repetitions.len() as u32,
                 deadline_ms: Some(plan.deadline_ms),
-                master: master.clone(),
-                retention: Some(root.join("controls")),
+                master: provenance::FixtureInputs::default(),
+                retention: Some(ledger.root.join("paid")),
                 brokkr: None,
                 comparison: None,
+                matrix_id: Some(attempt.clone()),
+                cli: vec![Some(cli)],
             },
-            &mut resources,
+            resources,
         )
         .await,
     );
-    let controls = baseline::rows(&artifacts::read_file(
-        &root,
-        "controls.jsonl",
-        4096 * provenance::RESULT_LIMIT,
-    )?)?;
-    let control_plan = resources
-        .plan
-        .as_ref()
-        .ok_or("baseline_control_plan_missing")?;
-    let (exe, target) = resources
-        .resolved
-        .clone()
-        .ok_or("baseline_target_missing")?;
-    let harness = identity::harness();
-    baseline::validate_controls(
-        &controls,
-        control_plan,
-        plan,
-        status,
-        &harness,
-        &target.identity,
-    )?;
-    // Validate immutable retained bytes as well as stdout and the in-memory
-    // prelaunch plan. A failed retention marker never authorizes paid work.
-    let retained = artifacts::matrix(&root.join("controls").join(&control_plan.matrix_id))?;
-    if retained.len() != controls.len()
-        || retained
-            .iter()
-            .zip(&controls)
-            .any(|(a, b)| a.original_result != *b)
-    {
-        return Err("baseline_control_retention_invalid".into());
+    // matrix_run returned after its owned cleanup and cancellation fence.
+    publish_closure(&attempts, &attempt, "owned_cleanup")?;
+    let after = ledger.read(&[])?;
+    let scored = chunk
+        .repetitions
+        .iter()
+        .filter(|r| after.contains_key(&(chunk.task.clone(), chunk.agent.clone(), **r)))
+        .count();
+    eprintln!(
+        "swarmail-evals: baseline chunk closed task={} agent={} attempt={attempt} scored={scored}/{}",
+        chunk.task,
+        chunk.agent,
+        chunk.repetitions.len()
+    );
+    if resources.interrupted {
+        eprintln!(
+            "swarmail-evals: baseline interrupted; committed scores kept; continue with --resume"
+        );
+        return Ok(false);
     }
-    baseline_transition(&mut resources).await?;
-    wrappers::validate_config(config)?;
-    let agents = plan.effective_agents(&exe, config)?;
-    resources.writer = Some(start_output_writer_to(Some(baseline_stream(
-        &root,
-        "paid.jsonl",
-    )?)));
-    let paid_status = numeric_status(
-        matrix_run(
-            MatrixInvocation {
-                ids: plan.tasks.clone(),
-                specs: agents.clone(),
-                trials: plan.paid_repetitions,
-                deadline_ms: Some(plan.deadline_ms),
-                master,
-                retention: Some(root.join("paid")),
-                brokkr: None,
-                comparison: None,
-            },
-            &mut resources,
-        )
-        .await,
-    );
-    let paid = baseline::rows(&artifacts::read_file(
-        &root,
-        "paid.jsonl",
-        4096 * provenance::RESULT_LIMIT,
-    )?)?;
-    // Strict parsing is needed to report; complete accounting is needed for a
-    // successful run. Diagnostic reports may describe an incomplete row set.
-    let accounting = resources
-        .plan
-        .as_ref()
-        .ok_or_else(|| "baseline_paid_plan_missing".to_string())
-        .and_then(|p| {
-            baseline::validate_accounting(
-                &paid,
-                p,
-                &agents,
-                &plan.tasks,
-                plan.paid_repetitions,
-                &harness,
-                &target.identity,
-            )
-        })
-        .is_ok();
-    let report_ok = artifacts::publish(
-        &root,
-        "report.json",
-        &artifacts::encode(&report::report(&paid), artifacts::PLAN_LIMIT)?,
-    )
-    .is_ok();
-    Ok(baseline::status(
-        paid_status,
-        accounting && !resources.interrupted,
-        report_ok,
-        &paid,
-    ))
+    if status > 1 || scored < chunk.repetitions.len() {
+        eprintln!(
+            "swarmail-evals: baseline stopped: attempt {attempt} ended with a harness error; committed scores kept; continue with --resume"
+        );
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 async fn baseline_transition(resources: &mut MatrixResources) -> Result<(), String> {

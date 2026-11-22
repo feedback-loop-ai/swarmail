@@ -345,6 +345,14 @@ impl WrapperProfile {
     pub fn validate_model(self, model: Option<&str>) -> Result<(), String> {
         crate::wrappers::validate_model(self.family(), model.ok_or("wrapper_model_missing")?)
     }
+    /// The exact CLI version this profile's recipe was written against.
+    pub fn cli_version(self) -> &'static str {
+        match self.direct() {
+            Self::Claude2_1_310 => "2.1.310",
+            Self::Codex0_164_0 => "0.164.0",
+            _ => "0.1.5-rc.1",
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -462,6 +470,37 @@ pub struct AgentIdentity {
     pub command: Availability<CommandIdentity>,
     pub model: Availability<String>,
     pub config_id: Availability<String>,
+    /// The verified CLI binary a paid-baseline row's wrapper launched
+    /// (proposed 0137): its profile, the canonical version the bounded probe
+    /// returned and the pinned, measured SHA-256. Absent on every other row,
+    /// so historically accepted records keep their exact bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli: Option<CliIdentity>,
+}
+/// Public CLI identity: never the private path, banner or credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CliIdentity {
+    pub profile: WrapperProfile,
+    pub version: String,
+    pub sha256: String,
+}
+impl CliIdentity {
+    /// A binding agrees with the row's declared direct wrapper surface, names
+    /// that profile's exact version and carries a lowercase SHA-256.
+    pub fn validate(&self, surface: &ToolSurface) -> Result<(), String> {
+        match surface {
+            ToolSurface::Wrapper { profile, .. }
+                if *profile == self.profile
+                    && !profile.via_brokkr()
+                    && self.version == profile.cli_version()
+                    && is_hash(&self.sha256) =>
+            {
+                Ok(())
+            }
+            _ => Err("invalid cli identity".into()),
+        }
+    }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -524,6 +563,9 @@ impl Provenance {
         self.agent
             .tool_surface
             .validate(self.agent.kind, &self.agent.model)?;
+        if let Some(cli) = &self.agent.cli {
+            cli.validate(&self.agent.tool_surface)?;
+        }
         if let Some(m) = &self.matrix {
             seed_bytes(&m.master_seed)?;
         }

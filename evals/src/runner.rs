@@ -3766,6 +3766,7 @@ pub fn make_provenance(
                     .map(|v| Availability::present(v, Source::OperatorDeclared))
                     .unwrap_or_else(|| Availability::unavailable(Reason::NotDeclared))
             },
+            cli: None,
         },
         limits: Limits {
             agent_deadline_ms: valid
