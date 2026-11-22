@@ -143,7 +143,9 @@ variable or a stdout relay for the accounting channel, which lands only once
 the observed channel is recorded in 0119 by dated addendum; none is recorded
 yet. The text above is unchanged.
 
-## Dated addendum — 2026-11-22 (proposed; only the operator accepts)
+## Dated addendum — 2026-11-22 (accepted, operator, 2026-11-22)
+
+The operator accepted this addendum on 2026-11-22, in chat to the dispatcher.
 
 **§1, a ninth agent input in value-capture mode only.** With
 `matrix --capture-tool-values` (accepted 0119 §4, built by #396), agents

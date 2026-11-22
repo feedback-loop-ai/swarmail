@@ -456,8 +456,8 @@ It has not been run, so `--via-brokkr` still refuses with
 `driver_contract_unknown`, and no accounting channel is recorded.
 
 Capture mode gives agents one input beyond 0075 §1's eight,
-`EVAL_TOOL_CAPTURE_SOCKET`, a harness-generated path. It is proposed for
-the operator in 0075's dated addendum of 2026-11-22.
+`EVAL_TOOL_CAPTURE_SOCKET`, a harness-generated path. The operator
+accepted it in 0075's dated addendum of 2026-11-22.
 
 The acceptance note above ("not built") was true when it was written and is
 left as it was.
