@@ -340,10 +340,21 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     assert_eq!(code, Some(1), "fake CLIs are measured failures: {lines:?}");
     let starts: Vec<_> = lines
         .iter()
+        .filter(|l| l.contains("chunk start"))
         .filter_map(|l| l.split("agent=").nth(1)?.split(' ').next())
-        .filter(|_| true)
         .collect();
-    assert!(starts.iter().any(|a| *a == "claude-opus"), "{lines:?}");
+    // The remaining dsh chunks ran first; the deferred Claude chunks ran last,
+    // once the renewed login qualified.
+    let tail = starts.len() - 2;
+    assert_eq!(
+        starts[tail..],
+        ["claude-opus", "claude-sonnet"],
+        "{lines:?}"
+    );
+    assert!(
+        starts[..tail].iter().all(|a| a.starts_with("glm-")),
+        "{lines:?}"
+    );
     let launches = p.launches();
     assert!(!launches.contains(&"LEAK".to_string()));
     for (line, n) in [
@@ -641,7 +652,7 @@ fn bad_controls_never_admit(paid: &Paid) {
     );
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(
-        std::fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+        std::fs::metadata(output).unwrap().permissions().mode() & 0o777,
         0o700
     );
     assert_eq!(
