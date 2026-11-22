@@ -332,12 +332,52 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     for (id, bytes) in &scored_before {
         assert_eq!(mid.get(id), Some(bytes), "committed score bytes unchanged");
     }
+    // A trial worker killed before it reports proves no owned cleanup: its
+    // agent may survive, so the attempt stays open (no closure) and only the
+    // operator's confirmation reopens the run.
+    let k = p.count("dsh dashscope") + 1;
+    std::fs::write(&p.hold, format!("dsh dashscope {k}")).unwrap();
+    let killed = Running::start(p.authorized(&["--resume"]));
+    wait("a held dashscope launch", || p.count("dsh dashscope") == k);
+    let worker = trial_worker(killed.child.id());
+    unsafe { libc::kill(worker, libc::SIGKILL) };
+    let (code, lines) = killed.finish();
+    assert_eq!(code, Some(2), "{lines:?}");
+    let open = lines
+        .iter()
+        .find(|l| l.contains("has no proof of owned cleanup"))
+        .unwrap_or_else(|| panic!("{lines:?}"));
+    let killed_attempt = open
+        .split("attempt ")
+        .nth(1)
+        .unwrap()
+        .split(' ')
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(
+        !p.output
+            .join("attempts")
+            .join(format!("{killed_attempt}.closed"))
+            .exists(),
+        "no closure without proof"
+    );
+    std::fs::remove_file(&p.hold).unwrap();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2));
+    assert!(
+        err.contains(&format!(
+            "attempt {killed_attempt} has no proof of owned cleanup"
+        )),
+        "{err}"
+    );
+    assert_eq!(p.count("dsh dashscope"), k, "the refusal launched nothing");
     // Mid-chunk, the operator rotates the dsh CLI and its pin. The held
     // second glm-spark trial ran on the run's binary; the wrapper of every
     // later trial refuses before exec, so no model runs and those slots stay
     // unscored: harness errors, never measured failures.
     std::fs::write(&p.hold, b"dsh spark-glm 2").unwrap();
-    let third = Running::start(p.authorized(&["--resume"]));
+    let third = Running::start(p.authorized(&["--resume", "--confirm-cleanup", &killed_attempt]));
     wait("two glm-spark launches", || p.count("dsh spark-glm") == 2);
     rotate(&p, "dsh");
     p.select(|_| {});
@@ -430,10 +470,10 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     ] {
         assert_eq!(p.count(line), n, "{line}: {launches:?}");
     }
-    // An interrupt that reached a started dashscope trial leaves one unscored
-    // launch; otherwise there are exactly five.
+    // Five scored dashscope launches plus the one whose worker was killed;
+    // an interrupt that reached a started dashscope trial adds one more.
     let dashscope = p.count("dsh dashscope");
-    assert!((5..=6).contains(&dashscope), "{launches:?}");
+    assert!((6..=7).contains(&dashscope), "{launches:?}");
     // Claude ran last: every claude launch follows every other family's.
     let first_claude = launches
         .iter()
@@ -625,6 +665,31 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
         before.1
     );
     assert_eq!(p.launches().len(), n);
+}
+
+/// The `swarmail-evals trial` worker the coordinator `parent` runs now.
+#[cfg(target_os = "linux")]
+fn trial_worker(parent: u32) -> i32 {
+    for entry in std::fs::read_dir("/proc").unwrap() {
+        let Ok(pid) = entry.unwrap().file_name().to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        let (Ok(stat), Ok(cmdline)) = (
+            std::fs::read_to_string(format!("/proc/{pid}/stat")),
+            std::fs::read(format!("/proc/{pid}/cmdline")),
+        ) else {
+            continue;
+        };
+        let ppid = stat
+            .rsplit(')')
+            .next()
+            .and_then(|rest| rest.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<u32>().ok());
+        if ppid == Some(parent) && cmdline.split(|b| *b == 0).nth(1) == Some(b"trial".as_slice()) {
+            return pid;
+        }
+    }
+    panic!("no trial worker under {parent}");
 }
 
 /// Replace `family`'s CLI with different bytes that still answer its banner.

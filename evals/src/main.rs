@@ -1456,6 +1456,10 @@ struct ChildRun {
     failure: Option<String>,
     stop_admission: bool,
     elapsed_ms: u64,
+    /// The worker reported its row after its own owned cleanup and did not
+    /// say that cleanup was unproved (or no worker ever started). False means
+    /// a descendant may survive: nothing may claim the slot's cleanup.
+    cleanup_proved: bool,
 }
 
 fn install_matrix_signals()
@@ -2419,6 +2423,7 @@ async fn run_child_assigned(
         failure: Some(failure.into()),
         stop_admission: false,
         elapsed_ms: 0,
+        cleanup_proved: true,
     };
     let args = match trial_args(id, spec, argv, deadline_ms, context, retention, bin) {
         Ok(args) => args,
@@ -2486,6 +2491,7 @@ async fn run_child_assigned(
                 failure: Some("trial_spawn_failed".into()),
                 stop_admission: false,
                 elapsed_ms: started.elapsed().as_millis() as u64,
+                cleanup_proved: true,
             };
         }
     };
@@ -2657,10 +2663,12 @@ async fn run_child_assigned(
         (None, captured, status) => (captured, status),
     };
     let output_available = captured.is_some();
+    let mut reported = false;
     let row = match (captured, status) {
         (Some(captured), Some(status)) => {
             match matching_trial_row(captured, status, id, spec, interrupted) {
                 Ok(row) => {
+                    reported = true;
                     if context.is_some_and(|c| {
                         artifacts::matches_cell(&row, &c.cell).is_err()
                             || row.provenance.agent != c.agent
@@ -2688,6 +2696,7 @@ async fn run_child_assigned(
         }
         _ => None,
     };
+    let cleanup_proved = reported && worker_category != Some("trial_cleanup_unproved");
     if let Some(category) = worker_category {
         failure.get_or_insert_with(|| category.to_string());
     }
@@ -2698,6 +2707,7 @@ async fn run_child_assigned(
         failure,
         stop_admission,
         elapsed_ms: started.elapsed().as_millis() as u64,
+        cleanup_proved,
     }
 }
 
@@ -3220,6 +3230,8 @@ struct MatrixResources {
     resolved: Option<(PathBuf, identity::TargetBuild)>,
     plan: Option<artifacts::MatrixPlan>,
     interrupted: bool,
+    /// The last matrix ran a slot whose worker did not prove owned cleanup.
+    cleanup_unproved: bool,
 }
 async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResources) -> ExitCode {
     let MatrixInvocation {
@@ -3235,6 +3247,7 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
         cli,
         paid,
     } = invocation;
+    resources.cleanup_unproved = false;
     let nominal = paid.as_ref().map(|p| &p.nominal);
     if trials == 0
         || ids.is_empty()
@@ -3438,6 +3451,7 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
     let (mut any_error, mut any_fail) = (resolved.is_none(), false);
     let mut stop_admission = false;
     let mut output_failed = false;
+    let mut cleanup_unproved = false;
     while next_slot < total_slots {
         if interrupted || pending_matrix_signal(&mut term, &mut int).await.is_some() {
             interrupted = true;
@@ -3493,11 +3507,13 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
                     failure: Some("agent_program_unavailable".into()),
                     stop_admission: false,
                     elapsed_ms: 0,
+                    cleanup_proved: true,
                 }
             };
             let child_interrupted = child.interrupted;
             let child_failed = child.failure.is_some();
             let child_stop = child.stop_admission;
+            cleanup_unproved |= !child.cleanup_proved;
             let mut row = child.row.unwrap_or_else(|| {
                 let mut refused = runner::refused_row(&req, &cell.trial_id);
                 refused.wall_time_ms = child.elapsed_ms;
@@ -3613,6 +3629,7 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
     }
     resources.signals = Some((term, int));
     resources.interrupted = interrupted;
+    resources.cleanup_unproved = cleanup_unproved;
     if output_failed || interrupted || any_error || evidence_failed {
         ExitCode::from(2)
     } else if any_fail {
@@ -4441,7 +4458,15 @@ async fn baseline_chunk(
         )
         .await,
     );
-    // matrix_run returned after its owned cleanup and cancellation fence.
+    // matrix_run returned after its cancellation fence. Owned cleanup is
+    // claimed only when every worker it started reported after its own
+    // cleanup; otherwise the attempt stays open for the operator.
+    if resources.cleanup_unproved {
+        eprintln!(
+            "swarmail-evals: baseline stopped: attempt {attempt} has no proof of owned cleanup; check for surviving agent processes, then resume with --confirm-cleanup {attempt}"
+        );
+        return Ok(false);
+    }
     publish_closure(&attempts, &attempt, "owned_cleanup")?;
     let after = ledger.read(&[])?;
     let scored = chunk
