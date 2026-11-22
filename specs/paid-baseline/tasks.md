@@ -111,21 +111,19 @@ binding's drift, margin and half-binding refusals, a bound launch, and an
 expired Codex id token). `--lib
 paid_tests cli_identity` (token-claim grammar, banners, CLI binding).
 
-**Added test time** on this host (load 21–44): `paid_baseline` 80 s;
-`baseline` 107 s → 37 s, because the 32-control default run folded into the
-2-control deliverability run; `wrappers paid_selection` 0.3 s. The net is
-about +10 s of wall time on this host.
+**Added test time** on this host (load 17–39): `paid_baseline` 87–91 s
+(was 80 s; the mid-chunk rotation adds three unstarted trials and seven
+short resume invocations); `baseline` 107 s → 37 s, because the 32-control
+default run folded into the 2-control deliverability run; `wrappers
+paid_selection` 0.5 s. The net is about +20 s of wall time on this host.
 
-**Gates (local, this tree).** Root: fmt, clippy `--locked`, `cargo test
---workspace --locked` (first run green; on the second, under load 44,
-`mail_compare api_section::only_the_holder_enters_the_delegated_scope`
-failed once at a process spawn and passed 3/3 alone; no root code changed),
-`cargo build --locked --bin swarmail`, the coverage gate (exact
-100/100/100) and its selftest, publish-guard-test, seal-branch-test and
-`cargo deny check licenses`. Evals: fmt, clippy `--locked`, and `cargo test
---locked` with `SWARMAIL_BIN` set to the candidate's built binary (all green,
-24 min under load). The lib and `paid_baseline` suites ran again after the
-last edits.
+**Gates (local, final tree after review return 1).** Root: fmt, clippy
+`--locked`, `cargo test --workspace --locked` (green), `cargo build --locked
+--bin swarmail`, the coverage gate (exact 100/100/100) and its selftest,
+publish-guard-test, seal-branch-test and `cargo deny check licenses`. Evals:
+fmt, clippy `--all-targets --locked`, and `cargo test --locked` with
+`SWARMAIL_BIN` set to the candidate's built binary (all green). No root
+`src/`, `scripts/`, `.github/`, `.brokkr/`, lock or `deny.toml` change.
 
 **Not run here.** `brokkr compile` for every recipe: no pinned brokkr binary
 is reachable from this seat, and no `.brokkr/` file changed. Only CI runs the
