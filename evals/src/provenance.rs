@@ -847,3 +847,43 @@ mod via_brokkr_tests {
         assert!(forged.validate(AgentKind::External, &model).is_err());
     }
 }
+
+#[cfg(test)]
+mod cli_identity_tests {
+    use super::*;
+
+    #[test]
+    fn a_cli_binding_must_match_its_direct_surface_version_and_digest() {
+        let surface = ToolSurface::declared(WrapperProfile::Codex0_164_0);
+        let good = CliIdentity {
+            profile: WrapperProfile::Codex0_164_0,
+            version: "0.164.0".into(),
+            sha256: "a".repeat(64),
+        };
+        assert!(good.validate(&surface).is_ok());
+        let mut other = good.clone();
+        other.profile = WrapperProfile::Claude2_1_310;
+        assert!(other.validate(&surface).is_err());
+        let mut version = good.clone();
+        version.version = "0.165.0".into();
+        assert!(version.validate(&surface).is_err());
+        let mut digest = good.clone();
+        digest.sha256 = "A".repeat(64);
+        assert!(digest.validate(&surface).is_err());
+        let mut via = good.clone();
+        via.profile = WrapperProfile::Codex0_164_0ViaBrokkr;
+        assert!(
+            via.validate(&ToolSurface::declared(
+                WrapperProfile::Codex0_164_0ViaBrokkr
+            ))
+            .is_err()
+        );
+        assert!(good.validate(&ToolSurface::ExternalUnknown).is_err());
+        // Absent on every other row: the serialized agent keeps its bytes.
+        let json = serde_json::to_value(&good).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"profile":"codex_0_164_0","version":"0.164.0","sha256":"a".repeat(64)})
+        );
+    }
+}

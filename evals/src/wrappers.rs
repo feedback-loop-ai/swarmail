@@ -1556,3 +1556,60 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod paid_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    fn token(payload: &str) -> String {
+        let e = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        format!("{}.{}.sig", e.encode("{}"), e.encode(payload))
+    }
+
+    #[test]
+    fn access_token_expiry_is_a_bounded_integer_claim_or_unknown() {
+        assert_eq!(jwt_expiry(&token(r#"{"exp":1767225600}"#)), Ok(1767225600));
+        // Padded payloads decode the same.
+        let padded = format!(
+            "e30.{}.sig",
+            base64::engine::general_purpose::URL_SAFE.encode(r#"{"exp":7}"#)
+        );
+        assert_eq!(jwt_expiry(&padded), Ok(7));
+        for bad in [
+            token(r#"{"exp":1.5}"#),
+            token(r#"{"exp":-1}"#),
+            token(r#"{"exp":"1767225600"}"#),
+            token(r#"{"exp":18446744073709551615}"#),
+            token(r#"{"iat":1}"#),
+            token("not json"),
+            "opaque-token".to_string(),
+            "a.b".to_string(),
+            "a.!!.c".to_string(),
+            format!("a.{}.c", "A".repeat(8193)),
+        ] {
+            assert_eq!(
+                jwt_expiry(&bad),
+                Err("credential_expiry_unknown".to_string()),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_profile_has_one_exact_banner_and_auth_shape() {
+        use crate::provenance::WrapperProfile::*;
+        assert_eq!(version_banner(Claude2_1_310), "2.1.310 (Claude Code)");
+        assert_eq!(version_banner(Codex0_164_0), "codex-cli 0.164.0");
+        assert_eq!(version_banner(Dsh0_1_5Rc1), "0.1.5-rc.1");
+        assert_eq!(auth_shape("claude"), "claude_oauth_v1");
+        assert_eq!(auth_shape("codex"), "codex_chatgpt_v1");
+        assert_eq!(auth_shape("dsh"), "dsh_routes_attested_v1");
+        assert_eq!(credential_key("dsh", "dashscope/glm-5.3"), "dsh:dashscope");
+        assert_eq!(
+            credential_key("dsh", "spark-glm/GLM-5.3-Flash-EXL3"),
+            "dsh:spark-glm"
+        );
+        assert_eq!(credential_key("codex", "gpt-6-luna"), "codex");
+    }
+}
