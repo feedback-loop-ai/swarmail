@@ -723,6 +723,7 @@ fn paid_accounting(
         tasks: plan.tasks.clone(),
         agents: plan.agents.iter().map(|a| a.label.clone()).collect(),
         repetitions: 5,
+        nominal: None,
         cells: Vec::new(),
     };
     let mut paid = Vec::new();

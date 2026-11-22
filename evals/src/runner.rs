@@ -438,6 +438,77 @@ pub struct TrialRequest {
     /// Value capture (decision 0119 §4), only when asked for. `None` runs the
     /// trial exactly as before.
     pub capture: Option<CapturePlan>,
+    /// A paid-baseline slot's launch binding (proposed 0137): the wrapper
+    /// rechecks it immediately before exec and reports on the launch pipe.
+    pub paid: Option<PaidLaunch>,
+}
+
+/// What a paid-baseline slot's wrapper must still find true at exec: the
+/// run's pinned CLI digest and the validity its chunk was admitted with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaidLaunch {
+    pub cli_sha256: String,
+    /// The credential must stay valid at least until this Unix second: the
+    /// chunk's admission instant plus the freshness margin.
+    pub valid_through: u64,
+}
+/// The descriptor a paid wrapper reports its launch on: `ready` just before
+/// it execs the pinned CLI, `unstarted` when it refuses. The wrapper marks it
+/// close-on-exec first, so the CLI (and the model behind it) never holds it.
+pub const LAUNCH_FD: i32 = 3;
+pub const ENV_LAUNCH_FD: &str = "EVAL_LAUNCH_FD";
+pub const ENV_PAID_CLI_SHA256: &str = "EVAL_PAID_CLI_SHA256";
+pub const ENV_PAID_VALID_THROUGH: &str = "EVAL_PAID_VALID_THROUGH";
+/// The wrapper's word that the pinned CLI is about to run.
+pub const LAUNCH_READY: &[u8] = b"ready\n";
+
+/// A launch pipe whose write end the agent receives as `LAUNCH_FD`.
+fn launch_pipe(cmd: &mut Command) -> io::Result<io::PipeReader> {
+    use std::os::fd::{AsRawFd, IntoRawFd};
+    let (reader, writer) = io::pipe()?;
+    let fd = reader.as_raw_fd();
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // The child's copy closes with the parent's `Command`; the raw fd stays
+    // valid until the command (which owns it through the closure) drops.
+    let raw = writer.into_raw_fd();
+    let owned = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(raw) };
+    unsafe {
+        cmd.pre_exec(move || {
+            let w = owned.as_raw_fd();
+            if w == LAUNCH_FD {
+                if libc::fcntl(w, libc::F_SETFD, 0) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            } else if libc::dup2(w, LAUNCH_FD) != LAUNCH_FD {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.env(ENV_LAUNCH_FD, LAUNCH_FD.to_string());
+    Ok(reader)
+}
+/// Whether the wrapper reported exactly `ready` and nothing after it. A
+/// refusal, an exec failure, or a wrapper that died first leaves anything
+/// else: no model ran, so the attempt is unstarted, never a measurement.
+fn launch_reported_ready(reader: &mut io::PipeReader) -> bool {
+    use std::io::Read as _;
+    let mut out = Vec::new();
+    let mut buf = [0u8; 64];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) if out.len() + n <= 64 => out.extend_from_slice(&buf[..n]),
+            Ok(_) => return false,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            // WouldBlock: a stray holder of the write end; what arrived counts.
+            Err(_) => break,
+        }
+    }
+    out == LAUNCH_READY
 }
 
 /// Where a trial's redacted value capture goes and which sentinels its
@@ -2680,6 +2751,7 @@ async fn run_body(
     provenance: &crate::provenance::Provenance,
     scratch: &Path,
     competitor: Option<&CompetitorPlan>,
+    paid: Option<&PaidLaunch>,
     trial: &mut Trial,
     exits: &mut Vec<AgentExit>,
     snapshot_out: &mut Option<Snapshot>,
@@ -2838,6 +2910,7 @@ async fn run_body(
     let mut waits = tokio::task::JoinSet::new();
     let mut agent_groups = Vec::new();
     let mut spawn_failed = false;
+    let mut launches = Vec::new();
     for (index, id) in ids.iter().enumerate() {
         let vars = PromptVars {
             app_url: &app_url,
@@ -2877,6 +2950,17 @@ async fn run_body(
             cmd.env(crate::wrappers::ENV_MCP_SERVER, server)
                 .env(crate::wrappers::ENV_MCP_TOOLS, tools)
                 .env(crate::oracle::ENV_COMPETITOR, plan.target.name());
+        }
+        if let Some(paid) = paid {
+            cmd.env(ENV_PAID_CLI_SHA256, &paid.cli_sha256)
+                .env(ENV_PAID_VALID_THROUGH, paid.valid_through.to_string());
+            match launch_pipe(&mut cmd) {
+                Ok(reader) => launches.push(reader),
+                Err(_) => {
+                    spawn_failed = true;
+                    break;
+                }
+            }
         }
         match spawn(cmd, &trial.groups, None, Some(trial.runtime.clone()), false) {
             Ok(Proc {
@@ -2967,6 +3051,9 @@ async fn run_body(
         return Err("agent_spawn".into());
     }
     cleanup_result?;
+    if !launches.iter_mut().all(launch_reported_ready) {
+        return Err("agent_unstarted".into());
+    }
     match end {
         AgentsEnd::ServerDied => return Err("server_died".into()),
         AgentsEnd::Done | AgentsEnd::Deadline => {}
@@ -3149,6 +3236,7 @@ fn safe_trial_category(error: &str) -> &'static str {
         | "cargo_artifact_invalid"
         | "build_context_changed" => "swarmail_unavailable",
         "agent_spawn" => "agent_spawn_failed",
+        "agent_unstarted" => "agent_unstarted",
         "adapter_cleanup_unproved" => "trial_cleanup_unproved",
         "adapter_spawn" => "adapter_spawn_failed",
         "adapter_tools_mismatch" => "adapter_tools_mismatch",
@@ -3377,6 +3465,7 @@ async fn execute_trial(
                         &provenance,
                         scratch_owner.path(),
                         req_body.competitor.as_ref(),
+                        req_body.paid.as_ref(),
                         &mut trial,
                         &mut exits,
                         &mut snap,

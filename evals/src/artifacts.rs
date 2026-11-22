@@ -383,6 +383,41 @@ pub struct MatrixPlan {
     pub repetitions: u32,
     #[serde(deserialize_with = "crate::provenance::cells")]
     pub cells: Vec<PlannedCell>,
+    /// A paid-baseline attempt's place in its run (proposed 0137): its one
+    /// task and model by their run indices and the nominal repetitions its
+    /// cells stand for, so each cell's coordinates and seed are its planned
+    /// slot's. Absent for every other matrix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nominal: Option<Nominal>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Nominal {
+    pub task_index: u64,
+    pub agent_index: u64,
+    pub repetitions: Vec<u32>,
+}
+impl Nominal {
+    /// The coordinates of local cell `(ti, ai, ri)`: the run's for a nominal
+    /// attempt, the matrix's own otherwise.
+    pub fn coordinates(
+        nominal: Option<&Self>,
+        matrix_id: &str,
+        master_seed: &str,
+        (ti, ai, ri): (usize, usize, usize),
+    ) -> MatrixCoordinates {
+        let (task_index, agent_index, repetition_index) = match nominal {
+            Some(n) => (n.task_index, n.agent_index, u64::from(n.repetitions[ri])),
+            None => (ti as u64, ai as u64, ri as u64),
+        };
+        MatrixCoordinates {
+            matrix_id: matrix_id.into(),
+            master_seed: master_seed.into(),
+            task_index,
+            agent_index,
+            repetition_index,
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -511,6 +546,12 @@ pub fn validate_plan(plan: &MatrixPlan) -> Result<(), String> {
         || plan.repetitions == 0
         || count > 4096
         || count != plan.cells.len()
+        || plan.nominal.as_ref().is_some_and(|n| {
+            plan.tasks.len() != 1
+                || plan.agents.len() != 1
+                || n.repetitions.len() != plan.repetitions as usize
+                || n.repetitions.windows(2).any(|w| w[0] >= w[1])
+        })
     {
         return Err("invalid matrix dimensions/version".into());
     }
@@ -525,13 +566,12 @@ pub fn validate_plan(plan: &MatrixPlan) -> Result<(), String> {
         let ti = i / (plan.agents.len() * plan.repetitions as usize);
         let ai = (i / plan.repetitions as usize) % plan.agents.len();
         let ri = i % plan.repetitions as usize;
-        let expected = MatrixCoordinates {
-            matrix_id: plan.matrix_id.clone(),
-            master_seed: plan.master.seed.clone(),
-            task_index: ti as u64,
-            agent_index: ai as u64,
-            repetition_index: ri as u64,
-        };
+        let expected = Nominal::coordinates(
+            plan.nominal.as_ref(),
+            &plan.matrix_id,
+            &plan.master.seed,
+            (ti, ai, ri),
+        );
         if c.task != plan.tasks[ti]
             || tasks::find(&c.task).is_none()
             || c.agent != plan.agents[ai]

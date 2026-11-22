@@ -1326,9 +1326,21 @@ struct WorkerContext {
     /// Swarmail, whose worker resolves its own as ever.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     competitor: Option<comparison::CompetitorContext>,
+    /// A paid-baseline slot's launch binding (proposed 0137): the run's
+    /// pinned digest, which must be the identity its row records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    paid: Option<runner::PaidLaunch>,
 }
 impl WorkerContext {
     fn apply(self, req: &mut TrialRequest) -> Result<(), String> {
+        if self
+            .paid
+            .as_ref()
+            .is_some_and(|p| self.agent.cli.as_ref().map(|c| &c.sha256) != Some(&p.cli_sha256))
+        {
+            return Err("worker_agent_context_invalid".into());
+        }
+        req.paid = self.paid.clone();
         req.matrix = Some(self.cell.coordinates.clone());
         req.trial_id = Some(self.cell.trial_id.clone());
         let expected = runner::make_provenance(req, None, None).agent;
@@ -1630,6 +1642,7 @@ fn matrix_slot<'a>(
     (&ids[task_index], &specs[agent_index])
 }
 
+#[allow(clippy::too_many_arguments)]
 fn assigned_cell(
     ids: &[String],
     specs: &[report::AgentSpec],
@@ -1638,15 +1651,19 @@ fn assigned_cell(
     master: &provenance::FixtureInputs,
     matrix_id: &str,
     deadline_ms: Option<u64>,
+    nominal: Option<&artifacts::Nominal>,
 ) -> artifacts::PlannedCell {
     let (task, spec) = matrix_slot(ids, specs, trials, index);
-    let coordinates = provenance::MatrixCoordinates {
-        matrix_id: matrix_id.into(),
-        master_seed: master.seed.clone(),
-        task_index: (index / (specs.len() * trials as usize)) as u64,
-        agent_index: ((index / trials as usize) % specs.len()) as u64,
-        repetition_index: (index % trials as usize) as u64,
-    };
+    let coordinates = artifacts::Nominal::coordinates(
+        nominal,
+        matrix_id,
+        &master.seed,
+        (
+            index / (specs.len() * trials as usize),
+            (index / trials as usize) % specs.len(),
+            index % trials as usize,
+        ),
+    );
     let mut fixture = master.clone();
     fixture.seed = coordinates
         .cell_seed(task, &spec.label)
@@ -3166,6 +3183,7 @@ async fn matrix_with_target(
             comparison,
             matrix_id: None,
             cli: Vec::new(),
+            paid: None,
         },
         &mut resources,
     )
@@ -3187,6 +3205,13 @@ struct MatrixInvocation {
     matrix_id: Option<String>,
     /// Per declaration, the verified CLI binding every row of it carries.
     cli: Vec<Option<provenance::CliIdentity>>,
+    /// A paid-baseline chunk: its cells' nominal slots and the validity its
+    /// wrapper must still find at exec.
+    paid: Option<PaidChunk>,
+}
+struct PaidChunk {
+    nominal: artifacts::Nominal,
+    valid_through: u64,
 }
 #[derive(Default)]
 struct MatrixResources {
@@ -3208,7 +3233,9 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
         comparison,
         matrix_id: assigned_matrix_id,
         cli,
+        paid,
     } = invocation;
+    let nominal = paid.as_ref().map(|p| &p.nominal);
     if trials == 0
         || ids.is_empty()
         || specs.is_empty()
@@ -3242,8 +3269,20 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
         tasks: ids.clone(),
         agents: specs.iter().map(|s| s.label.clone()).collect(),
         repetitions: trials,
+        nominal: nominal.cloned(),
         cells: (0..total_slots)
-            .map(|i| assigned_cell(&ids, &specs, trials, i, &master, &matrix_id, deadline_ms))
+            .map(|i| {
+                assigned_cell(
+                    &ids,
+                    &specs,
+                    trials,
+                    i,
+                    &master,
+                    &matrix_id,
+                    deadline_ms,
+                    nominal,
+                )
+            })
             .collect(),
     });
     resources.plan = planned.clone();
@@ -3264,7 +3303,16 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
         .iter()
         .enumerate()
         .map(|(index, spec)| {
-            let cell = assigned_cell(&ids, &specs, trials, 0, &master, &matrix_id, deadline_ms);
+            let cell = assigned_cell(
+                &ids,
+                &specs,
+                trials,
+                0,
+                &master,
+                &matrix_id,
+                deadline_ms,
+                nominal,
+            );
             let mut req = cell_request(&cell, spec, None);
             req.agent = Some(spec.label.clone());
             let mut agent = runner::make_provenance(&req, None, None).agent;
@@ -3277,7 +3325,16 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
             .as_ref()
             .map(|p| p.cells[i].clone())
             .unwrap_or_else(|| {
-                assigned_cell(&ids, &specs, trials, i, &master, &matrix_id, deadline_ms)
+                assigned_cell(
+                    &ids,
+                    &specs,
+                    trials,
+                    i,
+                    &master,
+                    &matrix_id,
+                    deadline_ms,
+                    nominal,
+                )
             })
     };
     let (mut term, mut int) = match resources
@@ -3402,6 +3459,14 @@ async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResource
                     let context = WorkerContext {
                         cell: cell.clone(),
                         target: bin.identity.clone(),
+                        paid: expected_agent
+                            .cli
+                            .as_ref()
+                            .zip(paid.as_ref())
+                            .map(|(c, p)| runner::PaidLaunch {
+                                cli_sha256: c.sha256.clone(),
+                                valid_through: p.valid_through,
+                            }),
                         agent: expected_agent,
                         competitor: comparison.as_ref().and_then(|c| c.competitor.clone()),
                     };
@@ -3677,7 +3742,12 @@ struct BaselineManifest {
     harness: provenance::HarnessIdentity,
     target: provenance::ExecutableIdentity,
     contracts: Vec<wrappers::Contract>,
+    /// The run's fixture inputs: every paid cell's seed derives from this
+    /// master and its nominal slot, so a resumed slot gets the same seed.
+    master: provenance::FixtureInputs,
 }
+const MANIFEST_SCHEMA: u32 = 2;
+const CLOSURE_CAUSES: [&str; 2] = ["owned_cleanup", "operator_confirmed"];
 /// Published before a chunk's matrix starts: which nominal repetitions of
 /// which task × model this attempt's cells stand for.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -3836,8 +3906,17 @@ struct Ledger<'a> {
     harness: &'a provenance::HarnessIdentity,
     target: &'a provenance::ExecutableIdentity,
     contracts: &'a [wrappers::Contract],
+    master: &'a provenance::FixtureInputs,
 }
 impl Ledger<'_> {
+    /// A chunk's nominal place in the run: its task and model by run index.
+    fn nominal(&self, task: &str, agent: &str, repetitions: &[u32]) -> Option<artifacts::Nominal> {
+        Some(artifacts::Nominal {
+            task_index: self.plan.tasks.iter().position(|t| t == task)? as u64,
+            agent_index: self.plan.agents.iter().position(|a| a.label == agent)? as u64,
+            repetitions: repetitions.to_vec(),
+        })
+    }
     fn read(
         &self,
         confirm: &[String],
@@ -3875,7 +3954,10 @@ impl Ledger<'_> {
             } else if let Some(id) = name.strip_suffix(".closed") {
                 let c: Closure =
                     provenance::decode(&bytes).map_err(|_| "attempt_evidence_invalid")?;
-                if c.schema_version != 1 || c.attempt_id != id {
+                if c.schema_version != 1
+                    || c.attempt_id != id
+                    || !CLOSURE_CAUSES.contains(&c.cause.as_str())
+                {
                     return Err(format!("attempt {id}: closure_invalid"));
                 }
                 closed.insert(id.to_string());
@@ -3936,11 +4018,15 @@ impl Ledger<'_> {
             };
         artifacts::validate_plan(&matrix)
             .map_err(|_| format!("attempt {id}: matrix_plan_invalid"))?;
+        // The attempt's cells must stand for exactly its assignment's slots,
+        // seeded from the run's master: an edit to either side refuses.
         if matrix.matrix_id != id
             || matrix.tasks != [a.task.clone()]
             || matrix.agents != [a.agent.clone()]
             || matrix.repetitions as usize != a.repetitions.len()
             || matrix.cells.len() != a.repetitions.len()
+            || &matrix.master != self.master
+            || matrix.nominal != self.nominal(&a.task, &a.agent, &a.repetitions)
         {
             return Err(format!("attempt {id}: matrix_plan_inconsistent"));
         }
@@ -3965,7 +4051,8 @@ impl Ledger<'_> {
             .find(|c| c.family == family)
             .ok_or("baseline_contract_missing")?
             .cli;
-        for (cell, repetition) in matrix.cells.iter().zip(&a.repetitions) {
+        for cell in &matrix.cells {
+            let repetition = cell.coordinates.repetition_index as u32;
             if !trial_names.contains(&cell.trial_id) {
                 continue;
             }
@@ -3986,7 +4073,7 @@ impl Ledger<'_> {
                 Some(cli),
             )
             .map_err(|e| format!("attempt {id}: {e}"))?;
-            let key = (a.task.clone(), a.agent.clone(), *repetition);
+            let key = (a.task.clone(), a.agent.clone(), repetition);
             if ledger.insert(key, retained.row).is_some() {
                 return Err(format!("attempt {id}: slot_scored_twice"));
             }
@@ -4034,10 +4121,6 @@ fn outstanding(
 async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<u8, String> {
     let config = args.config.as_path();
     let families = plan.families();
-    // Every planned family's local contract and credential shape is checked
-    // before anything spends or any output exists.
-    let contracts =
-        wrappers::paid_contracts(config, &families).map_err(|e| format!("contract {e}"))?;
     let keys: Vec<String> = plan
         .freshness
         .rules
@@ -4047,26 +4130,39 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
     let validity = |key: &str| {
         wrappers::valid_until(config, key).map_err(|e| format!("credential {key}: {e}"))
     };
-    for key in &keys {
-        validity(key)?;
-    }
-    let (mut term, mut int) =
-        install_matrix_signals().map_err(|_| "baseline_signals_unavailable")?;
+    let live_contracts =
+        || wrappers::paid_contracts(config, &families).map_err(|e| format!("contract {e}"));
+    // A fresh run checks every planned family's local contract and
+    // credential shape before anything spends or any output exists. A resume
+    // binds the contracts its manifest recorded and rechecks them live only
+    // before a chunk starts, so recovering derived output from retained rows
+    // never needs the private inputs.
+    let fresh_contracts = if args.resume {
+        None
+    } else {
+        let contracts = live_contracts()?;
+        for key in &keys {
+            validity(key)?;
+        }
+        Some(contracts)
+    };
+    let (term, int) = install_matrix_signals().map_err(|_| "baseline_signals_unavailable")?;
     let root = if args.resume {
         baseline_reopen(&args.output)?
     } else {
         baseline_leaf(&args.output)?
     };
     let _writer = baseline_writer(&root)?;
+    let (mut term, mut int) = (term, int);
     let mut interrupted = false;
     let resolved = resolve_matrix_bin(&mut term, &mut int, &mut interrupted)
         .await?
         .ok_or("baseline_interrupted")?;
     let harness = identity::harness();
     let target = resolved.1.identity.clone();
-    let manifest = artifacts::encode(
-        &BaselineManifest {
-            schema_version: 1,
+    let bind =
+        |contracts: Vec<wrappers::Contract>, master: provenance::FixtureInputs| BaselineManifest {
+            schema_version: MANIFEST_SCHEMA,
             product_id: plan.product_id.clone(),
             tier: plan.tier,
             tasks: plan.tasks.clone(),
@@ -4074,19 +4170,45 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
             margin_minutes: plan.freshness.margin_minutes,
             harness: harness.clone(),
             target: target.clone(),
-            contracts: contracts.clone(),
-        },
-        artifacts::PLAN_LIMIT,
-    )?;
-    if args.resume {
-        let recorded = artifacts::read_file(&root, "manifest.json", artifacts::PLAN_LIMIT)
-            .map_err(|_| "manifest_missing")?;
-        if recorded != manifest {
-            return Err("manifest_drift: product, margin, harness, target or CLI contract differs from the run".into());
+            contracts,
+            master,
+        };
+    let manifest = match fresh_contracts {
+        Some(contracts) => {
+            let manifest = bind(contracts, provenance::FixtureInputs::default());
+            artifacts::publish(
+                &root,
+                "manifest.json",
+                &artifacts::encode(&manifest, artifacts::PLAN_LIMIT)?,
+            )?;
+            manifest
         }
-    } else {
-        artifacts::publish(&root, "manifest.json", &manifest)?;
-    }
+        None => {
+            let recorded = artifacts::read_file(&root, "manifest.json", artifacts::PLAN_LIMIT)
+                .map_err(|_| "manifest_missing")?;
+            let manifest: BaselineManifest =
+                provenance::decode(&recorded).map_err(|_| "manifest_invalid")?;
+            manifest.master.validate().map_err(|_| "manifest_invalid")?;
+            let families_bound = manifest.contracts.iter().map(|c| c.family.as_str());
+            if !families_bound.eq(families.iter().copied()) {
+                return Err("manifest_invalid".into());
+            }
+            // Everything but the recorded contracts and master must be
+            // what this invocation would bind.
+            let expected = artifacts::encode(
+                &bind(manifest.contracts.clone(), manifest.master.clone()),
+                artifacts::PLAN_LIMIT,
+            )?;
+            if recorded != expected {
+                return Err(
+                    "manifest_drift: product, margin, harness or target differs from the run"
+                        .into(),
+                );
+            }
+            manifest
+        }
+    };
+    let contracts = manifest.contracts.clone();
     let mut resources = MatrixResources {
         signals: Some((term, int)),
         resolved: Some(resolved.clone()),
@@ -4115,6 +4237,7 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
                         comparison: None,
                         matrix_id: None,
                         cli: Vec::new(),
+                        paid: None,
                     },
                     &mut resources,
                 )
@@ -4146,6 +4269,7 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
         harness: &harness,
         target: &target,
         contracts: &contracts,
+        master: &manifest.master,
     };
     let mut said: Option<(Vec<String>, bool)> = None;
     let committed = loop {
@@ -4170,9 +4294,7 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
             return Ok(2);
         }
         // The pinned installations must not have changed since the manifest.
-        let current =
-            wrappers::paid_contracts(config, &families).map_err(|e| format!("contract {e}"))?;
-        if current != contracts {
+        if live_contracts()? != contracts {
             return Err("contract_drift".into());
         }
         let now = unix_now();
@@ -4219,7 +4341,10 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
             }
             continue;
         };
-        if !baseline_chunk(&ledger, &mut resources, &chunk, &agents, &contracts).await? {
+        // The wrapper of every trial in this chunk must still find the login
+        // valid through the instant this admission checked for.
+        let valid_through = now.saturating_add(plan.freshness.margin_minutes.saturating_mul(60));
+        if !baseline_chunk(&ledger, &mut resources, &chunk, &agents, valid_through).await? {
             return Ok(2);
         }
     };
@@ -4255,7 +4380,7 @@ async fn baseline_chunk(
     resources: &mut MatrixResources,
     chunk: &baseline::Chunk,
     agents: &[report::AgentSpec],
-    contracts: &[wrappers::Contract],
+    valid_through: u64,
 ) -> Result<bool, String> {
     let plan = ledger.plan;
     let attempts = ledger.root.join("attempts");
@@ -4264,7 +4389,8 @@ async fn baseline_chunk(
         .iter()
         .position(|a| a.label == chunk.agent)
         .ok_or("baseline_agent_unknown")?;
-    let cli = contracts
+    let cli = ledger
+        .contracts
         .iter()
         .find(|c| c.family == chunk.family)
         .ok_or("baseline_contract_missing")?
@@ -4298,12 +4424,18 @@ async fn baseline_chunk(
                 specs: vec![agents[index].clone()],
                 trials: chunk.repetitions.len() as u32,
                 deadline_ms: Some(plan.deadline_ms),
-                master: provenance::FixtureInputs::default(),
+                master: ledger.master.clone(),
                 retention: Some(ledger.root.join("paid")),
                 brokkr: None,
                 comparison: None,
                 matrix_id: Some(attempt.clone()),
                 cli: vec![Some(cli)],
+                paid: Some(PaidChunk {
+                    nominal: ledger
+                        .nominal(&chunk.task, &chunk.agent, &chunk.repetitions)
+                        .ok_or("baseline_agent_unknown")?,
+                    valid_through,
+                }),
             },
             resources,
         )
@@ -6718,7 +6850,10 @@ mod baseline_tests {
             tasks: ids.clone(),
             agents: vec!["oracle".into()],
             repetitions: 1,
-            cells: vec![assigned_cell(&ids, &specs, 1, 0, &master, &matrix_id, None)],
+            cells: vec![assigned_cell(
+                &ids, &specs, 1, 0, &master, &matrix_id, None, None,
+            )],
+            nominal: None,
         };
         assert!(MatrixEvidence::start(&base.join("link").join("evidence"), &plan).is_err());
         assert!(!real.join("evidence").exists(), "nothing under the target");

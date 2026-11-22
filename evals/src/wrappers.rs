@@ -744,15 +744,34 @@ const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// HOME, no stdin and a bounded stdout, and kill its whole group afterwards.
 /// The banner never leaves this function; only the verdict does.
 fn probe_version(executable: &Path, expected: &str) -> Result<(), String> {
+    use std::os::unix::fs::DirBuilderExt as _;
     use std::os::unix::process::CommandExt as _;
     let home = crate::runner::private_tempdir("cli-probe-").map_err(|_| "version_probe_failed")?;
-    let mut child = Command::new(executable)
+    let mut probe = Command::new(executable);
+    probe
         .arg("--version")
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("LANG", "C")
         .env("LC_ALL", "C")
-        .env("HOME", home.path())
+        .env("HOME", home.path());
+    // Every child gets the private runtime map (decision 0075 §1): a private
+    // TMPDIR and the four XDG directories, never the operator's defaults.
+    for (key, name) in [
+        ("TMPDIR", "tmp"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_STATE_HOME", "state"),
+    ] {
+        let dir = home.path().join(name);
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&dir)
+            .map_err(|_| "version_probe_failed")?;
+        probe.env(key, dir);
+    }
+    let mut child = probe
         .current_dir(home.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -882,6 +901,54 @@ fn jwt_expiry(token: &str) -> Result<u64, String> {
         .filter(|exp| *exp <= i64::MAX as u64)
         .ok_or_else(unknown)
 }
+/// A Codex login lasts until the earlier of its access token's `exp` and,
+/// when the id token is a JWT carrying one, the id token's `exp`.
+fn codex_expiry(auth: &CodexAuth) -> Result<u64, String> {
+    let access = jwt_expiry(&auth.tokens.access_token)?;
+    Ok(jwt_expiry(&auth.tokens.id_token).map_or(access, |id| id.min(access)))
+}
+/// A paid launch's credential must be unexpired and, when the coordinator
+/// admitted its chunk with a margin, still valid through that instant.
+fn still_valid(until: u64, through: u64) -> Result<(), String> {
+    if until <= now_unix() {
+        Err("private_credential_expired".into())
+    } else if until < through {
+        Err("private_credential_margin".into())
+    } else {
+        Ok(())
+    }
+}
+/// The run binding a paid-baseline coordinator hands its wrapper: the
+/// manifest's CLI digest and the validity the chunk was admitted with. Both
+/// or neither; anything else refuses.
+fn paid_binding() -> Result<Option<(String, u64)>, String> {
+    use crate::runner::{ENV_PAID_CLI_SHA256, ENV_PAID_VALID_THROUGH};
+    match (
+        std::env::var(ENV_PAID_CLI_SHA256),
+        std::env::var(ENV_PAID_VALID_THROUGH),
+    ) {
+        (Err(std::env::VarError::NotPresent), Err(std::env::VarError::NotPresent)) => Ok(None),
+        (Ok(sha), Ok(through)) if crate::provenance::is_hash(&sha) => through
+            .parse()
+            .map(|t| Some((sha, t)))
+            .map_err(|_| "wrapper_paid_binding_invalid".into()),
+        _ => Err("wrapper_paid_binding_invalid".into()),
+    }
+}
+/// Tell a paid coordinator, on the descriptor it handed down, whether the
+/// pinned CLI is about to run. The descriptor is closed on exec first, so the
+/// CLI never inherits it and a model can never write the report.
+fn report_launch(word: &[u8]) {
+    if std::env::var(crate::runner::ENV_LAUNCH_FD).as_deref() != Ok("3") {
+        return;
+    }
+    let fd = crate::runner::LAUNCH_FD;
+    unsafe {
+        if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == 0 {
+            let _ = libc::write(fd, word.as_ptr().cast(), word.len());
+        }
+    }
+}
 fn dsh_route(auth: DshAttested, provider: &str) -> AttestedKey {
     if provider == "dashscope" {
         auth.dashscope
@@ -907,7 +974,7 @@ pub fn valid_until(config: &Path, key: &str) -> Result<u64, String> {
         "codex" => {
             let auth: CodexAuth = private_read(&selected.credential_file)?;
             codex_validated(&auth)?;
-            jwt_expiry(&auth.tokens.access_token)
+            codex_expiry(&auth)
         }
         _ => {
             let auth: DshAttested = private_read(&selected.credential_file)?;
@@ -990,7 +1057,20 @@ fn through_driver(direct: &Command, family: &str, driver: &Path) -> Command {
     cmd
 }
 
+/// Launch the family CLI, or say why not. Returning at all means the CLI
+/// never ran: a paid coordinator learns that on the launch descriptor and
+/// keeps the slot unscored (proposed 0137).
 pub fn run(
+    harness: &str,
+    model: &str,
+    config: &Path,
+    via_brokkr: Option<&Path>,
+) -> Result<(), String> {
+    let result = launch(harness, model, config, via_brokkr);
+    report_launch(b"unstarted\n");
+    result
+}
+fn launch(
     harness: &str,
     model: &str,
     config: &Path,
@@ -1022,10 +1102,19 @@ pub fn run(
         return Err("wrapper_executable_invalid".into());
     }
     // A paid contract binds the bytes: recheck the pin at launch, so a CLI
-    // replaced since preflight never runs under the recorded identity.
-    if let Some(paid) = &selected.paid {
-        check_pinned(&selected.executable, &paid.cli_sha256)
-            .map_err(|e| format!("wrapper_cli_{e}"))?;
+    // replaced since preflight never runs under the recorded identity. A
+    // coordinator's run binding wins over the mutable selection: a selection
+    // re-pinned mid-run refuses rather than running the new binary.
+    let binding = paid_binding()?;
+    let through = binding.as_ref().map_or(0, |(_, t)| *t);
+    match (&selected.paid, &binding) {
+        (Some(paid), Some((sha, _))) if *sha != paid.cli_sha256 => {
+            return Err("wrapper_contract_drift".into());
+        }
+        (Some(paid), _) => check_pinned(&selected.executable, &paid.cli_sha256)
+            .map_err(|e| format!("wrapper_cli_{e}"))?,
+        (None, Some(_)) => return Err("wrapper_contract_missing".into()),
+        (None, None) => {}
     }
     let paid = selected.paid.is_some();
     let cwd = std::env::current_dir().map_err(|_| "wrapper_workdir")?;
@@ -1061,8 +1150,8 @@ pub fn run(
         "claude" => {
             let auth: ClaudeAuth = private_read(&selected.credential_file)?;
             claude_validated(&auth)?;
-            if paid && auth.oauth.expires_at / 1000 <= now_unix() {
-                return Err("private_credential_expired".into());
+            if paid {
+                still_valid(auth.oauth.expires_at / 1000, through)?;
             }
             let dir = make_dir(&home_fd, ".claude")?;
             write_private(
@@ -1110,8 +1199,8 @@ pub fn run(
         "codex" => {
             let auth: CodexAuth = private_read(&selected.credential_file)?;
             codex_validated(&auth)?;
-            if paid && jwt_expiry(&auth.tokens.access_token)? <= now_unix() {
-                return Err("private_credential_expired".into());
+            if paid {
+                still_valid(codex_expiry(&auth)?, through)?;
             }
             let dir = make_dir(&home_fd, ".codex")?;
             write_private(
@@ -1169,14 +1258,12 @@ pub fn run(
                 nonempty(&attested.dashscope.key)?;
                 nonempty(&attested.spark.key)?;
                 let (dashscope, spark) = (attested.dashscope, attested.spark);
-                let through = if provider == "dashscope" {
+                let route_through = if provider == "dashscope" {
                     dashscope.valid_through
                 } else {
                     spark.valid_through
                 };
-                if through <= now_unix() {
-                    return Err("private_credential_expired".into());
-                }
+                still_valid(route_through, through)?;
                 DshAuth {
                     dashscope: dashscope.key,
                     spark: spark.key,
@@ -1250,6 +1337,7 @@ pub fn run(
             .map_err(|_| "eval_prompt_unavailable")?;
         cmd.stdin(f);
     }
+    report_launch(crate::runner::LAUNCH_READY);
     let _error = cmd.exec();
     Err("wrapper_exec_failed".into())
 }

@@ -1243,7 +1243,7 @@ fn replace_private(path: &Path, bytes: &[u8]) {
 /// without launching; version 1 callers are unchanged (tests above).
 #[test]
 fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
-    let refused = |c: &Case, family: &str, model: &str, code: &str| {
+    let refused = |c: &Case, env: &[(&str, String)], family: &str, model: &str, code: &str| {
         let _ = std::fs::remove_file(&c.capture);
         // Each launch needs a fresh HOME; the previous one staged into it.
         for entry in std::fs::read_dir(&c.home).unwrap() {
@@ -1254,7 +1254,11 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
                 std::fs::remove_file(&path).unwrap();
             }
         }
-        let out = c.command(family, model).output().unwrap();
+        let mut cmd = c.command(family, model);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{code}: {out:?}");
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(err.contains(code), "{code}: {err}");
@@ -1295,11 +1299,66 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
                 json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":future},"SPARK_API_KEY":{"key":"SPARK-CANARY","valid_through":1}})
             };
             replace_private(&credential, route.to_string().as_bytes());
-            refused(&c, family, model, "private_credential_expired");
+            refused(&c, &[], family, model, "private_credential_expired");
+        }
+        // A coordinator's run binding wins over the mutable selection: a
+        // selection re-pinned since the manifest refuses, a login valid less
+        // long than the chunk was admitted for refuses, and half a binding
+        // refuses.
+        if family == "claude" {
+            let pin = swarmail_evals::identity::file_hash(&script).unwrap();
+            let (sha, through) = (
+                swarmail_evals::runner::ENV_PAID_CLI_SHA256,
+                swarmail_evals::runner::ENV_PAID_VALID_THROUGH,
+            );
+            let bound = |s: &str, t: u64| [(sha, s.to_string()), (through, t.to_string())];
+            refused(
+                &c,
+                &bound(&"1".repeat(64), 0),
+                family,
+                model,
+                "wrapper_contract_drift",
+            );
+            refused(
+                &c,
+                &bound(&pin, future),
+                family,
+                model,
+                "private_credential_margin",
+            );
+            refused(
+                &c,
+                &[(sha, pin.clone())],
+                family,
+                model,
+                "wrapper_paid_binding_invalid",
+            );
+            refused(
+                &c,
+                &bound("not-a-digest", 0),
+                family,
+                model,
+                "wrapper_paid_binding_invalid",
+            );
+            let mut cmd = c.command(family, model);
+            for (k, v) in bound(&pin, now_secs()) {
+                cmd.env(k, v);
+            }
+            for entry in std::fs::read_dir(&c.home).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    std::fs::remove_dir_all(&path).unwrap();
+                } else {
+                    std::fs::remove_file(&path).unwrap();
+                }
+            }
+            let _ = std::fs::remove_file(&c.capture);
+            let out = cmd.output().unwrap();
+            assert!(out.status.success(), "bound launch: {out:?}");
         }
         // A CLI replaced after preflight never runs under the pinned identity.
         paid_selection(&c, family, &"0".repeat(64));
-        refused(&c, family, model, "wrapper_cli_digest_mismatch");
+        refused(&c, &[], family, model, "wrapper_cli_digest_mismatch");
         // A family the paid selection does not name has no contract.
         let other = if family == "claude" {
             "codex"
@@ -1311,7 +1370,7 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
         } else {
             "claude-opus-5-5"
         };
-        refused(&c, other, other_model, "wrapper_contract_missing");
+        refused(&c, &[], other, other_model, "wrapper_contract_missing");
     }
     // Codex: an access token whose exp has passed refuses before exec.
     let c = Case::new("codex");
@@ -1331,5 +1390,24 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
         "codex",
         &swarmail_evals::identity::file_hash(&script).unwrap(),
     );
-    refused(&c, "codex", "gpt-6-luna", "private_credential_expired");
+    refused(&c, &[], "codex", "gpt-6-luna", "private_credential_expired");
+    // A fresh access token does not outlast an id token that has expired.
+    let fresh = format!(
+        "{}.{}.sig",
+        e.encode("{}"),
+        e.encode(r#"{"exp":4102444800}"#)
+    );
+    replace_private(
+        &credential,
+        json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":stale,"access_token":fresh,"refresh_token":"r","account_id":"a"},"last_refresh":"2026-11-22T00:00:00Z"})
+            .to_string()
+            .as_bytes(),
+    );
+    refused(&c, &[], "codex", "gpt-6-luna", "private_credential_expired");
+}
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
