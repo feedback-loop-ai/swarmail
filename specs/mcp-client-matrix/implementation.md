@@ -61,3 +61,16 @@ criterion is not met, and nothing here claims it.
 
 None touched: no change under `scripts/`, `.github/`, `.brokkr/`, either lock,
 `deny.toml` or the toolchain. No production code under `src/` changed.
+
+## Local gates — 2026-11-22, on 13c30b61
+
+Run in the foreground, on a shared host at load average 20–25:
+
+- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`: clean.
+- `cargo test --workspace --locked`: no failures (4 m 20 s).
+- `cargo build --locked --bin swarmail`: built. The evals fmt and clippy were clean, and the evals `cargo test --locked` against that binary had no failures (24 m under load).
+- `bash scripts/coverage-gate.sh`: pass, exact 100/100/100. Its `selftest`: pass.
+- `bash scripts/publish-guard-test.sh`, `bash scripts/seal-branch-test.sh`, `cargo deny check licenses`: pass.
+- `brokkr compile` over `.brokkr/recipes/*/`: **not run**. This sandbox has no brokkr binary, and the seat installs nothing. No file under `.brokkr/` changed, so the recipes are main's bytes. The verify seat and CI run this gate with the pinned engine.
+
+CI owns macOS, the native-tls absence proof, Helm, Docker smoke, RustSec and the port-80 bridge exchange.
