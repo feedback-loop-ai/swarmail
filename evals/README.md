@@ -855,8 +855,8 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
   Original bytes never reach a disk.
 - **The socket's trust boundary.** The helper learns the socket's path,
   `EVAL_TOOL_CAPTURE_SOCKET` (harness-generated, a path and never a secret,
-  set only in capture mode: a ninth agent-visible input that awaits the
-  operator's dated 0075 §1 addendum), from the agent's own MCP configuration, so an unconfined same-uid agent can
+  set only in capture mode: a ninth agent-visible input, accepted in
+  0075's dated §1 addendum of 2026-11-22), from the agent's own MCP configuration, so an unconfined same-uid agent can
   reach it too: nothing a CLI launches can hold a secret the agent cannot
   read. A connection can only report `eval_http` calls (the runner fixes the
   owned tools), holds at most one open call, and a trial accepts at most 16
