@@ -72,8 +72,8 @@ on every paid baseline row, refusal rows included.
   return; anything but exactly `ready` makes the trial a harness error
   (`agent_unstarted`) that consumes no slot. The model never holds the fd.
 - The version probe gets a private TMPDIR and the four XDG directories
-  (0075 §1). Codex validity is the earlier of the access token's `exp` and,
-  when the id token is a JWT, its `exp`.
+  (0075 §1). Codex validity is the access token's `exp` alone (review return 2:
+  a short-lived id token would defer every Codex chunk forever).
 - Docs: wrappers.md drift wording, README's probe and resume wording,
   run-plan.md's filtering and incomplete-report sentences. The dry-run test
   carries the non-Linux ignore.
@@ -108,8 +108,8 @@ expert real controls, now through the all-deferred wait and an interrupt,
 plus a corrupt retained control. `--test wrappers paid_selection`
 (launch-time pin, dsh route projection, expiry, missing contract, the run
 binding's drift, margin and half-binding refusals, a bound launch, and an
-expired Codex id token). `--lib
-paid_tests cli_identity` (token-claim grammar, banners, CLI binding).
+expired Codex access token). `--lib
+paid_tests cli_identity` (token-claim grammar, Codex validity from the access token alone, banners, CLI binding).
 
 **Added test time** on this host (load 17–39): `paid_baseline` 87–91 s
 (was 80 s; the mid-chunk rotation adds three unstarted trials and seven

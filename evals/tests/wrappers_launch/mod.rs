@@ -1391,19 +1391,6 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
         &swarmail_evals::identity::file_hash(&script).unwrap(),
     );
     refused(&c, &[], "codex", "gpt-6-luna", "private_credential_expired");
-    // A fresh access token does not outlast an id token that has expired.
-    let fresh = format!(
-        "{}.{}.sig",
-        e.encode("{}"),
-        e.encode(r#"{"exp":4102444800}"#)
-    );
-    replace_private(
-        &credential,
-        json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":stale,"access_token":fresh,"refresh_token":"r","account_id":"a"},"last_refresh":"2026-11-22T00:00:00Z"})
-            .to_string()
-            .as_bytes(),
-    );
-    refused(&c, &[], "codex", "gpt-6-luna", "private_credential_expired");
 }
 fn now_secs() -> u64 {
     std::time::SystemTime::now()

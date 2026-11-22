@@ -901,11 +901,11 @@ fn jwt_expiry(token: &str) -> Result<u64, String> {
         .filter(|exp| *exp <= i64::MAX as u64)
         .ok_or_else(unknown)
 }
-/// A Codex login lasts until the earlier of its access token's `exp` and,
-/// when the id token is a JWT carrying one, the id token's `exp`.
+/// A Codex login lasts until its access token's `exp`. The id token is
+/// identity evidence the CLI does not need to be current; a short-lived id
+/// token must not keep the login inside the freshness margin forever.
 fn codex_expiry(auth: &CodexAuth) -> Result<u64, String> {
-    let access = jwt_expiry(&auth.tokens.access_token)?;
-    Ok(jwt_expiry(&auth.tokens.id_token).map_or(access, |id| id.min(access)))
+    jwt_expiry(&auth.tokens.access_token)
 }
 /// A paid launch's credential must be unexpired and, when the coordinator
 /// admitted its chunk with a margin, still valid through that instant.
@@ -1653,6 +1653,29 @@ mod paid_tests {
     fn token(payload: &str) -> String {
         let e = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         format!("{}.{}.sig", e.encode("{}"), e.encode(payload))
+    }
+
+    #[test]
+    fn codex_validity_is_the_access_token_alone() {
+        let auth = |id: String, access: String| CodexAuth {
+            auth_mode: "chatgpt".into(),
+            api_key: None,
+            tokens: Tokens {
+                id_token: id,
+                access_token: access,
+                refresh_token: "r".into(),
+                account_id: "a".into(),
+            },
+            last_refresh: "2026-11-22T00:00:00Z".into(),
+        };
+        // An id token that expires first never shortens the login.
+        let fresh = token(r#"{"exp":4102444800}"#);
+        assert_eq!(
+            codex_expiry(&auth(token(r#"{"exp":1}"#), fresh.clone())),
+            Ok(4102444800)
+        );
+        assert_eq!(codex_expiry(&auth("opaque".into(), fresh)), Ok(4102444800));
+        assert!(codex_expiry(&auth(token(r#"{"exp":1}"#), "opaque".into())).is_err());
     }
 
     #[test]

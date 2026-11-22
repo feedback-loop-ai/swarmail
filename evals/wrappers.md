@@ -124,8 +124,9 @@ or absent evidence refuses by `credential <family|route>: <cause>`:
 * Codex (`codex_chatgpt_v1`, the Codex schema above): `last_refresh` must
   parse, but it is copy time and no validity evidence. The expiry is the
   integer `exp` claim of the selected access token's base64url JSON payload
-  (`credential_expiry_unknown` otherwise), or the id token's `exp` when the
-  id token is such a JWT and expires earlier. The token and its claims are never
+  (`credential_expiry_unknown` otherwise). The id token's `exp` is not read:
+  the CLI does not need a current id token, and a short-lived one would keep
+  every Codex login inside the margin. The token and its claims are never
   printed, kept or put in argv.
 * dsh (`dsh_routes_attested_v1`): each route keeps its key with an
   operator-attested UTC valid-through instant, epoch seconds:
