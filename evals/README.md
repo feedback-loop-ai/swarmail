@@ -117,7 +117,8 @@ $E baseline --tier deliverability --config /private/wrappers.json --output /priv
   `authorization_mismatch`. Both exit 2 after printing the plan.
 * **Contracts.** The `--config` must be the version-2 selection in
   [wrappers.md](wrappers.md#paid-selection-version-2-proposed-0137). Each
-  refusal names its family and cause, and it comes before any output or launch.
+  refusal names its family and cause, and it comes before any output or paid
+  launch (the bounded `--version` probe is the only process it starts).
 * **Freshness.** A chunk starts only if its credential has at least
   `--freshness-minutes` (default 70) left. Claude logins, Codex logins and
   each dsh route are separate credentials. Other chunks run while one
@@ -135,10 +136,17 @@ $E baseline --tier deliverability --config /private/wrappers.json --output /priv
 * **Resume.** A score counts once its trial's hash-bound evidence is
   retained, and a resume reruns only the slots that are still outstanding.
   Harness-error and interrupted attempts stay as evidence and use up no slot.
-  A resume refuses before launching anything in these cases: a second writer
-  (`run_writer_busy`), a changed product, margin, harness, target or CLI
-  (`manifest_drift`), unexpected, duplicated or tampered evidence, or
-  conflicting derived output (`output_conflict`). A coordinator killed
+  Rows carry their nominal slot coordinates and a seed from the manifest's
+  master, so a resumed slot is the planned one. A wrapper that refuses before
+  exec (a replaced or re-pinned CLI, a login shorter than the chunk was
+  admitted for) leaves an unscored harness-error attempt, never a measured
+  failure. A resume refuses before launching anything in these cases: a
+  second writer (`run_writer_busy`), a changed product, margin, harness or
+  target (`manifest_drift`), a CLI changed since the manifest
+  (`contract_drift`, or `digest_mismatch` under the old pin), unexpected,
+  duplicated or tampered evidence, or conflicting derived output
+  (`output_conflict`). A complete run reopens with no private input present
+  and regenerates missing derived output from its retained rows. A coordinator killed
   mid-chunk leaves an attempt whose cleanup is unproved. Check for surviving
   agent processes, then add `--confirm-cleanup <attempt>`, which the refusal
   names. A trial that still holds admission refuses even with a confirmation.

@@ -15,6 +15,10 @@ use swarmail_evals::{
 };
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
 fn dry_run_prints_the_whole_product_and_reads_creates_and_launches_nothing() {
     let dir = tempdir();
     // Neither file exists: a dry run never opens a selection or credential.
@@ -328,8 +332,62 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     for (id, bytes) in &scored_before {
         assert_eq!(mid.get(id), Some(bytes), "committed score bytes unchanged");
     }
-    // Resume: dsh runs, then every remaining chunk is Claude's and the run
-    // waits with its reason until the operator renews that login.
+    // Mid-chunk, the operator rotates the dsh CLI and its pin. The held
+    // second glm-spark trial ran on the run's binary; the wrapper of every
+    // later trial refuses before exec, so no model runs and those slots stay
+    // unscored: harness errors, never measured failures.
+    std::fs::write(&p.hold, b"dsh spark-glm 2").unwrap();
+    let third = Running::start(p.authorized(&["--resume"]));
+    wait("two glm-spark launches", || p.count("dsh spark-glm") == 2);
+    rotate(&p, "dsh");
+    p.select(|_| {});
+    std::fs::remove_file(&p.hold).unwrap();
+    let (code, lines) = third.finish();
+    assert_eq!(code, Some(2), "{lines:?}");
+    assert_eq!(
+        p.count("dsh spark-glm"),
+        2,
+        "refused trials launched no CLI"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("agent=glm-spark") && l.contains("scored=2/5")),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("ended with a harness error")),
+        "{lines:?}"
+    );
+    let unstarted = retained_results(&p)
+        .values()
+        .filter(|b| contains(b, "\"outcome\":\"harness_error\""))
+        .count();
+    assert!(
+        unstarted >= 3,
+        "three unstarted glm-spark attempts retained"
+    );
+    // Between chunks: the re-pinned selection is drift for this run, and the
+    // restored binary under the rotated pin is a digest refusal.
+    let n = p.launches().len();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2));
+    assert!(err.contains("baseline refused: contract_drift"), "{err}");
+    p.write_cli("dsh", banner("dsh"));
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2));
+    assert!(err.contains("contract dsh: digest_mismatch"), "{err}");
+    p.select(|_| {});
+    // A different margin is a different run.
+    let (code, _, err) = run(&mut p.authorized(&["--resume", "--freshness-minutes", "71"]));
+    assert_eq!(code, Some(2));
+    assert!(err.contains("manifest_drift"), "{err}");
+    assert_eq!(p.launches().len(), n);
+    // Resume: the three outstanding glm-spark slots run, then every remaining
+    // chunk is Claude's and the run waits with its reason until the operator
+    // renews that login.
     let third = Running::start(p.authorized(&["--resume"]));
     third.until("the renewal wait", |l| {
         l.contains("baseline waiting") && l.contains("blocked: claude")
@@ -349,6 +407,12 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     assert_eq!(
         starts[tail..],
         ["claude-opus", "claude-sonnet"],
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("agent=glm-spark repetitions=[2, 3, 4]")),
         "{lines:?}"
     );
     assert!(
@@ -383,10 +447,26 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     let rows = paid_rows(&p);
     assert_eq!(rows.len(), 30);
     let plan = p.plan();
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(p.output.join("manifest.json")).unwrap()).unwrap();
     for (i, row) in rows.iter().enumerate() {
         let spec = &plan.agents[i / 5];
         assert_eq!(row["agent"], spec.label);
         assert_eq!(row["outcome"], "fail");
+        // Each row stands at its nominal slot, whichever attempt scored it,
+        // with the seed the run's master gives that slot.
+        let m: MatrixCoordinates =
+            serde_json::from_value(row["provenance"]["matrix"].clone()).unwrap();
+        assert_eq!(
+            (m.task_index, m.agent_index, m.repetition_index),
+            (0, (i / 5) as u64, (i % 5) as u64),
+            "{row}"
+        );
+        assert_eq!(json!(m.master_seed), manifest["master"]["seed"]);
+        assert_eq!(
+            row["provenance"]["fixture"]["seed"],
+            json!(m.cell_seed(&plan.tasks[0], &spec.label).unwrap())
+        );
         let family = spec.wrapper_profile.unwrap().family();
         assert_eq!(
             row["provenance"]["agent"]["cli"],
@@ -490,6 +570,37 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     assert_eq!(code, Some(2));
     assert!(err.contains("matrix_plan_inconsistent"), "{err}");
     std::fs::write(&assignment, &original).unwrap();
+    // A resumed attempt's slots cannot be re-labelled: [2, 3, 4] edited to
+    // the sorted, in-range [1, 3, 4] no longer matches its cells.
+    let resumed = std::fs::read_dir(p.output.join("attempts"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|f| {
+            std::fs::read_to_string(f)
+                .unwrap()
+                .contains("\"repetitions\":[2,3,4]")
+        })
+        .unwrap();
+    let original = std::fs::read(&resumed).unwrap();
+    let edited = String::from_utf8(original.clone())
+        .unwrap()
+        .replace("\"repetitions\":[2,3,4]", "\"repetitions\":[1,3,4]");
+    std::fs::write(&resumed, edited).unwrap();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2));
+    assert!(err.contains("matrix_plan_inconsistent"), "{err}");
+    std::fs::write(&resumed, &original).unwrap();
+    // A closure must name how cleanup was proved.
+    let closure = resumed.with_extension("closed");
+    let original = std::fs::read(&closure).unwrap();
+    let forged = String::from_utf8(original.clone())
+        .unwrap()
+        .replace("owned_cleanup", "assumed");
+    std::fs::write(&closure, forged).unwrap();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2));
+    assert!(err.contains("closure_invalid"), "{err}");
+    std::fs::write(&closure, &original).unwrap();
     // Restored evidence regenerates the same canonical rows.
     let (code, _, err) = run(&mut p.authorized(&["--resume"]));
     assert_eq!(code, Some(1), "{err}");
@@ -498,23 +609,33 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
         before.0
     );
     assert_eq!(p.launches().len(), n);
-    // A replaced CLI (re-pinned or not) is identity drift for this run.
-    p.write_cli("codex", &format!("{} ", banner("codex")));
-    p.write_cli("codex", banner("codex"));
-    std::fs::OpenOptions::new()
-        .append(true)
-        .open(p.bin("codex"))
-        .unwrap()
-        .write_all(b"# replaced\n")
-        .unwrap();
+    // Recovery needs no private input: with the selection, every credential
+    // and every CLI gone, a complete run still reopens and regenerates its
+    // derived output from retained rows alone.
+    std::fs::remove_file(p.output.join("report.json")).unwrap();
+    std::fs::remove_file(&p.config).unwrap();
+    for family in FAMILIES {
+        std::fs::remove_file(p.bin(family)).unwrap();
+        std::fs::remove_file(p.cred(family)).unwrap();
+    }
     let (code, _, err) = run(&mut p.authorized(&["--resume"]));
-    assert_eq!(code, Some(2));
-    assert!(err.contains("contract codex: digest_mismatch"), "{err}");
-    p.select(|_| {});
-    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
-    assert_eq!(code, Some(2));
-    assert!(err.contains("manifest_drift"), "{err}");
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(
+        std::fs::read(p.output.join("report.json")).unwrap(),
+        before.1
+    );
     assert_eq!(p.launches().len(), n);
+}
+
+/// Replace `family`'s CLI with different bytes that still answer its banner.
+fn rotate(p: &Paid, family: &str) {
+    p.write_cli(family, banner(family));
+    let next = p.bin(family).with_extension("rotated");
+    let mut bytes = std::fs::read(p.bin(family)).unwrap();
+    bytes.extend_from_slice(b"# rotated\n");
+    std::fs::write(&next, bytes).unwrap();
+    std::fs::set_permissions(&next, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::rename(&next, p.bin(family)).unwrap();
 }
 
 fn bytes(rows: &[TrialResult]) -> Vec<u8> {

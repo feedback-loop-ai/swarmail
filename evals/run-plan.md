@@ -212,11 +212,15 @@ A start exclusively creates the requested output leaf at 0700 under an
 existing parent (symlinked ancestors only under the README's root-owned
 rule); an existing output refuses unchanged. `--resume` reopens that private
 leaf, takes the run's exclusive writer lock and must reproduce its
-`manifest.json` (product, margin, harness, target and CLI contracts) exactly
+`manifest.json` (product, margin, harness and target) exactly; the CLI
+contracts and fixture master it recorded bind the rest of the run
 (proposed 0137; the README's "Paid baseline: one operator command" has the
-operator procedure). Keep the whole output tree, including incomplete
-attempts and absent completion markers. The coordinator never overwrites,
-filters or fabricates rows.
+operator procedure). A resume rechecks the live contracts and credentials
+only before it starts a chunk, so a complete run's derived output can be
+regenerated from retained rows with no private input present. Keep the
+whole output tree, including incomplete attempts and absent completion
+markers. The coordinator never overwrites, fabricates or filters a scored
+row; unscored attempts stay under paid/ and out of paid.jsonl.
 
 1. Before any output: the plan prints, `--authorized-product` must equal its
    `product_id`, and every planned family's version-2 contract (profile,
@@ -244,9 +248,17 @@ filters or fabricates rows.
    other chunks run meanwhile and the run waits, stating the blocked
    credentials, when none can start. Each chunk attempt is published in
    attempts/ before it starts and closed after the matrix's owned cleanup.
+   Its cells carry their nominal run coordinates (task and model by run
+   index, the planned repetition) and the seed the manifest's master gives
+   that slot, so a resumed slot is the same slot. Every trial's wrapper
+   rechecks, immediately before exec, the manifest's CLI digest and that the
+   login stays valid through the chunk's admission instant plus the margin.
 5. A slot is scored once its trial's hash-bound retained evidence holds a pass
    or fail; harness errors and interruptions are unscored attempts kept as
    evidence, and a terminal harness error stops the run (exit 2) for a resume.
+   A wrapper that refuses before exec reports so on a close-on-exec launch
+   descriptor: no model ran, the row is a harness error, the slot stays
+   outstanding.
    Every paid row carries the verified CLI identity (`provenance.agent.cli`).
 6. When every slot is scored, publish paid.jsonl in canonical order and
    report.json with the existing report logic; existing files must hold the
@@ -267,8 +279,9 @@ operational/admission/retention/interruption/accounting/report failure and wins
 over report success. Authorization, contract, credential and resume refusals
 are exit 2 and are not model measurements. Reports count every requested row as an attempt, score
 success over pass+fail, and also show passes/attempts; infrastructure is explicit.
-No failure or infrastructure row is removed from the denominator. An incomplete
-diagnostic report is not a completed baseline. Retain every row and report.
+No failure or infrastructure row is removed from the denominator. An
+incomplete run publishes no report.json; its retained rows under paid/ are
+the evidence, and they are not a completed baseline.
 
 Before any operator-owned measurement run standalone fmt, locked clippy and
 full tests from [README](README.md), including `--test wrappers`, `--test baseline`

@@ -39,13 +39,6 @@ before exec. `provenance.agent.cli` is optional and validated; it is present
 on every paid baseline row, refusal rows included.
 
 **Deviations from the plan, for review.**
-- Row matrix coordinates are local to the attempt. A partial chunk's
-  repetition index counts within its attempt; the nominal repetition is
-  recorded in `attempts/<id>.json` and fixes `paid.jsonl`'s canonical order.
-- The wrapper refuses only an expired credential. The margin is the
-  coordinator's check at chunk entry, so the wrapper does not release a
-  below-margin attempt back to the scheduler.
-- Codex validity is the access token's `exp`. The id token is not consulted.
 - The `--version` banners are fixed per profile
   (`2.1.310 (Claude Code)`, `codex-cli 0.164.0`, `0.1.5-rc.1`). The dsh
   banner grammar has not been observed; the operator's smoke confirms all
@@ -53,13 +46,49 @@ on every paid baseline row, refusal rows included.
 - A worker orphaned by a coordinator SIGKILL can finish its trial and retain
   its own hash-bound score. The resume counts that slot as scored and does
   not re-run it, and the proof asserts exactly that.
+- An interrupt that lands during the controls leaves a complete control
+  matrix with harness-error rows; a resume then refuses
+  `baseline_controls_failed` and the operator starts a fresh `--output`
+  (low, tracked; nothing paid can be lost there).
+
+**Review return 1 (2026-11-22), what changed.**
+- Nominal coordinates: a paid attempt's matrix plan carries `nominal` (run
+  task and model index, planned repetitions), every cell's coordinates and
+  seed are its planned slot's, and the seed derives from a fixture master
+  recorded in the manifest (schema 2). The ledger cross-checks the plan's
+  nominal and master against the assignment, so an edited `repetitions`
+  refuses. Closures must name `owned_cleanup` or `operator_confirmed`.
+- Recovery: a resume binds the manifest's recorded contracts and master and
+  rechecks the live contracts and credentials only before a chunk starts; a
+  complete run regenerates `report.json` with the selection, every CLI and
+  every credential deleted.
+- Launch binding: the coordinator hands each paid trial's wrapper the
+  manifest digest and `valid_through` = chunk admission + margin through the
+  worker context (`runner::PaidLaunch`). The wrapper refuses a drifted pin
+  (`wrapper_contract_drift`), a login shorter than that
+  (`private_credential_margin`) or a half binding, before exec.
+- Unscored refusals: a paid agent gets a close-on-exec launch descriptor
+  (fd 3). The wrapper writes `ready` just before exec and `unstarted` on any
+  return; anything but exactly `ready` makes the trial a harness error
+  (`agent_unstarted`) that consumes no slot. The model never holds the fd.
+- The version probe gets a private TMPDIR and the four XDG directories
+  (0075 §1). Codex validity is the earlier of the access token's `exp` and,
+  when the id token is a JWT, its `exp`.
+- Docs: wrappers.md drift wording, README's probe and resume wording,
+  run-plan.md's filtering and incomplete-report sentences. The dry-run test
+  carries the non-Linux ignore.
 
 **Not proved here.** There is no probe-timeout test, because it would wait
 out the real 10 s bound. Final-publication interruption is covered by
 deleting and regenerating `report.json` and by refusing conflicting
 `paid.jsonl` bytes, not by a kill during the write itself. A forged duplicate
 score across two attempts would refuse with `slot_scored_twice`; the
-integration test covers stray and edited evidence, not that forgery.
+integration test covers stray and edited evidence, not that forgery. No
+test reaches `controls_ambiguous`, `confirm_cleanup_unknown`,
+`paid_evidence_unexpected`, `closure_without_assignment`,
+`matrix_plan_missing` or the reopen-side `baseline_output_unsafe`; the
+launch-pipe setup failure arm and a wrapper killed before it reports are
+also unexercised (both fall to the same harness-error path).
 
 **Tests (targeted filters).** `--test paid_baseline` has five tests. The
 full deliverability run with fake direct CLIs covers the controls gate,
@@ -67,12 +96,19 @@ Claude deferral, a SIGKILL mid-chunk, `run_writer_busy`, the live-owner fence,
 `--confirm-cleanup`, a SIGTERM between chunks, the renewal wait, exact
 per-model launch counts, unchanged committed score bytes, the CLI identity on
 all 30 rows, canary absence, reopening with zero launches, `output_conflict`,
-stray and edited evidence, `digest_mismatch` and `manifest_drift`. The other
+stray and edited evidence (agent, repetitions, closure cause), the nominal
+coordinates and slot seeds of all 30 rows, a mid-chunk CLI rotation whose
+three later trials are refused before exec and stay unscored (exactly two
+glm-spark launches, `scored=2/5`, the resume runs `[2, 3, 4]`),
+`contract_drift` and `digest_mismatch` between chunks, `manifest_drift` for a
+changed margin, and recovery with no private input present. The other
 four tests are the dry run, authorization, every contract and credential
 refusal, and freshness/next-chunk. `--test baseline` keeps the hard and
 expert real controls, now through the all-deferred wait and an interrupt,
 plus a corrupt retained control. `--test wrappers paid_selection`
-(launch-time pin, dsh route projection, expiry, missing contract). `--lib
+(launch-time pin, dsh route projection, expiry, missing contract, the run
+binding's drift, margin and half-binding refusals, a bound launch, and an
+expired Codex id token). `--lib
 paid_tests cli_identity` (token-claim grammar, banners, CLI binding).
 
 **Added test time** on this host (load 21–44): `paid_baseline` 80 s;

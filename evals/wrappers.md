@@ -97,17 +97,24 @@ by `contract <family>: <cause>`:
 * `digest_mismatch`: the measured sha256 differs from `cli_sha256`;
 * `version_mismatch` / `version_probe_failed` / `version_probe_timeout`: a
   fixed `EXECUTABLE --version` with a cleared environment, an empty private
-  HOME, no stdin, 4096 bytes of stdout and a 10 s deadline (its process group
+  HOME with private TMPDIR and XDG directories (decision 0075 §1), no stdin, 4096 bytes of stdout and a 10 s deadline (its process group
   is killed afterwards) must answer exactly `2.1.310 (Claude Code)`,
   `codex-cli 0.164.0` or `0.1.5-rc.1`. The banner is never printed or kept.
 
 The wrapper itself rechecks the pin immediately before exec
 (`wrapper_cli_digest_mismatch`, `wrapper_contract_missing`) and refuses an
-expired login (`private_credential_expired`). Only the verified profile,
-version and sha256 enter rows, as `provenance.agent.cli`; the path stays
-private. Keep pinned installations unchanged for the whole run: a replaced
-binary refuses the next chunk (`contract_drift`) and any resume
-(`manifest_drift`).
+expired login (`private_credential_expired`). Under a paid baseline the
+coordinator also hands it the run's manifest digest and the instant the
+chunk was admitted for: a selection re-pinned since the manifest refuses
+(`wrapper_contract_drift`), and so does a login valid for less than that
+(`private_credential_margin`). Any such refusal is reported on the launch
+descriptor, so the slot stays unscored rather than counting as a model
+failure. Only the verified profile, version and sha256 enter rows, as
+`provenance.agent.cli`; the path stays private. Keep pinned installations
+unchanged for the whole run. Before a chunk starts, a binary replaced under
+the old pin refuses as `contract <family>: digest_mismatch`, and a selection
+re-pinned to a new binary refuses as `contract_drift`; a complete run's
+resume needs neither.
 
 Credential validity is read the way each auth shape carries it, and malformed
 or absent evidence refuses by `credential <family|route>: <cause>`:
@@ -117,7 +124,8 @@ or absent evidence refuses by `credential <family|route>: <cause>`:
 * Codex (`codex_chatgpt_v1`, the Codex schema above): `last_refresh` must
   parse, but it is copy time and no validity evidence. The expiry is the
   integer `exp` claim of the selected access token's base64url JSON payload
-  (`credential_expiry_unknown` otherwise). The token and its claims are never
+  (`credential_expiry_unknown` otherwise), or the id token's `exp` when the
+  id token is such a JWT and expires earlier. The token and its claims are never
   printed, kept or put in argv.
 * dsh (`dsh_routes_attested_v1`): each route keeps its key with an
   operator-attested UTC valid-through instant, epoch seconds:
