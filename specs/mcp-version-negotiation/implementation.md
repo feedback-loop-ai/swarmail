@@ -234,3 +234,16 @@ result is written only after every final exit is zero and the tracked tree is
 clean. Local tasks T1–T7 are complete; original issue AC3 and E1–E3 remain owed
 by their named owners. Runtime behavior, both proposed statuses and #151's
 unmerged-PR hold are preserved.
+
+## Client matrix procedure — 2026-11-22
+
+Part of #392. The earlier sections stay as recorded. The live client receipts
+they call owed now have a fixed checklist and receipt format in
+[`docs/agents/client-matrix.md`](../../docs/agents/client-matrix.md): six steps
+per client (initialize with the negotiated revision, tools/list, a read,
+`swarmail_wait_for_code`, a `structuredContent` search and the attachment
+list), each pass or fail with a reason. Receipts go in
+[`docs/evals/clients/`](../../docs/evals/clients/README.md), and
+`tests/agent_setup_docs.rs` checks their shape only. **Status, 2026-11-22: no
+receipts yet.** Claude Code, Codex, MCP Inspector and Claude Desktop remain
+operator-owned and owed; this procedure makes none of the four rows green.

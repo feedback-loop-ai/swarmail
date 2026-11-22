@@ -288,7 +288,9 @@ an address that routes, and that on the default server it is an error naming
 `--route-domain`.
 
 CI does not prove that Claude Code, Codex, Cursor or dsh load these files.
-That is an operator-owned receipt. The labels above marked **unverified** are
+That is an operator-owned receipt. The fixed checklist and receipt format for
+Claude Code, Codex, the MCP Inspector and Claude Desktop are in
+[the client matrix](client-matrix.md); as of 2026-11-22 no receipt exists. The labels above marked **unverified** are
 the parts of this guide that no source in the repository backs: Cursor's file
 name and shape, the Codex config path, the skill's install path and its
 frontmatter. The TOML and YAML readers in the suite are subset validators for
