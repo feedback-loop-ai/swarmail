@@ -279,8 +279,11 @@ operational/admission/retention/interruption/accounting/report failure and wins
 over report success. Authorization, contract, credential and resume refusals
 are exit 2 and are not model measurements. Reports count every requested row as an attempt, score
 success over pass+fail, and also show passes/attempts; infrastructure is explicit.
-No failure or infrastructure row is removed from the denominator. An
-incomplete run publishes no report.json; its retained rows under paid/ are
+No measured failure is removed from the denominator. A paid slot whose
+attempt ended unscored (a harness error, an interrupted or refused launch)
+is no measurement: it stays retained as evidence under paid/, consumes no
+slot, and the slot runs again, so the report counts each nominal slot's one
+scored row. An incomplete run publishes no report.json; its retained rows under paid/ are
 the evidence, and they are not a completed baseline.
 
 Before any operator-owned measurement run standalone fmt, locked clippy and

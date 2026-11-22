@@ -568,6 +568,19 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     for (id, bytes) in &scored_before {
         assert_eq!(end.get(id), Some(bytes));
     }
+    // Unscored rows (refused, interrupted, killed) carry the CLI binding too.
+    let unscored: Vec<_> = end
+        .values()
+        .filter(|b| contains(b, "\"outcome\":\"harness_error\""))
+        .collect();
+    assert!(unscored.len() >= 4, "{}", unscored.len());
+    for bytes in unscored {
+        assert!(
+            contains(bytes, "\"cli\":{\"profile\":"),
+            "{}",
+            String::from_utf8_lossy(bytes)
+        );
+    }
     // No credential, claim or banner byte reaches any retained or public file.
     let everything = all_bytes(&p.output);
     assert!(!contains(&everything, CANARY));

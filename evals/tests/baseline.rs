@@ -46,9 +46,13 @@ fn dry_run_uses_the_exact_approved_product_without_reading_config_or_creating_ou
     assert_eq!(plan["concurrency"], 1);
     assert_eq!(plan["control_repetitions"], 1);
     assert_eq!(plan["paid_repetitions"], 5);
-    assert_eq!(plan["steps"][0], "fresh free control matrix");
     assert_eq!(
-        plan["steps"][1],
+        plan["steps"][0],
+        "verify every family's pinned CLI contract and credential shape"
+    );
+    assert_eq!(plan["steps"][1], "fresh free control matrix");
+    assert_eq!(
+        plan["steps"][2],
         "validate every control and retained matrix"
     );
     assert_eq!(
@@ -192,7 +196,8 @@ fn an_unknown_baseline_tier_is_a_usage_error_with_no_plan() {
 
 /// Controls come first for the hard product too: six real control trials
 /// (oracle passes, null fails with its idle class) are retained and admitted
-/// before anything paid, and a bad manifest still stops short of a paid slot.
+/// before anything paid; stale credentials and an interrupt still stop short
+/// of a paid slot.
 #[test]
 #[cfg_attr(
     not(target_os = "linux"),

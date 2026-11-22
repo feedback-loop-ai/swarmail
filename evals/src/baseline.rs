@@ -219,9 +219,9 @@ impl Plan {
                 rules,
             },
             steps: vec![
+                "verify every family's pinned CLI contract and credential shape",
                 "fresh free control matrix",
                 "validate every control and retained matrix",
-                "verify every family's pinned CLI contract and credential shape",
                 "task-major paid chunks, each started only while its credential has the margin left",
                 "validate every retained paid slot",
                 "report every scored paid row",
