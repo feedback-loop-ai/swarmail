@@ -69,6 +69,66 @@ credential is modified. Raw CLI stdout/stderr go directly to `/dev/null`, on
 success or failure; there is no raw debug or redaction mode. CLI-created private
 session files are disposed with HOME. Crash-proof erasure is not promised.
 
+## Paid selection (version 2, proposed 0137)
+
+`swarmail-evals baseline` spends only against the closed **version-2**
+selection, which adds each family's pinned CLI contract to the version-1
+locators (inert values):
+
+```json
+{"version":2,"families":{
+ "claude":{"executable":"/opt/claude/2.1.310/claude","credential_file":"/private/claude-oauth.json","profile":"claude_2_1_310","cli_version":"2.1.310","cli_sha256":"<sha256 of that file>","auth_shape":"claude_oauth_v1"},
+ "codex":{"executable":"/opt/codex/0.164.0/codex","credential_file":"/private/auth.json","profile":"codex_0_164_0","cli_version":"0.164.0","cli_sha256":"<sha256>","auth_shape":"codex_chatgpt_v1"},
+ "dsh":{"executable":"/opt/dsh/0.1.5-rc.1/dsh","credential_file":"/private/dsh-routes.json","profile":"dsh_0_1_5_rc_1","cli_version":"0.1.5-rc.1","cli_sha256":"<sha256>","auth_shape":"dsh_routes_attested_v1"}}}
+```
+
+A family the product does not spend may be absent; any other field refuses.
+The file rules above apply to the selection and every credential. Before
+anything spends, `baseline` checks every family the product names and refuses
+by `contract <family>: <cause>`:
+
+* `contract_missing` (absent family), `profile_mismatch` (wrong family or a
+  `*_via_brokkr` selector), `version_unsupported` (`cli_version` is not the
+  profile's exact version), `digest_invalid`, `auth_shape_unsupported`;
+* `executable_unsafe`: the executable must be a regular file itself, not a
+  symlink or forwarding path, executable, owned by the operator or root and
+  writable by no one else, under safe ancestors. Pin the real binary, not a
+  launcher whose downstream bytes cannot be measured;
+* `digest_mismatch`: the measured sha256 differs from `cli_sha256`;
+* `version_mismatch` / `version_probe_failed` / `version_probe_timeout`: a
+  fixed `EXECUTABLE --version` with a cleared environment, an empty private
+  HOME, no stdin, 4096 bytes of stdout and a 10 s deadline (its process group
+  is killed afterwards) must answer exactly `2.1.310 (Claude Code)`,
+  `codex-cli 0.164.0` or `0.1.5-rc.1`. The banner is never printed or kept.
+
+The wrapper itself rechecks the pin immediately before exec
+(`wrapper_cli_digest_mismatch`, `wrapper_contract_missing`) and refuses an
+expired login (`private_credential_expired`). Only the verified profile,
+version and sha256 enter rows, as `provenance.agent.cli`; the path stays
+private. Keep pinned installations unchanged for the whole run: a replaced
+binary refuses the next chunk (`contract_drift`) and any resume
+(`manifest_drift`).
+
+Credential validity is read the way each auth shape carries it, and malformed
+or absent evidence refuses by `credential <family|route>: <cause>`:
+
+* Claude (`claude_oauth_v1`, the Claude schema above): `expiresAt`, epoch
+  milliseconds.
+* Codex (`codex_chatgpt_v1`, the Codex schema above): `last_refresh` must
+  parse, but it is copy time and no validity evidence. The expiry is the
+  integer `exp` claim of the selected access token's base64url JSON payload
+  (`credential_expiry_unknown` otherwise). The token and its claims are never
+  printed, kept or put in argv.
+* dsh (`dsh_routes_attested_v1`): each route keeps its key with an
+  operator-attested UTC valid-through instant, epoch seconds:
+  `{"DASHSCOPE_API_KEY":{"key":"<route key>","valid_through":1767225600},"SPARK_API_KEY":{"key":"<route key>","valid_through":1767225600}}`.
+  The two-key version-1 file has no validity evidence and refuses here. On
+  rotation, replace the whole file atomically with a conservative horizon you
+  can justify for that key; the assertion says nothing about revocation.
+
+Version-1 selections keep working for direct `agent-*` callers and never
+admit a paid baseline.
+
 ## Recipes, tools and limits
 
 | Family / exact models | Applied recipe | Remaining surface / evidence limits |

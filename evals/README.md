@@ -83,8 +83,69 @@ closed private selection/auth schemas, exact versioned launch recipes and
 conservative per-family tool surfaces. Offline stand-ins prove assembly;
 first authenticated smoke with each approved model, live HTTP MCP (especially
 dsh), and the paid baseline remain operator-owned. Dry-run opens no private
-selection, creates no output and launches nothing. Never treat offline assembly
+selection, creates no output and launches nothing; a paid run needs
+`--authorized-product` (see "Paid baseline: one operator command" below). Never treat offline assembly
 or a declared surface as a provider interoperability or confinement claim.
+
+## Paid baseline: one operator command (#393, proposed 0137)
+
+`baseline` runs a whole paid product, and the operator's external driver is
+no longer needed. It prints the plan, verifies every family's pinned CLI
+contract and credential shape, runs fresh oracle/null controls and admits
+paid work only if they validate. Then it runs task-major chunks of one
+task × model × five trials, sequentially (concurrency 1, accepted 0076).
+
+```bash
+$E baseline --tier deliverability --config /private/wrappers.json --output /private/run --dry-run
+PRODUCT=baseline-v1-…    # the plan's product_id, after reviewing it
+$E baseline --tier deliverability --config /private/wrappers.json --output /private/run --authorized-product "$PRODUCT"
+# after an interruption, the same command plus --resume (and the same --freshness-minutes if overridden):
+$E baseline --tier deliverability --config /private/wrappers.json --output /private/run --authorized-product "$PRODUCT" --resume
+```
+
+* **Plan and authorization.** The plan (stdout, one JSON line) lists the
+  control slots, every chunk with its nominal repetitions, the six
+  declarations from `agents-baseline.json`, the per-credential freshness rule
+  and margin, and `estimate.nominal_minutes`. That is every slot at its full
+  600000 ms deadline: 5120 minutes for the default product (32 + 480 slots),
+  320 for deliverability. Preparation, cleanup and renewal waits come on top.
+  `product_id` is `baseline-v1-<sha256>` over the tier, catalogue, tasks,
+  declarations, repetitions, deadline and concurrency. The output path, margin
+  and credential state are not part of it. `--dry-run` reads, creates and
+  launches nothing. Without `--authorized-product`, the run refuses with
+  `authorization_missing`; with another id it refuses with
+  `authorization_mismatch`. Both exit 2 after printing the plan.
+* **Contracts.** The `--config` must be the version-2 selection in
+  [wrappers.md](wrappers.md#paid-selection-version-2-proposed-0137). Each
+  refusal names its family and cause, and it comes before any output or launch.
+* **Freshness.** A chunk starts only if its credential has at least
+  `--freshness-minutes` (default 70) left. Claude logins, Codex logins and
+  each dsh route are separate credentials. Other chunks run while one
+  defers. If none can start, the run prints `baseline waiting: … blocked: …`
+  and rereads the credentials every `--renewal-poll-seconds` (default 60)
+  until one is renewed. SIGINT or SIGTERM stops the wait.
+* **Output.** One private 0700 directory: `manifest.json`, `run.lock`,
+  `controls/`, `attempts/<attempt>.json` (and `.closed` after owned cleanup),
+  `paid/<attempt>/` (the retained matrix per chunk attempt), and at the end
+  `controls.jsonl`, `paid.jsonl` (canonical task → model → repetition order)
+  and `report.json`. Exit 0, 1 and 2 keep their meanings in
+  [run-plan.md](run-plan.md#admission-retention-and-statuses). Every paid row
+  carries `provenance.agent.cli`: the wrapper profile, the CLI version and its
+  sha256.
+* **Resume.** A score counts once its trial's hash-bound evidence is
+  retained, and a resume reruns only the slots that are still outstanding.
+  Harness-error and interrupted attempts stay as evidence and use up no slot.
+  A resume refuses before launching anything in these cases: a second writer
+  (`run_writer_busy`), a changed product, margin, harness, target or CLI
+  (`manifest_drift`), unexpected, duplicated or tampered evidence, or
+  conflicting derived output (`output_conflict`). A coordinator killed
+  mid-chunk leaves an attempt whose cleanup is unproved. Check for surviving
+  agent processes, then add `--confirm-cleanup <attempt>`, which the refusal
+  names. A trial that still holds admission refuses even with a confirmation.
+  A provider may have charged for a request whose score was never committed.
+* **Not measured.** Tokens per success stay unmeasured (#391, proposed 0136).
+  The proofs run fake direct CLIs offline (`tests/paid_baseline.rs`). The
+  authenticated six-model smoke remains the operator's.
 
 ## Commands
 
