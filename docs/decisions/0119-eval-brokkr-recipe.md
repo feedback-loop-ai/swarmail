@@ -436,3 +436,28 @@ What the acceptance settles, in this record's own terms:
   record does not supply that observation.
 
 0075 carries a dated pointer to this note.
+
+## Dated implementation note — 2026-11-22
+
+§4's value-bearing evidence mode is built. #396 merged it on 2026-11-22 as
+`c2973bc`; it is opt-in and deny-by-default, per the operator's rulings of
+2026-11-21. It covers:
+
+- argument values of Swarmail's MCP tools and `eval_http`, published only when
+  provably plain;
+- every value as the exact checked bytes, hash-bound at seal and verified on
+  the published bytes;
+- whole-trial absence, with one typed reason, otherwise;
+- never scored.
+
+The guarantee and its boundary are in `specs/trial-evidence/spec.md` AC3. The
+operator's smoke procedure for §5 and §6 is documented in `evals/README.md`.
+It has not been run, so `--via-brokkr` still refuses with
+`driver_contract_unknown`, and no accounting channel is recorded.
+
+Capture mode gives agents one input beyond 0075 §1's eight,
+`EVAL_TOOL_CAPTURE_SOCKET`, a harness-generated path. The operator
+accepted it in 0075's dated addendum of 2026-11-22.
+
+The acceptance note above ("not built") was true when it was written and is
+left as it was.
