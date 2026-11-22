@@ -2,287 +2,17 @@
 //! stand-in executables answer the bounded version probe and log each
 //! launch; no provider, credential or network beyond loopback is involved.
 mod common;
+use common::paid::*;
 use common::*;
 use serde_json::{Value, json};
-use std::{
-    io::{BufRead, Write},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+use std::{io::Write, path::Path, process::Command};
+use swarmail_evals::{
+    artifacts, baseline,
+    provenance::*,
+    report,
+    runner::TrialResult,
+    tasks::{self, Outcome},
 };
-use swarmail_evals::{baseline, provenance::WrapperProfile, runner, tasks};
-
-const CANARY: &str = "SYNTHETIC-PAID-CANARY-NEVER-RETAINED";
-const SPARK_CANARY: &str = "SYNTHETIC-SPARK-CANARY-NEVER-RETAINED";
-const FAMILIES: [&str; 3] = ["claude", "codex", "dsh"];
-const HOUR: u64 = 3600;
-
-fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-fn private(path: &Path, bytes: &[u8]) {
-    // Replace atomically, as an operator renewing a login does.
-    let tmp = path.with_extension("next");
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .unwrap();
-    f.write_all(bytes).unwrap();
-    std::fs::rename(&tmp, path).unwrap();
-}
-fn banner(family: &str) -> &'static str {
-    match family {
-        "claude" => "2.1.310 (Claude Code)",
-        "codex" => "codex-cli 0.164.0",
-        _ => "0.1.5-rc.1",
-    }
-}
-fn profile(family: &str) -> WrapperProfile {
-    match family {
-        "claude" => WrapperProfile::Claude2_1_310,
-        "codex" => WrapperProfile::Codex0_164_0,
-        _ => WrapperProfile::Dsh0_1_5Rc1,
-    }
-}
-fn jwt(exp: u64) -> String {
-    use base64::Engine as _;
-    let e = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    format!(
-        "{}.{}.{}",
-        e.encode(br#"{"alg":"none"}"#),
-        e.encode(json!({"exp":exp,"canary":CANARY}).to_string()),
-        e.encode(CANARY)
-    )
-}
-
-/// A private run: fake CLIs, their credentials, the v2 selection and an
-/// independent launch log the harness never reads.
-struct Paid {
-    dir: tempfile::TempDir,
-    config: PathBuf,
-    log: PathBuf,
-    hold: PathBuf,
-    output: PathBuf,
-}
-impl Paid {
-    fn new() -> Self {
-        let dir = runner::private_tempdir("paid-baseline-").unwrap();
-        let p = Self {
-            config: dir.path().join("selection.json"),
-            log: dir.path().join("launches.log"),
-            hold: dir.path().join("hold"),
-            output: dir.path().join("run"),
-            dir,
-        };
-        for family in FAMILIES {
-            p.write_cli(family, banner(family));
-        }
-        p.claude(now() + 24 * HOUR);
-        p.codex(now() + 24 * HOUR);
-        p.dsh(now() + 24 * HOUR, now() + 24 * HOUR);
-        p.select(|_| {});
-        p
-    }
-    fn bin(&self, family: &str) -> PathBuf {
-        self.dir.path().join(format!("{family}-cli"))
-    }
-    fn cred(&self, family: &str) -> PathBuf {
-        self.dir.path().join(format!("{family}-credential.json"))
-    }
-    /// The stand-in answers `--version` with `version`; any other launch logs
-    /// its family and model (dsh: its route), holds (bounded) while the hold
-    /// file names this launch as `<family> <model> <n>`, and exits: a
-    /// measured failure.
-    fn write_cli(&self, family: &str, version: &str) {
-        let script = format!(
-            r#"#!/bin/sh
-if [ "$1" = "--version" ]; then printf '%s\n' '{version}'; exit 0; fi
-case "$*" in *{CANARY}*|*{SPARK_CANARY}*) echo LEAK >> '{log}';; esac
-m=none
-while [ $# -gt 0 ]; do [ "$1" = --model ] && m="$2"; shift; done
-[ -n "$DASHSCOPE_API_KEY" ] && m=dashscope
-[ -n "$SPARK_API_KEY" ] && m=spark-glm
-echo "{family} $m" >> '{log}'
-n=$(grep -c "^{family} $m\$" '{log}')
-i=0
-while [ "$(cat '{hold}' 2>/dev/null)" = "{family} $m $n" ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done
-exit 0
-"#,
-            log = self.log.display(),
-            hold = self.hold.display(),
-        );
-        let path = self.bin(family);
-        let tmp = path.with_extension("next");
-        std::fs::write(&tmp, script).unwrap();
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::rename(&tmp, &path).unwrap();
-    }
-    fn claude(&self, until: u64) {
-        private(
-            &self.cred("claude"),
-            json!({"claudeAiOauth":{"accessToken":CANARY,"expiresAt":until * 1000,"scopes":["user:inference"]}})
-                .to_string()
-                .as_bytes(),
-        );
-    }
-    fn codex(&self, until: u64) {
-        private(
-            &self.cred("codex"),
-            json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":CANARY,"access_token":jwt(until),"refresh_token":CANARY,"account_id":"synthetic-account"},"last_refresh":"2026-11-22T00:00:00Z"})
-                .to_string()
-                .as_bytes(),
-        );
-    }
-    fn dsh(&self, dashscope: u64, spark: u64) {
-        private(
-            &self.cred("dsh"),
-            json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":dashscope},"SPARK_API_KEY":{"key":SPARK_CANARY,"valid_through":spark}})
-                .to_string()
-                .as_bytes(),
-        );
-    }
-    /// The v2 selection with each fake's measured digest; `edit` may break it.
-    fn select(&self, edit: impl FnOnce(&mut Value)) {
-        let mut families = json!({});
-        for family in FAMILIES {
-            families[family] = json!({
-                "executable": self.bin(family),
-                "credential_file": self.cred(family),
-                "profile": profile(family),
-                "cli_version": profile(family).cli_version(),
-                "cli_sha256": swarmail_evals::identity::file_hash(&self.bin(family)).unwrap(),
-                "auth_shape": swarmail_evals::wrappers::auth_shape(family),
-            });
-        }
-        let mut v = json!({"version":2,"families":families});
-        edit(&mut v);
-        private(&self.config, v.to_string().as_bytes());
-    }
-    fn plan(&self) -> baseline::Plan {
-        baseline::Plan::for_tier(Some(tasks::Tier::Deliverability), &self.output)
-    }
-    fn command(&self, extra: &[&str]) -> Command {
-        let mut c = cli();
-        c.args(["baseline", "--tier", "deliverability", "--config"])
-            .arg(&self.config)
-            .arg("--output")
-            .arg(&self.output)
-            .args(["--renewal-poll-seconds", "1"])
-            .args(extra);
-        c
-    }
-    fn authorized(&self, extra: &[&str]) -> Command {
-        let id = self.plan().product_id;
-        let mut c = self.command(&["--authorized-product", &id]);
-        c.args(extra);
-        c
-    }
-    fn launches(&self) -> Vec<String> {
-        std::fs::read_to_string(&self.log)
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_string)
-            .collect()
-    }
-    fn count(&self, line: &str) -> usize {
-        self.launches().iter().filter(|l| *l == line).count()
-    }
-}
-
-/// A running baseline whose stderr lines are collected as they arrive.
-struct Running {
-    child: Child,
-    lines: Arc<Mutex<Vec<String>>>,
-}
-impl Running {
-    fn start(mut c: Command) -> Self {
-        let mut child = c
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let lines = Arc::new(Mutex::new(Vec::new()));
-        let sink = lines.clone();
-        let stderr = child.stderr.take().unwrap();
-        std::thread::spawn(move || {
-            for line in std::io::BufReader::new(stderr)
-                .lines()
-                .map_while(Result::ok)
-            {
-                sink.lock().unwrap().push(line);
-            }
-        });
-        Self { child, lines }
-    }
-    /// Wait, bounded, until a stderr line satisfies `f`.
-    fn until(&self, what: &str, f: impl Fn(&str) -> bool) {
-        wait(what, || self.lines.lock().unwrap().iter().any(|l| f(l)));
-    }
-    fn signal(&self, sig: i32) {
-        unsafe { libc::kill(self.child.id() as i32, sig) };
-    }
-    fn finish(mut self) -> (Option<i32>, Vec<String>) {
-        let start = Instant::now();
-        let status = loop {
-            if let Some(s) = self.child.try_wait().unwrap() {
-                break s;
-            }
-            assert!(start.elapsed() < Duration::from_secs(240), "baseline hung");
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        // The reader thread ends at EOF; give it a bounded moment.
-        let end = Instant::now();
-        while Arc::strong_count(&self.lines) > 1 && end.elapsed() < Duration::from_secs(5) {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let lines = self.lines.lock().unwrap().clone();
-        (status.code(), lines)
-    }
-}
-fn wait(what: &str, f: impl Fn() -> bool) {
-    let start = Instant::now();
-    while !f() {
-        assert!(
-            start.elapsed() < Duration::from_secs(180),
-            "timed out waiting for {what}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-fn run(c: &mut Command) -> (Option<i32>, String, String) {
-    let out = c.stdin(Stdio::null()).output().unwrap();
-    (
-        out.status.code(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
-}
-/// Every byte under `root`, for leak checks.
-fn all_bytes(root: &Path) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(p) = stack.pop() {
-        let m = std::fs::symlink_metadata(&p).unwrap();
-        if m.is_dir() {
-            for e in std::fs::read_dir(&p).unwrap() {
-                stack.push(e.unwrap().path());
-            }
-        } else if m.is_file() {
-            out.extend(std::fs::read(&p).unwrap());
-        }
-    }
-    out
-}
-fn contains(hay: &[u8], needle: &str) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle.as_bytes())
-}
 
 #[test]
 fn dry_run_prints_the_whole_product_and_reads_creates_and_launches_nothing() {
@@ -371,6 +101,10 @@ fn dry_run_prints_the_whole_product_and_reads_creates_and_launches_nothing() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
 fn missing_and_wrong_authorization_refuse_by_name_after_the_plan() {
     let p = Paid::new();
     let (code, out, err) = run(&mut p.command(&[]));
@@ -402,6 +136,10 @@ fn missing_and_wrong_authorization_refuse_by_name_after_the_plan() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
 fn every_contract_refusal_names_its_family_and_cause_before_any_spend() {
     let p = Paid::new();
     let refuse = |expected: &str| {
@@ -681,6 +419,7 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     assert!(!contains(&everything, CANARY));
     assert!(!contains(&everything, SPARK_CANARY));
     assert!(!lines.iter().any(|l| l.contains(CANARY)));
+    bad_controls_never_admit(&p);
     // Reopening a complete product launches nothing and reproduces its bytes.
     let before = (
         std::fs::read(p.output.join("paid.jsonl")).unwrap(),
@@ -725,4 +464,323 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     assert_eq!(code, Some(2));
     assert!(err.contains("manifest_drift"), "{err}");
     assert_eq!(p.launches().len(), n);
+}
+
+fn bytes(rows: &[TrialResult]) -> Vec<u8> {
+    rows.iter()
+        .flat_map(|r| {
+            let mut b = serde_json::to_vec(r).unwrap();
+            b.push(b'\n');
+            b
+        })
+        .collect()
+}
+/// The run's real retained controls: admission refuses every mutation of
+/// them, a fresh start never reuses the run's output, and synthetic paid
+/// accounting covers the default product's exact 480 coordinates.
+fn bad_controls_never_admit(paid: &Paid) {
+    let output = &paid.output;
+    let stream = std::fs::read(output.join("controls.jsonl")).unwrap();
+    let rows = baseline::rows(&stream).unwrap();
+    assert_eq!(rows.len(), 2);
+    let root = std::fs::read_dir(output.join("controls"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let matrix: artifacts::MatrixPlan =
+        decode(&artifacts::read_file(&root, "matrix-plan.json", artifacts::PLAN_LIMIT).unwrap())
+            .unwrap();
+    let plan = paid.plan();
+    let harness = rows[0].provenance.harness.clone();
+    let p = &rows[0].provenance.target;
+    let target = ExecutableIdentity {
+        executable_sha256: p.executable_sha256.clone(),
+        build_commit: p.build_commit.clone(),
+        source_dirty: p.source_dirty.clone(),
+    };
+    baseline::validate_controls(&rows, &matrix, &plan, 1, &harness, &target).unwrap();
+    let replay = artifacts::matrix(&root).unwrap();
+    assert_eq!(replay.len(), rows.len());
+    assert!(
+        replay
+            .iter()
+            .zip(&rows)
+            .all(|(a, b)| a.original_result == *b)
+    );
+    let original = stream.clone();
+    let value: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| serde_json::to_value(r).unwrap())
+        .collect();
+    let cases = [
+        "missing",
+        "duplicate",
+        "extra",
+        "reorder",
+        "malformed",
+        "truncated",
+        "blank",
+        "wrong_class",
+        "oracle_fail",
+        "null_pass",
+        "infra",
+        "foreign_trial",
+        "foreign_matrix",
+        "wrong_task",
+        "wrong_agent",
+        "wrong_catalogue",
+        "wrong_model",
+        "wrong_config",
+        "wrong_deadline",
+        "wrong_limits",
+        "wrong_target",
+        "wrong_harness",
+        "wrong_concurrency",
+        "duplicate_key",
+    ];
+    for case in cases {
+        let mut v = value.clone();
+        match case {
+            "missing" => {
+                v.pop();
+            }
+            "duplicate" => v[1] = v[0].clone(),
+            "extra" => v.push(v[0].clone()),
+            "reorder" => v.swap(0, 1),
+            "wrong_class" => v[1]["failure_class"] = serde_json::json!("wrong_message"),
+            "oracle_fail" => {
+                v[0]["outcome"] = serde_json::json!("fail");
+                v[0]["failure_class"] = serde_json::json!("gave_up");
+            }
+            "null_pass" => {
+                v[1]["outcome"] = serde_json::json!("pass");
+                v[1]["failure_class"] = serde_json::Value::Null;
+            }
+            "infra" => {
+                v[0]["outcome"] = serde_json::json!("harness_error");
+                v[0]["failure_class"] = serde_json::json!("harness_error");
+            }
+            "foreign_trial" => v[0]["trial_id"] = serde_json::json!("a".repeat(32)),
+            "foreign_matrix" => {
+                v[0]["provenance"]["matrix"]["matrix_id"] = serde_json::json!("b".repeat(32))
+            }
+            "wrong_task" => v[0]["task"] = serde_json::json!("otp"),
+            "wrong_agent" => v[0]["agent"] = serde_json::json!("null"),
+            "wrong_catalogue" => {
+                v[0]["provenance"]["task"]["catalogue_sha256"] = serde_json::json!("a".repeat(64))
+            }
+            "wrong_model" => {
+                v[0]["provenance"]["agent"]["model"] = serde_json::json!({"status":"present","value":"wrong","source":"operator_declared"})
+            }
+            "wrong_config" => {
+                v[0]["provenance"]["agent"]["config_id"]["value"] = serde_json::json!("wrong")
+            }
+            "wrong_deadline" => {
+                v[0]["provenance"]["limits"]["agent_deadline_ms"]["value"] =
+                    serde_json::json!(60_000)
+            }
+            "wrong_limits" => v[0]["provenance"]["limits"]["startup_ms"] = serde_json::json!(1),
+            "wrong_target" => {
+                v[0]["provenance"]["target"]["executable_sha256"]["value"] =
+                    serde_json::json!("a".repeat(64))
+            }
+            "wrong_harness" => {
+                v[0]["provenance"]["harness"]["executable_sha256"]["value"] =
+                    serde_json::json!("a".repeat(64))
+            }
+            "wrong_concurrency" => v[0]["concurrency"] = serde_json::json!(2),
+            _ => {}
+        }
+        let mut stream: Vec<u8> = v
+            .iter()
+            .flat_map(|r| {
+                let mut b = serde_json::to_vec(r).unwrap();
+                b.push(b'\n');
+                b
+            })
+            .collect();
+        match case {
+            "malformed" => stream.extend_from_slice(b"not-json\n"),
+            "truncated" => {
+                stream.pop();
+            }
+            "blank" => stream.extend_from_slice(b"\n"),
+            "duplicate_key" => stream
+                .splice(1..1, b"\"schema_version\":2,".iter().copied())
+                .for_each(drop),
+            _ => {}
+        }
+        let mut paid_launches = 0;
+        let admission = baseline::rows(&stream)
+            .and_then(|r| baseline::validate_controls(&r, &matrix, &plan, 1, &harness, &target));
+        if admission.is_ok() {
+            paid_launches += 1;
+        }
+        assert_eq!(paid_launches, 0, "{case}");
+        assert!(admission.is_err(), "{case}");
+    }
+    for status in [0, 2, 3, 127, 130, 143, 255] {
+        assert!(
+            baseline::validate_controls(&rows, &matrix, &plan, status, &harness, &target).is_err()
+        );
+    }
+    assert_eq!(
+        std::fs::read(output.join("controls.jsonl")).unwrap(),
+        original
+    );
+    assert_eq!(bytes(&rows), original);
+    // Never overwrite a prior or partial result, including existing modes.
+    let before = std::fs::read(output.join("controls.jsonl")).unwrap();
+    let again = paid.authorized(&[]).output().unwrap();
+    assert_eq!(again.status.code(), Some(2));
+    assert_eq!(
+        std::fs::read(output.join("controls.jsonl")).unwrap(),
+        before
+    );
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(
+        std::fs::metadata(output.join("controls.jsonl"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    // Full synthetic paid accounting exercises the exact 480 coordinates and
+    // declared models without invoking any provider. Reports retain all rows.
+    paid_accounting(&rows[0], &baseline::Plan::new(output), &harness, &target);
+}
+
+fn paid_accounting(
+    template: &TrialResult,
+    plan: &baseline::Plan,
+    harness: &HarnessIdentity,
+    target: &ExecutableIdentity,
+) {
+    let matrix_id = "f".repeat(32);
+    let master = template.provenance.fixture.clone();
+    let mut matrix = artifacts::MatrixPlan {
+        schema_version: 1,
+        matrix_id: matrix_id.clone(),
+        master: master.clone(),
+        tasks: plan.tasks.clone(),
+        agents: plan.agents.iter().map(|a| a.label.clone()).collect(),
+        repetitions: 5,
+        cells: Vec::new(),
+    };
+    let mut paid = Vec::new();
+    for (ti, task) in plan.tasks.iter().enumerate() {
+        for (ai, agent) in plan.agents.iter().enumerate() {
+            for ri in 0..5 {
+                let coordinates = MatrixCoordinates {
+                    matrix_id: matrix_id.clone(),
+                    master_seed: master.seed.clone(),
+                    task_index: ti as u64,
+                    agent_index: ai as u64,
+                    repetition_index: ri,
+                };
+                let mut fixture = master.clone();
+                fixture.seed = coordinates.cell_seed(task, &agent.label).unwrap();
+                let trial_id = format!("{:032x}", paid.len() + 1);
+                let cell = artifacts::PlannedCell {
+                    trial_id: trial_id.clone(),
+                    task: task.clone(),
+                    agent: agent.label.clone(),
+                    fixture: fixture.clone(),
+                    coordinates: coordinates.clone(),
+                    deadline_ms: baseline::DEADLINE_MS,
+                };
+                let mut row = template.clone();
+                row.trial_id = trial_id;
+                row.task = Some(task.clone());
+                row.agent = Some(agent.label.clone());
+                row.provenance.fixture = fixture;
+                row.provenance.matrix = Some(coordinates);
+                row.provenance.task.definition_sha256 =
+                    Availability::present(task_hash(task).unwrap(), Source::CatalogueDefinition);
+                row.provenance.agent.kind = AgentKind::External;
+                row.provenance.agent.tool_surface =
+                    ToolSurface::declared(agent.wrapper_profile.unwrap());
+                row.provenance.agent.command = Availability::unavailable(Reason::PrivateArgv);
+                row.provenance.agent.model =
+                    Availability::present(agent.model.clone().unwrap(), Source::OperatorDeclared);
+                row.provenance.agent.config_id = Availability::unavailable(Reason::NotDeclared);
+                matrix.cells.push(cell);
+                paid.push(row);
+            }
+        }
+    }
+    assert_eq!(paid.len(), 480);
+    baseline::validate_accounting(
+        &paid,
+        &matrix,
+        &plan.agents,
+        &plan.tasks,
+        5,
+        harness,
+        target,
+    )
+    .unwrap();
+    assert_eq!(baseline::status(0, true, true, &paid), 0);
+    paid[0].outcome = Outcome::Fail;
+    paid[0].failure_class = Some(swarmail_evals::state::FailureClass::GaveUp);
+    assert_eq!(baseline::status(1, true, true, &paid), 1);
+    paid[1].outcome = Outcome::HarnessError;
+    paid[1].failure_class = Some(swarmail_evals::state::FailureClass::HarnessError);
+    let summary = report::report(&paid);
+    assert_eq!(
+        serde_json::json!(
+            summary["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|g| g["attempts"].as_u64().unwrap())
+                .sum::<u64>()
+        ),
+        480
+    );
+    assert_eq!(
+        serde_json::json!(
+            summary["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|g| g["harness_errors"].as_u64().unwrap())
+                .sum::<u64>()
+        ),
+        1
+    );
+    assert_eq!(baseline::status(2, true, true, &paid), 2);
+    assert_eq!(baseline::status(0, false, true, &paid), 2);
+    assert_eq!(baseline::status(0, true, false, &paid), 2);
+    paid.pop();
+    assert!(
+        baseline::validate_accounting(
+            &paid,
+            &matrix,
+            &plan.agents,
+            &plan.tasks,
+            5,
+            harness,
+            target
+        )
+        .is_err()
+    );
+    assert_eq!(
+        serde_json::json!(
+            report::report(&paid)["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|g| g["attempts"].as_u64().unwrap())
+                .sum::<u64>()
+        ),
+        479
+    );
 }

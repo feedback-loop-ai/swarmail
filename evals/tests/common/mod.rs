@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 pub mod coordination;
+pub mod paid;
 pub fn trial_scope() -> std::fs::File {
     coordination::trial_scope()
 }
