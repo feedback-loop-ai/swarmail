@@ -1211,3 +1211,125 @@ fn closed_private_records_refuse_semantic_credential_and_selection_errors_before
         assert!(!String::from_utf8_lossy(&out.stderr).contains(CANARY));
     }
 }
+
+/// Rewrite a case's selection as the paid version 2, pinning its stand-in.
+fn paid_selection(c: &Case, family: &str, sha256: &str) {
+    let v1: Value = serde_json::from_slice(&std::fs::read(&c.manifest).unwrap()).unwrap();
+    let selected = &v1["families"][family];
+    let profile = match family {
+        "claude" => swarmail_evals::provenance::WrapperProfile::Claude2_1_310,
+        "codex" => swarmail_evals::provenance::WrapperProfile::Codex0_164_0,
+        _ => swarmail_evals::provenance::WrapperProfile::Dsh0_1_5Rc1,
+    };
+    let v2 = json!({"version":2,"families":{family:{
+        "executable": selected["executable"],
+        "credential_file": selected["credential_file"],
+        "profile": profile,
+        "cli_version": profile.cli_version(),
+        "cli_sha256": sha256,
+        "auth_shape": wrappers::auth_shape(family),
+    }}});
+    std::fs::remove_file(&c.manifest).unwrap();
+    private(&c.manifest, v2.to_string().as_bytes());
+}
+fn replace_private(path: &Path, bytes: &[u8]) {
+    std::fs::remove_file(path).unwrap();
+    private(path, bytes);
+}
+
+/// Proposed 0137 at the launch boundary: a version-2 selection recheck the
+/// pinned bytes immediately before exec, projects only the selected dsh
+/// route's attested key, and refuses an expired login or an absent family
+/// without launching; version 1 callers are unchanged (tests above).
+#[test]
+fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
+    let refused = |c: &Case, family: &str, model: &str, code: &str| {
+        let _ = std::fs::remove_file(&c.capture);
+        // Each launch needs a fresh HOME; the previous one staged into it.
+        for entry in std::fs::read_dir(&c.home).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path).unwrap();
+            } else {
+                std::fs::remove_file(&path).unwrap();
+            }
+        }
+        let out = c.command(family, model).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{code}: {out:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(code), "{code}: {err}");
+        assert!(!err.contains(CANARY));
+        assert!(!c.capture.exists(), "{code}: no CLI launch");
+    };
+    for (family, model) in [
+        ("claude", "claude-opus-5-5"),
+        ("dsh", "dashscope/glm-5.3"),
+        ("dsh", "spark-glm/GLM-5.3-Flash-EXL3"),
+    ] {
+        let c = Case::new(family);
+        let script = c.root.path().join("standin");
+        let credential = c.root.path().join("selected private.json");
+        let future = 4_102_444_800u64; // 2100-01-01
+        if family == "dsh" {
+            replace_private(
+                &credential,
+                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":future},"SPARK_API_KEY":{"key":"SPARK-CANARY","valid_through":future}})
+                    .to_string()
+                    .as_bytes(),
+            );
+        }
+        paid_selection(
+            &c,
+            family,
+            &swarmail_evals::identity::file_hash(&script).unwrap(),
+        );
+        let out = c.command(family, model).output().unwrap();
+        assert!(out.status.success(), "{family} {model}: {out:?}");
+        assert!(c.capture.exists());
+        // The selected route's key alone reached the CLI (the stand-in checks
+        // the projection); an expired attestation refuses before exec.
+        if family == "dsh" {
+            let route = if model.starts_with("dashscope") {
+                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":1},"SPARK_API_KEY":{"key":"SPARK-CANARY","valid_through":future}})
+            } else {
+                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":future},"SPARK_API_KEY":{"key":"SPARK-CANARY","valid_through":1}})
+            };
+            replace_private(&credential, route.to_string().as_bytes());
+            refused(&c, family, model, "private_credential_expired");
+        }
+        // A CLI replaced after preflight never runs under the pinned identity.
+        paid_selection(&c, family, &"0".repeat(64));
+        refused(&c, family, model, "wrapper_cli_digest_mismatch");
+        // A family the paid selection does not name has no contract.
+        let other = if family == "claude" {
+            "codex"
+        } else {
+            "claude"
+        };
+        let other_model = if other == "codex" {
+            "gpt-6-luna"
+        } else {
+            "claude-opus-5-5"
+        };
+        refused(&c, other, other_model, "wrapper_contract_missing");
+    }
+    // Codex: an access token whose exp has passed refuses before exec.
+    let c = Case::new("codex");
+    let credential = c.root.path().join("selected private.json");
+    use base64::Engine as _;
+    let e = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let stale = format!("{}.{}.sig", e.encode("{}"), e.encode(r#"{"exp":1}"#));
+    replace_private(
+        &credential,
+        json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":CANARY,"access_token":stale,"refresh_token":"r","account_id":"a"},"last_refresh":"2026-11-22T00:00:00Z"})
+            .to_string()
+            .as_bytes(),
+    );
+    let script = c.root.path().join("standin");
+    paid_selection(
+        &c,
+        "codex",
+        &swarmail_evals::identity::file_hash(&script).unwrap(),
+    );
+    refused(&c, "codex", "gpt-6-luna", "private_credential_expired");
+}
