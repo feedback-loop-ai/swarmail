@@ -458,6 +458,46 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     let (code, _, err) = run(&mut p.authorized(&["--resume"]));
     assert_eq!(code, Some(2));
     assert!(err.contains("output_conflict paid.jsonl"), "{err}");
+    std::fs::remove_file(p.output.join("paid.jsonl")).unwrap();
+    // Unexpected or edited slot evidence refuses before any launch.
+    let stray = p.output.join("attempts").join("stray");
+    std::fs::write(&stray, b"{}").unwrap();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2));
+    assert!(err.contains("attempt_evidence_unexpected"), "{err}");
+    std::fs::remove_file(&stray).unwrap();
+    let assignment = std::fs::read_dir(p.output.join("attempts"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|f| {
+            f.extension().is_some_and(|x| x == "json")
+                && p.output
+                    .join("paid")
+                    .join(f.file_stem().unwrap())
+                    .join("matrix-plan.json")
+                    .exists()
+        })
+        .unwrap();
+    let original = std::fs::read(&assignment).unwrap();
+    let mut edited: Value = serde_json::from_slice(&original).unwrap();
+    edited["agent"] = json!(if edited["agent"] == "glm-spark" {
+        "glm-dashscope"
+    } else {
+        "glm-spark"
+    });
+    std::fs::write(&assignment, edited.to_string()).unwrap();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2));
+    assert!(err.contains("matrix_plan_inconsistent"), "{err}");
+    std::fs::write(&assignment, &original).unwrap();
+    // Restored evidence regenerates the same canonical rows.
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(
+        std::fs::read(p.output.join("paid.jsonl")).unwrap(),
+        before.0
+    );
+    assert_eq!(p.launches().len(), n);
     // A replaced CLI (re-pinned or not) is identity drift for this run.
     p.write_cli("codex", &format!("{} ", banner("codex")));
     p.write_cli("codex", banner("codex"));
