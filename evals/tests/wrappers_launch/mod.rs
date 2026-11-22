@@ -1222,7 +1222,7 @@ fn paid_selection(c: &Case, family: &str, sha256: &str) {
         _ => swarmail_evals::provenance::WrapperProfile::Dsh0_1_5Rc1,
     };
     let v2 = json!({"version":2,"families":{family:{
-        "executable": selected["executable"],
+        "executable": native_standin(c),
         "credential_file": selected["credential_file"],
         "profile": profile,
         "cli_version": profile.cli_version(),
@@ -1231,6 +1231,16 @@ fn paid_selection(c: &Case, family: &str, sha256: &str) {
     }}});
     std::fs::remove_file(&c.manifest).unwrap();
     private(&c.manifest, v2.to_string().as_bytes());
+}
+/// The native stand-in a paid selection pins (a pinned CLI must be a native
+/// image), replacing itself with the case's Python stand-in.
+fn native_standin(c: &Case) -> PathBuf {
+    let native = c.root.path().join("standin-native");
+    if !native.exists() {
+        let script = std::fs::read(c.root.path().join("standin")).unwrap();
+        common::paid::install_native(&native, &script, b"");
+    }
+    native
 }
 fn replace_private(path: &Path, bytes: &[u8]) {
     std::fs::remove_file(path).unwrap();
@@ -1243,7 +1253,7 @@ fn replace_private(path: &Path, bytes: &[u8]) {
 /// without launching; version 1 callers are unchanged (tests above).
 #[test]
 fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
-    let refused = |c: &Case, env: &[(&str, String)], family: &str, model: &str, code: &str| {
+    let refused = |c: &Case, extra: &[String], family: &str, model: &str, code: &str| {
         let _ = std::fs::remove_file(&c.capture);
         // Each launch needs a fresh HOME; the previous one staged into it.
         for entry in std::fs::read_dir(&c.home).unwrap() {
@@ -1255,9 +1265,7 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
             }
         }
         let mut cmd = c.command(family, model);
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
+        cmd.args(extra);
         let out = cmd.output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{code}: {out:?}");
         let err = String::from_utf8_lossy(&out.stderr);
@@ -1271,7 +1279,7 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
         ("dsh", "spark-glm/GLM-5.3-Flash-EXL3"),
     ] {
         let c = Case::new(family);
-        let script = c.root.path().join("standin");
+        let script = native_standin(&c);
         let credential = c.root.path().join("selected private.json");
         let future = 4_102_444_800u64; // 2100-01-01
         if family == "dsh" {
@@ -1307,11 +1315,8 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
         // refuses.
         if family == "claude" {
             let pin = swarmail_evals::identity::file_hash(&script).unwrap();
-            let (sha, through) = (
-                swarmail_evals::runner::ENV_PAID_CLI_SHA256,
-                swarmail_evals::runner::ENV_PAID_VALID_THROUGH,
-            );
-            let bound = |s: &str, t: u64| [(sha, s.to_string()), (through, t.to_string())];
+            let flag = swarmail_evals::runner::PAID_LAUNCH_ARG.to_string();
+            let bound = |s: &str, t: u64| [flag.clone(), format!("{s}:{t}")];
             refused(
                 &c,
                 &bound(&"1".repeat(64), 0),
@@ -1328,7 +1333,14 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
             );
             refused(
                 &c,
-                &[(sha, pin.clone())],
+                &[flag.clone(), pin.clone()],
+                family,
+                model,
+                "wrapper_paid_binding_invalid",
+            );
+            refused(
+                &c,
+                &[flag.clone(), format!("{pin}:soon")],
                 family,
                 model,
                 "wrapper_paid_binding_invalid",
@@ -1341,9 +1353,7 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
                 "wrapper_paid_binding_invalid",
             );
             let mut cmd = c.command(family, model);
-            for (k, v) in bound(&pin, now_secs()) {
-                cmd.env(k, v);
-            }
+            cmd.args(bound(&pin, now_secs()));
             for entry in std::fs::read_dir(&c.home).unwrap() {
                 let path = entry.unwrap().path();
                 if path.is_dir() {
@@ -1384,7 +1394,7 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
             .to_string()
             .as_bytes(),
     );
-    let script = c.root.path().join("standin");
+    let script = native_standin(&c);
     paid_selection(
         &c,
         "codex",

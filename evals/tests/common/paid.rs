@@ -61,6 +61,25 @@ pub fn jwt(exp: u64) -> String {
     )
 }
 
+/// Install the native stand-in at `path` (a pinned CLI must be a native
+/// image) with `behaviour` as the script it replaces itself with. `trailer`
+/// rides after the image, so differently configured stand-ins differ in
+/// digest as distinct real binaries would.
+pub fn install_native(path: &Path, behaviour: &[u8], trailer: &[u8]) {
+    let mut hop = path.as_os_str().to_owned();
+    hop.push(".hop");
+    let hop = PathBuf::from(hop);
+    let tmp = path.with_extension("next");
+    std::fs::write(&tmp, behaviour).unwrap();
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::rename(&tmp, &hop).unwrap();
+    let mut image = std::fs::read(env!("CARGO_BIN_EXE_paid-cli-standin")).unwrap();
+    image.extend_from_slice(trailer);
+    std::fs::write(&tmp, image).unwrap();
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::rename(&tmp, path).unwrap();
+}
+
 /// A private run: fake CLIs, their credentials, the v2 selection and an
 /// independent launch log the harness never reads.
 pub struct Paid {
@@ -123,10 +142,7 @@ exit 0
             hold = self.hold.display(),
         );
         let path = self.bin(family);
-        let tmp = path.with_extension("next");
-        std::fs::write(&tmp, script).unwrap();
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::rename(&tmp, &path).unwrap();
+        install_native(&path, script.as_bytes(), version.as_bytes());
     }
     pub fn claude(&self, until: u64) {
         private(

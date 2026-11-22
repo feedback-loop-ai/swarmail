@@ -98,6 +98,11 @@ enum Cmd {
         /// Launch through this brokkr driver (absolute path): `DRIVER claude -- <argv>`.
         #[arg(long)]
         via_brokkr: Option<PathBuf>,
+        /// Set by a paid-baseline trial only: `SHA256:VALID_THROUGH`, the
+        /// run's pinned CLI digest and the instant the login must outlast.
+        /// Descriptor 3 is then the launch report pipe.
+        #[arg(long, hide = true)]
+        paid_launch: Option<String>,
     },
     /// Launch Codex with private selected ChatGPT authentication.
     AgentCodex {
@@ -108,6 +113,11 @@ enum Cmd {
         /// Launch through this brokkr driver (absolute path): `DRIVER codex -- <argv>`.
         #[arg(long)]
         via_brokkr: Option<PathBuf>,
+        /// Set by a paid-baseline trial only: `SHA256:VALID_THROUGH`, the
+        /// run's pinned CLI digest and the instant the login must outlast.
+        /// Descriptor 3 is then the launch report pipe.
+        #[arg(long, hide = true)]
+        paid_launch: Option<String>,
     },
     /// Launch dsh with the selected private route credential.
     AgentDsh {
@@ -118,6 +128,11 @@ enum Cmd {
         /// Launch through this brokkr driver (absolute path): `DRIVER dsh -- <argv>`.
         #[arg(long)]
         via_brokkr: Option<PathBuf>,
+        /// Set by a paid-baseline trial only: `SHA256:VALID_THROUGH`, the
+        /// run's pinned CLI digest and the instant the login must outlast.
+        /// Descriptor 3 is then the launch report pipe.
+        #[arg(long, hide = true)]
+        paid_launch: Option<String>,
     },
     /// Serve one app-bound HTTP tool over MCP stdio using the EVAL inputs.
     FixtureHttp,
@@ -828,17 +843,38 @@ fn main() -> ExitCode {
             model,
             config,
             via_brokkr,
-        } => wrapper_result("claude", model, config, via_brokkr.as_deref()),
+            paid_launch,
+        } => wrapper_result(
+            "claude",
+            model,
+            config,
+            via_brokkr.as_deref(),
+            paid_launch.as_deref(),
+        ),
         Cmd::AgentCodex {
             model,
             config,
             via_brokkr,
-        } => wrapper_result("codex", model, config, via_brokkr.as_deref()),
+            paid_launch,
+        } => wrapper_result(
+            "codex",
+            model,
+            config,
+            via_brokkr.as_deref(),
+            paid_launch.as_deref(),
+        ),
         Cmd::AgentDsh {
             model,
             config,
             via_brokkr,
-        } => wrapper_result("dsh", model, config, via_brokkr.as_deref()),
+            paid_launch,
+        } => wrapper_result(
+            "dsh",
+            model,
+            config,
+            via_brokkr.as_deref(),
+            paid_launch.as_deref(),
+        ),
         Cmd::FixtureHttpIsolated => match wrappers::isolated_helper() {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => fail("helper_setup_failed"),
@@ -3644,8 +3680,9 @@ fn wrapper_result(
     model: String,
     config: PathBuf,
     via_brokkr: Option<&std::path::Path>,
+    paid_launch: Option<&str>,
 ) -> ExitCode {
-    match wrappers::run(harness, &model, &config, via_brokkr) {
+    match wrappers::run(harness, &model, &config, via_brokkr, paid_launch) {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => {
             // run returns only finite harness-authored categories.
@@ -3819,6 +3856,12 @@ fn publish_or_verify(root: &std::path::Path, name: &str, bytes: &[u8]) -> Result
             }
         }
     }
+}
+/// The first derived paid output already present, if any.
+fn derived_output(root: &std::path::Path) -> Option<&'static str> {
+    ["paid.jsonl", "report.json"]
+        .into_iter()
+        .find(|name| std::fs::symlink_metadata(root.join(name)).is_ok())
 }
 fn private_dir_ok(path: &std::path::Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
@@ -4238,6 +4281,14 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
         .into_iter()
         .filter(|n| controls_root.join(n).join("matrix.json").exists())
         .collect();
+    // Derived paid output exists only once every slot is scored: beside a
+    // control matrix still to run, or outstanding slots, it conflicts, and
+    // the resume refuses before launching anything.
+    if complete.is_empty()
+        && let Some(name) = derived_output(&root)
+    {
+        return Err(format!("output_conflict {name}"));
+    }
     let controls = match complete.as_slice() {
         [] => {
             resources.writer = Some(start_output_writer_to(Some(sink()?)));
@@ -4294,6 +4345,9 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
         let outstanding = outstanding(plan, &committed);
         if outstanding.is_empty() {
             break committed;
+        }
+        if let Some(name) = derived_output(&root) {
+            return Err(format!("output_conflict {name}"));
         }
         {
             let (term, int) = resources

@@ -94,6 +94,10 @@ by `contract <family>: <cause>`:
   symlink or forwarding path, executable, owned by the operator or root and
   writable by no one else, under safe ancestors. Pin the real binary, not a
   launcher whose downstream bytes cannot be measured;
+* `executable_not_native`: the pinned file must open as a native executable
+  image (ELF, or Mach-O thin or universal). An interpreter script (`#!`),
+  such as an npm `codex` launcher, forwards to bytes its digest never covers,
+  so it cannot establish CLI identity: pin the native binary it runs;
 * `digest_mismatch`: the measured sha256 differs from `cli_sha256`;
 * `version_mismatch` / `version_probe_failed` / `version_probe_timeout`: a
   fixed `EXECUTABLE --version` with a cleared environment, an empty private
@@ -104,11 +108,14 @@ by `contract <family>: <cause>`:
 The wrapper itself rechecks the pin immediately before exec
 (`wrapper_cli_digest_mismatch`, `wrapper_contract_missing`) and refuses an
 expired login (`private_credential_expired`). Under a paid baseline the
-coordinator also hands it the run's manifest digest and the instant the
-chunk was admitted for: a selection re-pinned since the manifest refuses
+trial appends `--paid-launch SHA256:VALID_THROUGH` to the wrapper's argv: the
+run's manifest digest and the instant the chunk was admitted for. Neither
+secret, they never enter the agent's environment, which stays the accepted
+inputs of 0075 §1. A selection re-pinned since the manifest refuses
 (`wrapper_contract_drift`), and so does a login valid for less than that
-(`private_credential_margin`). Any such refusal is reported on the launch
-descriptor, so the slot stays unscored rather than counting as a model
+(`private_credential_margin`), and a malformed binding refuses
+(`wrapper_paid_binding_invalid`). Any such refusal is reported on the launch
+descriptor (fd 3, inherited only with `--paid-launch` and closed on exec), so the slot stays unscored rather than counting as a model
 failure. Only the verified profile, version and sha256 enter rows, as
 `provenance.agent.cli`; the path stays private. Keep pinned installations
 unchanged for the whole run. Before a chunk starts, a binary replaced under

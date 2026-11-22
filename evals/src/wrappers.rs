@@ -733,10 +733,32 @@ fn check_pinned(executable: &Path, sha256: &str) -> Result<(), String> {
     {
         return Err("executable_unsafe".into());
     }
+    let mut head = [0u8; 4];
+    let n = File::open(executable)
+        .and_then(|mut f| f.read(&mut head))
+        .map_err(|_| "executable_unavailable")?;
+    if !native_image(&head[..n]) {
+        return Err("executable_not_native".into());
+    }
     if crate::identity::file_hash(executable).map_err(|_| "executable_unavailable")? != sha256 {
         return Err("digest_mismatch".into());
     }
     Ok(())
+}
+/// Whether `head` opens a native executable image: ELF, or Mach-O thin or
+/// universal. An interpreter script (`#!`) or any other launcher forwards to
+/// bytes its digest cannot cover, so it can never establish CLI identity.
+fn native_image(head: &[u8]) -> bool {
+    const MAGIC: [[u8; 4]; 7] = [
+        *b"\x7fELF",
+        [0xfe, 0xed, 0xfa, 0xce],
+        [0xfe, 0xed, 0xfa, 0xcf],
+        [0xce, 0xfa, 0xed, 0xfe],
+        [0xcf, 0xfa, 0xed, 0xfe],
+        [0xca, 0xfe, 0xba, 0xbe],
+        [0xbe, 0xba, 0xfe, 0xca],
+    ];
+    MAGIC.iter().any(|m| head == m)
 }
 const PROBE_LIMIT: usize = 4096;
 const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -918,19 +940,18 @@ fn still_valid(until: u64, through: u64) -> Result<(), String> {
         Ok(())
     }
 }
-/// The run binding a paid-baseline coordinator hands its wrapper: the
-/// manifest's CLI digest and the validity the chunk was admitted with. Both
-/// or neither; anything else refuses.
-fn paid_binding() -> Result<Option<(String, u64)>, String> {
-    use crate::runner::{ENV_PAID_CLI_SHA256, ENV_PAID_VALID_THROUGH};
-    match (
-        std::env::var(ENV_PAID_CLI_SHA256),
-        std::env::var(ENV_PAID_VALID_THROUGH),
-    ) {
-        (Err(std::env::VarError::NotPresent), Err(std::env::VarError::NotPresent)) => Ok(None),
-        (Ok(sha), Ok(through)) if crate::provenance::is_hash(&sha) => through
+/// The run binding a paid-baseline trial hands its wrapper in argv
+/// (`--paid-launch SHA256:VALID_THROUGH`, never the environment, which stays
+/// the accepted agent inputs of 0075 §1): the manifest's CLI digest and the
+/// validity the chunk was admitted with. Anything malformed refuses.
+fn paid_binding(launch: Option<&str>) -> Result<Option<(String, u64)>, String> {
+    let Some(launch) = launch else {
+        return Ok(None);
+    };
+    match launch.split_once(':') {
+        Some((sha, through)) if crate::provenance::is_hash(sha) => through
             .parse()
-            .map(|t| Some((sha, t)))
+            .map(|t| Some((sha.to_string(), t)))
             .map_err(|_| "wrapper_paid_binding_invalid".into()),
         _ => Err("wrapper_paid_binding_invalid".into()),
     }
@@ -938,8 +959,8 @@ fn paid_binding() -> Result<Option<(String, u64)>, String> {
 /// Tell a paid coordinator, on the descriptor it handed down, whether the
 /// pinned CLI is about to run. The descriptor is closed on exec first, so the
 /// CLI never inherits it and a model can never write the report.
-fn report_launch(word: &[u8]) {
-    if std::env::var(crate::runner::ENV_LAUNCH_FD).as_deref() != Ok("3") {
+fn report_launch(paid_launch: Option<&str>, word: &[u8]) {
+    if paid_launch.is_none() {
         return;
     }
     let fd = crate::runner::LAUNCH_FD;
@@ -1065,9 +1086,10 @@ pub fn run(
     model: &str,
     config: &Path,
     via_brokkr: Option<&Path>,
+    paid_launch: Option<&str>,
 ) -> Result<(), String> {
-    let result = launch(harness, model, config, via_brokkr);
-    report_launch(b"unstarted\n");
+    let result = launch(harness, model, config, via_brokkr, paid_launch);
+    report_launch(paid_launch, b"unstarted\n");
     result
 }
 fn launch(
@@ -1075,6 +1097,7 @@ fn launch(
     model: &str,
     config: &Path,
     via_brokkr: Option<&Path>,
+    paid_launch: Option<&str>,
 ) -> Result<(), String> {
     validate_model(harness, model)?;
     if !config.is_absolute() {
@@ -1105,7 +1128,7 @@ fn launch(
     // replaced since preflight never runs under the recorded identity. A
     // coordinator's run binding wins over the mutable selection: a selection
     // re-pinned mid-run refuses rather than running the new binary.
-    let binding = paid_binding()?;
+    let binding = paid_binding(paid_launch)?;
     let through = binding.as_ref().map_or(0, |(_, t)| *t);
     match (&selected.paid, &binding) {
         (Some(paid), Some((sha, _))) if *sha != paid.cli_sha256 => {
@@ -1337,7 +1360,7 @@ fn launch(
             .map_err(|_| "eval_prompt_unavailable")?;
         cmd.stdin(f);
     }
-    report_launch(crate::runner::LAUNCH_READY);
+    report_launch(paid_launch, crate::runner::LAUNCH_READY);
     let _error = cmd.exec();
     Err("wrapper_exec_failed".into())
 }
@@ -1562,13 +1585,14 @@ mod tests {
         std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
         let config = Path::new("/nonexistent/selection.json");
-        let run_with = |driver: &Path| run("claude", "claude-sonnet-5-5", config, Some(driver));
+        let run_with =
+            |driver: &Path| run("claude", "claude-sonnet-5-5", config, Some(driver), None);
         assert_eq!(run_with(Path::new("rel")), Err("driver_invalid".into()));
         assert_eq!(run_with(&plain), Err("driver_invalid".into()));
         assert_eq!(run_with(&exe), Err("driver_contract_unknown".into()));
         // The same call without the flag goes on to read its inputs and refuses
         // for a different reason, which shows the refusal above preceded them.
-        let direct = run("claude", "claude-sonnet-5-5", config, None).unwrap_err();
+        let direct = run("claude", "claude-sonnet-5-5", config, None, None).unwrap_err();
         assert_ne!(direct, "driver_contract_unknown");
     }
     #[test]
@@ -1653,6 +1677,24 @@ mod paid_tests {
     fn token(payload: &str) -> String {
         let e = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         format!("{}.{}.sig", e.encode("{}"), e.encode(payload))
+    }
+
+    #[test]
+    fn only_a_native_image_can_be_a_pinned_cli() {
+        for magic in [
+            &b"\x7fELF"[..],
+            &[0xfe, 0xed, 0xfa, 0xce],
+            &[0xfe, 0xed, 0xfa, 0xcf],
+            &[0xce, 0xfa, 0xed, 0xfe],
+            &[0xcf, 0xfa, 0xed, 0xfe],
+            &[0xca, 0xfe, 0xba, 0xbe],
+            &[0xbe, 0xba, 0xfe, 0xca],
+        ] {
+            assert!(native_image(magic), "{magic:?}");
+        }
+        for other in [&b"#!/b"[..], b"#!", b"", b"\x7fEL", b"MZ\x90\0"] {
+            assert!(!native_image(other), "{other:?}");
+        }
     }
 
     #[test]

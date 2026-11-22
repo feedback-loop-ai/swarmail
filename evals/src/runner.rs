@@ -457,9 +457,9 @@ pub struct PaidLaunch {
 /// it execs the pinned CLI, `unstarted` when it refuses. The wrapper marks it
 /// close-on-exec first, so the CLI (and the model behind it) never holds it.
 pub const LAUNCH_FD: i32 = 3;
-pub const ENV_LAUNCH_FD: &str = "EVAL_LAUNCH_FD";
-pub const ENV_PAID_CLI_SHA256: &str = "EVAL_PAID_CLI_SHA256";
-pub const ENV_PAID_VALID_THROUGH: &str = "EVAL_PAID_VALID_THROUGH";
+/// The wrapper flag that carries a paid slot's binding. The agent's
+/// environment stays exactly the accepted inputs (0075 §1).
+pub const PAID_LAUNCH_ARG: &str = "--paid-launch";
 /// The wrapper's word that the pinned CLI is about to run.
 pub const LAUNCH_READY: &[u8] = b"ready\n";
 
@@ -488,7 +488,6 @@ fn launch_pipe(cmd: &mut Command) -> io::Result<io::PipeReader> {
             Ok(())
         });
     }
-    cmd.env(ENV_LAUNCH_FD, LAUNCH_FD.to_string());
     Ok(reader)
 }
 /// Whether the wrapper reported exactly `ready` and nothing after it. A
@@ -2952,8 +2951,8 @@ async fn run_body(
                 .env(crate::oracle::ENV_COMPETITOR, plan.target.name());
         }
         if let Some(paid) = paid {
-            cmd.env(ENV_PAID_CLI_SHA256, &paid.cli_sha256)
-                .env(ENV_PAID_VALID_THROUGH, paid.valid_through.to_string());
+            cmd.arg(PAID_LAUNCH_ARG)
+                .arg(format!("{}:{}", paid.cli_sha256, paid.valid_through));
             match launch_pipe(&mut cmd) {
                 Ok(reader) => launches.push(reader),
                 Err(_) => {

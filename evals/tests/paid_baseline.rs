@@ -172,6 +172,20 @@ fn every_contract_refusal_names_its_family_and_cause_before_any_spend() {
     std::os::unix::fs::symlink(p.bin("codex"), &link).unwrap();
     p.select(|v| v["families"]["codex"]["executable"] = json!(link));
     refuse("contract codex: executable_unsafe");
+    // So cannot a launcher script: its digest never covers what it runs.
+    let shim = p.dir.path().join("codex-shim");
+    std::fs::write(
+        &shim,
+        format!("#!/bin/sh\nexec '{}' \"$@\"\n", p.bin("codex").display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    p.select(|v| {
+        v["families"]["codex"]["executable"] = json!(shim);
+        v["families"]["codex"]["cli_sha256"] =
+            json!(swarmail_evals::identity::file_hash(&shim).unwrap());
+    });
+    refuse("contract codex: executable_not_native");
     // The probe's banner must be the profile's exact version; the banner
     // itself (here carrying a canary) is never echoed.
     p.write_cli("dsh", &format!("0.1.6 {CANARY}"));
@@ -332,6 +346,15 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     for (id, bytes) in &scored_before {
         assert_eq!(mid.get(id), Some(bytes), "committed score bytes unchanged");
     }
+    // Derived output beside outstanding slots conflicts: the resume refuses
+    // before launching anything.
+    std::fs::write(p.output.join("report.json"), b"{}").unwrap();
+    let n = p.launches().len();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2));
+    assert!(err.contains("output_conflict report.json"), "{err}");
+    assert_eq!(p.launches().len(), n);
+    std::fs::remove_file(p.output.join("report.json")).unwrap();
     // A trial worker killed before it reports proves no owned cleanup: its
     // agent may survive, so the attempt stays open (no closure) and only the
     // operator's confirmation reopens the run.
@@ -578,6 +601,18 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     let (code, _, err) = run(&mut p.authorized(&["--resume"]));
     assert_eq!(code, Some(2));
     assert!(err.contains("output_conflict paid.jsonl"), "{err}");
+    // Beside a control matrix that would have to run again, derived output
+    // conflicts before the controls launch.
+    let control = std::fs::read_dir(p.output.join("controls"))
+        .unwrap()
+        .map(|e| e.unwrap().path().join("matrix.json"))
+        .find(|m| m.exists())
+        .unwrap();
+    std::fs::rename(&control, control.with_extension("aside")).unwrap();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2));
+    assert!(err.contains("output_conflict paid.jsonl"), "{err}");
+    std::fs::rename(control.with_extension("aside"), &control).unwrap();
     std::fs::remove_file(p.output.join("paid.jsonl")).unwrap();
     // Unexpected or edited slot evidence refuses before any launch.
     let stray = p.output.join("attempts").join("stray");
@@ -656,6 +691,7 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     std::fs::remove_file(&p.config).unwrap();
     for family in FAMILIES {
         std::fs::remove_file(p.bin(family)).unwrap();
+        std::fs::remove_file(p.bin(family).with_extension("hop")).unwrap();
         std::fs::remove_file(p.cred(family)).unwrap();
     }
     let (code, _, err) = run(&mut p.authorized(&["--resume"]));
