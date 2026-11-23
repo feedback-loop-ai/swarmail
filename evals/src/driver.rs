@@ -1145,7 +1145,7 @@ mod tests {
             Cursor::new(caps().into_bytes()),
             id(),
             &input(),
-            |_| {
+            |_, _| {
                 n += 1;
                 if n > 2 {
                     Err(std::io::Error::other("closed"))
