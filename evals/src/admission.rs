@@ -17,6 +17,13 @@ fn private(metadata: &std::fs::Metadata, uid: u32, directory: bool) -> bool {
         }
 }
 
+/// True when no cooperating runner of this uid holds trial admission now: a
+/// nonblocking acquire that releases at once. A paid-baseline resume asks this
+/// before it accepts an operator's cleanup confirmation (proposed 0137).
+pub fn idle() -> bool {
+    Admission::acquire().is_ok()
+}
+
 impl Admission {
     pub(crate) fn acquire() -> Result<Self, &'static str> {
         // SAFETY: geteuid has no preconditions.

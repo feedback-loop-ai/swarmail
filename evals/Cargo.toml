@@ -34,6 +34,14 @@ serde_json = "=1.0.151"
 tempfile = "=3.27.0"
 tokio = { version = "=1.53.2", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros", "signal", "process", "fs"] }
 
+# Test equipment only: the native stand-in a paid baseline's proofs pin as
+# each family's CLI (proposed 0137 refuses interpreter scripts as pins).
+[[bin]]
+name = "paid-cli-standin"
+path = "tests/standin/paid_cli.rs"
+test = false
+doc = false
+
 [dev-dependencies]
 pulldown-cmark = { version = "=0.13.6", default-features = false }
 

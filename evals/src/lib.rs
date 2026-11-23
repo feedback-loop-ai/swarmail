@@ -5,7 +5,7 @@
 //! trial runner that #148's brokkr recipe will wrap. Outside the shipped
 //! crate and its coverage denominator by the operator's 2026-10-18 ruling.
 
-mod admission;
+pub mod admission;
 // Protocol 4's API section (accepted decision 0132 §9.2): the wire driver's
 // one client per tool and its scheduler and exact checks, compiled here by
 // path so each tool has exactly one client. They use only packages this

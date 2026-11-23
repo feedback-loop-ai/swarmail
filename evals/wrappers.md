@@ -25,10 +25,13 @@ The closed version-1 selection has exactly these fields (inert paths):
 
 Choose actual absolute executable paths or trusted launchers that work with
 `PATH=/usr/bin:/bin`, `LANG=LC_ALL=C`. A Volta shim requiring ambient VOLTA_HOME
-needs an operator-provided explicit launcher. There is no installer, PATH
+needs an operator-provided explicit launcher. A launcher is a version-1
+convenience only: a paid (version-2) selection must pin the CLI's own native
+binary, as below. There is no installer, PATH
 inheritance, version discovery, arbitrary argv/env override, API-key substitution
-for Claude/Codex, refresh subsystem or fallback model. Profile versions describe
-the recipe, not a binary attestation.
+for Claude/Codex, refresh subsystem or fallback model. In a version-1 selection
+profile versions describe the recipe, not a binary attestation; the paid
+version-2 selection below attests them.
 
 MCP configuration requires UTF-8 runtime paths and an ASCII identity header;
 unsupported representations refuse before launch. Entry-point selection
@@ -68,6 +71,90 @@ The runner retains them through owned cleanup and then disposes them. No source
 credential is modified. Raw CLI stdout/stderr go directly to `/dev/null`, on
 success or failure; there is no raw debug or redaction mode. CLI-created private
 session files are disposed with HOME. Crash-proof erasure is not promised.
+
+## Paid selection (version 2, proposed 0137)
+
+`swarmail-evals baseline` spends only against the closed **version-2**
+selection, which adds each family's pinned CLI contract to the version-1
+locators (inert values):
+
+```json
+{"version":2,"families":{
+ "claude":{"executable":"/opt/claude/2.1.310/claude","credential_file":"/private/claude-oauth.json","profile":"claude_2_1_310","cli_version":"2.1.310","cli_sha256":"<sha256 of that file>","auth_shape":"claude_oauth_v1"},
+ "codex":{"executable":"/opt/codex/0.164.0/codex","credential_file":"/private/auth.json","profile":"codex_0_164_0","cli_version":"0.164.0","cli_sha256":"<sha256>","auth_shape":"codex_chatgpt_v1"},
+ "dsh":{"executable":"/opt/dsh/0.1.5-rc.1/dsh","credential_file":"/private/dsh-routes.json","profile":"dsh_0_1_5_rc_1","cli_version":"0.1.5-rc.1","cli_sha256":"<sha256>","auth_shape":"dsh_routes_attested_v1"}}}
+```
+
+A family the product does not spend may be absent; any other field refuses.
+The file rules above apply to the selection and every credential. Before
+anything spends, `baseline` checks every family the product names and refuses
+by `contract <family>: <cause>`:
+
+* `contract_missing` (absent family), `profile_mismatch` (wrong family or a
+  `*_via_brokkr` selector), `version_unsupported` (`cli_version` is not the
+  profile's exact version), `digest_invalid`, `auth_shape_unsupported`;
+* `executable_unsafe`: the executable must be a regular file itself, not a
+  symlink or forwarding path, executable, owned by the operator or root and
+  writable by no one else, under safe ancestors. Pin the real binary, not a
+  launcher whose downstream bytes cannot be measured;
+* `executable_not_native`: the pinned file must open as a native executable
+  image (ELF, or Mach-O thin or universal). An interpreter script (`#!`),
+  such as an npm `codex` launcher, forwards to bytes its digest never covers,
+  so it cannot establish CLI identity: pin the native binary it runs. A
+  *native* launcher that execs another binary is not detectable and passes;
+  the row then names the launcher's bytes, not the CLI's, so pinning the
+  real binary is the operator's attestation. A CLI shipped only as an
+  interpreted package has nothing to pin and cannot run paid;
+* `digest_mismatch`: the measured sha256 differs from `cli_sha256`;
+* `version_mismatch` / `version_probe_failed` / `version_probe_timeout`: a
+  fixed `EXECUTABLE --version` with a cleared environment, an empty private
+  HOME with private TMPDIR and XDG directories (decision 0075 §1), no stdin, 4096 bytes of stdout and a 10 s deadline (its process group
+  is killed afterwards) must answer exactly `2.1.310 (Claude Code)`,
+  `codex-cli 0.164.0` or `0.1.5-rc.1`. The banner is never printed or kept.
+  Only these versions qualify: a newer installed CLI (the published pages
+  record Claude 2.1.316–2.1.319 and dsh 0.2.1-rc.3 / 0.2.2-rc.1) refuses
+  until a reviewed profile for its version lands. The dsh banner is the
+  profile's, not yet observed from a real 0.1.5-rc.1 binary.
+
+The wrapper itself rechecks the pin immediately before exec
+(`wrapper_cli_digest_mismatch`, `wrapper_contract_missing`) and refuses an
+expired login (`private_credential_expired`). Under a paid baseline the
+trial appends `--paid-launch SHA256:VALID_THROUGH` to the wrapper's argv: the
+run's manifest digest and the instant the chunk was admitted for. Neither
+secret, they never enter the agent's environment, which stays the accepted
+inputs of 0075 §1. A selection re-pinned since the manifest refuses
+(`wrapper_contract_drift`), and so does a login valid for less than that
+(`private_credential_margin`), and a malformed binding refuses
+(`wrapper_paid_binding_invalid`). Any such refusal is reported on the launch
+descriptor (fd 3, inherited only with `--paid-launch` and closed on exec), so the slot stays unscored rather than counting as a model
+failure. Only the verified profile, version and sha256 enter rows, as
+`provenance.agent.cli`; the path stays private. Keep pinned installations
+unchanged for the whole run. Before a chunk starts, a binary replaced under
+the old pin refuses as `contract <family>: digest_mismatch`, and a selection
+re-pinned to a new binary refuses as `contract_drift`; a complete run's
+resume needs neither.
+
+Credential validity is read the way each auth shape carries it, and malformed
+or absent evidence refuses by `credential <family|route>: <cause>`:
+
+* Claude (`claude_oauth_v1`, the Claude schema above): `expiresAt`, epoch
+  milliseconds.
+* Codex (`codex_chatgpt_v1`, the Codex schema above): `last_refresh` must
+  parse, but it is copy time and no validity evidence. The expiry is the
+  integer `exp` claim of the selected access token's base64url JSON payload
+  (`credential_expiry_unknown` otherwise). The id token's `exp` is not read:
+  the CLI does not need a current id token, and a short-lived one would keep
+  every Codex login inside the margin. The token and its claims are never
+  printed, kept or put in argv.
+* dsh (`dsh_routes_attested_v1`): each route keeps its key with an
+  operator-attested UTC valid-through instant, epoch seconds:
+  `{"DASHSCOPE_API_KEY":{"key":"<route key>","valid_through":1767225600},"SPARK_API_KEY":{"key":"<route key>","valid_through":1767225600}}`.
+  The two-key version-1 file has no validity evidence and refuses here. On
+  rotation, replace the whole file atomically with a conservative horizon you
+  can justify for that key; the assertion says nothing about revocation.
+
+Version-1 selections keep working for direct `agent-*` callers and never
+admit a paid baseline.
 
 ## Recipes, tools and limits
 
