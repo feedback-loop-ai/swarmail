@@ -345,9 +345,33 @@ tasks in `specs/trial-evidence/`. Part of #391, not its close.
 - [x] **T45 Typed accounting on the page.** `report --page` gives every paid
   group a figure or `null` with its reason, journal or not.
 - [x] **T46 Proposed 0136** for the token source and the reference run.
-- [ ] **T47 Operator: the first authenticated via-brokkr smoke per family**
-  (`evals/README.md`, "The first authenticated via-brokkr smoke, per family"),
-  recorded by dated addenda in 0119 §5 (F2) and §6 (F1) and in the F1/F2/F5
-  table of `implementation.md` (T31). Operator-owned; not run by a seat.
+- [x] **T47 Operator: the first authenticated via-brokkr smoke per family**
+  — run 2026-11-23 and recorded in 0119's 2026-11-23 addendum: the outer
+  `exec` adapter drops a nested driver's stdout (brokkr#1289), and the
+  operator ruled route (b).
 - [ ] **T48 Operator: rule on 0136.** The direct-launch usage reader stays
   unbuilt until accepted (0045 §8).
+
+## #404: count paid tokens through the nested driver (route (b))
+
+Spec, plan and tasks in `specs/nested-driver-usage/`; proposed 0138. Part of
+#404, #391 and #164.
+
+- [x] **T49 Amended CLI profiles** (accepted 0137's 2026-11-23 amendment):
+  claude 2.1.329 and codex 0.166.0 native, dsh 0.2.2-rc.1 interpreted under a
+  runtime-and-package pin; the superseded profiles leave the approved set.
+- [x] **T50 The forge-driver/v1 caller** (`evals/src/driver.rs`), wired into
+  `wrappers::launch` against brokkr v0.15.2's guide; `driver_contract_unknown`
+  lifted for the three amended `*_via_brokkr` profiles only.
+- [x] **T51 The release pin** (v0.15.2 Linux x86_64 executable by path and
+  SHA-256, traced to its archive's `SHA256SUMS` line), apart from the engine's.
+- [x] **T52 Typed nested usage** (`evals/src/usage.rs`) on the row as
+  `nested_usage`, and `report --page` tokens per success from it alone (0136).
+- [x] **T53 F5 projections and environment** per family, proven with a
+  protocol stand-in and, opt-in, through the real v0.15.2 driver with inert
+  CLIs; codex's inner sandbox class a typed selection field.
+- [x] **T54 `journal-facts.sh`** on the real `export --run` NDJSON shape.
+- [ ] **T55 Operator: one authenticated finished-path session per family**
+  (`evals/README.md`, "The authenticated finished-path session, per family"),
+  each recording non-null input and output tokens; this also proves the
+  proposed codex class writes its result. Operator-owned; not run by a seat.

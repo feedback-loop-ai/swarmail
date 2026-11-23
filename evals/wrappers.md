@@ -88,7 +88,10 @@ locators (inert values):
   "interpreted":{"runtime":"/opt/node/22.11.0/bin/node","runtime_version":"v22.11.0","runtime_sha256":"<sha256>","package_root":"/opt/dsh/lib/node_modules/@deepseek-ai/dsh","entry":"dist/cli.js","files":{"<relative path>":"<sha256>", "...":"..."}}}}}
 ```
 
-A family the product does not spend may be absent; any other field refuses.
+A family the product does not spend may be absent; any other field refuses,
+except the optional `nested` member that pins the brokkr driver for
+`--via-brokkr` (route (b), below). The selection's `profile` stays the direct
+one even then, and the trial declares the matching `*_via_brokkr` profile.
 The file rules above apply to the selection and every credential. Before
 anything spends, `baseline` checks every family the product names and refuses
 by `contract <family>: <cause>`:
@@ -286,70 +289,183 @@ publication, failure-taxonomy reprioritization and sealing are operator work.
 No paid or networked agent is run by this delivery. Root and standalone test
 receipts, including carried failures, must be assessed separately from smoke.
 
-## Launching through a brokkr driver (`--via-brokkr`, 0119)
+## Launching through a brokkr driver (`--via-brokkr`, route (b) of 0119's 2026-11-23 addendum)
 
-**`--via-brokkr` fails closed today.** `agent-claude|agent-codex|agent-dsh ...
---via-brokkr /abs/driver` validates `DRIVER` (an absolute path to a regular
-executable; anything else refuses `driver_invalid`) and then refuses
-`driver_contract_unknown`, before the EVAL inputs, the selection file or any
-credential file is read and before anything is spawned. The refusal is
-unconditional: no switch, digest, flag or environment variable lifts it. Why:
-the invocation form brokkr's driver accepts (brokkr fact F2) has never been
-observed, and running a guessed `DRIVER <family> -- <argv>` would turn a driver
-error into the agent's exit status, scored as the task's idle class
-(`gave_up`), a fake model failure inside measurement data.
+`agent-claude|agent-codex|agent-dsh ... --via-brokkr /abs/brokkr` launches the
+family CLI through the pinned brokkr v0.15.2 driver, with `swarmail-evals`
+acting as the driver's engine (proposed 0138, `specs/nested-driver-usage/`).
+The outer `exec` adapter drops a nested driver's stdout (brokkr#1289), so the
+wrapper reads the driver's protocol itself.
 
-`swarmail-evals trial` refuses the same thing one level up, before any server
-starts or agent launches, so the slot is a typed harness refusal and not a
-wrapper that exits early: an agent argv carrying `--via-brokkr` is refused
-`driver_contract_unknown`, and a `*_via_brokkr` profile declared without the
-flag is refused `via_brokkr_profile_mismatch` (exit 2, a fixed category on
-stderr, no row). Under `matrix --brokkr` that slot is a `harness_error` and
-stops admission.
+**The pin.** `--via-brokkr` needs a version-2 selection whose family carries a
+`nested` member, checked before any credential is read:
 
-The argv assembly (`DRIVER <family> -- <program> <argv...>`, the direct
-launch's environment and working directory, output routed to `/dev/null`)
-stays in the code and is proven by an inline test that inspects the assembled
-`Command` for all three families; `through_driver` is `#[cfg(test)]` (no
-production path reaches it), so the compiler keeps it out of the shipped binary
-until the follow-up that implements the observed invocation lifts the refusal
-and restores `run()`'s arm. A direct launch is
-unchanged.
+```json
+"nested": {
+  "driver": "/abs/brokkr-v0.15.2/brokkr",
+  "driver_sha256": "61cba4ee438eb0bd0dbc223f7d394219238aeecc061250e36281a4989e455062",
+  "driver_version": "0.15.2",
+  "platform": "linux-x86_64",
+  "archive_sha256": "ecce9b5acea9e07eb5b9f978b87272aa87273add34f1f215cdc400aeb2f52eb3",
+  "effort": "medium",
+  "codex_sandbox": "danger-full-access"
+}
+```
 
-A row for a via-brokkr launch will declare the matching finite selector
-`claude_2_1_329_via_brokkr`, `codex_0_166_0_via_brokkr` or
-`dsh_0_2_2_rc_1_via_brokkr`: the family's declared configuration plus one
-residual (`brokkr driver flags unenumerated`), because the driver adds flags
-the family profile does not list. A via-brokkr row never claims the
-direct-launch surface; a binary from before this change refuses these rows,
-as it refuses any historical row it does not know.
+`driver_sha256` is the `brokkr` executable extracted from the release asset
+`brokkr-linux-x86_64.tar.gz`, whose `SHA256SUMS` line is `archive_sha256`.
+This pin is separate from the delivery engine's
+(`.brokkr/recipes/self/tooling.json`). `effort` is required for claude and
+codex (`low|medium|high|xhigh|max`) and refused for dsh. `codex_sandbox`
+(`read-only|workspace-write|danger-full-access`) is required for codex and
+refused elsewhere. Refusals, each before any private write or spawn:
+`driver_invalid` (not an absolute path to an executable), `driver_pin_missing`
+(no `nested` member, or a version-1 selection), `driver_selection_mismatch`
+(the flag names another path), `driver_version_unsupported`,
+`driver_platform_unsupported`, `driver_archive_unrecognized`,
+`driver_digest_invalid`, `driver_effort_invalid`, `driver_sandbox_invalid`,
+`driver_executable_unsafe`, `driver_executable_not_native` and
+`driver_digest_mismatch` (the bytes), and `driver_version_mismatch` (the
+bounded `--version` banner is not `brokkr 0.15.2`). The CLI's own pin
+(native binary, or dsh's interpreted pin) is rechecked exactly as for a direct
+launch.
 
-### Four seams sever any accounting channel
+**The exchange.** The wrapper runs `brokkr driver <family> -- <flags>`. Only
+the family's flags follow the separator:
 
-Whatever channel carries a nested driver's token, turn and tool counts back to
-brokkr's journal (a stdout relay or one environment variable, brokkr fact F1),
-four places cut it today. None is changed by this delivery, because forwarding
-touches accepted 0075 section 1 and waits for the observed channel and the
-operator's acceptance of 0119 section 6:
+| family | flags after `--` | how the driver finds the CLI |
+|---|---|---|
+| claude | `--permission-mode acceptEdits --model M --effort E` | `BROKKR_CLAUDE_BIN` = the pinned binary, its directory first on `PATH` |
+| codex | `--model M --effort E --sandbox CLASS` (prompt on stdin) | `codex` on `PATH`, whose first entry is the pinned binary's directory; the pinned file must be named `codex` (`driver_cli_unresolvable`) |
+| dsh | `--model route/model` | `BROKKR_DSH_BIN` = the pinned entry file |
 
-1. `.brokkr/recipes/eval/scripts/trial.sh` runs the trial under `env -i PATH=...
-   LANG=C LC_ALL=C SWARMAIL_BIN=...`;
-2. the runner builds the agent's environment afresh (`RuntimeDirs`/`CallerEnv`:
-   `PATH` plus the eight EVAL inputs);
-3. `wrappers::through_driver` calls `env_clear` before it sets the direct
-   launch's keys;
-4. `through_driver` routes the driver's stdout and stderr to `/dev/null`.
+dsh's driver runs `BROKKR_DSH_BIN` as one program, so the pinned entry must
+start the pinned runtime itself: it must be executable and its `#!` line must
+be the runtime's absolute path, or `/usr/bin/env node` with the runtime named
+`node` (its directory is first on `PATH`). Anything else refuses
+`driver_entry_not_executable` or `driver_entry_shebang_unsupported`. No script
+of ours stands between the runtime and the entry.
 
-Tests set `SWARMAIL_EVAL_SEAM_SENTINEL` and prove two of the four. Seam 1:
-`recipe.rs::the_trial_script_strips_the_matrix_environment` runs the real
-`trial.sh` with a probe as the request's `evals_bin`, which records its own
-environment, so deleting `env -i` turns it red. Seam 2:
-`recipe.rs::the_runner_rebuilds_the_agents_environment` runs `swarmail-evals
-trial` with the sentinel in its own environment and reads the probe agent's
-keys; the direct wrapper launch has the same assertion in `wrappers_launch`.
-Seams 3 and 4 are crossed by no production path while `through_driver` is
-test-only, so **no runtime proof is claimed for them**; the follow-up supplies
-it. The follow-up flips the tests to the observed channel's name.
+The wrapper sends `hello` (with `engine_version`), then `start` with exactly the
+eight input keys (`feature` = the goal, `phase`/`seat` = `trial`, `role_path` =
+a fixed charter in a fresh `.swarmail-seat-<attempt>/` under the work
+directory, `workdir`, `result_path` in the same directory,
+`allowed_results` = `done`, `stuck`, `context` = the task id), then
+`shutdown` once and closes the driver's stdin. It reads `capabilities`,
+`accepted`, `checkpoint`* and one `result` with the bounded strict reader of
+`evals/src/driver.rs`: 64 KiB per frame, 4 MiB and 4096 frames per exchange,
+depth 16, duplicate keys and repeated `msg_id`s refused, both identities on
+every post-start frame, a checkpoint's facts in its `data` object. Every
+error is a fixed code, never peer bytes. The driver's stderr is discarded.
+
+**Endings.** `accepted` is the launch witness. The wrapper writes `ready` on
+descriptor 3 only when it arrives. After the exchange it writes one receipt
+line, `nested {"disposition", "attempt_id", "family", "facts"}`. Descriptor 3
+is close-on-exec before the driver spawns, so neither the driver nor the CLI
+can write it.
+
+| what the driver did | wrapper | the trial |
+|---|---|---|
+| nothing (silent exit 0, or no `capabilities`) | `unstarted`, `driver_launched_nothing` | `harness_error` (`agent_unstarted`), never `gave_up` |
+| a `failed` result before `accepted` | `unstarted`, `driver_refused_start` | `harness_error` |
+| accepted, then EOF without a result | `ready` + receipt `driver_result_missing` | `harness_error` with its usage |
+| accepted, then `failed` | `ready` + receipt `driver_session_failed` | `harness_error` with its usage |
+| accepted, then `succeeded` without an object naming `done`/`stuck` | `ready` + receipt `driver_result_invalid` | `harness_error` with its usage |
+| accepted, then a protocol violation | `ready` + receipt naming the violation | `harness_error` with its usage |
+| accepted, then `succeeded` naming `done` or `stuck` | `ready` + receipt `completed` | graded as usual |
+| killed at the trial deadline | `ready` only | graded as usual; usage `receipt_missing` |
+
+The runner gives every nested trial the launch pipe (`--launch-report`, and
+`--paid-launch` as before on a paid slot). `swarmail-evals trial` accepts
+`--via-brokkr` only beside an amended `*_via_brokkr` profile. The superseded
+ones (`claude_2_1_310_via_brokkr`, `codex_0_164_0_via_brokkr`,
+`dsh_0_1_5_rc_1_via_brokkr`) still refuse `driver_contract_unknown`. The flag
+without a via-brokkr profile, or such a profile without the flag, refuses
+`via_brokkr_profile_mismatch`.
+
+**Usage.** The receipt's six facts come only from the family's session-final
+checkpoint:
+
+| family | session-final step | per-turn steps never counted |
+|---|---|---|
+| claude | `claude-code-session-finished` | `seat-turn` |
+| codex | `codex-session-finished` | `turn-completed` |
+| dsh | `deepseek-harness-session-finished` | `seat-turn` |
+
+The six facts are `input_tokens`, `output_tokens`, `cache_read_tokens`,
+`cache_write_tokens`, `num_turns` and `total_cost_usd`. Each is a value or
+one reason: `no_session_final`, `field_absent`, `field_malformed`,
+`final_conflicting` or (runner-side) `receipt_missing`. An identical repeated
+final counts once, and an explicit `0` is kept. The `result` object is
+populated from the agent's own file, so it carries no accounting authority,
+even where it repeats the totals. The runner puts the record on the row as
+`nested_usage` (`source: via_brokkr_driver`, the row's own `trial_id`, the
+exchange's `attempt_id`, the family). That is the join (0075 §4,
+harness-authored). A row without the field reads unchanged.
+
+**Private projections (F5).** The driver gets a cleared environment: the
+runtime map (`HOME`, `TMPDIR`, XDG directories, `PATH` with the pinned CLI's
+directory first, `LANG`/`LC_ALL`, `PWD`) plus each family's keys. Everything
+lands in the trial's fresh private `HOME` (directories 0700, files 0600):
+
+- claude: `.claude/.credentials.json`, `.claude.json` (the MCP servers, user
+  scope) and `.claude/settings.json` (the tool allowance);
+- codex: `.codex/auth.json` and `.codex/config.toml` (MCP servers, the fixture
+  helper, `web_search = "disabled"`, the work directory untrusted), with
+  `CODEX_HOME`;
+- dsh: `.dsh/profiles/headless/cordis.patch.yml` (the selected route and the
+  MCP servers; the driver composes the model and session rows itself), with
+  `DSH_HOME`, `DSH_TELEMETRY_DISABLED=1` and only the selected route's key
+  (`SPARK_API_KEY` or `DASHSCOPE_API_KEY`), passed by name.
+
+Trials are unconfined (accepted 0076), so the DNS inputs (`/etc/resolv.conf`,
+`/run/systemd/resolve`, `/etc/nsswitch.conf`, `/etc/hosts`) are the host's own.
+The opt-in release proof shows the CLI can read them and cannot write them.
+dsh's overlay location comes from the release's own wording ("the headless
+profile's `cordis.patch.yml`"). No dsh in this box confirms it; the
+operator's dsh session does.
+
+**Codex's sandbox class.** The smoke's `workspace-write` lost the result
+inside the trial box. The proposed posture is `danger-full-access`: the
+trial's own private work directory, `HOME` and the unconfined trial boundary
+are then the only write limit. That is the trial's limit already: a direct
+codex launch runs `read-only` and is given no other write. The class is a
+typed field of the selection. The stand-in proofs only show the seat writing
+its result inside the work directory under the class the driver was given.
+Real codex enforcement is unproven until the operator's authenticated codex
+session writes its result under that class.
+
+**Proofs.** `evals/tests/wrappers_launch/nested.rs` drives the real wrapper
+against a forge-driver/v1 stand-in (`fake_driver.py` behind the native
+forwarder, so it passes the pin), for all three families: the eight keys, the
+flags, the projections, the usage, every ending above, the pin refusals, and a
+nested agent through `swarmail-evals trial` whose row carries its usage.
+`real_driver.rs` runs the staged release itself over inert stand-in CLIs. It
+is ignored unless `EVAL_BROKKR_DRIVER` names the extracted v0.15.2
+executable (its digest is asserted):
+
+```bash
+cd evals && EVAL_BROKKR_DRIVER=/abs/brokkr-v0.15.2/brokkr SWARMAIL_BIN=... \
+  cargo test --locked --test wrappers real_driver -- --ignored
+```
+
+It caught the `driver` subcommand the stand-in had accepted without. It
+shows claude's and codex's session-final tokens, dsh's pinned runtime given
+the pinned entry first, the result written inside the work directory, and
+the launch pipe unreachable from the CLI.
+
+The four seams the earlier plan named (`trial.sh`'s `env -i`, the runner's
+fresh agent environment, and the old assembly's cleared environment and
+`/dev/null` output) need no crossing under route (b). The usage never leaves
+the wrapper except on its own launch pipe. The tests of seams 1 and 2
+(`recipe.rs::the_trial_script_strips_the_matrix_environment`,
+`recipe.rs::the_runner_rebuilds_the_agents_environment`) stand unchanged, and
+the old `through_driver` assembly is gone.
+
+**What stays the operator's.** One authenticated session per family through
+this route (accepted 0137, acceptance criterion 4) is the only paid step. Each
+must record non-null `input_tokens` and `output_tokens`. Nothing in delivery
+runs one.
 
 ### The paid read set (brokkr fact F5)
 
