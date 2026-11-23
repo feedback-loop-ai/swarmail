@@ -78,6 +78,11 @@ enum Cmd {
         /// only outstanding slots run.
         #[arg(long)]
         resume: bool,
+        /// Run every paid agent through this pinned brokkr driver (route (b)):
+        /// the product's agents take their amended `*_via_brokkr` profiles and
+        /// the selection must pin the driver (evals/wrappers.md).
+        #[arg(long)]
+        via_brokkr: Option<PathBuf>,
         /// Minutes of validity a credential needs left before its chunk starts.
         #[arg(long, default_value_t = baseline::FRESHNESS_MINUTES, value_parser = clap::value_parser!(u64).range(1..=10080))]
         freshness_minutes: u64,
@@ -857,8 +862,10 @@ fn main() -> ExitCode {
             freshness_minutes,
             renewal_poll_seconds,
             confirm_cleanup,
+            via_brokkr,
         } => rt.block_on(run_baseline(BaselineArgs {
             config,
+            via_brokkr,
             output,
             dry_run,
             tier,
@@ -3813,6 +3820,7 @@ fn baseline_leaf(output: &std::path::Path) -> Result<PathBuf, String> {
 }
 struct BaselineArgs {
     config: PathBuf,
+    via_brokkr: Option<PathBuf>,
     output: PathBuf,
     dry_run: bool,
     tier: Option<tasks::Tier>,
@@ -3824,7 +3832,16 @@ struct BaselineArgs {
 }
 
 async fn run_baseline(args: BaselineArgs) -> ExitCode {
-    let plan = baseline::Plan::with_margin(args.tier, &args.output, args.freshness_minutes);
+    let plan = baseline::Plan::with_route(
+        args.tier,
+        &args.output,
+        args.freshness_minutes,
+        args.via_brokkr.as_deref(),
+    );
+    if args.via_brokkr.as_ref().is_some_and(|d| !d.is_absolute()) {
+        eprintln!("swarmail-evals: baseline refused: baseline_driver_locator_invalid");
+        return ExitCode::from(2);
+    }
     if !args.config.is_absolute() {
         return fail("baseline_config_locator_invalid");
     }
@@ -4281,8 +4298,10 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
     let validity = |key: &str| {
         wrappers::valid_until(config, key).map_err(|e| format!("credential {key}: {e}"))
     };
-    let live_contracts =
-        || wrappers::paid_contracts(config, &families).map_err(|e| format!("contract {e}"));
+    let live_contracts = || {
+        wrappers::paid_contracts(config, &families, args.via_brokkr.is_some())
+            .map_err(|e| format!("contract {e}"))
+    };
     // A fresh run checks every planned family's local contract and
     // credential shape before anything spends or any output exists. A resume
     // binds the contracts its manifest recorded and rechecks them live only

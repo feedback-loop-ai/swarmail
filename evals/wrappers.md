@@ -383,6 +383,17 @@ ones (`claude_2_1_310_via_brokkr`, `codex_0_164_0_via_brokkr`,
 without a via-brokkr profile, or such a profile without the flag, refuses
 `via_brokkr_profile_mismatch`.
 
+**The paid baseline.** `swarmail-evals baseline --via-brokkr /abs/brokkr ...`
+is a separate product. Each paid agent takes its amended `*_via_brokkr`
+profile and the flag, so the printed `product_id` the operator authorizes
+covers the route and the driver path. The controls are unchanged. A nested
+family's contract identity (`cli.sha256` in the manifest and on every row) is
+a digest over the CLI's pin, the driver's pin, `effort` and `codex_sandbox`.
+Resume rechecks it live, and each launch's paid binding must equal it, so a
+changed driver, effort or sandbox class refuses (`wrapper_contract_drift`)
+rather than running under the recorded identity. A relative driver path
+refuses `baseline_driver_locator_invalid`.
+
 **Usage.** The receipt's six facts come only from the family's session-final
 checkpoint:
 

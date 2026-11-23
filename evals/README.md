@@ -1115,7 +1115,9 @@ holds. For each family (claude, codex, dsh):
    Never record a transcript or a credential.
 
 The prospective reference is a separate measurement: 0136's 16 default tasks
-× six models × five trials.
+× six models × five trials. It runs as the nested paid product,
+`"$E" baseline --config "$SELECTION" --output "$W/ref" --via-brokkr "$BROKKR"`,
+authorized by the `product_id` its dry run prints (`wrappers.md`).
 
 ## Honest limits
 

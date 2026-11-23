@@ -362,6 +362,19 @@ impl WrapperProfile {
     pub fn via_brokkr(self) -> bool {
         self.direct() != self
     }
+    /// The selector that launches this one's configuration through a brokkr
+    /// driver (itself when it already does).
+    pub fn via(self) -> Self {
+        match self {
+            Self::Claude2_1_310 => Self::Claude2_1_310ViaBrokkr,
+            Self::Codex0_164_0 => Self::Codex0_164_0ViaBrokkr,
+            Self::Dsh0_1_5Rc1 => Self::Dsh0_1_5Rc1ViaBrokkr,
+            Self::Claude2_1_329 => Self::Claude2_1_329ViaBrokkr,
+            Self::Codex0_166_0 => Self::Codex0_166_0ViaBrokkr,
+            Self::Dsh0_2_2Rc1 => Self::Dsh0_2_2Rc1ViaBrokkr,
+            other => other,
+        }
+    }
     /// The direct-launch selector whose declared configuration this one shares.
     pub fn direct(self) -> Self {
         match self {
@@ -526,13 +539,14 @@ pub struct CliIdentity {
     pub sha256: String,
 }
 impl CliIdentity {
-    /// A binding agrees with the row's declared direct wrapper surface, names
-    /// that profile's exact version and carries a lowercase SHA-256.
+    /// A binding agrees with the row's declared wrapper surface, names that
+    /// profile's exact version and carries a lowercase SHA-256. Under an
+    /// amended `*_via_brokkr` profile the digest is the nested identity: the
+    /// CLI's pin with the driver's (route (b), proposed 0138).
     pub fn validate(&self, surface: &ToolSurface) -> Result<(), String> {
         match surface {
             ToolSurface::Wrapper { profile, .. }
                 if *profile == self.profile
-                    && !profile.via_brokkr()
                     && profile.approved()
                     && self.version == profile.cli_version()
                     && is_hash(&self.sha256) =>
@@ -954,14 +968,33 @@ mod cli_identity_tests {
         let mut digest = good.clone();
         digest.sha256 = "A".repeat(64);
         assert!(digest.validate(&surface).is_err());
+        // An amended via-brokkr binding holds against its own surface only.
         let mut via = good.clone();
         via.profile = WrapperProfile::Codex0_166_0ViaBrokkr;
+        let via_surface = ToolSurface::declared(WrapperProfile::Codex0_166_0ViaBrokkr);
+        assert!(via.validate(&via_surface).is_ok());
+        assert!(via.validate(&surface).is_err());
+        assert!(good.validate(&via_surface).is_err());
+        let mut old_via = old.clone();
+        old_via.profile = WrapperProfile::Codex0_164_0ViaBrokkr;
         assert!(
-            via.validate(&ToolSurface::declared(
-                WrapperProfile::Codex0_166_0ViaBrokkr
-            ))
-            .is_err()
+            old_via
+                .validate(&ToolSurface::declared(
+                    WrapperProfile::Codex0_164_0ViaBrokkr
+                ))
+                .is_err()
         );
+        for p in [
+            WrapperProfile::Claude2_1_310,
+            WrapperProfile::Codex0_164_0,
+            WrapperProfile::Dsh0_1_5Rc1,
+            WrapperProfile::Claude2_1_329,
+            WrapperProfile::Codex0_166_0,
+            WrapperProfile::Dsh0_2_2Rc1,
+        ] {
+            assert!(p.via().via_brokkr() && p.via().direct() == p);
+            assert_eq!(p.via().via(), p.via());
+        }
         assert!(good.validate(&ToolSurface::ExternalUnknown).is_err());
         // Absent on every other row: the serialized agent keeps its bytes.
         let json = serde_json::to_value(&good).unwrap();

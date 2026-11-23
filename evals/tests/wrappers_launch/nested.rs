@@ -531,3 +531,96 @@ fn a_nested_trial_row_carries_its_harness_authored_usage() {
         assert_eq!(nested["tokens_per_success"]["reason"], "no_passes");
     }
 }
+
+/// A nested paid contract binds the CLI's pin with the driver's pin and the
+/// family's driver flags: resume compares it live, and the launch binding
+/// refuses the direct identity.
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[test]
+fn a_nested_contract_binds_the_driver_pin_and_its_flags() {
+    for (family, model) in [("claude", "claude-sonnet-5-5"), ("codex", "gpt-6-luna")] {
+        let n = Nested::new(family, model);
+        let hop = PathBuf::from(format!("{}.hop", n.cli.display()));
+        std::fs::remove_file(&n.cli).unwrap();
+        std::fs::remove_file(&hop).unwrap();
+        let banner = if family == "claude" {
+            "2.1.329 (Claude Code)"
+        } else {
+            "codex-cli 0.166.0"
+        };
+        let log = n.c.root.path().join("cli.log");
+        common::paid::install_configured(
+            &n.cli,
+            &json!({"family": family, "version": banner, "log": log, "hold": n.c.root.path().join("hold"), "canaries": [CANARY]}),
+        );
+        n.reselect();
+        let contract = |nested: bool| wrappers::paid_contracts(&n.c.manifest, &[family], nested);
+        let direct = contract(false).unwrap().remove(0);
+        let cli_sha = swarmail_evals::identity::file_hash(&n.cli).unwrap();
+        assert_eq!(
+            (direct.cli.profile.via_brokkr(), direct.cli.sha256.as_str()),
+            (false, cli_sha.as_str())
+        );
+        let nested = contract(true).unwrap().remove(0);
+        assert_eq!(nested.cli.profile, direct.cli.profile.via());
+        assert_ne!(nested.cli.sha256, cli_sha);
+        let surface = swarmail_evals::provenance::ToolSurface::declared(nested.cli.profile);
+        assert_eq!(nested.cli.validate(&surface), Ok(()));
+        // Each pinned part moves the identity, so resume refuses the change.
+        let edits = if family == "codex" {
+            vec![
+                json!({"codex_sandbox": "workspace-write"}),
+                json!({"effort": "high"}),
+            ]
+        } else {
+            vec![json!({"effort": "high"})]
+        };
+        for edit in edits {
+            n.select(edit.clone());
+            assert_ne!(
+                contract(true).unwrap()[0].cli.sha256,
+                nested.cli.sha256,
+                "{edit}"
+            );
+        }
+        n.select(json!(null));
+        let err = contract(true).unwrap_err();
+        assert!(err.contains("driver_pin_missing"), "{err}");
+        // At launch: bound to the nested identity it runs; bound to the
+        // CLI's alone it drifts before anything spawns.
+        n.select(json!({}));
+        // Inside both stand-in logins' validity (claude's ends in 2033).
+        let future = 1_900_000_000u64;
+        let bound = |sha: &str| {
+            n.clear_home();
+            let _ = std::fs::remove_file(&n.mode);
+            private(
+                &n.mode,
+                json!({"mode": "complete", "finals": [smoke_final(family)]})
+                    .to_string()
+                    .as_bytes(),
+            );
+            n.c.command(family, model)
+                .arg("--via-brokkr")
+                .arg(&n.driver)
+                .arg("--paid-launch")
+                .arg(format!("{sha}:{future}"))
+                .output()
+                .unwrap()
+        };
+        let out = bound(&nested.cli.sha256);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{family}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let out = bound(&cli_sha);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("wrapper_contract_drift"));
+        assert!(!n.record.exists(), "{family}: the driver ran after drift");
+    }
+}

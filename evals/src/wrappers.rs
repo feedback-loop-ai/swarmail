@@ -484,6 +484,28 @@ impl NestedSelection {
     }
 }
 impl PaidSelection {
+    /// The identity a paid run binds: the CLI's pin for a direct launch; for
+    /// a nested one, a digest over the CLI's pin, the driver's pin and the
+    /// family's driver flags, so a changed driver, effort or codex sandbox
+    /// class drifts on resume and at launch like a changed CLI.
+    fn identity(&self, nested: bool) -> Result<String, String> {
+        if !nested {
+            return Ok(self.cli_sha256.clone());
+        }
+        let n = self.nested.as_ref().ok_or("driver_pin_missing")?;
+        Ok(crate::provenance::sha256(
+            format!(
+                "swarmail-nested-pin/1\ncli {}\ndriver {} {} {}\neffort {}\nsandbox {}\n",
+                self.cli_sha256,
+                n.driver_sha256,
+                n.driver_version,
+                n.platform,
+                n.effort.as_deref().unwrap_or("-"),
+                n.codex_sandbox.map_or("-", CodexSandbox::name),
+            )
+            .as_bytes(),
+        ))
+    }
     /// The native program a launch or probe runs, and the argument that
     /// precedes the CLI's own: the pinned runtime on the pinned entry, or
     /// the pinned binary alone.
@@ -1028,7 +1050,11 @@ pub struct Contract {
 /// Verify every named family's v2 contract before anything spends: profile,
 /// exact supported version, pinned and measured digest, bounded version
 /// probe and auth-file shape. The refusal is `<family>: <finite cause>`.
-pub fn paid_contracts(config: &Path, families: &[&str]) -> Result<Vec<Contract>, String> {
+pub fn paid_contracts(
+    config: &Path,
+    families: &[&str],
+    nested: bool,
+) -> Result<Vec<Contract>, String> {
     if !config.is_absolute() {
         return Err("selection: wrapper_config_locator_invalid".into());
     }
@@ -1039,12 +1065,16 @@ pub fn paid_contracts(config: &Path, families: &[&str]) -> Result<Vec<Contract>,
             let s = paid_selection(&bytes, family).map_err(|e| format!("{family}: {e}"))?;
             s.check().map_err(|e| format!("{family}: {e}"))?;
             s.probe().map_err(|e| format!("{family}: {e}"))?;
+            let sha256 = s.identity(nested).map_err(|e| format!("{family}: {e}"))?;
+            if let (true, Some(n)) = (nested, &s.nested) {
+                n.check(&n.driver).map_err(|e| format!("{family}: {e}"))?;
+            }
             Ok(Contract {
                 family: family.to_string(),
                 cli: crate::provenance::CliIdentity {
-                    profile: s.profile,
+                    profile: if nested { s.profile.via() } else { s.profile },
                     version: s.cli_version,
-                    sha256: s.cli_sha256,
+                    sha256,
                 },
                 auth_shape: s.auth_shape,
             })
@@ -1308,7 +1338,7 @@ fn launch(
     let binding = paid_binding(paid_launch)?;
     let through = binding.as_ref().map_or(0, |(_, t)| *t);
     match (&selected.paid, &binding) {
-        (Some(paid), Some((sha, _))) if *sha != paid.cli_sha256 => {
+        (Some(paid), Some((sha, _))) if *sha != paid.identity(via_brokkr.is_some())? => {
             return Err("wrapper_contract_drift".into());
         }
         (Some(paid), _) => paid.check().map_err(|e| format!("wrapper_cli_{e}"))?,
