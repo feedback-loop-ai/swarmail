@@ -4115,8 +4115,20 @@ impl Ledger<'_> {
                 continue;
             }
             let invalid = || format!("attempt {id}: trial_invalid {}", cell.trial_id);
-            let retained = artifacts::trial(&dir.join("trials").join(&cell.trial_id))
-                .map_err(|_| invalid())?;
+            let leaf = dir.join("trials").join(&cell.trial_id);
+            // A score commits at its hash-bound metadata marker. A leaf the
+            // retention never finished (a worker killed mid-retention, a full
+            // disk) holds no marker: it is an uncommitted attempt, so its slot
+            // stays outstanding. The attempt is closed or operator-confirmed
+            // here, so no writer is live; a marker that fails still refuses.
+            if !names(&leaf)?.iter().any(|n| n == "metadata.json") {
+                eprintln!(
+                    "swarmail-evals: baseline attempt {id}: trial {} has no committed marker; its slot stays outstanding",
+                    cell.trial_id
+                );
+                continue;
+            }
+            let retained = artifacts::trial(&leaf).map_err(|_| invalid())?;
             if retained.row.outcome == Outcome::HarnessError {
                 // Evidence of an unscored attempt: kept and counted by the
                 // report, but it consumes no slot.

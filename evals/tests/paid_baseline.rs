@@ -256,7 +256,8 @@ fn paid_rows(p: &Paid) -> Vec<Value> {
         .map(|l| serde_json::from_str(l).unwrap())
         .collect()
 }
-/// Every retained paid result.json, by trial id: committed score bytes.
+/// Every committed paid result.json (its leaf has the metadata marker), by
+/// trial id: committed score bytes.
 fn retained_results(p: &Paid) -> std::collections::BTreeMap<String, Vec<u8>> {
     let mut out = std::collections::BTreeMap::new();
     let paid = p.output.join("paid");
@@ -264,6 +265,11 @@ fn retained_results(p: &Paid) -> std::collections::BTreeMap<String, Vec<u8>> {
         let trials = attempt.unwrap().path().join("trials");
         for t in std::fs::read_dir(&trials).into_iter().flatten() {
             let t = t.unwrap().path();
+            // A score commits at its metadata marker; a leaf without one
+            // holds no committed row.
+            if !t.join("metadata.json").exists() {
+                continue;
+            }
             if let Ok(bytes) = std::fs::read(t.join("result.json")) {
                 out.insert(t.file_name().unwrap().to_string_lossy().into(), bytes);
             }
@@ -395,6 +401,23 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
         "{err}"
     );
     assert_eq!(p.count("dsh dashscope"), k, "the refusal launched nothing");
+    // A leaf retention never finished (a worker killed mid-retention, a full
+    // disk) holds no metadata marker: an uncommitted attempt, not tampering.
+    // Strip the marker from the killed attempt's unscored leaf; the confirmed
+    // resume keeps the leaf as found and its slot stays outstanding.
+    let killed_dir = p.output.join("paid").join(&killed_attempt);
+    let partial = std::fs::read_dir(killed_dir.join("trials"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|t| {
+            std::fs::read(t.join("result.json"))
+                .is_ok_and(|b| contains(&b, "\"outcome\":\"harness_error\""))
+        })
+        .expect("the killed attempt's unscored leaf");
+    let partial_bytes = std::fs::read(partial.join("result.json")).unwrap();
+    std::fs::remove_file(partial.join("metadata.json")).unwrap();
+    let partial_dir = partial.clone();
+    let partial = partial.file_name().unwrap().to_string_lossy().to_string();
     // Mid-chunk, the operator rotates the dsh CLI and its pin. The held
     // second glm-spark trial ran on the run's binary; the wrapper of every
     // later trial refuses before exec, so no model runs and those slots stay
@@ -407,6 +430,17 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     std::fs::remove_file(&p.hold).unwrap();
     let (code, lines) = third.finish();
     assert_eq!(code, Some(2), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(&format!("trial {partial} has no committed marker"))),
+        "{lines:?}"
+    );
+    assert_eq!(
+        std::fs::read(partial_dir.join("result.json")).unwrap(),
+        partial_bytes,
+        "the uncommitted leaf is kept as found"
+    );
     assert_eq!(
         p.count("dsh spark-glm"),
         2,
