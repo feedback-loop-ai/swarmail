@@ -143,13 +143,16 @@ $E baseline --tier deliverability --config /private/wrappers.json --output /priv
   else (a Volta shim, for example) passes the check and the row would record
   the launcher's version and digest, not the CLI's. The harness cannot tell
   the two apart, so choosing the real binary is the operator's attestation.
-  Only the profiles' exact versions qualify: Claude Code 2.1.310, codex-cli
-  0.164.0 and dsh 0.1.5-rc.1. The CLIs the published pages record
-  (Claude 2.1.316–2.1.319, dsh 0.2.1-rc.3 and 0.2.2-rc.1) refuse with
-  `version_mismatch` until a profile for that version lands (a reviewed
-  change to `wrappers.rs`). The dsh 0.1.5-rc.1 banner (`0.1.5-rc.1`) is the
-  profile's, not yet observed from a real binary. A CLI shipped only as an
-  interpreted package has no native file to pin and cannot run paid.
+  Only the approved profiles' exact versions qualify (accepted 0137's
+  2026-11-23 amendment): Claude Code 2.1.329 (`claude_2_1_329`), codex-cli
+  0.166.0 (`codex_0_166_0`, the native binary behind the Volta shim, never
+  the shim) and dsh 0.2.2-rc.1 (`dsh_0_2_2_rc_1`). Any other installed
+  version refuses with `version_mismatch`. The superseded selectors
+  (`claude_2_1_310`, `codex_0_164_0`, `dsh_0_1_5_rc_1`) still decode in
+  published rows and refuse in a selection with `profile_superseded`. dsh
+  ships as an interpreted package: the amendment admits it under a pin of
+  the node runtime and every package file, which is not built yet (#404),
+  so a dsh selection still refuses (`executable_not_native`) until it is.
 * **Resume.** A score counts once its trial's hash-bound evidence is
   retained, and a resume reruns only the slots that are still outstanding.
   Harness-error and interrupted attempts stay as evidence and use up no slot.

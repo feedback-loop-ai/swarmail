@@ -1217,9 +1217,9 @@ fn paid_selection(c: &Case, family: &str, sha256: &str) {
     let v1: Value = serde_json::from_slice(&std::fs::read(&c.manifest).unwrap()).unwrap();
     let selected = &v1["families"][family];
     let profile = match family {
-        "claude" => swarmail_evals::provenance::WrapperProfile::Claude2_1_310,
-        "codex" => swarmail_evals::provenance::WrapperProfile::Codex0_164_0,
-        _ => swarmail_evals::provenance::WrapperProfile::Dsh0_1_5Rc1,
+        "claude" => swarmail_evals::provenance::WrapperProfile::Claude2_1_329,
+        "codex" => swarmail_evals::provenance::WrapperProfile::Codex0_166_0,
+        _ => swarmail_evals::provenance::WrapperProfile::Dsh0_2_2Rc1,
     };
     let v2 = json!({"version":2,"families":{family:{
         "executable": native_standin(c),

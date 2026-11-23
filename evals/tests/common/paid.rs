@@ -38,16 +38,16 @@ pub fn private(path: &Path, bytes: &[u8]) {
 }
 pub fn banner(family: &str) -> &'static str {
     match family {
-        "claude" => "2.1.310 (Claude Code)",
-        "codex" => "codex-cli 0.164.0",
-        _ => "0.1.5-rc.1",
+        "claude" => "2.1.329 (Claude Code)",
+        "codex" => "codex-cli 0.166.0",
+        _ => "0.2.2-rc.1",
     }
 }
 pub fn profile(family: &str) -> WrapperProfile {
     match family {
-        "claude" => WrapperProfile::Claude2_1_310,
-        "codex" => WrapperProfile::Codex0_164_0,
-        _ => WrapperProfile::Dsh0_1_5Rc1,
+        "claude" => WrapperProfile::Claude2_1_329,
+        "codex" => WrapperProfile::Codex0_166_0,
+        _ => WrapperProfile::Dsh0_2_2Rc1,
     }
 }
 pub fn jwt(exp: u64) -> String {

@@ -1,7 +1,9 @@
 # Baseline CLI wrappers
 
-The three entrypoints launch fixed recipes for Claude Code **2.1.310**, Codex
-**0.164.0**, and dsh **0.1.5-rc.1** (MCP client rc.3). They use the operator's
+The three entrypoints launch fixed recipes for Claude Code **2.1.329**, Codex
+**0.166.0**, and dsh **0.2.2-rc.1** (accepted 0137's 2026-11-23 amendment; the
+recipes were written against 2.1.310, 0.164.0 and 0.1.5-rc.1, whose selectors
+now decode in published rows only). They use the operator's
 selected existing logins. Delivery uses local stand-ins only: authenticated
 six-model smoke, exact-version tool inventories and HTTP MCP interoperability,
 especially the **live dsh HTTP MCP row**, remain the operator's first smoke
@@ -80,9 +82,9 @@ locators (inert values):
 
 ```json
 {"version":2,"families":{
- "claude":{"executable":"/opt/claude/2.1.310/claude","credential_file":"/private/claude-oauth.json","profile":"claude_2_1_310","cli_version":"2.1.310","cli_sha256":"<sha256 of that file>","auth_shape":"claude_oauth_v1"},
- "codex":{"executable":"/opt/codex/0.164.0/codex","credential_file":"/private/auth.json","profile":"codex_0_164_0","cli_version":"0.164.0","cli_sha256":"<sha256>","auth_shape":"codex_chatgpt_v1"},
- "dsh":{"executable":"/opt/dsh/0.1.5-rc.1/dsh","credential_file":"/private/dsh-routes.json","profile":"dsh_0_1_5_rc_1","cli_version":"0.1.5-rc.1","cli_sha256":"<sha256>","auth_shape":"dsh_routes_attested_v1"}}}
+ "claude":{"executable":"/opt/claude/2.1.329/claude","credential_file":"/private/claude-oauth.json","profile":"claude_2_1_329","cli_version":"2.1.329","cli_sha256":"<sha256 of that file>","auth_shape":"claude_oauth_v1"},
+ "codex":{"executable":"/opt/codex/0.166.0/codex","credential_file":"/private/auth.json","profile":"codex_0_166_0","cli_version":"0.166.0","cli_sha256":"<sha256>","auth_shape":"codex_chatgpt_v1"},
+ "dsh":{"executable":"/opt/dsh/0.2.2-rc.1/dsh","credential_file":"/private/dsh-routes.json","profile":"dsh_0_2_2_rc_1","cli_version":"0.2.2-rc.1","cli_sha256":"<sha256>","auth_shape":"dsh_routes_attested_v1"}}}
 ```
 
 A family the product does not spend may be absent; any other field refuses.
@@ -109,12 +111,13 @@ by `contract <family>: <cause>`:
 * `version_mismatch` / `version_probe_failed` / `version_probe_timeout`: a
   fixed `EXECUTABLE --version` with a cleared environment, an empty private
   HOME with private TMPDIR and XDG directories (decision 0075 §1), no stdin, 4096 bytes of stdout and a 10 s deadline (its process group
-  is killed afterwards) must answer exactly `2.1.310 (Claude Code)`,
-  `codex-cli 0.164.0` or `0.1.5-rc.1`. The banner is never printed or kept.
-  Only these versions qualify: a newer installed CLI (the published pages
-  record Claude 2.1.316–2.1.319 and dsh 0.2.1-rc.3 / 0.2.2-rc.1) refuses
-  until a reviewed profile for its version lands. The dsh banner is the
-  profile's, not yet observed from a real 0.1.5-rc.1 binary.
+  is killed afterwards) must answer exactly `2.1.329 (Claude Code)`,
+  `codex-cli 0.166.0` or `0.2.2-rc.1`. The banner is never printed or kept.
+  Only these versions qualify (accepted 0137, 2026-11-23 amendment);
+* `profile_superseded`: the selection names `claude_2_1_310`,
+  `codex_0_164_0` or `dsh_0_1_5_rc_1`, which left the approved set. dsh
+  0.2.2-rc.1 is an interpreted package; its runtime-and-package pin is not
+  built yet (#404), so a real dsh install still refuses as not native.
 
 The wrapper itself rechecks the pin immediately before exec
 (`wrapper_cli_digest_mismatch`, `wrapper_contract_missing`) and refuses an
@@ -211,9 +214,11 @@ Other helper failures retain the generic `fixture_request_refused` tool result.
 Every current row requires canonical `provenance.agent.tool_surface`, including
 setup failures and unstarted slots. Wrapper profiles have revision 1 and basis
 `declared_configuration`, restrictions and conservative residuals. The finite
-selectors are `claude_2_1_310`, `codex_0_164_0`, `dsh_0_1_5_rc_1` (AgentSpec
+selectors are `claude_2_1_329`, `codex_0_166_0`, `dsh_0_2_2_rc_1` (AgentSpec
 `wrapper_profile`, or trial `--wrapper-profile`), plus the three
-`*_via_brokkr` selectors below. A selector is an explicit
+`*_via_brokkr` selectors below. The superseded `claude_2_1_310`,
+`codex_0_164_0` and `dsh_0_1_5_rc_1` (and their `*_via_brokkr` forms) still
+decode so published rows keep their bytes; a paid selection refuses them. A selector is an explicit
 operator declaration, never inferred from a label, executable or CLI output.
 Generic external commands remain `external_unknown`; builtins are
 `builtin_not_applicable`; invalid requests are `invalid_request`. Missing,
@@ -234,7 +239,7 @@ For example, after setting absolute E and SWARMAIL_BIN as in the run plan:
 
 ```bash
 $E trial --task signup --agent smoke --agent-model claude-opus-5-5 \
-  --wrapper-profile claude_2_1_310 --deadline-ms 600000 -- \
+  --wrapper-profile claude_2_1_329 --deadline-ms 600000 -- \
   "$E" agent-claude --model claude-opus-5-5 --config /private/wrappers.json
 ```
 
@@ -276,8 +281,8 @@ and restores `run()`'s arm. A direct launch is
 unchanged.
 
 A row for a via-brokkr launch will declare the matching finite selector
-`claude_2_1_310_via_brokkr`, `codex_0_164_0_via_brokkr` or
-`dsh_0_1_5_rc_1_via_brokkr`: the family's declared configuration plus one
+`claude_2_1_329_via_brokkr`, `codex_0_166_0_via_brokkr` or
+`dsh_0_2_2_rc_1_via_brokkr`: the family's declared configuration plus one
 residual (`brokkr driver flags unenumerated`), because the driver adds flags
 the family profile does not list. A via-brokkr row never claims the
 direct-launch surface; a binary from before this change refuses these rows,

@@ -167,6 +167,19 @@ fn every_contract_refusal_names_its_family_and_cause_before_any_spend() {
     refuse("contract claude: auth_shape_unsupported");
     p.select(|v| v["families"]["claude"]["profile"] = json!("claude_2_1_310_via_brokkr"));
     refuse("contract claude: profile_mismatch");
+    // The superseded profiles left the approved set (accepted 0137's
+    // 2026-11-23 amendment), even beside their own version.
+    for (family, old, version) in [
+        ("claude", "claude_2_1_310", "2.1.310"),
+        ("codex", "codex_0_164_0", "0.164.0"),
+        ("dsh", "dsh_0_1_5_rc_1", "0.1.5-rc.1"),
+    ] {
+        p.select(|v| {
+            v["families"][family]["profile"] = json!(old);
+            v["families"][family]["cli_version"] = json!(version);
+        });
+        refuse(&format!("contract {family}: profile_superseded"));
+    }
     // An opaque forwarding path cannot establish identity.
     let link = p.dir.path().join("codex-link");
     std::os::unix::fs::symlink(p.bin("codex"), &link).unwrap();

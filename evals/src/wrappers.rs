@@ -692,6 +692,9 @@ fn paid_selection(bytes: &[u8], family: &str) -> Result<PaidSelection, String> {
     if selected.profile.family() != family || selected.profile.via_brokkr() {
         return Err("profile_mismatch".into());
     }
+    if !selected.profile.approved() {
+        return Err("profile_superseded".into());
+    }
     if selected.cli_version != selected.profile.cli_version() {
         return Err("version_unsupported".into());
     }
