@@ -243,3 +243,39 @@ fmt, clippy `--all-targets --locked`, `cargo test --locked` with
 `SWARMAIL_BIN` from Cargo's artifact record: 27 binaries green. Not run
 here: `brokkr compile` (no pinned brokkr reachable from this seat; no
 `.brokkr/` change).
+
+## Review return 4 (2026-11-23)
+
+- **MEDIUM, unresumable partial leaf** (independent). A trial leaf whose
+  retention stopped before its hash-bound `metadata.json` marker (a worker
+  killed mid-retention, a full disk) made every later `--resume` refuse
+  `trial_invalid`. `Ledger::attempt` now keeps such a leaf as found, logs
+  `trial <id> has no committed marker; its slot stays outstanding`, and
+  leaves the slot for a later attempt; a marker that is present and fails
+  validation still refuses. This runs only for closed or
+  operator-confirmed attempts, so no writer is live. The one-command test
+  strips the marker from the killed dashscope attempt's unscored leaf
+  before the confirmed resume, asserts the log line, that the leaf's bytes
+  stay as found, and the existing exact counts (30 rows, per-model
+  launches, unchanged committed score bytes); its helper now counts only
+  leaves with a marker as committed. With the ledger change reverted the
+  same test fails (the resume refuses and the run never reaches its next
+  launch).
+- **LOW, stale plan text** (correctness, guarantees). `plan.md` now says
+  the Codex expiry is the access token's `exp` alone and that only the
+  private selection holds the CLI path; the manifest records public
+  identity only.
+
+Lows left as tracked debt (unchanged from return 3): the wrapper-boundary
+margin refusal stops the run; the schedule-dependent ranges; the
+unexercised refusal arms (now also assignment_invalid, trial_unexpected,
+attempt_evidence_invalid, the manifest decode arms, controls_ambiguous and
+agent_unstarted's category string); resume does not read the attempt's
+`matrix.json` index and does not apply the scored-row provenance
+predicate to unscored rows (guarantees, low: same-uid consistency, outside
+0075's privacy boundary); `validate_accounting` taking `cli: None`;
+no interrupted-controls end-to-end test; dry-run zero-launch proof by
+launch log; fd 3 not checked as a pipe; CI time.
+
+**Added test time**: `paid_baseline` 96.1 s (unchanged; the new
+assertions run inside the existing run, no new launch).
