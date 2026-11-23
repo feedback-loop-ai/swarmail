@@ -267,6 +267,26 @@ fn claude_allowed(server: &str, tools: &[String]) -> String {
         .join(",")
 }
 
+/// Codex's overrides for the isolated fixture helper.
+fn fixture_overrides(
+    executable: &Path,
+    env: &BTreeMap<String, String>,
+    cwd: &Path,
+) -> Vec<(String, Value)> {
+    vec![
+        ("mcp_servers.fixture.command".into(), json!(executable)),
+        (
+            "mcp_servers.fixture.args".into(),
+            json!(["fixture-http-isolated"]),
+        ),
+        ("mcp_servers.fixture.env".into(), json!(env)),
+        ("mcp_servers.fixture.cwd".into(), json!(cwd)),
+        (
+            "mcp_servers.fixture.default_tools_approval_mode".into(),
+            json!("approve"),
+        ),
+    ]
+}
 /// Codex's `-c` overrides for the target's MCP server.
 fn codex_server_overrides(server: &str, url: &str, headers: Value) -> Vec<(String, Value)> {
     vec![
@@ -365,6 +385,103 @@ struct PaidSelection {
     /// the pin's identity.
     #[serde(default)]
     interpreted: Option<crate::interpreted::Pin>,
+    /// Route (b): the pinned brokkr driver this family may launch through,
+    /// and the family's driver flags. Needed only for `--via-brokkr`.
+    #[serde(default)]
+    nested: Option<NestedSelection>,
+}
+/// The brokkr release whose driver route (b) runs (proposed 0138), pinned
+/// apart from the delivery engine's `.brokkr/recipes/self/tooling.json`.
+pub const DRIVER_VERSION: &str = "0.15.2";
+/// The one platform the pinned release asset serves.
+pub const DRIVER_PLATFORM: &str = "linux-x86_64";
+/// The `SHA256SUMS` line of brokkr v0.15.2's `brokkr-linux-x86_64.tar.gz`:
+/// the provenance a selection's driver pin names.
+pub const DRIVER_ARCHIVE_SHA256: &str =
+    "ecce9b5acea9e07eb5b9f978b87272aa87273add34f1f215cdc400aeb2f52eb3";
+/// The `brokkr` executable extracted from that verified archive: the digest
+/// an operator's selection pins (`driver_sha256`).
+pub const DRIVER_RELEASE_SHA256: &str =
+    "61cba4ee438eb0bd0dbc223f7d394219238aeecc061250e36281a4989e455062";
+/// The effort words a nested claude or codex selection may name.
+pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Codex's inner sandbox class under the nested driver: a typed selection,
+/// because `workspace-write` lost the smoke's result inside the trial box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CodexSandbox {
+    ReadOnly,
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+impl CodexSandbox {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::WorkspaceWrite => "workspace-write",
+            Self::DangerFullAccess => "danger-full-access",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NestedSelection {
+    driver: PathBuf,
+    driver_sha256: String,
+    driver_version: String,
+    platform: String,
+    archive_sha256: String,
+    #[serde(default)]
+    effort: Option<String>,
+    #[serde(default)]
+    codex_sandbox: Option<CodexSandbox>,
+}
+impl NestedSelection {
+    /// The static shape, checked with the rest of the selection.
+    fn validate(&self, family: &str) -> Result<(), String> {
+        if !self.driver.is_absolute() {
+            return Err("driver_selection_invalid".into());
+        }
+        if self.driver_version != DRIVER_VERSION {
+            return Err("driver_version_unsupported".into());
+        }
+        if self.platform != DRIVER_PLATFORM {
+            return Err("driver_platform_unsupported".into());
+        }
+        if self.archive_sha256 != DRIVER_ARCHIVE_SHA256 {
+            return Err("driver_archive_unrecognized".into());
+        }
+        if !crate::provenance::is_hash(&self.driver_sha256) {
+            return Err("driver_digest_invalid".into());
+        }
+        let effort_ok = match (family, self.effort.as_deref()) {
+            ("dsh", None) => true,
+            ("dsh", Some(_)) | (_, None) => false,
+            (_, Some(e)) => EFFORTS.contains(&e),
+        };
+        if !effort_ok {
+            return Err("driver_effort_invalid".into());
+        }
+        if (family == "codex") != self.codex_sandbox.is_some() {
+            return Err("driver_sandbox_invalid".into());
+        }
+        Ok(())
+    }
+    /// The launch-time proof: the flag names the pinned driver, this host is
+    /// the pinned platform, and the bytes and banner are the release's.
+    fn check(&self, via: &Path) -> Result<(), String> {
+        if via != self.driver {
+            return Err("driver_selection_mismatch".into());
+        }
+        if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            return Err("driver_platform_unsupported".into());
+        }
+        check_pinned(&self.driver, &self.driver_sha256).map_err(|e| format!("driver_{e}"))?;
+        probe_version(&self.driver, None, &format!("brokkr {DRIVER_VERSION}"))
+            .map_err(|e| format!("driver_{e}"))
+    }
 }
 impl PaidSelection {
     /// The native program a launch or probe runs, and the argument that
@@ -761,6 +878,9 @@ fn paid_selection(bytes: &[u8], family: &str) -> Result<PaidSelection, String> {
     if selected.auth_shape != auth_shape(family) {
         return Err("auth_shape_unsupported".into());
     }
+    if let Some(nested) = &selected.nested {
+        nested.validate(family)?;
+    }
     Ok(selected)
 }
 /// The one auth-file shape each family's paid contract may name.
@@ -1016,11 +1136,12 @@ fn paid_binding(launch: Option<&str>) -> Result<Option<(String, u64)>, String> {
         _ => Err("wrapper_paid_binding_invalid".into()),
     }
 }
-/// Tell a paid coordinator, on the descriptor it handed down, whether the
-/// pinned CLI is about to run. The descriptor is closed on exec first, so the
-/// CLI never inherits it and a model can never write the report.
-fn report_launch(paid_launch: Option<&str>, word: &[u8]) {
-    if paid_launch.is_none() {
+/// Tell the runner, on the descriptor it handed down, whether the pinned CLI
+/// is about to run (and, nested, what the session reported). The descriptor
+/// is closed on exec first, so the CLI never inherits it and a model can
+/// never write the report.
+fn report(reporting: bool, word: &[u8]) {
+    if !reporting {
         return;
     }
     let fd = crate::runner::LAUNCH_FD;
@@ -1028,6 +1149,12 @@ fn report_launch(paid_launch: Option<&str>, word: &[u8]) {
         if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == 0 {
             let _ = libc::write(fd, word.as_ptr().cast(), word.len());
         }
+    }
+}
+/// Mark the launch pipe close-on-exec before a child is spawned.
+fn seal_launch_fd(reporting: bool) {
+    if reporting {
+        unsafe { libc::fcntl(crate::runner::LAUNCH_FD, libc::F_SETFD, libc::FD_CLOEXEC) };
     }
 }
 fn dsh_route(auth: DshAttested, provider: &str) -> AttestedKey {
@@ -1110,34 +1237,6 @@ fn validate_driver(driver: &Path) -> Result<(), String> {
     }
 }
 
-/// `DRIVER <family> -- <program> <args...>` with the direct launch's
-/// environment, working directory and output routing: the driver is only a
-/// different launcher for the same argv. Test-only (decision 0119, revision 3):
-/// no production path reaches it while `driver_contract_unknown` is refused,
-/// so the compiler, not a comment, keeps it out of the shipped binary. The
-/// follow-up that implements the observed F2 invocation lifts the refusal and
-/// restores the arm in `run()` that launches through the driver; this
-/// assembly and its inline proof are its starting point.
-#[cfg(test)]
-fn through_driver(direct: &Command, family: &str, driver: &Path) -> Command {
-    let mut cmd = Command::new(driver);
-    cmd.arg(family)
-        .arg("--")
-        .arg(direct.get_program())
-        .args(direct.get_args())
-        .env_clear();
-    for (key, value) in direct.get_envs() {
-        if let Some(value) = value {
-            cmd.env(key, value);
-        }
-    }
-    if let Some(dir) = direct.get_current_dir() {
-        cmd.current_dir(dir);
-    }
-    cmd.stdout(Stdio::null()).stderr(Stdio::null());
-    cmd
-}
-
 /// Launch the family CLI, or say why not. Returning at all means the CLI
 /// never ran: a paid coordinator learns that on the launch descriptor and
 /// keeps the slot unscored (proposed 0137).
@@ -1147,10 +1246,25 @@ pub fn run(
     config: &Path,
     via_brokkr: Option<&Path>,
     paid_launch: Option<&str>,
+    launch_report: bool,
 ) -> Result<(), String> {
-    let result = launch(harness, model, config, via_brokkr, paid_launch);
-    report_launch(paid_launch, b"unstarted\n");
-    result
+    // A nested wrapper reports on the pipe with or without a paid binding;
+    // a direct one only under a paid binding, as before.
+    let reporting = paid_launch.is_some() || (launch_report && via_brokkr.is_some());
+    match launch(harness, model, config, via_brokkr, paid_launch, reporting) {
+        // A nested session that began was reported `ready` and given its
+        // receipt: never `unstarted` after work.
+        Ok(Launched::Nested(end)) => end,
+        Err(e) => {
+            report(reporting, b"unstarted\n");
+            Err(e)
+        }
+    }
+}
+/// How a launch that returned ended: only the nested route returns after
+/// work began (a direct launch replaces this process).
+enum Launched {
+    Nested(Result<(), String>),
 }
 fn launch(
     harness: &str,
@@ -1158,20 +1272,15 @@ fn launch(
     config: &Path,
     via_brokkr: Option<&Path>,
     paid_launch: Option<&str>,
-) -> Result<(), String> {
+    reporting: bool,
+) -> Result<Launched, String> {
     validate_model(harness, model)?;
     if !config.is_absolute() {
         return Err("wrapper_config_locator_invalid".into());
     }
     if let Some(driver) = via_brokkr {
+        // The path's shape first, before any environment or private read.
         validate_driver(driver)?;
-        // Fail closed (decision 0119, revision 2): the invocation brokkr's
-        // driver accepts (F2) has never been observed, and running a guessed
-        // argv would turn a driver error into the agent's exit, scored as the
-        // task's idle class. This refusal precedes every environment read,
-        // credential read and spawn, and has no switch: `through_driver` below
-        // is the test-only assembly the follow-up will lift this refusal onto.
-        return Err("driver_contract_unknown".into());
     }
     let inputs = Inputs::environment()?;
     validate_goal(harness, &inputs.goal)?;
@@ -1206,6 +1315,20 @@ fn launch(
         (None, Some(_)) => return Err("wrapper_contract_missing".into()),
         (None, None) => {}
     }
+    // Route (b): the selection pins the driver beside the CLI; both are
+    // proven before any credential is read.
+    let nested = match via_brokkr {
+        Some(driver) => {
+            let pin = selected
+                .paid
+                .as_ref()
+                .and_then(|p| p.nested.as_ref())
+                .ok_or("driver_pin_missing")?;
+            pin.check(driver)?;
+            Some((driver, pin))
+        }
+        None => None,
+    };
     let paid = selected.paid.is_some();
     let cwd = std::env::current_dir().map_err(|_| "wrapper_workdir")?;
     preflight(harness, &cwd, Path::new("/etc"))?;
@@ -1230,13 +1353,31 @@ fn launch(
         std::env::var(ENV_MCP_TOOLS).ok().as_deref(),
     )?;
     refuse_dsh_competitor(harness, &server)?;
-    let mut cmd = Command::new(&program);
-    cmd.args(entry)
-        .env_clear()
+    let mut cmd = match nested {
+        Some((driver, _)) => {
+            let mut c = Command::new(driver);
+            c.arg(harness).arg("--");
+            c
+        }
+        None => {
+            let mut c = Command::new(&program);
+            c.args(entry.clone());
+            c
+        }
+    };
+    cmd.env_clear()
         .envs(&map)
         .current_dir(&cwd)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // The driver finds the CLI by name on PATH: the pinned program's own
+    // directory comes first, ahead of the fixed system path.
+    if nested.is_some() {
+        let dir = program.parent().ok_or("driver_cli_unresolvable")?;
+        let mut path = OsString::from(dir.as_os_str());
+        path.push(":/usr/bin:/bin");
+        cmd.env("PATH", path);
+    }
     match harness {
         "claude" => {
             let auth: ClaudeAuth = private_read(&selected.credential_file)?;
@@ -1252,15 +1393,36 @@ fn launch(
                     json!({"claudeAiOauth":{"accessToken":auth.oauth.access_token,"expiresAt":auth.oauth.expires_at,"scopes":auth.oauth.scopes}}),
                 ),
             )?;
-            write_private(
-                &home_fd,
-                "mcp.json",
-                &json_bytes(json!({"mcpServers":{
-                    server.as_str():{"type":"http","url":inputs.mcp.as_str(),"headers":headers},
-                    "fixture":{"type":"stdio","command":executable,"args":["fixture-http-isolated"],"env":env}
-                }})),
-            )?;
+            let servers = json!({"mcpServers":{
+                server.as_str():{"type":"http","url":inputs.mcp.as_str(),"headers":headers},
+                "fixture":{"type":"stdio","command":executable,"args":["fixture-http-isolated"],"env":env}
+            }});
             let allowed = claude_allowed(&server, &tools);
+            if let Some((_, pin)) = nested {
+                // The driver owns the argv: the MCP servers are the user
+                // scope's, the tools the settings' allowance.
+                write_private(&home_fd, ".claude.json", &json_bytes(servers))?;
+                write_private(
+                    &dir,
+                    "settings.json",
+                    &json_bytes(
+                        json!({"permissions":{"allow":allowed.split(',').collect::<Vec<_>>()}}),
+                    ),
+                )?;
+                cmd.env("BROKKR_CLAUDE_BIN", &program)
+                    .env("DISABLE_AUTOUPDATER", "1")
+                    .args([
+                        "--permission-mode",
+                        "acceptEdits",
+                        "--model",
+                        model,
+                        "--effort",
+                    ])
+                    .arg(pin.effort.as_deref().expect("validated effort"));
+                return nested_session(harness, cmd, &inputs, &cwd, reporting)
+                    .map(Launched::Nested);
+            }
+            write_private(&home_fd, "mcp.json", &json_bytes(servers))?;
             cmd.args([
                 "-p",
                 "--output-format",
@@ -1301,8 +1463,37 @@ fn launch(
                     json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":auth.tokens.id_token,"access_token":auth.tokens.access_token,"account_id":auth.tokens.account_id,"refresh_token":"unavailable"},"last_refresh":chrono::Utc::now().to_rfc3339()}),
                 ),
             )?;
-            cmd.env("CODEX_HOME", home.join(".codex"))
-                .args(["exec", "--json", "--model", model, "-C"])
+            cmd.env("CODEX_HOME", home.join(".codex"));
+            if let Some((_, pin)) = nested {
+                if program.file_name() != Some(std::ffi::OsStr::new("codex")) {
+                    return Err("driver_cli_unresolvable".into());
+                }
+                let mut overrides = vec![
+                    ("web_search".to_string(), json!("disabled")),
+                    (
+                        format!("projects.{}.trust_level", toml(&json!(cwd))),
+                        json!("untrusted"),
+                    ),
+                ];
+                overrides.extend(codex_server_overrides(
+                    &server,
+                    inputs.mcp.as_str(),
+                    headers,
+                ));
+                overrides.extend(fixture_overrides(&executable, &env, &cwd));
+                let config = overrides
+                    .iter()
+                    .map(|(k, v)| format!("{k} = {}\n", toml(v)))
+                    .collect::<String>();
+                write_private(&dir, "config.toml", config.as_bytes())?;
+                let sandbox = pin.codex_sandbox.expect("validated sandbox");
+                cmd.args(["--model", model, "--effort"])
+                    .arg(pin.effort.as_deref().expect("validated effort"))
+                    .args(["--sandbox", sandbox.name()]);
+                return nested_session(harness, cmd, &inputs, &cwd, reporting)
+                    .map(Launched::Nested);
+            }
+            cmd.args(["exec", "--json", "--model", model, "-C"])
                 .arg(&cwd)
                 .args([
                     "--skip-git-repo-check",
@@ -1324,19 +1515,7 @@ fn launch(
                 inputs.mcp.as_str(),
                 headers,
             ));
-            overrides.extend([
-                ("mcp_servers.fixture.command".into(), json!(executable)),
-                (
-                    "mcp_servers.fixture.args".into(),
-                    json!(["fixture-http-isolated"]),
-                ),
-                ("mcp_servers.fixture.env".into(), json!(env)),
-                ("mcp_servers.fixture.cwd".into(), json!(cwd)),
-                (
-                    "mcp_servers.fixture.default_tools_approval_mode".into(),
-                    json!("approve"),
-                ),
-            ]);
+            overrides.extend(fixture_overrides(&executable, &env, &cwd));
             for (k, v) in overrides {
                 cmd.arg("-c").arg(format!("{k}={}", toml(&v)));
             }
@@ -1378,7 +1557,42 @@ fn launch(
                     json!({"displayName":"DGX Spark vLLM (GLM)","apiKeyEnv":"SPARK_API_KEY","api":"openai-completions","baseURL":"http://spark:8888/v1","models":[{"id":model_id,"contextWindow":200000,"maxTokens":32768}]}),
                 )
             };
-            make_dir(&home_fd, ".dsh")?;
+            let dsh_home = make_dir(&home_fd, ".dsh")?;
+            if nested.is_some() {
+                // The driver composes the model and session rows; the route,
+                // the MCP servers and compaction are the home profile's
+                // overlay. Only the selected route's key reaches the child.
+                let mut rows = vec![
+                    json!({"id":"llm-pi-ai","config":{"providers":{provider:route}}}),
+                    json!({"insert":[
+                        {"id":"mcp-swarmail","name":"@deepseek-ai/dsh-mcp-client","config":{"serverName":"swarmail","transport":"streamable-http","url":inputs.mcp.as_str(),"headers":headers,"failOnStartupError":true,"toolCallTimeoutMs":60000}},
+                        {"id":"mcp-fixture","name":"@deepseek-ai/dsh-mcp-client","config":{"serverName":"fixture","transport":"stdio","command":executable,"args":["fixture-http-isolated"],"env":env,"cwd":cwd,"failOnStartupError":true}}
+                    ]}),
+                ];
+                if provider == "spark-glm" {
+                    rows.push(json!({"id":"compaction-basic","config":{"modelPolicies":[{"provider":provider,"model":model_id,"thresholdRatio":0.8,"retainRatio":0.16}]}}));
+                }
+                let overlay = rows
+                    .iter()
+                    .map(|r| format!("- {}\n", yaml_flow(r)))
+                    .collect::<String>();
+                let profiles = make_dir(&dsh_home, "profiles")?;
+                let headless = make_dir(&profiles, "headless")?;
+                write_private(&headless, "cordis.patch.yml", overlay.as_bytes())?;
+                let interpreted = selected
+                    .paid
+                    .as_ref()
+                    .and_then(|p| p.interpreted.as_ref())
+                    .expect("a paid dsh selection carries its interpreted pin");
+                direct_entry(interpreted)?;
+                cmd.env("BROKKR_DSH_BIN", interpreted.entry_path())
+                    .env("DSH_HOME", home.join(".dsh"))
+                    .env("DSH_TELEMETRY_DISABLED", "1")
+                    .env(key, token)
+                    .args(["--model", model]);
+                return nested_session(harness, cmd, &inputs, &cwd, reporting)
+                    .map(Launched::Nested);
+            }
             make_dir(&home_fd, "sessions")?;
             let mut rows = vec![
                 json!({"id":"llm-pi-ai","config":{"providers":{provider:route}}}),
@@ -1428,9 +1642,119 @@ fn launch(
             .map_err(|_| "eval_prompt_unavailable")?;
         cmd.stdin(f);
     }
-    report_launch(paid_launch, crate::runner::LAUNCH_READY);
+    report(paid_launch.is_some(), crate::runner::LAUNCH_READY);
     let _error = cmd.exec();
     Err("wrapper_exec_failed".into())
+}
+
+/// dsh's driver runs `BROKKR_DSH_BIN` as one program, so the pinned entry
+/// must start the pinned runtime itself: an executable entry whose `#!` line
+/// names the runtime's absolute path, or `/usr/bin/env node` with the
+/// runtime's directory first on PATH (set above). No wrapper script of ours
+/// stands between the runtime and the entry.
+fn direct_entry(pin: &crate::interpreted::Pin) -> Result<(), String> {
+    let entry = pin.entry_path();
+    let m = std::fs::symlink_metadata(&entry).map_err(|_| "driver_entry_unavailable")?;
+    if !m.file_type().is_file() || m.mode() & 0o111 == 0 {
+        return Err("driver_entry_not_executable".into());
+    }
+    let mut head = [0u8; 256];
+    let n = File::open(&entry)
+        .and_then(|mut f| f.read(&mut head))
+        .map_err(|_| "driver_entry_unavailable")?;
+    let line = head[..n].split(|b| *b == b'\n').next().unwrap_or_default();
+    let runtime = pin.runtime.as_os_str().as_bytes();
+    let by_env = pin.runtime.file_name() == Some(std::ffi::OsStr::new("node"))
+        && line == b"#!/usr/bin/env node";
+    if line.strip_prefix(b"#!") == Some(runtime) || by_env {
+        Ok(())
+    } else {
+        Err("driver_entry_shebang_unsupported".into())
+    }
+}
+
+/// The fixed seat charter a nested session reads at `role_path`: the task
+/// itself travels as the start's `feature`.
+const NESTED_CHARTER: &str = "# Eval trial seat\n\nYou are the agent of one Swarmail evaluation trial. The Feature below is your task: complete it with the MCP tools you have, then write your result file. Write `done` when you finished the task and `stuck` when you could not.\n";
+/// The results a nested trial's seat may write.
+pub const NESTED_RESULTS: [&str; 2] = ["done", "stuck"];
+
+/// Run one nested session: the charter and result target in a fresh seat
+/// directory under the work directory, the driver spawned with its stdio
+/// piped, the exchange to its end, and the receipt on the launch pipe.
+/// `Err` only when nothing was launched; a launched session's own end is the
+/// inner result.
+fn nested_session(
+    family: &str,
+    mut cmd: Command,
+    inputs: &Inputs,
+    cwd: &Path,
+    reporting: bool,
+) -> Result<Result<(), String>, String> {
+    use std::io::Write as _;
+    let attempt_id = crate::runner::new_trial_id();
+    let seat_name = format!(".swarmail-seat-{attempt_id}");
+    let seat = make_dir(&directory(cwd)?, &seat_name)?;
+    write_private(&seat, "charter.md", NESTED_CHARTER.as_bytes())?;
+    let seat_dir = cwd.join(&seat_name);
+    let text = |p: PathBuf| p.to_str().expect("a validated UTF-8 workdir").to_string();
+    let start = crate::driver::StartInput {
+        feature: inputs.goal.clone(),
+        phase: "trial".into(),
+        seat: "trial".into(),
+        role_path: text(seat_dir.join("charter.md")),
+        workdir: text(cwd.to_path_buf()),
+        result_path: text(seat_dir.join("result.json")),
+        allowed_results: NESTED_RESULTS.map(String::from).to_vec(),
+        context: json!({"task": inputs.task}),
+    };
+    let id = crate::driver::Identity {
+        effect_id: format!("trial-{attempt_id}"),
+        attempt_id: attempt_id.clone(),
+        seat: "trial".into(),
+    };
+    // The launch pipe stays the wrapper's: neither the driver nor anything
+    // it starts inherits it.
+    seal_launch_fd(reporting);
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "driver_spawn_failed")?;
+    let mut stdin = child.stdin.take();
+    let stdout = child.stdout.take().expect("piped stdout");
+    let (exchange, end) = crate::driver::run(
+        std::io::BufReader::new(stdout),
+        id,
+        &start,
+        |bytes| match stdin.as_mut() {
+            Some(s) => s.write_all(&bytes).and_then(|()| s.flush()),
+            None => Err(std::io::ErrorKind::BrokenPipe.into()),
+        },
+        || report(reporting, crate::runner::LAUNCH_READY),
+    );
+    drop(stdin);
+    let _ = child.wait();
+    let (launched, code) = match end {
+        Ok(d) => (d.launched(), d.code()),
+        Err(e) => (exchange.accepted(), e.code()),
+    };
+    if !launched {
+        return Err(code.into());
+    }
+    let receipt = crate::usage::Receipt {
+        disposition: code.into(),
+        attempt_id,
+        family: family.into(),
+        facts: crate::usage::project(family, exchange.checkpoints()),
+    };
+    report(reporting, &crate::usage::receipt_line(&receipt));
+    Ok(if code == "completed" {
+        Ok(())
+    } else {
+        Err(code.into())
+    })
 }
 
 /// Prevent credentials inherited by MCP launchers from entering the helper.
@@ -1577,75 +1901,7 @@ mod tests {
         }
     }
     #[test]
-    fn through_driver_assembles_the_direct_argv_byte_for_byte() {
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt;
-        let driver = Path::new("/opt/brokkr/brokkr-driver");
-        // The shapes of the three families' direct launches: the goal on stdin
-        // for claude and codex, as the last literal argument for dsh.
-        let non_utf8 = OsStr::from_bytes(b"model-\xff-bytes");
-        for (family, program, args) in [
-            (
-                "claude",
-                "/opt/claude/bin/claude",
-                vec![
-                    OsStr::new("-p"),
-                    OsStr::new("--mcp-config"),
-                    OsStr::new("/home/x/mcp.json"),
-                ],
-            ),
-            (
-                "codex",
-                "/opt/codex/bin/codex",
-                vec![OsStr::new("exec"), OsStr::new("-m"), non_utf8],
-            ),
-            (
-                "dsh",
-                "/opt/dsh/bin/dsh",
-                vec![
-                    OsStr::new("--profile"),
-                    OsStr::new("headless"),
-                    OsStr::new("a goal; with $(shell) \" metacharacters"),
-                ],
-            ),
-        ] {
-            let mut direct = Command::new(program);
-            direct
-                .args(&args)
-                .env_clear()
-                .env("HOME", "/run/home")
-                .env("PATH", "/usr/bin:/bin")
-                .env("EMPTY", "")
-                .env_remove("REMOVED")
-                .current_dir("/run/work");
-            let driven = through_driver(&direct, family, driver);
-            assert_eq!(driven.get_program(), driver.as_os_str(), "{family}");
-            let argv: Vec<&OsStr> = driven.get_args().collect();
-            assert_eq!(argv[0], OsStr::new(family));
-            assert_eq!(argv[1], OsStr::new("--"));
-            assert_eq!(argv[2], OsStr::new(program), "{family}: the program");
-            assert_eq!(
-                &argv[3..],
-                &args[..],
-                "{family}: the argv after the program, byte for byte"
-            );
-            let direct_env: Vec<_> = direct.get_envs().filter(|(_, v)| v.is_some()).collect();
-            let driven_env: Vec<_> = driven.get_envs().collect();
-            assert_eq!(
-                driven_env, direct_env,
-                "{family}: the same keys and values, nothing added, nothing inherited"
-            );
-            assert_eq!(driven.get_current_dir(), direct.get_current_dir());
-        }
-        // A direct launch with no working directory stays without one.
-        let bare = Command::new("/opt/claude/bin/claude");
-        assert_eq!(
-            through_driver(&bare, "claude", driver).get_current_dir(),
-            None
-        );
-    }
-    #[test]
-    fn the_via_brokkr_refusal_comes_after_the_driver_check_and_before_every_read() {
+    fn the_driver_path_is_checked_before_every_read() {
         let root = crate::runner::private_tempdir("wrapper-proof-").unwrap();
         let plain = root.path().join("not-executable");
         std::fs::write(&plain, b"#!/bin/sh\n").unwrap();
@@ -1653,15 +1909,160 @@ mod tests {
         std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
         let config = Path::new("/nonexistent/selection.json");
-        let run_with =
-            |driver: &Path| run("claude", "claude-sonnet-5-5", config, Some(driver), None);
+        let run_with = |driver: &Path| {
+            run(
+                "claude",
+                "claude-sonnet-5-5",
+                config,
+                Some(driver),
+                None,
+                true,
+            )
+        };
         assert_eq!(run_with(Path::new("rel")), Err("driver_invalid".into()));
         assert_eq!(run_with(&plain), Err("driver_invalid".into()));
-        assert_eq!(run_with(&exe), Err("driver_contract_unknown".into()));
-        // The same call without the flag goes on to read its inputs and refuses
-        // for a different reason, which shows the refusal above preceded them.
-        let direct = run("claude", "claude-sonnet-5-5", config, None, None).unwrap_err();
-        assert_ne!(direct, "driver_contract_unknown");
+        // A well-shaped driver goes on to the inputs, which this process
+        // lacks: the same refusal as without the flag.
+        let direct = run("claude", "claude-sonnet-5-5", config, None, None, false).unwrap_err();
+        assert_eq!(run_with(&exe).unwrap_err(), direct);
+        assert_ne!(direct, "driver_invalid");
+    }
+    fn nested(family: &str) -> NestedSelection {
+        NestedSelection {
+            driver: "/opt/brokkr/brokkr".into(),
+            driver_sha256: DRIVER_RELEASE_SHA256.into(),
+            driver_version: DRIVER_VERSION.into(),
+            platform: DRIVER_PLATFORM.into(),
+            archive_sha256: DRIVER_ARCHIVE_SHA256.into(),
+            effort: (family != "dsh").then(|| "medium".into()),
+            codex_sandbox: (family == "codex").then_some(CodexSandbox::DangerFullAccess),
+        }
+    }
+    #[test]
+    fn a_nested_pin_names_the_release_and_each_familys_typed_flags() {
+        for family in ["claude", "codex", "dsh"] {
+            assert_eq!(nested(family).validate(family), Ok(()), "{family}");
+        }
+        type Edit = fn(&mut NestedSelection);
+        let cases: [(&str, Edit, &str); 10] = [
+            (
+                "claude",
+                |n| n.driver = "brokkr".into(),
+                "driver_selection_invalid",
+            ),
+            (
+                "claude",
+                |n| n.driver_version = "0.12.0".into(),
+                "driver_version_unsupported",
+            ),
+            (
+                "claude",
+                |n| n.platform = "linux-aarch64".into(),
+                "driver_platform_unsupported",
+            ),
+            (
+                "claude",
+                |n| n.archive_sha256 = "0".repeat(64),
+                "driver_archive_unrecognized",
+            ),
+            (
+                "claude",
+                |n| n.driver_sha256 = "x".into(),
+                "driver_digest_invalid",
+            ),
+            ("claude", |n| n.effort = None, "driver_effort_invalid"),
+            (
+                "codex",
+                |n| n.effort = Some("turbo".into()),
+                "driver_effort_invalid",
+            ),
+            (
+                "dsh",
+                |n| n.effort = Some("high".into()),
+                "driver_effort_invalid",
+            ),
+            (
+                "codex",
+                |n| n.codex_sandbox = None,
+                "driver_sandbox_invalid",
+            ),
+            (
+                "claude",
+                |n| n.codex_sandbox = Some(CodexSandbox::ReadOnly),
+                "driver_sandbox_invalid",
+            ),
+        ];
+        for (family, edit, want) in cases {
+            let mut n = nested(family);
+            edit(&mut n);
+            assert_eq!(n.validate(family), Err(want.into()), "{family} {want}");
+        }
+        assert_eq!(
+            [
+                CodexSandbox::ReadOnly,
+                CodexSandbox::WorkspaceWrite,
+                CodexSandbox::DangerFullAccess
+            ]
+            .map(CodexSandbox::name),
+            ["read-only", "workspace-write", "danger-full-access"]
+        );
+        // The launch check: the flag must name the pinned path, then the
+        // bytes must hash to the pin, before any banner runs.
+        let n = nested("claude");
+        assert_eq!(
+            n.check(Path::new("/elsewhere/brokkr")),
+            Err("driver_selection_mismatch".into())
+        );
+        if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            assert_eq!(n.check(&n.driver), Err("driver_executable_unsafe".into()));
+        } else {
+            assert_eq!(
+                n.check(&n.driver),
+                Err("driver_platform_unsupported".into())
+            );
+        }
+    }
+    #[test]
+    fn a_dsh_entry_must_start_the_pinned_runtime_itself() {
+        let root = crate::runner::private_tempdir("entry-proof-").unwrap();
+        let pkg = root.path().join("pkg");
+        std::fs::create_dir(&pkg).unwrap();
+        let entry = pkg.join("cli.js");
+        let pin = |runtime: &str| crate::interpreted::Pin {
+            runtime: PathBuf::from(runtime),
+            runtime_version: "v22.0.0".into(),
+            runtime_sha256: "0".repeat(64),
+            package_root: pkg.clone(),
+            entry: "cli.js".into(),
+            files: Default::default(),
+        };
+        let write = |body: &[u8], mode: u32| {
+            std::fs::write(&entry, body).unwrap();
+            std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        assert_eq!(
+            direct_entry(&pin("/opt/node/bin/node")),
+            Err("driver_entry_unavailable".into())
+        );
+        write(b"#!/usr/bin/env node\nx", 0o755);
+        assert_eq!(direct_entry(&pin("/opt/node/bin/node")), Ok(()));
+        // The env form needs the runtime to be the `node` PATH resolves.
+        assert_eq!(
+            direct_entry(&pin("/opt/node/bin/node22")),
+            Err("driver_entry_shebang_unsupported".into())
+        );
+        write(b"#!/opt/node/bin/node22\n", 0o755);
+        assert_eq!(direct_entry(&pin("/opt/node/bin/node22")), Ok(()));
+        write(b"#!/bin/sh\nexec node cli.js", 0o755);
+        assert_eq!(
+            direct_entry(&pin("/opt/node/bin/node")),
+            Err("driver_entry_shebang_unsupported".into())
+        );
+        write(b"#!/usr/bin/env node\n", 0o644);
+        assert_eq!(
+            direct_entry(&pin("/opt/node/bin/node")),
+            Err("driver_entry_not_executable".into())
+        );
     }
     #[test]
     fn descriptor_inputs_refuse_unsafe_paths_types_schemas_and_bounds() {

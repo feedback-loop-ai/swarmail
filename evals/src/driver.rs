@@ -78,6 +78,46 @@ impl ProtocolError {
     }
 }
 
+/// Every code a nested receipt's disposition may carry, as a static string:
+/// `completed`, a disposition's harness error or a protocol error's code.
+pub fn static_code(code: &str) -> Option<&'static str> {
+    use ProtocolError::*;
+    let dispositions = [
+        Disposition::Completed,
+        Disposition::NotLaunched { refused: false },
+        Disposition::NotLaunched { refused: true },
+        Disposition::ResultMissing,
+        Disposition::Failed,
+        Disposition::InvalidResult,
+    ]
+    .map(Disposition::code);
+    let protocol = [
+        Io,
+        FrameTooLarge,
+        TotalTooLarge,
+        TooManyFrames,
+        Truncated,
+        NotUtf8,
+        NotJson,
+        NotObject,
+        DuplicateKey,
+        TooDeep,
+        WrongProto,
+        MissingField,
+        UnknownType,
+        OutOfOrder,
+        IdentityMismatch,
+        AfterResult,
+        DuplicateMsgId,
+        BadStatus,
+    ]
+    .map(ProtocolError::code);
+    dispositions
+        .into_iter()
+        .chain(protocol)
+        .find(|c| *c == code)
+}
+
 /// The eight `start.input` keys the smoke found sufficient for every family.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartInput {
@@ -548,7 +588,7 @@ pub fn run<R: BufRead>(
     };
     let mut ex = Exchange::new(id, input.allowed_results.clone());
     let (mut started, mut shut, mut told) = (false, false, false);
-    let mut body = || -> Result<(), ProtocolError> {
+    let body = || -> Result<(), ProtocolError> {
         send(hello(&next_id())).map_err(|_| ProtocolError::Io)?;
         let mut frames = FrameReader::new(reader);
         while let Some(frame) = frames.next_frame()? {

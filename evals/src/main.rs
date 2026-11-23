@@ -95,7 +95,7 @@ enum Cmd {
         model: String,
         #[arg(long)]
         config: PathBuf,
-        /// Launch through this brokkr driver (absolute path): `DRIVER claude -- <argv>`.
+        /// Launch through this pinned brokkr driver (absolute path), speaking forge-driver/v1 to it.
         #[arg(long)]
         via_brokkr: Option<PathBuf>,
         /// Set by a paid-baseline trial only: `SHA256:VALID_THROUGH`, the
@@ -103,6 +103,10 @@ enum Cmd {
         /// Descriptor 3 is then the launch report pipe.
         #[arg(long, hide = true)]
         paid_launch: Option<String>,
+        /// Set by a trial for a nested (`--via-brokkr`) agent: descriptor 3
+        /// is the launch report pipe that carries the session's usage.
+        #[arg(long, hide = true)]
+        launch_report: bool,
     },
     /// Launch Codex with private selected ChatGPT authentication.
     AgentCodex {
@@ -110,7 +114,7 @@ enum Cmd {
         model: String,
         #[arg(long)]
         config: PathBuf,
-        /// Launch through this brokkr driver (absolute path): `DRIVER codex -- <argv>`.
+        /// Launch through this pinned brokkr driver (absolute path), speaking forge-driver/v1 to it.
         #[arg(long)]
         via_brokkr: Option<PathBuf>,
         /// Set by a paid-baseline trial only: `SHA256:VALID_THROUGH`, the
@@ -118,6 +122,10 @@ enum Cmd {
         /// Descriptor 3 is then the launch report pipe.
         #[arg(long, hide = true)]
         paid_launch: Option<String>,
+        /// Set by a trial for a nested (`--via-brokkr`) agent: descriptor 3
+        /// is the launch report pipe that carries the session's usage.
+        #[arg(long, hide = true)]
+        launch_report: bool,
     },
     /// Launch dsh with the selected private route credential.
     AgentDsh {
@@ -125,7 +133,7 @@ enum Cmd {
         model: String,
         #[arg(long)]
         config: PathBuf,
-        /// Launch through this brokkr driver (absolute path): `DRIVER dsh -- <argv>`.
+        /// Launch through this pinned brokkr driver (absolute path), speaking forge-driver/v1 to it.
         #[arg(long)]
         via_brokkr: Option<PathBuf>,
         /// Set by a paid-baseline trial only: `SHA256:VALID_THROUGH`, the
@@ -133,6 +141,10 @@ enum Cmd {
         /// Descriptor 3 is then the launch report pipe.
         #[arg(long, hide = true)]
         paid_launch: Option<String>,
+        /// Set by a trial for a nested (`--via-brokkr`) agent: descriptor 3
+        /// is the launch report pipe that carries the session's usage.
+        #[arg(long, hide = true)]
+        launch_report: bool,
     },
     /// Print an interpreted CLI's paid pin (accepted 0137, 2026-11-23
     /// amendment) for the selection's dsh family: its `executable`,
@@ -861,36 +873,42 @@ fn main() -> ExitCode {
             config,
             via_brokkr,
             paid_launch,
+            launch_report,
         } => wrapper_result(
             "claude",
             model,
             config,
             via_brokkr.as_deref(),
             paid_launch.as_deref(),
+            launch_report,
         ),
         Cmd::AgentCodex {
             model,
             config,
             via_brokkr,
             paid_launch,
+            launch_report,
         } => wrapper_result(
             "codex",
             model,
             config,
             via_brokkr.as_deref(),
             paid_launch.as_deref(),
+            launch_report,
         ),
         Cmd::AgentDsh {
             model,
             config,
             via_brokkr,
             paid_launch,
+            launch_report,
         } => wrapper_result(
             "dsh",
             model,
             config,
             via_brokkr.as_deref(),
             paid_launch.as_deref(),
+            launch_report,
         ),
         Cmd::PinInterpreted {
             runtime,
@@ -3726,8 +3744,16 @@ fn wrapper_result(
     config: PathBuf,
     via_brokkr: Option<&std::path::Path>,
     paid_launch: Option<&str>,
+    launch_report: bool,
 ) -> ExitCode {
-    match wrappers::run(harness, &model, &config, via_brokkr, paid_launch) {
+    match wrappers::run(
+        harness,
+        &model,
+        &config,
+        via_brokkr,
+        paid_launch,
+        launch_report,
+    ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => {
             // run returns only finite harness-authored categories.

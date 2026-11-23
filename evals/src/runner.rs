@@ -252,10 +252,12 @@ pub const BUILTINS: [&str; 2] = ["oracle", "null"];
 /// 0119, revision 2), decided on the public agent argv and the declared
 /// profile alone, before anything starts.
 ///
-/// brokkr's driver invocation (F2) has never been observed, so an argv that
-/// asks for the driver is refused (`driver_contract_unknown`) and a
-/// `*_via_brokkr` profile declared without the flag is refused
-/// (`via_brokkr_profile_mismatch`). Both are fixed categories; the caller
+/// Route (b) of the 2026-11-23 addendum implements the driver exchange for
+/// the three amended profiles: an argv that asks for the driver passes only
+/// with one of their `*_via_brokkr` selectors. A superseded `*_via_brokkr`
+/// selector stays `driver_contract_unknown`; the flag without a via-brokkr
+/// selector, or such a selector without the flag, is
+/// `via_brokkr_profile_mismatch`. Both are fixed categories; the caller
 /// prints one and exits 2 with no row.
 pub fn via_brokkr_refusal(
     argv: &[OsString],
@@ -266,12 +268,13 @@ pub fn via_brokkr_refusal(
         let bytes = arg.as_bytes();
         bytes == FLAG || bytes.starts_with(b"--via-brokkr=")
     });
-    if asks {
-        Some("driver_contract_unknown")
-    } else if profile.is_some_and(|p| p.via_brokkr()) {
-        Some("via_brokkr_profile_mismatch")
-    } else {
-        None
+    let via = profile.is_some_and(|p| p.via_brokkr());
+    match (asks, via) {
+        // Route (b) is implemented for the three amended profiles only.
+        (true, true) if profile.is_some_and(|p| p.approved()) => None,
+        (true, true) => Some("driver_contract_unknown"),
+        (true, false) | (false, true) => Some("via_brokkr_profile_mismatch"),
+        (false, false) => None,
     }
 }
 
@@ -508,24 +511,89 @@ fn launch_pipe(cmd: &mut Command) -> io::Result<io::PipeReader> {
     }
     Ok(reader)
 }
-/// Whether the wrapper reported exactly `ready` and nothing after it. A
-/// refusal, an exec failure, or a wrapper that died first leaves anything
-/// else: no model ran, so the attempt is unstarted, never a measurement.
-fn launch_reported_ready(reader: &mut io::PipeReader) -> bool {
+/// What a wrapper reported on its launch pipe.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LaunchReport {
+    /// Anything but the two shapes below: a refusal, an exec failure, a
+    /// wrapper that died first, or a driver that accepted nothing. No model
+    /// ran, so the attempt is unstarted, never a measurement.
+    Unstarted,
+    /// Exactly `ready`: the CLI (or the nested session) began, and no
+    /// receipt followed.
+    Ready,
+    /// `ready`, then one nested-driver receipt line (route (b)).
+    Nested(crate::usage::Receipt),
+}
+/// The flag that tells a nested wrapper descriptor 3 is its launch pipe
+/// when no paid binding already says so.
+pub const LAUNCH_REPORT_ARG: &str = "--launch-report";
+/// Classify the bytes a wrapper wrote on its launch pipe.
+pub fn launch_report_of(out: &[u8]) -> LaunchReport {
+    if out == LAUNCH_READY {
+        return LaunchReport::Ready;
+    }
+    match out
+        .strip_prefix(LAUNCH_READY)
+        .and_then(|rest| rest.strip_suffix(b"\n"))
+        .filter(|line| !line.contains(&b'\n'))
+        .and_then(crate::usage::parse_receipt)
+    {
+        Some(receipt) => LaunchReport::Nested(receipt),
+        None => LaunchReport::Unstarted,
+    }
+}
+/// Read a launch pipe, bounded: a report longer than any valid one is
+/// unstarted.
+fn launch_report(reader: &mut io::PipeReader) -> LaunchReport {
     use std::io::Read as _;
+    let limit = LAUNCH_READY.len() + crate::usage::RECEIPT_LIMIT;
     let mut out = Vec::new();
-    let mut buf = [0u8; 64];
+    let mut buf = [0u8; 512];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
-            Ok(n) if out.len() + n <= 64 => out.extend_from_slice(&buf[..n]),
-            Ok(_) => return false,
+            Ok(n) if out.len() + n <= limit => out.extend_from_slice(&buf[..n]),
+            Ok(_) => return LaunchReport::Unstarted,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             // WouldBlock: a stray holder of the write end; what arrived counts.
             Err(_) => break,
         }
     }
-    out == LAUNCH_READY
+    launch_report_of(&out)
+}
+/// Turn the agents' launch reports into the trial's usage record and its
+/// harness error, if any. `nested` is the family of a nested-driver trial.
+pub fn settle_launch(
+    reports: &[LaunchReport],
+    nested: Option<&str>,
+    trial_id: &str,
+) -> (Option<crate::usage::NestedUsage>, Result<(), String>) {
+    if reports.contains(&LaunchReport::Unstarted) {
+        return (None, Err("agent_unstarted".into()));
+    }
+    let Some(family) = nested else {
+        // A direct launch never sends a receipt.
+        return if reports.iter().all(|r| *r == LaunchReport::Ready) {
+            (None, Ok(()))
+        } else {
+            (None, Err("agent_unstarted".into()))
+        };
+    };
+    match reports {
+        [LaunchReport::Ready] => (
+            Some(crate::usage::NestedUsage::missing(trial_id, family)),
+            Ok(()),
+        ),
+        [LaunchReport::Nested(r)] if r.family == family => {
+            let usage = crate::usage::NestedUsage::from_receipt(trial_id, r);
+            match crate::driver::static_code(&r.disposition) {
+                Some("completed") => (Some(usage), Ok(())),
+                Some(code) => (Some(usage), Err(code.into())),
+                None => (Some(usage), Err("agent_unstarted".into())),
+            }
+        }
+        _ => (None, Err("agent_unstarted".into())),
+    }
 }
 
 /// Where a trial's redacted value capture goes and which sentinels its
@@ -2126,6 +2194,8 @@ struct Trial {
     bridge: Option<crate::bridge::Bridge>,
     /// Value capture's plan and the slot its sealed result is left in.
     capture: Option<(CapturePlan, CaptureSink)>,
+    /// A nested-driver trial's usage record, read from the launch report.
+    nested_usage: Option<crate::usage::NestedUsage>,
 }
 
 /// How long a competitor adapter gets, after its stdin closes, to clean up
@@ -2621,6 +2691,7 @@ pub async fn probe_contract(
         diagnostics: Vec::new(),
         bridge: None,
         capture: None,
+        nested_usage: None,
     };
     let probed = probe_contract_body(target, swarmail, plan, scratch.path(), &mut trial).await;
     let stopped = trial.stop_servers().await;
@@ -2929,6 +3000,14 @@ async fn run_body(
     let mut agent_groups = Vec::new();
     let mut spawn_failed = false;
     let mut launches = Vec::new();
+    // A nested-driver trial (route (b)): its wrapper reports the session's
+    // usage on the launch pipe, paid or not.
+    let nested = match &provenance.agent.tool_surface {
+        crate::provenance::ToolSurface::Wrapper { profile, .. } if profile.via_brokkr() => {
+            Some(profile.family())
+        }
+        _ => None,
+    };
     for (index, id) in ids.iter().enumerate() {
         let vars = PromptVars {
             app_url: &app_url,
@@ -2972,6 +3051,10 @@ async fn run_body(
         if let Some(paid) = paid {
             cmd.arg(PAID_LAUNCH_ARG)
                 .arg(format!("{}:{}", paid.cli_sha256, paid.valid_through));
+        } else if nested.is_some() {
+            cmd.arg(LAUNCH_REPORT_ARG);
+        }
+        if paid.is_some() || nested.is_some() {
             match launch_pipe(&mut cmd) {
                 Ok(reader) => launches.push(reader),
                 Err(_) => {
@@ -3069,8 +3152,11 @@ async fn run_body(
         return Err("agent_spawn".into());
     }
     cleanup_result?;
-    if !launches.iter_mut().all(launch_reported_ready) {
-        return Err("agent_unstarted".into());
+    if paid.is_some() || nested.is_some() {
+        let reports: Vec<_> = launches.iter_mut().map(launch_report).collect();
+        let (usage, settled) = settle_launch(&reports, nested, trial_id);
+        trial.nested_usage = usage;
+        settled?;
     }
     match end {
         AgentsEnd::ServerDied => return Err("server_died".into()),
@@ -3453,6 +3539,7 @@ async fn execute_trial(
                 diagnostics: Vec::new(),
                 bridge: None,
                 capture: capture_owner,
+                nested_usage: None,
             };
             let mut exits = Vec::new();
             let mut snap = None;
@@ -3496,7 +3583,7 @@ async fn execute_trial(
                 Ok(()) => outcome,
                 Err(e) => Err(e),
             };
-            (outcome, exits, snap, trial.diagnostics)
+            (outcome, exits, snap, trial.diagnostics, trial.nested_usage)
         })
     };
     let joined = tokio::select! {
@@ -3583,8 +3670,8 @@ async fn execute_trial(
             None,
         );
     };
-    let (mut verdict, exits, snap, mut diagnostics) = match joined {
-        Ok((outcome, exits, snap, mut diagnostics)) => {
+    let (mut verdict, exits, snap, mut diagnostics, nested_usage) = match joined {
+        Ok((outcome, exits, snap, mut diagnostics, nested_usage)) => {
             if outcome
                 .as_ref()
                 .is_err_and(|e| e == "build_context_changed")
@@ -3624,7 +3711,7 @@ async fn execute_trial(
                     },
                 },
             };
-            (verdict, exits, snap, diagnostics)
+            (verdict, exits, snap, diagnostics, nested_usage)
         }
         Err(_) => {
             // A panic: the body's handles are gone, so its groups are
@@ -3635,6 +3722,7 @@ async fn execute_trial(
                 Vec::new(),
                 None,
                 vec!["stage=runner category=panicked".into()],
+                None,
             )
         }
     };
@@ -3699,7 +3787,7 @@ async fn execute_trial(
         agent_exits: exits,
         confinement: CONFINEMENT.to_string(),
         provenance: make_provenance(req, req.target_build.as_ref(), snap.as_ref()),
-        nested_usage: None,
+        nested_usage,
     };
     if row.outcome == Outcome::HarnessError {
         for d in &diagnostics {
