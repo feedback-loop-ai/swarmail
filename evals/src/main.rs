@@ -134,6 +134,23 @@ enum Cmd {
         #[arg(long, hide = true)]
         paid_launch: Option<String>,
     },
+    /// Print an interpreted CLI's paid pin (accepted 0137, 2026-11-23
+    /// amendment) for the selection's dsh family: its `executable`,
+    /// `cli_sha256` and `interpreted` members. Reads no credential.
+    PinInterpreted {
+        /// The native runtime (absolute path), never a shim.
+        #[arg(long)]
+        runtime: PathBuf,
+        /// The exact line `RUNTIME --version` answers, e.g. `v22.11.0`.
+        #[arg(long)]
+        runtime_version: String,
+        /// The installed package root (absolute path).
+        #[arg(long)]
+        package_root: PathBuf,
+        /// The entry file, relative to the package root.
+        #[arg(long)]
+        entry: String,
+    },
     /// Serve one app-bound HTTP tool over MCP stdio using the EVAL inputs.
     FixtureHttp,
     #[command(hide = true)]
@@ -875,6 +892,34 @@ fn main() -> ExitCode {
             via_brokkr.as_deref(),
             paid_launch.as_deref(),
         ),
+        Cmd::PinInterpreted {
+            runtime,
+            runtime_version,
+            package_root,
+            entry,
+        } => match swarmail_evals::interpreted::pin(
+            &runtime,
+            &runtime_version,
+            &package_root,
+            &entry,
+        ) {
+            Ok(pin) => {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "executable": pin.entry_path(),
+                        "cli_sha256": pin.identity(),
+                        "interpreted": pin,
+                    })
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                // A finite category from the pin module, never a path.
+                eprintln!("swarmail-evals: pin refused: {e}");
+                ExitCode::from(2)
+            }
+        },
         Cmd::FixtureHttpIsolated => match wrappers::isolated_helper() {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => fail("helper_setup_failed"),

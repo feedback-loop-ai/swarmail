@@ -150,9 +150,13 @@ $E baseline --tier deliverability --config /private/wrappers.json --output /priv
   version refuses with `version_mismatch`. The superseded selectors
   (`claude_2_1_310`, `codex_0_164_0`, `dsh_0_1_5_rc_1`) still decode in
   published rows and refuse in a selection with `profile_superseded`. dsh
-  ships as an interpreted package: the amendment admits it under a pin of
-  the node runtime and every package file, which is not built yet (#404),
-  so a dsh selection still refuses (`executable_not_native`) until it is.
+  ships as an interpreted package and is admitted only under its full pin:
+  the native node runtime (absolute path, exact `--version` line, sha256)
+  and the sha256 of every entry under the package root.
+  `swarmail-evals pin-interpreted` prints that pin for the selection, and
+  `evals/wrappers.md` lists its refusals. Before any spend, and again at
+  exec, the harness verifies the pin and runs the pinned runtime on the
+  pinned entry directly.
 * **Resume.** A score counts once its trial's hash-bound evidence is
   retained, and a resume reruns only the slots that are still outstanding.
   Harness-error and interrupted attempts stay as evidence and use up no slot.

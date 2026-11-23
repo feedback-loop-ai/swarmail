@@ -180,6 +180,9 @@ fn every_contract_refusal_names_its_family_and_cause_before_any_spend() {
         });
         refuse(&format!("contract {family}: profile_superseded"));
     }
+    // dsh runs only as an interpreted package under its full pin (accepted
+    // 0137's 2026-11-23 amendment): every mutation refuses before spend.
+    dsh_pin_refusals(&p, &refuse);
     // An opaque forwarding path cannot establish identity.
     let link = p.dir.path().join("codex-link");
     std::os::unix::fs::symlink(p.bin("codex"), &link).unwrap();
@@ -488,7 +491,10 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     p.write_cli("dsh", banner("dsh"));
     let (code, _, err) = run(&mut p.authorized(&["--resume"]));
     assert_eq!(code, Some(2));
-    assert!(err.contains("contract dsh: digest_mismatch"), "{err}");
+    assert!(
+        err.contains("contract dsh: runtime_digest_mismatch"),
+        "{err}"
+    );
     p.select(|_| {});
     // A different margin is a different run.
     let (code, _, err) = run(&mut p.authorized(&["--resume", "--freshness-minutes", "71"]));
@@ -583,7 +589,12 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
             json!({
                 "profile": profile(family),
                 "version": profile(family).cli_version(),
-                "sha256": swarmail_evals::identity::file_hash(&p.bin(family)).unwrap(),
+                // dsh's identity is its interpreted pin's, runtime and package.
+                "sha256": if family == "dsh" {
+                    p.dsh_pin().identity()
+                } else {
+                    swarmail_evals::identity::file_hash(&p.bin(family)).unwrap()
+                },
             })
         );
     }
@@ -800,6 +811,73 @@ fn trial_worker(_parent: u32) -> i32 {
 }
 
 /// Replace `family`'s CLI with different bytes that still answer its banner.
+fn dsh_pin_refusals(p: &Paid, refuse: &dyn Fn(&str)) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = |path: &std::path::Path, m: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(m)).unwrap()
+    };
+    // A native family never carries a pin, and dsh never runs without one.
+    p.select(|v| {
+        v["families"]["claude"]["interpreted"] = v["families"]["dsh"]["interpreted"].clone()
+    });
+    refuse("contract claude: interpreted_pin_unexpected");
+    p.select(|v| {
+        v["families"]["dsh"]
+            .as_object_mut()
+            .unwrap()
+            .remove("interpreted");
+    });
+    refuse("contract dsh: interpreted_pin_missing");
+    // A shim in place of the entry, or of the runtime, refuses by name.
+    p.select(|v| v["families"]["dsh"]["executable"] = json!(p.bin("dsh")));
+    refuse("contract dsh: executable_not_entry");
+    let shim = p.dir.path().join("node-shim");
+    std::os::unix::fs::symlink(p.bin("dsh"), &shim).unwrap();
+    let pin =
+        swarmail_evals::interpreted::pin(&shim, NODE_BANNER, &p.package(), DSH_ENTRY).unwrap();
+    p.select(|v| {
+        v["families"]["dsh"]["cli_sha256"] = json!(pin.identity());
+        v["families"]["dsh"]["interpreted"] = json!(pin);
+    });
+    refuse("contract dsh: runtime_executable_unsafe");
+    // A changed runtime binary or banner.
+    p.select(|v| v["families"]["dsh"]["interpreted"]["runtime_version"] = json!("v22.11.1"));
+    refuse("contract dsh: digest_mismatch");
+    let mut pin = p.dsh_pin();
+    pin.runtime_version = "v22.11.1".into();
+    p.select(|v| {
+        v["families"]["dsh"]["cli_sha256"] = json!(pin.identity());
+        v["families"]["dsh"]["interpreted"] = json!(pin);
+    });
+    refuse("contract dsh: runtime_version_mismatch");
+    p.select(|_| {});
+    rotate(p, "dsh");
+    refuse("contract dsh: runtime_digest_mismatch");
+    p.write_cli("dsh", banner("dsh"));
+    // A changed, an extra and a missing package file, and a link leaving
+    // the package root.
+    let package = p.package();
+    let entry = package.join(DSH_ENTRY);
+    std::fs::write(&entry, "// changed\n").unwrap();
+    refuse("contract dsh: package_file_changed");
+    std::fs::write(&entry, "// dsh entry\n").unwrap();
+    let extra = package.join("extra.js");
+    std::fs::write(&extra, "").unwrap();
+    mode(&extra, 0o644);
+    refuse("contract dsh: package_file_extra");
+    std::fs::remove_file(&extra).unwrap();
+    let manifest = package.join("package.json");
+    let kept = std::fs::read(&manifest).unwrap();
+    std::fs::remove_file(&manifest).unwrap();
+    refuse("contract dsh: package_file_missing");
+    std::fs::write(&manifest, kept).unwrap();
+    mode(&manifest, 0o644);
+    std::os::unix::fs::symlink(p.cred("dsh"), package.join("escape")).unwrap();
+    refuse("contract dsh: package_symlink_escapes");
+    std::fs::remove_file(package.join("escape")).unwrap();
+    p.select(|_| {});
+}
+
 fn rotate(p: &Paid, family: &str) {
     p.write_cli(family, banner(family));
     let next = p.bin(family).with_extension("rotated");
@@ -1128,4 +1206,41 @@ fn paid_accounting(
         ),
         479
     );
+}
+
+/// The operator's helper prints exactly the dsh selection's pin members the
+/// harness verifies, and refuses an unpinnable package by its finite reason.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+fn pin_interpreted_prints_the_selection_members_the_contract_verifies() {
+    let p = Paid::new();
+    let pin_command = || {
+        let mut c = cli();
+        c.arg("pin-interpreted")
+            .arg("--runtime")
+            .arg(p.bin("dsh"))
+            .args(["--runtime-version", NODE_BANNER, "--package-root"])
+            .arg(p.package())
+            .args(["--entry", DSH_ENTRY]);
+        run(&mut c)
+    };
+    let (code, out, err) = pin_command();
+    assert_eq!(code, Some(0), "{err}");
+    let pin = p.dsh_pin();
+    let printed: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(
+        printed,
+        json!({"executable": pin.entry_path(), "cli_sha256": pin.identity(), "interpreted": pin})
+    );
+    std::os::unix::fs::symlink(p.cred("dsh"), p.package().join("escape")).unwrap();
+    let (code, out, err) = pin_command();
+    assert_eq!((code, out.as_str()), (Some(2), ""));
+    assert!(
+        err.contains("pin refused: package_symlink_escapes"),
+        "{err}"
+    );
+    assert!(!contains(err.as_bytes(), CANARY));
 }

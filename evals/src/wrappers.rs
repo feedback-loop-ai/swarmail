@@ -360,6 +360,47 @@ struct PaidSelection {
     cli_version: String,
     cli_sha256: String,
     auth_shape: String,
+    /// dsh only: the interpreted pin of accepted 0137's 2026-11-23
+    /// amendment. `executable` is then the pin's entry file and `cli_sha256`
+    /// the pin's identity.
+    #[serde(default)]
+    interpreted: Option<crate::interpreted::Pin>,
+}
+impl PaidSelection {
+    /// The native program a launch or probe runs, and the argument that
+    /// precedes the CLI's own: the pinned runtime on the pinned entry, or
+    /// the pinned binary alone.
+    fn program(&self) -> (&Path, Option<PathBuf>) {
+        match &self.interpreted {
+            Some(pin) => (&pin.runtime, Some(pin.entry_path())),
+            None => (&self.executable, None),
+        }
+    }
+    /// Verify the pinned bytes: the native binary, or the runtime and then
+    /// every package entry. Nothing of the package runs before this passes.
+    fn check(&self) -> Result<(), String> {
+        match &self.interpreted {
+            None => check_pinned(&self.executable, &self.cli_sha256),
+            Some(pin) => {
+                check_pinned(&pin.runtime, &pin.runtime_sha256)
+                    .map_err(|e| format!("runtime_{e}"))?;
+                crate::interpreted::compare(
+                    &pin.files,
+                    &crate::interpreted::measure(&pin.package_root)?,
+                )
+            }
+        }
+    }
+    /// The bounded, credential-free banners: the runtime's own first, then
+    /// the CLI's through the pinned runtime.
+    fn probe(&self) -> Result<(), String> {
+        if let Some(pin) = &self.interpreted {
+            probe_version(&pin.runtime, None, &pin.runtime_version)
+                .map_err(|e| format!("runtime_{e}"))?;
+        }
+        let (program, entry) = self.program();
+        probe_version(program, entry.as_deref(), &version_banner(self.profile))
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -701,6 +742,22 @@ fn paid_selection(bytes: &[u8], family: &str) -> Result<PaidSelection, String> {
     if !crate::provenance::is_hash(&selected.cli_sha256) {
         return Err("digest_invalid".into());
     }
+    // dsh is admitted only as an interpreted package under its full pin; a
+    // native family never carries one.
+    match (family, &selected.interpreted) {
+        ("dsh", None) => return Err("interpreted_pin_missing".into()),
+        ("dsh", Some(pin)) => {
+            pin.validate()?;
+            if selected.executable != pin.entry_path() {
+                return Err("executable_not_entry".into());
+            }
+            if selected.cli_sha256 != pin.identity() {
+                return Err("digest_mismatch".into());
+            }
+        }
+        (_, Some(_)) => return Err("interpreted_pin_unexpected".into()),
+        _ => {}
+    }
     if selected.auth_shape != auth_shape(family) {
         return Err("auth_shape_unsupported".into());
     }
@@ -768,12 +825,13 @@ const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Run `EXECUTABLE --version` with a closed environment, an empty private
 /// HOME, no stdin and a bounded stdout, and kill its whole group afterwards.
 /// The banner never leaves this function; only the verdict does.
-fn probe_version(executable: &Path, expected: &str) -> Result<(), String> {
+fn probe_version(executable: &Path, entry: Option<&Path>, expected: &str) -> Result<(), String> {
     use std::os::unix::fs::DirBuilderExt as _;
     use std::os::unix::process::CommandExt as _;
     let home = crate::runner::private_tempdir("cli-probe-").map_err(|_| "version_probe_failed")?;
     let mut probe = Command::new(executable);
     probe
+        .args(entry)
         .arg("--version")
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
@@ -859,9 +917,8 @@ pub fn paid_contracts(config: &Path, families: &[&str]) -> Result<Vec<Contract>,
         .iter()
         .map(|family| {
             let s = paid_selection(&bytes, family).map_err(|e| format!("{family}: {e}"))?;
-            check_pinned(&s.executable, &s.cli_sha256).map_err(|e| format!("{family}: {e}"))?;
-            probe_version(&s.executable, &version_banner(s.profile))
-                .map_err(|e| format!("{family}: {e}"))?;
+            s.check().map_err(|e| format!("{family}: {e}"))?;
+            s.probe().map_err(|e| format!("{family}: {e}"))?;
             Ok(Contract {
                 family: family.to_string(),
                 cli: crate::provenance::CliIdentity {
@@ -1122,8 +1179,16 @@ fn launch(
         "contract_missing" => "wrapper_contract_missing".to_string(),
         _ => e,
     })?;
-    let m =
-        std::fs::metadata(&selected.executable).map_err(|_| "wrapper_executable_unavailable")?;
+    // An interpreted pin runs its native runtime; the entry file it is given
+    // need not be executable itself.
+    let (program, entry) = match &selected.paid {
+        Some(paid) => {
+            let (program, entry) = paid.program();
+            (program.to_path_buf(), entry)
+        }
+        None => (selected.executable.clone(), None),
+    };
+    let m = std::fs::metadata(&program).map_err(|_| "wrapper_executable_unavailable")?;
     if !m.is_file() || m.mode() & 0o111 == 0 {
         return Err("wrapper_executable_invalid".into());
     }
@@ -1137,8 +1202,7 @@ fn launch(
         (Some(paid), Some((sha, _))) if *sha != paid.cli_sha256 => {
             return Err("wrapper_contract_drift".into());
         }
-        (Some(paid), _) => check_pinned(&selected.executable, &paid.cli_sha256)
-            .map_err(|e| format!("wrapper_cli_{e}"))?,
+        (Some(paid), _) => paid.check().map_err(|e| format!("wrapper_cli_{e}"))?,
         (None, Some(_)) => return Err("wrapper_contract_missing".into()),
         (None, None) => {}
     }
@@ -1166,8 +1230,9 @@ fn launch(
         std::env::var(ENV_MCP_TOOLS).ok().as_deref(),
     )?;
     refuse_dsh_competitor(harness, &server)?;
-    let mut cmd = Command::new(&selected.executable);
-    cmd.env_clear()
+    let mut cmd = Command::new(&program);
+    cmd.args(entry)
+        .env_clear()
         .envs(&map)
         .current_dir(&cwd)
         .stdout(Stdio::null())

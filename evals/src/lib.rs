@@ -43,6 +43,7 @@ pub mod testexec;
 
 pub mod artifacts;
 pub mod identity;
+pub mod interpreted;
 pub mod provenance;
 pub mod results;
 

@@ -1221,7 +1221,7 @@ fn paid_selection(c: &Case, family: &str, sha256: &str) {
         "codex" => swarmail_evals::provenance::WrapperProfile::Codex0_166_0,
         _ => swarmail_evals::provenance::WrapperProfile::Dsh0_2_2Rc1,
     };
-    let v2 = json!({"version":2,"families":{family:{
+    let mut v2 = json!({"version":2,"families":{family:{
         "executable": native_standin(c),
         "credential_file": selected["credential_file"],
         "profile": profile,
@@ -1229,8 +1229,35 @@ fn paid_selection(c: &Case, family: &str, sha256: &str) {
         "cli_sha256": sha256,
         "auth_shape": wrappers::auth_shape(family),
     }}});
+    // dsh runs as an interpreted package (accepted 0137's 2026-11-23
+    // amendment): the stand-in is its node runtime, given the entry first.
+    if family == "dsh" {
+        let pin = dsh_pin(c);
+        v2["families"]["dsh"]["executable"] = json!(pin.entry_path());
+        v2["families"]["dsh"]["cli_sha256"] = json!(pin.identity());
+        v2["families"]["dsh"]["interpreted"] = json!(pin);
+    }
     std::fs::remove_file(&c.manifest).unwrap();
     private(&c.manifest, v2.to_string().as_bytes());
+}
+/// The dsh package a paid selection pins with the native stand-in as its
+/// runtime: an entry file and its manifest.
+fn dsh_pin(c: &Case) -> swarmail_evals::interpreted::Pin {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = c.root.path().join("dsh-package");
+    if !root.exists() {
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        for dir in [root.clone(), root.join("bin")] {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(root.join("bin/dsh.js"), "// dsh entry\n").unwrap();
+        std::fs::set_permissions(
+            root.join("bin/dsh.js"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+    }
+    swarmail_evals::interpreted::pin(&native_standin(c), "v22.11.0", &root, "bin/dsh.js").unwrap()
 }
 /// The native stand-in a paid selection pins (a pinned CLI must be a native
 /// image), forwarding to the case's capturing Python stand-in. This proves
@@ -1300,6 +1327,12 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
         let out = c.command(family, model).output().unwrap();
         assert!(out.status.success(), "{family} {model}: {out:?}");
         assert!(c.capture.exists());
+        // The pinned runtime ran the pinned entry directly, no shim between.
+        if family == "dsh" {
+            let seen: Value = serde_json::from_slice(&std::fs::read(&c.capture).unwrap()).unwrap();
+            assert_eq!(seen["argv"][0], json!(dsh_pin(&c).entry_path()));
+            assert_eq!(seen["argv"][1], "--profile");
+        }
         // The selected route's key alone reached the CLI (the stand-in checks
         // the projection); an expired attestation refuses before exec.
         if family == "dsh" {
@@ -1369,8 +1402,17 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
             assert!(out.status.success(), "bound launch: {out:?}");
         }
         // A CLI replaced after preflight never runs under the pinned identity.
-        paid_selection(&c, family, &"0".repeat(64));
-        refused(&c, &[], family, model, "wrapper_cli_digest_mismatch");
+        if family == "dsh" {
+            // An interpreted package changed since preflight refuses at exec.
+            let entry = dsh_pin(&c).entry_path();
+            paid_selection(&c, family, "");
+            std::fs::write(&entry, "// replaced\n").unwrap();
+            refused(&c, &[], family, model, "wrapper_cli_package_file_changed");
+            std::fs::write(&entry, "// dsh entry\n").unwrap();
+        } else {
+            paid_selection(&c, family, &"0".repeat(64));
+            refused(&c, &[], family, model, "wrapper_cli_digest_mismatch");
+        }
         // A family the paid selection does not name has no contract.
         let other = if family == "claude" {
             "codex"

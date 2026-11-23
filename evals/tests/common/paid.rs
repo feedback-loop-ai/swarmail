@@ -43,6 +43,9 @@ pub fn banner(family: &str) -> &'static str {
         _ => "0.2.2-rc.1",
     }
 }
+/// The fake node runtime's own banner and the package's entry file.
+pub const NODE_BANNER: &str = "v22.11.0";
+pub const DSH_ENTRY: &str = "bin/dsh.js";
 pub fn profile(family: &str) -> WrapperProfile {
     match family {
         "claude" => WrapperProfile::Claude2_1_329,
@@ -123,8 +126,34 @@ impl Paid {
         p.select(|_| {});
         p
     }
+    /// Each family's pinned native binary: for dsh, the node runtime.
     pub fn bin(&self, family: &str) -> PathBuf {
         self.dir.path().join(format!("{family}-cli"))
+    }
+    /// The dsh package root: an entry, a manifest and an in-root link.
+    pub fn package(&self) -> PathBuf {
+        let root = self.dir.path().join("dsh-package");
+        if !root.exists() {
+            use std::os::unix::fs::PermissionsExt as _;
+            for (rel, body) in [
+                (DSH_ENTRY, "// dsh entry\n"),
+                ("package.json", "{\"name\":\"dsh\"}"),
+            ] {
+                let path = root.join(rel);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, body).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            }
+            for dir in [root.clone(), root.join("bin")] {
+                std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        root
+    }
+    /// The interpreted pin the dsh selection names, measured now.
+    pub fn dsh_pin(&self) -> swarmail_evals::interpreted::Pin {
+        swarmail_evals::interpreted::pin(&self.bin("dsh"), NODE_BANNER, &self.package(), DSH_ENTRY)
+            .unwrap()
     }
     pub fn cred(&self, family: &str) -> PathBuf {
         self.dir.path().join(format!("{family}-credential.json"))
@@ -134,14 +163,21 @@ impl Paid {
     /// file names this launch as `<family> <model> <n>`, and exits: a
     /// measured failure. Its whole behaviour rides in the pinned file, so
     /// the digest a row records covers every byte that ran.
+    /// dsh's fake is the node runtime: it answers its own banner, and
+    /// `version` only when given the package's entry first.
     pub fn write_cli(&self, family: &str, version: &str) {
-        let config = json!({
+        let mut config = json!({
             "family": family,
             "version": version,
             "log": self.log,
             "hold": self.hold,
             "canaries": [CANARY, SPARK_CANARY],
         });
+        if family == "dsh" {
+            config["version"] = json!(NODE_BANNER);
+            config["entry"] = json!(self.package().join(DSH_ENTRY));
+            config["entry_version"] = json!(version);
+        }
         install_configured(&self.bin(family), &config);
     }
     pub fn claude(&self, until: u64) {
@@ -181,6 +217,10 @@ impl Paid {
                 "auth_shape": swarmail_evals::wrappers::auth_shape(family),
             });
         }
+        let pin = self.dsh_pin();
+        families["dsh"]["executable"] = json!(pin.entry_path());
+        families["dsh"]["cli_sha256"] = json!(pin.identity());
+        families["dsh"]["interpreted"] = json!(pin);
         let mut v = json!({"version":2,"families":families});
         edit(&mut v);
         private(&self.config, v.to_string().as_bytes());

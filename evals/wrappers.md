@@ -84,7 +84,8 @@ locators (inert values):
 {"version":2,"families":{
  "claude":{"executable":"/opt/claude/2.1.329/claude","credential_file":"/private/claude-oauth.json","profile":"claude_2_1_329","cli_version":"2.1.329","cli_sha256":"<sha256 of that file>","auth_shape":"claude_oauth_v1"},
  "codex":{"executable":"/opt/codex/0.166.0/codex","credential_file":"/private/auth.json","profile":"codex_0_166_0","cli_version":"0.166.0","cli_sha256":"<sha256>","auth_shape":"codex_chatgpt_v1"},
- "dsh":{"executable":"/opt/dsh/0.2.2-rc.1/dsh","credential_file":"/private/dsh-routes.json","profile":"dsh_0_2_2_rc_1","cli_version":"0.2.2-rc.1","cli_sha256":"<sha256>","auth_shape":"dsh_routes_attested_v1"}}}
+ "dsh":{"executable":"/opt/dsh/lib/node_modules/@deepseek-ai/dsh/dist/cli.js","credential_file":"/private/dsh-routes.json","profile":"dsh_0_2_2_rc_1","cli_version":"0.2.2-rc.1","cli_sha256":"<pin identity>","auth_shape":"dsh_routes_attested_v1",
+  "interpreted":{"runtime":"/opt/node/22.11.0/bin/node","runtime_version":"v22.11.0","runtime_sha256":"<sha256>","package_root":"/opt/dsh/lib/node_modules/@deepseek-ai/dsh","entry":"dist/cli.js","files":{"<relative path>":"<sha256>", "...":"..."}}}}}
 ```
 
 A family the product does not spend may be absent; any other field refuses.
@@ -115,9 +116,44 @@ by `contract <family>: <cause>`:
   `codex-cli 0.166.0` or `0.2.2-rc.1`. The banner is never printed or kept.
   Only these versions qualify (accepted 0137, 2026-11-23 amendment);
 * `profile_superseded`: the selection names `claude_2_1_310`,
-  `codex_0_164_0` or `dsh_0_1_5_rc_1`, which left the approved set. dsh
-  0.2.2-rc.1 is an interpreted package; its runtime-and-package pin is not
-  built yet (#404), so a real dsh install still refuses as not native.
+  `codex_0_164_0` or `dsh_0_1_5_rc_1`, which left the approved set.
+
+**dsh is an interpreted package** (accepted 0137's 2026-11-23 amendment).
+Its selection carries an `interpreted` pin. `executable` is the pin's entry
+file and `cli_sha256` is the pin's identity: the SHA-256 of
+`swarmail-interpreted-pin/1\n`, `runtime <sha256> <version>\n`,
+`entry <path>\n`, then one `<sha256>  <path>\n` line per package entry in
+byte order of path. Do not compute it by hand; run
+`swarmail-evals pin-interpreted --runtime NODE --runtime-version vX.Y.Z
+--package-root ROOT --entry REL`. It prints the three members to paste into
+the selection, reads no credential and refuses with `pin refused: <reason>`.
+The manifest covers every entry under the root, hidden files included. A
+symbolic link is recorded by its in-root target and never followed. Before
+spend and again at exec, the harness checks the following, in order:
+
+* `interpreted_pin_missing` (dsh without a pin) and
+  `interpreted_pin_unexpected` (a pin on Claude or Codex);
+* `interpreted_pin_invalid` (a relative runtime or root, a bad digest, an
+  unsafe manifest path) and `entry_invalid` (an entry the manifest does not
+  list);
+* `executable_not_entry`: `executable` is not the pin's entry, for example
+  a shim such as `~/.volta/bin/dsh`;
+* `digest_mismatch`: `cli_sha256` is not the pin's identity;
+* `runtime_executable_unsafe`, `runtime_executable_not_native`,
+  `runtime_digest_mismatch`: the runtime is held to the native-binary rules
+  above, so a shim or symlink in its place refuses;
+* `package_file_changed`, `package_file_extra`, `package_file_missing`:
+  the measured package against the manifest;
+* `package_symlink_escapes`, `package_symlink_invalid`,
+  `package_special_file`, `package_unsafe` (writable by group or others, or
+  owned by someone else), `package_name_invalid`, `package_too_large`,
+  `package_root_invalid`: refused while walking;
+* `runtime_version_mismatch`, then `version_mismatch`: `RUNTIME --version`
+  must answer the pinned line, then `RUNTIME ENTRY --version` must answer
+  `0.2.2-rc.1`. Both run under the bounded probe above.
+
+The launch then runs `RUNTIME ENTRY <dsh argv>`, with no shim in between.
+At exec, the wrapper's refusals carry the `wrapper_cli_` prefix.
 
 The wrapper itself rechecks the pin immediately before exec
 (`wrapper_cli_digest_mismatch`, `wrapper_contract_missing`) and refuses an

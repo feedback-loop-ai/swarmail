@@ -25,6 +25,14 @@ struct Config {
     log: std::path::PathBuf,
     hold: std::path::PathBuf,
     canaries: Vec<String>,
+    /// As an interpreted CLI's runtime (accepted 0137's 2026-11-23
+    /// amendment): the entry file it must be given first, and the banner
+    /// `RUNTIME ENTRY --version` answers. A launch on any other first
+    /// argument logs `WRONG-ENTRY`.
+    #[serde(default)]
+    entry: Option<std::path::PathBuf>,
+    #[serde(default)]
+    entry_version: Option<String>,
 }
 
 fn main() {
@@ -59,9 +67,25 @@ fn main() {
 }
 
 fn fake(c: &Config) -> i32 {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--version") {
         println!("{}", c.version);
+        return 0;
+    }
+    let wrong_entry = c.entry.as_ref().is_some_and(|entry| {
+        let first = args.first().map(std::path::Path::new);
+        let wrong = first != Some(entry.as_path());
+        if !wrong {
+            args.remove(0);
+        }
+        wrong
+    });
+    if let (false, Some(banner), Some("--version")) = (
+        wrong_entry,
+        &c.entry_version,
+        args.first().map(String::as_str),
+    ) {
+        println!("{banner}");
         return 0;
     }
     let append = |line: &str| {
@@ -77,6 +101,9 @@ fn fake(c: &Config) -> i32 {
         .any(|a| c.canaries.iter().any(|k| a.contains(k.as_str())))
     {
         append("LEAK");
+    }
+    if wrong_entry {
+        append("WRONG-ENTRY");
     }
     let mut model = args
         .windows(2)
