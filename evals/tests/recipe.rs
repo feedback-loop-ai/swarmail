@@ -596,56 +596,115 @@ fn the_scripts_read_only_their_prompt_and_name_no_secret() {
 
 // ---- evals/scripts/journal-facts.sh (decision 0119, F3) -------------------
 //
-// brokkr was not reachable when this was written, so the export below is a
-// STAND-IN in the shape the script documents, not a captured real export. The
-// operator's first engine run replaces it with a capture.
+// The real export shape: `brokkr export --run RUN --out DIR` writes
+// DIR/RUN.ndjson. tests/data/journal-export-smoke.ndjson is the sanitized
+// export of the 2026-11-23 direct claude smoke (run smoke-4a42634a), with
+// only the trial seat's `inputs.trial_id` set to fixed_id(1); the multi-seat
+// run below is built in the same event shape.
 
 fn journal_script() -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/journal-facts.sh")
 }
 
-fn digest(s: &str) -> String {
-    swarmail_evals::provenance::sha256(s.as_bytes())
+fn smoke_export() -> String {
+    std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data/journal-export-smoke.ndjson"),
+    )
+    .unwrap()
 }
 
-fn tool_row(tool: &str, outcome: &str) -> Value {
-    json!({"tool": tool, "outcome": outcome, "argument_bytes": 61,
-           "argument_sha256": digest(tool), "result_bytes": 2048, "result_sha256": digest(outcome)})
-}
-
-fn full_usage() -> Value {
-    json!({
-        "input_tokens": 1200, "output_tokens": 300, "cached_tokens": 4000,
-        "turns": 7, "wall_time_ms": 18400, "deadline_killed": false,
-        "tool_calls": [
-            tool_row("mcp__swarmail__wait", "ok"),
-            tool_row("mcp__fixture__eval_http", "invalid_argument"),
-        ]
-    })
-}
-
-fn standin_export() -> Value {
-    let mut bad_tool = full_usage();
-    bad_tool["tool_calls"][1]["outcome"] = json!("exploded");
-    // An empty tool list is a real fact; a non-boolean kill flag is not one.
-    let mut empty_list = full_usage();
-    empty_list["tool_calls"] = json!([]);
-    empty_list["deadline_killed"] = json!("no");
-    // Tool rows the journal did not give: absent, never an empty list.
-    let mut null_rows = full_usage();
-    null_rows["tool_calls"] = Value::Null;
-    null_rows.as_object_mut().unwrap().remove("deadline_killed");
-    let seat = |trial: &str, usage: Value| json!({"seat": "trial", "result": "ran", "inputs": {"trial_id": trial}, "usage": usage});
-    json!({"runs": [
-        {"run_id": "run-a", "seats": [seat(&fixed_id(1), full_usage()), {"seat": "review", "result": "pass", "inputs": {}}]},
-        {"run_id": "run-b", "seats": [seat(&fixed_id(2), Value::Null)]},
-        {"run_id": "run-c", "seats": [seat(&fixed_id(3), json!({"turns": 1}))]},
-        {"run_id": "run-d", "seats": [seat(&fixed_id(3), json!({"turns": 2}))]},
-        {"run_id": "run-e", "seats": [seat(&fixed_id(5), bad_tool)]},
-        {"run_id": "run-f", "seats": [{"seat": "implement", "result": "complete", "inputs": {"trial_id": fixed_id(6)}}]},
-        {"run_id": "run-g", "seats": [seat(&fixed_id(7), empty_list)]},
-        {"run_id": "run-h", "seats": [seat(&fixed_id(8), null_rows)]}
-    ]})
+/// One run's events: interleaved effects, a retried trial attempt, a review
+/// seat with its own bill, ambiguous and unaccounted trials.
+fn multi_seat_export() -> String {
+    let mut seq = 0;
+    let mut lines = Vec::new();
+    let mut ev = |kind: &str, attempt: Option<&str>, payload: Value| {
+        seq += 1;
+        let mut e = json!({"type": kind, "run_id": "run-multi", "seq": seq, "payload": payload});
+        if let Some(a) = attempt {
+            e["attempt_id"] = json!(a);
+        }
+        lines.push(e.to_string());
+    };
+    let final_step = |i: u64, o: u64, c: u64| json!({"step": "claude-code-session-finished", "input_tokens": i, "output_tokens": o, "cache_read_tokens": c, "num_turns": 3, "exit_code": 0});
+    let cp = |effect: &str, attempt: &str, data: Value| {
+        (
+            effect.to_string(),
+            attempt.to_string(),
+            json!({"effect_id": effect, "attempt_id": attempt, "checkpoint": data}),
+        )
+    };
+    let req = |effect: &str, seat: &str| json!({"effect_id": effect, "seat": seat, "phase": seat});
+    let ok = |effect: &str, attempt: &str, trial: Option<String>| {
+        let inputs = trial.map_or(json!({}), |t| json!({"trial_id": t}));
+        json!({"effect_id": effect, "attempt_id": attempt, "result": {"result": "ran", "inputs": inputs}})
+    };
+    for (effect, seat) in [
+        ("t2", "trial"),
+        ("rv", "review"),
+        ("t3a", "trial"),
+        ("t3b", "trial"),
+        ("t4", "trial"),
+        ("t5", "trial"),
+        ("t6", "trial"),
+        ("t7", "trial"),
+        ("t8", "review"),
+    ] {
+        ev("effect/requested", None, req(effect, seat));
+    }
+    // Trial 2: attempt a1 fails after a big final; a2 succeeds. Review
+    // checkpoints interleave with a2's.
+    let script = [
+        cp("t2", "a1", final_step(9000, 9000, 1)),
+        cp(
+            "t2",
+            "a2",
+            json!({"step": "seat-turn", "input_tokens": 70, "output_tokens": 7}),
+        ),
+        cp("rv", "r1", final_step(5555, 555, 5)),
+        cp("t2", "a2", final_step(100, 10, 50)),
+        cp(
+            "t4",
+            "c1",
+            json!({"step": "exec-session-finished", "exit_code": 0}),
+        ),
+        cp("t5", "e1", final_step(40, 4, 0)),
+        cp("t5", "e1", final_step(40, 4, 0)),
+        cp("t6", "f1", final_step(40, 4, 0)),
+        cp("t6", "f1", final_step(41, 4, 0)),
+        cp(
+            "t7",
+            "g1",
+            json!({"step": "codex-session-finished", "input_tokens": 8, "output_tokens": 2, "num_turns": 1}),
+        ),
+    ];
+    for (_, attempt, payload) in script {
+        ev("effect/checkpointed", Some(&attempt), payload);
+    }
+    ev(
+        "effect/failed",
+        Some("a1"),
+        json!({"effect_id": "t2", "attempt_id": "a1", "error": "x"}),
+    );
+    for (effect, attempt, trial) in [
+        ("t2", "a2", 2),
+        ("rv", "r1", 2),
+        ("t3a", "b1", 3),
+        ("t3b", "b2", 3),
+        ("t4", "c1", 4),
+        ("t5", "e1", 5),
+        ("t6", "f1", 6),
+        ("t7", "g1", 7),
+        ("t8", "h1", 8),
+    ] {
+        ev(
+            "effect/succeeded",
+            Some(attempt),
+            ok(effect, attempt, Some(fixed_id(trial))),
+        );
+    }
+    lines.join("\n") + "\n"
 }
 
 fn run_facts(args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
@@ -660,28 +719,30 @@ fn run_facts(args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
 }
 
 /// A stand-in brokkr: `--version` prints `version` (and fails when it is
-/// empty); `export` prints the file at `export` or fails when that is `None`.
-fn fake_brokkr(
-    fx: &Fixture,
-    name: &str,
-    version: &str,
-    export: Option<&std::path::Path>,
-) -> PathBuf {
+/// empty); `export --db DB --run RUN --out DIR` copies `exports/RUN.ndjson`
+/// into DIR, or does `export` instead of copying when it is given.
+fn fake_brokkr(fx: &Fixture, name: &str, version: &str, export: Option<&str>) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = fx.dir.path().join(name);
+    let exports = fx.dir.path().join("exports");
     let version_line = if version.is_empty() {
         "exit 1".to_string()
     } else {
         format!("echo 'brokkr {version}'; exit 0")
     };
-    let export_line = match export {
-        Some(file) => format!("[ \"$1\" = export ] && exec cat {}", file.display()),
-        None => "[ \"$1\" = export ] && exit 7".to_string(),
-    };
+    let export_line = export.map_or_else(
+        || {
+            format!(
+                "cp \"{}/$5.ndjson\" \"$7/$5.ndjson\"; exit $?",
+                exports.display()
+            )
+        },
+        str::to_string,
+    );
     std::fs::write(
         &path,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = --version ]; then {version_line}; fi\n{export_line}\nexit 9\n"
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then {version_line}; fi\nif [ \"$1\" = export ] && [ \"$2\" = --db ] && [ \"$4\" = --run ] && [ \"$6\" = --out ] && [ \"$#\" = 7 ]; then {export_line}; fi\nexit 64\n"
         ),
     )
     .unwrap();
@@ -689,40 +750,42 @@ fn fake_brokkr(
     path
 }
 
+fn saved_exports(fx: &Fixture) -> PathBuf {
+    let dir = fx.dir.path().join("exports");
+    if !dir.exists() {
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("smoke-4a42634a.ndjson"), smoke_export()).unwrap();
+        std::fs::write(dir.join("run-multi.ndjson"), multi_seat_export()).unwrap();
+    }
+    dir
+}
+
 #[test]
-fn journal_facts_script_output_reads_as_facts_v1() {
+fn journal_facts_script_reads_the_real_export_shape() {
     use swarmail_evals::journal;
     let fx = fixture();
-    let export = fx.dir.path().join("export.json");
-    std::fs::write(&export, standin_export().to_string()).unwrap();
-    let fake = fake_brokkr(&fx, "brokkr", "0.12.0", Some(&export));
+    let saved = saved_exports(&fx);
+    let fake = fake_brokkr(&fx, "brokkr", "0.15.2", None);
     let db = fx.dir.path().join("forge.db");
     std::fs::write(&db, b"not a real database; the stand-in ignores it").unwrap();
-    let ids: Vec<String> = (1..=8).map(fixed_id).collect();
-    let id_args: Vec<&str> = ids.iter().map(String::as_str).collect();
-    let facts_names = [
-        "tokens",
-        "turns",
-        "wall_time_ms",
-        "deadline_killed",
-        "tool_calls",
-    ];
-
-    for saved in [false, true] {
+    let ids: Vec<String> = (1..=9).map(fixed_id).collect();
+    let none = json!({"status": "unavailable", "reason": "journal_has_no_accounting"});
+    for live in [true, false] {
         let out_path = fx
             .dir
             .path()
-            .join(if saved { "saved.json" } else { "live.json" });
+            .join(if live { "live.json" } else { "saved.json" });
         let mut args = vec![
             fake.to_str().unwrap(),
             db.to_str().unwrap(),
             out_path.to_str().unwrap(),
         ];
-        args.extend(&id_args);
-        let env: Vec<(&str, &str)> = if saved {
-            vec![("JOURNAL_EXPORT_FILE", export.to_str().unwrap())]
-        } else {
+        args.extend(["--run", "smoke-4a42634a", "--run", "run-multi"]);
+        args.extend(ids.iter().map(String::as_str));
+        let env = if live {
             vec![]
+        } else {
+            vec![("JOURNAL_EXPORT_DIR", saved.to_str().unwrap())]
         };
         let out = run_facts(&args, &env);
         assert!(
@@ -731,243 +794,277 @@ fn journal_facts_script_output_reads_as_facts_v1() {
             String::from_utf8_lossy(&out.stderr)
         );
         let facts = journal::read(&std::fs::read(&out_path).unwrap()).expect("reads as facts v1");
-        assert_eq!(facts.source.brokkr_version, "0.12.0");
+        assert_eq!(facts.source.brokkr_version, "0.15.2");
         assert_eq!(
             facts.source.binary_sha256,
             swarmail_evals::provenance::sha256(&std::fs::read(&fake).unwrap())
         );
-        assert!(facts.source.query.starts_with(if saved {
-            "saved export sha256:"
+        assert!(facts.source.query.starts_with(if live {
+            "brokkr export --db forge.db --run smoke-4a42634a run-multi"
         } else {
-            "brokkr export"
+            "saved export smoke-4a42634a sha256:"
         }));
         let value: Value = serde_json::from_slice(&std::fs::read(&out_path).unwrap()).unwrap();
         let trials = value["trials"].as_array().unwrap();
-        let by_id = |n: u32| trials.iter().find(|t| t["trial_id"] == fixed_id(n));
-        // Six of eight ids are carried; 4 is in no run and 6 only in a seat
-        // that is not the trial seat.
-        assert_eq!(trials.len(), 6);
-        assert!(
-            by_id(4).is_none(),
-            "an absent trial is omitted, not invented"
-        );
-        assert!(by_id(6).is_none(), "only the trial seat is read");
-        let first = by_id(1).unwrap();
-        assert_eq!(first["run_id"], "run-a");
+        let by_id = |n: u32| {
+            trials
+                .iter()
+                .find(|t| t["trial_id"] == fixed_id(n))
+                .cloned()
+        };
+        // 8 is owned by a review seat and 9 by no run: absent, not invented.
+        assert_eq!(trials.len(), 7);
+        assert!(by_id(8).is_none() && by_id(9).is_none());
+        // The real smoke: the trial seat's session-final checkpoint.
+        let smoke = by_id(1).unwrap();
+        assert_eq!(smoke["run_id"], "smoke-4a42634a");
         assert_eq!(
-            first["tokens"],
-            json!({"status": "present", "value": {"input": 1200, "output": 300, "cached": 4000}})
+            smoke["tokens"],
+            json!({"status": "present", "value": {"input": 34366, "output": 202, "cached": 34362}})
         );
-        assert_eq!(first["turns"], json!({"status": "present", "value": 7}));
+        assert_eq!(smoke["turns"], json!({"status": "present", "value": 2}));
         assert_eq!(
-            first["deadline_killed"],
+            smoke["deadline_killed"],
             json!({"status": "present", "value": false})
         );
-        assert_eq!(first["tool_calls"]["status"], "present");
-        assert_eq!(first["tool_calls"]["value"].as_array().unwrap().len(), 2);
-        assert_eq!(first["tool_calls"]["value"][1]["ordinal"], 2);
         assert_eq!(
-            first["tool_calls"]["value"][1]["outcome"],
-            "invalid_argument"
+            (&smoke["wall_time_ms"], &smoke["tool_calls"]),
+            (&none, &none)
         );
-        let none = json!({"status": "unavailable", "reason": "journal_has_no_accounting"});
-        for fact in facts_names {
-            assert_eq!(by_id(2).unwrap()[fact], none, "a run with no usage: {fact}");
-        }
-        // Each fact is typed on its own: an unrecognised tool row loses the
-        // tool rows and nothing else.
-        let bad = by_id(5).unwrap();
-        assert_eq!(bad["tool_calls"], none);
-        assert_eq!(bad["tokens"]["status"], "present");
+        // Only the owning attempt counts: not the failed retry, the per-turn
+        // row, nor the interleaved review seat's bill.
+        let retried = by_id(2).unwrap();
+        assert_eq!(retried["run_id"], "run-multi");
         assert_eq!(
-            bad["deadline_killed"],
-            json!({"status": "present", "value": false})
+            retried["tokens"]["value"],
+            json!({"input": 100, "output": 10, "cached": 50})
         );
-        // A present empty list is "zero calls"; a non-boolean flag is absence.
-        let empty = by_id(7).unwrap();
-        assert_eq!(
-            empty["tool_calls"],
-            json!({"status": "present", "value": []})
-        );
-        assert_eq!(empty["deadline_killed"], none);
-        assert_eq!(empty["tokens"]["status"], "present");
-        // Absent and null tool rows are unavailable, never an empty list.
-        let null_rows = by_id(8).unwrap();
-        assert_eq!(null_rows["tool_calls"], none);
-        assert_eq!(null_rows["deadline_killed"], none);
-        assert_eq!(null_rows["turns"]["status"], "present");
-        let ambiguous = by_id(3).unwrap();
-        for fact in facts_names {
+        for fact in [
+            "tokens",
+            "turns",
+            "wall_time_ms",
+            "deadline_killed",
+            "tool_calls",
+        ] {
             assert_eq!(
-                ambiguous[fact],
+                by_id(3).unwrap()[fact],
                 json!({"status": "unavailable", "reason": "journal_ambiguous"}),
                 "{fact}"
             );
         }
-
-        // Joined to rows, the absent trials are journal_missing and the
-        // ambiguous one is typed, never a number.
-        let rows: Vec<_> = (1..=8)
-            .map(|n| {
-                synthetic_row(
-                    "signup",
-                    "agent",
-                    true,
-                    swarmail_evals::tasks::Outcome::Pass,
-                    10,
-                    &fixed_id(n),
-                )
-            })
-            .collect();
-        let summary = journal::join(&rows, &facts).unwrap();
-        let group: Vec<_> = rows.iter().collect();
-        let out = journal::summarize(&group, &summary);
-        assert_eq!(out["joined"], 4, "trials 1, 5, 7 and 8 have tokens");
+        // The nested drop: the outer exec seat carries no counts.
+        let dropped = by_id(4).unwrap();
+        assert_eq!((&dropped["tokens"], &dropped["turns"]), (&none, &none));
+        // A repeated identical final counts once; a differing one is ambiguous.
         assert_eq!(
-            out["missing"],
-            json!({"journal_ambiguous": 1, "journal_has_no_accounting": 1, "journal_missing": 2})
+            by_id(5).unwrap()["tokens"]["value"],
+            json!({"input": 40, "output": 4, "cached": 0})
         );
-        assert_eq!(out["tokens_per_success"], Value::Null);
-        assert_eq!(out["tokens_per_success_reason"], "incomplete_join");
-        assert_eq!(out["tool_calls"], Value::Null);
-        assert_eq!(out["tool_calls_reason"], "incomplete_join");
-        assert_eq!(out["deadline_killed"], Value::Null);
+        assert_eq!(
+            by_id(6).unwrap()["tokens"],
+            json!({"status": "unavailable", "reason": "journal_ambiguous"})
+        );
+        assert_eq!(by_id(6).unwrap()["turns"]["value"], 3);
+        // A final without the cache read cannot fill the v1 token triple.
+        assert_eq!(by_id(7).unwrap()["tokens"], none);
+        assert_eq!(by_id(7).unwrap()["turns"]["value"], 1);
     }
 }
 
 #[test]
 fn journal_facts_script_refuses_without_writing_a_file() {
     let fx = fixture();
-    let export = fx.dir.path().join("export.json");
-    std::fs::write(&export, standin_export().to_string()).unwrap();
-    let fake = fake_brokkr(&fx, "brokkr", "0.12.0", Some(&export));
-    let out_path = fx.dir.path().join("out.json");
+    let saved = saved_exports(&fx);
+    let fake = fake_brokkr(&fx, "brokkr", "0.15.2", None);
     let fake_s = fake.to_str().unwrap();
+    let out_path = fx.dir.path().join("out.json");
     let out_s = out_path.to_str().unwrap();
     let id = fixed_id(1);
-    let saved = [("JOURNAL_EXPORT_FILE", export.to_str().unwrap())];
-    let not_json = fx.dir.path().join("garbage.json");
-    std::fs::write(&not_json, "not json at all").unwrap();
-    let garbage = [("JOURNAL_EXPORT_FILE", not_json.to_str().unwrap())];
-    // Documents that are JSON but not the shape the script reads.
-    let mut shapes = Vec::new();
-    for (name, body) in [
-        ("runs-is-a-string.json", r#"{"runs": "nope"}"#),
-        ("unrelated.json", r#"{"unrelated": 1}"#),
-        (
-            "seat-without-name.json",
-            r#"{"runs": [{"run_id": "r", "seats": [{}]}]}"#,
-        ),
-        ("run-without-id.json", r#"{"runs": [{"seats": []}]}"#),
-        ("empty.json", ""),
-    ] {
-        let path = fx.dir.path().join(name);
-        std::fs::write(&path, body).unwrap();
-        shapes.push((name, path));
-    }
-    let versionless = fake_brokkr(&fx, "brokkr-no-version", "", Some(&export));
-    let failing_export = fake_brokkr(&fx, "brokkr-export-fails", "0.12.0", None);
     let db = fx.dir.path().join("forge.db");
     std::fs::write(&db, b"db").unwrap();
     let db_s = db.to_str().unwrap();
-    type Case<'a> = (
-        String,
-        Vec<&'a str>,
-        Vec<(&'a str, &'a str)>,
-        Option<&'a str>,
-    );
-    let mut cases: Vec<Case> = vec![
+    let bad_dir = fx.dir.path().join("bad");
+    std::fs::create_dir(&bad_dir).unwrap();
+    for (name, body) in [
+        ("not-json", "not json at all\n"),
+        ("empty", ""),
+        ("untyped", "{\"payload\": {}}\n"),
         (
-            "relative brokkr".into(),
-            vec!["brokkr", "/db", out_s, id.as_str()],
-            saved.to_vec(),
+            "no-seat",
+            "{\"type\": \"effect/requested\", \"payload\": {\"effect_id\": \"e\"}}\n",
+        ),
+        (
+            "no-attempt",
+            "{\"type\": \"effect/checkpointed\", \"payload\": {\"effect_id\": \"e\", \"checkpoint\": {}}}\n",
+        ),
+        (
+            "no-payload",
+            "{\"type\": \"effect/succeeded\", \"attempt_id\": \"a\"}\n",
+        ),
+    ] {
+        std::fs::write(bad_dir.join(format!("{name}.ndjson")), body).unwrap();
+    }
+    let bad = bad_dir.to_str().unwrap();
+    let good = saved.to_str().unwrap();
+    let versionless = fake_brokkr(&fx, "brokkr-no-version", "", None);
+    let failing = fake_brokkr(&fx, "brokkr-export-fails", "0.15.2", Some("exit 7"));
+    let silent = fake_brokkr(&fx, "brokkr-export-silent", "0.15.2", Some("exit 0"));
+    let run = |run: &'static str| ["--run", run];
+    type Case<'a> = (&'a str, Vec<&'a str>, Option<&'a str>, &'a str);
+    let cases: Vec<Case> = vec![
+        (
+            "relative brokkr",
+            [
+                vec!["brokkr", db_s, out_s],
+                run("run-multi").to_vec(),
+                vec![&id],
+            ]
+            .concat(),
+            Some(good),
+            "absolute",
+        ),
+        (
+            "relative output",
+            [
+                vec![fake_s, db_s, "out.json"],
+                run("run-multi").to_vec(),
+                vec![&id],
+            ]
+            .concat(),
+            Some(good),
+            "absolute",
+        ),
+        (
+            "no run",
+            vec![fake_s, db_s, out_s, &id, &id, &id],
+            Some(good),
+            "--run",
+        ),
+        (
+            "no trial ids",
+            [
+                vec![fake_s, db_s, out_s],
+                run("run-multi").to_vec(),
+                run("smoke-4a42634a").to_vec(),
+            ]
+            .concat(),
+            Some(good),
+            "TRIAL_ID",
+        ),
+        (
+            "path-like id",
+            [
+                vec![fake_s, db_s, out_s],
+                run("run-multi").to_vec(),
+                vec!["../x"],
+            ]
+            .concat(),
+            Some(good),
+            "plain",
+        ),
+        (
+            "path-like run",
+            [vec![fake_s, db_s, out_s], run("../run").to_vec(), vec![&id]].concat(),
+            Some(good),
+            "plain",
+        ),
+        (
+            "missing saved run",
+            [vec![fake_s, db_s, out_s], run("absent").to_vec(), vec![&id]].concat(),
+            Some(good),
+            "export_failed",
+        ),
+        (
+            "export fails",
+            [
+                vec![failing.to_str().unwrap(), db_s, out_s],
+                run("run-multi").to_vec(),
+                vec![&id],
+            ]
+            .concat(),
             None,
+            "export_failed",
         ),
         (
-            "relative output".into(),
-            vec![fake_s, "/db", "out.json", id.as_str()],
-            saved.to_vec(),
+            "export writes nothing",
+            [
+                vec![silent.to_str().unwrap(), db_s, out_s],
+                run("run-multi").to_vec(),
+                vec![&id],
+            ]
+            .concat(),
             None,
+            "export_failed",
         ),
         (
-            "no trial ids".into(),
-            vec![fake_s, "/db", out_s],
-            saved.to_vec(),
-            None,
+            "no version",
+            [
+                vec![versionless.to_str().unwrap(), db_s, out_s],
+                run("run-multi").to_vec(),
+                vec![&id],
+            ]
+            .concat(),
+            Some(good),
+            "export_version_unreadable",
         ),
         (
-            "path-like id".into(),
-            vec![fake_s, "/db", out_s, "../x"],
-            saved.to_vec(),
-            None,
-        ),
-        (
-            "export is not JSON".into(),
-            vec![fake_s, "/db", out_s, id.as_str()],
-            garbage.to_vec(),
-            Some("export_not_json"),
-        ),
-        (
-            "no database for a live export".into(),
-            vec![fake_s, "/nonexistent.db", out_s, id.as_str()],
-            vec![],
-            None,
-        ),
-        (
-            "brokkr export fails".into(),
-            vec![failing_export.to_str().unwrap(), db_s, out_s, id.as_str()],
-            vec![],
-            Some("export_failed"),
-        ),
-        (
-            "the version is unreadable".into(),
-            vec![versionless.to_str().unwrap(), db_s, out_s, id.as_str()],
-            saved.to_vec(),
-            Some("export_version_unreadable"),
+            "not json",
+            [
+                vec![fake_s, db_s, out_s],
+                run("not-json").to_vec(),
+                vec![&id],
+            ]
+            .concat(),
+            Some(bad),
+            "export_not_json",
         ),
     ];
-    for (name, path) in &shapes {
+    let mut cases = cases;
+    for name in ["empty", "untyped", "no-seat", "no-attempt", "no-payload"] {
         cases.push((
-            format!("shape mismatch: {name}"),
-            vec![fake_s, "/db", out_s, id.as_str()],
-            vec![("JOURNAL_EXPORT_FILE", path.to_str().unwrap())],
-            Some("export_shape_mismatch"),
+            name,
+            [vec![fake_s, db_s, out_s], run(name).to_vec(), vec![&id]].concat(),
+            Some(bad),
+            "export_shape_mismatch",
         ));
     }
-    for (label, args, env, class) in &cases {
-        let out = run_facts(args, env);
-        let err = String::from_utf8_lossy(&out.stderr).into_owned();
-        assert_eq!(out.status.code(), Some(2), "{label}: {err}");
-        if let Some(class) = class {
-            assert!(err.contains(class), "{label}: wanted {class} in {err}");
-        }
-        assert!(!out_path.exists(), "{label}: no output file");
+    for (label, args, dir, want) in cases {
+        let env: Vec<(&str, &str)> = dir
+            .map(|d| vec![("JOURNAL_EXPORT_DIR", d)])
+            .unwrap_or_default();
+        let out = run_facts(&args, &env);
+        assert_eq!(out.status.code(), Some(2), "{label}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(want), "{label}: {err}");
+        assert!(!out_path.exists(), "{label}: wrote a file");
     }
-    // An existing output is never overwritten.
-    std::fs::write(&out_path, "precious").unwrap();
-    let out = run_facts(&[fake_s, "/db", out_s, id.as_str()], &saved);
+    // An existing OUT is never overwritten.
+    std::fs::write(&out_path, b"keep").unwrap();
+    let out = run_facts(
+        &[fake_s, db_s, out_s, "--run", "run-multi", &id],
+        &[("JOURNAL_EXPORT_DIR", good)],
+    );
     assert_eq!(out.status.code(), Some(2));
-    assert_eq!(std::fs::read_to_string(&out_path).unwrap(), "precious");
+    assert_eq!(std::fs::read(&out_path).unwrap(), b"keep");
 }
 
 #[test]
 fn a_matching_export_with_no_run_for_a_trial_yields_journal_missing_by_absence() {
     use swarmail_evals::journal;
     let fx = fixture();
-    let export = fx.dir.path().join("empty-runs.json");
-    std::fs::write(&export, r#"{"runs": []}"#).unwrap();
-    let fake = fake_brokkr(&fx, "brokkr", "0.12.0", Some(&export));
+    let saved = saved_exports(&fx);
+    let fake = fake_brokkr(&fx, "brokkr", "0.15.2", None);
     let out_path = fx.dir.path().join("out.json");
-    let id = fixed_id(1);
-    let out = run_facts(
-        &[
-            fake.to_str().unwrap(),
-            "/db",
-            out_path.to_str().unwrap(),
-            id.as_str(),
-        ],
-        &[("JOURNAL_EXPORT_FILE", export.to_str().unwrap())],
-    );
+    let id = fixed_id(42);
+    let args = [
+        fake.to_str().unwrap(),
+        "/db",
+        out_path.to_str().unwrap(),
+        "--run",
+        "run-multi",
+        id.as_str(),
+    ];
+    let out = run_facts(&args, &[("JOURNAL_EXPORT_DIR", saved.to_str().unwrap())]);
     assert!(
         out.status.success(),
         "{}",
