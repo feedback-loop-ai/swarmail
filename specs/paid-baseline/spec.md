@@ -4,7 +4,7 @@ Part of #393, epic #164. The November baseline needed a private driver to gate p
 
 Decision: 0137
 
-[Proposed paid baseline contract](../../docs/decisions/0137-paid-baseline.md)
+[Paid baseline contract (accepted with an amendment, 2026-11-23)](../../docs/decisions/0137-paid-baseline.md)
 
 ## Acceptance Criteria
 
