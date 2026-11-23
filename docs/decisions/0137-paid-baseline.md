@@ -30,4 +30,4 @@ The earlier versions (Claude 2.1.310, Codex 0.164.0, dsh 0.1.5-rc.1) leave the a
 
 **Why.** The reference cohort of [0136](0136-paid-token-reference.md) needs all three families on the CLIs actually installed. Refusing dsh would drop the GLM family, and with it the epic's per-family measure.
 
-**What follows.** A follow-up delivery (#406) adds the three reviewed profiles and the interpreted-pin verification. Until it lands, paid baseline refuses every installed CLI, as this decision already requires.
+**What follows.** A follow-up delivery (#404, scope item 4) adds the three reviewed profiles and the interpreted-pin verification. Until it lands, paid baseline refuses every installed CLI, as this decision already requires.
