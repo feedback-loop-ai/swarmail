@@ -6732,6 +6732,7 @@ mod privacy_tests {
                 None,
                 None,
             ),
+            nested_usage: None,
         };
         let spec = AgentSpec {
             label: "oracle".into(),

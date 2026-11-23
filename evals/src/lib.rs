@@ -57,4 +57,5 @@ pub mod baseline;
 pub mod fixture_http;
 pub mod journal;
 pub mod toolvalues;
+pub mod usage;
 pub mod wrappers;

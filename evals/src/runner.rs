@@ -310,12 +310,30 @@ pub struct TrialResult {
     pub agent_exits: Vec<AgentExit>,
     pub confinement: String,
     pub provenance: crate::provenance::Provenance,
+    /// The nested brokkr driver's session usage (route (b) of decision
+    /// 0119's 2026-11-23 addendum): harness-authored, present only on a row
+    /// whose agent ran through the driver. Absent on every other row, so a
+    /// legacy row reads unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested_usage: Option<crate::usage::NestedUsage>,
 }
 
 impl TrialResult {
     /// Whether the row obeys its own schema's invariants.
     pub fn validate(&self) -> Result<(), String> {
         self.provenance.validate()?;
+        if let Some(usage) = &self.nested_usage {
+            usage.validate(&self.trial_id)?;
+            let nested = match &self.provenance.agent.tool_surface {
+                crate::provenance::ToolSurface::Wrapper { profile, .. } => {
+                    profile.via_brokkr() && profile.family() == usage.family
+                }
+                _ => false,
+            };
+            if !nested {
+                return Err("usage_without_nested_driver".into());
+            }
+        }
         use crate::provenance::{AgentKind, Availability, Reason, Source};
         match self.provenance.agent.kind {
             AgentKind::Invalid => {
@@ -2341,6 +2359,7 @@ pub fn refused_row(req: &TrialRequest, trial_id: &str) -> TrialResult {
         agent_exits: Vec::new(),
         confinement: CONFINEMENT.to_string(),
         provenance: make_provenance(req, req.target_build.as_ref(), None),
+        nested_usage: None,
     }
 }
 
@@ -3559,6 +3578,7 @@ async fn execute_trial(
                 agent_exits,
                 confinement: CONFINEMENT.to_string(),
                 provenance: make_provenance(req, req.target_build.as_ref(), None),
+                nested_usage: None,
             },
             None,
         );
@@ -3679,6 +3699,7 @@ async fn execute_trial(
         agent_exits: exits,
         confinement: CONFINEMENT.to_string(),
         provenance: make_provenance(req, req.target_build.as_ref(), snap.as_ref()),
+        nested_usage: None,
     };
     if row.outcome == Outcome::HarnessError {
         for d in &diagnostics {
