@@ -160,12 +160,11 @@ fn executable_driver(base: &Path, name: &str, record: &Path) -> PathBuf {
 }
 
 #[test]
-fn via_brokkr_refuses_before_any_private_read() {
-    // The driver's invocation form has never been observed (F2), so a valid,
-    // executable driver is still refused: before the EVAL inputs, the
-    // selection file and the credential file are read, and before anything is
-    // spawned. The selection here is an unreadable sentinel that the direct
-    // launch would refuse differently, so the category proves the order.
+fn via_brokkr_without_a_driver_pin_refuses_before_any_spawn_or_private_write() {
+    // Route (b) launches only a driver the selection pins: a version-1
+    // selection has no `nested` member, so a valid, executable driver is
+    // refused `driver_pin_missing` after the selection is read and before
+    // any credential is projected or anything is spawned.
     for (family, model) in [
         ("claude", "claude-sonnet-5-5"),
         ("codex", "gpt-6-luna"),
@@ -174,14 +173,6 @@ fn via_brokkr_refuses_before_any_private_read() {
         let c = Case::new(family);
         let record = c.root.path().join("driver-record");
         let driver = executable_driver(c.root.path(), "driver-ok", &record);
-        std::fs::set_permissions(&c.manifest, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let direct = c.command(family, model).output().unwrap();
-        assert_eq!(direct.status.code(), Some(2), "{family}");
-        let direct_err = String::from_utf8_lossy(&direct.stderr).into_owned();
-        assert!(
-            direct_err.contains("private_path_unavailable"),
-            "{family}: the sentinel is a refusing selection: {direct_err}"
-        );
         let out = c
             .command(family, model)
             .arg("--via-brokkr")
@@ -190,8 +181,8 @@ fn via_brokkr_refuses_before_any_private_read() {
             .unwrap();
         assert_eq!(out.status.code(), Some(2), "{family}");
         let err = String::from_utf8_lossy(&out.stderr).into_owned();
-        assert!(err.contains("driver_contract_unknown"), "{family}: {err}");
-        assert!(!err.contains("private_path_unavailable"), "{family}: {err}");
+        assert!(err.contains("driver_pin_missing"), "{family}: {err}");
+        assert!(!err.contains(CANARY));
         assert!(!record.exists(), "{family}: nothing was spawned");
         assert!(!c.capture.exists(), "{family}: no CLI was launched");
         assert!(
