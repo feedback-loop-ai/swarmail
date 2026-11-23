@@ -801,6 +801,8 @@ const VERIFY_SHIMS: &[&str] = &[
     "scripts/seal-branch-test.sh",
 ];
 
+const VERIFY_FIXTURE_RECIPES: &[&str] = &["self", "sentinel", "sol-opus"];
+
 struct VerifySeatFixture {
     _root: tempfile::TempDir,
     candidate: std::path::PathBuf,
@@ -847,9 +849,9 @@ impl VerifySeatFixture {
         let result = result_dir.join("seat result.json");
 
         std::fs::create_dir_all(&candidate).unwrap();
-        // A candidate shelf of the repository's anchor recipe and a sentinel
-        // no gate was taught: the seat must compile both (#148).
-        for name in ["self", "sentinel"] {
+        // The anchor and default recipes surround a sentinel the gate was
+        // never taught. The seat must compile all three (#148).
+        for name in VERIFY_FIXTURE_RECIPES {
             let recipe = candidate.join(".brokkr/recipes").join(name);
             std::fs::create_dir_all(&recipe).unwrap();
             std::fs::write(recipe.join("bundle.json"), "{}\n").unwrap();
@@ -1129,6 +1131,7 @@ fi
             "cargo:test --locked",
             "brokkr",
             "brokkr",
+            "brokkr",
             "coverage-gate.sh",
         ]
     );
@@ -1165,7 +1168,8 @@ fi
         argv.lines().collect::<Vec<_>>(),
         [
             "compile --bundle .brokkr/recipes/self",
-            "compile --bundle .brokkr/recipes/sentinel"
+            "compile --bundle .brokkr/recipes/sentinel",
+            "compile --bundle .brokkr/recipes/sol-opus",
         ],
         "every recipe directory is compiled, in glob order"
     );
@@ -1186,7 +1190,7 @@ fi
 /// arm reaches `fail` and leaves the coverage gate, the next gate, unrun.
 #[test]
 fn verify_seat_compiles_every_recipe_and_refuses_the_first_problem_by_name() {
-    // A sweep warning on the *first* recipe while the second compiles clean:
+    // A sweep warning on the *first* recipe, with clean recipes after it:
     // the check sits inside the loop, not after it.
     let fixture = VerifySeatFixture::new();
     let output = fixture
@@ -1230,6 +1234,15 @@ fn verify_seat_compiles_every_recipe_and_refuses_the_first_problem_by_name() {
         "{notes}"
     );
     assert!(notes.contains("fixture compile failure"), "{notes}");
+    let argv = std::fs::read_to_string(&fixture.argv_marker).unwrap();
+    assert_eq!(
+        argv.lines().collect::<Vec<_>>(),
+        [
+            "compile --bundle .brokkr/recipes/self",
+            "compile --bundle .brokkr/recipes/sentinel",
+        ],
+        "the sentinel failure stops the sweep before the default recipe"
+    );
     let order = std::fs::read_to_string(&fixture.gate_order).unwrap();
     assert!(!order.contains("coverage-gate.sh"), "{order}");
 
@@ -1264,7 +1277,7 @@ fn verify_seat_compiles_every_recipe_and_refuses_the_first_problem_by_name() {
 
     // An empty shelf compiles nothing, so it can never pass.
     let fixture = VerifySeatFixture::new();
-    for name in ["self", "sentinel"] {
+    for name in VERIFY_FIXTURE_RECIPES {
         std::fs::remove_dir_all(fixture.candidate.join(".brokkr/recipes").join(name)).unwrap();
     }
     let output = fixture.base_command().output().unwrap();

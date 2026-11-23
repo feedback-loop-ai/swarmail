@@ -127,34 +127,41 @@ and security hold are careful's. No Codex model appears anywhere in its
 composed route, and every chain is a single model:
 
 ```text
-+---------------------+------------------------------------------+
-| Seat                | claude-careful                           |
-+---------------------+------------------------------------------+
-| Intake              | Haiku 5.5 / high (workspace hands)       |
-| Design: simplicity  | Opus 5.5 / high (workspace hands)        |
-| Design: robustness  | Official Flash / high (dsh, no hands)    |
-| Design: chief       | Fable 5.2 / high (workspace hands)       |
-| Design: check       | Offline exec gate (self's validator)     |
-| Implement           | Sonnet 5.5 / high, 14400 s, 3 attempts   |
-| Verify              | Pinned offline gates                     |
-| Review: correctness | Fable 5.2 / high                         |
-| Review: security    | Official Flash / high                    |
-| Review: guarantees  | Official Flash / high                    |
-| Review: tests       | GLM Flash / N/A                          |
-| Review: independent | Opus 5.5 / high                          |
-| Review: deadline    | 14400 s, 3 attempts                      |
-| Ship                | Pinned exec gate                         |
-+---------------------+------------------------------------------+
++---------------------+----------------------------------------+---------------------------------------+
+| Seat                | claude-careful                         | sol-opus                              |
++---------------------+----------------------------------------+---------------------------------------+
+| Intake              | Haiku 5.5 / high (workspace hands)     | Haiku 5.5 / high (workspace hands)    |
+| Design: simplicity  | Opus 5.5 / medium (workspace hands)    | Opus 5.5 / medium (workspace hands)   |
+| Design: robustness  | Official Flash / high (dsh, no hands)  | Official Flash / high (dsh, no hands) |
+| Design: chief       | Fable 5.2 / medium (workspace hands)   | Fable 5.2 / medium (workspace hands)  |
+| Design: check       | Offline exec gate (self's validator)   | Offline exec gate (inherited)         |
+| Implement           | Sonnet 5.5 / high, 14400 s, 3 attempts | Sol 6.2 / high, 14400 s, 3 attempts   |
+| Verify              | Pinned offline gates                   | Pinned offline gates                  |
+| Review: correctness | Fable 5.2 / medium                     | Opus 5.5 / high                       |
+| Review: security    | Official Flash / high                  | Opus 5.5 / high                       |
+| Review: guarantees  | Official Flash / high                  | Opus 5.5 / high                       |
+| Review: tests       | GLM Flash / N/A                        | Opus 5.5 / high                       |
+| Review: independent | Opus 5.5 / medium                      | Opus 5.5 / medium                     |
+| Review: deadline    | 14400 s, 3 attempts                    | 14400 s, 3 attempts                   |
+| Ship                | Pinned exec gate                       | Pinned exec gate                      |
++---------------------+----------------------------------------+---------------------------------------+
 ```
 
-The engine has no agent-only override of a sequence, so this recipe
+The engine has no agent-only override of a sequence, so `claude-careful`
 redefines the whole design seat. Its `./scripts/design-check.sh` then
 resolves against `.brokkr/recipes/claude-careful/`, the only root its exec box
 binds, so that directory carries byte-identical copies of `self`'s
 validator and its two speckit helpers; `tests/delivery_recipes.rs` refuses
 any drift. The dsh robustness position has no hands (dsh declares none);
 it writes its run-local position file through its own tools, under its
-charter. GLM serves only the tests member, so each run uses one Spark seat.
+charter. GLM serves only the tests member, so each `claude-careful` run uses
+one Spark seat.
+
+Accepted [0138](../../docs/decisions/0138-sol-opus-recipe.md) adds `sol-opus`.
+It extends `claude-careful` and replaces the implementation and review seats.
+The five reviewers have separate gate-class verdicts and single-model chains.
+The security office owns the hold. The inherited design check resolves from
+`claude-careful`, which supplies its validator and helpers.
 
 Codex work offices inherit the original intake, design and implementation
 charters. Their declared workspace hands put writes through the engine's
@@ -168,7 +175,7 @@ These recipes stand on the shelf of the repository's one brokkr folder,
 `.brokkr/recipes/<name>/` (decision 0100, brokkr's 0083), beside the
 `.brokkr/agents/`, `.brokkr/adapters/` and `.brokkr/dialects/` they resolve
 against. A recipe's `extends` names another recipe on the same shelf. The
-folder's own `.brokkr/bundle.json` extends `claude-careful`, so a plain
+folder's own `.brokkr/bundle.json` extends `sol-opus`, so a plain
 `brokkr run` with no `--recipe` delivers on that lane.
 
 Use the recorded brokkr build from `self/tooling.json`, with the required

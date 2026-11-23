@@ -17,6 +17,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 SAFE = dict(fixes_applied=False, spec_defect=False,
             has_security_residual=False, max_residual_severity="none")
+SOL_OPUS_ROLES = ('correctness', 'security', 'tests', 'guarantees', 'independent')
 DRIVER = r'''
 import json,sys,pathlib,uuid,subprocess
 model=sys.argv[-1]
@@ -106,6 +107,8 @@ def resolved_matrix(engine, out):
     expected['claude-careful']['review:correctness'] = ('claude', ['fable'])
     expected['claude-careful']['review:independent'] = ('claude', ['opus'])
     expected['claude-careful']['intake'] = ('claude', ['haiku55'])
+    expected['sol-opus'] = {'review:' + role: ('claude', ['opus']) for role in SOL_OPUS_ROLES}
+    expected['sol-opus'].update(intake=('claude', ['haiku55']), implement=('codex', ['sol']))
     expected['codex']['intake'] = ('codex', ['sol'])
     expected['codex-careful']['intake'] = ('codex', ['sol'])
     expected['mixed-opus-terra']['intake'] = ('codex', ['terra61'])
@@ -123,7 +126,7 @@ def resolved_matrix(engine, out):
         agents = manifest['agents']
         actual = {k: (v['provider'], v['chain']) for k, v in agents.items()
                   if k.startswith('review') or k in ['intake', 'triage']
-                  or (recipe == 'self' and k == 'implement')}
+                  or (recipe in ['self', 'sol-opus'] and k == 'implement')}
         assert actual == expected[recipe], (recipe, actual)
         for key, agent in agents.items():
             if recipe != 'self' and key.startswith('implement'):
@@ -131,7 +134,7 @@ def resolved_matrix(engine, out):
                         'mixed-opus-terra': ('claude', ['opus']),
                         'claude-careful': ('claude', ['sonnet'])}.get(recipe, ('codex', ['sol']))
                 assert (agent['provider'], agent['chain']) == work, (recipe, key, agent)
-        if recipe != 'self':
+        if recipe not in ['self', 'sol-opus']:
             keys = (['review:design:tests', 'review:engine:tests']
                     if recipe == 'codex-fast' else ['review:tests'])
             result = call([engine, 'agents', 'show', 'codex-review-tests'], ROOT,
@@ -228,6 +231,8 @@ def resolved_matrix(engine, out):
                 model, effort = ('terra61', 'high') if key == 'intake' else ('opus', 'medium')
             if recipe == 'claude-careful':
                 model, effort = ('haiku55' if key == 'intake' else 'sonnet'), 'high'
+            if recipe == 'sol-opus':
+                model, effort = ('haiku55' if key == 'intake' else 'sol'), 'high'
             assert office['models'] == [model] and office['efforts'] == {model: effort}
         if recipe == 'codex-fast':
             selected = agents['triage']
@@ -283,14 +288,15 @@ def resolved_matrix(engine, out):
     shared_design = {k: v for k, v in base['agents'].items() if k.startswith('design:')}
     for recipe, manifest in manifests.items():
         design = {k: v for k, v in manifest['agents'].items() if k.startswith('design:')}
-        # claude-careful replaces the design crew; its route is pinned below.
-        assert (design != shared_design) == (recipe == 'claude-careful'), recipe
+        # sol-opus inherits claude-careful's separately pinned design crew.
+        assert (design != shared_design) == (recipe in ['claude-careful', 'sol-opus']), recipe
         for key in ['design:check', 'verify', 'ship']:
             assert manifest['drivers'][key] == base['drivers'][key], (recipe, key)
             assert manifest['hands'][key] == base['hands'][key], (recipe, key)
             assert manifest['boundary'][key] == base['boundary'][key], (recipe, key)
     mixed_route(engine, out, manifests)
     claude_careful_route(engine, out, manifests)
+    sol_opus_route(engine, out, manifests)
     print('resolved triage/intake, work/review matrices and negative controls passed', flush=True)
 
 
@@ -606,6 +612,48 @@ def claude_careful_route(engine, out, manifests):
         rejected.append(refuses(assert_claude_careful, bad, ('claude-careful', mutation)))
     dump(out / 'claude-careful-route-matrix.json', dict(actual=observed, rejected=rejected,
          presence='unknown: resolution is not a provider invocation', providers_called=False))
+
+
+def sol_opus_route(engine, out, manifests):
+    manifest = manifests['sol-opus']
+    parent = manifests['claude-careful']
+    codex = manifests['codex-careful']
+    routes = {'implement': ('sol-implementer', 'implementer', 'codex', 'sol', 'gpt-6.2-sol', 'high')}
+    for role in SOL_OPUS_ROLES:
+        independent = role == 'independent'
+        routes['review:' + role] = (
+            'claude-review-independent' if independent else 'opus-review-' + role,
+            'review-correctness' if independent else 'review-' + role,
+            'claude', 'opus', 'claude-opus-5-5', 'medium' if independent else 'high',
+        )
+    for key, (agent, base, provider, model, concrete, effort) in routes.items():
+        selected = manifest['agents'][key]
+        site = manifest['capabilities']['sites'][key]
+        assert selected['agent'] == site['office'] == agent, (key, selected, site)
+        assert (selected['provider'], selected['chain'], selected['model'],
+                selected['chosen_index'], selected['skipped'], selected.get('effort')) == (
+                    provider, [model], model, 0, [], None), (key, selected)
+        candidate, = site['candidates']
+        assert candidate['model_pins']['read'] == [{'id': concrete}], (key, candidate)
+        result = call([engine, 'agents', 'show', agent], ROOT,
+                      out / ('sol-opus-' + key.replace(':', '-') + '-resolved-office'))
+        assert result.returncode == 0, result.stderr
+        office = json.loads(result.stdout)
+        base_office = json.loads((ROOT / f'.brokkr/agents/{base}.json').read_text())
+        assert office['charter'] == base_office['charter'], (key, office)
+        assert office.get('limits') == base_office.get('limits'), (key, office)
+        assert office['models'] == [model] and office['efforts'] == {model: effort}, (key, office)
+        assert [(c['model'], c['provider'], c['status']) for c in office['resolution']['chain']] == [
+            (model, provider, 'ok')], (key, office)
+        for section in ['hands', 'boundary']:
+            want = codex[section][key] if key == 'implement' else None
+            assert manifest[section].get(key) == want, (key, section)
+
+    changed = routes.keys() - {'review:independent'}
+    for current, inherited in [(manifest['agents'], parent['agents']),
+                               (manifest['capabilities']['sites'], parent['capabilities']['sites'])]:
+        assert current.keys() == inherited.keys()
+        assert {key for key in current if current[key] != inherited[key]} == changed
 
 
 def refuses(comparator, bad, label):

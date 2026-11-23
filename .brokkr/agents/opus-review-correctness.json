@@ -1,0 +1,9 @@
+{
+  "extends": "review-correctness",
+  "models": [
+    "opus"
+  ],
+  "efforts": {
+    "opus": "high"
+  }
+}

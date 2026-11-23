@@ -73,6 +73,15 @@ Fable at medium (operator, 2026-11-16). Claude work offices take
 careful intake's boxed workspace hands; the recipe reuses the Fable
 correctness, Flash security and guarantees, and GLM tests offices unchanged.
 
+Accepted [0138](../../docs/decisions/0138-sol-opus-recipe.md) adds the default
+`sol-opus` crew. `sol-implementer` overlays `implementer` and selects Sol 6.2
+at high effort with `codex-careful-implementer`'s boxed workspace hands.
+`opus-review-correctness`, `opus-review-security`, `opus-review-tests` and
+`opus-review-guarantees` each overlay the corresponding `review-*` office
+and select Opus 5.5 at high effort. The read-only `claude-review-independent`
+office supplies the separate fifth verdict on Opus 5.5 at medium effort.
+Intake and design use the `claude-careful` offices.
+
 `codex-fast` adds `codex-triage`, `codex-fast-implementer` and
 `codex-bug-reviewer`: triage uses Claude Opus 5.5 (`opus`) at medium effort
 with no fallback and records scope; implementation stays on Codex Luna at
