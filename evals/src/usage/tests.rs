@@ -236,3 +236,176 @@ fn receipts_round_trip_and_refuse_anything_untyped() {
     forged.facts.total_cost_usd = Fact::Present { value: f64::NAN };
     assert_eq!(forged.validate("t1"), Err("usage_cost_invalid".into()));
 }
+
+mod groups {
+    use super::*;
+    use crate::provenance::WrapperProfile;
+    use crate::runner::{self, TrialRequest};
+    use crate::state::FailureClass;
+
+    fn counts(i: u64, o: u64) -> Facts {
+        Facts {
+            input_tokens: present(i),
+            output_tokens: present(o),
+            cache_read_tokens: present(i / 2),
+            cache_write_tokens: present(1),
+            num_turns: present(2),
+            total_cost_usd: Fact::Present { value: 0.5 },
+        }
+    }
+
+    fn row(n: u32, outcome: Outcome, facts: Option<Facts>) -> TrialResult {
+        let req = TrialRequest {
+            task: Some("signup".into()),
+            agent: Some("claude-nested".into()),
+            argv: vec!["/bin/agent".into()],
+            agent_model: Some("claude-sonnet-5-5".into()),
+            wrapper_profile: Some(WrapperProfile::Claude2_1_329ViaBrokkr),
+            ..Default::default()
+        };
+        let trial_id = format!("{n:032x}");
+        let mut row = runner::refused_row(&req, &trial_id);
+        row.outcome = outcome;
+        if outcome != Outcome::HarnessError {
+            row.agent_exit_status = Some(0);
+            row.failure_class = (outcome == Outcome::Fail).then_some(FailureClass::GaveUp);
+        }
+        row.nested_usage = facts.map(|facts| NestedUsage {
+            source: SOURCE.into(),
+            trial_id: trial_id.clone(),
+            attempt_id: format!("a{n}"),
+            family: "claude".into(),
+            facts,
+        });
+        row.validate().unwrap();
+        row
+    }
+
+    fn summary(rows: &[TrialResult]) -> Value {
+        summarize(&rows.iter().collect::<Vec<_>>()).unwrap()
+    }
+
+    #[test]
+    fn tokens_per_success_charges_every_scored_trial_to_the_passes() {
+        // A pass costing 10 and a scored failure costing 30: 40 per success.
+        let rows = [
+            row(1, Outcome::Pass, Some(counts(4, 6))),
+            row(2, Outcome::Fail, Some(counts(20, 10))),
+            // A harness error is not scored, whatever it spent.
+            row(3, Outcome::HarnessError, Some(counts(500, 500))),
+        ];
+        let s = summary(&rows);
+        assert_eq!(s["source"], SOURCE);
+        assert_eq!((s["scored_trials"].clone(), s["passes"].clone()), (json!(2), json!(1)));
+        assert_eq!(s["total_tokens"], json!({"status": "present", "value": 40}));
+        assert_eq!(s["tokens_per_success"], json!({"status": "present", "value": 40.0}));
+        // Caches, turns and cost stand beside the figure, never added.
+        assert_eq!(s["cache_read_tokens"]["value"], 12);
+        assert_eq!(s["cache_write_tokens"]["value"], 2);
+        assert_eq!(s["num_turns"]["value"], 4);
+        assert_eq!(s["total_cost_usd"]["value"], 1.0);
+        // An explicit zero is a measurement.
+        let zero = summary(&[row(1, Outcome::Pass, Some(counts(0, 0)))]);
+        assert_eq!(zero["tokens_per_success"]["value"], 0.0);
+    }
+
+    #[test]
+    fn every_gap_is_a_typed_unavailability_never_a_journal_fill_or_zero() {
+        let reason = |rows: &[TrialResult]| summary(rows)["tokens_per_success"]["reason"].clone();
+        assert_eq!(reason(&[row(1, Outcome::Fail, Some(counts(1, 1)))]), "no_passes");
+        // A scored row without the record in a nested group.
+        let bare = row(2, Outcome::Pass, None);
+        let rows = [row(1, Outcome::Pass, Some(counts(1, 1))), bare.clone()];
+        assert_eq!(reason(&rows), "incomplete_attribution");
+        assert_eq!(summary(&rows)["total_cost_usd"]["reason"], "incomplete_attribution");
+        // A required count missing, the other facts standing on their own.
+        let mut lost = counts(1, 1);
+        lost.output_tokens = Fact::Unavailable { reason: Reason::FieldAbsent };
+        lost.total_cost_usd = Fact::Unavailable { reason: Reason::FieldAbsent };
+        let rows = [row(1, Outcome::Pass, Some(lost)), row(2, Outcome::Pass, Some(counts(1, 1)))];
+        let s = summary(&rows);
+        assert_eq!(s["tokens_per_success"]["reason"], "missing_required_count");
+        assert_eq!(s["total_cost_usd"]["reason"], "missing_required_count");
+        assert_eq!(s["num_turns"]["value"], 4);
+        // A sum past the exact range is withheld, never wrapped.
+        let big = |n| row(n, Outcome::Pass, Some(counts(COUNT_LIMIT, 0)));
+        assert_eq!(reason(&[big(1), big(2)]), "sum_overflow");
+        assert_eq!(reason(&[row(1, Outcome::Pass, Some(counts(COUNT_LIMIT, 1)))]), "sum_overflow");
+        let huge = |n| {
+            let mut f = counts(1, 1);
+            f.total_cost_usd = Fact::Present { value: f64::MAX };
+            row(n, Outcome::Pass, Some(f))
+        };
+        assert_eq!(summary(&[huge(1), huge(2)])["total_cost_usd"]["reason"], "sum_overflow");
+        // A group with no nested record has no nested figures at all.
+        let mut direct = bare;
+        direct.nested_usage = None;
+        assert_eq!(summarize(&[&direct]), None);
+    }
+
+    #[test]
+    fn the_record_binds_to_a_nested_row_and_a_legacy_row_reads_unchanged() {
+        let r = row(1, Outcome::Pass, Some(counts(1, 1)));
+        let text = serde_json::to_string(&r).unwrap();
+        assert!(text.contains("\"nested_usage\""));
+        let back: TrialResult = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, r);
+        let mut legacy = r.clone();
+        legacy.nested_usage = None;
+        let text = serde_json::to_string(&legacy).unwrap();
+        assert!(!text.contains("nested_usage"));
+        assert_eq!(serde_json::from_str::<TrialResult>(&text).unwrap(), legacy);
+        // The record is the row's own and only a nested row's.
+        let mut other = r.clone();
+        other.nested_usage.as_mut().unwrap().trial_id = format!("{:032x}", 9);
+        assert_eq!(other.validate(), Err("usage_binding_mismatch".into()));
+        let mut family = r.clone();
+        family.nested_usage.as_mut().unwrap().family = "codex".into();
+        assert_eq!(family.validate(), Err("usage_without_nested_driver".into()));
+        let req = TrialRequest {
+            task: Some("signup".into()),
+            agent: Some("claude".into()),
+            argv: vec!["/bin/agent".into()],
+            agent_model: Some("claude-sonnet-5-5".into()),
+            wrapper_profile: Some(WrapperProfile::Claude2_1_329),
+            ..Default::default()
+        };
+        let mut direct = runner::refused_row(&req, &r.trial_id);
+        direct.nested_usage = r.nested_usage.clone();
+        assert_eq!(direct.validate(), Err("usage_without_nested_driver".into()));
+    }
+
+    #[test]
+    fn the_page_takes_a_nested_groups_figure_from_its_usage_alone() {
+        use crate::toolvalues::{render_page, tokens_figure};
+        let rows = [
+            row(1, Outcome::Pass, Some(counts(4, 6))),
+            row(2, Outcome::Fail, Some(counts(20, 10))),
+        ];
+        let mut group = json!({
+            "task": "signup", "agent": "claude-nested", "attempts": 2, "passes": 1,
+            "fails": 1, "harness_errors": 0, "scored": 2,
+            "nested_usage": summary(&rows),
+            // A journal figure is never used for a nested group.
+            "journal": {"tokens_per_success": 1.0, "tokens": {"cached": {"sum": 5}}},
+        });
+        assert_eq!(tokens_figure(&group), (Some(40.0), ""));
+        let page = render_page(&json!({"groups": [group.clone()]}));
+        assert!(page.contains("| 40 | reads 12, writes 2 |"), "{page}");
+        for (reason, want) in [
+            ("no_passes", "no_passes"),
+            ("sum_overflow", "sum_overflow"),
+            ("missing_required_count", "missing_required_count"),
+            ("incomplete_attribution", "incomplete_attribution"),
+            ("anything else", "incomplete_attribution"),
+        ] {
+            group["nested_usage"]["tokens_per_success"] =
+                json!({"status": "unavailable", "reason": reason});
+            group["nested_usage"]["cache_write_tokens"] =
+                json!({"status": "unavailable", "reason": "missing_required_count"});
+            assert_eq!(tokens_figure(&group), (None, want));
+            let page = render_page(&json!({"groups": [group.clone()]}));
+            assert!(page.contains(r"writes null (missing\_required\_count)"), "{page}");
+        }
+    }
+}

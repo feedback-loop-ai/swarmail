@@ -300,6 +300,11 @@ pub fn report_with_journal(
             if let Some(joined) = journal {
                 group["journal"] = crate::journal::summarize(&rows, joined);
             }
+            // Route (b)'s harness-authored usage: the only token source for
+            // a nested group, whatever the journal holds.
+            if let Some(nested) = crate::usage::summarize(&rows) {
+                group["nested_usage"] = nested;
+            }
             group
         })
         .collect();
