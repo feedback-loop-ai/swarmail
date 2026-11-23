@@ -129,10 +129,27 @@ $E baseline --tier deliverability --config /private/wrappers.json --output /priv
   `controls/`, `attempts/<attempt>.json` (and `.closed` after owned cleanup),
   `paid/<attempt>/` (the retained matrix per chunk attempt), and at the end
   `controls.jsonl`, `paid.jsonl` (canonical task → model → repetition order)
-  and `report.json`. Exit 0, 1 and 2 keep their meanings in
-  [run-plan.md](run-plan.md#admission-retention-and-statuses). Every paid row
-  carries `provenance.agent.cli`: the wrapper profile, the CLI version and its
-  sha256.
+  and `report.json`. `paid.jsonl` holds one scored row per slot;
+  `report.json` also counts every retained unscored attempt (refused,
+  interrupted, killed) under `attempts` and `harness_errors`, so retries are
+  visible and never change a success rate. Exit 0, 1 and 2 keep their
+  meanings in [run-plan.md](run-plan.md#admission-retention-and-statuses),
+  ruled over the scored rows. Every paid row carries `provenance.agent.cli`:
+  the wrapper profile, the CLI version and its sha256.
+* **Which CLIs qualify (read before the first paid run).** The pin attests
+  the bytes of the file the wrapper execs, nothing downstream. Pin the
+  CLI's own native binary, never a launcher: an interpreter script refuses
+  (`executable_not_native`), but a *native* launcher that execs something
+  else (a Volta shim, for example) passes the check and the row would record
+  the launcher's version and digest, not the CLI's. The harness cannot tell
+  the two apart, so choosing the real binary is the operator's attestation.
+  Only the profiles' exact versions qualify: Claude Code 2.1.310, codex-cli
+  0.164.0 and dsh 0.1.5-rc.1. The CLIs the published pages record
+  (Claude 2.1.316–2.1.319, dsh 0.2.1-rc.3 and 0.2.2-rc.1) refuse with
+  `version_mismatch` until a profile for that version lands (a reviewed
+  change to `wrappers.rs`). The dsh 0.1.5-rc.1 banner (`0.1.5-rc.1`) is the
+  profile's, not yet observed from a real binary. A CLI shipped only as an
+  interpreted package has no native file to pin and cannot run paid.
 * **Resume.** A score counts once its trial's hash-bound evidence is
   retained, and a resume reruns only the slots that are still outstanding.
   Harness-error and interrupted attempts stay as evidence and use up no slot.
@@ -150,6 +167,10 @@ $E baseline --tier deliverability --config /private/wrappers.json --output /priv
   mid-chunk leaves an attempt whose cleanup is unproved. Check for surviving
   agent processes, then add `--confirm-cleanup <attempt>`, which the refusal
   names. A trial that still holds admission refuses even with a confirmation.
+  An interruption during the controls leaves a control matrix with
+  harness-error rows, which every later resume refuses as
+  `baseline_controls_failed`: start again with a fresh `--output` (nothing
+  paid has run at that point).
   A provider may have charged for a request whose score was never committed.
 * **Not measured.** Tokens per success stay unmeasured (#391, proposed 0136).
   The proofs run fake direct CLIs offline (`tests/paid_baseline.rs`). The

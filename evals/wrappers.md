@@ -25,10 +25,13 @@ The closed version-1 selection has exactly these fields (inert paths):
 
 Choose actual absolute executable paths or trusted launchers that work with
 `PATH=/usr/bin:/bin`, `LANG=LC_ALL=C`. A Volta shim requiring ambient VOLTA_HOME
-needs an operator-provided explicit launcher. There is no installer, PATH
+needs an operator-provided explicit launcher. A launcher is a version-1
+convenience only: a paid (version-2) selection must pin the CLI's own native
+binary, as below. There is no installer, PATH
 inheritance, version discovery, arbitrary argv/env override, API-key substitution
-for Claude/Codex, refresh subsystem or fallback model. Profile versions describe
-the recipe, not a binary attestation.
+for Claude/Codex, refresh subsystem or fallback model. In a version-1 selection
+profile versions describe the recipe, not a binary attestation; the paid
+version-2 selection below attests them.
 
 MCP configuration requires UTF-8 runtime paths and an ASCII identity header;
 unsupported representations refuse before launch. Entry-point selection
@@ -97,13 +100,21 @@ by `contract <family>: <cause>`:
 * `executable_not_native`: the pinned file must open as a native executable
   image (ELF, or Mach-O thin or universal). An interpreter script (`#!`),
   such as an npm `codex` launcher, forwards to bytes its digest never covers,
-  so it cannot establish CLI identity: pin the native binary it runs;
+  so it cannot establish CLI identity: pin the native binary it runs. A
+  *native* launcher that execs another binary is not detectable and passes;
+  the row then names the launcher's bytes, not the CLI's, so pinning the
+  real binary is the operator's attestation. A CLI shipped only as an
+  interpreted package has nothing to pin and cannot run paid;
 * `digest_mismatch`: the measured sha256 differs from `cli_sha256`;
 * `version_mismatch` / `version_probe_failed` / `version_probe_timeout`: a
   fixed `EXECUTABLE --version` with a cleared environment, an empty private
   HOME with private TMPDIR and XDG directories (decision 0075 §1), no stdin, 4096 bytes of stdout and a 10 s deadline (its process group
   is killed afterwards) must answer exactly `2.1.310 (Claude Code)`,
   `codex-cli 0.164.0` or `0.1.5-rc.1`. The banner is never printed or kept.
+  Only these versions qualify: a newer installed CLI (the published pages
+  record Claude 2.1.316–2.1.319 and dsh 0.2.1-rc.3 / 0.2.2-rc.1) refuses
+  until a reviewed profile for its version lands. The dsh banner is the
+  profile's, not yet observed from a real 0.1.5-rc.1 binary.
 
 The wrapper itself rechecks the pin immediately before exec
 (`wrapper_cli_digest_mismatch`, `wrapper_contract_missing`) and refuses an

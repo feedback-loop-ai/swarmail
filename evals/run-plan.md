@@ -69,6 +69,7 @@ resolves to the wrapper and its private configuration.
 
 ```bash
 $E baseline --tier hard --config /private/wrappers.json --output /tmp/baseline-hard --dry-run
+PRODUCT=baseline-v1-…   # the dry-run plan's product_id
 # Only the operator executes without --dry-run, after the six-model authenticated smoke:
 $E baseline --tier hard --config /private/wrappers.json --output /tmp/baseline-hard --authorized-product "$PRODUCT"
 ```
@@ -109,6 +110,7 @@ controls-first admission.
 
 ```bash
 $E baseline --tier deliverability --config /private/wrappers.json --output /tmp/baseline-deliverability --dry-run
+PRODUCT=baseline-v1-…   # the dry-run plan's product_id
 # Only the operator executes without --dry-run, after the six-model authenticated smoke:
 $E baseline --tier deliverability --config /private/wrappers.json --output /tmp/baseline-deliverability --authorized-product "$PRODUCT"
 ```
@@ -144,6 +146,7 @@ the paid run.
 
 ```bash
 $E baseline --tier expert --config /private/wrappers.json --output /tmp/baseline-expert --dry-run
+PRODUCT=baseline-v1-…   # the dry-run plan's product_id
 # Only the operator executes without --dry-run, after the six-model authenticated smoke:
 $E baseline --tier expert --config /private/wrappers.json --output /tmp/baseline-expert --authorized-product "$PRODUCT"
 ```
@@ -220,7 +223,8 @@ only before it starts a chunk, so a complete run's derived output can be
 regenerated from retained rows with no private input present. Keep the
 whole output tree, including incomplete attempts and absent completion
 markers. The coordinator never overwrites, fabricates or filters a scored
-row; unscored attempts stay under paid/ and out of paid.jsonl.
+row; unscored attempts stay under paid/, out of paid.jsonl, and counted
+in report.json.
 
 1. Before any output: the plan prints, `--authorized-product` must equal its
    `product_id`, and every planned family's version-2 contract (profile,
@@ -261,8 +265,9 @@ row; unscored attempts stay under paid/ and out of paid.jsonl.
    outstanding.
    Every paid row carries the verified CLI identity (`provenance.agent.cli`).
 6. When every slot is scored, publish paid.jsonl in canonical order and
-   report.json with the existing report logic; existing files must hold the
-   same bytes.
+   report.json with the existing report logic over the scored rows plus
+   every retained unscored attempt row; existing files must hold the same
+   bytes.
 
 Output layout: manifest.json, run.lock, controls.jsonl, controls/<matrix-id>/
 (prelaunch matrix-plan.json, trials/<trial-id>/ and final matrix.json);
@@ -282,8 +287,11 @@ success over pass+fail, and also show passes/attempts; infrastructure is explici
 No measured failure is removed from the denominator. A paid slot whose
 attempt ended unscored (a harness error, an interrupted or refused launch)
 is no measurement: it stays retained as evidence under paid/, consumes no
-slot, and the slot runs again, so the report counts each nominal slot's one
-scored row. An incomplete run publishes no report.json; its retained rows under paid/ are
+slot, and the slot runs again. paid.jsonl holds each nominal slot's one
+scored row; report.json counts the unscored attempts too, as attempts and
+harness_errors (0055 §10, 0076 §5), so a run that needed retries reports
+more attempts than slots and never a changed success rate. The exit status
+is ruled over the scored rows, as before. An incomplete run publishes no report.json; its retained rows under paid/ are
 the evidence, and they are not a completed baseline.
 
 Before any operator-owned measurement run standalone fmt, locked clippy and
