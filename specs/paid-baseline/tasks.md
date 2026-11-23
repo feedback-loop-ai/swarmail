@@ -190,3 +190,56 @@ seal-branch-test, `cargo deny check licenses`. Evals: fmt, clippy
 Cargo's artifact record (all green, 24 min under load). Not run here:
 `brokkr compile` (no pinned brokkr reachable from this seat; no `.brokkr/`
 change).
+
+## Review return 3 (2026-11-23)
+
+- **HIGH, macOS compile** (correctness, guarantees, independent).
+  `trial_worker` now has a `#[cfg(not(target_os = "linux"))]` stub beside
+  the Linux item, so the ignored interruption test compiles off Linux. A
+  cross `cargo clippy --all-targets --locked --target aarch64-apple-darwin`
+  of `evals/` (C build of ring stubbed, nothing linked) reproduced E0425 at
+  the previous head and is clean now. macOS tests were not executed here.
+- **MEDIUM, report accounting** (guarantees). The ledger keeps every
+  retained unscored attempt row; `report.json` is the existing report over
+  the scored rows plus those, so `attempts` and `harness_errors` count
+  retries (0055 §10, 0076 §5) and no success rate moves. `paid.jsonl` and
+  the exit status stay over the scored slots. The one-command test asserts
+  attempts = 30 + unscored, harness_errors = unscored, scored = 30.
+- **MEDIUM, native forwarder** (guarantees). The paid proofs now pin a
+  self-contained stand-in: its configuration (family, banner, log, hold,
+  canaries) rides inside the pinned image, so the recorded sha256 covers
+  every byte that ran. Only the wrapper launch-boundary test still uses the
+  forwarding mode, documented as proving projection, not identity. The
+  harness cannot detect a native launcher in general; evals/README.md,
+  wrappers.md and 0137 now say so and make the real binary the operator's
+  attestation.
+- **MEDIUM, installed versions** (guarantees, independent). README,
+  wrappers.md, 0137 and the docs/evals status line state that only
+  2.1.310 / 0.164.0 / 0.1.5-rc.1 qualify, that the recorded Claude
+  2.1.316–2.1.319 and dsh 0.2.x binaries refuse until a reviewed profile
+  lands, that the dsh banner is unobserved, and that an interpreted-only
+  CLI cannot run paid. The banner stays a profile constant.
+
+Lows addressed: each run-plan.md example defines `PRODUCT`; README states
+that an interrupt during controls needs a fresh `--output`. Lows left as
+tracked debt: wrapper-boundary margin refusal stops the run; the
+schedule-dependent ranges (orphan 2..=3, dashscope 6..=7); the unexercised
+refusal arms listed by the tests member; dry-run zero-launch proof by
+launch log; `validate_accounting` taking `cli: None`; the plan's private
+CLI path and id-token wording; the `admission::idle` seam; fd 3 not
+checked as a pipe; CI time.
+
+**Added test time** (load 4–19): `paid_baseline` 96.8 s (unchanged within
+noise; the native stand-in replaces a script exec). Evals suite 24 min
+under load.
+
+**Gates (local, head after return 3).** Root: fmt, clippy `--locked`,
+`cargo test --workspace --locked` (one `mail_compare` closed-port test,
+code untouched by this run, failed once at load 19 and passed alone and in
+a full `mail_compare` rerun, 621/621), `cargo build --locked --bin
+swarmail`, coverage gate (exact 100/100/100) and selftest,
+publish-guard-test, seal-branch-test, `cargo deny check licenses`. Evals:
+fmt, clippy `--all-targets --locked`, `cargo test --locked` with
+`SWARMAIL_BIN` from Cargo's artifact record: 27 binaries green. Not run
+here: `brokkr compile` (no pinned brokkr reachable from this seat; no
+`.brokkr/` change).
