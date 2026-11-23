@@ -1233,12 +1233,14 @@ fn paid_selection(c: &Case, family: &str, sha256: &str) {
     private(&c.manifest, v2.to_string().as_bytes());
 }
 /// The native stand-in a paid selection pins (a pinned CLI must be a native
-/// image), replacing itself with the case's Python stand-in.
+/// image), forwarding to the case's capturing Python stand-in. This proves
+/// the launch boundary (pin recheck, projection, validity), not CLI
+/// identity: a forwarder's pin covers only the forwarder.
 fn native_standin(c: &Case) -> PathBuf {
     let native = c.root.path().join("standin-native");
     if !native.exists() {
         let script = std::fs::read(c.root.path().join("standin")).unwrap();
-        common::paid::install_native(&native, &script, b"");
+        common::paid::install_native(&native, &script);
     }
     native
 }

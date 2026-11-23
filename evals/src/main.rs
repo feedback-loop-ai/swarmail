@@ -3958,7 +3958,8 @@ fn retained_controls(
 
 /// Every committed score of the run, keyed by its nominal slot, rebuilt from
 /// retained evidence alone. Unscored attempts stay as evidence and consume
-/// nothing; anything unexpected, duplicated or inconsistent refuses.
+/// no slot, but the report counts them; anything unexpected, duplicated or
+/// inconsistent refuses.
 struct Ledger<'a> {
     root: &'a std::path::Path,
     plan: &'a baseline::Plan,
@@ -3977,10 +3978,7 @@ impl Ledger<'_> {
             repetitions: repetitions.to_vec(),
         })
     }
-    fn read(
-        &self,
-        confirm: &[String],
-    ) -> Result<std::collections::BTreeMap<SlotKey, TrialResult>, String> {
+    fn read(&self, confirm: &[String]) -> Result<Evidence, String> {
         use std::collections::{BTreeMap, BTreeSet};
         let attempts_dir = self.root.join("attempts");
         let paid = self.root.join("paid");
@@ -4035,7 +4033,7 @@ impl Ledger<'_> {
         if let Some(name) = paid_names.iter().find(|n| !assignments.contains_key(*n)) {
             return Err(format!("paid_evidence_unexpected {name}"));
         }
-        let mut ledger = BTreeMap::new();
+        let mut ledger = Evidence::default();
         for (id, a) in &assignments {
             if !closed.contains(id) {
                 if !confirm.contains(id) {
@@ -4064,7 +4062,7 @@ impl Ledger<'_> {
         dir: &std::path::Path,
         id: &str,
         a: &Assignment,
-        ledger: &mut std::collections::BTreeMap<SlotKey, TrialResult>,
+        ledger: &mut Evidence,
     ) -> Result<(), String> {
         artifacts::safe_root(dir)?;
         let trial_names = names(&dir.join("trials"))?;
@@ -4120,8 +4118,10 @@ impl Ledger<'_> {
             let retained = artifacts::trial(&dir.join("trials").join(&cell.trial_id))
                 .map_err(|_| invalid())?;
             if retained.row.outcome == Outcome::HarnessError {
-                // Evidence of an unscored attempt: kept, consumes no slot.
+                // Evidence of an unscored attempt: kept and counted by the
+                // report, but it consumes no slot.
                 artifacts::matches_cell(&retained.row, cell).map_err(|_| invalid())?;
+                ledger.unscored.push(retained.row);
                 continue;
             }
             baseline::validate_row(
@@ -4134,12 +4134,20 @@ impl Ledger<'_> {
             )
             .map_err(|e| format!("attempt {id}: {e}"))?;
             let key = (a.task.clone(), a.agent.clone(), repetition);
-            if ledger.insert(key, retained.row).is_some() {
+            if ledger.scored.insert(key, retained.row).is_some() {
                 return Err(format!("attempt {id}: slot_scored_twice"));
             }
         }
         Ok(())
     }
+}
+/// What a run's retained evidence holds: one score per nominal slot, and
+/// every unscored attempt row (refused, interrupted, killed), in attempt-id
+/// then cell order so regeneration is byte-stable.
+#[derive(Default)]
+struct Evidence {
+    scored: std::collections::BTreeMap<SlotKey, TrialResult>,
+    unscored: Vec<TrialResult>,
 }
 fn publish_closure(dir: &std::path::Path, id: &str, cause: &str) -> Result<(), String> {
     artifacts::publish(
@@ -4340,11 +4348,11 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
         master: &manifest.master,
     };
     let mut said: Option<(Vec<String>, bool)> = None;
-    let committed = loop {
-        let committed = ledger.read(&args.confirm_cleanup)?;
-        let outstanding = outstanding(plan, &committed);
+    let evidence = loop {
+        let evidence = ledger.read(&args.confirm_cleanup)?;
+        let outstanding = outstanding(plan, &evidence.scored);
         if outstanding.is_empty() {
-            break committed;
+            break evidence;
         }
         if let Some(name) = derived_output(&root) {
             return Err(format!("output_conflict {name}"));
@@ -4425,15 +4433,19 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
         .flat_map(|c| {
             c.repetitions
                 .iter()
-                .map(|r| committed[&(c.task.clone(), c.agent.clone(), *r)].clone())
+                .map(|r| evidence.scored[&(c.task.clone(), c.agent.clone(), *r)].clone())
                 .collect::<Vec<_>>()
         })
         .collect();
     publish_or_verify(&root, "paid.jsonl", &jsonl(&rows))?;
+    // The report counts every attempt and every infrastructure error
+    // (0055 §10, 0076 §5): unscored attempts join the scored slots there,
+    // where they raise attempts and harness_errors and never a success rate.
+    let attempted: Vec<TrialResult> = rows.iter().chain(&evidence.unscored).cloned().collect();
     publish_or_verify(
         &root,
         "report.json",
-        &artifacts::encode(&report::report(&rows), artifacts::PLAN_LIMIT)?,
+        &artifacts::encode(&report::report(&attempted), artifacts::PLAN_LIMIT)?,
     )?;
     Ok(baseline::status(
         0,
@@ -4526,7 +4538,11 @@ async fn baseline_chunk(
     let scored = chunk
         .repetitions
         .iter()
-        .filter(|r| after.contains_key(&(chunk.task.clone(), chunk.agent.clone(), **r)))
+        .filter(|r| {
+            after
+                .scored
+                .contains_key(&(chunk.task.clone(), chunk.agent.clone(), **r))
+        })
         .count();
     eprintln!(
         "swarmail-evals: baseline chunk closed task={} agent={} attempt={attempt} scored={scored}/{}",

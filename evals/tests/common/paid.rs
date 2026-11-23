@@ -61,11 +61,11 @@ pub fn jwt(exp: u64) -> String {
     )
 }
 
-/// Install the native stand-in at `path` (a pinned CLI must be a native
-/// image) with `behaviour` as the script it replaces itself with. `trailer`
-/// rides after the image, so differently configured stand-ins differ in
-/// digest as distinct real binaries would.
-pub fn install_native(path: &Path, behaviour: &[u8], trailer: &[u8]) {
+/// Install the native stand-in at `path` in forwarding mode, with
+/// `behaviour` as the script it replaces itself with. A forwarder's pin
+/// covers only the forwarder, so only launch-boundary proofs use it, never
+/// a CLI-identity proof.
+pub fn install_native(path: &Path, behaviour: &[u8]) {
     let mut hop = path.as_os_str().to_owned();
     hop.push(".hop");
     let hop = PathBuf::from(hop);
@@ -73,8 +73,18 @@ pub fn install_native(path: &Path, behaviour: &[u8], trailer: &[u8]) {
     std::fs::write(&tmp, behaviour).unwrap();
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::rename(&tmp, &hop).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_paid-cli-standin"), &tmp).unwrap();
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::rename(&tmp, path).unwrap();
+}
+
+/// Install the native stand-in at `path` as a self-contained fake CLI: the
+/// image plus its marker and `config`, one file with no forwarding.
+pub fn install_configured(path: &Path, config: &Value) {
+    let tmp = path.with_extension("next");
     let mut image = std::fs::read(env!("CARGO_BIN_EXE_paid-cli-standin")).unwrap();
-    image.extend_from_slice(trailer);
+    image.extend_from_slice(b"\0PAID-CLI-STANDIN-CONFIG\0");
+    image.extend_from_slice(config.to_string().as_bytes());
     std::fs::write(&tmp, image).unwrap();
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::rename(&tmp, path).unwrap();
@@ -122,27 +132,17 @@ impl Paid {
     /// The stand-in answers `--version` with `version`; any other launch logs
     /// its family and model (dsh: its route), holds (bounded) while the hold
     /// file names this launch as `<family> <model> <n>`, and exits: a
-    /// measured failure.
+    /// measured failure. Its whole behaviour rides in the pinned file, so
+    /// the digest a row records covers every byte that ran.
     pub fn write_cli(&self, family: &str, version: &str) {
-        let script = format!(
-            r#"#!/bin/sh
-if [ "$1" = "--version" ]; then printf '%s\n' '{version}'; exit 0; fi
-case "$*" in *{CANARY}*|*{SPARK_CANARY}*) echo LEAK >> '{log}';; esac
-m=none
-while [ $# -gt 0 ]; do [ "$1" = --model ] && m="$2"; shift; done
-[ -n "$DASHSCOPE_API_KEY" ] && m=dashscope
-[ -n "$SPARK_API_KEY" ] && m=spark-glm
-echo "{family} $m" >> '{log}'
-n=$(grep -c "^{family} $m\$" '{log}')
-i=0
-while [ "$(cat '{hold}' 2>/dev/null)" = "{family} $m $n" ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done
-exit 0
-"#,
-            log = self.log.display(),
-            hold = self.hold.display(),
-        );
-        let path = self.bin(family);
-        install_native(&path, script.as_bytes(), version.as_bytes());
+        let config = json!({
+            "family": family,
+            "version": version,
+            "log": self.log,
+            "hold": self.hold,
+            "canaries": [CANARY, SPARK_CANARY],
+        });
+        install_configured(&self.bin(family), &config);
     }
     pub fn claude(&self, until: u64) {
         private(

@@ -555,15 +555,6 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
             (json!("null"), json!("fail"))
         ]
     );
-    let report: Value =
-        serde_json::from_slice(&std::fs::read(p.output.join("report.json")).unwrap()).unwrap();
-    let attempts: u64 = report["groups"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|g| g["attempts"].as_u64().unwrap())
-        .sum();
-    assert_eq!(attempts, 30);
     let end = retained_results(&p);
     for (id, bytes) in &scored_before {
         assert_eq!(end.get(id), Some(bytes));
@@ -574,6 +565,21 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
         .filter(|b| contains(b, "\"outcome\":\"harness_error\""))
         .collect();
     assert!(unscored.len() >= 4, "{}", unscored.len());
+    // The report counts every attempt: the 30 scored slots plus each
+    // retained unscored attempt as an infrastructure error.
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(p.output.join("report.json")).unwrap()).unwrap();
+    let sum = |field: &str| -> u64 {
+        report["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g[field].as_u64().unwrap())
+            .sum()
+    };
+    assert_eq!(sum("attempts"), 30 + unscored.len() as u64);
+    assert_eq!(sum("harness_errors"), unscored.len() as u64);
+    assert_eq!(sum("scored"), 30);
     for bytes in unscored {
         assert!(
             contains(bytes, "\"cli\":{\"profile\":"),
@@ -704,7 +710,6 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     std::fs::remove_file(&p.config).unwrap();
     for family in FAMILIES {
         std::fs::remove_file(p.bin(family)).unwrap();
-        std::fs::remove_file(p.bin(family).with_extension("hop")).unwrap();
         std::fs::remove_file(p.cred(family)).unwrap();
     }
     let (code, _, err) = run(&mut p.authorized(&["--resume"]));
