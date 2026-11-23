@@ -1,0 +1,9 @@
+{
+  "extends": "review-tests",
+  "models": [
+    "opus"
+  ],
+  "efforts": {
+    "opus": "high"
+  }
+}

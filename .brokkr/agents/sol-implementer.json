@@ -1,0 +1,30 @@
+{
+  "extends": "implementer",
+  "models": [
+    "sol"
+  ],
+  "efforts": {
+    "sol": "high"
+  },
+  "hands": {
+    "kind": "workspace",
+    "network": true,
+    "binds": [
+      {
+        "path": "~/.cargo",
+        "mode": "overlay",
+        "mask": [
+          "credentials.toml",
+          "credentials"
+        ]
+      },
+      {
+        "path": "~/.rustup",
+        "mode": "ro"
+      }
+    ]
+  },
+  "replaces": {
+    "hands": "Codex authors through the engine workspace tool under the realm boundary; native shell stays read-only, and Cargo/Rust caches are mounted for the required gates."
+  }
+}

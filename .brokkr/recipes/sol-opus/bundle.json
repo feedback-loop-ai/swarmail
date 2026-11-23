@@ -1,0 +1,69 @@
+{
+  "name": "sol-opus",
+  "description": "Careful lane with GPT-6.2 Sol implementation and five required Claude Opus 5.5 reviewers. Inherits claude-careful's intake, design and protected shell gates.",
+  "extends": "claude-careful",
+  "override": {
+    "bundle": [
+      "description"
+    ],
+    "seats": [
+      "implement",
+      "review"
+    ]
+  },
+  "seats": {
+    "implement": {
+      "agent": "sol-implementer",
+      "class": "work",
+      "results": [
+        "complete",
+        "broken",
+        "blocked"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 14400
+      }
+    },
+    "review": {
+      "results": [
+        "clean",
+        "residual",
+        "security-hold"
+      ],
+      "inputs": [
+        "fixes_applied",
+        "has_security_residual",
+        "max_residual_severity",
+        "spec_defect"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 14400
+      },
+      "aggregate": "review-panel",
+      "panel": {
+        "correctness": {
+          "agent": "opus-review-correctness",
+          "class": "gate"
+        },
+        "security": {
+          "agent": "opus-review-security",
+          "class": "gate"
+        },
+        "tests": {
+          "agent": "opus-review-tests",
+          "class": "gate"
+        },
+        "guarantees": {
+          "agent": "opus-review-guarantees",
+          "class": "gate"
+        },
+        "independent": {
+          "agent": "claude-review-independent",
+          "class": "gate"
+        }
+      }
+    }
+  }
+}

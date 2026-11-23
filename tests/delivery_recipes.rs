@@ -119,6 +119,7 @@ fn every_recipe_stands_on_the_brokkr_folder_shelf() {
         "codex-fast",
         "mixed-opus-terra",
         "claude-careful",
+        "sol-opus",
         "eval",
     ] {
         assert!(shelf.join(name).is_dir(), "{name}: missing from the shelf");
@@ -128,8 +129,8 @@ fn every_recipe_stands_on_the_brokkr_folder_shelf() {
             .unwrap();
     assert_eq!(
         default,
-        serde_json::json!({"name": "swarmail", "extends": "claude-careful"}),
-        "the folder's own bundle is claude-careful by name and adds nothing"
+        json!({"name": "swarmail", "extends": "sol-opus"}),
+        "the folder's own bundle is sol-opus by name and adds nothing"
     );
 }
 
@@ -139,6 +140,7 @@ fn recipes_cannot_replace_the_protected_policy_or_the_exec_gates() {
         ("codex", "self"),
         ("codex-careful", "codex"),
         ("mixed-opus-terra", "codex-careful"),
+        ("sol-opus", "claude-careful"),
     ] {
         let recipe = read_json(&format!(".brokkr/recipes/{name}/bundle.json"));
         assert_eq!(recipe["extends"], parent);
@@ -192,11 +194,11 @@ fn both_designs_end_in_a_model_free_offline_validator() {
             "{prompt_file}"
         ])
     );
-    for name in ["codex", "codex-careful", "mixed-opus-terra"] {
+    for name in ["codex", "codex-careful", "mixed-opus-terra", "sol-opus"] {
         let recipe = read_json(&format!(".brokkr/recipes/{name}/bundle.json"));
         assert!(
             recipe["seats"].get("design").is_none(),
-            "{name}: inherit the complete design seat so the exec script retains self's origin"
+            "{name}: inherit the complete design seat so the exec script retains its origin"
         );
     }
 }
@@ -1702,6 +1704,62 @@ fn claude_careful_design_check_is_self_validator_byte_for_byte() {
     assert_eq!(
         recipe["seats"]["design"]["sequence"][2], base["seats"]["design"]["sequence"][2],
         "the model-free validator step is self's, field for field"
+    );
+}
+
+#[test]
+fn sol_opus_replaces_only_implementation_and_review_offices() {
+    let leaf = ".brokkr/recipes/sol-opus";
+    let recipe = read_json(&format!("{leaf}/bundle.json"));
+    let parent = read_json(".brokkr/recipes/claude-careful/bundle.json");
+    let mut implement = parent["seats"]["implement"].clone();
+    implement["agent"] = json!("sol-implementer");
+    let mut review = parent["seats"]["review"].clone();
+    for role in ["correctness", "security", "tests", "guarantees"] {
+        let agent = format!("opus-review-{role}");
+        review["panel"][role]["agent"] = json!(agent);
+        assert_eq!(
+            office(&agent),
+            json!({"extends": format!("review-{role}"), "models": ["opus"],
+                   "efforts": {"opus": "high"}}),
+            "{agent}"
+        );
+    }
+    assert_eq!(
+        review["panel"]["independent"]["agent"],
+        "claude-review-independent"
+    );
+    let description = recipe["description"].as_str().unwrap();
+    assert!(!description.trim().is_empty());
+    assert_eq!(
+        recipe,
+        json!({"name": "sol-opus", "description": description, "extends": "claude-careful",
+               "override": {"bundle": ["description"], "seats": ["implement", "review"]},
+               "seats": {"implement": implement, "review": review}})
+    );
+
+    let codex_implementer = office("codex-careful-implementer");
+    assert_eq!(
+        office("sol-implementer"),
+        json!({"extends": "implementer", "models": ["sol"], "efforts": {"sol": "high"},
+               "hands": codex_implementer["hands"], "replaces": codex_implementer["replaces"]})
+    );
+    assert_eq!(
+        read_json(".brokkr/adapters/codex.json")["models"]["sol"],
+        "gpt-6.2-sol"
+    );
+    assert_eq!(
+        read_json(".brokkr/adapters/claude.json")["models"]["opus"],
+        "claude-opus-5-5"
+    );
+    let entries: Vec<_> = std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join(leaf))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        entries,
+        ["bundle.json"],
+        "design scripts stay in claude-careful"
     );
 }
 
