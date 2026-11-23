@@ -27,3 +27,17 @@ The operator accepted this record on 2026-11-23, in chat to the dispatcher ("acc
 - **The token reference for #164's "30% below the baseline":** the first paid main matrix with complete checked accounting under a recorded source, with its cohort, settings and comparison groups fixed before launch. It is a prospective reference only; it says nothing about pre-#152 costs.
 
 The text above is unchanged.
+
+## Dated addendum — 2026-11-23 (the accounting source for via-brokkr rows)
+
+The smoke recorded in 0119's 2026-11-23 addendum found that brokkr's `exec` adapter drops a nested driver's stdout. The journal channel this record prefers therefore cannot carry via-brokkr tokens in any brokkr version up to 0.15.2.
+
+The operator ruled route (b) on 2026-11-23. Paid via-brokkr token counts come from the nested driver's own forge-driver/v1 `checkpoint` and `result` fields, which `swarmail-evals` reads as that driver's engine and records as a typed harness fact. The direct-launch reader of a CLI's own usage summary stays deferred and unimplemented.
+
+The token reference rule above is unchanged, with one addition: the reference run's recorded source is this via-brokkr driver channel. The operator fixed the reference cohort before launch, on 2026-11-23:
+
+- **Tasks:** the 16 default-tier tasks.
+- **Models:** claude-opus, claude-sonnet, codex-sol, codex-luna, glm-spark and glm-dashscope.
+- **Trials:** five per task and model, which matches the 2026-11-01 baseline's cohort.
+
+The text above is unchanged.
