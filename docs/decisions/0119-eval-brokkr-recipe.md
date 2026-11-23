@@ -461,3 +461,32 @@ accepted it in 0075's dated addendum of 2026-11-22.
 
 The acceptance note above ("not built") was true when it was written and is
 left as it was.
+
+## Dated addendum — 2026-11-23 (§5 and §6, observed; route ruled by the operator)
+
+The first authenticated via-brokkr smoke ran on 2026-11-23 with the operator's approval. It used one nested and one direct session per family, on brokkr 0.12.0 (`29dc3309…`), Claude Code 2.1.329, codex-cli 0.166.0 and dsh 0.2.2-rc.1. The full, sanitized findings are kept beside the operator's working tree; this addendum records what they settle.
+
+**§5, the invocation (F2).** `brokkr driver <family> -- <agent-CLI flags>` is a forge-driver/v1 protocol adapter on stdio. It is not a CLI that takes a goal.
+
+- **Caller to driver:** `hello`, then `start{effect_id, attempt_id, seat, input}`, then `shutdown`.
+- **Driver to caller:** `capabilities`, `accepted`, any number of `checkpoint`, then one `result`.
+- **The goal** travels in `start.input`. These keys were sufficient for every family: `feature`, `phase`, `seat`, `role_path` (a charter file), `workdir`, `result_path`, `allowed_results` and `context`. The agent reports through the result file.
+- **Flags after `--`:**
+  - claude: `--permission-mode acceptEdits --model M --effort E`;
+  - codex: `--model M --effort E --sandbox <class>`;
+  - dsh: `--model route/model`.
+
+The wrapper's previous assembly put the goal on stdin or in argv and discarded the output. With it, every family's driver exits 0 and launches nothing, which is exactly the fake `gave_up` that `driver_contract_unknown` guarded against. The refusal therefore stays until the wrapper implements the exchange above.
+
+The selectors in §5 name versions that are no longer installed. Accepted 0137's 2026-11-23 amendment governs the profiles that replace them.
+
+**§6, the accounting channel (F1).** A nested driver's accounting did not reach the journal for any family. The channel is the nested driver's own stdout: its `checkpoint` and `result` messages carry `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `num_turns` and `total_cost_usd`. Direct seats journal exactly these. No environment variable names a channel.
+
+There is a fifth seam beyond the four named in §6. brokkr's `exec` adapter captures and drops its child's stdout. This holds in 0.12.0 and still in 0.15.2, and no brokkr decision or issue proposes a relay. Opening Swarmail's seam 4 alone therefore cannot carry tokens to the journal.
+
+**The operator's ruling (2026-11-23, in chat to the dispatcher): route (b).**
+
+- **The protocol and the facts:** for via-brokkr trials, `swarmail-evals` speaks forge-driver/v1 to the nested driver itself, as the trial seat's engine for that driver. It records the driver's `checkpoint` and `result` token fields as a harness-authored typed fact under 0075 §4, joined to the row by `trial_id`.
+- **Outside the journal:** those tokens are not journal facts. §3's journal join stays the rule for every other fact, and via-brokkr token facts name their source.
+- **The nested driver binary** is pinned by path and digest like any other paid executable, separately from the delivery engine's pin.
+- **Route (a)**, an exec relay or a named nested-accounting channel in brokkr, is filed upstream as the long-term route. If it ships, a further addendum may move via-brokkr tokens back into the journal.
