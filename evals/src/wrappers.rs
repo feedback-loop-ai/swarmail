@@ -1356,7 +1356,7 @@ fn launch(
     let mut cmd = match nested {
         Some((driver, _)) => {
             let mut c = Command::new(driver);
-            c.arg(harness).arg("--");
+            c.args(["driver", harness, "--"]);
             c
         }
         None => {
@@ -1728,13 +1728,19 @@ fn nested_session(
         std::io::BufReader::new(stdout),
         id,
         &start,
-        |bytes| match stdin.as_mut() {
-            Some(s) => s.write_all(&bytes).and_then(|()| s.flush()),
-            None => Err(std::io::ErrorKind::BrokenPipe.into()),
+        |bytes, last| {
+            let sent = match stdin.as_mut() {
+                Some(s) => s.write_all(&bytes).and_then(|()| s.flush()),
+                None => Err(std::io::ErrorKind::BrokenPipe.into()),
+            };
+            if last {
+                // Shutdown, then the driver's stdin closes.
+                stdin = None;
+            }
+            sent
         },
         || report(reporting, crate::runner::LAUNCH_READY),
     );
-    drop(stdin);
     let _ = child.wait();
     let (launched, code) = match end {
         Ok(d) => (d.launched(), d.code()),

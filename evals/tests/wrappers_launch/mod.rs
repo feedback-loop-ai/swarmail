@@ -1452,3 +1452,7 @@ fn now_secs() -> u64 {
         .unwrap()
         .as_secs()
 }
+#[path = "nested.rs"]
+mod nested;
+#[path = "real_driver.rs"]
+mod real_driver;

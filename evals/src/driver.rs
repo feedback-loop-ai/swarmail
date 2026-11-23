@@ -571,14 +571,16 @@ impl Exchange {
 
 /// Drive a whole exchange over one reader: `hello` first, `start` once the
 /// capabilities arrive, `shutdown` after the result or at end of stream,
-/// every frame decoded and checked in order. `on_accepted` runs once, when
-/// the driver proves a session began. Deadlines and the process belong to
+/// every frame decoded and checked in order. `send` gets each frame and
+/// whether it is the last: after `shutdown` the caller closes the driver's
+/// stdin, as the engine does. `on_accepted` runs once, when the driver
+/// proves a session began. Deadlines and the process belong to
 /// the caller; on a protocol error the exchange so far is returned with it.
 pub fn run<R: BufRead>(
     reader: R,
     id: Identity,
     input: &StartInput,
-    mut send: impl FnMut(Vec<u8>) -> std::io::Result<()>,
+    mut send: impl FnMut(Vec<u8>, bool) -> std::io::Result<()>,
     mut on_accepted: impl FnMut(),
 ) -> (Exchange, Result<Disposition, ProtocolError>) {
     let mut seq = 0u32;
@@ -589,7 +591,7 @@ pub fn run<R: BufRead>(
     let mut ex = Exchange::new(id, input.allowed_results.clone());
     let (mut started, mut shut, mut told) = (false, false, false);
     let body = || -> Result<(), ProtocolError> {
-        send(hello(&next_id())).map_err(|_| ProtocolError::Io)?;
+        send(hello(&next_id()), false).map_err(|_| ProtocolError::Io)?;
         let mut frames = FrameReader::new(reader);
         while let Some(frame) = frames.next_frame()? {
             ex.receive(frame)?;
@@ -599,17 +601,17 @@ pub fn run<R: BufRead>(
             }
             if ex.ready_to_start() && !started {
                 started = true;
-                send(start(&next_id(), &ex.id, input)).map_err(|_| ProtocolError::Io)?;
+                send(start(&next_id(), &ex.id, input), false).map_err(|_| ProtocolError::Io)?;
             }
             if ex.finished() && !shut {
                 shut = true;
-                send(shutdown(&next_id())).map_err(|_| ProtocolError::Io)?;
+                send(shutdown(&next_id()), true).map_err(|_| ProtocolError::Io)?;
             }
         }
         if !shut {
             // Shutdown is sent once, after the result or after EOF; a
             // driver that is already gone cannot read it.
-            let _ = send(shutdown(&next_id()));
+            let _ = send(shutdown(&next_id()), true);
         }
         Ok(())
     };
@@ -690,9 +692,11 @@ mod tests {
             Cursor::new(stream.as_bytes().to_vec()),
             id(),
             &input(),
-            |b| {
+            |b, last| {
                 assert_eq!(b.last(), Some(&b'\n'));
-                sent.push(serde_json::from_slice(&b).unwrap());
+                let frame: Value = serde_json::from_slice(&b).unwrap();
+                assert_eq!(last, frame["type"] == "shutdown");
+                sent.push(frame);
                 Ok(())
             },
             || accepted += 1,
@@ -1122,7 +1126,7 @@ mod tests {
                 Cursor::new(full.clone().into_bytes()),
                 id(),
                 &input(),
-                |_| {
+                |_, _| {
                     n += 1;
                     if n > fail_at {
                         Err(std::io::Error::other("closed"))

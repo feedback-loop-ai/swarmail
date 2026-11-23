@@ -6205,17 +6205,30 @@ mod identity_tests {
         assert_eq!(ids[0].inbox, "eval-abcdef12-ada");
     }
 
-    /// The trial refuses the wrapper's driver flag wherever it stands in the
-    /// public argv, and a via-brokkr profile that does not carry it.
+    /// The driver flag passes only beside an amended via-brokkr profile,
+    /// wherever it stands in the public argv; a superseded via-brokkr profile
+    /// stays unimplemented and every other pairing is a mismatch.
     #[test]
-    fn via_brokkr_is_refused_at_every_argv_position_and_profile() {
+    fn via_brokkr_passes_only_with_an_amended_via_profile() {
         use crate::provenance::WrapperProfile as P;
         let os = |v: &[&str]| v.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
-        let direct = [P::Claude2_1_310, P::Codex0_164_0, P::Dsh0_1_5Rc1];
-        let via = [
+        let direct = [
+            P::Claude2_1_310,
+            P::Codex0_164_0,
+            P::Dsh0_1_5Rc1,
+            P::Claude2_1_329,
+            P::Codex0_166_0,
+            P::Dsh0_2_2Rc1,
+        ];
+        let superseded = [
             P::Claude2_1_310ViaBrokkr,
             P::Codex0_164_0ViaBrokkr,
             P::Dsh0_1_5Rc1ViaBrokkr,
+        ];
+        let amended = [
+            P::Claude2_1_329ViaBrokkr,
+            P::Codex0_166_0ViaBrokkr,
+            P::Dsh0_2_2Rc1ViaBrokkr,
         ];
         let flagged = [
             os(&["--via-brokkr", "/d", "agent-claude"]),
@@ -6223,34 +6236,119 @@ mod identity_tests {
             os(&["agent-claude", "--model", "m", "--via-brokkr"]),
             os(&["agent-claude", "--via-brokkr=/d"]),
         ];
+        let refusal = crate::runner::via_brokkr_refusal;
         for argv in &flagged {
-            for profile in std::iter::once(None)
-                .chain(direct.iter().copied().map(Some))
-                .chain(via.iter().copied().map(Some))
-            {
+            for profile in amended {
+                assert_eq!(refusal(argv, Some(profile)), None, "{argv:?} {profile:?}");
+            }
+            for profile in superseded {
                 assert_eq!(
-                    crate::runner::via_brokkr_refusal(argv, profile),
-                    Some("driver_contract_unknown"),
+                    refusal(argv, Some(profile)),
+                    Some("driver_contract_unknown")
+                );
+            }
+            for profile in std::iter::once(None).chain(direct.map(Some)) {
+                assert_eq!(
+                    refusal(argv, profile),
+                    Some("via_brokkr_profile_mismatch"),
                     "{argv:?} {profile:?}"
                 );
             }
         }
         // The flag is matched exactly: a lookalike is an ordinary argument.
         let plain = os(&["agent-claude", "--via-brokkr-not", "x", "--model", "--via"]);
-        assert_eq!(crate::runner::via_brokkr_refusal(&plain, None), None);
+        assert_eq!(refusal(&plain, None), None);
         for profile in direct {
-            assert_eq!(
-                crate::runner::via_brokkr_refusal(&plain, Some(profile)),
-                None
-            );
+            assert_eq!(refusal(&plain, Some(profile)), None);
         }
-        for profile in via {
+        for profile in superseded.into_iter().chain(amended) {
             assert_eq!(
-                crate::runner::via_brokkr_refusal(&plain, Some(profile)),
+                refusal(&plain, Some(profile)),
                 Some("via_brokkr_profile_mismatch")
             );
         }
-        assert_eq!(crate::runner::via_brokkr_refusal(&[], None), None);
+        assert_eq!(refusal(&[], None), None);
+    }
+
+    /// The launch pipe's two valid shapes, and the trial's usage and harness
+    /// error for each pairing of report and route.
+    #[test]
+    fn launch_reports_settle_the_rows_usage_and_harness_error() {
+        use crate::runner::{LAUNCH_READY, LaunchReport, launch_report_of, settle_launch};
+        use crate::usage::{Facts, NestedUsage, Reason, Receipt, receipt_line};
+        let receipt = |disposition: &str| Receipt {
+            disposition: disposition.into(),
+            attempt_id: "a1".into(),
+            family: "claude".into(),
+            facts: Facts::unavailable(Reason::NoSessionFinal),
+        };
+        let with = |r: &Receipt| [LAUNCH_READY, &receipt_line(r)].concat();
+        assert_eq!(launch_report_of(LAUNCH_READY), LaunchReport::Ready);
+        let done = receipt("completed");
+        assert_eq!(
+            launch_report_of(&with(&done)),
+            LaunchReport::Nested(done.clone())
+        );
+        for bad in [
+            b"".to_vec(),
+            b"unstarted\n".to_vec(),
+            b"ready".to_vec(),
+            [LAUNCH_READY, b"nested {}\n"].concat(),
+            [with(&done), b"x".to_vec()].concat(),
+            [with(&done), receipt_line(&done)].concat(),
+            receipt_line(&done),
+        ] {
+            assert_eq!(launch_report_of(&bad), LaunchReport::Unstarted, "{bad:?}");
+        }
+        use crate::runner::LaunchReport::*;
+        // Direct: exactly ready, never a receipt.
+        assert_eq!(settle_launch(&[Ready], None, "t"), (None, Ok(())));
+        assert_eq!(settle_launch(&[], None, "t"), (None, Ok(())));
+        for reports in [vec![Unstarted], vec![Nested(done.clone())]] {
+            assert_eq!(
+                settle_launch(&reports, None, "t"),
+                (None, Err("agent_unstarted".into()))
+            );
+        }
+        // Nested: the receipt is the row's usage; ready alone (a deadline
+        // kill) is usage lost, never zero, and the trial keeps its grading.
+        assert_eq!(
+            settle_launch(&[Nested(done.clone())], Some("claude"), "t"),
+            (Some(NestedUsage::from_receipt("t", &done)), Ok(()))
+        );
+        assert_eq!(
+            settle_launch(&[Ready], Some("claude"), "t"),
+            (Some(NestedUsage::missing("t", "claude")), Ok(()))
+        );
+        let lost = receipt("driver_result_missing");
+        assert_eq!(
+            settle_launch(&[Nested(lost.clone())], Some("claude"), "t"),
+            (
+                Some(NestedUsage::from_receipt("t", &lost)),
+                Err("driver_result_missing".into())
+            )
+        );
+        let odd = receipt("not_a_code");
+        assert_eq!(
+            settle_launch(&[Nested(odd.clone())], Some("claude"), "t").1,
+            Err("agent_unstarted".into())
+        );
+        for reports in [
+            vec![Unstarted],
+            vec![Nested(done.clone())],
+            vec![Ready, Ready],
+        ] {
+            let family = if reports.len() == 1 && reports[0] != Unstarted {
+                "codex"
+            } else {
+                "claude"
+            };
+            assert_eq!(
+                settle_launch(&reports, Some(family), "t"),
+                (None, Err("agent_unstarted".into())),
+                "{reports:?}"
+            );
+        }
     }
 }
 
