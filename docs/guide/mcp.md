@@ -109,6 +109,11 @@ that data boundary when displaying results or passing mail to a model.
 The metric is compatibility: actual Claude Code, Codex, MCP Inspector and
 Claude Desktop receipts remain operator-owned and owed (issue AC3). See the
 [implementation evidence](../../specs/mcp-version-negotiation/implementation.md).
+The [client matrix](../agents/client-matrix.md) fixes each client's checklist
+and the receipt format (part of #392). Receipts go in
+[`docs/evals/clients/`](../evals/clients/README.md), one JSON file per client
+and date. **Status, 2026-11-22: no receipts yet**, so no client compatibility
+is claimed.
 The negotiation change merged (#288, `42f04f2`) before the #151 baseline;
 that baseline now exists ([`docs/evals/baseline-2026-11-01.md`](../evals/baseline-2026-11-01.md))
 and measured main `a4f552d`, which already carries it.

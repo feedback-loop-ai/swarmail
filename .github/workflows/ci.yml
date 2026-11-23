@@ -6,7 +6,7 @@ on:
 
 # Least privilege by default: every job runs with read-only repository
 # access unless it grants itself more (AC52.2). The publish jobs ask for
-# `packages: write`, the audit for its check annotations — everything else
+# `packages: write` — everything else
 # inherits this floor, so a compromised action can at most read the tree.
 permissions:
   contents: read
@@ -289,18 +289,29 @@ jobs:
   # RustSec advisories are CI-only: the advisory DB needs the network the
   # hermetic seat deliberately denies, and a vulnerable dependency is a CI
   # blocker, not a gate a test harness should fetch anything to enforce.
+  #
+  # cargo-audit runs directly rather than through rustsec/audit-check. On push
+  # events that action intermittently failed with "Not Found - update-a-check-run"
+  # after reporting "No vulnerabilities were found", so a clean audit could
+  # still turn the job red. Run directly, the job's exit is cargo-audit's own: a
+  # vulnerability fails it, while informational warnings (unmaintained,
+  # unsound) are printed and do not. It needs no write permission. Both
+  # lockfiles are audited: the evals workspace ships a lockfile of its own.
   dependency-audit:
     name: RustSec dependency audit
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      checks: write
-      issues: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit@0.23.0
+      - name: Audit Cargo.lock
+        run: cargo audit --file Cargo.lock
+      - name: Audit evals/Cargo.lock
+        run: cargo audit --file evals/Cargo.lock
 
   # The delivery constitution is compiled by the *recorded* brokkr, not by
   # whatever `cargo install` would resolve today — two 0.12.0 binaries have

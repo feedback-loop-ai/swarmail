@@ -51,6 +51,9 @@
 
 mod common;
 
+#[path = "agent_setup_docs/client_matrix.rs"]
+mod client_matrix;
+
 use clap::{CommandFactory, Parser};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;

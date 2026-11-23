@@ -142,3 +142,42 @@ admits one exception to §1 of this record, a single named environment
 variable or a stdout relay for the accounting channel, which lands only once
 the observed channel is recorded in 0119 by dated addendum; none is recorded
 yet. The text above is unchanged.
+
+## Dated addendum — 2026-11-22 (accepted, operator, 2026-11-22)
+
+The operator accepted this addendum on 2026-11-22, in chat to the dispatcher.
+
+**§1, a ninth agent input in value-capture mode only.** With
+`matrix --capture-tool-values` (accepted 0119 §4, built by #396), agents
+receive one more input beyond the existing eight and the generated `PWD`:
+`EVAL_TOOL_CAPTURE_SOCKET`.
+
+- It holds the absolute path of the trial's private capture socket.
+- The harness generates it for each trial.
+- It carries a path, never a secret or a credential.
+- It is set only when value capture is on. Without capture, agents still
+  receive exactly the eight inputs this record names.
+
+Nothing else in §1 changes: no other variable, inheritance or fallback is
+admitted. The socket's own bounds and binding (connection, frame and call
+limits; every observation bound to the journal's tool, length and SHA-256)
+are in `evals/src/capture.rs` and `evals/README.md`.
+
+## Dated implementation note — 2026-11-22
+
+The value-bearing evidence mode that 0119 §4 authorized by amending §4 of this
+record is built. #396 merged it on 2026-11-22 as `c2973bc`. It is opt-in
+(`matrix --capture-tool-values`, `report --tool-values-from`) and
+deny-by-default, per the operator's rulings of 2026-11-21:
+
+- **What publishes:** a value is published only when it is provably plain, as
+  the exact checked bytes, and hash-bound.
+- **What is withheld:** anything the redactor cannot read withholds that
+  trial's whole value record, with one typed reason from a closed set.
+- **Where the guarantee is stated:** `specs/trial-evidence/spec.md` AC3 gives
+  the exact guarantee and names the transforms no check sees as this record's
+  §9 boundary.
+
+The 2026-11-06 pointer above ("authorized and not built") was true when it
+was written and is left as it was. 0119 §6's channel is still unobserved, so
+via-brokkr accounting stays unavailable.
