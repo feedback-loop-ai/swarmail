@@ -128,3 +128,65 @@ fmt, clippy `--all-targets --locked`, and `cargo test --locked` with
 **Not run here.** `brokkr compile` for every recipe: no pinned brokkr binary
 is reachable from this seat, and no `.brokkr/` file changed. Only CI runs the
 macOS test job, Docker smoke, Helm, RustSec and the pinned bundle check.
+
+## Review return 2 (head 38ab7a07)
+
+Fixed above low:
+
+- **HIGH, owned-cleanup closure** (guarantees). `attempts/<id>.closed`
+  with cause `owned_cleanup` is now published only when every worker the
+  chunk started reported its row after its own cleanup and did not report
+  `trial_cleanup_unproved` (`ChildRun::cleanup_proved`,
+  `MatrixResources::cleanup_unproved`). Otherwise the attempt stays open,
+  the run stops with "has no proof of owned cleanup … --confirm-cleanup",
+  and the next resume refuses until the operator confirms. Proved in the
+  deliverability run by SIGKILLing the `trial` worker under a held
+  dashscope launch: no closure, a plain resume refuses by attempt id and
+  launches nothing, and the confirmed resume continues (dashscope launches
+  are now 6..=7).
+- **MEDIUM, Codex validity** (correctness, independent). The access
+  token's `exp` alone; the id token is not read. Unit test
+  `codex_validity_is_the_access_token_alone`; the wrapper test's
+  id-token refusal is gone; wrappers.md updated.
+- **MEDIUM, resume output conflict** (guarantees). `paid.jsonl` or
+  `report.json` beside outstanding slots, or beside controls that would run
+  again, refuses `output_conflict <name>` before any launch. Both arms are
+  proved with launch counts unchanged.
+- **MEDIUM, agent environment** (guarantees). The three variables are
+  gone. The trial appends `--paid-launch SHA256:VALID_THROUGH`, a hidden
+  wrapper flag, to the wrapper's argv. The values are not secret, and the
+  agent's environment is again exactly the accepted 0075 §1 inputs.
+  Descriptor 3 is the launch pipe only when that flag is present. The
+  wrapper test drives drift, margin, malformed bindings (no colon, bad
+  instant, bad digest) and a bound launch through argv.
+- **MEDIUM, forwarding shims** (guarantees). `check_pinned` refuses
+  any file that is not a native image (ELF or Mach-O thin/universal) as
+  `executable_not_native`. Unit test `only_a_native_image_can_be_a_pinned_cli`;
+  the contract test refuses a `#!/bin/sh` launcher pinned at its own
+  digest. The proofs now pin a native stand-in,
+  `tests/standin/paid_cli.rs`. It is an `[[bin]]` in `evals/Cargo.toml`,
+  which is not a held path, and the lock is unchanged. It replaces itself
+  with `<path>.hop`, the fixture's script. A trailer keeps the digests
+  distinct.
+
+Lows addressed: plan steps now list contract verification first.
+run-plan.md states the unscored-slot rule. Unscored paid rows are asserted
+to carry `provenance.agent.cli`. The hard-tier comment is corrected. Lows
+left as tracked debt: a wrapper-boundary margin refusal still stops the run
+rather than releasing to the scheduler. The between-chunk SIGTERM and the
+glm-spark rotation remain partly schedule-dependent. The manifest records
+no private CLI path. The unexercised arms listed above remain, as does the
+CI time.
+
+**Added test time** (load 10–13): `paid_baseline` 86–95 s (about +3 s for
+the worker kill and the two conflict refusals); `baseline` 37 s; `wrappers
+paid_selection` 0.6 s.
+
+**Gates (local, head after return 2).** Root: fmt, clippy `--locked`,
+`cargo test --workspace --locked`, `cargo build --locked --bin swarmail`,
+coverage gate (exact 100/100/100) and selftest, publish-guard-test,
+seal-branch-test, `cargo deny check licenses`. Evals: fmt, clippy
+`--all-targets --locked`, `cargo test --locked` with `SWARMAIL_BIN` from
+Cargo's artifact record (all green, 24 min under load). Not run here:
+`brokkr compile` (no pinned brokkr reachable from this seat; no `.brokkr/`
+change).
