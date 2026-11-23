@@ -348,6 +348,52 @@ struct DshAuth {
     spark: String,
 }
 
+/// The paid-baseline (version 2) selection, proposed 0137: each family adds
+/// its pinned CLI identity and auth-file shape to the version-1 locators. A
+/// family the product does not name may be absent; nothing else may.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaidSelection {
+    executable: PathBuf,
+    credential_file: PathBuf,
+    profile: crate::provenance::WrapperProfile,
+    cli_version: String,
+    cli_sha256: String,
+    auth_shape: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaidFamilies {
+    #[serde(default)]
+    claude: Option<PaidSelection>,
+    #[serde(default)]
+    codex: Option<PaidSelection>,
+    #[serde(default)]
+    dsh: Option<PaidSelection>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaidManifest {
+    version: u32,
+    families: PaidFamilies,
+}
+/// The dsh paid shape: each route's key with the operator-attested UTC
+/// valid-through instant (Unix seconds) in the same record.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DshAttested {
+    #[serde(rename = "DASHSCOPE_API_KEY")]
+    dashscope: AttestedKey,
+    #[serde(rename = "SPARK_API_KEY")]
+    spark: AttestedKey,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttestedKey {
+    key: String,
+    valid_through: u64,
+}
+
 fn cstring(s: &std::ffi::OsStr) -> Result<CString, String> {
     CString::new(s.as_bytes()).map_err(|_| "private_path_invalid".into())
 }
@@ -407,6 +453,9 @@ fn private_metadata(m: &std::fs::Metadata, uid: u32) -> bool {
         && m.len() <= PRIVATE_LIMIT
 }
 fn private_read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
+    crate::provenance::decode(&private_bytes(path)?).map_err(|_| "private_input_invalid".into())
+}
+fn private_bytes(path: &Path) -> Result<Vec<u8>, String> {
     let parent = directory(path.parent().ok_or("private_path_invalid")?)?;
     let f = fd_open(
         &parent,
@@ -425,7 +474,7 @@ fn private_read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String
     if b.len() as u64 > PRIVATE_LIMIT {
         return Err("private_input_oversized".into());
     }
-    crate::provenance::decode(&b).map_err(|_| "private_input_invalid".into())
+    Ok(b)
 }
 fn make_dir(parent: &File, name: &str) -> Result<File, String> {
     let c = CString::new(name).expect("fixed directory name");
@@ -593,11 +642,379 @@ fn yaml_flow(value: &Value) -> String {
         .collect()
 }
 
-fn manifest(config: &Path) -> Result<Manifest, String> {
+/// One family's selection from either closed version: v1 locators alone, or
+/// v2 locators with the paid contract that binds them.
+struct Selected {
+    executable: PathBuf,
+    credential_file: PathBuf,
+    paid: Option<PaidSelection>,
+}
+fn selection(config: &Path, family: &str) -> Result<Selected, String> {
     if !config.is_absolute() {
         return Err("wrapper_config_locator_invalid".into());
     }
-    let manifest: Manifest = private_read(config)?;
+    let bytes = private_bytes(config)?;
+    if let Ok(manifest) = crate::provenance::decode::<Manifest>(&bytes) {
+        validate_v1(&manifest)?;
+        let s = match family {
+            "claude" => manifest.families.claude,
+            "codex" => manifest.families.codex,
+            _ => manifest.families.dsh,
+        };
+        return Ok(Selected {
+            executable: s.executable,
+            credential_file: s.credential_file,
+            paid: None,
+        });
+    }
+    let paid = paid_selection(&bytes, family)?;
+    Ok(Selected {
+        executable: paid.executable.clone(),
+        credential_file: paid.credential_file.clone(),
+        paid: Some(paid),
+    })
+}
+fn paid_selection(bytes: &[u8], family: &str) -> Result<PaidSelection, String> {
+    let manifest: PaidManifest =
+        crate::provenance::decode(bytes).map_err(|_| "private_input_invalid")?;
+    if manifest.version != 2 {
+        return Err("wrapper_config_version".into());
+    }
+    let selected = match family {
+        "claude" => manifest.families.claude,
+        "codex" => manifest.families.codex,
+        _ => manifest.families.dsh,
+    }
+    .ok_or("contract_missing")?;
+    if !selected.executable.is_absolute() || !selected.credential_file.is_absolute() {
+        return Err("wrapper_selection_invalid".into());
+    }
+    if selected.profile.family() != family || selected.profile.via_brokkr() {
+        return Err("profile_mismatch".into());
+    }
+    if selected.cli_version != selected.profile.cli_version() {
+        return Err("version_unsupported".into());
+    }
+    if !crate::provenance::is_hash(&selected.cli_sha256) {
+        return Err("digest_invalid".into());
+    }
+    if selected.auth_shape != auth_shape(family) {
+        return Err("auth_shape_unsupported".into());
+    }
+    Ok(selected)
+}
+/// The one auth-file shape each family's paid contract may name.
+pub fn auth_shape(family: &str) -> &'static str {
+    match family {
+        "claude" => "claude_oauth_v1",
+        "codex" => "codex_chatgpt_v1",
+        _ => "dsh_routes_attested_v1",
+    }
+}
+/// The exact `--version` line each profile's CLI answers.
+fn version_banner(profile: crate::provenance::WrapperProfile) -> String {
+    match profile.family() {
+        "claude" => format!("{} (Claude Code)", profile.cli_version()),
+        "codex" => format!("codex-cli {}", profile.cli_version()),
+        _ => profile.cli_version().to_string(),
+    }
+}
+/// A pinned executable is a regular file itself (no symlink or forwarding
+/// path), executable, owned by the operator or root and writable by no one
+/// else, under safe ancestors, and its bytes hash to the pin.
+fn check_pinned(executable: &Path, sha256: &str) -> Result<(), String> {
+    directory(executable.parent().ok_or("executable_unsafe")?).map_err(|_| "executable_unsafe")?;
+    let m = std::fs::symlink_metadata(executable).map_err(|_| "executable_unavailable")?;
+    let uid = unsafe { libc::geteuid() };
+    if !m.file_type().is_file()
+        || m.mode() & 0o111 == 0
+        || m.mode() & 0o022 != 0
+        || (m.uid() != uid && m.uid() != 0)
+    {
+        return Err("executable_unsafe".into());
+    }
+    let mut head = [0u8; 4];
+    let n = File::open(executable)
+        .and_then(|mut f| f.read(&mut head))
+        .map_err(|_| "executable_unavailable")?;
+    if !native_image(&head[..n]) {
+        return Err("executable_not_native".into());
+    }
+    if crate::identity::file_hash(executable).map_err(|_| "executable_unavailable")? != sha256 {
+        return Err("digest_mismatch".into());
+    }
+    Ok(())
+}
+/// Whether `head` opens a native executable image: ELF, or Mach-O thin or
+/// universal. An interpreter script (`#!`) or any other launcher forwards to
+/// bytes its digest cannot cover, so it can never establish CLI identity.
+fn native_image(head: &[u8]) -> bool {
+    const MAGIC: [[u8; 4]; 7] = [
+        *b"\x7fELF",
+        [0xfe, 0xed, 0xfa, 0xce],
+        [0xfe, 0xed, 0xfa, 0xcf],
+        [0xce, 0xfa, 0xed, 0xfe],
+        [0xcf, 0xfa, 0xed, 0xfe],
+        [0xca, 0xfe, 0xba, 0xbe],
+        [0xbe, 0xba, 0xfe, 0xca],
+    ];
+    MAGIC.iter().any(|m| head == m)
+}
+const PROBE_LIMIT: usize = 4096;
+const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Run `EXECUTABLE --version` with a closed environment, an empty private
+/// HOME, no stdin and a bounded stdout, and kill its whole group afterwards.
+/// The banner never leaves this function; only the verdict does.
+fn probe_version(executable: &Path, expected: &str) -> Result<(), String> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    use std::os::unix::process::CommandExt as _;
+    let home = crate::runner::private_tempdir("cli-probe-").map_err(|_| "version_probe_failed")?;
+    let mut probe = Command::new(executable);
+    probe
+        .arg("--version")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .env("HOME", home.path());
+    // Every child gets the private runtime map (decision 0075 §1): a private
+    // TMPDIR and the four XDG directories, never the operator's defaults.
+    for (key, name) in [
+        ("TMPDIR", "tmp"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_STATE_HOME", "state"),
+    ] {
+        let dir = home.path().join(name);
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&dir)
+            .map_err(|_| "version_probe_failed")?;
+        probe.env(key, dir);
+    }
+    let mut child = probe
+        .current_dir(home.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|_| "version_probe_failed")?;
+    let group = child.id() as i32;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stdout.take(PROBE_LIMIT as u64 + 1).read_to_end(&mut out);
+        let _ = tx.send(out);
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < PROBE_DEADLINE => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            _ => break None,
+        }
+    };
+    // The group is the probe's alone: no descendant outlives the verdict.
+    unsafe { libc::kill(-group, libc::SIGKILL) };
+    let _ = child.wait();
+    let out = rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .map_err(|_| "version_probe_failed")?;
+    let status = status.ok_or("version_probe_timeout")?;
+    if !status.success() || out.len() > PROBE_LIMIT {
+        return Err("version_probe_failed".into());
+    }
+    let line = out.strip_suffix(b"\n").unwrap_or(&out);
+    if line != expected.as_bytes() {
+        return Err("version_mismatch".into());
+    }
+    Ok(())
+}
+
+/// One planned family's verified local contract: public identity only.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Contract {
+    pub family: String,
+    pub cli: crate::provenance::CliIdentity,
+    pub auth_shape: String,
+}
+/// Verify every named family's v2 contract before anything spends: profile,
+/// exact supported version, pinned and measured digest, bounded version
+/// probe and auth-file shape. The refusal is `<family>: <finite cause>`.
+pub fn paid_contracts(config: &Path, families: &[&str]) -> Result<Vec<Contract>, String> {
+    if !config.is_absolute() {
+        return Err("selection: wrapper_config_locator_invalid".into());
+    }
+    let bytes = private_bytes(config).map_err(|e| format!("selection: {e}"))?;
+    families
+        .iter()
+        .map(|family| {
+            let s = paid_selection(&bytes, family).map_err(|e| format!("{family}: {e}"))?;
+            check_pinned(&s.executable, &s.cli_sha256).map_err(|e| format!("{family}: {e}"))?;
+            probe_version(&s.executable, &version_banner(s.profile))
+                .map_err(|e| format!("{family}: {e}"))?;
+            Ok(Contract {
+                family: family.to_string(),
+                cli: crate::provenance::CliIdentity {
+                    profile: s.profile,
+                    version: s.cli_version,
+                    sha256: s.cli_sha256,
+                },
+                auth_shape: s.auth_shape,
+            })
+        })
+        .collect()
+}
+
+/// The credential a declaration spends: one login per Claude or Codex
+/// family, one attested key per dsh route.
+pub fn credential_key(family: &str, model: &str) -> String {
+    match family {
+        "dsh" => format!("dsh:{}", model.split_once('/').map_or(model, |(p, _)| p)),
+        other => other.to_string(),
+    }
+}
+fn claude_validated(auth: &ClaudeAuth) -> Result<(), String> {
+    nonempty(&auth.oauth.access_token)?;
+    if auth.oauth.expires_at > 9_007_199_254_740_991 || auth.oauth.scopes != ["user:inference"] {
+        return Err("private_credential_invalid".into());
+    }
+    Ok(())
+}
+fn codex_validated(auth: &CodexAuth) -> Result<(), String> {
+    for token in [
+        &auth.tokens.id_token,
+        &auth.tokens.access_token,
+        &auth.tokens.account_id,
+        &auth.tokens.refresh_token,
+    ] {
+        nonempty(token)?;
+    }
+    if auth.auth_mode != "chatgpt"
+        || auth.api_key.is_some()
+        || chrono::DateTime::parse_from_rfc3339(&auth.last_refresh).is_err()
+    {
+        return Err("private_credential_invalid".into());
+    }
+    Ok(())
+}
+/// The NumericDate `exp` of a bounded base64url JWT payload: an integer, or
+/// the expiry is unknown. The decoded claims never leave this function.
+fn jwt_expiry(token: &str) -> Result<u64, String> {
+    use base64::Engine as _;
+    let unknown = || "credential_expiry_unknown".to_string();
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 || parts[1].len() > 8192 {
+        return Err(unknown());
+    }
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(parts[1].trim_end_matches('='))
+        .map_err(|_| unknown())?;
+    let claims: Value = serde_json::from_slice(&payload).map_err(|_| unknown())?;
+    claims
+        .get("exp")
+        .and_then(Value::as_u64)
+        .filter(|exp| *exp <= i64::MAX as u64)
+        .ok_or_else(unknown)
+}
+/// A Codex login lasts until its access token's `exp`. The id token is
+/// identity evidence the CLI does not need to be current; a short-lived id
+/// token must not keep the login inside the freshness margin forever.
+fn codex_expiry(auth: &CodexAuth) -> Result<u64, String> {
+    jwt_expiry(&auth.tokens.access_token)
+}
+/// A paid launch's credential must be unexpired and, when the coordinator
+/// admitted its chunk with a margin, still valid through that instant.
+fn still_valid(until: u64, through: u64) -> Result<(), String> {
+    if until <= now_unix() {
+        Err("private_credential_expired".into())
+    } else if until < through {
+        Err("private_credential_margin".into())
+    } else {
+        Ok(())
+    }
+}
+/// The run binding a paid-baseline trial hands its wrapper in argv
+/// (`--paid-launch SHA256:VALID_THROUGH`, never the environment, which stays
+/// the accepted agent inputs of 0075 §1): the manifest's CLI digest and the
+/// validity the chunk was admitted with. Anything malformed refuses.
+fn paid_binding(launch: Option<&str>) -> Result<Option<(String, u64)>, String> {
+    let Some(launch) = launch else {
+        return Ok(None);
+    };
+    match launch.split_once(':') {
+        Some((sha, through)) if crate::provenance::is_hash(sha) => through
+            .parse()
+            .map(|t| Some((sha.to_string(), t)))
+            .map_err(|_| "wrapper_paid_binding_invalid".into()),
+        _ => Err("wrapper_paid_binding_invalid".into()),
+    }
+}
+/// Tell a paid coordinator, on the descriptor it handed down, whether the
+/// pinned CLI is about to run. The descriptor is closed on exec first, so the
+/// CLI never inherits it and a model can never write the report.
+fn report_launch(paid_launch: Option<&str>, word: &[u8]) {
+    if paid_launch.is_none() {
+        return;
+    }
+    let fd = crate::runner::LAUNCH_FD;
+    unsafe {
+        if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == 0 {
+            let _ = libc::write(fd, word.as_ptr().cast(), word.len());
+        }
+    }
+}
+fn dsh_route(auth: DshAttested, provider: &str) -> AttestedKey {
+    if provider == "dashscope" {
+        auth.dashscope
+    } else {
+        auth.spark
+    }
+}
+/// When the credential behind `key` stops being valid, in Unix seconds, read
+/// from the v2 selection's credential with its contract's shape: Claude's
+/// `expiresAt` (milliseconds), the Codex access token's `exp` (its
+/// `last_refresh` must parse; copy time is no validity evidence), or the dsh
+/// route's attested `valid_through`. Malformed or absent evidence refuses.
+pub fn valid_until(config: &Path, key: &str) -> Result<u64, String> {
+    let (family, route) = key.split_once(':').unwrap_or((key, ""));
+    let bytes = private_bytes(config)?;
+    let selected = paid_selection(&bytes, family)?;
+    match family {
+        "claude" => {
+            let auth: ClaudeAuth = private_read(&selected.credential_file)?;
+            claude_validated(&auth)?;
+            Ok(auth.oauth.expires_at / 1000)
+        }
+        "codex" => {
+            let auth: CodexAuth = private_read(&selected.credential_file)?;
+            codex_validated(&auth)?;
+            codex_expiry(&auth)
+        }
+        _ => {
+            let auth: DshAttested = private_read(&selected.credential_file)?;
+            nonempty(&auth.dashscope.key)?;
+            nonempty(&auth.spark.key)?;
+            if !matches!(route, "dashscope" | "spark-glm") {
+                return Err("private_credential_invalid".into());
+            }
+            Ok(dsh_route(auth, route).valid_through)
+        }
+    }
+}
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn validate_v1(manifest: &Manifest) -> Result<(), String> {
     if manifest.version != 1 {
         return Err("wrapper_config_version".into());
     }
@@ -610,12 +1027,7 @@ fn manifest(config: &Path) -> Result<Manifest, String> {
             return Err("wrapper_selection_invalid".into());
         }
     }
-    Ok(manifest)
-}
-/// Validate the credential-free selection after controls, before admitting a
-/// potentially large paid product. This never opens a credential file.
-pub fn validate_config(config: &Path) -> Result<(), String> {
-    manifest(config).map(|_| ())
+    Ok(())
 }
 
 fn validate_goal(family: &str, goal: &str) -> Result<(), String> {
@@ -666,11 +1078,26 @@ fn through_driver(direct: &Command, family: &str, driver: &Path) -> Command {
     cmd
 }
 
+/// Launch the family CLI, or say why not. Returning at all means the CLI
+/// never ran: a paid coordinator learns that on the launch descriptor and
+/// keeps the slot unscored (proposed 0137).
 pub fn run(
     harness: &str,
     model: &str,
     config: &Path,
     via_brokkr: Option<&Path>,
+    paid_launch: Option<&str>,
+) -> Result<(), String> {
+    let result = launch(harness, model, config, via_brokkr, paid_launch);
+    report_launch(paid_launch, b"unstarted\n");
+    result
+}
+fn launch(
+    harness: &str,
+    model: &str,
+    config: &Path,
+    via_brokkr: Option<&Path>,
+    paid_launch: Option<&str>,
 ) -> Result<(), String> {
     validate_model(harness, model)?;
     if !config.is_absolute() {
@@ -688,17 +1115,31 @@ pub fn run(
     }
     let inputs = Inputs::environment()?;
     validate_goal(harness, &inputs.goal)?;
-    let manifest = manifest(config)?;
-    let selected = match harness {
-        "claude" => manifest.families.claude,
-        "codex" => manifest.families.codex,
-        _ => manifest.families.dsh,
-    };
+    let selected = selection(config, harness).map_err(|e| match e.as_str() {
+        "contract_missing" => "wrapper_contract_missing".to_string(),
+        _ => e,
+    })?;
     let m =
         std::fs::metadata(&selected.executable).map_err(|_| "wrapper_executable_unavailable")?;
     if !m.is_file() || m.mode() & 0o111 == 0 {
         return Err("wrapper_executable_invalid".into());
     }
+    // A paid contract binds the bytes: recheck the pin at launch, so a CLI
+    // replaced since preflight never runs under the recorded identity. A
+    // coordinator's run binding wins over the mutable selection: a selection
+    // re-pinned mid-run refuses rather than running the new binary.
+    let binding = paid_binding(paid_launch)?;
+    let through = binding.as_ref().map_or(0, |(_, t)| *t);
+    match (&selected.paid, &binding) {
+        (Some(paid), Some((sha, _))) if *sha != paid.cli_sha256 => {
+            return Err("wrapper_contract_drift".into());
+        }
+        (Some(paid), _) => check_pinned(&selected.executable, &paid.cli_sha256)
+            .map_err(|e| format!("wrapper_cli_{e}"))?,
+        (None, Some(_)) => return Err("wrapper_contract_missing".into()),
+        (None, None) => {}
+    }
+    let paid = selected.paid.is_some();
     let cwd = std::env::current_dir().map_err(|_| "wrapper_workdir")?;
     preflight(harness, &cwd, Path::new("/etc"))?;
     let map = runtime(&cwd)?;
@@ -731,11 +1172,9 @@ pub fn run(
     match harness {
         "claude" => {
             let auth: ClaudeAuth = private_read(&selected.credential_file)?;
-            nonempty(&auth.oauth.access_token)?;
-            if auth.oauth.expires_at > 9_007_199_254_740_991
-                || auth.oauth.scopes != ["user:inference"]
-            {
-                return Err("private_credential_invalid".into());
+            claude_validated(&auth)?;
+            if paid {
+                still_valid(auth.oauth.expires_at / 1000, through)?;
             }
             let dir = make_dir(&home_fd, ".claude")?;
             write_private(
@@ -782,19 +1221,9 @@ pub fn run(
         }
         "codex" => {
             let auth: CodexAuth = private_read(&selected.credential_file)?;
-            for token in [
-                &auth.tokens.id_token,
-                &auth.tokens.access_token,
-                &auth.tokens.account_id,
-                &auth.tokens.refresh_token,
-            ] {
-                nonempty(token)?;
-            }
-            if auth.auth_mode != "chatgpt"
-                || auth.api_key.is_some()
-                || chrono::DateTime::parse_from_rfc3339(&auth.last_refresh).is_err()
-            {
-                return Err("private_credential_invalid".into());
+            codex_validated(&auth)?;
+            if paid {
+                still_valid(codex_expiry(&auth)?, through)?;
             }
             let dir = make_dir(&home_fd, ".codex")?;
             write_private(
@@ -846,10 +1275,28 @@ pub fn run(
             cmd.arg("-");
         }
         _ => {
-            let auth: DshAuth = private_read(&selected.credential_file)?;
-            nonempty(&auth.dashscope)?;
-            nonempty(&auth.spark)?;
             let (provider, model_id) = model.split_once('/').expect("validated model");
+            let auth = if paid {
+                let attested: DshAttested = private_read(&selected.credential_file)?;
+                nonempty(&attested.dashscope.key)?;
+                nonempty(&attested.spark.key)?;
+                let (dashscope, spark) = (attested.dashscope, attested.spark);
+                let route_through = if provider == "dashscope" {
+                    dashscope.valid_through
+                } else {
+                    spark.valid_through
+                };
+                still_valid(route_through, through)?;
+                DshAuth {
+                    dashscope: dashscope.key,
+                    spark: spark.key,
+                }
+            } else {
+                let auth: DshAuth = private_read(&selected.credential_file)?;
+                nonempty(&auth.dashscope)?;
+                nonempty(&auth.spark)?;
+                auth
+            };
             let (key, token, route) = if provider == "dashscope" {
                 (
                     "DASHSCOPE_API_KEY",
@@ -913,6 +1360,7 @@ pub fn run(
             .map_err(|_| "eval_prompt_unavailable")?;
         cmd.stdin(f);
     }
+    report_launch(paid_launch, crate::runner::LAUNCH_READY);
     let _error = cmd.exec();
     Err("wrapper_exec_failed".into())
 }
@@ -1137,13 +1585,14 @@ mod tests {
         std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
         let config = Path::new("/nonexistent/selection.json");
-        let run_with = |driver: &Path| run("claude", "claude-sonnet-5-5", config, Some(driver));
+        let run_with =
+            |driver: &Path| run("claude", "claude-sonnet-5-5", config, Some(driver), None);
         assert_eq!(run_with(Path::new("rel")), Err("driver_invalid".into()));
         assert_eq!(run_with(&plain), Err("driver_invalid".into()));
         assert_eq!(run_with(&exe), Err("driver_contract_unknown".into()));
         // The same call without the flag goes on to read its inputs and refuses
         // for a different reason, which shows the refusal above preceded them.
-        let direct = run("claude", "claude-sonnet-5-5", config, None).unwrap_err();
+        let direct = run("claude", "claude-sonnet-5-5", config, None, None).unwrap_err();
         assert_ne!(direct, "driver_contract_unknown");
     }
     #[test]
@@ -1217,5 +1666,103 @@ mod tests {
             toml(&json!("\"\\\n\r\t\u{0008}\u{007f}🦀")),
             "\"\\\"\\\\\\n\\r\\t\\u0008\\u007F🦀\""
         );
+    }
+}
+
+#[cfg(test)]
+mod paid_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    fn token(payload: &str) -> String {
+        let e = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        format!("{}.{}.sig", e.encode("{}"), e.encode(payload))
+    }
+
+    #[test]
+    fn only_a_native_image_can_be_a_pinned_cli() {
+        for magic in [
+            &b"\x7fELF"[..],
+            &[0xfe, 0xed, 0xfa, 0xce],
+            &[0xfe, 0xed, 0xfa, 0xcf],
+            &[0xce, 0xfa, 0xed, 0xfe],
+            &[0xcf, 0xfa, 0xed, 0xfe],
+            &[0xca, 0xfe, 0xba, 0xbe],
+            &[0xbe, 0xba, 0xfe, 0xca],
+        ] {
+            assert!(native_image(magic), "{magic:?}");
+        }
+        for other in [&b"#!/b"[..], b"#!", b"", b"\x7fEL", b"MZ\x90\0"] {
+            assert!(!native_image(other), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn codex_validity_is_the_access_token_alone() {
+        let auth = |id: String, access: String| CodexAuth {
+            auth_mode: "chatgpt".into(),
+            api_key: None,
+            tokens: Tokens {
+                id_token: id,
+                access_token: access,
+                refresh_token: "r".into(),
+                account_id: "a".into(),
+            },
+            last_refresh: "2026-11-22T00:00:00Z".into(),
+        };
+        // An id token that expires first never shortens the login.
+        let fresh = token(r#"{"exp":4102444800}"#);
+        assert_eq!(
+            codex_expiry(&auth(token(r#"{"exp":1}"#), fresh.clone())),
+            Ok(4102444800)
+        );
+        assert_eq!(codex_expiry(&auth("opaque".into(), fresh)), Ok(4102444800));
+        assert!(codex_expiry(&auth(token(r#"{"exp":1}"#), "opaque".into())).is_err());
+    }
+
+    #[test]
+    fn access_token_expiry_is_a_bounded_integer_claim_or_unknown() {
+        assert_eq!(jwt_expiry(&token(r#"{"exp":1767225600}"#)), Ok(1767225600));
+        // Padded payloads decode the same.
+        let padded = format!(
+            "e30.{}.sig",
+            base64::engine::general_purpose::URL_SAFE.encode(r#"{"exp":7}"#)
+        );
+        assert_eq!(jwt_expiry(&padded), Ok(7));
+        for bad in [
+            token(r#"{"exp":1.5}"#),
+            token(r#"{"exp":-1}"#),
+            token(r#"{"exp":"1767225600"}"#),
+            token(r#"{"exp":18446744073709551615}"#),
+            token(r#"{"iat":1}"#),
+            token("not json"),
+            "opaque-token".to_string(),
+            "a.b".to_string(),
+            "a.!!.c".to_string(),
+            format!("a.{}.c", "A".repeat(8193)),
+        ] {
+            assert_eq!(
+                jwt_expiry(&bad),
+                Err("credential_expiry_unknown".to_string()),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_profile_has_one_exact_banner_and_auth_shape() {
+        use crate::provenance::WrapperProfile::*;
+        assert_eq!(version_banner(Claude2_1_310), "2.1.310 (Claude Code)");
+        assert_eq!(version_banner(Codex0_164_0), "codex-cli 0.164.0");
+        assert_eq!(version_banner(Dsh0_1_5Rc1), "0.1.5-rc.1");
+        assert_eq!(auth_shape("claude"), "claude_oauth_v1");
+        assert_eq!(auth_shape("codex"), "codex_chatgpt_v1");
+        assert_eq!(auth_shape("dsh"), "dsh_routes_attested_v1");
+        assert_eq!(credential_key("dsh", "dashscope/glm-5.3"), "dsh:dashscope");
+        assert_eq!(
+            credential_key("dsh", "spark-glm/GLM-5.3-Flash-EXL3"),
+            "dsh:spark-glm"
+        );
+        assert_eq!(credential_key("codex", "gpt-6-luna"), "codex");
     }
 }

@@ -83,8 +83,98 @@ closed private selection/auth schemas, exact versioned launch recipes and
 conservative per-family tool surfaces. Offline stand-ins prove assembly;
 first authenticated smoke with each approved model, live HTTP MCP (especially
 dsh), and the paid baseline remain operator-owned. Dry-run opens no private
-selection, creates no output and launches nothing. Never treat offline assembly
+selection, creates no output and launches nothing; a paid run needs
+`--authorized-product` (see "Paid baseline: one operator command" below). Never treat offline assembly
 or a declared surface as a provider interoperability or confinement claim.
+
+## Paid baseline: one operator command (#393, proposed 0137)
+
+`baseline` runs a whole paid product, and the operator's external driver is
+no longer needed. It prints the plan, verifies every family's pinned CLI
+contract and credential shape, runs fresh oracle/null controls and admits
+paid work only if they validate. Then it runs task-major chunks of one
+task × model × five trials, sequentially (concurrency 1, accepted 0076).
+
+```bash
+$E baseline --tier deliverability --config /private/wrappers.json --output /private/run --dry-run
+PRODUCT=baseline-v1-…    # the plan's product_id, after reviewing it
+$E baseline --tier deliverability --config /private/wrappers.json --output /private/run --authorized-product "$PRODUCT"
+# after an interruption, the same command plus --resume (and the same --freshness-minutes if overridden):
+$E baseline --tier deliverability --config /private/wrappers.json --output /private/run --authorized-product "$PRODUCT" --resume
+```
+
+* **Plan and authorization.** The plan (stdout, one JSON line) lists the
+  control slots, every chunk with its nominal repetitions, the six
+  declarations from `agents-baseline.json`, the per-credential freshness rule
+  and margin, and `estimate.nominal_minutes`. That is every slot at its full
+  600000 ms deadline: 5120 minutes for the default product (32 + 480 slots),
+  320 for deliverability. Preparation, cleanup and renewal waits come on top.
+  `product_id` is `baseline-v1-<sha256>` over the tier, catalogue, tasks,
+  declarations, repetitions, deadline and concurrency. The output path, margin
+  and credential state are not part of it. `--dry-run` reads, creates and
+  launches nothing. Without `--authorized-product`, the run refuses with
+  `authorization_missing`; with another id it refuses with
+  `authorization_mismatch`. Both exit 2 after printing the plan.
+* **Contracts.** The `--config` must be the version-2 selection in
+  [wrappers.md](wrappers.md#paid-selection-version-2-proposed-0137). Each
+  refusal names its family and cause, and it comes before any output or paid
+  launch (the bounded `--version` probe is the only process it starts).
+* **Freshness.** A chunk starts only if its credential has at least
+  `--freshness-minutes` (default 70) left. Claude logins, Codex logins and
+  each dsh route are separate credentials. Other chunks run while one
+  defers. If none can start, the run prints `baseline waiting: … blocked: …`
+  and rereads the credentials every `--renewal-poll-seconds` (default 60)
+  until one is renewed. SIGINT or SIGTERM stops the wait.
+* **Output.** One private 0700 directory: `manifest.json`, `run.lock`,
+  `controls/`, `attempts/<attempt>.json` (and `.closed` after owned cleanup),
+  `paid/<attempt>/` (the retained matrix per chunk attempt), and at the end
+  `controls.jsonl`, `paid.jsonl` (canonical task → model → repetition order)
+  and `report.json`. `paid.jsonl` holds one scored row per slot;
+  `report.json` also counts every retained unscored attempt (refused,
+  interrupted, killed) under `attempts` and `harness_errors`, so retries are
+  visible and never change a success rate. Exit 0, 1 and 2 keep their
+  meanings in [run-plan.md](run-plan.md#admission-retention-and-statuses),
+  ruled over the scored rows. Every paid row carries `provenance.agent.cli`:
+  the wrapper profile, the CLI version and its sha256.
+* **Which CLIs qualify (read before the first paid run).** The pin attests
+  the bytes of the file the wrapper execs, nothing downstream. Pin the
+  CLI's own native binary, never a launcher: an interpreter script refuses
+  (`executable_not_native`), but a *native* launcher that execs something
+  else (a Volta shim, for example) passes the check and the row would record
+  the launcher's version and digest, not the CLI's. The harness cannot tell
+  the two apart, so choosing the real binary is the operator's attestation.
+  Only the profiles' exact versions qualify: Claude Code 2.1.310, codex-cli
+  0.164.0 and dsh 0.1.5-rc.1. The CLIs the published pages record
+  (Claude 2.1.316–2.1.319, dsh 0.2.1-rc.3 and 0.2.2-rc.1) refuse with
+  `version_mismatch` until a profile for that version lands (a reviewed
+  change to `wrappers.rs`). The dsh 0.1.5-rc.1 banner (`0.1.5-rc.1`) is the
+  profile's, not yet observed from a real binary. A CLI shipped only as an
+  interpreted package has no native file to pin and cannot run paid.
+* **Resume.** A score counts once its trial's hash-bound evidence is
+  retained, and a resume reruns only the slots that are still outstanding.
+  Harness-error and interrupted attempts stay as evidence and use up no slot.
+  Rows carry their nominal slot coordinates and a seed from the manifest's
+  master, so a resumed slot is the planned one. A wrapper that refuses before
+  exec (a replaced or re-pinned CLI, a login shorter than the chunk was
+  admitted for) leaves an unscored harness-error attempt, never a measured
+  failure. A resume refuses before launching anything in these cases: a
+  second writer (`run_writer_busy`), a changed product, margin, harness or
+  target (`manifest_drift`), a CLI changed since the manifest
+  (`contract_drift`, or `digest_mismatch` under the old pin), unexpected,
+  duplicated or tampered evidence, or conflicting derived output
+  (`output_conflict`). A complete run reopens with no private input present
+  and regenerates missing derived output from its retained rows. A coordinator killed
+  mid-chunk leaves an attempt whose cleanup is unproved. Check for surviving
+  agent processes, then add `--confirm-cleanup <attempt>`, which the refusal
+  names. A trial that still holds admission refuses even with a confirmation.
+  An interruption during the controls leaves a control matrix with
+  harness-error rows, which every later resume refuses as
+  `baseline_controls_failed`: start again with a fresh `--output` (nothing
+  paid has run at that point).
+  A provider may have charged for a request whose score was never committed.
+* **Not measured.** Tokens per success stay unmeasured (#391, proposed 0136).
+  The proofs run fake direct CLIs offline (`tests/paid_baseline.rs`). The
+  authenticated six-model smoke remains the operator's.
 
 ## Commands
 

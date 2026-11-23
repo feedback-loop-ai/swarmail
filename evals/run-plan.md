@@ -69,8 +69,9 @@ resolves to the wrapper and its private configuration.
 
 ```bash
 $E baseline --tier hard --config /private/wrappers.json --output /tmp/baseline-hard --dry-run
+PRODUCT=baseline-v1-…   # the dry-run plan's product_id
 # Only the operator executes without --dry-run, after the six-model authenticated smoke:
-$E baseline --tier hard --config /private/wrappers.json --output /tmp/baseline-hard
+$E baseline --tier hard --config /private/wrappers.json --output /tmp/baseline-hard --authorized-product "$PRODUCT"
 ```
 
 **The paid hard-tier run is the operator's, after merge.** Delivery proves the
@@ -109,8 +110,9 @@ controls-first admission.
 
 ```bash
 $E baseline --tier deliverability --config /private/wrappers.json --output /tmp/baseline-deliverability --dry-run
+PRODUCT=baseline-v1-…   # the dry-run plan's product_id
 # Only the operator executes without --dry-run, after the six-model authenticated smoke:
-$E baseline --tier deliverability --config /private/wrappers.json --output /tmp/baseline-deliverability
+$E baseline --tier deliverability --config /private/wrappers.json --output /tmp/baseline-deliverability --authorized-product "$PRODUCT"
 ```
 
 **The paid deliverability-tier run is the operator's, after merge.** Delivery
@@ -144,8 +146,9 @@ the paid run.
 
 ```bash
 $E baseline --tier expert --config /private/wrappers.json --output /tmp/baseline-expert --dry-run
+PRODUCT=baseline-v1-…   # the dry-run plan's product_id
 # Only the operator executes without --dry-run, after the six-model authenticated smoke:
-$E baseline --tier expert --config /private/wrappers.json --output /tmp/baseline-expert
+$E baseline --tier expert --config /private/wrappers.json --output /tmp/baseline-expert --authorized-product "$PRODUCT"
 ```
 
 **The paid expert-tier run is the operator's, after merge.** Delivery proves
@@ -183,7 +186,9 @@ export SWARMAIL_BIN="$PWD/target/debug/swarmail"
 E="$PWD/evals/target/debug/swarmail-evals"
 $E baseline --config /private/wrappers.json --output /tmp/baseline-new --dry-run
 # Only the operator executes without --dry-run, after the six-model authenticated smoke:
-$E baseline --config /private/wrappers.json --output /tmp/baseline-new
+PRODUCT=baseline-v1-…   # the dry-run plan's product_id
+$E baseline --config /private/wrappers.json --output /tmp/baseline-new --authorized-product "$PRODUCT"
+# After an interruption: the same command plus --resume.
 ```
 
 The dry-run prints the actual ordered tasks and six models, control/paid
@@ -206,54 +211,88 @@ ownership; no shorter competing parent kill timer is added.
 
 ## Admission, retention and statuses
 
-Execution exclusively creates the requested output leaf at 0700 under an
+A start exclusively creates the requested output leaf at 0700 under an
 existing parent (symlinked ancestors only under the README's root-owned
-rule). Existing or partial outputs refuse unchanged.
-controls.jsonl and paid.jsonl are streamed as rows commit, at 0600. Keep the
-whole output tree, including incomplete bytes and absent completion markers.
-No automatic retry, overwrite, row filtering, resume, archive conversion or
-fabricated suffix is performed by the coordinator.
+rule); an existing output refuses unchanged. `--resume` reopens that private
+leaf, takes the run's exclusive writer lock and must reproduce its
+`manifest.json` (product, margin, harness and target) exactly; the CLI
+contracts and fixture master it recorded bind the rest of the run
+(proposed 0137; the README's "Paid baseline: one operator command" has the
+operator procedure). A resume rechecks the live contracts and credentials
+only before it starts a chunk, so a complete run's derived output can be
+regenerated from retained rows with no private input present. Keep the
+whole output tree, including incomplete attempts and absent completion
+markers. The coordinator never overwrites, fabricates or filters a scored
+row; unscored attempts stay under paid/, out of paid.jsonl, and counted
+in report.json.
 
-1. Run the fresh free oracle/null matrix over every task of the selected
+1. Before any output: the plan prints, `--authorized-product` must equal its
+   `product_id`, and every planned family's version-2 contract (profile,
+   exact version, pinned and measured sha256, bounded version probe, auth
+   shape) and credential validity evidence must verify (wrappers.md).
+2. Run the fresh free oracle/null matrix over every task of the selected
    product (the 16 default-tier tasks, the 3 hard ones with `--tier hard`, or the
    5 expert ones with `--tier expert`, or the deliverability one with
    `--tier deliverability`), in
-   task → agent → repetition order, retaining controls.jsonl and controls/.
-2. Require strict complete v2 rows bound to this invocation's prelaunch plan,
+   task → agent → repetition order, retaining controls/. A resume reuses only
+   this run's complete retained control matrix.
+3. Require strict complete v2 rows bound to the prelaunch plan,
    unique cell/trial identities, catalogue/task definitions, declared builtins,
    harness/target identity and effective limits. Every oracle must pass with no
    class; every null must fail with that task's idle_class. Expected matrix
    exit is 1, since null intentionally fails. Exit alone never admits paid work.
-   Also verify retained matrix/trial bindings against the streamed rows.
-3. Refuse any missing, duplicate, extra, malformed, foreign, wrong-class or
-   infrastructure row, mismatching limit, unexpected exit or interruption.
-   Retain controls but never launch paid work on refusal. After valid controls,
-   validate the credential-free private selection before admitting paid slots;
-   this opens no credential file.
-4. The command's paid branch uses the
-   fixed six declarations, five repetitions, same target, concurrency and
-   deadline. Preserve every emitted paid row, including harness errors and
-   the matrix owner's unstarted refusal suffix, in paid.jsonl and paid/.
-5. Strictly parse paid rows and validate complete accounting without requiring
-   model success. Generate report.json with the existing report logic even
-   after paid matrix exit 1/2 or incomplete accounting if every row parses.
-   Truncated/malformed streams remain untouched and refuse reporting.
+   Refuse any missing, duplicate, extra, malformed, foreign, wrong-class or
+   infrastructure row, mismatching limit, unexpected exit, corrupt retention
+   or interruption; retain controls but never launch paid work on refusal.
+   Publish controls.jsonl from the retained rows.
+4. Paid work runs as task-major chunks of one task × model × its outstanding
+   repetitions, with the fixed six declarations, five repetitions, same
+   target, concurrency one and deadline. A chunk starts only while its
+   credential has at least the freshness margin (default 70 minutes) left;
+   other chunks run meanwhile and the run waits, stating the blocked
+   credentials, when none can start. Each chunk attempt is published in
+   attempts/ before it starts and closed after the matrix's owned cleanup.
+   Its cells carry their nominal run coordinates (task and model by run
+   index, the planned repetition) and the seed the manifest's master gives
+   that slot, so a resumed slot is the same slot. Every trial's wrapper
+   rechecks, immediately before exec, the manifest's CLI digest and that the
+   login stays valid through the chunk's admission instant plus the margin.
+5. A slot is scored once its trial's hash-bound retained evidence holds a pass
+   or fail; harness errors and interruptions are unscored attempts kept as
+   evidence, and a terminal harness error stops the run (exit 2) for a resume.
+   A wrapper that refuses before exec reports so on a close-on-exec launch
+   descriptor: no model ran, the row is a harness error, the slot stays
+   outstanding.
+   Every paid row carries the verified CLI identity (`provenance.agent.cli`).
+6. When every slot is scored, publish paid.jsonl in canonical order and
+   report.json with the existing report logic over the scored rows plus
+   every retained unscored attempt row; existing files must hold the same
+   bytes.
 
-Output layout: controls.jsonl, controls/<matrix-id>/ (prelaunch matrix-plan.json,
-trials/<trial-id>/ and final matrix.json); paid.jsonl, paid/<matrix-id>/ with the
-same retention structure; report.json. Files are synthetic fixture evidence,
-not provider logs. The command discards raw child output through the current
-runner. Complete artifacts are detectable by their bound metadata/index; this
-is not fsync/power-loss durability or historical authentication.
+Output layout: manifest.json, run.lock, controls.jsonl, controls/<matrix-id>/
+(prelaunch matrix-plan.json, trials/<trial-id>/ and final matrix.json);
+attempts/<attempt-id>.json and .closed; paid/<attempt-id>/ with the same
+retention structure; paid.jsonl; report.json. Files are synthetic fixture
+evidence, not provider logs. The command discards raw child output through
+the current runner. Complete artifacts are detectable by their bound
+metadata/index; this is not fsync/power-loss durability or historical
+authentication.
 
 Exit 0 means complete all-pass paid results and a valid report. Exit 1 means
 complete measured business failures with a valid report. Exit 2 means an
 operational/admission/retention/interruption/accounting/report failure and wins
-over report success. The current missing-contract refusal is exit 2 and is not
-a model measurement. Reports count every requested row as an attempt, score
+over report success. Authorization, contract, credential and resume refusals
+are exit 2 and are not model measurements. Reports count every requested row as an attempt, score
 success over pass+fail, and also show passes/attempts; infrastructure is explicit.
-No failure or infrastructure row is removed from the denominator. An incomplete
-diagnostic report is not a completed baseline. Retain every row and report.
+No measured failure is removed from the denominator. A paid slot whose
+attempt ended unscored (a harness error, an interrupted or refused launch)
+is no measurement: it stays retained as evidence under paid/, consumes no
+slot, and the slot runs again. paid.jsonl holds each nominal slot's one
+scored row; report.json counts the unscored attempts too, as attempts and
+harness_errors (0055 §10, 0076 §5), so a run that needed retries reports
+more attempts than slots and never a changed success rate. The exit status
+is ruled over the scored rows, as before. An incomplete run publishes no report.json; its retained rows under paid/ are
+the evidence, and they are not a completed baseline.
 
 Before any operator-owned measurement run standalone fmt, locked clippy and
 full tests from [README](README.md), including `--test wrappers`, `--test baseline`
