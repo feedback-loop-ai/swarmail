@@ -741,6 +741,12 @@ fn trial_worker(parent: u32) -> i32 {
     panic!("no trial worker under {parent}");
 }
 
+/// Off Linux the only caller is ignored; the stub keeps it compiling.
+#[cfg(not(target_os = "linux"))]
+fn trial_worker(_parent: u32) -> i32 {
+    unreachable!("trial_worker reads /proc and runs on Linux only")
+}
+
 /// Replace `family`'s CLI with different bytes that still answer its banner.
 fn rotate(p: &Paid, family: &str) {
     p.write_cli(family, banner(family));
