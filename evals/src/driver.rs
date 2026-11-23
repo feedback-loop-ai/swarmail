@@ -4,13 +4,13 @@
 //! `swarmail-evals` acts as the nested driver's engine: it sends `hello`, then
 //! `start{effect_id, attempt_id, seat, input}` once `capabilities` arrives, then
 //! `shutdown`; the driver answers `capabilities`, `accepted`, any number of
-//! `checkpoint`, then one `result`. This module holds only what the addendum
-//! records: the envelope, the order, the identities, the eight start keys and
-//! a bounded strict frame reader. It reads no usage field: which checkpoint
-//! or result representation is a family's session-final total needs the
-//! release evidence the plan names, so token facts are not derived here yet.
-//! No production path launches a driver while `driver_contract_unknown` is
-//! refused; this is the client that refusal will be lifted onto.
+//! `checkpoint`, then one `result`. The shape is brokkr v0.15.2's
+//! `docs/guides/driver-authoring.md`: every frame carries `proto`, a unique
+//! `msg_id` and `type`; `accepted`, `checkpoint` and `result` carry the start's
+//! `effect_id` and `attempt_id`; a checkpoint's facts are its `data` object; a
+//! failed result before `accepted` is a refusal to start. The reader is
+//! bounded and strict, and every error is a fixed code, never peer bytes.
+//! Usage is read from the checkpoints by `crate::usage`, never here.
 
 use serde::de::{DeserializeSeed, Error as _, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
@@ -19,6 +19,8 @@ use std::io::BufRead;
 
 /// The protocol name every frame carries in `proto`.
 pub const PROTO: &str = "forge-driver/v1";
+/// What `hello` names as the engine: this harness and its version.
+pub const ENGINE_VERSION: &str = concat!("swarmail-evals ", env!("CARGO_PKG_VERSION"));
 /// One frame's cap, newline excluded, enforced before the bytes are kept.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 /// The cap over every frame of one exchange.
@@ -47,6 +49,8 @@ pub enum ProtocolError {
     OutOfOrder,
     IdentityMismatch,
     AfterResult,
+    DuplicateMsgId,
+    BadStatus,
 }
 
 impl ProtocolError {
@@ -68,6 +72,8 @@ impl ProtocolError {
             Self::OutOfOrder => "driver_out_of_order",
             Self::IdentityMismatch => "driver_identity_mismatch",
             Self::AfterResult => "driver_frame_after_result",
+            Self::DuplicateMsgId => "driver_msg_id_duplicate",
+            Self::BadStatus => "driver_result_status_invalid",
         }
     }
 }
@@ -109,7 +115,9 @@ fn line(m: Map<String, Value>) -> Vec<u8> {
 
 /// `hello`, one line.
 pub fn hello(msg_id: &str) -> Vec<u8> {
-    line(envelope("hello", msg_id))
+    let mut m = envelope("hello", msg_id);
+    m.insert("engine_version".into(), ENGINE_VERSION.into());
+    line(m)
 }
 
 /// `shutdown`, one line.
@@ -310,52 +318,86 @@ enum Stage {
     Finished,
 }
 
-/// What the driver did, as far as its frames prove.
-#[derive(Debug, Clone, PartialEq)]
+/// What the driver did, as far as its frames prove (v0.15.2's guide,
+/// "`accepted` is the load-bearing message").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Disposition {
-    /// The driver reached no `accepted`: nothing was launched. A driver
-    /// that exits 0 here is a harness error, never the agent giving up.
-    NotLaunched { refused: Option<String> },
-    /// Accepted, but the stream ended before its `result`.
+    /// No `accepted`: nothing was launched. `refused` when the driver said so
+    /// with a failed result. A driver that exits 0 here is a harness error,
+    /// never the agent giving up.
+    NotLaunched { refused: bool },
+    /// Accepted, but the stream ended before its `result`: what the session
+    /// did is unknown.
     ResultMissing,
-    /// The one `result`, with its `status` when the driver sent one.
-    Completed { status: Option<String> },
+    /// Accepted, then a `failed` result: the session may have spent.
+    Failed,
+    /// Accepted, then a `succeeded` result whose payload is not an object
+    /// naming one of the allowed results.
+    InvalidResult,
+    /// Accepted, then a `succeeded` result naming an allowed result.
+    Completed,
 }
 
 impl Disposition {
+    /// True once the driver proved a session began.
+    pub fn launched(self) -> bool {
+        !matches!(self, Self::NotLaunched { .. })
+    }
     /// The trial's harness-error reason, `None` only for a completed session.
-    pub fn harness_error(&self) -> Option<&'static str> {
+    pub fn harness_error(self) -> Option<&'static str> {
         match self {
-            Self::NotLaunched { refused: None } => Some("driver_launched_nothing"),
-            Self::NotLaunched { refused: Some(_) } => Some("driver_refused_start"),
+            Self::NotLaunched { refused: false } => Some("driver_launched_nothing"),
+            Self::NotLaunched { refused: true } => Some("driver_refused_start"),
             Self::ResultMissing => Some("driver_result_missing"),
-            Self::Completed { .. } => None,
+            Self::Failed => Some("driver_session_failed"),
+            Self::InvalidResult => Some("driver_result_invalid"),
+            Self::Completed => None,
         }
+    }
+    /// The receipt word: `completed` or the harness-error code.
+    pub fn code(self) -> &'static str {
+        self.harness_error().unwrap_or("completed")
     }
 }
 
-fn status(m: &Map<String, Value>) -> Option<String> {
-    m.get("status").and_then(Value::as_str).map(str::to_string)
+fn string_field(m: &Map<String, Value>, key: &str) -> Result<String, ProtocolError> {
+    match m.get(key) {
+        Some(Value::String(s)) => Ok(s.clone()),
+        _ => Err(ProtocolError::MissingField),
+    }
+}
+
+/// The driver's `capabilities`, as v0.15.2 requires them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Capabilities {
+    pub driver: String,
+    pub version: String,
 }
 
 /// The ordered exchange's checker: feed it every driver frame; it says when
 /// `start` and `shutdown` are due and what the driver did at end of stream.
 pub struct Exchange {
     id: Identity,
+    allowed: Vec<String>,
     stage: Stage,
+    msg_ids: std::collections::BTreeSet<String>,
+    capabilities: Option<Capabilities>,
     checkpoints: Vec<Map<String, Value>>,
-    result: Option<Map<String, Value>>,
-    refused: Option<String>,
+    result: Option<Disposition>,
+    refused: bool,
 }
 
 impl Exchange {
-    pub fn new(id: Identity) -> Self {
+    pub fn new(id: Identity, allowed: Vec<String>) -> Self {
         Self {
             id,
+            allowed,
             stage: Stage::AwaitCapabilities,
+            msg_ids: Default::default(),
+            capabilities: None,
             checkpoints: Vec::new(),
             result: None,
-            refused: None,
+            refused: false,
         }
     }
 
@@ -364,30 +406,33 @@ impl Exchange {
         self.stage == Stage::AwaitAccepted
     }
 
+    /// True once the driver accepted the attempt (or ran past it).
+    pub fn accepted(&self) -> bool {
+        matches!(self.stage, Stage::Running) || self.result.is_some()
+    }
+
     /// True once the `result` arrived and `shutdown` may be sent.
     pub fn finished(&self) -> bool {
         self.stage == Stage::Finished
     }
 
-    /// The checkpoints in order, kept for the usage reader the release
-    /// evidence will settle.
+    /// The driver's declared name and version.
+    pub fn capabilities(&self) -> Option<&Capabilities> {
+        self.capabilities.as_ref()
+    }
+
+    /// Every checkpoint's `data` object, in order; the envelope is dropped.
     pub fn checkpoints(&self) -> &[Map<String, Value>] {
         &self.checkpoints
     }
 
-    /// The `result` frame of a launched session.
-    pub fn result(&self) -> Option<&Map<String, Value>> {
-        self.result.as_ref()
-    }
-
-    fn check_identity(&self, m: &Map<String, Value>, required: bool) -> Result<(), ProtocolError> {
+    fn check_identity(&self, m: &Map<String, Value>) -> Result<(), ProtocolError> {
         for (key, want) in [
             ("effect_id", &self.id.effect_id),
             ("attempt_id", &self.id.attempt_id),
         ] {
             match m.get(key) {
                 Some(Value::String(got)) if got == want => {}
-                None if !required => {}
                 None => return Err(ProtocolError::MissingField),
                 Some(_) => return Err(ProtocolError::IdentityMismatch),
             }
@@ -395,32 +440,73 @@ impl Exchange {
         Ok(())
     }
 
+    fn terminal(&self, m: &Map<String, Value>) -> Result<Disposition, ProtocolError> {
+        match m.get("status").and_then(Value::as_str) {
+            Some("failed") => Ok(Disposition::Failed),
+            Some("succeeded") => Ok(match m.get("result") {
+                Some(Value::Object(r))
+                    if r.get("result")
+                        .and_then(Value::as_str)
+                        .is_some_and(|s| self.allowed.iter().any(|a| a == s)) =>
+                {
+                    Disposition::Completed
+                }
+                _ => Disposition::InvalidResult,
+            }),
+            _ => Err(ProtocolError::BadStatus),
+        }
+    }
+
     /// One decoded driver frame.
-    pub fn receive(&mut self, m: Map<String, Value>) -> Result<(), ProtocolError> {
+    pub fn receive(&mut self, mut m: Map<String, Value>) -> Result<(), ProtocolError> {
         if self.stage == Stage::Finished {
             return Err(ProtocolError::AfterResult);
         }
+        let msg_id = m
+            .get("msg_id")
+            .and_then(Value::as_str)
+            .ok_or(ProtocolError::MissingField)?;
+        if !self.msg_ids.insert(msg_id.to_string()) {
+            return Err(ProtocolError::DuplicateMsgId);
+        }
         let kind = m.get("type").and_then(Value::as_str).unwrap_or_default();
         match (kind, self.stage) {
-            ("capabilities", Stage::AwaitCapabilities) => self.stage = Stage::AwaitAccepted,
+            ("capabilities", Stage::AwaitCapabilities) => {
+                let caps = Capabilities {
+                    driver: string_field(&m, "driver")?,
+                    version: string_field(&m, "version")?,
+                };
+                match m.get("supports") {
+                    Some(Value::Array(a)) if a.iter().all(Value::is_string) => {}
+                    _ => return Err(ProtocolError::MissingField),
+                }
+                self.capabilities = Some(caps);
+                self.stage = Stage::AwaitAccepted;
+            }
             ("accepted", Stage::AwaitAccepted) => {
-                self.check_identity(&m, true)?;
+                self.check_identity(&m)?;
                 self.stage = Stage::Running;
             }
             ("checkpoint", Stage::Running) => {
-                self.check_identity(&m, false)?;
-                self.checkpoints.push(m);
+                self.check_identity(&m)?;
+                match m.remove("data") {
+                    Some(Value::Object(data)) => self.checkpoints.push(data),
+                    _ => return Err(ProtocolError::MissingField),
+                }
             }
             ("result", Stage::AwaitAccepted) => {
-                // A pre-session refusal: the driver answered start with its
-                // result and launched nothing. Keep the status only.
-                self.check_identity(&m, true)?;
-                self.refused = Some(status(&m).unwrap_or_else(|| "unstated".into()));
+                // A pre-session refusal: a failed result with no accepted
+                // and no checkpoint. Anything else here is out of order.
+                self.check_identity(&m)?;
+                if self.terminal(&m)? != Disposition::Failed {
+                    return Err(ProtocolError::OutOfOrder);
+                }
+                self.refused = true;
                 self.stage = Stage::Finished;
             }
             ("result", Stage::Running) => {
-                self.check_identity(&m, true)?;
-                self.result = Some(m);
+                self.check_identity(&m)?;
+                self.result = Some(self.terminal(&m)?);
                 self.stage = Stage::Finished;
             }
             ("capabilities" | "accepted" | "checkpoint" | "result", _) => {
@@ -433,47 +519,63 @@ impl Exchange {
 
     /// The disposition at end of stream.
     pub fn finish(&self) -> Disposition {
-        match (&self.result, self.stage) {
-            (Some(r), _) => Disposition::Completed { status: status(r) },
+        match (self.result, self.stage) {
+            (Some(d), _) => d,
             (None, Stage::Running) => Disposition::ResultMissing,
             (None, _) => Disposition::NotLaunched {
-                refused: self.refused.clone(),
+                refused: self.refused,
             },
         }
     }
 }
 
 /// Drive a whole exchange over one reader: `hello` first, `start` once the
-/// capabilities arrive, `shutdown` after the result, every frame decoded and
-/// checked in order. Deadlines and the process belong to the caller.
+/// capabilities arrive, `shutdown` after the result or at end of stream,
+/// every frame decoded and checked in order. `on_accepted` runs once, when
+/// the driver proves a session began. Deadlines and the process belong to
+/// the caller; on a protocol error the exchange so far is returned with it.
 pub fn run<R: BufRead>(
     reader: R,
     id: Identity,
     input: &StartInput,
     mut send: impl FnMut(Vec<u8>) -> std::io::Result<()>,
-) -> Result<(Exchange, Disposition), ProtocolError> {
+    mut on_accepted: impl FnMut(),
+) -> (Exchange, Result<Disposition, ProtocolError>) {
     let mut seq = 0u32;
     let mut next_id = || {
         seq += 1;
         format!("swarmail-evals-{seq}")
     };
-    send(hello(&next_id())).map_err(|_| ProtocolError::Io)?;
-    let mut ex = Exchange::new(id);
-    let mut frames = FrameReader::new(reader);
-    let (mut started, mut shut) = (false, false);
-    while let Some(frame) = frames.next_frame()? {
-        ex.receive(frame)?;
-        if ex.ready_to_start() && !started {
-            started = true;
-            send(start(&next_id(), &ex.id, input)).map_err(|_| ProtocolError::Io)?;
+    let mut ex = Exchange::new(id, input.allowed_results.clone());
+    let (mut started, mut shut, mut told) = (false, false, false);
+    let mut body = || -> Result<(), ProtocolError> {
+        send(hello(&next_id())).map_err(|_| ProtocolError::Io)?;
+        let mut frames = FrameReader::new(reader);
+        while let Some(frame) = frames.next_frame()? {
+            ex.receive(frame)?;
+            if ex.accepted() && !told {
+                told = true;
+                on_accepted();
+            }
+            if ex.ready_to_start() && !started {
+                started = true;
+                send(start(&next_id(), &ex.id, input)).map_err(|_| ProtocolError::Io)?;
+            }
+            if ex.finished() && !shut {
+                shut = true;
+                send(shutdown(&next_id())).map_err(|_| ProtocolError::Io)?;
+            }
         }
-        if ex.finished() && !shut {
-            shut = true;
-            send(shutdown(&next_id())).map_err(|_| ProtocolError::Io)?;
+        if !shut {
+            // Shutdown is sent once, after the result or after EOF; a
+            // driver that is already gone cannot read it.
+            let _ = send(shutdown(&next_id()));
         }
-    }
-    let disposition = ex.finish();
-    Ok((ex, disposition))
+        Ok(())
+    };
+    let outcome = body();
+    let disposition = outcome.map(|()| ex.finish());
+    (ex, disposition)
 }
 
 #[cfg(test)]
@@ -504,7 +606,9 @@ mod tests {
     }
 
     fn frame(kind: &str, extra: Value) -> String {
-        let mut v = json!({"proto": PROTO, "msg_id": "m", "type": kind});
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut v = json!({"proto": PROTO, "msg_id": format!("m{n}"), "type": kind});
         for (k, x) in extra.as_object().unwrap() {
             v[k] = x.clone();
         }
@@ -514,12 +618,35 @@ mod tests {
     fn ids() -> Value {
         json!({"effect_id": "e1", "attempt_id": "a1"})
     }
+    fn with_ids(extra: Value) -> Value {
+        let mut v = ids();
+        for (k, x) in extra.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        v
+    }
+    fn caps() -> String {
+        frame(
+            "capabilities",
+            json!({"driver": "claude-code", "version": "0.15.2", "supports": ["resume"], "probe": true}),
+        )
+    }
+    fn checkpoint(data: Value) -> String {
+        frame("checkpoint", with_ids(json!({ "data": data })))
+    }
+    fn result(status: &str, payload: Value) -> String {
+        frame(
+            "result",
+            with_ids(json!({"status": status, "result": payload})),
+        )
+    }
 
-    type Outcome = Result<(Exchange, Disposition), ProtocolError>;
+    type Outcome = Result<Disposition, ProtocolError>;
 
-    fn exchange(stream: &str) -> (Outcome, Vec<Value>) {
+    fn exchange(stream: &str) -> (Exchange, Outcome, Vec<Value>, usize) {
         let mut sent = Vec::new();
-        let out = run(
+        let mut accepted = 0;
+        let (ex, out) = run(
             Cursor::new(stream.as_bytes().to_vec()),
             id(),
             &input(),
@@ -528,37 +655,45 @@ mod tests {
                 sent.push(serde_json::from_slice(&b).unwrap());
                 Ok(())
             },
+            || accepted += 1,
         );
-        (out, sent)
+        (ex, out, sent, accepted)
     }
 
     #[test]
     fn the_whole_exchange_runs_in_order_and_sends_exactly_the_eight_keys() {
         let stream = [
-            frame("capabilities", json!({"driver": "d", "supports": []})),
-            frame("accepted", ids()),
-            frame("checkpoint", ids()),
-            frame("checkpoint", json!({})),
-            frame(
-                "result",
-                json!({"effect_id": "e1", "attempt_id": "a1", "status": "ok"}),
+            caps(),
+            frame("accepted", with_ids(json!({"session_ref": null}))),
+            checkpoint(json!({"step": "transcript"})),
+            checkpoint(json!({"step": "claude-code-session-finished", "input_tokens": 1})),
+            result(
+                "succeeded",
+                json!({"result": "complete", "inputs": {"input_tokens": 9}}),
             ),
         ]
         .concat();
-        let (out, sent) = exchange(&stream);
-        let (ex, disposition) = out.unwrap();
+        let (ex, out, sent, accepted) = exchange(&stream);
+        assert_eq!(out, Ok(Disposition::Completed));
+        assert_eq!(accepted, 1);
+        assert_eq!(Disposition::Completed.harness_error(), None);
+        assert_eq!(Disposition::Completed.code(), "completed");
+        assert!(Disposition::Completed.launched());
         assert_eq!(
-            disposition,
-            Disposition::Completed {
-                status: Some("ok".into())
-            }
+            ex.capabilities(),
+            Some(&Capabilities {
+                driver: "claude-code".into(),
+                version: "0.15.2".into()
+            })
         );
-        assert_eq!(disposition.harness_error(), None);
+        // Checkpoints keep their data object only.
         assert_eq!(ex.checkpoints().len(), 2);
-        assert!(ex.result().is_some());
+        assert_eq!(ex.checkpoints()[1]["input_tokens"], 1);
+        assert!(!ex.checkpoints()[0].contains_key("effect_id"));
         let kinds: Vec<_> = sent.iter().map(|m| m["type"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["hello", "start", "shutdown"]);
         assert!(sent.iter().all(|m| m["proto"] == PROTO));
+        assert_eq!(sent[0]["engine_version"], ENGINE_VERSION);
         let start = &sent[1];
         assert_eq!(
             (&start["effect_id"], &start["attempt_id"]),
@@ -599,135 +734,214 @@ mod tests {
     #[test]
     fn a_driver_that_launches_nothing_is_a_harness_error_never_gave_up() {
         // Silent exit zero: not even capabilities, so no start goes out.
-        let (out, sent) = exchange("");
-        assert_eq!(
-            out.unwrap().1.harness_error(),
-            Some("driver_launched_nothing")
-        );
-        assert_eq!(sent.len(), 1);
+        let (_, out, sent, accepted) = exchange("");
+        let d = out.unwrap();
+        assert_eq!(d.harness_error(), Some("driver_launched_nothing"));
+        assert!(!d.launched());
+        assert_eq!(accepted, 0);
+        let kinds: Vec<_> = sent.iter().map(|m| m["type"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["hello", "shutdown"]);
         // Capabilities, then nothing: start went out, nothing was accepted.
-        let (out, sent) = exchange(&frame("capabilities", json!({})));
+        let (_, out, sent, _) = exchange(&caps());
         assert_eq!(
-            out.unwrap().1.harness_error(),
+            out.unwrap().harness_error(),
             Some("driver_launched_nothing")
         );
-        assert_eq!(sent.len(), 2);
-        // A pre-session refusal, with and without a status.
-        for (extra, status) in [
-            (
-                json!({"effect_id": "e1", "attempt_id": "a1", "status": "failed"}),
-                "failed",
-            ),
-            (ids(), "unstated"),
-        ] {
-            let stream = [frame("capabilities", json!({})), frame("result", extra)].concat();
-            let (out, sent) = exchange(&stream);
-            let (ex, d) = out.unwrap();
-            assert_eq!(
-                d,
-                Disposition::NotLaunched {
-                    refused: Some(status.into())
-                }
-            );
-            assert_eq!(d.harness_error(), Some("driver_refused_start"));
-            assert!(ex.result().is_none());
-            assert_eq!(sent.last().unwrap()["type"], "shutdown");
-        }
-        // Accepted only.
-        let stream = [frame("capabilities", json!({})), frame("accepted", ids())].concat();
-        let d = exchange(&stream).0.unwrap().1;
-        assert_eq!(d, Disposition::ResultMissing);
-        assert_eq!(d.harness_error(), Some("driver_result_missing"));
-        // A result without a status completes, its status unstated.
-        let stream = [
-            frame("capabilities", json!({})),
-            frame("accepted", ids()),
-            frame("result", ids()),
-        ]
-        .concat();
-        assert_eq!(
-            exchange(&stream).0.unwrap().1,
-            Disposition::Completed { status: None }
+        assert_eq!(sent.len(), 3);
+        // A pre-session refusal: a failed result with no accepted.
+        let (_, out, sent, accepted) = exchange(
+            &[
+                caps(),
+                frame(
+                    "result",
+                    with_ids(
+                        json!({"status": "failed", "result": null, "error": "SECRET-PEER-TEXT"}),
+                    ),
+                ),
+            ]
+            .concat(),
         );
+        let d = out.unwrap();
+        assert_eq!(d, Disposition::NotLaunched { refused: true });
+        assert_eq!(d.harness_error(), Some("driver_refused_start"));
+        assert_eq!(accepted, 0);
+        assert_eq!(sent.last().unwrap()["type"], "shutdown");
+        assert!(!format!("{d:?}{}", d.code()).contains("SECRET"));
+        // Accepted only: launched, its result lost.
+        let (_, out, _, accepted) = exchange(&[caps(), frame("accepted", ids())].concat());
+        assert_eq!(out, Ok(Disposition::ResultMissing));
+        assert_eq!(accepted, 1);
+        assert_eq!(
+            Disposition::ResultMissing.harness_error(),
+            Some("driver_result_missing")
+        );
+        // Failed after acceptance, and succeeded results with a null, a
+        // non-object, a missing or an out-of-vocabulary payload.
+        for (res, want) in [
+            (result("failed", json!(null)), Disposition::Failed),
+            (result("succeeded", json!(null)), Disposition::InvalidResult),
+            (
+                result("succeeded", json!("complete")),
+                Disposition::InvalidResult,
+            ),
+            (
+                result("succeeded", json!({"notes": "n"})),
+                Disposition::InvalidResult,
+            ),
+            (
+                result("succeeded", json!({"result": "gave_up"})),
+                Disposition::InvalidResult,
+            ),
+            (
+                frame("result", with_ids(json!({"status": "succeeded"}))),
+                Disposition::InvalidResult,
+            ),
+        ] {
+            let (_, out, _, _) = exchange(&[caps(), frame("accepted", ids()), res].concat());
+            assert_eq!(out, Ok(want));
+            assert!(want.launched() && want.harness_error().is_some());
+        }
+        assert_eq!(Disposition::Failed.code(), "driver_session_failed");
+        assert_eq!(Disposition::InvalidResult.code(), "driver_result_invalid");
     }
 
     #[test]
     fn order_identity_and_trailing_frames_are_refused() {
-        let caps = frame("capabilities", json!({}));
-        let acc = frame("accepted", ids());
-        let res = frame("result", ids());
-        let cp = frame("checkpoint", ids());
-        let with = |extra: Value| [caps.clone(), frame("accepted", extra)].concat();
+        let acc = || frame("accepted", ids());
+        let res = || result("succeeded", json!({"result": "complete"}));
+        let cp = || checkpoint(json!({}));
+        let accepting = |extra: Value| [caps(), frame("accepted", extra)].concat();
         let cases: Vec<(String, ProtocolError)> = vec![
-            (acc.clone(), ProtocolError::OutOfOrder),
-            (cp.clone(), ProtocolError::OutOfOrder),
-            (res.clone(), ProtocolError::OutOfOrder),
-            (
-                [caps.clone(), caps.clone()].concat(),
-                ProtocolError::OutOfOrder,
-            ),
-            (
-                [caps.clone(), acc.clone(), acc.clone()].concat(),
-                ProtocolError::OutOfOrder,
-            ),
-            (
-                [caps.clone(), cp.clone()].concat(),
-                ProtocolError::OutOfOrder,
-            ),
+            (acc(), ProtocolError::OutOfOrder),
+            (cp(), ProtocolError::OutOfOrder),
+            (res(), ProtocolError::OutOfOrder),
+            ([caps(), caps()].concat(), ProtocolError::OutOfOrder),
+            ([caps(), acc(), acc()].concat(), ProtocolError::OutOfOrder),
+            ([caps(), cp()].concat(), ProtocolError::OutOfOrder),
+            // A succeeded result before accepted is not a refusal.
+            ([caps(), res()].concat(), ProtocolError::OutOfOrder),
             (frame("bogus", json!({})), ProtocolError::UnknownType),
             (
-                with(json!({"effect_id": "e1"})),
+                frame("capabilities", json!({"version": "v", "supports": []})),
                 ProtocolError::MissingField,
             ),
             (
-                with(json!({"effect_id": "e2", "attempt_id": "a1"})),
+                frame("capabilities", json!({"driver": "d", "supports": []})),
+                ProtocolError::MissingField,
+            ),
+            (
+                frame("capabilities", json!({"driver": "d", "version": "v"})),
+                ProtocolError::MissingField,
+            ),
+            (
+                frame(
+                    "capabilities",
+                    json!({"driver": "d", "version": "v", "supports": [1]}),
+                ),
+                ProtocolError::MissingField,
+            ),
+            (
+                accepting(json!({"effect_id": "e1"})),
+                ProtocolError::MissingField,
+            ),
+            (
+                accepting(json!({"effect_id": "e2", "attempt_id": "a1"})),
                 ProtocolError::IdentityMismatch,
             ),
             (
-                with(json!({"effect_id": "e1", "attempt_id": 1})),
+                accepting(json!({"effect_id": "e1", "attempt_id": 1})),
                 ProtocolError::IdentityMismatch,
             ),
             (
                 [
-                    caps.clone(),
-                    frame("result", json!({"effect_id": "x", "attempt_id": "a1"})),
+                    caps(),
+                    frame(
+                        "result",
+                        json!({"effect_id": "x", "attempt_id": "a1", "status": "failed"}),
+                    ),
                 ]
                 .concat(),
                 ProtocolError::IdentityMismatch,
             ),
             (
                 [
-                    caps.clone(),
-                    acc.clone(),
-                    frame("checkpoint", json!({"attempt_id": "o"})),
+                    caps(),
+                    acc(),
+                    frame(
+                        "checkpoint",
+                        json!({"attempt_id": "o", "effect_id": "e1", "data": {}}),
+                    ),
                 ]
                 .concat(),
                 ProtocolError::IdentityMismatch,
             ),
             (
+                [caps(), acc(), frame("checkpoint", json!({"data": {}}))].concat(),
+                ProtocolError::MissingField,
+            ),
+            (
+                [caps(), acc(), frame("checkpoint", ids())].concat(),
+                ProtocolError::MissingField,
+            ),
+            (
                 [
-                    caps.clone(),
-                    acc.clone(),
-                    frame("result", json!({"attempt_id": "a1"})),
+                    caps(),
+                    acc(),
+                    frame("checkpoint", with_ids(json!({"data": [1]}))),
                 ]
                 .concat(),
                 ProtocolError::MissingField,
             ),
             (
-                [caps.clone(), acc.clone(), res.clone(), res.clone()].concat(),
+                [
+                    caps(),
+                    acc(),
+                    frame("result", json!({"attempt_id": "a1", "status": "failed"})),
+                ]
+                .concat(),
+                ProtocolError::MissingField,
+            ),
+            (
+                [
+                    caps(),
+                    acc(),
+                    frame("result", with_ids(json!({"status": "ok"}))),
+                ]
+                .concat(),
+                ProtocolError::BadStatus,
+            ),
+            (
+                [caps(), acc(), frame("result", ids())].concat(),
+                ProtocolError::BadStatus,
+            ),
+            (
+                [caps(), acc(), res(), res()].concat(),
                 ProtocolError::AfterResult,
             ),
             (
-                [caps.clone(), acc.clone(), res.clone(), cp.clone()].concat(),
+                [caps(), acc(), res(), cp()].concat(),
                 ProtocolError::AfterResult,
             ),
         ];
         for (stream, want) in cases {
-            assert_eq!(exchange(&stream).0.err(), Some(want), "{stream}");
+            let (_, out, sent, _) = exchange(&stream);
+            assert_eq!(out.err(), Some(want), "{stream}");
+            // A protocol error still sends nothing after the frames it saw.
+            assert!(sent.len() <= 3, "{stream}");
         }
+        // A repeated msg_id refuses, whatever the type.
+        let one = caps();
+        let again = one.replace("capabilities", "accepted");
+        assert_eq!(
+            exchange(&[one, again].concat()).1.err(),
+            Some(ProtocolError::DuplicateMsgId)
+        );
         // A frame the decoder never saw still cannot pass for a known type.
-        let mut ex = Exchange::new(id());
-        assert_eq!(ex.receive(Map::new()), Err(ProtocolError::UnknownType));
+        let mut ex = Exchange::new(id(), vec![]);
+        assert_eq!(ex.receive(Map::new()), Err(ProtocolError::MissingField));
+        let mut m = Map::new();
+        m.insert("msg_id".into(), "x".into());
+        assert_eq!(ex.receive(m), Err(ProtocolError::UnknownType));
     }
 
     #[test]
@@ -795,6 +1009,8 @@ mod tests {
             ProtocolError::OutOfOrder,
             ProtocolError::IdentityMismatch,
             ProtocolError::AfterResult,
+            ProtocolError::DuplicateMsgId,
+            ProtocolError::BadStatus,
         ];
         let codes: std::collections::BTreeSet<_> = all.iter().map(|e| e.code()).collect();
         assert_eq!(codes.len(), all.len());
@@ -854,15 +1070,15 @@ mod tests {
         let mut r = FrameReader::new(std::io::BufReader::new(Broken));
         assert_eq!(r.next_frame().err(), Some(ProtocolError::Io));
         let full = [
-            frame("capabilities", json!({})),
+            caps(),
             frame("accepted", ids()),
-            frame("result", ids()),
+            result("succeeded", json!({"result": "complete"})),
         ]
         .concat();
         // A send that fails at the hello, at the start and at the shutdown.
         for fail_at in 0..3 {
             let mut n = 0;
-            let out = run(
+            let (_, out) = run(
                 Cursor::new(full.clone().into_bytes()),
                 id(),
                 &input(),
@@ -874,8 +1090,27 @@ mod tests {
                         Ok(())
                     }
                 },
+                || {},
             );
             assert_eq!(out.err(), Some(ProtocolError::Io));
         }
+        // A shutdown after EOF that cannot be sent is not an error: the
+        // driver is already gone.
+        let mut n = 0;
+        let (_, out) = run(
+            Cursor::new(caps().into_bytes()),
+            id(),
+            &input(),
+            |_| {
+                n += 1;
+                if n > 2 {
+                    Err(std::io::Error::other("closed"))
+                } else {
+                    Ok(())
+                }
+            },
+            || {},
+        );
+        assert_eq!(out, Ok(Disposition::NotLaunched { refused: false }));
     }
 }
