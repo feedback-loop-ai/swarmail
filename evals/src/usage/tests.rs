@@ -296,9 +296,15 @@ mod groups {
         ];
         let s = summary(&rows);
         assert_eq!(s["source"], SOURCE);
-        assert_eq!((s["scored_trials"].clone(), s["passes"].clone()), (json!(2), json!(1)));
+        assert_eq!(
+            (s["scored_trials"].clone(), s["passes"].clone()),
+            (json!(2), json!(1))
+        );
         assert_eq!(s["total_tokens"], json!({"status": "present", "value": 40}));
-        assert_eq!(s["tokens_per_success"], json!({"status": "present", "value": 40.0}));
+        assert_eq!(
+            s["tokens_per_success"],
+            json!({"status": "present", "value": 40.0})
+        );
         // Caches, turns and cost stand beside the figure, never added.
         assert_eq!(s["cache_read_tokens"]["value"], 12);
         assert_eq!(s["cache_write_tokens"]["value"], 2);
@@ -312,17 +318,30 @@ mod groups {
     #[test]
     fn every_gap_is_a_typed_unavailability_never_a_journal_fill_or_zero() {
         let reason = |rows: &[TrialResult]| summary(rows)["tokens_per_success"]["reason"].clone();
-        assert_eq!(reason(&[row(1, Outcome::Fail, Some(counts(1, 1)))]), "no_passes");
+        assert_eq!(
+            reason(&[row(1, Outcome::Fail, Some(counts(1, 1)))]),
+            "no_passes"
+        );
         // A scored row without the record in a nested group.
         let bare = row(2, Outcome::Pass, None);
         let rows = [row(1, Outcome::Pass, Some(counts(1, 1))), bare.clone()];
         assert_eq!(reason(&rows), "incomplete_attribution");
-        assert_eq!(summary(&rows)["total_cost_usd"]["reason"], "incomplete_attribution");
+        assert_eq!(
+            summary(&rows)["total_cost_usd"]["reason"],
+            "incomplete_attribution"
+        );
         // A required count missing, the other facts standing on their own.
         let mut lost = counts(1, 1);
-        lost.output_tokens = Fact::Unavailable { reason: Reason::FieldAbsent };
-        lost.total_cost_usd = Fact::Unavailable { reason: Reason::FieldAbsent };
-        let rows = [row(1, Outcome::Pass, Some(lost)), row(2, Outcome::Pass, Some(counts(1, 1)))];
+        lost.output_tokens = Fact::Unavailable {
+            reason: Reason::FieldAbsent,
+        };
+        lost.total_cost_usd = Fact::Unavailable {
+            reason: Reason::FieldAbsent,
+        };
+        let rows = [
+            row(1, Outcome::Pass, Some(lost)),
+            row(2, Outcome::Pass, Some(counts(1, 1))),
+        ];
         let s = summary(&rows);
         assert_eq!(s["tokens_per_success"]["reason"], "missing_required_count");
         assert_eq!(s["total_cost_usd"]["reason"], "missing_required_count");
@@ -330,13 +349,19 @@ mod groups {
         // A sum past the exact range is withheld, never wrapped.
         let big = |n| row(n, Outcome::Pass, Some(counts(COUNT_LIMIT, 0)));
         assert_eq!(reason(&[big(1), big(2)]), "sum_overflow");
-        assert_eq!(reason(&[row(1, Outcome::Pass, Some(counts(COUNT_LIMIT, 1)))]), "sum_overflow");
+        assert_eq!(
+            reason(&[row(1, Outcome::Pass, Some(counts(COUNT_LIMIT, 1)))]),
+            "sum_overflow"
+        );
         let huge = |n| {
             let mut f = counts(1, 1);
             f.total_cost_usd = Fact::Present { value: f64::MAX };
             row(n, Outcome::Pass, Some(f))
         };
-        assert_eq!(summary(&[huge(1), huge(2)])["total_cost_usd"]["reason"], "sum_overflow");
+        assert_eq!(
+            summary(&[huge(1), huge(2)])["total_cost_usd"]["reason"],
+            "sum_overflow"
+        );
         // A group with no nested record has no nested figures at all.
         let mut direct = bare;
         direct.nested_usage = None;
@@ -405,7 +430,10 @@ mod groups {
                 json!({"status": "unavailable", "reason": "missing_required_count"});
             assert_eq!(tokens_figure(&group), (None, want));
             let page = render_page(&json!({"groups": [group.clone()]}));
-            assert!(page.contains(r"writes null (missing\_required\_count)"), "{page}");
+            assert!(
+                page.contains(r"writes null (missing\_required\_count)"),
+                "{page}"
+            );
         }
     }
 }

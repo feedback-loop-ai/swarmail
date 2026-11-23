@@ -4,6 +4,7 @@
 //! session's usage on descriptor 3.
 use super::*;
 use swarmail_evals::runner::{LaunchReport, launch_report_of};
+use swarmail_evals::tasks::Outcome;
 use swarmail_evals::usage::{Fact, Reason};
 
 /// The session-final checkpoint of each family, as the 2026-11-23 smoke
@@ -465,4 +466,68 @@ fn the_driver_pin_refuses_before_any_private_write_or_spawn() {
     // A driver whose banner is not the release's.
     let swapped = json!({"driver": other, "driver_sha256": other_sha});
     refuse(swapped, &other, "driver_version_mismatch");
+}
+
+/// Through the real `trial` command: the row the runner writes carries the
+/// session's usage, bound to its own trial id, and is retained and reported
+/// as such; a driver that launches nothing is a harness error with none.
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[test]
+fn a_nested_trial_row_carries_its_harness_authored_usage() {
+    let _scope = common::trial_scope();
+    for mode in ["complete", "silent"] {
+        let n = Nested::new("claude", "claude-sonnet-5-5");
+        private(
+            &n.mode,
+            json!({"mode": mode, "finals": [smoke_final("claude")]})
+                .to_string()
+                .as_bytes(),
+        );
+        let evidence = n.c.root.path().join("retained");
+        let mut command = common::cli();
+        command
+            .args(["trial", "--task", "signup", "--agent", "claude-nested"])
+            .args(["--agent-model", "claude-sonnet-5-5"])
+            .args(["--wrapper-profile", "claude_2_1_329_via_brokkr"])
+            .args(["--deadline-ms", "60000", "--artifacts-dir"])
+            .arg(&evidence)
+            .args([
+                "--",
+                common::exe(),
+                "agent-claude",
+                "--model",
+                "claude-sonnet-5-5",
+            ])
+            .arg("--config")
+            .arg(&n.c.manifest)
+            .arg("--via-brokkr")
+            .arg(&n.driver);
+        let out = command.output().unwrap();
+        let row = common::one_row(&out);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!err.contains(CANARY));
+        if mode == "silent" {
+            assert_eq!(row.outcome, Outcome::HarnessError, "{err}");
+            assert!(err.contains("harness error: agent_unstarted"), "{err}");
+            assert_eq!(row.nested_usage, None);
+            continue;
+        }
+        // The fake session did nothing to the mail: a scored failure.
+        assert_eq!(row.outcome, Outcome::Fail, "{err}");
+        let usage = row.nested_usage.clone().expect("the nested record");
+        assert_eq!(usage.source, "via_brokkr_driver");
+        assert_eq!(usage.trial_id, row.trial_id);
+        assert_eq!(usage.family, "claude");
+        assert_eq!(usage.facts.input_tokens, Fact::Present { value: 41871 });
+        assert_eq!(usage.facts.output_tokens, Fact::Present { value: 180 });
+        let retained = swarmail_evals::artifacts::trial(&evidence.join(&row.trial_id)).unwrap();
+        assert_eq!(retained.row, row);
+        let report = swarmail_evals::report::report(std::slice::from_ref(&row));
+        let nested = &report["groups"][0]["nested_usage"];
+        assert_eq!(nested["total_tokens"]["value"], 41871 + 180);
+        assert_eq!(nested["tokens_per_success"]["reason"], "no_passes");
+    }
 }
