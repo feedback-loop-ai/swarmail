@@ -64,3 +64,5 @@ After the second rework (run …-8cc2a397), the build differs as follows.
   carry the plan's `matrix_id`, equal to the attempt id. The cell must also
   match the row. A separate field would restate that binding. Adding one
   would need a companion version 2, which this rework did not build.
+
+At 6074b83e the debug credential check searched for a fixture marker anywhere in the file. The third review found that an unrelated field could contain that marker. The proposed inert-build restriction requires checking the authorizing field against the known offline fixture. The previous trust-set description states the intended restriction. Its release-build proof and the baseline CLI proofs for the existing version-1 ownership chain remain outstanding at that revision.
