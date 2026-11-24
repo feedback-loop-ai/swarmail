@@ -140,3 +140,70 @@ The authenticated finished-path session per family (T55) stays open. A bare
 authorized nested product or the recipe with binds (`evals/README.md`).
 No single-trial paid entry point exists. Choosing the product is the
 operator's call.
+
+# Second rework: run issue-404-…-8cc2a397 (after the hold on a73ac17a)
+
+Part of #404. Base 2f1b878d (the chief's revision). The commits are unsigned
+and stay on `feat/route-b-tokens-404`. Nothing was pushed. Held paths: only
+`.brokkr/recipes/eval/bundle.json` (approved by name); no lock, `deny.toml`,
+`scripts/`, `.github/` or root `src/` change.
+
+## The security hold (all four fixed)
+
+| item | fix | proof that fails without the fix |
+|---|---|---|
+| 1. gate on the actual selection (c46fc46c) | `wrappers::argv_selects_paid` decodes each agents-file entry's `--config` selection; `matrix --brokkr` refuses `brokkr_paid_unbound` for any paid entry (profile or argv-only) before dispatch. Every paid (v2) wrapper without a grant is the recipe route and proves `binds::verify_live` before any credential read, direct as well as nested. | `report.rs::brokkr_mode_refuses…` (argv-only v2 entry behind a free `oracle` slot); `wrappers::tests::the_paid_decision_reads_the_selection_the_argv_names`; `launch::paid_selection_rechecks…` (bare direct dsh → `paid_unbound: recipe_bind_`, HOME empty, CLI never ran). |
+| 2. coordinator-owned binding (c46fc46c, 3c10e6df) | `evals/src/grant.rs`: the baseline coordinator gives each paid slot's worker one `SOCK_SEQPACKET` endpoint per expected agent (fd 4..); the worker hands agent `i` its own at fd 4; the wrapper sends its binding and launches only on `granted`. Both sides read `SCM_CREDENTIALS`: the reply must come from an ancestor running this executable, the request from a descendant of the coordinator's own worker. One answer per endpoint. Reserved runner switches (`--paid-launch`, `--launch-report`, either spelling) refuse `agent_argv_reserved_flag` in `trial` argv, agents files and `validate_request`. `pin.release()` runs on every nested route. | `nested.rs::an_unbound_nested_selection_refuses_before_any_spend`: self-computed binding → `paid_grant_channel_missing`; caller-made socket answered `granted` by the test → `paid_grant_unauthenticated`; wrong grant → `paid_grant_refused`; second launch on one endpoint → `paid_grant_channel_closed`. `a_three_agent…`: the worker with a paid context but no endpoints → `paid_grant_channel_missing`, driver never ran. `runner.rs::caller_argv_never_carries_a_runner_switch`, `report::tests::agent_files_refuse_bad_shapes`, `grant::tests`. The nested tests now launch through `grant-standin` (the coordinator's own endpoint code); `paid_baseline.rs` (6 tests, 98 s) drives the real coordinator for direct paid launches. |
+| 3. no production env bypass (c46fc46c) | `EVAL_TEST_STANDIN_DRIVER_SHA256` is gone. A release build admits `DRIVER_RELEASE_SHA256` alone; a debug build (`debug_assertions`) also admits the `paid-cli-standin` built beside it, and refuses any paid launch whose credential holds no `"SYNTHETIC-` value (`paid_seam_build_refused`), on every route, genuine pin included. | `wrappers::tests::a_nested_pin…` (the old variable admits nothing; synthetic/real credential table); `nested.rs::a_nested_contract…` and `an_unbound…` (altered driver bytes → `driver_release_unrecognized` with the old variable set); the stand-in still drives every offline proof. A release-profile build was not run (CI builds debug); the release arm is `cfg(not(debug_assertions))` returning `false`. |
+| 4. actual codex class (0fbe6563, f6efe3f7) | `ToolSurface::declared_class` records `read-only sandbox (driver-selected)` or `workspace-write …`, read by `wrappers::argv_codex_class` from the same selection that sets the driver's `--sandbox` and the contract identity; the worker's expected surface and the coordinator's agree (`WorkerContext::apply`). Validation admits the two classes (or `unread`, which never launches). | `provenance::via_brokkr_tests::a_via_brokkr_surface_names_what_its_route_applies`; `nested.rs::a_nested_contract…` per class: driver argv `--sandbox <class>` and `make_provenance` descriptor. |
+
+## Medium and low items
+
+| item | disposition |
+|---|---|
+| claude via descriptor | fixed (0fbe6563): the amended via profiles state the nested launch (acceptEdits, user-scope MCP, settings allow-list, model and effort) with unrestricted builtins as a residual; the codex via descriptor drops `ephemeral` and ignored config. Superseded via profiles keep their published descriptor (the default-contract golden rows carry `claude_2_1_310_via_brokkr`). The test pinning equality was replaced. |
+| baseline report | fixed (728ae012): `baseline_execute` uses `artifacts::companions` over `<output>/paid` and `report_with_usage`; `Plan.report_argv` prints `--usage-from <output>/paid`. `paid_baseline.rs` runs the printed command against the retained root; `baseline.rs` pins the argv. **Not executed:** a non-dry-run `baseline --via-brokkr` product end to end (no nested baseline fixture exists; the nested companion reader is exercised by the trial and report tests instead). |
+| duplicate owners on resume | fixed (728ae012): `Evidence.owners` claims every committed leaf in `Ledger::read`. The baseline-shaped root proof (`duplicate_owners_refuse_over_a_baseline_root`, inside the three-agent test) runs both `duplicate usage owner` arms and `usage row mismatch` over `paid/<attempt>/trials/<id>` with an interrupted attempt and a capture tree. **Not separately executed:** the `Ledger::read` claim itself (needs a nested baseline product). |
+| honest proof claims | fixed (a408a081): T51 now claims release-only admission for release builds; T53 splits the host-route real driver and the mount primitive (both run by the dispatcher on 2026-11-24 at a73ac17a) from brokkr applying the bundle to a seat, which stays open. |
+| bind list | fixed (831f9cdb): `~/.local/bin`, `~/.claude.json`, `~/.dsh/spark.env` `ro` in the bundle, `binds.rs` and the recipe pin; a missing source (the systemd resolver included) refuses `recipe_bind_missing`. Claude and codex auth stay `ro`; a paid claude/codex launch on the recipe route refuses `paid_unbound: recipe_auth_unruled` until the operator rules (the smoke needed them writable). |
+| docs | fixed (a408a081): README's re-prove claim (now true for dsh; claude/codex refuse), single-leaf vs whole-root ownership, "trial's figures come", the grant, reserved switches and trust set in `wrappers.md`. |
+| coverage (low) | added: both duplicate-owner arms and row mismatch; `usage_companion_unretained` (`a_scored_nested_trial_without_retention_is_a_harness_error`); the `usage.json` stage and the marker after it in `every_publication_stage…`; the mask arm; an injected 200 ms grace for `deaf` (debug-only `EVAL_TEST_DRIVER_EXIT_GRACE_MS`, capped at the production 3 s). |
+| assignment attempt | the companion stays version 1. Its slot's `matrix_id` is the paid attempt id, and resume ties it to the attempt through the plan and the row's cell (0138's dated note). No separate field. |
+
+Cold defensive arms left as the panel accepted: `binds.rs` `recipe_bind_unverifiable` (unreadable `/proc/self/mountinfo`), `Reaper::reap`'s EINTR loop, `artifacts::trial`'s invalid-companion decode arm, `interpreted` `package_too_large` at `FILE_LIMIT`, and new in `grant.rs`: `MSG_TRUNC`/`MSG_CTRUNC`, missing `SCM_CREDENTIALS`, `socketpair`/`setsockopt` failure and the ancestor walk's 64-step bound.
+
+## Host-gated proofs (the dispatcher runs them; not run here)
+
+From `evals/`, on the candidate:
+
+```bash
+cargo test --locked --test wrappers -- --ignored a_read_only_bind_rejects_a_write_and_verifies_in_its_namespace
+EVAL_BROKKR_DRIVER=~/.local/share/brokkr-0.15.2/brokkr cargo test --locked --test wrappers -- --ignored real_driver
+```
+
+Both passed at a73ac17a (`.evidence/host-proofs-2026-11-24.md`). `real_driver`
+now launches through `grant-standin` and also asserts that fd 4 never reaches
+the driver or CLI. Still unobserved: brokkr applying the bundle's binds to a
+recipe seat and the release driver inside one. Operator-only and unticked: one
+authenticated session per family (T55).
+
+## Gates (this seat, Linux)
+
+- Root, at f6efe3f7's tree: `cargo fmt --check` and evals `fmt --check`
+  passed. Root `clippy --workspace --all-targets --locked -D warnings`, `cargo
+  build --locked --bin swarmail` and `cargo test --workspace --locked` passed
+  (all result lines 0 failed, 3 min 41 s). `coverage-gate.sh` passed at exact
+  100/100/100 (functions 3504/3504; root `src/` untouched) and its selftest
+  passed. `publish-guard-test.sh` and `seal-branch-test.sh` passed. `cargo
+  deny check licenses`: ok.
+- Recipes: the pinned brokkr 0.12.0 is not on this host, so **the pinned
+  compile was not run**; CI's `brokkr bundle (pinned)` is its proof. With
+  v0.15.2 (`.evidence`), `.brokkr/recipes/eval` compiles with exit 0, no
+  `lets the run go on without reading`, and the three new binds in the
+  output; the other recipes fail under 0.15.2 on unrelated provider checks,
+  as before.
+- evals: `clippy --all-targets --locked -D warnings` clean (Linux). **macOS
+  not compiled here**: Linux-only code is under `cfg(target_os = "linux")`
+  with refusing stubs elsewhere, and the new tests carry the non-Linux ignore.
+- evals full suite: see the result below.
+
