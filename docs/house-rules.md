@@ -6,7 +6,7 @@ Everything brokkr reads or writes lives in one folder, `.brokkr/`
 (decision 0100, brokkr's decision 0083): the recipes on its shelf
 `.brokkr/recipes/<name>/`, the agents, adapters, dialects and realm map
 beside them, and the folder's own `bundle.json`, which extends
-`sol-opus` (decision 0138). The delivery constitution is the shelf recipe
+`sol-opus` (decision 0139). The delivery constitution is the shelf recipe
 `.brokkr/recipes/self/` (`bundle.json` + `policy.json`), compiled with
 `brokkr compile --bundle .brokkr/recipes/self`. Runtime state stands under
 `.brokkr/state/` and is ignored by `.brokkr/.gitignore`: the journal
@@ -298,7 +298,7 @@ Accepted [0099](decisions/0099-claude-careful-recipe.md) records the
 Haiku 5.5 intake, an Opus 5.5 / official Flash / Fable 5.2 design council,
 Sonnet 5.5 implementation, and Fable correctness, Flash security and
 guarantees, GLM tests and Opus independent review, with careful's gates.
-Accepted [0138](decisions/0138-sol-opus-recipe.md) makes `sol-opus` the default
+Accepted [0139](decisions/0139-sol-opus-recipe.md) makes `sol-opus` the default
 lane. It inherits `claude-careful`'s intake and design and uses Sol 6.2 for
 implementation and Opus 5.5 for all five review offices.
 DeepSeek Pro is forbidden; other reviewers

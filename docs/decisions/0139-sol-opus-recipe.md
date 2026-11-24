@@ -1,4 +1,4 @@
-# 0138 — Sol implements and Opus reviews in `sol-opus`
+# 0139 — Sol implements and Opus reviews in `sol-opus`
 
 - **Status:** accepted (operator, 2026-11-23, given in chat).
 - **Date:** 2026-11-23

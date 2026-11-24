@@ -73,7 +73,7 @@ Fable at medium (operator, 2026-11-16). Claude work offices take
 careful intake's boxed workspace hands; the recipe reuses the Fable
 correctness, Flash security and guarantees, and GLM tests offices unchanged.
 
-Accepted [0138](../../docs/decisions/0138-sol-opus-recipe.md) adds the default
+Accepted [0139](../../docs/decisions/0139-sol-opus-recipe.md) adds the default
 `sol-opus` crew. `sol-implementer` overlays `implementer` and selects Sol 6.2
 at high effort with `codex-careful-implementer`'s boxed workspace hands.
 `opus-review-correctness`, `opus-review-security`, `opus-review-tests` and

@@ -157,7 +157,7 @@ it writes its run-local position file through its own tools, under its
 charter. GLM serves only the tests member, so each `claude-careful` run uses
 one Spark seat.
 
-Accepted [0138](../../docs/decisions/0138-sol-opus-recipe.md) adds `sol-opus`.
+Accepted [0139](../../docs/decisions/0139-sol-opus-recipe.md) adds `sol-opus`.
 It extends `claude-careful` and replaces the implementation and review seats.
 The five reviewers have separate gate-class verdicts and single-model chains.
 The security office owns the hold. The inherited design check resolves from

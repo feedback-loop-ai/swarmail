@@ -106,9 +106,9 @@ candidate became read-only, the engine's result file included. A candidate
 outside the journal's directory ships normally. Candidates now live outside
 `.forge/`. The ledger stays in the git directory, which is harmless.
 
-## Later-decision marker — 2026-11-23 (0138)
+## Later-decision marker — 2026-11-23 (0139)
 
-- *(Amended by [0138](0138-sol-opus-recipe.md) (accepted 2026-11-23):
+- *(Amended by [0139](0139-sol-opus-recipe.md) (accepted 2026-11-23):
   §2, the default recipe is `sol-opus`, which extends `claude-careful`;
   `.brokkr/bundle.json` is `{"name": "swarmail", "extends": "sol-opus"}`
   and still adds nothing. `claude-careful` runs by name.)*
