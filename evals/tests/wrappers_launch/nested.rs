@@ -621,7 +621,12 @@ fn an_unbound_nested_selection_refuses_before_any_spend() {
     let raw = theirs.as_raw_fd();
     unsafe {
         cmd.pre_exec(move || {
-            if libc::dup2(raw, 4) == 4 {
+            let placed = if raw == 4 {
+                libc::fcntl(raw, libc::F_SETFD, 0) == 0
+            } else {
+                libc::dup2(raw, 4) == 4
+            };
+            if placed {
                 Ok(())
             } else {
                 Err(std::io::Error::last_os_error())
