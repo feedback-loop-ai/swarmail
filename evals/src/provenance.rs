@@ -489,8 +489,12 @@ impl ToolSurface {
         let mut restrictions: Vec<String> = restrictions.iter().map(|s| s.to_string()).collect();
         if profile.via_brokkr() {
             // The nested route applies its own launch, not the direct one's
-            // flags: each family's descriptor names what it passes.
+            // flags: each amended family's descriptor names what it passes.
+            // A superseded via profile never launched the driver
+            // (`driver_contract_unknown`); its published rows keep the
+            // descriptor they were written with.
             match profile.family() {
+                _ if !profile.approved() => {}
                 "claude" => {
                     restrictions = vec![
                         "permission mode acceptEdits".into(),
@@ -544,7 +548,7 @@ impl ToolSurface {
     /// Whether this is a surface the profile can declare: under the driver,
     /// Codex's with one of the admitted classes or an unread one.
     fn admitted(&self, profile: WrapperProfile) -> bool {
-        if profile.via_brokkr() && profile.family() == "codex" {
+        if profile.via_brokkr() && profile.approved() && profile.family() == "codex" {
             CODEX_CLASSES
                 .iter()
                 .map(|c| Some(*c))
@@ -973,6 +977,8 @@ mod via_brokkr_tests {
                 Some("brokkr driver flags unenumerated")
             );
             match via.family() {
+                // A superseded via profile keeps its published descriptor.
+                _ if !via.approved() => assert_eq!(restrictions, direct_restrictions),
                 "claude" => {
                     for direct_only in [
                         "empty builtins",
