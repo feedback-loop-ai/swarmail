@@ -51,6 +51,14 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// The MCP client matrix (issue #392, proposed 0140): `run` drives an
+    /// installed MCP Inspector CLI through docs/agents/client-matrix.md's
+    /// checklist against a fresh Swarmail and writes a receipt draft;
+    /// `validate` checks receipt files. Downloads nothing.
+    ClientMatrix {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Run the paid baseline product with one operator command (proposed
     /// 0137): print the plan, verify every family's pinned CLI contract, run
     /// fresh controls, then task-major paid chunks, each started only while
@@ -817,6 +825,9 @@ fn main() -> ExitCode {
         }
         Cmd::Testexec { args } => {
             ExitCode::from(rt.block_on(swarmail_evals::testexec::testexec(&args)) as u8)
+        }
+        Cmd::ClientMatrix { args } => {
+            ExitCode::from(rt.block_on(swarmail_evals::client_matrix::command(&args)))
         }
         Cmd::Baseline {
             config,

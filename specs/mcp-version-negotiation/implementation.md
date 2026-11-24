@@ -247,3 +247,17 @@ list), each pass or fail with a reason. Receipts go in
 `tests/agent_setup_docs.rs` checks their shape only. **Status, 2026-11-22: no
 receipts yet.** Claude Code, Codex, MCP Inspector and Claude Desktop remain
 operator-owned and owed; this procedure makes none of the four rows green.
+
+## Client matrix runner — 2026-11-24
+
+Part of #392. The sections above stay as recorded. The MCP Inspector's
+checklist gained a headless CLI route: `swarmail-evals client-matrix run`
+drives an installed Inspector CLI through the six steps against a fresh
+memory-only server and writes a receipt draft, under proposed
+[0140](../../docs/decisions/0140-inspector-cli-evidence.md)
+([checklist](../../docs/agents/client-matrix.md#headless-the-inspector-cli-through-the-runner)).
+Receipts for Claude Code, Codex, MCP Inspector and Claude Desktop remain
+operator-owned and owed. The runner has run only against an offline stand-in,
+so it makes none of the four rows green, and
+[`docs/evals/clients/`](../../docs/evals/clients/README.md) still holds no
+receipt.

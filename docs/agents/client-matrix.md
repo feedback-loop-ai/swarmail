@@ -16,7 +16,10 @@ Interactive clients need a person.
 **Status, 2026-11-22: no receipts yet.** [`docs/evals/clients/`](../evals/clients/README.md)
 holds no receipt. `tests/agent_setup_docs.rs` checks the shape of each
 receipt there and prints `no receipts yet` while the directory is empty. It
-never reports compatibility.
+never reports compatibility. **Update, 2026-11-24:** the MCP Inspector also
+has a headless CLI route, recorded by `swarmail-evals client-matrix run`
+([below](#headless-the-inspector-cli-through-the-runner)). It has been proven
+only with an offline stand-in client, so there are still no receipts.
 
 ## Routes at a glance
 
@@ -24,7 +27,7 @@ never reports compatibility.
 |---|---|---|---|
 | Claude Code (`claude-code`) | [setup § 2](setup.md#2-claude-code), the HTTP entry | `http` | a person, or headless (`claude -p`) on a host where the operator has signed the CLI in |
 | Codex (`codex`) | [setup § 3](setup.md#3-codex) | `http` | a person, or headless (`codex exec`) on a host where the operator has signed the CLI in |
-| MCP Inspector (`mcp-inspector`) | the URL from [setup § 1](setup.md#1-start-the-server) | `http` | needs a person: the route goes through the Inspector's web UI |
+| MCP Inspector (`mcp-inspector`) | the URL from [setup § 1](setup.md#1-start-the-server) | `http` | a person through the Inspector's web UI, or headless through its CLI and the runner (§ 4) |
 | Claude Desktop (`claude-desktop`) | [setup § 2](setup.md#2-claude-code), the stdio entry | `stdio` | needs a person: the route goes through the Desktop app |
 
 The headless commands for Claude Code and Codex are given below. They are
@@ -239,7 +242,72 @@ same way.
    choose **Run Tool**. The response pane shows the reply. Check it against
    the capture.
 
-This route needs a person. There is no headless form.
+The UI route needs a person and keeps the one-session rule of § 2.
+
+#### Headless: the Inspector CLI through the runner
+
+The Inspector's CLI mode runs one method per launch. Proposed decision
+[0140](../decisions/0140-inspector-cli-evidence.md) lets one set span five
+launches against one fresh server and one delivery, each launch with its
+own `initialize`. A receipt made this way (`"mode": "headless"`) shows that
+each method worked in a fresh session at the first launch's revision. It
+does not show one long session; the UI route above does.
+
+The runner, `swarmail-evals client-matrix run` in the
+[`evals/`](../../evals/README.md) workspace, does steps 2–4 of § 1 itself.
+It starts `$BIN` memory-only on ephemeral loopback ports, delivers this
+page's fixture over SMTP once, and takes the stored ID from the final DATA
+reply. For each launch it starts a loopback observer in front of `/mcp`, so
+the capture of § 3 is not needed. It keeps only the first `initialize`
+reply, with this host's name, the home directory, the user and the run's
+paths redacted. It downloads nothing. It runs the argv given after `--` and
+appends `--cli <observer URL> --transport http` and then one of these:
+
+| Step | Appended arguments |
+|---|---|
+| `list_tools` | `--method tools/list` |
+| `read` | `--method tools/call --tool-name swarmail_get_latest_email --tool-arg count=1 --tool-arg inbox=default` |
+| `wait_for_code` | `--method tools/call --tool-name swarmail_wait_for_code --tool-arg inbox=default --tool-arg timeout_ms=0` |
+| `structured_content` | `--method tools/call --tool-name swarmail_search_emails --tool-arg inbox=default` |
+| `list_attachments` | `--method tools/call --tool-name swarmail_list_attachments --tool-arg id=<stored ID>` |
+
+A step passes only when all of these hold for its launch. The launch's own
+handshake succeeded at the first launch's revision. The observer saw the
+client send exactly that request. Swarmail's reply with the same `id`
+carries the expected values of § 2. The CLI exited 0 and printed a result
+that carries them too. A clean exit without the request on the wire fails.
+The first launch's `initialize` goes in the receipt. If it fails, the four
+calls are recorded as failed, blocked by it.
+
+The Inspector must already be installed. The runner never installs it, and
+`npx` must not either. Record its version from the installed package, for
+example `npm ls -g @modelcontextprotocol/inspector`. Then, with `$BIN` and
+the commit from § 1 (`$MAIN_COMMIT`), run from `evals/`:
+
+```sh
+cargo run --locked --bin swarmail-evals -- client-matrix run \
+  --binary "$BIN" --commit "$MAIN_COMMIT" --client-version "$INSPECTOR_VERSION" \
+  --os "$OS_VERSION" --recorded-by operator --output-dir "$DRAFTS" \
+  -- npx --offline --no-install "@modelcontextprotocol/inspector@$INSPECTOR_VERSION"
+```
+
+An installed executable's path works in place of the `npx` prefix. A
+dispatcher records with `--recorded-by dispatcher`, on the operator's
+approval. The exit status is 0 when all six steps pass and 1 when a red
+draft was written; the failed steps and their reasons are printed. It is 2
+for an error before any attributable observation, and then no draft is
+written. The draft is `$DRAFTS/YYYY-MM-DD-mcp-inspector.json`. The runner
+never overwrites an existing file. Review the draft, copy it into
+[`docs/evals/clients/`](../evals/clients/README.md) and check it with
+`cargo run --locked --bin swarmail-evals -- client-matrix validate <file>`.
+A red draft is published as red, with its failing step.
+
+**Status, 2026-11-24:** this route has run only against the offline
+stand-in of `evals/tests/client_matrix.rs`, not a real Inspector. The
+printed-result check expects the CLI to print the method's result as JSON.
+If a real Inspector prints something else, its steps fail with "the client
+printed no JSON result". That is a fault of this route to report, never a
+pass.
 
 ### Claude Desktop
 
@@ -282,7 +350,9 @@ status, and the reason says why it failed.
 
 No other field is allowed, and no field may appear twice. The shape check
 (`cargo test --locked --test agent_setup_docs client_matrix`) reads every
-file in the directory except its `README.md`. It refuses a missing, extra or
+file in the directory except its `README.md`. The same checker runs on one
+file or a directory with `swarmail-evals client-matrix validate`, and on
+every draft the runner writes. It refuses a missing, extra or
 duplicate field, a step outside the checklist, a wrong type or enum value,
 non-hex or wrong-length hashes, an impossible or non-canonical date, a file
 name that disagrees with `date` or `client`, and a file that is not a regular

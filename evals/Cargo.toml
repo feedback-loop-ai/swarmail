@@ -42,6 +42,14 @@ path = "tests/standin/paid_cli.rs"
 test = false
 doc = false
 
+# Test equipment only: the client matrix's offline stand-in for the MCP
+# Inspector CLI (issue #392), speaking real MCP to the real Swarmail.
+[[bin]]
+name = "inspector-cli-standin"
+path = "tests/standin/inspector_cli.rs"
+test = false
+doc = false
+
 [dev-dependencies]
 pulldown-cmark = { version = "=0.13.6", default-features = false }
 

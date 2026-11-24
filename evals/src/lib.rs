@@ -15,6 +15,7 @@ pub mod api;
 pub mod apibench;
 pub mod bridge;
 pub mod capture;
+pub mod client_matrix;
 #[path = "../../benches/mail_compare/clients/mod.rs"]
 pub mod clients;
 pub mod comparison;
