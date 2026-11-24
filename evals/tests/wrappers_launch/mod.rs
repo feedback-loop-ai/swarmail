@@ -1486,10 +1486,12 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
                 model,
                 "wrapper_paid_binding_invalid",
             );
+            // Valid for the bounded exchange, not through the current second
+            // alone: the coordinator reads its clock again on the request.
+            let [flag, binding] = bound(&pin, launch_horizon());
             let mut cmd = c.command(family, model);
-            let now = now_secs();
-            cmd.args(bound(&pin, now));
-            let mut cmd = nested::granted(&cmd, 1, &format!("{pin}:{now}"));
+            cmd.args([&flag, &binding]);
+            let mut cmd = nested::granted(&cmd, 1, &binding);
             for entry in std::fs::read_dir(&c.home).unwrap() {
                 let path = entry.unwrap().path();
                 if path.is_dir() {
@@ -1555,20 +1557,25 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
     refused(&c, &[], "codex", "gpt-6-luna", "private_credential_expired");
 }
 /// A direct paid launch with the coordinator's binding for the current
-/// selection, valid from now: the command and the grant it asks for.
+/// selection, valid from now for an hour: the command and the grant it asks
+/// for, one string for both.
 fn bound(c: &Case, family: &str, model: &str) -> (std::process::Command, String) {
     let sha = swarmail_evals::wrappers::contract_identity(&c.manifest, family, false)
         .unwrap_or_else(|_| "0".repeat(64));
-    let grant = format!("{sha}:{}", now_secs());
+    let grant = format!("{sha}:{}", launch_horizon());
     let mut cmd = c.command(family, model);
     cmd.arg(swarmail_evals::runner::PAID_LAUNCH_ARG).arg(&grant);
     (cmd, grant)
 }
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
+/// The last second an intended-valid binding is admitted: an hour past the
+/// epoch it is built at, far beyond the bounded child exchange, and inside
+/// every positive fixture's login (claude's ends in 2033, dsh's in 2100).
+/// A binding through the current second alone expired whenever a second
+/// ticked between building it and the coordinator's answer (`grant::answer`
+/// reads its own clock), which refused a valid request as
+/// `paid_grant_refused` on a loaded host.
+fn launch_horizon() -> u64 {
+    common::paid::now() + common::paid::HOUR
 }
 #[path = "mount_proof.rs"]
 mod mount_proof;

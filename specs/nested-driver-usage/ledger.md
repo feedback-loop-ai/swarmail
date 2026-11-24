@@ -601,3 +601,27 @@ sessions), so wall times below are noisy.
   load 23.6): 33 passed, 3 ignored (host-gated, unchanged), 152.7 s.
   Added time: one file read and three SHA-256s of a ~1 MB image per family,
   well under 0.1 s.
+
+### Finding 2 — grant lifetime (`paid_selection_rechecks_the_pin_and_validity_before_exec`)
+
+- **Shared state: the wall clock.** `bound()` and the second Claude launch
+  built the binding as `<identity>:<now>` — valid through the current
+  integer second only. The coordinator stand-in answers with
+  `grant::answer(…, now())`, reading the clock again after the wrapper has
+  probed, spawned and sent its request; `unexpired` is `t >= now`. When a
+  second ticked in between — likelier the more sibling tests load the host —
+  a valid request was refused and the wrapper reported
+  `paid_grant_refused`. This is the fixture's horizon, not a production
+  defect: production bindings are horizons the coordinator chooses, and
+  `answer`'s rollover semantics (granted at `t`, refused at `t+1`) are
+  already proven by `grant::tests::the_coordinator_answers_only_its_own_fresh_binding`
+  (unchanged; no `grant.rs` edit was needed).
+- **Fix.** One helper, `launch_horizon()` = `common::paid::now() + HOUR`,
+  builds every intended-valid direct binding; argv and the coordinator's
+  expected binding come from the same string (`bound()`, and the second
+  Claude launch now takes both from one `[flag, binding]`). The horizon is
+  inside both positive logins (claude's ends in 2033, dsh's in 2100). The
+  margin refusal keeps its horizon beyond claude's expiry (2100), the drift
+  and invalid-binding cases keep theirs, and expired fixtures stay expired.
+- **Evidence.** Same wrappers run as finding 1: 33 passed, 152.7 s. Added
+  time: 0 s (no new launch or wait).
