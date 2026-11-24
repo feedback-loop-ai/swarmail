@@ -2351,9 +2351,9 @@ mod tests {
         assert_eq!(other.release(), Err("driver_release_unrecognized".into()));
         // No environment value widens the trusted set (the panel's hold 3 on
         // a73ac17a): the retired test-equipment variable admits nothing.
-        unsafe { std::env::set_var("EVAL_TEST_STANDIN_DRIVER_SHA256", "a".repeat(64)) };
-        assert_eq!(other.release(), Err("driver_release_unrecognized".into()));
-        unsafe { std::env::remove_var("EVAL_TEST_STANDIN_DRIVER_SHA256") };
+        // That proof runs with the variable in a child's environment
+        // (`tests/wrappers_launch/nested.rs`), never by writing this
+        // multi-threaded harness's own.
         // A debug build admits the stand-in built beside it, a release build
         // nothing but the published digest.
         assert!(!standin_driver_admitted(&"a".repeat(64)));

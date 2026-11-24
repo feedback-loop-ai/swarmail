@@ -553,3 +553,51 @@ cargo test --locked --test paid_baseline -- --ignored a_nested_baseline
 ```
 
 Added CI time: 0 s (documentation only).
+
+## Race isolation (run issue-404-…-a2022fe0, 2026-11-24)
+
+Part of #404 and #164. Spec, plan and tasks: `specs/eval-race-isolation/`.
+Test races only; no production behaviour, boundary, ruling or proof meaning
+changes. Host: shared Linux box, load average 19–24 throughout (other
+sessions), so wall times below are noisy.
+
+### Finding 1 — driver pin (`a_nested_contract_binds_the_driver_pin_and_its_flags`)
+
+- **Shared state.** The test wrote and removed the process-global
+  `EVAL_TEST_STANDIN_DRIVER_SHA256` with `std::env::set_var` while sibling
+  test threads read the environment and spawn children; so did the inline
+  `wrappers::tests` pin proof. Both writes are deleted. The variable has
+  admitted nothing since hold 3 on a73ac17a, so the writes proved nothing
+  the child form does not.
+- **The adversarial input is kept, child-scoped.** The existing
+  altered-driver launch in `an_unbound_nested_selection_refuses_before_any_spend`
+  now carries the variable, naming the altered bytes' digest, through
+  `Command::env` on the wrapper child; it still refuses
+  `driver_release_unrecognized`. The release-profile refusal
+  (`release_seam.rs`) already passes it the same way and is unchanged.
+- **Point-of-use check.** After the restore and reselect, the test asserts
+  that the restored private bytes equal the originals and that the selected
+  digest, the private driver's digest and the digest of the image the debug
+  admission hashes (`current_exe`'s profile directory, one up from `deps/`,
+  joined with `wrappers::STANDIN_DRIVER_NAME`) agree, reporting each read as
+  `Ok`/`Err` and the image path. A recurrence now names the diverging input
+  instead of surfacing as the verifier's refusal.
+- **Mechanism, honestly bounded.** From the code, nothing in the `wrappers`
+  harness writes `target/debug/paid-cli-standin` (every fixture copies it,
+  `install_native`/`install_configured`; `tests/identity.rs` and
+  `tests/runner.rs` build into private `--target-dir`s), every fixture path
+  is a private `/tmp/wrapper-proof-*` directory, and the debug admission
+  never reads the environment. The only process-shared state this test
+  touched was the environment write, which is undefined behaviour under
+  concurrent `getenv`/spawn in other threads; it is removed. I could not
+  reproduce the Ubuntu refusal locally before or after, so the CI failure's
+  exact interleaving is not demonstrated; the new check makes the next one
+  self-describing. No production defect is shown.
+- **Production-file exception.** `evals/src/wrappers.rs` changes only inside
+  `#[cfg(test)] mod tests`: the unsafe `set_var`/`remove_var` pair and the
+  assertion between them are replaced by a comment pointing to the child
+  proof. No non-test line changes.
+- **Evidence.** `cargo test --locked --test wrappers` (default threading,
+  load 23.6): 33 passed, 3 ignored (host-gated, unchanged), 152.7 s.
+  Added time: one file read and three SHA-256s of a ~1 MB image per family,
+  well under 0.1 s.

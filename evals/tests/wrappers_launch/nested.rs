@@ -144,6 +144,40 @@ impl Nested {
                 .as_bytes(),
         );
     }
+    /// Where the debug admission looks for the stand-in it trusts: beside
+    /// the profile directory this harness runs under `deps/` in.
+    fn admitted_image() -> PathBuf {
+        let me = std::env::current_exe().unwrap();
+        let dir = me.parent().unwrap();
+        let dir = if dir.file_name().is_some_and(|n| n == "deps") {
+            dir.parent().unwrap()
+        } else {
+            dir
+        };
+        dir.join(wrappers::STANDIN_DRIVER_NAME)
+    }
+    /// At the point of use, after a restore and reselect: the selected
+    /// digest, this test's private driver bytes and the image the debug
+    /// admission hashes agree. A read failure and a digest mismatch name
+    /// themselves, so a refusal that follows is the verifier's own.
+    fn restored_inputs_agree(&self, restored: &[u8]) {
+        let selection: Value =
+            serde_json::from_slice(&std::fs::read(&self.c.manifest).unwrap()).unwrap();
+        let selected = selection["families"][self.family]["nested"]["driver_sha256"]
+            .as_str()
+            .map(str::to_owned);
+        let private = swarmail_evals::identity::file_hash(&self.driver);
+        let image = Self::admitted_image();
+        let adjacent = swarmail_evals::identity::file_hash(&image);
+        let bytes = std::fs::read(&self.driver).map(|b| b == restored);
+        assert_eq!(bytes.as_ref().ok(), Some(&true), "private bytes restored");
+        assert_eq!(
+            (selected.as_ref(), private.as_ref().ok()),
+            (private.as_ref().ok(), adjacent.as_ref().ok()),
+            "selected / private / adjacent {} ({private:?}, {adjacent:?})",
+            image.display()
+        );
+    }
     /// Re-pin after the driver or CLI bytes changed.
     pub(super) fn reselect(&self) {
         let _ = std::fs::remove_dir_all(self.c.root.path().join("dsh-nested"));
@@ -705,7 +739,12 @@ fn an_unbound_nested_selection_refuses_before_any_spend() {
     n.reselect();
     let _ = std::fs::remove_file(&n.record);
     let mut cmd = fresh(&n);
-    cmd.arg("--paid-launch").arg(n.binding());
+    // The retired test-equipment variable, naming the altered bytes, in
+    // this child's environment alone: it admits nothing.
+    cmd.arg("--paid-launch").arg(n.binding()).env(
+        "EVAL_TEST_STANDIN_DRIVER_SHA256",
+        swarmail_evals::identity::file_hash(&n.driver).unwrap(),
+    );
     refuses(
         &n,
         granted(&cmd, 1, &n.binding()),
@@ -1094,17 +1133,14 @@ fn a_nested_contract_binds_the_driver_pin_and_its_flags() {
         altered.push(0);
         std::fs::write(&n.driver, &altered).unwrap();
         n.reselect();
-        unsafe {
-            std::env::set_var(
-                "EVAL_TEST_STANDIN_DRIVER_SHA256",
-                swarmail_evals::identity::file_hash(&n.driver).unwrap(),
-            )
-        };
+        // No process-global environment write here: the retired variable
+        // admits nothing, and the child-environment proof in
+        // `an_unbound_nested_selection_refuses_before_any_spend` carries it.
         let refused = wrappers::paid_contracts(&n.c.manifest, &[family], true).unwrap_err();
-        unsafe { std::env::remove_var("EVAL_TEST_STANDIN_DRIVER_SHA256") };
         assert!(refused.contains("driver_release_unrecognized"), "{refused}");
         std::fs::write(&n.driver, &driver).unwrap();
         n.reselect();
+        n.restored_inputs_agree(&driver);
         let contract = |nested: bool| wrappers::paid_contracts(&n.c.manifest, &[family], nested);
         let direct = contract(false).unwrap().remove(0);
         let cli_sha = swarmail_evals::identity::file_hash(&n.cli).unwrap();
