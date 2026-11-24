@@ -404,7 +404,10 @@ async fn forward(
     } else {
         Vec::new()
     };
-    let logged = st.log.as_ref().map(|_| (method == Method::POST, body.clone()));
+    let logged = st
+        .log
+        .as_ref()
+        .map(|_| (method == Method::POST, body.clone()));
     let mut req = st.http.request(method, &st.upstream);
     for (name, value) in &headers {
         if hop_by_hop(name) {
@@ -433,7 +436,11 @@ async fn forward(
     .await;
     drop(observed);
     if let (Some(log), Some((post, request))) = (&st.log, logged) {
-        log.record(post, &request, reply.as_ref().map(|(s, _, b)| (s.as_u16(), &b[..])));
+        log.record(
+            post,
+            &request,
+            reply.as_ref().map(|(s, _, b)| (s.as_u16(), &b[..])),
+        );
     }
     let Some((status, upstream_headers, bytes)) = reply else {
         return StatusCode::BAD_GATEWAY.into_response();

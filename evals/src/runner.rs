@@ -1950,23 +1950,24 @@ pub async fn owned_source_context(
 /// Run one owned helper to its exit within `bound`, its stdout read under
 /// the 1 MiB helper bound, its process group reaped on every path. A
 /// timeout is `helper_timeout`, an oversized stdout `helper_output_invalid`.
+/// The output is read once the group is reaped, so a descendant that
+/// outlives the helper holding its stdout cannot stall the read.
 pub async fn run_captured(
     cmd: Command,
     groups: &Groups,
     runtime: Arc<tempfile::TempDir>,
     bound: Duration,
 ) -> Result<(ExitStatus, Vec<u8>), String> {
-    let mut proc =
-        spawn_extended(cmd, groups, None, Some(runtime), false, true).map_err(|_| "helper_spawn")?;
+    let mut proc = spawn_extended(cmd, groups, None, Some(runtime), false, true)
+        .map_err(|_| "helper_spawn")?;
     let rx = proc.captured.take().ok_or("helper_output")?;
-    let result = tokio::time::timeout(bound, async {
-        let status = proc.child.wait().await.map_err(|_| "helper_wait")?;
-        let bytes = rx.await.map_err(|_| "helper_output")??;
-        Ok::<_, String>((status, bytes))
-    })
-    .await;
+    let status = tokio::time::timeout(bound, proc.child.wait()).await;
     proc.cleanup().await?;
-    result.map_err(|_| "helper_timeout")?
+    let status = status
+        .map_err(|_| "helper_timeout")?
+        .map_err(|_| "helper_wait")?;
+    let bytes = rx.await.map_err(|_| "helper_output")??;
+    Ok((status, bytes))
 }
 
 pub async fn build_owned_target(

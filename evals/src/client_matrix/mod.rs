@@ -39,6 +39,8 @@ pub const EXIT_ERROR: u8 = 2;
 
 /// The longest one client launch may run, within the run's budget.
 const LAUNCH_BOUND: Duration = Duration::from_secs(60);
+/// The set's grace past the budget, for the last launch's reaping.
+const SET_GRACE: Duration = Duration::from_secs(15);
 
 #[derive(Parser)]
 #[command(name = "client-matrix", no_binary_name = true)]
@@ -153,7 +155,10 @@ pub fn fixture_message() -> Result<Vec<u8>, String> {
 
 fn extract_fixture(text: &str) -> Result<Vec<u8>, String> {
     let missing = || "the checklist's fixture block is missing".to_string();
-    let after = text.split_once("`matrix-fixture.eml`:").ok_or_else(missing)?.1;
+    let after = text
+        .split_once("`matrix-fixture.eml`:")
+        .ok_or_else(missing)?
+        .1;
     let fence = after.split_once("```text\n").ok_or_else(missing)?.1;
     let mut message = Vec::new();
     for line in fence.lines() {
@@ -174,7 +179,10 @@ fn check_args(args: &RunArgs) -> Result<RecordedBy, String> {
     if !receipt::lower_hex(&args.commit, 40) {
         return Err("--commit must be the full commit, 40 lowercase hex digits".into());
     }
-    for (flag, value) in [("--client-version", &args.client_version), ("--os", &args.os)] {
+    for (flag, value) in [
+        ("--client-version", &args.client_version),
+        ("--os", &args.os),
+    ] {
         if value.trim().is_empty() {
             return Err(format!("{flag} is blank"));
         }
@@ -191,20 +199,29 @@ fn check_args(args: &RunArgs) -> Result<RecordedBy, String> {
 pub async fn run(args: &RunArgs) -> Result<(PathBuf, Receipt), String> {
     let recorded_by = check_args(args)?;
     let deadline = Instant::now() + Duration::from_secs(args.budget_secs);
-    let date = chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();
+    let date = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
     let name = format!("{date}-{}.json", Client::McpInspector.slug());
     let root = crate::artifacts::resolve_root(&args.output_dir)?;
     crate::artifacts::ensure_root(&root)?;
     if std::fs::symlink_metadata(root.join(&name)).is_ok() {
-        return Err(format!("{name} already exists in the output directory; it is kept"));
+        return Err(format!(
+            "{name} already exists in the output directory; it is kept"
+        ));
     }
     let sha = crate::identity::file_hash(&args.binary)?;
     let scratch = Arc::new(crate::runner::private_tempdir("swarmail-matrix-")?);
     let groups = crate::runner::Groups::default();
+    // Each launch is bounded by what is left of the budget; the set as a
+    // whole gets a grace for the last launch's reaping. An exhausted budget
+    // or an interruption ends the set with an error and no draft.
     let observed = tokio::select! {
-        observed = observe_set(args, &scratch, &groups, deadline) => observed,
+        biased;
         _ = tokio::signal::ctrl_c() => Err("interrupted".to_string()),
-        _ = tokio::time::sleep_until(deadline) => Err("the run budget ran out during setup".into()),
+        _ = tokio::time::sleep_until(deadline + SET_GRACE) => Err("the run budget ran out".into()),
+        observed = observe_set(args, &scratch, &groups, deadline) => observed,
     };
     let cleanup = groups.cleanup_all().await;
     let (initialize, reply, revision, rest) = observed?;
@@ -242,7 +259,12 @@ pub async fn run(args: &RunArgs) -> Result<(PathBuf, Receipt), String> {
     Ok((root.join(name), receipt))
 }
 
-type Observed = (Outcome, Option<serde_json::Value>, Option<String>, Vec<Outcome>);
+type Observed = (
+    Outcome,
+    Option<serde_json::Value>,
+    Option<String>,
+    Vec<Outcome>,
+);
 
 /// Start the server, store the fixture and observe the five launches.
 async fn observe_set(
@@ -251,14 +273,10 @@ async fn observe_set(
     groups: &crate::runner::Groups,
     deadline: Instant,
 ) -> Result<Observed, String> {
-    let (server, smtp, http) = crate::runner::start_memory_swarmail(
-        &args.binary,
-        scratch.path(),
-        groups,
-        scratch.clone(),
-    )
-    .await
-    .map_err(|e| format!("swarmail did not start: {e}"))?;
+    let (server, smtp, http) =
+        crate::runner::start_memory_swarmail(&args.binary, scratch.path(), groups, scratch.clone())
+            .await
+            .map_err(|e| format!("swarmail did not start: {e}"))?;
     let message = fixture_message()?;
     let (sent, id) = crate::mail::send_stored(
         smtp,
@@ -280,7 +298,9 @@ async fn observe_set(
         if let Some((init, _, _)) = &first
             && init.status == Status::Fail
         {
-            steps.push(Outcome::fail("blocked: the first launch's initialize failed"));
+            steps.push(Outcome::fail(
+                "blocked: the first launch's initialize failed",
+            ));
             continue;
         }
         if server.exited() {
@@ -291,8 +311,10 @@ async fn observe_set(
             steps.push(Outcome::fail("the run budget ran out before this launch"));
             continue;
         }
-        let launch = launch_client(args, &upstream, http, &call, scratch, groups, index, remaining)
-            .await?;
+        let launch = launch_client(
+            args, &upstream, http, &call, scratch, groups, index, remaining,
+        )
+        .await?;
         let revision = match &first {
             Some((_, _, revision)) => revision.clone(),
             None => {
@@ -339,13 +361,17 @@ async fn launch_client(
         .arg(&observer.mcp_url)
         .args(call.inspector_args())
         .current_dir(&work);
-    let client = crate::runner::run_captured(cmd, groups, scratch.clone(), LAUNCH_BOUND.min(remaining))
-        .await
-        .map(|(status, stdout)| (status.success(), stdout));
+    let client =
+        crate::runner::run_captured(cmd, groups, scratch.clone(), LAUNCH_BOUND.min(remaining))
+            .await
+            .map(|(status, stdout)| (status.success(), stdout));
     if let Err(e) = &client
         && e == "helper_spawn"
     {
-        return Err(format!("the client {:?} could not be started", args.client[0]));
+        return Err(format!(
+            "the client {:?} could not be started",
+            args.client[0]
+        ));
     }
     let (exchanges, overflowed) = observer.seal();
     Ok(Launch {

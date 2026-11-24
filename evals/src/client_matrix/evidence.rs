@@ -30,7 +30,10 @@ const REASON_LIMIT: usize = 200;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Call {
     ListTools,
-    Tool { name: &'static str, arguments: Value },
+    Tool {
+        name: &'static str,
+        arguments: Value,
+    },
 }
 
 /// The five launches after the fixture is stored as `id`: the step each
@@ -210,11 +213,9 @@ pub fn first_handshake(launch: &Launch) -> (Outcome, Option<Value>, Option<Strin
     match attempt.and_then(|p| handshake(&p)) {
         Ok((reply, revision)) => (Outcome::pass(), Some(reply), Some(revision)),
         Err((reason, reply)) => {
-            let revision = reply.as_ref().and_then(|r| {
-                r["result"]["protocolVersion"]
-                    .as_str()
-                    .map(str::to_string)
-            });
+            let revision = reply
+                .as_ref()
+                .and_then(|r| r["result"]["protocolVersion"].as_str().map(str::to_string));
             (fail(&reason), reply, revision)
         }
     }
@@ -247,7 +248,13 @@ pub fn judge(step: &str, call: &Call, launch: &Launch, revision: &str, id: &str)
     }
 }
 
-fn judged(step: &str, call: &Call, launch: &Launch, revision: &str, id: &str) -> Result<(), String> {
+fn judged(
+    step: &str,
+    call: &Call,
+    launch: &Launch,
+    revision: &str,
+    id: &str,
+) -> Result<(), String> {
     if launch.overflowed {
         return Err("the launch's traffic exceeded the observer's bound".into());
     }
@@ -276,7 +283,13 @@ fn judged(step: &str, call: &Call, launch: &Launch, revision: &str, id: &str) ->
     let pair = match matching.as_slice() {
         [] => return Err(format!("the client sent no {}", call.describe())),
         [one] => *one,
-        many => return Err(format!("the client sent {} {}", many.len(), call.describe())),
+        many => {
+            return Err(format!(
+                "the client sent {} {}",
+                many.len(),
+                call.describe()
+            ));
+        }
     };
     if let Call::Tool { arguments, .. } = call {
         let sent = pair.params.get("arguments").cloned().unwrap_or(Value::Null);
@@ -284,7 +297,10 @@ fn judged(step: &str, call: &Call, launch: &Launch, revision: &str, id: &str) ->
             return Err(format!("the client sent arguments {sent}, not {arguments}"));
         }
     }
-    let reply = pair.reply.as_ref().ok_or("the call got no JSON-RPC reply")?;
+    let reply = pair
+        .reply
+        .as_ref()
+        .ok_or("the call got no JSON-RPC reply")?;
     if !(200..300).contains(&pair.status) {
         return Err(format!("the call answered HTTP {}", pair.status));
     }
@@ -317,10 +333,8 @@ fn payload(result: &Value) -> Result<Value, String> {
         .and_then(|b| b["text"].as_str())
         .and_then(|t| serde_json::from_str::<Value>(t).ok())
         .filter(Value::is_object);
-    text.or_else(|| {
-        Some(result["structuredContent"].clone()).filter(Value::is_object)
-    })
-    .ok_or_else(|| "no JSON payload in the tool result".to_string())
+    text.or_else(|| Some(result["structuredContent"].clone()).filter(Value::is_object))
+        .ok_or_else(|| "no JSON payload in the tool result".to_string())
 }
 
 /// The checklist's pass condition for `step` on one tool result.
@@ -383,7 +397,9 @@ pub fn expect(step: &str, result: &Value, id: &str) -> Result<(), String> {
             if body["id"] != id {
                 Err("the listing is not of the stored ID".into())
             } else if !listed {
-                Err(format!("no {ATTACHMENT} entry of {ATTACHMENT_TYPE}, size {ATTACHMENT_SIZE}"))
+                Err(format!(
+                    "no {ATTACHMENT} entry of {ATTACHMENT_TYPE}, size {ATTACHMENT_SIZE}"
+                ))
             } else {
                 Ok(())
             }

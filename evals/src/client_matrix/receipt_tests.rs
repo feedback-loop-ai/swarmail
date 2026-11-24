@@ -523,7 +523,6 @@ fn receipt_contradictory_handshake_evidence_is_refused() {
     }
 }
 
-
 #[test]
 fn receipt_mistyping_any_required_field_is_refused() {
     let pass = modern_pass();
@@ -540,17 +539,19 @@ fn receipt_mistyping_any_required_field_is_refused() {
         };
         let refusal = verdict_of(NAME, &with(&pass, &format!("/{field}"), wrong));
         let refusal = refusal.expect_err(field);
+        // serde names an enum given a non-string as "expected value".
         let named = refusal.contains("invalid type")
+            || refusal.contains("expected value")
             || refusal.contains("not a JSON object")
             || refusal.contains("initialize_response");
         assert!(named, "{field}: {refusal}");
     }
     for step in STEPS {
-        for (pointer, value) in [
-            (format!("/steps/{step}"), json!(true)),
-            (format!("/steps/{step}/status"), json!(1)),
+        for (pointer, value, needle) in [
+            (format!("/steps/{step}"), json!(true), "invalid type"),
+            (format!("/steps/{step}/status"), json!(1), "expected value"),
         ] {
-            refused_value(&with(&pass, &pointer, value), "invalid type");
+            refused_value(&with(&pass, &pointer, value), needle);
         }
     }
     let failed = missing_reply();
@@ -564,7 +565,12 @@ fn receipt_mistyping_any_required_field_is_refused() {
 
 #[test]
 fn receipt_a_typed_draft_serializes_to_an_accepted_file() {
-    for fixture in [modern_pass(), march_partial(), initialize_error(), missing_reply()] {
+    for fixture in [
+        modern_pass(),
+        march_partial(),
+        initialize_error(),
+        missing_reply(),
+    ] {
         let name = name_of(&fixture);
         let bytes = serde_json::to_vec(&fixture).unwrap();
         let receipt = validate(&bytes, &name).unwrap_or_else(|e| panic!("{e}"));
