@@ -176,6 +176,48 @@ $E baseline --tier deliverability --config /private/wrappers.json --output /priv
   The proofs run fake direct CLIs offline (`tests/paid_baseline.rs`). The
   authenticated six-model smoke remains the operator's.
 
+## MCP client matrix (#392, proposed 0138)
+
+**Status, 2026-11-24: the runner is proven only with an offline stand-in;
+no client receipt exists.** `client-matrix run` drives an installed MCP
+Inspector CLI through the checklist in
+[`docs/agents/client-matrix.md`](../docs/agents/client-matrix.md) and writes
+one receipt draft. `client-matrix validate <file or directory>` checks
+receipt files. Both use the one receipt checker,
+`src/client_matrix/receipt.rs`. The root `agent_setup_docs` target compiles
+the same file for the checked-in directory and the handbook's example.
+
+```sh
+cargo run --locked --bin swarmail-evals -- client-matrix run \
+  --binary "$BIN" --commit "$MAIN_COMMIT" --client-version "$INSPECTOR_VERSION" \
+  --os "$OS_VERSION" --recorded-by operator --output-dir "$DRAFTS" \
+  -- npx --offline --no-install "@modelcontextprotocol/inspector@$INSPECTOR_VERSION"
+```
+
+The runner starts `--binary` memory-only on ephemeral loopback ports with a
+closed environment, delivers the handbook's fixture over SMTP once and keys
+every step on the stored ID from the final DATA reply. It downloads nothing.
+It runs the argv after `--` five times, each launch behind its own loopback
+observer and bounded by what is left of `--budget-secs` (default 300, at
+most 60 s a launch). Each launch's process group is reaped before its
+output is read. The judge is `src/client_matrix/evidence.rs`. A step passes
+only on the launch's own handshake at the first revision, the expected
+request on the wire, Swarmail's paired reply with the checklist's values,
+and the same values in the result the client printed. The draft is
+validated, then installed without overwriting. The exit status is 0 when all
+six steps pass, 1 when a red draft is written, and 2 for an error, with no
+draft.
+
+`tests/client_matrix.rs` proves the command offline. Its client is
+`inspector-cli-standin` (`tests/standin/inspector_cli.rs`), which takes the
+Inspector's CLI grammar and speaks real MCP to the candidate `SWARMAIL_BIN`.
+The test covers a green draft, a red one for an omitted call that still
+exits 0, March text-only search, oversized output, a lingering descendant,
+an existing draft, a spent budget and an unusable output path. The judge's
+and the checker's cases are unit tests in `src/client_matrix/`. None of
+them is a receipt. Claude Code and Codex stay on the checklist's
+approval-gated routes and Claude Desktop on its interactive route.
+
 ## Commands
 
 ```bash

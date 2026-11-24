@@ -167,3 +167,63 @@ fn client_matrix_every_status_page_links_the_matrix_and_dates_the_empty_state() 
         );
     }
 }
+
+#[test]
+fn client_matrix_the_inspector_cli_route_is_documented_with_its_limits() {
+    let guide = doc(MATRIX);
+    for needle in [
+        "#### Headless: the Inspector CLI through the runner",
+        "(../decisions/0138-inspector-cli-evidence.md)",
+        "`swarmail-evals client-matrix run`",
+        "`--cli <observer URL> --transport http`",
+        "| `list_tools` | `--method tools/list` |",
+        "--tool-name swarmail_get_latest_email --tool-arg count=1 --tool-arg inbox=default",
+        "--tool-name swarmail_wait_for_code --tool-arg inbox=default --tool-arg timeout_ms=0",
+        "--tool-name swarmail_search_emails --tool-arg inbox=default",
+        "--tool-name swarmail_list_attachments --tool-arg id=<stored ID>",
+        "npx --offline --no-install",
+        "The runner never installs it",
+        "npm ls -g @modelcontextprotocol/inspector",
+        "A clean exit without the request on the wire fails.",
+        "A red draft is published as red",
+        "The UI route needs a person",
+        "on the operator's approval",
+        "**Status, 2026-11-24:** this route has run only against the offline stand-in",
+        "`claude --version`",
+        "`codex --version`",
+        "**About Claude**",
+    ] {
+        assert!(guide.contains(needle), "{MATRIX} lacks {needle:?}");
+    }
+    for (page, needle) in [
+        ("docs/guide/mcp.md", "remain operator-owned and owed"),
+        ("docs/guide/mcp.md", "all four receipts remain owed"),
+        (
+            "specs/mcp-version-negotiation/implementation.md",
+            "## Client matrix runner — 2026-11-24",
+        ),
+        (
+            "specs/mcp-version-negotiation/implementation.md",
+            "operator-owned and owed",
+        ),
+        (
+            "evals/README.md",
+            "**Status, 2026-11-24: the runner is proven only with an offline stand-in; no client receipt exists.**",
+        ),
+        ("docs/evals/README.md", "Update 2026-11-24"),
+        ("docs/evals/clients/README.md", "client-matrix validate"),
+    ] {
+        assert!(doc(page).contains(needle), "{page} lacks {needle:?}");
+    }
+    for page in [
+        "docs/guide/mcp.md",
+        "evals/README.md",
+        "specs/mcp-version-negotiation/implementation.md",
+    ] {
+        assert_eq!(
+            dangling(page, &super::raw(page)),
+            Vec::<String>::new(),
+            "{page}"
+        );
+    }
+}
