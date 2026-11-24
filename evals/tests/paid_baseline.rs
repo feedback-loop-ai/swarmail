@@ -1269,3 +1269,171 @@ fn pin_interpreted_prints_the_selection_members_the_contract_verifies() {
     );
     assert!(!contains(err.as_bytes(), CANARY));
 }
+
+/// Route (b) through the real `baseline` entry point (part of #404, proposed
+/// 0138): every paid slot runs through one offline stand-in driver, the
+/// baseline's own report reads each committed usage companion, its printed
+/// `report_argv` replays to the same report, and a resume refuses a
+/// companion that claims another leaf's driver attempt and a codex selection
+/// whose sandbox class differs from the retained rows'.
+///
+/// Host-gated for time, not privilege: the smallest product is 32 slots and
+/// takes about 100 s, past the CI test job's budget. The dispatcher runs it:
+/// `cd evals && cargo test --locked --test paid_baseline -- --ignored a_nested_baseline`.
+#[test]
+#[ignore = "host-gated: a whole nested baseline (~100 s); run with --ignored"]
+fn a_nested_baseline_reports_its_companions_and_resume_refuses_what_they_contradict() {
+    let _scope = trial_scope();
+    let p = Paid::nested();
+    let finals = json!({
+        "claude": {"step": "claude-code-session-finished", "input_tokens": 41871, "output_tokens": 180, "cache_read_tokens": 41867, "cache_write_tokens": 18455, "num_turns": 2, "total_cost_usd": 0.0798147, "exit_code": 0},
+        "codex": {"step": "codex-session-finished", "input_tokens": 45729, "output_tokens": 244, "cache_read_tokens": 41600, "num_turns": 1, "exit_code": 0},
+        "dsh": {"step": "deepseek-harness-session-finished", "input_tokens": 11497, "output_tokens": 323, "cache_read_tokens": 4096, "num_turns": 2, "exit_code": 0},
+    });
+    let mut by_family = json!({});
+    for f in FAMILIES {
+        by_family[f] = json!([finals[f]]);
+    }
+    p.driver_mode(json!({"mode": "ok", "finals_by_family": by_family}));
+    let (code, out, err) = run(&mut p.authorized(&[]));
+    assert_eq!(
+        code,
+        Some(1),
+        "every stand-in trial is a measured failure: {err}"
+    );
+    // The printed plan's report command reads the companions.
+    let plan: Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+    let argv: Vec<String> = serde_json::from_value(plan["report_argv"].clone()).unwrap();
+    assert_eq!(
+        argv[1..],
+        [
+            "report".to_string(),
+            "--input".into(),
+            p.output.join("paid.jsonl").display().to_string(),
+            "--usage-from".into(),
+            p.output.join("paid").display().to_string(),
+        ]
+    );
+    // The baseline's own report reads every nested companion: each group's
+    // figures are its five sessions' sums, never `incomplete_attribution`.
+    let bytes = std::fs::read(p.output.join("report.json")).unwrap();
+    assert!(!contains(&bytes, "incomplete_attribution"));
+    let report: Value = serde_json::from_slice(&bytes).unwrap();
+    let groups = report["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 6);
+    for g in groups {
+        let family = p
+            .plan()
+            .agents
+            .iter()
+            .find(|a| json!(a.label) == g["agent"])
+            .unwrap()
+            .wrapper_profile
+            .unwrap()
+            .family();
+        let usage = g
+            .as_object()
+            .unwrap()
+            .values()
+            .find(|v| v.get("total_definition").is_some())
+            .unwrap_or_else(|| panic!("{g}"));
+        let f = &finals[family];
+        let total =
+            5 * (f["input_tokens"].as_u64().unwrap() + f["output_tokens"].as_u64().unwrap());
+        assert_eq!(usage["scored_trials"], 5, "{usage}");
+        assert_eq!(
+            usage["total_tokens"],
+            json!({"status": "present", "value": total}),
+            "{usage}"
+        );
+        assert_eq!(
+            usage["cache_read_tokens"],
+            json!({"status": "present", "value": 5 * f["cache_read_tokens"].as_u64().unwrap()})
+        );
+    }
+    // The printed command, run as printed, reproduces the same report.
+    let replay = cli().args(&argv[1..]).output().unwrap();
+    assert_eq!(replay.status.code(), Some(0), "{replay:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&replay.stdout).unwrap(),
+        report
+    );
+    // Two committed companions in different attempts' leaves.
+    let mut leaves = Vec::new();
+    for attempt in std::fs::read_dir(p.output.join("paid")).unwrap() {
+        let trials = attempt.unwrap().path().join("trials");
+        if let Some(leaf) = std::fs::read_dir(trials)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|l| l.join("usage.json").exists())
+        {
+            leaves.push(leaf);
+        }
+    }
+    assert_eq!(leaves.len(), 6, "{leaves:?}");
+    let (a, b) = (&leaves[0], &leaves[1]);
+    let read = |leaf: &Path, name: &str| -> Value {
+        serde_json::from_slice(&std::fs::read(leaf.join(name)).unwrap()).unwrap()
+    };
+    let original = (
+        std::fs::read(b.join("usage.json")).unwrap(),
+        std::fs::read(b.join("metadata.json")).unwrap(),
+    );
+    // Leaf B's companion claims leaf A's driver attempt; its own binding,
+    // slot and profile stay intact and its marker re-binds the new bytes, so
+    // only the ledger-wide owner check can see it.
+    let mut usage = read(b, "usage.json");
+    usage["sessions"][0]["attempt_id"] = read(a, "usage.json")["sessions"][0]["attempt_id"].clone();
+    let forged = serde_json::to_vec(&usage).unwrap();
+    let mut meta = read(b, "metadata.json");
+    meta["usage"]["length"] = json!(forged.len());
+    meta["usage"]["sha256"] = json!(swarmail_evals::provenance::sha256(&forged));
+    std::fs::write(b.join("usage.json"), &forged).unwrap();
+    std::fs::write(b.join("metadata.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+    std::fs::remove_file(p.output.join("report.json")).unwrap();
+    let n = std::fs::read(p.dir.path().join("driver-record.json")).unwrap();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("duplicate usage owner"), "{err}");
+    assert!(!p.output.join("report.json").exists());
+    std::fs::write(b.join("usage.json"), &original.0).unwrap();
+    std::fs::write(b.join("metadata.json"), &original.1).unwrap();
+    // Each retained codex row records the class its selection named.
+    let rows = paid_rows(&p);
+    let codex: Vec<_> = rows
+        .iter()
+        .filter(|r| r["agent"].as_str().unwrap().starts_with("codex-"))
+        .collect();
+    assert_eq!(codex.len(), 10);
+    for row in &codex {
+        let declared = row["provenance"]["agent"]["tool_surface"].to_string();
+        assert!(
+            declared.contains("workspace-write sandbox (driver-selected)"),
+            "{declared}"
+        );
+        assert!(!declared.contains("\"read-only sandbox"), "{declared}");
+    }
+    // A codex selection whose sandbox class differs from the retained rows'
+    // refuses the resume at the first codex attempt, writing no report.
+    p.select(|v| v["families"]["codex"]["nested"]["codex_sandbox"] = json!("read-only"));
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("baseline_provenance_invalid"), "{err}");
+    assert!(!p.output.join("report.json").exists());
+    // The same selection with the retained class reopens: only the class
+    // differed.
+    p.select(|v| v["families"]["codex"]["nested"]["codex_sandbox"] = json!("workspace-write"));
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(1), "{err}");
+    std::fs::remove_file(p.output.join("report.json")).unwrap();
+    // Restored, the complete product reopens to its own bytes, having
+    // launched nothing in any of the refusals above.
+    p.select(|_| {});
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(std::fs::read(p.output.join("report.json")).unwrap(), bytes);
+    assert_eq!(
+        std::fs::read(p.dir.path().join("driver-record.json")).unwrap(),
+        n
+    );
+}

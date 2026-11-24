@@ -8,6 +8,10 @@ args = sys.argv[1:]
 if args == ['--version']:
     print('brokkr 0.15.2')
     sys.exit(0)
+# A header with FAMILY=None serves every family (one driver path for a whole
+# baseline), taking it from the subcommand.
+if FAMILY is None and len(args) > 1 and args[1] in ('claude', 'codex', 'dsh'):
+    FAMILY = args[1]
 # `brokkr driver <family> -- <flags>`: anything else is brokkr's usage error.
 if args[:3] != ['driver', FAMILY, '--']:
     sys.stderr.write('error: unrecognized subcommand\n')
@@ -62,7 +66,7 @@ else:
     send(dict(pair, type='checkpoint', data={'step': 'harness-started', 'harness': FAMILY, 'launch': 'cold'}))
     # A per-turn row with a larger bill than the session: it must not count.
     send(dict(pair, type='checkpoint', data={'step': mode.get('turn_step', 'seat-turn'), 'input_tokens': 999999, 'output_tokens': 999999}))
-    for final in mode.get('finals', []):
+    for final in mode.get('finals_by_family', {}).get(FAMILY, mode.get('finals', [])):
         if mode.get('per_agent'):
             # A multi-agent trial: each session's bill names its agent (the
             # runner's `agent-N` work directory), so the sum is checkable.

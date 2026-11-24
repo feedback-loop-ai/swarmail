@@ -93,6 +93,32 @@ pub fn install_configured(path: &Path, config: &Value) {
     std::fs::rename(&tmp, path).unwrap();
 }
 
+/// The stand-in decodes TOML independently with the standard library's
+/// tomllib (Python 3.11+). /usr/bin/python3 is new enough on Linux runners,
+/// but macOS ships 3.9 there, so take the first python3 that has tomllib,
+/// trying /usr/bin/python3 and then the test's PATH.
+pub fn standin_python() -> &'static str {
+    static PYTHON: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PYTHON.get_or_init(|| {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        std::iter::once(PathBuf::from("/usr/bin/python3"))
+            .chain(std::env::split_paths(&path).map(|dir| dir.join("python3")))
+            .filter(|candidate| candidate.is_absolute())
+            .find(|candidate| {
+                std::process::Command::new(candidate)
+                    .args(["-c", "import tomllib"])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success())
+            })
+            .expect("the wrapper stand-in needs a python3 with tomllib (3.11+)")
+            .to_str()
+            .expect("a UTF-8 interpreter path")
+            .to_owned()
+    })
+}
 /// A private run: fake CLIs, their credentials, the v2 selection and an
 /// independent launch log the harness never reads.
 pub struct Paid {
@@ -102,21 +128,52 @@ pub struct Paid {
     pub hold: PathBuf,
     pub output: PathBuf,
     pub tier: tasks::Tier,
+    /// Route (b): the one pinned stand-in driver every family's selection
+    /// names, and its mode file (see [`Paid::nested`]).
+    pub driver: Option<PathBuf>,
 }
 impl Paid {
     pub fn new() -> Self {
         Self::for_tier(tasks::Tier::Deliverability)
     }
     pub fn for_tier(tier: tasks::Tier) -> Self {
+        Self::build(tier, false)
+    }
+    /// The same private run routed through one offline forge-driver/v1
+    /// stand-in (`tests/wrappers_launch/fake_driver.py`, admitted only by a
+    /// debug build): the CLIs stand under the names the driver looks up,
+    /// dsh's entry starts the pinned runtime, and each family's selection
+    /// carries its nested pin (codex at `workspace-write`).
+    pub fn nested() -> Self {
+        Self::build(tasks::Tier::Deliverability, true)
+    }
+    fn build(tier: tasks::Tier, nested: bool) -> Self {
         let dir = runner::private_tempdir("paid-baseline-").unwrap();
+        let driver = nested.then(|| dir.path().join("brokkr-0.15.2").join("brokkr"));
         let p = Self {
             tier,
+            driver,
             config: dir.path().join("selection.json"),
             log: dir.path().join("launches.log"),
             hold: dir.path().join("hold"),
             output: dir.path().join("run"),
             dir,
         };
+        if let Some(driver) = &p.driver {
+            for d in [driver.parent().unwrap(), &p.dir.path().join("cli")] {
+                std::fs::create_dir(d).unwrap();
+                std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            p.driver_mode(json!({"mode": "ok"}));
+            let body = format!(
+                "#!{}\nFAMILY=None\nMODE_FILE={}\nRECORD={}\n{}",
+                standin_python(),
+                json!(p.dir.path().join("driver-mode.json")),
+                json!(p.dir.path().join("driver-record.json")),
+                include_str!("../wrappers_launch/fake_driver.py")
+            );
+            install_native(driver, body.as_bytes());
+        }
         for family in FAMILIES {
             p.write_cli(family, banner(family));
         }
@@ -126,23 +183,40 @@ impl Paid {
         p.select(|_| {});
         p
     }
-    /// Each family's pinned native binary: for dsh, the node runtime.
+    /// Each family's pinned native binary: for dsh, the node runtime. The
+    /// nested route names them as the driver looks them up on PATH.
     pub fn bin(&self, family: &str) -> PathBuf {
-        self.dir.path().join(format!("{family}-cli"))
+        match (&self.driver, family) {
+            (None, _) => self.dir.path().join(format!("{family}-cli")),
+            (Some(_), "dsh") => self.dir.path().join("cli").join("node"),
+            (Some(_), _) => self.dir.path().join("cli").join(family),
+        }
+    }
+    /// Replace the stand-in driver's mode (its session finals by family).
+    pub fn driver_mode(&self, mode: Value) {
+        let path = self.dir.path().join("driver-mode.json");
+        let _ = std::fs::remove_file(&path);
+        private(&path, mode.to_string().as_bytes());
     }
     /// The dsh package root: an entry, a manifest and an in-root link.
     pub fn package(&self) -> PathBuf {
         let root = self.dir.path().join("dsh-package");
         if !root.exists() {
             use std::os::unix::fs::PermissionsExt as _;
-            for (rel, body) in [
-                (DSH_ENTRY, "// dsh entry\n"),
-                ("package.json", "{\"name\":\"dsh\"}"),
+            // The nested route starts the entry itself: it names the runtime.
+            let entry = match self.driver {
+                Some(_) => format!("#!{}\n// dsh entry\n", self.bin("dsh").display()),
+                None => "// dsh entry\n".into(),
+            };
+            let mode = if self.driver.is_some() { 0o755 } else { 0o644 };
+            for (rel, body, mode) in [
+                (DSH_ENTRY, entry.as_str(), mode),
+                ("package.json", "{\"name\":\"dsh\"}", 0o644),
             ] {
                 let path = root.join(rel);
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                 std::fs::write(&path, body).unwrap();
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
             }
             for dir in [root.clone(), root.join("bin")] {
                 std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -218,6 +292,20 @@ impl Paid {
             });
         }
         let pin = self.dsh_pin();
+        if let Some(driver) = &self.driver {
+            for family in FAMILIES {
+                families[family]["nested"] = json!({
+                    "driver": driver,
+                    "driver_sha256": swarmail_evals::identity::file_hash(driver).unwrap(),
+                    "driver_version": swarmail_evals::wrappers::DRIVER_VERSION,
+                    "platform": swarmail_evals::wrappers::DRIVER_PLATFORM,
+                    "archive_sha256": swarmail_evals::wrappers::DRIVER_ARCHIVE_SHA256,
+                });
+            }
+            families["claude"]["nested"]["effort"] = json!("medium");
+            families["codex"]["nested"]["effort"] = json!("low");
+            families["codex"]["nested"]["codex_sandbox"] = json!("workspace-write");
+        }
         families["dsh"]["executable"] = json!(pin.entry_path());
         families["dsh"]["cli_sha256"] = json!(pin.identity());
         families["dsh"]["interpreted"] = json!(pin);
@@ -226,14 +314,22 @@ impl Paid {
         private(&self.config, v.to_string().as_bytes());
     }
     pub fn plan(&self) -> baseline::Plan {
-        baseline::Plan::for_tier(Some(self.tier), &self.output)
+        baseline::Plan::with_route(
+            Some(self.tier),
+            &self.output,
+            baseline::FRESHNESS_MINUTES,
+            self.driver.as_deref(),
+        )
     }
     pub fn command(&self, extra: &[&str]) -> Command {
         let mut c = cli();
         let tier = serde_json::to_value(self.tier).unwrap();
         c.args(["baseline", "--tier", tier.as_str().unwrap(), "--config"])
-            .arg(&self.config)
-            .arg("--output")
+            .arg(&self.config);
+        if let Some(driver) = &self.driver {
+            c.arg("--via-brokkr").arg(driver);
+        }
+        c.arg("--output")
             .arg(&self.output)
             .args(["--renewal-poll-seconds", "1"])
             .args(extra);
