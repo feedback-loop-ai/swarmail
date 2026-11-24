@@ -4367,6 +4367,14 @@ impl Ledger<'_> {
                 continue;
             }
             let retained = artifacts::trial(&leaf).map_err(|_| invalid())?;
+            // One owner set across every committed leaf of the whole paid
+            // ledger, unscored ones included (part of #404): a companion
+            // copied into a second leaf never lets two slots own one driver
+            // attempt.
+            ledger
+                .owners
+                .claim(retained.usage.as_ref())
+                .map_err(|e| format!("attempt {id}: {e}"))?;
             if retained.row.outcome == Outcome::HarnessError {
                 // Evidence of an unscored attempt: kept and counted by the
                 // report, but it consumes no slot.
@@ -4398,6 +4406,7 @@ impl Ledger<'_> {
 struct Evidence {
     scored: std::collections::BTreeMap<SlotKey, TrialResult>,
     unscored: Vec<TrialResult>,
+    owners: artifacts::UsageOwners,
 }
 fn publish_closure(dir: &std::path::Path, id: &str, cause: &str) -> Result<(), String> {
     artifacts::publish(
@@ -4694,10 +4703,18 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
     // (0055 §10, 0076 §5): unscored attempts join the scored slots there,
     // where they raise attempts and harness_errors and never a success rate.
     let attempted: Vec<TrialResult> = rows.iter().chain(&evidence.unscored).cloned().collect();
+    // A nested row's usage is read from its committed companion by the
+    // same verified reader `report --usage-from` uses (part of #404), so
+    // the product's report and the printed command agree.
+    let usage = artifacts::companions(&root.join("paid"), &attempted)
+        .map_err(|e| format!("usage_unverified: {e}"))?;
     publish_or_verify(
         &root,
         "report.json",
-        &artifacts::encode(&report::report(&attempted), artifacts::PLAN_LIMIT)?,
+        &artifacts::encode(
+            &report::report_with_usage(&attempted, None, &usage),
+            artifacts::PLAN_LIMIT,
+        )?,
     )?;
     Ok(baseline::status(
         0,

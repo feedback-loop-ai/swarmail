@@ -65,7 +65,9 @@ fn dry_run_uses_the_exact_approved_product_without_reading_config_or_creating_ou
             "swarmail-evals",
             "report",
             "--input",
-            output.join("paid.jsonl")
+            output.join("paid.jsonl"),
+            "--usage-from",
+            output.join("paid")
         ])
     );
     assert!(

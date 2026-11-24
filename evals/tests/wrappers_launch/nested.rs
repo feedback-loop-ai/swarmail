@@ -922,6 +922,81 @@ fn a_three_agent_nested_trial_commits_every_sessions_usage() {
     assert_eq!(e, "byte binding mismatch");
     std::fs::write(leaf.join("usage.json"), &companion).unwrap();
     assert!(swarmail_evals::artifacts::trial(&leaf).is_ok());
+    duplicate_owners_refuse_over_a_baseline_root(&n, &leaf, &row);
+}
+
+/// Over a baseline-shaped root (`paid/<attempt>/trials/<id>`, with an
+/// interrupted attempt and a capture tree beside it): one valid leaf reads;
+/// the same leaf under a second attempt, a second trial whose companion
+/// claims the same driver attempts, and a row that is not the committed one
+/// all refuse (the panel's tests 1 and independent 5 on a73ac17a).
+fn duplicate_owners_refuse_over_a_baseline_root(
+    n: &Nested,
+    leaf: &Path,
+    row: &runner::TrialResult,
+) {
+    use swarmail_evals::artifacts;
+    let dir = |p: &Path| {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(p)
+            .unwrap()
+    };
+    let copy = |from: &Path, to: &Path| {
+        dir(to);
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+        }
+    };
+    let root = n.c.root.path().join("product");
+    let paid = root.join("paid");
+    let first = paid.join("a".repeat(32)).join("trials");
+    dir(&first);
+    copy(leaf, &first.join(&row.trial_id));
+    // Siblings that confer no ownership: an interrupted attempt with no
+    // trials and a capture tree.
+    dir(&paid.join("b".repeat(32)));
+    dir(&root.join("capture").join("values"));
+    let read = |rows: &[runner::TrialResult]| artifacts::companions(&paid, rows);
+    assert_eq!(read(std::slice::from_ref(row)).unwrap().len(), 1);
+    // A row that is not the committed one.
+    let mut other = row.clone();
+    other.wall_time_ms += 1;
+    assert_eq!(
+        read(std::slice::from_ref(&other)).unwrap_err(),
+        "usage row mismatch"
+    );
+    // The same leaf under a second attempt: two directories own one trial.
+    let second = paid.join("c".repeat(32)).join("trials");
+    dir(&second);
+    copy(leaf, &second.join(&row.trial_id));
+    assert_eq!(
+        read(std::slice::from_ref(row)).unwrap_err(),
+        "duplicate usage owner"
+    );
+    std::fs::remove_dir_all(&second).unwrap();
+    // A second, individually valid trial whose companion names the same
+    // driver attempts: the bill has one owner.
+    let retained = artifacts::trial(leaf).unwrap();
+    let mut twin = retained.row.clone();
+    twin.trial_id = format!("{:032x}", 0x405u32);
+    let mut usage = retained.usage.clone().unwrap();
+    usage.trial_id = twin.trial_id.clone();
+    let twins = paid.join("d".repeat(32)).join("trials");
+    dir(&twins);
+    let state = retained.state.clone().map(|mut s| {
+        s.trial_id = twin.trial_id.clone();
+        s
+    });
+    artifacts::retain_trial(&twins, &twin, state.as_ref(), Some(&usage)).unwrap();
+    assert!(artifacts::trial(&twins.join(&twin.trial_id)).is_ok());
+    assert_eq!(read(std::slice::from_ref(&twin)).unwrap().len(), 1);
+    assert_eq!(
+        read(&[row.clone(), twin]).unwrap_err(),
+        "duplicate usage owner"
+    );
 }
 
 /// A nested paid contract binds the CLI's pin with the driver's pin and the

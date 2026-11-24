@@ -638,6 +638,31 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     assert_eq!(sum("attempts"), 30 + unscored.len() as u64);
     assert_eq!(sum("harness_errors"), unscored.len() as u64);
     assert_eq!(sum("scored"), 30);
+    // The printed report command reads the retained companions with the
+    // same verified reader as report.json (part of #404): it runs as
+    // printed, over the same scored slots.
+    let printed = cli()
+        .args(["report", "--input"])
+        .arg(p.output.join("paid.jsonl"))
+        .arg("--usage-from")
+        .arg(p.output.join("paid"))
+        .output()
+        .unwrap();
+    assert_eq!(printed.status.code(), Some(0), "{printed:?}");
+    let printed: Value = serde_json::from_slice(&printed.stdout).unwrap();
+    assert_eq!(
+        printed["groups"].as_array().unwrap().len(),
+        report["groups"].as_array().unwrap().len()
+    );
+    let scored = |r: &Value| -> u64 {
+        r["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["scored"].as_u64().unwrap())
+            .sum()
+    };
+    assert_eq!(scored(&printed), 30);
     for bytes in unscored {
         assert!(
             contains(bytes, "\"cli\":{\"profile\":"),

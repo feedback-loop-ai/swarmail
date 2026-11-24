@@ -264,6 +264,8 @@ impl Plan {
                 "report".into(),
                 "--input".into(),
                 output.join("paid.jsonl").to_string_lossy().into_owned(),
+                "--usage-from".into(),
+                output.join("paid").to_string_lossy().into_owned(),
             ],
             wrapper_contracts: "a version-2 private selection pins each family's CLI path, version, sha256 and auth shape (see evals/wrappers.md); authenticated six-model and HTTP MCP smoke remains operator-owned",
         }
