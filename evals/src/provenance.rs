@@ -476,14 +476,24 @@ impl ToolSurface {
             ),
         };
         let mut residuals: Vec<String> = residuals.iter().map(|s| s.to_string()).collect();
+        let mut restrictions: Vec<String> = restrictions.iter().map(|s| s.to_string()).collect();
         if profile.via_brokkr() {
             residuals.push("brokkr driver flags unenumerated".to_string());
+            // Under the driver codex runs the class the selection names, not
+            // the direct launch's fixed one: say which classes are admitted
+            // and where the effective one is bound, never "read-only".
+            if profile.family() == "codex" {
+                restrictions[0] = "driver-selected sandbox class (read-only or \
+                    workspace-write; danger-full-access refused), bound in the \
+                    contract identity"
+                    .to_string();
+            }
         }
         Self::Wrapper {
             revision: 1,
             basis: SurfaceBasis::DeclaredConfiguration,
             profile,
-            restrictions: restrictions.iter().map(|s| s.to_string()).collect(),
+            restrictions,
             residuals,
         }
     }
@@ -883,7 +893,7 @@ mod via_brokkr_tests {
     }
 
     #[test]
-    fn a_via_brokkr_surface_differs_from_the_direct_one_only_by_the_driver_residual() {
+    fn a_via_brokkr_surface_differs_only_by_the_driver_residual_and_codexs_class() {
         for (direct, via) in DIRECT.into_iter().zip(VIA) {
             let (
                 ToolSurface::Wrapper {
@@ -906,7 +916,9 @@ mod via_brokkr_tests {
             };
             assert_eq!(profile, via);
             assert_eq!((revision, basis), (direct_revision, direct_basis));
-            assert_eq!(restrictions, direct_restrictions);
+            // Codex's class alone differs: the driver runs the selected one.
+            let same = usize::from(via.family() == "codex");
+            assert_eq!(restrictions[same..], direct_restrictions[same..]);
             assert_eq!(residuals[..direct_residuals.len()], direct_residuals[..]);
             assert_eq!(
                 residuals[direct_residuals.len()..],
@@ -973,6 +985,12 @@ mod cli_identity_tests {
         via.profile = WrapperProfile::Codex0_166_0ViaBrokkr;
         let via_surface = ToolSurface::declared(WrapperProfile::Codex0_166_0ViaBrokkr);
         assert!(via.validate(&via_surface).is_ok());
+        // The nested descriptor never claims the direct launch's class.
+        let ToolSurface::Wrapper { restrictions, .. } = &via_surface else {
+            panic!("a wrapper surface");
+        };
+        assert!(!restrictions.iter().any(|r| r == "read-only sandbox"));
+        assert!(restrictions[0].contains("danger-full-access refused"));
         assert!(via.validate(&surface).is_err());
         assert!(good.validate(&via_surface).is_err());
         let mut old_via = old.clone();

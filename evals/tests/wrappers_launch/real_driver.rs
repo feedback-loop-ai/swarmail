@@ -21,10 +21,11 @@ fn release() -> PathBuf {
     path
 }
 
-#[cfg(target_os = "linux")]
+/// Ignored on every platform unless asked for: the release asset is Linux
+/// x86_64 only, and no hard `cfg` leaves its helpers dead elsewhere.
 #[test]
-#[ignore = "needs the staged brokkr v0.15.2 release in EVAL_BROKKR_DRIVER"]
-fn the_release_driver_launches_each_inert_cli_inside_the_trial_boundary() {
+#[ignore = "needs the staged brokkr v0.15.2 release in EVAL_BROKKR_DRIVER (Linux x86_64)"]
+fn the_release_driver_launches_each_inert_cli_on_the_host_route() {
     let driver = release();
     for (family, model) in super::nested::CASES {
         let n = Nested::new(family, model);
@@ -95,11 +96,14 @@ fn the_release_driver_launches_each_inert_cli_inside_the_trial_boundary() {
         assert_eq!(rec["fd3"], Value::Null, "{family}: the launch pipe leaked");
         assert!(!env.to_string().contains(CANARY));
         // The result was written inside the work directory (codex under
-        // its selected sandbox class), and DNS inputs read but not written.
+        // its selected sandbox class), and the DNS inputs were readable.
+        // Whether a write is refused is not read from `os.access` on the
+        // host's files: the recipe route's read-only binds are proven by a
+        // real mount (`evals/src/binds/mount_tests.rs`).
         let result = rec["result_path"].as_str().unwrap();
         assert!(result.starts_with(n.c.work.to_str().unwrap()), "{family}");
         for (path, access) in rec["dns"].as_object().unwrap() {
-            assert_eq!(access, &json!([true, false]), "{family}: {path}");
+            assert_eq!(access[0], json!(true), "{family}: {path}");
         }
     }
 }

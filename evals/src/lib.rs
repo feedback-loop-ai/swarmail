@@ -13,6 +13,7 @@ pub mod admission;
 #[path = "../../benches/mail_compare/api.rs"]
 pub mod api;
 pub mod apibench;
+pub mod binds;
 pub mod bridge;
 pub mod capture;
 #[path = "../../benches/mail_compare/clients/mod.rs"]

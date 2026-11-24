@@ -106,7 +106,7 @@ impl Nested {
             "claude" => nested["effort"] = json!("medium"),
             "codex" => {
                 nested["effort"] = json!("low");
-                nested["codex_sandbox"] = json!("danger-full-access");
+                nested["codex_sandbox"] = json!("workspace-write");
             }
             _ => {}
         }
@@ -188,7 +188,8 @@ impl Nested {
         let mut cmd = self.c.command(self.family, self.model);
         cmd.arg("--via-brokkr")
             .arg(&self.driver)
-            .arg("--launch-report");
+            .arg("--paid-launch")
+            .arg(self.binding());
         unsafe {
             cmd.pre_exec(move || {
                 let ok = if raw == 3 {
@@ -214,6 +215,15 @@ impl Nested {
             String::from_utf8_lossy(&out.stderr).into_owned(),
             report,
         )
+    }
+    /// The host route's paid-launch binding a coordinator would pass: the
+    /// current selection's nested identity, valid inside every stand-in
+    /// login (claude's ends in 2033). A selection without a nested pin
+    /// gets a well-formed digest that cannot match.
+    pub(super) fn binding(&self) -> String {
+        let sha = wrappers::contract_identity(&self.c.manifest, self.family, true)
+            .unwrap_or_else(|_| "0".repeat(64));
+        format!("{sha}:1900000000")
     }
     fn record(&self) -> Value {
         serde_json::from_slice(&std::fs::read(&self.record).unwrap()).unwrap()
@@ -242,7 +252,7 @@ fn flags(family: &str, model: &str) -> Vec<String> {
             "--effort",
             "low",
             "--sandbox",
-            "danger-full-access",
+            "workspace-write",
         ],
         _ => vec!["--model", model],
     };
@@ -433,7 +443,8 @@ fn the_driver_pin_refuses_before_any_private_write_or_spawn() {
         n.select(edit);
         n.clear_home();
         let mut cmd = n.c.command("codex", "gpt-6-luna");
-        let out = cmd.arg("--via-brokkr").arg(via).output().unwrap();
+        cmd.arg("--via-brokkr").arg(via);
+        let out = cmd.arg("--paid-launch").arg(n.binding()).output().unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(2), "{code}: {err}");
         assert!(err.contains(code), "{code}: {err}");
@@ -463,73 +474,86 @@ fn the_driver_pin_refuses_before_any_private_write_or_spawn() {
         &n.driver,
         "driver_sandbox_invalid",
     );
+    refuse(
+        json!({"codex_sandbox": "danger-full-access"}),
+        &n.driver,
+        "driver_sandbox_unconfined",
+    );
     // A driver whose banner is not the release's.
     let swapped = json!({"driver": other, "driver_sha256": other_sha});
     refuse(swapped, &other, "driver_version_mismatch");
 }
 
-/// Through the real `trial` command: the row the runner writes carries the
-/// session's usage, bound to its own trial id, and is retained and reported
-/// as such; a driver that launches nothing is a harness error with none.
+/// Fail closed (the operator's 2026-11-24 ruling): a valid nested selection
+/// with neither the host's paid-launch binding nor the recipe's read-only
+/// binds refuses before any credential read, HOME write or driver spawn.
+/// Outside a recipe seat the release pin refuses the stand-in first; with
+/// the stand-in admitted, this host's writable mounts refuse it.
 #[cfg_attr(
     not(target_os = "linux"),
     ignore = "bind ownership is read from /proc (Linux)"
 )]
 #[test]
-fn a_nested_trial_row_carries_its_harness_authored_usage() {
-    let _scope = common::trial_scope();
-    for mode in ["complete", "silent"] {
-        let n = Nested::new("claude", "claude-sonnet-5-5");
-        private(
-            &n.mode,
-            json!({"mode": mode, "finals": [smoke_final("claude")]})
-                .to_string()
-                .as_bytes(),
-        );
-        let evidence = n.c.root.path().join("retained");
-        let mut command = common::cli();
-        command
-            .args(["trial", "--task", "signup", "--agent", "claude-nested"])
-            .args(["--agent-model", "claude-sonnet-5-5"])
-            .args(["--wrapper-profile", "claude_2_1_329_via_brokkr"])
-            .args(["--deadline-ms", "60000", "--artifacts-dir"])
-            .arg(&evidence)
-            .args([
-                "--",
-                common::exe(),
-                "agent-claude",
-                "--model",
-                "claude-sonnet-5-5",
-            ])
-            .arg("--config")
-            .arg(&n.c.manifest)
-            .arg("--via-brokkr")
-            .arg(&n.driver);
-        let out = command.output().unwrap();
-        let row = common::one_row(&out);
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(!err.contains(CANARY));
-        if mode == "silent" {
-            assert_eq!(row.outcome, Outcome::HarnessError, "{err}");
-            assert!(err.contains("harness error: agent_unstarted"), "{err}");
-            assert_eq!(row.nested_usage, None);
-            continue;
+fn an_unbound_nested_selection_refuses_before_any_spend() {
+    let n = Nested::new("claude", "claude-sonnet-5-5");
+    let standin = swarmail_evals::identity::file_hash(&n.driver).unwrap();
+    for (admit, code) in [
+        (false, "driver_release_unrecognized"),
+        (true, "nested_paid_unbound: recipe_bind_"),
+    ] {
+        n.clear_home();
+        let _ = std::fs::remove_file(&n.mode);
+        private(&n.mode, json!({"mode": "complete"}).to_string().as_bytes());
+        let mut cmd = n.c.command("claude", "claude-sonnet-5-5");
+        cmd.arg("--via-brokkr").arg(&n.driver);
+        if admit {
+            cmd.env(wrappers::STANDIN_DRIVER_ENV, &standin);
         }
-        // The fake session did nothing to the mail: a scored failure.
-        assert_eq!(row.outcome, Outcome::Fail, "{err}");
-        let usage = row.nested_usage.clone().expect("the nested record");
-        assert_eq!(usage.source, "via_brokkr_driver");
-        assert_eq!(usage.trial_id, row.trial_id);
-        assert_eq!(usage.family, "claude");
-        assert_eq!(usage.facts.input_tokens, Fact::Present { value: 41871 });
-        assert_eq!(usage.facts.output_tokens, Fact::Present { value: 180 });
-        let retained = swarmail_evals::artifacts::trial(&evidence.join(&row.trial_id)).unwrap();
-        assert_eq!(retained.row, row);
-        let report = swarmail_evals::report::report(std::slice::from_ref(&row));
-        let nested = &report["groups"][0]["nested_usage"];
-        assert_eq!(nested["total_tokens"]["value"], 41871 + 180);
-        assert_eq!(nested["tokens_per_success"]["reason"], "no_passes");
+        let out = cmd.output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{code}: {err}");
+        assert!(err.contains(code), "{code}: {err}");
+        assert!(!n.record.exists(), "{code}: the driver ran");
+        assert!(std::fs::read_dir(&n.c.home).unwrap().next().is_none());
     }
+}
+
+/// Through the real `trial` command with no coordinator: no paid-launch
+/// binding and no recipe binds, so the nested selection fails closed. The
+/// driver never runs, and the trial is a harness error, never a scored
+/// attempt (the operator's 2026-11-24 ruling).
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[test]
+fn a_nested_trial_without_a_binding_never_starts_the_driver() {
+    let _scope = common::trial_scope();
+    let n = Nested::new("claude", "claude-sonnet-5-5");
+    private(
+        &n.mode,
+        json!({"mode": "complete", "finals": [smoke_final("claude")]})
+            .to_string()
+            .as_bytes(),
+    );
+    let mut command = common::cli();
+    command
+        .args(["trial", "--task", "signup", "--agent", "claude-nested"])
+        .args(["--agent-model", "claude-sonnet-5-5"])
+        .args(["--wrapper-profile", "claude_2_1_329_via_brokkr"])
+        .args(["--deadline-ms", "60000", "--"])
+        .arg(common::exe())
+        .args(["agent-claude", "--model", "claude-sonnet-5-5", "--config"])
+        .arg(&n.c.manifest)
+        .arg("--via-brokkr")
+        .arg(&n.driver);
+    let out = command.output().unwrap();
+    let row = common::one_row(&out);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains(CANARY));
+    assert_eq!(row.outcome, Outcome::HarnessError, "{err}");
+    assert!(err.contains("harness error: agent_unstarted"), "{err}");
+    assert!(!n.record.exists(), "the unbound driver ran");
 }
 
 /// A nested paid contract binds the CLI's pin with the driver's pin and the
@@ -557,6 +581,15 @@ fn a_nested_contract_binds_the_driver_pin_and_its_flags() {
             &json!({"family": family, "version": banner, "log": log, "hold": n.c.root.path().join("hold"), "canaries": [CANARY]}),
         );
         n.reselect();
+        // The coordinator admits the release executable alone; this proof
+        // pins the stand-in, admitted by the test-equipment digest. Only
+        // this test reads the variable in-process; every launch below runs
+        // with a cleared environment.
+        let standin = swarmail_evals::identity::file_hash(&n.driver).unwrap();
+        unsafe { std::env::remove_var(wrappers::STANDIN_DRIVER_ENV) };
+        let refused = wrappers::paid_contracts(&n.c.manifest, &[family], true).unwrap_err();
+        assert!(refused.contains("driver_release_unrecognized"), "{refused}");
+        unsafe { std::env::set_var(wrappers::STANDIN_DRIVER_ENV, &standin) };
         let contract = |nested: bool| wrappers::paid_contracts(&n.c.manifest, &[family], nested);
         let direct = contract(false).unwrap().remove(0);
         let cli_sha = swarmail_evals::identity::file_hash(&n.cli).unwrap();
@@ -572,7 +605,7 @@ fn a_nested_contract_binds_the_driver_pin_and_its_flags() {
         // Each pinned part moves the identity, so resume refuses the change.
         let edits = if family == "codex" {
             vec![
-                json!({"codex_sandbox": "workspace-write"}),
+                json!({"codex_sandbox": "read-only"}),
                 json!({"effort": "high"}),
             ]
         } else {

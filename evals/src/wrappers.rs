@@ -403,11 +403,28 @@ pub const DRIVER_ARCHIVE_SHA256: &str =
 /// an operator's selection pins (`driver_sha256`).
 pub const DRIVER_RELEASE_SHA256: &str =
     "61cba4ee438eb0bd0dbc223f7d394219238aeecc061250e36281a4989e455062";
+/// Whether a selection's driver digest is the published release executable.
+/// Production trusts exactly [`DRIVER_RELEASE_SHA256`]. The offline
+/// stand-in driver of the integration proofs is admitted only by the
+/// test-equipment variable below, read by the coordinator process alone
+/// (an agent's environment is rebuilt from nothing): its value must itself
+/// be a digest the selection then pins and every launch re-measures, so it
+/// adds one trusted digest and never skips a measurement.
+fn release_digest(sha256: &str) -> bool {
+    sha256 == DRIVER_RELEASE_SHA256
+        || std::env::var(STANDIN_DRIVER_ENV).is_ok_and(|standin| standin == sha256)
+}
+/// Test equipment (like the runner's `EVAL_TEST_*` hooks): the digest of the
+/// offline forge-driver/v1 stand-in an integration proof pins.
+pub const STANDIN_DRIVER_ENV: &str = "EVAL_TEST_STANDIN_DRIVER_SHA256";
 /// The effort words a nested claude or codex selection may name.
 pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
-/// Codex's inner sandbox class under the nested driver: a typed selection,
-/// because `workspace-write` lost the smoke's result inside the trial box.
+/// Codex's inner sandbox class under the nested driver: a typed selection.
+/// Only `read-only` and `workspace-write` are admitted (the operator's
+/// 2026-11-24 ruling on #404): no enclosing boundary is verified that could
+/// stand in for codex's own, so `danger-full-access` parses only to be
+/// refused with its own reason before anything is read or spawned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CodexSandbox {
@@ -467,7 +484,20 @@ impl NestedSelection {
         if (family == "codex") != self.codex_sandbox.is_some() {
             return Err("driver_sandbox_invalid".into());
         }
+        if self.codex_sandbox == Some(CodexSandbox::DangerFullAccess) {
+            return Err("driver_sandbox_unconfined".into());
+        }
         Ok(())
+    }
+    /// The coordinator's admission (host baseline and `matrix --brokkr`
+    /// alike): the pin must be the published release executable, whose
+    /// archive line [`DRIVER_ARCHIVE_SHA256`] `validate` already required.
+    fn release(&self) -> Result<(), String> {
+        if release_digest(&self.driver_sha256) {
+            Ok(())
+        } else {
+            Err("driver_release_unrecognized".into())
+        }
     }
     /// The launch-time proof: the flag names the pinned driver, this host is
     /// the pinned platform, and the bytes and banner are the release's.
@@ -1067,6 +1097,7 @@ pub fn paid_contracts(
             s.probe().map_err(|e| format!("{family}: {e}"))?;
             let sha256 = s.identity(nested).map_err(|e| format!("{family}: {e}"))?;
             if let (true, Some(n)) = (nested, &s.nested) {
+                n.release().map_err(|e| format!("{family}: {e}"))?;
                 n.check(&n.driver).map_err(|e| format!("{family}: {e}"))?;
             }
             Ok(Contract {
@@ -1080,6 +1111,13 @@ pub fn paid_contracts(
             })
         })
         .collect()
+}
+
+/// The identity a coordinator binds a family's launch to (`--paid-launch
+/// SHA256:...`), read from the selection without probing anything: the
+/// shape is checked, the bytes are not. Admission is [`paid_contracts`].
+pub fn contract_identity(config: &Path, family: &str, nested: bool) -> Result<String, String> {
+    paid_selection(&private_bytes(config)?, family)?.identity(nested)
 }
 
 /// The credential a declaration spends: one login per Claude or Codex
@@ -1354,6 +1392,21 @@ fn launch(
                 .as_ref()
                 .and_then(|p| p.nested.as_ref())
                 .ok_or("driver_pin_missing")?;
+            // Fail closed (the operator's 2026-11-24 ruling): a nested paid
+            // session runs only under the host baseline's paid-launch
+            // binding or inside the recipe seat's verified read-only binds,
+            // where no coordinator admitted the release pin, so it is
+            // checked here.
+            if binding.is_none() {
+                pin.release()?;
+                let paid = selected.paid.as_ref().expect("a nested pin is paid");
+                let mut sources = vec![driver, paid.program().0, &selected.credential_file, config];
+                if let Some(pin) = &paid.interpreted {
+                    sources.push(&pin.package_root);
+                }
+                crate::binds::verify_live(&sources)
+                    .map_err(|e| format!("nested_paid_unbound: {e}"))?;
+            }
             pin.check(driver)?;
             Some((driver, pin))
         }
@@ -1971,7 +2024,7 @@ mod tests {
             platform: DRIVER_PLATFORM.into(),
             archive_sha256: DRIVER_ARCHIVE_SHA256.into(),
             effort: (family != "dsh").then(|| "medium".into()),
-            codex_sandbox: (family == "codex").then_some(CodexSandbox::DangerFullAccess),
+            codex_sandbox: (family == "codex").then_some(CodexSandbox::WorkspaceWrite),
         }
     }
     #[test]
@@ -1980,7 +2033,11 @@ mod tests {
             assert_eq!(nested(family).validate(family), Ok(()), "{family}");
         }
         type Edit = fn(&mut NestedSelection);
-        let cases: [(&str, Edit, &str); 10] = [
+        let mut read_only = nested("codex");
+        read_only.codex_sandbox = serde_json::from_value(json!("read-only")).unwrap();
+        assert_eq!(read_only.codex_sandbox, Some(CodexSandbox::ReadOnly));
+        assert_eq!(read_only.validate("codex"), Ok(()));
+        let cases: [(&str, Edit, &str); 11] = [
             (
                 "claude",
                 |n| n.driver = "brokkr".into(),
@@ -2027,6 +2084,11 @@ mod tests {
                 |n| n.codex_sandbox = Some(CodexSandbox::ReadOnly),
                 "driver_sandbox_invalid",
             ),
+            (
+                "codex",
+                |n| n.codex_sandbox = Some(CodexSandbox::DangerFullAccess),
+                "driver_sandbox_unconfined",
+            ),
         ];
         for (family, edit, want) in cases {
             let mut n = nested(family);
@@ -2042,6 +2104,11 @@ mod tests {
             .map(CodexSandbox::name),
             ["read-only", "workspace-write", "danger-full-access"]
         );
+        // Production admits the release executable's digest alone.
+        assert_eq!(nested("claude").release(), Ok(()));
+        let mut other = nested("claude");
+        other.driver_sha256 = "a".repeat(64);
+        assert_eq!(other.release(), Err("driver_release_unrecognized".into()));
         // The launch check: the flag must name the pinned path, then the
         // bytes must hash to the pin, before any banner runs.
         let n = nested("claude");

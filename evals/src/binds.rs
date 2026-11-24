@@ -1,0 +1,234 @@
+//! The recipe route's F5 binding (the operator's 2026-11-24 ruling on #404):
+//! a nested paid wrapper with no host paid-launch binding may launch only
+//! when the trial namespace it runs in holds the eval recipe's read-only
+//! binds. The proof is the effective mount table, never the bundle text and
+//! never an access probe on host files: every protected path must resolve
+//! under a mount whose per-mount options say `ro`, with no writable mount
+//! stacked inside a protected tree.
+use std::path::{Path, PathBuf};
+
+/// The four DNS inputs the trial seat binds read-only. The first three must
+/// exist inside the namespace; `/run/systemd/resolve` is bound where the
+/// host has it.
+pub const DNS: [&str; 4] = [
+    "/etc/resolv.conf",
+    "/etc/nsswitch.conf",
+    "/etc/hosts",
+    "/run/systemd/resolve",
+];
+
+/// One mount-table entry: its mount point and whether it is read-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Mount {
+    point: PathBuf,
+    read_only: bool,
+}
+
+/// Undo mountinfo's octal escapes (`\040` space, `\011` tab, `\012`
+/// newline, `\134` backslash). Anything else is kept as written.
+fn unescape(field: &str) -> PathBuf {
+    let bytes = field.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let octal = bytes
+            .get(i + 1..i + 4)
+            .filter(|d| bytes[i] == b'\\' && d.iter().all(|c| (b'0'..=b'7').contains(c)))
+            .map(|d| d.iter().fold(0u32, |n, c| n * 8 + u32::from(c - b'0')));
+        match octal.and_then(|n| u8::try_from(n).ok()) {
+            Some(b) => {
+                out.push(b);
+                i += 4;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    PathBuf::from(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(out))
+}
+
+/// Parse `/proc/self/mountinfo`: field 5 is the mount point, field 6 the
+/// per-mount options. A line that does not have them is skipped.
+fn mounts(mountinfo: &str) -> Vec<Mount> {
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split(' ').skip(4);
+            let point = unescape(fields.next()?);
+            let options = fields.next()?;
+            Some(Mount {
+                point,
+                read_only: options.split(',').any(|o| o == "ro"),
+            })
+        })
+        .collect()
+}
+
+/// The mount a path lives on: the deepest mount point that is an ancestor
+/// of (or equal to) it, the later entry winning on a stacked point.
+fn owner<'a>(table: &'a [Mount], path: &Path) -> Option<&'a Mount> {
+    let mut best: Option<&Mount> = None;
+    for m in table {
+        if path.starts_with(&m.point)
+            && best.is_none_or(|b| m.point.components().count() >= b.point.components().count())
+        {
+            best = Some(m);
+        }
+    }
+    best
+}
+
+/// Whether `path` (already resolved) and everything mounted beneath it is
+/// read-only in this table.
+fn protected(table: &[Mount], path: &Path) -> bool {
+    owner(table, path).is_some_and(|m| m.read_only)
+        && table
+            .iter()
+            .all(|m| m.read_only || !m.point.starts_with(path) || m.point == path)
+}
+
+/// Check a mount table against the DNS inputs and the selection's sources.
+/// `resolve` maps a path to its canonical form inside the namespace (`None`
+/// when it is absent there). Each refusal is a fixed reason.
+pub fn verify(
+    mountinfo: &str,
+    sources: &[&Path],
+    resolve: impl Fn(&Path) -> Option<PathBuf>,
+) -> Result<(), String> {
+    let table = mounts(mountinfo);
+    for (index, dns) in DNS.iter().enumerate() {
+        match resolve(Path::new(dns)) {
+            Some(real) if protected(&table, &real) => {}
+            Some(_) => return Err("recipe_bind_writable".into()),
+            None if index == DNS.len() - 1 => {}
+            None => return Err("recipe_bind_missing".into()),
+        }
+    }
+    for source in sources {
+        match resolve(source) {
+            Some(real) if protected(&table, &real) => {}
+            Some(_) => return Err("recipe_bind_writable".into()),
+            None => return Err("recipe_bind_missing".into()),
+        }
+    }
+    Ok(())
+}
+
+/// The live check a nested wrapper makes: this process's own mount table.
+/// A host outside any recipe seat has writable DNS inputs, so an unbound
+/// nested selection refuses here before any credential is read.
+pub fn verify_live(sources: &[&Path]) -> Result<(), String> {
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")
+        .map_err(|_| "recipe_bind_unverifiable".to_string())?;
+    verify(&mountinfo, sources, |p| std::fs::canonicalize(p).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(point: &str, options: &str) -> String {
+        format!("36 35 98:0 / {point} {options} master:1 - ext4 /dev/root rw")
+    }
+    fn table(rows: &[(&str, &str)]) -> String {
+        rows.iter()
+            .map(|(p, o)| line(p, o))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    fn present(p: &Path) -> Option<PathBuf> {
+        Some(p.to_path_buf())
+    }
+    const BOUND: [(&str, &str); 6] = [
+        ("/", "rw,relatime"),
+        ("/etc/resolv.conf", "ro,nosuid"),
+        ("/etc/nsswitch.conf", "ro"),
+        ("/etc/hosts", "ro"),
+        ("/run/systemd/resolve", "ro"),
+        ("/opt/cli", "ro"),
+    ];
+
+    #[test]
+    fn the_recipe_binds_verify_only_when_every_input_is_read_only() {
+        let bound = table(&BOUND);
+        let cli = Path::new("/opt/cli/bin/claude");
+        assert_eq!(verify(&bound, &[cli], present), Ok(()));
+        // The host itself: one writable root holds everything.
+        let host = table(&[("/", "rw,relatime")]);
+        assert_eq!(
+            verify(&host, &[cli], present),
+            Err("recipe_bind_writable".into())
+        );
+        // A source outside the binds, a writable mount stacked inside a
+        // protected tree, and a source absent from the namespace.
+        assert_eq!(
+            verify(&bound, &[Path::new("/home/op/auth.json")], present),
+            Err("recipe_bind_writable".into())
+        );
+        let mut stacked = BOUND.to_vec();
+        stacked.push(("/opt/cli/bin", "rw"));
+        assert_eq!(
+            verify(&table(&stacked), &[Path::new("/opt/cli")], present),
+            Err("recipe_bind_writable".into())
+        );
+        let gone = |p: &Path| (p != Path::new("/opt/cli/bin/claude")).then(|| p.to_path_buf());
+        assert_eq!(
+            verify(&bound, &[cli], gone),
+            Err("recipe_bind_missing".into())
+        );
+        // A stacked point: the later entry wins, so ro over rw protects and
+        // rw over ro does not.
+        let mut over = BOUND.to_vec();
+        over.push(("/etc/hosts", "rw"));
+        assert_eq!(
+            verify(&table(&over), &[], present),
+            Err("recipe_bind_writable".into())
+        );
+        // Only the systemd resolver directory may be absent.
+        let no_systemd =
+            |p: &Path| (p != Path::new("/run/systemd/resolve")).then(|| p.to_path_buf());
+        assert_eq!(verify(&bound, &[], no_systemd), Ok(()));
+        let no_hosts = |p: &Path| (p != Path::new("/etc/hosts")).then(|| p.to_path_buf());
+        assert_eq!(
+            verify(&bound, &[], no_hosts),
+            Err("recipe_bind_missing".into())
+        );
+        // resolv.conf resolving into the bound resolver directory is
+        // protected by that bind.
+        let linked = |p: &Path| {
+            Some(if p == Path::new("/etc/resolv.conf") {
+                PathBuf::from("/run/systemd/resolve/stub-resolv.conf")
+            } else {
+                p.to_path_buf()
+            })
+        };
+        assert_eq!(verify(&bound, &[], linked), Ok(()));
+    }
+
+    #[test]
+    fn mountinfo_fields_are_unescaped_and_short_lines_skipped() {
+        let info = format!("{}\nshort line\n", line("/opt/my\\040cli", "ro"));
+        assert_eq!(
+            mounts(&info),
+            vec![Mount {
+                point: PathBuf::from("/opt/my cli"),
+                read_only: true
+            }]
+        );
+        assert_eq!(unescape("a\\134b\\9xy\\"), PathBuf::from("a\\b\\9xy\\"));
+        assert_eq!(unescape("\\777"), PathBuf::from("\\777"));
+        assert_eq!(owner(&[], Path::new("/x")), None);
+    }
+
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "bind ownership is read from /proc (Linux)"
+    )]
+    #[test]
+    fn a_source_absent_from_the_live_namespace_is_refused() {
+        let absent = Path::new("/nonexistent-swarmail-evals-bind-source");
+        assert!(verify_live(&[absent]).is_err());
+    }
+}
