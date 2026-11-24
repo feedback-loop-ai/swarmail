@@ -57,8 +57,10 @@ After the second rework (run …-8cc2a397), the build differs as follows.
   compute.
 - **Ownership.** Driver attempts are claimed across the whole scan by resume,
   by the baseline's own report, by matrix replay and by `report
-  --usage-from`. The companion is still version 1 and still names no paid
-  assignment identifier: the explicit assignment field the revised design
-  asks for is not built yet. A copied companion is refused as a duplicate
-  owner wherever two committed leaves meet in one scan, but a single leaf
-  does not prove which assignment it belongs to beyond its trial id.
+  --usage-from`. The companion is still version 1 and has no separate
+  assignment field. Its slot is the row's matrix coordinates, whose
+  `matrix_id` a paid chunk sets to its attempt id. Resume ties the slot to
+  the attempt through the plan, which requires every cell's coordinates to
+  carry the plan's `matrix_id`, equal to the attempt id. The cell must also
+  match the row. A separate field would restate that binding. Adding one
+  would need a companion version 2, which this rework did not build.
