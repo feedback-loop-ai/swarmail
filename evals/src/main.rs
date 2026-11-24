@@ -4386,7 +4386,10 @@ impl Ledger<'_> {
                 );
                 continue;
             }
-            let retained = artifacts::trial(&leaf).map_err(|_| invalid())?;
+            // The leaf's own reason travels with the refusal, so a resume
+            // names what failed (a companion owning another slot, a broken
+            // digest) rather than only which trial.
+            let retained = artifacts::trial(&leaf).map_err(|e| format!("{}: {e}", invalid()))?;
             // One owner set across every committed leaf of the whole paid
             // ledger, unscored ones included (part of #404): a companion
             // copied into a second leaf never lets two slots own one driver

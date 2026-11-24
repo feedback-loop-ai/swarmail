@@ -9,7 +9,8 @@
 //!
 //! In that build the real adjacent stand-in, with the retired override
 //! variable naming its digest, is refused by the production verifier
-//! before anything launches; the published digest is still admitted; and
+//! after the private selection is read and before the grant, the
+//! credential read or any launch; the published digest is still admitted; and
 //! the debug-only `grant-standin` subcommand does not exist.
 use super::*;
 
@@ -30,7 +31,9 @@ fn release_standin_is_not_admitted() {
     assert!(!wrappers::driver_admitted(&standin));
     assert!(wrappers::driver_admitted(wrappers::DRIVER_RELEASE_SHA256));
     // The production verifier, through the real wrapper, with the retired
-    // variable set: refused before the grant, any read or any launch.
+    // variable set: refused by the release pin before the grant, the
+    // credential read, any HOME write or any launch. The wrapper has read
+    // its private selection by then; that read is what names the driver.
     let mut cmd = n.c.command("claude", "claude-sonnet-5-5");
     cmd.arg("--via-brokkr")
         .arg(&n.driver)

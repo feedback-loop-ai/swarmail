@@ -1274,14 +1274,16 @@ fn pin_interpreted_prints_the_selection_members_the_contract_verifies() {
 /// 0138): every paid slot runs through one offline stand-in driver, the
 /// baseline's own report reads each committed usage companion, its printed
 /// `report_argv` replays to the same report, and a resume refuses a
-/// companion that claims another leaf's driver attempt and a codex selection
+/// companion that claims another leaf's driver attempt or slot and a codex selection
 /// whose sandbox class differs from the retained rows'.
 ///
 /// Host-gated for time, not privilege: the smallest product is 32 slots and
-/// takes about 100 s, past the CI test job's budget. The dispatcher runs it:
+/// takes about 100 s, past the CI test job's budget. It is Linux-only: the
+/// paid launch grant needs Linux's socket peer evidence and `/proc`
+/// (`paid_grant_unsupported` elsewhere). The dispatcher runs it:
 /// `cd evals && cargo test --locked --test paid_baseline -- --ignored a_nested_baseline`.
 #[test]
-#[ignore = "host-gated: a whole nested baseline (~100 s); run with --ignored"]
+#[ignore = "host-gated: a whole nested baseline (~100 s, Linux only: grant endpoints and /proc); run with --ignored"]
 fn a_nested_baseline_reports_its_companions_and_resume_refuses_what_they_contradict() {
     let _scope = trial_scope();
     let p = Paid::nested();
@@ -1403,6 +1405,25 @@ fn a_nested_baseline_reports_its_companions_and_resume_refuses_what_they_contrad
     let (code, _, err) = run(&mut p.authorized(&["--resume"]));
     assert_eq!(code, Some(2), "{err}");
     assert!(err.contains("duplicate usage owner"), "{err}");
+    assert!(!p.output.join("report.json").exists());
+    std::fs::write(b.join("usage.json"), &original.0).unwrap();
+    std::fs::write(b.join("metadata.json"), &original.1).unwrap();
+    // The version-1 assignment chain (tasks.md, the panel's low on
+    // 9f28d4e8): leaf B's companion names leaf A's slot, every other field
+    // intact and the marker re-bound to the new bytes, so the companion is
+    // hash-valid and only its ownership of B's row is wrong.
+    let mut usage = read(b, "usage.json");
+    assert_ne!(usage["slot"], read(a, "usage.json")["slot"]);
+    usage["slot"] = read(a, "usage.json")["slot"].clone();
+    let forged = serde_json::to_vec(&usage).unwrap();
+    let mut meta = read(b, "metadata.json");
+    meta["usage"]["length"] = json!(forged.len());
+    meta["usage"]["sha256"] = json!(swarmail_evals::provenance::sha256(&forged));
+    std::fs::write(b.join("usage.json"), &forged).unwrap();
+    std::fs::write(b.join("metadata.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("usage_binding_mismatch"), "{err}");
     assert!(!p.output.join("report.json").exists());
     std::fs::write(b.join("usage.json"), &original.0).unwrap();
     std::fs::write(b.join("metadata.json"), &original.1).unwrap();

@@ -1284,6 +1284,7 @@ fn a_bare_paid_launch_refuses_unbound_on_every_platform() {
 /// host's own writable mounts refuse `recipe_bind_writable` instead. Both
 /// before any credential read or HOME write. The mount table is /proc's.
 /// An empty inventory turns the first refusal into `recipe_bind_writable`.
+/// A host lacking a DNS input skips it, except under `CI`, where it fails.
 #[cfg_attr(
     not(target_os = "linux"),
     ignore = "bind ownership is read from /proc (Linux)"
@@ -1293,11 +1294,18 @@ fn a_recipe_selection_reproves_every_declared_home_source() {
     // A host without every DNS input refuses on that input first, which
     // would hide the HOME inventory: the proof needs a host that has them
     // (CI's runners and the operator's host do; a bare sandbox may not).
-    if !swarmail_evals::binds::DNS
+    // On CI a missing input fails instead, so the proof never passes there
+    // by skipping (the panel's low on 9f28d4e8).
+    let missing: Vec<_> = swarmail_evals::binds::DNS
         .iter()
-        .all(|p| Path::new(p).exists())
-    {
-        eprintln!("skipped: this host lacks a DNS input the proof needs");
+        .filter(|p| !Path::new(p).exists())
+        .collect();
+    if !missing.is_empty() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "CI must execute this proof, but the host lacks {missing:?}"
+        );
+        eprintln!("skipped: this host lacks the DNS inputs {missing:?}");
         return;
     }
     let mut c = Case::new("dsh");
