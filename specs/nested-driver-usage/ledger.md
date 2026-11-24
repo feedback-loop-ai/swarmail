@@ -722,6 +722,8 @@ Root `src/` is untouched by this run.
 pair). No other `evals/src/` line, no root `src/`, no held path, no
 `#[ignore]` added or widened, no lock or dependency change. No
 `std::env::set_var`/`remove_var` remains under `evals/tests/` or in
-`evals/src/wrappers.rs`; the one left in `evals/src/main.rs` is
-production (the runner's own `SWARMAIL_BIN`, single-threaded at start-up)
-and outside this run.
+`evals/src/wrappers.rs`. The one left in `evals/src/main.rs` is the
+test `matrix_probe_entrypoint`, which writes `SWARMAIL_BIN` only when
+re-entered as a dedicated probe child process (its `MATRIX_PROBE_ENV`
+guard returns at once in the normal harness), so it never mutates a
+shared harness's environment; it is outside this run.
