@@ -380,6 +380,13 @@ fn a_nested_session_reports_ready_then_its_session_final_usage() {
             }
         }
     }
+    // dsh's other route: the DashScope key alone, by name.
+    let n = Nested::new("dsh", "dashscope/glm-5.3");
+    let (code, err, _) = n.launch(json!({"mode": "complete", "finals": [smoke_final("dsh")]}));
+    assert_eq!(code, Some(0), "{err}");
+    let env = &n.record()["env"];
+    assert_eq!(env["DASHSCOPE_API_KEY"], "<present>");
+    assert!(env.get("SPARK_API_KEY").is_none());
 }
 
 #[cfg_attr(

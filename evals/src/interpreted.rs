@@ -343,6 +343,19 @@ mod tests {
             std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o644)).unwrap();
             assert_eq!(measure(&root), Err("package_name_invalid".into()));
             std::fs::remove_file(&bad).unwrap();
+            // A link whose in-root target is not UTF-8: the link is walked
+            // with the root's entries, before the directory holding the
+            // target, so its own arm refuses.
+            let sub = root.join("sub");
+            std::fs::create_dir(&sub).unwrap();
+            std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let target = sub.join(std::ffi::OsStr::from_bytes(b"\xff"));
+            std::fs::write(&target, "").unwrap();
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::os::unix::fs::symlink(&target, root.join("link")).unwrap();
+            assert_eq!(measure(&root), Err("package_name_invalid".into()));
+            std::fs::remove_file(root.join("link")).unwrap();
+            std::fs::remove_dir_all(&sub).unwrap();
         }
         assert!(measure(&root).is_ok());
     }
