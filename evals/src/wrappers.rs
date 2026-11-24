@@ -412,6 +412,12 @@ pub const DRIVER_RELEASE_SHA256: &str =
 fn release_digest(sha256: &str) -> bool {
     sha256 == DRIVER_RELEASE_SHA256 || standin_driver_admitted(sha256)
 }
+/// Whether this build admits `sha256` as the nested driver: the published
+/// release in every build, the adjacent stand-in in a debug build alone.
+/// The release-profile proof (`release_seam.rs`) reads it.
+pub fn driver_admitted(sha256: &str) -> bool {
+    release_digest(sha256)
+}
 /// The fixed name of the offline stand-in executable the test suites build
 /// beside this one (`tests/standin/paid_cli.rs`).
 pub const STANDIN_DRIVER_NAME: &str = "paid-cli-standin";

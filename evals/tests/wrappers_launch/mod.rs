@@ -1511,3 +1511,5 @@ mod mount_proof;
 mod nested;
 #[path = "real_driver.rs"]
 mod real_driver;
+#[path = "release_seam.rs"]
+mod release_seam;
