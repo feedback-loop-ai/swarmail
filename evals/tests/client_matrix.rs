@@ -148,6 +148,8 @@ fn the_runner_writes_green_and_red_drafts_against_the_real_swarmail() {
         !common::pid_alive(lingering),
         "the client's descendant was reaped"
     );
+    #[cfg(not(target_os = "linux"))]
+    let _ = lingering;
 
     // March negotiation: text-only search fails structured_content alone.
     let march = base.path().join("march");
