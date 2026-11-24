@@ -350,8 +350,12 @@ The wrapper sends `hello` (with `engine_version`), then `start` with exactly the
 eight input keys (`feature` = the goal, `phase`/`seat` = `trial`, `role_path` =
 a fixed charter in a fresh `.swarmail-seat-<attempt>/` under the work
 directory, `workdir`, `result_path` in the same directory,
-`allowed_results` = `done`, `stuck`, `context` = the task id), then
-`shutdown` once and closes the driver's stdin. It reads `capabilities`,
+`allowed_results` = `done`, `stuck`, `context` = the object
+`{"task": <task id>}`), then `shutdown` once and closes the driver's stdin.
+On every ending (a result, a protocol error, EOF) the driver's stdin is
+closed and the driver gets `DRIVER_EXIT_GRACE` (3 s) to exit; one that
+ignores `shutdown` or keeps its stdout open is killed then, and the typed
+receipt stands. It reads `capabilities`,
 `accepted`, `checkpoint`* and one `result` with the bounded strict reader of
 `evals/src/driver.rs`: 64 KiB per frame, 4 MiB and 4096 frames per exchange,
 depth 16, duplicate keys and repeated `msg_id`s refused, both identities on
@@ -373,10 +377,29 @@ can write it.
 | accepted, then `succeeded` without an object naming `done`/`stuck` | `ready` + receipt `driver_result_invalid` | `harness_error` with its usage |
 | accepted, then a protocol violation | `ready` + receipt naming the violation | `harness_error` with its usage |
 | accepted, then `succeeded` naming `done` or `stuck` | `ready` + receipt `completed` | graded as usual |
-| killed at the trial deadline | `ready` only | graded as usual; usage `receipt_missing` |
+| killed at the trial deadline | `ready` only | graded as usual; that session's usage `receipt_missing` (no receipt is written on termination) |
 
 The runner gives every nested trial the launch pipe (`--launch-report`, and
-`--paid-launch` as before on a paid slot). `swarmail-evals trial` accepts
+`--paid-launch` as before on a paid slot), one per agent.
+
+**Fail closed (the operator's 2026-11-24 ruling).** A nested selection is
+paid, so the wrapper launches the driver only with a verified binding, checked
+before any credential is read or anything spawns:
+
+- the host baseline's paid-launch binding (`--paid-launch`, which the
+  coordinator derives from the authorized product; its admission requires the
+  release executable's digest, `driver_release_unrecognized` otherwise), or
+- the recipe route: no binding, but this process's own mount table
+  (`/proc/self/mountinfo`) shows the four DNS inputs and the selection, the
+  driver, the CLI program (and dsh's package root) and the credential file
+  under read-only mounts with no writable mount stacked inside, and the
+  driver is the release executable.
+
+Anything else refuses `nested_paid_unbound: recipe_bind_writable` (or
+`_missing`, `_unverifiable`) or `driver_release_unrecognized`, so a bare
+`trial` or wrapper with a nested selection never starts the driver.
+`matrix --brokkr` with any paid agent refuses `brokkr_paid_unbound` before a
+slot unless `.brokkr/recipes/eval/bundle.json` declares every F5 bind below. `swarmail-evals trial` accepts
 `--via-brokkr` only beside an amended `*_via_brokkr` profile. The superseded
 ones (`claude_2_1_310_via_brokkr`, `codex_0_164_0_via_brokkr`,
 `dsh_0_1_5_rc_1_via_brokkr`) still refuse `driver_contract_unknown`. The flag
@@ -409,10 +432,13 @@ one reason: `no_session_final`, `field_absent`, `field_malformed`,
 `final_conflicting` or (runner-side) `receipt_missing`. An identical repeated
 final counts once, and an explicit `0` is kept. The `result` object is
 populated from the agent's own file, so it carries no accounting authority,
-even where it repeats the totals. The runner puts the record on the row as
-`nested_usage` (`source: via_brokkr_driver`, the row's own `trial_id`, the
-exchange's `attempt_id`, the family). That is the join (0075 §4,
-harness-authored). A row without the field reads unchanged.
+even where it repeats the totals. The runner settles one session per expected
+agent, in assignment order (a lost receipt is `receipt_missing`, an agent
+that never launched `agent_unstarted`, an attempt a sibling already owns or
+another family's receipt is unattributable), and publishes them as the trial
+leaf's usage companion `usage.json`, bound in the leaf's `metadata.json`
+(proposed 0138; `evals/README.md`). The schema-2 row carries no usage field.
+That is the join (0075 §4, harness-authored).
 
 **Private projections (F5).** The driver gets a cleared environment: the
 runtime map (`HOME`, `TMPDIR`, XDG directories, `PATH` with the pinned CLI's
@@ -429,31 +455,44 @@ lands in the trial's fresh private `HOME` (directories 0700, files 0600):
   `DSH_HOME`, `DSH_TELEMETRY_DISABLED=1` and only the selected route's key
   (`SPARK_API_KEY` or `DASHSCOPE_API_KEY`), passed by name.
 
-Trials are unconfined (accepted 0076), so the DNS inputs (`/etc/resolv.conf`,
-`/run/systemd/resolve`, `/etc/nsswitch.conf`, `/etc/hosts`) are the host's own.
-The opt-in release proof shows the CLI can read them and cannot write them.
+On the host route trials are unconfined (accepted 0076, the direct-wrapper
+posture 0137 accepts), so the DNS inputs (`/etc/resolv.conf`,
+`/run/systemd/resolve`, `/etc/nsswitch.conf`, `/etc/hosts`) are the host's own;
+the opt-in release proof shows the CLI can read them. On the recipe route they
+are read-only binds (the paid read set below), and a write through them is
+refused by the mount, not by file permissions.
 dsh's overlay location comes from the release's own wording ("the headless
 profile's `cordis.patch.yml`"). No dsh in this box confirms it; the
 operator's dsh session does.
 
-**Codex's sandbox class.** The smoke's `workspace-write` lost the result
-inside the trial box. The proposed posture is `danger-full-access`: the
-trial's own private work directory, `HOME` and the unconfined trial boundary
-are then the only write limit. That is the trial's limit already: a direct
-codex launch runs `read-only` and is given no other write. The class is a
-typed field of the selection. The stand-in proofs only show the seat writing
-its result inside the work directory under the class the driver was given.
-Real codex enforcement is unproven until the operator's authenticated codex
-session writes its result under that class.
+**Codex's sandbox class.** A typed field of the selection, admitted only as
+`read-only` or `workspace-write` (the operator's 2026-11-24 ruling).
+`danger-full-access` refuses `driver_sandbox_unconfined` before anything is
+read or spawned: no enclosing boundary is verified that could stand in for
+codex's own. The class moves the contract identity, so resume and the launch
+binding refuse a changed one. The via-brokkr codex descriptor
+(`ToolSurface::declared`) names this rule instead of the direct launch's
+"read-only sandbox". The smoke's `workspace-write` lost the result inside a
+brokkr seat box, which is not this environment; `workspace-write` is the
+proposed class for the operator's session. The stand-in proofs only show the
+seat writing its result inside the work directory under the class the driver
+was given. Real codex enforcement is unproven until that session writes its
+result.
 
 **Proofs.** `evals/tests/wrappers_launch/nested.rs` drives the real wrapper
 against a forge-driver/v1 stand-in (`fake_driver.py` behind the native
 forwarder, so it passes the pin), for all three families: the eight keys, the
 flags, the projections, the usage, every ending above, the pin refusals, and a
 nested agent through `swarmail-evals trial` whose row carries its usage.
-`real_driver.rs` runs the staged release itself over inert stand-in CLIs. It
-is ignored unless `EVAL_BROKKR_DRIVER` names the extracted v0.15.2
-executable (its digest is asserted):
+A three-agent `trial --task inbox-isolation` under a coordinator's binding
+commits all three sessions' companion and is read back by
+`report --usage-from`. The stand-in driver is admitted by the coordinator only
+through the test-equipment digest `EVAL_TEST_STANDIN_DRIVER_SHA256`, read in
+the coordinator's own process; an agent's environment is rebuilt from nothing,
+so the recipe route admits the release digest alone.
+`real_driver.rs` runs the staged release itself over inert stand-in CLIs on
+the host route. It is ignored unless `EVAL_BROKKR_DRIVER` names the extracted
+v0.15.2 executable (its digest is asserted):
 
 ```bash
 cd evals && EVAL_BROKKR_DRIVER=/abs/brokkr-v0.15.2/brokkr SWARMAIL_BIN=... \
@@ -463,7 +502,14 @@ cd evals && EVAL_BROKKR_DRIVER=/abs/brokkr-v0.15.2/brokkr SWARMAIL_BIN=... \
 It caught the `driver` subcommand the stand-in had accepted without. It
 shows claude's and codex's session-final tokens, dsh's pinned runtime given
 the pinned entry first, the result written inside the work directory, and
-the launch pipe unreachable from the CLI.
+the launch pipe unreachable from the CLI. `mount_proof.rs` is the recipe
+binds' proof: in a bubblewrap namespace with the binds, a write to an
+owner-writable source through each read-only target fails with `EROFS`, the
+private result directory takes a write, the sources are unchanged after
+teardown, and the namespace's mount table passes the wrapper's verifier while
+the host's does not. It needs an unprivileged user namespace, which a boxed
+seat lacks, so it is a host proof (ignored by default):
+`cd evals && cargo test --locked --test wrappers mount_proof -- --ignored`.
 
 The four seams the earlier plan named (`trial.sh`'s `env -i`, the runner's
 fresh agent environment, and the old assembly's cleared environment and
@@ -480,11 +526,26 @@ runs one.
 
 ### The paid read set (brokkr fact F5)
 
-A paid trial under the recipe would additionally read the operator's private
-selection file, the three credential files it names (Claude's
-`.credentials.json` source, Codex's `auth.json` source, dsh's route file) and
-the three CLI executables with their install trees, and needs the network. The
-recipe binds none of them (`binds: []`; `network` true on `trial`, false on
-`score`), so **paid agents under `matrix --brokkr` are unsupported** until the
-follow-up declares the observed binds. A paid agent tried anyway fails closed
-at slot 1 through the wrapper's existing typed refusals.
+A paid trial under the recipe reads the operator's private selection file,
+the credential file it names, the driver and CLI executables with their
+install trees, and needs the network. The operator approved
+`.brokkr/recipes/eval/bundle.json` by name on 2026-11-24 for these binds
+alone. The `trial` seat declares, besides `network: true`:
+
+| path | mode | why |
+|---|---|---|
+| `/etc/resolv.conf`, `/run/systemd/resolve`, `/etc/nsswitch.conf`, `/etc/hosts` | `ro` | DNS inputs |
+| `~/.config/swarmail-evals` | `ro` | the operator's version-2 selection |
+| `~/.local/share/brokkr-0.15.2` | `ro` | the extracted release driver |
+| `~/.local/share/claude` | `ro` | Claude Code's native install tree |
+| `~/.volta` | `ro` | codex-cli behind Volta, and the pinned Node runtime |
+| `~/.claude`, `~/.codex` | `ro` | Claude's and Codex's source auth and config |
+| `~/.dsh/profiles` | `overlay` | dsh's profiles: readable, writes stay in the seat |
+
+Keep the selection, the driver, the CLIs and dsh's package under these trees:
+the wrapper refuses any of them outside a read-only mount. dsh's route key
+lives in the selection's credential file. `matrix --brokkr` refuses a paid
+agent unless the bundle declares every entry with its mode
+(`evals/src/binds.rs`), and the wrapper re-proves the effect in its own mount
+table. Which of these paths exist on a given host is the dispatcher's to
+check before a paid recipe run; the free controls read none of them.

@@ -6320,6 +6320,17 @@ mod identity_tests {
         ] {
             assert_eq!(launch_report_of(&bad), LaunchReport::Unstarted, "{bad:?}");
         }
+        // The bounded reader: a report one byte past the longest valid one
+        // is unstarted, whatever it holds; one within it reads whole.
+        let over = |bytes: &[u8]| {
+            let (mut reader, mut writer) = std::io::pipe().unwrap();
+            std::io::Write::write_all(&mut writer, bytes).unwrap();
+            drop(writer);
+            super::launch_report(&mut reader)
+        };
+        let limit = LAUNCH_READY.len() + crate::usage::RECEIPT_LIMIT;
+        assert_eq!(over(&vec![b'x'; limit + 1]), LaunchReport::Unstarted);
+        assert_eq!(over(&with(&done)), LaunchReport::Nested(done.clone()));
         use crate::runner::LaunchReport::*;
         use crate::usage::{RECEIPT_MISSING, Session, UNSTARTED};
         // Direct: exactly ready, never a receipt.

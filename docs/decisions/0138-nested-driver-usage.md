@@ -15,3 +15,31 @@ This adds one small artifact and one digest per nested trial. Interruption can l
 ## 2026-11-24 clarification of the proposal
 
 A paid slot can run several agents. The three-agent inbox-isolation task in the accepted 0136 cohort exposed the ambiguity in “attempt”. Keep the slot assignment attempt as the owner of one companion. Within it list each expected agent and its distinct driver attempt, disposition and six typed fields in assignment order. Validate that roster against the harness assignment on replay. Derive the trial figure by checked addition per field. Missing or overflowing members make the affected figure unavailable. This preserves each session’s attribution through a sibling failure without changing the schema-2 row or introducing another commit marker.
+
+## 2026-11-24 note: where the build differs
+
+The build follows the contract above, with three differences the operator
+should weigh before accepting it.
+
+- **Slot and assignment attempt.** The companion records the row's matrix
+  coordinates as its slot and checks them on every read. It does not record
+  the paid coordinator's attempt directory. A leaf is that attempt's own, so
+  each leaf binds its companion. No trial-level field names the attempt
+  independently of the row, and adding one would change the row. Duplicate
+  owners are refused per driver attempt, across the leaves of one matrix
+  replay and one `report --usage-from` read.
+- **Where a missing companion refuses.** A scored nested row with no
+  companion is refused at retention, at every leaf read (`check`, resume and
+  matrix replay), and by `report`, which needs `--usage-from` for such rows.
+  The runner reports it as a `harness_error` (`usage_companion_unretained`)
+  instead of a scored row without usage. So a nested trial needs a retained
+  leaf.
+- **Superseded via profiles.** Only the three amended via-brokkr profiles
+  need a companion. Rows of the superseded ones never launched the nested
+  driver (`driver_contract_unknown`). They stay journal-route rows and read
+  as before.
+
+The release pin is enforced at the coordinator's admission and, on the
+recipe route, by the wrapper. The offline stand-in driver is admitted only by
+a test-equipment digest that the coordinator's own process reads. An agent's
+environment is rebuilt, so the recipe route admits the release alone.

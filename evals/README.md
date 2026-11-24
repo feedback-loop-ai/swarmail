@@ -761,8 +761,9 @@ tracked in brokkr#766.
   the app's state and stops both servers. A wrapper agent may launch its CLI
   through the pinned brokkr v0.15.2 driver (`--via-brokkr`, route (b) of
   0119's 2026-11-23 addendum; `wrappers.md`), with `swarmail-evals` as that
-  driver's engine. Paid agents stay unsupported under `matrix --brokkr` itself
-  (the paid read set below).
+  driver's engine. A paid agent under `matrix --brokkr` is refused
+  (`brokkr_paid_unbound`) unless the trial seat declares F5's read-only binds
+  (the paid read set below), and its wrapper re-proves them at launch.
 - `review` (the exec scoring gate, `scripts/score.sh`, which is the recipe's
   protected review under brokkr 0.12.0, decision 0119 R4) re-applies the task's
   check to the retained leaf (`check --artifacts-dir`): the app's state, never the agent's account.
@@ -805,14 +806,16 @@ the trial's deadline plus the runner's fixed startup and shutdown budgets must
 fit the trial seat's 1800 s. The matrix's wait on one worker is the trial
 deadline plus 300 s plus the review seat's 600 s. `--artifacts-dir` must resolve
 inside the current directory (`brokkr_artifacts_unreachable`): the seat's
-workspace hands reach nothing else. **Paid agents are unsupported under
-`matrix --brokkr`** until the follow-up below declares the binds a paid trial
-needs and lifts the driver refusal; the direct `matrix` (the #151 path) stays
-the paid route. Run only the oracle and null controls through this recipe now. Trials stay sequential (accepted 0076): the
+workspace hands reach nothing else. **A paid agent under `matrix --brokkr`
+fails closed** (`brokkr_paid_unbound`, before any slot) unless the recipe's
+trial seat declares every F5 bind of `wrappers.md`'s paid read set, and a
+nested wrapper inside the seat refuses (`nested_paid_unbound`) unless its own
+mount table shows them read-only. The host baseline (the #151 path) stays the
+paid route the operator has run; no paid trial has run through this recipe. Trials stay sequential (accepted 0076): the
 issue's "two concurrent trials of one task both pass" criterion is **not** met
 by this recipe and is not claimed; isolation is #221's.
 
-**What joins.** Rows are unchanged. `report --journal` adds a `journal` object
+**What joins.** The journal changes no row. `report --journal` adds a `journal` object
 to each group: joined count, typed `missing` reasons (`journal_missing`,
 `journal_ambiguous`, `journal_has_no_accounting`, `builtin_agent`), token
 distributions (`total` is input + output; `cached` is reported beside it),
@@ -1078,14 +1081,39 @@ through a real `brokkr driver`, and the engine itself was not run.
 outer `exec` adapter drops a nested driver's stdout (brokkr#1289), so no
 journal ever holds a nested trial's tokens. Instead the wrapper speaks
 forge-driver/v1 to the pinned brokkr v0.15.2 driver itself and reports the
-session-final usage on its launch pipe. The runner puts that record on the row
-(`nested_usage`, `source: via_brokkr_driver`). `report --page` then computes
-the group's tokens per success from those records alone, under accepted 0136:
-the checked sum of `input_tokens + output_tokens` over every scored trial,
-divided by the passes. Cache reads and writes, turns and cost are reported
-beside it, each on its own availability. A gap is a typed reason
-(`incomplete_attribution`, `missing_required_count`, `sum_overflow`,
-`no_passes`), and a journal figure never fills it. `wrappers.md` describes the
+session-final usage on its launch pipe. The schema-2 row does not change
+(accepted 0119 §3): the runner publishes the sessions as the retained leaf's
+usage companion, `usage.json` (`version` 1, `source: via_brokkr_driver`, the
+row's `trial_id`, its matrix `slot`, the amended `profile`, and one `sessions`
+entry per expected agent in assignment order with its driver `attempt_id`,
+`disposition` and six facts), bound by digest in the same `metadata.json` that
+commits the score (proposed 0138). A three-agent task such as
+`inbox-isolation` lists all three sessions; the trial's figure is the checked
+per-field sum, and a session missing a field (or a sum past the exact range)
+makes that field unavailable, never zero. Reading a leaf refuses an orphan,
+missing, tampered or mismatched companion and an attempt two leaves claim. A
+scored nested row with no committed companion is a `harness_error`
+(`usage_companion_unretained`), so a nested trial needs `--artifacts-dir`.
+`report --usage-from ROOT` reads the companions from the retained root, checks
+each leaf's row against the input, and `report --page` then computes the
+group's tokens per success from them alone, under accepted 0136: the checked
+sum of `input_tokens + output_tokens` over every scored trial, divided by the
+passes. Cache reads and writes, turns and cost are reported beside it, each on
+its own availability. A gap is a typed reason (`incomplete_attribution`,
+`missing_required_count`, `sum_overflow`, `no_passes`). Without `--usage-from`
+a report holding a scored nested row refuses
+(`nested_usage_requires_artifacts`); a journal figure never fills it. Rows of
+the superseded via-brokkr profiles never ran nested and read as before.
+
+Two limits differ from the direct route. A trial the runner kills at its
+hard deadline kills its wrapper before the receipt is written: that session's
+entry is `receipt_missing`, every one of its facts is unavailable, and one
+such scored trial makes its group's tokens per success
+`missing_required_count` (the receipt is not written on termination; the
+figure is withheld, never partial). And a nested session counts as completed
+only when the driver returns a fresh `done` or `stuck` result file; a model
+that does the mail work but writes no result is a `harness_error`, not a
+scored attempt, so the two routes' failure classes are not comparable. `wrappers.md` describes the
 selection, the exchange, the endings and the proofs. Structural tool-call
 records landed with #316, and value-bearing records and transcripts with #391.
 
@@ -1099,16 +1127,26 @@ holds. For each family (claude, codex, dsh):
    the release's `SHA256SUMS`, and add the family's `nested` member to the
    private version-2 selection (`wrappers.md`). Use `driver_sha256` =
    `61cba4ee438eb0bd0dbc223f7d394219238aeecc061250e36281a4989e455062`, the
-   extracted executable's digest. For codex, set `codex_sandbox` to the class
-   under test (proposed: `danger-full-access`).
+   extracted executable's digest; any other digest refuses
+   `driver_release_unrecognized` before anything runs. For codex, set
+   `codex_sandbox` to `workspace-write` (proposed for this session;
+   `read-only` is the other admitted class, and `danger-full-access` refuses
+   `driver_sandbox_unconfined`).
 2. Run the free controls first:
    `"$E" trial --task signup --agent oracle` and `--agent null` must pass and
    fail as always.
-3. Run one trial with the family's amended via-brokkr profile, for example
-   `"$E" trial --task signup --agent claude-nested --agent-model claude-sonnet-5-5 --wrapper-profile claude_2_1_329_via_brokkr --artifacts-dir "$W" -- "$E" agent-claude --model claude-sonnet-5-5 --config "$SELECTION" --via-brokkr "$BROKKR"`.
-4. Check the row: `nested_usage.source` is `via_brokkr_driver`, its
-   `trial_id` is the row's, and `input_tokens` and `output_tokens` are
-   present (non-null). For codex, the row must not be
+3. Run the session through a verified binding: a bare `trial` with a nested
+   paid selection fails closed (`nested_paid_unbound`, the driver never
+   starts). Use the host baseline's nested product
+   (`"$E" baseline --via-brokkr "$BROKKR" ...`, authorized by the
+   `product_id` its dry run prints), whose coordinator passes each trial its
+   paid-launch binding, or the eval recipe with its F5 binds in place. No
+   smaller single-trial paid entry point exists; choosing the product is the
+   operator's.
+4. Check the committed leaf: `usage.json` is bound in `metadata.json`, its
+   `source` is `via_brokkr_driver`, its `trial_id` is the row's, and every
+   session's `input_tokens` and `output_tokens` are present (non-null)
+   (`report --usage-from` reads it). For codex, the row must not be
    `harness_error` with `driver_result_missing`: that would mean the class
    could not write the result. Record only typed, sanitized facts: the family,
    the versions, the profile, the disposition and which facts are present.
@@ -1142,8 +1180,8 @@ authorized by the `product_id` its dry run prints (`wrappers.md`).
   challenge; it does not measure Swarmail inbound reply transport (#160).
 - Tokens, turns and cost of a direct launch are not in the rows. They come
   from brokkr's journal, joined by trial id (next section). A nested
-  (`--via-brokkr`) row carries its own harness-authored `nested_usage`
-  instead. No authenticated session has run through that route yet: that is
+  (`--via-brokkr`) trial's come from its harness-authored usage companion in
+  the retained leaf instead, never from the row or the journal. No authenticated session has run through that route yet: that is
   the operator's step above, and the #151 baseline's tokens per success waits
   for it.
 

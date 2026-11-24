@@ -364,14 +364,27 @@ Spec, plan and tasks in `specs/nested-driver-usage/`; proposed 0138. Part of
   `wrappers::launch` against brokkr v0.15.2's guide; `driver_contract_unknown`
   lifted for the three amended `*_via_brokkr` profiles only.
 - [x] **T51 The release pin** (v0.15.2 Linux x86_64 executable by path and
-  SHA-256, traced to its archive's `SHA256SUMS` line), apart from the engine's.
-- [x] **T52 Typed nested usage** (`evals/src/usage.rs`) on the row as
-  `nested_usage`, and `report --page` tokens per success from it alone (0136).
-- [x] **T53 F5 projections and environment** per family, proven with a
-  protocol stand-in and, opt-in, through the real v0.15.2 driver with inert
-  CLIs; codex's inner sandbox class a typed selection field.
+  SHA-256, traced to its archive's `SHA256SUMS` line), apart from the engine's;
+  production admission accepts the release executable's digest alone.
+  Executed offline for the stand-in; the release binary itself only in the
+  opt-in `real_driver.rs`.
+- [x] **T52 Typed nested usage** (`evals/src/usage.rs`): one session per
+  expected agent in the trial leaf's usage companion `usage.json`, bound in
+  `metadata.json` (proposed 0138); the schema-2 row is unchanged; `report
+  --usage-from` takes tokens per success from the companions alone (0136).
+  Executed offline, including a three-agent `inbox-isolation` trial; no
+  authenticated session yet (T55).
+- [x] **T53 F5 projections, environment and binds** per family: projections
+  proven with a protocol stand-in and, opt-in, through the real v0.15.2 driver
+  with inert CLIs (host route; DNS readability only, no write claim from file
+  permissions). The recipe's read-only binds are declared in
+  `.brokkr/recipes/eval/bundle.json` and verified by the wrapper from its
+  mount table (unit-tested). The write rejection is proven by a real
+  bubblewrap mount in the host-gated `mount_proof.rs`, which the dispatcher
+  runs; a boxed seat cannot. Codex's inner class is `read-only` or
+  `workspace-write`, and `danger-full-access` is refused.
 - [x] **T54 `journal-facts.sh`** on the real `export --run` NDJSON shape.
 - [ ] **T55 Operator: one authenticated finished-path session per family**
   (`evals/README.md`, "The authenticated finished-path session, per family"),
   each recording non-null input and output tokens; this also proves the
-  proposed codex class writes its result. Operator-owned; not run by a seat.
+  proposed codex class (`workspace-write`) writes its result. Operator-owned; not run by a seat.
