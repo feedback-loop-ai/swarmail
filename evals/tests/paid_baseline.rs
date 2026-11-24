@@ -297,12 +297,14 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     });
     let launches = p.launches();
     assert_eq!(launches.len(), 3, "controls launch no CLI: {launches:?}");
+    let orphan = first.session.live_trial();
     // One writer owns the run: a competing resume refuses and starts nothing.
     let (code, _, err) = run(&mut p.authorized(&["--resume"]));
     assert_eq!(code, Some(2));
     assert!(err.contains("run_writer_busy"), "{err}");
     first.signal(libc::SIGKILL);
-    let (_, lines) = first.finish();
+    // The worker outlives its coordinator and still owns its trial.
+    let (_, lines, first_family) = first.finish_owned();
     assert!(
         lines.iter().any(|l| l.contains("deferring claude")),
         "{lines:?}"
@@ -319,6 +321,13 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     assert!(err.contains("trial admission is still held"), "{err}");
     std::fs::remove_file(&p.hold).unwrap();
     wait("the orphaned trial to end", swarmail_evals::admission::idle);
+    // The released worker finishes its owned cleanup (0076): its whole
+    // family, servers included, exits before anyone confirms anything.
+    first_family.wait_clear(std::time::Duration::from_secs(30));
+    // The trial's scratch went with it; the worker's runtime root belonged
+    // to the coordinator the test killed.
+    assert!(!orphan.scratch.exists(), "{}", orphan.scratch.display());
+    first_family.dispose_runtime(&orphan);
     assert_eq!(p.launches().len(), 3, "refusals launched nothing");
     // The orphaned worker may still have committed its own hash-bound score
     // after its owned cleanup; such a slot is scored and never re-run.
@@ -368,9 +377,11 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     std::fs::write(&p.hold, format!("dsh dashscope {k}")).unwrap();
     let killed = Running::start(p.authorized(&["--resume"]));
     wait("a held dashscope launch", || p.count("dsh dashscope") == k);
-    let worker = trial_worker(killed.child.id());
-    unsafe { libc::kill(worker, libc::SIGKILL) };
-    let (code, lines) = killed.finish();
+    // The held launch shows the worker and both live servers in one private
+    // scratch root; only the worker is killed, pinned by its identity.
+    let trial = killed.session.live_trial();
+    killed.session.kill_worker(&trial);
+    let (code, lines, family) = killed.finish_owned();
     assert_eq!(code, Some(2), "{lines:?}");
     let open = lines
         .iter()
@@ -401,6 +412,13 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
         "{err}"
     );
     assert_eq!(p.count("dsh dashscope"), k, "the refusal launched nothing");
+    // The test killed the worker, so the cleanup it could not run is the
+    // test's: end the trial's surviving service and fixture (0076), check
+    // that nothing it owned is left, and clear the abandoned scratch root
+    // before acting as the operator who confirms the cleanup (0137).
+    family.terminate();
+    family.assert_clear();
+    family.dispose_scratch(&trial);
     // A leaf retention never finished (a worker killed mid-retention, a full
     // disk) holds no metadata marker: an uncommitted attempt, not tampering.
     // Strip the marker from the killed attempt's unscored leaf; the confirmed
@@ -753,37 +771,6 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
         before.1
     );
     assert_eq!(p.launches().len(), n);
-}
-
-/// The `swarmail-evals trial` worker the coordinator `parent` runs now.
-#[cfg(target_os = "linux")]
-fn trial_worker(parent: u32) -> i32 {
-    for entry in std::fs::read_dir("/proc").unwrap() {
-        let Ok(pid) = entry.unwrap().file_name().to_string_lossy().parse::<i32>() else {
-            continue;
-        };
-        let (Ok(stat), Ok(cmdline)) = (
-            std::fs::read_to_string(format!("/proc/{pid}/stat")),
-            std::fs::read(format!("/proc/{pid}/cmdline")),
-        ) else {
-            continue;
-        };
-        let ppid = stat
-            .rsplit(')')
-            .next()
-            .and_then(|rest| rest.split_whitespace().nth(1))
-            .and_then(|v| v.parse::<u32>().ok());
-        if ppid == Some(parent) && cmdline.split(|b| *b == 0).nth(1) == Some(b"trial".as_slice()) {
-            return pid;
-        }
-    }
-    panic!("no trial worker under {parent}");
-}
-
-/// Off Linux the only caller is ignored; the stub keeps it compiling.
-#[cfg(not(target_os = "linux"))]
-fn trial_worker(_parent: u32) -> i32 {
-    unreachable!("trial_worker reads /proc and runs on Linux only")
 }
 
 /// Replace `family`'s CLI with different bytes that still answer its banner.
