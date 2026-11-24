@@ -1655,6 +1655,11 @@ impl Proc {
         self.group.await_cleanup().await
     }
 
+    /// Whether the process has exited (its wait owner has a status).
+    pub fn exited(&self) -> bool {
+        self.group.status().is_some()
+    }
+
     /// Wait for the first valid typed announcement, child exit, or startup
     /// deadline. Raw lines never cross this boundary.
     async fn announce(&mut self) -> Result<Announcement, String> {
@@ -1931,23 +1936,37 @@ pub async fn owned_source_context(
                     "core.untrackedCache=false",
                 ])
                 .args(args);
-            let mut proc = spawn_extended(cmd, groups, None, Some(runtime), false, true)
-                .map_err(|_| "helper_spawn")?;
-            let rx = proc.captured.take().ok_or("helper_output")?;
-            let result = tokio::time::timeout(Duration::from_secs(10), async {
-                let status = proc.child.wait().await.map_err(|_| "helper_wait")?;
-                let bytes = rx.await.map_err(|_| "helper_output")??;
-                Ok::<_, String>(status.success().then_some(bytes))
-            })
-            .await;
-            proc.cleanup().await?;
-            result.map_err(|_| "helper_timeout")??
+            let (status, bytes) =
+                run_captured(cmd, groups, runtime, Duration::from_secs(10)).await?;
+            status.success().then_some(bytes)
         } else {
             None
         };
         facts.push(value);
     }
     crate::identity::SourceContext::with_git(root, facts[0].as_deref(), facts[1].as_deref())
+}
+
+/// Run one owned helper to its exit within `bound`, its stdout read under
+/// the 1 MiB helper bound, its process group reaped on every path. A
+/// timeout is `helper_timeout`, an oversized stdout `helper_output_invalid`.
+pub async fn run_captured(
+    cmd: Command,
+    groups: &Groups,
+    runtime: Arc<tempfile::TempDir>,
+    bound: Duration,
+) -> Result<(ExitStatus, Vec<u8>), String> {
+    let mut proc =
+        spawn_extended(cmd, groups, None, Some(runtime), false, true).map_err(|_| "helper_spawn")?;
+    let rx = proc.captured.take().ok_or("helper_output")?;
+    let result = tokio::time::timeout(bound, async {
+        let status = proc.child.wait().await.map_err(|_| "helper_wait")?;
+        let bytes = rx.await.map_err(|_| "helper_output")??;
+        Ok::<_, String>((status, bytes))
+    })
+    .await;
+    proc.cleanup().await?;
+    result.map_err(|_| "helper_timeout")?
 }
 
 pub async fn build_owned_target(
@@ -2473,10 +2492,46 @@ async fn start_swarmail(
     scratch: &Path,
     trial: &mut Trial,
 ) -> Result<(SocketAddr, SocketAddr), String> {
+    target.recheck()?;
+    let (swarmail, addrs) = launch_swarmail(
+        &target.path,
+        scratch,
+        &["--max-per-inbox", "100000", "--route-domain", ROUTE_DOMAIN],
+        &trial.groups,
+        trial.runtime.clone(),
+    )
+    .await?;
+    trial.servers.push(swarmail);
+    addrs
+}
+
+/// Start one memory-only Swarmail from `bin` on ephemeral loopback ports,
+/// owned by `groups`, with a closed environment and no data file, chaos
+/// rule or hook: the client matrix's fresh server (issue #392). The process
+/// comes back so the caller can tell a restart from an answer.
+pub async fn start_memory_swarmail(
+    bin: &Path,
+    scratch: &Path,
+    groups: &Groups,
+    runtime: Arc<tempfile::TempDir>,
+) -> Result<(Proc, SocketAddr, SocketAddr), String> {
+    let (swarmail, addrs) = launch_swarmail(bin, scratch, &[], groups, runtime).await?;
+    let (smtp, http) = addrs?;
+    Ok((swarmail, smtp, http))
+}
+
+/// Spawn Swarmail and wait for its announcement and readiness. The owned
+/// process is returned whatever the readiness verdict, so a trial keeps it.
+async fn launch_swarmail(
+    bin: &Path,
+    scratch: &Path,
+    extra: &[&str],
+    groups: &Groups,
+    runtime: Arc<tempfile::TempDir>,
+) -> Result<(Proc, Result<(SocketAddr, SocketAddr), String>), String> {
     // Every role gets a closed runtime map and a private owner under /tmp.
     let swarmail_dirs = RuntimeDirs::create(scratch, "swarmail")?;
-    target.recheck()?;
-    let mut cmd = Command::new(&target.path);
+    let mut cmd = Command::new(bin);
     cmd.args([
         "serve",
         "--smtp-listen",
@@ -2485,41 +2540,41 @@ async fn start_swarmail(
         "127.0.0.1:0",
         "--http-listen",
         "127.0.0.1:0",
-        "--max-per-inbox",
-        "100000",
-        "--route-domain",
-        ROUTE_DOMAIN,
-    ]);
+    ])
+    .args(extra);
     swarmail_dirs.apply(&mut cmd);
     cmd.env("RUST_LOG", "swarmail=info,tower_http=off")
         .current_dir(&swarmail_dirs.root);
     let mut swarmail = spawn(
         cmd,
-        &trial.groups,
+        groups,
         Some(ServerRole::Swarmail),
-        Some(trial.runtime.clone()),
+        Some(runtime),
         false,
     )
     .map_err(|_| "swarmail_spawn")?;
     let announced = swarmail.announce().await;
-    trial.servers.push(swarmail);
-    let (smtp, http) = match announced? {
-        Announcement::Swarmail(smtp, http) => (smtp, http),
-        Announcement::Fixture(_, _) => return Err("startup_protocol".into()),
-    };
-    let client = http_client();
-    let health = client
-        .get(format!("http://{http}/healthz"))
-        .send()
-        .await
-        .map_err(|_| "swarmail_health")?;
-    if !health.status().is_success() {
-        return Err("swarmail_health".into());
+    let addrs = async {
+        let (smtp, http) = match announced? {
+            Announcement::Swarmail(smtp, http) => (smtp, http),
+            Announcement::Fixture(_, _) => return Err("startup_protocol".to_string()),
+        };
+        let client = http_client();
+        let health = client
+            .get(format!("http://{http}/healthz"))
+            .send()
+            .await
+            .map_err(|_| "swarmail_health")?;
+        if !health.status().is_success() {
+            return Err("swarmail_health".into());
+        }
+        mail::probe_greeting(smtp)
+            .await
+            .map_err(|_| "swarmail_smtp")?;
+        Ok((smtp, http))
     }
-    mail::probe_greeting(smtp)
-        .await
-        .map_err(|_| "swarmail_smtp")?;
-    Ok((smtp, http))
+    .await;
+    Ok((swarmail, addrs))
 }
 
 /// Tools the free contract probe never calls: they change Swarmail's state

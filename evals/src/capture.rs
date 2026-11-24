@@ -126,6 +126,9 @@ struct Forward {
     own_port: u16,
     capture: Capture,
     requests: AtomicUsize,
+    /// The client matrix's invocation log (issue #392), when this forwarder
+    /// observes one client launch; `None` for a trial's capture.
+    log: Option<Arc<ExchangeLog>>,
 }
 
 /// Read the Swarmail catalogue the capture admits, then start both owners.
@@ -146,7 +149,7 @@ pub async fn start(
         return Err("tool_catalogue_unavailable".into());
     }
     let capture = Capture::new(catalogue);
-    let (own, server) = forwarder(mcp_url, upstream_addr, capture.clone()).await?;
+    let (own, server) = forwarder(mcp_url, upstream_addr, capture.clone(), None).await?;
     // From here an early return stops the forwarder it would leave behind.
     let stop = |e: &str| {
         server.abort();
@@ -175,6 +178,7 @@ async fn forwarder(
     upstream: &str,
     upstream_addr: SocketAddr,
     capture: Capture,
+    log: Option<Arc<ExchangeLog>>,
 ) -> Result<(SocketAddr, JoinHandle<()>), String> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -194,6 +198,7 @@ async fn forwarder(
         own_port: own.port(),
         capture: capture.clone(),
         requests: AtomicUsize::new(0),
+        log,
     });
     let app = axum::Router::new()
         .route("/mcp", axum::routing::any(forward))
@@ -399,6 +404,7 @@ async fn forward(
     } else {
         Vec::new()
     };
+    let logged = st.log.as_ref().map(|_| (method == Method::POST, body.clone()));
     let mut req = st.http.request(method, &st.upstream);
     for (name, value) in &headers {
         if hop_by_hop(name) {
@@ -426,6 +432,9 @@ async fn forward(
     }
     .await;
     drop(observed);
+    if let (Some(log), Some((post, request))) = (&st.log, logged) {
+        log.record(post, &request, reply.as_ref().map(|(s, _, b)| (s.as_u16(), &b[..])));
+    }
     let Some((status, upstream_headers, bytes)) = reply else {
         return StatusCode::BAD_GATEWAY.into_response();
     };
@@ -437,6 +446,103 @@ async fn forward(
         }
     }
     out
+}
+
+/// The most exchanges one client launch may make through its observer: the
+/// matrix needs an initialize, a notification and one method, with room
+/// for a client's own lifecycle traffic. Past it the launch is unattributable.
+pub const EXCHANGE_LIMIT: usize = 64;
+/// The most request and reply bytes one launch's observer keeps in memory.
+pub const EXCHANGE_BYTES: usize = 8 << 20;
+
+/// One request the observed client sent and the reply it received, paired
+/// where the forwarder already holds both. `reply` is `None` when Swarmail
+/// gave none (the client then saw `502`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Exchange {
+    /// Whether the request was a `POST` (the only kind carrying JSON-RPC).
+    pub post: bool,
+    pub request: Vec<u8>,
+    pub reply: Option<(u16, Vec<u8>)>,
+}
+
+/// One launch's exchanges, bounded by [`EXCHANGE_LIMIT`] and
+/// [`EXCHANGE_BYTES`]; a record past either only marks the log overflowed.
+#[derive(Default)]
+pub struct ExchangeLog {
+    state: std::sync::Mutex<LogState>,
+}
+
+#[derive(Default)]
+struct LogState {
+    exchanges: Vec<Exchange>,
+    bytes: usize,
+    overflowed: bool,
+    sealed: bool,
+}
+
+impl ExchangeLog {
+    fn record(&self, post: bool, request: &[u8], reply: Option<(u16, &[u8])>) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.sealed {
+            return;
+        }
+        let size = request.len() + reply.map_or(0, |(_, b)| b.len());
+        if state.exchanges.len() == EXCHANGE_LIMIT || size > EXCHANGE_BYTES - state.bytes {
+            state.overflowed = true;
+            return;
+        }
+        state.bytes += size;
+        state.exchanges.push(Exchange {
+            post,
+            request: request.to_vec(),
+            reply: reply.map(|(s, b)| (s, b.to_vec())),
+        });
+    }
+
+    /// Close the log: what was recorded, and whether a record was refused.
+    fn seal(&self) -> (Vec<Exchange>, bool) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.sealed = true;
+        (std::mem::take(&mut state.exchanges), state.overflowed)
+    }
+}
+
+/// A forwarder observing one client launch: its own loopback endpoint in
+/// front of Swarmail's `/mcp`, so what it records belongs to that launch.
+pub struct Observer {
+    pub mcp_url: String,
+    log: Arc<ExchangeLog>,
+    server: JoinHandle<()>,
+}
+
+impl Observer {
+    /// Stop serving and return the launch's exchanges in arrival order and
+    /// whether the log overflowed. Called after the launch was reaped.
+    pub fn seal(self) -> (Vec<Exchange>, bool) {
+        self.server.abort();
+        self.log.seal()
+    }
+}
+
+impl Drop for Observer {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
+/// Start an observer in front of `mcp_url` (Swarmail's `/mcp` at
+/// `upstream_addr`), forwarding exactly as a trial's capture does.
+pub async fn observe(mcp_url: &str, upstream_addr: SocketAddr) -> Result<Observer, String> {
+    let log = Arc::new(ExchangeLog::default());
+    // The trial's value capture rides along unread: the matrix reads the log.
+    let capture = Capture::new(BTreeSet::new());
+    let (own, server) = forwarder(mcp_url, upstream_addr, capture, Some(log.clone())).await?;
+    Ok(Observer {
+        mcp_url: format!("http://{own}/mcp"),
+        log,
+        server,
+    })
 }
 
 #[cfg(test)]
@@ -576,7 +682,7 @@ mod tests {
     async fn bounded_forwarder() -> (Capture, SocketAddr, Arc<AtomicUsize>) {
         let (up, hits) = upstream().await;
         let c = Capture::new(BTreeSet::from(["t".to_string()]));
-        let (own, _server) = forwarder(&format!("http://{up}/mcp"), up, c.clone())
+        let (own, _server) = forwarder(&format!("http://{up}/mcp"), up, c.clone(), None)
             .await
             .unwrap();
         (c, own, hits)
@@ -690,5 +796,68 @@ mod tests {
             .expect("the accept loop ends")
             .unwrap();
         assert_eq!(reason(&c), Some(Refusal::BindingMismatch));
+    }
+
+    #[tokio::test]
+    async fn an_observer_pairs_each_request_with_its_reply_within_its_bounds() {
+        let (up, hits) = upstream().await;
+        let observer = observe(&format!("http://{up}/mcp"), up).await.unwrap();
+        let own: SocketAddr = observer
+            .mcp_url
+            .strip_prefix("http://")
+            .and_then(|r| r.strip_suffix("/mcp"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut s = tokio::net::TcpStream::connect(own).await.unwrap();
+        assert!(exchange(&mut s).await);
+        let (log, overflowed) = observer.seal();
+        assert!(!overflowed);
+        assert_eq!(
+            log,
+            vec![Exchange {
+                post: false,
+                request: Vec::new(),
+                reply: Some((200, b"ok".to_vec())),
+            }]
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        // The bounds: a record past the count or the bytes only overflows,
+        // and nothing is kept once the log is sealed.
+        let log = ExchangeLog::default();
+        for _ in 0..EXCHANGE_LIMIT {
+            log.record(true, b"{}", None);
+        }
+        log.record(true, b"{}", None);
+        let (kept, overflowed) = log.seal();
+        assert_eq!((kept.len(), overflowed), (EXCHANGE_LIMIT, true));
+        log.record(true, b"{}", None);
+        assert_eq!(log.seal().0.len(), 0);
+        let log = ExchangeLog::default();
+        log.record(true, &vec![b' '; EXCHANGE_BYTES - 1], Some((200, b"x")));
+        log.record(true, b"y", None);
+        let (kept, overflowed) = log.seal();
+        assert_eq!((kept.len(), overflowed), (1, true));
+    }
+
+    #[tokio::test]
+    async fn an_observer_records_an_absent_reply() {
+        // Nothing listens upstream: the client sees 502 and the log says so.
+        let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up = dead.local_addr().unwrap();
+        drop(dead);
+        let observer = observe(&format!("http://{up}/mcp"), up).await.unwrap();
+        let reply = reqwest::Client::new()
+            .post(&observer.mcp_url)
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), StatusCode::BAD_GATEWAY);
+        let (log, _) = observer.seal();
+        assert_eq!(log.len(), 1);
+        assert!(log[0].post && log[0].reply.is_none());
+        assert_eq!(log[0].request, b"{}");
     }
 }
