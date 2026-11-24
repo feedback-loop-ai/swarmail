@@ -444,7 +444,7 @@ it answers the medium with evidence.
 | finding | change | proof (executed here) |
 |---|---|---|
 | correctness 2 / independent 4 (CLI-level wrong-slot swap through the version-1 chain) | `a_nested_baseline` adds a case: leaf B's companion names leaf A's `slot`, and B's marker is re-bound to the new bytes, so it is hash-valid. The baseline's refusal now carries the leaf's own reason (`attempt <id>: trial_invalid <trial>: <reason>`); before, `main.rs` dropped it. | `baseline --resume` exits 2 with `usage_binding_mismatch` and writes no report; restored, the rest of the test holds. 1 passed, 106 s (host-gated, at f7c4a851). |
-| guarantees 2 / independent 2 / tests 2 / correctness 4 (inventory wiring green-by-skip) | `a_recipe_selection_reproves_every_declared_home_source` still skips on a host that lacks a DNS input, and names the missing inputs, but under `CI` (GitHub sets `CI=true`) it fails instead. On CI it executes or goes red. | Here the test skipped: this seat lacks two DNS inputs, and `CI` is unset. CI's ubuntu runner is a bare VM with systemd-resolved. |
+| guarantees 2 / independent 2 / tests 2 / correctness 4 (inventory wiring green-by-skip) | `a_recipe_selection_reproves_every_declared_home_source` still skips on a host that lacks a DNS input, and names the missing inputs, but on GitHub's runners (`GITHUB_ACTIONS=true`) it fails instead, so in CI it executes or goes red. The first version keyed on `CI`, which this delivery seat also sets; the full suite caught that, and the key changed. | Here it skipped (this seat lacks two DNS inputs; `GITHUB_ACTIONS` unset), and with `GITHUB_ACTIONS=true` it fails naming them (observed). CI's ubuntu runner is a bare VM with systemd-resolved. |
 | tests 4 (ignore reason) | The nested baseline's `#[ignore]` reason and doc say it is Linux-only (grant endpoints, `/proc`). | text |
 | correctness 5 (release_seam comment) | The comment and module doc say the release pin refuses after the private selection read and before the grant, the credential read or any launch. | text |
 
@@ -494,3 +494,23 @@ cargo test --locked --test paid_baseline -- --ignored a_nested_baseline
 
 Added CI time: 0 s. The new case is in the ignored test, and the CI
 assertion is a branch.
+
+### Gates run here (Linux; root `src/` untouched, one `evals/src/main.rs` line changed)
+
+- **Root**: `fmt --check`; `clippy --workspace --all-targets --locked -D
+  warnings`; `cargo build --locked --bin swarmail`; `cargo test --workspace
+  --locked` (every result line 0 failed, 219 s); `coverage-gate.sh` (exact
+  100/100/100, 397 s); `coverage-gate.sh selftest` (pass);
+  `publish-guard-test.sh` (OK); `seal-branch-test.sh` (7 cases, 10
+  mutants); `cargo deny check licenses` (ok).
+- **Evals**: `fmt --check`; `clippy --all-targets --locked -D warnings`.
+  The full suite ran once with `SWARMAIL_BIN=<root target/debug/swarmail>
+  cargo test --locked`: 663 passed, 1 failed, 11 ignored, 1499 s, at
+  f7c4a851 plus the ledger commit. The one failure was the `CI`-keyed
+  assertion above, because this seat sets `CI=true`. After the switch to
+  `GITHUB_ACTIONS`, the whole `--test wrappers` target ran again: 33
+  passed, 0 failed, 3 ignored. No other target changed between the two
+  runs.
+- **Host-gated, run here**: `a_nested_baseline`, 1 passed, 106 s.
+- **Not run here**: the pinned brokkr recipe compile (no brokkr binary in
+  this box; no `.brokkr/` path was touched). macOS execution is CI's.
