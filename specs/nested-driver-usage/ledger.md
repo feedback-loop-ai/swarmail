@@ -357,3 +357,56 @@ The other host-gated proofs, unchanged from attempt 1, stay listed above
 - **Unchanged**: root `src/` is untouched. The only held path changed on
   this branch is the approved `.brokkr/recipes/eval/bundle.json`, from
   attempt 1; this attempt touched none.
+
+## Third rework, review return on c93e3931 (same run, 2026-11-24)
+
+Part of #404. Implement seat, Linux. All five members returned `residual`:
+one medium (security 1, the deliberate same-uid class) and lows and infos
+elsewhere. This attempt fixes the only security finding a code change can
+close on this branch, closes the cheap lows and answers the rest below.
+
+| finding | change | proof (executed here) |
+|---|---|---|
+| security 2 / correctness 2 (seam marker in any field) | `wrappers::seam_build_refuses_real_spend` reads only the authorizing values for the selection's credential key: `claude` → `claudeAiOauth.accessToken`, `codex` → `tokens.access_token` and `OPENAI_API_KEY`, `dsh:<route>` → that route's `key`. Each present must begin `SYNTHETIC-` or be a JWT whose signature segment decodes to bytes that begin so; at least one must be present. The fixtures whose spark key (`SPARK-CANARY`) or stale codex token (`…sig`) were not synthetic now are. | `wrappers::tests` seam table: decoys with the marker in `scopes`, mid-value, in a non-string, in the id token beside a real JWT access token, in the other dsh route, with a real `OPENAI_API_KEY`, no authorizing field, unknown key, unparsable file. `--test wrappers` 35 passed (3 ignored), `--test paid_baseline` 6 passed. The first full run of `wrappers` caught the two non-synthetic fixtures, as the change intends. |
+| correctness/guarantees/independent low (wrapper → `source_home` → `verify_live` wiring unproven) | `binds::verify` checks the presence of every source before protection. A missing declared HOME source therefore refuses `recipe_bind_missing` even where a host's writable DNS file would refuse first. | `a_recipe_selection_reproves_every_declared_home_source` (real wrapper, dsh selection under `<tmp>/source-home/.config/swarmail-evals`): `~/.volta` absent → `recipe_bind_missing`; created → `recipe_bind_writable`; HOME empty, no CLI launch. An empty-inventory mutant fails it (observed). It needs a host with all four DNS inputs and returns early otherwise. This seat lacks two, so I created them temporarily in the seat's own `/etc` and `/run` to run the proof and the mutant. CI's runners and the operator's host carry them. 0.1 s. |
+| guarantees 1 / independent 4 (0138's note) | 0138's closing paragraph states the build now in force (authorizing field, not one exact fixture, and why) and that the release and baseline-CLI proofs exist, host-gated. 0138 stays `proposed`. | text |
+| guarantees 2 / tests 1 / correctness 5 (tasks.md) | Boxes reconciled: ticked items are delivered, unticked are open, each with a one-line reason. | text |
+| guarantees 5 (T51) | T51 names the authorizing-field check and the release-profile proof with its command. | text |
+| independent 3 (mount-proof fixture) | `~/.local/share/brokkr-0.15.2` is now made a directory: only `.claude.json` and `spark.env` are files. | compiles; the proof is host-gated |
+
+### Answered, not changed
+
+- **Security 1 (medium), the deliberate same-uid class.** A same-uid
+  ancestor running this executable can answer the wrapper's nonce, and the
+  serving side trusts any same-exe descendant of the worker. Under the
+  operator's 2026-11-24 ruling 4 (spec.md, wrappers.md, grant.rs) this is a
+  residual, not a hold. Such an actor could equally run the CLI directly
+  with the operator's credentials. The security member classed it so too.
+- **Correctness 1 (swapped agent/assignment refusal)** is the same class;
+  tasks.md says so.
+- **Independent 1 / guarantees 4 (the baseline-CLI proofs are ignored).**
+  They are host-gated for time (about 105 s, against the CI budget the
+  brief fixes). The dispatcher must run the command below on the final
+  head before merge.
+- **Correctness 3 / tasks line 10 (a group with a pass and a scored
+  failure at the baseline entry point).** Debt. The stand-in driver cannot
+  play a passing agent, and the arithmetic is unit-proven in report/usage.
+- **Correctness 4 (companion version 1).** As recorded in 0138's note.
+- **Independent 6 (`SO_RCVTIMEO` expiry reads as `paid_grant_channel_closed`;
+  `runs_this` checked at registration only).** Low and diagnostic. The
+  start-time check at receipt covers pid reuse, and exec keeps pid and start
+  time, which is the same-uid class.
+- **Version-1 wrong-slot swap at the CLI** (tasks line 13). Debt;
+  `usage_binding_mismatch` is unit-tested.
+
+### Host-gated proofs for the dispatcher (from `evals/`, on the final head)
+
+```bash
+cargo test --locked --test wrappers -- --ignored a_read_only_bind_rejects_a_write_and_verifies_in_its_namespace
+EVAL_BROKKR_DRIVER=~/.local/share/brokkr-0.15.2/brokkr cargo test --locked --test wrappers -- --ignored real_driver
+cargo test --release --locked --test wrappers -- --ignored release_standin_is_not_admitted
+cargo test --locked --test paid_baseline -- --ignored a_nested_baseline
+```
+
+Added CI time: about 0.1 s (the new wrapper-level test, and the seam
+table's 16 cases).
