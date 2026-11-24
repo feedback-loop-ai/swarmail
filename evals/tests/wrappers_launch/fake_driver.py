@@ -47,6 +47,16 @@ if mode['mode'] == 'refuse':
     send(dict(pair, type='result', status='failed', result=None, error='provider refused before work'))
 else:
     send(dict(pair, type='accepted', session_ref=None))
+    if mode['mode'] == 'garbage':
+        # A protocol error past acceptance: the driver then waits for its
+        # stdin to close, as the release does.
+        sys.stdout.write('{not json\n')
+        sys.stdout.flush()
+        while recv() is not None:
+            pass
+        rec['stdin_closed'] = True
+        save()
+        sys.exit(0)
     send(dict(pair, type='checkpoint', data={'step': 'transcript', 'model': 'not reported', 'effort': 'not reported'}))
     send(dict(pair, type='checkpoint', data={'step': 'harness-started', 'harness': FAMILY, 'launch': 'cold'}))
     # A per-turn row with a larger bill than the session: it must not count.
@@ -66,3 +76,7 @@ else:
 rec['shutdown'] = recv()
 rec['eof_after_shutdown'] = recv() is None
 save()
+if mode['mode'] == 'deaf':
+    # Ignores shutdown and keeps its stdout open: only a kill ends it.
+    import time
+    time.sleep(600)

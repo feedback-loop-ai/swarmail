@@ -419,6 +419,28 @@ fn every_nested_ending_without_a_completed_result_is_a_typed_harness_error() {
         assert_eq!(receipt.disposition, code);
         assert_eq!(receipt.facts.input_tokens, Fact::Present { value: 41871 });
     }
+    // Bounded shutdown: a protocol error past acceptance closes the
+    // driver's stdin at once (the stand-in exits on that EOF), and a driver
+    // that ignores shutdown while holding its stdout open is killed after
+    // the grace. Both keep their typed receipt.
+    let (exit, err, report) = n.launch(json!({"mode": "garbage"}));
+    assert_eq!(exit, Some(2), "{err}");
+    let LaunchReport::Nested(receipt) = launch_report_of(&report) else {
+        panic!("{}", String::from_utf8_lossy(&report));
+    };
+    assert!(err.contains(&receipt.disposition), "{err}");
+    assert_ne!(receipt.disposition, "completed");
+    assert_eq!(n.record()["stdin_closed"], true);
+    let began = std::time::Instant::now();
+    let (exit, err, report) = n.launch(json!({"mode": "deaf", "finals": finals}));
+    assert_eq!(exit, Some(0), "{err}");
+    assert!(began.elapsed() < std::time::Duration::from_secs(60));
+    assert!(began.elapsed() >= wrappers::DRIVER_EXIT_GRACE);
+    let LaunchReport::Nested(receipt) = launch_report_of(&report) else {
+        panic!("{}", String::from_utf8_lossy(&report));
+    };
+    assert_eq!(receipt.disposition, "completed");
+    assert_eq!(receipt.facts.input_tokens, Fact::Present { value: 41871 });
     // No session-final checkpoint: every fact unavailable, never zero.
     let (exit, _, report) = n.launch(json!({"mode": "complete", "finals": []}));
     assert_eq!(exit, Some(0));

@@ -1807,6 +1807,7 @@ fn nested_session(
         .map_err(|_| "driver_spawn_failed")?;
     let mut stdin = child.stdin.take();
     let stdout = child.stdout.take().expect("piped stdout");
+    let reaper = Reaper::new(child.id());
     let (exchange, end) = crate::driver::run(
         std::io::BufReader::new(stdout),
         id,
@@ -1817,14 +1818,21 @@ fn nested_session(
                 None => Err(std::io::ErrorKind::BrokenPipe.into()),
             };
             if last {
-                // Shutdown, then the driver's stdin closes.
+                // Shutdown, then the driver's stdin closes, and it has a
+                // bounded grace to exit and release its stdout.
                 stdin = None;
+                reaper.arm();
             }
             sent
         },
         || report(reporting, crate::runner::LAUNCH_READY),
     );
-    let _ = child.wait();
+    // A protocol error ends the exchange without a shutdown: close stdin,
+    // then the same bounded grace before the driver is killed. The typed
+    // ending above is already decided either way.
+    drop(stdin);
+    reaper.arm();
+    reaper.reap(child);
     let (launched, code) = match end {
         Ok(d) => (d.launched(), d.code()),
         Err(e) => (exchange.accepted(), e.code()),
@@ -1844,6 +1852,58 @@ fn nested_session(
     } else {
         Err(code.into())
     })
+}
+
+/// How long a driver has, after its stdin closes, to exit before it is
+/// killed: a driver that ignores `shutdown` or holds its stdout open must
+/// not keep the wrapper (and the typed receipt) until the trial deadline.
+pub const DRIVER_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The bounded end of a nested driver. `arm` starts one watchdog that kills
+/// the driver after [`DRIVER_EXIT_GRACE`] unless it was reaped first; the
+/// reaper waits for exit without reaping (`WNOWAIT`), marks it under the
+/// same lock, and only then reaps, so the kill can never reach a reused pid.
+struct Reaper {
+    pid: u32,
+    reaped: std::sync::Arc<std::sync::Mutex<bool>>,
+    armed: std::cell::Cell<bool>,
+}
+impl Reaper {
+    fn new(pid: u32) -> Self {
+        Self {
+            pid,
+            reaped: std::sync::Arc::default(),
+            armed: std::cell::Cell::new(false),
+        }
+    }
+    fn arm(&self) {
+        if self.armed.replace(true) {
+            return;
+        }
+        let (pid, reaped) = (self.pid, self.reaped.clone());
+        std::thread::spawn(move || {
+            std::thread::sleep(DRIVER_EXIT_GRACE);
+            let reaped = reaped.lock().unwrap_or_else(|e| e.into_inner());
+            if !*reaped {
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            }
+        });
+    }
+    fn reap(&self, mut child: std::process::Child) {
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        while unsafe {
+            libc::waitid(
+                libc::P_PID,
+                self.pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        } != 0
+            && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+        {}
+        *self.reaped.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        let _ = child.wait();
+    }
 }
 
 /// Prevent credentials inherited by MCP launchers from entering the helper.
