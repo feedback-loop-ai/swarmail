@@ -1,6 +1,7 @@
 //! The paid baseline's offline fixture (proposed 0137): fake direct CLIs
 //! that answer the bounded version probe and log each launch, their private
 //! credentials, the version-2 selection and a stderr-watching runner.
+use super::session::{self, OwnedSession};
 use super::*;
 use serde_json::{Value, json};
 use std::{
@@ -380,14 +381,17 @@ impl Paid {
     }
 }
 
-/// A running baseline whose stderr lines are collected as they arrive.
+/// A running baseline whose stderr lines are collected as they arrive. It
+/// leads its own session, which the test owns: whatever trial it starts is
+/// checked gone when the baseline is finished.
 pub struct Running {
     pub child: Child,
     pub lines: Arc<Mutex<Vec<String>>>,
+    pub session: OwnedSession,
 }
 impl Running {
     pub fn start(mut c: Command) -> Self {
-        let mut child = c
+        let mut child = session::isolate(&mut c)
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -403,7 +407,12 @@ impl Running {
                 sink.lock().unwrap().push(line);
             }
         });
-        Self { child, lines }
+        let session = OwnedSession::of(child.id(), "baseline");
+        Self {
+            child,
+            lines,
+            session,
+        }
     }
     /// Wait, bounded, until a stderr line satisfies `f`.
     pub fn until(&self, what: &str, f: impl Fn(&str) -> bool) {
@@ -412,7 +421,18 @@ impl Running {
     pub fn signal(&self, sig: i32) {
         unsafe { libc::kill(self.child.id() as i32, sig) };
     }
-    pub fn finish(mut self) -> (Option<i32>, Vec<String>) {
+    /// The exit code and stderr lines, once the baseline has exited and
+    /// nothing it started is left running.
+    pub fn finish(self) -> (Option<i32>, Vec<String>) {
+        let (code, lines, session) = self.finish_owned();
+        session.assert_clear();
+        (code, lines)
+    }
+    /// As [`Running::finish`], but the session stays the caller's to check:
+    /// after a forced death part of the family legitimately outlives the
+    /// baseline (a worker finishing its owned cleanup, or servers the test
+    /// must end itself).
+    pub fn finish_owned(mut self) -> (Option<i32>, Vec<String>, OwnedSession) {
         let start = Instant::now();
         let status = loop {
             if let Some(s) = self.child.try_wait().unwrap() {
@@ -427,7 +447,7 @@ impl Running {
             std::thread::sleep(Duration::from_millis(10));
         }
         let lines = self.lines.lock().unwrap().clone();
-        (status.code(), lines)
+        (status.code(), lines, self.session)
     }
 }
 pub fn wait(what: &str, f: impl Fn() -> bool) {
@@ -440,8 +460,18 @@ pub fn wait(what: &str, f: impl Fn() -> bool) {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+/// Run a baseline command to its exit in a session of its own; nothing it
+/// started may outlive it.
 pub fn run(c: &mut Command) -> (Option<i32>, String, String) {
-    let out = c.stdin(Stdio::null()).output().unwrap();
+    let child = session::isolate(c)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let session = OwnedSession::of(child.id(), "baseline command");
+    let out = child.wait_with_output().unwrap();
+    session.assert_clear();
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),

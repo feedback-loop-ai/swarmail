@@ -6,6 +6,7 @@
 
 pub mod coordination;
 pub mod paid;
+pub mod session;
 pub fn trial_scope() -> std::fs::File {
     coordination::trial_scope()
 }
@@ -422,8 +423,9 @@ pub fn process_descendants(root: i32) -> Vec<ProcessIdentity> {
     found
 }
 
-/// One line per member of `family` that is still alive: pid, state, parent and
-/// namespace pids from `/proc/<pid>/status`, and the command line. A field that
+/// One line per member of `family` that is still alive: pid, state, start
+/// time, parent and namespace pids from `/proc/<pid>/status`, the working
+/// directory and the command line. A field that
 /// cannot be read is `?`. Empty when every member is gone.
 #[cfg(target_os = "linux")]
 pub fn survivors(family: &[ProcessIdentity]) -> String {
@@ -453,9 +455,12 @@ pub fn survivors(family: &[ProcessIdentity]) -> String {
                         .to_string()
                 })
                 .unwrap_or_else(|_| "?".into());
+            let cwd = std::fs::read_link(format!("/proc/{}/cwd", member.pid))
+                .map_or_else(|_| "?".into(), |p| p.display().to_string());
             format!(
-                "pid {} state {state} PPid {} NSpid {} cmdline {cmdline}",
+                "pid {} state {state} start {} PPid {} NSpid {} cwd {cwd} cmdline {cmdline}",
                 member.pid,
+                member.start_time,
                 status_field(member.pid, "PPid"),
                 status_field(member.pid, "NSpid"),
             )

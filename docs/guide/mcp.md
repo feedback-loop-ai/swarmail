@@ -113,7 +113,10 @@ The [client matrix](../agents/client-matrix.md) fixes each client's checklist
 and the receipt format (part of #392). Receipts go in
 [`docs/evals/clients/`](../evals/clients/README.md), one JSON file per client
 and date. **Status, 2026-11-22: no receipts yet**, so no client compatibility
-is claimed.
+is claimed. On 2026-11-24 the MCP Inspector gained a headless CLI route,
+`swarmail-evals client-matrix run` (proposed
+[0140](../decisions/0140-inspector-cli-evidence.md)). It has been proven only
+with an offline stand-in, so all four receipts remain owed.
 The negotiation change merged (#288, `42f04f2`) before the #151 baseline;
 that baseline now exists ([`docs/evals/baseline-2026-11-01.md`](../evals/baseline-2026-11-01.md))
 and measured main `a4f552d`, which already carries it.
