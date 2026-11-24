@@ -433,3 +433,64 @@ table's 16 cases).
   binary on this host; this attempt touched no `.brokkr/` path, and CI's
   `brokkr bundle (pinned)` job and the verify seat run it). macOS
   execution is CI's.
+
+## Third rework, review return on 9f28d4e8 (same run, 2026-11-24)
+
+Part of #404. Implement seat, Linux. All five members returned `residual`.
+The worst finding was security 1, medium: the deliberate same-uid class.
+The rest were low or info. This attempt closes the cheap lows, and below
+it answers the medium with evidence.
+
+| finding | change | proof (executed here) |
+|---|---|---|
+| correctness 2 / independent 4 (CLI-level wrong-slot swap through the version-1 chain) | `a_nested_baseline` adds a case: leaf B's companion names leaf A's `slot`, and B's marker is re-bound to the new bytes, so it is hash-valid. The baseline's refusal now carries the leaf's own reason (`attempt <id>: trial_invalid <trial>: <reason>`); before, `main.rs` dropped it. | `baseline --resume` exits 2 with `usage_binding_mismatch` and writes no report; restored, the rest of the test holds. 1 passed, 106 s (host-gated, at f7c4a851). |
+| guarantees 2 / independent 2 / tests 2 / correctness 4 (inventory wiring green-by-skip) | `a_recipe_selection_reproves_every_declared_home_source` still skips on a host that lacks a DNS input, and names the missing inputs, but under `CI` (GitHub sets `CI=true`) it fails instead. On CI it executes or goes red. | Here the test skipped: this seat lacks two DNS inputs, and `CI` is unset. CI's ubuntu runner is a bare VM with systemd-resolved. |
+| tests 4 (ignore reason) | The nested baseline's `#[ignore]` reason and doc say it is Linux-only (grant endpoints, `/proc`). | text |
+| correctness 5 (release_seam comment) | The comment and module doc say the release pin refuses after the private selection read and before the grant, the credential read or any launch. | text |
+
+### Answered, not changed
+
+- **Security 1 (medium), the deliberate same-uid class.** This is a residual
+  under the operator's 2026-11-24 ruling 4, not a hold. The evidence for
+  how far it reaches:
+  - *Post-peek reply.* A reply counts only when its kernel-stamped
+    `SCM_CREDENTIALS` name the registered coordinator pid with an unchanged
+    start time. Without `CAP_SYS_ADMIN`, a process cannot claim another
+    pid's credentials. So a packet sent after the freshness peek by
+    anything other than the coordinator process refuses. The `sender`
+    fault proves it: `nested.rs`, the right nonce and binding sent by a
+    forked child, refused. Answering the nonce also means reading it from
+    the coordinator's end, which only the coordinator holds (`SOCK_CLOEXEC`).
+  - *What remains.* Two paths still answer: the coordinator process
+    itself, if a same-uid actor started it or injected into it, and a
+    same-exe descendant of the worker. Both require deliberately running
+    or tampering with this executable as the operator's uid. Ruling 4
+    excludes that actor, who could run the CLI with the credentials
+    directly. spec.md, wrappers.md and grant.rs record it.
+- **Correctness 1 / guarantees 1 / independent 1 / tests 1 (baseline-CLI
+  proofs are `#[ignore]`).** They are host-gated for time (about 106 s,
+  against the CI budget). The dispatcher runs the command below on the
+  final head.
+- **Correctness 1 / independent 4 (a baseline group with a pass).** This
+  stays debt. The stand-in driver cannot play a passing agent, and the
+  per-success arithmetic is unit-proven.
+- **Tests 3 (elapsed < 5 s in the fault loop).** Kept. The bound is half the
+  coordinator's 10 s `SO_RCVTIMEO`. That margin is what tells a refusal
+  that comes before the wait from one that times out.
+- **Tests 5 (`driver_admitted` only in the release proof).** Kept. It is
+  the release-profile check, and the debug suite cannot reach it.
+- **Guarantees 3 / independent 3 (mount and real-driver proofs not
+  observed on this head).** This seat has no user namespaces and no
+  brokkr 0.15.2 binary. The dispatcher runs them.
+
+### Host-gated proofs for the dispatcher (from `evals/`, on the final head)
+
+```bash
+cargo test --locked --test wrappers -- --ignored a_read_only_bind_rejects_a_write_and_verifies_in_its_namespace
+EVAL_BROKKR_DRIVER=~/.local/share/brokkr-0.15.2/brokkr cargo test --locked --test wrappers -- --ignored real_driver
+cargo test --release --locked --test wrappers -- --ignored release_standin_is_not_admitted
+cargo test --locked --test paid_baseline -- --ignored a_nested_baseline
+```
+
+Added CI time: 0 s. The new case is in the ignored test, and the CI
+assertion is a branch.
