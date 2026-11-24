@@ -228,3 +228,65 @@ authenticated session per family (T55).
 - A release-profile build of `swarmail-evals` was not built here; the
   seam's absence there rests on `cfg(debug_assertions)`.
 
+
+## Third rework (run …-50013b57, after the security hold on 6074b83e)
+
+Part of #404. Implement seat, Linux, 2026-11-24. Commits 82308737 through
+761451c6 on top of the chief's 7fd5587c.
+
+| finding | change | proof (executed here) |
+|---|---|---|
+| **security hold** (pre-queued reply) | `grant.rs` protocol `swarmail-grant/1`: the wrapper pins the endpoint's creator (`SO_PEERCRED` pid + `/proc` start time, live ancestor running this exe), refuses input queued before it asks (`paid_grant_reply_stale`), sends 128 bits from `getrandom` (`paid_grant_entropy_unavailable` on failure), and accepts only the registered pid's (`SCM_CREDENTIALS`, start time unchanged) byte-exact echo of nonce + binding (`paid_grant_reply_unbound`, `paid_grant_unauthenticated`). The coordinator refuses an expired or other binding and echoes the nonce. | `grant::tests::the_coordinator_answers_only_its_own_fresh_binding` (pure `answer`/`judge` table), `grant::tests::an_endpoint_names_its_creator_and_any_queued_packet`; `nested.rs::an_unbound_nested_selection_refuses_before_any_spend` now drives the debug `grant-standin --fault prequeue|nonce|contract|sender` (stale, unbound, unbound, unauthenticated; each under 5 s, no driver record, empty HOME) beside the kept channel-missing, forged-peer, refused and replay cases; `paid_baseline::one_command_…` passes through the real coordinator (98 s). |
+| ruling 4 | dated threat model in `grant.rs`'s module doc and `wrappers.md`'s paid boundary; the spec already carried it (7fd5587c), its "still requires repair" sentence now says repaired. No "admits nothing" same-uid claim remains. | text |
+| also 1 (macOS) | `paid_selection_rechecks_…` carries the non-Linux ignore; the bare refusal is the new portable `a_bare_paid_launch_refuses_unbound_on_every_platform`; the forged-peer pair is a Linux-only `cloexec_pair` helper (atomic `SOCK_CLOEXEC`, panel low 4). | `cargo clippy --target aarch64-apple-darwin --all-targets --locked -- -D warnings` clean (with a stub C compiler for ring's build script; type-checks, does not link or run). It caught a duplicate `ignore` before commit. macOS *execution* is CI's. |
+| also 2 (full inventory) | `binds::verify_recipe`: DNS + all nine `~/` read-only entries resolved against the seat HOME + selected paths, then `~/.dsh/profiles` must be a writable `overlay` mount (`recipe_overlay_missing`, `recipe_overlay_not_private`). The HOME is read from the selection's nearest `.config/swarmail-evals` ancestor (`recipe_bind_home_unknown` otherwise) instead of a new request field: `trial.sh` is a held path this run may not edit, and the selection directory is itself a declared, re-proven bind. | `binds::tests::the_recipe_check_proves_every_declared_source_and_the_overlay` (writable sibling under `.volta`, missing `.dsh/spark.env`, absent / ordinary-rw / ro-overlay profiles, valid overlay). Docs: wrappers.md recipe bullet, inventory paragraph and count (thirteen ro + one overlay), README both passages, T53, bundle description. |
+| also 4 (release seam) | `wrappers::driver_admitted`; ignored `release_seam.rs::release_standin_is_not_admitted` (refuses to pass in a debug build). | **Ran here**: `cd evals && cargo test --release --locked --test wrappers -- --ignored release_standin_is_not_admitted` → 1 passed at 37a44cb9's tree (38 s incl. build). |
+
+### Not done in this attempt (required; the result is `broken`)
+
+- **Also 3, the three baseline-CLI proofs**: duplicate-owner refusal through
+  `baseline --resume`, the paid baseline's own `report.json` over nested
+  companions plus replaying `report_argv`, and the codex class change
+  through `baseline --resume`. They need an offline nested `baseline
+  --via-brokkr` product: `fake_driver.py` hard-codes one `FAMILY` per
+  driver file while the baseline passes one `--via-brokkr` path for all
+  three families, and no stand-in driver mode yet plays an agent that
+  passes a deliverability task. That fixture is the next attempt's work.
+- Lows left: exact inert-fixture debug admission (correctness 5 / plan
+  item 5; `SYNTHETIC-` substring still decides), the empty-families matrix
+  fixture (correctness 6), explicit wrong-slot ownership test. Shell
+  indirection hiding a wrapper from matrix preflight and deliberate
+  same-uid activity stay residuals (ruling 4; the wrapper's own check is
+  mandatory).
+- Cold arms not exercised, by reason: `grant::place`'s two `dup` failures,
+  `grant-standin`'s `program_missing`/spawn failure, `run_child_assigned`'s
+  endpoint-allocation refusal (needs fd exhaustion), the exit-grace clamp,
+  `getrandom` failure, and `serve_faulty`'s `fork` failure arm.
+
+### Host-gated proofs for the dispatcher (from `evals/`, on this head)
+
+```bash
+cargo test --locked --test wrappers -- --ignored a_read_only_bind_rejects_a_write_and_verifies_in_its_namespace
+EVAL_BROKKR_DRIVER=~/.local/share/brokkr-0.15.2/brokkr cargo test --locked --test wrappers -- --ignored real_driver
+cargo test --release --locked --test wrappers -- --ignored release_standin_is_not_admitted
+```
+
+The mount proof now also binds the whole fixture inventory read-only
+(EROFS on `.dsh/spark.env`) and mounts the profiles as a bubblewrap
+`--tmp-overlay` (write succeeds, source unchanged, `verify_recipe` passes
+inside and fails on the host). It could not run in this seat (`bwrap:
+Creating new namespace failed … ENOSPC`). The third command passed here.
+Still unobserved: brokkr applying the binds to a recipe seat; operator
+sessions (T55) stay unticked.
+
+### Gates run here (Linux)
+
+evals `fmt --check`, `clippy --all-targets --locked -D warnings` (Linux and
+the aarch64-apple-darwin type-check), `cargo test --lib` (224 passed),
+`--test wrappers` (all non-ignored passed, 152 s), `--test paid_baseline`
+(6 passed, 98 s); root `fmt --check`, `cargo test --test delivery_recipes`
+(23 passed). **Not run in this attempt**: the full evals suite, root
+clippy/test/coverage/selftest, publish/seal proofs, `cargo deny`, and the
+pinned brokkr 0.12.0 compile (not on this host; CI). Root `src/` is
+untouched. Added test time: about +1 s in the nested group (four fault
+launches), under 0.1 s of unit tests.
