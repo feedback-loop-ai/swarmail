@@ -205,5 +205,26 @@ authenticated session per family (T55).
 - evals: `clippy --all-targets --locked -D warnings` clean (Linux). **macOS
   not compiled here**: Linux-only code is under `cfg(target_os = "linux")`
   with refusing stubs elsewhere, and the new tests carry the non-Linux ignore.
-- evals full suite: see the result below.
+- evals full suite, at ceb85398's tree: `SWARMAIL_BIN=<candidate
+  target/debug/swarmail> cargo test --locked --no-fail-fast` passed, 27
+  result lines, 0 failed (24 min 49 s on the shared host; lib 222, wrappers
+  31 + 2 ignored, paid_baseline 6, report 44, runner 39). An earlier run at
+  a408a081 failed the two default-contract golden tests (the superseded
+  `claude_2_1_310_via_brokkr` descriptor had changed); f6efe3f7 restores it.
+- Added test time: about +3 s in the nested group (one new single-agent
+  trial, the three-agent test's refused first worker, the forged-grant
+  launches), less about 2.8 s saved by the injected 200 ms grace; unit and
+  report additions are under 1 s.
+
+## Open (stated, not hidden)
+
+- `baseline --via-brokkr` has still not run a nested product end to end, so
+  the baseline's report.json over real nested companions and the
+  `Ledger::read` duplicate-owner refusal are executed only through the
+  shared reader (`artifacts::companions`, `UsageOwners::claim`) and the
+  direct product, not on a nested baseline.
+- The pinned 0.12.0 recipe compile, macOS clippy/tests, and the host-gated
+  proofs on this head are CI's and the dispatcher's.
+- A release-profile build of `swarmail-evals` was not built here; the
+  seam's absence there rests on `cfg(debug_assertions)`.
 
