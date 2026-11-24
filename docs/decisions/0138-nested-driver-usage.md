@@ -44,3 +44,21 @@ a test-equipment digest that the coordinator's own process reads. An agent's
 environment is rebuilt, so the recipe route admits the release alone.
 
 The second rework requires explicit assignment ownership because two independently valid leaves can claim the same driver attempt. Carry the paid assignment identifier outside the schema-2 row, compare it with the coordinator’s assignment on replay and claim driver attempts across the entire resume scan. Apply the same ownership checks when producing the baseline report and replaying it offline. The review also found that the production verifier itself reads the stand-in environment variable. The revised design requires a release-only trust set at each nested launch and confines fixture admission to inert builds barred from paid execution. These are requirements for the next implementation. The observations above describe a73ac17a.
+
+After the second rework (run …-8cc2a397), the build differs as follows.
+
+- **Trust set.** A release build admits the published driver digest alone
+  at every nested launch, host and recipe, and reads no environment for it.
+  A debug build also admits the stand-in built beside it and spends only
+  synthetic credentials, so the stand-in seam cannot reach a real login.
+- **Launch authority.** The host route's binding is granted by the live
+  baseline coordinator on a private per-agent endpoint authenticated by
+  kernel peer credentials, not by the argv string, which any caller can
+  compute.
+- **Ownership.** Driver attempts are claimed across the whole scan by resume,
+  by the baseline's own report, by matrix replay and by `report
+  --usage-from`. The companion is still version 1 and still names no paid
+  assignment identifier: the explicit assignment field the revised design
+  asks for is not built yet. A copied companion is refused as a duplicate
+  owner wherever two committed leaves meet in one scan, but a single leaf
+  does not prove which assignment it belongs to beyond its trial id.

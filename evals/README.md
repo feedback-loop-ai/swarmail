@@ -132,7 +132,10 @@ $E baseline --tier deliverability --config /private/wrappers.json --output /priv
   and `report.json`. `paid.jsonl` holds one scored row per slot;
   `report.json` also counts every retained unscored attempt (refused,
   interrupted, killed) under `attempts` and `harness_errors`, so retries are
-  visible and never change a success rate. Exit 0, 1 and 2 keep their
+  visible and never change a success rate. A nested row's usage in
+  `report.json` comes from its committed companion through the same verified
+  reader as `report --usage-from`, and the printed `report_argv` carries
+  `--usage-from <output>/paid`, so it reproduces those figures. Exit 0, 1 and 2 keep their
   meanings in [run-plan.md](run-plan.md#admission-retention-and-statuses),
   ruled over the scored rows. Every paid row carries `provenance.agent.cli`:
   the wrapper profile, the CLI version and its sha256.
@@ -761,9 +764,12 @@ tracked in brokkr#766.
   the app's state and stops both servers. A wrapper agent may launch its CLI
   through the pinned brokkr v0.15.2 driver (`--via-brokkr`, route (b) of
   0119's 2026-11-23 addendum; `wrappers.md`), with `swarmail-evals` as that
-  driver's engine. A paid agent under `matrix --brokkr` is refused
-  (`brokkr_paid_unbound`) unless the trial seat declares F5's read-only binds
-  (the paid read set below), and its wrapper re-proves them at launch.
+  driver's engine. A paid agent under `matrix --brokkr` (decided from the selection its
+  argv names, not its profile) is refused (`brokkr_paid_unbound`) unless the
+  trial seat declares F5's read-only binds (the paid read set below). At
+  launch a paid dsh wrapper re-proves them in its own mount table before any
+  credential read, direct or nested; a paid claude or codex wrapper refuses
+  (`recipe_auth_unruled`) until the operator rules on read-only auth.
 - `review` (the exec scoring gate, `scripts/score.sh`, which is the recipe's
   protected review under brokkr 0.12.0, decision 0119 R4) re-applies the task's
   check to the retained leaf (`check --artifacts-dir`): the app's state, never the agent's account.
@@ -809,8 +815,9 @@ inside the current directory (`brokkr_artifacts_unreachable`): the seat's
 workspace hands reach nothing else. **A paid agent under `matrix --brokkr`
 fails closed** (`brokkr_paid_unbound`, before any slot) unless the recipe's
 trial seat declares every F5 bind of `wrappers.md`'s paid read set, and a
-nested wrapper inside the seat refuses (`nested_paid_unbound`) unless its own
-mount table shows them read-only. The host baseline (the #151 path) stays the
+paid wrapper inside the seat refuses (`paid_unbound`) unless its own mount
+table shows them read-only (claude and codex refuse there regardless, pending
+the operator's ruling on read-only auth). The host baseline (the #151 path) stays the
 paid route the operator has run; no paid trial has run through this recipe. Trials stay sequential (accepted 0076): the
 issue's "two concurrent trials of one task both pass" criterion is **not** met
 by this recipe and is not claimed; isolation is #221's.
@@ -1090,8 +1097,10 @@ entry per expected agent in assignment order with its driver `attempt_id`,
 commits the score (proposed 0138). A three-agent task such as
 `inbox-isolation` lists all three sessions; the trial's figure is the checked
 per-field sum, and a session missing a field (or a sum past the exact range)
-makes that field unavailable, never zero. Reading a leaf refuses an orphan,
-missing, tampered or mismatched companion and an attempt two leaves claim. A
+makes that field unavailable, never zero. Reading one leaf refuses an orphan,
+missing, tampered or mismatched companion. Matrix replay, `report --usage-from`
+and `baseline --resume` each read their whole root with one owner set, and
+refuse a driver attempt two committed leaves claim (`duplicate usage owner`). A
 scored nested row with no committed companion is a `harness_error`
 (`usage_companion_unretained`), so a nested trial needs `--artifacts-dir`.
 `report --usage-from ROOT` reads the companions from the retained root, checks
@@ -1136,11 +1145,13 @@ holds. For each family (claude, codex, dsh):
    `"$E" trial --task signup --agent oracle` and `--agent null` must pass and
    fail as always.
 3. Run the session through a verified binding: a bare `trial` with a nested
-   paid selection fails closed (`nested_paid_unbound`, the driver never
-   starts). Use the host baseline's nested product
+   paid selection fails closed (`paid_unbound`, the driver never starts).
+   Use the host baseline's nested product
    (`"$E" baseline --via-brokkr "$BROKKR" ...`, authorized by the
-   `product_id` its dry run prints), whose coordinator passes each trial its
-   paid-launch binding, or the eval recipe with its F5 binds in place. No
+   `product_id` its dry run prints, run from a release build), whose
+   coordinator grants each trial's launch on its private endpoint. The eval
+   recipe with its F5 binds serves dsh only until the operator rules on
+   read-only claude and codex auth. No
    smaller single-trial paid entry point exists; choosing the product is the
    operator's.
 4. Check the committed leaf: `usage.json` is bound in `metadata.json`, its
@@ -1180,7 +1191,7 @@ authorized by the `product_id` its dry run prints (`wrappers.md`).
   challenge; it does not measure Swarmail inbound reply transport (#160).
 - Tokens, turns and cost of a direct launch are not in the rows. They come
   from brokkr's journal, joined by trial id (next section). A nested
-  (`--via-brokkr`) trial's come from its harness-authored usage companion in
+  (`--via-brokkr`) trial's figures come from its harness-authored usage companion in
   the retained leaf instead, never from the row or the journal. No authenticated session has run through that route yet: that is
   the operator's step above, and the #151 baseline's tokens per success waits
   for it.

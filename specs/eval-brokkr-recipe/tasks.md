@@ -365,24 +365,32 @@ Spec, plan and tasks in `specs/nested-driver-usage/`; proposed 0138. Part of
   lifted for the three amended `*_via_brokkr` profiles only.
 - [x] **T51 The release pin** (v0.15.2 Linux x86_64 executable by path and
   SHA-256, traced to its archive's `SHA256SUMS` line), apart from the engine's;
-  production admission accepts the release executable's digest alone.
-  Executed offline for the stand-in; the release binary itself only in the
-  opt-in `real_driver.rs`.
+  a release build admits the release executable's digest alone, checked on
+  every nested route (host grant and recipe), and no environment value widens
+  it. Debug builds also admit the stand-in built beside them and spend only
+  synthetic credentials (`paid_seam_build_refused`); unit-tested. Executed
+  offline for the stand-in; the release binary itself only in the opt-in
+  `real_driver.rs`.
 - [x] **T52 Typed nested usage** (`evals/src/usage.rs`): one session per
   expected agent in the trial leaf's usage companion `usage.json`, bound in
   `metadata.json` (proposed 0138); the schema-2 row is unchanged; `report
   --usage-from` takes tokens per success from the companions alone (0136).
   Executed offline, including a three-agent `inbox-isolation` trial; no
   authenticated session yet (T55).
-- [x] **T53 F5 projections, environment and binds** per family: projections
-  proven with a protocol stand-in and, opt-in, through the real v0.15.2 driver
-  with inert CLIs (host route; DNS readability only, no write claim from file
-  permissions). The recipe's read-only binds are declared in
-  `.brokkr/recipes/eval/bundle.json` and verified by the wrapper from its
-  mount table (unit-tested). The write rejection is proven by a real
-  bubblewrap mount in the host-gated `mount_proof.rs`, which the dispatcher
-  runs; a boxed seat cannot. Codex's inner class is `read-only` or
-  `workspace-write`, and `danger-full-access` is refused.
+- [x] **T53 F5 projections, environment and binds** per family. What is
+  proven: projections with a protocol stand-in; the real v0.15.2 driver
+  launching inert CLIs on the **host route** (opt-in `real_driver.rs`, run by
+  the dispatcher on 2026-11-24 at a73ac17a); and the **mount primitive**, a
+  read-only bubblewrap bind rejecting a write with `binds::verify` passing in
+  its namespace (host-gated `mount_proof.rs`, same day). The recipe's
+  fourteen read-only binds and the dsh overlay are declared in
+  `.brokkr/recipes/eval/bundle.json`, and the wrapper verifies them from its
+  own mount table (unit-tested). What is **not yet** proven: brokkr applying
+  the bundle's binds to a recipe seat, and the release driver launching
+  inside one; and any paid claude or codex session under read-only auth,
+  which the wrapper refuses (`recipe_auth_unruled`) pending an operator
+  ruling. Codex's inner class is `read-only` or `workspace-write`, recorded
+  per row in the descriptor, and `danger-full-access` is refused.
 - [x] **T54 `journal-facts.sh`** on the real `export --run` NDJSON shape.
 - [ ] **T55 Operator: one authenticated finished-path session per family**
   (`evals/README.md`, "The authenticated finished-path session, per family"),

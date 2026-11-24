@@ -380,26 +380,63 @@ can write it.
 | killed at the trial deadline | `ready` only | graded as usual; that session's usage `receipt_missing` (no receipt is written on termination) |
 
 The runner gives every nested trial the launch pipe (`--launch-report`, and
-`--paid-launch` as before on a paid slot), one per agent.
+`--paid-launch` as before on a paid slot), one per agent. Both switches are
+the runner's: a caller's agent argv that carries either, as its own word or
+as `--switch=value`, refuses `agent_argv_reserved_flag` before anything
+starts, whether it comes after `trial --`, from a matrix agents file or in a
+request handed to `validate_request`.
 
-**Fail closed (the operator's 2026-11-24 ruling).** A nested selection is
-paid, so the wrapper launches the driver only with a verified binding, checked
-before any credential is read or anything spawns:
+**Fail closed (the operator's 2026-11-24 ruling; the panel's holds on
+a73ac17a).** Every paid (version-2) launch, direct or nested, runs only on a
+verified binding, checked before any credential is read or anything spawns:
 
-- the host baseline's paid-launch binding (`--paid-launch`, which the
-  coordinator derives from the authorized product; its admission requires the
-  release executable's digest, `driver_release_unrecognized` otherwise), or
-- the recipe route: no binding, but this process's own mount table
+- **the host baseline's grant.** `--paid-launch` is a request, never a
+  permission: its identity is a pure function of the selection, so anyone
+  can compute it. The baseline coordinator, under its product lock, gives
+  each paid slot's worker one private `SOCK_SEQPACKET` endpoint per expected
+  agent (descriptors 4 and up; the worker hands agent `i` its own at fd 4).
+  The wrapper sends its binding and launches only on the coordinator's
+  `granted`, and both sides read the kernel's `SCM_CREDENTIALS`: the reply
+  must come from an ancestor of the wrapper running this very executable,
+  the request from a descendant of the coordinator's own worker running it.
+  Each endpoint answers once; a forged identity, a caller-made socket, a
+  replay or a coordinator that is gone refuses (`paid_grant_channel_missing`,
+  `paid_grant_unauthenticated`, `paid_grant_refused`,
+  `paid_grant_channel_closed`). A worker given a paid context without its
+  endpoints refuses before any server starts. The endpoint is
+  close-on-exec in every process, so no CLI or driver inherits it. The peer
+  evidence is Linux's; elsewhere a paid binding refuses
+  (`paid_grant_unsupported`).
+- **the recipe route.** No binding, and this process's own mount table
   (`/proc/self/mountinfo`) shows the four DNS inputs and the selection, the
-  driver, the CLI program (and dsh's package root) and the credential file
-  under read-only mounts with no writable mount stacked inside, and the
-  driver is the release executable.
+  CLI program (dsh's package root), the driver and the credential file under
+  read-only mounts with no writable mount stacked inside. A missing source,
+  the systemd resolver directory included, refuses `recipe_bind_missing`.
+  Claude's and codex's auth are bound read-only there, which no session has
+  been shown to run under (the 2026-11-23 smoke needed `~/.claude`,
+  `~/.claude.json` and `~/.codex` writable), so a paid claude or codex launch
+  on the recipe route refuses `paid_unbound: recipe_auth_unruled` until the
+  operator rules; dsh proves the mount table.
 
-Anything else refuses `nested_paid_unbound: recipe_bind_writable` (or
-`_missing`, `_unverifiable`) or `driver_release_unrecognized`, so a bare
-`trial` or wrapper with a nested selection never starts the driver.
-`matrix --brokkr` with any paid agent refuses `brokkr_paid_unbound` before a
-slot unless `.brokkr/recipes/eval/bundle.json` declares every F5 bind below. `swarmail-evals trial` accepts
+On both routes a nested driver must be the release executable
+(`driver_release_unrecognized` otherwise). Anything else refuses
+`paid_unbound: recipe_bind_writable` (or `_missing`, `_unverifiable`,
+`recipe_auth_unruled`), so a bare `trial` or wrapper with a paid selection
+never starts the CLI or the driver. `matrix --brokkr` decodes every agents-file
+entry before dispatch, from the selection its wrapper would read (never the
+profile alone): any paid entry, including one declared by argv alone behind a
+free first slot, refuses `brokkr_paid_unbound` before a slot unless
+`.brokkr/recipes/eval/bundle.json` declares every F5 bind below.
+
+**Release pin and test equipment.** A release build of `swarmail-evals`
+trusts the published driver digest alone, whatever the environment says. A
+debug build (the profile the test suites build) also trusts the offline
+stand-in built beside it (`paid-cli-standin`), has the hidden
+`grant-standin` subcommand that serves the coordinator's endpoint code to the
+command it launches, and takes a shorter exit grace from
+`EVAL_TEST_DRIVER_EXIT_GRACE_MS`. Such a build spends nothing but synthetic
+credentials: a paid launch whose credential file holds no `"SYNTHETIC-` value
+refuses `paid_seam_build_refused`, on every route and with the genuine pin. `swarmail-evals trial` accepts
 `--via-brokkr` only beside an amended `*_via_brokkr` profile. The superseded
 ones (`claude_2_1_310_via_brokkr`, `codex_0_164_0_via_brokkr`,
 `dsh_0_1_5_rc_1_via_brokkr`) still refuse `driver_contract_unknown`. The flag
@@ -484,12 +521,10 @@ against a forge-driver/v1 stand-in (`fake_driver.py` behind the native
 forwarder, so it passes the pin), for all three families: the eight keys, the
 flags, the projections, the usage, every ending above, the pin refusals, and a
 nested agent through `swarmail-evals trial` whose row carries its usage.
-A three-agent `trial --task inbox-isolation` under a coordinator's binding
-commits all three sessions' companion and is read back by
-`report --usage-from`. The stand-in driver is admitted by the coordinator only
-through the test-equipment digest `EVAL_TEST_STANDIN_DRIVER_SHA256`, read in
-the coordinator's own process; an agent's environment is rebuilt from nothing,
-so the recipe route admits the release digest alone.
+A three-agent `trial --task inbox-isolation` under the coordinator's grant
+endpoints (`grant-standin`) commits all three sessions' companion and is read
+back by `report --usage-from`; without the endpoints the same worker refuses.
+The stand-in driver is admitted only by debug builds, as above.
 `real_driver.rs` runs the staged release itself over inert stand-in CLIs on
 the host route. It is ignored unless `EVAL_BROKKR_DRIVER` names the extracted
 v0.15.2 executable (its digest is asserted):
@@ -540,12 +575,24 @@ alone. The `trial` seat declares, besides `network: true`:
 | `~/.local/share/claude` | `ro` | Claude Code's native install tree |
 | `~/.volta` | `ro` | codex-cli behind Volta, and the pinned Node runtime |
 | `~/.claude`, `~/.codex` | `ro` | Claude's and Codex's source auth and config |
+| `~/.local/bin` | `ro` | Claude Code's launcher |
+| `~/.claude.json` | `ro` | Claude Code's user configuration |
+| `~/.dsh/spark.env` | `ro` | dsh's Spark route environment |
 | `~/.dsh/profiles` | `overlay` | dsh's profiles: readable, writes stay in the seat |
 
 Keep the selection, the driver, the CLIs and dsh's package under these trees:
 the wrapper refuses any of them outside a read-only mount. dsh's route key
 lives in the selection's credential file. `matrix --brokkr` refuses a paid
 agent unless the bundle declares every entry with its mode
-(`evals/src/binds.rs`), and the wrapper re-proves the effect in its own mount
-table. Which of these paths exist on a given host is the dispatcher's to
-check before a paid recipe run; the free controls read none of them.
+(`evals/src/binds.rs`), and a paid dsh wrapper re-proves the effect in its own
+mount table; a paid claude or codex wrapper refuses there
+(`recipe_auth_unruled`). The 2026-11-23 smoke needed `~/.claude`,
+`~/.claude.json` and `~/.codex` read-write; the operator approved read-only
+binds only, so they stay `ro`, and **a paid claude or codex session on the
+recipe route under read-only auth is unproven and needs an operator ruling
+before it runs.** All fourteen sources exist on the operator's host as of
+2026-11-24 (the dispatcher's host proofs); a source missing inside a seat
+refuses with a typed reason (`recipe_bind_missing`), never silently drops.
+Whether brokkr applies these binds to a recipe seat, and the release driver
+launching inside one, is not yet observed: the host proofs cover the host
+route's real driver and the mount primitive only.
