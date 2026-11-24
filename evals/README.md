@@ -176,7 +176,7 @@ $E baseline --tier deliverability --config /private/wrappers.json --output /priv
   The proofs run fake direct CLIs offline (`tests/paid_baseline.rs`). The
   authenticated six-model smoke remains the operator's.
 
-## MCP client matrix (#392, proposed 0138)
+## MCP client matrix (#392, proposed 0140)
 
 **Status, 2026-11-24: the runner is proven only with an offline stand-in;
 no client receipt exists.** `client-matrix run` drives an installed MCP

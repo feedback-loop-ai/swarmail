@@ -6,7 +6,7 @@ Build on the landed #399 checklist, directory scanner and documentation tests. T
 
 Adopt simplicity's one Inspector route, shared reader and existing SMTP delivery helper. Reject a general client adapter registry. Supporting another command grammar would require a separate mapping from client-visible results to evidence. Keep Claude Code and Codex on the documented approval-gated routes and Desktop on its interactive route.
 
-Rule for simplicity on one process per CLI method. Robustness's single-session rule would make a one-method CLI unable to earn a green receipt even when all five invocations worked. Accept the narrower evidence about continuity, label it in the handbook, and keep the one-session UI procedure. Adopt robustness's requirement to bind the handshake, actual method and client-consumed result to the same invocation. That costs a bounded observer and CLI output decoding. Exit status alone misses a successful process that printed a tool error. [Proposed evidence rule](../../docs/decisions/0138-inspector-cli-evidence.md)
+Rule for simplicity on one process per CLI method. Robustness's single-session rule would make a one-method CLI unable to earn a green receipt even when all five invocations worked. Accept the narrower evidence about continuity, label it in the handbook, and keep the one-session UI procedure. Adopt robustness's requirement to bind the handshake, actual method and client-consumed result to the same invocation. That costs a bounded observer and CLI output decoding. Exit status alone misses a successful process that printed a tool error. [Proposed evidence rule](../../docs/decisions/0140-inspector-cli-evidence.md)
 
 ## Project structure, data model and contracts
 

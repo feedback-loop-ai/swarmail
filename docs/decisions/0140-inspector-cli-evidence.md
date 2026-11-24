@@ -1,4 +1,4 @@
-# 0138 — Record Inspector CLI observations across method invocations
+# 0140 — Record Inspector CLI observations across method invocations
 
 - **Status:** proposed
 - **Date:** 2026-11-24

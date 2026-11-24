@@ -254,7 +254,7 @@ Part of #392. The sections above stay as recorded. The MCP Inspector's
 checklist gained a headless CLI route: `swarmail-evals client-matrix run`
 drives an installed Inspector CLI through the six steps against a fresh
 memory-only server and writes a receipt draft, under proposed
-[0138](../../docs/decisions/0138-inspector-cli-evidence.md)
+[0140](../../docs/decisions/0140-inspector-cli-evidence.md)
 ([checklist](../../docs/agents/client-matrix.md#headless-the-inspector-cli-through-the-runner)).
 Receipts for Claude Code, Codex, MCP Inspector and Claude Desktop remain
 operator-owned and owed. The runner has run only against an offline stand-in,

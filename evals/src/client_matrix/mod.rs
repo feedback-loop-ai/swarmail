@@ -1,5 +1,5 @@
 //! The MCP client matrix's scripted route (issue #392, proposed decision
-//! 0138): `swarmail-evals client-matrix run` drives one installed MCP
+//! 0140): `swarmail-evals client-matrix run` drives one installed MCP
 //! Inspector CLI through the checklist of `docs/agents/client-matrix.md`
 //! against one fresh, memory-only Swarmail, and writes a receipt draft the
 //! shared checker accepts. `client-matrix validate` checks receipt files.

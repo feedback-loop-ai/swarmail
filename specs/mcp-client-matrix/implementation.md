@@ -79,7 +79,7 @@ CI owns macOS, the native-tls absence proof, Helm, Docker smoke, RustSec and the
 
 Part of #392 (epic #164). Run `issue-392-record-the-mcp-client--c566e8ab`,
 implement seat. The sections above stay as recorded; their "Not built" item
-is built here under proposed [0138](../../docs/decisions/0138-inspector-cli-evidence.md).
+is built here under proposed [0140](../../docs/decisions/0140-inspector-cli-evidence.md).
 
 ### What landed
 
@@ -133,11 +133,11 @@ is built here under proposed [0138](../../docs/decisions/0138-inspector-cli-evid
   - no matrix server left alive at the end.
 - **Docs.** `docs/agents/client-matrix.md` has the headless Inspector route:
   the invocation, the five appended argument sets, what a pass requires and
-  the narrower evidence under 0138. The UI route is unchanged. The receipt
+  the narrower evidence under 0140. The UI route is unchanged. The receipt
   README, `docs/guide/mcp.md`, the negotiation implementation record,
   `docs/evals/README.md` and a new `evals/README.md` section carry the dated
   2026-11-24 status. Every receipt is still owed. `docs/decisions/README.md`
-  gained 0138's missing index row (`store_contract_docs` refused the design
+  gained 0140's missing index row (`store_contract_docs` refused the design
   commit without it). Decisions 0079 and 0080 are not edited.
 
 ### Not claimed
@@ -176,7 +176,7 @@ All were run in the foreground on the shared host.
 - `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets
   --locked -- -D warnings`: clean.
 - `cargo test --workspace --locked`: no failures (4 m 7 s). The first run
-  found 0138's missing index row, which is fixed above.
+  found 0140's missing index row, which is fixed above.
 - `cargo build --locked --bin swarmail`: built.
 - The evals fmt and clippy: clean. The evals `cargo test --locked
   --no-fail-fast` against that binary: no failures (24 m 33 s).

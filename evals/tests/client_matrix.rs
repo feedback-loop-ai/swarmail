@@ -1,4 +1,4 @@
-//! The client matrix runner's offline proof (issue #392, proposed 0138):
+//! The client matrix runner's offline proof (issue #392, proposed 0140):
 //! the public `client-matrix run` command drives the Inspector-shaped
 //! stand-in (`tests/standin/inspector_cli.rs`), which speaks real MCP to
 //! the candidate Swarmail binary, and the drafts it writes are read back

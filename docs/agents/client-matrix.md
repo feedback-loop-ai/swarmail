@@ -247,7 +247,7 @@ The UI route needs a person and keeps the one-session rule of § 2.
 #### Headless: the Inspector CLI through the runner
 
 The Inspector's CLI mode runs one method per launch. Proposed decision
-[0138](../decisions/0138-inspector-cli-evidence.md) lets one set span five
+[0140](../decisions/0140-inspector-cli-evidence.md) lets one set span five
 launches against one fresh server and one delivery, each launch with its
 own `initialize`. A receipt made this way (`"mode": "headless"`) shows that
 each method worked in a fresh session at the first launch's revision. It

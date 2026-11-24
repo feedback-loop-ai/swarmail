@@ -2,9 +2,9 @@
 
 Part of #392, epic #164. An operator needs to know which installed clients can discover and use Swarmail's tools on a particular main build. A local driver proves server behavior. Only an observation through the named client can establish what that client received. This delivery adds an offline Inspector CLI runner and shares the receipt checker with the standalone eval harness. The four live runs belong to the operator. The compatibility criterion requires green recorded results for all four clients. [Negotiation ruling](../../docs/decisions/0079-mcp-version-negotiation.md) · [Source reconciliation](../../docs/decisions/0080-mcp-source-reconciliation.md)
 
-Decision: 0138
+Decision: 0140
 
-The proposed Inspector CLI evidence rule specifies what a headless Inspector receipt attests. [Proposed decision 0138](../../docs/decisions/0138-inspector-cli-evidence.md)
+The proposed Inspector CLI evidence rule specifies what a headless Inspector receipt attests. [Proposed decision 0140](../../docs/decisions/0140-inspector-cli-evidence.md)
 
 ## Acceptance Criteria
 

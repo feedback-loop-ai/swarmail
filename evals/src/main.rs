@@ -51,7 +51,7 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// The MCP client matrix (issue #392, proposed 0138): `run` drives an
+    /// The MCP client matrix (issue #392, proposed 0140): `run` drives an
     /// installed MCP Inspector CLI through docs/agents/client-matrix.md's
     /// checklist against a fresh Swarmail and writes a receipt draft;
     /// `validate` checks receipt files. Downloads nothing.

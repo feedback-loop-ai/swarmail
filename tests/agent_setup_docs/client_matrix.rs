@@ -173,7 +173,7 @@ fn client_matrix_the_inspector_cli_route_is_documented_with_its_limits() {
     let guide = doc(MATRIX);
     for needle in [
         "#### Headless: the Inspector CLI through the runner",
-        "(../decisions/0138-inspector-cli-evidence.md)",
+        "(../decisions/0140-inspector-cli-evidence.md)",
         "`swarmail-evals client-matrix run`",
         "`--cli <observer URL> --transport http`",
         "| `list_tools` | `--method tools/list` |",

@@ -1,4 +1,4 @@
-//! The evidence judge's portable proofs (issue #392, proposed 0138): each
+//! The evidence judge's portable proofs (issue #392, proposed 0140): each
 //! launch is built from synthetic exchanges in the shape Swarmail answers,
 //! so every refusal is reached without a socket, a process or a wait.
 

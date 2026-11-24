@@ -1,5 +1,5 @@
 //! What one observed client launch proves (issue #392, proposed decision
-//! 0138): the pure judge of the Inspector CLI route. Each launch is judged
+//! 0140): the pure judge of the Inspector CLI route. Each launch is judged
 //! from its own observer's exchanges, its own handshake and the result the
 //! client printed; nothing here reads a socket or a clock.
 //!
