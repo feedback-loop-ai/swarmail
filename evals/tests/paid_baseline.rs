@@ -1350,6 +1350,11 @@ fn a_nested_baseline_reports_its_companions_and_resume_refuses_what_they_contrad
             usage["cache_read_tokens"],
             json!({"status": "present", "value": 5 * f["cache_read_tokens"].as_u64().unwrap()})
         );
+        // Every stand-in trial fails: per-success is typed, never zero.
+        assert_eq!(
+            usage["tokens_per_success"],
+            json!({"status": "unavailable", "reason": "no_passes"})
+        );
     }
     // The printed command, run as printed, reproduces the same report.
     let replay = cli().args(&argv[1..]).output().unwrap();
@@ -1390,6 +1395,9 @@ fn a_nested_baseline_reports_its_companions_and_resume_refuses_what_they_contrad
     meta["usage"]["sha256"] = json!(swarmail_evals::provenance::sha256(&forged));
     std::fs::write(b.join("usage.json"), &forged).unwrap();
     std::fs::write(b.join("metadata.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+    // Each leaf still verifies alone: only the shared owner set refuses.
+    artifacts::trial(a).unwrap();
+    artifacts::trial(b).unwrap();
     std::fs::remove_file(p.output.join("report.json")).unwrap();
     let n = std::fs::read(p.dir.path().join("driver-record.json")).unwrap();
     let (code, _, err) = run(&mut p.authorized(&["--resume"]));
@@ -1426,6 +1434,45 @@ fn a_nested_baseline_reports_its_companions_and_resume_refuses_what_they_contrad
     let (code, _, err) = run(&mut p.authorized(&["--resume"]));
     assert_eq!(code, Some(1), "{err}");
     std::fs::remove_file(p.output.join("report.json")).unwrap();
+    // The other side: the selection stays fixed and one retained codex row
+    // records the other admitted class, its digest repaired in the marker.
+    let leaf = leaves
+        .iter()
+        .find(|l| {
+            read(l, "result.json")["agent"]
+                .as_str()
+                .unwrap()
+                .starts_with("codex-")
+        })
+        .unwrap();
+    let kept = (
+        std::fs::read(leaf.join("result.json")).unwrap(),
+        std::fs::read(leaf.join("metadata.json")).unwrap(),
+    );
+    let text = String::from_utf8(kept.0.clone()).unwrap();
+    assert!(text.contains("workspace-write sandbox (driver-selected)"));
+    let swapped = text
+        .replace(
+            "workspace-write sandbox (driver-selected)",
+            "read-only sandbox (driver-selected)",
+        )
+        .into_bytes();
+    let mut meta = read(leaf, "metadata.json");
+    meta["result"]["length"] = json!(swapped.len());
+    meta["result"]["sha256"] = json!(swarmail_evals::provenance::sha256(&swapped));
+    std::fs::write(leaf.join("result.json"), &swapped).unwrap();
+    std::fs::write(
+        leaf.join("metadata.json"),
+        serde_json::to_vec(&meta).unwrap(),
+    )
+    .unwrap();
+    artifacts::trial(leaf).unwrap();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("baseline_provenance_invalid"), "{err}");
+    assert!(!p.output.join("report.json").exists());
+    std::fs::write(leaf.join("result.json"), &kept.0).unwrap();
+    std::fs::write(leaf.join("metadata.json"), &kept.1).unwrap();
     // Restored, the complete product reopens to its own bytes, having
     // launched nothing in any of the refusals above.
     p.select(|_| {});
