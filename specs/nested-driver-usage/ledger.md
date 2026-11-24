@@ -410,3 +410,26 @@ cargo test --locked --test paid_baseline -- --ignored a_nested_baseline
 
 Added CI time: about 0.1 s (the new wrapper-level test, and the seam
 table's 16 cases).
+
+### Gates run here (Linux, at 3ad93a6f's tree; the commit after it changes only this ledger and tasks.md)
+
+- **Root**: `fmt --check`; `clippy --workspace --all-targets --locked -D
+  warnings`; `cargo test --workspace --locked` (exit 0, every result line
+  0 failed, about 2 min); `cargo build --locked --bin swarmail`;
+  `coverage-gate.sh` (exact 100/100/100, 6 min 29 s); `coverage-gate.sh
+  selftest` (pass); `publish-guard-test.sh` (OK); `seal-branch-test.sh`
+  (7 cases, 10 mutants); `cargo deny check licenses` (ok). Root `src/` is
+  untouched.
+- **Evals**: `fmt --check`; `clippy --all-targets --locked -D warnings`
+  (Linux, and the aarch64-apple-darwin type-check with stub `cc`/`ar`,
+  which does not link or run); `SWARMAIL_BIN=<root target/debug/swarmail>
+  cargo test --locked`, the full suite once: 664 passed, 0 failed, 11
+  ignored, 1502 s wall.
+- **Host-gated, run here**: `release_standin_is_not_admitted` in the
+  release profile (1 passed, 34 s including the build); `a_nested_baseline`
+  (1 passed, 104 s). The mount and real-driver proofs could not run here
+  (no user namespaces in this seat; no brokkr 0.15.2 binary).
+- **Not run here**: the pinned brokkr 0.12.0 recipe compile (no brokkr
+  binary on this host; this attempt touched no `.brokkr/` path, and CI's
+  `brokkr bundle (pinned)` job and the verify seat run it). macOS
+  execution is CI's.
