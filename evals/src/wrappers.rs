@@ -2378,7 +2378,27 @@ mod tests {
             json!({"version": 1, "families": {"claude": family, "codex": family, "dsh": family}}),
         );
         let v2 = write("v2.json", json!({"version": 2, "families": {}}));
+        // A valid paid selection is detected as one, not merely refused as
+        // unreadable (panel low 6 on 6074b83e).
+        let valid = write(
+            "valid.json",
+            json!({"version": 2, "families": {"claude": {
+                "executable": "/bin/true",
+                "credential_file": "/nonexistent",
+                "profile": "claude_2_1_329",
+                "cli_version": crate::provenance::WrapperProfile::Claude2_1_329.cli_version(),
+                "cli_sha256": "0".repeat(64),
+                "auth_shape": auth_shape("claude"),
+            }}}),
+        );
+        assert!(selection(&valid, "claude").unwrap().paid.is_some());
         let argv = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        assert!(argv_selects_paid(&argv(&[
+            "/x",
+            "agent-claude",
+            "--config",
+            valid.to_str().unwrap()
+        ])));
         let v1s = v1.to_str().unwrap();
         let v2s = v2.to_str().unwrap();
         // Not a wrapper of this executable: no paid decision to make.

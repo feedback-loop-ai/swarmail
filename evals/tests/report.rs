@@ -2029,7 +2029,17 @@ fn brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline() {
     let selection = dir.path().join("paid").join("selection.json");
     std::fs::write(
         &selection,
-        json!({"version": 2, "families": {}}).to_string(),
+        // A valid paid selection (panel low 6 on 6074b83e): detection, not
+        // an unreadable file's fail-closed refusal.
+        json!({"version": 2, "families": {"claude": {
+            "executable": "/bin/true",
+            "credential_file": "/nonexistent",
+            "profile": "claude_2_1_329",
+            "cli_version": swarmail_evals::provenance::WrapperProfile::Claude2_1_329.cli_version(),
+            "cli_sha256": "0".repeat(64),
+            "auth_shape": swarmail_evals::wrappers::auth_shape("claude"),
+        }}})
+        .to_string(),
     )
     .unwrap();
     std::fs::set_permissions(&selection, std::fs::Permissions::from_mode(0o600)).unwrap();
