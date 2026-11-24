@@ -625,3 +625,48 @@ sessions), so wall times below are noisy.
   and invalid-binding cases keep theirs, and expired fixtures stay expired.
 - **Evidence.** Same wrappers run as finding 1: 33 passed, 152.7 s. Added
   time: 0 s (no new launch or wait).
+
+### Finding 3 — report admission (`brokkr_mode_commits_a_harness_error_row_over_a_passing_state`, macOS)
+
+- **Shared state: the fixed trial lock and one agents file.**
+  `brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline` holds
+  no `trial_scope`. Its two `agents_file` calls both wrote
+  `<dir>/paid/agents.json`, so the argv-only fixture (oracle first, then a
+  direct paid wrapper) replaced the profile declaration before the "bound"
+  probe ran. That probe, in stand-in mode `ok` on the bound realm, passed the
+  preflight and dispatched the free oracle slot; the stand-in ran the
+  recipe's real `trial.sh`, whose trial took
+  `/tmp/swarmail-evals-<uid>/trial.lock` (`admission.rs`: a fixed root that
+  ignores HOME and TMPDIR, so macOS's `/var/folders` alias does not separate
+  it). `agreeing_case` holds the tests' cooperating scope
+  (`/tmp/swarmail-evals-tests-<uid>.lock`), not that lock; its oracle slot
+  overlapping the stray trial got `concurrent_trials_refused` (accepted
+  0076, production behaving as ruled), the matrix stopped and filled the
+  unstarted suffix — three rows, one logged request: the `left: 1,
+  right: 3` failure. Linux can interleave the same way; macOS's slower
+  runner made the window wider.
+- **Fix (test-only).** The argv-only declaration gets its own directory and
+  the test asserts the two paths differ and that `paid` still names
+  `claude-nested`. All three paid-preflight probes run the stand-in's
+  `no-row` mode, which logs the dispatch and exits 3 before `trial.sh` on
+  either OS, so none can take the trial lock even if a negative control
+  regresses; each probe has its own request log. The probes now assert:
+  each unbound declaration — exit 2, empty stdout, `brokkr_paid_unbound`,
+  zero requests, no artifact root; the bound profile — exactly one request
+  and `trial_row_missing`.
+- **A latent vacuity, found while doing so.** Even with the right file, the
+  bound probe never dispatched: its argv `/nonexistent/agent` refused as
+  `agent_program_unavailable`, and the old assertion (only "no
+  `brokkr_paid_unbound`") passed anyway. The declaration now names
+  `common::TRUE_PROGRAM`, which the no-row stand-in never runs, so the
+  control proves dispatch. The unbound refusals are unchanged.
+- **Audit.** Every other dispatching `matrix` call in `tests/report.rs`
+  holds `trial_scope` (`agreeing_case`, `defect_case`, the signal cases via
+  their callers, the overlap proof); the remaining unscoped calls in this
+  test are preflight refusals (exit 2, no rows) that never dispatch.
+  `sequential_matrix_refuses_overlap_and_unsupported_concurrency` still
+  passes.
+- **Evidence.** `cargo test --locked --test report` (default threading,
+  load 12–20): 44 passed, 153.7 s. Added time: the bound probe now stops
+  at `no-row` instead of running an oracle trial, so the test is faster;
+  net under 0 s.

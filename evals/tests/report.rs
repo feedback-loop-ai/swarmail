@@ -2003,7 +2003,9 @@ fn brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline() {
     std::fs::create_dir(dir.path().join("paid")).unwrap();
     let paid = agents_file(
         &dir.path().join("paid"),
-        json!([{"label": "claude-nested", "argv": ["/nonexistent/agent"], "model": "claude-sonnet-5-5", "wrapper_profile": "claude_2_1_329_via_brokkr"}]),
+        // An available program, so the bound control below reaches dispatch;
+        // the no-row stand-in never runs it.
+        json!([{"label": "claude-nested", "argv": [common::TRUE_PROGRAM], "model": "claude-sonnet-5-5", "wrapper_profile": "claude_2_1_329_via_brokkr"}]),
     );
     let unbound = dir.path().join("unbound");
     let recipe = unbound.join(".brokkr/recipes/eval");
@@ -2014,13 +2016,24 @@ fn brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline() {
     .unwrap();
     bundle["seats"]["trial"]["hands"]["binds"] = json!([]);
     std::fs::write(recipe.join("bundle.json"), bundle.to_string()).unwrap();
-    let paid_matrix = |realm: &std::path::Path| {
-        let mut cmd = brokkr_matrix("ok", realm);
-        cmd.args(["--tasks", "signup", "--agents", &paid, "--trials", "1"])
+    // Each preflight probe runs the no-row stand-in, which logs its dispatch
+    // and exits before the recipe's trial.sh: none of them can take the
+    // shared trial lock outside `trial_scope` (the macOS failure on
+    // 8359e879, where the bound probe ran a real oracle trial beside
+    // `agreeing_case`). Each probe has its own request log.
+    let probe = |agents: &str, realm: &std::path::Path, name: &str| {
+        let log = dir.path().join(format!("{name}.log"));
+        let mut cmd = brokkr_matrix("no-row", realm);
+        cmd.env("EVAL_TEST_BROKKR_LOG", &log)
+            .args(["--tasks", "signup", "--agents", agents, "--trials", "1"])
             .args(["--artifacts-dir", realm.join("artifacts").to_str().unwrap()]);
-        cmd.output().unwrap()
+        let out = cmd.output().unwrap();
+        let sent = std::fs::read_to_string(&log).map_or(0, |t| requests(&t));
+        (out, sent)
     };
-    refused(paid_matrix(&unbound), "brokkr_paid_unbound");
+    let (out, sent) = probe(&paid, &unbound, "profile-unbound");
+    refused(out, "brokkr_paid_unbound");
+    assert_eq!(sent, 0, "an unbound profile dispatches nothing");
     assert!(!unbound.join("artifacts").exists());
     // Hold 1 on a73ac17a: the selection decides, not the profile. A paid
     // version-2 wrapper declared by argv alone, behind a free first slot,
@@ -2043,24 +2056,40 @@ fn brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline() {
     )
     .unwrap();
     std::fs::set_permissions(&selection, std::fs::Permissions::from_mode(0o600)).unwrap();
+    // Its own file: written over `paid`, it made the bound probe below run
+    // this declaration's free oracle slot instead of the profile.
+    std::fs::create_dir(dir.path().join("argv-only")).unwrap();
     let argv_only = agents_file(
-        &dir.path().join("paid"),
+        &dir.path().join("argv-only"),
         json!([
             {"label": "oracle", "argv": []},
             {"label": "claude-direct", "argv": [common::exe(), "agent-claude", "--model", "claude-sonnet-5-5", format!("--config={}", selection.display())]},
         ]),
     );
-    let mut cmd = brokkr_matrix("ok", &unbound);
-    cmd.args(["--tasks", "signup", "--agents", &argv_only, "--trials", "1"])
-        .args([
-            "--artifacts-dir",
-            unbound.join("artifacts").to_str().unwrap(),
-        ]);
-    refused(cmd.output().unwrap(), "brokkr_paid_unbound");
+    assert_ne!(argv_only, paid);
+    let (out, sent) = probe(&argv_only, &unbound, "argv-unbound");
+    refused(out, "brokkr_paid_unbound");
+    assert_eq!(sent, 0, "an argv-only paid slot dispatches nothing");
     assert!(!unbound.join("artifacts").exists());
-    let bound = paid_matrix(&realm);
+    // The profile declaration is still the one `paid` names.
+    let declared: Value = serde_json::from_slice(&std::fs::read(&paid).unwrap()).unwrap();
+    assert_eq!(declared[0]["label"], "claude-nested");
+    // The bound control: the same declaration passes the preflight and is
+    // dispatched exactly once; the no-row stand-in then leaves no row.
+    let (bound, sent) = probe(&paid, &realm, "profile-bound");
     assert!(
         !stderr(&bound).contains("brokkr_paid_unbound"),
+        "{}",
+        stderr(&bound)
+    );
+    assert_eq!(
+        sent,
+        1,
+        "the bound profile is dispatched once: {}",
+        stderr(&bound)
+    );
+    assert!(
+        stderr(&bound).contains("trial_row_missing"),
         "{}",
         stderr(&bound)
     );
