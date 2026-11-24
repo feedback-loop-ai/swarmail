@@ -25,7 +25,7 @@ elif FAMILY == 'codex':
 else:
     config = [json.loads(line[2:]) for line in (home/'seat.yml').read_text().splitlines()]
     provider = config[1]['config']['provider']
-    key, token = ('DASHSCOPE_API_KEY',CANARY) if provider == 'dashscope' else ('SPARK_API_KEY','SPARK-CANARY')
+    key, token = ('DASHSCOPE_API_KEY',CANARY) if provider == 'dashscope' else ('SPARK_API_KEY','SYNTHETIC-SPARK-CANARY')
     assert env.pop(key) == token
     assert 'DASHSCOPE_API_KEY' not in env and 'SPARK_API_KEY' not in env
 assert CANARY not in json.dumps(args)

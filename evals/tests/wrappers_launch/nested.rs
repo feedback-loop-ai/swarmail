@@ -76,7 +76,7 @@ impl Nested {
         if self.family == "dsh" {
             replace_private(
                 &credential,
-                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":future},"SPARK_API_KEY":{"key":"SPARK-CANARY","valid_through":future}})
+                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":future},"SPARK_API_KEY":{"key":"SYNTHETIC-SPARK-CANARY","valid_through":future}})
                     .to_string()
                     .as_bytes(),
             );

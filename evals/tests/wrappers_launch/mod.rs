@@ -64,7 +64,7 @@ impl Case {
             "codex" => {
                 json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":CANARY,"access_token":CANARY,"refresh_token":"SOURCE-REFRESH-NEVER-FORWARDED","account_id":"synthetic-account"},"last_refresh":"2026-10-26T00:00:00Z"})
             }
-            _ => json!({"DASHSCOPE_API_KEY":CANARY,"SPARK_API_KEY":"SPARK-CANARY"}),
+            _ => json!({"DASHSCOPE_API_KEY":CANARY,"SPARK_API_KEY":"SYNTHETIC-SPARK-CANARY"}),
         };
         let credential = base.join("selected private.json");
         private(&credential, auth.to_string().as_bytes());
@@ -1276,6 +1276,79 @@ fn a_bare_paid_launch_refuses_unbound_on_every_platform() {
     }
 }
 
+/// The wrapper's wiring of the declared inventory (the panel's low on
+/// c93e3931): a dsh selection under a source HOME's
+/// `.config/swarmail-evals` makes the real wrapper resolve all thirteen
+/// read-only entries against that HOME. With one declared source (`~/.volta`)
+/// absent it refuses `recipe_bind_missing`; once every source exists, the
+/// host's own writable mounts refuse `recipe_bind_writable` instead. Both
+/// before any credential read or HOME write. The mount table is /proc's.
+/// An empty inventory turns the first refusal into `recipe_bind_writable`.
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[test]
+fn a_recipe_selection_reproves_every_declared_home_source() {
+    // A host without every DNS input refuses on that input first, which
+    // would hide the HOME inventory: the proof needs a host that has them
+    // (CI's runners and the operator's host do; a bare sandbox may not).
+    if !swarmail_evals::binds::DNS
+        .iter()
+        .all(|p| Path::new(p).exists())
+    {
+        eprintln!("skipped: this host lacks a DNS input the proof needs");
+        return;
+    }
+    let mut c = Case::new("dsh");
+    let script = native_standin(&c);
+    paid_selection(
+        &c,
+        "dsh",
+        &swarmail_evals::identity::file_hash(&script).unwrap(),
+    );
+    let source = c.root.path().join("source-home");
+    for d in [
+        "",
+        ".config",
+        ".config/swarmail-evals",
+        ".local",
+        ".local/share",
+        ".local/share/brokkr-0.15.2",
+        ".local/share/claude",
+        ".local/bin",
+        ".claude",
+        ".codex",
+        ".dsh",
+        ".dsh/profiles",
+    ] {
+        dir(&source.join(d));
+    }
+    private(&source.join(".claude.json"), b"{}");
+    private(&source.join(".dsh/spark.env"), b"");
+    let selection = source.join(".config/swarmail-evals/selection.json");
+    private(&selection, &std::fs::read(&c.manifest).unwrap());
+    c.manifest = selection;
+    let launch = |want: &str| {
+        let out = c
+            .command("dsh", "spark-glm/GLM-5.3-Flash-EXL3")
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{err}");
+        assert!(
+            err.contains(&format!("paid_unbound: {want}")),
+            "{want}: {err}"
+        );
+        assert!(!err.contains(CANARY));
+        assert!(!c.capture.exists());
+        assert!(std::fs::read_dir(&c.home).unwrap().next().is_none());
+    };
+    launch("recipe_bind_missing");
+    dir(&source.join(".volta"));
+    launch("recipe_bind_writable");
+}
+
 /// Proposed 0137 at the launch boundary: a version-2 selection recheck the
 /// pinned bytes immediately before exec, projects only the selected dsh
 /// route's attested key, and refuses an expired login or an absent family
@@ -1329,7 +1402,7 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
         if family == "dsh" {
             replace_private(
                 &credential,
-                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":future},"SPARK_API_KEY":{"key":"SPARK-CANARY","valid_through":future}})
+                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":future},"SPARK_API_KEY":{"key":"SYNTHETIC-SPARK-CANARY","valid_through":future}})
                     .to_string()
                     .as_bytes(),
             );
@@ -1353,9 +1426,9 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
         // the projection); an expired attestation refuses before exec.
         if family == "dsh" {
             let route = if model.starts_with("dashscope") {
-                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":1},"SPARK_API_KEY":{"key":"SPARK-CANARY","valid_through":future}})
+                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":1},"SPARK_API_KEY":{"key":"SYNTHETIC-SPARK-CANARY","valid_through":future}})
             } else {
-                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":future},"SPARK_API_KEY":{"key":"SPARK-CANARY","valid_through":1}})
+                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":future},"SPARK_API_KEY":{"key":"SYNTHETIC-SPARK-CANARY","valid_through":1}})
             };
             replace_private(&credential, route.to_string().as_bytes());
             refused(&c, &[], family, model, "private_credential_expired");
@@ -1449,7 +1522,14 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
     let credential = c.root.path().join("selected private.json");
     use base64::Engine as _;
     let e = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    let stale = format!("{}.{}.sig", e.encode("{}"), e.encode(r#"{"exp":1}"#));
+    // Synthetic equipment (its signature is the canary), so the seam lets
+    // it through to the expiry check it is here to prove.
+    let stale = format!(
+        "{}.{}.{}",
+        e.encode("{}"),
+        e.encode(r#"{"exp":1}"#),
+        e.encode(CANARY)
+    );
     replace_private(
         &credential,
         json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":CANARY,"access_token":stale,"refresh_token":"r","account_id":"a"},"last_refresh":"2026-11-22T00:00:00Z"})

@@ -447,26 +447,61 @@ fn standin_driver_admitted(_sha256: &str) -> bool {
 }
 /// Whether this build carries the stand-in seam above.
 pub const SEAM_BUILD: bool = cfg!(debug_assertions);
-/// The marker every offline credential fixture carries: a JSON string value
-/// that begins `SYNTHETIC-`. A seam-bearing build spends nothing else; a
-/// real login (a JWT, an `sk-` key, an OAuth token) never contains it.
-pub const SYNTHETIC_CREDENTIAL: &[u8] = b"\"SYNTHETIC-";
+/// The marker every offline credential fixture's authorizing value carries:
+/// the value begins `SYNTHETIC-`, or it is a JWT whose signature segment
+/// decodes to bytes that begin so (the codex fixture). A real login (an
+/// issuer-signed JWT, an `sk-` key, an OAuth token) never does.
+pub const SYNTHETIC_CREDENTIAL: &[u8] = b"SYNTHETIC-";
+/// Whether one authorizing value is offline equipment.
+fn synthetic_value(value: &str) -> bool {
+    use base64::Engine as _;
+    if value.as_bytes().starts_with(SYNTHETIC_CREDENTIAL) {
+        return true;
+    }
+    let parts: Vec<&str> = value.split('.').collect();
+    parts.len() == 3
+        && base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(parts[2])
+            .is_ok_and(|sig| sig.starts_with(SYNTHETIC_CREDENTIAL))
+}
+/// The JSON pointers of the values that authorize a spend, by
+/// [`credential_key`]: the bearer each CLI presents, any key that could
+/// stand in for it, and for dsh the one route's attested key.
+fn authorizing_fields(key: &str) -> &'static [&'static str] {
+    match key {
+        "claude" => &["/claudeAiOauth/accessToken"],
+        "codex" => &["/tokens/access_token", "/OPENAI_API_KEY"],
+        "dsh:dashscope" => &["/DASHSCOPE_API_KEY/key"],
+        "dsh:spark-glm" => &["/SPARK_API_KEY/key"],
+        _ => &[],
+    }
+}
 /// A build that carries the stand-in seam refuses a paid launch whose
-/// credential file is not offline equipment, before anything is spawned,
-/// on every route and with the genuine release pin too.
-fn seam_build_refuses_real_spend(credential: &Path, seam: bool) -> Result<(), String> {
+/// credential is not offline equipment, before anything is spawned, on
+/// every route and with the genuine release pin too. Only the family's
+/// authorizing fields decide (security low 2 on c93e3931): the marker in
+/// any other field (an id token, an account id, an extra key) admits
+/// nothing. Every authorizing field present must be synthetic, a `null`
+/// API key aside, and at least one must be.
+fn seam_build_refuses_real_spend(credential: &Path, key: &str, seam: bool) -> Result<(), String> {
     if !seam {
         return Ok(());
     }
     let bytes = private_bytes(credential)?;
-    if bytes
-        .windows(SYNTHETIC_CREDENTIAL.len())
-        .any(|w| w == SYNTHETIC_CREDENTIAL)
-    {
-        Ok(())
-    } else {
-        Err("paid_seam_build_refused".into())
+    let refused = || "paid_seam_build_refused".to_string();
+    let doc: Value = serde_json::from_slice(&bytes).map_err(|_| refused())?;
+    let mut seen = 0;
+    for field in authorizing_fields(key) {
+        match doc.pointer(field) {
+            None | Some(Value::Null) => {}
+            Some(Value::String(v)) if synthetic_value(v) => seen += 1,
+            Some(_) => return Err(refused()),
+        }
     }
+    if seen == 0 {
+        return Err(refused());
+    }
+    Ok(())
 }
 /// The effort words a nested claude or codex selection may name.
 pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
@@ -1534,7 +1569,11 @@ fn launch(
                     .map_err(|e| format!("paid_unbound: {e}"))?;
             }
         }
-        seam_build_refuses_real_spend(&selected.credential_file, SEAM_BUILD)?;
+        seam_build_refuses_real_spend(
+            &selected.credential_file,
+            &credential_key(harness, model),
+            SEAM_BUILD,
+        )?;
     }
     if let Some((driver, pin)) = nested {
         pin.check(driver)?;
@@ -2322,29 +2361,85 @@ mod tests {
         // A seam-bearing build spends synthetic equipment alone, whatever
         // the pin; a release build reads nothing here.
         let root = crate::runner::private_tempdir("seam-spend-").unwrap();
-        let real = root.path().join("real.json");
-        let fixture = root.path().join("fixture.json");
-        for (path, body) in [
+        use base64::Engine as _;
+        let e = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let fixture_jwt = format!(
+            "{}.{}.{}",
+            e.encode("{}"),
+            e.encode("{}"),
+            e.encode("SYNTHETIC-C")
+        );
+        let real_jwt = format!(
+            "{}.{}.{}",
+            e.encode("{}"),
+            e.encode("{}"),
+            e.encode([0x9a, 0x01])
+        );
+        let codex = |access: &str, api: Value| json!({"auth_mode":"chatgpt","OPENAI_API_KEY":api,"tokens":{"id_token":"SYNTHETIC-ID","access_token":access,"refresh_token":"SYNTHETIC-R","account_id":"SYNTHETIC-A"},"last_refresh":"2026-10-26T00:00:00Z"});
+        let dsh = |a: &str, b: &str| json!({"DASHSCOPE_API_KEY":{"key":a,"valid_through":1},"SPARK_API_KEY":{"key":b,"valid_through":1}});
+        let cases: Vec<(&str, Value, bool)> = vec![
             (
-                &real,
-                &br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-x"}}"#[..],
+                "claude",
+                json!({"claudeAiOauth":{"accessToken":"SYNTHETIC-X"}}),
+                true,
             ),
             (
-                &fixture,
-                &br#"{"claudeAiOauth":{"accessToken":"SYNTHETIC-X"}}"#[..],
+                "claude",
+                json!({"claudeAiOauth":{"accessToken":"sk-ant-oat01-x"}}),
+                false,
             ),
-        ] {
-            std::fs::write(path, body).unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            // The decoys: the marker beside, not in, the authorizing value.
+            (
+                "claude",
+                json!({"claudeAiOauth":{"accessToken":"sk-ant-oat01-x","scopes":["SYNTHETIC-S"]}}),
+                false,
+            ),
+            (
+                "claude",
+                json!({"claudeAiOauth":{"accessToken":"x SYNTHETIC-X"}}),
+                false,
+            ),
+            ("claude", json!({"claudeAiOauth":{"accessToken":7}}), false),
+            ("codex", codex("SYNTHETIC-C", Value::Null), true),
+            ("codex", codex(&fixture_jwt, Value::Null), true),
+            ("codex", codex(&real_jwt, Value::Null), false),
+            ("codex", codex("a.b!.c", Value::Null), false),
+            ("codex", codex("SYNTHETIC-C", json!("sk-real")), false),
+            ("dsh:dashscope", dsh("SYNTHETIC-D", "sk-real"), true),
+            ("dsh:spark-glm", dsh("SYNTHETIC-D", "sk-real"), false),
+            ("dsh:spark-glm", dsh("sk-real", "SYNTHETIC-S"), true),
+            ("dsh:dashscope", dsh("sk-real", "SYNTHETIC-S"), false),
+            // No authorizing field at all, or a family with none.
+            ("claude", json!({"note":"SYNTHETIC-X"}), false),
+            (
+                "other",
+                json!({"claudeAiOauth":{"accessToken":"SYNTHETIC-X"}}),
+                false,
+            ),
+        ];
+        let path = root.path().join("credential.json");
+        for (family, body, admitted) in &cases {
+            std::fs::write(&path, body.to_string()).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let want = if *admitted {
+                Ok(())
+            } else {
+                Err("paid_seam_build_refused".into())
+            };
+            assert_eq!(
+                seam_build_refuses_real_spend(&path, family, true),
+                want,
+                "{family} {body}"
+            );
+            assert_eq!(seam_build_refuses_real_spend(&path, family, false), Ok(()));
         }
+        std::fs::write(&path, b"not json").unwrap();
         assert_eq!(
-            seam_build_refuses_real_spend(&real, true),
+            seam_build_refuses_real_spend(&path, "claude", true),
             Err("paid_seam_build_refused".into())
         );
-        assert_eq!(seam_build_refuses_real_spend(&fixture, true), Ok(()));
-        assert_eq!(seam_build_refuses_real_spend(&real, false), Ok(()));
         assert_eq!(
-            seam_build_refuses_real_spend(&root.path().join("absent"), true),
+            seam_build_refuses_real_spend(&root.path().join("absent"), "claude", true),
             Err("private_path_unavailable".into())
         );
         // The launch check: the flag must name the pinned path, then the

@@ -144,14 +144,22 @@ pub fn verify(
     resolve: impl Fn(&Path) -> Option<PathBuf>,
 ) -> Result<(), String> {
     let table = mounts(mountinfo);
-    for source in DNS.iter().map(Path::new).chain(sources.iter().copied()) {
-        match resolve(source) {
-            Some(real) if protected(&table, &real) => {}
-            Some(_) => return Err("recipe_bind_writable".into()),
-            None => return Err("recipe_bind_missing".into()),
-        }
+    // Presence first, over every source, then protection: a missing
+    // declared source names itself even where an earlier input (a host's
+    // writable DNS file) would also refuse, so the wrapper's wiring of the
+    // HOME inventory is observable outside a recipe namespace.
+    let resolved = DNS
+        .iter()
+        .map(Path::new)
+        .chain(sources.iter().copied())
+        .map(&resolve)
+        .collect::<Option<Vec<_>>>()
+        .ok_or("recipe_bind_missing")?;
+    if resolved.iter().all(|real| protected(&table, real)) {
+        Ok(())
+    } else {
+        Err("recipe_bind_writable".into())
     }
-    Ok(())
 }
 
 /// The recipe seat's source HOME, read from where the operator's selection
