@@ -582,6 +582,14 @@ mod tests {
         let me = std::process::id() as libc::pid_t;
         let mut ends = endpoints(1).unwrap();
         let (coordinator, worker) = ends.pop().unwrap();
+        // Off the grant descriptors: tests in this process that run a
+        // wrapper's request would otherwise take a pair landing on fd 4.
+        let high = |fd: OwnedFd| {
+            let h = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 64) };
+            assert!(h >= 64);
+            unsafe { OwnedFd::from_raw_fd(h) }
+        };
+        let (coordinator, worker) = (high(coordinator), high(worker));
         // The creator is this process, live, running this executable; it
         // is not its own ancestor.
         assert_eq!(linux::peer(worker.as_raw_fd()).unwrap().pid, me);
@@ -608,15 +616,18 @@ mod tests {
         let (n, _) = linux::receive(worker.as_raw_fd(), &mut buf).unwrap();
         assert_eq!(&buf[..n], refused_packet(&"c".repeat(32)).as_bytes());
         assert!(!server.join().unwrap());
-        // A closed coordinator is an end of file, never a grant.
-        assert_eq!(
-            linux::queued(worker.as_raw_fd()),
-            Err("paid_grant_channel_closed")
-        );
+        // A closed coordinator is an end of file, never a grant. A fork in
+        // a parallel test may hold a copy of its end until its exec, so the
+        // end of file is awaited (bounded) before it is peeked.
+        linux::bound_wait(worker.as_raw_fd());
         let mut buf = [0u8; 16];
         assert_eq!(
             linux::receive(worker.as_raw_fd(), &mut buf).err(),
             Some("paid_grant_channel_closed")
+        );
+        assert_eq!(
+            linux::queued(worker.as_raw_fd()),
+            Err("paid_grant_channel_closed")
         );
         assert_eq!(linux::queued(-1), Err("paid_grant_channel_closed"));
         assert!(!linux::is_endpoint(-1));

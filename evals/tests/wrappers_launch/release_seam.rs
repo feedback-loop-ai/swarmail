@@ -13,18 +13,16 @@
 //! the debug-only `grant-standin` subcommand does not exist.
 use super::*;
 
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "bind ownership is read from /proc (Linux)"
-)]
 #[test]
 #[ignore = "host proof: run in the release profile (cargo test --release), outside CI"]
 fn release_standin_is_not_admitted() {
+    // Read at run time, so the profile that built this test decides.
+    let debug = std::hint::black_box(cfg!(debug_assertions));
     assert!(
-        !cfg!(debug_assertions),
+        !debug,
         "this proof means nothing in a debug build: run it with --release"
     );
-    assert!(!wrappers::SEAM_BUILD);
+    assert!(!std::hint::black_box(wrappers::SEAM_BUILD));
     let n = nested::Nested::new("claude", "claude-sonnet-5-5");
     // The driver here is the stand-in image built beside the release
     // binary; its digest is admitted by nothing but a debug build.
