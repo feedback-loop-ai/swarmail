@@ -689,3 +689,39 @@ splits the five: this seat runs one near the end, because one run takes
 two-hour attempt. Runs 2–5 belong to the verify phase on the same code;
 **AC4's five-run streak is not yet complete** and must not be read as
 such. A failed run or any code change restarts the streak.
+
+### Gates run here (Linux, code at `ebb8362c`; later commits are ledger-only)
+
+Root `src/` is untouched by this run.
+
+- `cargo fmt --all -- --check` (root and `evals/`): clean.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`: clean.
+- `cd evals && cargo clippy --all-targets --locked -- -D warnings`: clean.
+- `cargo build --locked --bin swarmail`: ok (artifact path above).
+- `cargo test --workspace --locked`: exit 0, 2212 passed, 0 failed,
+  57 ignored, 220 s.
+- Evals suite: run 1 above.
+- `bash scripts/coverage-gate.sh`: pass, exact 100/100/100, 396 s.
+- `bash scripts/coverage-gate.sh selftest`: pass, 20 s.
+- `bash scripts/publish-guard-test.sh`: OK, 7 s.
+- `bash scripts/seal-branch-test.sh`: 7 cases and 10 mutants passed, 5 s.
+- `cargo deny check licenses`: licenses ok.
+- **Not run here**: the pinned brokkr 0.12.0 recipe compile — no brokkr
+  binary in this box, as in every earlier seat of this run. No `.brokkr/`
+  path was touched (not even the approved `.brokkr/recipes/eval/bundle.json`).
+  The verify seat and CI's `brokkr bundle (pinned)` own it.
+- **CI-owned, not observed here**: macOS execution (the report fix's
+  `no-row` probes use only the stand-in's pre-`trial.sh` exit, which
+  `defect_case("no-row", …)` already runs on macOS), Helm, Docker smoke,
+  RustSec.
+
+### Diff audit (task 4)
+
+`git diff 1112d05d..ebb8362c -- evals/`: three test files and one
+`#[cfg(test)]` block in `evals/src/wrappers.rs` (the deleted unsafe env
+pair). No other `evals/src/` line, no root `src/`, no held path, no
+`#[ignore]` added or widened, no lock or dependency change. No
+`std::env::set_var`/`remove_var` remains under `evals/tests/` or in
+`evals/src/wrappers.rs`; the one left in `evals/src/main.rs` is
+production (the runner's own `SWARMAIL_BIN`, single-threaded at start-up)
+and outside this run.
