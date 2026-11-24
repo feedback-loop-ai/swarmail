@@ -156,9 +156,6 @@ fn receipts_round_trip_and_refuse_anything_untyped() {
     let line = receipt_line(&r);
     assert!(line.len() < RECEIPT_LIMIT && line.ends_with(b"\n"));
     assert_eq!(parse_receipt(&line[..line.len() - 1]), Some(r.clone()));
-    let u = NestedUsage::from_receipt("t1", &r);
-    assert_eq!(u.validate("t1"), Ok(()));
-    assert_eq!(u.validate("t2"), Err("usage_binding_mismatch".into()));
     for (bad, why) in [
         (
             Receipt {
@@ -218,23 +215,28 @@ fn receipts_round_trip_and_refuse_anything_untyped() {
         parse_receipt(b"nested {\"disposition\":\"completed\"}"),
         None
     );
-    let lost = NestedUsage::missing("t1", "dsh");
-    assert_eq!(lost.validate("t1"), Ok(()));
-    let mut forged = lost.clone();
-    forged.attempt_id = "a".into();
-    assert_eq!(forged.validate("t1"), Err("usage_attempt_invalid".into()));
-    let mut forged = u.clone();
-    forged.attempt_id = String::new();
-    assert_eq!(forged.validate("t1"), Err("usage_attempt_invalid".into()));
-    let mut forged = u.clone();
-    forged.family = "exec".into();
-    assert_eq!(forged.validate("t1"), Err("usage_family_invalid".into()));
-    let mut forged = u.clone();
-    forged.source = "journal".into();
-    assert_eq!(forged.validate("t1"), Err("usage_binding_mismatch".into()));
-    let mut forged = u;
+    // A session keeps a receipt's attempt and facts, or none at all.
+    let session = Session::from_receipt(0, &r);
+    assert_eq!(session.validate(), Ok(()));
+    for lost in [RECEIPT_MISSING, UNSTARTED] {
+        assert_eq!(Session::without_receipt(1, lost).validate(), Ok(()));
+        let mut forged = Session::without_receipt(1, lost);
+        forged.attempt_id = "a".into();
+        assert_eq!(forged.validate(), Err("usage_attempt_invalid".into()));
+    }
+    for edit in [
+        (|s: &mut Session| s.attempt_id = String::new()) as fn(&mut Session),
+        |s| s.disposition = RECEIPT_MISSING.into(),
+        |s| s.disposition = "Completed!".into(),
+        |s| s.attempt_id = "a b".into(),
+    ] {
+        let mut forged = session.clone();
+        edit(&mut forged);
+        assert_eq!(forged.validate(), Err("usage_attempt_invalid".into()));
+    }
+    let mut forged = session;
     forged.facts.total_cost_usd = Fact::Present { value: f64::NAN };
-    assert_eq!(forged.validate("t1"), Err("usage_cost_invalid".into()));
+    assert_eq!(forged.validate(), Err("usage_cost_invalid".into()));
 }
 
 mod groups {
@@ -254,9 +256,9 @@ mod groups {
         }
     }
 
-    fn row(n: u32, outcome: Outcome, facts: Option<Facts>) -> TrialResult {
+    pub(super) fn bare(n: u32, outcome: Outcome, task: &str) -> TrialResult {
         let req = TrialRequest {
-            task: Some("signup".into()),
+            task: Some(task.into()),
             agent: Some("claude-nested".into()),
             argv: vec!["/bin/agent".into()],
             agent_model: Some("claude-sonnet-5-5".into()),
@@ -270,19 +272,34 @@ mod groups {
             row.agent_exit_status = Some(0);
             row.failure_class = (outcome == Outcome::Fail).then_some(FailureClass::GaveUp);
         }
-        row.nested_usage = facts.map(|facts| NestedUsage {
-            source: SOURCE.into(),
-            trial_id: trial_id.clone(),
-            attempt_id: format!("a{n}"),
-            family: "claude".into(),
-            facts,
-        });
         row.validate().unwrap();
         row
     }
 
-    fn summary(rows: &[TrialResult]) -> Value {
-        summarize(&rows.iter().collect::<Vec<_>>()).unwrap()
+    /// A one-agent nested row and, with facts, its companion.
+    fn row(n: u32, outcome: Outcome, facts: Option<Facts>) -> (TrialResult, Option<Companion>) {
+        let row = bare(n, outcome, "signup");
+        let usage = facts.map(|facts| {
+            let session = Session {
+                agent: 0,
+                attempt_id: format!("a{n}"),
+                disposition: "completed".into(),
+                facts,
+            };
+            let c = Companion::new(&row, vec![session]).unwrap();
+            c.validate(&row).unwrap();
+            c
+        });
+        (row, usage)
+    }
+
+    fn summary(rows: &[(TrialResult, Option<Companion>)]) -> Value {
+        let usage: Companions = rows
+            .iter()
+            .filter_map(|(r, u)| u.clone().map(|u| (r.trial_id.clone(), u)))
+            .collect();
+        let rows: Vec<&TrialResult> = rows.iter().map(|(r, _)| r).collect();
+        summarize(&rows, &usage).unwrap()
     }
 
     #[test]
@@ -317,14 +334,18 @@ mod groups {
 
     #[test]
     fn every_gap_is_a_typed_unavailability_never_a_journal_fill_or_zero() {
-        let reason = |rows: &[TrialResult]| summary(rows)["tokens_per_success"]["reason"].clone();
+        let reason = |rows: &[(TrialResult, Option<Companion>)]| {
+            summary(rows)["tokens_per_success"]["reason"].clone()
+        };
         assert_eq!(
             reason(&[row(1, Outcome::Fail, Some(counts(1, 1)))]),
             "no_passes"
         );
-        // A scored row without the record in a nested group.
-        let bare = row(2, Outcome::Pass, None);
-        let rows = [row(1, Outcome::Pass, Some(counts(1, 1))), bare.clone()];
+        // A scored row without its companion in a nested group.
+        let rows = [
+            row(1, Outcome::Pass, Some(counts(1, 1))),
+            row(2, Outcome::Pass, None),
+        ];
         assert_eq!(reason(&rows), "incomplete_attribution");
         assert_eq!(
             summary(&rows)["total_cost_usd"]["reason"],
@@ -362,31 +383,7 @@ mod groups {
             summary(&[huge(1), huge(2)])["total_cost_usd"]["reason"],
             "sum_overflow"
         );
-        // A group with no nested record has no nested figures at all.
-        let mut direct = bare;
-        direct.nested_usage = None;
-        assert_eq!(summarize(&[&direct]), None);
-    }
-
-    #[test]
-    fn the_record_binds_to_a_nested_row_and_a_legacy_row_reads_unchanged() {
-        let r = row(1, Outcome::Pass, Some(counts(1, 1)));
-        let text = serde_json::to_string(&r).unwrap();
-        assert!(text.contains("\"nested_usage\""));
-        let back: TrialResult = serde_json::from_str(&text).unwrap();
-        assert_eq!(back, r);
-        let mut legacy = r.clone();
-        legacy.nested_usage = None;
-        let text = serde_json::to_string(&legacy).unwrap();
-        assert!(!text.contains("nested_usage"));
-        assert_eq!(serde_json::from_str::<TrialResult>(&text).unwrap(), legacy);
-        // The record is the row's own and only a nested row's.
-        let mut other = r.clone();
-        other.nested_usage.as_mut().unwrap().trial_id = format!("{:032x}", 9);
-        assert_eq!(other.validate(), Err("usage_binding_mismatch".into()));
-        let mut family = r.clone();
-        family.nested_usage.as_mut().unwrap().family = "codex".into();
-        assert_eq!(family.validate(), Err("usage_without_nested_driver".into()));
+        // A group with no nested row has no nested figures at all.
         let req = TrialRequest {
             task: Some("signup".into()),
             agent: Some("claude".into()),
@@ -395,9 +392,127 @@ mod groups {
             wrapper_profile: Some(WrapperProfile::Claude2_1_329),
             ..Default::default()
         };
-        let mut direct = runner::refused_row(&req, &r.trial_id);
-        direct.nested_usage = r.nested_usage.clone();
-        assert_eq!(direct.validate(), Err("usage_without_nested_driver".into()));
+        let direct = runner::refused_row(&req, &"9".repeat(32));
+        assert_eq!(summarize(&[&direct], &Companions::new()), None);
+        assert_eq!(Companion::new(&direct, Vec::new()), None);
+        // Nor has a superseded via-brokkr row, which never ran nested.
+        let legacy = runner::refused_row(
+            &TrialRequest {
+                wrapper_profile: Some(WrapperProfile::Claude2_1_310ViaBrokkr),
+                ..req
+            },
+            &"8".repeat(32),
+        );
+        assert_eq!(nested_profile(&legacy), None);
+    }
+
+    /// The schema-2 row is unchanged (accepted 0119 §3): no usage field, and
+    /// the strict historical reader decodes a nested row's bytes.
+    #[test]
+    fn a_nested_row_carries_no_usage_and_reads_strictly() {
+        let (r, usage) = row(1, Outcome::Pass, Some(counts(1, 1)));
+        let text = serde_json::to_string(&r).unwrap();
+        assert!(!text.contains("usage"), "{text}");
+        assert_eq!(crate::results::read(text.as_bytes()).unwrap(), r);
+        // The companion is bound to its own row only.
+        let usage = usage.unwrap();
+        let other = bare(2, Outcome::Pass, "signup");
+        assert_eq!(usage.validate(&other), Err("usage_binding_mismatch".into()));
+    }
+
+    /// A three-agent trial: every session listed by assignment, the trial's
+    /// figure the checked per-field sum, any unavailable member making that
+    /// field unavailable, and an overflow unavailable too.
+    #[test]
+    fn a_multi_agent_companion_sums_every_session_field_by_field() {
+        let row = bare(7, Outcome::Pass, "inbox-isolation");
+        let session = |i: u8, facts: Facts| Session {
+            agent: i,
+            attempt_id: format!("a{i}"),
+            disposition: "completed".into(),
+            facts,
+        };
+        let c = Companion::new(
+            &row,
+            vec![
+                session(0, counts(10, 1)),
+                session(1, counts(20, 2)),
+                session(2, counts(0, 0)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(c.validate(&row), Ok(()));
+        let t = c.totals();
+        assert_eq!(t.input_tokens, present(30));
+        assert_eq!(t.output_tokens, present(3));
+        assert_eq!(t.cache_write_tokens, present(3));
+        assert_eq!(t.num_turns, present(6));
+        assert_eq!(t.total_cost_usd, Fact::Present { value: 1.5 });
+        assert_eq!(c.attempts().collect::<Vec<_>>(), ["a0", "a1", "a2"]);
+        // One lost receipt: every field unavailable for that reason, never
+        // a partial sum; a member missing one field withholds that field.
+        let mut lost = c.clone();
+        lost.sessions[1] = Session::without_receipt(1, RECEIPT_MISSING);
+        assert_eq!(lost.validate(&row), Ok(()));
+        assert_eq!(lost.totals(), Facts::unavailable(Reason::ReceiptMissing));
+        let mut absent = c.clone();
+        absent.sessions[2].facts.output_tokens = Fact::Unavailable {
+            reason: Reason::FieldAbsent,
+        };
+        let t = absent.totals();
+        assert_eq!(t.input_tokens, present(30));
+        assert_eq!(
+            t.output_tokens,
+            Fact::Unavailable {
+                reason: Reason::FieldAbsent
+            }
+        );
+        // Overflow and a nonfinite cost sum are unavailable.
+        let mut big = c.clone();
+        big.sessions[0].facts.input_tokens = present(COUNT_LIMIT);
+        let over = Fact::Unavailable {
+            reason: Reason::SumOverflow,
+        };
+        assert_eq!(big.totals().input_tokens, over);
+        big.sessions[0].facts.total_cost_usd = Fact::Present { value: f64::MAX };
+        big.sessions[1].facts.total_cost_usd = Fact::Present { value: f64::MAX };
+        assert_eq!(
+            big.totals().total_cost_usd,
+            Fact::Unavailable {
+                reason: Reason::SumOverflow
+            }
+        );
+        // Ownership: roster, order, duplicate attempts, version and profile.
+        let mut short = c.clone();
+        short.sessions.pop();
+        assert_eq!(short.validate(&row), Err("usage_roster_mismatch".into()));
+        let mut swapped = c.clone();
+        swapped.sessions.swap(0, 1);
+        assert_eq!(swapped.validate(&row), Err("usage_roster_mismatch".into()));
+        let mut twice = c.clone();
+        twice.sessions[1].attempt_id = "a0".into();
+        assert_eq!(twice.validate(&row), Err("usage_attempt_duplicate".into()));
+        let mut version = c.clone();
+        version.version = 2;
+        assert_eq!(
+            version.validate(&row),
+            Err("usage_version_unsupported".into())
+        );
+        let mut profile = c.clone();
+        profile.profile = WrapperProfile::Codex0_166_0ViaBrokkr;
+        assert_eq!(profile.validate(&row), Err("usage_profile_mismatch".into()));
+        let mut slot = c.clone();
+        slot.slot = Some(crate::provenance::MatrixCoordinates {
+            matrix_id: "m".into(),
+            master_seed: "s".into(),
+            task_index: 0,
+            agent_index: 0,
+            repetition_index: 0,
+        });
+        assert_eq!(slot.validate(&row), Err("usage_binding_mismatch".into()));
+        let mut bad = c;
+        bad.sessions[0].facts.num_turns = present(COUNT_LIMIT + 1);
+        assert_eq!(bad.validate(&row), Err("usage_count_invalid".into()));
     }
 
     #[test]

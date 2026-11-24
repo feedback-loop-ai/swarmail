@@ -417,6 +417,12 @@ enum Cmd {
         /// this fresh path, tokens per success with its reason per group.
         #[arg(long)]
         page: Option<PathBuf>,
+        /// The retained artifact root holding the input's trial leaves: a
+        /// nested (`*_via_brokkr`) row's tokens come only from its committed
+        /// usage companion (proposed 0138). Required when the input holds a
+        /// scored nested row.
+        #[arg(long)]
+        usage_from: Option<PathBuf>,
     },
 }
 
@@ -577,7 +583,7 @@ fn refuse(req: &TrialRequest, reason: &str, out: &mut impl Write, err: &mut impl
         artifacts_dir: None,
         ..req.clone()
     };
-    let row = runner::finalize(&bare, runner::refused_row(&bare, &id), None);
+    let row = runner::finalize(&bare, runner::refused_row(&bare, &id), None, None);
     let _ = writeln!(out, "{}", serde_json::to_string(&row).expect("serializes"));
     let _ = out.flush();
     row.exit_code() as u8
@@ -1317,6 +1323,7 @@ fn main() -> ExitCode {
             evidence_dir,
             tool_values_from,
             page,
+            usage_from,
         } => {
             if evidence_dir.is_some() && journal.is_none() {
                 eprintln!("swarmail-evals: harness error: evidence_requires_journal");
@@ -1360,7 +1367,29 @@ fn main() -> ExitCode {
                             return ExitCode::from(2);
                         }
                     };
-                    let report = report::report_with_journal(&rows, joined.as_ref());
+                    // A scored nested row is reported from its committed
+                    // companion or not at all (AC6): never journal tokens.
+                    let usage = match &usage_from {
+                        Some(root) => artifacts::companions(root, &rows),
+                        None if rows.iter().any(|r| {
+                            r.outcome != swarmail_evals::tasks::Outcome::HarnessError
+                                && swarmail_evals::usage::nested_profile(r).is_some()
+                        }) =>
+                        {
+                            Err("nested_usage_requires_artifacts".into())
+                        }
+                        None => Ok(Default::default()),
+                    };
+                    let usage = match usage {
+                        Ok(u) => u,
+                        Err(category) => {
+                            eprintln!(
+                                "swarmail-evals: harness error: usage_unverified: {category}"
+                            );
+                            return ExitCode::from(2);
+                        }
+                    };
+                    let report = report::report_with_usage(&rows, joined.as_ref(), &usage);
                     if let Some(path) = &page
                         && write_page(path, &report).is_err()
                     {
@@ -1857,7 +1886,7 @@ impl MatrixEvidence {
         let result = (|| {
             match std::fs::symlink_metadata(&leaf) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    artifacts::retain_trial(&trials, row, None)?;
+                    artifacts::retain_trial(&trials, row, None, None)?;
                 }
                 Err(_) => return Err("artifact_unavailable".into()),
                 Ok(_) => {}
@@ -6801,7 +6830,6 @@ mod privacy_tests {
                 None,
                 None,
             ),
-            nested_usage: None,
         };
         let spec = AgentSpec {
             label: "oracle".into(),

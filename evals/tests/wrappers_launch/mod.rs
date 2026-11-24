@@ -865,7 +865,7 @@ fn declared_surfaces_are_required_canonical_model_bound_and_retained() {
         duplicate = duplicate.replacen("\"revision\":1", "\"revision\":1,\"revision\":1", 1);
         assert!(results::read(duplicate.as_bytes()).is_err());
         let root = runner::private_tempdir("surface-proof-").unwrap();
-        artifacts::retain_trial(root.path(), &row, None).unwrap();
+        artifacts::retain_trial(root.path(), &row, None, None).unwrap();
         assert_eq!(
             artifacts::trial(&root.path().join(&row.trial_id))
                 .unwrap()

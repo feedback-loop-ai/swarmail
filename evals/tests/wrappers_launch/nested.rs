@@ -3,7 +3,7 @@
 //! driver pinned like the release one, and reports its launch and the
 //! session's usage on descriptor 3.
 use super::*;
-use swarmail_evals::runner::{LaunchReport, launch_report_of};
+use swarmail_evals::runner::{self, LaunchReport, launch_report_of};
 use swarmail_evals::tasks::Outcome;
 use swarmail_evals::usage::{Fact, Reason};
 
@@ -576,6 +576,198 @@ fn a_nested_trial_without_a_binding_never_starts_the_driver() {
     assert_eq!(row.outcome, Outcome::HarnessError, "{err}");
     assert!(err.contains("harness error: agent_unstarted"), "{err}");
     assert!(!n.record.exists(), "the unbound driver ran");
+}
+
+/// The worker context a paid coordinator hands one trial (main.rs's
+/// `WorkerContext`), built from the library's own identities: the slot, the
+/// candidate Swarmail, the agent as the trial will declare it with its
+/// nested CLI identity, and the paid-launch binding.
+fn paid_context(
+    n: &Nested,
+    trial_id: &str,
+    task: &str,
+    argv: &[std::ffi::OsString],
+    coordinates: &swarmail_evals::provenance::MatrixCoordinates,
+) -> String {
+    use swarmail_evals::provenance::{CliIdentity, FixtureInputs, WrapperProfile};
+    let seed = coordinates.cell_seed(task, "claude-nested").unwrap();
+    let fixture = FixtureInputs::resolve(Some(&seed), None).unwrap();
+    let profile = WrapperProfile::Claude2_1_329ViaBrokkr;
+    let mut req = runner::TrialRequest {
+        task: Some(task.into()),
+        agent: Some("claude-nested".into()),
+        argv: argv.to_vec(),
+        deadline_ms: Some(60000),
+        agent_model: Some("claude-sonnet-5-5".into()),
+        wrapper_profile: Some(profile),
+        fixture: fixture.clone(),
+        ..Default::default()
+    };
+    req.matrix = Some(coordinates.clone());
+    req.trial_id = Some(trial_id.into());
+    let mut agent = runner::make_provenance(&req, None, None).agent;
+    let sha = wrappers::contract_identity(&n.c.manifest, "claude", true).unwrap();
+    agent.cli = Some(CliIdentity {
+        profile,
+        version: profile.cli_version().into(),
+        sha256: sha.clone(),
+    });
+    let target = swarmail_evals::identity::TargetBuild::external(common::swarmail_bin().into());
+    json!({
+        "cell": {
+            "trial_id": trial_id, "task": task, "agent": "claude-nested",
+            "fixture": fixture, "coordinates": coordinates, "deadline_ms": 60000,
+        },
+        "target": target.identity,
+        "agent": agent,
+        "paid": {"cli_sha256": sha, "valid_through": 1_900_000_000u64},
+    })
+    .to_string()
+}
+
+/// Through the real `trial` command under a paid coordinator's binding:
+/// `inbox-isolation`'s three agents each run a nested session, and the
+/// retained leaf commits one usage companion listing every session by
+/// assignment, its figure the checked per-field sum (the operator's
+/// 2026-11-24 ruling). The row itself carries no usage; a report reads the
+/// companion, and refuses without it rather than taking journal tokens.
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[test]
+fn a_three_agent_nested_trial_commits_every_sessions_usage() {
+    let _scope = common::trial_scope();
+    let n = Nested::new("claude", "claude-sonnet-5-5");
+    private(
+        &n.mode,
+        json!({"mode": "complete", "per_agent": true, "finals": [smoke_final("claude")]})
+            .to_string()
+            .as_bytes(),
+    );
+    let evidence = n.c.root.path().join("retained");
+    let trial_id = format!("{:032x}", 0x404u32);
+    let coordinates = swarmail_evals::provenance::MatrixCoordinates {
+        matrix_id: "f".repeat(32),
+        master_seed: "e".repeat(64),
+        task_index: 0,
+        agent_index: 0,
+        repetition_index: 0,
+    };
+    let seed = coordinates
+        .cell_seed("inbox-isolation", "claude-nested")
+        .unwrap();
+    let fixture = swarmail_evals::provenance::FixtureInputs::resolve(Some(&seed), None).unwrap();
+    let argv: Vec<std::ffi::OsString> = vec![
+        common::exe().into(),
+        "agent-claude".into(),
+        "--model".into(),
+        "claude-sonnet-5-5".into(),
+        "--config".into(),
+        n.c.manifest.clone().into(),
+        "--via-brokkr".into(),
+        n.driver.clone().into(),
+    ];
+    let context = paid_context(&n, &trial_id, "inbox-isolation", &argv, &coordinates);
+    let mut command = common::cli();
+    command
+        .args([
+            "trial",
+            "--task",
+            "inbox-isolation",
+            "--agent",
+            "claude-nested",
+        ])
+        .args(["--agent-model", "claude-sonnet-5-5"])
+        .args(["--wrapper-profile", "claude_2_1_329_via_brokkr"])
+        .args(["--deadline-ms", "60000", "--seed", &fixture.seed])
+        .args(["--fixture-time", &fixture.fixture_time])
+        .args(["--worker-context", &context, "--artifacts-dir"])
+        .arg(&evidence)
+        .arg("--")
+        .args(&argv);
+    let out = command.output().unwrap();
+    let row = common::one_row(&out);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains(CANARY));
+    // The stand-in sessions did nothing to the mail: a scored failure with
+    // its application grade.
+    assert_eq!(row.outcome, Outcome::Fail, "{err}");
+    assert_eq!(row.trial_id, trial_id);
+    let text = serde_json::to_string(&row).unwrap();
+    assert!(!text.contains("usage"), "the row carries no usage");
+    let leaf = evidence.join(&trial_id);
+    let retained = swarmail_evals::artifacts::trial(&leaf).unwrap();
+    assert_eq!(retained.row, row);
+    let usage = retained.usage.expect("the committed companion");
+    assert_eq!(usage.trial_id, trial_id);
+    assert_eq!(usage.sessions.len(), 3);
+    for (i, s) in usage.sessions.iter().enumerate() {
+        assert_eq!((s.agent as usize, s.disposition.as_str()), (i, "completed"));
+        assert_eq!(
+            s.facts.input_tokens,
+            Fact::Present {
+                value: 41871 + 1000 * i as u64
+            }
+        );
+    }
+    let mut attempts: Vec<_> = usage.attempts().collect();
+    attempts.dedup();
+    assert_eq!(attempts.len(), 3, "distinct driver attempts");
+    let totals = usage.totals();
+    assert_eq!(
+        totals.input_tokens,
+        Fact::Present {
+            value: 3 * 41871 + 3000
+        }
+    );
+    assert_eq!(totals.output_tokens, Fact::Present { value: 3 * 180 });
+    assert_eq!(totals.num_turns, Fact::Present { value: 6 });
+    // The report reads the companion from the retained root, and refuses
+    // without it; the journal is never asked.
+    let rows = n.c.root.path().join("rows.jsonl");
+    std::fs::write(&rows, format!("{text}\n")).unwrap();
+    let report = |extra: &[&std::ffi::OsStr]| {
+        common::cli()
+            .arg("report")
+            .arg("--input")
+            .arg(&rows)
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let read = report(&["--usage-from".as_ref(), evidence.as_os_str()]);
+    assert_eq!(read.status.code(), Some(0));
+    let page: Value = serde_json::from_slice(&read.stdout).unwrap();
+    let nested = &page["groups"][0]["nested_usage"];
+    assert_eq!(nested["total_tokens"]["value"], 3 * (41871 + 180) + 3000);
+    assert_eq!(nested["tokens_per_success"]["reason"], "no_passes");
+    let refused = report(&[]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("nested_usage_requires_artifacts"));
+    // An orphan, a removed binding and a tampered companion all refuse.
+    let meta_path = leaf.join("metadata.json");
+    let meta = std::fs::read(&meta_path).unwrap();
+    let companion = std::fs::read(leaf.join("usage.json")).unwrap();
+    let mut unbound: Value = serde_json::from_slice(&meta).unwrap();
+    unbound.as_object_mut().unwrap().remove("usage");
+    std::fs::write(&meta_path, unbound.to_string()).unwrap();
+    let e = swarmail_evals::artifacts::trial(&leaf).unwrap_err();
+    assert_eq!(e, "orphan usage companion");
+    std::fs::remove_file(leaf.join("usage.json")).unwrap();
+    let e = swarmail_evals::artifacts::trial(&leaf).unwrap_err();
+    assert_eq!(e, "usage companion missing");
+    let refused = report(&["--usage-from".as_ref(), evidence.as_os_str()]);
+    assert_eq!(refused.status.code(), Some(2));
+    std::fs::write(&meta_path, &meta).unwrap();
+    let mut tampered = companion.clone();
+    let at = tampered.iter().position(|b| *b == b'4').unwrap();
+    tampered[at] = b'5';
+    std::fs::write(leaf.join("usage.json"), &tampered).unwrap();
+    let e = swarmail_evals::artifacts::trial(&leaf).unwrap_err();
+    assert_eq!(e, "byte binding mismatch");
+    std::fs::write(leaf.join("usage.json"), &companion).unwrap();
+    assert!(swarmail_evals::artifacts::trial(&leaf).is_ok());
 }
 
 /// A nested paid contract binds the CLI's pin with the driver's pin and the

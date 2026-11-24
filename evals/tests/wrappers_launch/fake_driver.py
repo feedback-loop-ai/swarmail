@@ -62,6 +62,12 @@ else:
     # A per-turn row with a larger bill than the session: it must not count.
     send(dict(pair, type='checkpoint', data={'step': mode.get('turn_step', 'seat-turn'), 'input_tokens': 999999, 'output_tokens': 999999}))
     for final in mode.get('finals', []):
+        if mode.get('per_agent'):
+            # A multi-agent trial: each session's bill names its agent (the
+            # runner's `agent-N` work directory), so the sum is checkable.
+            import re
+            n = int(re.search(r'agent-(\d+)', os.getcwd()).group(1))
+            final = dict(final, input_tokens=final['input_tokens'] + 1000 * n)
         send(dict(pair, type='checkpoint', data=final))
     # The seat's agent writes its result where the contract says.
     pathlib.Path(inp['result_path']).write_text(json.dumps({'result': mode.get('result', 'done'), 'inputs': {'input_tokens': 7}, 'notes': 'n'}))

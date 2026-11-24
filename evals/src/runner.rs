@@ -313,30 +313,12 @@ pub struct TrialResult {
     pub agent_exits: Vec<AgentExit>,
     pub confinement: String,
     pub provenance: crate::provenance::Provenance,
-    /// The nested brokkr driver's session usage (route (b) of decision
-    /// 0119's 2026-11-23 addendum): harness-authored, present only on a row
-    /// whose agent ran through the driver. Absent on every other row, so a
-    /// legacy row reads unchanged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nested_usage: Option<crate::usage::NestedUsage>,
 }
 
 impl TrialResult {
     /// Whether the row obeys its own schema's invariants.
     pub fn validate(&self) -> Result<(), String> {
         self.provenance.validate()?;
-        if let Some(usage) = &self.nested_usage {
-            usage.validate(&self.trial_id)?;
-            let nested = match &self.provenance.agent.tool_surface {
-                crate::provenance::ToolSurface::Wrapper { profile, .. } => {
-                    profile.via_brokkr() && profile.family() == usage.family
-                }
-                _ => false,
-            };
-            if !nested {
-                return Err("usage_without_nested_driver".into());
-            }
-        }
         use crate::provenance::{AgentKind, Availability, Reason, Source};
         match self.provenance.agent.kind {
             AgentKind::Invalid => {
@@ -561,16 +543,16 @@ fn launch_report(reader: &mut io::PipeReader) -> LaunchReport {
     }
     launch_report_of(&out)
 }
-/// Turn the agents' launch reports into the trial's usage record and its
-/// harness error, if any. `nested` is the family of a nested-driver trial.
+/// Turn the agents' launch reports into the trial's sessions, in assignment
+/// order, and its harness error, if any. `nested` is the family of a
+/// nested-driver trial. Every expected agent keeps an entry, whatever its
+/// siblings did; the first infrastructure ending in assignment order is the
+/// trial's.
 pub fn settle_launch(
     reports: &[LaunchReport],
     nested: Option<&str>,
-    trial_id: &str,
-) -> (Option<crate::usage::NestedUsage>, Result<(), String>) {
-    if reports.contains(&LaunchReport::Unstarted) {
-        return (None, Err("agent_unstarted".into()));
-    }
+) -> (Option<Vec<crate::usage::Session>>, Result<(), String>) {
+    use crate::usage::{RECEIPT_MISSING, Session, UNSTARTED};
     let Some(family) = nested else {
         // A direct launch never sends a receipt.
         return if reports.iter().all(|r| *r == LaunchReport::Ready) {
@@ -579,21 +561,38 @@ pub fn settle_launch(
             (None, Err("agent_unstarted".into()))
         };
     };
-    match reports {
-        [LaunchReport::Ready] => (
-            Some(crate::usage::NestedUsage::missing(trial_id, family)),
-            Ok(()),
-        ),
-        [LaunchReport::Nested(r)] if r.family == family => {
-            let usage = crate::usage::NestedUsage::from_receipt(trial_id, r);
-            match crate::driver::static_code(&r.disposition) {
-                Some("completed") => (Some(usage), Ok(())),
-                Some(code) => (Some(usage), Err(code.into())),
-                None => (Some(usage), Err("agent_unstarted".into())),
+    let mut first: Option<String> = None;
+    let mut fail = |code: &str| {
+        first.get_or_insert_with(|| code.to_string());
+    };
+    let mut owners = std::collections::BTreeSet::new();
+    let sessions = reports
+        .iter()
+        .enumerate()
+        .map(|(i, report)| {
+            let agent = i as u8;
+            match report {
+                LaunchReport::Ready => Session::without_receipt(agent, RECEIPT_MISSING),
+                LaunchReport::Nested(r)
+                    if r.family == family && owners.insert(r.attempt_id.clone()) =>
+                {
+                    match crate::driver::static_code(&r.disposition) {
+                        Some("completed") => {}
+                        Some(code) => fail(code),
+                        None => fail(UNSTARTED),
+                    }
+                    Session::from_receipt(agent, r)
+                }
+                // Another family's receipt, an attempt a sibling already
+                // owns, or no launch at all: nothing of it is attributable.
+                LaunchReport::Nested(_) | LaunchReport::Unstarted => {
+                    fail(UNSTARTED);
+                    Session::without_receipt(agent, UNSTARTED)
+                }
             }
-        }
-        _ => (None, Err("agent_unstarted".into())),
-    }
+        })
+        .collect();
+    (Some(sessions), first.map_or(Ok(()), Err))
 }
 
 /// Where a trial's redacted value capture goes and which sentinels its
@@ -2194,8 +2193,9 @@ struct Trial {
     bridge: Option<crate::bridge::Bridge>,
     /// Value capture's plan and the slot its sealed result is left in.
     capture: Option<(CapturePlan, CaptureSink)>,
-    /// A nested-driver trial's usage record, read from the launch report.
-    nested_usage: Option<crate::usage::NestedUsage>,
+    /// A nested-driver trial's sessions, settled from every launch report
+    /// in assignment order.
+    sessions: Option<Vec<crate::usage::Session>>,
 }
 
 /// How long a competitor adapter gets, after its stdin closes, to clean up
@@ -2429,7 +2429,6 @@ pub fn refused_row(req: &TrialRequest, trial_id: &str) -> TrialResult {
         agent_exits: Vec::new(),
         confinement: CONFINEMENT.to_string(),
         provenance: make_provenance(req, req.target_build.as_ref(), None),
-        nested_usage: None,
     }
 }
 
@@ -2691,7 +2690,7 @@ pub async fn probe_contract(
         diagnostics: Vec::new(),
         bridge: None,
         capture: None,
-        nested_usage: None,
+        sessions: None,
     };
     let probed = probe_contract_body(target, swarmail, plan, scratch.path(), &mut trial).await;
     let stopped = trial.stop_servers().await;
@@ -3154,8 +3153,8 @@ async fn run_body(
     cleanup_result?;
     if paid.is_some() || nested.is_some() {
         let reports: Vec<_> = launches.iter_mut().map(launch_report).collect();
-        let (usage, settled) = settle_launch(&reports, nested, trial_id);
-        trial.nested_usage = usage;
+        let (sessions, settled) = settle_launch(&reports, nested);
+        trial.sessions = sessions;
         settled?;
     }
     match end {
@@ -3361,13 +3360,13 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
     let id = req.trial_id.clone().unwrap_or_else(new_trial_id);
     if req.concurrency.unwrap_or(1) != 1 {
         eprintln!("swarmail-evals: harness error: concurrency_unsupported");
-        return finalize(&req, refused_row(&req, &id), None);
+        return finalize(&req, refused_row(&req, &id), None, None);
     }
     let admission = match crate::admission::Admission::acquire() {
         Ok(guard) => Arc::new(guard),
         Err(category) => {
             eprintln!("swarmail-evals: harness error: {category}");
-            return finalize(&req, refused_row(&req, &id), None);
+            return finalize(&req, refused_row(&req, &id), None, None);
         }
     };
     let fallback = refused_row(&req, &id);
@@ -3389,7 +3388,7 @@ async fn run_admitted_trial(
         req.fixture.seed, req.fixture.fixture_time
     );
     let sink: Option<CaptureSink> = req.capture.as_ref().map(|_| Arc::default());
-    let (mut row, snap) =
+    let (mut row, snap, usage) =
         execute_trial(&mut req, swarmail_bin, id, admission.clone(), sink.clone()).await;
     if req
         .target_build
@@ -3399,7 +3398,7 @@ async fn run_admitted_trial(
         row.outcome = Outcome::HarnessError;
         row.failure_class = Some(FailureClass::HarnessError);
     }
-    let row = finalize(&req, row, snap.as_ref());
+    let row = finalize(&req, row, snap.as_ref(), usage.as_ref());
     if let (Some(plan), Some(sink)) = (&req.capture, &sink) {
         write_value_capture(plan, sink, &row);
     }
@@ -3432,16 +3431,32 @@ fn write_value_capture(plan: &CapturePlan, sink: &CaptureSink, row: &TrialResult
     }
 }
 
-pub fn finalize(req: &TrialRequest, mut row: TrialResult, snap: Option<&Snapshot>) -> TrialResult {
+pub fn finalize(
+    req: &TrialRequest,
+    mut row: TrialResult,
+    snap: Option<&Snapshot>,
+    usage: Option<&crate::usage::Companion>,
+) -> TrialResult {
     if row.validate().is_err()
         || crate::artifacts::encode(&row, crate::provenance::RESULT_LIMIT - 1).is_err()
     {
         row.outcome = Outcome::HarnessError;
         row.failure_class = Some(FailureClass::HarnessError);
     }
+    // A scored nested row is scored only with its usage companion committed
+    // beside it (proposed 0138): with no retained leaf to commit it in, or
+    // no companion, it is a harness error, never a scored row without usage.
+    if row.outcome != Outcome::HarnessError
+        && crate::usage::nested_profile(&row).is_some()
+        && (req.artifacts_dir.is_none() || usage.is_none())
+    {
+        eprintln!("swarmail-evals: harness error: usage_companion_unretained");
+        row.outcome = Outcome::HarnessError;
+        row.failure_class = Some(FailureClass::HarnessError);
+    }
     if let Some(root) = &req.artifacts_dir
         && crate::artifacts::resolve_root(root)
-            .and_then(|real| crate::artifacts::retain_trial(&real, &row, snap))
+            .and_then(|real| crate::artifacts::retain_trial(&real, &row, snap, usage))
             .is_err()
     {
         row.outcome = Outcome::HarnessError;
@@ -3457,19 +3472,23 @@ async fn execute_trial(
     trial_id: String,
     admission: Arc<crate::admission::Admission>,
     sink: Option<CaptureSink>,
-) -> (TrialResult, Option<Snapshot>) {
+) -> (
+    TrialResult,
+    Option<Snapshot>,
+    Option<crate::usage::Companion>,
+) {
     let (task, label) = match validate_request(req) {
         Ok(v) => v,
         Err(_) => {
             eprintln!("swarmail-evals: harness error: request_invalid");
-            return (refused_row(req, &trial_id), None);
+            return (refused_row(req, &trial_id), None, None);
         }
     };
     let caller = match CallerEnv::capture() {
         Ok(caller) => caller,
         Err(_) => {
             eprintln!("swarmail-evals: harness error: caller_context_unavailable");
-            return (refused_row(req, &trial_id), None);
+            return (refused_row(req, &trial_id), None, None);
         }
     };
     #[cfg(test)]
@@ -3501,14 +3520,14 @@ async fn execute_trial(
         (Ok(t), Ok(i)) => (t, i),
         _ => {
             eprintln!("swarmail-evals: harness error: signal_handlers_unavailable");
-            return (refused_row(req, &trial_id), None);
+            return (refused_row(req, &trial_id), None, None);
         }
     };
     let scratch = match private_tempdir("swarmail-eval-") {
         Ok(d) => Arc::new(d),
         Err(_) => {
             eprintln!("swarmail-evals: harness error: private_directory_unavailable");
-            return (refused_row(req, &trial_id), None);
+            return (refused_row(req, &trial_id), None, None);
         }
     };
     let captured = make_provenance(req, req.target_build.as_ref(), None);
@@ -3539,7 +3558,7 @@ async fn execute_trial(
                 diagnostics: Vec::new(),
                 bridge: None,
                 capture: capture_owner,
-                nested_usage: None,
+                sessions: None,
             };
             let mut exits = Vec::new();
             let mut snap = None;
@@ -3583,7 +3602,7 @@ async fn execute_trial(
                 Ok(()) => outcome,
                 Err(e) => Err(e),
             };
-            (outcome, exits, snap, trial.diagnostics, trial.nested_usage)
+            (outcome, exits, snap, trial.diagnostics, trial.sessions)
         })
     };
     let joined = tokio::select! {
@@ -3665,13 +3684,13 @@ async fn execute_trial(
                 agent_exits,
                 confinement: CONFINEMENT.to_string(),
                 provenance: make_provenance(req, req.target_build.as_ref(), None),
-                nested_usage: None,
             },
+            None,
             None,
         );
     };
-    let (mut verdict, exits, snap, mut diagnostics, nested_usage) = match joined {
-        Ok((outcome, exits, snap, mut diagnostics, nested_usage)) => {
+    let (mut verdict, exits, snap, mut diagnostics, sessions) = match joined {
+        Ok((outcome, exits, snap, mut diagnostics, sessions)) => {
             if outcome
                 .as_ref()
                 .is_err_and(|e| e == "build_context_changed")
@@ -3711,7 +3730,7 @@ async fn execute_trial(
                     },
                 },
             };
-            (verdict, exits, snap, diagnostics, nested_usage)
+            (verdict, exits, snap, diagnostics, sessions)
         }
         Err(_) => {
             // A panic: the body's handles are gone, so its groups are
@@ -3787,7 +3806,6 @@ async fn execute_trial(
         agent_exits: exits,
         confinement: CONFINEMENT.to_string(),
         provenance: make_provenance(req, req.target_build.as_ref(), snap.as_ref()),
-        nested_usage,
     };
     if row.outcome == Outcome::HarnessError {
         for d in &diagnostics {
@@ -3795,7 +3813,9 @@ async fn execute_trial(
         }
     }
     drop(scratch);
-    (row, snap)
+    // The companion is built once the row it binds to is final.
+    let usage = sessions.and_then(|s| crate::usage::Companion::new(&row, s));
+    (row, snap, usage)
 }
 
 /// Resolve facts from actual inputs; absence is never a guessed identity.
@@ -6275,7 +6295,7 @@ mod identity_tests {
     #[test]
     fn launch_reports_settle_the_rows_usage_and_harness_error() {
         use crate::runner::{LAUNCH_READY, LaunchReport, launch_report_of, settle_launch};
-        use crate::usage::{Facts, NestedUsage, Reason, Receipt, receipt_line};
+        use crate::usage::{Facts, Reason, Receipt, receipt_line};
         let receipt = |disposition: &str| Receipt {
             disposition: disposition.into(),
             attempt_id: "a1".into(),
@@ -6301,53 +6321,88 @@ mod identity_tests {
             assert_eq!(launch_report_of(&bad), LaunchReport::Unstarted, "{bad:?}");
         }
         use crate::runner::LaunchReport::*;
+        use crate::usage::{RECEIPT_MISSING, Session, UNSTARTED};
         // Direct: exactly ready, never a receipt.
-        assert_eq!(settle_launch(&[Ready], None, "t"), (None, Ok(())));
-        assert_eq!(settle_launch(&[], None, "t"), (None, Ok(())));
+        assert_eq!(settle_launch(&[Ready], None), (None, Ok(())));
+        assert_eq!(settle_launch(&[], None), (None, Ok(())));
         for reports in [vec![Unstarted], vec![Nested(done.clone())]] {
             assert_eq!(
-                settle_launch(&reports, None, "t"),
+                settle_launch(&reports, None),
                 (None, Err("agent_unstarted".into()))
             );
         }
-        // Nested: the receipt is the row's usage; ready alone (a deadline
-        // kill) is usage lost, never zero, and the trial keeps its grading.
+        // Nested: each receipt is its agent's session; ready alone (a
+        // deadline kill) is usage lost, never zero, and the trial keeps its
+        // grading.
         assert_eq!(
-            settle_launch(&[Nested(done.clone())], Some("claude"), "t"),
-            (Some(NestedUsage::from_receipt("t", &done)), Ok(()))
+            settle_launch(&[Nested(done.clone())], Some("claude")),
+            (Some(vec![Session::from_receipt(0, &done)]), Ok(()))
         );
         assert_eq!(
-            settle_launch(&[Ready], Some("claude"), "t"),
-            (Some(NestedUsage::missing("t", "claude")), Ok(()))
+            settle_launch(&[Ready], Some("claude")),
+            (
+                Some(vec![Session::without_receipt(0, RECEIPT_MISSING)]),
+                Ok(())
+            )
         );
         let lost = receipt("driver_result_missing");
         assert_eq!(
-            settle_launch(&[Nested(lost.clone())], Some("claude"), "t"),
+            settle_launch(&[Nested(lost.clone())], Some("claude")),
             (
-                Some(NestedUsage::from_receipt("t", &lost)),
+                Some(vec![Session::from_receipt(0, &lost)]),
                 Err("driver_result_missing".into())
             )
         );
         let odd = receipt("not_a_code");
         assert_eq!(
-            settle_launch(&[Nested(odd.clone())], Some("claude"), "t").1,
+            settle_launch(&[Nested(odd.clone())], Some("claude")).1,
             Err("agent_unstarted".into())
         );
-        for reports in [
-            vec![Unstarted],
-            vec![Nested(done.clone())],
-            vec![Ready, Ready],
+        // Three agents: every one keeps its entry, in assignment order, and
+        // the first infrastructure ending is the trial's.
+        let second = Receipt {
+            attempt_id: "a2".into(),
+            ..done.clone()
+        };
+        let third = Receipt {
+            attempt_id: "a3".into(),
+            ..receipt("driver_session_failed")
+        };
+        let (sessions, settled) = settle_launch(
+            &[Nested(done.clone()), Ready, Nested(third.clone())],
+            Some("claude"),
+        );
+        assert_eq!(
+            sessions.unwrap(),
+            vec![
+                Session::from_receipt(0, &done),
+                Session::without_receipt(1, RECEIPT_MISSING),
+                Session::from_receipt(2, &third),
+            ]
+        );
+        assert_eq!(settled, Err("driver_session_failed".into()));
+        let (sessions, settled) = settle_launch(
+            &[Nested(done.clone()), Nested(second.clone()), Ready],
+            Some("claude"),
+        );
+        assert_eq!(sessions.unwrap().len(), 3);
+        assert_eq!(settled, Ok(()));
+        // A foreign family, an attempt a sibling owns, or no launch at all is
+        // unattributable: an unstarted entry and a harness error.
+        for (reports, family) in [
+            (vec![Unstarted], "claude"),
+            (vec![Nested(done.clone())], "codex"),
+            (vec![Nested(done.clone()), Nested(done.clone())], "claude"),
+            (vec![Ready, Unstarted], "claude"),
         ] {
-            let family = if reports.len() == 1 && reports[0] != Unstarted {
-                "codex"
-            } else {
-                "claude"
-            };
+            let (sessions, settled) = settle_launch(&reports, Some(family));
+            let sessions = sessions.unwrap();
+            assert_eq!(sessions.len(), reports.len(), "{reports:?}");
             assert_eq!(
-                settle_launch(&reports, Some(family), "t"),
-                (None, Err("agent_unstarted".into())),
-                "{reports:?}"
+                sessions.last().unwrap(),
+                &Session::without_receipt(reports.len() as u8 - 1, UNSTARTED)
             );
+            assert_eq!(settled, Err("agent_unstarted".into()), "{reports:?}");
         }
     }
 }

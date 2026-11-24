@@ -239,6 +239,16 @@ pub fn report_with_journal(
     rows: &[TrialResult],
     journal: Option<&crate::journal::Joined>,
 ) -> Value {
+    report_with_usage(rows, journal, &crate::usage::Companions::new())
+}
+
+/// The same report, with each nested group's `nested_usage` read from the
+/// committed usage companions (proposed 0138) and never from the journal.
+pub fn report_with_usage(
+    rows: &[TrialResult],
+    journal: Option<&crate::journal::Joined>,
+    usage: &crate::usage::Companions,
+) -> Value {
     let mut groups: BTreeMap<(Option<String>, Option<String>), Vec<&TrialResult>> = BTreeMap::new();
     for row in rows {
         groups
@@ -302,7 +312,7 @@ pub fn report_with_journal(
             }
             // Route (b)'s harness-authored usage: the only token source for
             // a nested group, whatever the journal holds.
-            if let Some(nested) = crate::usage::summarize(&rows) {
+            if let Some(nested) = crate::usage::summarize(&rows, usage) {
                 group["nested_usage"] = nested;
             }
             group
