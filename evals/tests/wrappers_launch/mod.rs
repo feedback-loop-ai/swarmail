@@ -1443,6 +1443,8 @@ fn now_secs() -> u64 {
         .unwrap()
         .as_secs()
 }
+#[path = "mount_proof.rs"]
+mod mount_proof;
 #[path = "nested.rs"]
 mod nested;
 #[path = "real_driver.rs"]

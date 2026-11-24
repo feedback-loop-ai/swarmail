@@ -17,6 +17,45 @@ pub const DNS: [&str; 4] = [
     "/run/systemd/resolve",
 ];
 
+/// The trial seat's declared binds in `.brokkr/recipes/eval/bundle.json`,
+/// path and mode, that a paid agent under `matrix --brokkr` requires. The
+/// wrapper re-proves the effect in its own namespace; this is the matrix's
+/// refusal before any slot spends, so a recipe without them never starts
+/// a paid agent.
+pub const RECIPE_BINDS: [(&str, &str); 11] = [
+    ("/etc/resolv.conf", "ro"),
+    ("/run/systemd/resolve", "ro"),
+    ("/etc/nsswitch.conf", "ro"),
+    ("/etc/hosts", "ro"),
+    ("~/.config/swarmail-evals", "ro"),
+    ("~/.local/share/brokkr-0.15.2", "ro"),
+    ("~/.local/share/claude", "ro"),
+    ("~/.volta", "ro"),
+    ("~/.claude", "ro"),
+    ("~/.codex", "ro"),
+    ("~/.dsh/profiles", "overlay"),
+];
+
+/// Whether a bundle's `trial` seat declares every [`RECIPE_BINDS`] entry
+/// with its mode. Extra binds are the bundle's business.
+pub fn declared(bundle: &str) -> Result<(), &'static str> {
+    let value: serde_json::Value =
+        serde_json::from_str(bundle).map_err(|_| "brokkr_realm_invalid")?;
+    let binds = value["seats"]["trial"]["hands"]["binds"]
+        .as_array()
+        .ok_or("brokkr_paid_unbound")?;
+    let has = |path: &str, mode: &str| {
+        binds
+            .iter()
+            .any(|b| b["path"] == path && b["mode"] == mode && b.get("mask").is_none())
+    };
+    if RECIPE_BINDS.iter().all(|(path, mode)| has(path, mode)) {
+        Ok(())
+    } else {
+        Err("brokkr_paid_unbound")
+    }
+}
+
 /// One mount-table entry: its mount point and whether it is read-only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Mount {
@@ -205,6 +244,29 @@ mod tests {
             })
         };
         assert_eq!(verify(&bound, &[], linked), Ok(()));
+    }
+
+    #[test]
+    fn the_eval_recipe_declares_every_paid_bind() {
+        let bundle = include_str!("../../.brokkr/recipes/eval/bundle.json");
+        assert_eq!(declared(bundle), Ok(()));
+        let mut value: serde_json::Value = serde_json::from_str(bundle).unwrap();
+        let binds = value["seats"]["trial"]["hands"]["binds"].clone();
+        // Each bind missing, or with another mode, refuses.
+        for index in 0..RECIPE_BINDS.len() {
+            let mut fewer = binds.clone();
+            fewer.as_array_mut().unwrap().remove(index);
+            let mut doc = value.clone();
+            doc["seats"]["trial"]["hands"]["binds"] = fewer;
+            assert_eq!(declared(&doc.to_string()), Err("brokkr_paid_unbound"));
+            let mut writable = binds.clone();
+            writable[index]["mode"] = "rw".into();
+            doc["seats"]["trial"]["hands"]["binds"] = writable;
+            assert_eq!(declared(&doc.to_string()), Err("brokkr_paid_unbound"));
+        }
+        value["seats"]["trial"]["hands"]["binds"] = serde_json::Value::Null;
+        assert_eq!(declared(&value.to_string()), Err("brokkr_paid_unbound"));
+        assert_eq!(declared("{"), Err("brokkr_realm_invalid"));
     }
 
     #[test]

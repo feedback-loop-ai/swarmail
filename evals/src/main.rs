@@ -1519,6 +1519,20 @@ fn brokkr_mode_admissible(
     Ok(())
 }
 
+/// A paid agent under `matrix --brokkr`: the realm's eval recipe must
+/// declare every F5 bind (bounded read, fixed refusals).
+fn brokkr_paid_admissible(realm_dir: &std::path::Path) -> Result<(), &'static str> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(realm_dir.join(".brokkr/recipes/eval/bundle.json"))
+        .and_then(|f| {
+            f.take(artifacts::SMALL_LIMIT as u64)
+                .read_to_string(&mut text)
+        })
+        .map_err(|_| "brokkr_realm_invalid")?;
+    swarmail_evals::binds::declared(&text)
+}
+
 /// Whether the artifact root resolves, without creating anything, to a path
 /// inside the realm directory (the current directory). The root need not
 /// exist yet; a `..`, an unsafe link or an unresolvable ancestor is outside.
@@ -3266,6 +3280,16 @@ async fn matrix_with_target(
         Ok(s) => s,
         Err(e) => return fail(e),
     };
+    // Fail closed (the operator's 2026-11-24 ruling on #404): a paid agent
+    // runs under the recipe only when its trial seat declares F5's
+    // read-only binds; the wrapper then proves their effect at launch.
+    if brokkr.is_some()
+        && specs.iter().any(|s| s.wrapper_profile.is_some())
+        && let Err(category) = brokkr_paid_admissible(std::path::Path::new("."))
+    {
+        eprintln!("swarmail-evals: harness error: {category}");
+        return ExitCode::from(2);
+    }
     let mut resources = MatrixResources::default();
     if let Some(c) = &comparison {
         // The dsh wrapper takes no competitor: it has no MCP surface to name
@@ -7349,6 +7373,11 @@ mod brokkr_mode_tests {
             Err("brokkr_requires_artifacts")
         );
         assert_eq!(check(&me, crate_dir, None), Err("brokkr_realm_invalid"));
+        assert_eq!(brokkr_paid_admissible(root), Ok(()));
+        assert_eq!(
+            brokkr_paid_admissible(crate_dir),
+            Err("brokkr_realm_invalid")
+        );
         assert_eq!(check(&me, root, None), Ok(()));
         assert_eq!(
             check("brokkr".as_ref(), root, None),

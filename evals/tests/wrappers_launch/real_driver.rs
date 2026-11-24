@@ -99,7 +99,7 @@ fn the_release_driver_launches_each_inert_cli_on_the_host_route() {
         // its selected sandbox class), and the DNS inputs were readable.
         // Whether a write is refused is not read from `os.access` on the
         // host's files: the recipe route's read-only binds are proven by a
-        // real mount (`evals/src/binds/mount_tests.rs`).
+        // real mount (`evals/tests/wrappers_launch/mount_proof.rs`).
         let result = rec["result_path"].as_str().unwrap();
         assert!(result.starts_with(n.c.work.to_str().unwrap()), "{family}");
         for (path, access) in rec["dns"].as_object().unwrap() {

@@ -1996,6 +1996,38 @@ fn brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline() {
         "concurrency_unsupported",
     );
     assert!(!root.exists(), "a refusal writes no evidence");
+    // A paid agent under a recipe whose trial seat lacks F5's read-only
+    // binds fails closed before any slot (the operator's 2026-11-24 ruling
+    // on #404); the realm's own bundle declares them, so the same agent
+    // passes this check and goes on to the other refusals.
+    std::fs::create_dir(dir.path().join("paid")).unwrap();
+    let paid = agents_file(
+        &dir.path().join("paid"),
+        json!([{"label": "claude-nested", "argv": ["/nonexistent/agent"], "model": "claude-sonnet-5-5", "wrapper_profile": "claude_2_1_329_via_brokkr"}]),
+    );
+    let unbound = dir.path().join("unbound");
+    let recipe = unbound.join(".brokkr/recipes/eval");
+    std::fs::create_dir_all(&recipe).unwrap();
+    let mut bundle: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(realm.join(".brokkr/recipes/eval/bundle.json")).unwrap(),
+    )
+    .unwrap();
+    bundle["seats"]["trial"]["hands"]["binds"] = json!([]);
+    std::fs::write(recipe.join("bundle.json"), bundle.to_string()).unwrap();
+    let paid_matrix = |realm: &std::path::Path| {
+        let mut cmd = brokkr_matrix("ok", realm);
+        cmd.args(["--tasks", "signup", "--agents", &paid, "--trials", "1"])
+            .args(["--artifacts-dir", realm.join("artifacts").to_str().unwrap()]);
+        cmd.output().unwrap()
+    };
+    refused(paid_matrix(&unbound), "brokkr_paid_unbound");
+    assert!(!unbound.join("artifacts").exists());
+    let bound = paid_matrix(&realm);
+    assert!(
+        !stderr(&bound).contains("brokkr_paid_unbound"),
+        "{}",
+        stderr(&bound)
+    );
 }
 
 // ---- `report --journal`: the typed join (decision 0119) -------------------
