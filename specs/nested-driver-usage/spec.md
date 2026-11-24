@@ -10,7 +10,7 @@ The operator ruled the accounting channel in the November 23 addenda to [0119](.
 
 ## Paid launch boundary, operator ruling of 2026-11-24
 
-The coordinator grant, release pin and recipe binds guard against accidental or unbound paid launches, including bare wrappers, caller-made argv, stale grants, missing mounts and substituted drivers. A deliberate actor with the operator’s uid can run the agent CLI directly using the operator’s credentials. The operator routes further deliberate same-uid bypasses as residuals. The pre-queued reply at 6074b83e still requires repair. Record this scope and date in the paid-boundary section of evals/wrappers.md and the module documentation of evals/src/grant.rs.
+The coordinator grant, release pin and recipe binds guard against accidental or unbound paid launches, including bare wrappers, caller-made argv, stale grants, missing mounts and substituted drivers. A deliberate actor with the operator’s uid can run the agent CLI directly using the operator’s credentials. The operator routes further deliberate same-uid bypasses as residuals. The pre-queued reply found at 6074b83e is repaired: every reply must echo the wrapper's fresh OS-random nonce and binding and come from the endpoint's registered creator. Record this scope and date in the paid-boundary section of evals/wrappers.md and the module documentation of evals/src/grant.rs.
 
 ## Acceptance Criteria
 

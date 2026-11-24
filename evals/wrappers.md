@@ -395,13 +395,21 @@ verified binding, checked before any credential is read or anything spawns:
   can compute it. The baseline coordinator, under its product lock, gives
   each paid slot's worker one private `SOCK_SEQPACKET` endpoint per expected
   agent (descriptors 4 and up; the worker hands agent `i` its own at fd 4).
-  The wrapper sends its binding and launches only on the coordinator's
-  `granted`, and both sides read the kernel's `SCM_CREDENTIALS`: the reply
-  must come from an ancestor of the wrapper running this very executable,
-  the request from a descendant of the coordinator's own worker running it.
-  Each endpoint answers once; a forged identity, a caller-made socket, a
-  replay or a coordinator that is gone refuses (`paid_grant_channel_missing`,
-  `paid_grant_unauthenticated`, `paid_grant_refused`,
+  Each exchange (`swarmail-grant/1`) is bound to the wrapper's own request
+  (the security hold on 6074b83e). The wrapper reads the endpoint's creator
+  from the kernel (`SO_PEERCRED`) and requires a live ancestor running this
+  very executable, pinned by its start time; it refuses any packet already
+  queued before it asks (`paid_grant_reply_stale`); it sends a fresh 128-bit
+  nonce from the OS RNG with its binding; and it launches only on a reply
+  whose `SCM_CREDENTIALS` name that registered coordinator, start time
+  unchanged, echoing that nonce and binding byte for byte
+  (`paid_grant_reply_unbound` otherwise). The coordinator grants only a
+  request for its exact, unexpired binding from a descendant of its own
+  worker running this executable. Each endpoint answers once; a forged
+  identity, a caller-made socket, a pre-queued or relayed reply, another
+  sender, a replay or a coordinator that is gone refuses
+  (`paid_grant_channel_missing`, `paid_grant_unauthenticated`,
+  `paid_grant_reply_stale`, `paid_grant_reply_unbound`, `paid_grant_refused`,
   `paid_grant_channel_closed`). A worker given a paid context without its
   endpoints refuses before any server starts. The endpoint is
   close-on-exec in every process, so no CLI or driver inherits it. The peer
@@ -417,6 +425,15 @@ verified binding, checked before any credential is read or anything spawns:
   `~/.claude.json` and `~/.codex` writable), so a paid claude or codex launch
   on the recipe route refuses `paid_unbound: recipe_auth_unruled` until the
   operator rules; dsh proves the mount table.
+
+**Threat model (the operator's ruling of 2026-11-24, after the third hold).**
+The fail-closed boundary (the coordinator grant, the release pin, the binds)
+guards against *accidental or unbound* paid launches: a bare wrapper, a
+caller-made argv, a stale, pre-queued or replayed grant, a missing bind, a
+non-release driver. It does not defend against a deliberate adversary
+running as the same uid, who could equally run the agent CLI directly with
+the operator's credentials. Reviewers route further deliberate same-uid
+bypasses as residuals, not holds.
 
 On both routes a nested driver must be the release executable
 (`driver_release_unrecognized` otherwise). Anything else refuses
