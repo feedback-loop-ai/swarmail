@@ -631,18 +631,7 @@ fn an_unbound_nested_selection_refuses_before_any_spend() {
     // harness: the kernel names the pair's creator, and it is not an
     // ancestor running this executable. The pair is made close-on-exec
     // atomically, so no concurrent spawn inherits it.
-    let mut fds = [0; 2];
-    assert_eq!(
-        unsafe {
-            libc::socketpair(
-                libc::AF_UNIX,
-                libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
-                0,
-                fds.as_mut_ptr(),
-            )
-        },
-        0
-    );
+    let fds = cloexec_pair();
     let (ours, theirs) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
     assert_eq!(
         unsafe { libc::send(ours.as_raw_fd(), b"granted\n".as_ptr().cast(), 8, 0) },
@@ -724,6 +713,28 @@ fn an_unbound_nested_selection_refuses_before_any_spend() {
     );
     std::fs::write(&n.driver, &driver).unwrap();
     n.reselect();
+}
+
+/// A local sequenced-packet pair made close-on-exec atomically, so no
+/// concurrent spawn inherits it.
+#[cfg(target_os = "linux")]
+fn cloexec_pair() -> [libc::c_int; 2] {
+    let mut fds = [0; 2];
+    let r = unsafe {
+        libc::socketpair(
+            libc::AF_UNIX,
+            libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+            0,
+            fds.as_mut_ptr(),
+        )
+    };
+    assert_eq!(r, 0);
+    fds
+}
+/// Off Linux its only caller is ignored; the stub keeps it compiling.
+#[cfg(not(target_os = "linux"))]
+fn cloexec_pair() -> [libc::c_int; 2] {
+    unreachable!("the grant is Linux's")
 }
 
 /// Through the real `trial` command with no coordinator: no paid-launch

@@ -1267,10 +1267,50 @@ fn replace_private(path: &Path, bytes: &[u8]) {
     private(path, bytes);
 }
 
+/// Hold 1 on a73ac17a, on every platform: with neither the coordinator's
+/// grant nor the recipe's read-only binds, a direct paid launch refuses
+/// before any credential is read or HOME written. Nothing here needs the
+/// grant or /proc, so macOS runs it too.
+#[test]
+fn a_bare_paid_launch_refuses_unbound_on_every_platform() {
+    for (family, model) in [
+        ("claude", "claude-opus-5-5"),
+        ("dsh", "spark-glm/GLM-5.3-Flash-EXL3"),
+    ] {
+        let c = Case::new(family);
+        let script = native_standin(&c);
+        paid_selection(
+            &c,
+            family,
+            &swarmail_evals::identity::file_hash(&script).unwrap(),
+        );
+        let out = c.command(family, model).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{err}");
+        // Claude's and codex's read-only recipe auth awaits an operator
+        // ruling; dsh's selection lies outside any recipe HOME here.
+        let unbound = if family == "dsh" {
+            "paid_unbound: recipe_bind_home_unknown"
+        } else {
+            "paid_unbound: recipe_auth_unruled"
+        };
+        assert!(err.contains(unbound), "{err}");
+        assert!(!err.contains(CANARY));
+        assert!(!c.capture.exists());
+        assert!(std::fs::read_dir(&c.home).unwrap().next().is_none());
+    }
+}
+
 /// Proposed 0137 at the launch boundary: a version-2 selection recheck the
 /// pinned bytes immediately before exec, projects only the selected dsh
 /// route's attested key, and refuses an expired login or an absent family
-/// without launching; version 1 callers are unchanged (tests above).
+/// without launching; version 1 callers are unchanged (tests above). Every
+/// launch here goes through the coordinator's grant, which is Linux's; the
+/// portable refusal of a bare launch is the test above.
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
 #[test]
 fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
     let refused = |c: &Case, extra: &[String], family: &str, model: &str, code: &str| {
@@ -1324,22 +1364,6 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
             family,
             &swarmail_evals::identity::file_hash(&script).unwrap(),
         );
-        // Hold 1 on a73ac17a: with neither the coordinator's grant nor the
-        // recipe's read-only binds, a direct paid launch refuses before any
-        // credential is read or HOME written.
-        let out = c.command(family, model).output().unwrap();
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(2), "{err}");
-        // Claude's and codex's read-only recipe auth awaits an operator
-        // ruling; dsh proves the mount table, which this host fails.
-        let unbound = if family == "dsh" {
-            "paid_unbound: recipe_bind_"
-        } else {
-            "paid_unbound: recipe_auth_unruled"
-        };
-        assert!(err.contains(unbound), "{err}");
-        assert!(!c.capture.exists());
-        assert!(std::fs::read_dir(&c.home).unwrap().next().is_none());
         let (cmd, grant) = bound(&c, family, model);
         let out = nested::granted(&cmd, 1, &grant).output().unwrap();
         assert!(out.status.success(), "{family} {model}: {out:?}");

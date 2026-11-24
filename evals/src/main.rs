@@ -812,6 +812,8 @@ fn conclude(
 fn grant_standin(n: usize, want: &str, fault: Option<&str>, argv: &[OsString]) -> ExitCode {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::process::CommandExt as _;
+    #[cfg(not(target_os = "linux"))]
+    let _ = fault;
     let Some((program, args)) = argv.split_first() else {
         return fail("program_missing");
     };
@@ -836,13 +838,14 @@ fn grant_standin(n: usize, want: &str, fault: Option<&str>, argv: &[OsString]) -
     for (coordinator, worker) in ends {
         drop(worker);
         let want = want.to_string();
+        #[cfg(target_os = "linux")]
         let fault = fault.map(str::to_string);
-        std::thread::spawn(move || match fault {
+        std::thread::spawn(move || {
             #[cfg(target_os = "linux")]
-            Some(fault) => swarmail_evals::grant::serve_faulty(coordinator, &want, &fault),
-            _ => {
-                swarmail_evals::grant::serve(coordinator, me, &want);
+            if let Some(fault) = fault {
+                return swarmail_evals::grant::serve_faulty(coordinator, &want, &fault);
             }
+            swarmail_evals::grant::serve(coordinator, me, &want);
         });
     }
     match child.wait() {
