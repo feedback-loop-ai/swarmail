@@ -18,8 +18,7 @@ A paid slot can run several agents. The three-agent inbox-isolation task in the 
 
 ## 2026-11-24 note: where the build differs
 
-The build follows the contract above, with three differences the operator
-should weigh before accepting it.
+At a73ac17a the build differed from the proposal as follows.
 
 - **Slot and assignment attempt.** The companion records the row's matrix
   coordinates as its slot and checks them on every read. It does not record
@@ -39,7 +38,9 @@ should weigh before accepting it.
   driver (`driver_contract_unknown`). They stay journal-route rows and read
   as before.
 
-The release pin is enforced at the coordinator's admission and, on the
+At that revision the release pin was enforced at the coordinator's admission and, on the
 recipe route, by the wrapper. The offline stand-in driver is admitted only by
 a test-equipment digest that the coordinator's own process reads. An agent's
 environment is rebuilt, so the recipe route admits the release alone.
+
+The second rework requires explicit assignment ownership because two independently valid leaves can claim the same driver attempt. Carry the paid assignment identifier outside the schema-2 row, compare it with the coordinator’s assignment on replay and claim driver attempts across the entire resume scan. Apply the same ownership checks when producing the baseline report and replaying it offline. The review also found that the production verifier itself reads the stand-in environment variable. The revised design requires a release-only trust set at each nested launch and confines fixture admission to inert builds barred from paid execution. These are requirements for the next implementation. The observations above describe a73ac17a.
