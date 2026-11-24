@@ -62,6 +62,51 @@ pub const FIELDS: [&str; 12] = [
     "mode",
 ];
 
+/// The checklist's synthetic fixture message, exactly as the handbook's
+/// fenced block shows it (LF line ends, no indentation). The root docs
+/// target checks the handbook against it; the runner delivers it.
+pub const FIXTURE: &str = "\
+From: Matrix Sender <sender@matrix.test>
+To: operator@matrix.test
+Subject: Swarmail client matrix fixture
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=\"matrix-boundary\"
+
+--matrix-boundary
+Content-Type: text/plain; charset=utf-8
+
+Your verification code is 482913.
+
+--matrix-boundary
+Content-Type: text/plain; name=\"matrix.txt\"
+Content-Disposition: attachment; filename=\"matrix.txt\"
+Content-Transfer-Encoding: base64
+
+aGVsbG8gbWF0cml4Cg==
+--matrix-boundary--
+";
+
+/// The fenced fixture block that follows `` `matrix-fixture.eml`: `` in
+/// `text` (the handbook), unindented, with LF line ends.
+pub fn fenced_fixture(text: &str) -> Result<String, String> {
+    let missing = || "the checklist's fixture block is missing".to_string();
+    let after = text
+        .split_once("`matrix-fixture.eml`:")
+        .ok_or_else(missing)?
+        .1;
+    let fence = after.split_once("```text\n").ok_or_else(missing)?.1;
+    let mut message = String::new();
+    for line in fence.lines() {
+        let line = line.strip_prefix("   ").unwrap_or(line);
+        if line.starts_with("```") {
+            return Ok(message);
+        }
+        message.push_str(line);
+        message.push('\n');
+    }
+    Err(missing())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Client {

@@ -227,3 +227,13 @@ fn client_matrix_the_inspector_cli_route_is_documented_with_its_limits() {
         );
     }
 }
+
+#[test]
+fn client_matrix_the_runner_delivers_the_handbooks_fixture() {
+    let fenced = receipt::fenced_fixture(&super::raw(MATRIX)).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        fenced,
+        receipt::FIXTURE,
+        "{MATRIX}'s fixture block and evals' receipt::FIXTURE must be the same message"
+    );
+}

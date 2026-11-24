@@ -475,24 +475,26 @@ fn reasons_are_short_single_lines_and_redaction_keeps_the_envelope() {
 }
 
 #[test]
-fn the_runner_delivers_the_handbooks_own_fixture() {
-    let message = String::from_utf8(super::fixture_message().unwrap()).unwrap();
+fn the_runner_delivers_the_checklist_fixture_with_crlf_lines() {
+    let message = String::from_utf8(super::fixture_message()).unwrap();
     assert!(message.starts_with("From: Matrix Sender <sender@matrix.test>\r\n"));
     assert!(message.contains(&format!("Subject: {SUBJECT}\r\n")));
     assert!(message.contains(&format!("Your verification code is {CODE}.")));
     assert!(message.contains(&format!("filename=\"{ATTACHMENT}\"")));
     assert!(message.ends_with("--matrix-boundary--\r\n"));
-    assert!(!message.contains("```") && !message.contains("\n   "));
+    assert!(!message.replace("\r\n", "").contains('\n'));
     for broken in [
         "no block",
         "`matrix-fixture.eml`:\n no fence",
         "`matrix-fixture.eml`:\n```text\nunterminated\n",
     ] {
         assert_eq!(
-            super::extract_fixture(broken).unwrap_err(),
+            super::receipt::fenced_fixture(broken).unwrap_err(),
             "the checklist's fixture block is missing"
         );
     }
+    let page = "`matrix-fixture.eml`:\n\n   ```text\n   A: b\n\n   c\n   ```\n";
+    assert_eq!(super::receipt::fenced_fixture(page).unwrap(), "A: b\n\nc\n");
 }
 
 fn runtime() -> tokio::runtime::Runtime {

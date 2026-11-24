@@ -28,10 +28,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
 
-/// The checklist, compiled in: its fenced fixture is the one the runner
-/// delivers, so the handbook and the runner share one message.
-const MATRIX_TEXT: &str = include_str!("../../../docs/agents/client-matrix.md");
-
 /// Exit status of an all-pass draft, a written red draft and an error.
 pub const EXIT_GREEN: u8 = 0;
 pub const EXIT_RED: u8 = 1;
@@ -147,29 +143,14 @@ fn validate_paths(paths: &[PathBuf]) -> u8 {
     code
 }
 
-/// The checklist's fixture message, from the handbook's fenced block, with
-/// CRLF line ends.
-pub fn fixture_message() -> Result<Vec<u8>, String> {
-    extract_fixture(MATRIX_TEXT)
-}
-
-fn extract_fixture(text: &str) -> Result<Vec<u8>, String> {
-    let missing = || "the checklist's fixture block is missing".to_string();
-    let after = text
-        .split_once("`matrix-fixture.eml`:")
-        .ok_or_else(missing)?
-        .1;
-    let fence = after.split_once("```text\n").ok_or_else(missing)?.1;
-    let mut message = Vec::new();
-    for line in fence.lines() {
-        let line = line.strip_prefix("   ").unwrap_or(line);
-        if line.starts_with("```") {
-            return Ok(message);
-        }
-        message.extend_from_slice(line.as_bytes());
-        message.extend_from_slice(b"\r\n");
-    }
-    Err(missing())
+/// The checklist's fixture message with CRLF line ends: the handbook's
+/// fenced block, which the root docs target checks equals
+/// [`receipt::FIXTURE`].
+pub fn fixture_message() -> Vec<u8> {
+    receipt::FIXTURE
+        .lines()
+        .flat_map(|line| [line.as_bytes(), b"\r\n"].concat())
+        .collect()
 }
 
 fn check_args(args: &RunArgs) -> Result<RecordedBy, String> {
@@ -277,7 +258,7 @@ async fn observe_set(
         crate::runner::start_memory_swarmail(&args.binary, scratch.path(), groups, scratch.clone())
             .await
             .map_err(|e| format!("swarmail did not start: {e}"))?;
-    let message = fixture_message()?;
+    let message = fixture_message();
     let (sent, id) = crate::mail::send_stored(
         smtp,
         crate::mail::SmtpAuth::None,
