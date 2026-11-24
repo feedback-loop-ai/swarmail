@@ -18,7 +18,8 @@ for p in ('/etc/resolv.conf', '/run/systemd/resolve', '/etc/nsswitch.conf', '/et
     if os.path.exists(p):
         dns[p] = [os.access(p, os.R_OK), os.access(p, os.W_OK)]
 rec = {'argv': args, 'env': env, 'cwd': os.getcwd(), 'dns': dns, 'result_path': result_path,
-       'fd3': os.readlink('/proc/self/fd/3') if os.path.exists('/proc/self/fd/3') else None}
+       'fd3': os.readlink('/proc/self/fd/3') if os.path.exists('/proc/self/fd/3') else None,
+       'fd4': os.readlink('/proc/self/fd/4') if os.path.exists('/proc/self/fd/4') else None}
 open(RECORD, 'w').write(json.dumps(rec))
 def p(o):
     print(json.dumps(o), flush=True)

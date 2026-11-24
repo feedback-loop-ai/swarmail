@@ -199,6 +199,20 @@ enum Cmd {
     },
     /// Run a built-in agent (`oracle` or `null`) from the EVAL_* environment.
     Agent { name: String },
+    /// Test equipment compiled into debug builds alone (part of #404): hand
+    /// the command after `--` one grant endpoint per `--endpoints` and
+    /// serve each once, as the paid coordinator does, for `--grant`. A
+    /// debug build spends synthetic credentials alone.
+    #[cfg(debug_assertions)]
+    #[command(hide = true)]
+    GrantStandin {
+        #[arg(long)]
+        endpoints: usize,
+        #[arg(long)]
+        grant: String,
+        #[arg(last = true)]
+        argv: Vec<OsString>,
+    },
     /// Run one trial and print exactly one JSON result line.
     /// Exit 0 pass, 1 fail, 2 harness error.
     Trial {
@@ -487,6 +501,11 @@ fn trial_request(cmd: &Cmd) -> Result<TrialRequest, ExitCode> {
             || wrapper_profile.is_some())
     {
         return Err(fail("builtin_declaration_invalid"));
+    }
+    if let Some(category) = runner::reserved_flag(argv) {
+        // A runner switch is the runner's to append (part of #404).
+        eprintln!("swarmail-evals: harness error: {category}");
+        return Err(ExitCode::from(2));
     }
     if let Some(category) = runner::via_brokkr_refusal(argv, *wrapper_profile) {
         // Before any server starts or agent launches: a wrapper that
@@ -784,7 +803,41 @@ fn conclude(
     }
 }
 
+/// The debug-only grant stand-in: the coordinator's endpoint code, serving
+/// the command it launches (and that command's descendants).
+#[cfg(debug_assertions)]
+fn grant_standin(n: usize, want: &str, argv: &[OsString]) -> ExitCode {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::process::CommandExt as _;
+    let Some((program, args)) = argv.split_first() else {
+        return fail("program_missing");
+    };
+    let ends = match swarmail_evals::grant::endpoints(n) {
+        Ok(ends) => ends,
+        Err(e) => return fail(e),
+    };
+    let raws: Vec<_> = ends.iter().map(|(_, w)| w.as_raw_fd()).collect();
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    unsafe { cmd.pre_exec(move || swarmail_evals::grant::place(&raws)) };
+    let Ok(mut child) = cmd.spawn() else {
+        return fail("program_missing");
+    };
+    let me = std::process::id();
+    for (coordinator, worker) in ends {
+        drop(worker);
+        let want = want.to_string();
+        std::thread::spawn(move || swarmail_evals::grant::serve(coordinator, me, &want));
+    }
+    match child.wait() {
+        Ok(status) => ExitCode::from(status.code().unwrap_or(2) as u8),
+        Err(_) => fail("wait"),
+    }
+}
+
 fn main() -> ExitCode {
+    // A paid grant endpoint stays this process's own (part of #404).
+    swarmail_evals::grant::seal_inherited();
     swarmail_evals::isolation::rearm_parent_death(std::process::id() == 1);
     std::panic::set_hook(Box::new(|_| {
         eprintln!("swarmail-evals: harness error: panicked");
@@ -844,6 +897,15 @@ fn main() -> ExitCode {
             Err(code) => return ExitCode::from(code),
         }
     }
+    #[cfg(debug_assertions)]
+    if let Cmd::GrantStandin {
+        endpoints,
+        grant,
+        argv,
+    } = &cli.command
+    {
+        return grant_standin(*endpoints, grant, argv);
+    }
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -852,6 +914,8 @@ fn main() -> ExitCode {
         Err(_) => return fail("runtime unavailable"),
     };
     match cli.command {
+        #[cfg(debug_assertions)]
+        Cmd::GrantStandin { .. } => unreachable!("served above"),
         Cmd::ApiMcp { args } => {
             ExitCode::from(rt.block_on(swarmail_evals::apibench::api_mcp(&args)) as u8)
         }
@@ -2578,6 +2642,22 @@ async fn run_child_assigned(
         Ok(args) => args,
         Err(failure) => return refused(failure),
     };
+    // A paid slot on the host (part of #404): one grant endpoint per
+    // expected agent, served by this coordinator alone. A recipe slot has
+    // no grant; its wrappers prove the seat's read-only binds instead.
+    let grants = match context.and_then(|c| c.paid.as_ref()) {
+        Some(paid) if brokkr.is_none() => {
+            let n = tasks::find(id).map_or(1, |t| t.agent_count as usize);
+            match swarmail_evals::grant::endpoints(n) {
+                Ok(ends) => Some((
+                    ends,
+                    swarmail_evals::grant::want(&paid.cli_sha256, paid.valid_through),
+                )),
+                Err(failure) => return refused(&failure),
+            }
+        }
+        _ => None,
+    };
     #[cfg(test)]
     let bypass_wait = std::env::var_os("EVAL_TEST_MATRIX_BYPASS_WAIT").is_some();
     #[cfg(not(test))]
@@ -2621,6 +2701,11 @@ async fn run_child_assigned(
         };
         cmd = Command::new(exe);
         dirs.apply(&mut cmd);
+        if let Some((ends, _)) = &grants {
+            use std::os::fd::AsRawFd as _;
+            let raws: Vec<_> = ends.iter().map(|(_, w)| w.as_raw_fd()).collect();
+            unsafe { cmd.pre_exec(move || swarmail_evals::grant::place(&raws)) };
+        }
         cmd.process_group(0)
             .arg("trial")
             .args(&args)
@@ -2647,6 +2732,13 @@ async fn run_child_assigned(
     #[cfg(test)]
     matrix_spawn_test_hold().await;
     let pid = child.id().expect("spawned trial has a PID");
+    if let Some((ends, want)) = grants {
+        for (coordinator, worker) in ends {
+            drop(worker);
+            let want = want.clone();
+            std::thread::spawn(move || swarmail_evals::grant::serve(coordinator, pid, &want));
+        }
+    }
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
     let brokkr_mode = slot.is_some();
@@ -3312,8 +3404,13 @@ async fn matrix_with_target(
     // Fail closed (the operator's 2026-11-24 ruling on #404): a paid agent
     // runs under the recipe only when its trial seat declares F5's
     // read-only binds; the wrapper then proves their effect at launch.
+    // Every entry is decoded before dispatch, from the selection its
+    // wrapper would read (hold 1 on a73ac17a): a paid agent declared by
+    // argv alone, behind a free first slot, refuses here too.
     if brokkr.is_some()
-        && specs.iter().any(|s| s.wrapper_profile.is_some())
+        && specs.iter().any(|s| {
+            s.wrapper_profile.is_some() || swarmail_evals::wrappers::argv_selects_paid(&s.argv)
+        })
         && let Err(category) = brokkr_paid_admissible(std::path::Path::new("."))
     {
         eprintln!("swarmail-evals: harness error: {category}");

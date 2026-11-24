@@ -94,6 +94,11 @@ fn the_release_driver_launches_each_inert_cli_on_the_host_route() {
         }
         assert_eq!(env["HOME"], json!(n.c.home), "{family}");
         assert_eq!(rec["fd3"], Value::Null, "{family}: the launch pipe leaked");
+        assert_eq!(
+            rec["fd4"],
+            Value::Null,
+            "{family}: the grant endpoint leaked"
+        );
         assert!(!env.to_string().contains(CANARY));
         // The result was written inside the work directory (codex under
         // its selected sandbox class), and the DNS inputs were readable.

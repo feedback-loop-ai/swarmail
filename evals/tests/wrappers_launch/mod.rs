@@ -1284,9 +1284,18 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
                 std::fs::remove_file(&path).unwrap();
             }
         }
-        let mut cmd = c.command(family, model);
-        cmd.args(extra);
-        let out = cmd.output().unwrap();
+        // Every launch here asks the coordinator's grant stand-in: a bare
+        // paid launch is the recipe route, refused below.
+        let (mut cmd, grant) = bound(c, family, model);
+        let grant = match extra {
+            [flag, value] if *flag == swarmail_evals::runner::PAID_LAUNCH_ARG => {
+                cmd = c.command(family, model);
+                cmd.args(extra);
+                value.clone()
+            }
+            _ => grant,
+        };
+        let out = nested::granted(&cmd, 1, &grant).output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{code}: {out:?}");
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(err.contains(code), "{code}: {err}");
@@ -1315,7 +1324,17 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
             family,
             &swarmail_evals::identity::file_hash(&script).unwrap(),
         );
+        // Hold 1 on a73ac17a: with neither the coordinator's grant nor the
+        // recipe's read-only binds, a direct paid launch refuses before any
+        // credential is read or HOME written.
         let out = c.command(family, model).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{err}");
+        assert!(err.contains("paid_unbound: recipe_bind_"), "{err}");
+        assert!(!c.capture.exists());
+        assert!(std::fs::read_dir(&c.home).unwrap().next().is_none());
+        let (cmd, grant) = bound(&c, family, model);
+        let out = nested::granted(&cmd, 1, &grant).output().unwrap();
         assert!(out.status.success(), "{family} {model}: {out:?}");
         assert!(c.capture.exists());
         // The pinned runtime ran the pinned entry directly, no shim between.
@@ -1379,7 +1398,9 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
                 "wrapper_paid_binding_invalid",
             );
             let mut cmd = c.command(family, model);
-            cmd.args(bound(&pin, now_secs()));
+            let now = now_secs();
+            cmd.args(bound(&pin, now));
+            let mut cmd = nested::granted(&cmd, 1, &format!("{pin}:{now}"));
             for entry in std::fs::read_dir(&c.home).unwrap() {
                 let path = entry.unwrap().path();
                 if path.is_dir() {
@@ -1436,6 +1457,16 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
         &swarmail_evals::identity::file_hash(&script).unwrap(),
     );
     refused(&c, &[], "codex", "gpt-6-luna", "private_credential_expired");
+}
+/// A direct paid launch with the coordinator's binding for the current
+/// selection, valid from now: the command and the grant it asks for.
+fn bound(c: &Case, family: &str, model: &str) -> (std::process::Command, String) {
+    let sha = swarmail_evals::wrappers::contract_identity(&c.manifest, family, false)
+        .unwrap_or_else(|_| "0".repeat(64));
+    let grant = format!("{sha}:{}", now_secs());
+    let mut cmd = c.command(family, model);
+    cmd.arg(swarmail_evals::runner::PAID_LAUNCH_ARG).arg(&grant);
+    (cmd, grant)
 }
 fn now_secs() -> u64 {
     std::time::SystemTime::now()

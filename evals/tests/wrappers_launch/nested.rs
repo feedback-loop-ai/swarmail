@@ -85,7 +85,7 @@ impl Nested {
             let token = common::paid::jwt(future);
             replace_private(
                 &credential,
-                json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":token,"access_token":token,"refresh_token":"SOURCE-REFRESH-NEVER-FORWARDED","account_id":"synthetic-account"},"last_refresh":"2026-10-26T00:00:00Z"})
+                json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":CANARY,"access_token":token,"refresh_token":"SOURCE-REFRESH-NEVER-FORWARDED","account_id":"synthetic-account"},"last_refresh":"2026-10-26T00:00:00Z"})
                     .to_string()
                     .as_bytes(),
             );
@@ -190,6 +190,7 @@ impl Nested {
             .arg(&self.driver)
             .arg("--paid-launch")
             .arg(self.binding());
+        let mut cmd = granted(&cmd, 1, &self.binding());
         unsafe {
             cmd.pre_exec(move || {
                 let ok = if raw == 3 {
@@ -228,6 +229,32 @@ impl Nested {
     fn record(&self) -> Value {
         serde_json::from_slice(&std::fs::read(&self.record).unwrap()).unwrap()
     }
+}
+
+/// `cmd` run as the paid coordinator's child: the debug-only grant
+/// stand-in hands it `endpoints` grant endpoints and answers each once for
+/// `grant`, through the coordinator's own endpoint code. Environment and
+/// working directory are `cmd`'s.
+pub(super) fn granted(
+    cmd: &std::process::Command,
+    endpoints: usize,
+    grant: &str,
+) -> std::process::Command {
+    let mut c = std::process::Command::new(common::exe());
+    c.env_clear()
+        .args(["grant-standin", "--endpoints", &endpoints.to_string()])
+        .args(["--grant", grant, "--"])
+        .arg(cmd.get_program())
+        .args(cmd.get_args());
+    for (k, v) in cmd.get_envs() {
+        if let Some(v) = v {
+            c.env(k, v);
+        }
+    }
+    if let Some(dir) = cmd.get_current_dir() {
+        c.current_dir(dir);
+    }
+    c
 }
 
 pub(super) const CASES: [(&str, &str); 3] = [
@@ -345,6 +372,11 @@ fn a_nested_session_reports_ready_then_its_session_final_usage() {
         let cli_dir = n.cli.parent().unwrap().display().to_string();
         assert_eq!(env["PATH"], json!(format!("{cli_dir}:/usr/bin:/bin")));
         assert_eq!(rec["fd3"], Value::Null, "{family}: the launch pipe leaked");
+        assert_eq!(
+            rec["fd4"],
+            Value::Null,
+            "{family}: the grant endpoint leaked"
+        );
         assert!(!env.to_string().contains(CANARY), "{family}");
         assert!(env.get(SEAM_SENTINEL).is_none());
         assert_eq!(env["HOME"], json!(n.c.home));
@@ -473,7 +505,8 @@ fn the_driver_pin_refuses_before_any_private_write_or_spawn() {
         n.clear_home();
         let mut cmd = n.c.command("codex", "gpt-6-luna");
         cmd.arg("--via-brokkr").arg(via);
-        let out = cmd.arg("--paid-launch").arg(n.binding()).output().unwrap();
+        cmd.arg("--paid-launch").arg(n.binding());
+        let out = granted(&cmd, 1, &n.binding()).output().unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(2), "{code}: {err}");
         assert!(err.contains(code), "{code}: {err}");
@@ -486,6 +519,17 @@ fn the_driver_pin_refuses_before_any_private_write_or_spawn() {
     refuse(
         json!({"driver_sha256": "0".repeat(64)}),
         &n.driver,
+        "driver_release_unrecognized",
+    );
+    // An admitted pin over other bytes: measured at launch.
+    let altered = n.c.root.path().join("altered-brokkr");
+    let mut bytes = std::fs::read(&n.driver).unwrap();
+    bytes.push(0);
+    std::fs::write(&altered, bytes).unwrap();
+    std::fs::set_permissions(&altered, std::fs::Permissions::from_mode(0o700)).unwrap();
+    refuse(
+        json!({"driver": altered, "driver_sha256": other_sha}),
+        &altered,
         "driver_digest_mismatch",
     );
     refuse(
@@ -524,27 +568,106 @@ fn the_driver_pin_refuses_before_any_private_write_or_spawn() {
 )]
 #[test]
 fn an_unbound_nested_selection_refuses_before_any_spend() {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::process::CommandExt;
     let n = Nested::new("claude", "claude-sonnet-5-5");
-    let standin = swarmail_evals::identity::file_hash(&n.driver).unwrap();
-    for (admit, code) in [
-        (false, "driver_release_unrecognized"),
-        (true, "nested_paid_unbound: recipe_bind_"),
-    ] {
+    let fresh = |n: &Nested| {
         n.clear_home();
         let _ = std::fs::remove_file(&n.mode);
         private(&n.mode, json!({"mode": "complete"}).to_string().as_bytes());
         let mut cmd = n.c.command("claude", "claude-sonnet-5-5");
         cmd.arg("--via-brokkr").arg(&n.driver);
-        if admit {
-            cmd.env(wrappers::STANDIN_DRIVER_ENV, &standin);
-        }
+        cmd
+    };
+    let refuses = |n: &Nested, mut cmd: std::process::Command, code: &str| {
         let out = cmd.output().unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(2), "{code}: {err}");
         assert!(err.contains(code), "{code}: {err}");
         assert!(!n.record.exists(), "{code}: the driver ran");
         assert!(std::fs::read_dir(&n.c.home).unwrap().next().is_none());
+    };
+    // No binding: the recipe route, whose read-only binds this host's
+    // mount table does not hold.
+    refuses(&n, fresh(&n), "paid_unbound: recipe_bind_");
+    // A self-computed binding with no coordinator (the panel's hold 2): the
+    // identity is a pure function of the selection, so it admits nothing.
+    let mut cmd = fresh(&n);
+    cmd.arg("--paid-launch").arg(n.binding());
+    refuses(&n, cmd, "paid_grant_channel_missing");
+    // A caller-made endpoint answered by a process that is not the harness:
+    // the kernel names the sender, and it is not an ancestor running this
+    // executable.
+    let mut fds = [0; 2];
+    assert_eq!(
+        unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0, fds.as_mut_ptr()) },
+        0
+    );
+    for fd in fds {
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+            0
+        );
     }
+    let (ours, theirs) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    let forger = std::thread::spawn(move || {
+        let mut buf = [0u8; 256];
+        let n = unsafe { libc::recv(ours.as_raw_fd(), buf.as_mut_ptr().cast(), 256, 0) };
+        assert!(n > 0);
+        unsafe { libc::send(ours.as_raw_fd(), b"granted\n".as_ptr().cast(), 8, 0) };
+    });
+    let mut cmd = fresh(&n);
+    cmd.arg("--paid-launch").arg(n.binding());
+    let raw = theirs.as_raw_fd();
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::dup2(raw, 4) == 4 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    refuses(&n, cmd, "paid_grant_unauthenticated");
+    forger.join().unwrap();
+    drop(theirs);
+    // The genuine coordinator code refuses a request it was not asked to
+    // grant, and answers an endpoint once: a second launch on it is refused.
+    let mut cmd = fresh(&n);
+    cmd.arg("--paid-launch").arg(n.binding());
+    refuses(&n, granted(&cmd, 1, "0:0"), "paid_grant_refused");
+    let mut twice = std::process::Command::new("/bin/sh");
+    let mut once = fresh(&n);
+    once.arg("--paid-launch").arg(n.binding());
+    let words: Vec<String> = std::iter::once(once.get_program())
+        .chain(once.get_args())
+        .map(|a| format!("'{}'", a.to_str().unwrap()))
+        .collect();
+    twice
+        .arg("-c")
+        .arg(format!("{0} 3>/dev/null; {0} 3>/dev/null", words.join(" ")))
+        .env_clear()
+        .envs(once.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))))
+        .current_dir(once.get_current_dir().unwrap());
+    let out = granted(&twice, 1, &n.binding()).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("paid_grant_channel_closed"), "{err}");
+    // A driver that is neither the release nor the stand-in refuses first.
+    let driver = std::fs::read(&n.driver).unwrap();
+    let mut altered = driver.clone();
+    altered.push(0);
+    std::fs::write(&n.driver, &altered).unwrap();
+    n.reselect();
+    let _ = std::fs::remove_file(&n.record);
+    let mut cmd = fresh(&n);
+    cmd.arg("--paid-launch").arg(n.binding());
+    refuses(
+        &n,
+        granted(&cmd, 1, &n.binding()),
+        "driver_release_unrecognized",
+    );
+    std::fs::write(&n.driver, &driver).unwrap();
+    n.reselect();
 }
 
 /// Through the real `trial` command with no coordinator: no paid-launch
@@ -693,7 +816,26 @@ fn a_three_agent_nested_trial_commits_every_sessions_usage() {
         .arg(&evidence)
         .arg("--")
         .args(&argv);
+    // Without the coordinator's endpoints the worker refuses before any
+    // server or agent starts, whatever its context says.
     let out = command.output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        common::one_row(&out).outcome,
+        Outcome::HarnessError,
+        "{err}"
+    );
+    assert!(err.contains("paid_grant_channel_missing"), "{err}");
+    assert!(
+        !n.record.exists(),
+        "an unauthorized worker started the driver"
+    );
+    let _ = std::fs::remove_dir_all(&evidence);
+    let grant = format!(
+        "{}:1900000000",
+        wrappers::contract_identity(&n.c.manifest, "claude", true).unwrap()
+    );
+    let out = granted(&command, 3, &grant).output().unwrap();
     let row = common::one_row(&out);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!err.contains(CANARY));
@@ -802,15 +944,25 @@ fn a_nested_contract_binds_the_driver_pin_and_its_flags() {
             &json!({"family": family, "version": banner, "log": log, "hold": n.c.root.path().join("hold"), "canaries": [CANARY]}),
         );
         n.reselect();
-        // The coordinator admits the release executable alone; this proof
-        // pins the stand-in, admitted by the test-equipment digest. Only
-        // this test reads the variable in-process; every launch below runs
-        // with a cleared environment.
-        let standin = swarmail_evals::identity::file_hash(&n.driver).unwrap();
-        unsafe { std::env::remove_var(wrappers::STANDIN_DRIVER_ENV) };
+        // The coordinator admits the release executable and, in a debug
+        // build alone, the stand-in built beside it: any other driver bytes
+        // refuse, whatever the environment says.
+        let driver = std::fs::read(&n.driver).unwrap();
+        let mut altered = driver.clone();
+        altered.push(0);
+        std::fs::write(&n.driver, &altered).unwrap();
+        n.reselect();
+        unsafe {
+            std::env::set_var(
+                "EVAL_TEST_STANDIN_DRIVER_SHA256",
+                swarmail_evals::identity::file_hash(&n.driver).unwrap(),
+            )
+        };
         let refused = wrappers::paid_contracts(&n.c.manifest, &[family], true).unwrap_err();
+        unsafe { std::env::remove_var("EVAL_TEST_STANDIN_DRIVER_SHA256") };
         assert!(refused.contains("driver_release_unrecognized"), "{refused}");
-        unsafe { std::env::set_var(wrappers::STANDIN_DRIVER_ENV, &standin) };
+        std::fs::write(&n.driver, &driver).unwrap();
+        n.reselect();
         let contract = |nested: bool| wrappers::paid_contracts(&n.c.manifest, &[family], nested);
         let direct = contract(false).unwrap().remove(0);
         let cli_sha = swarmail_evals::identity::file_hash(&n.cli).unwrap();
@@ -857,11 +1009,12 @@ fn a_nested_contract_binds_the_driver_pin_and_its_flags() {
                     .to_string()
                     .as_bytes(),
             );
-            n.c.command(family, model)
-                .arg("--via-brokkr")
+            let mut cmd = n.c.command(family, model);
+            cmd.arg("--via-brokkr")
                 .arg(&n.driver)
                 .arg("--paid-launch")
-                .arg(format!("{sha}:{future}"))
+                .arg(format!("{sha}:{future}"));
+            granted(&cmd, 1, &format!("{sha}:{future}"))
                 .output()
                 .unwrap()
         };

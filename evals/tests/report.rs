@@ -2022,6 +2022,32 @@ fn brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline() {
     };
     refused(paid_matrix(&unbound), "brokkr_paid_unbound");
     assert!(!unbound.join("artifacts").exists());
+    // Hold 1 on a73ac17a: the selection decides, not the profile. A paid
+    // version-2 wrapper declared by argv alone, behind a free first slot,
+    // refuses before any slot dispatches.
+    use std::os::unix::fs::PermissionsExt as _;
+    let selection = dir.path().join("paid").join("selection.json");
+    std::fs::write(
+        &selection,
+        json!({"version": 2, "families": {}}).to_string(),
+    )
+    .unwrap();
+    std::fs::set_permissions(&selection, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let argv_only = agents_file(
+        &dir.path().join("paid"),
+        json!([
+            {"label": "oracle", "argv": []},
+            {"label": "claude-direct", "argv": [common::exe(), "agent-claude", "--model", "claude-sonnet-5-5", format!("--config={}", selection.display())]},
+        ]),
+    );
+    let mut cmd = brokkr_matrix("ok", &unbound);
+    cmd.args(["--tasks", "signup", "--agents", &argv_only, "--trials", "1"])
+        .args([
+            "--artifacts-dir",
+            unbound.join("artifacts").to_str().unwrap(),
+        ]);
+    refused(cmd.output().unwrap(), "brokkr_paid_unbound");
+    assert!(!unbound.join("artifacts").exists());
     let bound = paid_matrix(&realm);
     assert!(
         !stderr(&bound).contains("brokkr_paid_unbound"),

@@ -21,6 +21,7 @@ pub mod clients;
 pub mod comparison;
 pub mod driver;
 pub mod fixture;
+pub mod grant;
 pub mod isolation;
 pub mod mail;
 pub mod mailsource;

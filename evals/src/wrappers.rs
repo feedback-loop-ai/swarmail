@@ -404,19 +404,64 @@ pub const DRIVER_ARCHIVE_SHA256: &str =
 pub const DRIVER_RELEASE_SHA256: &str =
     "61cba4ee438eb0bd0dbc223f7d394219238aeecc061250e36281a4989e455062";
 /// Whether a selection's driver digest is the published release executable.
-/// Production trusts exactly [`DRIVER_RELEASE_SHA256`]. The offline
-/// stand-in driver of the integration proofs is admitted only by the
-/// test-equipment variable below, read by the coordinator process alone
-/// (an agent's environment is rebuilt from nothing): its value must itself
-/// be a digest the selection then pins and every launch re-measures, so it
-/// adds one trusted digest and never skips a measurement.
+/// A release build trusts exactly [`DRIVER_RELEASE_SHA256`], whatever the
+/// environment says. A debug build (`debug_assertions`, the profile the
+/// test suites build) also trusts the offline stand-in equipment beside its
+/// own executable ([`standin_driver_admitted`]); such a build never spends a
+/// credential that is not synthetic ([`seam_build_refuses_real_spend`]).
 fn release_digest(sha256: &str) -> bool {
-    sha256 == DRIVER_RELEASE_SHA256
-        || std::env::var(STANDIN_DRIVER_ENV).is_ok_and(|standin| standin == sha256)
+    sha256 == DRIVER_RELEASE_SHA256 || standin_driver_admitted(sha256)
 }
-/// Test equipment (like the runner's `EVAL_TEST_*` hooks): the digest of the
-/// offline forge-driver/v1 stand-in an integration proof pins.
-pub const STANDIN_DRIVER_ENV: &str = "EVAL_TEST_STANDIN_DRIVER_SHA256";
+/// The fixed name of the offline stand-in executable the test suites build
+/// beside this one (`tests/standin/paid_cli.rs`).
+pub const STANDIN_DRIVER_NAME: &str = "paid-cli-standin";
+/// Test equipment, compiled only into debug builds: the digest of the
+/// stand-in built beside this executable. No environment value, flag or
+/// selection field can widen the trusted set; a release build has no such
+/// arm at all.
+#[cfg(debug_assertions)]
+fn standin_driver_admitted(sha256: &str) -> bool {
+    // Beside this executable, or beside the profile directory when this is
+    // a test harness under `deps/`.
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|me| me.parent().map(Path::to_path_buf))
+    else {
+        return false;
+    };
+    let dir = match dir.file_name() {
+        Some(name) if name == "deps" => dir.parent().map_or(dir.clone(), Path::to_path_buf),
+        _ => dir,
+    };
+    crate::identity::file_hash(&dir.join(STANDIN_DRIVER_NAME)).is_ok_and(|s| s == sha256)
+}
+#[cfg(not(debug_assertions))]
+fn standin_driver_admitted(_sha256: &str) -> bool {
+    false
+}
+/// Whether this build carries the stand-in seam above.
+pub const SEAM_BUILD: bool = cfg!(debug_assertions);
+/// The marker every offline credential fixture carries: a JSON string value
+/// that begins `SYNTHETIC-`. A seam-bearing build spends nothing else; a
+/// real login (a JWT, an `sk-` key, an OAuth token) never contains it.
+pub const SYNTHETIC_CREDENTIAL: &[u8] = b"\"SYNTHETIC-";
+/// A build that carries the stand-in seam refuses a paid launch whose
+/// credential file is not offline equipment, before anything is spawned,
+/// on every route and with the genuine release pin too.
+fn seam_build_refuses_real_spend(credential: &Path, seam: bool) -> Result<(), String> {
+    if !seam {
+        return Ok(());
+    }
+    let bytes = private_bytes(credential)?;
+    if bytes
+        .windows(SYNTHETIC_CREDENTIAL.len())
+        .any(|w| w == SYNTHETIC_CREDENTIAL)
+    {
+        Ok(())
+    } else {
+        Err("paid_seam_build_refused".into())
+    }
+}
 /// The effort words a nested claude or codex selection may name.
 pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
@@ -858,6 +903,34 @@ struct Selected {
     executable: PathBuf,
     credential_file: PathBuf,
     paid: Option<PaidSelection>,
+}
+/// Whether an agent argv runs a paid wrapper selection, decided from the
+/// selection the wrapper itself would read, never from profile metadata
+/// (hold 1 on a73ac17a, part of #404). An argv naming a wrapper subcommand
+/// is paid when its `--config` holds a version-2 selection for that
+/// family, and also, failing closed, when its selection cannot be read or
+/// it names none. Anything else is no wrapper of this executable.
+pub fn argv_selects_paid<S: AsRef<std::ffi::OsStr>>(argv: &[S]) -> bool {
+    use std::os::unix::ffi::OsStrExt as _;
+    let words: Vec<&std::ffi::OsStr> = argv.iter().map(AsRef::as_ref).collect();
+    let Some((at, family)) = words.iter().enumerate().find_map(|(i, w)| {
+        w.to_str()
+            .and_then(|w| w.strip_prefix("agent-"))
+            .filter(|f| matches!(*f, "claude" | "codex" | "dsh"))
+            .map(|f| (i, f))
+    }) else {
+        return false;
+    };
+    let mut config = None;
+    let mut rest = words[at + 1..].iter();
+    while let Some(word) = rest.next() {
+        if word.as_bytes() == b"--config" {
+            config = rest.next().map(PathBuf::from);
+        } else if let Some(value) = word.as_bytes().strip_prefix(b"--config=") {
+            config = Some(PathBuf::from(std::ffi::OsStr::from_bytes(value)));
+        }
+    }
+    config.is_none_or(|config| selection(&config, family).map_or(true, |s| s.paid.is_some()))
 }
 fn selection(config: &Path, family: &str) -> Result<Selected, String> {
     if !config.is_absolute() {
@@ -1383,8 +1456,9 @@ fn launch(
         (None, Some(_)) => return Err("wrapper_contract_missing".into()),
         (None, None) => {}
     }
-    // Route (b): the selection pins the driver beside the CLI; both are
-    // proven before any credential is read.
+    // Route (b): the selection pins the driver beside the CLI, and the
+    // driver must be the published release on every route (the panel's
+    // hold 3 on a73ac17a): a host grant never stands in for the pin.
     let nested = match via_brokkr {
         Some(driver) => {
             let pin = selected
@@ -1392,26 +1466,35 @@ fn launch(
                 .as_ref()
                 .and_then(|p| p.nested.as_ref())
                 .ok_or("driver_pin_missing")?;
-            // Fail closed (the operator's 2026-11-24 ruling): a nested paid
-            // session runs only under the host baseline's paid-launch
-            // binding or inside the recipe seat's verified read-only binds,
-            // where no coordinator admitted the release pin, so it is
-            // checked here.
-            if binding.is_none() {
-                pin.release()?;
-                let paid = selected.paid.as_ref().expect("a nested pin is paid");
-                let mut sources = vec![driver, paid.program().0, &selected.credential_file, config];
-                if let Some(pin) = &paid.interpreted {
-                    sources.push(&pin.package_root);
-                }
-                crate::binds::verify_live(&sources)
-                    .map_err(|e| format!("nested_paid_unbound: {e}"))?;
-            }
-            pin.check(driver)?;
+            pin.release()?;
             Some((driver, pin))
         }
         None => None,
     };
+    // Fail closed (the operator's 2026-11-24 ruling, holds 1 and 2 on
+    // a73ac17a): a paid launch, direct or nested, runs only on the live
+    // coordinator's authenticated grant (the host baseline) or inside the
+    // recipe seat's verified read-only binds, proven in this process's own
+    // mount table, before any credential is read.
+    if let Some(paid) = &selected.paid {
+        match &binding {
+            Some((sha, t)) => crate::grant::request(&crate::grant::want(sha, *t))?,
+            None => {
+                let mut sources = vec![paid.program().0, &selected.credential_file, config];
+                if let Some((driver, _)) = nested {
+                    sources.push(driver);
+                }
+                if let Some(pin) = &paid.interpreted {
+                    sources.push(&pin.package_root);
+                }
+                crate::binds::verify_live(&sources).map_err(|e| format!("paid_unbound: {e}"))?;
+            }
+        }
+        seam_build_refuses_real_spend(&selected.credential_file, SEAM_BUILD)?;
+    }
+    if let Some((driver, pin)) = nested {
+        pin.check(driver)?;
+    }
     let paid = selected.paid.is_some();
     let cwd = std::env::current_dir().map_err(|_| "wrapper_workdir")?;
     preflight(harness, &cwd, Path::new("/etc"))?;
@@ -2169,6 +2252,43 @@ mod tests {
         let mut other = nested("claude");
         other.driver_sha256 = "a".repeat(64);
         assert_eq!(other.release(), Err("driver_release_unrecognized".into()));
+        // No environment value widens the trusted set (the panel's hold 3 on
+        // a73ac17a): the retired test-equipment variable admits nothing.
+        unsafe { std::env::set_var("EVAL_TEST_STANDIN_DRIVER_SHA256", "a".repeat(64)) };
+        assert_eq!(other.release(), Err("driver_release_unrecognized".into()));
+        unsafe { std::env::remove_var("EVAL_TEST_STANDIN_DRIVER_SHA256") };
+        // A debug build admits the stand-in built beside it, a release build
+        // nothing but the published digest.
+        assert!(!standin_driver_admitted(&"a".repeat(64)));
+        assert_eq!(SEAM_BUILD, cfg!(debug_assertions));
+        // A seam-bearing build spends synthetic equipment alone, whatever
+        // the pin; a release build reads nothing here.
+        let root = crate::runner::private_tempdir("seam-spend-").unwrap();
+        let real = root.path().join("real.json");
+        let fixture = root.path().join("fixture.json");
+        for (path, body) in [
+            (
+                &real,
+                &br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-x"}}"#[..],
+            ),
+            (
+                &fixture,
+                &br#"{"claudeAiOauth":{"accessToken":"SYNTHETIC-X"}}"#[..],
+            ),
+        ] {
+            std::fs::write(path, body).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert_eq!(
+            seam_build_refuses_real_spend(&real, true),
+            Err("paid_seam_build_refused".into())
+        );
+        assert_eq!(seam_build_refuses_real_spend(&fixture, true), Ok(()));
+        assert_eq!(seam_build_refuses_real_spend(&real, false), Ok(()));
+        assert_eq!(
+            seam_build_refuses_real_spend(&root.path().join("absent"), true),
+            Err("private_path_unavailable".into())
+        );
         // The launch check: the flag must name the pinned path, then the
         // bytes must hash to the pin, before any banner runs.
         let n = nested("claude");
@@ -2184,6 +2304,65 @@ mod tests {
                 Err("driver_platform_unsupported".into())
             );
         }
+    }
+    #[test]
+    fn the_paid_decision_reads_the_selection_the_argv_names() {
+        let root = crate::runner::private_tempdir("argv-paid-").unwrap();
+        let write = |name: &str, body: serde_json::Value| {
+            let path = root.path().join(name);
+            std::fs::write(&path, body.to_string()).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            path
+        };
+        let family = json!({"executable": "/bin/true", "credential_file": "/nonexistent"});
+        let v1 = write(
+            "v1.json",
+            json!({"version": 1, "families": {"claude": family, "codex": family, "dsh": family}}),
+        );
+        let v2 = write("v2.json", json!({"version": 2, "families": {}}));
+        let argv = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        let v1s = v1.to_str().unwrap();
+        let v2s = v2.to_str().unwrap();
+        // Not a wrapper of this executable: no paid decision to make.
+        assert!(!argv_selects_paid(&argv(&["/bin/agent", "--config", v2s])));
+        assert!(!argv_selects_paid(&argv(&[
+            "/x",
+            "agent-other",
+            "--config",
+            v2s
+        ])));
+        // A version-1 selection is the free direct contract, both spellings.
+        assert!(!argv_selects_paid(&argv(&[
+            "/x",
+            "agent-claude",
+            "--config",
+            v1s
+        ])));
+        assert!(!argv_selects_paid(&argv(&[
+            "/x",
+            "agent-codex",
+            &format!("--config={v1s}")
+        ])));
+        // A selection that is not version 1 is paid, and so, failing
+        // closed, is one that cannot be read or is not named.
+        assert!(argv_selects_paid(&argv(&[
+            "/x",
+            "agent-claude",
+            "--config",
+            v2s
+        ])));
+        assert!(argv_selects_paid(&argv(&[
+            "/x",
+            "agent-dsh",
+            "--config",
+            "/absent"
+        ])));
+        assert!(argv_selects_paid(&argv(&[
+            "/x",
+            "agent-claude",
+            "--config"
+        ])));
+        assert!(argv_selects_paid(&argv(&["/x", "agent-claude"])));
     }
     #[test]
     fn a_dsh_entry_must_start_the_pinned_runtime_itself() {

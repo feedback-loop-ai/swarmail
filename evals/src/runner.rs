@@ -259,6 +259,25 @@ pub const BUILTINS: [&str; 2] = ["oracle", "null"];
 /// selector, or such a selector without the flag, is
 /// `via_brokkr_profile_mismatch`. Both are fixed categories; the caller
 /// prints one and exits 2 with no row.
+/// The wrapper switches only the runner appends (part of #404): a caller's
+/// agent argv carrying one, in either spelling, is refused before anything
+/// starts, so a binding or a launch pipe is never the caller's to claim.
+pub const RESERVED_FLAGS: [&str; 2] = [PAID_LAUNCH_ARG, LAUNCH_REPORT_ARG];
+/// The typed refusal of a caller's agent argv that names a runner switch.
+pub const RESERVED_FLAG_REFUSAL: &str = "agent_argv_reserved_flag";
+/// Whether a caller's agent argv names a reserved runner switch, as its own
+/// word or as `--switch=value`, anywhere after the program.
+pub fn reserved_flag<S: AsRef<OsStr>>(argv: &[S]) -> Option<&'static str> {
+    argv.iter().skip(1).find_map(|arg| {
+        let bytes = arg.as_ref().as_bytes();
+        RESERVED_FLAGS.iter().find_map(|flag| {
+            let f = flag.as_bytes();
+            (bytes == f || (bytes.starts_with(f) && bytes.get(f.len()) == Some(&b'=')))
+                .then_some(RESERVED_FLAG_REFUSAL)
+        })
+    })
+}
+
 pub fn via_brokkr_refusal(
     argv: &[OsString],
     profile: Option<crate::provenance::WrapperProfile>,
@@ -2362,6 +2381,9 @@ pub fn validate_request(req: &TrialRequest) -> Result<(Task, String), String> {
     if BUILTINS.contains(&label) && !req.argv.is_empty() {
         return Err(format!("the built-in agent {label} takes no command"));
     }
+    if let Some(refusal) = reserved_flag(&req.argv) {
+        return Err(refusal.into());
+    }
     if !BUILTINS.contains(&label) && req.argv.is_empty() {
         return Err(format!(
             "the external agent {label} needs a command after --"
@@ -2849,6 +2871,13 @@ async fn run_body(
     {
         return Err("competitor_task_not_applicable".into());
     }
+    // A paid slot's agents launch only on the coordinator's grant (part of
+    // #404): its endpoints, one per expected agent, must be here before any
+    // server starts, or nothing runs.
+    let grant_ends = match paid {
+        Some(_) => crate::grant::claim(task.agent_count as usize)?,
+        None => Vec::new(),
+    };
     let (smtp, http, mcp_url, surface): (
         SocketAddr,
         Option<SocketAddr>,
@@ -3052,6 +3081,11 @@ async fn run_body(
                 .arg(format!("{}:{}", paid.cli_sha256, paid.valid_through));
         } else if nested.is_some() {
             cmd.arg(LAUNCH_REPORT_ARG);
+        }
+        if let Some(end) = grant_ends.get(index).copied() {
+            // This agent's endpoint, alone, at the descriptor its wrapper
+            // asks on; every other descriptor stays close-on-exec.
+            unsafe { cmd.pre_exec(move || crate::grant::place(&[end])) };
         }
         if paid.is_some() || nested.is_some() {
             match launch_pipe(&mut cmd) {
@@ -3340,6 +3374,9 @@ fn safe_trial_category(error: &str) -> &'static str {
         | "build_context_changed" => "swarmail_unavailable",
         "agent_spawn" => "agent_spawn_failed",
         "agent_unstarted" => "agent_unstarted",
+        "paid_grant_channel_missing"
+        | "paid_grant_unsupported"
+        | "paid_grant_endpoints_invalid" => "paid_grant_channel_missing",
         "adapter_cleanup_unproved" => "trial_cleanup_unproved",
         "adapter_spawn" => "adapter_spawn_failed",
         "adapter_tools_mismatch" => "adapter_tools_mismatch",

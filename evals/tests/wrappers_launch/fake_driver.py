@@ -21,7 +21,8 @@ for k in ('DASHSCOPE_API_KEY', 'SPARK_API_KEY'):
         env[k] = '<present>'
 home = pathlib.Path(env['HOME'])
 fd3 = os.readlink('/proc/self/fd/3') if os.path.exists('/proc/self/fd/3') else None
-rec = {'fd3': fd3, 'argv': args, 'env': env, 'cwd': os.getcwd(),
+fd4 = os.readlink('/proc/self/fd/4') if os.path.exists('/proc/self/fd/4') else None
+rec = {'fd3': fd3, 'fd4': fd4, 'argv': args, 'env': env, 'cwd': os.getcwd(),
        'home': sorted([str(p.relative_to(home)), oct(stat.S_IMODE(p.lstat().st_mode))] for p in home.rglob('*'))}
 def save():
     pathlib.Path(RECORD).write_text(json.dumps(rec))
