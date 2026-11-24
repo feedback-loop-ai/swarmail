@@ -43,7 +43,9 @@ fn a_read_only_bind_rejects_a_write_and_verifies_in_its_namespace() {
     // and dsh's profiles, located from the selection's own path.
     let home = root.join("home");
     for path in swarmail_evals::binds::inventory(&home) {
-        if path.extension().is_some() || path.ends_with("spark.env") {
+        // The two declared files; every other entry is a tree (a version
+        // suffix such as `brokkr-0.15.2` is no file extension).
+        if path.ends_with(".claude.json") || path.ends_with("spark.env") {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, b"inert\n").unwrap();
         } else {

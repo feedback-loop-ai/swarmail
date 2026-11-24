@@ -368,9 +368,14 @@ Spec, plan and tasks in `specs/nested-driver-usage/`; proposed 0138. Part of
   a release build admits the release executable's digest alone, checked on
   every nested route (host grant and recipe), and no environment value widens
   it. Debug builds also admit the stand-in built beside them and spend only
-  synthetic credentials (`paid_seam_build_refused`); unit-tested. Executed
-  offline for the stand-in; the release binary itself only in the opt-in
-  `real_driver.rs`.
+  synthetic credentials, judged by each family's authorizing field alone
+  (`paid_seam_build_refused`); unit-tested. Executed offline for the
+  stand-in; the release binary itself only in the opt-in `real_driver.rs`.
+  The release profile's refusal of the stand-in is the host-gated
+  `release_seam.rs::release_standin_is_not_admitted` (`cargo test --release
+  --locked --test wrappers -- --ignored release_standin_is_not_admitted`
+  from `evals/`). It passed at 37a44cb9's tree; the dispatcher re-runs it on
+  the final head.
 - [x] **T52 Typed nested usage** (`evals/src/usage.rs`): one session per
   expected agent in the trial leaf's usage companion `usage.json`, bound in
   `metadata.json` (proposed 0138); the schema-2 row is unchanged; `report

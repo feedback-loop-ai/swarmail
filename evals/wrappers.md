@@ -460,8 +460,13 @@ stand-in built beside it (`paid-cli-standin`), has the hidden
 `grant-standin` subcommand that serves the coordinator's endpoint code to the
 command it launches, and takes a shorter exit grace from
 `EVAL_TEST_DRIVER_EXIT_GRACE_MS`. Such a build spends nothing but synthetic
-credentials: a paid launch whose credential file holds no `"SYNTHETIC-` value
-refuses `paid_seam_build_refused`, on every route and with the genuine pin. `swarmail-evals trial` accepts
+credentials. Only the family's authorizing values decide: Claude's access
+token, Codex's access token and API key, and the selected dsh route's key.
+Each one present must begin `SYNTHETIC-`, or be a JWT whose signature
+segment decodes to bytes that begin so (an issuer-signed token never does),
+and at least one must be present. The marker in any other field admits
+nothing. Otherwise the launch refuses `paid_seam_build_refused`, on every
+route and with the genuine pin. `swarmail-evals trial` accepts
 `--via-brokkr` only beside an amended `*_via_brokkr` profile. The superseded
 ones (`claude_2_1_310_via_brokkr`, `codex_0_164_0_via_brokkr`,
 `dsh_0_1_5_rc_1_via_brokkr`) still refuse `driver_contract_unknown`. The flag
