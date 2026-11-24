@@ -416,10 +416,18 @@ verified binding, checked before any credential is read or anything spawns:
   evidence is Linux's; elsewhere a paid binding refuses
   (`paid_grant_unsupported`).
 - **the recipe route.** No binding, and this process's own mount table
-  (`/proc/self/mountinfo`) shows the four DNS inputs and the selection, the
-  CLI program (dsh's package root), the driver and the credential file under
-  read-only mounts with no writable mount stacked inside. A missing source,
-  the systemd resolver directory included, refuses `recipe_bind_missing`.
+  (`/proc/self/mountinfo`, one snapshot) shows the four DNS inputs, every
+  read-only source the bundle declares (the nine `~/` entries of the table
+  below, resolved against the seat's source HOME, which the wrapper reads from
+  where the selection lies: its nearest `.config/swarmail-evals` ancestor,
+  `recipe_bind_home_unknown` otherwise), and the selection's own program
+  (dsh's package root), driver, credential file and config under read-only
+  mounts with no writable mount stacked inside any of them, resolver
+  symlinks followed; and `~/.dsh/profiles` is itself a writable `overlay`
+  mount, so profile writes stay in the seat (`recipe_overlay_missing`,
+  `recipe_overlay_not_private`). A missing source, the systemd resolver
+  directory included, refuses `recipe_bind_missing`; a writable one, or a
+  writable mount beneath a declared tree, `recipe_bind_writable`.
   Claude's and codex's auth are bound read-only there, which no session has
   been shown to run under (the 2026-11-23 smoke needed `~/.claude`,
   `~/.claude.json` and `~/.codex` writable), so a paid claude or codex launch
@@ -597,19 +605,25 @@ alone. The `trial` seat declares, besides `network: true`:
 | `~/.dsh/spark.env` | `ro` | dsh's Spark route environment |
 | `~/.dsh/profiles` | `overlay` | dsh's profiles: readable, writes stay in the seat |
 
-Keep the selection, the driver, the CLIs and dsh's package under these trees:
-the wrapper refuses any of them outside a read-only mount. dsh's route key
+Keep the selection under `~/.config/swarmail-evals` (the wrapper finds the
+seat's HOME from it) and the driver, the CLIs and dsh's package under these
+trees: the wrapper refuses any of them outside a read-only mount, and it
+re-proves every declared entry, not only the files this selection reads. dsh's route key
 lives in the selection's credential file. `matrix --brokkr` refuses a paid
 agent unless the bundle declares every entry with its mode
 (`evals/src/binds.rs`), and a paid dsh wrapper re-proves the effect in its own
-mount table; a paid claude or codex wrapper refuses there
+mount table (all thirteen read-only sources, the four DNS inputs among them,
+and the overlay); a paid claude or codex wrapper refuses there
 (`recipe_auth_unruled`). The 2026-11-23 smoke needed `~/.claude`,
 `~/.claude.json` and `~/.codex` read-write; the operator approved read-only
 binds only, so they stay `ro`, and **a paid claude or codex session on the
 recipe route under read-only auth is unproven and needs an operator ruling
-before it runs.** All fourteen sources exist on the operator's host as of
-2026-11-24 (the dispatcher's host proofs); a source missing inside a seat
-refuses with a typed reason (`recipe_bind_missing`), never silently drops.
+before it runs.** The thirteen read-only sources and the profiles overlay
+target exist on the operator's host as of 2026-11-24 (the dispatcher's host
+proofs); a source missing inside a seat refuses with a typed reason
+(`recipe_bind_missing`, `recipe_overlay_missing`), never silently drops, and a
+host missing an unselected family's files refuses too: the declared boundary
+is proven whole.
 Whether brokkr applies these binds to a recipe seat, and the release driver
 launching inside one, is not yet observed: the host proofs cover the host
 route's real driver and the mount primitive only.

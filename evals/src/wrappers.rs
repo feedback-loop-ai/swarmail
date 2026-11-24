@@ -1518,7 +1518,14 @@ fn launch(
                 if let Some(pin) = &paid.interpreted {
                     sources.push(&pin.package_root);
                 }
-                crate::binds::verify_live(&sources).map_err(|e| format!("paid_unbound: {e}"))?;
+                // Every declared read-only source under the seat's HOME, the
+                // profiles overlay and the selected paths (guarantees 1 on
+                // 6074b83e): the whole inventory, not only what this
+                // selection reads.
+                let home = crate::binds::source_home(config)
+                    .ok_or("paid_unbound: recipe_bind_home_unknown")?;
+                crate::binds::verify_live(&home, &sources)
+                    .map_err(|e| format!("paid_unbound: {e}"))?;
             }
         }
         seam_build_refuses_real_spend(&selected.credential_file, SEAM_BUILD)?;

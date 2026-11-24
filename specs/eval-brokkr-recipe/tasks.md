@@ -383,9 +383,12 @@ Spec, plan and tasks in `specs/nested-driver-usage/`; proposed 0138. Part of
   the dispatcher on 2026-11-24 at a73ac17a); and the **mount primitive**, a
   read-only bubblewrap bind rejecting a write with `binds::verify` passing in
   its namespace (host-gated `mount_proof.rs`, same day). The recipe's
-  fourteen read-only binds and the dsh overlay are declared in
-  `.brokkr/recipes/eval/bundle.json`, and the wrapper verifies them from its
-  own mount table (unit-tested). What is **not yet** proven: brokkr applying
+  thirteen read-only binds and the dsh overlay are declared in
+  `.brokkr/recipes/eval/bundle.json`, and a paid recipe wrapper verifies all
+  of them, HOME-resolved, plus the selected paths, from its own mount table
+  (unit-tested over fixture tables; `mount_proof.rs` extends to the whole
+  inventory and the overlay, pending the dispatcher's run at the third
+  rework). What is **not yet** proven: brokkr applying
   the bundle's binds to a recipe seat, and the release driver launching
   inside one; and any paid claude or codex session under read-only auth,
   which the wrapper refuses (`recipe_auth_unruled`) pending an operator

@@ -64,6 +64,7 @@ pub fn declared(bundle: &str) -> Result<(), &'static str> {
 struct Mount {
     point: PathBuf,
     read_only: bool,
+    fstype: String,
 }
 
 /// Undo mountinfo's octal escapes (`\040` space, `\011` tab, `\012`
@@ -92,7 +93,8 @@ fn unescape(field: &str) -> PathBuf {
 }
 
 /// Parse `/proc/self/mountinfo`: field 5 is the mount point, field 6 the
-/// per-mount options. A line that does not have them is skipped.
+/// per-mount options, and the first field after the ` - ` separator the
+/// filesystem type. A line that does not have them is skipped.
 fn mounts(mountinfo: &str) -> Vec<Mount> {
     mountinfo
         .lines()
@@ -100,9 +102,11 @@ fn mounts(mountinfo: &str) -> Vec<Mount> {
             let mut fields = line.split(' ').skip(4);
             let point = unescape(fields.next()?);
             let options = fields.next()?;
+            let fstype = fields.skip_while(|f| *f != "-").nth(1)?;
             Some(Mount {
                 point,
                 read_only: options.split(',').any(|o| o == "ro"),
+                fstype: fstype.to_string(),
             })
         })
         .collect()
@@ -150,13 +154,74 @@ pub fn verify(
     Ok(())
 }
 
-/// The live check a nested wrapper makes: this process's own mount table.
-/// A host outside any recipe seat has writable DNS inputs, so an unbound
-/// nested selection refuses here before any credential is read.
-pub fn verify_live(sources: &[&Path]) -> Result<(), String> {
+/// The recipe seat's source HOME, read from where the operator's selection
+/// lies: under the declared `~/.config/swarmail-evals` tree, so `config`'s
+/// nearest `.config/swarmail-evals` ancestor names it. It only locates the
+/// declared mounts, each of which must then prove read-only; it confers no
+/// authority. A selection elsewhere has no recipe HOME (`None`).
+pub fn source_home(config: &Path) -> Option<PathBuf> {
+    config
+        .ancestors()
+        .find(|a| a.ends_with(".config/swarmail-evals"))
+        .and_then(|a| a.parent()?.parent())
+        .filter(|h| h.is_absolute())
+        .map(Path::to_path_buf)
+}
+
+/// Every read-only [`RECIPE_BINDS`] entry under HOME, resolved against the
+/// seat's source `home`: the declared inventory the wrapper re-proves.
+pub fn inventory(home: &Path) -> Vec<PathBuf> {
+    RECIPE_BINDS
+        .iter()
+        .filter(|(_, mode)| *mode == "ro")
+        .filter_map(|(path, _)| path.strip_prefix("~/"))
+        .map(|rest| home.join(rest))
+        .collect()
+}
+
+/// The declared overlay's target under `home` (dsh's profiles).
+pub fn overlay_target(home: &Path) -> PathBuf {
+    let (path, _) = RECIPE_BINDS[RECIPE_BINDS.len() - 1];
+    home.join(path.trim_start_matches("~/"))
+}
+
+/// The whole recipe check: the DNS inputs, every declared read-only source
+/// under `home` and the selection's own `selected` paths are protected (a
+/// missing one refuses `recipe_bind_missing`, a writable one or a writable
+/// mount beneath it `recipe_bind_writable`), and the profiles target is
+/// itself a writable overlay mount, so the seat's writes stay private
+/// (`recipe_overlay_missing` when the target is absent,
+/// `recipe_overlay_not_private` when it is anything but an overlay mount).
+pub fn verify_recipe(
+    mountinfo: &str,
+    home: &Path,
+    selected: &[&Path],
+    resolve: impl Fn(&Path) -> Option<PathBuf>,
+) -> Result<(), String> {
+    let declared = inventory(home);
+    let sources: Vec<&Path> = declared
+        .iter()
+        .map(PathBuf::as_path)
+        .chain(selected.iter().copied())
+        .collect();
+    verify(mountinfo, &sources, &resolve)?;
+    let real = resolve(&overlay_target(home)).ok_or("recipe_overlay_missing")?;
+    let table = mounts(mountinfo);
+    match owner(&table, &real) {
+        Some(m) if m.point == real && m.fstype == "overlay" && !m.read_only => Ok(()),
+        _ => Err("recipe_overlay_not_private".into()),
+    }
+}
+
+/// The live check a paid recipe wrapper makes: this process's own mount
+/// table. A host outside any recipe seat has writable DNS inputs, so an
+/// unbound paid selection refuses here before any credential is read.
+pub fn verify_live(home: &Path, selected: &[&Path]) -> Result<(), String> {
     let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")
         .map_err(|_| "recipe_bind_unverifiable".to_string())?;
-    verify(&mountinfo, sources, |p| std::fs::canonicalize(p).ok())
+    verify_recipe(&mountinfo, home, selected, |p| {
+        std::fs::canonicalize(p).ok()
+    })
 }
 
 #[cfg(test)]
@@ -244,6 +309,79 @@ mod tests {
         assert_eq!(verify(&bound, &[], linked), Ok(()));
     }
 
+    /// The whole declared inventory under the source HOME, not only the
+    /// selected files, and dsh's profiles as a private overlay (guarantees 1
+    /// on 6074b83e).
+    #[test]
+    fn the_recipe_check_proves_every_declared_source_and_the_overlay() {
+        let home = Path::new("/home/op");
+        assert_eq!(
+            source_home(Path::new("/home/op/.config/swarmail-evals/agents/sel.json")),
+            Some(home.to_path_buf())
+        );
+        assert_eq!(source_home(Path::new("/srv/sel.json")), None);
+        assert_eq!(
+            source_home(Path::new(".config/swarmail-evals/s.json")),
+            None
+        );
+        let declared = inventory(home);
+        assert_eq!(declared.len(), 9);
+        assert!(declared.contains(&home.join(".volta")));
+        assert!(declared.contains(&home.join(".dsh/spark.env")));
+        assert_eq!(overlay_target(home), home.join(".dsh/profiles"));
+        // Every declared tree read-only, the overlay a writable overlay.
+        let mut rows: Vec<(String, &str, &str)> = BOUND
+            .iter()
+            .map(|(p, o)| (p.to_string(), *o, "ext4"))
+            .collect();
+        for path in &declared {
+            rows.push((path.to_str().unwrap().to_string(), "ro", "ext4"));
+        }
+        let profiles = overlay_target(home).to_str().unwrap().to_string();
+        let render = |rows: &[(String, &str, &str)]| {
+            rows.iter()
+                .map(|(p, o, t)| format!("36 35 98:0 / {p} {o} master:1 - {t} src rw"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut good = rows.clone();
+        good.push((profiles.clone(), "rw,relatime", "overlay"));
+        let sel = Path::new("/opt/cli/bin/dsh");
+        assert_eq!(verify_recipe(&render(&good), home, &[sel], present), Ok(()));
+        // A writable sibling mounted under a declared read-only tree.
+        let mut sibling = good.clone();
+        sibling.push(("/home/op/.volta/tools/node_modules".into(), "rw", "ext4"));
+        assert_eq!(
+            verify_recipe(&render(&sibling), home, &[sel], present),
+            Err("recipe_bind_writable".into())
+        );
+        // A declared source missing from the namespace.
+        let no_env = |p: &Path| (p != home.join(".dsh/spark.env")).then(|| p.to_path_buf());
+        assert_eq!(
+            verify_recipe(&render(&good), home, &[sel], no_env),
+            Err("recipe_bind_missing".into())
+        );
+        // The profiles target absent, an ordinary writable directory, an
+        // ordinary writable mount, or a read-only overlay.
+        let no_profiles = |p: &Path| (p != overlay_target(home)).then(|| p.to_path_buf());
+        assert_eq!(
+            verify_recipe(&render(&good), home, &[sel], no_profiles),
+            Err("recipe_overlay_missing".into())
+        );
+        assert_eq!(
+            verify_recipe(&render(&rows), home, &[sel], present),
+            Err("recipe_overlay_not_private".into())
+        );
+        for (o, t) in [("rw", "ext4"), ("ro", "overlay")] {
+            let mut other = rows.clone();
+            other.push((profiles.clone(), o, t));
+            assert_eq!(
+                verify_recipe(&render(&other), home, &[sel], present),
+                Err("recipe_overlay_not_private".into())
+            );
+        }
+    }
+
     #[test]
     fn the_eval_recipe_declares_every_paid_bind() {
         let bundle = include_str!("../../.brokkr/recipes/eval/bundle.json");
@@ -280,7 +418,8 @@ mod tests {
             mounts(&info),
             vec![Mount {
                 point: PathBuf::from("/opt/my cli"),
-                read_only: true
+                read_only: true,
+                fstype: "ext4".into(),
             }]
         );
         assert_eq!(unescape("a\\134b\\9xy\\"), PathBuf::from("a\\b\\9xy\\"));
@@ -295,6 +434,6 @@ mod tests {
     #[test]
     fn a_source_absent_from_the_live_namespace_is_refused() {
         let absent = Path::new("/nonexistent-swarmail-evals-bind-source");
-        assert!(verify_live(&[absent]).is_err());
+        assert!(verify_live(absent, &[absent]).is_err());
     }
 }

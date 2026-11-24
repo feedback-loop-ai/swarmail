@@ -767,8 +767,9 @@ tracked in brokkr#766.
   driver's engine. A paid agent under `matrix --brokkr` (decided from the selection its
   argv names, not its profile) is refused (`brokkr_paid_unbound`) unless the
   trial seat declares F5's read-only binds (the paid read set below). At
-  launch a paid dsh wrapper re-proves them in its own mount table before any
-  credential read, direct or nested; a paid claude or codex wrapper refuses
+  launch a paid dsh wrapper re-proves every declared read-only source and the
+  profiles overlay in its own mount table before any credential read, direct
+  or nested; a paid claude or codex wrapper refuses
   (`recipe_auth_unruled`) until the operator rules on read-only auth.
 - `review` (the exec scoring gate, `scripts/score.sh`, which is the recipe's
   protected review under brokkr 0.12.0, decision 0119 R4) re-applies the task's
@@ -816,7 +817,7 @@ workspace hands reach nothing else. **A paid agent under `matrix --brokkr`
 fails closed** (`brokkr_paid_unbound`, before any slot) unless the recipe's
 trial seat declares every F5 bind of `wrappers.md`'s paid read set, and a
 paid wrapper inside the seat refuses (`paid_unbound`) unless its own mount
-table shows them read-only (claude and codex refuse there regardless, pending
+table shows every declared source read-only and the profiles overlay private (claude and codex refuse there regardless, pending
 the operator's ruling on read-only auth). The host baseline (the #151 path) stays the
 paid route the operator has run; no paid trial has run through this recipe. Trials stay sequential (accepted 0076): the
 issue's "two concurrent trials of one task both pass" criterion is **not** met
