@@ -7,9 +7,9 @@
 //! stacked inside a protected tree.
 use std::path::{Path, PathBuf};
 
-/// The four DNS inputs the trial seat binds read-only. The first three must
-/// exist inside the namespace; `/run/systemd/resolve` is bound where the
-/// host has it.
+/// The four DNS inputs the trial seat binds read-only. Each must exist
+/// inside the namespace: a missing source refuses by name
+/// (`recipe_bind_missing`), never silently drops.
 pub const DNS: [&str; 4] = [
     "/etc/resolv.conf",
     "/etc/nsswitch.conf",
@@ -22,7 +22,7 @@ pub const DNS: [&str; 4] = [
 /// wrapper re-proves the effect in its own namespace; this is the matrix's
 /// refusal before any slot spends, so a recipe without them never starts
 /// a paid agent.
-pub const RECIPE_BINDS: [(&str, &str); 11] = [
+pub const RECIPE_BINDS: [(&str, &str); 14] = [
     ("/etc/resolv.conf", "ro"),
     ("/run/systemd/resolve", "ro"),
     ("/etc/nsswitch.conf", "ro"),
@@ -33,6 +33,9 @@ pub const RECIPE_BINDS: [(&str, &str); 11] = [
     ("~/.volta", "ro"),
     ("~/.claude", "ro"),
     ("~/.codex", "ro"),
+    ("~/.local/bin", "ro"),
+    ("~/.claude.json", "ro"),
+    ("~/.dsh/spark.env", "ro"),
     ("~/.dsh/profiles", "overlay"),
 ];
 
@@ -137,15 +140,7 @@ pub fn verify(
     resolve: impl Fn(&Path) -> Option<PathBuf>,
 ) -> Result<(), String> {
     let table = mounts(mountinfo);
-    for (index, dns) in DNS.iter().enumerate() {
-        match resolve(Path::new(dns)) {
-            Some(real) if protected(&table, &real) => {}
-            Some(_) => return Err("recipe_bind_writable".into()),
-            None if index == DNS.len() - 1 => {}
-            None => return Err("recipe_bind_missing".into()),
-        }
-    }
-    for source in sources {
+    for source in DNS.iter().map(Path::new).chain(sources.iter().copied()) {
         match resolve(source) {
             Some(real) if protected(&table, &real) => {}
             Some(_) => return Err("recipe_bind_writable".into()),
@@ -225,10 +220,13 @@ mod tests {
             verify(&table(&over), &[], present),
             Err("recipe_bind_writable".into())
         );
-        // Only the systemd resolver directory may be absent.
+        // Every DNS source must be there, the systemd resolver included.
         let no_systemd =
             |p: &Path| (p != Path::new("/run/systemd/resolve")).then(|| p.to_path_buf());
-        assert_eq!(verify(&bound, &[], no_systemd), Ok(()));
+        assert_eq!(
+            verify(&bound, &[], no_systemd),
+            Err("recipe_bind_missing".into())
+        );
         let no_hosts = |p: &Path| (p != Path::new("/etc/hosts")).then(|| p.to_path_buf());
         assert_eq!(
             verify(&bound, &[], no_hosts),
@@ -264,6 +262,12 @@ mod tests {
             doc["seats"]["trial"]["hands"]["binds"] = writable;
             assert_eq!(declared(&doc.to_string()), Err("brokkr_paid_unbound"));
         }
+        // A masked bind declares nothing.
+        let mut masked = binds.clone();
+        masked[0]["mask"] = serde_json::json!(["*"]);
+        let mut doc = value.clone();
+        doc["seats"]["trial"]["hands"]["binds"] = masked;
+        assert_eq!(declared(&doc.to_string()), Err("brokkr_paid_unbound"));
         value["seats"]["trial"]["hands"]["binds"] = serde_json::Value::Null;
         assert_eq!(declared(&value.to_string()), Err("brokkr_paid_unbound"));
         assert_eq!(declared("{"), Err("brokkr_realm_invalid"));

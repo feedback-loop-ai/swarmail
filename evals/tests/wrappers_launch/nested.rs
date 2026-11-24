@@ -178,6 +178,14 @@ impl Nested {
     /// One launch with a fresh HOME and descriptor 3 as the launch pipe:
     /// the exit code, stderr and what the pipe carried.
     pub(super) fn launch(&self, mode: Value) -> (Option<i32>, String, Vec<u8>) {
+        self.launch_env(mode, &[])
+    }
+    /// [`Nested::launch`] with extra wrapper environment (test equipment).
+    pub(super) fn launch_env(
+        &self,
+        mode: Value,
+        env: &[(&str, &str)],
+    ) -> (Option<i32>, String, Vec<u8>) {
         use std::os::fd::IntoRawFd;
         use std::os::unix::process::CommandExt;
         self.clear_home();
@@ -189,7 +197,8 @@ impl Nested {
         cmd.arg("--via-brokkr")
             .arg(&self.driver)
             .arg("--paid-launch")
-            .arg(self.binding());
+            .arg(self.binding())
+            .envs(env.iter().copied());
         let mut cmd = granted(&cmd, 1, &self.binding());
         unsafe {
             cmd.pre_exec(move || {
@@ -471,10 +480,15 @@ fn every_nested_ending_without_a_completed_result_is_a_typed_harness_error() {
     assert_ne!(receipt.disposition, "completed");
     assert_eq!(n.record()["stdin_closed"], true);
     let began = std::time::Instant::now();
-    let (exit, err, report) = n.launch(json!({"mode": "deaf", "finals": finals}));
+    // An injected short grace (debug builds only): the kill and reap
+    // follow it, not the production 3 s.
+    let (exit, err, report) = n.launch_env(
+        json!({"mode": "deaf", "finals": finals}),
+        &[(wrappers::EXIT_GRACE_TEST_ENV, "200")],
+    );
     assert_eq!(exit, Some(0), "{err}");
     assert!(began.elapsed() < std::time::Duration::from_secs(60));
-    assert!(began.elapsed() >= wrappers::DRIVER_EXIT_GRACE);
+    assert!(began.elapsed() >= std::time::Duration::from_millis(200));
     let LaunchReport::Nested(receipt) = launch_report_of(&report) else {
         panic!("{}", String::from_utf8_lossy(&report));
     };
@@ -587,9 +601,15 @@ fn an_unbound_nested_selection_refuses_before_any_spend() {
         assert!(!n.record.exists(), "{code}: the driver ran");
         assert!(std::fs::read_dir(&n.c.home).unwrap().next().is_none());
     };
-    // No binding: the recipe route, whose read-only binds this host's
-    // mount table does not hold.
-    refuses(&n, fresh(&n), "paid_unbound: recipe_bind_");
+    // No binding: the recipe route. Claude's read-only auth there awaits
+    // the operator's ruling; dsh's read-only binds this host's mount table
+    // does not hold.
+    refuses(&n, fresh(&n), "paid_unbound: recipe_auth_unruled");
+    let d = Nested::new("dsh", "spark-glm/GLM-5.3-Flash-EXL3");
+    d.clear_home();
+    let mut cmd = d.c.command("dsh", "spark-glm/GLM-5.3-Flash-EXL3");
+    cmd.arg("--via-brokkr").arg(&d.driver);
+    refuses(&d, cmd, "paid_unbound: recipe_bind_");
     // A self-computed binding with no coordinator (the panel's hold 2): the
     // identity is a pure function of the selection, so it admits nothing.
     let mut cmd = fresh(&n);
@@ -1154,4 +1174,63 @@ fn a_nested_contract_binds_the_driver_pin_and_its_flags() {
         assert!(String::from_utf8_lossy(&out.stderr).contains("wrapper_contract_drift"));
         assert!(!n.record.exists(), "{family}: the driver ran after drift");
     }
+}
+
+/// A granted nested trial that would score, run with no retained leaf to
+/// commit its usage companion in, is a harness error, never a scored row
+/// without usage (the panel's tests 2 on a73ac17a).
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[test]
+fn a_scored_nested_trial_without_retention_is_a_harness_error() {
+    let _scope = common::trial_scope();
+    let n = Nested::new("claude", "claude-sonnet-5-5");
+    private(
+        &n.mode,
+        json!({"mode": "complete", "finals": [smoke_final("claude")]})
+            .to_string()
+            .as_bytes(),
+    );
+    let trial_id = format!("{:032x}", 0x406u32);
+    let coordinates = swarmail_evals::provenance::MatrixCoordinates {
+        matrix_id: "f".repeat(32),
+        master_seed: "e".repeat(64),
+        task_index: 0,
+        agent_index: 0,
+        repetition_index: 0,
+    };
+    let seed = coordinates.cell_seed("signup", "claude-nested").unwrap();
+    let fixture = swarmail_evals::provenance::FixtureInputs::resolve(Some(&seed), None).unwrap();
+    let argv: Vec<std::ffi::OsString> = vec![
+        common::exe().into(),
+        "agent-claude".into(),
+        "--model".into(),
+        "claude-sonnet-5-5".into(),
+        "--config".into(),
+        n.c.manifest.clone().into(),
+        "--via-brokkr".into(),
+        n.driver.clone().into(),
+    ];
+    let context = paid_context(&n, &trial_id, "signup", &argv, &coordinates);
+    let mut command = common::cli();
+    command
+        .args(["trial", "--task", "signup", "--agent", "claude-nested"])
+        .args(["--agent-model", "claude-sonnet-5-5"])
+        .args(["--wrapper-profile", "claude_2_1_329_via_brokkr"])
+        .args(["--deadline-ms", "60000", "--seed", &fixture.seed])
+        .args(["--fixture-time", &fixture.fixture_time])
+        .args(["--worker-context", &context, "--"])
+        .args(&argv);
+    let grant = format!(
+        "{}:1900000000",
+        wrappers::contract_identity(&n.c.manifest, "claude", true).unwrap()
+    );
+    let out = granted(&command, 1, &grant).output().unwrap();
+    let row = common::one_row(&out);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(n.record.exists(), "the granted session ran: {err}");
+    assert_eq!(row.outcome, Outcome::HarnessError, "{err}");
+    assert!(err.contains("usage_companion_unretained"), "{err}");
 }

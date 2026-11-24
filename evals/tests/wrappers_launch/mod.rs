@@ -1330,7 +1330,14 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
         let out = c.command(family, model).output().unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(2), "{err}");
-        assert!(err.contains("paid_unbound: recipe_bind_"), "{err}");
+        // Claude's and codex's read-only recipe auth awaits an operator
+        // ruling; dsh proves the mount table, which this host fails.
+        let unbound = if family == "dsh" {
+            "paid_unbound: recipe_bind_"
+        } else {
+            "paid_unbound: recipe_auth_unruled"
+        };
+        assert!(err.contains(unbound), "{err}");
         assert!(!c.capture.exists());
         assert!(std::fs::read_dir(&c.home).unwrap().next().is_none());
         let (cmd, grant) = bound(&c, family, model);

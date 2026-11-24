@@ -1504,6 +1504,12 @@ fn launch(
     if let Some(paid) = &selected.paid {
         match &binding {
             Some((sha, t)) => crate::grant::request(&crate::grant::want(sha, *t))?,
+            // The recipe route binds claude's and codex's auth read-only,
+            // which no session has yet been shown to run under (the 2026-11-23
+            // smoke needed them writable): refused until the operator rules.
+            None if matches!(harness, "claude" | "codex") => {
+                return Err("paid_unbound: recipe_auth_unruled".into());
+            }
             None => {
                 let mut sources = vec![paid.program().0, &selected.credential_file, config];
                 if let Some((driver, _)) = nested {
@@ -1966,6 +1972,20 @@ fn nested_session(
 /// killed: a driver that ignores `shutdown` or holds its stdout open must
 /// not keep the wrapper (and the typed receipt) until the trial deadline.
 pub const DRIVER_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+/// Test equipment, debug builds alone: a shorter grace for the offline
+/// proofs (milliseconds, never longer than [`DRIVER_EXIT_GRACE`]). A release
+/// build always waits the full grace.
+pub const EXIT_GRACE_TEST_ENV: &str = "EVAL_TEST_DRIVER_EXIT_GRACE_MS";
+fn exit_grace() -> std::time::Duration {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var(EXIT_GRACE_TEST_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return std::time::Duration::from_millis(ms).min(DRIVER_EXIT_GRACE);
+    }
+    DRIVER_EXIT_GRACE
+}
 
 /// The bounded end of a nested driver. `arm` starts one watchdog that kills
 /// the driver after [`DRIVER_EXIT_GRACE`] unless it was reaped first; the
@@ -1988,9 +2008,9 @@ impl Reaper {
         if self.armed.replace(true) {
             return;
         }
-        let (pid, reaped) = (self.pid, self.reaped.clone());
+        let (pid, reaped, grace) = (self.pid, self.reaped.clone(), exit_grace());
         std::thread::spawn(move || {
-            std::thread::sleep(DRIVER_EXIT_GRACE);
+            std::thread::sleep(grace);
             let reaped = reaped.lock().unwrap_or_else(|e| e.into_inner());
             if !*reaped {
                 unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };

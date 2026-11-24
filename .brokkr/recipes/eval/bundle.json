@@ -60,6 +60,18 @@
             "mode": "ro"
           },
           {
+            "path": "~/.local/bin",
+            "mode": "ro"
+          },
+          {
+            "path": "~/.claude.json",
+            "mode": "ro"
+          },
+          {
+            "path": "~/.dsh/spark.env",
+            "mode": "ro"
+          },
+          {
             "path": "~/.dsh/profiles",
             "mode": "overlay"
           }

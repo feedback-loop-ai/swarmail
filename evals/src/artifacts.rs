@@ -838,6 +838,51 @@ mod tests {
             assert_eq!(r.unwrap_err(), "injected write failure");
             assert!(!root.join(&row.trial_id).join("metadata.json").exists());
         }
+        // A nested leaf adds the usage companion, published after cleanup
+        // and before the marker: a failure at it, or at the marker after
+        // it, leaves no committed leaf.
+        let nested = crate::runner::TrialRequest {
+            task: Some("signup".into()),
+            agent: Some("claude-nested".into()),
+            argv: vec!["/bin/agent".into()],
+            agent_model: Some("claude-sonnet-5-5".into()),
+            wrapper_profile: Some(crate::provenance::WrapperProfile::Claude2_1_329ViaBrokkr),
+            ..Default::default()
+        };
+        let row = crate::runner::refused_row(&nested, &"1".repeat(32));
+        let usage = crate::usage::Companion::new(
+            &row,
+            vec![crate::usage::Session {
+                agent: 0,
+                attempt_id: "attempt-1".into(),
+                disposition: "completed".into(),
+                facts: crate::usage::Facts::unavailable(crate::usage::Reason::NoSessionFinal),
+            }],
+        )
+        .expect("a nested row has a companion");
+        for stage in [crate::usage::COMPANION_FILE, "metadata.json"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = artifact_root(&dir);
+            let mut seen = Vec::new();
+            let r = retain_with(&root, &row, None, Some(&usage), |root, name, bytes| {
+                seen.push(name.to_string());
+                if name == stage {
+                    return Err("injected write failure".into());
+                }
+                publish(root, name, bytes)
+            });
+            assert_eq!(r.unwrap_err(), "injected write failure");
+            assert!(
+                seen.iter().any(|n| n == crate::usage::COMPANION_FILE),
+                "{seen:?}"
+            );
+            assert!(!root.join(&row.trial_id).join("metadata.json").exists());
+            assert!(trial(&root.join(&row.trial_id)).is_err());
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = artifact_root(&dir);
+        retain_trial(&root, &row, None, Some(&usage)).unwrap();
+        assert_eq!(trial(&root.join(&row.trial_id)).unwrap().usage, Some(usage));
     }
     #[test]
     fn exclusive_destinations_and_symlinked_roots_are_never_reused() {
