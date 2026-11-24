@@ -427,8 +427,18 @@ pub enum ToolSurface {
         residuals: Vec<String>,
     },
 }
+/// The Codex sandbox classes a nested selection may run (the operator's
+/// 2026-11-24 ruling on #404); `danger-full-access` is refused before any
+/// row exists.
+pub const CODEX_CLASSES: [&str; 2] = ["read-only", "workspace-write"];
 impl ToolSurface {
     pub fn declared(profile: WrapperProfile) -> Self {
+        Self::declared_class(profile, None)
+    }
+    /// The declared surface, with the Codex sandbox class the selection
+    /// actually names under the driver (hold 4 on a73ac17a). `None` is a
+    /// class that could not be read: such a selection never launches.
+    pub fn declared_class(profile: WrapperProfile, codex_class: Option<&str>) -> Self {
         let (restrictions, residuals): (&[&str], &[&str]) = match profile.family() {
             "claude" => (
                 &[
@@ -478,16 +488,34 @@ impl ToolSurface {
         let mut residuals: Vec<String> = residuals.iter().map(|s| s.to_string()).collect();
         let mut restrictions: Vec<String> = restrictions.iter().map(|s| s.to_string()).collect();
         if profile.via_brokkr() {
-            residuals.push("brokkr driver flags unenumerated".to_string());
-            // Under the driver codex runs the class the selection names, not
-            // the direct launch's fixed one: say which classes are admitted
-            // and where the effective one is bound, never "read-only".
-            if profile.family() == "codex" {
-                restrictions[0] = "driver-selected sandbox class (read-only or \
-                    workspace-write; danger-full-access refused), bound in the \
-                    contract identity"
-                    .to_string();
+            // The nested route applies its own launch, not the direct one's
+            // flags: each family's descriptor names what it passes.
+            match profile.family() {
+                "claude" => {
+                    restrictions = vec![
+                        "permission mode acceptEdits".into(),
+                        "two declared MCP servers (user scope)".into(),
+                        "explicit MCP tool permissions (settings)".into(),
+                        "model and effort flags".into(),
+                    ];
+                    residuals.push("builtin tools, settings and skills not restricted".into());
+                }
+                "codex" => {
+                    restrictions = vec![
+                        match codex_class {
+                            Some(class) => format!("{class} sandbox (driver-selected)"),
+                            None => "driver sandbox class unread".into(),
+                        },
+                        "web search disabled".into(),
+                        "fresh CODEX_HOME configuration".into(),
+                        "two declared MCP servers".into(),
+                        "model and effort flags".into(),
+                    ];
+                    residuals.push("ephemeral session and rule exclusion not applied".into());
+                }
+                _ => {}
             }
+            residuals.push("brokkr driver flags unenumerated".to_string());
         }
         Self::Wrapper {
             revision: 1,
@@ -497,13 +525,33 @@ impl ToolSurface {
             residuals,
         }
     }
-    pub fn for_request(valid: bool, builtin: bool, profile: Option<WrapperProfile>) -> Self {
+    pub fn for_request(
+        valid: bool,
+        builtin: bool,
+        profile: Option<WrapperProfile>,
+        codex_class: Option<&str>,
+    ) -> Self {
         if !valid {
             Self::InvalidRequest
         } else if builtin {
             Self::BuiltinNotApplicable
         } else {
-            profile.map(Self::declared).unwrap_or(Self::ExternalUnknown)
+            profile
+                .map(|p| Self::declared_class(p, codex_class))
+                .unwrap_or(Self::ExternalUnknown)
+        }
+    }
+    /// Whether this is a surface the profile can declare: under the driver,
+    /// Codex's with one of the admitted classes or an unread one.
+    fn admitted(&self, profile: WrapperProfile) -> bool {
+        if profile.via_brokkr() && profile.family() == "codex" {
+            CODEX_CLASSES
+                .iter()
+                .map(|c| Some(*c))
+                .chain([None])
+                .any(|c| *self == Self::declared_class(profile, c))
+        } else {
+            *self == Self::declared(profile)
         }
     }
     pub fn validate(&self, kind: AgentKind, model: &Availability<String>) -> Result<(), String> {
@@ -511,9 +559,7 @@ impl ToolSurface {
             (Self::BuiltinNotApplicable, AgentKind::Builtin)
             | (Self::ExternalUnknown, AgentKind::External)
             | (Self::InvalidRequest, AgentKind::Invalid) => Ok(()),
-            (Self::Wrapper { profile, .. }, AgentKind::External)
-                if *self == Self::declared(*profile) =>
-            {
+            (Self::Wrapper { profile, .. }, AgentKind::External) if self.admitted(*profile) => {
                 profile.validate_model(match model {
                     Availability::Present { value, .. } => Some(value),
                     _ => None,
@@ -892,8 +938,13 @@ mod via_brokkr_tests {
         }
     }
 
+    /// Each route's descriptor names what that route applies (the panel's
+    /// correctness 5 on a73ac17a): the nested claude launch passes only
+    /// acceptEdits, model and effort, so none of the direct launch's flag
+    /// restrictions is claimed for it, and the nested codex descriptor names
+    /// the class the selection runs (hold 4).
     #[test]
-    fn a_via_brokkr_surface_differs_only_by_the_driver_residual_and_codexs_class() {
+    fn a_via_brokkr_surface_names_what_its_route_applies() {
         for (direct, via) in DIRECT.into_iter().zip(VIA) {
             let (
                 ToolSurface::Wrapper {
@@ -916,18 +967,65 @@ mod via_brokkr_tests {
             };
             assert_eq!(profile, via);
             assert_eq!((revision, basis), (direct_revision, direct_basis));
-            // Codex's class alone differs: the driver runs the selected one.
-            let same = usize::from(via.family() == "codex");
-            assert_eq!(restrictions[same..], direct_restrictions[same..]);
             assert_eq!(residuals[..direct_residuals.len()], direct_residuals[..]);
             assert_eq!(
-                residuals[direct_residuals.len()..],
-                ["brokkr driver flags unenumerated".to_string()]
+                residuals.last().map(String::as_str),
+                Some("brokkr driver flags unenumerated")
             );
+            match via.family() {
+                "claude" => {
+                    for direct_only in [
+                        "empty builtins",
+                        "strict two-server MCP",
+                        "restricted settings",
+                        "disabled skills",
+                    ] {
+                        assert!(direct_restrictions.iter().any(|r| r == direct_only));
+                        assert!(
+                            !restrictions.iter().any(|r| r == direct_only),
+                            "{direct_only}"
+                        );
+                    }
+                    assert_eq!(restrictions[0], "permission mode acceptEdits");
+                }
+                "codex" => {
+                    assert_eq!(direct_restrictions[0], "read-only sandbox");
+                    assert_eq!(restrictions[0], "driver sandbox class unread");
+                    for class in CODEX_CLASSES {
+                        let surface = ToolSurface::declared_class(via, Some(class));
+                        let ToolSurface::Wrapper { restrictions, .. } = &surface else {
+                            panic!("a wrapper surface");
+                        };
+                        assert_eq!(
+                            restrictions[0],
+                            format!("{class} sandbox (driver-selected)")
+                        );
+                        assert_eq!(
+                            ToolSurface::for_request(true, false, Some(via), Some(class)),
+                            surface
+                        );
+                        let model = Availability::present(
+                            "gpt-6-luna".to_string(),
+                            Source::OperatorDeclared,
+                        );
+                        assert!(surface.validate(AgentKind::External, &model).is_ok());
+                    }
+                    assert_ne!(
+                        ToolSurface::declared_class(via, Some("read-only")),
+                        ToolSurface::declared_class(via, Some("workspace-write"))
+                    );
+                    // A class outside the admitted two is no declared surface.
+                    let forged = ToolSurface::declared_class(via, Some("danger-full-access"));
+                    let model =
+                        Availability::present("gpt-6-luna".to_string(), Source::OperatorDeclared);
+                    assert!(forged.validate(AgentKind::External, &model).is_err());
+                }
+                _ => assert_eq!(restrictions, direct_restrictions),
+            }
             assert_ne!(ToolSurface::declared(via), ToolSurface::declared(direct));
             // The request-level constructor accepts a via-brokkr profile like any other.
             assert_eq!(
-                ToolSurface::for_request(true, false, Some(via)),
+                ToolSurface::for_request(true, false, Some(via), None),
                 ToolSurface::declared(via)
             );
         }
@@ -990,7 +1088,7 @@ mod cli_identity_tests {
             panic!("a wrapper surface");
         };
         assert!(!restrictions.iter().any(|r| r == "read-only sandbox"));
-        assert!(restrictions[0].contains("danger-full-access refused"));
+        assert_eq!(restrictions[0], "driver sandbox class unread");
         assert!(via.validate(&surface).is_err());
         assert!(good.validate(&via_surface).is_err());
         let mut old_via = old.clone();

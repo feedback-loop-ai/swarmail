@@ -1030,6 +1030,50 @@ fn a_nested_contract_binds_the_driver_pin_and_its_flags() {
             "{family}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+        // Hold 4 on a73ac17a: each admitted codex class reaches the driver's
+        // argv and the row's descriptor from the one selection.
+        if family == "codex" {
+            for class in swarmail_evals::provenance::CODEX_CLASSES {
+                n.select(json!({"codex_sandbox": class}));
+                let sha = wrappers::contract_identity(&n.c.manifest, family, true).unwrap();
+                let out = bound(&sha);
+                assert_eq!(out.status.code(), Some(0), "{class}: {out:?}");
+                let argv: Vec<String> = serde_json::from_value(n.record()["argv"].clone()).unwrap();
+                assert!(
+                    argv.windows(2).any(|w| w == ["--sandbox", class]),
+                    "{argv:?}"
+                );
+                let req = runner::TrialRequest {
+                    task: Some("signup".into()),
+                    agent: Some("codex-nested".into()),
+                    argv: [
+                        common::exe().into(),
+                        "agent-codex".into(),
+                        "--model".into(),
+                        model.into(),
+                        "--config".into(),
+                        n.c.manifest.clone().into_os_string(),
+                        "--via-brokkr".into(),
+                        n.driver.clone().into_os_string(),
+                    ]
+                    .to_vec(),
+                    agent_model: Some(model.into()),
+                    wrapper_profile: Some(nested.cli.profile),
+                    ..Default::default()
+                };
+                let agent = runner::make_provenance(&req, None, None).agent;
+                let swarmail_evals::provenance::ToolSurface::Wrapper { restrictions, .. } =
+                    &agent.tool_surface
+                else {
+                    panic!("a wrapper surface");
+                };
+                assert_eq!(
+                    restrictions[0],
+                    format!("{class} sandbox (driver-selected)")
+                );
+            }
+            n.select(json!({}));
+        }
         let out = bound(&cli_sha);
         assert_eq!(out.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&out.stderr).contains("wrapper_contract_drift"));

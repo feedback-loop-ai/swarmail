@@ -3985,7 +3985,12 @@ pub fn make_provenance(
             chaos,
         },
         agent: AgentIdentity {
-            tool_surface: ToolSurface::for_request(valid.is_some(), builtin, req.wrapper_profile),
+            tool_surface: ToolSurface::for_request(
+                valid.is_some(),
+                builtin,
+                req.wrapper_profile,
+                crate::wrappers::argv_codex_class(&req.argv),
+            ),
             kind: if valid.is_none() {
                 AgentKind::Invalid
             } else if builtin {

@@ -404,7 +404,13 @@ pub fn validate_row(
             } else {
                 AgentKind::External
             }
-        || p.agent.tool_surface != ToolSurface::for_request(true, builtin, spec.wrapper_profile)
+        || p.agent.tool_surface
+            != ToolSurface::for_request(
+                true,
+                builtin,
+                spec.wrapper_profile,
+                crate::wrappers::argv_codex_class(&spec.argv),
+            )
         || p.agent.model != expected_model
         || p.agent.config_id != expected_config
         || p.agent.command != expected_command

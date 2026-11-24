@@ -911,16 +911,41 @@ struct Selected {
 /// family, and also, failing closed, when its selection cannot be read or
 /// it names none. Anything else is no wrapper of this executable.
 pub fn argv_selects_paid<S: AsRef<std::ffi::OsStr>>(argv: &[S]) -> bool {
+    match argv_selection(argv) {
+        None => false,
+        Some((family, config)) => config
+            .is_none_or(|config| selection(&config, family).map_or(true, |s| s.paid.is_some())),
+    }
+}
+/// The Codex sandbox class an agent argv's nested selection names, read
+/// from the selection itself (hold 4 on a73ac17a): what the driver is told,
+/// what the row's descriptor records. `None` when it cannot be read.
+pub fn argv_codex_class<S: AsRef<std::ffi::OsStr>>(argv: &[S]) -> Option<&'static str> {
+    let (family, config) = argv_selection(argv)?;
+    selection(&config?, family)
+        .ok()?
+        .paid?
+        .nested?
+        .codex_sandbox
+        .filter(|class| *class != CodexSandbox::DangerFullAccess)
+        .map(CodexSandbox::name)
+}
+/// The wrapper family and `--config` an agent argv names, if it runs a
+/// wrapper subcommand of this executable.
+fn argv_selection<S: AsRef<std::ffi::OsStr>>(
+    argv: &[S],
+) -> Option<(&'static str, Option<PathBuf>)> {
     use std::os::unix::ffi::OsStrExt as _;
     let words: Vec<&std::ffi::OsStr> = argv.iter().map(AsRef::as_ref).collect();
-    let Some((at, family)) = words.iter().enumerate().find_map(|(i, w)| {
-        w.to_str()
-            .and_then(|w| w.strip_prefix("agent-"))
-            .filter(|f| matches!(*f, "claude" | "codex" | "dsh"))
-            .map(|f| (i, f))
-    }) else {
-        return false;
-    };
+    let (at, family) = words
+        .iter()
+        .enumerate()
+        .find_map(|(i, w)| match w.to_str() {
+            Some("agent-claude") => Some((i, "claude")),
+            Some("agent-codex") => Some((i, "codex")),
+            Some("agent-dsh") => Some((i, "dsh")),
+            _ => None,
+        })?;
     let mut config = None;
     let mut rest = words[at + 1..].iter();
     while let Some(word) = rest.next() {
@@ -930,7 +955,7 @@ pub fn argv_selects_paid<S: AsRef<std::ffi::OsStr>>(argv: &[S]) -> bool {
             config = Some(PathBuf::from(std::ffi::OsStr::from_bytes(value)));
         }
     }
-    config.is_none_or(|config| selection(&config, family).map_or(true, |s| s.paid.is_some()))
+    Some((family, config))
 }
 fn selection(config: &Path, family: &str) -> Result<Selected, String> {
     if !config.is_absolute() {
