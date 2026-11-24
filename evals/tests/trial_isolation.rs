@@ -410,6 +410,12 @@ fn survivors_names_a_live_process_and_is_empty_once_it_is_gone() {
     let named = survivors(&family);
     assert!(named.contains(&format!("pid {pid} state ")), "{named}");
     assert!(named.contains("cmdline /usr/bin/sleep 30"), "{named}");
+    let cwd = std::env::current_dir().unwrap();
+    assert!(
+        named.contains(&format!("start {} ", family[0].start_time))
+            && named.contains(&format!(" cwd {} cmdline", cwd.display())),
+        "{named}"
+    );
     assert!(
         named.contains(&format!("PPid {}", std::process::id())),
         "{named}"

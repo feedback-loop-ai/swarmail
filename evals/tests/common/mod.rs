@@ -423,8 +423,8 @@ pub fn process_descendants(root: i32) -> Vec<ProcessIdentity> {
     found
 }
 
-/// One line per member of `family` that is still alive: pid, start time,
-/// state, parent and namespace pids from `/proc/<pid>/status`, the working
+/// One line per member of `family` that is still alive: pid, state, start
+/// time, parent and namespace pids from `/proc/<pid>/status`, the working
 /// directory and the command line. A field that
 /// cannot be read is `?`. Empty when every member is gone.
 #[cfg(target_os = "linux")]
@@ -458,7 +458,7 @@ pub fn survivors(family: &[ProcessIdentity]) -> String {
             let cwd = std::fs::read_link(format!("/proc/{}/cwd", member.pid))
                 .map_or_else(|_| "?".into(), |p| p.display().to_string());
             format!(
-                "pid {} start {} state {state} PPid {} NSpid {} cwd {cwd} cmdline {cmdline}",
+                "pid {} state {state} start {} PPid {} NSpid {} cwd {cwd} cmdline {cmdline}",
                 member.pid,
                 member.start_time,
                 status_field(member.pid, "PPid"),
