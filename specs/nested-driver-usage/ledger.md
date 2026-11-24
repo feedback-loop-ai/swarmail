@@ -242,7 +242,7 @@ Part of #404. Implement seat, Linux, 2026-11-24. Commits 82308737 through
 | also 2 (full inventory) | `binds::verify_recipe`: DNS + all nine `~/` read-only entries resolved against the seat HOME + selected paths, then `~/.dsh/profiles` must be a writable `overlay` mount (`recipe_overlay_missing`, `recipe_overlay_not_private`). The HOME is read from the selection's nearest `.config/swarmail-evals` ancestor (`recipe_bind_home_unknown` otherwise) instead of a new request field: `trial.sh` is a held path this run may not edit, and the selection directory is itself a declared, re-proven bind. | `binds::tests::the_recipe_check_proves_every_declared_source_and_the_overlay` (writable sibling under `.volta`, missing `.dsh/spark.env`, absent / ordinary-rw / ro-overlay profiles, valid overlay). Docs: wrappers.md recipe bullet, inventory paragraph and count (thirteen ro + one overlay), README both passages, T53, bundle description. |
 | also 4 (release seam) | `wrappers::driver_admitted`; ignored `release_seam.rs::release_standin_is_not_admitted` (refuses to pass in a debug build). | **Ran here**: `cd evals && cargo test --release --locked --test wrappers -- --ignored release_standin_is_not_admitted` → 1 passed at 37a44cb9's tree (38 s incl. build). |
 
-### Not done in this attempt (required; the result is `broken`)
+### Not done in attempt 1 (required; attempt 2 below closes also 3)
 
 - **Also 3, the three baseline-CLI proofs**: duplicate-owner refusal through
   `baseline --resume`, the paid baseline's own `report.json` over nested
@@ -290,3 +290,70 @@ clippy/test/coverage/selftest, publish/seal proofs, `cargo deny`, and the
 pinned brokkr 0.12.0 compile (not on this host; CI). Root `src/` is
 untouched. Added test time: about +1 s in the nested group (four fault
 launches), under 0.1 s of unit tests.
+
+## Third rework, attempt 2 (same run, 2026-11-24)
+
+Part of #404. Implement seat, Linux. Commits 8f3a4370 through f2156e9e on
+top of 27419145.
+
+| finding | change | proof (executed here) |
+|---|---|---|
+| also 3 (three baseline-CLI proofs; correctness 1–3 and 7, security 3, tests 1) | `common::paid::Paid::nested()`: the offline baseline fixture routed through one stand-in driver (`fake_driver.py` with `FAMILY=None` takes the family from `driver <family>`; per-family finals in the mode file), CLIs under the names the driver looks up, dsh's entry starting the pinned runtime, every family's nested pin (codex `workspace-write`). `standin_python` moves to the shared fixture (reused by `wrappers_launch`). | `paid_baseline::a_nested_baseline_reports_its_companions_and_resume_refuses_what_they_contradict` drives the real `baseline --via-brokkr` (32 slots): the printed plan's `report_argv` ends `--input <out>/paid.jsonl --usage-from <out>/paid`; the baseline's own `report.json` has no `incomplete_attribution` and each of six groups reads exactly 5 × the family's session bill (total and cache_read), `tokens_per_success` typed `no_passes`; running `report_argv` as printed gives the identical report. **Duplicate owner**: leaf B (another attempt) takes leaf A's driver attempt id with its own trial/slot/profile and a re-bound marker; both leaves verify alone, `baseline --resume` exits 2 with `duplicate usage owner` and writes no report. **Codex class**: every retained codex row records `workspace-write sandbox (driver-selected)`; a selection changed to `read-only` refuses the resume (`baseline_provenance_invalid`); restored, it reopens; a retained row rewritten to `read-only` under the fixed selection (result digest repaired, leaf valid alone) refuses the same way. Restored, the complete product reopens to its own `report.json` bytes, and the driver record shows no launch since the first run. 105 s. |
+| correctness low 6 (empty-families fixture) | The matrix preflight test (`report.rs::brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline`) and the argv unit table now name a well-formed paid claude v2 selection; the unit table asserts the reader parses it as paid. | both tests pass |
+
+**Host-gated for time, not privilege.** The nested baseline test is
+`#[ignore]`: the smallest product is 32 slots, about 105 s, more than the
+CI budget allows ("a few seconds" per the brief). It ran three times here,
+all passing (the last at f2156e9e's tree). Dispatcher command (from `evals/`):
+
+```bash
+cargo test --locked --test paid_baseline -- --ignored a_nested_baseline
+```
+
+The other host-gated proofs, unchanged from attempt 1, stay listed above
+(mount proof, real driver, release seam).
+
+### Lows left, with reasons
+
+- Exact inert-fixture debug admission (correctness 5, tasks.md line 14):
+  the offline fixtures differ by family (a codex JWT whose payload encodes
+  the canary, a literal `SOURCE-REFRESH…` refresh token), so an exact
+  admission rule means redesigning each fixture's shape. Under ruling 4, a
+  debug build is a non-release driver, and the release build carries no
+  seam (`release_standin_is_not_admitted`, run in attempt 1). Debt.
+- Explicit wrong-slot/attempt ownership test through the version-1
+  assignment chain (tasks.md line 13): `Companion::validate`'s
+  `usage_binding_mismatch` is unit-tested; the CLI-level swap is not built.
+  Debt.
+- tasks.md line 10's group with a pass *and* a scored failure: the
+  stand-in driver does not yet play an agent that passes a task, so the
+  baseline-level proof covers the all-fail group (typed `no_passes`).
+  Per-success arithmetic stays proven at the report unit level. Debt.
+- Grant serve accepting any same-exe descendant (correctness 4): a
+  deliberate same-uid bypass, a residual under ruling 4.
+- Assignment id outside the row (third panel low 3): the deviation is
+  recorded in 0138's note. The version-1 slot binds through `matrix_id`.
+
+### Gates run here (Linux, at f2156e9e's tree unless noted)
+
+- **Root**: `fmt --check`; `clippy --workspace --all-targets --locked -D
+  warnings`; `cargo test --workspace --locked` (all pass, 0 failed, 3 min
+  41 s); `cargo build --locked --bin swarmail`; `coverage-gate.sh` (exact
+  100/100/100); `coverage-gate.sh selftest` (pass); `publish-guard-test.sh`
+  (OK); `seal-branch-test.sh` (7 cases, 10 mutants); `cargo deny check
+  licenses` (ok). These ran at 1d7bc19a. The commit after it touches only
+  `evals/tests` and this spec folder.
+- **Evals**: `fmt --check`; `clippy --all-targets --locked -D warnings`
+  (Linux, and an aarch64-apple-darwin type-check with a stub C compiler,
+  which does not link or run); `SWARMAIL_BIN=<root target/debug/swarmail>
+  cargo test --locked`, the full suite once at 1d7bc19a: 663 passed,
+  0 failed, 11 ignored, 24 min 50 s wall on a shared, loaded host. f2156e9e
+  changes only the ignored test, re-run above.
+- **Not run here**: the pinned brokkr 0.12.0 recipe compile (no brokkr
+  binary in this box; CI's `brokkr bundle (pinned)`). macOS execution is
+  CI's.
+- **Added CI time**: about 0 s. The new baseline test is ignored, and the
+  two low-6 cases add well under 0.1 s.
+- **Unchanged**: root `src/` is untouched. The only held path changed on
+  this branch is the approved `.brokkr/recipes/eval/bundle.json`, from
+  attempt 1; this attempt touched none.
