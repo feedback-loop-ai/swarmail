@@ -1,21 +1,45 @@
-//! The host route's launch authority (the panel's hold 2 on a73ac17a, part
-//! of #404). A `--paid-launch` binding in argv is a request, never a
-//! permission: anyone can compute a selection's identity. A paid wrapper on
-//! the host launches only after the live baseline coordinator answers that
-//! request on a private endpoint it handed down the worker chain.
+//! The host route's launch authority (the panel's holds 2 on a73ac17a and
+//! the security hold on 6074b83e, part of #404). A `--paid-launch` binding
+//! in argv is a request, never a permission: anyone can compute a
+//! selection's identity. A paid wrapper on the host launches only after the
+//! live baseline coordinator answers that request, fresh, on a private
+//! endpoint it handed down the worker chain.
 //!
 //! The coordinator makes one `SOCK_SEQPACKET` pair per expected agent of a
 //! paid slot and places the worker's ends at descriptors
 //! [`GRANT_FD`]`..`; the worker gives agent `i` its own end at
-//! [`GRANT_FD`]. Each end answers exactly one request. Both sides read the
-//! kernel's `SCM_CREDENTIALS` of the message they receive, so a reply
-//! counts only when it was sent by a process that is an ancestor of the
-//! wrapper and runs this very executable, and a request only when it was
-//! sent by a descendant of the coordinator's own worker running it. A
-//! forged identity string, a caller-made socket or a relaying script admits
-//! nothing; a coordinator that is gone is an end of file, a refusal. Linux
-//! is the one platform with that peer evidence; elsewhere a paid binding
-//! refuses (`paid_grant_unsupported`).
+//! [`GRANT_FD`]. Each end answers exactly one request.
+//!
+//! **The exchange** (protocol `swarmail-grant/1`, bounded packets):
+//!
+//! 1. *Registration.* The kernel stamps a socket pair with its creator's
+//!    credentials (`SO_PEERCRED`): the wrapper reads the coordinator's pid
+//!    from its own end, and that process's start time from `/proc`, and
+//!    requires it to be a live ancestor running this very executable.
+//! 2. *Freshness.* Input already queued on the endpoint before the wrapper
+//!    asks is refused (`paid_grant_reply_stale`): a reply cannot precede
+//!    its request.
+//! 3. *Challenge.* The wrapper sends `swarmail-grant/1 request <nonce>
+//!    <binding>`, the nonce 128 fresh bits from the OS (`getrandom`; an
+//!    entropy failure refuses). The coordinator grants only a request for
+//!    exactly its assigned binding, unexpired, sent by a descendant of its
+//!    own worker running this executable, and echoes `swarmail-grant/1
+//!    granted <nonce> <binding>`.
+//! 4. *Sender.* The reply counts only when the kernel's `SCM_CREDENTIALS`
+//!    name the registered coordinator pid, with the start time unchanged,
+//!    and it carries the wrapper's own nonce and binding byte for byte.
+//!
+//! A coordinator that is gone is an end of file, a refusal. Linux is the
+//! one platform with that peer evidence; elsewhere a paid binding refuses
+//! (`paid_grant_unsupported`).
+//!
+//! **Threat model (the operator's ruling of 2026-11-24, after the third
+//! hold).** This boundary guards against *accidental or unbound* paid
+//! launches: a bare wrapper, a caller-made argv, a stale, pre-queued or
+//! replayed grant, a missing bind, a non-release driver. It does not defend
+//! against a deliberate adversary running as the same uid, who could
+//! equally run the agent CLI directly with the operator's credentials;
+//! reviewers route such deliberate same-uid bypasses as residuals.
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::fd::{OwnedFd, RawFd};
@@ -25,13 +49,11 @@ use std::os::fd::{OwnedFd, RawFd};
 pub const GRANT_FD: RawFd = 4;
 /// The most endpoints a worker can hold: the largest `agent_count`.
 pub const MAX_ENDPOINTS: usize = 3;
-/// The coordinator's one positive answer.
-pub const GRANTED: &[u8] = b"granted\n";
+/// The exchange's protocol tag, first word of every packet.
+pub const PROTOCOL: &str = "swarmail-grant/1";
+/// The longest packet either side accepts.
 #[cfg(target_os = "linux")]
-const REFUSED: &[u8] = b"refused\n";
-/// The longest request: a digest, `:`, a Unix second.
-#[cfg(target_os = "linux")]
-const REQUEST_LIMIT: usize = 128;
+const PACKET_LIMIT: usize = 256;
 /// How long a wrapper waits for its coordinator.
 #[cfg(target_os = "linux")]
 const WAIT_SECS: libc::time_t = 10;
@@ -45,9 +67,71 @@ pub fn seal_inherited() {
     }
 }
 
-/// The paid request a wrapper sends: its binding, verbatim.
+/// The paid binding a wrapper asks for: its contract identity and validity.
 pub fn want(cli_sha256: &str, valid_through: u64) -> String {
     format!("{cli_sha256}:{valid_through}")
+}
+
+/// The wrapper's request packet.
+pub fn request_packet(nonce: &str, want: &str) -> String {
+    format!("{PROTOCOL} request {nonce} {want}")
+}
+
+/// The coordinator's positive reply to `nonce` for `want`.
+pub fn granted_packet(nonce: &str, want: &str) -> String {
+    format!("{PROTOCOL} granted {nonce} {want}")
+}
+
+/// The coordinator's refusal of a request carrying `nonce`.
+pub fn refused_packet(nonce: &str) -> String {
+    format!("{PROTOCOL} refused {nonce}")
+}
+
+/// The coordinator's answer to one request packet, sent by a process that
+/// `trusted` says descends from its worker and runs this executable, for
+/// its assigned binding `want`, at Unix second `now`: the reply packet and
+/// whether it grants. Pure, so every arm is tested directly.
+pub fn answer(packet: &[u8], trusted: bool, want: &str, now: u64) -> (String, bool) {
+    let text = std::str::from_utf8(packet).unwrap_or("");
+    let mut words = text.split(' ');
+    let (Some(PROTOCOL), Some("request"), Some(nonce), Some(asked), None) = (
+        words.next(),
+        words.next(),
+        words.next(),
+        words.next(),
+        words.next(),
+    ) else {
+        return (format!("{PROTOCOL} refused -"), false);
+    };
+    let fresh = nonce.len() == 32 && nonce.bytes().all(|b| b.is_ascii_hexdigit());
+    let unexpired = want
+        .rsplit_once(':')
+        .and_then(|(_, t)| t.parse::<u64>().ok())
+        .is_some_and(|t| t >= now);
+    if fresh && trusted && asked == want && unexpired {
+        (granted_packet(nonce, want), true)
+    } else {
+        (refused_packet(if fresh { nonce } else { "-" }), false)
+    }
+}
+
+/// The wrapper's verdict on a reply `packet` to its request for `want`
+/// with `nonce`, once the sender is authenticated.
+pub fn judge(packet: &[u8], nonce: &str, want: &str) -> Result<(), String> {
+    if packet == granted_packet(nonce, want).as_bytes() {
+        Ok(())
+    } else if packet == refused_packet(nonce).as_bytes() {
+        Err("paid_grant_refused".into())
+    } else {
+        Err("paid_grant_reply_unbound".into())
+    }
+}
+
+/// Unix seconds now.
+pub fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Place `ends` at [`GRANT_FD`]`..` in a child, after fork and before exec:
@@ -212,6 +296,63 @@ mod linux {
             _ => false,
         }
     }
+    /// The credentials the kernel stamped on `fd`'s socket pair when it was
+    /// made: its creator's, for an endpoint the coordinator's.
+    pub fn peer(fd: RawFd) -> Option<libc::ucred> {
+        let mut c: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let r = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut c as *mut libc::ucred).cast(),
+                &mut len,
+            )
+        };
+        (r == 0 && c.pid > 0).then_some(c)
+    }
+    /// A live process's start time (clock ticks since boot): with its pid,
+    /// the process instance, which a reused pid does not share.
+    pub fn started(pid: libc::pid_t) -> Option<u64> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit_once(')')?
+            .1
+            .split_whitespace()
+            .nth(19)?
+            .parse()
+            .ok()
+    }
+    /// Whether a packet is already queued on `fd`, without waiting.
+    pub fn queued(fd: RawFd) -> Result<bool, &'static str> {
+        let mut b = [0u8; 1];
+        let n = unsafe {
+            libc::recv(
+                fd,
+                b.as_mut_ptr().cast(),
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
+        match n {
+            0 => Err("paid_grant_channel_closed"),
+            n if n > 0 => Ok(true),
+            _ if std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock => {
+                Ok(false)
+            }
+            _ => Err("paid_grant_channel_closed"),
+        }
+    }
+    /// 128 fresh bits from the OS, hex: the wrapper's challenge.
+    pub fn nonce() -> Result<String, &'static str> {
+        let mut b = [0u8; 16];
+        let n = unsafe { libc::getrandom(b.as_mut_ptr().cast(), b.len(), 0) };
+        if n == b.len() as isize {
+            Ok(crate::provenance::hex(&b))
+        } else {
+            Err("paid_grant_entropy_unavailable")
+        }
+    }
     pub fn bound_wait(fd: RawFd) {
         let tv = libc::timeval {
             tv_sec: WAIT_SECS,
@@ -230,6 +371,7 @@ mod linux {
 }
 
 /// The coordinator's side: `n` endpoint pairs, the coordinator's end first.
+/// This process makes them, so the kernel registers it as their creator.
 #[cfg(target_os = "linux")]
 pub fn endpoints(n: usize) -> Result<Vec<(OwnedFd, OwnedFd)>, String> {
     if n == 0 || n > MAX_ENDPOINTS {
@@ -244,21 +386,21 @@ pub fn endpoints(_n: usize) -> Result<Vec<(OwnedFd, OwnedFd)>, String> {
     Err("paid_grant_unsupported".into())
 }
 
-/// Answer one endpoint once: grant only a request for exactly `want`, sent
-/// by a process that descends from `worker` and runs this executable.
-/// Returns whether it granted. Blocks until the request or the end of
-/// file that follows the worker's and its agents' exits.
+/// Answer one endpoint once: grant only a fresh request for exactly
+/// `want`, unexpired, sent by a process that descends from `worker` and
+/// runs this executable, echoing its nonce. Returns whether it granted.
+/// Blocks until the request or the end of file that follows the worker's
+/// and its agents' exits.
 #[cfg(target_os = "linux")]
 pub fn serve(end: OwnedFd, worker: u32, want: &str) -> bool {
-    let mut buf = [0u8; REQUEST_LIMIT];
+    let mut buf = [0u8; PACKET_LIMIT];
     let Ok((n, creds)) = linux::receive(end.as_raw_fd(), &mut buf) else {
         return false;
     };
-    let ok = &buf[..n] == want.as_bytes()
-        && linux::descends(creds.pid, worker as libc::pid_t)
-        && linux::runs_this(creds.pid);
-    let _ = linux::send(end.as_raw_fd(), if ok { GRANTED } else { REFUSED });
-    ok
+    let trusted = linux::descends(creds.pid, worker as libc::pid_t) && linux::runs_this(creds.pid);
+    let (reply, granted) = answer(&buf[..n], trusted, want, now());
+    let _ = linux::send(end.as_raw_fd(), reply.as_bytes());
+    granted
 }
 #[cfg(not(target_os = "linux"))]
 pub fn serve(_end: OwnedFd, _worker: u32, _want: &str) -> bool {
@@ -288,69 +430,195 @@ pub fn claim(_n: usize) -> Result<Vec<RawFd>, String> {
     Err("paid_grant_unsupported".into())
 }
 
-/// The wrapper's side: ask the coordinator on [`GRANT_FD`] for `want` and
-/// require its authenticated `granted`. The endpoint is closed either way,
-/// so nothing launched afterwards holds it.
+/// The wrapper's side: the exchange in this module's header, on
+/// [`GRANT_FD`]. The endpoint is closed either way, so nothing launched
+/// afterwards holds it.
 #[cfg(target_os = "linux")]
 pub fn request(want: &str) -> Result<(), String> {
-    if want.len() > REQUEST_LIMIT || !linux::is_endpoint(GRANT_FD) {
+    if want.len() > PACKET_LIMIT / 2 || !linux::is_endpoint(GRANT_FD) {
         return Err("paid_grant_channel_missing".into());
     }
     let end = unsafe { OwnedFd::from_raw_fd(GRANT_FD) };
     let fd = end.as_raw_fd();
     linux::passcred(&end).map_err(|_| "paid_grant_channel_missing")?;
     linux::bound_wait(fd);
-    linux::send(fd, want.as_bytes())?;
-    let mut buf = [0u8; 16];
-    let (n, creds) = linux::receive(fd, &mut buf)?;
+    // Registration: the pair's creator, a live ancestor running this
+    // executable, pinned to its process instance.
     let me = std::process::id() as libc::pid_t;
-    if !(linux::descends(me, creds.pid) && linux::runs_this(creds.pid)) {
+    let coordinator = linux::peer(fd)
+        .map(|c| c.pid)
+        .filter(|&pid| linux::descends(me, pid) && linux::runs_this(pid))
+        .ok_or("paid_grant_unauthenticated")?;
+    let started = linux::started(coordinator).ok_or("paid_grant_unauthenticated")?;
+    // Freshness: nothing may answer before the request exists.
+    if linux::queued(fd)? {
+        return Err("paid_grant_reply_stale".into());
+    }
+    let nonce = linux::nonce()?;
+    linux::send(fd, request_packet(&nonce, want).as_bytes())?;
+    let mut buf = [0u8; PACKET_LIMIT];
+    let (n, creds) = linux::receive(fd, &mut buf)?;
+    if creds.pid != coordinator || linux::started(coordinator) != Some(started) {
         return Err("paid_grant_unauthenticated".into());
     }
-    if &buf[..n] != GRANTED {
-        return Err("paid_grant_refused".into());
-    }
-    Ok(())
+    judge(&buf[..n], &nonce, want)
 }
 #[cfg(not(target_os = "linux"))]
 pub fn request(_want: &str) -> Result<(), String> {
     Err("paid_grant_unsupported".into())
 }
 
+/// The debug-only stand-in coordinator's faults (`grant-standin
+/// --fault`), each a reply other than the genuine coordinator's fresh
+/// answer: `prequeue` (a well-formed grant queued before the request),
+/// `nonce` (another nonce), `contract` (another binding) and `sender` (the
+/// right reply, sent by another process). Absent from release builds.
+#[cfg(all(debug_assertions, target_os = "linux"))]
+pub fn serve_faulty(end: OwnedFd, want: &str, fault: &str) {
+    let fd = end.as_raw_fd();
+    let forged = granted_packet(&"0".repeat(32), want);
+    let mut buf = [0u8; PACKET_LIMIT];
+    if fault == "prequeue" {
+        // Queued by [`prequeue`] before the wrapper started: wait it out.
+        let _ = linux::receive(fd, &mut buf);
+        return;
+    }
+    let Ok((n, _)) = linux::receive(fd, &mut buf) else {
+        return;
+    };
+    let nonce = std::str::from_utf8(&buf[..n])
+        .ok()
+        .and_then(|t| t.split(' ').nth(2))
+        .unwrap_or("-")
+        .to_string();
+    let reply = match fault {
+        "nonce" => forged,
+        "contract" => granted_packet(&nonce, &self::want(&"0".repeat(64), u64::MAX)),
+        _ => granted_packet(&nonce, want),
+    };
+    if fault != "sender" {
+        let _ = linux::send(fd, reply.as_bytes());
+        return;
+    }
+    match unsafe { libc::fork() } {
+        0 => unsafe {
+            libc::send(fd, reply.as_ptr().cast(), reply.len(), libc::MSG_NOSIGNAL);
+            libc::_exit(0)
+        },
+        pid if pid > 0 => unsafe {
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+        },
+        _ => {}
+    }
+}
+
+/// The `prequeue` fault's packet, sent on the coordinator's end before
+/// the wrapper is even spawned.
+#[cfg(all(debug_assertions, target_os = "linux"))]
+pub fn prequeue(end: &OwnedFd, want: &str) {
+    let _ = linux::send(
+        end.as_raw_fd(),
+        granted_packet(&"0".repeat(32), want).as_bytes(),
+    );
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
-    /// A grant is answered once, to the exact request, and a reply from a
-    /// process that is not an ancestor running this executable is refused.
+    /// The coordinator grants only a fresh, well-formed, trusted request for
+    /// its exact unexpired binding, and echoes the request's nonce.
     #[test]
-    fn an_endpoint_answers_one_exact_request_from_a_descendant() {
-        assert_eq!(want("ab", 7), "ab:7");
+    fn the_coordinator_answers_only_its_own_fresh_binding() {
+        let n = "a".repeat(32);
+        let w = want("ab", 7);
+        assert_eq!(w, "ab:7");
+        let ok = request_packet(&n, &w);
+        assert_eq!(
+            answer(ok.as_bytes(), true, &w, 7),
+            (granted_packet(&n, &w), true)
+        );
+        // Untrusted sender, other binding, expired, unparsable validity.
+        let refused = (refused_packet(&n), false);
+        assert_eq!(answer(ok.as_bytes(), false, &w, 7), refused);
+        assert_eq!(answer(ok.as_bytes(), true, "ab:8", 7), refused);
+        assert_eq!(answer(ok.as_bytes(), true, &w, 8), refused);
+        assert_eq!(answer(ok.as_bytes(), true, "ab", 0), refused);
+        // Malformed nonce, wrong protocol, extra word, not UTF-8.
+        let none = (format!("{PROTOCOL} refused -"), false);
+        assert_eq!(
+            answer(request_packet("zz", &w).as_bytes(), true, &w, 0),
+            (refused_packet("-"), false)
+        );
+        assert_eq!(answer(b"swarmail-grant/0 request x y", true, &w, 0), none);
+        assert_eq!(answer(format!("{ok} z").as_bytes(), true, &w, 0), none);
+        assert_eq!(answer(&[0xff], true, &w, 0), none);
+        // The wrapper's verdict: its own nonce and binding, or nothing.
+        assert_eq!(judge(granted_packet(&n, &w).as_bytes(), &n, &w), Ok(()));
+        assert_eq!(
+            judge(refused_packet(&n).as_bytes(), &n, &w).unwrap_err(),
+            "paid_grant_refused"
+        );
+        for other in [
+            granted_packet(&"b".repeat(32), &w),
+            granted_packet(&n, "ab:8"),
+            refused_packet("-"),
+            "granted\n".to_string(),
+        ] {
+            assert_eq!(
+                judge(other.as_bytes(), &n, &w).unwrap_err(),
+                "paid_grant_reply_unbound"
+            );
+        }
+        assert!(now() > 1_700_000_000);
+    }
+
+    /// The kernel's registration, freshness and sender evidence the
+    /// wrapper relies on, read from a pair this process makes.
+    #[test]
+    fn an_endpoint_names_its_creator_and_any_queued_packet() {
         assert!(endpoints(0).is_err() && endpoints(MAX_ENDPOINTS + 1).is_err());
         assert!(claim(0).is_err() && claim(MAX_ENDPOINTS + 1).is_err());
-        // This test process is not its own ancestor: a self-made pair whose
-        // reply it sends itself never authenticates.
+        let me = std::process::id() as libc::pid_t;
         let mut ends = endpoints(1).unwrap();
         let (coordinator, worker) = ends.pop().unwrap();
-        let me = std::process::id();
-        let server = std::thread::spawn(move || serve(coordinator, me, "x:1"));
-        linux::send(worker.as_raw_fd(), b"x:1").unwrap();
-        let mut buf = [0u8; 16];
+        // The creator is this process, live, running this executable; it
+        // is not its own ancestor.
+        assert_eq!(linux::peer(worker.as_raw_fd()).unwrap().pid, me);
+        assert!(linux::peer(-1).is_none());
+        assert!(linux::started(me).is_some());
+        assert!(linux::started(-1).is_none());
+        assert!(linux::runs_this(me));
+        assert!(!linux::descends(me, me));
+        assert_eq!(linux::nonce().unwrap().len(), 32);
+        assert_ne!(linux::nonce().unwrap(), linux::nonce().unwrap());
+        // Nothing queued, then a queued packet, seen without consuming it.
+        assert_eq!(linux::queued(worker.as_raw_fd()), Ok(false));
+        linux::send(coordinator.as_raw_fd(), b"x").unwrap();
+        assert_eq!(linux::queued(worker.as_raw_fd()), Ok(true));
+        let mut buf = [0u8; 4];
         let (n, creds) = linux::receive(worker.as_raw_fd(), &mut buf).unwrap();
-        // The requester is this process, not a descendant of itself.
-        assert_eq!(String::from_utf8_lossy(&buf[..n]), "refused\n");
-        assert_eq!(creds.pid as u32, me);
+        assert_eq!((&buf[..n], creds.pid), (&b"x"[..], me));
+        // The coordinator refuses a request from a process that does not
+        // descend from its worker, echoing the request's nonce.
+        let server = std::thread::spawn(move || serve(coordinator, me as u32, "x:9999999999"));
+        let ask = request_packet(&"c".repeat(32), "x:9999999999");
+        linux::send(worker.as_raw_fd(), ask.as_bytes()).unwrap();
+        let mut buf = [0u8; PACKET_LIMIT];
+        let (n, _) = linux::receive(worker.as_raw_fd(), &mut buf).unwrap();
+        assert_eq!(&buf[..n], refused_packet(&"c".repeat(32)).as_bytes());
         assert!(!server.join().unwrap());
-        assert!(linux::runs_this(me as libc::pid_t));
-        assert!(!linux::descends(me as libc::pid_t, me as libc::pid_t));
         // A closed coordinator is an end of file, never a grant.
-        let (coordinator, worker) = linux::pair().unwrap();
-        drop(coordinator);
+        assert_eq!(
+            linux::queued(worker.as_raw_fd()),
+            Err("paid_grant_channel_closed")
+        );
         let mut buf = [0u8; 16];
         assert_eq!(
             linux::receive(worker.as_raw_fd(), &mut buf).err(),
             Some("paid_grant_channel_closed")
         );
+        assert_eq!(linux::queued(-1), Err("paid_grant_channel_closed"));
         assert!(!linux::is_endpoint(-1));
         assert!(linux::is_endpoint(worker.as_raw_fd()));
     }

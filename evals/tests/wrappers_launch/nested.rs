@@ -249,10 +249,22 @@ pub(super) fn granted(
     endpoints: usize,
     grant: &str,
 ) -> std::process::Command {
+    faulty(cmd, endpoints, grant, &[])
+}
+
+/// [`granted`], with the stand-in coordinator's `fault` arguments.
+pub(super) fn faulty(
+    cmd: &std::process::Command,
+    endpoints: usize,
+    grant: &str,
+    fault: &[&str],
+) -> std::process::Command {
     let mut c = std::process::Command::new(common::exe());
     c.env_clear()
         .args(["grant-standin", "--endpoints", &endpoints.to_string()])
-        .args(["--grant", grant, "--"])
+        .args(["--grant", grant])
+        .args(fault)
+        .arg("--")
         .arg(cmd.get_program())
         .args(cmd.get_args());
     for (k, v) in cmd.get_envs() {
@@ -615,27 +627,27 @@ fn an_unbound_nested_selection_refuses_before_any_spend() {
     let mut cmd = fresh(&n);
     cmd.arg("--paid-launch").arg(n.binding());
     refuses(&n, cmd, "paid_grant_channel_missing");
-    // A caller-made endpoint answered by a process that is not the harness:
-    // the kernel names the sender, and it is not an ancestor running this
-    // executable.
+    // A caller-made endpoint, its reply queued by a process that is not the
+    // harness: the kernel names the pair's creator, and it is not an
+    // ancestor running this executable. The pair is made close-on-exec
+    // atomically, so no concurrent spawn inherits it.
     let mut fds = [0; 2];
     assert_eq!(
-        unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0, fds.as_mut_ptr()) },
+        unsafe {
+            libc::socketpair(
+                libc::AF_UNIX,
+                libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                0,
+                fds.as_mut_ptr(),
+            )
+        },
         0
     );
-    for fd in fds {
-        assert_eq!(
-            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
-            0
-        );
-    }
     let (ours, theirs) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-    let forger = std::thread::spawn(move || {
-        let mut buf = [0u8; 256];
-        let n = unsafe { libc::recv(ours.as_raw_fd(), buf.as_mut_ptr().cast(), 256, 0) };
-        assert!(n > 0);
-        unsafe { libc::send(ours.as_raw_fd(), b"granted\n".as_ptr().cast(), 8, 0) };
-    });
+    assert_eq!(
+        unsafe { libc::send(ours.as_raw_fd(), b"granted\n".as_ptr().cast(), 8, 0) },
+        8
+    );
     let mut cmd = fresh(&n);
     cmd.arg("--paid-launch").arg(n.binding());
     let raw = theirs.as_raw_fd();
@@ -654,13 +666,32 @@ fn an_unbound_nested_selection_refuses_before_any_spend() {
         });
     }
     refuses(&n, cmd, "paid_grant_unauthenticated");
-    forger.join().unwrap();
-    drop(theirs);
+    drop((ours, theirs));
     // The genuine coordinator code refuses a request it was not asked to
     // grant, and answers an endpoint once: a second launch on it is refused.
     let mut cmd = fresh(&n);
     cmd.arg("--paid-launch").arg(n.binding());
     refuses(&n, granted(&cmd, 1, "0:0"), "paid_grant_refused");
+    // The security hold on 6074b83e: the registered coordinator, alive,
+    // with a well-formed grant queued before the wrapper asked; a reply
+    // with another nonce; one for another contract; and the right reply
+    // sent by another process. Each refuses before any spend, and the
+    // queued one without waiting for the coordinator's bound.
+    for (fault, code) in [
+        ("prequeue", "paid_grant_reply_stale"),
+        ("nonce", "paid_grant_reply_unbound"),
+        ("contract", "paid_grant_reply_unbound"),
+        ("sender", "paid_grant_unauthenticated"),
+    ] {
+        let mut cmd = fresh(&n);
+        cmd.arg("--paid-launch").arg(n.binding());
+        let started = std::time::Instant::now();
+        refuses(&n, faulty(&cmd, 1, &n.binding(), &["--fault", fault]), code);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{fault}"
+        );
+    }
     let mut twice = std::process::Command::new("/bin/sh");
     let mut once = fresh(&n);
     once.arg("--paid-launch").arg(n.binding());

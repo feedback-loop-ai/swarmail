@@ -201,8 +201,9 @@ enum Cmd {
     Agent { name: String },
     /// Test equipment compiled into debug builds alone (part of #404): hand
     /// the command after `--` one grant endpoint per `--endpoints` and
-    /// serve each once, as the paid coordinator does, for `--grant`. A
-    /// debug build spends synthetic credentials alone.
+    /// serve each once, as the paid coordinator does, for `--grant`, or
+    /// with one of `grant::serve_faulty`'s `--fault`s. A debug build spends
+    /// synthetic credentials alone.
     #[cfg(debug_assertions)]
     #[command(hide = true)]
     GrantStandin {
@@ -210,6 +211,8 @@ enum Cmd {
         endpoints: usize,
         #[arg(long)]
         grant: String,
+        #[arg(long)]
+        fault: Option<String>,
         #[arg(last = true)]
         argv: Vec<OsString>,
     },
@@ -806,7 +809,7 @@ fn conclude(
 /// The debug-only grant stand-in: the coordinator's endpoint code, serving
 /// the command it launches (and that command's descendants).
 #[cfg(debug_assertions)]
-fn grant_standin(n: usize, want: &str, argv: &[OsString]) -> ExitCode {
+fn grant_standin(n: usize, want: &str, fault: Option<&str>, argv: &[OsString]) -> ExitCode {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::process::CommandExt as _;
     let Some((program, args)) = argv.split_first() else {
@@ -816,6 +819,12 @@ fn grant_standin(n: usize, want: &str, argv: &[OsString]) -> ExitCode {
         Ok(ends) => ends,
         Err(e) => return fail(e),
     };
+    #[cfg(target_os = "linux")]
+    if fault == Some("prequeue") {
+        for (coordinator, _) in &ends {
+            swarmail_evals::grant::prequeue(coordinator, want);
+        }
+    }
     let raws: Vec<_> = ends.iter().map(|(_, w)| w.as_raw_fd()).collect();
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
@@ -827,7 +836,14 @@ fn grant_standin(n: usize, want: &str, argv: &[OsString]) -> ExitCode {
     for (coordinator, worker) in ends {
         drop(worker);
         let want = want.to_string();
-        std::thread::spawn(move || swarmail_evals::grant::serve(coordinator, me, &want));
+        let fault = fault.map(str::to_string);
+        std::thread::spawn(move || match fault {
+            #[cfg(target_os = "linux")]
+            Some(fault) => swarmail_evals::grant::serve_faulty(coordinator, &want, &fault),
+            _ => {
+                swarmail_evals::grant::serve(coordinator, me, &want);
+            }
+        });
     }
     match child.wait() {
         Ok(status) => ExitCode::from(status.code().unwrap_or(2) as u8),
@@ -901,10 +917,11 @@ fn main() -> ExitCode {
     if let Cmd::GrantStandin {
         endpoints,
         grant,
+        fault,
         argv,
     } = &cli.command
     {
-        return grant_standin(*endpoints, grant, argv);
+        return grant_standin(*endpoints, grant, fault.as_deref(), argv);
     }
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
