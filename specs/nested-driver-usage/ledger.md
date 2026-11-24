@@ -514,3 +514,42 @@ assertion is a branch.
 - **Host-gated, run here**: `a_nested_baseline`, 1 passed, 106 s.
 - **Not run here**: the pinned brokkr recipe compile (no brokkr binary in
   this box; no `.brokkr/` path was touched). macOS execution is CI's.
+
+## Fourth rework, review return on 1370fe63 (same run, 2026-11-24)
+
+Every member returned `residual`; no hold. Part of #404.
+
+### Changed
+
+| finding | change |
+|---|---|
+| security low / correctness low 2: `wrappers.md` listed "a caller-made socket" as refused before the threat-model paragraph | the refusal list now says "a socket whose creator is no live ancestor running this executable", which is what `grant::request` checks; a same-uid creator that is such an ancestor is the ruling-4 class |
+| security low: shell indirection hides a paid wrapper from `matrix --brokkr`'s argv preflight | `wrappers.md` now says the preflight reads the argv as written and is an early refusal, not the boundary; the wrapper's own launch-time check (bare paid launch → `paid_unbound`, proven by `a_bare_paid_launch_refuses_unbound_on_every_platform` and the nested refusal tests) still refuses before any spend. Parsing shell scripts would be a heuristic and is not attempted |
+| correctness low 5 / independent low 4: AC5 said "assignment attempt" without the qualifier | spec AC5 now says the attempt is carried as the slot's `matrix_id`, as 0138's dated build note records |
+
+### Answered, not changed
+
+- **Security medium residual (deliberate same-uid creator / `serve` trusting
+  any same-exe descendant of the worker).** Routed as a residual by the
+  operator's 2026-11-24 ruling 4, recorded in `spec.md`, `wrappers.md` and
+  `grant.rs`. Binding the agent ordinal/argv into the grant would not change
+  the class: a same-uid process can run the CLI directly.
+- **Proof placement (all members).** The baseline-CLI, release-seam, mount
+  and real-driver proofs stay host-gated under the CI budget; commands
+  below, unchanged. Their test content is unchanged since they last passed.
+- **No passing baseline group (AC6 per-success at the entry point).**
+  Unchanged debt, tasks.md line 10: the stand-in driver cannot play a
+  passing agent; the arithmetic is unit-proven.
+- **Info items** (DNS-input skip off GitHub, overlay fstype unobserved,
+  SO_RCVTIMEO reason, macOS execution CI-only): unchanged, as recorded.
+
+### Host-gated proofs for the dispatcher (from `evals/`, on the final head)
+
+```bash
+cargo test --locked --test wrappers -- --ignored a_read_only_bind_rejects_a_write_and_verifies_in_its_namespace
+EVAL_BROKKR_DRIVER=~/.local/share/brokkr-0.15.2/brokkr cargo test --locked --test wrappers -- --ignored real_driver
+cargo test --release --locked --test wrappers -- --ignored release_standin_is_not_admitted
+cargo test --locked --test paid_baseline -- --ignored a_nested_baseline
+```
+
+Added CI time: 0 s (documentation only).

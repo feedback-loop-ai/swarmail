@@ -406,8 +406,9 @@ verified binding, checked before any credential is read or anything spawns:
   (`paid_grant_reply_unbound` otherwise). The coordinator grants only a
   request for its exact, unexpired binding from a descendant of its own
   worker running this executable. Each endpoint answers once; a forged
-  identity, a caller-made socket, a pre-queued or relayed reply, another
-  sender, a replay or a coordinator that is gone refuses
+  identity, a socket whose creator is no live ancestor running this
+  executable, a pre-queued or relayed reply, another sender, a replay or a
+  coordinator that is gone refuses
   (`paid_grant_channel_missing`, `paid_grant_unauthenticated`,
   `paid_grant_reply_stale`, `paid_grant_reply_unbound`, `paid_grant_refused`,
   `paid_grant_channel_closed`). A worker given a paid context without its
@@ -451,7 +452,11 @@ never starts the CLI or the driver. `matrix --brokkr` decodes every agents-file
 entry before dispatch, from the selection its wrapper would read (never the
 profile alone): any paid entry, including one declared by argv alone behind a
 free first slot, refuses `brokkr_paid_unbound` before a slot unless
-`.brokkr/recipes/eval/bundle.json` declares every F5 bind below.
+`.brokkr/recipes/eval/bundle.json` declares every F5 bind below. That
+preflight reads the argv as written, so it is an early refusal and not the
+boundary: an entry that reaches a wrapper through a shell or another program
+is not seen by it, and the wrapper's own launch-time check above still
+refuses that launch before any spend.
 
 **Release pin and test equipment.** A release build of `swarmail-evals`
 trusts the published driver digest alone, whatever the environment says. A
