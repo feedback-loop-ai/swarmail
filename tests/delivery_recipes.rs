@@ -1767,12 +1767,31 @@ fn eval_recipe_defect(bundle: &Value, policy: &Value) -> Result<(), String> {
         seats["trial"]["hands"]["network"] == true,
         "trial has network (a paid trial needs it)",
     )?;
-    for name in ["trial", "review"] {
-        expect(
-            seats[name]["hands"]["binds"] == json!([]),
-            &format!("{name}: no bind is guessed (decision 0119, F5)"),
-        )?;
-    }
+    // F5 (the operator's 2026-11-24 ruling on #404, which approved this
+    // bundle by name for these binds alone): the trial seat binds exactly
+    // the paid read set, read-only but for dsh's profiles overlay; the gate
+    // binds nothing.
+    expect(
+        seats["trial"]["hands"]["binds"]
+            == json!([
+                {"path": "/etc/resolv.conf", "mode": "ro"},
+                {"path": "/run/systemd/resolve", "mode": "ro"},
+                {"path": "/etc/nsswitch.conf", "mode": "ro"},
+                {"path": "/etc/hosts", "mode": "ro"},
+                {"path": "~/.config/swarmail-evals", "mode": "ro"},
+                {"path": "~/.local/share/brokkr-0.15.2", "mode": "ro"},
+                {"path": "~/.local/share/claude", "mode": "ro"},
+                {"path": "~/.volta", "mode": "ro"},
+                {"path": "~/.claude", "mode": "ro"},
+                {"path": "~/.codex", "mode": "ro"},
+                {"path": "~/.dsh/profiles", "mode": "overlay"},
+            ]),
+        "trial: exactly the approved F5 binds (decision 0119, F5; #404)",
+    )?;
+    expect(
+        seats["review"]["hands"]["binds"] == json!([]),
+        "review: no bind is guessed (decision 0119, F5)",
+    )?;
     expect(
         seats["trial"]["limits"]["timeout_seconds"] == 1800,
         "trial seat 1800 s",
@@ -1864,9 +1883,14 @@ fn eval_recipe_is_two_exec_seats_with_one_attempt_and_five_rules() {
         network["seats"]["review"]["hands"]["network"] = json!(true);
         out.push(("network on the gate", network, policy.clone()));
         let mut bind = bundle.clone();
-        bind["seats"]["trial"]["hands"]["binds"] =
-            json!([{"path": "/home/operator/.claude", "mode": "ro"}]);
+        bind["seats"]["trial"]["hands"]["binds"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"path": "/home/operator", "mode": "ro"}));
         out.push(("a guessed bind on trial", bind, policy.clone()));
+        let mut writable = bundle.clone();
+        writable["seats"]["trial"]["hands"]["binds"][8]["mode"] = json!("rw");
+        out.push(("a writable F5 bind", writable, policy.clone()));
         let mut score_bind = bundle.clone();
         score_bind["seats"]["review"]["hands"]["binds"] = json!(["/tmp"]);
         out.push(("a bind on the gate", score_bind, policy.clone()));
@@ -1916,7 +1940,7 @@ fn eval_recipe_is_two_exec_seats_with_one_attempt_and_five_rules() {
         "a retry rule" => "exactly the five rules",
         "max_attempts 2" => "trial: no retries",
         "network on the gate" => "review has no network",
-        "a guessed bind on trial" => "trial: no bind is guessed",
+        "a guessed bind on trial" | "a writable F5 bind" => "trial: exactly the approved F5 binds",
         "a bind on the gate" => "review: no bind is guessed",
         "no network on trial" => "trial has network",
         "a model agent on trial" => "trial: no model agent",
