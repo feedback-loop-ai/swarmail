@@ -763,3 +763,54 @@ Second implement attempt, 2026-11-25, after runs 4 and 5. Load 13–40.
 Added CI time for the three fixes: at most about 0.1 s net. The report
 probe now stops at `no-row`, which makes it faster. The pin check adds
 three hashes per family.
+
+### Review return on ededb327 (run issue-404-…-19dec4ac, 2026-11-25)
+
+Part of #404 and #164. Verdicts: correctness clean; guarantees,
+independent, security and tests residual. No finding names a defect in
+the race-fix diff, so no code changed. The five-run streak on `ebb8362c`
+and the verify receipt at `ededb327` / tree `c0057f0b` still stand, and
+only this ledger section is new.
+
+- **MEDIUM, security: same-uid grant class** (`evals/src/grant.rs`
+  `serve` trusts any same-exe descendant, and the endpoint creator acts as
+  coordinator). This residual comes from earlier rounds, the race-fix
+  diff did not change it, and the security member reports it as the prior
+  "operator-ruled shippable residual". It is the deliberate same-uid
+  class that the operator's 2026-11-24 ruling 4 routes as a residual
+  (`spec.md` § Paid launch boundary; `evals/wrappers.md` paid boundary;
+  `grant.rs` module doc). Closing it would change production behaviour and
+  the boundary, which this run's charter forbids ("test races only").
+  Answered, not fixed. Any change needs a new operator ruling.
+- **LOW, security:** the debug-only `SYNTHETIC-` admission and the
+  shell-indirection preflight gap. Both are inherited, documented in
+  `wrappers.md`, and carried as tracked debt.
+- **LOW, independent: race 1's cause is not established.** I agree that
+  the deleted `set_var` pair cannot explain a hash mismatch in the
+  calling thread, because std's env lock serialises it against std
+  readers and spawn, and `standin_driver_admitted` reads no environment.
+  The fix removes the only shared mutation the test made, and
+  `restored_inputs_agree` turns a recurrence into a named divergence
+  (selected, private or adjacent, with each read's error). As the
+  reviewer notes, it cannot catch a transient read failure that hits only
+  the verifier's own later `file_hash`. This stays tracked debt. If CI
+  shows it again, the assertion message or a bare
+  `driver_release_unrecognized` after a passing `restored_inputs_agree`
+  is the next evidence, and the latter would point at the verifier's
+  read.
+- **LOW, guarantees:** the "proposed 0137" labels where 0137 is accepted.
+  They are inherited from main. Most sit in `evals/src/` comments, which
+  this run may not touch except for an unavoidable race fix. They are
+  tracked as docs-only debt for a follow-up.
+- **LOW, guarantees:** the ignored `a_nested_baseline` proofs must run
+  before merge. The command for the dispatcher at `ededb327` is
+  `cd evals && cargo test --locked --test paid_baseline -- --ignored a_nested_baseline`.
+  The baseline group that needs both a pass and a scored failure stays
+  open (0138 AC6), as already recorded.
+- **INFO:** these were not changed: the tautological
+  `assert_ne!(argv_only, paid)` in `tests/report.rs` (the identity and
+  request-count assertions beside it carry the proof), host-gated
+  `mount_proof`/`real_driver`, and the main-owned root `mail_compare`
+  ETXTBSY flake (it deserves its own issue). Any code edit would restart
+  AC4's five-run streak, about 25 minutes per run, for no change in
+  proof strength.
