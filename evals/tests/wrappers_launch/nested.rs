@@ -144,17 +144,10 @@ impl Nested {
                 .as_bytes(),
         );
     }
-    /// Where the debug admission looks for the stand-in it trusts: beside
-    /// the profile directory this harness runs under `deps/` in.
+    /// Where the debug admission looks for the stand-in it trusts: the
+    /// library's own rule, applied to this harness.
     fn admitted_image() -> PathBuf {
-        let me = std::env::current_exe().unwrap();
-        let dir = me.parent().unwrap();
-        let dir = if dir.file_name().is_some_and(|n| n == "deps") {
-            dir.parent().unwrap()
-        } else {
-            dir
-        };
-        dir.join(wrappers::STANDIN_DRIVER_NAME)
+        wrappers::standin_image_beside(&std::env::current_exe().unwrap()).unwrap()
     }
     /// At the point of use, after a restore and reselect: the selected
     /// digest, this test's private driver bytes and the image the debug

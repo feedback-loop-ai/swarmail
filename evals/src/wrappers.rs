@@ -421,25 +421,38 @@ pub fn driver_admitted(sha256: &str) -> bool {
 /// The fixed name of the offline stand-in executable the test suites build
 /// beside this one (`tests/standin/paid_cli.rs`).
 pub const STANDIN_DRIVER_NAME: &str = "paid-cli-standin";
+/// Where the debug admission looks for the stand-in beside `exe`: the
+/// executable's own directory, or the profile directory when `exe` is a
+/// test harness in Cargo's build directory. That is `<profile>/deps/`, or,
+/// under the newer build-directory layout, `<profile>/build/<pkg>/<hash>/out/`
+/// (CI's stable cargo uses it, and the earlier pinned one does not). Only
+/// those two exact shapes are recognized; nothing else walks upward. This
+/// is a path computation only, and a release build never consults it.
+pub fn standin_image_beside(exe: &Path) -> Option<PathBuf> {
+    let dir = exe.parent()?;
+    let profile = match dir.file_name() {
+        Some(name) if name == "deps" => dir.parent()?,
+        Some(name) if name == "out" => match dir.ancestors().nth(3) {
+            Some(build) if build.file_name().is_some_and(|n| n == "build") => build.parent()?,
+            _ => dir,
+        },
+        _ => dir,
+    };
+    Some(profile.join(STANDIN_DRIVER_NAME))
+}
 /// Test equipment, compiled only into debug builds: the digest of the
-/// stand-in built beside this executable. No environment value, flag or
-/// selection field can widen the trusted set; a release build has no such
-/// arm at all.
+/// stand-in built beside this executable ([`standin_image_beside`]). No
+/// environment value, flag or selection field can widen the trusted set; a
+/// release build has no such arm at all.
 #[cfg(debug_assertions)]
 fn standin_driver_admitted(sha256: &str) -> bool {
-    // Beside this executable, or beside the profile directory when this is
-    // a test harness under `deps/`.
-    let Some(dir) = std::env::current_exe()
+    let Some(image) = std::env::current_exe()
         .ok()
-        .and_then(|me| me.parent().map(Path::to_path_buf))
+        .and_then(|me| standin_image_beside(&me))
     else {
         return false;
     };
-    let dir = match dir.file_name() {
-        Some(name) if name == "deps" => dir.parent().map_or(dir.clone(), Path::to_path_buf),
-        _ => dir,
-    };
-    crate::identity::file_hash(&dir.join(STANDIN_DRIVER_NAME)).is_ok_and(|s| s == sha256)
+    crate::identity::file_hash(&image).is_ok_and(|s| s == sha256)
 }
 #[cfg(not(debug_assertions))]
 fn standin_driver_admitted(_sha256: &str) -> bool {
@@ -2358,6 +2371,22 @@ mod tests {
         // nothing but the published digest.
         assert!(!standin_driver_admitted(&"a".repeat(64)));
         assert_eq!(SEAM_BUILD, cfg!(debug_assertions));
+        // The stand-in's place: beside a binary, or at the profile directory
+        // for a harness in either Cargo build-directory layout, and nowhere
+        // else upward.
+        let image = |exe: &str| standin_image_beside(Path::new(exe));
+        let at = |dir: &str| Some(Path::new(dir).join(STANDIN_DRIVER_NAME));
+        assert_eq!(image("/t/debug/swarmail-evals"), at("/t/debug"));
+        assert_eq!(image("/t/debug/deps/wrappers-1a2b"), at("/t/debug"));
+        assert_eq!(
+            image("/t/debug/build/swarmail-evals/2b5b/out/wrappers-1a2b"),
+            at("/t/debug")
+        );
+        assert_eq!(
+            image("/t/debug/other/x/y/out/h"),
+            at("/t/debug/other/x/y/out")
+        );
+        assert_eq!(image("/out/h"), at("/out"));
         // A seam-bearing build spends synthetic equipment alone, whatever
         // the pin; a release build reads nothing here.
         let root = crate::runner::private_tempdir("seam-spend-").unwrap();
