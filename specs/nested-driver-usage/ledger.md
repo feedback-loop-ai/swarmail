@@ -684,6 +684,7 @@ Command, from `evals/`, one suite at a time, default test threading:
 | 1 | `ebb8362c` (code); load 17.9 → 13.4 | 2026-11-24 23:10:51 | 1523 s | exit 0 — 693 passed, 0 failed, 11 ignored (host-gated, unchanged), 28 test binaries |
 | 2 | `1bcc5309` (code as `ebb8362c`; ledger-only since); load 24.0 → 8.1 | 2026-11-24 23:48:11 | 1498 s | exit 0 — 693 passed, 0 failed, 11 ignored, 28 test binaries |
 | 3 | `0c51b37c` (code as `ebb8362c`); load 7.5 → 8.0 | 2026-11-25 00:13:30 | 1511 s | exit 0 — 693 passed, 0 failed, 11 ignored, 28 test binaries |
+| 4 | `ba48ac14` (code as `ebb8362c`; next implement attempt, same run); load 13.9 → 13.4 | 2026-11-25 00:41:48 | 1511 s | exit 0 — 693 passed, 0 failed, 11 ignored, 28 test binaries |
 
 Three consecutive passes here (run 3 under `timeout 30m`); two more on
 the same code complete AC4's five.
