@@ -31,3 +31,18 @@ The earlier versions (Claude 2.1.310, Codex 0.164.0, dsh 0.1.5-rc.1) leave the a
 **Why.** The reference cohort of [0136](0136-paid-token-reference.md) needs all three families on the CLIs actually installed. Refusing dsh would drop the GLM family, and with it the epic's per-family measure.
 
 **What follows.** A follow-up delivery (#404, scope item 4) adds the three reviewed profiles and the interpreted-pin verification. Until it lands, paid baseline refuses every installed CLI, as this decision already requires.
+
+## Addendum — 2026-11-24: the operator's rulings on the nested paid route (#404)
+
+The operator made four rulings on 2026-11-24 for the nested (via-brokkr) paid route, in chat to the dispatcher, while #404 was under review. They are recorded here because they govern this decision's launch boundary. #413 (`1161a535`) delivered them.
+
+1. **The boundary.** A nested paid session runs through the operator's host `swarmail-evals baseline`, with the confinement this decision accepts for direct wrappers.
+   - **F5 binds.** The recipe route carries read-only binds in `.brokkr/recipes/eval/bundle.json`. That held path was approved by name for this purpose only. The binds are the four DNS inputs, the CLI and driver install trees, each family's config and auth, the operator's selection directory, and dsh's `profiles` as an overlay. The wrapper re-proves every declared bind in its own mount table before any credential read. A missing source refuses, and so does a writable mount beneath a declared tree.
+   - **Proof by a real mount.** The proof is a real mount rejecting a write; reading `os.access` is not a proof. That proof is host-gated.
+   - **Fail closed.** A paid launch without a verified binding refuses before spend. The binding is coordinator-owned and bound to the wrapper's own fresh request. Caller argv cannot supply it.
+   - **Codex sandbox.** Codex runs only under `read-only` or `workspace-write`, and `danger-full-access` is refused. The row's descriptor and retained provenance record the class actually used.
+2. **Multi-agent tasks score.** A trial with several agent sessions reports the checked per-field sum over all of them. Any unavailable session makes that field unavailable, never zero, and an overflow does the same. [0136](0136-paid-token-reference.md)'s 16-task cohort is unchanged.
+3. **The usage companion.** Nested usage goes in proposed [0138](0138-nested-driver-usage.md)'s versioned companion in the retained leaf, digest-bound in the metadata commit, and not in the schema-2 row. 0138 itself stays proposed.
+4. **The threat model.** The fail-closed boundary guards against *accidental or unbound* paid launches: a bare wrapper, caller-made argv, a stale or replayed grant, a missing bind, a non-release driver. It does not defend against a deliberate adversary running as the operator's uid, who could equally run the agent CLI directly with the operator's credentials. Reviewers route such findings as residuals, not holds. The deliberate same-uid grant class stays an accepted residual of #413.
+
+**Still open.** The 2026-11-23 smoke needed `~/.claude`, `~/.claude.json` and `~/.codex` read-write. Ruling 1 approved read-only binds only. A paid claude or codex session on the *recipe* route is therefore unproven, and needs a further ruling before it runs. The host baseline route is unaffected.
