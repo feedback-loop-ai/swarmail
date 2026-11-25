@@ -682,11 +682,12 @@ Command, from `evals/`, one suite at a time, default test threading:
 | run | tested revision | started (UTC) | elapsed | outcome |
 |---|---|---|---|---|
 | 1 | `ebb8362c` (code); load 17.9 → 13.4 | 2026-11-24 23:10:51 | 1523 s | exit 0 — 693 passed, 0 failed, 11 ignored (host-gated, unchanged), 28 test binaries |
+| 2 | `1bcc5309` (code as `ebb8362c`; ledger-only since); load 24.0 → 8.1 | 2026-11-24 23:48:11 | 1498 s | exit 0 — 693 passed, 0 failed, 11 ignored, 28 test binaries |
 
 The plan (`specs/eval-race-isolation/plan.md`, verification quickstart)
-splits the five: this seat runs one near the end, because one run takes
+splits the five: this seat runs what fits, because one run takes
 ~25 min on this loaded host and five plus the house gates do not fit a
-two-hour attempt. Runs 2–5 belong to the verify phase on the same code;
+two-hour attempt. The remaining runs belong to the verify phase on the same code;
 **AC4's five-run streak is not yet complete** and must not be read as
 such. A failed run or any code change restarts the streak.
 
