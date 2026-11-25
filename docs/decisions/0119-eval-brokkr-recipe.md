@@ -490,3 +490,9 @@ There is a fifth seam beyond the four named in §6. brokkr's `exec` adapter capt
 - **Outside the journal:** those tokens are not journal facts. §3's journal join stays the rule for every other fact, and via-brokkr token facts name their source.
 - **The nested driver binary** is pinned by path and digest like any other paid executable, separately from the delivery engine's pin.
 - **Route (a)**, an exec relay or a named nested-accounting channel in brokkr, is filed upstream as the long-term route. If it ships, a further addendum may move via-brokkr tokens back into the journal.
+
+## Dated addendum — 2026-11-24 (route (b) built; the eval recipe's F5 binds)
+
+Route (b), ruled on 2026-11-23, is built by #413 (`1161a535`). `swarmail-evals` speaks forge-driver/v1 to the nested driver, which is pinned to the brokkr v0.15.2 release executable. It records each session's token fields in proposed [0138](0138-nested-driver-usage.md)'s usage companion, outside the journal, as the 2026-11-23 ruling requires.
+
+The trial seat of `.brokkr/recipes/eval/bundle.json` now carries F5's read-only binds, which the operator approved by name on 2026-11-24. The operator's rulings of that date on the boundary, the codex sandbox classes, multi-agent sums and the threat model are recorded in accepted [0137](0137-paid-baseline.md)'s 2026-11-24 addendum.
