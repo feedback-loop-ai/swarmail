@@ -685,16 +685,13 @@ Command, from `evals/`, one suite at a time, default test threading:
 | 2 | `1bcc5309` (code as `ebb8362c`; ledger-only since); load 24.0 → 8.1 | 2026-11-24 23:48:11 | 1498 s | exit 0 — 693 passed, 0 failed, 11 ignored, 28 test binaries |
 | 3 | `0c51b37c` (code as `ebb8362c`); load 7.5 → 8.0 | 2026-11-25 00:13:30 | 1511 s | exit 0 — 693 passed, 0 failed, 11 ignored, 28 test binaries |
 | 4 | `ba48ac14` (code as `ebb8362c`; next implement attempt, same run); load 13.9 → 13.4 | 2026-11-25 00:41:48 | 1511 s | exit 0 — 693 passed, 0 failed, 11 ignored, 28 test binaries |
+| 5 | `71667c66` (code as `ebb8362c`); load 12.7 → 22.2 | 2026-11-25 01:07:10 | 1514 s | exit 0 — 693 passed, 0 failed, 11 ignored, 28 test binaries |
 
-Three consecutive passes here (run 3 under `timeout 30m`); two more on
-the same code complete AC4's five.
-
-The plan (`specs/eval-race-isolation/plan.md`, verification quickstart)
-splits the five: this seat runs what fits, because one run takes
-~25 min on this loaded host and five plus the house gates do not fit a
-two-hour attempt. The remaining runs belong to the verify phase on the same code;
-**AC4's five-run streak is not yet complete** and must not be read as
-such. A failed run or any code change restarts the streak.
+Five consecutive passes on identical code (`ebb8362c`; every later
+commit touches only `specs/`), run one at a time: runs 1–3 by the first
+implement attempt, runs 4–5 by the next attempt of the same run, each
+under `timeout 45m` (run 3 under `timeout 30m`). **AC4's five-run
+streak is complete.** A later code change restarts it.
 
 ### Gates run here (Linux, code at `ebb8362c`; later commits are ledger-only)
 
@@ -733,3 +730,36 @@ test `matrix_probe_entrypoint`, which writes `SWARMAIL_BIN` only when
 re-entered as a dedicated probe child process (its `MATRIX_PROBE_ENV`
 guard returns at once in the normal harness), so it never mutates a
 shared harness's environment; it is outside this run.
+
+### Gates re-run on the final tree (Linux, `71667c66`, code as `ebb8362c`)
+
+Second implement attempt, 2026-11-25, after runs 4 and 5. Load 13–40.
+
+- `cargo fmt --all -- --check`, root and `evals/`: clean.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`,
+  root and `evals/`: clean.
+- `cargo build --locked --bin swarmail --message-format=json`: the
+  artifact path above.
+- `cargo test --workspace --locked`: the **first run failed one test**,
+  124 s, at load 40. The test was
+  `mail_compare::api_section::only_the_holder_enters_the_delegated_scope`
+  (`tests/mail_compare/api_section.rs:5606`), which hit `ExecutableFileBusy`
+  ("Text file busy") when it spawned a script it had just written. A sibling
+  thread's fork held the write descriptor across the exec. The test and its
+  file come from main, through `5b4a99ed`. Under root `tests/`, this branch
+  changes only `tests/delivery_recipes.rs`, and this run is scoped to the
+  evals races, so it is reported here and not changed. The rerun passed:
+  exit 0, 2212 passed, 0 failed, 57 ignored, 223 s.
+- `bash scripts/coverage-gate.sh`: pass, exact 100/100/100, 393 s.
+- `bash scripts/coverage-gate.sh selftest`: pass, 20 s.
+- `bash scripts/publish-guard-test.sh`: OK.
+- `bash scripts/seal-branch-test.sh`: 7 cases and 10 mutants passed.
+- `cargo deny check licenses`: licenses ok.
+- **Not run here:** the pinned brokkr 0.12.0 recipe compile. No brokkr
+  binary is on this host's PATH. No `.brokkr/` path changed. The verify
+  seat and CI's `brokkr bundle (pinned)` own it.
+- **CI-owned:** macOS execution, Helm, Docker smoke, RustSec.
+
+Added CI time for the three fixes: at most about 0.1 s net. The report
+probe now stops at `no-row`, which makes it faster. The pin check adds
+three hashes per family.
