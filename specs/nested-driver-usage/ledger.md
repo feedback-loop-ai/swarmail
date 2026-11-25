@@ -814,3 +814,43 @@ only this ledger section is new.
   ETXTBSY flake (it deserves its own issue). Any code edit would restart
   AC4's five-run streak, about 25 minutes per run, for no change in
   proof strength.
+
+### Review return on e4eaa7d5 (run issue-404-…-19dec4ac, 2026-11-25)
+
+Part of #404 and #164. Verdicts: correctness clean; guarantees,
+independent, security and tests residual. Two things are the same as the
+return on `ededb327`: no finding names a defect in the race-fix diff, and
+the only finding above low is the inherited same-uid grant class. So no
+code changed. The five-run streak on `ebb8362c` and the gates recorded
+above still stand: `git diff --stat ebb8362c..HEAD` touches only
+`specs/`, and no gate or test reads this ledger.
+
+- **MEDIUM, security: same-uid grant class** (`evals/src/grant.rs`
+  `serve`/coordinator registration). This is unchanged from the previous
+  answer. It is the class that the operator's 2026-11-24 ruling 4 routes as
+  a residual, not a hold. Changing it would change production behaviour
+  and the paid boundary, and this run's charter forbids both. The run
+  cannot clear it. Each further review return will repeat it until the
+  operator rules on the run (0102's five-return limit). **The operator
+  should rule on this residual directly** rather than spend further
+  returns on it.
+- **LOW, guarantees (new): unbounded report probes.** In
+  `tests/report.rs`, the three paid-preflight probes call `cmd.output()`
+  with no test-side bound. If the matrix hangs, the suite would hold for
+  the matrix's own seat deadline instead of failing by name. Accepted as
+  tracked debt. The follow-up is `common::bounded(cmd,
+  common::ISOLATED_CLI_BOUND).wait_with_output()` (or
+  `common::isolated_output`). It is not done here because any test edit
+  restarts AC4's five-run streak. That streak is about 2 h 10 min of full
+  suites, which is longer than this seat's 2-hour deadline. The probes
+  now run the no-row stand-in, which exits before `trial.sh`, so this
+  run's change gives them no new path that can hang.
+- **LOW (carried):** race 1's exact cause is still not shown, the "proposed
+  0137" labels remain, the ignored `a_nested_baseline` proofs must run
+  before merge, and 0138 AC6 is still open. These stand as recorded in the
+  section above. The `paid_baseline` command for the dispatcher is
+  unchanged.
+- **INFO (carried):** these remain as recorded: the tautological
+  `assert_ne!(argv_only, paid)`, the host-gated proofs, the `Option`
+  equality in `restored_inputs_agree` and the main-owned `mail_compare`
+  ETXTBSY flake.
